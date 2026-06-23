@@ -261,6 +261,13 @@ let streamBubbleVisibleSince = 0;
 let streamBubbleHideTimer = null;
 let streamTextRenderTimer = null;
 let streamToolCallSeen = false;
+let streamToolCallBubble = null;
+let streamToolCallText = null;
+let streamToolCallRawArguments = "";
+let streamToolCallName = "";
+let streamToolCallId = "";
+let streamToolCallContentIndex = null;
+let streamToolCallComplete = false;
 let streamThinkingBubble = null;
 let streamThinking = null;
 let streamMessageActive = false;
@@ -2517,7 +2524,7 @@ function messageCopyText(message, body = null) {
     return sections.join("\n\n").trimEnd() || messageCopyFallbackText(body);
   }
   if (message.role === "thinking") return visibleThinkingText(message.thinking || textFromContent(message.content)).trimEnd() || messageCopyFallbackText(body);
-  if (message.role === "toolCall") return JSON.stringify(message.arguments ?? message.content ?? {}, null, 2);
+  if (message.role === "toolCall") return toolCallDisplayText(message).trimEnd() || messageCopyFallbackText(body);
   if (message.role === "assistantEvent") {
     return (typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? {}, null, 2)).trimEnd();
   }
@@ -14240,6 +14247,30 @@ function assistantToolCallArguments(part) {
   return part?.arguments || part?.args || part?.input || part?.toolCall?.arguments || {};
 }
 
+function toolCallArgumentsText(value, { includeEmptyObject = true } = {}) {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return includeEmptyObject ? "{}" : "";
+  if (typeof value === "object") {
+    if (!includeEmptyObject && !Array.isArray(value) && Object.keys(value).length === 0) return "";
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function toolCallDisplayText(message, options = {}) {
+  if (typeof message?.rawArguments === "string" && message.rawArguments.length > 0) return message.rawArguments;
+  return toolCallArgumentsText(message?.arguments ?? message?.content ?? {}, options);
+}
+
+function renderToolCallMessageBody(body, message, { placeholder = "{}" } = {}) {
+  const text = toolCallDisplayText(message).trimEnd() || placeholder;
+  appendText(body, text, "code-block tool-call-arguments");
+}
+
 function assistantTextPartText(part) {
   if (!part || typeof part !== "object" || part.type !== "text") return "";
   if (typeof part.text === "string") return part.text;
@@ -15274,7 +15305,7 @@ function appendMessage(message, { streaming = false, messageIndex = -1, transien
     const thinkingText = visibleThinkingText(message.thinking || textFromContent(message.content));
     if (thinkingOutputVisible && thinkingText) appendText(body, thinkingText, "thinking-text");
   } else if (message.role === "toolCall") {
-    appendText(body, JSON.stringify(message.arguments ?? message.content ?? {}, null, 2), "code-block");
+    renderToolCallMessageBody(body, message);
   } else if (message.role === "assistantEvent") {
     appendText(body, typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? {}, null, 2), "code-block");
   } else {
@@ -17530,6 +17561,55 @@ function suppressStreamingAssistantTextBeforeToolCall() {
   removeStreamBubble();
 }
 
+function resetStreamingToolCallState({ remove = true } = {}) {
+  if (remove) streamToolCallBubble?.remove();
+  streamToolCallBubble = null;
+  streamToolCallText = null;
+  streamToolCallRawArguments = "";
+  streamToolCallName = "";
+  streamToolCallId = "";
+  streamToolCallContentIndex = null;
+  streamToolCallComplete = false;
+}
+
+function streamingToolCallTitle() {
+  const name = streamToolCallName || "tool";
+  return `tool call: ${name}${streamToolCallComplete ? " (ready)" : " (building)"}`;
+}
+
+function streamingToolCallMessage() {
+  return {
+    role: "toolCall",
+    title: streamingToolCallTitle(),
+    timestamp: Date.now(),
+    toolName: streamToolCallName || "tool",
+    toolCallId: streamToolCallId,
+    rawArguments: streamToolCallRawArguments,
+    content: streamToolCallRawArguments,
+  };
+}
+
+function renderStreamingToolCallCard({ scroll = false } = {}) {
+  const message = streamingToolCallMessage();
+  const displayText = streamToolCallRawArguments || (streamToolCallComplete ? "{}" : "(waiting for argument stream…)");
+  if (!streamToolCallBubble?.parentElement || !streamToolCallText) {
+    const created = appendMessage(message, { streaming: true });
+    streamToolCallBubble = created.bubble;
+    streamToolCallText = created.body.querySelector(".tool-call-arguments") || created.body.querySelector(".code-block");
+  }
+  streamToolCallBubble._copyMessage = message;
+  const role = streamToolCallBubble.querySelector(":scope > .message-header .message-role");
+  if (role && role.textContent !== message.title) role.textContent = message.title;
+  if (streamToolCallText && streamToolCallText.textContent !== displayText) streamToolCallText.textContent = displayText;
+  renderRunIndicator({ scroll: false });
+  if (scroll) scrollChatToBottom();
+}
+
+function removeStreamingToolCallCard() {
+  resetStreamingToolCallState({ remove: true });
+  renderRunIndicator({ scroll: false });
+}
+
 function ensureStreamBubble() {
   cancelStreamBubbleHide();
   if (streamBubble?.parentElement === elements.chat) return;
@@ -17567,13 +17647,14 @@ function resetStreamBubble() {
   streamMarkdownState = null;
   streamBubbleVisibleSince = 0;
   streamToolCallSeen = false;
+  resetStreamingToolCallState({ remove: true });
   streamThinkingBubble = null;
   streamThinking = null;
   streamMessageActive = false;
 }
 
 function liveStreamRenderActive() {
-  return streamMessageActive && currentState?.isStreaming === true && Boolean(streamBubble || streamThinkingBubble || streamRawText);
+  return streamMessageActive && currentState?.isStreaming === true && Boolean(streamBubble || streamThinkingBubble || streamToolCallBubble || streamRawText || streamToolCallRawArguments);
 }
 
 /**
@@ -17584,14 +17665,18 @@ function liveStreamRenderActive() {
 function restoreStreamRenderAfterChatRebuild() {
   const thinkingText = streamThinking?.textContent || "";
   const thinkingComplete = streamThinkingBubble?.classList.contains("complete") === true;
+  const toolCallWasVisible = !!(streamToolCallBubble?.parentElement === elements.chat || streamToolCallRawArguments || streamToolCallName);
   streamBubble = null;
   streamText = null;
   streamThinkingBubble = null;
   streamThinking = null;
+  streamToolCallBubble = null;
+  streamToolCallText = null;
   streamBubbleVisibleSince = 0;
   if (thinkingText && setStreamingThinkingText(thinkingText) && thinkingComplete) {
     streamThinkingBubble?.classList.add("complete");
   }
+  if (toolCallWasVisible) renderStreamingToolCallCard();
   if (stripTodoProgressLines(streamRawText, { streaming: true })) renderStreamingAssistantText();
 }
 
@@ -17603,6 +17688,56 @@ function assistantStreamingMessage(event) {
   if (event?.message?.role === "assistant") return event.message;
   const partial = event?.assistantMessageEvent?.partial;
   return partial?.role === "assistant" ? partial : null;
+}
+
+function assistantToolCallPartFromUpdate(event, update = event?.assistantMessageEvent || {}) {
+  if (isAssistantToolCallPart(update.toolCall)) return update.toolCall;
+  const message = assistantStreamingMessage(event);
+  const content = message?.content;
+  if (!Array.isArray(content)) return null;
+  const contentIndex = Number(update.contentIndex);
+  if (Number.isInteger(contentIndex) && isAssistantToolCallPart(content[contentIndex])) return content[contentIndex];
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    if (isAssistantToolCallPart(content[index])) return content[index];
+  }
+  return null;
+}
+
+function streamToolCallNameFromUpdate(update, part) {
+  const rawName = update.name || update.toolName || update.toolCall?.name || assistantToolCallName(part);
+  const name = runIndicatorToolName(rawName);
+  return name === "unknown" ? "tool" : name;
+}
+
+function streamingToolCallContentIndexFromUpdate(update) {
+  const contentIndex = Number(update.contentIndex);
+  return Number.isInteger(contentIndex) ? contentIndex : null;
+}
+
+function updateStreamingToolCallFromEvent(event, { reset = false, appendDelta = false, complete = false, scroll = false } = {}) {
+  const update = event.assistantMessageEvent || {};
+  const part = assistantToolCallPartFromUpdate(event, update);
+  const contentIndex = streamingToolCallContentIndexFromUpdate(update);
+  if (reset || (contentIndex !== null && streamToolCallContentIndex !== null && contentIndex !== streamToolCallContentIndex)) {
+    resetStreamingToolCallState({ remove: true });
+  }
+  streamToolCallContentIndex = contentIndex ?? streamToolCallContentIndex;
+  streamToolCallName = streamToolCallNameFromUpdate(update, part) || streamToolCallName || "tool";
+  streamToolCallId = assistantToolCallId(update.toolCall || part) || streamToolCallId;
+  streamToolCallComplete = !!complete;
+
+  const partArgumentText = toolCallArgumentsText(assistantToolCallArguments(update.toolCall || part), { includeEmptyObject: false });
+  if (reset) streamToolCallRawArguments = partArgumentText || "";
+  if (appendDelta && update.delta !== undefined && update.delta !== null) streamToolCallRawArguments += typeof update.delta === "string" ? update.delta : String(update.delta);
+  if (!streamToolCallRawArguments && partArgumentText) streamToolCallRawArguments = partArgumentText;
+  if (complete) {
+    const finalArgumentText = toolCallArgumentsText(assistantToolCallArguments(update.toolCall || part), { includeEmptyObject: true });
+    if (finalArgumentText && (finalArgumentText !== "{}" || !streamToolCallRawArguments)) streamToolCallRawArguments = finalArgumentText;
+    if (!streamToolCallRawArguments) streamToolCallRawArguments = "{}";
+  }
+
+  renderStreamingToolCallCard({ scroll });
+  return streamToolCallName || "tool";
 }
 
 function assistantTextFromMessage(message, { streaming = false } = {}) {
@@ -17693,9 +17828,20 @@ function handleMessageUpdate(event) {
   } else if (update.type === "toolcall_start") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = runIndicatorToolName(update.name || update.toolName || update.toolCall?.name);
-    setRunIndicatorActivity(`Preparing tool call: ${name}…`);
+    const name = updateStreamingToolCallFromEvent(event, { reset: true, scroll: true });
+    setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
     addEvent(`tool call started in assistant message`, "info");
+  } else if (update.type === "toolcall_delta") {
+    streamToolCallSeen = true;
+    suppressStreamingAssistantTextBeforeToolCall();
+    const name = updateStreamingToolCallFromEvent(event, { appendDelta: true });
+    setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
+    scrollChatToBottom();
+  } else if (update.type === "toolcall_end") {
+    streamToolCallSeen = true;
+    suppressStreamingAssistantTextBeforeToolCall();
+    const name = updateStreamingToolCallFromEvent(event, { complete: true, scroll: true });
+    setRunIndicatorActivity(`Tool call ready: ${name}; waiting to run…`, { scroll: false });
   } else if (update.type === "error") {
     setRunIndicatorActivity("Assistant stream reported an error…");
     appendMessage({ role: "error", title: "assistant error", timestamp: Date.now(), content: update.reason || update.errorMessage || "assistant error", level: "error" }, { streaming: true });
@@ -19617,6 +19763,7 @@ function handleEvent(event) {
     case "tool_execution_start":
       streamToolCallSeen = true;
       suppressStreamingAssistantTextBeforeToolCall();
+      removeStreamingToolCallCard();
       handleToolExecutionStart(event);
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
       addEvent(`tool ${event.toolName} started`);

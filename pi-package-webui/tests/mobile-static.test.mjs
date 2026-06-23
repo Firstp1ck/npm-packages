@@ -810,6 +810,10 @@ assert.match(app, /function scheduleStreamBubbleHide\([\s\S]*?STREAM_OUTPUT_MIN_
 assert.match(app, /if \(finalText\) \{[\s\S]*?renderStreamingMarkdown\(streamText, finalText\);[\s\S]*?\} else \{\n\s+scheduleStreamBubbleHide\(\);/, "empty filtered stream output should schedule hide while visible stream output renders as Markdown");
 assert.match(app, /if \(streamToolCallSeen \|\| streamBubble\) renderStreamingAssistantText\(\);\n\s+else scheduleStreamingAssistantTextRender\(\);/, "live assistant text should wait briefly before showing unless it is already visible or follows a tool call");
 assert.match(app, /streamToolCallSeen = true;\n\s+suppressStreamingAssistantTextBeforeToolCall\(\);/, "tool-call starts should remove pending assistant text from the live transcript");
+assert.match(app, /function renderStreamingToolCallCard\(\{ scroll = false \} = \{\}\)[\s\S]*?appendMessage\(message, \{ streaming: true \}\)[\s\S]*?streamToolCallText\.textContent !== displayText/, "live tool-call cards should render and update the arguments stream in place");
+assert.match(app, /update\.type === "toolcall_delta"[\s\S]*?updateStreamingToolCallFromEvent\(event, \{ appendDelta: true \}\)[\s\S]*?Building tool call:/, "tool-call deltas should update visible streamed arguments instead of a static placeholder");
+assert.match(app, /case "tool_execution_start":[\s\S]*?removeStreamingToolCallCard\(\)[\s\S]*?handleToolExecutionStart\(event\)/, "the streamed tool-call argument card should be removed when the real tool execution card starts");
+assert.doesNotMatch(app, /Preparing tool call:/, "tool-call streaming should no longer show only the static preparing placeholder");
 assert.match(app, /const created = appendMessage\(\{ role: "assistant", title: "final output"/, "live Assistant cards should be created only for final output text without a noisy Assistant label");
 assert.match(app, /function renderMarkdownInto\(parent, text\)/, "assistant output should have a browser-native Markdown renderer");
 assert.match(app, /safeMarkdownLinkHref\(url\)/, "Markdown links should be sanitized before rendering");
