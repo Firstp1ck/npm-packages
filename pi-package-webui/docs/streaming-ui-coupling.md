@@ -162,12 +162,75 @@ so total cost is quadratic in output length:
 
 ---
 
+## Ranked impact of mitigations
+
+| Rank | Mitigation | Output stream impact | UI impact | Why |
+|---:|---|---|---|---|
+| 1 | Coalesce per-token scroll work via rAF for `scrollChatToBottom()` / jump-sticky button layout reads | Medium | Very high | Biggest visible win. Removes forced layout/reflow from the hot token path and stops stream tokens from fighting user scroll. |
+| 2 | Prevent full markdown rebuild fallback during streaming by making stripping/splitting append-only or stable-boundary-aware | High | High | Reduces flicker and markdown block teardown. Protects perceived stream continuity because earlier rendered content stops being repeatedly replaced. |
+| 3 | Avoid O(n²) accumulated-text reparsing with incremental cursors / cached parse results | High | Medium/high | Biggest long-response scalability fix. Stream latency should stay flatter as output grows and the UI becomes less CPU-bound. |
+| 4 | Coalesce `renderTabs()` from `ingestEventTabActivity()` to rAF / update only affected tab nodes | Low | Medium | Mainly reduces global chrome churn during streaming events. Helps responsiveness, but is less directly tied to transcript rendering. |
+| 5 | Gate `setRunIndicatorActivity()` rendering/scrolling behind rAF and avoid scroll from per-token paths | Low/medium | Medium | Mostly already guarded by unchanged-signature checks, but useful around phase/tool-name changes. |
+| 6 | Keep `/git-footer-refresh --webui-silent` strictly out of active runs | Potentially high correctness impact | Low/medium | Not a per-token perf fix, but architecturally important: prevents WebUI chrome from writing back into the agent stream mid-run. |
+| 7 | Keep skill / auto-retry tracking side effects minimal | Low | Low | Watch-list item unless tracking grows heavier or starts rendering/persisting more often. |
+| 8 | Leave `markTabOutputSeen()` / event-end tab refreshes alone unless profiling proves otherwise | Low | Low | Event-driven, not per-token. |
+
+## Online documentation verification
+
+Reviewed browser-performance documentation supports the current impact ranking and
+keeps **#1 scroll/layout work** as the highest-confidence, highest-impact fix.
+
+- **Forced layout / reflow is a verified hot-path risk.** Chrome's Forced Reflow
+  insight defines forced reflow as JavaScript querying geometric properties after
+  DOM/style invalidation, causing immediate layout and poor performance; multiple
+  forced reflows in quick succession are layout thrashing. web.dev likewise says
+  layout directly affects interaction latency and recommends avoiding forced
+  synchronous layout by batching style/layout reads before writes.
+  - Sources: [Chrome Forced Reflow insight](https://developer.chrome.com/docs/performance/insights/forced-reflow),
+    [web.dev layout thrashing](https://web.dev/articles/avoid-large-complex-layouts-and-layout-thrashing).
+- **The specific scroll metrics used here are layout-sensitive.** A
+  Chromium-source-derived trigger list identifies `scrollHeight`, `scrollTop`,
+  `clientHeight`, box metrics, `getBoundingClientRect()`, and scroll setters as
+  APIs that can synchronously calculate style/layout when layout is invalidated.
+  This directly supports treating `scrollChatToBottom()` / `isChatNearBottom()`
+  as the top risk.
+  - Source: [What forces layout/reflow](https://gist.github.com/paulirish/5d52fb081b3570c81e3a).
+- **rAF coalescing is the right mitigation shape for visual work.** MDN documents
+  `requestAnimationFrame()` callbacks as running before the next repaint, and
+  web.dev's rendering-performance guide frames smooth UI around a per-frame
+  budget. Coalescing token-driven scroll/chrome updates to at most one rAF keeps
+  work aligned with the browser's paint cadence instead of the token cadence.
+  - Sources: [MDN requestAnimationFrame](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame),
+    [web.dev rendering performance](https://web.dev/articles/rendering-performance).
+- **Full DOM/markdown/chrome rebuilds are credible UI-jank sources.** web.dev
+  documents that DOM insertions/deletions/content changes can trigger expensive
+  style, layout, paint, and compositing work, with larger DOMs increasing the
+  cost and affecting Interaction to Next Paint. Rebuilding markdown blocks,
+  widgets, or tabs during streaming therefore has a documented path to UI jank.
+  - Sources: [DOM size and interactivity](https://web.dev/articles/dom-size-and-interactivity),
+    [style recalculation scope](https://web.dev/articles/reduce-the-scope-and-complexity-of-style-calculations).
+- **O(n²) accumulated-text parsing is mainly verified as a main-thread workload
+  risk, not a browser-layout risk.** web.dev's long-task guidance says JavaScript
+  tasks over 50 ms block the main thread and delay interactions. That supports
+  reducing repeated full-message parsing and doing less work per token, but the
+  exact impact needs local profiling because it depends on message size, token
+  cadence, and device speed.
+  - Source: [web.dev optimize long tasks](https://web.dev/articles/optimize-long-tasks).
+- **Tab/run-indicator updates remain lower-ranked unless profiling shows frequent
+  affected-node churn.** Online docs support the general cost of DOM/style/layout
+  updates, but the current code has unchanged-signature and event-driven guards,
+  so the expected impact is below the token-path scroll and markdown work.
+- **The git-footer steer-prompt item is architectural, not browser-performance
+  verified.** Browser docs do not validate that risk; it should be verified from
+  WebUI/agent protocol behavior and guarded by code invariants/tests.
+
 ## Suggested priority order
 
 1. **#1** per-token scroll reflow (most visible jank, hits every stream).
 2. **#3** markdown full-rebuild fallback (flicker, triggered by the
    thinking/todo features that are on by default).
-3. **#2** O(n²) re-parsing (degrades long responses).
+3. **#2** O(n²) re-parsing (degrades long responses and directly affects output
+   stream smoothness).
 4. **#5** tab-strip re-render per event.
 5. **#4 / #7 / #8** low/medium watch-list and design guards.
 
