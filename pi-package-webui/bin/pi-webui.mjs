@@ -4706,6 +4706,11 @@ function extensionStatusMap(tab) {
   return tab.extensionStatuses;
 }
 
+function extensionWidgetMap(tab) {
+  if (!tab.extensionWidgets) tab.extensionWidgets = new Map();
+  return tab.extensionWidgets;
+}
+
 function rememberExtensionStatusEvent(tab, event) {
   if (event?.type !== "extension_ui_request" || event.method !== "setStatus" || !event.statusKey) return;
   const statuses = extensionStatusMap(tab);
@@ -4713,8 +4718,21 @@ function rememberExtensionStatusEvent(tab, event) {
   else statuses.delete(String(event.statusKey));
 }
 
+function rememberExtensionWidgetEvent(tab, event) {
+  if (event?.type !== "extension_ui_request" || event.method !== "setWidget") return;
+  const widgetKey = event.widgetKey || event.id;
+  if (!widgetKey) return;
+  const widgets = extensionWidgetMap(tab);
+  if (Array.isArray(event.widgetLines)) widgets.set(String(widgetKey), { ...event, widgetKey: String(widgetKey), widgetLines: event.widgetLines.map((line) => String(line)) });
+  else widgets.delete(String(widgetKey));
+}
+
 function clearExtensionStatuses(tab) {
   tab?.extensionStatuses?.clear();
+}
+
+function clearExtensionWidgets(tab) {
+  tab?.extensionWidgets?.clear();
 }
 
 function replayExtensionStatuses(tab, res) {
@@ -4730,6 +4748,24 @@ function replayExtensionStatuses(tab, res) {
       replayed: true,
       tabActivity: tabActivitySnapshot(tab),
       pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length,
+    });
+  }
+}
+
+function replayExtensionWidgets(tab, res) {
+  const pendingExtensionUiRequestCount = pendingExtensionUiRequests(tab).length;
+  for (const [widgetKey, request] of extensionWidgetMap(tab)) {
+    sendSse(res, {
+      ...request,
+      type: "extension_ui_request",
+      id: randomUUID(),
+      method: "setWidget",
+      widgetKey,
+      tabId: tab.id,
+      tabTitle: tab.title,
+      replayed: true,
+      tabActivity: tabActivitySnapshot(tab),
+      pendingExtensionUiRequestCount,
     });
   }
 }
@@ -5030,8 +5066,10 @@ function attachRpcToTab(tab, rpc) {
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
+      clearExtensionWidgets(tab);
     } else {
       rememberExtensionStatusEvent(tab, scopedEvent);
+      rememberExtensionWidgetEvent(tab, scopedEvent);
       trackPendingExtensionUiRequest(tab, scopedEvent);
     }
     scopedEvent = { ...scopedEvent, tabActivity: tabActivitySnapshot(tab), pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length };
@@ -5068,6 +5106,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     activity: createTabActivity(createdAt),
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
+    extensionWidgets: new Map(),
     webuiHelperRequests: new Map(),
     webuiHelperResponseIds: new Set(),
     bashQueue: [],
@@ -5657,6 +5696,7 @@ async function updateTabCwd(id, cwd) {
   resetTabActivity(tab);
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
+  clearExtensionWidgets(tab);
   const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
   attachRpcToTab(tab, rpc);
   rpc.start();
@@ -5694,6 +5734,7 @@ async function restartTabRpc(tab, reason = "reload") {
   resetTabActivity(tab);
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
+  clearExtensionWidgets(tab);
   const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
   attachRpcToTab(tab, rpc);
   rpc.start();
@@ -7382,6 +7423,7 @@ const server = createServer(async (req, res) => {
         activeRun: publicAppRunnerState(tab.appRunner),
       });
       replayExtensionStatuses(tab, res);
+      replayExtensionWidgets(tab, res);
       replayPendingExtensionUiRequests(tab, res);
       const keepAlive = setInterval(() => res.write(": keepalive\n\n"), 15000);
       req.on("close", () => {
@@ -7942,6 +7984,7 @@ const server = createServer(async (req, res) => {
           rememberTabState(tab, response.data);
           clearPendingExtensionUiRequests(tab);
           clearExtensionStatuses(tab);
+          clearExtensionWidgets(tab);
         }
         sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
         return;

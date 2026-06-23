@@ -17,7 +17,7 @@ Auto todo/progress tracking for multi-step Pi agent work.
 - Keeps a completed list visible long enough for the agent to check whether the goal is reached.
 - If the goal is reached, the agent should produce final output; if not, it should create a new short checklist before continuing.
 - Supports multiple todo lists during one agent run; each new list replaces the previous widget list.
-- Keeps the latest list visible after an agent run and restores it on session reload/resume when possible.
+- Clears the widget automatically after a normal final assistant response, so stale partial lists do not remain visible after successful runs.
 - Shows up to 5 rows and supports manual scrolling/hiding.
 
 ## Install
@@ -65,4 +65,4 @@ Todo 3/3 done · check goal
 
 At that point the agent should either produce the final answer or create the next short checklist if the goal is not yet reached.
 
-The latest widget state is persisted in the Pi session, so it should survive terminal redraws, tab switches, reloads, and resumes until a new non-command prompt starts or `Ctrl+Alt+X` dismisses it.
+Active widget state is persisted in the Pi session, so interrupted/failed/tool-use runs can survive terminal redraws, tab switches, reloads, and resumes until a normal final assistant response, a new non-command prompt, or `Ctrl+Alt+X` clears it.

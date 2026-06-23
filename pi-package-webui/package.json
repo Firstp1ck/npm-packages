@@ -64,7 +64,7 @@
     "@firstpick/pi-extension-safety-guard": "^0.2.3",
     "@firstpick/pi-extension-setup-skills": "^0.1.8",
     "@firstpick/pi-extension-stats": "^0.2.6",
-    "@firstpick/pi-extension-todo-progress": "^0.2.4",
+    "@firstpick/pi-extension-todo-progress": "^0.2.5",
     "@firstpick/pi-extension-tools": "^0.1.6",
     "@firstpick/pi-extension-workflows": "^0.1.0",
     "@firstpick/pi-package-remote-webui": "^0.1.2",

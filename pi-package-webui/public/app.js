@@ -257,9 +257,12 @@ let tabSeenCompletionSerials = new Map();
 let streamBubble = null;
 let streamText = null;
 let streamRawText = "";
+let streamThinkingRawText = "";
+let streamDerivedTextCache = { rawText: null, assistantText: "", thinkingFormat: null, finalText: "" };
 let streamBubbleVisibleSince = 0;
 let streamBubbleHideTimer = null;
 let streamTextRenderTimer = null;
+let streamTextRenderFrame = null;
 let streamToolCallSeen = false;
 let streamToolCallBubble = null;
 let streamToolCallText = null;
@@ -275,6 +278,8 @@ let runIndicatorBubble = null;
 let runIndicatorText = null;
 let runIndicatorMeta = null;
 let runIndicatorTimer = null;
+let runIndicatorRenderFrame = null;
+let runIndicatorRenderScroll = false;
 let runIndicatorGraceCheckTimer = null;
 let runIndicatorLastStateCheckAt = 0;
 let runIndicatorLocallyActive = false;
@@ -284,6 +289,7 @@ let refreshMessagesTimer = null;
 let refreshStateTimer = null;
 let refreshFooterTimer = null;
 let refreshTabsTimer = null;
+let tabsRenderFrame = null;
 let foregroundReconcileTimer = null;
 let eventSource = null;
 let activeDialog = null;
@@ -373,6 +379,7 @@ let terminalTabsLayout = "top";
 let webuiSettings = {};
 let busyPromptBehavior = "followUp";
 let composerModeRenderSignature = "";
+let composerModeButtonsFrame = null;
 let autocompleteMaxVisible = 12;
 let doubleEscapeAction = "none";
 let treeFilterMode = "default";
@@ -396,7 +403,11 @@ const contextUsageUnknownAfterCompactionByTab = new Map();
 let autoFollowChat = true;
 let chatFollowFrame = null;
 let chatFollowSettleTimer = null;
+let chatFollowNeedsSettle = false;
 let liveWidgetRenderFrame = null;
+let liveTodoProgressSyncFrame = null;
+let liveTodoProgressPendingText = "";
+let liveTodoProgressPendingTabId = null;
 let lastChatProgrammaticScrollAt = 0;
 let chatUserScrollIntentUntil = 0;
 let mobileFooterExpanded = false;
@@ -551,6 +562,8 @@ const statusEntries = new Map();
 const widgets = new Map();
 const widgetsByTab = new Map();
 const todoProgressWidgetExpandedByTab = new Map();
+const todoProgressGoalByTab = new Map();
+const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
 const appRunnerDataByTab = new Map();
 const appRunnerInputDraftByRun = new Map();
@@ -1891,6 +1904,17 @@ function trackSkillsFromMessages(messages = latestMessages, tabId = activeTabId)
   for (const message of messages || []) trackSkillsFromMessage(tabId, message);
 }
 
+function assistantMessageUpdateType(event) {
+  return event?.assistantMessageEvent?.type || "";
+}
+
+function eventMayAffectSkillUsage(event) {
+  const type = event?.type || "";
+  return ["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(type)
+    || (type === "message_update" && assistantMessageUpdateType(event) === "toolcall_start")
+    || (type === "response" && event.command === "new_session");
+}
+
 function trackSkillsFromEvent(event) {
   const tabId = event?.tabId || activeTabId;
   if (!tabId || !event) return;
@@ -1898,11 +1922,9 @@ function trackSkillsFromEvent(event) {
     trackSkillsFromToolInvocation(tabId, event.toolName, event.args, { sourcePrefix: `event:${event.type}` });
     return;
   }
-  if (event.type === "message_update") {
+  if (assistantMessageUpdateType(event) === "toolcall_start") {
     const update = event.assistantMessageEvent || {};
-    if (update.type === "toolcall_start") {
-      trackSkillsFromToolInvocation(tabId, update.name || update.toolName || update.toolCall?.name, update.arguments || update.args || update.toolCall?.arguments || {}, { sourcePrefix: "event:message_update" });
-    }
+    trackSkillsFromToolInvocation(tabId, update.name || update.toolName || update.toolCall?.name, update.arguments || update.args || update.toolCall?.arguments || {}, { sourcePrefix: "event:message_update" });
     return;
   }
   if (event.type === "response" && event.command === "new_session") {
@@ -2185,6 +2207,16 @@ function updateComposerModeButtons() {
   }
   renderBusyPromptBehaviorTag();
   document.body.classList.toggle("pi-run-active", runActive || abortAvailable);
+}
+
+function scheduleComposerModeButtonsUpdate() {
+  if (composerModeButtonsFrame !== null) return;
+  const flush = () => {
+    composerModeButtonsFrame = null;
+    updateComposerModeButtons();
+  };
+  if (typeof requestAnimationFrame === "function") composerModeButtonsFrame = requestAnimationFrame(flush);
+  else composerModeButtonsFrame = setTimeout(flush, 0);
 }
 
 function isFooterPickerOpen() {
@@ -4552,7 +4584,7 @@ function markTabWorkingLocally(tabId = activeTabId) {
   const previous = activityForTab(tab);
   const next = normalizeTabActivity({ ...previous, status: "working", isWorking: true });
   tabActivities.set(tabId, next);
-  if (tabActivityStateChanged(previous, next)) renderTabs();
+  if (tabActivityStateChanged(previous, next)) scheduleTabsRender();
   return true;
 }
 
@@ -4562,7 +4594,7 @@ function markTabIdleLocally(tabId = activeTabId) {
   const previous = activityForTab(tab);
   const next = normalizeTabActivity({ ...previous, status: "idle", isWorking: false });
   tabActivities.set(tabId, next);
-  if (tabActivityStateChanged(previous, next)) renderTabs();
+  if (tabActivityStateChanged(previous, next)) scheduleTabsRender();
   return true;
 }
 
@@ -4578,7 +4610,7 @@ function markTabDoneLocally(tabId = activeTabId) {
     lastCompletedAt: new Date().toISOString(),
   });
   tabActivities.set(tabId, next);
-  if (tabActivityStateChanged(previous, next)) renderTabs();
+  if (tabActivityStateChanged(previous, next)) scheduleTabsRender();
   return true;
 }
 
@@ -4618,7 +4650,7 @@ function markTabOutputSeen(tabId = activeTabId, { force = false } = {}) {
   const previousSerial = tabSeenCompletionSerials.get(tabId) ?? 0;
   if (previousSerial >= completionSerial) return false;
   tabSeenCompletionSerials.set(tabId, completionSerial);
-  renderTabs();
+  scheduleTabsRender();
   return true;
 }
 
@@ -4638,7 +4670,14 @@ function ingestEventTabActivity(event) {
     const next = setTabActivity(event.tabId, event.tabActivity);
     changed = tabActivityStateChanged(previous, next) || changed;
   }
-  if (changed) renderTabs();
+  if (changed) scheduleTabsRender();
+}
+
+function eventHasTabActivityPayload(event) {
+  return !!(
+    event?.tabId &&
+    (event.tabTitle || event.tabActivity || Object.prototype.hasOwnProperty.call(event, "pendingExtensionUiRequestCount"))
+  );
 }
 
 function trackAutoRetryStateFromEvent(event) {
@@ -4760,11 +4799,42 @@ function restoreWidgetsForActiveTab() {
   for (const [key, value] of cache) widgets.set(key, value);
 }
 
+function todoProgressSignatureFromLines(lines = []) {
+  const parsed = parseTodoProgressWidget(lines);
+  if (!parsed) return JSON.stringify(lines.map(stripAnsi));
+  return JSON.stringify({ goal: parsed.goal, done: parsed.done, total: parsed.total, partial: parsed.partial, items: parsed.items, footer: parsed.footer });
+}
+
+function rememberTodoProgressGoalForTab(tabId, widgetKey, request) {
+  if (widgetKey !== "todo-progress" || !tabId) return;
+  if (!Array.isArray(request?.widgetLines)) {
+    todoProgressGoalByTab.delete(tabId);
+    todoProgressSignatureByTab.delete(tabId);
+    return;
+  }
+  const parsed = parseTodoProgressWidget(request.widgetLines);
+  if (parsed?.goal) todoProgressGoalByTab.set(tabId, parsed.goal);
+  todoProgressSignatureByTab.set(tabId, todoProgressSignatureFromLines(request.widgetLines));
+}
+
+function widgetRequestEquivalent(a, b) {
+  const aHasLines = Array.isArray(a?.widgetLines);
+  const bHasLines = Array.isArray(b?.widgetLines);
+  if (aHasLines !== bHasLines) return false;
+  if (!aHasLines) return true;
+  if (a.widgetLines.length !== b.widgetLines.length) return false;
+  return a.widgetLines.every((line, index) => String(line) === String(b.widgetLines[index]));
+}
+
 function setWidgetForTab(tabId, widgetKey, request) {
-  if (!widgetKey) return;
+  if (!widgetKey) return false;
   const targetTabId = tabId || activeTabId;
   const cache = widgetCacheForTab(targetTabId);
   const hasLines = Array.isArray(request?.widgetLines);
+  const current = cache?.get(widgetKey) || (targetTabId === activeTabId ? widgets.get(widgetKey) : undefined);
+  if (widgetRequestEquivalent(current, request)) return false;
+
+  rememberTodoProgressGoalForTab(targetTabId, widgetKey, request);
 
   if (cache) {
     if (hasLines) cache.set(widgetKey, request);
@@ -4776,11 +4846,21 @@ function setWidgetForTab(tabId, widgetKey, request) {
     if (hasLines) widgets.set(widgetKey, request);
     else widgets.delete(widgetKey);
   }
+
+  return true;
 }
 
 function clearWidgetsForTab(tabId = activeTabId) {
-  if (tabId) widgetsByTab.delete(tabId);
+  if (tabId) {
+    widgetsByTab.delete(tabId);
+    todoProgressGoalByTab.delete(tabId);
+    todoProgressSignatureByTab.delete(tabId);
+  }
   if (!tabId || tabId === activeTabId) widgets.clear();
+  if (!tabId) {
+    todoProgressGoalByTab.clear();
+    todoProgressSignatureByTab.clear();
+  }
 }
 
 function resetActiveTabUi() {
@@ -5121,6 +5201,16 @@ function moveNewTabMenuFocus(delta) {
   const currentIndex = Math.max(0, items.indexOf(document.activeElement));
   const nextIndex = (currentIndex + delta + items.length) % items.length;
   items[nextIndex].focus({ preventScroll: true });
+}
+
+function scheduleTabsRender() {
+  if (tabsRenderFrame !== null) return;
+  const flush = () => {
+    tabsRenderFrame = null;
+    renderTabs();
+  };
+  if (typeof requestAnimationFrame === "function") tabsRenderFrame = requestAnimationFrame(flush);
+  else tabsRenderFrame = setTimeout(flush, 0);
 }
 
 function renderTabs() {
@@ -9048,13 +9138,27 @@ function renderReleaseDialogMessage(parent, text) {
   }
 }
 
+function textLines(raw) {
+  const value = String(raw || "");
+  const lines = [];
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "\n") continue;
+    const end = index > start && value[index - 1] === "\r" ? index - 1 : index;
+    lines.push(value.slice(start, end));
+    start = index + 1;
+  }
+  if (start <= value.length) lines.push(value.slice(start));
+  return lines;
+}
+
 function stripTodoProgressLines(text, { streaming = false } = {}) {
   if (!isOptionalFeatureEnabled("todoProgressWidget")) return String(text || "");
   let inFence = false;
   const kept = [];
   const raw = String(text || "");
   const hasTrailingNewline = /\r?\n$/.test(raw);
-  const lines = raw.split(/\r?\n/);
+  const lines = textLines(raw);
 
   lines.forEach((line, index) => {
     const isUnfinishedTail = streaming && !hasTrailingNewline && index === lines.length - 1;
@@ -9084,7 +9188,7 @@ function todoProgressStatusLabel(status) {
   return "[ ]";
 }
 
-function liveTodoProgressWidgetLinesFromText(text) {
+function liveTodoProgressWidgetLinesFromText(text, tabId = activeTabId) {
   if (!isOptionalFeatureEnabled("todoProgressWidget")) return null;
   const raw = String(text || "");
   if (!raw.trim()) return null;
@@ -9098,7 +9202,7 @@ function liveTodoProgressWidgetLinesFromText(text) {
     current = [];
   };
 
-  for (const line of raw.split(/\r?\n/)) {
+  for (const line of textLines(raw)) {
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
       flush();
@@ -9122,10 +9226,12 @@ function liveTodoProgressWidgetLinesFromText(text) {
   const items = blocks.at(-1) || [];
   if (!items.length) return null;
 
+  if (goal && tabId) todoProgressGoalByTab.set(tabId, goal);
+  const displayGoal = goal || (tabId ? todoProgressGoalByTab.get(tabId) : "") || "";
   const done = items.filter((item) => item.status === "done").length;
   const partial = items.filter((item) => item.status === "partial").length;
   const lines = [];
-  if (goal) lines.push(`Goal: ${goal}`);
+  if (displayGoal) lines.push(`Goal: ${displayGoal}`);
   lines.push(`Todo ${done}/${items.length} done${partial ? `, ${partial} partial` : ""}`);
   for (const item of items) lines.push(`${todoProgressStatusLabel(item.status)} ${item.text}`);
   return lines;
@@ -9137,28 +9243,44 @@ function liveTodoProgressWidgetLinesFromText(text) {
 // output stream). One render per frame keeps streaming transcript-local.
 function scheduleLiveWidgetRender() {
   if (liveWidgetRenderFrame !== null) return;
-  if (typeof requestAnimationFrame !== "function") {
-    renderWidgets();
-    return;
-  }
-  liveWidgetRenderFrame = requestAnimationFrame(() => {
+  const flush = () => {
     liveWidgetRenderFrame = null;
     renderWidgets();
-  });
+  };
+  if (typeof requestAnimationFrame === "function") liveWidgetRenderFrame = requestAnimationFrame(flush);
+  else liveWidgetRenderFrame = setTimeout(flush, 0);
+}
+
+function scheduleLiveTodoProgressWidgetSync(text, tabId = activeTabId) {
+  liveTodoProgressPendingText = String(text || "");
+  liveTodoProgressPendingTabId = tabId || activeTabId;
+  if (liveTodoProgressSyncFrame !== null) return;
+  const flush = () => {
+    const pendingText = liveTodoProgressPendingText;
+    const pendingTabId = liveTodoProgressPendingTabId || activeTabId;
+    liveTodoProgressSyncFrame = null;
+    liveTodoProgressPendingText = "";
+    liveTodoProgressPendingTabId = null;
+    syncLiveTodoProgressWidgetFromText(pendingText, pendingTabId);
+  };
+  if (typeof requestAnimationFrame === "function") liveTodoProgressSyncFrame = requestAnimationFrame(flush);
+  else liveTodoProgressSyncFrame = setTimeout(flush, 0);
 }
 
 function syncLiveTodoProgressWidgetFromText(text, tabId = activeTabId) {
-  const lines = liveTodoProgressWidgetLinesFromText(text);
+  const lines = liveTodoProgressWidgetLinesFromText(text, tabId);
   if (!lines) return false;
+  const signature = todoProgressSignatureFromLines(lines);
+  if (tabId && todoProgressSignatureByTab.get(tabId) === signature) return false;
   // liveTodoProgressWidgetLinesFromText already short-circuits unless the
   // feature is enabled, so detection is settled here. Do NOT run
   // updateOptionalFeatureAvailability() per token: it triggers git-footer
   // payload reconciliation and a full optional-feature control rebuild.
   // Availability is reconciled on command/state refreshes and RPC widget
   // updates instead, keeping streaming output decoupled from chrome UI.
-  setWidgetForTab(tabId, "todo-progress", { method: "setWidget", widgetKey: "todo-progress", widgetLines: lines, tabId, live: true });
-  if (tabId === activeTabId) scheduleLiveWidgetRender();
-  return true;
+  const changed = setWidgetForTab(tabId, "todo-progress", { method: "setWidget", widgetKey: "todo-progress", widgetLines: lines, tabId, live: true });
+  if (changed && tabId === activeTabId) scheduleLiveWidgetRender();
+  return changed;
 }
 
 function parseTodoProgressWidget(lines) {
@@ -13797,16 +13919,21 @@ function streamingMarkdownStableBoundary(text) {
   return boundary;
 }
 
+function clearStreamingMarkdownBlock(block) {
+  while (block.firstChild) block.firstChild.remove();
+}
+
 function renderStreamingMarkdown(block, text) {
   let state = streamMarkdownState;
   if (!state || state.block !== block) {
-    block.replaceChildren();
+    clearStreamingMarkdownBlock(block);
     state = streamMarkdownState = { block, stableText: "", tailNodes: [] };
   }
   if (!text.startsWith(state.stableText)) {
-    // Earlier content changed retroactively (e.g. todo-progress stripping);
-    // fall back to a full re-render for correctness.
-    block.replaceChildren();
+    // Derived streaming text should be append-only; if a provider still sends a
+    // retroactive rewrite, reset the streaming renderer without replaceChildren
+    // so this path cannot tear down external chrome or widget nodes.
+    clearStreamingMarkdownBlock(block);
     state.stableText = "";
     state.tailNodes = [];
   }
@@ -15502,6 +15629,19 @@ function renderRunIndicator({ scroll = false } = {}) {
   if (shouldFollow) scrollChatToBottom();
 }
 
+function scheduleRunIndicatorRender({ scroll = false } = {}) {
+  runIndicatorRenderScroll = runIndicatorRenderScroll || scroll;
+  if (runIndicatorRenderFrame !== null) return;
+  const flush = () => {
+    const shouldScroll = runIndicatorRenderScroll;
+    runIndicatorRenderFrame = null;
+    runIndicatorRenderScroll = false;
+    renderRunIndicator({ scroll: shouldScroll });
+  };
+  if (typeof requestAnimationFrame === "function") runIndicatorRenderFrame = requestAnimationFrame(flush);
+  else runIndicatorRenderFrame = setTimeout(flush, 0);
+}
+
 function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}) {
   const wasLocallyActive = runIndicatorLocallyActive;
   const previousActivity = runIndicatorActivity;
@@ -15512,9 +15652,9 @@ function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}
   }
   runIndicatorActivity = activity || runIndicatorActivity || "Waiting for output or action…";
   const needsRender = scroll || !hadRunIndicatorBubble || wasLocallyActive !== runIndicatorLocallyActive || previousActivity !== runIndicatorActivity;
-  if (needsRender) renderRunIndicator({ scroll });
+  if (needsRender) scheduleRunIndicatorRender({ scroll });
   else if (runIndicatorIsActive()) startRunIndicatorTicker();
-  updateComposerModeButtons();
+  scheduleComposerModeButtonsUpdate();
   if (active) scheduleRunIndicatorGraceCheck();
 }
 
@@ -15940,11 +16080,15 @@ function applyChatFollowScroll() {
   updateStickyUserPromptButton();
 }
 
-function scheduleChatFollowScroll() {
+function scheduleChatFollowScroll({ settle = true } = {}) {
   if (chatFollowFrame === null) chatFollowFrame = requestAnimationFrame(applyChatFollowScroll);
+  if (!settle) return;
+  chatFollowNeedsSettle = true;
   clearTimeout(chatFollowSettleTimer);
   chatFollowSettleTimer = setTimeout(() => {
     chatFollowSettleTimer = null;
+    if (!chatFollowNeedsSettle) return;
+    chatFollowNeedsSettle = false;
     applyChatFollowScroll();
   }, CHAT_FOLLOW_SETTLE_DELAY_MS);
 }
@@ -15953,16 +16097,7 @@ function scrollChatToBottom({ force = false } = {}) {
   if (deferChatFollowScrollDuringPointerActivation({ force })) return;
   if (deferChatFollowScrollDuringInteractiveDropdown({ force })) return;
   if (force) autoFollowChat = true;
-  if (!autoFollowChat) {
-    updateJumpToLatestButton();
-    updateStickyUserPromptButton();
-    return;
-  }
-  lastChatProgrammaticScrollAt = performance.now();
-  setChatScrollTopInstant(elements.chat.scrollHeight);
   scheduleChatFollowScroll();
-  updateJumpToLatestButton();
-  updateStickyUserPromptButton();
 }
 
 function syncAutoFollowFromChatScroll() {
@@ -17497,6 +17632,8 @@ function cancelStreamBubbleHide() {
 function cancelStreamingAssistantTextRender() {
   clearTimeout(streamTextRenderTimer);
   streamTextRenderTimer = null;
+  if (streamTextRenderFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(streamTextRenderFrame);
+  streamTextRenderFrame = null;
 }
 
 function removeStreamBubble() {
@@ -17509,10 +17646,54 @@ function removeStreamBubble() {
   renderRunIndicator({ scroll: false });
 }
 
-function streamRenderableAssistantText() {
+function resetStreamDerivedTextCache() {
+  streamDerivedTextCache = { rawText: null, assistantText: "", thinkingFormat: null, finalText: "" };
+}
+
+function setStreamRawText(text) {
+  const nextText = String(text || "");
+  if (nextText === streamRawText) return false;
+  streamRawText = nextText;
+  resetStreamDerivedTextCache();
+  return true;
+}
+
+function appendStreamRawText(delta) {
+  const text = String(delta || "");
+  if (!text) return false;
+  streamRawText += text;
+  resetStreamDerivedTextCache();
+  return true;
+}
+
+function streamingAssistantTextFallback(event) {
+  // Fallback for legacy/summary events that do not carry a delta. The hot
+  // text_delta path appends update.delta and avoids this accumulated-message scan.
+  return assistantTextFromMessage(assistantStreamingMessage(event), { streaming: true });
+}
+
+function syncStreamRawTextFromUpdate(event, update) {
+  if (update.type === "text_delta") {
+    const delta = update.delta ?? update.text ?? update.content ?? "";
+    if (appendStreamRawText(delta)) return true;
+  }
+  if (typeof update.content === "string") return setStreamRawText(update.content);
+  if (typeof update.text === "string") return setStreamRawText(update.text);
+  const partialText = streamingAssistantTextFallback(event);
+  return typeof partialText === "string" ? setStreamRawText(partialText) : false;
+}
+
+function streamDerivedText() {
+  if (streamDerivedTextCache.rawText === streamRawText) return streamDerivedTextCache;
   const assistantText = stripTodoProgressLines(streamRawText, { streaming: true });
-  const parsed = splitThinkingFormatText(assistantText, { streaming: true });
-  return parsed?.hasThinkingFormat ? stripTodoProgressLines(parsed.finalText, { streaming: true }) : assistantText;
+  const thinkingFormat = splitThinkingFormatText(assistantText, { streaming: true });
+  const finalText = thinkingFormat?.hasThinkingFormat ? stripTodoProgressLines(thinkingFormat.finalText, { streaming: true }) : assistantText;
+  streamDerivedTextCache = { rawText: streamRawText, assistantText, thinkingFormat, finalText };
+  return streamDerivedTextCache;
+}
+
+function streamRenderableAssistantText() {
+  return streamDerivedText().finalText;
 }
 
 function scheduleStreamBubbleHide() {
@@ -17527,8 +17708,8 @@ function scheduleStreamBubbleHide() {
   }, delayMs);
 }
 
-function syncStreamingThinkingFormat(assistantText) {
-  const parsed = splitThinkingFormatText(assistantText, { streaming: true });
+function syncStreamingThinkingFormat() {
+  const parsed = streamDerivedText().thinkingFormat;
   if (!parsed?.hasThinkingFormat) return null;
   const thinking = visibleThinkingText(parsed.thinkingText);
   if (thinking) setStreamingThinkingText(thinking);
@@ -17537,9 +17718,8 @@ function syncStreamingThinkingFormat(assistantText) {
 }
 
 function renderStreamingAssistantText() {
-  const assistantText = stripTodoProgressLines(streamRawText, { streaming: true });
-  const thinkingFormat = syncStreamingThinkingFormat(assistantText);
-  const finalText = thinkingFormat?.hasThinkingFormat ? stripTodoProgressLines(thinkingFormat.finalText, { streaming: true }) : assistantText;
+  const thinkingFormat = syncStreamingThinkingFormat();
+  const finalText = thinkingFormat?.hasThinkingFormat ? streamDerivedText().finalText : streamRenderableAssistantText();
   if (finalText) {
     ensureStreamBubble();
     renderStreamingMarkdown(streamText, finalText);
@@ -17548,16 +17728,20 @@ function renderStreamingAssistantText() {
   }
 }
 
-function scheduleStreamingAssistantTextRender() {
-  if (streamTextRenderTimer) return;
-  streamTextRenderTimer = setTimeout(() => {
+function scheduleStreamingAssistantTextRender({ immediate = false } = {}) {
+  if (streamTextRenderTimer || streamTextRenderFrame !== null) return;
+  const flush = () => {
     streamTextRenderTimer = null;
+    streamTextRenderFrame = null;
     renderStreamingAssistantText();
-  }, STREAM_OUTPUT_TOOLCALL_GUARD_MS);
+    scheduleChatFollowScroll();
+  };
+  if (immediate && typeof requestAnimationFrame === "function") streamTextRenderFrame = requestAnimationFrame(flush);
+  else streamTextRenderTimer = setTimeout(flush, immediate ? 0 : STREAM_OUTPUT_TOOLCALL_GUARD_MS);
 }
 
 function suppressStreamingAssistantTextBeforeToolCall() {
-  streamRawText = "";
+  setStreamRawText("");
   removeStreamBubble();
 }
 
@@ -17644,6 +17828,8 @@ function resetStreamBubble() {
   streamBubble = null;
   streamText = null;
   streamRawText = "";
+  streamThinkingRawText = "";
+  resetStreamDerivedTextCache();
   streamMarkdownState = null;
   streamBubbleVisibleSince = 0;
   streamToolCallSeen = false;
@@ -17677,7 +17863,7 @@ function restoreStreamRenderAfterChatRebuild() {
     streamThinkingBubble?.classList.add("complete");
   }
   if (toolCallWasVisible) renderStreamingToolCallCard();
-  if (stripTodoProgressLines(streamRawText, { streaming: true })) renderStreamingAssistantText();
+  if (streamRenderableAssistantText()) renderStreamingAssistantText();
 }
 
 function thinkingDeltaText(update) {
@@ -17784,47 +17970,76 @@ function setStreamingThinkingText(text) {
   return true;
 }
 
-function syncStreamingThinkingFromMessage(event, { placeholder = "" } = {}) {
+function streamingThinkingTextFallback(event) {
+  return assistantThinkingTextFromMessage(assistantStreamingMessage(event), { streaming: true });
+}
+
+function setStreamThinkingRawText(text) {
+  const thinking = visibleThinkingText(text);
+  if (thinking === streamThinkingRawText) return false;
+  streamThinkingRawText = thinking;
+  return true;
+}
+
+function appendStreamThinkingText(delta) {
+  const thinking = visibleThinkingText(delta);
+  if (!thinking) return false;
+  streamThinkingRawText += thinking;
+  return true;
+}
+
+function syncStreamingThinkingFromUpdate(event, update, { placeholder = "" } = {}) {
   if (!thinkingOutputVisible) return true;
-  const text = assistantThinkingTextFromMessage(assistantStreamingMessage(event), { streaming: true });
-  if (text === null) return false;
-  return setStreamingThinkingText(text || placeholder);
+  const delta = thinkingDeltaText(update);
+  if (update.type === "thinking_delta" && delta) {
+    appendStreamThinkingText(delta);
+    return setStreamingThinkingText(streamThinkingRawText || placeholder);
+  }
+  if (update.type === "thinking_start") {
+    if (delta) setStreamThinkingRawText(delta);
+    return streamThinkingRawText ? setStreamingThinkingText(streamThinkingRawText || placeholder) : false;
+  }
+  if (update.type === "thinking_end") {
+    if (delta) setStreamThinkingRawText(delta);
+    else {
+      const fallback = streamingThinkingTextFallback(event);
+      if (fallback !== null) setStreamThinkingRawText(fallback);
+    }
+    return setStreamingThinkingText(streamThinkingRawText || placeholder);
+  }
+  const fallback = streamingThinkingTextFallback(event);
+  if (fallback === null) return false;
+  setStreamThinkingRawText(fallback);
+  return setStreamingThinkingText(streamThinkingRawText || placeholder);
 }
 
 function handleMessageUpdate(event) {
   const update = event.assistantMessageEvent || {};
   if (update.type === "thinking_start") {
     setRunIndicatorActivity("Thinking…", { scroll: false });
-    syncStreamingThinkingFromMessage(event);
-    scrollChatToBottom();
+    syncStreamingThinkingFromUpdate(event, update);
+    scheduleChatFollowScroll();
   } else if (update.type === "thinking_delta") {
     const delta = thinkingDeltaText(update);
     setRunIndicatorActivity("Thinking…", { scroll: false });
-    const synced = syncStreamingThinkingFromMessage(event);
+    const synced = syncStreamingThinkingFromUpdate(event, update);
     if (thinkingOutputVisible && delta && (!synced || !streamThinking?.textContent)) {
       showStreamingThinking("");
       if (streamThinking?.textContent === "Thinking…") streamThinking.textContent = "";
       if (streamThinking) streamThinking.textContent += delta;
     }
-    scrollChatToBottom();
+    scheduleChatFollowScroll();
   } else if (update.type === "thinking_end") {
-    const finalThinking = assistantThinkingTextFromMessage(assistantStreamingMessage(event), { streaming: true }) || thinkingDeltaText(update);
-    if (finalThinking) setStreamingThinkingText(finalThinking);
-    streamThinkingBubble?.classList.add("complete");
+    if (syncStreamingThinkingFromUpdate(event, update)) streamThinkingBubble?.classList.add("complete");
     setRunIndicatorActivity("Finished thinking; waiting for the next output or action…", { scroll: false });
   } else if (update.type === "text_delta" || update.type === "text_end") {
-    const delta = update.type === "text_delta" ? update.delta || "" : "";
-    const partialText = assistantTextFromMessage(assistantStreamingMessage(event), { streaming: true });
-    if (typeof partialText === "string") streamRawText = partialText;
-    else if (update.type === "text_end" && typeof update.content === "string") streamRawText = update.content;
-    else streamRawText += delta;
-    syncLiveTodoProgressWidgetFromText(streamRawText, event.tabId || activeTabId);
+    syncStreamRawTextFromUpdate(event, update);
+    scheduleLiveTodoProgressWidgetSync(streamRawText, event.tabId || activeTabId);
     setRunIndicatorActivity("Writing response…", { scroll: false });
-    if (streamToolCallSeen || streamBubble) renderStreamingAssistantText();
-    else scheduleStreamingAssistantTextRender();
+    scheduleStreamingAssistantTextRender({ immediate: !!(streamToolCallSeen || streamBubble) });
     // Streaming output must stay transcript-local. Full footer/status
     // reconciliation happens on message/state refreshes, not per token.
-    scrollChatToBottom();
+    scheduleChatFollowScroll();
   } else if (update.type === "toolcall_start") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
@@ -17836,7 +18051,7 @@ function handleMessageUpdate(event) {
     suppressStreamingAssistantTextBeforeToolCall();
     const name = updateStreamingToolCallFromEvent(event, { appendDelta: true });
     setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
-    scrollChatToBottom();
+    scheduleChatFollowScroll();
   } else if (update.type === "toolcall_end") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
@@ -17846,7 +18061,7 @@ function handleMessageUpdate(event) {
     setRunIndicatorActivity("Assistant stream reported an error…");
     appendMessage({ role: "error", title: "assistant error", timestamp: Date.now(), content: update.reason || update.errorMessage || "assistant error", level: "error" }, { streaming: true });
     renderRunIndicator({ scroll: false });
-    scrollChatToBottom();
+    scheduleChatFollowScroll();
   }
 }
 
@@ -19455,7 +19670,7 @@ function handleExtensionUiRequest(request) {
           closeRemoteWebuiQrPopup();
         }
       } else {
-        setWidgetForTab(requestTabId, widgetKey, request);
+        if (!setWidgetForTab(requestTabId, widgetKey, request)) return;
       }
       updateOptionalFeatureAvailability();
       renderWidgets();
@@ -19592,9 +19807,9 @@ function handleInactiveTabEvent(event) {
 }
 
 function handleEvent(event) {
-  ingestEventTabActivity(event);
-  trackAutoRetryStateFromEvent(event);
-  trackSkillsFromEvent(event);
+  if (eventHasTabActivityPayload(event)) ingestEventTabActivity(event);
+  if (event?.type === "auto_retry_start" || event?.type === "auto_retry_end") trackAutoRetryStateFromEvent(event);
+  if (eventMayAffectSkillUsage(event)) trackSkillsFromEvent(event);
   if (!eventTargetsActiveTab(event)) {
     handleInactiveTabEvent(event);
     return;

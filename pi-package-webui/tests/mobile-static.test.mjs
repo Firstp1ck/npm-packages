@@ -31,7 +31,7 @@ const companionDependencies = {
   "@firstpick/pi-extension-safety-guard": "^0.2.3",
   "@firstpick/pi-extension-setup-skills": "^0.1.8",
   "@firstpick/pi-extension-stats": "^0.2.6",
-  "@firstpick/pi-extension-todo-progress": "^0.2.4",
+  "@firstpick/pi-extension-todo-progress": "^0.2.5",
   "@firstpick/pi-extension-tools": "^0.1.6",
   "@firstpick/pi-prompts-git-pr": "^0.1.2",
   "@firstpick/pi-themes-bundle": "^0.1.4",
@@ -555,6 +555,9 @@ assert.match(app, /function parseTodoProgressWidget\(lines\)/, "todo-progress wi
 assert.ok(app.includes("const goalLine = cleanLines.find((line) => /^Goal\\s*[:：]/i.test(line));"), "todo-progress parser should preserve an optional Goal line from extension widget lines");
 assert.ok(app.includes("if (todo.goal) summary.append(make(\"div\", \"todo-widget-goal\", `Goal: ${todo.goal}`));"), "todo-progress widget should display the goal above the progress header");
 assert.match(app, /const todoProgressWidgetExpandedByTab = new Map\(\)/, "todo-progress expansion state should survive widget re-renders per tab");
+assert.match(app, /const todoProgressSignatureByTab = new Map\(\)/, "todo-progress should track per-tab signatures to avoid unchanged re-renders");
+assert.match(app, /function widgetRequestEquivalent\(a, b\)[\s\S]*?return a\.widgetLines\.every/, "todo-progress and generic widgets should no-op identical widget payloads");
+assert.match(app, /todoProgressSignatureByTab\.get\(tabId\) === signature\) return false/, "live todo-progress sync should skip unchanged checklist signatures");
 assert.match(app, /const node = make\("details", "widget todo-widget"\)/, "todo-progress widget should render collapsed by default as expandable details");
 assert.match(app, /Optional feature detection intentionally checks loaded Pi capabilities/, "optional Web UI features should be detected through loaded capabilities, not package folders");
 assert.match(app, /function resetOptionalFeatureAvailability\(\)/, "optional feature state should reset across active-tab and reload boundaries");
@@ -788,27 +791,27 @@ assert.match(app, /if \(isThinkingPart\) \{[\s\S]*?visibleThinkingText\(assistan
 assert.match(app, /message\.role === "thinking"[\s\S]*?visibleThinkingText\(message\.thinking \|\| textFromContent\(message\.content\)\)[\s\S]*?if \(thinkingOutputVisible && thinkingText\) appendText\(body, thinkingText, "thinking-text"\);/, "thinking cards should suppress empty and provider no-thinking placeholder output");
 assert.match(app, /function showStreamingThinking\(initialText = ""\)[\s\S]*?if \(initialText && !streamThinking\.textContent\) streamThinking\.textContent = initialText;/, "live thinking should not create a visible placeholder card before content arrives");
 assert.match(app, /function setStreamingThinkingText\(text\)[\s\S]*?const thinking = visibleThinkingText\(text\);[\s\S]*?if \(!thinkingOutputVisible \|\| !thinking\) return false;[\s\S]*?return true;/, "live thinking text setters should ignore empty text instead of clearing or flashing the card");
-assert.match(app, /function syncStreamingThinkingFromMessage\(event[\s\S]*?return setStreamingThinkingText\(text \|\| placeholder\);/, "partial-message thinking sync should only report success after setting visible thinking text");
+assert.match(app, /function syncStreamingThinkingFromUpdate\(event, update, \{ placeholder = "" \} = \{\}\)[\s\S]*?return setStreamingThinkingText\(streamThinkingRawText \|\| placeholder\);/, "incremental thinking sync should only report success after setting visible thinking text");
 assert.doesNotMatch(app, /text \|\| placeholder \|\| streamThinkingBubble/, "partial-message thinking sync should not clear an existing thinking card when a partial carries no visible thinking text");
 assert.match(app, /if \(thinkingOutputVisible && delta && \(!synced \|\| !streamThinking\?\.textContent\)\) \{/, "live thinking delta fallback should require visible delta text before creating a card");
 assert.match(app, /function thinkingDeltaText\(update\) \{[\s\S]*?return visibleThinkingText\(update\.delta \|\| update\.thinking \|\| update\.content \|\| ""\);/, "live thinking deltas should suppress provider no-thinking placeholders too");
 assert.match(app, /const THINKING_VISIBILITY_STORAGE_KEY = "pi-webui-thinking-visible"/, "thinking visibility should persist in browser storage");
 assert.match(app, /function setThinkingOutputVisible\(visible[\s\S]*renderAllMessages\(\{ preserveScroll: true \}\)/, "thinking visibility changes should immediately re-render the transcript");
 assert.match(app, /function assistantStreamingMessage\(event\)/, "live streaming should read the authoritative partial assistant message from RPC events like the TUI");
-assert.match(app, /assistantThinkingTextFromMessage\(assistantStreamingMessage\(event\), \{ streaming: true \}\) \|\| thinkingDeltaText\(update\)/, "live thinking end should replace deltas with the final partial-message thinking content");
-assert.match(app, /if \(typeof partialText === "string"\) streamRawText = partialText;/, "live assistant text should synchronize from partial messages instead of relying only on deltas");
+assert.match(app, /function syncStreamingThinkingFromUpdate\(event, update[\s\S]*?const fallback = streamingThinkingTextFallback\(event\);[\s\S]*?setStreamThinkingRawText\(fallback\);[\s\S]*?return setStreamingThinkingText\(streamThinkingRawText \|\| placeholder\);/, "live thinking end should replace deltas with the final partial-message thinking content");
+assert.match(app, /function setStreamRawText\(text\)[\s\S]*?streamRawText = nextText;[\s\S]*?resetStreamDerivedTextCache\(\);/, "live assistant text should synchronize from partial messages through a cache-aware setter");
 assert.match(app, /const TODO_PROGRESS_LINE_REGEX = /, "frontend should recognize live todo progress lines that will be moved into the todo widget");
 assert.match(app, /function stripTodoProgressLines\(text, \{ streaming = false \} = \{\}\)/, "live Assistant output should strip todo-progress lines before rendering final-output text");
 assert.match(app, /function syncLiveTodoProgressWidgetFromText\(text, tabId = activeTabId\)/, "live Assistant checklist text should update the todo-progress widget before tool execution events");
-assert.match(app, /syncLiveTodoProgressWidgetFromText\(streamRawText, event\.tabId \|\| activeTabId\)/, "streaming assistant text should feed the live todo-progress widget immediately");
-assert.match(app, /function renderStreamingAssistantText\(\)[\s\S]*?const assistantText = stripTodoProgressLines\(streamRawText, \{ streaming: true \}\)/, "streamed Assistant text should classify from accumulated output without flashing partial todo-progress lines");
-assert.match(app, /function syncStreamingThinkingFormat\(assistantText\)[\s\S]*?splitThinkingFormatText\(assistantText, \{ streaming: true \}\)[\s\S]*?setStreamingThinkingText\(thinking\)/, "tagged <think> streaming output should update the live thinking card instead of flashing raw tags");
-assert.match(app, /const finalText = thinkingFormat\?\.hasThinkingFormat \? stripTodoProgressLines\(thinkingFormat\.finalText, \{ streaming: true \}\) : assistantText;/, "tagged <think> streaming output should render only final response text in the Assistant card");
+assert.match(app, /scheduleLiveTodoProgressWidgetSync\(streamRawText, event\.tabId \|\| activeTabId\)/, "streaming assistant text should feed the live todo-progress widget through the coalesced sync scheduler");
+assert.match(app, /function renderStreamingAssistantText\(\)[\s\S]*?const thinkingFormat = syncStreamingThinkingFormat\(\);[\s\S]*?const finalText = thinkingFormat\?\.hasThinkingFormat \? streamDerivedText\(\)\.finalText : streamRenderableAssistantText\(\);/, "streamed Assistant text should render cached derived output without directly rescanning raw stream text");
+assert.match(app, /function syncStreamingThinkingFormat\(\)[\s\S]*?const parsed = streamDerivedText\(\)\.thinkingFormat;[\s\S]*?setStreamingThinkingText\(thinking\)/, "tagged <think> streaming output should update the live thinking card from cached parse state instead of flashing raw tags");
+assert.match(app, /const finalText = thinkingFormat\?\.hasThinkingFormat \? streamDerivedText\(\)\.finalText : streamRenderableAssistantText\(\);/, "tagged <think> streaming output should render only final response text in the Assistant card");
 assert.match(app, /const STREAM_OUTPUT_HIDE_DELAY_MS = 300/, "stream output hiding should be debounced to prevent rapid flicker");
 assert.match(app, /const STREAM_OUTPUT_TOOLCALL_GUARD_MS = 220/, "live assistant text should be briefly guarded so pre-tool-call text can be suppressed");
 assert.match(app, /function scheduleStreamBubbleHide\([\s\S]*?STREAM_OUTPUT_MIN_VISIBLE_MS/, "stream output cards should observe a minimum visible duration before hiding");
 assert.match(app, /if \(finalText\) \{[\s\S]*?renderStreamingMarkdown\(streamText, finalText\);[\s\S]*?\} else \{\n\s+scheduleStreamBubbleHide\(\);/, "empty filtered stream output should schedule hide while visible stream output renders as Markdown");
-assert.match(app, /if \(streamToolCallSeen \|\| streamBubble\) renderStreamingAssistantText\(\);\n\s+else scheduleStreamingAssistantTextRender\(\);/, "live assistant text should wait briefly before showing unless it is already visible or follows a tool call");
+assert.match(app, /scheduleStreamingAssistantTextRender\(\{ immediate: !!\(streamToolCallSeen \|\| streamBubble\) \}\);/, "live assistant text should wait briefly before showing unless it is already visible or follows a tool call");
 assert.match(app, /streamToolCallSeen = true;\n\s+suppressStreamingAssistantTextBeforeToolCall\(\);/, "tool-call starts should remove pending assistant text from the live transcript");
 assert.match(app, /function renderStreamingToolCallCard\(\{ scroll = false \} = \{\}\)[\s\S]*?appendMessage\(message, \{ streaming: true \}\)[\s\S]*?streamToolCallText\.textContent !== displayText/, "live tool-call cards should render and update the arguments stream in place");
 assert.match(app, /update\.type === "toolcall_delta"[\s\S]*?updateStreamingToolCallFromEvent\(event, \{ appendDelta: true \}\)[\s\S]*?Building tool call:/, "tool-call deltas should update visible streamed arguments instead of a static placeholder");
@@ -1133,13 +1136,16 @@ assert.match(server, /const EXTENSION_UI_BLOCKING_METHODS = new Set\(\["select",
 assert.match(server, /function trackPendingExtensionUiRequest\(tab, event\)/, "server should track blocking extension UI requests per tab");
 assert.match(server, /pendingExtensionUiRequests: new Map\(\)/, "new tabs should initialize pending extension UI request storage");
 assert.match(server, /extensionStatuses: new Map\(\)/, "new tabs should initialize replayable extension status storage");
+assert.match(server, /extensionWidgets: new Map\(\)/, "new tabs should initialize replayable extension widget storage");
 assert.match(server, /function rememberExtensionStatusEvent\(tab, event\)[\s\S]*event\.method !== "setStatus"[\s\S]*statuses\.set\(String\(event\.statusKey\), String\(event\.statusText\)\)/, "server should retain extension status events for reconnects");
-assert.match(server, /rememberExtensionStatusEvent\(tab, scopedEvent\)[\s\S]*trackPendingExtensionUiRequest\(tab, scopedEvent\)/, "RPC events should retain extension statuses before broadcasting");
+assert.match(server, /function rememberExtensionWidgetEvent\(tab, event\)[\s\S]*event\.method !== "setWidget"[\s\S]*widgets\.set\(String\(widgetKey\)/, "server should retain extension widget events for reconnects");
+assert.match(server, /rememberExtensionStatusEvent\(tab, scopedEvent\)[\s\S]*rememberExtensionWidgetEvent\(tab, scopedEvent\)[\s\S]*trackPendingExtensionUiRequest\(tab, scopedEvent\)/, "RPC events should retain extension statuses and widgets before broadcasting");
 assert.match(server, /trackPendingExtensionUiRequest\(tab, scopedEvent\)/, "RPC events should populate pending extension UI storage before broadcasting");
 assert.match(server, /scopedEvent = \{ \.\.\.scopedEvent,[\s\S]*?pendingExtensionUiRequestCount: pendingExtensionUiRequests\(tab\)\.length \}/, "RPC events should broadcast pending blocker counts for tab indicators");
 assert.match(server, /function replayExtensionStatuses\(tab, res\)[\s\S]*method: "setStatus"/, "server should replay latest extension statuses on SSE reconnect");
+assert.match(server, /function replayExtensionWidgets\(tab, res\)[\s\S]*method: "setWidget"/, "server should replay latest extension widgets on SSE reconnect");
 assert.match(server, /function replayPendingExtensionUiRequests\(tab, res\)/, "server should be able to replay missed extension UI requests on SSE reconnect");
-assert.match(server, /replayExtensionStatuses\(tab, res\);\n\s+replayPendingExtensionUiRequests\(tab, res\)/, "SSE connections should replay extension statuses before pending blockers");
+assert.match(server, /replayExtensionStatuses\(tab, res\);\n\s+replayExtensionWidgets\(tab, res\);\n\s+replayPendingExtensionUiRequests\(tab, res\)/, "SSE connections should replay extension statuses and widgets before pending blockers");
 assert.match(server, /pendingExtensionUiRequests: pendingExtensionUiRequestSummaries\(tab\)/, "detailed Web UI status should expose pending extension UI blockers");
 assert.match(server, /resolvePendingExtensionUiRequest\(tab, payload\.id\)/, "extension UI responses should clear the pending blocker cache");
 assert.match(server, /type: "webui_extension_ui_resolved"[\s\S]*?pendingExtensionUiRequestCount/, "extension UI responses should notify clients that a blocker resolved");
@@ -1342,7 +1348,7 @@ assert.match(app, /pruneDisconnectedLiveToolCards\(\);/, "reconciliation must pr
 // --- Performance: incremental streaming markdown (P0-3) ---
 assert.match(app, /function streamingMarkdownStableBoundary\(text\)[\s\S]*?for \(let index = 0; index < lines\.length - 1; index \+= 1\)/, "streaming markdown boundary must never treat the final partial line as stable");
 assert.match(app, /function renderStreamingMarkdown\(block, text\)[\s\S]*?if \(!text\.startsWith\(state\.stableText\)\)/, "streaming markdown must fall back to a full re-render when earlier content changes");
-assert.match(app, /streamRawText = "";\n  streamMarkdownState = null;/, "resetting the stream bubble must clear incremental markdown state");
+assert.match(app, /streamRawText = "";\n  streamThinkingRawText = "";\n  resetStreamDerivedTextCache\(\);\n  streamMarkdownState = null;/, "resetting the stream bubble must clear incremental markdown state and derived caches");
 
 // --- Performance: delta transcript fetch (P1-1) ---
 assert.match(app, /function mergeMessagesDelta\(previous, data\)[\s\S]*?messagesLookEqual\(previous\[since\], data\.messages\[0\]\)/, "delta merges must verify the one-message overlap before applying");

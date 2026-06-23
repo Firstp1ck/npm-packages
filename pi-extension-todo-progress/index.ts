@@ -24,13 +24,13 @@ const TODO_POLICY = [
   "[TODO PROGRESS POLICY] For multi-step work:",
   "- First formulate a concise one-sentence `Goal: ...` before creating a todo list or starting execution.",
   "- Create concise, agent-authored checklists with 2-6 short items. Keep the goal separate; the todo list does not need to contain the goal.",
-  "- Before every execution step or tool call, emit the current todo list update as markdown checklist lines exactly like `- [ ] item`, `- [-] item`, or `- [x] item`.",
+  "- Emit markdown checklist lines exactly like `- [ ] item`, `- [-] item`, or `- [x] item` only when starting a list or when item status/text changes; do not re-emit unchanged checklist items before every tool call.",
   "- Do not copy raw user-prompt lines as todos; rewrite them into clear action items.",
-  "- Update checklist markers as work changes. Mark the active/current step `[-]` when useful and completed steps `[x]`.",
+  "- Update checklist markers as work changes. Mark the active/current step `[-]` when useful and completed steps `[x]`; emitting only the changed checklist line(s) is enough.",
   "- When every item in the current list is `[x]`, explicitly check whether the goal is reached before doing more work.",
   "- If the goal is reached, stop creating todo lists and produce the final output. If the goal is not reached, create a new short checklist before the next execution step.",
   "- Multiple todo lists may be created during one session; each new list replaces the previous list in the progress widget.",
-  "- Todo checklists are session progress: still emit `[x]` updates when possible; the extension keeps the last list visible until it is replaced, dismissed, or a new user task begins.",
+  "- Todo checklists are session progress: still emit `[x]` updates when possible; after a normal final assistant response the extension clears the widget automatically so stale partial lists do not persist.",
 ].join("\n");
 
 function statusLabel(status: TodoStatus): string {
@@ -41,6 +41,42 @@ function statusLabel(status: TodoStatus): string {
 
 function isDoneList(items: TodoItem[]): boolean {
   return items.length > 0 && items.every((item) => item.status === "done");
+}
+
+function lastAssistantMessage(messages: any[]): any | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant") return message;
+  }
+  return undefined;
+}
+
+function assistantText(message: any): string {
+  if (!Array.isArray(message?.content)) return "";
+  return message.content
+    .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+    .map((part: any) => part.text)
+    .join("\n")
+    .trim();
+}
+
+function assistantHasToolCalls(message: any): boolean {
+  return Array.isArray(message?.content) && message.content.some((part: any) => part?.type === "toolCall");
+}
+
+function shouldAutoClearOnAgentEnd(messages: any[], s: TodoState): boolean {
+  if (s.items.length === 0) return false;
+
+  const finalAssistant = lastAssistantMessage(messages);
+  if (!finalAssistant) return false;
+
+  // Do not erase active progress for interrupted, failed, truncated, or tool-use
+  // terminal states. A normal final assistant text means the run has handed the
+  // result back to the user, so stale partial markers should not remain visible.
+  if (["aborted", "error", "length", "toolUse"].includes(finalAssistant.stopReason)) return false;
+  if (assistantHasToolCalls(finalAssistant)) return false;
+
+  return assistantText(finalAssistant).length > 0 || isDoneList(s.items);
 }
 
 function extractChecklistBlocks(text: string): TodoItem[][] {
@@ -74,9 +110,76 @@ function extractChecklistBlocks(text: string): TodoItem[][] {
   return blocks;
 }
 
-function extractLatestChecklist(texts: string[]): TodoItem[] {
-  const blocks = texts.flatMap((text) => extractChecklistBlocks(text));
-  return blocks.at(-1)?.slice(0, MAX_ITEMS) ?? [];
+function normalizeTodoText(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function todoItemKey(item: TodoItem): string {
+  return normalizeTodoText(item.text);
+}
+
+function sameTodoItems(a: TodoItem[], b: TodoItem[]): boolean {
+  return a.length === b.length && a.every((item, index) => item.status === b[index]?.status && item.text === b[index]?.text);
+}
+
+function bestChecklistBlock(blocks: TodoItem[][], previousItems: TodoItem[]): TodoItem[] {
+  if (blocks.length === 0) return [];
+  const previousKeys = new Set(previousItems.map(todoItemKey));
+  let best = blocks[0].slice(0, MAX_ITEMS);
+  let bestScore = [-1, best.length, 0];
+
+  blocks.forEach((block, index) => {
+    const items = block.slice(0, MAX_ITEMS);
+    const overlap = items.filter((item) => previousKeys.has(todoItemKey(item))).length;
+    const score = previousKeys.size > 0 ? [overlap, items.length, index] : [items.length, items.length, index];
+    if (score[0] > bestScore[0] || (score[0] === bestScore[0] && (score[1] > bestScore[1] || (score[1] === bestScore[1] && score[2] > bestScore[2])))) {
+      best = items;
+      bestScore = score;
+    }
+  });
+
+  return best;
+}
+
+function extractBestChecklist(texts: string[], previousItems: TodoItem[]): TodoItem[] {
+  return bestChecklistBlock(texts.flatMap((text) => extractChecklistBlocks(text)), previousItems);
+}
+
+function shouldAcceptInitialList(incomingItems: TodoItem[]): boolean {
+  // A single non-todo line such as `- [-] Verify build` is usually a status
+  // delta emitted without the full list. Do not let it become a new one-item
+  // canonical list that later expands unpredictably.
+  return incomingItems.length > 1 || incomingItems[0]?.status === "todo";
+}
+
+function shouldReplaceList(previousItems: TodoItem[], incomingItems: TodoItem[], overlap: number): boolean {
+  if (incomingItems.length === 0) return false;
+
+  // New lists are allowed once the prior list is complete and the model has
+  // checked the goal. While work is active, unrelated or low-overlap blocks are
+  // treated as stray status output instead of replacing the canonical list.
+  if (isDoneList(previousItems)) return shouldAcceptInitialList(incomingItems);
+  if (overlap === 0 || incomingItems.length < previousItems.length) return false;
+
+  const previousOverlapRatio = overlap / previousItems.length;
+  const incomingOverlapRatio = overlap / incomingItems.length;
+  return previousOverlapRatio >= 0.75 && incomingOverlapRatio >= 0.5;
+}
+
+function mergeChecklistItems(previousItems: TodoItem[], incomingItems: TodoItem[]): TodoItem[] {
+  if (incomingItems.length === 0) return previousItems.slice(0, MAX_ITEMS);
+  if (previousItems.length === 0) return shouldAcceptInitialList(incomingItems) ? incomingItems.slice(0, MAX_ITEMS) : [];
+
+  const previousByKey = new Map(previousItems.map((item) => [todoItemKey(item), item]));
+  const incomingByKey = new Map(incomingItems.map((item) => [todoItemKey(item), item]));
+  const overlap = incomingItems.filter((item) => previousByKey.has(todoItemKey(item))).length;
+
+  if (shouldReplaceList(previousItems, incomingItems, overlap)) return incomingItems.slice(0, MAX_ITEMS);
+
+  // Otherwise only apply status/text changes for existing items. Do not append
+  // new unrelated items during active progress; that was the source of one-item
+  // status deltas expanding into a different list mid-run.
+  return previousItems.map((item) => incomingByKey.get(todoItemKey(item)) ?? item).slice(0, MAX_ITEMS);
 }
 
 function cleanGoalText(value: string | undefined): string | undefined {
@@ -206,7 +309,7 @@ function buildInjectedContext(s: TodoState): string {
   } else if (s.items.length > 0) {
     lines.push(
       "",
-      "Before the next execution step or tool call, emit the current checklist update first so the progress widget stays ahead of the step.",
+      "Before the next execution step or tool call, emit checklist lines only for items whose status/text changed. If the checklist did not change, do not re-emit unchanged checklist lines.",
     );
   }
 
@@ -281,18 +384,33 @@ export default function todoProgress(pi: ExtensionAPI) {
 
     const textParts = event.message.content.filter((c: any) => c.type === "text");
     const texts = textParts.map((c: any) => c.text);
+    const previousGoal = state.goal;
+    const previousItems = state.items.map((item) => ({ ...item }));
     const goal = texts.map(extractGoal).find(Boolean);
     if (goal) state.goal = goal;
 
-    const checklist = extractLatestChecklist(texts);
-    if (checklist.length === 0) return;
+    const checklist = extractBestChecklist(texts, previousItems);
+    if (checklist.length === 0) {
+      if (state.goal !== previousGoal && state.visible && state.items.length > 0) {
+        render(ctx, state);
+        persistState();
+      }
+      return;
+    }
 
-    state.items = checklist;
-    state.awaitingGoalCheck = isDoneList(state.items);
-    state.offset = Math.min(state.offset, Math.max(0, state.items.length - MAX_ROWS));
-    state.visible = true;
-    render(ctx, state);
-    persistState();
+    const nextItems = mergeChecklistItems(previousItems, checklist);
+    const nextAwaitingGoalCheck = isDoneList(nextItems);
+    const nextOffset = Math.min(state.offset, Math.max(0, nextItems.length - MAX_ROWS));
+    const changed = state.goal !== previousGoal || !sameTodoItems(state.items, nextItems) || state.awaitingGoalCheck !== nextAwaitingGoalCheck || state.offset !== nextOffset || !state.visible;
+
+    if (changed) {
+      state.items = nextItems;
+      state.awaitingGoalCheck = nextAwaitingGoalCheck;
+      state.offset = nextOffset;
+      state.visible = true;
+      render(ctx, state);
+      persistState();
+    }
 
     return {
       message: {
@@ -302,9 +420,14 @@ export default function todoProgress(pi: ExtensionAPI) {
     };
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    // Keep the last list visible after the run finishes so terminal redraws/tab switches
-    // still have a current widget to render. A new non-command input or manual dismiss clears it.
+  pi.on("agent_end", async (event, ctx) => {
+    if (shouldAutoClearOnAgentEnd(event.messages, state)) {
+      clear(ctx, state);
+      persistState();
+      return;
+    }
+
+    // Keep active progress visible for interrupted/failed/tool-use terminal states.
     render(ctx, state);
     persistState();
   });
