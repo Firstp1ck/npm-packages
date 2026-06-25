@@ -2,13 +2,13 @@
 
 Minimal modular workflow runtime extension for Pi.
 
-This package implements the foundation described in `docs/Workflow_extension-implementation-plan.md`:
+This package implements a minimal modular workflow foundation:
 
 ```text
 Workflow Definition → Run State → Phases → Task/Agent Fanout → Aggregation → Final Result
 ```
 
-It intentionally uses a data-only Pi Workflow IR instead of cloning an undocumented JavaScript workflow DSL.
+It intentionally uses a data-only Pi Workflow IR instead of cloning an undocumented JavaScript workflow DSL. Repository planning docs are not required at runtime or in the published npm package.
 
 ## Commands
 

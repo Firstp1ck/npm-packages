@@ -19,7 +19,7 @@ Only write under an auto-discovered skill root after explicit user approval and 
 
 ## Lifecycle policy
 
-Before drafting, enabling, publishing, or moving skills, read the bundled package policy at `../../../../docs/SKILL-LIFECYCLE-POLICY.md` when available. Use `references/SKILL-PORTABILITY.md` for portable skill authoring rules.
+Before drafting, enabling, publishing, or moving skills, read the bundled package policy at `../../../../references/SKILL-LIFECYCLE-POLICY.md` when available. Use `references/SKILL-PORTABILITY.md` for portable skill authoring rules.
 
 ## When to Use
 

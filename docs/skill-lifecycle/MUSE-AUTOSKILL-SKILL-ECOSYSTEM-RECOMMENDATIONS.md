@@ -30,7 +30,7 @@ The current staged changes implement the MUSE-inspired skill-management spine as
 | 5. Skill refinement loop | Implemented as vendored resources in `pi-package-skill-lifecycle/vendor/pi-skill-skill-refinement-loop`. |
 | 6. Routing fixtures | Implemented as development-only fixtures under `tests/routing/` with `dev/scripts/validate-skill-routing-fixtures.mjs`; validator is schema-only by default and supports explicit `--settings`/`--skill-root` targets. |
 | 7. Skill portability guidelines | Packaged into `pi-package-skill-lifecycle/vendor/pi-skill-skill-creator/skills/skill-creator/references/SKILL-PORTABILITY.md`. |
-| 8. Lifecycle policy | Packaged into `pi-package-skill-lifecycle/docs/SKILL-LIFECYCLE-POLICY.md` and referenced directly by the lifecycle skills. |
+| 8. Lifecycle policy | Packaged into `docs/skill-lifecycle/SKILL-LIFECYCLE-POLICY.md` and referenced directly by the lifecycle skills. |
 | Bundle package | Added `pi-package-skill-lifecycle` v0.1.0 as a self-contained package bundling memory helper, bank manager, evaluator, creator, and refinement-loop resources under `vendor/`. |
 
 Main deviations from the original recommendations:
@@ -640,7 +640,7 @@ The task is done when future skill authors have a concise portability standard t
 **Estimated size:** Small  
 **Dependencies:** None  
 **Confidence:** 85/100  
-**Status:** Done 2026-05-30 — moved into `pi-package-skill-lifecycle/docs/SKILL-LIFECYCLE-POLICY.md` so the lifecycle package is self-contained and npm-publishable.
+**Status:** Done 2026-05-30 — moved into `docs/skill-lifecycle/SKILL-LIFECYCLE-POLICY.md` so the lifecycle package is self-contained and npm-publishable.
 
 ### Objective
 
@@ -671,7 +671,7 @@ Do not create a skill when:
 Package the policy with the lifecycle package:
 
 ```text
-<repo-root>/pi-package-skill-lifecycle/docs/SKILL-LIFECYCLE-POLICY.md
+<repo-root>/docs/skill-lifecycle/SKILL-LIFECYCLE-POLICY.md
 ```
 
 Lifecycle skills should reference this bundled file directly when installed from npm.
@@ -685,7 +685,7 @@ Lifecycle skills should reference this bundled file directly when installed from
 
 ### Implementation Note
 
-Implemented 2026-05-30 by moving the canonical policy into `pi-package-skill-lifecycle/docs/SKILL-LIFECYCLE-POLICY.md`, including `docs/` in the package's npm `files`, and referencing the bundled policy from the lifecycle skills. This keeps active Pi config lean while making the policy publishable with the package.
+Implemented 2026-05-30 by moving the canonical policy into `docs/skill-lifecycle/SKILL-LIFECYCLE-POLICY.md`, including `docs/` in the package's npm `files`, and referencing the bundled policy from the lifecycle skills. This keeps active Pi config lean while making the policy publishable with the package.
 
 ### Done Definition
 

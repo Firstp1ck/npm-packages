@@ -53,7 +53,7 @@ try {
 } catch {
   piPackageJson = {};
 }
-const nativeParityMatrix = JSON.parse(await readFile(path.join(packageRoot, "dev", "docs", "WEBUI_TUI_NATIVE_PARITY.json"), "utf8"));
+const nativeParityMatrix = JSON.parse(await readFile(path.join(packageRoot, "lib", "WEBUI_TUI_NATIVE_PARITY.json"), "utf8"));
 const webuiDevServer = isTruthyEnv(process.env.PI_WEBUI_DEV) || isSourceCheckout(packageRoot);
 let remoteQrCorePromise = null;
 

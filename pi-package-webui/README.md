@@ -152,7 +152,7 @@ Environment variables:
 
 ## Native Pi command coverage
 
-Web UI keeps a packaged parity matrix at `dev/docs/WEBUI_TUI_NATIVE_PARITY.json` and exposes it at `GET /api/native-parity`.
+Web UI keeps a packaged parity matrix at `lib/WEBUI_TUI_NATIVE_PARITY.json` and exposes it at `GET /api/native-parity`.
 
 | Status | Commands and behavior |
 | --- | --- |

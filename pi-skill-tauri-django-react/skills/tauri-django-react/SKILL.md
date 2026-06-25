@@ -7,7 +7,7 @@ description: Agents should invoke this skill for Tauri + Django + React desktop 
 
 Dense technical reference for building desktop applications that use Tauri as the native shell, Django as the backend API, and React as the frontend UI. Every pattern is battle-tested in the Externe Analytik project and designed for reuse across projects.
 
-**Architecture guide:** `docs/architecture/tauri-django-react-architecture.md` contains full explanations, diagrams, and extended code examples. This skill file is the quick-reference companion.
+This skill is self-contained; it must not depend on package-level `docs/` files at runtime.
 
 ---
 
@@ -709,7 +709,6 @@ python3 {baseDir}/scripts/validate.py --project-root . --format json
 
 ## Integration
 
-- **Architecture guide:** `docs/architecture/tauri-django-react-architecture.md` -- full explanations, diagrams, and extended examples
 - **Cross-reference:** `architecture-review` skill for layer boundary assessment, `design-patterns` for cross-layer communication patterns, `deployment-automation` for CI/CD pipeline implementation
 - **Memory:** Log project-specific quirks, build issues, and platform gotchas to `MEMORY.md`
 

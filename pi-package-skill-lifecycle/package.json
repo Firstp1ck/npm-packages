@@ -48,7 +48,7 @@
   },
   "files": [
     "vendor",
-    "docs",
+    "references",
     "README.md",
     "LICENSE"
   ]

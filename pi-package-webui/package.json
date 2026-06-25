@@ -79,7 +79,7 @@
     "public",
     "images",
     "tests",
-    "dev/docs/WEBUI_TUI_NATIVE_PARITY.json",
+    "lib/WEBUI_TUI_NATIVE_PARITY.json",
     "README.md",
     "LICENSE"
   ],

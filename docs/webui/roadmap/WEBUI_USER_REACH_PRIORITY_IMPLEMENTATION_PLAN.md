@@ -11,13 +11,13 @@ This plan intentionally prioritizes **broad user reach and repeated daily use** 
 
 ## Source docs reviewed
 
-- `dev/docs/WEBUI_EXTENDED_USABILITY_IDEAS.md`
-- `dev/docs/WEBUI_PERFORMANCE_UX_IMPROVEMENT_PLAN.md`
-- `dev/docs/WEBUI_TUI_NATIVE_FEATURE_PLAN.md`
-- `dev/docs/WEBUI_TUI_NATIVE_PARITY.json`
-- `dev/docs/OPTIONAL_FEATURE_MINIMAL_WEBUI_IMPLEMENTATION_PLAN.md`
-- `dev/docs/deep-research-report.md`
-- `dev/docs/WEBUI_TUI_NATIVE_FEATURE_GRILL_RESULTS.md`
+- `docs/webui/roadmap/WEBUI_EXTENDED_USABILITY_IDEAS.md`
+- `docs/webui/performance/WEBUI_PERFORMANCE_UX_IMPROVEMENT_PLAN.md`
+- `docs/webui/native-parity/WEBUI_TUI_NATIVE_FEATURE_PLAN.md`
+- `lib/WEBUI_TUI_NATIVE_PARITY.json`
+- `docs/webui/optional-features/OPTIONAL_FEATURE_MINIMAL_WEBUI_IMPLEMENTATION_PLAN.md`
+- `docs/webui/research/deep-research-report.md`
+- `docs/webui/native-parity/WEBUI_TUI_NATIVE_FEATURE_GRILL_RESULTS.md`
 
 ## Priority model
 

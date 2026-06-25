@@ -28,7 +28,7 @@ import {
 } from "../lib/native-command-adapter.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const parity = JSON.parse(await readFile(join(root, "dev", "docs", "WEBUI_TUI_NATIVE_PARITY.json"), "utf8"));
+const parity = JSON.parse(await readFile(join(root, "lib", "WEBUI_TUI_NATIVE_PARITY.json"), "utf8"));
 
 const localReq = { socket: { remoteAddress: "127.0.0.1" } };
 const remoteReq = { socket: { remoteAddress: "192.168.1.50" } };

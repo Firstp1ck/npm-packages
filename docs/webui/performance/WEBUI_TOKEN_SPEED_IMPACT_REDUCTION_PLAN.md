@@ -2,7 +2,7 @@
 
 Date: 2026-06-16  
 Scope: reduce Web UI / extension overhead that can depress the footer `Speed tok/s` value or actual streaming throughput.  
-Related analysis: `pi-package-webui/dev/docs/WEBUI_OUTPUT_STREAM_LATENCY_ANALYSIS.md`  
+Related analysis: `docs/webui/performance/WEBUI_OUTPUT_STREAM_LATENCY_ANALYSIS.md`  
 Status: plan only.
 
 ---

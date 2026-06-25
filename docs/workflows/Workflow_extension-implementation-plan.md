@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create a minimal, working Pi workflow extension foundation based on the research in [`docs/Workflow_deep-report.md`](./Workflow_deep-report.md).
+Create a minimal, working Pi workflow extension foundation based on the research in [`docs/workflows/Workflow_deep-report.md`](./Workflow_deep-report.md).
 
 The extension should implement the stable workflow semantics from the research document:
 

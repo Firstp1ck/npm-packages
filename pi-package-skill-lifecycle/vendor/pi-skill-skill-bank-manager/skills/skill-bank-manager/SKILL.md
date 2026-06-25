@@ -11,7 +11,7 @@ Use this skill when the user asks to audit, inventory, improve, merge, prune, or
 
 ## Lifecycle policy
 
-For create/update/merge/prune/enable/publish decisions, read the bundled package policy at `../../../../docs/SKILL-LIFECYCLE-POLICY.md` when available. Do not rely on a separate workspace-local copy.
+For create/update/merge/prune/enable/publish decisions, read the bundled package policy at `../../../../references/SKILL-LIFECYCLE-POLICY.md` when available. Do not rely on a separate workspace-local copy.
 
 ## Tools
 

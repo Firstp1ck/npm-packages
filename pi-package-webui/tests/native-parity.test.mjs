@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const [parityRaw, server, app, pkgRaw] = await Promise.all([
-  readFile(join(root, "dev", "docs", "WEBUI_TUI_NATIVE_PARITY.json"), "utf8"),
+  readFile(join(root, "lib", "WEBUI_TUI_NATIVE_PARITY.json"), "utf8"),
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
@@ -185,7 +185,7 @@ assert.match(app, /let userBashQueuesByTab = new Map\(\)/, "frontend should trac
 assert.match(app, /enqueueUserBashCommand\(parsed, \{ usesPromptInput, targetTabId \}\)/, "user bash should enqueue while an active or queued bash command exists");
 assert.match(server, /function sendQueuedBashCommand\(tab, command\)/, "server should serialize user bash commands per tab");
 assert.match(server, /command\.type === "bash"[\s\S]*?await sendQueuedBashCommand\(tab, command\)[\s\S]*?: await tab\.rpc\.send\(command\)/, "generic POST handling should route bash through the FIFO queue");
-assert.ok(pkg.files.includes("dev/docs/WEBUI_TUI_NATIVE_PARITY.json"), "published package should include the native parity matrix");
+assert.ok(pkg.files.includes("lib/WEBUI_TUI_NATIVE_PARITY.json"), "published package should include the native parity matrix");
 assert.ok(pkg.files.includes("lib"), "published package should include shared Web UI foundation modules");
 assert.ok(pkg.files.includes("webui-rpc-helper.mjs"), "published package should include the Web UI RPC helper extension");
 

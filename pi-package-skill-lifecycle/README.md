@@ -11,7 +11,7 @@ This package intentionally groups the skill-management tools that work together:
 - `vendor/pi-skill-skill-evaluator` — SKILL.md quality gate, routing fixture checks, safety checks, and tests.
 - `vendor/pi-skill-skill-creator` — disabled skill drafts from reusable workflows.
 - `vendor/pi-skill-skill-refinement-loop` — per-skill memory plus PATCH.md-style refinement proposals from failures/corrections.
-- `docs/SKILL-LIFECYCLE-POLICY.md` — package-bundled lifecycle policy used directly by the lifecycle skills.
+- `references/SKILL-LIFECYCLE-POLICY.md` — package-bundled lifecycle policy used directly by the lifecycle skills.
 
 The component package resources are vendored under `vendor/` so this package can be published as one npm package without relying on sibling checkout paths. The package also exposes the evaluator CLI wrappers `skill_eval_run` and `skill_eval_all` through its root npm `bin` metadata.
 
@@ -51,7 +51,7 @@ skills/<skill-name>/references/
 
 ## Publishing note
 
-This package is self-contained for the related skill lifecycle resources: component package contents are vendored under `vendor/`, the package-level policy is bundled under `docs/`, and the `pi` manifest references the vendored Pi resources directly.
+This package is self-contained for the related skill lifecycle resources: component package contents are vendored under `vendor/`, the package-level policy is bundled under `references/`, and the `pi` manifest references the vendored Pi resources directly.
 
 Before publishing this bundle, verify the packed tarball contains the referenced `vendor/...` resources. The vendored directories are the canonical publishable source for these lifecycle skills/tools; there are no separate top-level `pi-skill-skill-*` packages to publish. The only non-Pi-core runtime dependency is the published shared helper package `@firstpick/pi-utils`.
 

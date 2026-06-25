@@ -48,7 +48,6 @@
     "index.ts",
     "lib",
     "tests",
-    "docs",
     "README.md",
     "LICENSE"
   ],

@@ -18,7 +18,7 @@ Do **not** use this for ordinary application bugs unless the bug is caused by a 
 
 ## Lifecycle policy
 
-Before proposing production skill edits, enablement, pruning, publishing, or risky lifecycle changes, read the bundled package policy at `../../../../docs/SKILL-LIFECYCLE-POLICY.md` when available.
+Before proposing production skill edits, enablement, pruning, publishing, or risky lifecycle changes, read the bundled package policy at `../../../../references/SKILL-LIFECYCLE-POLICY.md` when available.
 
 ## Critical implementation notes
 

@@ -18,7 +18,7 @@ Good triggers include:
 
 ## Lifecycle policy
 
-When evaluation informs skill enablement, publishing, pruning, or merge/update decisions, read the bundled package policy at `../../../../docs/SKILL-LIFECYCLE-POLICY.md` when available.
+When evaluation informs skill enablement, publishing, pruning, or merge/update decisions, read the bundled package policy at `../../../../references/SKILL-LIFECYCLE-POLICY.md` when available.
 
 ## Workflow
 
