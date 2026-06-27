@@ -42,6 +42,129 @@ local_pi_webui_bin() {
   printf '%s\n' "$candidate"
 }
 
+dev_update_pi_runtime_package() {
+  local root package_name current latest
+  root="$1"
+  package_name="@earendil-works/pi-coding-agent"
+
+  latest="$(cd "$root" && npm view "$package_name" version --silent 2>/dev/null || true)"
+  latest="${latest//$'\r'/}"
+  latest="${latest//$'\n'/}"
+
+  if [[ -z "$latest" ]]; then
+    echo "Dev mode: could not check latest $package_name version; continuing with installed local package." >&2
+    return 0
+  fi
+
+  current="$(node -e '
+const fs = require("fs");
+const path = require("path");
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.argv[1], "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8"));
+  if (!pkg.version) process.exit(1);
+  process.stdout.write(pkg.version);
+} catch {
+  process.exit(1);
+}
+' "$root" 2>/dev/null || true)"
+
+  if [[ "$current" == "$latest" ]]; then
+    echo "Dev mode: $package_name is current ($current)."
+    return 0
+  fi
+
+  if [[ -n "$current" ]]; then
+    echo "Dev mode: updating $package_name from $current to latest ($latest)..."
+  else
+    echo "Dev mode: installing latest $package_name ($latest)..."
+  fi
+
+  if ! (cd "$root" && npm install "$package_name@latest"); then
+    echo "Dev mode: failed to update $package_name; refusing to start with a stale local Pi runtime." >&2
+    echo "Set PI_WEBUI_DEV_SKIP_UPDATE=1 to skip this preflight if you need to start anyway." >&2
+    return 1
+  fi
+
+  echo "Dev mode: $package_name is now at latest ($latest)."
+}
+
+dev_update_local_packages() {
+  local root tmp_dir outdated_json outdated_err status has_updates
+  root="$(package_root)"
+
+  case "${PI_WEBUI_DEV_SKIP_UPDATE:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      echo "Dev mode: skipping local npm package update because PI_WEBUI_DEV_SKIP_UPDATE is set."
+      return 0
+      ;;
+  esac
+
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm is required to check and update local packages in --dev mode." >&2
+    return 1
+  fi
+
+  if [[ ! -f "$root/package.json" ]]; then
+    echo "--dev expected package.json at: $root/package.json" >&2
+    return 1
+  fi
+
+  echo "Dev mode: checking local npm packages in: $root"
+
+  if [[ ! -d "$root/node_modules" ]]; then
+    echo "Dev mode: node_modules is missing; running npm install..."
+    (cd "$root" && npm install)
+    return $?
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  outdated_json="$tmp_dir/outdated.json"
+  outdated_err="$tmp_dir/outdated.err"
+  has_updates=0
+
+  if (cd "$root" && npm outdated --json >"$outdated_json" 2>"$outdated_err"); then
+    status=0
+  else
+    status=$?
+  fi
+
+  if node -e '
+const fs = require("fs");
+let data;
+try {
+  const text = fs.readFileSync(process.argv[1], "utf8").trim();
+  data = text ? JSON.parse(text) : {};
+} catch {
+  process.exit(1);
+}
+process.exit(data && typeof data === "object" && !Array.isArray(data) && Object.keys(data).length > 0 ? 0 : 1);
+' "$outdated_json"; then
+    has_updates=1
+  fi
+
+  if [[ "$has_updates" -eq 1 ]]; then
+    echo "Dev mode: local npm package updates are available; running npm update..."
+    if ! (cd "$root" && npm update); then
+      rm -rf "$tmp_dir"
+      echo "Dev mode: npm update failed; refusing to start with a partially updated local package tree." >&2
+      echo "Set PI_WEBUI_DEV_SKIP_UPDATE=1 to skip this preflight if you need to start anyway." >&2
+      return 1
+    fi
+
+    echo "Dev mode: local npm packages updated within configured version ranges."
+  elif [[ "$status" -ne 0 ]]; then
+    echo "Dev mode: npm outdated could not check for updates; continuing with existing local packages." >&2
+    if [[ -s "$outdated_err" ]]; then
+      sed 's/^/npm outdated: /' "$outdated_err" >&2 || true
+    fi
+  else
+    echo "Dev mode: local npm packages are up to date within configured version ranges."
+  fi
+
+  rm -rf "$tmp_dir"
+  dev_update_pi_runtime_package "$root"
+}
+
 pi_managed_pi_webui_bin() {
   local candidates candidate
 
@@ -435,6 +558,7 @@ main() {
   fi
 
   if [[ "$dev_mode" -eq 1 ]]; then
+    dev_update_local_packages
     local_webui_bin="$(local_pi_webui_bin)"
     webui_cmd=(node "$local_webui_bin")
     export PI_WEBUI_DEV=1

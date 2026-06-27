@@ -329,6 +329,8 @@ For local development, run the checkout helper directly, for example:
 ./dev/scripts/start-webui.sh --dev --cwd /path/to/project
 ```
 
+The `--dev` helper checks this checkout's local npm dependencies before launch, applies available local updates, and force-refreshes `@earendil-works/pi-coding-agent` to the latest npm version so stale bundled Pi runtime packages do not break extension loading. Set `PI_WEBUI_DEV_SKIP_UPDATE=1` to skip this preflight for offline or intentionally pinned local testing.
+
 Run `../dev/scripts/sync-pi-package-symlinks.sh` first when developing companion packages from this workspace. The Web UI manifest loads companions through `node_modules/` paths, and the sync script links those paths to the top-level dev packages so only one copy is loaded.
 
 ## Optional companion packages
