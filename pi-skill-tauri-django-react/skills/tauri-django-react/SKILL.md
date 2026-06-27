@@ -20,12 +20,22 @@ This skill is self-contained; it must not depend on package-level `docs/` files 
 3. **Is it an auth issue?** Cookies not working in Tauri, CORS errors, session tokens -> Cross-Origin Auth section.
 4. **Is it a build issue?** PyInstaller fails, bundle missing files, `tauri build` errors -> Build Pipeline section.
 5. **Is it a dual-mode issue?** Works in browser but not Tauri (or vice versa) -> Frontend Integration section.
-6. **Mandatory local runner:** When creating or updating a project with this skill, add or maintain a root-level executable `start.sh` that starts both Django and React for local development.
+6. **Mandatory local runner:** When creating or updating a project with this skill, add or maintain an executable `scripts/start.sh` that starts both Django and React for local development.
 7. **Mandatory frontend UX baseline:** Ask the user for separate light-mode and dark-mode background images before finalizing visual work; implement a persistent light/dark mode setting; implement German/English i18n for every user-facing string.
+8. **Mandatory GitHub release automation:** When creating or updating a project with this skill, add or maintain both `.github/workflows/release.yml` and an executable `scripts/release.sh` release helper.
 
-### Mandatory `start.sh` Local Runner
+### Mandatory GitHub Release Automation
 
-Every Tauri + Django + React project handled by this skill must include a root-level `start.sh` unless the user explicitly declines it. The script is the one-command local development entry point and must:
+Every Tauri + Django + React project handled by this skill must include GitHub release automation:
+
+- `.github/workflows/release.yml` builds the Tauri desktop app, uploads installer artifacts, and publishes a GitHub Release for `v*` tags or manual `workflow_dispatch` runs.
+- `scripts/release.sh` updates project version files, regenerates relevant locks when tooling is available, commits/pushes version changes, creates an annotated `vX.X.X` tag, and pushes the tag to trigger the workflow.
+- `dev/RELEASES/` is the canonical release-notes directory; release notes use `dev/RELEASES/RELEASE_vX.X.X.md` and the workflow falls back to the annotated tag message when the file is absent.
+- The workflow and script must be adapted to the actual app name, artifact names, package names, secrets, signing/updater setup, and platform targets. Do not copy private updater/Gist/signing logic unless the current project explicitly has that configuration.
+
+### Mandatory `scripts/start.sh` Local Runner
+
+Every Tauri + Django + React project handled by this skill must include `scripts/start.sh` unless the user explicitly declines it. The script is the one-command local development entry point and must:
 
 - use `uv` for backend dependency sync and Django commands;
 - use `bun` for frontend dependency install and Vite/React startup;
@@ -35,7 +45,7 @@ Every Tauri + Django + React project handled by this skill must include a root-l
 - set `VITE_API_BASE_URL` to the Django `/api` base URL unless already provided;
 - print the frontend and backend URLs;
 - trap `EXIT`, `INT`, and `TERM` and stop both child processes;
-- be executable (`chmod +x start.sh`).
+- be executable (`chmod +x scripts/start.sh`).
 
 Recommended template:
 
@@ -678,7 +688,7 @@ fn main() {
 
 ### Development
 
-- Mandatory one-command local runner: `./start.sh` from the repository root starts Django and React together.
+- Mandatory one-command local runner: `./scripts/start.sh` from the repository root starts Django and React together.
 - Django: `uv run python manage.py runserver 0.0.0.0:8000`
 - React: `bun run dev` (port 5173) with proxy or `VITE_API_BASE_URL` pointing to Django
 - Tauri: `tauri dev` wraps Vite dev server in WebView and starts/uses the local Django backend according to the lifecycle wiring
@@ -760,7 +770,7 @@ Two automation scripts live in `scripts/` alongside this SKILL.md.
 
 ### ./scripts/scaffold.py -- Generate Integration Boilerplate
 
-Creates all Tauri + Django + React integration files for a new project. Generates 15 files across three layers plus the mandatory root `start.sh`: Rust backend lifecycle, Django hybrid auth, React Tauri detection, build scripts, and configuration.
+Creates all Tauri + Django + React integration files for a new project, plus mandatory `scripts/start.sh` and GitHub release automation: Rust backend lifecycle, Django hybrid auth, React Tauri detection, build scripts, release scripts, workflow configuration, and app configuration.
 
 ```bash
 python3 {baseDir}/scripts/scaffold.py \
@@ -800,13 +810,16 @@ python3 {baseDir}/scripts/scaffold.py \
 | TypeScript | `frontend/src/components/LoadingScreen.tsx` | Backend readiness UI |
 | Shell | `scripts/build-backend.sh` | PyInstaller build + copy to resources |
 | PowerShell | `scripts/build-backend.ps1` | Windows equivalent |
-| Shell | `start.sh` | Mandatory one-command local runner for Django + React development |
+| Shell | `scripts/start.sh` | Mandatory one-command local runner for Django + React development |
+| GitHub Actions | `.github/workflows/release.yml` | Mandatory tag/manual release workflow that builds and publishes installers |
+| Shell | `scripts/release.sh` | Mandatory release helper that bumps versions, commits, tags, and triggers CI |
+| Docs | `dev/RELEASES/.gitkeep` | Canonical release notes directory for `RELEASE_vX.X.X.md` files |
 
-Skips files that already exist unless `--force` is passed. After scaffolding, the script prints next steps (dependency installation, URL wiring, settings config).
+Skips files that already exist unless `--force` is passed. After scaffolding, the script prints next steps (dependency installation, URL wiring, release workflow setup, settings config).
 
 ### ./scripts/validate.py -- Check Setup Correctness
 
-Inspects an existing project and validates cross-layer configuration consistency. Checks 15 categories across all three layers, including the mandatory root `start.sh`.
+Inspects an existing project and validates cross-layer configuration consistency across all three layers, including mandatory `scripts/start.sh` and GitHub release automation.
 
 ```bash
 python3 {baseDir}/scripts/validate.py \
@@ -840,7 +853,8 @@ python3 {baseDir}/scripts/validate.py \
 | Loading Screen | backend-ready listener, health polling fallback |
 | Port Consistency | Rust port range matches Django CORS/CSRF config, devUrl matches Vite |
 | Environment Files | TAURI_SIGNING_PRIVATE_KEY, GITHUB_PAT_UPDATER |
-| Start Script | Root `start.sh`, executable bit, `uv`, `bun`, backend/frontend startup, cleanup trap |
+| Start Script | `scripts/start.sh`, executable bit, `uv`, `bun`, backend/frontend startup, cleanup trap |
+| Release Automation | `.github/workflows/release.yml`, executable `scripts/release.sh`, canonical `dev/RELEASES/` release-notes path |
 
 **Exit codes:** `0` = all checks pass, `1` = failures found, `2` = script error
 

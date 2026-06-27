@@ -3,7 +3,8 @@
 Scaffold Tauri + Django + React integration files for a new project.
 
 Generates all cross-layer boilerplate: Rust backend lifecycle, Django hybrid auth,
-React Tauri detection, build scripts, configuration files, and a mandatory root start.sh.
+React Tauri detection, build scripts, configuration files, mandatory scripts/start.sh,
+and mandatory GitHub release workflow/script automation.
 
 Usage:
     python3 scaffold.py --project-root /path/to/project --app-name "My App" --app-id com.example.myapp
@@ -12,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -38,7 +40,10 @@ def get_templates(ctx: dict) -> list[tuple[str, str]]:
         ("frontend/src/components/LoadingScreen.tsx", _tmpl_loading_screen(ctx)),
         ("scripts/build-backend.sh", _tmpl_build_backend_sh(ctx)),
         ("scripts/build-backend.ps1", _tmpl_build_backend_ps1(ctx)),
-        ("start.sh", _tmpl_start_sh(ctx)),
+        ("scripts/release.sh", _tmpl_release_sh(ctx)),
+        (".github/workflows/release.yml", _tmpl_release_workflow_yml(ctx)),
+        ("dev/RELEASES/.gitkeep", _tmpl_release_gitkeep(ctx)),
+        ("scripts/start.sh", _tmpl_start_sh(ctx)),
     ]
 
 
@@ -1009,7 +1014,8 @@ def _tmpl_start_sh(ctx: dict) -> str:
         #!/usr/bin/env bash
         set -Eeuo pipefail
 
-        ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
         BACKEND_DIR="$ROOT_DIR/backend"
         FRONTEND_DIR="$ROOT_DIR/frontend"
 
@@ -1076,6 +1082,460 @@ def _tmpl_start_sh(ctx: dict) -> str:
     """)
 
 
+
+def _tmpl_release_gitkeep(ctx: dict) -> str:
+    return ""
+
+
+def _tmpl_release_workflow_yml(ctx: dict) -> str:
+    return dedent("""\
+        name: Release
+
+        on:
+          push:
+            tags:
+              - 'v*'
+          workflow_dispatch:
+            inputs:
+              version:
+                description: 'Release version (e.g., v0.1.0)'
+                required: true
+                type: string
+
+        permissions:
+          contents: write
+
+        concurrency:
+          group: release-${{ github.ref }}
+          cancel-in-progress: false
+
+        jobs:
+          get-version:
+            name: Get Version
+            runs-on: ubuntu-latest
+            outputs:
+              version: ${{ steps.version.outputs.version }}
+              release_notes: ${{ steps.version.outputs.release_notes }}
+              has_custom_notes: ${{ steps.version.outputs.has_custom_notes }}
+            steps:
+              - name: Checkout repository
+                uses: actions/checkout@v4
+                with:
+                  fetch-depth: 0
+
+              - name: Get version and release notes
+                id: version
+                shell: bash
+                run: |
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                    VERSION="${{ github.event.inputs.version }}"
+                    IS_TAG_PUSH="false"
+                  else
+                    VERSION=${GITHUB_REF#refs/tags/}
+                    IS_TAG_PUSH="true"
+                  fi
+
+                  if [[ ! "$VERSION" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+                    echo "::error::Invalid release version '$VERSION'. Expected format: vX.X.X"
+                    exit 1
+                  fi
+
+                  echo "Release version: $VERSION"
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+                  HAS_CUSTOM_NOTES="false"
+                  RELEASE_FILE="dev/RELEASES/RELEASE_${VERSION}.md"
+                  DELIMITER="RELEASE_NOTES_$(date +%s)_$$"
+
+                  if [ -f "$RELEASE_FILE" ]; then
+                    echo "Found release notes file: $RELEASE_FILE"
+                    RELEASE_NOTES=$(tail -n +3 "$RELEASE_FILE")
+                    HAS_CUSTOM_NOTES="true"
+                    echo "release_notes<<$DELIMITER" >> "$GITHUB_OUTPUT"
+                    echo "$RELEASE_NOTES" >> "$GITHUB_OUTPUT"
+                    echo "$DELIMITER" >> "$GITHUB_OUTPUT"
+                  elif [ "$IS_TAG_PUSH" = "true" ]; then
+                    TAG_TYPE=$(git cat-file -t "$VERSION" 2>/dev/null || echo "")
+                    if [ "$TAG_TYPE" = "tag" ]; then
+                      TAG_NOTES=$(git show "$VERSION" --format='%B' --no-patch 2>/dev/null || echo "")
+                      TAG_NOTES=$(echo "$TAG_NOTES" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                      if [ -n "$TAG_NOTES" ]; then
+                        echo "Found release notes in tag annotation"
+                        HAS_CUSTOM_NOTES="true"
+                        echo "release_notes<<$DELIMITER" >> "$GITHUB_OUTPUT"
+                        echo "$TAG_NOTES" >> "$GITHUB_OUTPUT"
+                        echo "$DELIMITER" >> "$GITHUB_OUTPUT"
+                      else
+                        echo "release_notes<<$DELIMITER" >> "$GITHUB_OUTPUT"
+                        echo "Release $VERSION" >> "$GITHUB_OUTPUT"
+                        echo "$DELIMITER" >> "$GITHUB_OUTPUT"
+                      fi
+                    else
+                      echo "release_notes<<$DELIMITER" >> "$GITHUB_OUTPUT"
+                      echo "Release $VERSION" >> "$GITHUB_OUTPUT"
+                      echo "$DELIMITER" >> "$GITHUB_OUTPUT"
+                    fi
+                  else
+                    echo "release_notes<<$DELIMITER" >> "$GITHUB_OUTPUT"
+                    echo "Release $VERSION" >> "$GITHUB_OUTPUT"
+                    echo "$DELIMITER" >> "$GITHUB_OUTPUT"
+                  fi
+
+                  echo "has_custom_notes=$HAS_CUSTOM_NOTES" >> "$GITHUB_OUTPUT"
+
+          build-windows:
+            name: Build Windows
+            needs: get-version
+            runs-on: windows-latest
+            steps:
+              - name: Checkout repository
+                uses: actions/checkout@v4
+
+              - name: Install Bun
+                uses: oven-sh/setup-bun@v2
+                with:
+                  bun-version: latest
+
+              - name: Install Rust
+                uses: dtolnay/rust-toolchain@stable
+
+              - name: Set up Python
+                uses: actions/setup-python@v5
+                with:
+                  python-version: '3.12'
+
+              - name: Install uv
+                uses: astral-sh/setup-uv@v4
+                with:
+                  version: latest
+
+              - name: Build Python backend bundle
+                shell: pwsh
+                run: |
+                  ./scripts/build-backend.ps1
+
+              - name: Install frontend dependencies
+                working-directory: frontend
+                run: bun install
+
+              - name: Build frontend
+                working-directory: frontend
+                run: bun run build
+
+              - name: Build Tauri Windows installer
+                working-directory: frontend
+                shell: pwsh
+                run: bunx tauri build --bundles nsis
+
+              - name: Upload Windows artifacts
+                uses: actions/upload-artifact@v4
+                with:
+                  name: __ARTIFACT_NAME__-windows
+                  path: |
+                    frontend/src-tauri/target/release/bundle/nsis/*_x64-setup.exe
+                    frontend/src-tauri/target/release/bundle/nsis/*-setup.exe
+                  if-no-files-found: error
+
+          publish-release:
+            name: Publish Release
+            needs: [get-version, build-windows]
+            runs-on: ubuntu-latest
+            steps:
+              - name: Download Windows artifacts
+                uses: actions/download-artifact@v4
+                with:
+                  name: __ARTIFACT_NAME__-windows
+                  path: artifacts/windows
+
+              - name: Prepare release artifacts
+                shell: bash
+                run: |
+                  set -euo pipefail
+                  find artifacts -type f | sort
+                  mkdir -p release_artifacts
+                  find artifacts/windows -type f -name "*.exe" -print0 | while IFS= read -r -d '' file; do
+                    cp "$file" release_artifacts/
+                    echo "Added Windows installer: $(basename "$file")"
+                  done
+                  if ! find release_artifacts -type f -name "*.exe" | grep -q .; then
+                    echo "::error::No Windows installer artifacts found"
+                    exit 1
+                  fi
+
+              - name: Create release body
+                id: release-body
+                env:
+                  RELEASE_NOTES: ${{ needs.get-version.outputs.release_notes }}
+                  HAS_CUSTOM_NOTES: ${{ needs.get-version.outputs.has_custom_notes }}
+                  VERSION: ${{ needs.get-version.outputs.version }}
+                shell: bash
+                run: |
+                  if [ "$HAS_CUSTOM_NOTES" = "true" ]; then
+                    printf '%s' "$RELEASE_NOTES" > /tmp/release_body.txt
+                  else
+                    echo "Release $VERSION" > /tmp/release_body.txt
+                  fi
+                  echo "body_path=/tmp/release_body.txt" >> "$GITHUB_OUTPUT"
+
+              - name: Create and publish release
+                uses: softprops/action-gh-release@v2
+                with:
+                  tag_name: ${{ needs.get-version.outputs.version }}
+                  name: Release ${{ needs.get-version.outputs.version }}
+                  body_path: ${{ steps.release-body.outputs.body_path }}
+                  files: release_artifacts/*
+                  draft: false
+                  prerelease: false
+                  fail_on_unmatched_files: true
+                env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    """).replace("__ARTIFACT_NAME__", ctx["artifact_name"])
+
+
+def _tmpl_release_sh(ctx: dict) -> str:
+    return dedent("""\
+        #!/usr/bin/env bash
+        # Release helper for Tauri + Django + React desktop apps.
+        # Usage: ./scripts/release.sh 0.1.0
+        set -Eeuo pipefail
+
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[1;33m'
+        BLUE='\033[0;34m'
+        NC='\033[0m'
+
+        print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
+        print_success() { echo -e "${GREEN}✓${NC} $1"; }
+        print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
+        print_error() { echo -e "${RED}✗${NC} $1"; }
+
+        command_exists() { command -v "$1" >/dev/null 2>&1; }
+        confirm() {
+          local prompt="$1"
+          local reply=""
+          echo "$prompt"
+          echo "Enter y to continue, anything else to cancel:"
+          if ! IFS= read -r reply; then
+            echo
+            return 1
+          fi
+          [[ "$reply" =~ ^[Yy]$ ]]
+        }
+        sed_in_place() {
+          local expression="$1"
+          local file="$2"
+          if [[ "${OSTYPE:-}" == darwin* ]]; then
+            sed -i '' "$expression" "$file"
+          else
+            sed -i "$expression" "$file"
+          fi
+        }
+
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+        cd "$PROJECT_ROOT"
+
+        if ! command_exists git; then
+          print_error "git is not installed."
+          exit 1
+        fi
+        if ! git rev-parse --git-dir >/dev/null 2>&1; then
+          print_error "Not in a git repository: $PROJECT_ROOT"
+          exit 1
+        fi
+
+        if [ $# -eq 0 ]; then
+          print_info "No version argument provided."
+          echo "Please enter the release version."
+          echo "Examples: 0.1.0, 1.2.3, v2.0.0"
+          while true; do
+            echo "Version (X.X.X or vX.X.X, q to cancel):"
+            if ! IFS= read -r VERSION_INPUT; then
+              echo
+              print_error "No version provided."
+              exit 1
+            fi
+            if [[ "$VERSION_INPUT" =~ ^[Qq]$ ]]; then
+              print_info "Release cancelled."
+              exit 0
+            fi
+            VERSION_NUMBER="${VERSION_INPUT#v}"
+            if [[ "$VERSION_NUMBER" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+              break
+            fi
+            print_error "Invalid version: $VERSION_INPUT"
+            echo "Expected X.X.X or vX.X.X, for example 0.1.0 or v0.1.0."
+          done
+        else
+          VERSION_INPUT="$1"
+          VERSION_NUMBER="${VERSION_INPUT#v}"
+          if [[ ! "$VERSION_NUMBER" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+            print_error "Invalid version: $VERSION_INPUT"
+            echo "Expected X.X.X or vX.X.X, for example 0.1.0 or v0.1.0."
+            exit 1
+          fi
+        fi
+        VERSION="v$VERSION_NUMBER"
+        print_success "Release version: $VERSION"
+
+        if ! git remote get-url origin >/dev/null 2>&1; then
+          print_error "No remote 'origin' configured."
+          exit 1
+        fi
+        REMOTE_URL="$(git remote get-url origin)"
+        REPO_NAME=""
+        if [[ "$REMOTE_URL" =~ github\\.com[:/]([^/]+/[^/]+) ]]; then
+          REPO_NAME="${BASH_REMATCH[1]}"
+          REPO_NAME="${REPO_NAME%.git}"
+        fi
+        if [ -z "$REPO_NAME" ]; then
+          print_error "Could not determine GitHub repository from origin: $REMOTE_URL"
+          exit 1
+        fi
+
+        TRACKED_CHANGES="$(git status --porcelain | grep -v '^??' || true)"
+        if [ -n "$TRACKED_CHANGES" ]; then
+          print_warning "You have uncommitted changes in tracked files."
+          if ! confirm "Continue anyway?"; then
+            print_info "Release cancelled."
+            exit 0
+          fi
+        fi
+
+        CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+        if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
+          print_warning "You are not on main/master."
+          if ! confirm "Continue anyway?"; then
+            print_info "Release cancelled."
+            exit 0
+          fi
+        fi
+
+        GH_AVAILABLE=false
+        if command_exists gh; then
+          GH_AVAILABLE=true
+        fi
+
+        RELEASE_EXISTS=false
+        if [ "$GH_AVAILABLE" = true ] && gh release view "$VERSION" --repo "$REPO_NAME" >/dev/null 2>&1; then
+          RELEASE_EXISTS=true
+        fi
+        TAG_EXISTS_LOCAL=false
+        TAG_EXISTS_REMOTE=false
+        if git rev-parse "$VERSION" >/dev/null 2>&1; then
+          TAG_EXISTS_LOCAL=true
+        fi
+        if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q "refs/tags/$VERSION"; then
+          TAG_EXISTS_REMOTE=true
+        fi
+
+        if [ "$RELEASE_EXISTS" = true ] || [ "$TAG_EXISTS_LOCAL" = true ] || [ "$TAG_EXISTS_REMOTE" = true ]; then
+          print_warning "Release and/or tag $VERSION already exists."
+          if ! confirm "Delete existing release/tag and recreate it?"; then
+            print_info "Release cancelled."
+            exit 0
+          fi
+          if [ "$RELEASE_EXISTS" = true ]; then
+            if [ "$GH_AVAILABLE" = true ]; then
+              gh release delete "$VERSION" --repo "$REPO_NAME" --yes
+            else
+              print_error "GitHub CLI is required to delete the existing GitHub release."
+              exit 1
+            fi
+          fi
+          if [ "$TAG_EXISTS_REMOTE" = true ]; then
+            git push origin ":refs/tags/$VERSION"
+          fi
+          if [ "$TAG_EXISTS_LOCAL" = true ]; then
+            git tag -d "$VERSION" >/dev/null 2>&1 || true
+          fi
+        fi
+
+        TAURI_CONF="$PROJECT_ROOT/frontend/src-tauri/tauri.conf.json"
+        PACKAGE_JSON="$PROJECT_ROOT/frontend/package.json"
+        CARGO_TOML="$PROJECT_ROOT/frontend/src-tauri/Cargo.toml"
+        PYPROJECT_TOML="$PROJECT_ROOT/backend/pyproject.toml"
+        UV_LOCK="$PROJECT_ROOT/backend/uv.lock"
+        CARGO_LOCK="$PROJECT_ROOT/frontend/src-tauri/Cargo.lock"
+
+        for required_file in "$TAURI_CONF" "$PACKAGE_JSON" "$CARGO_TOML" "$PYPROJECT_TOML"; do
+          if [ ! -f "$required_file" ]; then
+            print_error "Required file not found: $required_file"
+            exit 1
+          fi
+        done
+
+        print_info "Updating version files..."
+        sed_in_place "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION_NUMBER\"/" "$TAURI_CONF"
+        sed_in_place "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION_NUMBER\"/" "$PACKAGE_JSON"
+        sed_in_place "s/^version = \"[^\"]*\"/version = \"$VERSION_NUMBER\"/" "$CARGO_TOML"
+        sed_in_place "s/^version = \"[^\"]*\"/version = \"$VERSION_NUMBER\"/" "$PYPROJECT_TOML"
+
+        if [ -f "$UV_LOCK" ] && command_exists uv; then
+          (cd "$PROJECT_ROOT/backend" && uv lock --no-upgrade --native-tls >/dev/null 2>&1 || uv lock --native-tls >/dev/null 2>&1)
+        fi
+
+        if [ -f "$CARGO_LOCK" ] && command_exists cargo; then
+          CARGO_PACKAGE_NAME="$(awk '
+            /^\\[package\\]/ { in_package=1; next }
+            /^\\[/ { in_package=0 }
+            in_package && /^name[[:space:]]*=/ {
+              value=$0
+              sub(/^[^=]*=[[:space:]]*\"/, "", value)
+              sub(/\".*$/, "", value)
+              print value
+              exit
+            }
+          ' "$CARGO_TOML")"
+          (cd "$PROJECT_ROOT/frontend/src-tauri" && cargo update --package "$CARGO_PACKAGE_NAME" >/dev/null 2>&1 || cargo generate-lockfile >/dev/null 2>&1)
+        fi
+
+        git add "$TAURI_CONF" "$PACKAGE_JSON" "$CARGO_TOML" "$PYPROJECT_TOML"
+        [ -f "$UV_LOCK" ] && git add "$UV_LOCK"
+        [ -f "$CARGO_LOCK" ] && git add "$CARGO_LOCK"
+
+        if [ -n "$(git diff --cached --name-only)" ]; then
+          git commit -m "chore: bump version to $VERSION_NUMBER"
+          git push origin "$CURRENT_BRANCH"
+        else
+          print_warning "No version changes detected; continuing to tag creation."
+        fi
+
+        RELEASES_DIR="$PROJECT_ROOT/dev/RELEASES"
+        RELEASE_FILE="$RELEASES_DIR/RELEASE_${VERSION}.md"
+        mkdir -p "$RELEASES_DIR"
+        if [ -f "$RELEASE_FILE" ]; then
+          RELEASE_NOTES="$(cat "$RELEASE_FILE")"
+          git add "$RELEASE_FILE"
+          if [ -n "$(git diff --cached --name-only -- "$RELEASE_FILE")" ]; then
+            git commit -m "docs: add release notes for $VERSION"
+            git push origin "$CURRENT_BRANCH"
+          fi
+        else
+          print_warning "Release notes not found: $RELEASE_FILE"
+          RELEASE_NOTES="Release $VERSION"
+        fi
+
+        print_warning "About to create and push tag: $VERSION"
+        print_info "This triggers .github/workflows/release.yml."
+        if ! confirm "Continue?"; then
+          print_info "Release cancelled."
+          exit 0
+        fi
+
+        TEMP_NOTES_FILE="$(mktemp)"
+        printf '%s\n' "$RELEASE_NOTES" > "$TEMP_NOTES_FILE"
+        git tag -a "$VERSION" -F "$TEMP_NOTES_FILE"
+        rm -f "$TEMP_NOTES_FILE"
+        git push origin "$VERSION"
+
+        print_success "Release $VERSION triggered successfully."
+        print_info "Actions:  https://github.com/$REPO_NAME/actions"
+        print_info "Release:  https://github.com/$REPO_NAME/releases/tag/$VERSION"
+    """)
+
+
 # ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
@@ -1096,9 +1556,14 @@ def parse_port_range(value: str) -> tuple[int, int]:
 def build_context(args: argparse.Namespace) -> dict:
     port_start, port_end = parse_port_range(args.port_range)
     django_apps = [a.strip() for a in args.django_apps.split(",") if a.strip()]
+    app_slug = re.sub(r"[^a-z0-9]+", "-", args.app_name.lower()).strip("-")
+    if not app_slug:
+        app_slug = args.app_id.rsplit(".", 1)[-1].lower().replace("_", "-")
     return {
         "app_name": args.app_name,
         "app_id": args.app_id,
+        "app_slug": app_slug,
+        "artifact_name": app_slug,
         "port_start": port_start,
         "port_end": port_end,
         "django_apps": django_apps,
@@ -1203,8 +1668,10 @@ def main() -> int:
     print("4. Add HybridSessionAuthentication to DRF settings:")
     print('     DEFAULT_AUTHENTICATION_CLASSES: ["api.authentication.HybridSessionAuthentication"]')
     print("5. Add CORS/CSRF settings for Tauri origins (see SKILL.md)")
-    print("6. Use ./start.sh for local Django + React development")
-    print("7. Run the validation script to check your setup:")
+    print("6. Use ./scripts/start.sh for local Django + React development")
+    print("7. Use ./scripts/release.sh X.Y.Z to create tagged GitHub releases")
+    print("8. Put release notes in dev/RELEASES/RELEASE_vX.Y.Z.md")
+    print("9. Run the validation script to check your setup:")
     print("     python3 validate.py --project-root .")
     print()
 

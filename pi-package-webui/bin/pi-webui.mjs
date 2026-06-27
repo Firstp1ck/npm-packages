@@ -192,6 +192,8 @@ const APP_RUNNER_INPUT_MAX_CHARS = 16_000;
 const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
 const APP_RUNNER_CONTEXT_MAX_LINES = APP_RUNNER_OUTPUT_LINE_LIMIT;
 const APP_RUNNER_STOP_GRACE_MS = 2_500;
+const APP_RUNNER_PTY_DISABLED_VALUES = new Set(["0", "false", "no", "off"]);
+const APP_RUNNER_PTY_SCRIPT_CACHE_TTL_MS = 5 * 60 * 1000;
 const APP_RUNNER_PYTHON_ENTRIES = ["Main.py", "main.py", "src/main.py", "src/Main.py", "app.py", "src/app.py"];
 const APP_RUNNER_JS_ENTRIES = ["main.js", "src/main.js", "index.js", "src/index.js", "server.js", "src/server.js", "app.js", "src/app.js"];
 const APP_RUNNER_ZIG_ENTRIES = ["src/main.zig", "main.zig"];
@@ -1449,6 +1451,7 @@ async function readJsonFileIfExists(filePath) {
 }
 
 const appRunnerCommandAvailability = new Map();
+let appRunnerPtyScriptAvailability = { available: false, expiresAt: 0 };
 
 async function fileStatsIfExists(filePath) {
   try {
@@ -1504,6 +1507,25 @@ async function appRunnerCommandAvailable(command, cwd) {
   return available;
 }
 
+function appRunnerPtyDisabled() {
+  return APP_RUNNER_PTY_DISABLED_VALUES.has(String(process.env.PI_WEBUI_APP_RUNNER_PTY || "").trim().toLowerCase());
+}
+
+async function appRunnerScriptPtyAvailable(cwd) {
+  if (process.platform === "win32" || appRunnerPtyDisabled()) return false;
+  const now = Date.now();
+  if (appRunnerPtyScriptAvailability.expiresAt > now) return appRunnerPtyScriptAvailability.available;
+  const result = await runCommand("script", ["--version"], {
+    cwd,
+    timeoutMs: APP_RUNNER_DETECTION_TIMEOUT_MS,
+    maxOutputLength: 4_000,
+  });
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const available = !result.error && !result.timedOut && /util-linux/i.test(output);
+  appRunnerPtyScriptAvailability = { available, expiresAt: now + APP_RUNNER_PTY_SCRIPT_CACHE_TTL_MS };
+  return available;
+}
+
 function appRunnerPackageScripts(pkg) {
   return pkg && typeof pkg.scripts === "object" && pkg.scripts ? pkg.scripts : {};
 }
@@ -1536,6 +1558,41 @@ function appRunnerId(...parts) {
 
 function shellQuote(value) {
   return `'${String(value ?? "").replace(/'/g, `'\\''`)}'`;
+}
+
+function appRunnerShellCommandLine(command, args = []) {
+  return [command, ...args].map(shellQuote).join(" ");
+}
+
+async function spawnAppRunnerChild(run) {
+  const baseOptions = {
+    cwd: run.cwd,
+    env: process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  };
+  if (await appRunnerScriptPtyAvailable(run.cwd)) {
+    run.executionMode = "pty";
+    return spawn("script", [
+      "-q",
+      "-e",
+      "-f",
+      "-c",
+      `stty -echo 2>/dev/null || true; exec ${appRunnerShellCommandLine(run.command, run.args || [])}`,
+      "/dev/null",
+    ], {
+      ...baseOptions,
+      env: {
+        ...process.env,
+        TERM: process.env.TERM || "xterm-256color",
+        COLUMNS: process.env.COLUMNS || "120",
+        LINES: process.env.LINES || "40",
+      },
+    });
+  }
+  run.executionMode = "pipe";
+  return spawn(run.command, run.args || [], baseOptions);
 }
 
 function appRunnerCandidate({ id, label, kind, command, args = [], projectFile = "", description = "", shortDisplayCommand = "", priority = 100, cwd = "", custom = false, configFile = "" }) {
@@ -2322,6 +2379,7 @@ function publicAppRunnerState(run) {
     cwd: run.cwd,
     pid: run.pid,
     status: run.status,
+    executionMode: run.executionMode || "pipe",
     startedAt: run.startedAt,
     endedAt: run.endedAt,
     exitCode: run.exitCode,
@@ -2511,13 +2569,7 @@ async function startAppRunner(tab, runnerId) {
     stdinWrites: 0,
   };
   appendAppRunnerLine(run, `$ ${run.displayCommand}`);
-  const child = spawn(run.command, run.args, {
-    cwd: run.cwd,
-    env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    detached: process.platform !== "win32",
-  });
+  const child = await spawnAppRunnerChild(run);
   run.child = child;
   run.pid = child.pid;
   tab.appRunner = run;

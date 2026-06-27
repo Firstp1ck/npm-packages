@@ -508,6 +508,65 @@ try {
   assert.match(interactiveOutput, /# stdin sent \(5 chars\) and closed/, "app runner output should show that stdin was sent without echoing the input text itself");
   await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
 
+  const scriptVersion = spawnSync("script", ["--version"], { encoding: "utf8" });
+  const utilLinuxScriptAvailable = process.platform !== "win32" && scriptVersion.status === 0 && /util-linux/i.test(`${scriptVersion.stdout}\n${scriptVersion.stderr}`);
+  const bashAvailable = spawnSync("bash", ["--version"], { encoding: "utf8" }).status === 0;
+  if (utilLinuxScriptAvailable && bashAvailable) {
+    await mkdir(path.join(cwd, "qa"), { recursive: true });
+    await writeFile(path.join(cwd, "qa", "read-p-runner.sh"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "read -r -p 'choice? ' answer",
+      "printf 'selected:%s\\n' \"$answer\"",
+      "",
+    ].join("\n"));
+    const savedReadPromptRunner = await request("127.0.0.1", "/api/app-runner-config", {
+      method: "POST",
+      body: { tab: tabId, runner: { label: "Read prompt bash", command: "bash", path: "qa/read-p-runner.sh" } },
+      timeoutMs: 10_000,
+    });
+    assert.equal(savedReadPromptRunner.status, 200, `saving a bash read -p runner should succeed: ${savedReadPromptRunner.body?.error || ""}`);
+    const readPromptRunner = savedReadPromptRunner.body?.data?.runners?.find((runner) => runner.custom === true && runner.label === "Read prompt bash");
+    assert.ok(readPromptRunner?.id, "bash read -p runner should appear in detected app runners");
+    const readPromptStart = await request("127.0.0.1", "/api/app-runner", {
+      method: "POST",
+      body: { tab: tabId, runnerId: readPromptRunner.id },
+      timeoutMs: 10_000,
+    });
+    assert.equal(readPromptStart.status, 200, `bash read -p runner start should return ok: ${readPromptStart.body?.error || ""}`);
+    assert.equal(readPromptStart.body?.data?.activeRun?.executionMode, "pty", "bash read -p runner should use the PTY-backed execution path when util-linux script is available");
+    let readPromptState = readPromptStart;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      readPromptState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
+      const output = [
+        ...(readPromptState.body?.data?.activeRun?.lines || []),
+        readPromptState.body?.data?.activeRun?.pendingLine || "",
+      ].join("\n");
+      if (/choice\?/.test(output)) break;
+      await delay(100);
+    }
+    assert.match([
+      ...(readPromptState.body?.data?.activeRun?.lines || []),
+      readPromptState.body?.data?.activeRun?.pendingLine || "",
+    ].join("\n"), /choice\?/, "bash read -p prompts should be captured before a trailing newline");
+    const readPromptInput = await request("127.0.0.1", "/api/app-runner/input", {
+      method: "POST",
+      body: { tab: tabId, text: "alpha", closeStdin: true },
+      timeoutMs: 10_000,
+    });
+    assert.equal(readPromptInput.status, 200, `bash read -p runner input should be accepted: ${readPromptInput.body?.error || ""}`);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (readPromptState.body?.data?.activeRun?.status && readPromptState.body.data.activeRun.status !== "running") break;
+      await delay(100);
+      readPromptState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
+    }
+    assert.equal(readPromptState.body?.data?.activeRun?.status, "done", "bash read -p runner should finish after stdin");
+    const readPromptOutput = (readPromptState.body?.data?.activeRun?.lines || []).join("\n");
+    assert.match(readPromptOutput, /selected:alpha/, "bash read -p runner should receive stdin from the app-runner input endpoint");
+    assert.doesNotMatch(readPromptOutput, /^alpha$/m, "PTY-backed app runner should not echo raw stdin into captured output");
+    await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
+  }
+
   await writeFile(path.join(cwd, ".pi-webui-runners.json"), `${JSON.stringify({
     version: 1,
     runners: [{ id: "broken-custom", label: "Broken custom", command: "definitely-missing-pi-webui-runner", path: "custom-runner.mjs" }],
