@@ -69,7 +69,7 @@
               <div id="newTabMenuPanel" class="terminal-new-tab-menu-panel composer-publish-menu-panel" role="menu" aria-labelledby="newTabButton">
                 <button id="newTabCurrentDirectoryButton" class="terminal-new-tab-menu-item composer-publish-menu-item" type="button" role="menuitem"><span>Current Directory</span></button>
                 <button id="newTabChooseDirectoryButton" class="terminal-new-tab-menu-item composer-publish-menu-item" type="button" role="menuitem"><span>Choose Directory</span></button>
-                <button id="newTabWorktreeButton" class="terminal-new-tab-menu-item composer-publish-menu-item" type="button" role="menuitem"><span>Branch Worktree…</span></button>
+                <button id="newTabWorktreeButton" class="terminal-new-tab-menu-item composer-publish-menu-item" type="button" role="menuitem" aria-label="Open branch worktree picker: create or open a separate Git checkout in a new Pi tab. Keeps this tab on its current branch; does not commit, push, delete files, or copy ignored dependencies such as node_modules or .venv." data-tooltip="Branch worktree:&#10;• Create or open a separate Git checkout in a new Pi tab.&#10;• Keeps this tab on its current branch.&#10;• Does not commit, push, delete files, or copy ignored deps like node_modules/.venv."><span>Branch Worktree…</span></button>
               </div>
             </div>
           </div>
@@ -157,8 +157,8 @@
                 type="button"
                 hidden
                 title="Guided Git workflow"
-                aria-label="Start guided Git workflow: stage all changes, generate and preview staged commit messages, optionally create a PR branch, commit short or long, then push or create a pull request. Cancel is available at each step."
-                data-tooltip="Guided Git workflow:&#10;1. Stage all changes with git add .&#10;2. Generate and preview staged commit messages.&#10;3. Optional: create or type a PR branch before committing.&#10;4. Commit with the short or long message.&#10;5. Push normally, or push the PR branch, generate/review /pr, and create the PR.&#10;Cancel is available at each step."
+                aria-label="Start guided Git workflow: stage all changes, generate and preview staged commit messages, optionally open a PR branch worktree, commit short or long there, then push or create a pull request. Cancel is available at each step."
+                data-tooltip="Guided Git workflow:&#10;1. Stage all changes with git add .&#10;2. Generate and preview staged commit messages.&#10;3. Optional: create or type a PR branch worktree before committing.&#10;4. Commit with the short or long message in the worktree tab.&#10;5. Push normally, or push the PR worktree branch, generate/review /pr, and create the PR.&#10;Cancel is available at each step."
               ><svg class="composer-icon composer-icon-github" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></button>
               <div class="composer-publish-menu" hidden>
                 <button
@@ -432,6 +432,11 @@
               </button>
             </h2>
             <div id="sidePanelSectionOptionalFeatures" class="side-panel-section-content" hidden>
+              <p class="optional-features-description muted">
+                For additional WebUI feature requests, please
+                <a href="https://github.com/Firstp1ck/npm-packages/issues/new" target="_blank" rel="noopener noreferrer">open a GitHub issue</a>
+                so they can be reviewed and considered for implementation.
+              </p>
               <div id="optionalFeaturesBox" class="optional-features-box muted">Checking optional features…</div>
             </div>
           </section>

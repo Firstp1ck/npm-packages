@@ -900,22 +900,24 @@ const GIT_INIT_WORKFLOW_ACTIVE_INDEX = {
   done: 7,
 };
 const GIT_WORKFLOW_CREATE_PR_TOOLTIP = [
-  "Create PR branch:",
+  "Create PR worktree:",
   "1. Ask Pi to generate a type/feature-name branch from staged changes.",
   "2. Read dev/COMMIT/staged-branch-name.txt.",
   "3. Let you confirm or edit the generated branch name.",
-  "4. Run git switch -c <branch>.",
-  "5. Return here to commit short, long, or typed input on that branch.",
-  "6. Push and Create PR will push upstream, run /pr, let you review, then run gh pr create.",
+  "4. Create or open a Git worktree for that branch instead of switching this checkout.",
+  "5. Copy staged changes and commit message files into the worktree, then switch to its tab.",
+  "6. Commit short, long, or typed input in the worktree tab.",
+  "7. Push and Create PR will push upstream, run /pr, let you review, then run gh pr create.",
 ].join("\n");
 const GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP = [
-  "Manual PR branch:",
+  "Manual PR worktree:",
   "1. Skip agent branch-name generation.",
   "2. Prefill a branch from the commit message if possible.",
   "3. Let you type or edit the type/feature-name branch name.",
-  "4. Run git switch -c <branch>.",
-  "5. Return here to commit short, long, or typed input on that branch.",
-  "6. Push and Create PR will push upstream, run /pr, let you review, then run gh pr create.",
+  "4. Create or open a Git worktree for that branch instead of switching this checkout.",
+  "5. Copy staged changes and commit message files into the worktree, then switch to its tab.",
+  "6. Commit short, long, or typed input in the worktree tab.",
+  "7. Push and Create PR will push upstream, run /pr, let you review, then run gh pr create.",
 ].join("\n");
 const GIT_BRANCH_TYPE_SUGGESTIONS = ["feat", "fix", "change", "perf", "test", "chore", "refactor", "docs", "style", "build", "ci", "revert"];
 const GIT_FOOTER_STATUS_SETUP_TOOLTIP = [
@@ -6783,15 +6785,11 @@ function invalidateGitFooterRenderCache() {
 function triggerGitFooterRefreshFromButton() {
   const tabContext = activeTabContext();
   if (!tabContext.tabId || gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId)) return;
-  if (currentState?.isStreaming || currentState?.isCompacting) {
-    addEvent("Git footer refresh is unavailable while Pi is busy.", "warn");
-    return;
-  }
   if (!resolveAvailableCommandName("git-footer-refresh", { rpcOnly: true })) {
     addEvent(optionalFeatureUnavailableMessage("gitFooterStatus"), "warn");
     return;
   }
-  requestGitFooterWebuiPayload(tabContext, { force: true, silent: false });
+  requestGitFooterWebuiPayload(tabContext, { force: true, silent: false, allowDuringRun: true });
 }
 
 function renderGitFooterRefreshButton() {
@@ -12249,7 +12247,7 @@ function gitWorkflowTitle() {
     case "generating": return "Waiting for /git-staged-msg";
     case "message": return gitWorkflow.prMode ? "Choose PR branch commit message" : "Choose commit message";
     case "branchNaming": return "Waiting for branch name";
-    case "branching": return "Creating PR branch";
+    case "branching": return "Opening PR branch worktree";
     case "committing": return "Committing";
     case "push": return gitWorkflow.prMode ? "Push branch and create PR" : "Push commit";
     case "pushing": return "Pushing";
@@ -12284,11 +12282,11 @@ function gitWorkflowHint() {
     case "add": return "Step 1: run git add . in the current Pi working directory.";
     case "generate": return "Step 2: run /git-staged-msg, or type a commit message and use Commit input.";
     case "generating": return "Pi is generating dev/COMMIT/staged-commit-short.txt and staged-commit-long.txt.";
-    case "message": return gitWorkflow.prMode ? `Branch ${gitWorkflow.prBranch || "created"}: choose short, long, or typed input before opening a PR.` : "Step 3/4: preview the native g-msg output, type a commit message if needed, commit here, or create a PR branch first.";
-    case "branchNaming": return "Pi is generating dev/COMMIT/staged-branch-name.txt. Cancel will request Pi abort.";
-    case "branching": return "Creating a new branch with git switch -c before committing.";
+    case "message": return gitWorkflow.prMode ? `Worktree branch ${gitWorkflow.prBranch || "created"}: choose short, long, or typed input before opening a PR.` : "Step 3/4: preview the native g-msg output, type a commit message if needed, commit here, or create a PR branch worktree first.";
+    case "branchNaming": return "Pi is generating dev/COMMIT/staged-branch-name.txt for a PR branch worktree. Cancel will request Pi abort.";
+    case "branching": return "Creating or opening a branch worktree, copying staged changes, and switching to that tab before committing.";
     case "committing": return "Running native git commit with the selected message.";
-    case "push": return gitWorkflow.prMode ? "Push the PR branch, generate /pr, review the description, then create the pull request." : "Step 5: push the new commit to the configured remote.";
+    case "push": return gitWorkflow.prMode ? "Push the PR worktree branch, generate /pr, review the description, then create the pull request." : "Step 5: push the new commit to the configured remote.";
     case "pushing": return "Running git push. Cancel will request process termination.";
     case "prGenerating": return "Pi is generating dev/PR/<current-branch>.md with /pr.";
     case "prReview": return "Review or edit the generated PR description before creating the pull request.";
@@ -12406,8 +12404,8 @@ function renderGitWorkflow() {
     addGitWorkflowAction("Refresh message preview", () => loadGitWorkflowMessage({ requireFresh: true }), "", false);
   } else if (gitWorkflow.step === "message") {
     if (!gitWorkflow.prMode) {
-      addGitWorkflowAction("Create PR", () => createGitPrBranch(), "primary", false, GIT_WORKFLOW_CREATE_PR_TOOLTIP);
-      addGitWorkflowAction("Manual branch", () => createGitPrBranchManually(), "", false, GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP);
+      addGitWorkflowAction("Create PR worktree", () => createGitPrBranch(), "primary", false, GIT_WORKFLOW_CREATE_PR_TOOLTIP);
+      addGitWorkflowAction("Manual worktree", () => createGitPrBranchManually(), "", false, GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP);
     }
     const commitInputButton = renderGitWorkflowManualCommitInput({ appendCommitButton: false });
     addGitWorkflowAction("Commit short", () => commitGitWorkflow("short"), gitWorkflow.prMode ? "primary" : "", false);
@@ -12416,9 +12414,9 @@ function renderGitWorkflow() {
     elements.gitWorkflowActions.append(commitInputButton);
   } else if (gitWorkflow.step === "branchNaming") {
     addGitWorkflowAction("Refresh branch name", () => loadGitWorkflowBranchName({ requireFresh: true }), "", false);
-    addGitWorkflowAction("Manual branch", () => createGitPrBranchManually(), "", !!gitWorkflow.busy, GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP);
+    addGitWorkflowAction("Manual worktree", () => createGitPrBranchManually(), "", !!gitWorkflow.busy, GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP);
   } else if (gitWorkflow.step === "branching") {
-    addGitWorkflowAction("Creating branch…", () => {}, "primary", true);
+    addGitWorkflowAction("Opening worktree…", () => {}, "primary", true);
   } else if (gitWorkflow.step === "push") {
     if (gitWorkflow.prMode) addGitWorkflowAction("Push and Create PR", () => pushAndCreatePrGitWorkflow(), "primary", false);
     else addGitWorkflowAction("Run git push", () => pushGitWorkflow(), "primary", false);
@@ -12489,7 +12487,7 @@ function startGitWorkflow(tabId = activeTabId) {
     step: "add",
     process: "stage",
     busy: false,
-    output: "Ready to stage all changes with git add .\n\nNative mode is used for g-msg/g-short/g-long: dev/COMMIT message files are read directly and git commit is run without fish. In the Message stage you can also type a commit message and use Commit input. After the message is generated, use Create PR to switch to a new branch before committing.",
+    output: "Ready to stage all changes with git add .\n\nNative mode is used for g-msg/g-short/g-long: dev/COMMIT message files are read directly and git commit is run without fish. In the Message stage you can also type a commit message and use Commit input. After the message is generated, use Create PR worktree to open a branch worktree before committing.",
     error: "",
     githubUsername: "",
     repoName: "",
@@ -13039,26 +13037,89 @@ async function loadGitWorkflowBranchName({ requireFresh = false, retries = 0, ru
   }
 }
 
+function syncGitWorkflowWorktreeTabs(result) {
+  if (Array.isArray(result?.tabs)) {
+    tabs = result.tabs;
+    syncTabMetadata(tabs);
+  }
+  if (result?.tab) applyTabMetadata(result.tab);
+  renderTabs();
+}
+
+function gitWorkflowWorktreeOutput(result, branch) {
+  const prBranch = cleanStatusText(result?.branch || result?.tab?.gitWorkspace?.branch || branch);
+  const worktreePath = result?.worktree?.path || result?.path || result?.tab?.cwd || "worktree";
+  const copied = result?.carriedStagedChanges
+    ? "Staged changes were copied into the worktree index."
+    : result?.openedExisting || result?.openedExistingTab
+      ? "Existing worktree opened; review its current changes before committing."
+      : "Source index was clean; no staged changes were copied.";
+  return `${formatGitCommandResult(result)}\n\nOpened PR branch worktree ${prBranch || branch} at ${normalizeDisplayPath(worktreePath)}. ${copied}\n\nChoose Commit short, Commit long, or Commit input to commit in this worktree tab.`;
+}
+
 async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowActionTabId(), expectedRunId) {
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
-  const proposedBranch = prompt("New PR branch name (example: type/feature-name)", suggestion || defaultGitPrBranchName(workflow.message));
+  const sourceWorkflow = { ...workflow, actionsDone: createGitWorkflowActionsDone(workflow.actionsDone) };
+  const proposedBranch = prompt("New PR branch worktree name (example: type/feature-name)", suggestion || defaultGitPrBranchName(workflow.message));
   if (expectedRunId !== undefined && !isCurrentGitWorkflowRun(expectedRunId, tabId)) return;
   if (proposedBranch === null) {
-    setGitWorkflow({ step: "message", busy: false, output: `${formatCommitMessagePreview(workflow.message)}\n\nPR branch creation cancelled. Use Create PR to generate a branch name again or Manual branch to type one.` }, { tabId });
+    setGitWorkflow({ step: "message", busy: false, output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nPR branch worktree creation cancelled. Use Create PR worktree to generate a branch name again or Manual worktree to type one.` }, { tabId });
     return;
   }
   const branch = proposedBranch.trim();
   if (!branch) {
-    failGitWorkflow(new Error("Branch name is required to create a PR branch."), "message", { tabId });
+    failGitWorkflow(new Error("Branch name is required to create a PR branch worktree."), "message", { tabId });
     return;
   }
   const runId = workflow.runId;
-  setGitWorkflow({ step: "branching", prMode: true, prBranch: branch, branchName: branch, busy: true, error: "", output: `${formatCommitMessagePreview(workflow.message)}\n\nRunning git switch -c ${branch}…` }, { tabId });
+  setGitWorkflow({ step: "branching", prMode: true, prBranch: branch, branchName: branch, busy: true, error: "", output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nCreating or opening branch worktree ${branch}…` }, { tabId });
   try {
-    const result = await gitWorkflowRequest("/api/git-workflow/branch", { body: { branch }, runId, tabId });
+    const result = await gitWorkflowRequest("/api/git-workflow/branch", { body: { branch, sessionMode: "fork-current", openTab: true }, runId, tabId });
     if (!result) return;
-    setGitWorkflow({ step: "message", prMode: true, prBranch: result.branch || branch, branchName: result.branch || branch, busy: false, output: `${formatGitCommandResult(result)}\n\nCreated PR branch ${result.branch || branch}. Choose Commit short, Commit long, or Commit input to commit on this branch.` }, { tabId });
+    syncGitWorkflowWorktreeTabs(result);
+    const targetTabId = result.tab?.id && tabs.some((tab) => tab.id === result.tab.id) ? result.tab.id : tabId;
+    const prBranch = cleanStatusText(result.branch || result.tab?.gitWorkspace?.branch || branch);
+    const output = gitWorkflowWorktreeOutput(result, prBranch || branch);
+    const nextState = {
+      active: true,
+      mode: "standard",
+      step: "message",
+      process: "commit",
+      busy: false,
+      runId,
+      output,
+      error: "",
+      githubUsername: "",
+      repoName: "",
+      remoteUrl: "",
+      stack: "",
+      readmeRequestedAt: 0,
+      gitignoreRequestedAt: 0,
+      initFilesStatus: null,
+      message: sourceWorkflow.message,
+      manualCommitMessage: sourceWorkflow.manualCommitMessage || "",
+      manualCommitMessageDefault: sourceWorkflow.manualCommitMessageDefault || "",
+      manualCommitMessageDefaultReason: sourceWorkflow.manualCommitMessageDefaultReason || "",
+      manualCommitMessageDefaultPath: sourceWorkflow.manualCommitMessageDefaultPath || "",
+      manualCommitMessageDefaultAction: sourceWorkflow.manualCommitMessageDefaultAction || "",
+      manualCommitMessageDefaultRequestedAt: sourceWorkflow.manualCommitMessageDefaultRequestedAt || 0,
+      manualCommitMessageDefaultLoading: false,
+      messageRequestedAt: sourceWorkflow.messageRequestedAt || 0,
+      branchName: prBranch || branch,
+      branchNameRequestedAt: sourceWorkflow.branchNameRequestedAt || 0,
+      actionsDone: createGitWorkflowActionsDone({ ...sourceWorkflow.actionsDone, branch: true }),
+      prMode: true,
+      prBranch: prBranch || branch,
+      pr: null,
+      prRequestedAt: 0,
+    };
+    if (targetTabId !== tabId) {
+      setGitWorkflow({ step: "message", prMode: false, prBranch: "", branchName: prBranch || branch, busy: false, output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nOpened PR branch worktree ${prBranch || branch} in ${result.tab?.title || "a new tab"}. Continue the commit and PR flow there; this checkout stayed on its current branch.` }, { tabId });
+    }
+    setGitWorkflow(nextState, { tabId: targetTabId });
+    if (targetTabId !== tabId) await switchTab(targetTabId);
+    addEvent(`Opened PR branch worktree ${prBranch || branch}. Continue the guided Git workflow in its tab.`, "success");
   } catch (error) {
     if (isCurrentGitWorkflowRun(runId, tabId)) {
       setGitWorkflow({ prMode: false, prBranch: "" }, { tabId });
@@ -16650,9 +16711,9 @@ async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) 
   }
 }
 
-function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force = false, silent = true } = {}) {
+function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force = false, silent = true, allowDuringRun = false } = {}) {
   if (!tabContext.tabId || isOptionalFeatureDisabled("gitFooterStatus")) return;
-  if (currentState?.isStreaming || currentState?.isCompacting) return;
+  if (!allowDuringRun && (currentState?.isStreaming || currentState?.isCompacting)) return;
   const refreshCommand = resolveAvailableCommandName("git-footer-refresh", { rpcOnly: true });
   if (!refreshCommand || (!force && statusEntries.has(GIT_FOOTER_WEBUI_STATUS_KEY))) return;
   if (gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId)) return;

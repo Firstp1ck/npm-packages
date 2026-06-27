@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -186,6 +186,45 @@ try {
     assert.equal(initialWorktrees.status, 200);
     assert.equal(initialWorktrees.body?.ok, true, "worktree list endpoint should return data for a git repository");
     assert.ok(initialWorktrees.body?.data?.worktrees?.some((worktree) => worktree.isMainWorktree && worktree.current), "worktree list should include the current main worktree");
+
+    await writeFile(path.join(cwd, "guided.txt"), "guided worktree flow\n");
+    runGitFixture(["add", "guided.txt"], cwd, "source checkout should stage guided workflow changes");
+    await mkdir(path.join(cwd, "dev", "COMMIT"), { recursive: true });
+    await writeFile(path.join(cwd, "dev", "COMMIT", "staged-commit-short.txt"), "feat: guided worktree branch\n");
+    await writeFile(path.join(cwd, "dev", "COMMIT", "staged-commit-long.txt"), "feat: guided worktree branch\n- feat: cover guided branch worktrees\n");
+    const guidedBranch = "feat/guided-worktree";
+    const guidedWorktree = await request("127.0.0.1", "/api/git-workflow/branch", {
+      method: "POST",
+      body: { tab: tabId, branch: guidedBranch, sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(guidedWorktree.status, 200);
+    assert.equal(guidedWorktree.body?.ok, true, `guided branch worktree endpoint should return ok: ${guidedWorktree.body?.error || ""}`);
+    assert.equal(guidedWorktree.body?.data?.created, true, "guided branch flow should create a worktree instead of switching in place");
+    assert.equal(guidedWorktree.body?.data?.branch, guidedBranch);
+    assert.equal(guidedWorktree.body?.data?.carriedStagedChanges, true, "guided branch worktree should copy staged changes into the worktree index");
+    assert.ok(guidedWorktree.body?.data?.copiedMessageFiles?.includes("dev/COMMIT/staged-commit-short.txt"), "guided branch worktree should copy short commit message file");
+    assert.ok(guidedWorktree.body?.data?.copiedMessageFiles?.includes("dev/COMMIT/staged-commit-long.txt"), "guided branch worktree should copy long commit message file");
+    const guidedWorktreePath = guidedWorktree.body?.data?.worktree?.path || guidedWorktree.body?.data?.path;
+    const guidedWorktreeTabId = guidedWorktree.body?.data?.tab?.id;
+    assert.ok(guidedWorktreePath, "guided branch worktree response should include the worktree path");
+    assert.ok(guidedWorktreeTabId, "guided branch worktree should open a Web UI tab");
+    assert.equal(guidedWorktree.body?.data?.tab?.cwd, guidedWorktreePath, "guided worktree tab should be rooted at the worktree path");
+    assert.equal(guidedWorktree.body?.data?.tab?.gitWorkspace?.branch, guidedBranch, "guided worktree tab metadata should record the branch");
+    assert.equal(runGitFixture(["branch", "--show-current"], cwd, "source checkout should stay on main after guided worktree creation"), "main");
+    assert.match(runGitFixture(["status", "--short"], guidedWorktreePath, "guided worktree should have copied staged changes"), /^A  guided\.txt/m);
+    const guidedCommit = await request("127.0.0.1", "/api/git-workflow/commit", { method: "POST", body: { variant: "short", tab: guidedWorktreeTabId }, timeoutMs: 20_000 });
+    assert.equal(guidedCommit.status, 200);
+    assert.equal(guidedCommit.body?.ok, true, "guided worktree tab should continue the commit flow with copied message files");
+    assert.equal(runGitFixture(["branch", "--show-current"], guidedWorktreePath, "guided worktree should remain on the PR branch"), guidedBranch);
+    const closeGuidedWorktreeTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [guidedWorktreeTabId] }, timeoutMs: 10_000 });
+    assert.equal(closeGuidedWorktreeTab.status, 200);
+    assert.equal(closeGuidedWorktreeTab.body?.ok, true, "guided worktree tab should close before cleanup");
+    const removeGuidedWorktree = await request("127.0.0.1", "/api/git-worktrees", { method: "DELETE", body: { tab: tabId, path: guidedWorktreePath, confirmed: true, force: true }, timeoutMs: 20_000 });
+    assert.equal(removeGuidedWorktree.status, 200);
+    assert.equal(removeGuidedWorktree.body?.ok, true, "guided worktree should be removable after the tab is closed");
+    runGitFixture(["reset", "--hard"], cwd, "source checkout should clean staged guided workflow fixture changes");
+    await rm(path.join(cwd, "dev"), { recursive: true, force: true });
 
     const worktreeBranch = "feat/http-worktree";
     const createWorktree = await request("127.0.0.1", "/api/git-worktrees", {

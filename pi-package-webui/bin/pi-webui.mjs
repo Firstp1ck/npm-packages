@@ -4,7 +4,7 @@ import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto"
 import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { access, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -3879,6 +3879,120 @@ async function cleanupCreatedWorktreeAfterFailure(sourceCwd, worktreePath) {
   }
 }
 
+async function readGitWorkflowMessageFilesForTransfer(root) {
+  const { shortPath, longPath } = commitMessagePaths(root);
+  const files = [];
+  for (const sourcePath of [shortPath, longPath]) {
+    try {
+      const content = await readFile(sourcePath, "utf8");
+      files.push({ relativePath: path.relative(root, sourcePath).split(path.sep).join("/"), content });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return files;
+}
+
+async function snapshotGitWorkflowBranchState(root) {
+  const diffResult = await runGitWorkflowCommand(["diff", "--cached", "--binary", "--full-index"], {
+    cwd: root,
+    label: "git diff --cached --binary --full-index",
+    timeoutMs: 60 * 1000,
+  });
+  if (diffResult.exitCode !== 0 || diffResult.timedOut || diffResult.cancelled || diffResult.error) {
+    throw new Error((diffResult.stderr || diffResult.stdout || diffResult.error || "Unable to read staged changes for the PR worktree").trim());
+  }
+  return {
+    stagedPatch: diffResult.stdout || "",
+    messageFiles: await readGitWorkflowMessageFilesForTransfer(root),
+  };
+}
+
+async function applyGitWorkflowBranchStateToWorktree(snapshot, worktreePath) {
+  const copiedMessageFiles = [];
+  let appliedStagedPatch = false;
+  const patchText = String(snapshot?.stagedPatch || "");
+  if (patchText.trim()) {
+    const patchPath = path.join(tmpdir(), `pi-webui-staged-worktree-${process.pid}-${Date.now()}-${randomUUID()}.patch`);
+    await writeFile(patchPath, patchText, "utf8");
+    try {
+      const applyResult = await runGitWorkflowCommand(["apply", "--index", "--whitespace=nowarn", patchPath], {
+        cwd: worktreePath,
+        label: "git apply --index <staged diff>",
+        timeoutMs: 5 * 60 * 1000,
+      });
+      if (applyResult.exitCode !== 0 || applyResult.timedOut || applyResult.cancelled || applyResult.error) {
+        throw new Error((applyResult.stderr || applyResult.stdout || applyResult.error || "Unable to apply staged changes in the PR worktree").trim());
+      }
+      appliedStagedPatch = true;
+    } finally {
+      await rm(patchPath, { force: true }).catch(() => {});
+    }
+  }
+
+  for (const file of snapshot?.messageFiles || []) {
+    const relativePath = String(file.relativePath || "").replace(/\\/g, "/");
+    const targetPath = path.resolve(worktreePath, relativePath);
+    if (!relativePath || !pathInside(worktreePath, targetPath)) throw new Error(`Refusing to copy Git workflow file outside the worktree: ${relativePath}`);
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, file.content, "utf8");
+    copiedMessageFiles.push(relativePath);
+  }
+
+  return { appliedStagedPatch, copiedMessageFiles };
+}
+
+function gitWorkflowBranchWorktreeStdout({ branch, worktreePath, createdResult, opened, transfer }) {
+  const lines = [];
+  if (createdResult?.created) lines.push(`Created branch worktree ${branch} at ${worktreePath}.`);
+  else if (createdResult?.openedExisting) lines.push(`Opened existing branch worktree ${branch} at ${worktreePath}.`);
+  else lines.push(`Opened branch worktree ${branch} at ${worktreePath}.`);
+  if (transfer?.appliedStagedPatch) lines.push("Copied the source checkout's staged changes into the worktree index.");
+  else if (createdResult?.openedExisting) lines.push("Existing worktree was reused; source staged changes were not copied automatically.");
+  else lines.push("No staged changes were copied because the source index was clean.");
+  if (transfer?.copiedMessageFiles?.length) lines.push(`Copied ${transfer.copiedMessageFiles.join(", ")} for commit message selection.`);
+  if (opened?.tab?.id) lines.push(`Continue the guided Git workflow in Web UI tab ${opened.tab.title || opened.tab.id}.`);
+  lines.push("The source checkout was left on its current branch.");
+  return lines.join("\n");
+}
+
+async function createGitWorkflowBranchWorktree(tab, body = {}) {
+  const root = await getGitRoot(tab.cwd);
+  const branch = cleanGitBranchName(body.branch || body.branchName);
+  await validateGitBranchName(root, branch);
+  const snapshot = await snapshotGitWorkflowBranchState(root);
+  let createdResult = null;
+  try {
+    createdResult = await createGitWorktree(tab.cwd, { ...body, branchName: branch });
+    const worktreePath = createdResult.worktree?.path || createdResult.path;
+    if (!worktreePath) throw makeHttpError(500, "Git workflow worktree creation did not return a path");
+    const transfer = createdResult.created
+      ? await applyGitWorkflowBranchStateToWorktree(snapshot, worktreePath)
+      : { appliedStagedPatch: false, copiedMessageFiles: [] };
+    const opened = await openWorktreeResultForTab(tab, createdResult, { openTab: body.openTab !== false, sessionMode: body.sessionMode || "fork-current", ...body });
+    if (createdResult.created) {
+      recordEvent({ type: "webui_worktree_created", tabId: opened.tab?.id || tab.id, cwd: opened.worktree?.path || opened.path, branch });
+    }
+    recordEvent({ type: "webui_git_workflow_worktree", tabId: opened.tab?.id || tab.id, cwd: worktreePath, branch, transferredStagedChanges: transfer.appliedStagedPatch });
+    return {
+      ...opened,
+      command: createdResult.created ? formatGitCommand(["worktree", "add", "-b", branch, worktreePath]) : formatGitCommand(["worktree", "list", "--porcelain"]),
+      stdout: gitWorkflowBranchWorktreeStdout({ branch, worktreePath, createdResult, opened, transfer }),
+      stderr: "",
+      exitCode: 0,
+      branch: opened.branch || branch,
+      carriedStagedChanges: transfer.appliedStagedPatch,
+      copiedMessageFiles: transfer.copiedMessageFiles,
+    };
+  } catch (error) {
+    let cleanup = null;
+    const createdPath = createdResult?.created && !createdResult?.openedExisting ? createdResult.worktree?.path || createdResult.path : "";
+    if (createdPath) cleanup = await cleanupCreatedWorktreeAfterFailure(tab.cwd, createdPath);
+    recordEvent({ type: "webui_git_workflow_worktree_failed", tabId: tab.id, cwd: createdPath || tab.cwd, branch, error: sanitizeError(error), cleanup });
+    throw error;
+  }
+}
+
 async function createGitWorktreeTab(tab, body = {}) {
   let createdResult = null;
   try {
@@ -4039,7 +4153,9 @@ function gitWorkflowCommandPayload(result) {
   };
 }
 
-async function handleGitWorkflowRequest(pathname, body = {}, cwd = options.cwd) {
+async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.cwd) {
+  const tab = tabOrCwd && typeof tabOrCwd === "object" ? tabOrCwd : null;
+  const cwd = tab?.cwd || tabOrCwd || options.cwd;
   try {
     switch (pathname) {
       case "/api/git-workflow/message":
@@ -4088,12 +4204,8 @@ async function handleGitWorkflowRequest(pathname, body = {}, cwd = options.cwd) 
         await getGitRoot(cwd);
         return gitWorkflowCommandPayload(await runGitWorkflowCommand(["add", "."], { cwd }));
       case "/api/git-workflow/branch": {
-        const root = await getGitRoot(cwd);
-        const branch = cleanGitBranchName(body.branch);
-        await validateGitBranchName(root, branch);
-        const payload = gitWorkflowCommandPayload(await runGitWorkflowCommand(["switch", "-c", branch], { cwd: root }));
-        if (payload.ok) payload.data.branch = branch;
-        return payload;
+        if (!tab) throw new Error("Git workflow branch worktree requires a Web UI tab");
+        return { ok: true, data: await createGitWorkflowBranchWorktree(tab, body) };
       }
       case "/api/git-workflow/commit": {
         const variant = String(body.variant || "").trim();
@@ -8149,7 +8261,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/git-workflow/")) {
       const body = req.method === "POST" ? await readJsonBody(req) : {};
       const tab = getRequestedTab(req, url, body);
-      const response = await handleGitWorkflowRequest(url.pathname, body, tab.cwd);
+      const response = await handleGitWorkflowRequest(url.pathname, body, tab);
       if (response) {
         sendJson(res, 200, response);
         return;

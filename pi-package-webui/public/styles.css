@@ -1087,6 +1087,21 @@ body.side-panel-collapsed .terminal-tabs-shell {
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-yellow), var(--ctp-peach), var(--ctp-red));
 }
+.optional-features-description {
+  margin: 0 0 0.58rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+.optional-features-description a {
+  color: var(--ctp-blue);
+  font-weight: 800;
+  text-decoration-color: rgba(137, 180, 250, 0.48);
+  text-underline-offset: 0.14em;
+}
+.optional-features-description a:hover,
+.optional-features-description a:focus-visible {
+  color: var(--ctp-sky);
+}
 .optional-features-box {
   display: grid;
   gap: 0.6rem;
@@ -1719,6 +1734,8 @@ body.side-panel-collapsed .terminal-tabs-shell {
   inset: 100% 0 auto auto;
   padding-top: 0.38rem;
   padding-bottom: 0;
+  max-height: none;
+  overflow: visible;
 }
 .terminal-new-tab-menu .composer-publish-menu-item {
   color: var(--ctp-pink);
@@ -1733,6 +1750,61 @@ body.side-panel-collapsed .terminal-tabs-shell {
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-pink), var(--ctp-mauve), var(--ctp-blue));
   box-shadow: 0 0 1rem rgba(245, 194, 231, 0.20);
+}
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip] {
+  position: relative;
+}
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]::before,
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]::after {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 0.48rem);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]::before {
+  content: "";
+  z-index: 119;
+  width: 0.72rem;
+  height: 0.72rem;
+  background: rgba(var(--ctp-crust-rgb), 0.96);
+  border-left: 1px solid rgba(245, 194, 231, 0.30);
+  border-bottom: 1px solid rgba(245, 194, 231, 0.30);
+  transform: translate(-0.2rem, -50%) rotate(45deg);
+}
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]::after {
+  content: attr(data-tooltip);
+  z-index: 120;
+  width: max-content;
+  max-width: min(26rem, calc(100vw - 2rem));
+  padding: 0.78rem 0.9rem;
+  color: var(--ctp-text);
+  text-align: left;
+  white-space: pre-line;
+  line-height: 1.45;
+  border: 1px solid rgba(245, 194, 231, 0.32);
+  border-radius: 0.86rem;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(245, 194, 231, 0.14), transparent 12rem),
+    linear-gradient(145deg, rgba(var(--ctp-crust-rgb), 0.98), rgba(var(--ctp-base-rgb), 0.94));
+  box-shadow: 0 1rem 2.4rem rgba(var(--ctp-crust-rgb), 0.58), 0 0 1.2rem rgba(245, 194, 231, 0.18), inset 0 1px 0 rgba(255,255,255,0.055);
+  font-size: 0.82rem;
+  font-weight: 650;
+  text-transform: none;
+  letter-spacing: 0;
+  transform: translate(-0.2rem, -50%);
+}
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:hover::before,
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:hover::after,
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:focus-visible::before,
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:hover::before,
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:focus-visible::before {
+  transform: translate(0, -50%) rotate(45deg);
 }
 
 @media (min-width: 721px) {
