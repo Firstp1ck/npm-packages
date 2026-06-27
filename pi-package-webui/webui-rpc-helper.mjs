@@ -1,10 +1,40 @@
-import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 
 const HELPER_COMMAND = "webui-helper";
 const RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
 const TOOLS_CONFIG_TYPE = "webui-tools-config";
 const SKILLS_CONFIG_TYPE = "webui-skills-config";
 const APP_RUNNER_CONTEXT_TYPE = "webui-app-runner-output";
+
+const ACTIVE_COMMAND_SESSION_KEY = Symbol.for("pi.webui.helper.activeCommandSession");
+
+function activeCommandSession() {
+  return globalThis[ACTIVE_COMMAND_SESSION_KEY];
+}
+
+function setActiveCommandSession(session) {
+  if (session) globalThis[ACTIVE_COMMAND_SESSION_KEY] = session;
+  else delete globalThis[ACTIVE_COMMAND_SESSION_KEY];
+}
+
+function installActiveCommandSessionCapture() {
+  const proto = AgentSession?.prototype;
+  if (!proto || proto.__webuiHelperCommandSessionCaptureInstalled) return;
+  const original = proto._tryExecuteExtensionCommand;
+  if (typeof original !== "function") return;
+  Object.defineProperty(proto, "__webuiHelperCommandSessionCaptureInstalled", { value: true });
+  proto._tryExecuteExtensionCommand = async function webuiHelperTryExecuteExtensionCommand(...args) {
+    const previous = activeCommandSession();
+    setActiveCommandSession(this);
+    try {
+      return await original.apply(this, args);
+    } finally {
+      setActiveCommandSession(previous);
+    }
+  };
+}
+
+installActiveCommandSessionCapture();
 
 function responseMessage(payload) {
   return `${RESPONSE_PREFIX}${JSON.stringify(payload)}`;
@@ -42,6 +72,51 @@ function normalizeNameList(value) {
     names.push(name);
   }
   return names;
+}
+
+function queueMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((part) => part?.type === "text").map((part) => String(part.text || "")).join("\n");
+}
+
+function queuedMessagesSnapshot(session) {
+  return {
+    steering: Array.from(session?.getSteeringMessages?.() || []).map((item) => String(item || "")).filter((item) => item.trim()),
+    followUp: Array.from(session?.getFollowUpMessages?.() || []).map((item) => String(item || "")).filter((item) => item.trim()),
+  };
+}
+
+function normalizeQueueKind(value) {
+  const normalized = String(value || "").trim();
+  if (normalized === "follow-up" || normalized.toLowerCase() === "followup") return "followUp";
+  if (normalized === "steer") return "steering";
+  if (normalized === "steering" || normalized === "followUp") return normalized;
+  throw new Error("Queue removal requires kind 'followUp' or 'steering'");
+}
+
+function removeQueuedPrompt(payload = {}) {
+  const session = activeCommandSession();
+  if (!session) throw new Error("Web UI queue removal is unavailable in this Pi version; reload this tab and retry.");
+  const kind = normalizeQueueKind(payload.kind || "followUp");
+  const index = Number.parseInt(String(payload.index ?? ""), 10);
+  if (!Number.isInteger(index) || index < 0) throw new Error("Queue removal requires a zero-based item index");
+  const expectedText = String(payload.message ?? payload.text ?? "");
+  const tracked = kind === "followUp" ? session._followUpMessages : session._steeringMessages;
+  const agentQueue = kind === "followUp" ? session.agent?.followUpQueue : session.agent?.steeringQueue;
+  if (!Array.isArray(tracked) || !Array.isArray(agentQueue?.messages)) {
+    throw new Error("Web UI queue removal is not supported by this Pi runtime.");
+  }
+  const currentText = String(tracked[index] || "");
+  const agentText = queueMessageText(agentQueue.messages[index]);
+  if (!currentText || (expectedText && currentText !== expectedText) || (expectedText && agentText !== expectedText)) {
+    return { removed: false, reason: "queue-changed", queue: queuedMessagesSnapshot(session) };
+  }
+  tracked.splice(index, 1);
+  agentQueue.messages.splice(index, 1);
+  session._emitQueueUpdate?.();
+  return { removed: true, kind, index, message: currentText, queue: queuedMessagesSnapshot(session) };
 }
 
 function parseHelperArgs(args) {
@@ -201,6 +276,8 @@ export default function webuiRpcHelper(pi) {
         return setSkillState(ctx, payload);
       case "app-runner-context":
         return transferAppRunnerContext(ctx, payload);
+      case "queue-remove":
+        return removeQueuedPrompt(payload);
       default:
         throw new Error(`Unknown ${HELPER_COMMAND} action: ${action}`);
     }

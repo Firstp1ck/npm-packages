@@ -5753,6 +5753,9 @@ button.composer-skill-tag:focus-visible {
   border-radius: 0.68rem;
   background: rgba(var(--ctp-surface-rgb), 0.20);
 }
+.queue-item.can-remove {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
 .queue-item-number {
   color: rgba(var(--ctp-subtext-rgb), 0.70);
   font-size: 0.68rem;
@@ -5766,6 +5769,26 @@ button.composer-skill-tag:focus-visible {
   line-height: 1.42;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+.queue-remove-button {
+  align-self: center;
+  min-height: 1.9rem;
+  padding: 0.22rem 0.48rem;
+  border: 1px solid rgba(243, 139, 168, 0.28);
+  border-radius: 999px;
+  background: rgba(243, 139, 168, 0.12);
+  color: var(--ctp-red);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+.queue-remove-button:hover:not(:disabled),
+.queue-remove-button:focus-visible {
+  background: rgba(243, 139, 168, 0.20);
+  box-shadow: 0 0 0 2px rgba(243, 139, 168, 0.14);
+}
+.queue-remove-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 .queue-hint {
   color: rgba(var(--ctp-subtext-rgb), 0.68);

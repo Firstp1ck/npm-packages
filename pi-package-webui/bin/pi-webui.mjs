@@ -8204,6 +8204,18 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/queue/remove" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      const data = await sendWebuiHelperCommand(tab, "queue-remove", {
+        kind: body.kind || "followUp",
+        index: body.index,
+        message: body.message,
+      });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
     if (url.pathname === "/api/prompt" && req.method === "POST") {
       const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
       const tab = getRequestedTab(req, url, body);

@@ -13530,14 +13530,51 @@ function queueSummaryPill(label, count, tone) {
   return pill;
 }
 
-function renderQueueGroup(label, items, tone) {
+async function removeQueuedFollowUpPrompt(index, message, tabId = activeTabId) {
+  if (!tabId) return false;
+  const tabContext = activeTabContext(tabId);
+  try {
+    const response = await api("/api/queue/remove", { method: "POST", body: { kind: "followUp", index, message }, tabId });
+    const data = response?.data || {};
+    if (data.queue && isCurrentTabContext(tabContext)) renderQueue({ tabId, ...data.queue });
+    if (data.removed) {
+      if (isCurrentTabContext(tabContext)) addEvent(`removed queued follow-up #${index + 1}`);
+      scheduleRefreshState(120, tabContext);
+      return true;
+    }
+    if (isCurrentTabContext(tabContext)) addEvent("queued follow-up changed before it could be removed; refreshed queue", "warn");
+    scheduleRefreshState(120, tabContext);
+    return false;
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+    return false;
+  }
+}
+
+function renderQueueGroup(label, items, tone, { removable = false, tabId } = {}) {
   const group = make("section", `queue-group ${tone}`.trim());
   const heading = make("h3", "queue-group-title");
   heading.append(make("span", undefined, label), make("span", "queue-group-count", String(items.length)));
   const list = make("ol", "queue-list");
   items.forEach((item, index) => {
-    const row = make("li", "queue-item");
+    const row = make("li", `queue-item${removable ? " can-remove" : ""}`);
     row.append(make("span", "queue-item-number", `#${index + 1}`), make("div", "queue-item-text", item));
+    if (removable) {
+      const removeButton = make("button", "queue-remove-button", "Remove");
+      removeButton.type = "button";
+      removeButton.title = `Remove queued follow-up #${index + 1}`;
+      removeButton.setAttribute("aria-label", `Remove queued follow-up #${index + 1}`);
+      removeButton.addEventListener("click", async () => {
+        removeButton.disabled = true;
+        removeButton.textContent = "Removing…";
+        const removed = await removeQueuedFollowUpPrompt(index, item, tabId);
+        if (!removed && removeButton.isConnected) {
+          removeButton.disabled = false;
+          removeButton.textContent = "Remove";
+        }
+      });
+      row.append(removeButton);
+    }
     list.append(row);
   });
   group.append(heading, list);
@@ -13570,9 +13607,9 @@ function renderQueue(event) {
   summary.append(counts);
 
   elements.queueBox.append(summary);
-  if (steering.length) elements.queueBox.append(renderQueueGroup("Steering", steering, "steering"));
-  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up"));
-  elements.queueBox.append(make("div", "queue-hint", "Alt+Up restores this queue snapshot to the composer. RPC queue clearing is pending upstream support."));
+  if (steering.length) elements.queueBox.append(renderQueueGroup("Steering", steering, "steering", { tabId }));
+  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: true, tabId }));
+  elements.queueBox.append(make("div", "queue-hint", "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Use Remove beside follow-ups to drop them from the queue."));
   updateStickyUserPromptButton();
 }
 
