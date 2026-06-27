@@ -568,6 +568,7 @@ const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
 const appRunnerDataByTab = new Map();
 const appRunnerInputDraftByRun = new Map();
+const appRunnerContextLineDraftByRun = new Map();
 const liveToolRuns = new Map();
 const liveToolCards = new Map();
 const liveToolRenderQueue = new Map();
@@ -590,6 +591,8 @@ const optionalFeatureAvailability = {
   remoteWebui: false,
   themeBundle: false,
 };
+const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
+const APP_RUNNER_CONTEXT_MAX_LINES = 1000;
 const OPTIONAL_FEATURES = [
   {
     id: "btwCommand",
@@ -2357,7 +2360,7 @@ function setWorkspaceDashboardCollapsed(collapsed, { persist = true } = {}) {
     elements.workspaceDashboardToggleButton.setAttribute("aria-expanded", workspaceDashboardCollapsed ? "false" : "true");
     const tooltip = workspaceDashboardCollapsed ? "Show workspace overview" : "Hide workspace overview";
     const tooltipDetail = `${tooltip}:\n• Shows current tab, cwd, model, context, session, and queue.\n• Opens common workspace/session actions from one place.`;
-    elements.workspaceDashboardToggleButton.title = tooltip;
+    elements.workspaceDashboardToggleButton.removeAttribute("title");
     elements.workspaceDashboardToggleButton.setAttribute("aria-label", tooltip);
     elements.workspaceDashboardToggleButton.setAttribute("data-tooltip", tooltipDetail);
   }
@@ -4496,6 +4499,7 @@ function syncTabMetadata(nextTabs = []) {
     if (!tab?.id) continue;
     liveIds.add(tab.id);
     setTabActivity(tab.id, tab.activity);
+    if (Object.prototype.hasOwnProperty.call(tab, "appRunner")) setAppRunnerData(tab.id, { activeRun: tab.appRunner });
   }
   for (const tabId of tabActivities.keys()) {
     if (!liveIds.has(tabId)) {
@@ -4507,6 +4511,7 @@ function syncTabMetadata(nextTabs = []) {
       skillUsageByTab.delete(tabId);
       tabMessagesCache.delete(tabId);
       widgetsByTab.delete(tabId);
+      appRunnerDataByTab.delete(tabId);
       clearGitWorkflowForTab(tabId);
     }
   }
@@ -4557,7 +4562,7 @@ function tabIndicator(tab) {
 }
 
 function hasWorkingTab() {
-  return tabs.some((tab) => ["working", "blocked"].includes(tabIndicator(tab).state));
+  return tabs.some((tab) => ["working", "blocked"].includes(tabIndicator(tab).state) || tabAppRunnerRunningRun(tab));
 }
 
 function scheduleRefreshTabs(delay = 1500) {
@@ -5002,15 +5007,43 @@ function terminalDisplayGroupDetail(group, fallback = "group") {
   return `${cwdLabels[0]} + ${cwdLabels.length - 1} cwd${cwdLabels.length === 2 ? "" : "s"}`;
 }
 
-function terminalTabMeta(tab, indicator) {
-  return tab.running ? `${indicator.meta} · pid ${tab.pid || "…"}` : "stopped";
+function tabAppRunnerRun(tab) {
+  if (!tab?.id) return null;
+  const cached = appRunnerDataByTab.get(tab.id);
+  if (cached && Object.prototype.hasOwnProperty.call(cached, "activeRun")) return cached.activeRun || null;
+  if (Object.prototype.hasOwnProperty.call(tab, "appRunner")) return tab.appRunner || null;
+  return null;
 }
 
-function appendTerminalTabContent(button, { title, indicator, meta, count = null }) {
+function tabAppRunnerRunningRun(tab) {
+  const run = tabAppRunnerRun(tab);
+  return appRunnerIsRunning(run) ? run : null;
+}
+
+function tabGroupAppRunnerRunningRun(groupTabs = []) {
+  return groupTabs.map(tabAppRunnerRunningRun).find(Boolean) || null;
+}
+
+function terminalAppRunnerLabel(run) {
+  const command = cleanStatusText(run?.displayCommand || run?.label || run?.command || "app runner");
+  return command && command !== "app runner" ? `app runner: ${command}` : "app runner running";
+}
+
+function terminalAppRunnerTooltip(run) {
+  return appRunnerIsRunning(run) ? ` · ${terminalAppRunnerLabel(run)}` : "";
+}
+
+function terminalTabMeta(tab, indicator) {
+  const meta = tab.running ? `${indicator.meta} · pid ${tab.pid || "…"}` : "stopped";
+  return tabAppRunnerRunningRun(tab) ? `${meta} · app runner` : meta;
+}
+
+function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null }) {
   const titleRow = make("span", "terminal-tab-title-row");
   const indicatorDot = make("span", "terminal-tab-activity-indicator");
   indicatorDot.setAttribute("aria-hidden", "true");
   titleRow.append(indicatorDot, make("span", "terminal-tab-title", title));
+  if (appRunnerIsRunning(appRunnerRun)) titleRow.append(make("span", "terminal-tab-app-runner-indicator", "app"));
   if (count !== null) titleRow.append(make("span", "terminal-tab-group-count", String(count)));
   button.append(titleRow, make("span", "terminal-tab-meta", meta));
 }
@@ -5018,7 +5051,9 @@ function appendTerminalTabContent(button, { title, indicator, meta, count = null
 function renderTerminalTab(tab) {
   const isActive = tab.id === activeTabId;
   const indicator = tabIndicator(tab);
-  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}`);
+  const appRunnerRun = tabAppRunnerRunningRun(tab);
+  const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
+  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}`);
   wrapper.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: tab.id, target: { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button");
@@ -5026,9 +5061,10 @@ function renderTerminalTab(tab) {
   button.draggable = false;
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
-  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}`);
-  button.title = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"} · drag onto another tab or group to group`;
-  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator) });
+  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}`);
+  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)} · drag onto another tab or group to group`;
+  applyStyledTooltip(button, tooltip, { ariaLabel: false });
+  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button);
 
@@ -5036,8 +5072,8 @@ function renderTerminalTab(tab) {
     const close = make("button", "terminal-tab-close", "×");
     close.type = "button";
     close.draggable = false;
-    close.title = `Close ${tab.title}`;
-    close.setAttribute("aria-label", `Close ${tab.title}`);
+    const closeTooltip = `Close ${tab.title}`;
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTab(tab.id);
@@ -5051,7 +5087,9 @@ function renderTerminalTab(tab) {
 function renderTerminalTabGroupItem(tab, group) {
   const isActive = tab.id === activeTabId;
   const indicator = tabIndicator(tab);
-  const item = make("div", `terminal-tab-group-item activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}`);
+  const appRunnerRun = tabAppRunnerRunningRun(tab);
+  const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
+  const item = make("div", `terminal-tab-group-item activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}`);
   item.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(item, { sourceTabId: tab.id, target: group?.custom ? { type: "group", group } : { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button terminal-tab-group-item-button");
@@ -5059,9 +5097,10 @@ function renderTerminalTabGroupItem(tab, group) {
   button.draggable = false;
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
-  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}`);
-  button.title = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"} · drag onto another tab or group to group`;
-  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator) });
+  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}`);
+  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)} · drag onto another tab or group to group`;
+  applyStyledTooltip(button, tooltip, { ariaLabel: false });
+  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     switchTab(tab.id);
@@ -5072,8 +5111,8 @@ function renderTerminalTabGroupItem(tab, group) {
     const close = make("button", "terminal-tab-close terminal-tab-group-item-close", "×");
     close.type = "button";
     close.draggable = false;
-    close.title = `Close ${tab.title}`;
-    close.setAttribute("aria-label", `Close ${tab.title}`);
+    const closeTooltip = `Close ${tab.title}`;
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTab(tab.id);
@@ -5095,10 +5134,14 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   const isActive = groupTabs.some((tab) => tab.id === activeTabId);
   const isStopped = groupTabs.every((tab) => !tab.running);
   const indicator = tabGroupIndicator(groupTabs);
+  const appRunnerRun = tabGroupAppRunnerRunningRun(groupTabs);
+  const appRunnerCount = groupTabs.filter(tabAppRunnerRunningRun).length;
+  const appRunnerSummary = appRunnerCount > 1 ? `${appRunnerCount} app runners running` : appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
+  const groupAppRunnerMeta = appRunnerCount > 1 ? `${appRunnerCount} app runners` : appRunnerRun ? "app runner" : "";
   const groupTitle = terminalDisplayGroupTitle(group, activeGroupTab?.title || "group");
   const activeTitle = activeGroupTab?.title || groupTitle;
   const groupDetail = terminalDisplayGroupDetail(group, groupTitle);
-  const wrapper = make("div", `terminal-tab terminal-tab-group${group.custom ? " terminal-tab-custom-group" : ""} activity-${indicator.state}${isActive ? " active" : ""}${isStopped ? " stopped" : ""}`);
+  const wrapper = make("div", `terminal-tab terminal-tab-group${group.custom ? " terminal-tab-custom-group" : ""} activity-${indicator.state}${isActive ? " active" : ""}${isStopped ? " stopped" : ""}${appRunnerRun ? " app-runner-running" : ""}`);
   wrapper.dataset.groupKey = group.key;
   if (group.customGroupId) wrapper.dataset.customGroupId = group.customGroupId;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: activeGroupTab?.id || "", target: { type: "group", group } });
@@ -5117,9 +5160,10 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
-  button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}. Active ${activeTitle}`);
-  button.title = `${activeTitle} · ${groupTitle} · ${groupDetail} · ${groupTabs.length} tabs · ${indicator.label} · drop tabs here to add to group`;
-  appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}`, count: groupTabs.length });
+  button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}. Active ${activeTitle}`);
+  const tooltip = `${activeTitle} · ${groupTitle} · ${groupDetail} · ${groupTabs.length} tabs · ${indicator.label}${appRunnerSummary ? ` · ${appRunnerSummary}` : ""} · drop tabs here to add to group`;
+  applyStyledTooltip(button, tooltip, { ariaLabel: false });
+  appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}`, appRunnerRun, count: groupTabs.length });
   button.addEventListener("click", () => switchTab(activeGroupTab.id));
   wrapper.append(button);
 
@@ -5127,8 +5171,8 @@ function renderTerminalTabGroup(group, groupCount = 1) {
     const close = make("button", "terminal-tab-close terminal-tab-group-close", "×");
     close.type = "button";
     close.draggable = false;
-    close.title = `Close ${groupTitle} group`;
-    close.setAttribute("aria-label", `Close ${groupTitle} group`);
+    const closeTooltip = `Close ${groupTitle} group`;
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTabGroup(group);
@@ -5144,8 +5188,8 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   const add = make("button", "terminal-tab-group-add", "+ Tab");
   add.type = "button";
   add.draggable = false;
-  add.title = `Add tab in ${groupTitle}`;
-  add.setAttribute("aria-label", `Add tab in ${groupTitle}`);
+  const addTooltip = `Add tab in ${groupTitle}`;
+  applyStyledTooltip(add, addTooltip, { ariaLabel: addTooltip });
   add.addEventListener("click", (event) => {
     event.stopPropagation();
     createTerminalTab(activeGroupTab?.cwd || group.cwd || currentDirectoryForNewTab(), { triggerButton: add, customGroupId: group.customGroupId || null });
@@ -5182,6 +5226,11 @@ function setNewTabMenuOpen(open) {
   elements.newTabButton?.classList.toggle("menu-open", newTabMenuOpen);
   elements.newTabMenu?.classList.toggle("open", newTabMenuOpen);
   if (!newTabMenuOpen) scheduleDeferredUiFlushAfterDropdownClose();
+}
+
+function initializeTerminalHeaderTooltips() {
+  applyStyledTooltip(elements.newTabButton, "Start a separate isolated Pi terminal", { ariaLabel: "Start a separate isolated Pi terminal" });
+  applyStyledTooltip(elements.closeAllTabsButton, "Close all terminal tabs", { ariaLabel: "Close all terminal tabs" });
 }
 
 function openNewTabMenu() {
@@ -5225,7 +5274,9 @@ function renderTabs() {
   const active = activeTab();
   const activeIndicator = active ? tabIndicator(active) : null;
   elements.terminalTabsToggleButton.textContent = active ? `${activeIndicator.glyph} ${active.title}${tabs.length > 1 ? ` · ${tabs.length}` : ""}` : "Tabs";
-  elements.terminalTabsToggleButton.title = active ? `Show terminal tabs · active: ${active.title} · ${activeIndicator.label}` : "Show terminal tabs";
+  const toggleTooltip = active ? `Show terminal tabs · active: ${active.title} · ${activeIndicator.label}` : "Show terminal tabs";
+  applyStyledTooltip(elements.terminalTabsToggleButton, toggleTooltip, { ariaLabel: toggleTooltip });
+  if (footerTooltipTarget && elements.tabBar.contains(footerTooltipTarget)) hideFooterTooltip();
   elements.tabBar.replaceChildren();
   elements.tabBar.dataset.tabCount = String(tabs.length);
   elements.tabBar.classList.toggle("terminal-tabs-dense", tabs.length >= 10);
@@ -6199,9 +6250,13 @@ function cleanTooltipText(value) {
   return stripAnsi(value).replace(/\r\n?/g, "\n").replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+const TOOLTIP_HOVER_DELAY_MS = 500;
+
 let footerTooltipNode = null;
 let footerTooltipTarget = null;
 let footerTooltipEventsBound = false;
+let footerTooltipHoverTimer = null;
+let footerTooltipPendingTarget = null;
 
 function ensureFooterTooltipNode() {
   if (!footerTooltipNode) {
@@ -6242,7 +6297,15 @@ function positionFooterTooltip(target) {
   footerTooltipNode.style.top = `${Math.round(top)}px`;
 }
 
+function clearFooterTooltipHoverTimer(target) {
+  if (target && footerTooltipPendingTarget && target !== footerTooltipPendingTarget) return;
+  if (footerTooltipHoverTimer) clearTimeout(footerTooltipHoverTimer);
+  footerTooltipHoverTimer = null;
+  footerTooltipPendingTarget = null;
+}
+
 function showFooterTooltip(target) {
+  clearFooterTooltipHoverTimer();
   const text = target?.getAttribute("data-tooltip");
   if (!text) return;
   footerTooltipTarget = target;
@@ -6253,7 +6316,21 @@ function showFooterTooltip(target) {
   positionFooterTooltip(target);
 }
 
+function scheduleFooterTooltip(target) {
+  const text = target?.getAttribute("data-tooltip");
+  if (!text) return;
+  clearFooterTooltipHoverTimer();
+  footerTooltipPendingTarget = target;
+  footerTooltipHoverTimer = setTimeout(() => {
+    const pendingTarget = footerTooltipPendingTarget;
+    clearFooterTooltipHoverTimer();
+    if (!pendingTarget?.isConnected || !pendingTarget.matches?.(":hover")) return;
+    showFooterTooltip(pendingTarget);
+  }, TOOLTIP_HOVER_DELAY_MS);
+}
+
 function hideFooterTooltip(target) {
+  clearFooterTooltipHoverTimer(target);
   if (target && target !== footerTooltipTarget) return;
   footerTooltipTarget = null;
   if (!footerTooltipNode) return;
@@ -6261,17 +6338,32 @@ function hideFooterTooltip(target) {
   footerTooltipNode.classList.remove("visible");
 }
 
-function applyFooterTooltip(node, tooltip, options = {}) {
-  const text = cleanTooltipText(tooltip);
-  if (!text) return node;
-  node.setAttribute("data-tooltip", text);
-  node.setAttribute("aria-label", text.replace(/\s+/g, " "));
-  if (options.align) node.setAttribute("data-tooltip-align", options.align);
-  node.addEventListener("mouseenter", () => showFooterTooltip(node));
+function bindStyledTooltipEvents(node) {
+  if (!node || node._styledTooltipBound) return;
+  node._styledTooltipBound = true;
+  node.addEventListener("mouseenter", () => scheduleFooterTooltip(node));
   node.addEventListener("mouseleave", () => hideFooterTooltip(node));
   node.addEventListener("focus", () => showFooterTooltip(node));
   node.addEventListener("blur", () => hideFooterTooltip(node));
+}
+
+function applyStyledTooltip(node, tooltip, options = {}) {
+  if (!node) return node;
+  const text = cleanTooltipText(tooltip);
+  if (!text) return node;
+  node.setAttribute("data-tooltip", text);
+  node.removeAttribute("title");
+  if (options.ariaLabel !== false) {
+    const ariaLabel = typeof options.ariaLabel === "string" ? options.ariaLabel : text.replace(/\s+/g, " ");
+    node.setAttribute("aria-label", ariaLabel);
+  }
+  if (options.align) node.setAttribute("data-tooltip-align", options.align);
+  bindStyledTooltipEvents(node);
   return node;
+}
+
+function applyFooterTooltip(node, tooltip, options = {}) {
+  return applyStyledTooltip(node, tooltip, options);
 }
 
 function footerMetric(icon, label, value, tone = "", options = {}) {
@@ -9979,12 +10071,18 @@ function activeAppRunnerData() {
 function setAppRunnerData(tabId, data = {}) {
   if (!tabId) return;
   const previous = appRunnerDataByTab.get(tabId) || { runners: [], activeRun: null, customRunnerConfig: null };
-  appRunnerDataByTab.set(tabId, {
+  const hasActiveRun = Object.prototype.hasOwnProperty.call(data, "activeRun");
+  const next = {
     cwd: data.cwd || previous.cwd || "",
     runners: Array.isArray(data.runners) ? data.runners : previous.runners || [],
     customRunnerConfig: data.customRunnerConfig || previous.customRunnerConfig || null,
-    activeRun: Object.prototype.hasOwnProperty.call(data, "activeRun") ? data.activeRun : previous.activeRun || null,
-  });
+    activeRun: hasActiveRun ? data.activeRun : previous.activeRun || null,
+  };
+  appRunnerDataByTab.set(tabId, next);
+  if (hasActiveRun) {
+    const tab = tabs.find((item) => item.id === tabId);
+    if (tab) tab.appRunner = next.activeRun || null;
+  }
 }
 
 function appRunnerIsRunning(run) {
@@ -10057,6 +10155,7 @@ async function runAppRunner(runnerId) {
     setAppRunnerData(tabContext.tabId, response.data || {});
     renderAppRunnerControls();
     renderWidgets();
+    renderTabs();
     const command = response.data?.activeRun?.displayCommand || "app runner";
     addEvent(`started ${command}`, "info");
   } catch (error) {
@@ -10065,6 +10164,7 @@ async function runAppRunner(runnerId) {
     setAppRunnerData(tabContext.tabId, { activeRun: appRunnerFailureState(runnerId, error, activeAppRunnerData()) });
     renderAppRunnerControls();
     renderWidgets();
+    renderTabs();
     addEvent(`app runner failed: ${message}`, "error");
   }
 }
@@ -10078,6 +10178,7 @@ async function stopAppRunner() {
     setAppRunnerData(tabContext.tabId, response.data || {});
     renderAppRunnerControls();
     renderWidgets();
+    renderTabs();
     addEvent("app runner stop requested", "warn");
   } catch (error) {
     if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
@@ -10093,6 +10194,7 @@ async function clearAppRunner() {
     setAppRunnerData(tabContext.tabId, response.data || {});
     renderAppRunnerControls();
     renderWidgets();
+    renderTabs();
   } catch (error) {
     if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
   }
@@ -10134,6 +10236,73 @@ function appRunnerOutputText(run) {
 
 function appRunnerInputDraftKey(run) {
   return run?.id || run?.runnerId || "active";
+}
+
+function normalizeAppRunnerContextLineCount(value) {
+  const number = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(number)) return APP_RUNNER_CONTEXT_DEFAULT_LINES;
+  return Math.max(1, Math.min(APP_RUNNER_CONTEXT_MAX_LINES, number));
+}
+
+function appRunnerContextDraftKey(run) {
+  return appRunnerInputDraftKey(run);
+}
+
+async function transferAppRunnerOutputToContext(run, form) {
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId || !run) return;
+  const key = appRunnerContextDraftKey(run);
+  const input = form?.querySelector?.(".app-runner-context-lines-input");
+  const lineCount = normalizeAppRunnerContextLineCount(input?.value || appRunnerContextLineDraftByRun.get(key) || APP_RUNNER_CONTEXT_DEFAULT_LINES);
+  if (input) input.value = String(lineCount);
+  appRunnerContextLineDraftByRun.set(key, String(lineCount));
+  const buttons = [...(form?.querySelectorAll?.("button") || [])];
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const response = await api("/api/app-runner/context", { method: "POST", body: { lineCount }, tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const data = response.data || {};
+    if (data.activeRun) setAppRunnerData(tabContext.tabId, { activeRun: data.activeRun });
+    const deliveredAsSteer = data.delivery === "steer";
+    addEvent(deliveredAsSteer
+      ? `sent last ${data.lineCount || lineCount} app runner output lines as live steering context`
+      : `added last ${data.lineCount || lineCount} app runner output lines to agent context`, "info");
+    scheduleRefreshMessages(120, tabContext);
+    scheduleRefreshState(120, tabContext);
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(`app runner context transfer failed: ${error.message || String(error)}`, "error");
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+function renderAppRunnerContextForm(run) {
+  const key = appRunnerContextDraftKey(run);
+  const form = make("form", "app-runner-context-form");
+  form.dataset.runId = key;
+  const label = make("label", "app-runner-context-lines-label");
+  label.append(make("span", "", "Context lines"));
+  const input = make("input", "app-runner-context-lines-input");
+  input.type = "number";
+  input.min = "1";
+  input.max = String(APP_RUNNER_CONTEXT_MAX_LINES);
+  input.step = "1";
+  input.inputMode = "numeric";
+  input.value = String(normalizeAppRunnerContextLineCount(appRunnerContextLineDraftByRun.get(key) || APP_RUNNER_CONTEXT_DEFAULT_LINES));
+  input.setAttribute("aria-label", "Number of recent app runner output lines to add to agent context");
+  input.addEventListener("input", () => {
+    appRunnerContextLineDraftByRun.set(key, String(normalizeAppRunnerContextLineCount(input.value)));
+  });
+  label.append(input);
+  const transfer = make("button", "release-npm-action app-runner-context-action", "Add to context");
+  transfer.type = "submit";
+  transfer.title = "Add the selected number of recent app runner output lines to this agent session's context";
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    transferAppRunnerOutputToContext(run, form);
+  });
+  form.append(label, transfer);
+  return form;
 }
 
 function captureAppRunnerInputFocus() {
@@ -10636,11 +10805,12 @@ function renderAppRunnerWidget() {
     actions.append(appRunnerActionButton("Clear", clearAppRunner));
   }
   const inputForm = running ? renderAppRunnerInputForm(run) : null;
+  const contextForm = renderAppRunnerContextForm(run);
   const pills = make("div", "app-runner-output-pills");
   if (run.kind) pills.append(make("span", "release-npm-pill", run.kind));
   pills.append(make("span", `release-npm-pill app-runner-status ${run.status || "running"}`.trim(), status));
   if (elapsed) pills.append(make("span", "release-npm-pill elapsed", elapsed));
-  controls.append(actions);
+  controls.append(actions, contextForm);
   if (inputForm) controls.append(inputForm);
   controls.append(pills, make("span", "app-runner-output-meta", controlParts.join(" · ")));
   const outputDetails = renderReleaseNpmOutputDetails(`app-runner:${run.id || run.runnerId || "active"}`, streamHeader, terminal, controls);
@@ -20247,12 +20417,14 @@ function handleEvent(event) {
       setAppRunnerData(event.tabId || activeTabId, { cwd: event.cwd, activeRun: event.activeRun });
       renderAppRunnerControls();
       renderWidgets();
+      renderTabs();
       break;
     case "webui_cwd_changed":
       addEvent(`${event.tabTitle || "terminal"} cwd changed to ${event.cwd}`);
       setAppRunnerData(event.tabId || activeTabId, { cwd: event.cwd, activeRun: null, runners: [] });
       renderAppRunnerControls();
       renderWidgets();
+      renderTabs();
       refreshTabs().catch((error) => addEvent(error.message, "error"));
       refreshAppRunners(tabContext).catch((error) => addEvent(error.message, "error"));
       scheduleRefreshFooter();
@@ -21704,6 +21876,7 @@ restoreTerminalTabsLayoutSetting();
 restoreTerminalCustomGroups();
 restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
+initializeTerminalHeaderTooltips();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
 restoreSidePanelState();

@@ -67,6 +67,9 @@
   --visual-viewport-height: 100dvh;
   --visual-viewport-offset-top: 0px;
   --keyboard-inset-bottom: 0px;
+  --tooltip-hover-delay: 500ms;
+  --tooltip-blend-duration: 160ms;
+  --tooltip-blend-ease: ease;
 
   font-size: 80%;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1221,10 +1224,14 @@ body.side-panel-collapsed .terminal-tabs-shell {
   opacity: 0;
   pointer-events: none;
   transform: translateY(-0.16rem);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
   white-space: pre-wrap;
 }
-.optional-feature-row[data-tooltip]:hover::after,
+.optional-feature-row[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: var(--tooltip-hover-delay);
+}
 .optional-feature-row[data-tooltip]:focus::after,
 .optional-feature-row[data-tooltip]:focus-within::after {
   opacity: 1;
@@ -1577,6 +1584,11 @@ body.side-panel-collapsed .terminal-tabs-shell {
   border-color: rgba(166, 227, 161, 0.52);
   box-shadow: 0 0 1rem rgba(166, 227, 161, 0.16), inset 0 1px 0 rgba(255,255,255,0.045);
 }
+.terminal-tab.app-runner-running,
+.terminal-tab-group-item.app-runner-running {
+  outline: 1px solid rgba(137, 180, 250, 0.42);
+  outline-offset: -1px;
+}
 .terminal-tab.terminal-tab-drag-over,
 .terminal-tab-group-item.terminal-tab-drag-over {
   border-color: rgba(137, 180, 250, 0.82);
@@ -1618,6 +1630,22 @@ body.side-panel-collapsed .terminal-tabs-shell {
   background: rgba(var(--ctp-subtext-rgb), 0.38);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 0 0.45rem rgba(var(--ctp-subtext-rgb), 0.10);
 }
+.terminal-tab-app-runner-indicator {
+  flex: 0 0 auto;
+  padding: 0.04rem 0.34rem;
+  border: 1px solid rgba(137, 180, 250, 0.38);
+  border-radius: 999px;
+  color: var(--ctp-blue);
+  background: rgba(137, 180, 250, 0.13);
+  box-shadow: 0 0 0.7rem rgba(137, 180, 250, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.56rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.12;
+  text-transform: uppercase;
+  animation: terminal-tab-app-runner-pulse 1.35s ease-in-out infinite;
+}
 .terminal-tab.activity-working > .terminal-tab-button .terminal-tab-activity-indicator {
   background: var(--ctp-yellow);
   box-shadow: 0 0 0 1px rgba(249, 226, 175, 0.34), 0 0 0.8rem rgba(249, 226, 175, 0.52);
@@ -1657,6 +1685,10 @@ body.side-panel-collapsed .terminal-tabs-shell {
 @keyframes terminal-tab-working-pulse {
   0%, 100% { transform: scale(0.86); opacity: 0.68; }
   50% { transform: scale(1.08); opacity: 1; }
+}
+@keyframes terminal-tab-app-runner-pulse {
+  0%, 100% { opacity: 0.72; box-shadow: 0 0 0.45rem rgba(137, 180, 250, 0.20); }
+  50% { opacity: 1; box-shadow: 0 0 0.95rem rgba(137, 180, 250, 0.44); }
 }
 .terminal-tab-button:hover,
 .terminal-tab-close:hover,
@@ -1761,7 +1793,7 @@ body.side-panel-collapsed .terminal-tabs-shell {
   left: calc(100% + 0.48rem);
   pointer-events: none;
   opacity: 0;
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
 .terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]::before {
   content: "";
@@ -1796,7 +1828,11 @@ body.side-panel-collapsed .terminal-tabs-shell {
   transform: translate(-0.2rem, -50%);
 }
 .terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:hover::before,
-.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:hover::after,
+.terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translate(0, -50%);
+  transition-delay: var(--tooltip-hover-delay);
+}
 .terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:focus-visible::before,
 .terminal-new-tab-menu .composer-publish-menu-item[data-tooltip]:focus-visible::after {
   opacity: 1;
@@ -2128,10 +2164,12 @@ button.footer-tui-item {
   text-align: left;
   white-space: pre-wrap;
   opacity: 0;
-  transition: opacity 120ms ease;
+  transform: translateY(0.16rem);
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
 .footer-floating-tooltip.visible {
   opacity: 1;
+  transform: translateY(0);
 }
 .footer-metric {
   display: inline-grid;
@@ -2567,7 +2605,7 @@ button.footer-meta {
   z-index: 80;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.14s ease, transform 0.14s ease;
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
 .footer-branch-create-submit[data-tooltip]::before {
   content: "";
@@ -2603,7 +2641,11 @@ button.footer-meta {
   transform: translateY(0.24rem);
 }
 .footer-branch-create-submit[data-tooltip]:hover::before,
-.footer-branch-create-submit[data-tooltip]:hover::after,
+.footer-branch-create-submit[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: var(--tooltip-hover-delay);
+}
 .footer-branch-create-submit[data-tooltip]:focus-visible::before,
 .footer-branch-create-submit[data-tooltip]:focus-visible::after {
   opacity: 1;
@@ -3328,9 +3370,13 @@ button.git-workflow-step:hover:not(:disabled) {
   pointer-events: none;
   opacity: 0;
   transform: translateY(0.22rem);
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
-.git-workflow-actions button[data-tooltip]:hover::after,
+.git-workflow-actions button[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: var(--tooltip-hover-delay);
+}
 .git-workflow-actions button[data-tooltip]:focus-visible::after {
   opacity: 1;
   transform: translateY(0);
@@ -3515,6 +3561,49 @@ button.git-workflow-step:hover:not(:disabled) {
   justify-content: flex-start;
   gap: 0.42rem;
   min-width: 0;
+}
+.app-runner-context-form {
+  display: grid;
+  grid-template-columns: auto auto;
+  flex: 0 1 auto;
+  gap: 0.42rem;
+  align-items: stretch;
+  min-width: min(100%, 18rem);
+}
+.app-runner-context-lines-label {
+  display: inline-grid;
+  grid-template-columns: auto minmax(4.2rem, 5.8rem);
+  align-items: center;
+  gap: 0.38rem;
+  min-width: 0;
+  color: rgba(var(--ctp-subtext-rgb), 0.88);
+  font-weight: 800;
+}
+.app-runner-context-lines-input {
+  min-height: 2.15rem;
+  width: 100%;
+  padding: 0.34rem 0.52rem;
+  border: 1px solid rgba(148, 226, 213, 0.34);
+  border-radius: 0.68rem;
+  color: rgba(var(--ctp-text-rgb), 0.96);
+  background: rgba(var(--ctp-crust-rgb), 0.72);
+  font: inherit;
+  line-height: 1.1;
+}
+.app-runner-context-lines-input:focus {
+  outline: 2px solid rgba(148, 226, 213, 0.56);
+  outline-offset: 0.12rem;
+  border-color: rgba(148, 226, 213, 0.62);
+}
+.app-runner-context-action {
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.34);
+}
+.app-runner-context-action:not(:disabled):hover,
+.app-runner-context-action:not(:disabled):focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-blue));
 }
 .app-runner-output-controls .release-npm-action {
   flex: 0 0 auto;
@@ -5474,7 +5563,7 @@ button.composer-skill-tag:focus-visible {
   right: 0;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
 .composer-row button[data-tooltip]::before,
 .composer-input-row button[data-tooltip]::before {
@@ -5514,12 +5603,16 @@ button.composer-skill-tag:focus-visible {
 }
 .composer-row button[data-tooltip]:hover::before,
 .composer-row button[data-tooltip]:hover::after,
+.composer-input-row button[data-tooltip]:hover::before,
+.composer-input-row button[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: var(--tooltip-hover-delay);
+}
 .composer-row button[data-tooltip]:focus-visible::before,
 .composer-row button[data-tooltip]:focus-visible::after,
 .composer-row button[data-tooltip].tooltip-open::before,
 .composer-row button[data-tooltip].tooltip-open::after,
-.composer-input-row button[data-tooltip]:hover::before,
-.composer-input-row button[data-tooltip]:hover::after,
 .composer-input-row button[data-tooltip]:focus-visible::before,
 .composer-input-row button[data-tooltip]:focus-visible::after,
 .composer-input-row button[data-tooltip].tooltip-open::before,
@@ -8116,12 +8209,15 @@ button.composer-skill-tag:focus-visible {
   .native-tree-options { grid-template-columns: 1fr; }
   .app-runner-custom-item,
   .app-runner-custom-path-row,
+  .app-runner-context-form,
+  .app-runner-context-lines-label,
   .app-runner-stdin-form { grid-template-columns: 1fr; }
   .app-runner-custom-item-actions,
   .app-runner-custom-form-actions { justify-content: stretch; }
   .app-runner-custom-item-actions button,
   .app-runner-custom-form-actions button,
   .app-runner-custom-browse,
+  .app-runner-context-action,
   .app-runner-stdin-send,
   .app-runner-stdin-eof { width: 100%; }
   .path-picker-current-row,
@@ -8227,7 +8323,7 @@ button.composer-skill-tag:focus-visible {
   right: 0;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
 .terminal-command-palette-button[data-tooltip]::before,
 .terminal-dashboard-button[data-tooltip]::before {
@@ -8268,10 +8364,14 @@ button.composer-skill-tag:focus-visible {
 }
 .terminal-command-palette-button[data-tooltip]:hover::before,
 .terminal-command-palette-button[data-tooltip]:hover::after,
+.terminal-dashboard-button[data-tooltip]:hover::before,
+.terminal-dashboard-button[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: var(--tooltip-hover-delay);
+}
 .terminal-command-palette-button[data-tooltip]:focus-visible::before,
 .terminal-command-palette-button[data-tooltip]:focus-visible::after,
-.terminal-dashboard-button[data-tooltip]:hover::before,
-.terminal-dashboard-button[data-tooltip]:hover::after,
 .terminal-dashboard-button[data-tooltip]:focus-visible::before,
 .terminal-dashboard-button[data-tooltip]:focus-visible::after {
   opacity: 1;

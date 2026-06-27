@@ -1,6 +1,6 @@
 ---
 name: tauri-django-react
-description: Agents should invoke this skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.
+description: Agents should invoke this skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, mandatory light/dark theming, German/English i18n, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.
 ---
 
 # Tauri + Django + React Integration Patterns
@@ -20,6 +20,87 @@ This skill is self-contained; it must not depend on package-level `docs/` files 
 3. **Is it an auth issue?** Cookies not working in Tauri, CORS errors, session tokens -> Cross-Origin Auth section.
 4. **Is it a build issue?** PyInstaller fails, bundle missing files, `tauri build` errors -> Build Pipeline section.
 5. **Is it a dual-mode issue?** Works in browser but not Tauri (or vice versa) -> Frontend Integration section.
+6. **Mandatory local runner:** When creating or updating a project with this skill, add or maintain a root-level executable `start.sh` that starts both Django and React for local development.
+7. **Mandatory frontend UX baseline:** Ask the user for separate light-mode and dark-mode background images before finalizing visual work; implement a persistent light/dark mode setting; implement German/English i18n for every user-facing string.
+
+### Mandatory `start.sh` Local Runner
+
+Every Tauri + Django + React project handled by this skill must include a root-level `start.sh` unless the user explicitly declines it. The script is the one-command local development entry point and must:
+
+- use `uv` for backend dependency sync and Django commands;
+- use `bun` for frontend dependency install and Vite/React startup;
+- run Django migrations before starting the backend;
+- optionally run a clearly named seed/demo command when the project has one;
+- start Django and React concurrently;
+- set `VITE_API_BASE_URL` to the Django `/api` base URL unless already provided;
+- print the frontend and backend URLs;
+- trap `EXIT`, `INT`, and `TERM` and stop both child processes;
+- be executable (`chmod +x start.sh`).
+
+Recommended template:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_URL="http://localhost:5173"
+BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
+
+backend_pid=""
+frontend_pid=""
+
+cleanup() {
+  echo
+  echo "Stopping application..."
+  if [[ -n "$frontend_pid" ]] && kill -0 "$frontend_pid" 2>/dev/null; then
+    kill "$frontend_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
+    kill "$backend_pid" 2>/dev/null || true
+  fi
+  wait 2>/dev/null || true
+}
+
+trap cleanup EXIT INT TERM
+
+(
+  cd "$BACKEND_DIR"
+  uv sync --all-groups
+  uv run python manage.py migrate
+  if uv run python manage.py help seed_demo >/dev/null 2>&1; then
+    uv run python manage.py seed_demo
+  fi
+)
+
+(
+  cd "$FRONTEND_DIR"
+  bun install
+)
+
+(
+  cd "$BACKEND_DIR"
+  uv run python manage.py runserver "${BACKEND_HOST}:${BACKEND_PORT}"
+) &
+backend_pid=$!
+
+(
+  cd "$FRONTEND_DIR"
+  VITE_API_BASE_URL="${VITE_API_BASE_URL:-${BACKEND_URL}/api}" bun run dev
+) &
+frontend_pid=$!
+
+echo "Frontend: $FRONTEND_URL"
+echo "Backend:  $BACKEND_URL/api"
+echo "Press Ctrl+C to stop both processes."
+
+wait -n "$backend_pid" "$frontend_pid"
+```
 
 ---
 
@@ -220,6 +301,67 @@ def health_check(_request):
 ---
 
 ## Frontend Integration (React / TypeScript)
+
+### Mandatory Theme + Background + i18n Baseline
+
+Every React frontend created or substantially updated with this skill must include these UI foundations unless the user explicitly declines them:
+
+1. **Ask for backgrounds first:** Before finalizing visual styling, ask the user whether they have separate light-mode and dark-mode background images. If supplied, store them under `frontend/src/assets/` with stable names such as `background_light.png` and `background_dark.png`; if not supplied, use temporary CSS gradients and leave a clear TODO.
+2. **Persistent light/dark setting:** Implement a `Theme = "light" | "dark"` state, initialize it from `localStorage`, fall back to `prefers-color-scheme`, write `document.documentElement.dataset.theme`, set `document.documentElement.style.colorScheme`, and expose a translated toggle button.
+3. **Theme-aware backgrounds:** Wire backgrounds through CSS selectors (`body` for light, `:root[data-theme='dark'] body` for dark). Use overlays/gradients above the images so text contrast remains acceptable in both modes.
+4. **German/English i18n:** Implement `Language = "en" | "de"`, complete dictionaries for both languages, a typed `translate()`/`t()` helper with parameter interpolation, language detection from `localStorage` and `navigator.language`, a language switcher, and `document.documentElement.lang` + `document.title` updates.
+5. **No hardcoded UI strings:** All visible labels, buttons, status messages, errors, ARIA labels, document titles, and theme/language controls must use i18n keys in both English and German.
+
+Recommended theme pattern:
+
+```typescript
+type Theme = "light" | "dark";
+const themeStorageKey = "app-theme";
+
+function getInitialTheme(): Theme {
+  const stored = window.localStorage.getItem(themeStorageKey);
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+useEffect(() => {
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  window.localStorage.setItem(themeStorageKey, theme);
+}, [theme]);
+```
+
+Recommended background CSS pattern:
+
+```css
+body {
+  background-image:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.72)),
+    url("./assets/background_light.png");
+  background-attachment: fixed;
+  background-position: center;
+  background-size: cover;
+}
+
+:root[data-theme='dark'] body {
+  background-image:
+    linear-gradient(135deg, rgba(0, 0, 0, 0.76), rgba(0, 0, 0, 0.72)),
+    url("./assets/background_dark.png");
+}
+```
+
+Recommended i18n contract:
+
+```typescript
+export type Language = "en" | "de";
+export type TranslationKey = "app.title" | "common.language" | "common.darkMode";
+export type TFunction = (key: TranslationKey, params?: Record<string, string | number>) => string;
+
+const dictionaries: Record<Language, Record<TranslationKey, string>> = {
+  en: { "app.title": "App", "common.language": "Language", "common.darkMode": "Dark" },
+  de: { "app.title": "App", "common.language": "Sprache", "common.darkMode": "Dunkel" },
+};
+```
 
 ### Tauri Detection
 
@@ -536,10 +678,11 @@ fn main() {
 
 ### Development
 
-- Django: `manage.py runserver 0.0.0.0:8000`
-- React: `vite dev` (port 5173) with proxy to Django
-- Tauri: `tauri dev` wraps Vite dev server in WebView
-- All three run concurrently
+- Mandatory one-command local runner: `./start.sh` from the repository root starts Django and React together.
+- Django: `uv run python manage.py runserver 0.0.0.0:8000`
+- React: `bun run dev` (port 5173) with proxy or `VITE_API_BASE_URL` pointing to Django
+- Tauri: `tauri dev` wraps Vite dev server in WebView and starts/uses the local Django backend according to the lifecycle wiring
+- All development processes must have clear cleanup behavior on Ctrl+C or app exit
 
 ---
 
@@ -617,7 +760,7 @@ Two automation scripts live in `scripts/` alongside this SKILL.md.
 
 ### ./scripts/scaffold.py -- Generate Integration Boilerplate
 
-Creates all Tauri + Django + React integration files for a new project. Generates 14 files across three layers: Rust backend lifecycle, Django hybrid auth, React Tauri detection, build scripts, and configuration.
+Creates all Tauri + Django + React integration files for a new project. Generates 15 files across three layers plus the mandatory root `start.sh`: Rust backend lifecycle, Django hybrid auth, React Tauri detection, build scripts, and configuration.
 
 ```bash
 python3 {baseDir}/scripts/scaffold.py \
@@ -657,12 +800,13 @@ python3 {baseDir}/scripts/scaffold.py \
 | TypeScript | `frontend/src/components/LoadingScreen.tsx` | Backend readiness UI |
 | Shell | `scripts/build-backend.sh` | PyInstaller build + copy to resources |
 | PowerShell | `scripts/build-backend.ps1` | Windows equivalent |
+| Shell | `start.sh` | Mandatory one-command local runner for Django + React development |
 
 Skips files that already exist unless `--force` is passed. After scaffolding, the script prints next steps (dependency installation, URL wiring, settings config).
 
 ### ./scripts/validate.py -- Check Setup Correctness
 
-Inspects an existing project and validates cross-layer configuration consistency. Checks 14 categories across all three layers.
+Inspects an existing project and validates cross-layer configuration consistency. Checks 15 categories across all three layers, including the mandatory root `start.sh`.
 
 ```bash
 python3 {baseDir}/scripts/validate.py \
@@ -696,6 +840,7 @@ python3 {baseDir}/scripts/validate.py \
 | Loading Screen | backend-ready listener, health polling fallback |
 | Port Consistency | Rust port range matches Django CORS/CSRF config, devUrl matches Vite |
 | Environment Files | TAURI_SIGNING_PRIVATE_KEY, GITHUB_PAT_UPDATER |
+| Start Script | Root `start.sh`, executable bit, `uv`, `bun`, backend/frontend startup, cleanup trap |
 
 **Exit codes:** `0` = all checks pass, `1` = failures found, `2` = script error
 

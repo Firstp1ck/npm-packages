@@ -4,7 +4,7 @@ Validate a Tauri + Django + React project setup.
 
 Checks cross-layer configuration consistency: CSP, CORS/CSRF, auth,
 port ranges, Tauri imports, health endpoints, session management,
-bundle resources, and environment variables.
+bundle resources, environment variables, and the mandatory start.sh runner.
 
 Usage:
     python3 validate.py --project-root /path/to/project
@@ -1006,6 +1006,70 @@ def check_env_files(root: Path) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
+# Local runner checks
+# ---------------------------------------------------------------------------
+
+def check_start_script(root: Path) -> list[Result]:
+    results = []
+    layer = "development"
+
+    script = root / "start.sh"
+    if not script.exists():
+        results.append(Result(
+            Result.FAIL,
+            "Mandatory root start.sh not found",
+            fix="Create executable ./start.sh that starts Django and React together with uv and bun",
+            layer=layer,
+        ))
+        return results
+
+    content = read_text(script)
+
+    if script.stat().st_mode & 0o111:
+        results.append(Result(Result.PASS, "start.sh is executable", layer=layer))
+    else:
+        results.append(Result(
+            Result.FAIL,
+            "start.sh is not executable",
+            fix="Run chmod +x start.sh",
+            layer=layer,
+        ))
+
+    required_patterns = [
+        ("uv", "start.sh uses uv for backend commands", "Use uv sync and uv run python manage.py ..."),
+        ("bun", "start.sh uses bun for frontend commands", "Use bun install and bun run dev"),
+        ("manage.py migrate", "start.sh runs Django migrations", "Run uv run python manage.py migrate before starting the backend"),
+        ("manage.py runserver", "start.sh starts the Django backend", "Start Django with uv run python manage.py runserver"),
+        ("bun run dev", "start.sh starts the React/Vite frontend", "Start React with bun run dev"),
+        ("VITE_API_BASE_URL", "start.sh exports/provides VITE_API_BASE_URL", "Set VITE_API_BASE_URL to the Django /api base URL unless already set"),
+        ("trap cleanup EXIT INT TERM", "start.sh traps EXIT/INT/TERM for cleanup", "Trap EXIT, INT, and TERM and kill child processes"),
+        ("kill", "start.sh stops child processes", "Track backend/frontend PIDs and kill them in cleanup()"),
+    ]
+
+    for needle, ok_message, fix in required_patterns:
+        if needle in content:
+            results.append(Result(Result.PASS, ok_message, layer=layer))
+        else:
+            results.append(Result(Result.FAIL, ok_message.replace("uses", "missing").replace("runs", "missing").replace("starts", "missing"), fix=fix, layer=layer))
+
+    if "seed_demo" in content or "manage.py help" in content:
+        results.append(Result(
+            Result.PASS,
+            "start.sh handles optional demo/seed command discovery",
+            layer=layer,
+        ))
+    else:
+        results.append(Result(
+            Result.WARN,
+            "start.sh does not handle optional demo/seed commands",
+            fix="If the project has demo data, run a clearly named seed command conditionally (for example manage.py help seed_demo)",
+            layer=layer,
+        ))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -1024,6 +1088,7 @@ ALL_CHECKS = [
     ("Loading Screen", check_loading_screen),
     ("Port Consistency", check_port_consistency),
     ("Environment Files", check_env_files),
+    ("Start Script", check_start_script),
 ]
 
 COLORS = {

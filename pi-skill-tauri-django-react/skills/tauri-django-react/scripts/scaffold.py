@@ -3,7 +3,7 @@
 Scaffold Tauri + Django + React integration files for a new project.
 
 Generates all cross-layer boilerplate: Rust backend lifecycle, Django hybrid auth,
-React Tauri detection, build scripts, and configuration files.
+React Tauri detection, build scripts, configuration files, and a mandatory root start.sh.
 
 Usage:
     python3 scaffold.py --project-root /path/to/project --app-name "My App" --app-id com.example.myapp
@@ -38,6 +38,7 @@ def get_templates(ctx: dict) -> list[tuple[str, str]]:
         ("frontend/src/components/LoadingScreen.tsx", _tmpl_loading_screen(ctx)),
         ("scripts/build-backend.sh", _tmpl_build_backend_sh(ctx)),
         ("scripts/build-backend.ps1", _tmpl_build_backend_ps1(ctx)),
+        ("start.sh", _tmpl_start_sh(ctx)),
     ]
 
 
@@ -1003,6 +1004,78 @@ def _tmpl_build_backend_ps1(ctx: dict) -> str:
     """)
 
 
+def _tmpl_start_sh(ctx: dict) -> str:
+    return dedent("""\
+        #!/usr/bin/env bash
+        set -Eeuo pipefail
+
+        ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        BACKEND_DIR="$ROOT_DIR/backend"
+        FRONTEND_DIR="$ROOT_DIR/frontend"
+
+        BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+        BACKEND_PORT="${BACKEND_PORT:-8000}"
+        FRONTEND_URL="http://localhost:5173"
+        BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
+
+        backend_pid=""
+        frontend_pid=""
+
+        cleanup() {
+          echo
+          echo "Stopping application..."
+          if [[ -n "$frontend_pid" ]] && kill -0 "$frontend_pid" 2>/dev/null; then
+            kill "$frontend_pid" 2>/dev/null || true
+          fi
+          if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
+            kill "$backend_pid" 2>/dev/null || true
+          fi
+          wait 2>/dev/null || true
+        }
+
+        trap cleanup EXIT INT TERM
+
+        echo "Preparing backend..."
+        (
+          cd "$BACKEND_DIR"
+          uv sync --all-groups
+          uv run python manage.py migrate
+          if uv run python manage.py help seed_demo >/dev/null 2>&1; then
+            uv run python manage.py seed_demo
+          fi
+        )
+
+        echo "Preparing frontend..."
+        (
+          cd "$FRONTEND_DIR"
+          bun install
+        )
+
+        echo "Starting backend at $BACKEND_URL"
+        (
+          cd "$BACKEND_DIR"
+          uv run python manage.py runserver "${BACKEND_HOST}:${BACKEND_PORT}"
+        ) &
+        backend_pid=$!
+
+        echo "Starting frontend at $FRONTEND_URL"
+        (
+          cd "$FRONTEND_DIR"
+          VITE_API_BASE_URL="${VITE_API_BASE_URL:-${BACKEND_URL}/api}" bun run dev
+        ) &
+        frontend_pid=$!
+
+        echo
+        echo "Application is starting:"
+        echo "  Frontend: $FRONTEND_URL"
+        echo "  Backend:  $BACKEND_URL/api"
+        echo
+        echo "Press Ctrl+C to stop both processes."
+
+        wait -n "$backend_pid" "$frontend_pid"
+    """)
+
+
 # ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
@@ -1130,7 +1203,8 @@ def main() -> int:
     print("4. Add HybridSessionAuthentication to DRF settings:")
     print('     DEFAULT_AUTHENTICATION_CLASSES: ["api.authentication.HybridSessionAuthentication"]')
     print("5. Add CORS/CSRF settings for Tauri origins (see SKILL.md)")
-    print("6. Run the validation script to check your setup:")
+    print("6. Use ./start.sh for local Django + React development")
+    print("7. Run the validation script to check your setup:")
     print("     python3 validate.py --project-root .")
     print()
 

@@ -4,6 +4,7 @@ const HELPER_COMMAND = "webui-helper";
 const RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
 const TOOLS_CONFIG_TYPE = "webui-tools-config";
 const SKILLS_CONFIG_TYPE = "webui-skills-config";
+const APP_RUNNER_CONTEXT_TYPE = "webui-app-runner-output";
 
 function responseMessage(payload) {
   return `${RESPONSE_PREFIX}${JSON.stringify(payload)}`;
@@ -170,6 +171,24 @@ export default function webuiRpcHelper(pi) {
     return skillState(ctx);
   }
 
+  function transferAppRunnerContext(ctx, payload) {
+    const content = String(payload?.content || "").trimEnd();
+    if (!content.trim()) throw new Error("App runner context content is empty");
+    const details = payload?.details && typeof payload.details === "object" ? payload.details : {};
+    const isIdle = ctx.isIdle();
+    pi.sendMessage({
+      customType: APP_RUNNER_CONTEXT_TYPE,
+      content,
+      display: true,
+      details,
+    }, isIdle ? undefined : { deliverAs: "steer" });
+    return {
+      customType: APP_RUNNER_CONTEXT_TYPE,
+      delivery: isIdle ? "context" : "steer",
+      lineCount: Number(details.lineCount || 0) || undefined,
+    };
+  }
+
   function executeAction(action, payload, ctx) {
     switch (action) {
       case "tools-state":
@@ -180,6 +199,8 @@ export default function webuiRpcHelper(pi) {
         return skillState(ctx);
       case "skills-set":
         return setSkillState(ctx, payload);
+      case "app-runner-context":
+        return transferAppRunnerContext(ctx, payload);
       default:
         throw new Error(`Unknown ${HELPER_COMMAND} action: ${action}`);
     }

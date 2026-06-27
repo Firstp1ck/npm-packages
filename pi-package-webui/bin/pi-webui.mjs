@@ -189,6 +189,8 @@ const APP_RUNNER_COMMAND_CACHE_TTL_MS = 30_000;
 const APP_RUNNER_OUTPUT_LINE_LIMIT = 1_000;
 const APP_RUNNER_OUTPUT_MAX_CHARS = 240_000;
 const APP_RUNNER_INPUT_MAX_CHARS = 16_000;
+const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
+const APP_RUNNER_CONTEXT_MAX_LINES = APP_RUNNER_OUTPUT_LINE_LIMIT;
 const APP_RUNNER_STOP_GRACE_MS = 2_500;
 const APP_RUNNER_PYTHON_ENTRIES = ["Main.py", "main.py", "src/main.py", "src/Main.py", "app.py", "src/app.py"];
 const APP_RUNNER_JS_ENTRIES = ["main.js", "src/main.js", "index.js", "src/index.js", "server.js", "src/server.js", "app.js", "src/app.js"];
@@ -428,6 +430,10 @@ function truncateLongText(value, maxLength = 8000) {
   const text = String(value || "");
   if (text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function stripAnsi(text) {
+  return String(text ?? "").replace(/(?:\x1B|\u241B)(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
 }
 
 function parsePackageVersion(version) {
@@ -2563,6 +2569,59 @@ function clearAppRunnerForTab(tab) {
   tab.appRunner = null;
   broadcastAppRunnerState(tab);
   return true;
+}
+
+function normalizeAppRunnerContextLineCount(value) {
+  const number = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(number)) return APP_RUNNER_CONTEXT_DEFAULT_LINES;
+  return Math.max(1, Math.min(APP_RUNNER_CONTEXT_MAX_LINES, number));
+}
+
+function appRunnerOutputLinesForContext(run) {
+  const lines = Array.isArray(run?.lines) ? [...run.lines] : [];
+  const pendingLine = appRunnerPendingLine(run);
+  if (pendingLine) lines.push(pendingLine);
+  return lines.map((line) => stripAnsi(line).replace(/\r\n?/g, "\n"));
+}
+
+function formatAppRunnerContextContent(tab, run, { requestedLineCount, lines, totalAvailableLines }) {
+  const status = appRunnerStatusLabel(run);
+  const capturedAt = new Date().toISOString();
+  const header = [
+    "App runner output transferred from Pi Web UI.",
+    `Command: ${stripAnsi(run?.displayCommand || run?.command || "app runner")}`,
+    `Cwd: ${stripAnsi(run?.cwd || tab?.cwd || "")}`,
+    `Status: ${status}`,
+    `Captured: last ${lines.length} of ${totalAvailableLines} available line${totalAvailableLines === 1 ? "" : "s"} (requested ${requestedLineCount})`,
+    run?.truncated ? "Note: earlier app runner output had already been truncated before this capture." : "",
+    `Captured at: ${capturedAt}`,
+  ].filter(Boolean);
+  return `${header.join("\n")}\n\n\`\`\`\`text\n${lines.join("\n").trimEnd()}\n\`\`\`\``;
+}
+
+async function transferAppRunnerContext(tab, body = {}) {
+  const run = tab?.appRunner;
+  if (!run) throw makeHttpError(409, "No app runner output is available in this tab");
+  const requestedLineCount = normalizeAppRunnerContextLineCount(body.lineCount ?? body.lines ?? body.count);
+  const allLines = appRunnerOutputLinesForContext(run);
+  const lines = allLines.slice(-requestedLineCount);
+  if (!lines.some((line) => stripAnsi(line).trim())) throw makeHttpError(400, "App runner output is empty");
+  const details = {
+    runId: run.id,
+    runnerId: run.runnerId,
+    command: run.displayCommand || run.command || "",
+    cwd: run.cwd || tab.cwd,
+    status: run.status || "running",
+    requestedLineCount,
+    lineCount: lines.length,
+    totalAvailableLines: allLines.length,
+    truncated: run.truncated === true,
+    capturedAt: new Date().toISOString(),
+  };
+  const content = formatAppRunnerContextContent(tab, run, { requestedLineCount, lines, totalAvailableLines: allLines.length });
+  const helperData = await sendWebuiHelperCommand(tab, "app-runner-context", { content, details });
+  recordEvent({ type: "webui_app_runner_context", tabId: tab.id, tabTitle: tab.title, command: details.command, lineCount: lines.length, requestedLineCount, delivery: helperData?.delivery || "context" });
+  return { ...details, delivery: helperData?.delivery || "context", activeRun: publicAppRunnerState(run) };
 }
 
 function firstDefined(...values) {
@@ -5454,6 +5513,7 @@ function tabMeta(tab) {
     clientCount: tab.sseClients.size,
     pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length,
     activity: tabActivitySnapshot(tab),
+    appRunner: publicAppRunnerState(tab.appRunner),
   };
 }
 
@@ -7878,6 +7938,13 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       const text = Object.prototype.hasOwnProperty.call(body, "text") ? body.text : body.input;
       sendJson(res, 200, { ok: true, data: sendAppRunnerInput(tab, text, { appendNewline: body.newline !== false, closeStdin: body.closeStdin === true || body.close === true }) });
+      return;
+    }
+
+    if (url.pathname === "/api/app-runner/context" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await transferAppRunnerContext(tab, body) });
       return;
     }
 
