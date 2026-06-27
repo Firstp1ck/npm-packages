@@ -1922,6 +1922,66 @@ body.side-panel-collapsed .terminal-tabs-shell {
 .footer-line-meta .footer-details-toggle {
   flex: 0 0 auto;
 }
+.git-footer-refresh-button {
+  position: absolute;
+  z-index: 4;
+  top: 0.52rem;
+  right: 0.66rem;
+  display: inline-grid;
+  place-items: center;
+  width: 1.72rem;
+  min-width: 1.72rem;
+  height: 1.72rem;
+  min-height: 1.72rem;
+  padding: 0;
+  color: rgba(var(--ctp-text-rgb), 0.86);
+  border: 1px solid rgba(148, 226, 213, 0.30);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(148, 226, 213, 0.20), transparent 70%),
+    rgba(var(--ctp-surface-rgb), 0.36);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0.34rem 0.82rem rgba(var(--ctp-crust-rgb), 0.24);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 950;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-0.1rem) scale(0.94);
+  transition: opacity 120ms ease, transform 120ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.statusbar-git-footer:hover .git-footer-refresh-button,
+.statusbar-git-footer:focus-within .git-footer-refresh-button,
+.git-footer-refresh-button:hover,
+.git-footer-refresh-button:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+.git-footer-refresh-button:hover,
+.git-footer-refresh-button:focus-visible {
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.56);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 0 0.9rem rgba(148, 226, 213, 0.18);
+  outline: none;
+}
+.git-footer-refresh-button[aria-disabled="true"] {
+  cursor: help;
+}
+.statusbar-git-footer:hover .git-footer-refresh-button[aria-disabled="true"],
+.statusbar-git-footer:focus-within .git-footer-refresh-button[aria-disabled="true"] {
+  opacity: 0.62;
+}
+.git-footer-refresh-button[aria-busy="true"] {
+  cursor: progress;
+}
+.git-footer-refresh-button[aria-busy="true"] .git-footer-refresh-icon {
+  animation: git-footer-refresh-spin 0.8s linear infinite;
+}
+@keyframes git-footer-refresh-spin {
+  to { transform: rotate(360deg); }
+}
 .footer-line-tui {
   align-items: center;
   gap: 0.5rem;
@@ -2133,6 +2193,9 @@ button.footer-meta {
 .footer-branch.footer-meta-action {
   border-color: rgba(245, 194, 231, 0.24);
 }
+.footer-worktree.footer-meta-action {
+  border-color: rgba(166, 227, 161, 0.24);
+}
 .footer-model-picker {
   position: absolute;
   left: var(--footer-model-picker-left, auto);
@@ -2246,13 +2309,57 @@ button.footer-meta {
 .footer-model-option.drag-over-after::after {
   bottom: -0.28rem;
 }
+.footer-branch-section-title {
+  color: rgba(var(--ctp-subtext-rgb), 0.72);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.footer-branch-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.36rem;
+  align-items: stretch;
+}
 .footer-branch-option.active {
   border-color: rgba(245, 194, 231, 0.36);
   box-shadow: inset 3px 0 0 var(--ctp-pink), 0 0 1rem rgba(245, 194, 231, 0.12);
 }
+.footer-branch-option-row.worktree-occupied .footer-branch-option {
+  border-color: rgba(166, 227, 161, 0.34);
+  box-shadow: inset 3px 0 0 var(--ctp-green), 0 0 1rem rgba(166, 227, 161, 0.10);
+}
 .footer-branch-option:disabled {
   cursor: default;
   opacity: 0.78;
+}
+.footer-branch-advanced-action {
+  min-width: 5.6rem;
+  min-height: 44px;
+  padding: 0.35rem 0.58rem;
+  border-color: rgba(245, 194, 231, 0.22);
+  color: rgba(var(--ctp-subtext-rgb), 0.82);
+  font-size: 0.7rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+.footer-branch-advanced-action:not(:disabled):hover,
+.footer-branch-advanced-action:not(:disabled):focus-visible {
+  border-color: rgba(245, 194, 231, 0.46);
+  color: var(--ctp-pink);
+}
+.footer-branch-advanced-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+.footer-branch-worktree-section {
+  display: grid;
+  gap: 0.34rem;
+}
+.footer-worktree-option.active {
+  border-color: rgba(148, 226, 213, 0.38);
+  box-shadow: inset 3px 0 0 var(--ctp-teal), 0 0 1rem rgba(148, 226, 213, 0.12);
 }
 .footer-branch-create-option {
   border-color: rgba(166, 227, 161, 0.34);
@@ -2465,6 +2572,11 @@ button.footer-meta {
 .footer-branch .footer-meta-value {
   color: var(--ctp-pink);
   text-shadow: 0 0 0.55rem rgba(245, 194, 231, 0.18);
+}
+.footer-worktree .footer-meta-value,
+.footer-tui-worktree {
+  color: var(--ctp-green);
+  text-shadow: 0 0 0.55rem rgba(166, 227, 161, 0.20);
 }
 .footer-changes {
   border-color: rgba(249, 226, 175, 0.36);
@@ -7540,15 +7652,17 @@ button.composer-skill-tag:focus-visible {
   }
   .footer-line-meta .footer-meta { display: none; }
   .footer-workspace,
-  .footer-context { display: grid !important; }
+  .footer-context,
+  .footer-worktree { display: grid !important; }
   .footer-workspace { order: 1; }
   .footer-context { order: 2; }
-  .footer-details-toggle { order: 3; }
-  .footer-branch { order: 4; }
-  .footer-changes { order: 5; }
-  .footer-runtime { order: 6; }
-  .footer-model { order: 7; }
-  .footer-thinking { order: 8; }
+  .footer-worktree { order: 3; }
+  .footer-details-toggle { order: 4; }
+  .footer-branch { order: 5; }
+  .footer-changes { order: 6; }
+  .footer-runtime { order: 7; }
+  .footer-model { order: 8; }
+  .footer-thinking { order: 9; }
   body.footer-details-expanded .footer-line-meta {
     grid-template-columns: 1fr;
   }
@@ -8195,6 +8309,22 @@ button.composer-skill-tag:focus-visible {
   background: rgba(249, 226, 175, 0.12);
   color: var(--ctp-yellow);
 }
+button.workspace-dashboard-chip {
+  appearance: none;
+  cursor: pointer;
+  font: inherit;
+}
+.workspace-dashboard-chip.worktree {
+  border-color: rgba(166, 227, 161, 0.34);
+  background: rgba(166, 227, 161, 0.10);
+  color: var(--ctp-green);
+}
+.workspace-dashboard-chip.worktree:hover,
+.workspace-dashboard-chip.worktree:focus-visible {
+  border-color: rgba(166, 227, 161, 0.54);
+  outline: none;
+  box-shadow: 0 0 0.8rem rgba(166, 227, 161, 0.16);
+}
 .workspace-dashboard-chip-dot {
   color: var(--ctp-teal);
   font-size: 0.66rem;
@@ -8219,6 +8349,16 @@ button.composer-skill-tag:focus-visible {
   border-color: transparent;
   background: var(--neon-gradient);
   box-shadow: 0 0.55rem 1.4rem rgba(137, 180, 250, 0.18);
+}
+.workspace-dashboard-action.worktree {
+  border-color: rgba(166, 227, 161, 0.34);
+  color: var(--ctp-green);
+  background: rgba(166, 227, 161, 0.08);
+}
+.workspace-dashboard-action.worktree:hover,
+.workspace-dashboard-action.worktree:focus-visible {
+  border-color: rgba(166, 227, 161, 0.54);
+  box-shadow: 0 0.55rem 1.4rem rgba(166, 227, 161, 0.14);
 }
 .workspace-dashboard-metrics {
   display: grid;

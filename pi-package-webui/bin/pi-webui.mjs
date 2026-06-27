@@ -36,6 +36,15 @@ import {
   nativeSlashCommandEntries,
   parseSlashCommand as parseNativeSlashCommand,
 } from "../lib/native-command-adapter.mjs";
+import {
+  WORKTREE_ERROR_CODES,
+  createGitWorktree,
+  gitWorktreeErrorPayload,
+  listGitWorktrees,
+  openGitWorktree,
+  pathInside,
+  removeGitWorktree,
+} from "../lib/git-worktrees.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -3707,16 +3716,31 @@ function normalizeGitBranchList(branchText, current = "") {
 
 async function readGitBranches(cwd) {
   const root = await getGitRoot(cwd);
-  const [current, branchText] = await Promise.all([
+  const [current, branchText, worktreeData] = await Promise.all([
     currentGitBranchForPicker(root),
     runGitReadCommand(root, ["branch", "--format=%(refname:short)"], { timeoutMs: 5000, maxOutputLength: 120_000 }),
+    listGitWorktrees(cwd).catch(() => null),
   ]);
+  const occupiedByBranch = new Map();
+  for (const item of worktreeData?.occupiedBranches || []) {
+    if (!item?.branch || occupiedByBranch.has(item.branch)) continue;
+    occupiedByBranch.set(item.branch, item);
+  }
   return {
     cwd,
     root,
+    repoRoot: worktreeData?.repoRoot || root,
+    commonGitDir: worktreeData?.commonGitDir || "",
+    currentWorktreePath: worktreeData?.currentWorktreePath || root,
+    defaultWorktreesRoot: worktreeData?.defaultWorktreesRoot || "",
     current,
     generatedAt: new Date().toISOString(),
-    branches: normalizeGitBranchList(branchText, current),
+    branches: normalizeGitBranchList(branchText, current).map((branch) => {
+      const occupied = occupiedByBranch.get(branch.name);
+      return occupied ? { ...branch, occupied: true, worktreePath: occupied.path, worktreeCurrent: occupied.current === true, mainWorktree: occupied.isMainWorktree === true } : branch;
+    }),
+    worktrees: worktreeData?.worktrees || [],
+    occupiedBranches: worktreeData?.occupiedBranches || [],
   };
 }
 
@@ -3728,6 +3752,15 @@ async function switchGitBranch(cwd, branch, { create = false } = {}) {
   const branchExists = branches.branches.some((item) => item.name === targetBranch);
   if (create && branchExists) throw new Error(`Local git branch already exists: ${targetBranch}`);
   if (!create && !branchExists) throw new Error(`Unknown local git branch: ${targetBranch}`);
+  const occupied = branches.branches.find((item) => item.name === targetBranch && item.occupied && !item.worktreeCurrent);
+  if (!create && occupied?.worktreePath) {
+    return {
+      ok: false,
+      code: WORKTREE_ERROR_CODES.BRANCH_CHECKED_OUT_ELSEWHERE,
+      error: `Branch ${targetBranch} is already checked out at ${occupied.worktreePath}. Open that worktree instead of switching this checkout.`,
+      data: { branch: targetBranch, root, worktreePath: occupied.worktreePath },
+    };
+  }
   if (!create && branches.current === targetBranch) {
     return { ok: true, data: { command: `git switch ${targetBranch}`, stdout: "", stderr: "", exitCode: 0, branch: targetBranch, root, switched: false, created: false } };
   }
@@ -3742,6 +3775,157 @@ async function switchGitBranch(cwd, branch, { create = false } = {}) {
     payload.error = (payload.data?.stderr || payload.data?.stdout || payload.error || `Failed to ${create ? "create and switch to" : "switch to"} ${targetBranch}`).trim();
   }
   return payload;
+}
+
+function normalizeWorktreeSessionMode(value) {
+  const mode = String(value || "fork-current").trim().toLowerCase();
+  if (!mode || mode === "fork" || mode === "fork-current") return "fork-current";
+  if (mode === "empty" || mode === "new") return "empty";
+  if (mode === "clone-current" || mode === "parent-only") {
+    throw makeHttpError(400, `sessionMode ${mode} is not supported yet; use fork-current or empty.`);
+  }
+  throw makeHttpError(400, "sessionMode must be fork-current or empty");
+}
+
+async function createEmptySessionFileForCwd(cwd) {
+  const manager = SessionManager.create(cwd, configuredSessionDir());
+  const sessionFile = manager.getSessionFile();
+  const header = manager.getHeader();
+  if (!sessionFile || !header) return undefined;
+  await mkdir(path.dirname(sessionFile), { recursive: true });
+  await writeFile(sessionFile, `${JSON.stringify(header)}\n`, { encoding: "utf8", flag: "wx" });
+  return sessionFile;
+}
+
+async function prepareWorktreeSessionFile(sourceTab, targetCwd, requestedMode = "fork-current") {
+  if (options.noSession) return { mode: "none", requestedMode: "none", sessionFile: undefined, warning: "Web UI was started with --no-session." };
+  const mode = normalizeWorktreeSessionMode(requestedMode);
+  if (mode === "empty") {
+    return { mode, requestedMode: mode, sessionFile: await createEmptySessionFileForCwd(targetCwd) };
+  }
+
+  const state = await currentSessionState(sourceTab).catch(() => sourceTab?.lastState || {});
+  const sourceSessionFile = state.sessionFile || tabRestorableSessionFile(sourceTab);
+  if (sourceSessionFile) {
+    requireAllowedSessionPath(sourceSessionFile);
+    const sourceInfo = await stat(sourceSessionFile).catch(() => null);
+    if (sourceInfo?.isFile()) {
+      const manager = SessionManager.forkFrom(sourceSessionFile, targetCwd, configuredSessionDir());
+      return { mode, requestedMode: mode, sessionFile: manager.getSessionFile(), parentSession: sourceSessionFile };
+    }
+  }
+
+  return {
+    mode: "empty",
+    requestedMode: mode,
+    sessionFile: await createEmptySessionFileForCwd(targetCwd),
+    warning: "Current session is not persisted yet; opened an empty session rooted at the worktree.",
+  };
+}
+
+function gitWorkspaceFromWorktreeResult(result, worktree = result?.worktree) {
+  if (!worktree?.path) return null;
+  return {
+    repoRoot: result.repoRoot || worktree.repoRoot || "",
+    commonGitDir: result.commonGitDir || worktree.commonGitDir || "",
+    worktreePath: worktree.path,
+    branch: worktree.branch || result.branch || null,
+    worktreeCount: Array.isArray(result.worktrees) ? result.worktrees.length : undefined,
+    isMainWorktree: worktree.isMainWorktree === true,
+  };
+}
+
+async function openWorktreeResultForTab(sourceTab, result, body = {}) {
+  const worktree = result?.worktree;
+  const worktreePath = worktree?.path || result?.path;
+  if (!worktreePath) throw makeHttpError(500, "Git worktree operation did not return a path");
+  if (body.openTab === false) return { ...result, session: null, tab: null, tabs: listTabs(), openedTab: false };
+
+  if (sameResolvedPath(worktreePath, sourceTab.cwd)) {
+    sourceTab.gitWorkspace = gitWorkspaceFromWorktreeResult(result, worktree);
+    return { ...result, session: null, tab: tabMeta(sourceTab), tabs: listTabs(), openedTab: false, openedCurrent: true };
+  }
+
+  const existingTab = [...tabs.values()].find((item) => sameResolvedPath(item.cwd, worktreePath));
+  if (existingTab) {
+    existingTab.gitWorkspace = gitWorkspaceFromWorktreeResult(result, worktree);
+    return { ...result, session: null, tab: tabMeta(existingTab), tabs: listTabs(), openedTab: false, openedExistingTab: true };
+  }
+
+  const session = await prepareWorktreeSessionFile(sourceTab, worktreePath, body.sessionMode || "fork-current");
+  const tab = await createTab({
+    title: body.title,
+    titleSource: body.title ? "explicit" : undefined,
+    cwd: worktreePath,
+    sessionFile: session.sessionFile,
+    gitWorkspace: gitWorkspaceFromWorktreeResult(result, worktree),
+  });
+  recordEvent({ type: "webui_worktree_opened", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, branch: worktree.branch || result.branch || "", sessionMode: session.mode });
+  return {
+    ...result,
+    session,
+    tab: tabMeta(tab),
+    tabs: listTabs(),
+    openedTab: true,
+    dependencyHint: "Git worktrees do not share ignored dependency directories such as node_modules or .venv; install/bootstrap dependencies manually if needed.",
+  };
+}
+
+async function cleanupCreatedWorktreeAfterFailure(sourceCwd, worktreePath) {
+  try {
+    return await removeGitWorktree(sourceCwd, worktreePath, { force: true });
+  } catch (error) {
+    return { ok: false, error: sanitizeError(error), code: error?.code || WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED };
+  }
+}
+
+async function createGitWorktreeTab(tab, body = {}) {
+  let createdResult = null;
+  try {
+    createdResult = await createGitWorktree(tab.cwd, body);
+    const opened = await openWorktreeResultForTab(tab, createdResult, { openTab: body.openTab !== false, ...body });
+    if (createdResult.created) {
+      recordEvent({ type: "webui_worktree_created", tabId: opened.tab?.id || tab.id, cwd: opened.worktree?.path || opened.path, branch: opened.branch || body.branchName || "" });
+    }
+    return opened;
+  } catch (error) {
+    let cleanup = null;
+    const createdPath = createdResult?.created && !createdResult?.openedExisting ? createdResult.worktree?.path || createdResult.path : "";
+    if (createdPath) cleanup = await cleanupCreatedWorktreeAfterFailure(tab.cwd, createdPath);
+    recordEvent({ type: "webui_worktree_create_failed", tabId: tab.id, cwd: createdPath || tab.cwd, branch: body.branchName || body.branch || "", error: sanitizeError(error), cleanup });
+    throw error;
+  }
+}
+
+async function openExistingGitWorktreeTab(tab, body = {}) {
+  const requestedPath = String(body.path || body.worktreePath || "").trim();
+  if (!requestedPath) throw makeHttpError(400, "worktree path is required");
+  const result = await openGitWorktree(tab.cwd, requestedPath);
+  return openWorktreeResultForTab(tab, result, { openTab: body.openTab !== false, ...body });
+}
+
+function openTabsInsideWorktree(worktreePath) {
+  return [...tabs.values()].filter((tab) => pathInside(worktreePath, tab.cwd));
+}
+
+async function removeGitWorktreeForTab(tab, body = {}) {
+  if (body.confirmed !== true) throw makeHttpError(409, "Removing a worktree requires confirmed: true because it deletes files under the worktree path.");
+  const requestedPath = String(body.path || body.worktreePath || "").trim();
+  if (!requestedPath) throw makeHttpError(400, "worktree path is required");
+  const activeTabs = openTabsInsideWorktree(requestedPath);
+  if (activeTabs.length) {
+    const error = makeHttpError(409, `Refusing to remove a worktree that is open in ${activeTabs.length} Web UI tab${activeTabs.length === 1 ? "" : "s"}.`);
+    error.code = WORKTREE_ERROR_CODES.WORKTREE_BUSY;
+    error.details = { path: requestedPath, tabIds: activeTabs.map((item) => item.id) };
+    throw error;
+  }
+  const result = await removeGitWorktree(tab.cwd, requestedPath, { force: body.force === true });
+  recordEvent({ type: "webui_worktree_removed", tabId: tab.id, cwd: result.path || requestedPath, branch: result.branch || "" });
+  return { ...result, tabs: listTabs() };
+}
+
+function sendGitWorktreeFailure(res, error) {
+  sendJson(res, 200, gitWorktreeErrorPayload(error));
 }
 
 async function defaultGitRemote(root) {
@@ -5078,7 +5262,7 @@ function attachRpcToTab(tab, rpc) {
   });
 }
 
-async function createTab({ id: requestedId, index, title, titleSource, conversationStarted, cwd, sessionFile } = {}) {
+async function createTab({ id: requestedId, index, title, titleSource, conversationStarted, cwd, sessionFile, gitWorkspace } = {}) {
   const tabIndex = Number.isInteger(index) && index > 0 ? index : nextTabIndex;
   nextTabIndex = Math.max(nextTabIndex, tabIndex + 1);
   const explicitTitle = String(title || "").trim();
@@ -5101,6 +5285,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     cwd: tabCwd,
     createdAt,
     sessionFile: options.noSession ? undefined : normalizedRestoreString(sessionFile, 4096),
+    gitWorkspace: gitWorkspace || null,
     lastState: null,
     pendingThinkingLevel: undefined,
     activity: createTabActivity(createdAt),
@@ -5147,6 +5332,7 @@ function tabMeta(tab) {
     conversationStarted: !!tab.conversationStarted,
     cwd: tab.cwd,
     sessionFile: tabRestorableSessionFile(tab),
+    gitWorkspace: tab.gitWorkspace || null,
     pendingThinkingLevel: tab.pendingThinkingLevel || null,
     createdAt: tab.createdAt,
     startedAt: tab.rpc.startedAt,
@@ -7891,6 +8077,50 @@ const server = createServer(async (req, res) => {
         sendJson(res, 200, await pullGitChanges(tab.cwd));
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-worktrees" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        sendJson(res, 200, { ok: true, data: await listGitWorktrees(tab.cwd) });
+      } catch (error) {
+        sendGitWorktreeFailure(res, error);
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-worktrees" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      try {
+        sendJson(res, 200, { ok: true, data: await createGitWorktreeTab(tab, body) });
+      } catch (error) {
+        sendGitWorktreeFailure(res, error);
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-worktrees/open" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      try {
+        sendJson(res, 200, { ok: true, data: await openExistingGitWorktreeTab(tab, body) });
+      } catch (error) {
+        sendGitWorktreeFailure(res, error);
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-worktrees" && req.method === "DELETE") {
+      requireLocalhost(req, "Removing Git worktrees is only allowed from localhost");
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      try {
+        sendJson(res, 200, { ok: true, data: await removeGitWorktreeForTab(tab, body) });
+      } catch (error) {
+        sendGitWorktreeFailure(res, error);
       }
       return;
     }

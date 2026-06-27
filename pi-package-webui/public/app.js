@@ -10,6 +10,7 @@ const elements = {
   newTabMenuPanel: $("#newTabMenuPanel"),
   newTabCurrentDirectoryButton: $("#newTabCurrentDirectoryButton"),
   newTabChooseDirectoryButton: $("#newTabChooseDirectoryButton"),
+  newTabWorktreeButton: $("#newTabWorktreeButton"),
   closeAllTabsButton: $("#closeAllTabsButton"),
   commandPaletteButton: $("#commandPaletteButton"),
   workspaceDashboardToggleButton: $("#workspaceDashboardToggleButton"),
@@ -415,7 +416,7 @@ let footerModelPickerOpen = false;
 let footerThinkingPickerOpen = false;
 let footerAutoCompactionToggleInFlight = false;
 let footerBranchPickerOpen = false;
-let footerBranchPickerState = { loading: false, error: "", branches: [], current: "", root: "", switching: "", tabId: null };
+let footerBranchPickerState = { loading: false, error: "", branches: [], current: "", root: "", repoRoot: "", currentWorktreePath: "", defaultWorktreesRoot: "", worktrees: [], occupiedBranches: [], switching: "", tabId: null };
 let footerBranchCreateDraft = { type: "", name: "" };
 let footerBranchPickerRequestSerial = 0;
 let footerScopedModelDragKey = "";
@@ -5189,14 +5190,18 @@ function openNewTabMenu() {
   setNewTabMenuOpen(true);
 }
 
+function newTabMenuItems() {
+  return [elements.newTabCurrentDirectoryButton, elements.newTabChooseDirectoryButton, elements.newTabWorktreeButton].filter(Boolean);
+}
+
 function focusNewTabMenuItem(direction = "first") {
-  const items = [elements.newTabCurrentDirectoryButton, elements.newTabChooseDirectoryButton].filter(Boolean);
+  const items = newTabMenuItems();
   const item = direction === "last" ? items.at(-1) : items[0];
   item?.focus({ preventScroll: true });
 }
 
 function moveNewTabMenuFocus(delta) {
-  const items = [elements.newTabCurrentDirectoryButton, elements.newTabChooseDirectoryButton].filter(Boolean);
+  const items = newTabMenuItems();
   if (!items.length) return;
   const currentIndex = Math.max(0, items.indexOf(document.activeElement));
   const nextIndex = (currentIndex + delta + items.length) % items.length;
@@ -6155,6 +6160,24 @@ function normalizeDisplayPath(value) {
   return String(value || "").replace(/\\/g, "/");
 }
 
+function normalizeGitWorkspaceInfo(workspace) {
+  if (!workspace || typeof workspace !== "object") return null;
+  return {
+    repoRoot: normalizeDisplayPath(workspace.repoRoot || ""),
+    commonGitDir: normalizeDisplayPath(workspace.commonGitDir || ""),
+    worktreePath: normalizeDisplayPath(workspace.worktreePath || workspace.path || ""),
+    branch: cleanStatusText(workspace.branch || ""),
+    worktreeCount: Number.isFinite(Number(workspace.worktreeCount)) ? Number(workspace.worktreeCount) : null,
+    isMainWorktree: workspace.isMainWorktree === true,
+  };
+}
+
+function gitWorkspaceBadgeLabel(workspace = normalizeGitWorkspaceInfo(activeTab()?.gitWorkspace)) {
+  if (!workspace?.worktreePath) return "";
+  const branch = workspace.branch || "detached";
+  return workspace.isMainWorktree ? `main worktree · ${branch}` : `worktree · ${branch}`;
+}
+
 function textFromContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return JSON.stringify(content ?? "");
@@ -6327,6 +6350,7 @@ const FOOTER_META_CLASS_BY_KEY = new Map([
   ["sync", "footer-sync"],
   ["changes", "footer-changes"],
   ["git-extra", "footer-git-extra"],
+  ["worktree", "footer-worktree"],
   ["context", "footer-context"],
   ["model", "footer-model"],
   ["thinking", "footer-thinking"],
@@ -6345,6 +6369,7 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   sync: "Remote tracking divergence. ↑ means local commits ahead; ↓ means remote commits to pull.",
   changes: "Working tree and fetched remote summary. 🟢 staged, ✏️ modified unstaged, ➕ untracked, ⚠️ conflicted; ⬇️ means fetched remote commits to pull; 🔄/✓/⚠️ fetch shows the tab git fetch state; ✅ means no changes.",
   "git-extra": "Extra Git signals. 📦 stash, 🧩 dirty submodules, 🌳 worktrees, 🏷️ tag at HEAD, 🕒 last commit age, 🔓 signing mismatch.",
+  worktree: "Git worktree checkout for this tab. Use branch worktrees to work on branches in parallel without switching this checkout.",
   model: "Scoped model for this tab.",
   thinking: "Reasoning/thinking effort for this tab.",
 };
@@ -6517,7 +6542,10 @@ function footerPayloadWithLiveModel(payload) {
   if (!payload) return payload;
   const model = currentState?.model ? shortModelLabel(currentState.model) : "";
   const effort = footerThinkingDisplay();
+  const workspace = normalizeGitWorkspaceInfo(activeTab()?.gitWorkspace);
+  const worktreeLabel = gitWorkspaceBadgeLabel(workspace);
   const hasThinkingChip = [...payload.main, ...payload.meta].some((chip) => chip?.key === "thinking");
+  const hasWorktreeChip = [...payload.main, ...payload.meta].some((chip) => chip?.key === "worktree");
   const contextChip = (chip) => {
     const usageUnknown = contextUsageUnknownAfterCompaction();
     const value = usageUnknown ? footerContextDisplayWithAuto(unknownFooterContextText(chip?.contextUsage)) : footerContextDisplayWithAuto(chip?.value);
@@ -6525,6 +6553,7 @@ function footerPayloadWithLiveModel(payload) {
     return { ...chip, value, title: `context: ${value}`, ...(contextUsage ? { contextUsage } : {}) };
   };
   const effortChip = (chip) => ({ ...chip, key: "thinking", label: "effort", value: effort, title: `effort: ${effort}`, tone: "mauve" });
+  const worktreeChip = () => ({ key: "worktree", label: "worktree", value: worktreeLabel, icon: "🌳", tone: workspace?.isMainWorktree ? "teal" : "green", title: workspace?.worktreePath || "Git worktree" });
   const splitChip = (chip) => {
     if (chip?.key === "context") return [contextChip(chip)];
     if (chip?.key === "thinking") return [effortChip(chip)];
@@ -6532,9 +6561,11 @@ function footerPayloadWithLiveModel(payload) {
     const modelChip = { ...chip, value: model, title: `model: ${model}` };
     return hasThinkingChip ? [modelChip] : [modelChip, effortChip(chip)];
   };
+  const meta = payload.meta.flatMap(splitChip);
+  if (worktreeLabel && !hasWorktreeChip) meta.splice(Math.min(meta.length, 2), 0, worktreeChip());
   return {
     main: payload.main.flatMap(splitChip),
-    meta: payload.meta.flatMap(splitChip),
+    meta,
   };
 }
 
@@ -6582,11 +6613,14 @@ function footerTuiItem(value, className = "", options = {}) {
 
 function renderTuiFooterLine({ cwd, cwdTitle, message = "", stats = [], model = "" } = {}) {
   const tab = activeTab();
+  const workspace = normalizeGitWorkspaceInfo(tab?.gitWorkspace);
+  const worktreeLabel = gitWorkspaceBadgeLabel(workspace);
   const line = make("div", "footer-line footer-line-tui");
   line.append(footerTuiItem(cwd || "loading…", "footer-tui-cwd", tab ? {
     onClick: changeActiveTabCwd,
     title: cwdTitle || `Change cwd for ${tab.title}: ${cwd}`,
   } : { title: cwdTitle }));
+  if (worktreeLabel) line.append(footerTuiItem(worktreeLabel, "footer-tui-worktree", { title: workspace?.worktreePath || worktreeLabel }));
   if (message) line.append(footerTuiItem(message, "footer-tui-status"));
   for (const stat of stats.filter(Boolean)) line.append(footerTuiItem(stat, "footer-tui-stat"));
   if (model) {
@@ -6684,7 +6718,10 @@ function renderGitFooterPayloadMeta(chip, tab) {
     action = "No Git repository detected. Click to initialize a repo, create README.md, add origin, and push main.";
   } else if (chip.key === "git") {
     options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
-    action = "Click to switch to another local branch.";
+    action = "Click to open, create, or switch branches. Worktree actions are the safe default for parallel work.";
+  } else if (chip.key === "worktree") {
+    options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
+    action = "Click to manage branch worktrees for this repository.";
   } else if (chip.key === "changes") {
     options.onClick = openGitChangesDialog;
     action = "Click to view the current git diff.";
@@ -6700,7 +6737,7 @@ function renderGitFooterPayloadMeta(chip, tab) {
   options.tooltipAlign = gitFooterTooltipAlign(chip);
   const node = footerMeta(chip.label, chip.value, footerMetaClassForPayload(chip), options);
   applyFooterChangedFilesDropdown(node, chip);
-  if (chip.key === "git" && options.onClick && cleanFooterPayloadText(chip.value, "").toLowerCase() !== "no repo") {
+  if (["git", "worktree"].includes(chip.key) && options.onClick && cleanFooterPayloadText(chip.value, "").toLowerCase() !== "no repo") {
     node.setAttribute("aria-haspopup", "listbox");
     node.setAttribute("aria-expanded", footerBranchPickerOpen ? "true" : "false");
   }
@@ -6724,7 +6761,10 @@ function gitFooterChipShapeKey(chip) {
 }
 
 function gitFooterPickerStateKey() {
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}`;
+  const tabContext = activeTabContext();
+  const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
+  const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -6738,6 +6778,44 @@ let gitFooterRenderCache = null;
 
 function invalidateGitFooterRenderCache() {
   gitFooterRenderCache = null;
+}
+
+function triggerGitFooterRefreshFromButton() {
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId || gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId)) return;
+  if (currentState?.isStreaming || currentState?.isCompacting) {
+    addEvent("Git footer refresh is unavailable while Pi is busy.", "warn");
+    return;
+  }
+  if (!resolveAvailableCommandName("git-footer-refresh", { rpcOnly: true })) {
+    addEvent(optionalFeatureUnavailableMessage("gitFooterStatus"), "warn");
+    return;
+  }
+  requestGitFooterWebuiPayload(tabContext, { force: true, silent: false });
+}
+
+function renderGitFooterRefreshButton() {
+  const tabContext = activeTabContext();
+  const inFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
+  const commandAvailable = !!resolveAvailableCommandName("git-footer-refresh", { rpcOnly: true });
+  const button = make("button", "git-footer-refresh-button");
+  button.type = "button";
+  button.title = inFlight
+    ? "Refreshing git footer status…"
+    : commandAvailable
+      ? "Refresh git footer status (/git-footer-refresh)"
+      : optionalFeatureUnavailableMessage("gitFooterStatus");
+  button.setAttribute("aria-label", inFlight ? "Refreshing git footer status" : "Refresh git footer status");
+  if (!commandAvailable) button.setAttribute("aria-disabled", "true");
+  if (inFlight) button.setAttribute("aria-busy", "true");
+  button.disabled = inFlight || !tabContext.tabId;
+  button.append(make("span", "git-footer-refresh-icon", "↻"));
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    triggerGitFooterRefreshFromButton();
+  });
+  return button;
 }
 
 function renderGitFooterPayload(payload) {
@@ -6786,7 +6864,7 @@ function renderGitFooterPayload(payload) {
   const row2 = make("div", "footer-line footer-line-meta");
   row2.append(...metaNodes, footerToggle);
 
-  elements.statusBar.append(row1, row2);
+  elements.statusBar.append(row1, row2, renderGitFooterRefreshButton());
   if (footerModelPickerOpen) elements.statusBar.append(renderFooterModelPicker());
   if (footerThinkingPickerOpen) elements.statusBar.append(renderFooterThinkingPicker());
   if (footerBranchPickerOpen) elements.statusBar.append(renderFooterBranchPicker());
@@ -7576,6 +7654,8 @@ function renderWorkspaceDashboard() {
   const tab = activeTab();
   const snapshot = contextUsageSnapshot();
   const workspaceLabel = latestWorkspace?.displayCwd || (tab?.cwd ? normalizeDisplayPath(tab.cwd) : "Choose or create a tab to start");
+  const workspaceInfo = normalizeGitWorkspaceInfo(tab?.gitWorkspace);
+  const worktreeLabel = gitWorkspaceBadgeLabel(workspaceInfo);
   const queueCount = Number(currentState?.pendingMessageCount || 0) || 0;
   const tabIndicatorState = tab ? tabIndicator(tab) : null;
   const sessionSummary = dashboardSessionSummary();
@@ -7588,6 +7668,12 @@ function renderWorkspaceDashboard() {
   const signature = JSON.stringify({
     title: tab?.title || "Pi Web UI",
     workspaceLabel,
+    gitWorkspace: workspaceInfo ? {
+      branch: workspaceInfo.branch,
+      worktreePath: workspaceInfo.worktreePath,
+      isMainWorktree: workspaceInfo.isMainWorktree,
+      worktreeCount: workspaceInfo.worktreeCount,
+    } : null,
     tabIndicatorState,
     tabsLength: tabs.length,
     queueCount,
@@ -7617,6 +7703,13 @@ function renderWorkspaceDashboard() {
     statusChip.append(make("span", "workspace-dashboard-chip-dot", tabIndicatorState.glyph), make("span", undefined, tabIndicatorState.label));
     meta.append(statusChip);
   }
+  if (worktreeLabel) {
+    const worktreeChip = make("button", "workspace-dashboard-chip worktree", worktreeLabel);
+    worktreeChip.type = "button";
+    worktreeChip.title = workspaceInfo?.worktreePath || worktreeLabel;
+    worktreeChip.addEventListener("click", () => openBranchWorktreePicker());
+    meta.append(worktreeChip);
+  }
   meta.append(
     make("span", "workspace-dashboard-chip", `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`),
     make("span", `workspace-dashboard-chip ${queueCount ? "attention" : ""}`.trim(), queueCount ? `${queueCount} queued` : "queue clear"),
@@ -7626,6 +7719,7 @@ function renderWorkspaceDashboard() {
   actions.append(
     dashboardAction("Command palette", () => openCommandPalette(), "primary"),
     dashboardAction("New tab", () => createTerminalTab()),
+    dashboardAction("Branch worktree", () => openBranchWorktreePicker(), "worktree"),
     dashboardAction("Resume", () => runNativeCommandMenu("/resume")),
     dashboardAction("Model", () => runNativeCommandMenu("/model")),
     dashboardAction("Settings", () => runNativeCommandMenu("/settings")),
@@ -7720,19 +7814,50 @@ function setFooterThinkingPickerOpen(open) {
 }
 
 function normalizeFooterGitBranches(data = {}) {
-  const current = cleanStatusText(data.current || "");
+  const current = cleanStatusText(data.current || data.currentBranch || "");
   const seen = new Set();
   const branches = [];
   for (const item of Array.isArray(data.branches) ? data.branches : []) {
     const name = cleanStatusText(typeof item === "string" ? item : item?.name);
     if (!name || seen.has(name)) continue;
     seen.add(name);
-    branches.push({ name, current: Boolean(item?.current) || (!!current && name === current) });
+    branches.push({
+      name,
+      current: Boolean(item?.current) || (!!current && name === current),
+      occupied: Boolean(item?.occupied),
+      worktreePath: cleanFooterPayloadText(item?.worktreePath, "", 4000),
+      worktreeCurrent: Boolean(item?.worktreeCurrent),
+      mainWorktree: Boolean(item?.mainWorktree),
+    });
   }
+  const worktrees = (Array.isArray(data.worktrees) ? data.worktrees : [])
+    .map((item) => ({
+      path: cleanFooterPayloadText(item?.path, "", 4000),
+      branch: cleanStatusText(item?.branch || ""),
+      current: Boolean(item?.current),
+      isMainWorktree: Boolean(item?.isMainWorktree),
+      prunable: Boolean(item?.prunable),
+      locked: Boolean(item?.locked),
+    }))
+    .filter((item) => item.path);
+  const occupiedBranches = (Array.isArray(data.occupiedBranches) ? data.occupiedBranches : [])
+    .map((item) => ({
+      branch: cleanStatusText(item?.branch || ""),
+      path: cleanFooterPayloadText(item?.path, "", 4000),
+      current: Boolean(item?.current),
+      isMainWorktree: Boolean(item?.isMainWorktree),
+    }))
+    .filter((item) => item.branch && item.path);
   return {
-    root: cleanFooterPayloadText(data.root, "", 4000),
+    root: cleanFooterPayloadText(data.root || data.currentWorktreePath, "", 4000),
+    repoRoot: cleanFooterPayloadText(data.repoRoot || data.root, "", 4000),
+    commonGitDir: cleanFooterPayloadText(data.commonGitDir, "", 4000),
+    currentWorktreePath: cleanFooterPayloadText(data.currentWorktreePath || data.root, "", 4000),
+    defaultWorktreesRoot: cleanFooterPayloadText(data.defaultWorktreesRoot, "", 4000),
     current,
     branches,
+    worktrees,
+    occupiedBranches,
   };
 }
 
@@ -7757,12 +7882,19 @@ function applyOptimisticGitFooterBranch(branch, tabContext = activeTabContext())
 async function loadFooterBranchPicker(tabContext = activeTabContext()) {
   const requestSerial = ++footerBranchPickerRequestSerial;
   const tabId = tabContext.tabId || activeTabId;
+  const preserveState = footerBranchPickerState.tabId === tabId ? footerBranchPickerState : {};
   footerBranchPickerState = {
     loading: true,
     error: "",
-    branches: footerBranchPickerState.tabId === tabId ? footerBranchPickerState.branches : [],
-    current: footerBranchPickerState.tabId === tabId ? footerBranchPickerState.current : "",
-    root: footerBranchPickerState.tabId === tabId ? footerBranchPickerState.root : "",
+    branches: preserveState.branches || [],
+    current: preserveState.current || "",
+    root: preserveState.root || "",
+    repoRoot: preserveState.repoRoot || "",
+    commonGitDir: preserveState.commonGitDir || "",
+    currentWorktreePath: preserveState.currentWorktreePath || "",
+    defaultWorktreesRoot: preserveState.defaultWorktreesRoot || "",
+    worktrees: preserveState.worktrees || [],
+    occupiedBranches: preserveState.occupiedBranches || [],
     switching: "",
     tabId,
   };
@@ -7855,6 +7987,24 @@ function confirmFooterGitBranchAction(branch, { create = false, requireConfirm =
   return window.confirm(message);
 }
 
+function confirmFooterGitWorktreeAction(branch, { path = "", create = false, requireConfirm = false } = {}) {
+  const branchName = cleanStatusText(branch);
+  if (!requireConfirm) return true;
+  const targetPath = cleanFooterPayloadText(path, "", 4000);
+  const message = [
+    `${create ? "Create" : "Open"} branch worktree: ${branchName || targetPath}?`,
+    "",
+    `Repository: ${footerBranchPickerState.repoRoot || footerBranchPickerState.root || currentGitFooterCacheCwd() || "current tab"}`,
+    targetPath ? `Worktree: ${targetPath}` : `Default location: ${footerBranchPickerState.defaultWorktreesRoot || "repo sibling .worktrees directory"}`,
+    "",
+    "This opens a separate checkout in a separate Pi tab and does not switch this tab's branch.",
+    "Ignored dependencies such as node_modules or .venv are not copied; bootstrap them manually if needed.",
+    "",
+    "Continue?",
+  ].join("\n");
+  return window.confirm(message);
+}
+
 function footerBranchCreateType(value = footerBranchCreateDraft.type) {
   return slugifyGitBranchPart(value);
 }
@@ -7897,20 +8047,42 @@ function gitSwitchCreateCommandDisplay(branch) {
   return `git switch -c ${quoteGitBranchForDisplay(branch)}`;
 }
 
-function footerBranchCreateTooltip(branchName = footerBranchCreateName()) {
-  const command = gitSwitchCreateCommandDisplay(branchName || footerBranchCreatePreviewName());
+function slugifyWorktreePathPart(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/[-.]{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96) || "branch";
+}
+
+function footerBranchCreateWorktreePathPreview(branch = footerBranchCreateName(), state = footerBranchPickerState) {
+  const root = state.defaultWorktreesRoot || "<repo>.worktrees";
+  return `${root.replace(/\/+$/, "")}/${slugifyWorktreePathPart(branch || footerBranchCreatePreviewName())}`;
+}
+
+function gitWorktreeCreateCommandDisplay(branch, state = footerBranchPickerState) {
+  return `git worktree add -b ${quoteGitBranchForDisplay(branch)} ${quoteGitBranchForDisplay(footerBranchCreateWorktreePathPreview(branch, state))}`;
+}
+
+function gitWorktreeOpenCommandDisplay(path) {
+  return `pi-webui --cwd ${quoteGitBranchForDisplay(path || "<worktree-path>")}`;
+}
+
+function footerBranchCreateTooltip(branchName = footerBranchCreateName(), state = footerBranchPickerState) {
+  const command = gitWorktreeCreateCommandDisplay(branchName || footerBranchCreatePreviewName(), state);
   return [
-    "Create new branch",
-    "A branch is a safe workspace for your changes.",
+    "Create branch worktree",
+    "A branch worktree is a separate checkout for parallel changes.",
     "",
-    `This will run: ${command}`,
+    `This will run roughly: ${command}`,
     "",
     "What happens:",
-    "• creates the branch from the current code",
-    "• switches this tab to that branch",
-    "• does not commit, push, or delete anything",
+    "• creates the branch from the current HEAD when it does not exist",
+    "• opens a separate Pi tab rooted at that worktree",
+    "• does not switch this tab's branch, commit, push, or delete anything",
     "",
-    "Tip: use short lowercase words, e.g. fix/login-button.",
+    "Tip: ignored dependencies such as node_modules or .venv are not copied.",
   ].join("\n");
 }
 
@@ -7923,6 +8095,72 @@ async function createFooterGitBranch(branch = footerBranchCreateName()) {
   const tabContext = activeTabContext();
   if (!confirmFooterGitBranchAction(branchName, { create: true, requireConfirm: true, tabContext })) return;
   await applyFooterGitBranch(branchName, { create: true, tabContext, skipConfirm: true });
+}
+
+async function openWorktreeResponseTab(response, { branchName = "", action = "open" } = {}) {
+  if (!response.ok) throw new Error(response.error || `Failed to ${action} branch worktree`);
+  const payload = response.data || {};
+  if (Array.isArray(payload.tabs)) {
+    tabs = payload.tabs;
+    syncTabMetadata(tabs);
+  }
+  if (payload.tab) applyTabMetadata(payload.tab);
+  footerBranchPickerOpen = false;
+  footerBranchPickerRequestSerial += 1;
+  footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "" };
+  renderTabs();
+  const targetTab = payload.tab;
+  if (targetTab?.id) await switchTab(targetTab.id);
+  const branch = cleanStatusText(payload.worktree?.branch || payload.branch || branchName || targetTab?.gitWorkspace?.branch || "");
+  const where = payload.worktree?.path || payload.path || targetTab?.cwd || "worktree";
+  const prefix = payload.created ? "Created" : payload.openedExisting || payload.openedExistingTab ? "Opened existing" : "Opened";
+  addEvent(`${prefix} branch worktree${branch ? ` ${branch}` : ""} at ${normalizeDisplayPath(where)}.`, "success");
+  if (payload.session?.warning) addEvent(payload.session.warning, "warn");
+  if (payload.dependencyHint) addEvent(payload.dependencyHint, "info");
+  requestGitFooterWebuiPayload(activeTabContext(), { force: true });
+}
+
+async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), { tabContext = activeTabContext(), skipConfirm = false } = {}) {
+  const branchName = cleanStatusText(branch);
+  if (!branchName) {
+    addEvent("Enter a branch name before creating a branch worktree.", "warn");
+    return;
+  }
+  if (!skipConfirm && !confirmFooterGitWorktreeAction(branchName, { create: true, requireConfirm: true })) return;
+  const tabId = tabContext.tabId || activeTabId;
+  try {
+    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName, tabId };
+    renderFooter();
+    const response = await api("/api/git-worktrees", { method: "POST", body: { branchName, sessionMode: "fork-current", openTab: true }, tabId });
+    await openWorktreeResponseTab(response, { branchName, action: "create" });
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", error: error.message || String(error) };
+      renderFooter();
+      updateFooterModelPickerPosition();
+    }
+    addEvent(error.message || String(error), "error");
+  }
+}
+
+async function openFooterGitWorktree(path, { branchName = "", tabContext = activeTabContext(), skipConfirm = false } = {}) {
+  const worktreePath = cleanFooterPayloadText(path, "", 4000);
+  if (!worktreePath) return;
+  if (!skipConfirm && !confirmFooterGitWorktreeAction(branchName, { path: worktreePath, requireConfirm: false })) return;
+  const tabId = tabContext.tabId || activeTabId;
+  try {
+    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName || worktreePath, tabId };
+    renderFooter();
+    const response = await api("/api/git-worktrees/open", { method: "POST", body: { path: worktreePath, sessionMode: "fork-current", openTab: true }, tabId });
+    await openWorktreeResponseTab(response, { branchName, action: "open" });
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", error: error.message || String(error) };
+      renderFooter();
+      updateFooterModelPickerPosition();
+    }
+    addEvent(error.message || String(error), "error");
+  }
 }
 
 async function applyFooterGitBranch(branch, { create = false, tabContext = activeTabContext(), skipConfirm = false } = {}) {
@@ -7960,10 +8198,10 @@ async function applyFooterGitBranch(branch, { create = false, tabContext = activ
 
 function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   const form = make("form", "footer-branch-create-form");
-  form.setAttribute("aria-label", "Create new git branch");
+  form.setAttribute("aria-label", "Create branch worktree");
 
   const header = make("div", "footer-branch-create-header");
-  header.append(make("strong", "footer-branch-create-title", "Create new branch"));
+  header.append(make("strong", "footer-branch-create-title", "Create branch worktree"));
 
   const fields = make("div", "footer-branch-create-fields");
   const typeField = make("div", "footer-branch-create-type-field");
@@ -8012,19 +8250,19 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   nameInput.spellcheck = false;
   nameInput.setAttribute("aria-label", "New branch name");
 
-  const submitButton = make("button", "footer-branch-create-submit", state.switching ? "Creating…" : "Create new branch");
+  const submitButton = make("button", "footer-branch-create-submit", state.switching ? "Opening…" : "Open worktree tab");
   submitButton.type = "submit";
 
   const preview = make("div", "footer-branch-create-preview");
   const updatePreview = () => {
     const branchName = footerBranchCreateName();
-    preview.textContent = gitSwitchCreateCommandDisplay(branchName || footerBranchCreatePreviewName());
+    preview.textContent = gitWorktreeCreateCommandDisplay(branchName || footerBranchCreatePreviewName(), state);
     const submitDisabled = Boolean(state.switching) || !branchName;
     submitButton.disabled = false;
     submitButton.classList.toggle("footer-branch-create-submit-disabled", submitDisabled);
     submitButton.setAttribute("aria-disabled", submitDisabled ? "true" : "false");
     submitButton.dataset.tooltip = footerBranchCreateTooltip(branchName);
-    submitButton.setAttribute("aria-label", branchName ? `Create and switch to ${branchName}` : "Create new branch: enter both a branch type and name first");
+    submitButton.setAttribute("aria-label", branchName ? `Create and open branch worktree ${branchName}` : "Create branch worktree: enter both a branch type and name first");
     submitButton.removeAttribute("title");
   };
 
@@ -8065,7 +8303,7 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
     event.preventDefault();
     if (state.switching) return;
     const branchName = footerBranchCreateName();
-    createFooterGitBranch(branchName).catch((error) => addEvent(error.message || String(error), "error"));
+    createFooterGitBranchWorktree(branchName).catch((error) => addEvent(error.message || String(error), "error"));
   });
 
   updatePreview();
@@ -8076,14 +8314,94 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   return form;
 }
 
+function footerBranchWorktreePath(branch, state = footerBranchPickerState) {
+  const direct = cleanFooterPayloadText(branch?.worktreePath, "", 4000);
+  if (direct) return direct;
+  return cleanFooterPayloadText(state.occupiedBranches?.find((item) => item.branch === branch?.name)?.path, "", 4000);
+}
+
+function footerBranchOptionDetail(branch, state, { selected, worktreePath } = {}) {
+  if (state.switching === branch.name) return "opening…";
+  if (selected) return branch.worktreeCurrent ? "current branch in this worktree" : "current branch";
+  if (worktreePath) return branch.mainWorktree ? "checked out in main worktree · open tab" : "checked out in another worktree · open tab";
+  return "open branch in a new worktree tab";
+}
+
+function openFooterBranchOption(branch, state = footerBranchPickerState) {
+  const worktreePath = footerBranchWorktreePath(branch, state);
+  if (worktreePath && !branch.worktreeCurrent) return openFooterGitWorktree(worktreePath, { branchName: branch.name, skipConfirm: true });
+  return createFooterGitBranchWorktree(branch.name, { skipConfirm: true });
+}
+
+function renderFooterBranchOption(branch, state = footerBranchPickerState) {
+  const selected = branch.current || (!!state.current && branch.name === state.current);
+  const worktreePath = footerBranchWorktreePath(branch, state);
+  const busy = state.loading || !!state.switching;
+  const primaryDisabled = busy || selected;
+  const row = make("div", `footer-branch-option-row${selected ? " active" : ""}${worktreePath && !branch.worktreeCurrent ? " worktree-occupied" : ""}`);
+  row.setAttribute("role", "option");
+  row.setAttribute("aria-selected", selected ? "true" : "false");
+
+  const primary = make("button", "footer-model-option footer-branch-option footer-branch-primary-action");
+  primary.type = "button";
+  primary.disabled = primaryDisabled;
+  primary.title = selected ? `Current branch: ${branch.name}` : worktreePath ? `Open existing worktree: ${worktreePath}` : `Open ${branch.name} in a new Git worktree tab`;
+  primary.append(
+    make("span", "footer-model-option-main", branch.name),
+    make("span", "footer-model-option-name", footerBranchOptionDetail(branch, state, { selected, worktreePath })),
+  );
+  if (!primaryDisabled) primary.addEventListener("click", () => openFooterBranchOption(branch, state));
+  row.append(primary);
+
+  if (!selected) {
+    const advanced = make("button", "footer-branch-advanced-action", "Switch here");
+    advanced.type = "button";
+    advanced.disabled = busy || !!worktreePath;
+    advanced.title = worktreePath
+      ? "This branch is already checked out elsewhere; use the primary worktree action instead of switching this checkout."
+      : `Advanced: git switch ${branch.name} in this checkout`;
+    advanced.addEventListener("click", () => applyFooterGitBranch(branch.name));
+    row.append(advanced);
+  }
+  return row;
+}
+
+function renderFooterWorktreeList(state = footerBranchPickerState) {
+  const worktrees = (state.worktrees || []).filter((item) => item.path && !item.prunable);
+  if (worktrees.length <= 1) return null;
+  const section = make("div", "footer-branch-worktree-section");
+  section.append(make("div", "footer-branch-section-title", `Open worktrees (${worktrees.length})`));
+  for (const worktree of worktrees.slice(0, 8)) {
+    const selected = worktree.current || worktree.path === state.currentWorktreePath;
+    const button = make("button", `footer-model-option footer-worktree-option${selected ? " active" : ""}`);
+    button.type = "button";
+    button.disabled = selected || state.loading || !!state.switching;
+    button.title = selected ? `Current worktree: ${worktree.path}` : `Open worktree: ${worktree.path}`;
+    button.append(
+      make("span", "footer-model-option-main", worktree.branch || "detached"),
+      make("span", "footer-model-option-name", `${selected ? "current" : "open"} · ${normalizeDisplayPath(worktree.path)}`),
+    );
+    if (!button.disabled) button.addEventListener("click", () => openFooterGitWorktree(worktree.path, { branchName: worktree.branch || "", skipConfirm: true }));
+    section.append(button);
+  }
+  return section;
+}
+
+function openBranchWorktreePicker() {
+  setNewTabMenuOpen(false);
+  setMobileTabsExpanded(false);
+  setComposerActionsOpen(false);
+  setFooterBranchPickerOpen(true);
+}
+
 function renderFooterBranchPicker() {
   const picker = make("div", "footer-model-picker footer-branch-picker");
   picker.setAttribute("role", "listbox");
-  picker.setAttribute("aria-label", "Git branches");
+  picker.setAttribute("aria-label", "Git branches and worktrees");
   const state = footerBranchPickerState;
   const current = state.current || "detached";
-  picker.append(make("div", "footer-model-picker-title", "Git branches"));
-  picker.append(make("div", "footer-model-picker-source", `${state.loading ? "Refreshing" : "Current"}: ${state.switching || current}${state.root ? ` · ${state.root}` : ""}`));
+  picker.append(make("div", "footer-model-picker-title", "Git branches & worktrees"));
+  picker.append(make("div", "footer-model-picker-source", `${state.loading ? "Refreshing" : "Current"}: ${state.switching || current}${state.currentWorktreePath ? ` · ${normalizeDisplayPath(state.currentWorktreePath)}` : state.root ? ` · ${state.root}` : ""}`));
 
   if (state.error) {
     const error = make("div", "footer-model-picker-empty error");
@@ -8092,35 +8410,23 @@ function renderFooterBranchPicker() {
     return picker;
   }
   if (state.loading && state.branches.length === 0) {
-    picker.append(make("div", "footer-model-picker-empty muted", "Loading existing local branches… New branch creation is available."), renderFooterBranchCreateForm(state));
+    picker.append(make("div", "footer-model-picker-empty muted", "Loading existing local branches and worktrees… Worktree creation is available once branch data loads."), renderFooterBranchCreateForm(state));
     return picker;
   }
 
   const hasOtherBranches = state.branches.some((branch) => !branch.current && branch.name !== state.current);
   if (!state.loading && !hasOtherBranches) {
     const empty = make("div", "footer-model-picker-empty muted");
-    empty.append(make("strong", undefined, "No other local branches available."), make("span", undefined, " Create a branch from the current HEAD to continue."));
+    empty.append(make("strong", undefined, "No other local branches available."), make("span", undefined, " Create a branch worktree from the current HEAD to continue."));
     picker.append(empty);
   }
 
   picker.append(renderFooterBranchCreateForm(state));
+  const worktreeSection = renderFooterWorktreeList(state);
+  if (worktreeSection) picker.append(worktreeSection);
+  picker.append(make("div", "footer-branch-section-title", "Branches"));
 
-  for (const branch of state.branches) {
-    const selected = branch.current || (!!state.current && branch.name === state.current);
-    const disabled = selected || state.loading || !!state.switching;
-    const button = make("button", `footer-model-option footer-branch-option${selected ? " active" : ""}`);
-    button.type = "button";
-    button.disabled = disabled;
-    button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", selected ? "true" : "false");
-    button.title = selected ? `Current branch: ${branch.name}` : `git switch ${branch.name}`;
-    button.append(
-      make("span", "footer-model-option-main", branch.name),
-      make("span", "footer-model-option-name", selected ? "current branch" : state.switching === branch.name ? "switching…" : "switch to this branch"),
-    );
-    if (!disabled) button.addEventListener("click", () => applyFooterGitBranch(branch.name));
-    picker.append(button);
-  }
+  for (const branch of state.branches) picker.append(renderFooterBranchOption(branch, state));
   return picker;
 }
 
@@ -16344,7 +16650,7 @@ async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) 
   }
 }
 
-function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force = false } = {}) {
+function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force = false, silent = true } = {}) {
   if (!tabContext.tabId || isOptionalFeatureDisabled("gitFooterStatus")) return;
   if (currentState?.isStreaming || currentState?.isCompacting) return;
   const refreshCommand = resolveAvailableCommandName("git-footer-refresh", { rpcOnly: true });
@@ -16355,7 +16661,7 @@ function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force =
   if (isCurrentTabContext(tabContext)) renderFooter();
   api("/api/prompt", {
     method: "POST",
-    body: { message: `/${refreshCommand} --webui-silent`, streamingBehavior: "steer" },
+    body: { message: `/${refreshCommand}${silent ? " --webui-silent" : ""}`, streamingBehavior: "steer" },
     tabId: tabContext.tabId,
   }).catch((error) => {
     if (isCurrentTabContext(tabContext)) addEvent(`git footer payload refresh failed: ${error.message || String(error)}`, "warn");
@@ -18972,6 +19278,7 @@ function commandPaletteCoreItems() {
   const items = [
     { kind: "Action", label: "New tab", description: "Start an isolated Pi terminal in the current directory", keywords: "workspace session", run: () => createTerminalTab() },
     { kind: "Action", label: "Choose directory for new tab", description: "Pick a cwd before starting a tab", keywords: "cwd folder workspace", run: () => createTerminalTabFromChosenDirectory({ triggerButton: elements.commandPaletteButton }) },
+    { kind: "Git", label: "Branch worktree", description: "Create or open a Git worktree tab for parallel branch work", keywords: "git branch worktree parallel checkout", run: () => openBranchWorktreePicker() },
     { kind: "Action", label: "New session", description: "Start a fresh session in the active tab", keywords: "/new clear", run: () => elements.newSessionButton.click() },
     { kind: "Action", label: "Compact context", description: contextUsageDetail(), keywords: "/compact context window tokens", run: () => requestManualCompaction() },
     { kind: "Action", label: footerAutoCompactionEnabled() ? "Disable auto-compaction" : "Enable auto-compaction", description: footerAutoCompactionToggleAction(), keywords: "context automatic", run: () => toggleFooterAutoCompaction() },
@@ -20250,6 +20557,7 @@ elements.newTabMenu?.addEventListener("focusout", () => {
 });
 elements.newTabCurrentDirectoryButton?.addEventListener("click", () => createTerminalTab(currentDirectoryForNewTab(), { triggerButton: elements.newTabCurrentDirectoryButton }));
 elements.newTabChooseDirectoryButton?.addEventListener("click", () => createTerminalTabFromChosenDirectory({ triggerButton: elements.newTabChooseDirectoryButton }));
+elements.newTabWorktreeButton?.addEventListener("click", () => openBranchWorktreePicker());
 elements.closeAllTabsButton.addEventListener("click", () => closeAllTerminalTabs());
 elements.commandPaletteButton?.addEventListener("click", () => openCommandPalette());
 elements.workspaceDashboardToggleButton?.addEventListener("click", () => setWorkspaceDashboardCollapsed(!workspaceDashboardCollapsed));

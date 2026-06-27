@@ -182,6 +182,93 @@ try {
     assert.equal(gitMain.status, 200);
     assert.equal(gitMain.body?.ok, true, "main branch endpoint should rename the branch");
 
+    const initialWorktrees = await request("127.0.0.1", `/api/git-worktrees?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(initialWorktrees.status, 200);
+    assert.equal(initialWorktrees.body?.ok, true, "worktree list endpoint should return data for a git repository");
+    assert.ok(initialWorktrees.body?.data?.worktrees?.some((worktree) => worktree.isMainWorktree && worktree.current), "worktree list should include the current main worktree");
+
+    const worktreeBranch = "feat/http-worktree";
+    const createWorktree = await request("127.0.0.1", "/api/git-worktrees", {
+      method: "POST",
+      body: { tab: tabId, branchName: worktreeBranch, sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(createWorktree.status, 200);
+    assert.equal(createWorktree.body?.ok, true, `worktree create endpoint should return ok: ${createWorktree.body?.error || ""}`);
+    assert.equal(createWorktree.body?.data?.created, true, "creating a new branch worktree should report created=true");
+    assert.equal(createWorktree.body?.data?.branch, worktreeBranch);
+    const worktreePath = createWorktree.body?.data?.worktree?.path || createWorktree.body?.data?.path;
+    const worktreeTabId = createWorktree.body?.data?.tab?.id;
+    assert.ok(worktreePath, "created worktree response should include a worktree path");
+    assert.ok(worktreeTabId, "creating a branch worktree should open a tab by default");
+    assert.equal(createWorktree.body?.data?.tab?.cwd, worktreePath, "opened worktree tab should be rooted at the worktree path");
+    assert.equal(createWorktree.body?.data?.tab?.gitWorkspace?.branch, worktreeBranch, "opened tab metadata should record the worktree branch");
+    assert.equal(createWorktree.body?.data?.tab?.gitWorkspace?.worktreePath, worktreePath, "opened tab metadata should record the worktree path");
+
+    const branchesWithWorktree = await request("127.0.0.1", `/api/git-branches?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(branchesWithWorktree.status, 200);
+    assert.equal(branchesWithWorktree.body?.ok, true, "git branch list should still load after creating a worktree");
+    const occupiedBranch = branchesWithWorktree.body?.data?.branches?.find((branch) => branch.name === worktreeBranch);
+    assert.equal(occupiedBranch?.occupied, true, "branch list should mark branches checked out in a worktree");
+    assert.equal(occupiedBranch?.worktreePath, worktreePath, "branch list should point occupied branches at their worktree");
+    assert.equal(occupiedBranch?.worktreeCurrent, false, "main checkout should see the new branch as checked out elsewhere");
+    assert.ok(branchesWithWorktree.body?.data?.occupiedBranches?.some((branch) => branch.branch === worktreeBranch && branch.path === worktreePath), "occupied branch summary should include the new worktree");
+
+    const occupiedSwitch = await request("127.0.0.1", "/api/git-branch", { method: "POST", body: { tab: tabId, branch: worktreeBranch } });
+    assert.equal(occupiedSwitch.status, 200);
+    assert.equal(occupiedSwitch.body?.ok, false, "switching to a branch checked out in another worktree should be refused");
+    assert.equal(occupiedSwitch.body?.code, "BRANCH_CHECKED_OUT_ELSEWHERE");
+    assert.match(String(occupiedSwitch.body?.error || ""), /Open that worktree instead/);
+
+    const duplicateWorktree = await request("127.0.0.1", "/api/git-worktrees", {
+      method: "POST",
+      body: { tab: tabId, branchName: worktreeBranch, sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(duplicateWorktree.status, 200);
+    assert.equal(duplicateWorktree.body?.ok, true, "creating an already checked out branch should reuse the existing worktree");
+    assert.equal(duplicateWorktree.body?.data?.created, false);
+    assert.equal(duplicateWorktree.body?.data?.openedExisting, true);
+    assert.equal(duplicateWorktree.body?.data?.openedExistingTab, true, "already-open worktree tab should be reused");
+    assert.equal(duplicateWorktree.body?.data?.tab?.id, worktreeTabId);
+
+    const openedWorktree = await request("127.0.0.1", "/api/git-worktrees/open", {
+      method: "POST",
+      body: { tab: tabId, path: worktreePath, sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(openedWorktree.status, 200);
+    assert.equal(openedWorktree.body?.ok, true, "opening an existing worktree should return ok");
+    assert.equal(openedWorktree.body?.data?.openedExistingTab, true, "opening an already-open worktree should reuse its tab");
+    assert.equal(openedWorktree.body?.data?.tab?.id, worktreeTabId);
+
+    const unconfirmedRemove = await request("127.0.0.1", "/api/git-worktrees", { method: "DELETE", body: { tab: tabId, path: worktreePath } });
+    assert.equal(unconfirmedRemove.status, 200);
+    assert.equal(unconfirmedRemove.body?.ok, false, "worktree removal should require explicit confirmation");
+    assert.match(String(unconfirmedRemove.body?.error || ""), /requires confirmed: true/);
+
+    const busyRemove = await request("127.0.0.1", "/api/git-worktrees", { method: "DELETE", body: { tab: tabId, path: worktreePath, confirmed: true } });
+    assert.equal(busyRemove.status, 200);
+    assert.equal(busyRemove.body?.ok, false, "worktree removal should be refused while a Web UI tab is open inside it");
+    assert.equal(busyRemove.body?.code, "WORKTREE_BUSY");
+
+    const closeWorktreeTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [worktreeTabId] }, timeoutMs: 10_000 });
+    assert.equal(closeWorktreeTab.status, 200);
+    assert.equal(closeWorktreeTab.body?.ok, true, "worktree tab should close before removal");
+    assert.ok(closeWorktreeTab.body?.data?.closedIds?.includes(worktreeTabId), "close response should include the worktree tab id");
+
+    const removedWorktree = await request("127.0.0.1", "/api/git-worktrees", { method: "DELETE", body: { tab: tabId, path: worktreePath, confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(removedWorktree.status, 200);
+    assert.equal(removedWorktree.body?.ok, true, `confirmed worktree removal should succeed: ${removedWorktree.body?.error || ""}`);
+    assert.equal(removedWorktree.body?.data?.removed, true);
+    assert.equal(removedWorktree.body?.data?.path, worktreePath);
+
+    const worktreesAfterRemoval = await request("127.0.0.1", `/api/git-worktrees?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(worktreesAfterRemoval.status, 200);
+    assert.equal(worktreesAfterRemoval.body?.ok, true);
+    assert.equal(worktreesAfterRemoval.body?.data?.worktrees?.some((worktree) => worktree.path === worktreePath), false, "removed worktree should disappear from list output");
+    assert.equal(worktreesAfterRemoval.body?.data?.occupiedBranches?.some((branch) => branch.branch === worktreeBranch), false, "removed worktree should disappear from occupied branch output");
+
     const remoteFixtureRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-git-remote-"));
     const remoteBare = path.join(remoteFixtureRoot, "origin.git");
     const localRepo = path.join(remoteFixtureRoot, "local");
@@ -455,6 +542,12 @@ try {
 
     const remoteQr = await request(lan, "/api/network/qr");
     assert.equal(remoteQr.status, 403, "remote QR generation must be localhost-only because it can embed the PIN");
+
+    const remoteWorktreeRemove = await request(lan, "/api/git-worktrees", {
+      method: "DELETE",
+      body: { path: path.join(cwd, "irrelevant-worktree"), confirmed: true, tab: tabId },
+    });
+    assert.equal(remoteWorktreeRemove.status, 403, "worktree removal must be localhost-only");
 
     const enableAuth = await request("127.0.0.1", "/api/remote-auth/settings", { method: "POST", body: { enabled: true } });
     assert.equal(enableAuth.status, 200, "localhost can enable remote PIN auth");
