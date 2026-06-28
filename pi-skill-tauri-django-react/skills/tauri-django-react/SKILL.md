@@ -23,6 +23,7 @@ This skill is self-contained; it must not depend on package-level `docs/` files 
 6. **Mandatory local runner:** When creating or updating a project with this skill, add or maintain an executable `scripts/start.sh` that starts both Django and React for local development.
 7. **Mandatory frontend UX baseline:** Ask the user for separate light-mode and dark-mode background images before finalizing visual work; implement a persistent light/dark mode setting; implement German/English i18n for every user-facing string.
 8. **Mandatory GitHub release automation:** When creating or updating a project with this skill, add or maintain both `.github/workflows/release.yml` and an executable `scripts/release.sh` release helper.
+9. **Mandatory configurable update path:** Add or maintain a Schulungen-style filesystem update checker that reads a configurable update source directory before checking/installing desktop updates.
 
 ### Mandatory GitHub Release Automation
 
@@ -32,6 +33,19 @@ Every Tauri + Django + React project handled by this skill must include GitHub r
 - `scripts/release.sh` updates project version files, regenerates relevant locks when tooling is available, commits/pushes version changes, creates an annotated `vX.X.X` tag, and pushes the tag to trigger the workflow.
 - `dev/RELEASES/` is the canonical release-notes directory; release notes use `dev/RELEASES/RELEASE_vX.X.X.md` and the workflow falls back to the annotated tag message when the file is absent.
 - The workflow and script must be adapted to the actual app name, artifact names, package names, secrets, signing/updater setup, and platform targets. Do not copy private updater/Gist/signing logic unless the current project explicitly has that configuration.
+
+### Mandatory Configurable Filesystem Update System
+
+Every desktop-distributed Tauri + Django + React project handled by this skill must include a Schulungen-style update path unless the user explicitly chooses Tauri's built-in updater only:
+
+- **Canonical setting:** `settings.update_source_path` in the app config (`config.json`) stores the local/network directory to scan for installer updates.
+- **Config overrides:** support `APP_UPDATE_SOURCE_PATH` or `TAURI_UPDATE_SOURCE_PATH` env vars for deployment overrides; support `APP_CONFIG_PATH` for a custom runtime config file; support `APP_UPDATE_INSTALLER_PATTERNS` for app-specific installer filename regexes.
+- **Version source:** Rust passes `TAURI_APP_VERSION` and `APP_VERSION` from `app.package_info().version` into the Django backend. Django falls back to `APP_VERSION`, Django settings, or `pyproject.toml` in development.
+- **Installer discovery:** Django scans the configured directory for versioned installer filenames, extracts semantic `X.Y.Z`, compares integer tuples, and returns the newest installer newer than the current version. Keep the current-version installer path too so the UI can offer reinstall.
+- **Safety boundary:** only launch installers that exist, are regular files, match the configured filename pattern, and resolve inside the configured update source directory.
+- **API contract:** expose `GET /api/updates/check/` for availability, authenticated `GET/PATCH /api/updates/settings/` for the configurable path, and authenticated `POST /api/updates/install/` for launching a validated installer. If `check` is public, redact local/network paths unless the request is authenticated.
+- **Frontend contract:** provide an update service and menu/button whose label changes between `Check update` and `Install update`; check at startup and periodically; prompt before launching the installer; close the Tauri app after a successful installer launch.
+- **Release artifact contract:** release workflows/scripts must produce installer names that match the checker (for example `<app-slug>-1.2.3-Setup.exe` or Tauri NSIS `<app-slug>_1.2.3_x64-setup.exe`).
 
 ### Mandatory `scripts/start.sh` Local Runner
 
@@ -147,6 +161,8 @@ cmd.current_dir(&backend_dir);
 cmd.env("BACKEND_PORT", port.to_string());
 cmd.env("DJANGO_DATABASE_PATH", db_path.to_string_lossy().to_string());
 cmd.env("TAURI_APP_DATA_DIR", app_data.to_string_lossy().to_string());
+cmd.env("TAURI_APP_VERSION", app.package_info().version.to_string());
+cmd.env("APP_VERSION", app.package_info().version.to_string());
 
 #[cfg(target_os = "windows")]
 {
@@ -159,6 +175,7 @@ let child = cmd.spawn()?;
 
 - Backend path resolved from `resource_dir/python-backend/tauri_entry` (+ `.exe` on Windows)
 - `CREATE_NO_WINDOW` (0x08000000) prevents a visible console window on Windows
+- Pass the Tauri package version to Django via `TAURI_APP_VERSION`/`APP_VERSION` so update checks compare against the installed app version
 - Store the `Child` handle in `Mutex<Option<BackendState>>` for later cleanup
 - On Windows, strip UNC `\\?\` prefix from paths before passing to Python
 
@@ -659,12 +676,14 @@ fn main() {
 
 | Plugin | Purpose | Config |
 |---|---|---|
-| `updater` | Auto-update from GitHub releases | Public key + endpoint in `tauri.conf.json`, PAT via `option_env!()` for private repos |
+| `updater` | Optional Tauri built-in updater from GitHub/custom endpoints | Public key + endpoint in `tauri.conf.json`, PAT via `option_env!()` for private repos |
 | `fs` | Filesystem access from frontend | Scope paths in `tauri.conf.json` capabilities |
 | `shell` | Run shell commands from frontend | Scope allowed commands |
 | `opener` | Open URLs and files in default app | No special config needed |
 | `notification` | Desktop notifications | Windows: requires AUMID setup |
 | `autostart` | Launch on system boot | Platform-specific registration |
+
+The Schulungen-style configurable filesystem update checker is app/backend logic, not a Tauri plugin. Prefer it when updates are distributed by copying installers to an internal network/local folder; use Tauri's built-in updater only when the project has signed updater metadata/endpoints.
 
 ---
 
@@ -770,7 +789,7 @@ Two automation scripts live in `scripts/` alongside this SKILL.md.
 
 ### ./scripts/scaffold.py -- Generate Integration Boilerplate
 
-Creates all Tauri + Django + React integration files for a new project, plus mandatory `scripts/start.sh` and GitHub release automation: Rust backend lifecycle, Django hybrid auth, React Tauri detection, build scripts, release scripts, workflow configuration, and app configuration.
+Creates all Tauri + Django + React integration files for a new project, plus mandatory `scripts/start.sh`, GitHub release automation, and the configurable filesystem update checker: Rust backend lifecycle, Django hybrid auth, update APIs/services, React Tauri/update detection, build scripts, release scripts, workflow configuration, and app configuration.
 
 ```bash
 python3 {baseDir}/scripts/scaffold.py \
@@ -804,18 +823,23 @@ python3 {baseDir}/scripts/scaffold.py \
 | Python | `backend/tauri_entry.py` | PyInstaller entry point |
 | Python | `backend/api/authentication.py` | HybridSessionAuthentication |
 | Python | `backend/api/views/health.py` | Health check endpoint |
+| Python | `backend/api/services/update_service.py` | Configurable update-source path, installer discovery, safe installer launch |
+| Python | `backend/api/views/updates.py` | Update check/settings/install API views |
 | Python | `backend/pyinstaller.spec` | PyInstaller bundling config |
 | TypeScript | `frontend/src/utils/tauri.ts` | isTauriApp(), port management |
 | TypeScript | `frontend/src/services/api-tauri.ts` | Dynamic URL, session tokens, axios interceptor |
+| TypeScript | `frontend/src/services/update-service.ts` | Update check/settings/install API client helpers |
 | TypeScript | `frontend/src/components/LoadingScreen.tsx` | Backend readiness UI |
+| TypeScript | `frontend/src/components/UpdateButton.tsx` | Check/install update UI pattern |
 | Shell | `scripts/build-backend.sh` | PyInstaller build + copy to resources |
 | PowerShell | `scripts/build-backend.ps1` | Windows equivalent |
 | Shell | `scripts/start.sh` | Mandatory one-command local runner for Django + React development |
 | GitHub Actions | `.github/workflows/release.yml` | Mandatory tag/manual release workflow that builds and publishes installers |
 | Shell | `scripts/release.sh` | Mandatory release helper that bumps versions, commits, tags, and triggers CI |
 | Docs | `dev/RELEASES/.gitkeep` | Canonical release notes directory for `RELEASE_vX.X.X.md` files |
+| Environment | `.env.example` | Documents `APP_UPDATE_SOURCE_PATH`, `APP_CONFIG_PATH`, installer-pattern overrides, and updater/signing env vars |
 
-Skips files that already exist unless `--force` is passed. After scaffolding, the script prints next steps (dependency installation, URL wiring, release workflow setup, settings config).
+Skips files that already exist unless `--force` is passed. After scaffolding, the script prints next steps (dependency installation, health/update URL wiring, release workflow setup, update-source path configuration, settings config).
 
 ### ./scripts/validate.py -- Check Setup Correctness
 
@@ -851,8 +875,9 @@ python3 {baseDir}/scripts/validate.py \
 | Static Import Check | No top-level `@tauri-apps/*` imports (must be dynamic) |
 | Session Token | localStorage management, Authorization: Session interceptor |
 | Loading Screen | backend-ready listener, health polling fallback |
+| Filesystem Update System | Django update service/API, configurable `update_source_path`, installer pattern/version checks, frontend update helpers/UI, env documentation |
 | Port Consistency | Rust port range matches Django CORS/CSRF config, devUrl matches Vite |
-| Environment Files | TAURI_SIGNING_PRIVATE_KEY, GITHUB_PAT_UPDATER |
+| Environment Files | TAURI_SIGNING_PRIVATE_KEY, GITHUB_PAT_UPDATER, APP_UPDATE_SOURCE_PATH |
 | Start Script | `scripts/start.sh`, executable bit, `uv`, `bun`, backend/frontend startup, cleanup trap |
 | Release Automation | `.github/workflows/release.yml`, executable `scripts/release.sh`, canonical `dev/RELEASES/` release-notes path |
 

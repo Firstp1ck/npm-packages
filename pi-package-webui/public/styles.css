@@ -1950,13 +1950,20 @@ body.side-panel-collapsed .terminal-tabs-shell {
 }
 .widget-area:has(.release-npm-live-widget .release-npm-output-details[open]),
 .widget-area:has(.release-aur-live-widget .release-npm-output-details[open]),
-.widget-area:has(.workflow-live-widget .release-npm-output-details[open]),
-.widget-area:has(.app-runner-live-widget .release-npm-output-details[open]) {
+.widget-area:has(.workflow-live-widget .release-npm-output-details[open]) {
   flex: 0 0 min(44rem, 68dvh);
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  overflow-anchor: none;
+}
+.widget-area:has(.app-runner-live-widget .release-npm-output-details[open]) {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  overscroll-behavior: contain;
+  scrollbar-gutter: auto;
   overflow-anchor: none;
 }
 .statusbar {
@@ -3842,8 +3849,7 @@ button.git-workflow-step:hover:not(:disabled) {
 }
 .release-npm-live-widget .release-npm-output-details[open] .release-npm-terminal,
 .release-aur-live-widget .release-npm-output-details[open] .release-npm-terminal,
-.workflow-live-widget .release-npm-output-details[open] .release-npm-terminal,
-.app-runner-live-widget .release-npm-output-details[open] .release-npm-terminal {
+.workflow-live-widget .release-npm-output-details[open] .release-npm-terminal {
   height: clamp(15rem, 42dvh, 31rem);
   min-height: 0;
 }

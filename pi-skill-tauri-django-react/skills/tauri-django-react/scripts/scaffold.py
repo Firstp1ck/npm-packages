@@ -33,17 +33,24 @@ def get_templates(ctx: dict) -> list[tuple[str, str]]:
         ("frontend/src-tauri/capabilities/default.json", _tmpl_capabilities(ctx)),
         ("backend/tauri_entry.py", _tmpl_tauri_entry(ctx)),
         ("backend/api/authentication.py", _tmpl_authentication(ctx)),
+        ("backend/api/views/__init__.py", ""),
         ("backend/api/views/health.py", _tmpl_health_view(ctx)),
+        ("backend/api/services/__init__.py", ""),
+        ("backend/api/services/update_service.py", _tmpl_update_service_py(ctx)),
+        ("backend/api/views/updates.py", _tmpl_update_views_py(ctx)),
         ("backend/pyinstaller.spec", _tmpl_pyinstaller_spec(ctx)),
         ("frontend/src/utils/tauri.ts", _tmpl_tauri_ts(ctx)),
         ("frontend/src/services/api-tauri.ts", _tmpl_api_tauri_ts(ctx)),
+        ("frontend/src/services/update-service.ts", _tmpl_update_service_ts(ctx)),
         ("frontend/src/components/LoadingScreen.tsx", _tmpl_loading_screen(ctx)),
+        ("frontend/src/components/UpdateButton.tsx", _tmpl_update_button_tsx(ctx)),
         ("scripts/build-backend.sh", _tmpl_build_backend_sh(ctx)),
         ("scripts/build-backend.ps1", _tmpl_build_backend_ps1(ctx)),
         ("scripts/release.sh", _tmpl_release_sh(ctx)),
         (".github/workflows/release.yml", _tmpl_release_workflow_yml(ctx)),
         ("dev/RELEASES/.gitkeep", _tmpl_release_gitkeep(ctx)),
         ("scripts/start.sh", _tmpl_start_sh(ctx)),
+        (".env.example", _tmpl_env_example(ctx)),
     ]
 
 
@@ -137,6 +144,8 @@ def _tmpl_lib_rs(ctx: dict) -> str:
                 "TAURI_APP_DATA_DIR",
                 app_data.to_string_lossy().to_string(),
             );
+            cmd.env("TAURI_APP_VERSION", app.package_info().version.to_string());
+            cmd.env("APP_VERSION", app.package_info().version.to_string());
 
             #[cfg(target_os = "windows")]
             {{
@@ -366,6 +375,7 @@ def _tmpl_tauri_conf(ctx: dict) -> str:
     conf = {
         "$schema": "https://raw.githubusercontent.com/nicehash/tauri/master/.github/schema.json",
         "productName": ctx["app_name"],
+        "version": "0.1.0",
         "identifier": ctx["app_id"],
         "build": {
             "frontendDist": "../dist",
@@ -653,6 +663,350 @@ def _tmpl_health_view(ctx: dict) -> str:
     """)
 
 
+def _tmpl_update_service_py(ctx: dict) -> str:
+    return dedent("""\
+        \"\"\"
+        Configurable filesystem update checker for Tauri + Django desktop builds.
+
+        Pattern based on the Schulungen app: check a configured directory for installer
+        files named with semantic versions, compare against the current app version, and
+        launch the selected installer when the user confirms from the frontend.
+        \"\"\"
+        from __future__ import annotations
+
+        import json
+        import os
+        import re
+        import subprocess
+        import sys
+        from dataclasses import asdict, dataclass
+        from pathlib import Path
+
+        from django.conf import settings
+
+        APP_NAME = "__APP_NAME__"
+        APP_SLUG = "__APP_SLUG__"
+
+        DEFAULT_INSTALLER_PATTERNS = (
+            # Schulungen-style artifact: my-app-1.2.3-Setup.exe
+            rf"^{re.escape(APP_SLUG)}-(\\d+)\\.(\\d+)\\.(\\d+)-Setup\\.exe$",
+            # Tauri/NSIS-style artifact: my-app_1.2.3_x64-setup.exe
+            rf"^{re.escape(APP_SLUG)}_(\\d+)\\.(\\d+)\\.(\\d+)(?:_[A-Za-z0-9-]+)?-setup\\.exe$",
+            # Product-name variant: My App-1.2.3-Setup.exe
+            rf"^{re.escape(APP_NAME)}[-_ ](\\d+)\\.(\\d+)\\.(\\d+)(?:[-_ ].*)?setup\\.exe$",
+        )
+
+
+        @dataclass(frozen=True)
+        class UpdateInfo:
+            available: bool
+            current_version: str
+            latest_version: str | None = None
+            installer_path: str | None = None
+            current_installer_path: str | None = None
+            source_path: str | None = None
+            error: str | None = None
+
+            def to_dict(self) -> dict:
+                return asdict(self)
+
+
+        def _version_tuple(version: str) -> tuple[int, int, int]:
+            cleaned = str(version or "").strip().lstrip("v")
+            match = re.match(r"^(\\d+)\\.(\\d+)\\.(\\d+)$", cleaned)
+            if not match:
+                return (0, 0, 0)
+            return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+        def _config_path() -> Path:
+            configured = str(
+                os.environ.get("APP_CONFIG_PATH")
+                or getattr(settings, "APP_CONFIG_PATH", "")
+                or ""
+            ).strip()
+            if configured:
+                return Path(configured).expanduser()
+            app_data = str(os.environ.get("TAURI_APP_DATA_DIR") or "").strip()
+            if app_data:
+                return Path(app_data).expanduser() / "config.json"
+            return Path.cwd() / "config.json"
+
+
+        def get_update_source_path() -> str:
+            env_value = str(
+                os.environ.get("APP_UPDATE_SOURCE_PATH")
+                or os.environ.get("TAURI_UPDATE_SOURCE_PATH")
+                or ""
+            ).strip()
+            if env_value:
+                return env_value
+
+            config_path = _config_path()
+            if config_path.exists():
+                try:
+                    data = json.loads(config_path.read_text(encoding="utf-8"))
+                    settings_data = data.get("settings", {}) if isinstance(data, dict) else {}
+                    configured = str(
+                        settings_data.get("update_source_path")
+                        or data.get("update_source_path")
+                        or data.get("updates", {}).get("source_path")
+                        or ""
+                    ).strip()
+                    if configured:
+                        return configured
+                except (OSError, json.JSONDecodeError, AttributeError):
+                    pass
+
+            return str(getattr(settings, "APP_UPDATE_SOURCE_PATH", "") or "").strip()
+
+
+        def set_update_source_path(source_path: str) -> str:
+            cleaned = str(source_path or "").strip()
+            config_path = _config_path()
+            data: dict = {}
+            if config_path.exists():
+                try:
+                    loaded = json.loads(config_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+            data.setdefault("settings", {})["update_source_path"] = cleaned
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return cleaned
+
+
+        def _configured_source_path() -> str:
+            return get_update_source_path()
+
+
+        def _configured_patterns() -> tuple[re.Pattern[str], ...]:
+            configured = getattr(settings, "APP_UPDATE_INSTALLER_PATTERNS", None)
+            if isinstance(configured, str):
+                configured = [p for p in configured.split(os.pathsep) if p.strip()]
+            if not configured:
+                env_value = os.environ.get("APP_UPDATE_INSTALLER_PATTERNS", "")
+                configured = [p for p in env_value.split(os.pathsep) if p.strip()]
+            raw_patterns = tuple(configured or DEFAULT_INSTALLER_PATTERNS)
+            return tuple(re.compile(pattern, re.IGNORECASE) for pattern in raw_patterns)
+
+
+        def _read_version_from_pyproject() -> str:
+            for parent in Path(__file__).resolve().parents:
+                candidate = parent / "pyproject.toml"
+                if not candidate.exists():
+                    continue
+                try:
+                    content = candidate.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                match = re.search(r'^\\s*version\\s*=\\s*"(\\d+\\.\\d+\\.\\d+)"\\s*$', content, re.MULTILINE)
+                if match:
+                    return match.group(1)
+            return "0.0.0"
+
+
+        def get_current_app_version() -> str:
+            configured = str(
+                os.environ.get("TAURI_APP_VERSION")
+                or os.environ.get("APP_VERSION")
+                or getattr(settings, "APP_VERSION", "")
+                or ""
+            ).strip()
+            return configured.lstrip("v") if configured else _read_version_from_pyproject()
+
+
+        def _match_installer(filename: str) -> tuple[str, tuple[int, int, int]] | None:
+            for pattern in _configured_patterns():
+                match = pattern.match(filename)
+                if not match:
+                    continue
+                version = f"{match.group(1)}.{match.group(2)}.{match.group(3)}"
+                return version, _version_tuple(version)
+            return None
+
+
+        def check_for_update(source_path: str | None = None) -> UpdateInfo:
+            configured_source = str(source_path or _configured_source_path()).strip()
+            current_version = get_current_app_version()
+            current_tuple = _version_tuple(current_version)
+
+            if not configured_source:
+                return UpdateInfo(
+                    available=False,
+                    current_version=current_version,
+                    error="No update source path configured.",
+                )
+
+            source_dir = Path(configured_source).expanduser()
+            if not source_dir.exists():
+                return UpdateInfo(
+                    available=False,
+                    current_version=current_version,
+                    source_path=str(source_dir),
+                    error=f'Update source path not found: "{source_dir}"',
+                )
+            if not source_dir.is_dir():
+                return UpdateInfo(
+                    available=False,
+                    current_version=current_version,
+                    source_path=str(source_dir),
+                    error=f'Update source path is not a directory: "{source_dir}"',
+                )
+
+            latest_tuple = current_tuple
+            latest_version: str | None = None
+            latest_installer: str | None = None
+            current_installer: str | None = None
+
+            try:
+                entries = sorted(source_dir.iterdir(), key=lambda p: p.name.lower())
+            except OSError as exc:
+                return UpdateInfo(
+                    available=False,
+                    current_version=current_version,
+                    source_path=str(source_dir),
+                    error=str(exc),
+                )
+
+            for entry in entries:
+                if not entry.is_file():
+                    continue
+                matched = _match_installer(entry.name)
+                if not matched:
+                    continue
+                version, version_tuple = matched
+                resolved = str(entry.resolve())
+                if version_tuple == current_tuple:
+                    current_installer = resolved
+                if version_tuple > latest_tuple:
+                    latest_tuple = version_tuple
+                    latest_version = version
+                    latest_installer = resolved
+
+            if latest_version and latest_installer:
+                return UpdateInfo(
+                    available=True,
+                    current_version=current_version,
+                    latest_version=latest_version,
+                    installer_path=latest_installer,
+                    current_installer_path=current_installer,
+                    source_path=str(source_dir),
+                )
+
+            return UpdateInfo(
+                available=False,
+                current_version=current_version,
+                current_installer_path=current_installer,
+                source_path=str(source_dir),
+            )
+
+
+        def _validate_installer_path(installer_path: str) -> Path:
+            source_path = _configured_source_path()
+            if not source_path:
+                raise ValueError("No update source path configured.")
+
+            source_dir = Path(source_path).expanduser().resolve()
+            installer = Path(installer_path).expanduser().resolve()
+
+            if not installer.exists() or not installer.is_file():
+                raise ValueError(f"Installer not found: {installer}")
+            try:
+                installer.relative_to(source_dir)
+            except ValueError as exc:
+                raise ValueError("Installer is outside the configured update source path.") from exc
+            if _match_installer(installer.name) is None:
+                raise ValueError("Installer filename does not match the configured update pattern.")
+            return installer
+
+
+        def start_update_installer(installer_path: str | None = None) -> str:
+            if not installer_path:
+                info = check_for_update()
+                installer_path = info.installer_path or info.current_installer_path
+            if not installer_path:
+                raise ValueError("No update or reinstall installer is available.")
+
+            installer = _validate_installer_path(installer_path)
+
+            if sys.platform.startswith("win") and hasattr(os, "startfile"):
+                os.startfile(str(installer))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(
+                    [str(installer)],
+                    cwd=str(installer.parent),
+                    start_new_session=True,
+                )
+            return str(installer)
+    """).replace("__APP_NAME__", ctx["app_name"]).replace("__APP_SLUG__", ctx["app_slug"])
+
+
+def _tmpl_update_views_py(ctx: dict) -> str:
+    return dedent('''\
+        from rest_framework import status
+        from rest_framework.decorators import api_view, permission_classes
+        from rest_framework.permissions import AllowAny, IsAuthenticated
+        from rest_framework.response import Response
+
+        from api.services.update_service import (
+            check_for_update,
+            get_update_source_path,
+            set_update_source_path,
+            start_update_installer,
+        )
+
+
+        @api_view(["GET"])
+        @permission_classes([AllowAny])
+        def check_update(request):
+            """Return update availability from the configured filesystem source path."""
+            data = check_for_update().to_dict()
+            # Avoid leaking local/network paths before authentication in dual desktop/web deployments.
+            if not getattr(request.user, "is_authenticated", False):
+                data["source_path"] = None
+                data["installer_path"] = None
+                data["current_installer_path"] = None
+            return Response(data, status=status.HTTP_200_OK)
+
+
+        @api_view(["GET", "PATCH"])
+        @permission_classes([IsAuthenticated])
+        def update_settings(request):
+            """Read or update the configurable filesystem update source path."""
+            if request.method == "GET":
+                return Response({"update_source_path": get_update_source_path()})
+
+            source_path = ""
+            if isinstance(request.data, dict):
+                source_path = str(request.data.get("update_source_path", "") or "").strip()
+            saved_path = set_update_source_path(source_path)
+            return Response({"update_source_path": saved_path}, status=status.HTTP_200_OK)
+
+
+        @api_view(["POST"])
+        @permission_classes([IsAuthenticated])
+        def install_update(request):
+            """Launch a validated installer from the configured update source path."""
+            installer_path = ""
+            if isinstance(request.data, dict):
+                installer_path = str(request.data.get("installer_path", "") or "").strip()
+            try:
+                started_path = start_update_installer(installer_path or None)
+            except ValueError as exc:
+                return Response(
+                    {"started": False, "error": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(
+                {"started": True, "installer_path": started_path, "should_exit": True},
+                status=status.HTTP_200_OK,
+            )
+    ''')
+
+
 def _tmpl_pyinstaller_spec(ctx: dict) -> str:
     hidden = ", ".join(f'"{app}"' for app in ctx["django_apps"])
     return dedent(f"""\
@@ -676,6 +1030,8 @@ def _tmpl_pyinstaller_spec(ctx: dict) -> str:
                 "django.contrib.messages",
                 "django.contrib.staticfiles",
                 "rest_framework",
+                "api.services.update_service",
+                "api.views.updates",
             ],
             hookspath=[],
             hooksconfig={{}},
@@ -829,6 +1185,140 @@ def _tmpl_api_tauri_ts(ctx: dict) -> str:
             return config;
         });
     """)
+
+
+def _tmpl_update_service_ts(ctx: dict) -> str:
+    return dedent("""\
+        import { apiClient } from "./api-tauri";
+
+        export interface UpdateInfo {
+            available: boolean;
+            current_version: string;
+            latest_version?: string | null;
+            installer_path?: string | null;
+            current_installer_path?: string | null;
+            source_path?: string | null;
+            error?: string | null;
+        }
+
+        export interface InstallUpdateResponse {
+            started: boolean;
+            installer_path?: string;
+            should_exit?: boolean;
+            error?: string;
+        }
+
+        export interface UpdateSettings {
+            update_source_path: string;
+        }
+
+        export async function getUpdateSettings(): Promise<UpdateSettings> {
+            const response = await apiClient.get<UpdateSettings>("/updates/settings/");
+            return response.data;
+        }
+
+        export async function saveUpdateSettings(updateSourcePath: string): Promise<UpdateSettings> {
+            const response = await apiClient.patch<UpdateSettings>("/updates/settings/", {
+                update_source_path: updateSourcePath,
+            });
+            return response.data;
+        }
+
+        export async function checkForUpdate(): Promise<UpdateInfo> {
+            const response = await apiClient.get<UpdateInfo>("/updates/check/");
+            return response.data;
+        }
+
+        export async function installUpdate(installerPath?: string): Promise<InstallUpdateResponse> {
+            const response = await apiClient.post<InstallUpdateResponse>("/updates/install/", {
+                installer_path: installerPath ?? "",
+            });
+            return response.data;
+        }
+    """)
+
+
+
+def _tmpl_update_button_tsx(ctx: dict) -> str:
+    return dedent("""\
+        import { useCallback, useEffect, useState } from "react";
+        import { checkForUpdate, installUpdate, type UpdateInfo } from "../services/update-service";
+        import { isTauriApp } from "../utils/tauri";
+
+        export default function UpdateButton() {
+            const [info, setInfo] = useState<UpdateInfo | null>(null);
+            const [checking, setChecking] = useState(false);
+            const [error, setError] = useState<string | null>(null);
+
+            const refresh = useCallback(async (showFeedback = false) => {
+                setChecking(true);
+                setError(null);
+                try {
+                    const nextInfo = await checkForUpdate();
+                    setInfo(nextInfo);
+                    if (showFeedback && !nextInfo.available && nextInfo.error) {
+                        setError(nextInfo.error);
+                    }
+                } catch (err) {
+                    setError(err instanceof Error ? err.message : "Update check failed");
+                } finally {
+                    setChecking(false);
+                }
+            }, []);
+
+            useEffect(() => {
+                void refresh(false);
+                const id = window.setInterval(() => void refresh(false), 5 * 60 * 1000);
+                return () => window.clearInterval(id);
+            }, [refresh]);
+
+            const onClick = async () => {
+                if (!info?.available) {
+                    await refresh(true);
+                    return;
+                }
+
+                const confirmed = window.confirm(
+                    `A new version is available: ${info.latest_version}\n` +
+                    `Current version: ${info.current_version}\n\n` +
+                    "Start the installer now? The app should be closed afterwards.",
+                );
+                if (!confirmed) return;
+
+                try {
+                    await installUpdate(info.installer_path ?? undefined);
+                    if (isTauriApp()) {
+                        window.alert("Installer started. The app will close now to finish the update.");
+                        const { exit } = await import("@tauri-apps/plugin-process");
+                        await exit(0);
+                    } else {
+                        window.alert("Installer started. Please close this browser session if needed.");
+                    }
+                } catch (err) {
+                    setError(err instanceof Error ? err.message : "Could not start installer");
+                }
+            };
+
+            return (
+                <div>
+                    <button type="button" onClick={onClick} disabled={checking}>
+                        {info?.available ? "Install update" : checking ? "Checking..." : "Check update"}
+                    </button>
+                    {info?.available ? (
+                        <span role="status" style={{ marginLeft: 8 }}>
+                            Version {info.latest_version} available
+                        </span>
+                    ) : null}
+                    {error ? (
+                        <div role="alert" style={{ color: "#b91c1c", marginTop: 4 }}>
+                            {error}
+                        </div>
+                    ) : null}
+                </div>
+            );
+        }
+    """)
+
 
 
 def _tmpl_loading_screen(ctx: dict) -> str:
@@ -1079,6 +1569,28 @@ def _tmpl_start_sh(ctx: dict) -> str:
         echo "Press Ctrl+C to stop both processes."
 
         wait -n "$backend_pid" "$frontend_pid"
+    """)
+
+
+
+def _tmpl_env_example(ctx: dict) -> str:
+    return dedent("""\
+        # Optional filesystem update checker configuration.
+        # Configure this to a local/network directory containing versioned installer files,
+        # for example: My-App-1.2.3-Setup.exe or my-app_1.2.3_x64-setup.exe
+        APP_UPDATE_SOURCE_PATH=
+
+        # Optional explicit runtime config file. Defaults to $TAURI_APP_DATA_DIR/config.json
+        # in packaged Tauri runs, or ./config.json in development.
+        APP_CONFIG_PATH=
+
+        # Optional os.pathsep-separated regex patterns with three version capture groups.
+        APP_UPDATE_INSTALLER_PATTERNS=
+
+        # Tauri signing/updater variables when using Tauri's built-in updater in addition
+        # to, or instead of, the filesystem update-source pattern.
+        TAURI_SIGNING_PRIVATE_KEY=
+        GITHUB_PAT_UPDATER=
     """)
 
 
@@ -1663,15 +2175,20 @@ def main() -> int:
     print("       @tauri-apps/plugin-notification @tauri-apps/plugin-http @tauri-apps/plugin-updater")
     print("2. Install backend dependencies:")
     print("     pip install django djangorestframework django-cors-headers pyinstaller")
-    print("3. Add health URL to your Django urls.py:")
+    print("3. Add health and update URLs to your Django urls.py:")
     print('     path("api/health/", health_check, name="health")')
+    print('     path("api/updates/check/", check_update, name="check-update")')
+    print('     path("api/updates/settings/", update_settings, name="update-settings")')
+    print('     path("api/updates/install/", install_update, name="install-update")')
     print("4. Add HybridSessionAuthentication to DRF settings:")
     print('     DEFAULT_AUTHENTICATION_CLASSES: ["api.authentication.HybridSessionAuthentication"]')
     print("5. Add CORS/CSRF settings for Tauri origins (see SKILL.md)")
-    print("6. Use ./scripts/start.sh for local Django + React development")
-    print("7. Use ./scripts/release.sh X.Y.Z to create tagged GitHub releases")
-    print("8. Put release notes in dev/RELEASES/RELEASE_vX.Y.Z.md")
-    print("9. Run the validation script to check your setup:")
+    print("6. Configure the filesystem update source path via APP_UPDATE_SOURCE_PATH or settings.update_source_path")
+    print("7. Wire frontend/src/components/UpdateButton.tsx into your menu/options UI")
+    print("8. Use ./scripts/start.sh for local Django + React development")
+    print("9. Use ./scripts/release.sh X.Y.Z to create tagged GitHub releases")
+    print("10. Put release notes in dev/RELEASES/RELEASE_vX.Y.Z.md")
+    print("11. Run the validation script to check your setup:")
     print("     python3 validate.py --project-root .")
     print()
 

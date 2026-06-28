@@ -835,6 +835,155 @@ def check_loading_screen(root: Path) -> list[Result]:
     return results
 
 
+def check_update_system(root: Path) -> list[Result]:
+    results = []
+
+    service_path = find_file(root, [
+        "backend/api/services/update_service.py",
+        "backend/api/update_service.py",
+        "api/services/update_service.py",
+        "api/update_service.py",
+    ])
+
+    if service_path is None:
+        results.append(Result(
+            Result.FAIL,
+            "Filesystem update service not found",
+            fix="Create backend/api/services/update_service.py with configurable update_source_path scanning",
+            layer="django",
+        ))
+    else:
+        service = read_text(service_path)
+        results.append(Result(Result.PASS, f"Update service exists: {service_path.relative_to(root)}", layer="django"))
+
+        service_patterns = [
+            ("UpdateInfo", "UpdateInfo dataclass/result object present", "Return structured availability/current/latest/installer/source/error data"),
+            ("check_for_update", "check_for_update() implemented", "Implement directory scanning and version comparison"),
+            ("get_update_source_path", "configurable update source getter present", "Read update path from config/settings/env instead of hardcoding it"),
+            ("set_update_source_path", "configurable update source setter present", "Persist update_source_path to the app config from an authenticated settings endpoint"),
+            ("update_source_path", "update_source_path config key used", "Use settings.update_source_path as the canonical app-config key"),
+            ("APP_UPDATE_SOURCE_PATH", "APP_UPDATE_SOURCE_PATH env override supported", "Allow ops/dev overrides via APP_UPDATE_SOURCE_PATH"),
+            ("APP_UPDATE_INSTALLER_PATTERNS", "installer filename patterns are configurable", "Allow app-specific installer filename regexes with semantic-version capture groups"),
+            ("start_update_installer", "installer launch helper present", "Launch only validated installers from the configured update source path"),
+            ("relative_to", "installer path is constrained to update source directory", "Validate installer paths are inside the configured update source directory before launching"),
+        ]
+        for needle, ok_message, fix in service_patterns:
+            if needle in service:
+                results.append(Result(Result.PASS, ok_message, layer="django"))
+            else:
+                results.append(Result(Result.FAIL, ok_message.replace("present", "missing").replace("implemented", "missing").replace("used", "missing").replace("supported", "missing"), fix=fix, layer="django"))
+
+        if re.search(r"\(\\d\+\).*\(\\d\+\).*\(\\d\+\)", service) or "_version_tuple" in service:
+            results.append(Result(Result.PASS, "semantic version extraction/comparison present", layer="django"))
+        else:
+            results.append(Result(
+                Result.FAIL,
+                "semantic version extraction/comparison not found",
+                fix="Extract X.Y.Z from installer filenames and compare as integer tuples",
+                layer="django",
+            ))
+
+    views_path = find_file(root, [
+        "backend/api/views/updates.py",
+        "backend/api/updates.py",
+        "api/views/updates.py",
+        "api/updates.py",
+    ])
+
+    if views_path is None:
+        results.append(Result(
+            Result.FAIL,
+            "Update API views not found",
+            fix="Create backend/api/views/updates.py with check/settings/install endpoints",
+            layer="django",
+        ))
+    else:
+        views = read_text(views_path)
+        results.append(Result(Result.PASS, f"Update API views exist: {views_path.relative_to(root)}", layer="django"))
+        view_patterns = [
+            ("check_update", "update check endpoint view present", "Expose GET /api/updates/check/"),
+            ("update_settings", "update settings endpoint view present", "Expose authenticated GET/PATCH /api/updates/settings/ for update_source_path"),
+            ("install_update", "install update endpoint view present", "Expose authenticated POST /api/updates/install/"),
+            ("AllowAny", "update check can run before login", "Mark check_update AllowAny if the menu should show updates before auth"),
+            ("IsAuthenticated", "mutating update endpoints require authentication", "Require authentication for settings changes and installer launch"),
+        ]
+        for needle, ok_message, fix in view_patterns:
+            if needle in views:
+                results.append(Result(Result.PASS, ok_message, layer="django"))
+            else:
+                results.append(Result(Result.FAIL, ok_message.replace("present", "missing").replace("can", "may not").replace("require", "may not require"), fix=fix, layer="django"))
+
+    urls_text = "\n".join(read_text(p) for p in root.glob("**/urls.py"))
+    if "updates/check" in urls_text and "updates/install" in urls_text:
+        results.append(Result(Result.PASS, "Django URLs wire update check/install endpoints", layer="django"))
+    else:
+        results.append(Result(
+            Result.WARN,
+            "Django URLs may not wire update endpoints",
+            fix='Add paths such as path("api/updates/check/", check_update), path("api/updates/settings/", update_settings), path("api/updates/install/", install_update)',
+            layer="django",
+        ))
+
+    update_service_ts = find_file(root, [
+        "frontend/src/services/update-service.ts",
+        "frontend/src/services/updateService.ts",
+        "src/services/update-service.ts",
+        "src/services/updateService.ts",
+    ])
+
+    if update_service_ts is None:
+        results.append(Result(
+            Result.FAIL,
+            "React update service not found",
+            fix="Create frontend/src/services/update-service.ts with check/settings/install API helpers",
+            layer="react",
+        ))
+    else:
+        update_ts = read_text(update_service_ts)
+        results.append(Result(Result.PASS, f"React update service exists: {update_service_ts.relative_to(root)}", layer="react"))
+        frontend_patterns = [
+            ("checkForUpdate", "frontend checkForUpdate() helper present", "Add a helper calling /api/updates/check/"),
+            ("installUpdate", "frontend installUpdate() helper present", "Add a helper calling /api/updates/install/"),
+            ("getUpdateSettings", "frontend getUpdateSettings() helper present", "Add a helper reading /api/updates/settings/"),
+            ("saveUpdateSettings", "frontend saveUpdateSettings() helper present", "Add a helper saving update_source_path"),
+            ("update_source_path", "frontend transports update_source_path", "Use update_source_path as the canonical payload key"),
+        ]
+        for needle, ok_message, fix in frontend_patterns:
+            if needle in update_ts:
+                results.append(Result(Result.PASS, ok_message, layer="react"))
+            else:
+                results.append(Result(Result.FAIL, ok_message.replace("present", "missing").replace("transports", "does not transport"), fix=fix, layer="react"))
+
+    update_button = find_file(root, [
+        "frontend/src/components/UpdateButton.tsx",
+        "frontend/src/components/UpdateButton.jsx",
+        "src/components/UpdateButton.tsx",
+        "src/components/UpdateButton.jsx",
+    ])
+    if update_button:
+        results.append(Result(Result.PASS, "Update UI component exists", layer="react"))
+    else:
+        results.append(Result(
+            Result.WARN,
+            "No UpdateButton component found",
+            fix="Wire the update service into a menu/button whose label changes between Check update and Install update",
+            layer="react",
+        ))
+
+    env_text = "\n".join(read_text(p) for p in [root / ".env.example", root / "frontend" / ".env.example"])
+    if "APP_UPDATE_SOURCE_PATH" in env_text:
+        results.append(Result(Result.PASS, "APP_UPDATE_SOURCE_PATH documented in env example", layer="environment"))
+    else:
+        results.append(Result(
+            Result.WARN,
+            "APP_UPDATE_SOURCE_PATH not documented in env example",
+            fix="Document APP_UPDATE_SOURCE_PATH in .env.example for local/network update-source configuration",
+            layer="environment",
+        ))
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Cross-layer consistency checks
 # ---------------------------------------------------------------------------
@@ -1197,6 +1346,7 @@ ALL_CHECKS = [
     ("Static Import Check", check_static_tauri_imports),
     ("Session Token Management", check_session_token),
     ("Loading Screen", check_loading_screen),
+    ("Filesystem Update System", check_update_system),
     ("Port Consistency", check_port_consistency),
     ("Environment Files", check_env_files),
     ("Start Script", check_start_script),
