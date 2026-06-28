@@ -734,6 +734,7 @@ const optionalFeatureInstallInProgress = new Set();
 const optionalFeaturePackageStatuses = new Map();
 const optionalFeatureInstallMessages = new Map();
 const gitFooterPayloadRefreshInFlightByTab = new Set();
+const gitFooterSyncPushInFlightByTab = new Set();
 const gitFooterPiCalibrationInFlightByTab = new Set();
 
 function createGitWorkflowActionsDone(patch = {}) {
@@ -6423,6 +6424,10 @@ function footerMeta(label, value, className = "", options = {}) {
     node.addEventListener("click", options.onClick);
     if (options.ariaPressed !== undefined) node.setAttribute("aria-pressed", options.ariaPressed ? "true" : "false");
     if (options.ariaBusy) node.setAttribute("aria-busy", "true");
+    if (options.disabled) {
+      node.disabled = true;
+      node.setAttribute("aria-disabled", "true");
+    }
   }
   node.append(make("span", "footer-meta-label", label), make("span", "footer-meta-value", value));
   return applyFooterTooltip(node, options.title || `${label}: ${value}`, { align: options.tooltipAlign });
@@ -6461,7 +6466,7 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   cwd: "Active working directory for this Web UI tab.",
   git: "Current Git branch. detached means HEAD is not on a branch; no repo means the cwd is outside a Git work tree.",
   "git-state": "Active Git operation or detached state. Finish or abort rebase/merge/cherry-pick/revert/bisect before normal commits.",
-  sync: "Remote tracking divergence. ↑ means local commits ahead; ↓ means remote commits to pull.",
+  sync: "Remote tracking divergence. ↑ means local commits ahead; ↓ means remote commits to pull. Click when ↑ appears to run git push for this tab.",
   changes: "Working tree and fetched remote summary. 🟢 staged, ✏️ modified unstaged, ➕ untracked, ⚠️ conflicted; ⬇️ means fetched remote commits to pull; 🔄/✓/⚠️ fetch shows the tab git fetch state; ✅ means no changes.",
   "git-extra": "Extra Git signals. 📦 stash, 🧩 dirty submodules, 🌳 worktrees, 🏷️ tag at HEAD, 🕒 last commit age, 🔓 signing mismatch.",
   worktree: "Git worktree checkout for this tab. Use branch worktrees to work on branches in parallel without switching this checkout.",
@@ -6802,6 +6807,43 @@ function renderGitFooterPayloadMetric(chip) {
   return chip.contextUsage ? applyFooterContextUsage(node, chip.contextUsage) : node;
 }
 
+function gitFooterSyncOutgoingCount(value) {
+  const match = String(value || "").match(/[↑⇡]\s*(\d+)/u);
+  return match ? Number.parseInt(match[1] || "0", 10) || 0 : 0;
+}
+
+function gitFooterSyncChipHasOutgoing(chip) {
+  return chip?.key === "sync" && gitFooterSyncOutgoingCount(chip.value) > 0;
+}
+
+async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
+  if (!tabId || gitFooterSyncPushInFlightByTab.has(tabId)) return;
+  const outgoing = gitFooterSyncOutgoingCount(syncValue);
+  if (outgoing <= 0) return;
+  const tabContext = activeTabContext(tabId);
+  const tab = tabs.find((item) => item.id === tabId);
+  const target = tab?.title || tab?.cwd || "this tab";
+  hideFooterTooltip();
+  if (!window.confirm(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?`)) return;
+
+  gitFooterSyncPushInFlightByTab.add(tabId);
+  if (isCurrentTabContext(tabContext)) renderFooter();
+  try {
+    const response = await api("/api/git-workflow/push", { method: "POST", body: {}, tabId });
+    if (!response.ok) {
+      const detail = [response.error, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
+      throw new Error(detail || "git push failed");
+    }
+    addEvent(`Pushed ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"}.`, "success");
+    requestGitFooterWebuiPayload(tabContext, { force: true });
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+  } finally {
+    gitFooterSyncPushInFlightByTab.delete(tabId);
+    if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+}
+
 function renderGitFooterPayloadMeta(chip, tab) {
   const options = {};
   let action = "";
@@ -6817,6 +6859,13 @@ function renderGitFooterPayloadMeta(chip, tab) {
   } else if (chip.key === "worktree") {
     options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
     action = "Click to manage branch worktrees for this repository.";
+  } else if (chip.key === "sync" && gitFooterSyncChipHasOutgoing(chip)) {
+    const tabId = tab?.id || activeTabId;
+    const inFlight = tabId ? gitFooterSyncPushInFlightByTab.has(tabId) : false;
+    options.onClick = () => pushGitFooterSync(tabId, chip.value);
+    options.ariaBusy = inFlight;
+    options.disabled = inFlight;
+    action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
   } else if (chip.key === "changes") {
     options.onClick = openGitChangesDialog;
     action = "Click to view the current git diff.";
@@ -6858,8 +6907,9 @@ function gitFooterChipShapeKey(chip) {
 function gitFooterPickerStateKey() {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
+  const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
