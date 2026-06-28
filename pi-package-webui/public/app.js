@@ -11925,9 +11925,15 @@ function formatGitCommandResult(result) {
   return lines.join("\n");
 }
 
+function gitWorkflowMessagePreviewPath(message, key, fallback) {
+  return normalizeDisplayPath(message?.[`${key}RelativePath`] || message?.[`${key}RepoRelativePath`] || fallback);
+}
+
 function formatCommitMessagePreview(message) {
   if (!message) return "No commit message loaded yet.";
-  return [`=== SHORT ===`, message.short || "(empty)", "", "=== LONG ===", message.long || "(empty)"].join("\n");
+  const shortPath = gitWorkflowMessagePreviewPath(message, "short", "dev/COMMIT/staged-commit-short.txt");
+  const longPath = gitWorkflowMessagePreviewPath(message, "long", "dev/COMMIT/staged-commit-long.txt");
+  return [`=== SHORT (${shortPath}) ===`, message.short || "(empty)", "", `=== LONG (${longPath}) ===`, message.long || "(empty)"].join("\n");
 }
 
 function formatInputCommitMessagePreview(message) {

@@ -3523,22 +3523,38 @@ async function readGitChanges(cwd) {
   };
 }
 
-function commitMessagePaths(root) {
+function gitWorkflowMessageCwd(root, cwd) {
+  const messageCwd = path.resolve(String(cwd || root));
+  if (!pathInside(root, messageCwd)) throw new Error(`Git workflow cwd must stay inside repository root: ${messageCwd}`);
+  return messageCwd;
+}
+
+function gitWorkflowMessageFileMeta(root, messageCwd, filePath) {
   return {
-    shortPath: path.join(root, "dev", "COMMIT", "staged-commit-short.txt"),
-    longPath: path.join(root, "dev", "COMMIT", "staged-commit-long.txt"),
-    branchPath: path.join(root, "dev", "COMMIT", "staged-branch-name.txt"),
+    path: filePath,
+    relativePath: path.relative(messageCwd, filePath).split(path.sep).join("/"),
+    repoRelativePath: path.relative(root, filePath).split(path.sep).join("/"),
+  };
+}
+
+function commitMessagePaths(baseDir) {
+  return {
+    shortPath: path.join(baseDir, "dev", "COMMIT", "staged-commit-short.txt"),
+    longPath: path.join(baseDir, "dev", "COMMIT", "staged-commit-long.txt"),
+    branchPath: path.join(baseDir, "dev", "COMMIT", "staged-branch-name.txt"),
   };
 }
 
 async function readGitWorkflowBranchName(cwd) {
   const root = await getGitRoot(cwd);
-  const { branchPath } = commitMessagePaths(root);
+  const messageCwd = gitWorkflowMessageCwd(root, cwd);
+  const { branchPath } = commitMessagePaths(messageCwd);
   try {
     const [branchText, branchStat] = await Promise.all([readFile(branchPath, "utf8"), stat(branchPath)]);
     const branch = branchText.split(/\r?\n/).find((line) => line.trim())?.trim() || "";
     if (!branch) throw new Error(`${branchPath} is empty`);
-    return { root, branchPath, branch, mtimeMs: branchStat.mtimeMs };
+    const branchFile = gitWorkflowMessageFileMeta(root, messageCwd, branchPath);
+    return { root, cwd: messageCwd, branchPath, branchRelativePath: branchFile.relativePath, branchRepoRelativePath: branchFile.repoRelativePath, branch, mtimeMs: branchStat.mtimeMs };
   } catch (error) {
     throw new Error(`Missing generated branch name file ${branchPath}. Run /git-branch-name first. ${sanitizeError(error)}`);
   }
@@ -3546,7 +3562,8 @@ async function readGitWorkflowBranchName(cwd) {
 
 async function readGitWorkflowMessages(cwd) {
   const root = await getGitRoot(cwd);
-  const { shortPath, longPath } = commitMessagePaths(root);
+  const messageCwd = gitWorkflowMessageCwd(root, cwd);
+  const { shortPath, longPath } = commitMessagePaths(messageCwd);
   try {
     const [shortText, longText, shortStat, longStat] = await Promise.all([
       readFile(shortPath, "utf8"),
@@ -3554,17 +3571,24 @@ async function readGitWorkflowMessages(cwd) {
       stat(shortPath),
       stat(longPath),
     ]);
+    const shortFile = gitWorkflowMessageFileMeta(root, messageCwd, shortPath);
+    const longFile = gitWorkflowMessageFileMeta(root, messageCwd, longPath);
     return {
       root,
+      cwd: messageCwd,
       shortPath,
       longPath,
+      shortRelativePath: shortFile.relativePath,
+      longRelativePath: longFile.relativePath,
+      shortRepoRelativePath: shortFile.repoRelativePath,
+      longRepoRelativePath: longFile.repoRelativePath,
       short: shortText.trimEnd(),
       long: longText.trimEnd(),
       shortMtimeMs: shortStat.mtimeMs,
       longMtimeMs: longStat.mtimeMs,
     };
   } catch (error) {
-    throw new Error(`Missing generated commit message files in ${path.join(root, "dev", "COMMIT")}. Run /git-staged-msg first. ${sanitizeError(error)}`);
+    throw new Error(`Missing generated commit message files in ${path.join(messageCwd, "dev", "COMMIT")}. Run /git-staged-msg first. ${sanitizeError(error)}`);
   }
 }
 
@@ -3990,8 +4014,8 @@ async function cleanupCreatedWorktreeAfterFailure(sourceCwd, worktreePath) {
   }
 }
 
-async function readGitWorkflowMessageFilesForTransfer(root) {
-  const { shortPath, longPath } = commitMessagePaths(root);
+async function readGitWorkflowMessageFilesForTransfer(root, messageCwd = root) {
+  const { shortPath, longPath } = commitMessagePaths(messageCwd);
   const files = [];
   for (const sourcePath of [shortPath, longPath]) {
     try {
@@ -4004,7 +4028,8 @@ async function readGitWorkflowMessageFilesForTransfer(root) {
   return files;
 }
 
-async function snapshotGitWorkflowBranchState(root) {
+async function snapshotGitWorkflowBranchState(root, cwd = root) {
+  const messageCwd = gitWorkflowMessageCwd(root, cwd);
   const diffResult = await runGitWorkflowCommand(["diff", "--cached", "--binary", "--full-index"], {
     cwd: root,
     label: "git diff --cached --binary --full-index",
@@ -4015,7 +4040,7 @@ async function snapshotGitWorkflowBranchState(root) {
   }
   return {
     stagedPatch: diffResult.stdout || "",
-    messageFiles: await readGitWorkflowMessageFilesForTransfer(root),
+    messageFiles: await readGitWorkflowMessageFilesForTransfer(root, messageCwd),
   };
 }
 
@@ -4071,7 +4096,7 @@ async function createGitWorkflowBranchWorktree(tab, body = {}) {
   const root = await getGitRoot(tab.cwd);
   const branch = cleanGitBranchName(body.branch || body.branchName);
   await validateGitBranchName(root, branch);
-  const snapshot = await snapshotGitWorkflowBranchState(root);
+  const snapshot = await snapshotGitWorkflowBranchState(root, tab.cwd);
   let createdResult = null;
   try {
     createdResult = await createGitWorktree(tab.cwd, { ...body, branchName: branch });
