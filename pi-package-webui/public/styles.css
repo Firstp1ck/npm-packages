@@ -909,13 +909,15 @@ body.side-panel-collapsed .terminal-tabs-shell {
   gap: 0.42rem;
   align-items: center;
 }
-.server-action-row {
+.server-action-row,
+.network-action-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.42rem;
   align-items: center;
 }
-.server-action-row button {
+.server-action-row button,
+.network-action-row button {
   width: auto;
   min-width: 4.4rem;
 }
@@ -1089,6 +1091,15 @@ body.side-panel-collapsed .terminal-tabs-shell {
   color: #11111b;
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-yellow), var(--ctp-peach), var(--ctp-red));
+}
+#showRemoteQrButton {
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.32);
+}
+#showRemoteQrButton:not(:disabled):hover {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-sky), var(--ctp-blue));
 }
 .optional-features-description {
   margin: 0 0 0.58rem;

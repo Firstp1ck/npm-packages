@@ -142,6 +142,7 @@ const elements = {
   remoteAuthToggle: $("#remoteAuthToggle"),
   remoteAuthStatus: $("#remoteAuthStatus"),
   openNetworkButton: $("#openNetworkButton"),
+  showRemoteQrButton: $("#showRemoteQrButton"),
   remoteQrDialog: $("#remoteQrDialog"),
   remoteQrMessage: $("#remoteQrMessage"),
   remoteQrBody: $("#remoteQrBody"),
@@ -11693,11 +11694,35 @@ function isLocalWebuiBrowserOrigin() {
   return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
+function remoteWebuiUniqueUrls(values = []) {
+  const urls = [];
+  const seen = new Set();
+  const addUrl = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) addUrl(item);
+      return;
+    }
+    const href = remoteWebuiLineUrl(value);
+    if (!href || seen.has(href)) return;
+    seen.add(href);
+    urls.push(href);
+  };
+  addUrl(values);
+  return urls;
+}
+
+function remoteWebuiQrUrlsFromData(data = {}) {
+  const network = data.network || latestNetwork || {};
+  const networkUrls = Array.isArray(network.networkUrls) ? network.networkUrls : [];
+  const urls = remoteWebuiUniqueUrls([data.url, networkUrls]);
+  return urls.length ? urls : remoteWebuiUniqueUrls([network.localUrl]);
+}
+
 function remoteWebuiQrLinesFromData(data = {}) {
   const network = data.network || latestNetwork || {};
   const auth = network.auth || {};
-  const networkUrls = Array.isArray(network.networkUrls) ? network.networkUrls : [];
-  const displayUrl = data.url || networkUrls.find((candidate) => /^https?:\/\//i.test(String(candidate || ""))) || network.localUrl || "";
+  const urls = remoteWebuiQrUrlsFromData(data);
+  const displayUrl = urls[0] || "";
   const qrLines = Array.isArray(data.qrLines) ? data.qrLines.map((line) => String(line ?? "")) : [];
   const hasAutoAuthQr = !!(auth.enabled && auth.pin && data.qrUrl && displayUrl && data.qrUrl !== displayUrl);
   const authLine = auth.enabled ? `Remote PIN auth: on${auth.pin ? ` · PIN ${auth.pin}` : ""}` : "Remote PIN auth: off";
@@ -11714,6 +11739,7 @@ function remoteWebuiQrLinesFromData(data = {}) {
     ...qrLines,
     "",
     displayUrl,
+    ...urls.slice(1),
     authLine,
     "",
     warningLine,
@@ -11806,11 +11832,12 @@ function openRemoteWebuiQrPopup(lines = []) {
   }
 
   const details = make("div", "remote-qr-details");
-  if (url) {
+  const urls = remoteWebuiUniqueUrls([url, cleanLines]);
+  for (const [index, href] of urls.entries()) {
     const urlRow = make("div", "remote-qr-url-row");
-    const urlLabel = make("span", "remote-qr-url-label", "URL");
-    const link = make("a", "remote-qr-url", url);
-    link.href = url;
+    const urlLabel = make("span", "remote-qr-url-label", index === 0 ? "URL" : "LAN");
+    const link = make("a", "remote-qr-url", href);
+    link.href = href;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     urlRow.append(urlLabel, link);
@@ -18776,6 +18803,11 @@ function renderNetworkStatus() {
     : "Off";
   elements.openNetworkButton.disabled = rebinding;
   elements.openNetworkButton.textContent = opening ? "Opening…" : closing ? "Closing…" : open ? "Close for network" : "Open to network";
+  if (elements.showRemoteQrButton) {
+    elements.showRemoteQrButton.hidden = !open;
+    elements.showRemoteQrButton.disabled = rebinding || !open;
+    elements.showRemoteQrButton.textContent = "Show QR code";
+  }
 }
 
 async function refreshNetworkStatus() {
@@ -21380,6 +21412,7 @@ if (elements.backgroundClearButton) {
 }
 elements.remoteAuthToggle.addEventListener("change", () => toggleRemoteAuth().catch((error) => addEvent(error.message || String(error), "error")));
 elements.openNetworkButton.addEventListener("click", openToNetwork);
+elements.showRemoteQrButton?.addEventListener("click", () => showRemoteWebuiQrPopupFromNetwork().catch((error) => addEvent(error.message || String(error), "error")));
 elements.remoteQrCopyButton?.addEventListener("click", () => copyRemoteWebuiQrUrl().catch((error) => addEvent(error.message || String(error), "error")));
 elements.remoteQrOpenButton?.addEventListener("click", openRemoteWebuiQrUrl);
 elements.remoteQrCloseButton?.addEventListener("click", closeRemoteWebuiQrPopup);

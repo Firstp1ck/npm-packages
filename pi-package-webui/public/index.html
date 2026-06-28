@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=59" />
+    <link rel="stylesheet" href="/styles.css?v=60" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -395,7 +395,10 @@
                       <span id="remoteAuthStatus" class="toggle-control-hint">Off</span>
                     </span>
                   </label>
-                  <button id="openNetworkButton" type="button">Open to network</button>
+                  <div class="network-action-row">
+                    <button id="openNetworkButton" type="button">Open to network</button>
+                    <button id="showRemoteQrButton" type="button" hidden>Show QR code</button>
+                  </div>
                 </div>
                 <div class="control-field server-control-field">
                   <label for="serverActionSelect">Server</label>
@@ -746,6 +749,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=58"></script>
+    <script type="module" src="/app.js?v=59"></script>
   </body>
 </html>
