@@ -5071,9 +5071,19 @@ function rememberTabState(tab, state) {
   if (!options.noSession && Object.prototype.hasOwnProperty.call(state, "sessionFile")) tab.sessionFile = sessionFileFromState(state);
 }
 
+function patchTabState(tab, patch) {
+  if (!tab || !patch || typeof patch !== "object") return;
+  tab.lastState = { ...(tab.lastState || {}), ...patch };
+}
+
 function stateWithPendingThinking(tab, state) {
-  if (!state || typeof state !== "object" || !tab?.pendingThinkingLevel) return state;
-  return { ...state, pendingThinkingLevel: tab.pendingThinkingLevel };
+  if (!state || typeof state !== "object") return state;
+  const queueLength = tab ? compactionQueueForTab(tab).length : 0;
+  if (!tab?.pendingThinkingLevel && queueLength === 0) return state;
+  const patch = {};
+  if (tab?.pendingThinkingLevel) patch.pendingThinkingLevel = tab.pendingThinkingLevel;
+  if (queueLength > 0) patch.pendingMessageCount = Number(state.pendingMessageCount || 0) + queueLength;
+  return { ...state, ...patch };
 }
 
 function responseWithPendingThinking(tab, response) {
@@ -5205,6 +5215,160 @@ function replayExtensionWidgets(tab, res) {
 function bashQueueForTab(tab) {
   if (!tab.bashQueue) tab.bashQueue = [];
   return tab.bashQueue;
+}
+
+function compactionQueueForTab(tab) {
+  if (!tab.compactionQueue) tab.compactionQueue = [];
+  return tab.compactionQueue;
+}
+
+function queueableCompactionCommand(command) {
+  return ["prompt", "steer", "follow_up"].includes(command?.type) && !!String(command.message || "").trim();
+}
+
+function compactionQueueMode(command) {
+  if (command?.type === "follow_up" || command?.streamingBehavior === "followUp") return "followUp";
+  return "steer";
+}
+
+function compactQueuedCommand(command) {
+  const queued = {
+    type: command.type,
+    message: String(command.message || ""),
+    mode: compactionQueueMode(command),
+  };
+  if (Array.isArray(command.images) && command.images.length) queued.images = command.images;
+  return queued;
+}
+
+function compactionQueueEvent(tab, extra = {}) {
+  const queue = compactionQueueForTab(tab);
+  const steering = [];
+  const followUp = [];
+  for (const item of queue) {
+    const message = String(item?.command?.message || "").trim();
+    if (!message) continue;
+    if (item.command.mode === "followUp") followUp.push(message);
+    else steering.push(message);
+  }
+  return {
+    type: "webui_compaction_queue_update",
+    tabId: tab.id,
+    tabTitle: tab.title,
+    queueLength: queue.length,
+    pendingMessageCount: queue.length,
+    steering,
+    followUp,
+    draining: tab.compactionQueueDraining === true,
+    tabActivity: tabActivitySnapshot(tab),
+    ...extra,
+  };
+}
+
+function enqueueCommandUntilCompactionEnds(tab, command) {
+  const queue = compactionQueueForTab(tab);
+  const item = {
+    id: randomUUID(),
+    command: compactQueuedCommand(command),
+    enqueuedAt: new Date().toISOString(),
+  };
+  queue.push(item);
+  broadcastTabEvent(tab, compactionQueueEvent(tab, { queuedId: item.id }));
+  return rpcSuccess(command.type, {
+    queued: true,
+    queuedFor: "compaction",
+    queueLength: queue.length,
+    message: "Prompt queued; Pi will resume automatically after compaction finishes.",
+  });
+}
+
+function maybeQueueCommandDuringCompaction(tab, command) {
+  if (!queueableCompactionCommand(command)) return null;
+  if (!tab?.lastState?.isCompacting) return null;
+  return enqueueCommandUntilCompactionEnds(tab, command);
+}
+
+function queuedPromptCommand(item) {
+  const command = { type: "prompt", message: item.command.message };
+  if (Array.isArray(item.command.images) && item.command.images.length) command.images = item.command.images;
+  return command;
+}
+
+function queuedStreamingCommand(item) {
+  const command = {
+    type: item.command.mode === "followUp" ? "follow_up" : "steer",
+    message: item.command.message,
+  };
+  if (Array.isArray(item.command.images) && item.command.images.length) command.images = item.command.images;
+  return command;
+}
+
+function queuedRetryCommand(item) {
+  const message = String(item.command.message || "").trim();
+  if (item.command.type === "prompt" && message.startsWith("/")) {
+    const command = queuedPromptCommand(item);
+    command.streamingBehavior = item.command.mode === "followUp" ? "followUp" : "steer";
+    return command;
+  }
+  return queuedStreamingCommand(item);
+}
+
+function requeueCompactionItems(tab, items) {
+  if (!items?.length) return;
+  const queue = compactionQueueForTab(tab);
+  queue.unshift(...items);
+  broadcastTabEvent(tab, compactionQueueEvent(tab));
+}
+
+async function compactionFlushShouldJoinActiveRun(tab, event = {}) {
+  if (event.willRetry === true) return true;
+  await delay(80);
+  const state = await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS).catch(() => ({ ok: false }));
+  if (state.ok) return !!state.data?.isStreaming;
+  return !!tab.lastState?.isStreaming;
+}
+
+async function flushCompactionQueue(tab, event = {}) {
+  const queue = compactionQueueForTab(tab);
+  if (!queue.length || tab.compactionQueueDraining) return;
+  const items = queue.splice(0);
+  tab.compactionQueueDraining = true;
+  broadcastTabEvent(tab, compactionQueueEvent(tab));
+  const remaining = [...items];
+  try {
+    const joinActiveRun = await compactionFlushShouldJoinActiveRun(tab, event);
+    if (joinActiveRun) {
+      while (remaining.length) {
+        const item = remaining[0];
+        const response = await tab.rpc.send(queuedRetryCommand(item));
+        if (response.success === false) throw new Error(response.error || "failed to queue prompt after compaction");
+        remaining.shift();
+      }
+    } else {
+      let startedPrompt = false;
+      while (remaining.length) {
+        const item = remaining[0];
+        const command = startedPrompt ? queuedStreamingCommand(item) : queuedPromptCommand(item);
+        if (!startedPrompt) {
+          const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
+          if (pendingThinkingResponse?.success === false) throw new Error(pendingThinkingResponse.error || "failed to apply queued thinking level");
+          maybeNameTabForConversation(tab, command);
+          markTabWorking(tab);
+        }
+        const response = await tab.rpc.send(command, command.type === "prompt" ? PROMPT_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
+        if (response.success === false) throw new Error(response.error || "failed to resume after compaction");
+        remaining.shift();
+        if (command.type === "prompt") startedPrompt = true;
+      }
+    }
+    broadcastTabEvent(tab, compactionQueueEvent(tab, { drained: true }));
+  } catch (error) {
+    requeueCompactionItems(tab, remaining);
+    broadcastTabEvent(tab, compactionQueueEvent(tab, { error: sanitizeError(error) }));
+  } finally {
+    tab.compactionQueueDraining = false;
+    broadcastTabEvent(tab, compactionQueueEvent(tab));
+  }
 }
 
 function settleBashQueueItem(item, kind, value) {
@@ -5446,12 +5610,23 @@ function updateTabActivityFromEvent(tab, event) {
   const timestamp = new Date().toISOString();
   switch (event?.type) {
     case "agent_start":
+      patchTabState(tab, { isStreaming: true });
+      markTabWorking(tab, timestamp);
+      break;
     case "compaction_start":
+      patchTabState(tab, { isCompacting: true });
       markTabWorking(tab, timestamp);
       break;
     case "agent_end":
-    case "compaction_end":
+      patchTabState(tab, { isStreaming: false });
       markTabDone(tab, timestamp);
+      break;
+    case "compaction_end":
+      patchTabState(tab, { isCompacting: false });
+      markTabDone(tab, timestamp);
+      break;
+    case "queue_update":
+      patchTabState(tab, { pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) });
       break;
     case "pi_process_exit":
     case "pi_process_error":
@@ -5507,6 +5682,7 @@ function attachRpcToTab(tab, rpc) {
     scopedEvent = { ...scopedEvent, tabActivity: tabActivitySnapshot(tab), pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length };
     recordEvent(scopedEvent);
     for (const client of tab.sseClients) sendSse(client, scopedEvent);
+    if (event?.type === "compaction_end" && event.aborted !== true) void flushCompactionQueue(tab, event);
   });
 }
 
@@ -5544,6 +5720,8 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     webuiHelperResponseIds: new Set(),
     bashQueue: [],
     bashQueueDraining: false,
+    compactionQueue: [],
+    compactionQueueDraining: false,
     rpc: undefined,
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
@@ -8302,6 +8480,11 @@ const server = createServer(async (req, res) => {
         return;
       }
       const command = commandFromPost(url.pathname, body);
+      const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
+      if (queuedForCompaction) {
+        sendJson(res, 202, responseWithTab(queuedForCompaction, tab));
+        return;
+      }
       const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
       if (pendingThinkingResponse?.success === false) {
         sendJson(res, 400, responseWithTab(pendingThinkingResponse, tab));
@@ -8461,6 +8644,11 @@ const server = createServer(async (req, res) => {
       if (command) {
         const tab = getRequestedTab(req, url, body);
         if (command.type === "abort") await cancelPendingExtensionUiRequests(tab);
+        const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
+        if (queuedForCompaction) {
+          sendJson(res, 202, responseWithTab(queuedForCompaction, tab));
+          return;
+        }
         const startsVisibleWork = commandStartsVisibleWork(command);
         if (startsVisibleWork) {
           maybeNameTabForConversation(tab, command);

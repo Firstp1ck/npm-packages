@@ -16,19 +16,23 @@ const WEBUI_WIDGET_PAYLOAD_PREFIX = "BTW_WEBUI_PAYLOAD ";
 const WEBUI_PAYLOAD_TYPE = "firstpick.pi-extension-btw.output";
 const WEBUI_PAYLOAD_VERSION = 2;
 const SIDE_SYSTEM_PROMPT = `\n\n[/btw SIDE QUESTION MODE]\nAnswer the user's /btw side question using only the session transcript included in the request.\nDo not call tools, ask to inspect files, run commands, or search. You have no tool access in this side request.\nKeep the answer concise unless the question explicitly asks for detail.\nThis question and answer are ephemeral and must not assume they will be remembered in the main conversation.`;
+const TRANSFER_SUMMARY_SYSTEM_PROMPT = `\n\n[/btw TRANSFER SUMMARY MODE]\nSummarize a /btw side question and side answer for transfer back into the main agent conversation as steering context.\nReturn only a concise steering summary. Preserve actionable facts, decisions, constraints, caveats, and requested behavior relevant to the main task.\nDo not add new facts, do not call tools, and do not re-answer the original side question.`;
 const MAX_TOOL_ARGS_CHARS = 2000;
 const WEBUI_UPDATE_INTERVAL_MS = 90;
 
 type BtwStatus = "loading" | "streaming" | "done" | "error" | "aborted";
 type BtwOverlayResult = "dismiss" | "abort";
+type BtwTransferMode = "full" | "summary";
 
 type BtwTransferPayload = {
   question?: string;
   answer?: string;
+  summary?: string;
   status?: BtwStatus;
   model?: string;
   generatedAt?: number;
   updatedAt?: number;
+  transferMode?: BtwTransferMode;
 };
 
 let activeWebuiBtwId = "";
@@ -107,6 +111,37 @@ function buildSideQuestionMessages(ctx: ExtensionCommandContext, question: strin
   ];
 }
 
+function buildTransferSummaryMessages(payload: BtwTransferPayload): Message[] {
+  const question = String(payload.question || "").trim();
+  const answer = String(payload.answer || "").trim();
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: [
+            "Create a concise steering summary from this /btw side thread.",
+            "Return only the summary text; no preamble.",
+            "",
+            "Side question:",
+            question || "(empty)",
+            "",
+            "Side answer:",
+            answer || "(empty)",
+            "",
+            "Summary requirements:",
+            "- Prefer 3-6 short bullets, or one short paragraph if that is clearer.",
+            "- Preserve concrete decisions, constraints, caveats, file names, commands, and next actions.",
+            "- Omit irrelevant chatter and do not add facts that are not present above.",
+          ].join("\n"),
+        },
+      ],
+      timestamp: Date.now(),
+    },
+  ];
+}
+
 function assistantText(message: { content?: any[] } | undefined): string {
   return (message?.content || [])
     .filter((part): part is { type: "text"; text: string } => part?.type === "text")
@@ -133,21 +168,31 @@ function decodeTransferPayload(args: string): BtwTransferPayload {
   }
 }
 
-function formatTransferredContext(payload: BtwTransferPayload): string {
+function normalizeTransferMode(value: unknown): BtwTransferMode {
+  return value === "summary" ? "summary" : "full";
+}
+
+function formatTransferredContext(payload: BtwTransferPayload, summaryText = ""): string {
   const question = String(payload.question || "").trim();
   const answer = String(payload.answer || "").trim();
-  return [
-    "[/btw transferred context]",
-    "The following side-question context was explicitly transferred into the main conversation.",
+  const summary = String(summaryText || payload.summary || "").trim();
+  const mode = normalizeTransferMode(payload.transferMode);
+  const intro = mode === "summary"
+    ? "The following /btw side-thread summary was explicitly transferred as steering context. Treat it as user steering for the main task and incorporate it at the next safe point."
+    : "The following /btw side-question context was explicitly transferred as steering context. Treat it as user steering for the main task and incorporate it at the next safe point.";
+  const lines = [
+    mode === "summary" ? "[/btw transferred steering summary]" : "[/btw transferred context]",
+    intro,
     payload.model ? `Model: ${payload.model}` : "",
     payload.status ? `Status: ${payload.status}` : "",
     "",
-    "Side question:",
-    question || "(empty)",
-    "",
-    "Side answer:",
-    answer || "(empty)",
-  ].filter((line, index, lines) => line || lines[index - 1] !== "").join("\n");
+  ];
+  if (mode === "summary") {
+    lines.push("Steering summary:", summary || "(empty)", "", "Original side question:", question || "(empty)");
+  } else {
+    lines.push("Side question:", question || "(empty)", "", "Side answer:", answer || "(empty)");
+  }
+  return lines.filter((line, index, allLines) => line || allLines[index - 1] !== "").join("\n");
 }
 
 function webuiStatusLabel(status: BtwStatus): string {
@@ -354,6 +399,46 @@ class BtwOverlayComponent {
   invalidate(): void {}
 }
 
+async function summarizeTransferPayload(ctx: ExtensionCommandContext, payload: BtwTransferPayload): Promise<string> {
+  const providedSummary = String(payload.summary || "").trim();
+  if (providedSummary) return providedSummary;
+  const question = String(payload.question || "").trim();
+  const answer = String(payload.answer || "").trim();
+  if (!question && !answer) return "";
+  if (!ctx.model) throw new Error("No model selected for /btw transfer summary.");
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+  if (!auth.ok) throw new Error(auth.error);
+
+  const responseStream = stream(
+    ctx.model,
+    {
+      systemPrompt: `${ctx.getSystemPrompt()}${TRANSFER_SUMMARY_SYSTEM_PROMPT}`,
+      messages: buildTransferSummaryMessages(payload),
+    },
+    {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      maxTokens: 1024,
+      cacheRetention: "short",
+      sessionId: `btw-transfer:${ctx.sessionManager.getSessionId()}`,
+    },
+  );
+
+  let summary = "";
+  for await (const event of responseStream) {
+    if (event.type === "text_delta") {
+      summary += event.delta;
+    } else if (event.type === "done") {
+      summary = assistantText(event.message) || summary;
+    } else if (event.type === "error") {
+      throw new Error(event.error.errorMessage || "Transfer summary failed.");
+    }
+  }
+
+  const final = await responseStream.result().catch(() => undefined);
+  return (assistantText(final) || summary || answer || question).trim();
+}
+
 async function runSideQuestion(
   ctx: ExtensionCommandContext,
   question: string,
@@ -500,20 +585,23 @@ export default function btwExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("btw-transfer", {
-    description: "Transfer a /btw side answer into the main conversation context.",
+    description: "Transfer a /btw side answer, optionally summarized, into the main conversation context.",
     handler: async (args, ctx) => {
       const payload = decodeTransferPayload(args);
-      const content = formatTransferredContext(payload);
+      const transferMode = normalizeTransferMode(payload.transferMode);
+      const summary = transferMode === "summary" ? await summarizeTransferPayload(ctx, payload) : "";
+      const details: BtwTransferPayload = { ...payload, transferMode, ...(summary ? { summary } : {}) };
+      const content = formatTransferredContext(details, summary);
       const isIdle = ctx.isIdle();
       pi.sendMessage({
         customType: "btw-transfer",
         content,
         display: true,
-        details: payload,
-      }, isIdle ? undefined : { deliverAs: "steer" });
+        details,
+      }, { deliverAs: "steer" });
       ctx.ui.notify(isIdle
-        ? "/btw context transferred into the main conversation."
-        : "/btw context sent as live steering; it will be injected after the next agent action.", "info");
+        ? (transferMode === "summary" ? "/btw summary transferred as steering context." : "/btw context transferred as steering context.")
+        : (transferMode === "summary" ? "/btw summary sent as live steering; it will be injected after the next agent action." : "/btw context sent as live steering; it will be injected after the next agent action."), "info");
     },
   });
 

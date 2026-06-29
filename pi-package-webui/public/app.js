@@ -2162,7 +2162,7 @@ function isUserBashRunningOrQueued(tabId = activeTabId) {
 }
 
 function isRunActive() {
-  return !!currentState?.isStreaming || isUserBashRunningOrQueued() || (runIndicatorLocallyActive && !currentState?.isCompacting);
+  return !!currentState?.isStreaming || !!currentState?.isCompacting || isUserBashRunningOrQueued() || runIndicatorLocallyActive;
 }
 
 function isAbortAvailable() {
@@ -11435,14 +11435,16 @@ function base64UrlEncodeUtf8(value) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function btwTransferPayload(payload) {
+function btwTransferPayload(payload, { transferMode = "full" } = {}) {
   return {
     question: payload?.question || "",
     answer: payload?.answer || payload?.error || "",
+    summary: payload?.summary || "",
     status: payload?.status || "done",
     model: payload?.model || "",
     generatedAt: payload?.generatedAt || 0,
     updatedAt: payload?.updatedAt || Date.now(),
+    transferMode: transferMode === "summary" ? "summary" : "full",
   };
 }
 
@@ -11477,23 +11479,40 @@ function makeBtwTransferIcon() {
   return svg;
 }
 
-async function transferBtwContextToMain(button) {
+async function transferBtwContextToMain(button, { transferMode = "full" } = {}) {
   const payload = currentBtwWidgetPayload();
-  const transferPayload = btwTransferPayload(payload);
+  const normalizedMode = transferMode === "summary" ? "summary" : "full";
+  const transferPayload = btwTransferPayload(payload, { transferMode: normalizedMode });
   if (!transferPayload.question && !transferPayload.answer) return;
   const targetTabId = activeTabId;
   const liveSteer = !!currentState?.isStreaming;
-  const original = button?.querySelector("span")?.textContent || "Transfer Context";
+  const label = button?.querySelector(".btw-action-label") || button?.querySelector("span");
+  const original = label?.textContent || button?.textContent || (normalizedMode === "summary" ? "Summarize & Steer" : "Transfer Context");
   const encoded = base64UrlEncodeUtf8(JSON.stringify(transferPayload));
+  if (label) label.textContent = normalizedMode === "summary" ? "Summarizing…" : "Steering…";
+  else if (button) button.textContent = normalizedMode === "summary" ? "Summarizing…" : "Steering…";
+  if (button) button.disabled = true;
   try {
-    await sendPrompt("prompt", `/btw-transfer ${encoded}`, { targetTabId, throwOnError: true, streamingBehavior: liveSteer ? "steer" : undefined });
-    const label = button?.querySelector("span");
-    if (label) label.textContent = liveSteer ? "Steered" : "Transferred";
-    addEvent(liveSteer
-      ? "/btw context sent as live steering; it will be injected after the next agent action"
-      : "/btw context transferred into the main conversation", "info");
-    setTimeout(() => { if (label) label.textContent = original; }, 1800);
+    await sendPrompt("prompt", `/btw-transfer ${encoded}`, { targetTabId, throwOnError: true, streamingBehavior: "steer" });
+    const doneLabel = normalizedMode === "summary" ? "Summary Sent" : (liveSteer ? "Steered" : "Transferred");
+    if (label) label.textContent = doneLabel;
+    else if (button) button.textContent = doneLabel;
+    addEvent(normalizedMode === "summary"
+      ? (liveSteer
+        ? "/btw summary sent as live steering; it will be injected after the next agent action"
+        : "/btw summary transferred as steering context")
+      : (liveSteer
+        ? "/btw context sent as live steering; it will be injected after the next agent action"
+        : "/btw context transferred as steering context"), "info");
+    setTimeout(() => {
+      if (label) label.textContent = original;
+      else if (button) button.textContent = original;
+      if (button) button.disabled = false;
+    }, 1800);
   } catch {
+    if (label) label.textContent = original;
+    else if (button) button.textContent = original;
+    if (button) button.disabled = false;
     // sendPrompt already reports the error.
   }
 }
@@ -11560,14 +11579,22 @@ function renderBtwOutputWidget() {
   if (payload?.model) meta.append(make("span", "release-npm-pill", payload.model));
 
   const actions = make("div", "release-npm-actions");
+  const hasTransferContent = !!payload && !!(payload.answer || payload.error || payload.question);
   const transferButton = btwWidgetActionButton("", transferBtwContextToMain, "btw-transfer-action");
   transferButton.title = currentState?.isStreaming
     ? "Transfer this /btw question and answer as live steering after the next agent action"
-    : "Transfer this /btw question and answer into the main conversation context";
-  transferButton.append(makeBtwTransferIcon(), make("span", undefined, "Transfer Context"));
-  transferButton.disabled = !payload || !(payload.answer || payload.error || payload.question);
+    : "Transfer this /btw question and answer as steering context in the main conversation";
+  transferButton.append(makeBtwTransferIcon(), make("span", "btw-action-label", "Transfer Context"));
+  transferButton.disabled = !hasTransferContent;
+  const summaryTransferButton = btwWidgetActionButton("", (button) => transferBtwContextToMain(button, { transferMode: "summary" }), "btw-transfer-action btw-transfer-summary-action");
+  summaryTransferButton.title = currentState?.isStreaming
+    ? "Summarize this /btw side thread, then send the summary as live steering after the next agent action"
+    : "Summarize this /btw side thread, then transfer the summary as steering context";
+  summaryTransferButton.append(makeBtwTransferIcon(), make("span", "btw-action-label", "Summarize & Steer"));
+  summaryTransferButton.disabled = !hasTransferContent;
   actions.append(
     transferButton,
+    summaryTransferButton,
     btwWidgetActionButton("Copy", copyBtwWidgetAnswer),
     btwWidgetActionButton("Close", closeBtwOutputWidget),
   );
@@ -11584,7 +11611,7 @@ function renderBtwOutputWidget() {
 
   const note = payload?.status === "error"
     ? "The side request failed. The main conversation was not changed."
-    : "Ephemeral answer · every message in this input is sent as /btw · not appended to the main transcript.";
+    : "Ephemeral answer · use Transfer Context for the full side thread or Summarize & Steer for a concise steering summary.";
   const controls = make("div", "release-npm-controls btw-controls", note);
   const outputDetails = renderReleaseNpmOutputDetails(`btw:${payload?.id || "composer"}`, streamHeader, terminal, controls);
   node.append(header, question, outputDetails, renderBtwComposerForm());
@@ -20191,8 +20218,10 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   }
 
   const targetWasStreaming = !!currentState?.isStreaming;
+  const targetWasCompacting = !!currentState?.isCompacting;
+  const targetWasBusy = targetWasStreaming || targetWasCompacting;
   const busyBehavior = normalizeBusyPromptBehavior(busyPromptBehavior);
-  const startsRun = kind === "prompt" && !targetWasStreaming;
+  const startsRun = kind === "prompt" && !targetWasBusy;
   autoFollowChat = true;
   updateJumpToLatestButton();
   setComposerActionsOpen(false);
@@ -20221,7 +20250,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       response = await api("/api/follow-up", { method: "POST", body: bodyBase, tabId: targetTabId });
     } else {
       const body = { ...bodyBase };
-      if (targetWasStreaming) body.streamingBehavior = streamingBehavior || busyBehavior;
+      if (targetWasBusy) body.streamingBehavior = streamingBehavior || busyBehavior;
       response = await api("/api/prompt", { method: "POST", body, tabId: targetTabId });
     }
     applyResponseTab(response);
@@ -20230,6 +20259,9 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     if (startsRun && response?.command === "native_slash_command") {
       markTabIdleLocally(targetTabId);
       if (targetStillActive) clearRunIndicatorActivity();
+    } else if (targetStillActive && response?.data?.queuedFor === "compaction") {
+      setRunIndicatorActivity("Prompt queued; Pi will resume automatically after compaction…");
+      addEvent("prompt queued until compaction finishes");
     } else if (targetStillActive && kind === "steer" && currentState?.isStreaming) {
       setRunIndicatorActivity("Steering sent; waiting for the next output or action…");
     } else if (targetStillActive && kind === "follow-up" && currentState?.isStreaming) {
@@ -20587,6 +20619,23 @@ function handleEvent(event) {
       break;
     case "queue_update":
       renderQueue(event);
+      scheduleRefreshState();
+      break;
+    case "webui_compaction_queue_update":
+      renderQueue(event);
+      if (currentState) currentState = { ...currentState, pendingMessageCount: Number(event.pendingMessageCount ?? event.queueLength ?? currentState.pendingMessageCount ?? 0) };
+      if (event.error) {
+        addEvent(`queued compaction prompt resume failed: ${event.error}`, "error");
+      } else if (event.drained) {
+        addEvent("queued compaction prompt sent; Pi is resuming");
+      } else if (event.draining) {
+        setRunIndicatorActivity("Sending queued prompt after compaction…");
+        addEvent("sending queued compaction prompt after compaction");
+      } else if (event.queuedId) {
+        setRunIndicatorActivity("Prompt queued; Pi will resume automatically after compaction…");
+        addEvent("prompt queued until compaction finishes");
+      }
+      renderStatus();
       scheduleRefreshState();
       break;
     case "agent_start":
