@@ -37,6 +37,21 @@ async function request(host, pathname, { method = "GET", body, timeoutMs = 5_000
   return { status: response.status, body: payload };
 }
 
+async function rmWithRetry(target) {
+  let lastError;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "EBUSY" && error?.code !== "EPERM" && error?.code !== "ENOTEMPTY") throw error;
+      await delay(150 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function runGitFixture(args, cwd, message) {
   const result = spawnSync("git", args, {
     cwd,
@@ -567,6 +582,62 @@ try {
     await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
   }
 
+  if (process.platform !== "win32") {
+    await writeFile(path.join(cwd, "signal-runner.mjs"), [
+      "import { writeFileSync } from 'node:fs';",
+      "process.on('SIGINT', () => { writeFileSync('signal-result.txt', 'SIGINT\\n'); process.exit(130); });",
+      "process.on('SIGTERM', () => { writeFileSync('signal-result.txt', 'SIGTERM\\n'); process.exit(143); });",
+      "console.log('signal runner ready');",
+      "setInterval(() => {}, 1000);",
+      "",
+    ].join("\n"));
+    const savedSignalRunner = await request("127.0.0.1", "/api/app-runner-config", {
+      method: "POST",
+      body: { tab: tabId, runner: { label: "Signal node", command: process.execPath, path: "signal-runner.mjs" } },
+      timeoutMs: 10_000,
+    });
+    assert.equal(savedSignalRunner.status, 200, `saving a signal custom runner should succeed: ${savedSignalRunner.body?.error || ""}`);
+    const signalRunner = savedSignalRunner.body?.data?.runners?.find((runner) => runner.custom === true && runner.label === "Signal node");
+    assert.ok(signalRunner?.id, "signal custom runner should appear in detected app runners");
+    let signalRunState = await request("127.0.0.1", "/api/app-runner", {
+      method: "POST",
+      body: { tab: tabId, runnerId: signalRunner.id },
+      timeoutMs: 10_000,
+    });
+    assert.equal(signalRunState.status, 200, `signal runner start should return ok: ${signalRunState.body?.error || ""}`);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      signalRunState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
+      const output = [
+        ...(signalRunState.body?.data?.activeRun?.lines || []),
+        signalRunState.body?.data?.activeRun?.pendingLine || "",
+      ].join("\n");
+      if (/signal runner ready/.test(output)) break;
+      await delay(100);
+    }
+    assert.match([
+      ...(signalRunState.body?.data?.activeRun?.lines || []),
+      signalRunState.body?.data?.activeRun?.pendingLine || "",
+    ].join("\n"), /signal runner ready/, "signal app runner should start before stop is requested");
+    const signalStop = await request("127.0.0.1", "/api/app-runner/stop", { method: "POST", body: { tab: tabId }, timeoutMs: 10_000 });
+    assert.equal(signalStop.status, 200, `signal runner stop should return ok: ${signalStop.body?.error || ""}`);
+    assert.match((signalStop.body?.data?.activeRun?.lines || []).join("\n"), /sending Ctrl\+C/, "Web UI stop should document Ctrl+C-equivalent interruption");
+    let signalResult = "";
+    for (let attempt = 0; attempt < 50; attempt++) {
+      signalRunState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
+      try {
+        signalResult = await readFile(path.join(cwd, "signal-result.txt"), "utf8");
+      } catch {
+        signalResult = "";
+      }
+      const signalRunStopped = signalRunState.body?.data?.activeRun?.status && signalRunState.body.data.activeRun.status !== "running";
+      if (signalResult && signalRunStopped) break;
+      await delay(100);
+    }
+    assert.equal(signalResult.trim(), "SIGINT", "Web UI app-runner stop should deliver SIGINT like terminal Ctrl+C, not SIGTERM");
+    assert.notEqual(signalRunState.body?.data?.activeRun?.status, "running", "signal app runner should fully stop before cleanup continues");
+    await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
+  }
+
   await writeFile(path.join(cwd, ".pi-webui-runners.json"), `${JSON.stringify({
     version: 1,
     runners: [{ id: "broken-custom", label: "Broken custom", command: "definitely-missing-pi-webui-runner", path: "custom-runner.mjs" }],
@@ -709,8 +780,11 @@ try {
   }
   assert.notEqual(child.exitCode, null, "server should exit after /api/shutdown");
 } finally {
-  if (child.exitCode === null) child.kill("SIGKILL");
-  await rm(cwd, { recursive: true, force: true });
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    await new Promise((resolve) => child.once("exit", resolve));
+  }
+  await rmWithRetry(cwd);
 }
 
 console.log("http-endpoints-harness.test.mjs passed");

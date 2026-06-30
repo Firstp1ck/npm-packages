@@ -2470,7 +2470,7 @@ function scheduleAppRunnerBroadcast(tab) {
 }
 
 function terminateAppRunnerChild(run, signal = "SIGTERM") {
-  if (!run?.child || run.child.killed) return false;
+  if (!run?.child || run.child.exitCode !== null || run.child.signalCode !== null) return false;
   try {
     if (process.platform !== "win32" && run.pid) process.kill(-run.pid, signal);
     else run.child.kill(signal);
@@ -2483,6 +2483,24 @@ function terminateAppRunnerChild(run, signal = "SIGTERM") {
       return false;
     }
   }
+}
+
+function appRunnerStdinWritable(run) {
+  const stdin = run?.child?.stdin;
+  return !!stdin && !stdin.destroyed && !stdin.writableEnded && run.stdinClosed !== true;
+}
+
+function interruptAppRunnerChild(run) {
+  if (!run?.child || run.child.exitCode !== null || run.child.signalCode !== null) return false;
+  if (appRunnerStdinWritable(run) && (run.executionMode === "pty" || process.platform === "win32")) {
+    try {
+      run.child.stdin.write("\x03", "utf8");
+      return true;
+    } catch {
+      // Fall back to process signals below.
+    }
+  }
+  return terminateAppRunnerChild(run, "SIGINT");
 }
 
 function finishAppRunner(tab, run, patch = {}) {
@@ -2600,13 +2618,14 @@ function stopAppRunnerForTab(tab, reason = "stop requested", { force = false } =
   const run = tab?.appRunner;
   if (!run || run.status !== "running") return false;
   run.stopping = true;
-  appendAppRunnerLine(run, `# ${reason}; sending ${force ? "SIGKILL" : "SIGTERM"}`);
-  terminateAppRunnerChild(run, force ? "SIGKILL" : "SIGTERM");
+  appendAppRunnerLine(run, `# ${reason}; sending ${force ? "SIGKILL" : "Ctrl+C"}`);
+  if (force) terminateAppRunnerChild(run, "SIGKILL");
+  else interruptAppRunnerChild(run);
   if (!force) {
     clearTimeout(run.stopTimer);
     run.stopTimer = setTimeout(() => {
       if (run.status === "running") {
-        appendAppRunnerLine(run, "# app runner did not stop; sending SIGKILL");
+        appendAppRunnerLine(run, "# app runner did not stop after Ctrl+C; sending SIGKILL");
         terminateAppRunnerChild(run, "SIGKILL");
         scheduleAppRunnerBroadcast(tab);
       }
