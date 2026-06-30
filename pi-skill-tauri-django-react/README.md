@@ -1,12 +1,13 @@
 # @firstpick/pi-skill-tauri-django-react
 
-A Pi skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.
+A Pi skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, local-first desktop patterns, build packaging, updates, and platform-specific gotchas.
 
 ## What it does
 
 - Adds the `tauri-django-react` skill to Pi's skill library.
-- Guides agents to invoke the skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.
-- Bundles `skills/tauri-django-react/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- Guides agents to invoke the skill for Tauri + Django + React desktop apps.
+- Covers backend lifecycle, hybrid auth, frontend integration, local SQLite configuration, installer/update flows, packaging, and platform gotchas.
+- Bundles `skills/tauri-django-react/SKILL.md` plus helper scripts used by the skill.
 
 ## Install
 
@@ -37,8 +38,12 @@ project-root/
     tauri.conf.json
     Cargo.toml
   scripts/
+    start.sh
     build-backend.sh
     build-backend.ps1
+    release.sh
+  .github/workflows/
+    release.yml
 ```
 
 The skill package also bundles helper scripts relative to the installed skill directory:
@@ -59,7 +64,7 @@ python3 /path/to/installed/package/skills/tauri-django-react/scripts/validate.py
   --format json
 ```
 
-The generated or validated project usually needs standard toolchains installed separately: Python/Django dependencies, Node frontend dependencies, Rust/Cargo, Tauri CLI, and PyInstaller for backend bundling.
+The generated or validated project usually needs standard toolchains installed separately: Python/Django dependencies, Node frontend dependencies, Rust/Cargo, Tauri CLI, PyInstaller, and optionally Waitress for packaged backends.
 
 ## Commands
 
