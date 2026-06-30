@@ -5,7 +5,7 @@ description: Agents should invoke this skill for Tauri + Django + React desktop 
 
 # Tauri + Django + React Integration Patterns
 
-Dense technical reference for building desktop applications that use Tauri as the native shell, Django as the backend API, and React as the frontend UI. Every pattern is battle-tested in the Externe Analytik project and designed for reuse across projects.
+Dense technical reference for building desktop applications that use Tauri as the native shell, Django as the backend API, and React as the frontend UI. Patterns are designed for reuse across projects.
 
 This skill is self-contained; it must not depend on package-level `docs/` files at runtime.
 
@@ -23,7 +23,7 @@ This skill is self-contained; it must not depend on package-level `docs/` files 
 6. **Mandatory local runner:** When creating or updating a project with this skill, add or maintain an executable `scripts/start.sh` that starts both Django and React for local development.
 7. **Mandatory frontend UX baseline:** Ask the user for separate light-mode and dark-mode background images before finalizing visual work; implement a persistent light/dark mode setting; implement German/English i18n for every user-facing string.
 8. **Mandatory GitHub release automation:** When creating or updating a project with this skill, add or maintain both `.github/workflows/release.yml` and an executable `scripts/release.sh` release helper.
-9. **Mandatory configurable update path:** Add or maintain a Schulungen-style filesystem update checker that reads a configurable update source directory before checking/installing desktop updates.
+9. **Mandatory configurable update path:** Add or maintain a filesystem update checker that reads a configurable update source directory before checking/installing desktop updates.
 
 ### Mandatory GitHub Release Automation
 
@@ -36,7 +36,7 @@ Every Tauri + Django + React project handled by this skill must include GitHub r
 
 ### Mandatory Configurable Filesystem Update System
 
-Every desktop-distributed Tauri + Django + React project handled by this skill must include a Schulungen-style update path unless the user explicitly chooses Tauri's built-in updater only:
+Every desktop-distributed Tauri + Django + React project handled by this skill must include a configurable filesystem update path unless the user explicitly chooses Tauri's built-in updater only:
 
 - **Canonical setting:** `settings.update_source_path` in the app config (`config.json`) stores the local/network directory to scan for installer updates.
 - **Config overrides:** support `APP_UPDATE_SOURCE_PATH` or `TAURI_UPDATE_SOURCE_PATH` env vars for deployment overrides; support `APP_CONFIG_PATH` for a custom runtime config file; support `APP_UPDATE_INSTALLER_PATTERNS` for app-specific installer filename regexes.
@@ -683,7 +683,7 @@ fn main() {
 | `notification` | Desktop notifications | Windows: requires AUMID setup |
 | `autostart` | Launch on system boot | Platform-specific registration |
 
-The Schulungen-style configurable filesystem update checker is app/backend logic, not a Tauri plugin. Prefer it when updates are distributed by copying installers to an internal network/local folder; use Tauri's built-in updater only when the project has signed updater metadata/endpoints.
+The configurable filesystem update checker is app/backend logic, not a Tauri plugin. Prefer it when updates are distributed by copying installers to an internal network/local folder; use Tauri's built-in updater only when the project has signed updater metadata/endpoints.
 
 ---
 
@@ -741,6 +741,225 @@ The Schulungen-style configurable filesystem update checker is app/backend logic
 |---|---|---|
 | **Package formats** | Users expect .deb or .AppImage depending on distro | Build both via `tauri build` |
 | **System tray** | Behavior varies by desktop environment | Test on GNOME and KDE at minimum |
+
+---
+
+## Additional Reusable Local-First Desktop Patterns
+
+These patterns extend the baseline integration for local-first desktop apps with mutable SQLite data, per-user Windows installers, plain Django views, and internal filesystem-based updates.
+
+### Desktop App Configuration and Mutable Database Path
+
+Use a small JSON settings file in Tauri's app data directory for mutable desktop-only settings, especially the SQLite database path.
+
+Recommended database path precedence:
+
+1. Explicit environment variable for admin/debug overrides
+2. In-app `settings.json` for user-selected runtime configuration
+3. Installer-provided source such as Windows registry or `database-path.txt`
+4. Default app-data path such as `<app-data>/db.sqlite3`
+
+Expose Rust commands for the settings UI:
+
+```rust
+#[tauri::command]
+fn app_config(...) -> Result<AppConfigPayload, String>;
+
+#[tauri::command]
+fn save_app_config(..., database_path: String) -> Result<AppConfigPayload, String>;
+
+#[tauri::command]
+fn restart_backend(...) -> Result<AppConfigPayload, String>;
+```
+
+Useful payload fields: `configPath`, `databasePath`, `databasePathSource`, `defaultDatabasePath`, `runningDatabasePath`, `runningPort`, and `restartRequired`.
+
+### Packaged Backend Resolution With Development Fallback
+
+Do not assume a single backend resource layout. Check several packaged backend candidates, then fall back to a development launcher only in debug builds.
+
+```rust
+fn spawn_backend(app: &AppHandle, port: u16) -> Result<(Child, PathBuf), String> {
+    match resolve_packaged_backend_path(app) {
+        Ok(path) => spawn_packaged_backend(app, &path, port),
+        Err(packaged_error) if cfg!(debug_assertions) => {
+            spawn_dev_backend(app, port)
+                .map_err(|dev_error| format!("{packaged_error}. Development fallback also failed: {dev_error}"))
+        }
+        Err(packaged_error) => Err(format!(
+            "{packaged_error}. The desktop build is missing the bundled Django backend. Run the backend bundle script before Tauri packaging."
+        )),
+    }
+}
+```
+
+Development fallback can run `uv run python tauri_entry.py` from the backend directory. Release builds should fail with a user-actionable packaging message.
+
+### Backend Startup Diagnostics and Missed-Event Fallback
+
+In addition to `backend-ready` / `backend-error` events, expose commands the frontend can poll if it misses an event during startup:
+
+```rust
+#[tauri::command]
+fn backend_port(state: tauri::State<'_, Mutex<Option<BackendState>>>) -> Option<u16>;
+
+#[tauri::command]
+fn backend_startup_error(state: tauri::State<'_, Mutex<Option<String>>>) -> Option<String>;
+```
+
+Emit richer readiness payloads for diagnostics:
+
+```json
+{
+  "port": 8000,
+  "databasePath": ".../db.sqlite3",
+  "backendReadyMs": 2310,
+  "healthReadyMs": 1804
+}
+```
+
+Frontend loading screens should both listen for events and poll `backend_port` / `backend_startup_error` every ~500ms until ready or failed.
+
+### Plain Django Session Header Authentication
+
+For projects using regular Django views instead of DRF, implement session-header auth as middleware rather than DRF authentication classes.
+
+```python
+SESSION_AUTH_SCHEME = "session"
+
+def get_authorization_session_key(request):
+    header = request.META.get("HTTP_AUTHORIZATION", "")
+    parts = header.split()
+    if len(parts) != 2 or parts[0].lower() != SESSION_AUTH_SCHEME:
+        return None
+    return parts[1]
+```
+
+Recommended middleware split:
+
+1. `SessionHeaderCsrfExemptMiddleware` before `CsrfViewMiddleware`: validate `Authorization: Session <session_key>` against the session store, attach the user/session, then set `_dont_enforce_csrf_checks = True` only for valid session headers.
+2. `SessionHeaderAuthenticationMiddleware` after Django auth middleware: assign `request.session`, assign `request.user`, and refresh session expiry.
+
+This preserves normal cookie + CSRF behavior for browser mode while allowing reliable Tauri requests with an `Authorization: Session ...` header.
+
+### Fetch-Based API Wrapper Alternative
+
+Axios is not required. A small `fetch` wrapper works well if it centralizes cookie CSRF and Tauri session headers:
+
+```typescript
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(options.headers as Record<string, string> | undefined),
+    };
+    const csrfToken = getCookie("csrftoken");
+    const sessionToken = getSessionToken();
+    if (csrfToken) headers["X-CSRFToken"] = decodeURIComponent(csrfToken);
+    if (sessionToken) headers.Authorization = `Session ${sessionToken}`;
+
+    const response = await fetch(`${getApiBaseUrl()}${path}`, {
+        credentials: "include",
+        ...options,
+        headers,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? `Request failed with status ${response.status}`);
+    return body as T;
+}
+```
+
+### Production Backend Server: Waitress Over runserver
+
+Use Django `runserver --noreload` for development, but prefer Waitress for the packaged desktop backend, especially on Windows.
+
+```python
+def should_use_waitress() -> bool:
+    default = "1" if is_frozen() else "0"
+    return os.environ.get("USE_WAITRESS", default) == "1"
+
+def run_backend_server(port: str) -> None:
+    if should_use_waitress():
+        from config.wsgi import application
+        from waitress import serve
+        serve(application, host="127.0.0.1", port=int(port), threads=4, clear_untrusted_proxy_headers=True)
+    else:
+        execute_from_command_line(["manage.py", "runserver", f"127.0.0.1:{port}", "--noreload"])
+```
+
+Keep binding to `127.0.0.1`; do not expose the embedded backend on `0.0.0.0` in desktop mode.
+
+### PyInstaller Windowed stdout/stderr Safety
+
+Windowed PyInstaller executables on Windows may start with `sys.stdout` / `sys.stderr` set to `None`. Django management commands can crash when writing to those streams.
+
+At startup, redirect missing streams to an app-data log file:
+
+```python
+def ensure_standard_streams(app_data_dir: Path) -> None:
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_path = app_data_dir / "backend.log"
+    if sys.stdout is None:
+        sys.stdout = log_path.open("a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = log_path.open("a", encoding="utf-8", buffering=1)
+```
+
+Call this immediately after creating the app-data directory and before importing Django.
+
+### Startup Migration Optimization
+
+Avoid running full migrations on every desktop launch when the schema is already current.
+
+```python
+def migrations_are_current() -> bool:
+    from django.core.management import call_command
+    try:
+        call_command("migrate", check=True, interactive=False, verbosity=0)
+    except SystemExit as exc:
+        return exc.code in (0, None)
+    return True
+```
+
+If current, skip `migrate`; otherwise run `migrate --noinput`. Log timings for environment setup, Django setup, migration check, migration execution, and health readiness.
+
+### First-Run Admin Setup
+
+For local-first apps, avoid collecting admin credentials in the installer. Instead:
+
+- `GET /api/auth/setup/` returns whether no users exist
+- `POST /api/auth/setup-admin/` creates the first admin only if the user table is empty
+- Login the new admin immediately and return `sessionToken`
+- Return `409 Conflict` if setup is already complete
+
+This keeps credential entry inside the app UI, avoids installer blocking, and works the same for fresh installs and reset databases.
+
+### Windows NSIS Installer Data Coordination
+
+For per-user Windows installers with mutable SQLite data:
+
+- Use `installMode: "currentUser"` unless machine-wide install is required
+- Let the installer choose/create a database path and write it to both registry and `database-path.txt`
+- On update/repair, keep existing app `settings.json` silently instead of overwriting user choices
+- Close running app and backend processes before update/install using `taskkill /IM ...`, then `taskkill /F /T ...`
+- Do **not** run the bundled backend from the NSIS InstallFiles page; migrations can block the installer UI and make Cancel appear stuck
+- Defer database initialization/migrations/admin setup to first app launch
+
+On uninstall, preserve local SQLite data before removing app directories. Include sidecar files:
+
+- `*.sqlite`, `*.sqlite3`, `*.db`
+- `*-wal`, `*-shm`, `*-journal`
+
+### Local Installer-Based Updates Hardening
+
+The mandatory configurable filesystem update system should also follow these hardening rules:
+
+- Never launch arbitrary paths from user input
+- Require the file to exist and match an approved installer filename pattern
+- Require `installer.relative_to(source_dir)` to succeed after resolving symlinks/relative segments
+- Hide internal source paths from unauthenticated users
+- Pass `TAURI_APP_VERSION` / `APP_VERSION` from Rust to Django so comparisons use the installed desktop app version, not only backend package metadata
+- Minimize or hide the Tauri window after launching the installer so native installer prompts are visible
 
 ---
 
