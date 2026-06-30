@@ -6,7 +6,9 @@ import path from "node:path";
 
 const VALID_REUSABILITY = new Set(["repeated-3-plus", "expensive", "strategic-reuse", "confirmed"]);
 const BLOCKED_REUSABILITY = new Set(["unknown", "one-off", "not-reusable"]);
+const VALID_INVOCATION = new Set(["model", "user"]);
 const PRIVATE_PATH_RE = /(?:\/home\/[A-Za-z0-9._-]+|\/Users\/[A-Za-z0-9._-]+)/g;
+const SOURCE_REFERENCE_PATH = "references/source-reference.md";
 
 export function getAgentDir() {
   const configured = process.env.PI_CODING_AGENT_DIR?.trim();
@@ -133,26 +135,117 @@ export function extractProcedure(sourceText) {
   return unique.slice(0, 12);
 }
 
-function deriveDescription(name, sourceText, providedDescription) {
+function listOption(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value
+      .split(/\s*,\s*/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function uniqueList(items, limit = 8) {
+  const seen = new Set();
+  const unique = [];
+  for (const item of items) {
+    const cleaned = String(item ?? "").replace(/\s+/g, " ").trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(cleaned);
+    if (unique.length >= limit) break;
+  }
+  return unique;
+}
+
+function normalizeInvocation(value) {
+  const mode = String(value ?? "model").trim().toLowerCase();
+  if (!VALID_INVOCATION.has(mode)) {
+    throw new Error(`Invalid invocation mode: ${value}. Expected 'model' or 'user'.`);
+  }
+  return mode;
+}
+
+function sanitizeTextList(items, { localOnly = false } = {}) {
+  const warnings = [];
+  const sanitized = [];
+  for (const item of items) {
+    const result = sanitizePrivatePaths(item, { localOnly });
+    if (result.text.trim()) sanitized.push(result.text.trim());
+    warnings.push(...result.warnings);
+  }
+  return { items: uniqueList(sanitized), warnings: [...new Set(warnings)] };
+}
+
+function leadingWordFallback(name) {
+  const generic = new Set(["agent", "example", "pi", "skill", "workflow"]);
+  const parts = name.split("-").filter((part) => part.length > 2 && !generic.has(part));
+  return parts[0] ?? "repeatable";
+}
+
+function deriveLeadingWords(name, provided) {
+  const supplied = uniqueList(listOption(provided), 6);
+  return supplied.length > 0 ? supplied : [leadingWordFallback(name)];
+}
+
+function shortText(value, max = 120) {
+  const text = String(value ?? "").replace(/\s+/g, " ").replace(/[.!?]$/, "").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+}
+
+function deriveBranches(name, sourceText, provided) {
+  const supplied = uniqueList(listOption(provided), 8);
+  if (supplied.length > 0) return supplied;
+  const hints = extractProcedure(sourceText).slice(0, 3).map((hint) => shortText(hint, 110));
+  return hints.length > 0 ? hints : [`${titleFromName(name)} workflow reuse`];
+}
+
+function deriveShouldTrigger(description, branches, provided) {
+  const supplied = uniqueList(listOption(provided), 8);
+  if (supplied.length > 0) return supplied;
+  const examples = branches.slice(0, 3).map((branch) => `The request matches the branch: ${branch}`);
+  if (examples.length === 0) examples.push(description.replace(/[.!?]$/, ""));
+  return examples;
+}
+
+function deriveShouldNotTrigger(provided) {
+  const supplied = uniqueList(listOption(provided), 8);
+  if (supplied.length > 0) return supplied;
+  return [
+    "The task is one-off and better captured as a note or LEARNINGS entry",
+    "Required source evidence is missing or does not describe a successful workflow",
+  ];
+}
+
+function deriveDescription(name, sourceText, providedDescription, { invocation = "model", leadingWords = [] } = {}) {
   if (providedDescription?.trim()) return sentence(providedDescription).slice(0, 1024);
   const lines = String(sourceText ?? "")
     .split(/\r?\n/)
     .map((line) => usefulLine(line))
     .filter((line) => line.length >= 20 && !/^test|npm|python|node/i.test(line));
-  const basis = lines[0] ?? `${titleFromName(name)} workflow`;
-  return sentence(`Use when applying the repeatable ${basis.toLowerCase()}`).slice(0, 1024);
+  const basis = shortText(lines[0] ?? `${titleFromName(name)} workflow`, 140).toLowerCase();
+  const leadingWord = leadingWords[0] ?? leadingWordFallback(name);
+  if (invocation === "user") {
+    return sentence(`${titleFromName(name)} manual reference for applying ${basis}`).slice(0, 1024);
+  }
+  return sentence(`Use when ${leadingWord} work requires repeating ${basis} with a predictable process`).slice(0, 1024);
 }
 
-function deriveWhenToUse(name, sourceText, description) {
+function deriveWhenToUse(description, branches) {
   const lower = description.replace(/^Agents should invoke this skill when\s+/i, "").replace(/^Use when\s+/i, "");
-  const hints = extractProcedure(sourceText).slice(0, 3);
   const bullets = [
     `Use when ${lower.replace(/[.!?]$/, "")}.`,
-    `Use when a similar successful trajectory needs to be repeated with low variance.`,
+    "Use when a similar successful trajectory needs to be repeated with low variance.",
   ];
-  for (const hint of hints) bullets.push(`Use when the workflow includes: ${hint.replace(/[.!?]$/, "")}.`);
-  bullets.push(`Do not use for one-off work that is better captured as a note or LEARNINGS entry.`);
-  return bullets;
+  for (const branch of branches.slice(0, 3)) bullets.push(`Use when the work matches this trigger branch: ${branch}.`);
+  bullets.push("Do not use for one-off work that is better captured as a note or LEARNINGS entry.");
+  return uniqueList(bullets, 8);
 }
 
 function defaultWorkflow(name) {
@@ -163,6 +256,33 @@ function defaultWorkflow(name) {
     "Verify the result with the commands or observable checks listed below.",
     "Report changed files, verification results, and any remaining risks.",
   ];
+}
+
+function completionCriterionForStep(step) {
+  const lower = String(step ?? "").toLowerCase();
+  if (/\b(confirm|decide|choose|classify|scope)\b/.test(lower)) {
+    return "The decision is explicit, recorded, and either permits the next step or stops the workflow.";
+  }
+  if (/\b(collect|read|inspect|locate|review|find|gather)\b/.test(lower)) {
+    return "The required evidence has been inspected and the relevant files, commands, or observations are known.";
+  }
+  if (/\b(apply|create|draft|edit|write|update|modify|generate)\b/.test(lower)) {
+    return "The intended change or output exists in the target location and is small enough to review.";
+  }
+  if (/\b(test|verify|validate|run|check)\b/.test(lower)) {
+    return "The named checks ran successfully, or failures and skipped checks are documented with reasons.";
+  }
+  if (/\b(report|summari[sz]e|handoff|explain)\b/.test(lower)) {
+    return "The final response names the result, verification evidence, and remaining risks or follow-ups.";
+  }
+  return "The step has an observable result that is recorded before continuing.";
+}
+
+function workflowWithCompletionCriteria(workflow) {
+  return workflow.map((step) => ({
+    step: sentence(step),
+    criterion: completionCriterionForStep(step),
+  }));
 }
 
 function verificationSteps(sourceText) {
@@ -180,15 +300,41 @@ function verificationSteps(sourceText) {
   return steps;
 }
 
+function shouldDiscloseReference(options, sourceText) {
+  const source = String(sourceText ?? "").trim();
+  if (!source) return false;
+  return Boolean(options.discloseReference) || source.length > 4000;
+}
+
+function sourceReferenceMarkdown(name, sourceText) {
+  return `# Source Reference for ${titleFromName(name)}
+
+Sanitized source artifact used to draft this skill. Load this reference only when branch details, exact prior commands, or source-specific context are needed.
+
+\`\`\`md
+${String(sourceText ?? "").trim()}
+\`\`\`
+`;
+}
+
 export function buildSkillMarkdown(options) {
   const name = slugifySkillName(options.name);
   const localOnly = Boolean(options.localOnly);
   const sourceSanitized = sanitizePrivatePaths(options.sourceText ?? "", { localOnly });
-  const descriptionSanitized = sanitizePrivatePaths(deriveDescription(name, sourceSanitized.text, options.description), { localOnly });
+  const invocation = normalizeInvocation(options.invocation);
+  const leadingSanitized = sanitizeTextList(deriveLeadingWords(name, options.leadingWords), { localOnly });
+  const leadingWords = leadingSanitized.items;
+  const branchSanitized = sanitizeTextList(deriveBranches(name, sourceSanitized.text, options.branches), { localOnly });
+  const branches = branchSanitized.items;
+  const descriptionSanitized = sanitizePrivatePaths(deriveDescription(name, sourceSanitized.text, options.description, { invocation, leadingWords }), { localOnly });
   const description = descriptionSanitized.text;
+  const shouldTriggerSanitized = sanitizeTextList(deriveShouldTrigger(description, branches, options.shouldTrigger), { localOnly });
+  const shouldTrigger = shouldTriggerSanitized.items;
+  const shouldNotTriggerSanitized = sanitizeTextList(deriveShouldNotTrigger(options.shouldNotTrigger), { localOnly });
+  const shouldNotTrigger = shouldNotTriggerSanitized.items;
   const procedure = extractProcedure(sourceSanitized.text);
-  const workflow = procedure.length > 0 ? procedure : defaultWorkflow(name);
-  const whenToUse = deriveWhenToUse(name, sourceSanitized.text, description);
+  const workflow = workflowWithCompletionCriteria(procedure.length > 0 ? procedure : defaultWorkflow(name));
+  const whenToUse = deriveWhenToUse(description, branches);
   const verification = verificationSteps(sourceSanitized.text);
   const title = titleFromName(name);
   const compatibility = localOnly
@@ -196,11 +342,15 @@ export function buildSkillMarkdown(options) {
     : "Portable Agent Skills-style draft. Review before enabling.";
   const reusability = options.reusability ?? "confirmed";
   const reusabilityEvidence = sentence(options.reusabilityEvidence ?? "Human confirmed this workflow is reusable.");
+  const discloseReference = shouldDiscloseReference(options, sourceSanitized.text);
+  const sourceReference = discloseReference ? sourceReferenceMarkdown(name, sourceSanitized.text) : "";
+  const invocationLabel = invocation === "user" ? "user-invoked" : "model-invoked";
 
   const lines = [];
   lines.push("---");
   lines.push(`name: ${name}`);
   lines.push(`description: ${yamlString(description)}`);
+  if (invocation === "user") lines.push("disable-model-invocation: true");
   lines.push(`compatibility: ${yamlString(compatibility)}`);
   lines.push("---");
   lines.push("");
@@ -211,6 +361,24 @@ export function buildSkillMarkdown(options) {
   lines.push("## When to Use");
   lines.push("");
   for (const item of whenToUse) lines.push(`- ${item}`);
+  lines.push("");
+  lines.push("### Should trigger");
+  lines.push("");
+  for (const item of shouldTrigger) lines.push(`- ${sentence(item)}`);
+  lines.push("");
+  lines.push("### Should not trigger");
+  lines.push("");
+  for (const item of shouldNotTrigger) lines.push(`- ${sentence(item)}`);
+  lines.push("");
+  lines.push("## Invocation Design");
+  lines.push("");
+  lines.push(`- Invocation mode: ${invocationLabel}.`);
+  lines.push(invocation === "user"
+    ? "- Context decision: human-invoked only; the description is human-facing and should not spend model context load."
+    : "- Context decision: model-discoverable; the description must stay trigger-focused and avoid summary prose.");
+  lines.push(`- Leading words: ${leadingWords.map((word) => `\`${word}\``).join(", ")}.`);
+  lines.push("- Trigger branches:");
+  for (const branch of branches) lines.push(`  - ${sentence(branch)}`);
   lines.push("");
   lines.push("## Reusability Evidence");
   lines.push("");
@@ -226,7 +394,19 @@ export function buildSkillMarkdown(options) {
   lines.push("");
   lines.push("## Workflow");
   lines.push("");
-  workflow.forEach((step, index) => lines.push(`${index + 1}. ${sentence(step)}`));
+  workflow.forEach((item, index) => {
+    lines.push(`${index + 1}. ${item.step}`);
+    lines.push(`   Completion criterion: ${sentence(item.criterion)}`);
+  });
+  lines.push("");
+  lines.push("## References");
+  lines.push("");
+  if (discloseReference) {
+    lines.push(`- \`${SOURCE_REFERENCE_PATH}\` — sanitized source trajectory. Load only when exact source details or branch-specific context are needed.`);
+  } else {
+    lines.push("- No external reference is bundled yet. Move future long or branch-specific reference to `references/` instead of bloating `SKILL.md`.");
+  }
+  lines.push("- Use clear context pointers so the agent knows when a disclosed reference is worth loading.");
   lines.push("");
   lines.push("## Verification");
   lines.push("");
@@ -235,20 +415,39 @@ export function buildSkillMarkdown(options) {
     else lines.push(`- ${sentence(step)}`);
   }
   lines.push("");
+  lines.push("## Quality Review");
+  lines.push("");
+  lines.push("- [ ] Invocation mode is deliberate and encoded in frontmatter.");
+  lines.push("- [ ] Description has concrete triggers and no broad catch-all wording.");
+  lines.push("- [ ] Trigger branches are explicit, with should-trigger and should-not-trigger examples.");
+  lines.push("- [ ] Workflow steps include checkable completion criteria.");
+  lines.push("- [ ] Long or branch-specific reference is disclosed under `references/`.");
+  lines.push("- [ ] No no-op, duplicated, stale, private, or secret material remains.");
+  lines.push("- [ ] Verification proves the generated skill can be reviewed safely before enablement.");
+  lines.push("");
   lines.push("## Safety and Failure Modes");
   lines.push("");
   lines.push("- Stop when required source evidence is missing or contradicts the expected workflow.");
   lines.push("- Ask before destructive actions, external side effects, or enabling/installing this draft skill.");
   lines.push("- Do not include secrets, tokens, private customer data, or unredacted sensitive paths in outputs.");
   lines.push("- Prefer a short memory/LEARNINGS note instead if the workflow no longer appears reusable.");
+  lines.push("- Prune no-op instructions, duplicated meanings, stale source sediment, and sprawl before enablement.");
   lines.push("");
   lines.push("## Enablement");
   lines.push("");
   lines.push("This is a disabled draft. Review it, run its tests/evaluator, and ask the user before moving it into an auto-discovered skill root or enabling a package.");
   lines.push("");
 
-  const warnings = [...sourceSanitized.warnings, ...descriptionSanitized.warnings];
-  return { markdown: lines.join("\n"), warnings: [...new Set(warnings)] };
+  const warnings = [
+    ...sourceSanitized.warnings,
+    ...leadingSanitized.warnings,
+    ...branchSanitized.warnings,
+    ...descriptionSanitized.warnings,
+    ...shouldTriggerSanitized.warnings,
+    ...shouldNotTriggerSanitized.warnings,
+  ];
+  if (discloseReference) warnings.push(`Disclosed sanitized source material to ${SOURCE_REFERENCE_PATH}.`);
+  return { markdown: lines.join("\n"), warnings: [...new Set(warnings)], sourceReference };
 }
 
 export function validateDraftText(markdown, { localOnly = false } = {}) {
@@ -272,8 +471,33 @@ export function validateDraftText(markdown, { localOnly = false } = {}) {
     }
   }
 
-  for (const section of ["## When to Use", "## Workflow", "## Verification", "## Safety and Failure Modes"]) {
+  for (const section of ["## When to Use", "## Invocation Design", "## Workflow", "## References", "## Verification", "## Quality Review", "## Safety and Failure Modes"]) {
     if (!text.includes(section)) errors.push(`Missing required section: ${section}`);
+  }
+
+  if (/disable-model-invocation:\s*true/.test(frontmatter?.[1] ?? "") && !/Invocation mode:\s*user-invoked/i.test(text)) {
+    warnings.push("User-invoked drafts should explain the user-invoked invocation mode.");
+  }
+  if (!/### Should trigger/.test(text) || !/### Should not trigger/.test(text)) {
+    warnings.push("Draft should include should-trigger and should-not-trigger examples.");
+  }
+  if (!/Completion criterion:/i.test(text)) {
+    warnings.push("Workflow steps should include checkable completion criteria.");
+  }
+  if (!/no broad catch-all|catch-all/i.test(text)) {
+    warnings.push("Quality review should include description catch-all pruning.");
+  }
+  if (/\b(make sure it works|be thorough|do the needful)\b/i.test(text)) {
+    warnings.push("Draft contains vague/no-op wording that should be sharpened before enablement.");
+  }
+  const sentenceCounts = new Map();
+  for (const part of text.split(/(?<=[.!?])\s+/)) {
+    const cleaned = part.replace(/^[-*\d.\s]+/, "").replace(/`+/g, "").trim().toLowerCase();
+    if (cleaned.length < 40) continue;
+    sentenceCounts.set(cleaned, (sentenceCounts.get(cleaned) ?? 0) + 1);
+  }
+  if ([...sentenceCounts.values()].some((count) => count > 1)) {
+    warnings.push("Draft may contain duplicated sentence-level meaning; prune to one source of truth.");
   }
 
   if (!localOnly && PRIVATE_PATH_RE.test(text)) errors.push("Draft contains private-looking absolute home paths.");
@@ -337,7 +561,7 @@ function licenseText() {
 }
 
 function generatedContractTest(name) {
-  return `import re\nimport unittest\nfrom pathlib import Path\n\nSKILL = Path(__file__).resolve().parents[1] / "SKILL.md"\n\nclass GeneratedSkillContractTests(unittest.TestCase):\n    def test_skill_contract_sections(self):\n        text = SKILL.read_text(encoding="utf-8")\n        self.assertRegex(text, r"^---\\s*\\n[\\s\\S]*?name:\\s*${name}[\\s\\S]*?\\n---", "missing valid frontmatter")\n        for section in ["## When to Use", "## Workflow", "## Verification", "## Safety and Failure Modes"]:\n            self.assertIn(section, text)\n\n    def test_no_private_home_paths(self):\n        text = SKILL.read_text(encoding="utf-8")\n        self.assertIsNone(re.search(r"/(home|Users)/[A-Za-z0-9._-]+", text))\n\nif __name__ == "__main__":\n    unittest.main()\n`;
+  return `import re\nimport unittest\nfrom pathlib import Path\n\nSKILL = Path(__file__).resolve().parents[1] / "SKILL.md"\n\nclass GeneratedSkillContractTests(unittest.TestCase):\n    def test_skill_contract_sections(self):\n        text = SKILL.read_text(encoding="utf-8")\n        self.assertRegex(text, r"^---\\s*\\n[\\s\\S]*?name:\\s*${name}[\\s\\S]*?\\n---", "missing valid frontmatter")\n        for section in ["## When to Use", "## Invocation Design", "## Workflow", "## References", "## Verification", "## Quality Review", "## Safety and Failure Modes"]:\n            self.assertIn(section, text)\n        self.assertIn("### Should trigger", text)\n        self.assertIn("### Should not trigger", text)\n        self.assertIn("Completion criterion:", text)\n\n    def test_no_private_home_paths(self):\n        text = SKILL.read_text(encoding="utf-8")\n        self.assertIsNone(re.search(r"/(home|Users)/[A-Za-z0-9._-]+", text))\n\nif __name__ == "__main__":\n    unittest.main()\n`;
 }
 
 async function runCommand(command, args, { cwd, timeoutMs = 30_000 } = {}) {
@@ -375,7 +599,7 @@ export async function createDraft(rawOptions) {
   const cwd = options.cwd ?? process.cwd();
   const name = slugifySkillName(options.name);
   const sourceText = await readSource({ ...options, cwd });
-  const { markdown, warnings: buildWarnings } = buildSkillMarkdown({ ...options, name, sourceText });
+  const { markdown, warnings: buildWarnings, sourceReference } = buildSkillMarkdown({ ...options, name, sourceText });
   const validation = validateDraftText(markdown, { localOnly: Boolean(options.localOnly) });
 
   const filesWritten = [];
@@ -403,6 +627,9 @@ export async function createDraft(rawOptions) {
 
   const skillPath = path.join(skillDir, "SKILL.md");
   await writeFileSafe(skillPath, markdown, { overwrite, filesWritten });
+  if (sourceReference) {
+    await writeFileSafe(path.join(skillDir, SOURCE_REFERENCE_PATH), sourceReference, { overwrite, filesWritten });
+  }
 
   if (options.withTests) {
     await writeFileSafe(path.join(skillDir, "tests", "test_skill_contract.py"), generatedContractTest(name), { overwrite, filesWritten });
@@ -458,6 +685,13 @@ export function parseCliArgs(argv, defaults = {}) {
       case "--source-text": options.sourceText = next(); break;
       case "--output": options.outputDir = next(); break;
       case "--description": options.description = next(); break;
+      case "--invocation": options.invocation = next(); break;
+      case "--leading-word": options.leadingWords = [...listOption(options.leadingWords), next()]; break;
+      case "--branch": options.branches = [...listOption(options.branches), next()]; break;
+      case "--should-trigger": options.shouldTrigger = [...listOption(options.shouldTrigger), next()]; break;
+      case "--should-not-trigger": options.shouldNotTrigger = [...listOption(options.shouldNotTrigger), next()]; break;
+      case "--disclose-reference": options.discloseReference = true; break;
+      case "--quality-pass": options.qualityPass = true; break;
       case "--reusability": options.reusability = next(); break;
       case "--reusability-evidence": options.reusabilityEvidence = next(); break;
       case "--reuse-count": options.reuseCount = Number(next()); break;
@@ -478,7 +712,7 @@ export function parseCliArgs(argv, defaults = {}) {
 }
 
 export function cliHelp() {
-  return `Usage: skill_create_draft.mjs --name <skill-name> [options]\n\nRequired safety gate:\n  --reusability <repeated-3-plus|expensive|strategic-reuse|confirmed>\n  --reusability-evidence <why this deserves a skill>\n\nSource options:\n  --source-notes <file>       Successful trajectory notes\n  --source-patch <file>       PATCH.md-style source\n  --source-text <text>        Inline source text\n\nOutput options:\n  --output <dir>              Draft skill dir, or package root with --package-skeleton\n  --package-skeleton          Create pi-skill-<name>/ package skeleton\n  --with-tests                Add generated contract tests\n  --run-evaluator             Try skill_eval_run if available\n  --overwrite                 Overwrite existing generated files\n  --local-only                Mark draft as Pi-local\n  --json                      Print JSON result\n`;
+  return `Usage: skill_create_draft.mjs --name <skill-name> [options]\n\nRequired safety gate:\n  --reusability <repeated-3-plus|expensive|strategic-reuse|confirmed>\n  --reusability-evidence <why this deserves a skill>\n\nSource options:\n  --source-notes <file>       Successful trajectory notes\n  --source-patch <file>       PATCH.md-style source\n  --source-text <text>        Inline source text\n\nQuality options:\n  --invocation <model|user>   Choose model-discoverable or user-invoked draft\n  --leading-word <word>       Add a leading word; repeat flag for multiple words\n  --branch <trigger>          Add a trigger branch; repeat flag for multiple branches\n  --should-trigger <example>  Add routing positive example\n  --should-not-trigger <ex>   Add routing negative example\n  --disclose-reference        Write sanitized source notes to references/source-reference.md\n  --quality-pass              Mark that a predictability/pruning pass was requested\n\nOutput options:\n  --output <dir>              Draft skill dir, or package root with --package-skeleton\n  --package-skeleton          Create pi-skill-<name>/ package skeleton\n  --with-tests                Add generated contract tests\n  --run-evaluator             Try skill_eval_run if available\n  --overwrite                 Overwrite existing generated files\n  --local-only                Mark draft as Pi-local\n  --json                      Print JSON result\n`;
 }
 
 export async function runCli(argv, defaults = {}) {

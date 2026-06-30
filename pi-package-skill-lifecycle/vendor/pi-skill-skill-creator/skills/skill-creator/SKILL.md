@@ -19,7 +19,7 @@ Only write under an auto-discovered skill root after explicit user approval and 
 
 ## Lifecycle policy
 
-Before drafting, enabling, publishing, or moving skills, read the bundled package policy at `../../../../references/SKILL-LIFECYCLE-POLICY.md` when available. Use `references/SKILL-PORTABILITY.md` for portable skill authoring rules.
+Before drafting, enabling, publishing, or moving skills, read the bundled package policy at `../../../../references/SKILL-LIFECYCLE-POLICY.md` when available. Use `references/SKILL-PORTABILITY.md` for portable skill authoring rules and `references/SKILL-QUALITY-GUIDE.md` for predictable, low-sprawl skill design. For the full upstream vocabulary and rationale, consult the vendored `references/writing-great-skills/SKILL.md` and `references/writing-great-skills/GLOSSARY.md` reference.
 
 ## When to Use
 
@@ -51,18 +51,24 @@ If none is true, recommend a note or LEARNINGS entry instead of a skill.
    - Record the reusability class and concise evidence.
    - Stop if the workflow is not reusable enough.
    - For portable skills, follow `references/SKILL-PORTABILITY.md`.
-3. **Draft the skill**
+3. **Design for predictability**
+   - Decide whether the draft should be model-invoked or user-invoked.
+   - Identify leading words, trigger branches, should-trigger examples, and should-not-trigger examples.
+   - Keep ordered actions inline; disclose long or branch-specific reference through `references/*.md`.
+   - Ensure each workflow step has a checkable completion criterion.
+   - Prune no-ops, duplicated meanings, stale source sediment, and sprawl using `references/SKILL-QUALITY-GUIDE.md`; consult `references/writing-great-skills/` when the concise guide is insufficient.
+4. **Draft the skill**
    - Prefer the `skill_create_draft` tool when available.
    - Otherwise run `node ./scripts/skill_create_draft.mjs` from this skill directory.
    - Default to `~/.pi/agent/drafts/skills/<skill-name>/`.
-4. **Add fixtures/tests when possible**
+5. **Add fixtures/tests when possible**
    - Use `--with-tests` or tool parameter `withTests: true` for a basic contract test.
    - Include only sanitized, non-secret source snippets as fixtures.
-5. **Validate**
+6. **Validate**
    - Run the generated contract test.
    - Run `skill_eval_run <draft>/SKILL.md` if the skill evaluator is installed.
    - If the evaluator is absent, use the built-in draft validation output and clearly report that the external evaluator is unavailable.
-6. **Review before enabling**
+7. **Review before enabling**
    - Do not symlink, install, or add the draft to settings automatically.
    - Ask the user before moving a draft into `~/.pi/agent/skills/` or enabling a package.
 
@@ -76,6 +82,9 @@ node ./scripts/skill_create_draft.mjs \
   --source-notes /tmp/example-successful-trajectory.md \
   --reusability repeated-3-plus \
   --reusability-evidence "Used successfully for three similar tasks." \
+  --invocation model \
+  --leading-word repeatable \
+  --branch "successful workflow reuse" \
   --with-tests
 ```
 
@@ -97,9 +106,13 @@ node ./scripts/skill_create_draft.mjs \
 Every generated `SKILL.md` must include:
 
 - Valid frontmatter with lowercase hyphenated `name` and a specific `description`.
-- `## When to Use`.
-- `## Workflow`.
+- Deliberate invocation mode, including `disable-model-invocation: true` for user-invoked drafts.
+- `## When to Use` with concrete trigger and non-trigger guidance.
+- `## Invocation Design` with leading words, branches, and trigger examples.
+- `## Workflow` with checkable completion criteria for each step.
+- `## References` for progressive disclosure decisions.
 - `## Verification`.
+- `## Quality Review` covering no-ops, duplication, sediment, and sprawl.
 - `## Safety and Failure Modes`.
 - No hardcoded private home paths unless the draft is explicitly marked Pi-local.
 - A clear note that the draft is not enabled automatically.

@@ -17,9 +17,21 @@ const Reusability = Type.Union([
   Type.Literal("unknown"),
 ], { description: "Why this workflow deserves a reusable skill. 'unknown' blocks creation." });
 
+const Invocation = Type.Union([
+  Type.Literal("model"),
+  Type.Literal("user"),
+], { description: "Whether the generated draft should be model-discoverable or user-invoked only." });
+
 const BaseDraftParams = {
   name: Type.String({ description: "Draft skill name. Will be normalized to Agent Skills lowercase-hyphen format." }),
   description: Type.Optional(Type.String({ description: "Optional routing description for the generated skill." })),
+  invocation: Type.Optional(Invocation),
+  leadingWords: Type.Optional(Type.Array(Type.String({ description: "Leading word that should anchor invocation/execution behavior." }))),
+  branches: Type.Optional(Type.Array(Type.String({ description: "Distinct trigger branch this skill should handle." }))),
+  shouldTrigger: Type.Optional(Type.Array(Type.String({ description: "Positive routing example for the generated skill." }))),
+  shouldNotTrigger: Type.Optional(Type.Array(Type.String({ description: "Negative routing example for the generated skill." }))),
+  discloseReference: Type.Optional(Type.Boolean({ description: "Write sanitized source notes to references/source-reference.md when useful for progressive disclosure." })),
+  qualityPass: Type.Optional(Type.Boolean({ description: "Record that a predictability/pruning quality pass was requested." })),
   outputDir: Type.Optional(Type.String({ description: "Draft skill directory, or package root when packageSkeleton=true. Relative paths resolve from cwd." })),
   reusability: Reusability,
   reusabilityEvidence: Type.String({ description: "Concrete evidence that this is repeated, expensive, strategically reusable, or human-confirmed reusable." }),
@@ -102,6 +114,8 @@ export default function skillCreatorExtension(pi: ExtensionAPI): void {
     promptSnippet: "Draft a reusable Pi/Agent Skill from successful trajectory notes without auto-enabling it.",
     promptGuidelines: [
       "Use skill_create_draft only after confirming the workflow is repeated, expensive, strategically reusable, or explicitly confirmed reusable.",
+      "Choose invocation=model for autonomous routing and invocation=user for human-invoked reference/manual skills.",
+      "Provide leadingWords, branches, and should/should-not trigger examples when known so the draft is predictable rather than merely structurally valid.",
       "Do not use skill_create_draft to auto-enable generated skills; ask the user before enabling.",
     ],
     parameters: DraftParams,
@@ -119,6 +133,7 @@ export default function skillCreatorExtension(pi: ExtensionAPI): void {
     promptSnippet: "Draft a reusable skill from a successful trajectory notes file.",
     promptGuidelines: [
       "Use skill_create_from_notes when a notes file describes a successful reusable workflow.",
+      "Set invocation, leadingWords, branches, and routing examples when the notes imply them.",
       "Do not enable generated skill drafts without explicit user confirmation.",
     ],
     parameters: NotesParams,
@@ -136,6 +151,7 @@ export default function skillCreatorExtension(pi: ExtensionAPI): void {
     promptSnippet: "Draft a reusable skill from a PATCH.md-style workflow artifact.",
     promptGuidelines: [
       "Use skill_create_from_patch when a PATCH.md documents a reusable successful workflow.",
+      "Use discloseReference for long or branch-specific PATCH context instead of bloating SKILL.md.",
       "Do not enable generated skill drafts without explicit user confirmation.",
     ],
     parameters: PatchParams,
