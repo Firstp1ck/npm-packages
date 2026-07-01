@@ -11,7 +11,7 @@ Create a standalone **Pi package/extension** for per-terminal/tab **Natural Conv
 - Mode-scoped safety: force model thinking to `off` and expose only nondestructive tools.
 - Minimal setup flow for free/local or low-cost API-based STT/TTS.
 
-This is a plan only; no implementation is included here.
+This document remains the planning source for the feature. Implementation status is tracked in `docs/webui/natural-conversation/NATURAL_CONVERSATION_MODE_PROGRESS.md` and should be treated as the current source of truth for what is done versus pending.
 
 ## 2. Objectives
 
@@ -32,6 +32,16 @@ This is a plan only; no implementation is included here.
 - No direct remote microphone streaming unless remote access and privacy prompts are explicitly accepted. In practice, this means remote/LAN WebUI sessions must not silently forward microphone audio to the Pi host or third-party STT providers; they need an explicit per-session disclosure covering where audio is captured, where it is processed, whether it leaves the user's device/network, and how to stop it.
 
 ## 4. Current State / Repo Findings
+
+### Implementation snapshot — 2026-07-01
+
+- Phase 1 exists as standalone package `pi-package-natural-conversation/` with package name `@firstpick/pi-package-natural-conversation`; `package.json` declares `pi.extensions: ["./extensions/natural-conversation.ts"]` and exports the shared controller at `./controller`.
+- The package-owned native command family `/talk`, `/voice`, and `/conversation` is implemented. The controller stores/restores active tools and thinking level, forces `thinking = off`, limits tools to `read`, `grep`, `find`, `ls`, blocks non-allowlisted `tool_call` events, blocks `!`/`!!` user bash, appends spoken read-only system guidance, and emits `natural-conversation` status UI.
+- Phase 1 focused verification is green as of 2026-07-01: `npm test --prefix pi-package-natural-conversation` passed 7 tests. Live native Pi TUI runtime validation is still pending.
+- Phase 2 WebUI shell is drafted, but not done. `pi-package-webui` does not import or depend on `@firstpick/pi-package-natural-conversation`; availability is capability/status based through RPC-visible `/talk`, `/voice`, `/conversation`, and `natural-conversation` status events.
+- The WebUI shell currently includes `GET /api/features/natural-conversation`, `GET/POST /api/conversation-mode`, explicit placeholder `POST /api/stt/transcribe` and `POST /api/tts/speech` routes, Common Pi options menu controls, a composer status chip, persistent `End conversation` button, per-tab badges, and server-side guards for unsafe WebUI actions while the mode is active.
+- STT/TTS capture/playback is not implemented yet. Hosted/local STT/TTS fallback routes intentionally return `501` until provider, credential, and remote-consent behavior is designed.
+- WebUI verification as of 2026-07-01 is mixed: syntax checks for `public/app.js`, `bin/pi-webui.mjs`, and focused test files pass; `node pi-package-webui/tests/mobile-static.test.mjs` currently fails at a guided-PR-worktree assertion before later Natural Conversation assertions; `node pi-package-webui/tests/http-endpoints-harness.test.mjs` currently times out at `/api/features/natural-conversation`.
 
 ### WebUI option surface
 
@@ -243,7 +253,7 @@ Files:
 - `pi-package-webui/bin/pi-webui.mjs`
 - `pi-package-webui/webui-rpc-helper.mjs`
 
-Add optional backend routes only when the package adapter is available, or return a clear `feature_unavailable` response when absent:
+Backend routes should remain optional. The target architecture is a package adapter/controller call when available, with a clear `feature_unavailable` response when absent. The current Phase 2 shell delegates enable/disable through the package-owned `/talk` slash command and observes package status via RPC command/status capability detection rather than importing the package into WebUI:
 
 ```text
 GET  /api/features/natural-conversation
@@ -264,14 +274,14 @@ Backend responsibilities:
 - For remote WebUI, require explicit mic/privacy notice; default to localhost-only setup.
 - Treat remote microphone streaming as a separate consent tier from normal remote WebUI access: a remote browser may capture audio locally, but sending raw audio to the Pi host or onward to API STT providers requires explicit consent, visible active indicators, and an easy stop button.
 
-Expose package-backed helper actions through `webui-rpc-helper.mjs` only behind feature detection:
+Future adapter/helper route, not implemented in the current Phase 2 shell: expose package-backed helper actions through `webui-rpc-helper.mjs` only behind feature detection:
 
 ```json
 { "action": "conversation-mode-state" }
 { "action": "conversation-mode-set", "payload": { "enabled": true, "allowedTools": ["read", "grep", "find", "ls"] } }
 ```
 
-The helper can use the package controller, `pi.setActiveTools()`, and `pi.setThinkingLevel("off")` inside the Pi RPC process. If the package is unavailable, helper actions should return a typed unavailable result instead of partially emulating conversation mode in WebUI.
+If this direct helper path is added, the helper can use the package controller, `pi.setActiveTools()`, and `pi.setThinkingLevel("off")` inside the Pi RPC process. If the package is unavailable, helper actions should return a typed unavailable result instead of partially emulating conversation mode in WebUI. Until then, WebUI should continue treating `/talk` capability/status as the shell contract.
 
 ### 6.5 Remote WebUI microphone privacy policy
 
@@ -539,15 +549,15 @@ Update rules:
 4. When a phase is marked `Done`, all required tests for that phase must be listed in the verification log or explicitly deferred with a reason.
 5. If scope changes, update this plan first, then update the progress file.
 
-Initial phase status for this plan:
+Current phase status snapshot for this plan:
 
 | Phase | Status | Notes |
 |---|---|---|
-| 0 — Decisions | Blocked | Needs command/package naming, WebUI optional-feature UX, discovery mechanism, allowlist, turn-taking, silence timeout, provider defaults. |
-| 1 — Standalone package/native command | Not started | No package files created yet. |
-| 2 — Optional WebUI integration | Not started | Requires Phase 1 package adapter contract or stub. |
-| 3 — WebUI browser STT/TTS | Not started | Requires WebUI optional-feature shell. |
-| 4 — Hosted/local fallbacks | Not started | Requires provider decisions and credential handling. |
+| 0 — Decisions | In progress | Initial defaults are decided and implemented for package name, command aliases, allowlist, native phase-1 scope, WebUI capability discovery, tab-local reset semantics, and placeholder STT/TTS routes. Provider/audio UX decisions remain open. |
+| 1 — Standalone package/native command | Implemented; focused tests pass | Package files exist under `pi-package-natural-conversation/`; focused package tests pass. Live native Pi TUI runtime validation is still pending before marking done. |
+| 2 — Optional WebUI integration | Draft implemented; verification failing | WebUI shell routes/UI/guards exist and syntax checks pass, but focused WebUI execution is not green: `mobile-static.test.mjs` fails at a preceding guided-PR-worktree assertion, and `http-endpoints-harness.test.mjs` times out at `/api/features/natural-conversation`. |
+| 3 — WebUI browser STT/TTS | Not started | Requires Phase 2 shell verification before browser microphone/TTS loops are added. |
+| 4 — Hosted/local fallbacks | Placeholder only | `/api/stt/transcribe` and `/api/tts/speech` exist as explicit `501` placeholders; provider and credential handling are not designed/implemented. |
 | 5 — Native full audio loop | Not started | Requires native audio/provider architecture decision. |
 
 ## 11. Testing & Validation Plan
