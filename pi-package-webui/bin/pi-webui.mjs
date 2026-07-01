@@ -238,6 +238,7 @@ const unavailableNative = (command, details = {}) => nativeCommandUnavailable(co
 function parseSlashCommand(message) {
   return parseNativeSlashCommand(message, NATIVE_SLASH_COMMAND_NAMES);
 }
+const NATURAL_CONVERSATION_FEATURE_ID = "naturalConversation";
 const OPTIONAL_FEATURE_PACKAGES = new Map([
   ["btwCommand", "@firstpick/pi-extension-btw"],
   ["gitWorkflow", "@firstpick/pi-prompts-git-pr"],
@@ -249,11 +250,19 @@ const OPTIONAL_FEATURE_PACKAGES = new Map([
   ["todoProgressWidget", "@firstpick/pi-extension-todo-progress"],
   ["tuiToolsCommand", "@firstpick/pi-extension-tools"],
   ["remoteWebui", "@firstpick/pi-package-remote-webui"],
+  ["naturalConversation", "@firstpick/pi-package-natural-conversation"],
   ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status"],
   ["statsCommand", "@firstpick/pi-extension-stats"],
   ["themeBundle", "@firstpick/pi-themes-bundle"],
 ]);
-const WEBUI_CONTROLLED_PACKAGES = new Set([WEBUI_PACKAGE, ...OPTIONAL_FEATURE_PACKAGES.values()]);
+const WEBUI_CONTROLLED_PACKAGES = new Set([
+  WEBUI_PACKAGE,
+  ...[...OPTIONAL_FEATURE_PACKAGES.entries()]
+    .filter(([featureId]) => featureId !== NATURAL_CONVERSATION_FEATURE_ID)
+    .map(([, packageName]) => packageName),
+]);
+const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
+const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
 const PACKAGE_NAME_CACHE = new Map();
 
 function usage() {
@@ -5196,6 +5205,96 @@ function clearExtensionWidgets(tab) {
   tab?.extensionWidgets?.clear();
 }
 
+function naturalConversationStatusState(statusText) {
+  const text = stripAnsi(statusText).replace(/\s+/g, " ").trim();
+  if (!text) return { enabled: false, uiState: "off", statusText: "" };
+  const match = text.match(/voice\s*:\s*([a-z0-9_-]+)/i);
+  return { enabled: true, uiState: (match?.[1] || "listening").toLowerCase(), statusText: text };
+}
+
+function naturalConversationModeSnapshot(tab, patch = {}) {
+  const previous = tab?.conversationMode && typeof tab.conversationMode === "object" ? tab.conversationMode : {};
+  const status = naturalConversationStatusState(extensionStatusMap(tab).get(NATURAL_CONVERSATION_STATUS_KEY) || previous.statusText || "");
+  const enabled = patch.enabled ?? status.enabled ?? previous.enabled ?? false;
+  const uiState = patch.uiState || (enabled ? status.uiState || previous.uiState || "listening" : "off");
+  return {
+    featureId: NATURAL_CONVERSATION_FEATURE_ID,
+    available: patch.available ?? previous.available ?? false,
+    enabled,
+    uiState,
+    statusText: patch.statusText ?? status.statusText ?? previous.statusText ?? "",
+    allowedTools: Array.isArray(patch.allowedTools) ? patch.allowedTools : Array.isArray(previous.allowedTools) ? previous.allowedTools : ["read", "grep", "find", "ls"],
+    provider: patch.provider || previous.provider || "browser-shell",
+    startedAt: patch.startedAt ?? previous.startedAt ?? null,
+    packageInstalled: patch.packageInstalled ?? previous.packageInstalled ?? false,
+    loadedCommands: Array.isArray(patch.loadedCommands) ? patch.loadedCommands : Array.isArray(previous.loadedCommands) ? previous.loadedCommands : [],
+    updatedAt: patch.updatedAt || previous.updatedAt || new Date().toISOString(),
+  };
+}
+
+function resetNaturalConversationMode(tab) {
+  if (!tab) return;
+  tab.conversationMode = naturalConversationModeSnapshot(tab, { available: false, enabled: false, uiState: "off", statusText: "", loadedCommands: [] });
+}
+
+function rememberNaturalConversationStatusEvent(tab, event) {
+  if (event?.type !== "extension_ui_request" || event.method !== "setStatus" || event.statusKey !== NATURAL_CONVERSATION_STATUS_KEY) return;
+  const status = naturalConversationStatusState(event.statusText || "");
+  tab.conversationMode = naturalConversationModeSnapshot(tab, {
+    ...status,
+    available: true,
+    loadedCommands: tab?.conversationMode?.loadedCommands?.length ? tab.conversationMode.loadedCommands : ["talk"],
+  });
+}
+
+function isNaturalConversationActive(tab) {
+  return naturalConversationModeSnapshot(tab).enabled === true;
+}
+
+function naturalConversationCommandBaseName(name) {
+  return String(name || "").trim().toLowerCase().replace(/:\d+$/, "");
+}
+
+function naturalConversationSlashCommandName(message) {
+  const match = String(message || "").trim().match(/^\/([^\s]+)/);
+  return match ? naturalConversationCommandBaseName(match[1]) : "";
+}
+
+function isNaturalConversationSlashCommand(message) {
+  return NATURAL_CONVERSATION_COMMAND_NAMES.includes(naturalConversationSlashCommandName(message));
+}
+
+function blockNaturalConversationAction(action) {
+  throw makeHttpError(409, `Natural Conversation Mode is active; ${action}. Leave the mode first with /talk off.`);
+}
+
+function ensureNaturalConversationRouteAllowed(tab, action) {
+  if (isNaturalConversationActive(tab)) blockNaturalConversationAction(action);
+}
+
+async function ensureNaturalConversationPromptSafety(tab, command) {
+  if (!isNaturalConversationActive(tab) || !["prompt", "steer", "follow_up"].includes(command?.type)) return null;
+  tab.pendingThinkingLevel = undefined;
+  const stateResult = await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS);
+  if (stateResult.ok && stateIsBusyForSettings(stateResult.data)) return null;
+  const response = await setThinkingLevelForTab(tab, "off", { allowPending: false });
+  return response?.success === false ? response : null;
+}
+
+function enforceNaturalConversationCommandAllowed(tab, command) {
+  if (!isNaturalConversationActive(tab)) return;
+  if (command?.type === "set_thinking_level") {
+    if (command.level !== "off") blockNaturalConversationAction("thinking is forced off");
+    return;
+  }
+  if (!["prompt", "steer", "follow_up", "abort", "abort_bash"].includes(command?.type)) {
+    blockNaturalConversationAction(`${command?.type || "this action"} is blocked`);
+  }
+  if (command?.type === "prompt" && naturalConversationSlashCommandName(command.message) && !isNaturalConversationSlashCommand(command.message)) {
+    blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
+  }
+}
+
 function replayExtensionStatuses(tab, res) {
   for (const [statusKey, statusText] of extensionStatusMap(tab)) {
     sendSse(res, {
@@ -5693,8 +5792,10 @@ function attachRpcToTab(tab, rpc) {
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
       clearExtensionWidgets(tab);
+      resetNaturalConversationMode(tab);
     } else {
       rememberExtensionStatusEvent(tab, scopedEvent);
+      rememberNaturalConversationStatusEvent(tab, scopedEvent);
       rememberExtensionWidgetEvent(tab, scopedEvent);
       trackPendingExtensionUiRequest(tab, scopedEvent);
     }
@@ -5745,6 +5846,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
   };
+  resetNaturalConversationMode(tab);
 
   attachRpcToTab(tab, rpc);
   tabs.set(id, tab);
@@ -5788,6 +5890,7 @@ function tabMeta(tab) {
     pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length,
     activity: tabActivitySnapshot(tab),
     appRunner: publicAppRunnerState(tab.appRunner),
+    conversationMode: naturalConversationModeSnapshot(tab),
   };
 }
 
@@ -6329,6 +6432,7 @@ async function updateTabCwd(id, cwd) {
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
   clearExtensionWidgets(tab);
+  resetNaturalConversationMode(tab);
   const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
   attachRpcToTab(tab, rpc);
   rpc.start();
@@ -6367,6 +6471,7 @@ async function restartTabRpc(tab, reason = "reload") {
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
   clearExtensionWidgets(tab);
+  resetNaturalConversationMode(tab);
   const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
   attachRpcToTab(tab, rpc);
   rpc.start();
@@ -6951,17 +7056,117 @@ async function annotateSkillCommandState(tab, commands) {
     });
 }
 
+function naturalConversationLoadedCommandNames(commands = []) {
+  const names = [];
+  const seen = new Set();
+  for (const command of commands || []) {
+    const baseName = naturalConversationCommandBaseName(command?.name || command?.invokeName || "");
+    if (!NATURAL_CONVERSATION_COMMAND_NAMES.includes(baseName) || seen.has(baseName)) continue;
+    seen.add(baseName);
+    names.push(baseName);
+  }
+  return names;
+}
+
+function rememberNaturalConversationCommands(tab, commands = []) {
+  const loadedCommands = naturalConversationLoadedCommandNames(commands);
+  const available = loadedCommands.length > 0;
+  tab.conversationMode = naturalConversationModeSnapshot(tab, {
+    available,
+    enabled: available ? undefined : false,
+    uiState: available ? undefined : "off",
+    statusText: available ? undefined : "",
+    loadedCommands,
+  });
+  return tab.conversationMode;
+}
+
 async function getCommandData(tab) {
   try {
     const response = await tab.rpc.send({ type: "get_commands" });
     if (response.success === false) throw makeHttpError(400, response.error || "failed to load commands");
     const rpcCommands = await annotateSkillCommandState(tab, response.data?.commands || []);
+    rememberNaturalConversationCommands(tab, rpcCommands);
     return { commands: [...NATIVE_SLASH_COMMANDS, ...rpcCommands], rpcRunning: true };
   } catch (error) {
     const message = sanitizeError(error);
     if (!/Pi RPC process is not running/i.test(message)) throw error;
+    rememberNaturalConversationCommands(tab, []);
     return { commands: [...NATIVE_SLASH_COMMANDS], rpcRunning: false, error: message };
   }
+}
+
+async function naturalConversationPackageStatus() {
+  try {
+    return await optionalFeaturePackageStatus(NATURAL_CONVERSATION_FEATURE_ID);
+  } catch (error) {
+    return { featureId: NATURAL_CONVERSATION_FEATURE_ID, packageName: OPTIONAL_FEATURE_PACKAGES.get(NATURAL_CONVERSATION_FEATURE_ID), installed: false, error: sanitizeError(error) };
+  }
+}
+
+async function naturalConversationFeatureData(tab, { refreshCommands = true } = {}) {
+  let commandData = null;
+  let commandError = "";
+  if (refreshCommands) {
+    try {
+      commandData = await getCommandData(tab);
+    } catch (error) {
+      commandError = sanitizeError(error);
+      rememberNaturalConversationCommands(tab, []);
+    }
+  }
+  const packageStatus = await naturalConversationPackageStatus();
+  tab.conversationMode = naturalConversationModeSnapshot(tab, { packageInstalled: packageStatus.installed === true });
+  const mode = naturalConversationModeSnapshot(tab);
+  const available = mode.available === true;
+  return {
+    featureId: NATURAL_CONVERSATION_FEATURE_ID,
+    packageName: OPTIONAL_FEATURE_PACKAGES.get(NATURAL_CONVERSATION_FEATURE_ID),
+    available,
+    packageInstalled: packageStatus.installed === true,
+    packageStatus,
+    commands: mode.loadedCommands,
+    mode,
+    rpcRunning: commandData?.rpcRunning !== false && !commandError,
+    unavailableReason: available
+      ? ""
+      : packageStatus.installed
+        ? "Natural Conversation package is installed, but /talk is not loaded in the active Pi tab. Reload the tab or enable the package extension."
+        : "Natural Conversation package is not installed or not visible from the Web UI package root.",
+    error: commandError || undefined,
+  };
+}
+
+async function setNaturalConversationMode(tab, body = {}) {
+  const desired = body.enabled === true;
+  const feature = await naturalConversationFeatureData(tab);
+  if (!feature.available) throw makeHttpError(404, feature.unavailableReason);
+  const commandName = feature.commands.find((name) => name === "talk") || feature.commands[0] || "talk";
+  const response = await tab.rpc.send({ type: "prompt", message: `/${commandName} ${desired ? "on" : "off"}` }, REQUEST_TIMEOUT_MS);
+  if (response.success === false) throw makeHttpError(400, response.error || `Failed to ${desired ? "enable" : "disable"} Natural Conversation Mode`);
+  tab.conversationMode = naturalConversationModeSnapshot(tab, {
+    available: true,
+    enabled: desired,
+    uiState: desired ? "listening" : "off",
+    statusText: desired ? `Voice: listening` : "",
+    loadedCommands: feature.commands,
+    packageInstalled: feature.packageInstalled,
+    startedAt: desired ? naturalConversationModeSnapshot(tab).startedAt || new Date().toISOString() : null,
+  });
+  if (desired) {
+    tab.pendingThinkingLevel = undefined;
+    await setThinkingLevelForTab(tab, "off", { allowPending: false }).catch(() => null);
+  }
+  return { ...(await naturalConversationFeatureData(tab, { refreshCommands: false })), response };
+}
+
+function naturalConversationUnavailableResponse(tab) {
+  return {
+    featureId: NATURAL_CONVERSATION_FEATURE_ID,
+    available: false,
+    mode: naturalConversationModeSnapshot(tab, { available: false, enabled: false, uiState: "off" }),
+    message: "Natural Conversation STT/TTS fallback endpoints are reserved for a later phase. Install and load @firstpick/pi-package-natural-conversation, then use browser-native audio from the Web UI shell.",
+  };
 }
 
 function resolveCliPath(value) {
@@ -7412,6 +7617,12 @@ async function handleNativeSlashCommand(tab, body, req) {
       const response = await tab.rpc.send({ type: "new_session" });
       if (response.success === false) return response;
       tab.conversationStarted = false;
+      forgetTabState(tab);
+      rememberTabState(tab, response.data);
+      clearPendingExtensionUiRequests(tab);
+      clearExtensionStatuses(tab);
+      clearExtensionWidgets(tab);
+      resetNaturalConversationMode(tab);
       return respondNative("new", {
         status: "succeeded",
         message: "Started a new session.",
@@ -7875,6 +8086,10 @@ async function setThinkingLevelForTab(tab, level, { allowPending = true } = {}) 
 }
 
 async function applyPendingThinkingBeforePrompt(tab) {
+  if (isNaturalConversationActive(tab)) {
+    tab.pendingThinkingLevel = undefined;
+    return null;
+  }
   const level = tab?.pendingThinkingLevel;
   if (!level) return null;
   const stateResult = await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS);
@@ -8203,6 +8418,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner actions are blocked");
       sendJson(res, 200, { ok: true, data: await startAppRunner(tab, String(body.runnerId || body.id || "")) });
       return;
     }
@@ -8210,6 +8426,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner/input" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner actions are blocked");
       const text = Object.prototype.hasOwnProperty.call(body, "text") ? body.text : body.input;
       sendJson(res, 200, { ok: true, data: sendAppRunnerInput(tab, text, { appendNewline: body.newline !== false, closeStdin: body.closeStdin === true || body.close === true }) });
       return;
@@ -8218,6 +8435,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner/context" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner actions are blocked");
       sendJson(res, 200, { ok: true, data: await transferAppRunnerContext(tab, body) });
       return;
     }
@@ -8225,6 +8443,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner/stop" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner actions are blocked");
       stopAppRunnerForTab(tab, "stop requested from Web UI");
       sendJson(res, 200, { ok: true, data: await getAppRunnerData(tab) });
       return;
@@ -8233,6 +8452,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner/clear" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner actions are blocked");
       clearAppRunnerForTab(tab);
       sendJson(res, 200, { ok: true, data: await getAppRunnerData(tab) });
       return;
@@ -8247,6 +8467,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner-config" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner configuration changes are blocked");
       sendJson(res, 200, { ok: true, data: await saveCustomAppRunner(tab, body.runner || body) });
       return;
     }
@@ -8254,6 +8475,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/app-runner-config" && req.method === "DELETE") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "app runner configuration changes are blocked");
       sendJson(res, 200, { ok: true, data: await deleteCustomAppRunner(tab, body.id || body.runnerId) });
       return;
     }
@@ -8275,6 +8497,8 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/directories" && req.method === "POST") {
       const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "directory creation is blocked");
       const activeCwd = directoryPickerActiveCwd(req, url, body);
       sendJson(res, 201, {
         ok: true,
@@ -8296,6 +8520,8 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/path-fast-picks" && req.method === "POST") {
       const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "path fast-pick changes are blocked");
       const picks = await writePathFastPicks(body.picks ?? body);
       sendJson(res, 200, { ok: true, data: { picks } });
       return;
@@ -8303,6 +8529,8 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/attachments" && req.method === "POST") {
       const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "attachment uploads are blocked");
       sendJson(res, 201, { ok: true, data: await saveUploadedAttachments(body) });
       return;
     }
@@ -8316,6 +8544,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/model-cycle" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "model changes are blocked");
       const response = await cycleTabModel(tab, body.direction || body.mode);
       sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
       return;
@@ -8342,6 +8571,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/fork" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "session fork actions are blocked");
       const response = await runForkCommand(tab, body.entryId);
       sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
       return;
@@ -8350,6 +8580,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/clone" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "session clone actions are blocked");
       const response = await runCloneCommand(tab);
       sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
       return;
@@ -8358,6 +8589,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/switch-session" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "session switching is blocked");
       const response = await switchTabSession(tab, body.sessionPath || body.path);
       sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
       return;
@@ -8366,6 +8598,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/session-rename" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "session renaming is blocked");
       sendJson(res, 200, { ok: true, data: await renameSessionData(tab, body), tab: tabMeta(tab) });
       return;
     }
@@ -8374,6 +8607,7 @@ const server = createServer(async (req, res) => {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "session deletion is blocked");
       sendJson(res, 200, { ok: true, data: await deleteSessionData(tab, body), tab: tabMeta(tab) });
       return;
     }
@@ -8393,8 +8627,34 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/tree-navigate" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "session tree navigation is blocked");
       const response = await navigateSessionTree(tab, body);
       sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
+      return;
+    }
+
+    if (url.pathname === "/api/features/natural-conversation" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await naturalConversationFeatureData(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/conversation-mode" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await naturalConversationFeatureData(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/conversation-mode" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await setNaturalConversationMode(tab, body), tab: tabMeta(tab) });
+      return;
+    }
+
+    if ((url.pathname === "/api/stt/transcribe" || url.pathname === "/api/tts/speech") && req.method === "POST") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 501, { ok: false, feature_unavailable: true, data: naturalConversationUnavailableResponse(tab), error: "Natural Conversation hosted/local STT/TTS fallbacks are not implemented in this Web UI shell yet." });
       return;
     }
 
@@ -8406,6 +8666,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/optional-feature-install" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
       const data = await installOptionalFeaturePackage(String(body.featureId || ""));
       sendJson(res, 200, { ok: true, data });
       return;
@@ -8420,6 +8682,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/tools" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      if (isNaturalConversationActive(tab)) blockNaturalConversationAction("tool configuration changes are blocked");
       sendJson(res, 200, { ok: true, data: await setToolConfigData(tab, body) });
       return;
     }
@@ -8433,6 +8696,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/skills" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "skill configuration changes are blocked");
       sendJson(res, 200, { ok: true, data: await setSkillConfigData(tab, body) });
       return;
     }
@@ -8447,6 +8711,7 @@ const server = createServer(async (req, res) => {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req, { limitBytes: SKILL_FILE_BODY_LIMIT_BYTES });
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "skill file edits are blocked");
       sendJson(res, 200, { ok: true, data: await saveSkillFileData(tab, body) });
       return;
     }
@@ -8460,6 +8725,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/settings" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "settings changes are blocked");
       sendJson(res, 200, { ok: true, data: await setNativeSettingsData(tab, body) });
       return;
     }
@@ -8473,6 +8739,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/action-feedback" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "feedback-learning prompts are blocked");
       const response = await handleActionFeedback(tab, body);
       sendJson(res, response.success === false ? 400 : 200, response);
       return;
@@ -8493,15 +8760,24 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/prompt" && req.method === "POST") {
       const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
       const tab = getRequestedTab(req, url, body);
+      if (isNaturalConversationActive(tab) && naturalConversationSlashCommandName(body.message) && !isNaturalConversationSlashCommand(body.message)) {
+        blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
+      }
       const nativeResponse = await handleNativeSlashCommand(tab, body, req);
       if (nativeResponse) {
         sendJson(res, nativeResponse.success === false ? 400 : 200, responseWithTab(nativeResponse, tab));
         return;
       }
       const command = commandFromPost(url.pathname, body);
+      enforceNaturalConversationCommandAllowed(tab, command);
       const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
       if (queuedForCompaction) {
         sendJson(res, 202, responseWithTab(queuedForCompaction, tab));
+        return;
+      }
+      const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
+      if (naturalConversationSafetyResponse?.success === false) {
+        sendJson(res, 400, responseWithTab(naturalConversationSafetyResponse, tab));
         return;
       }
       const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
@@ -8543,6 +8819,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-changes/pull" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "git pull is blocked");
       try {
         sendJson(res, 200, await pullGitChanges(tab.cwd));
       } catch (error) {
@@ -8564,6 +8841,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-worktrees" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "git worktree changes are blocked");
       try {
         sendJson(res, 200, { ok: true, data: await createGitWorktreeTab(tab, body) });
       } catch (error) {
@@ -8575,6 +8853,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-worktrees/open" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "git worktree changes are blocked");
       try {
         sendJson(res, 200, { ok: true, data: await openExistingGitWorktreeTab(tab, body) });
       } catch (error) {
@@ -8587,6 +8866,7 @@ const server = createServer(async (req, res) => {
       requireLocalhost(req, "Removing Git worktrees is only allowed from localhost");
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "git worktree removal is blocked");
       try {
         sendJson(res, 200, { ok: true, data: await removeGitWorktreeForTab(tab, body) });
       } catch (error) {
@@ -8608,6 +8888,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-branch" && req.method === "POST") {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "git branch changes are blocked");
       try {
         sendJson(res, 200, await switchGitBranch(tab.cwd, body.branch, { create: body.create === true }));
       } catch (error) {
@@ -8619,6 +8900,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/git-workflow/")) {
       const body = req.method === "POST" ? await readJsonBody(req) : {};
       const tab = getRequestedTab(req, url, body);
+      if (req.method !== "GET") ensureNaturalConversationRouteAllowed(tab, "git workflow actions are blocked");
       const response = await handleGitWorkflowRequest(url.pathname, body, tab);
       if (response) {
         sendJson(res, 200, response);
@@ -8662,10 +8944,16 @@ const server = createServer(async (req, res) => {
       const command = commandFromPost(url.pathname, body);
       if (command) {
         const tab = getRequestedTab(req, url, body);
+        enforceNaturalConversationCommandAllowed(tab, command);
         if (command.type === "abort") await cancelPendingExtensionUiRequests(tab);
         const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
         if (queuedForCompaction) {
           sendJson(res, 202, responseWithTab(queuedForCompaction, tab));
+          return;
+        }
+        const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
+        if (naturalConversationSafetyResponse?.success === false) {
+          sendJson(res, 400, responseWithTab(naturalConversationSafetyResponse, tab));
           return;
         }
         const startsVisibleWork = commandStartsVisibleWork(command);
@@ -8690,6 +8978,7 @@ const server = createServer(async (req, res) => {
           clearPendingExtensionUiRequests(tab);
           clearExtensionStatuses(tab);
           clearExtensionWidgets(tab);
+          resetNaturalConversationMode(tab);
         }
         sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
         return;

@@ -136,6 +136,7 @@ Environment variables:
 - Streaming chat transcript with Markdown, copy buttons for fenced code blocks, rendered Mermaid diagrams from fenced `mermaid`/`mmd` code blocks, thinking output, tool/bash cards, queue and compaction events, edit-and-retry from user prompts, transcript search, copy buttons, and guarded abort controls that require holding Esc or the Abort button for 3 seconds.
 - Prompt composer with uploads, drag/drop/paste, inline image support, generated text attachments for long input or clipboard text, editable text attachments, slash-command autocomplete, and `@` file/path references with live suggestions.
 - Leading `!` and `!!` user-bash commands from the composer, serialized per tab; `!` keeps output in the next model context and `!!` excludes it.
+- Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions. Browser STT/TTS audio remains a later-phase placeholder.
 - Browser-native Pi dialogs for `/model`, `/settings`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`.
 - Runtime `/tools` and `/skills` selectors backed by the hidden Web UI RPC helper; skill toggles persist on the session branch, disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags.
 - Session resume/switch, metadata rename, and localhost-only safe delete with active/open-tab/session-directory guards.
@@ -341,6 +342,7 @@ When the standalone global `pi-webui` launcher is used, optional companion insta
 
 Optional companions:
 
+- `@firstpick/pi-package-natural-conversation` — standalone `/talk` Natural Conversation Mode package. Web UI does not import or load it directly; it detects the package through RPC-visible `/talk`, `/voice`, or `/conversation` commands and renders the optional shell only for tabs where those commands are available.
 - `@firstpick/pi-extension-btw` — ephemeral `/btw` side-question command with a TUI overlay, Web UI live output widget, and Transfer Context action.
 - `@firstpick/pi-prompts-git-pr` — guided Git commit/push workflow.
 - `@firstpick/pi-extension-release-npm` — NPM publish menu and release widgets.

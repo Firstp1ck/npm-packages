@@ -154,6 +154,9 @@ assert.ok(
   Math.min(optionsReloadIndex, optionsNameIndex) < optionsRemoteIndex && optionsRemoteIndex < Math.max(optionsReloadIndex, optionsNameIndex),
   "Open Remote should render between Reload Pi and Name Session",
 );
+assert.match(html, /id="optionsConversationModeButton"[^>]*data-command="\/talk"[^>]*hidden[\s\S]*?<span>Start Conversation<\/span>/, "Options menu should include the feature-gated Natural Conversation toggle");
+assert.match(html, /id="conversationModeChip" class="composer-conversation-mode-chip"[\s\S]*hidden>Voice: off<\/button>/, "composer should expose a hidden-until-active conversation status chip");
+assert.match(html, /id="conversationModeEndButton" class="composer-conversation-end-button"[\s\S]*hidden>End conversation<\/button>/, "composer should expose a persistent End conversation button while active");
 assert.match(html, /id="appRunnerMenuPanel"[^>]*aria-label="Detected app runners"/, "app-runner dropdown should render detected runner choices only from JS data");
 assert.match(html, /id="appRunnerInfoDialog"[\s\S]*id="appRunnerInfoBody"/, "app-runner explanation popup should have a dynamic details body");
 assert.match(app, /\.pi-webui-runners\.json/, "app-runner popup should explain the project-local custom runner config file");
@@ -695,7 +698,13 @@ assert.match(app, /id: "safetyGuard"[\s\S]*?@firstpick\/pi-extension-safety-guar
 assert.match(app, /id: "tuiSkillsCommand"[\s\S]*?@firstpick\/pi-extension-setup-skills/, "optional features should include the TUI skills command companion");
 assert.match(app, /id: "tuiToolsCommand"[\s\S]*?@firstpick\/pi-extension-tools/, "optional features should include the TUI tools command companion");
 assert.match(app, /id: "remoteWebui"[\s\S]*?@firstpick\/pi-package-remote-webui/, "optional features should include the Remote WebUI companion");
-assert.match(app, /function updateOptionalFeatureAvailability\(\)[\s\S]*hasAvailableCommand\("git-staged-msg"\)[\s\S]*hasAvailableCommand\("release-npm"\)[\s\S]*hasAvailableCommand\("release-aur"\)[\s\S]*hasAvailableCommand\("safety-guard"\)[\s\S]*hasLoadedRpcCommand\("skills"\)[\s\S]*hasAvailableCommand\("todo-progress-status"\)[\s\S]*hasLoadedRpcCommand\("tools"\)[\s\S]*hasAvailableCommand\("remote"\)/, "optional feature detection should call RPC-visible commands directly and distinguish native resource selectors from TUI companions");
+assert.match(app, /id: "naturalConversation"[\s\S]*?@firstpick\/pi-package-natural-conversation[\s\S]*?capabilityLabel: "\/talk, \/voice, or \/conversation"/, "optional features should include the capability-detected Natural Conversation shell");
+assert.match(app, /NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "frontend should detect Natural Conversation only from RPC-visible command aliases");
+assert.match(app, /const conversationModeByTab = new Map\(\)/, "frontend should track Natural Conversation state per terminal tab");
+assert.match(app, /function defaultConversationModeState[\s\S]*allowedTools: \["read", "grep", "find", "ls"\]/, "frontend Natural Conversation defaults should mirror the read-only tool allowlist");
+assert.match(app, /function renderConversationModeControls\(\)[\s\S]*document\.body\.classList\.toggle\("conversation-mode-active", active\)[\s\S]*optionsConversationModeButton[\s\S]*conversationModeChip[\s\S]*conversationModeEndButton/, "frontend should render active Natural Conversation controls and page\/composer state");
+assert.match(app, /async function setNaturalConversationModeEnabled\(enabled\)[\s\S]*api\("\/api\/conversation-mode", \{ method: "POST"/, "frontend Natural Conversation toggle should use the WebUI shell endpoint");
+assert.match(app, /function updateOptionalFeatureAvailability\(\)[\s\S]*hasAvailableCommand\("git-staged-msg"\)[\s\S]*hasAvailableCommand\("release-npm"\)[\s\S]*hasAvailableCommand\("release-aur"\)[\s\S]*hasAvailableCommand\("safety-guard"\)[\s\S]*hasLoadedRpcCommand\("skills"\)[\s\S]*hasAvailableCommand\("todo-progress-status"\)[\s\S]*hasLoadedRpcCommand\("tools"\)[\s\S]*hasAvailableCommand\("remote"\)[\s\S]*NATURAL_CONVERSATION_COMMAND_NAMES\.some\(\(name\) => hasAvailableCommand\(name\)\)/, "optional feature detection should call RPC-visible commands directly and distinguish native resource selectors from TUI companions");
 assert.match(app, /hasRemoteWebuiCommand = isOptionalFeatureEnabled\("remoteWebui"\) && hasAvailableCommand\("remote"\)[\s\S]*optionsRemoteButton\.hidden = !hasRemoteWebuiCommand[\s\S]*syncRemoteWebuiControlVisibility\(hasRemoteWebuiCommand\)/, "Options menu should track /remote availability and delegate network card visibility");
 assert.match(app, /function syncRemoteWebuiControlVisibility[\s\S]*networkControlField\.hidden = !hasRemoteWebuiCommand/, "Remote WebUI network card should render whenever the optional feature and /remote command are enabled");
 assert.match(app, /if \(featureId === "remoteWebui"\) syncRemoteWebuiControlVisibility\(false\)/, "Disabling Remote WebUI should immediately hide browser network controls before broader rerendering");
@@ -752,7 +761,12 @@ assert.match(app, /function renderReleaseNpmOutputWidget\(\)/, "release-npm live
 assert.match(app, /async function refreshAppRunners\(tabContext = activeTabContext\(\)\)/, "frontend should load detected app runners for the active tab cwd");
 assert.match(app, /function renderAppRunnerWidget\(\)/, "frontend should render app runner output in the shared top widget area");
 assert.match(app, /function tabAppRunnerRunningRun\(tab\)[\s\S]*appRunnerIsRunning\(run\)/, "frontend should derive running app-runner state for terminal tab indicators");
-assert.match(app, /function appendTerminalTabContent\(button, \{ title, indicator, meta, count = null, appRunnerRun = null \}\)[\s\S]*terminal-tab-app-runner-indicator/, "terminal tab content should render a visible app-runner badge");
+assert.match(app, /function appendTerminalTabContent\(button, \{ title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false \}\)[\s\S]*terminal-tab-app-runner-indicator/, "terminal tab content should render a visible app-runner badge");
+assert.match(app, /function appendTerminalTabContent\(button,[\s\S]*terminal-tab-conversation-indicator/, "terminal tab content should render a visible Natural Conversation badge");
+assert.match(app, /function renderTerminalTab\(tab\)[\s\S]*conversation-mode-running/, "terminal tabs should indicate active Natural Conversation mode per tab");
+assert.match(css, /\.composer-conversation-mode-chip[\s\S]*\.composer-conversation-end-button/, "Natural Conversation composer controls should have dedicated styles");
+assert.match(css, /\.composer\.conversation-mode-active[\s\S]*body\.conversation-mode-active \.composer::before/, "active Natural Conversation mode should visibly glow around the composer");
+assert.match(css, /\.terminal-tab\.conversation-mode-running[\s\S]*\.terminal-tab-conversation-indicator/, "Natural Conversation tabs should have active-tab and badge styles");
 assert.match(app, /function renderTerminalTabGroup\(group[\s\S]*tabGroupAppRunnerRunningRun\(groupTabs\)[\s\S]*app-runner-running/, "terminal tab groups should indicate when any child tab has a running app runner");
 assert.match(server, /function tabMeta\(tab\)[\s\S]*appRunner: publicAppRunnerState\(tab\.appRunner\)/, "server should expose app-runner state in tab metadata for inactive tab indicators");
 assert.match(app, /function renderAppRunnerInputForm\(run\)[\s\S]*app-runner-stdin-input[\s\S]*Send stdin/, "frontend should let running app runners receive line-oriented stdin");
@@ -1143,7 +1157,7 @@ assert.ok(mochaBackground.length > 8000, "Catppuccin Mocha background image shou
 
 assert.match(server, /AuthStorage, SessionManager/, "server should import AuthStorage for safe OAuth token refresh");
 assert.match(server, /DefaultPackageManager/, "server should use Pi's package resolver when controlling Web UI tab extension loading");
-assert.match(server, /WEBUI_CONTROLLED_PACKAGES = new Set\(\[WEBUI_PACKAGE, \.\.\.OPTIONAL_FEATURE_PACKAGES\.values\(\)\]\)/, "server should identify Web UI-controlled packages for de-duplicated feature loading");
+assert.match(server, /WEBUI_CONTROLLED_PACKAGES = new Set\(\[[\s\S]*WEBUI_PACKAGE[\s\S]*filter\(\(\[featureId\]\) => featureId !== NATURAL_CONVERSATION_FEATURE_ID\)/, "server should identify Web UI-controlled packages for de-duplicated feature loading while leaving Natural Conversation independently owned");
 assert.match(server, /const args = \["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"\]/, "Web UI tabs should disable implicit resource loading before adding curated resource paths");
 assert.match(server, /normalPiResourcePathsForTab[\s\S]*WEBUI_CONTROLLED_PACKAGES\.has\(packageName\)[\s\S]*continue/, "Web UI tab resource resolution should exclude separately installed Web UI feature packages");
 assert.match(server, /startedWebuiResourcePaths\(resourceType\)/, "Web UI tabs should load feature resources from the started Web UI package");
@@ -1270,7 +1284,15 @@ assert.match(server, /\["btwCommand", "@firstpick\/pi-extension-btw"\]/, "server
 assert.match(server, /\["safetyGuard", "@firstpick\/pi-extension-safety-guard"\]/, "server should allow installing the safety guard optional feature");
 assert.match(server, /\["tuiSkillsCommand", "@firstpick\/pi-extension-setup-skills"\]/, "server should allow installing the TUI skills optional feature");
 assert.match(server, /\["tuiToolsCommand", "@firstpick\/pi-extension-tools"\]/, "server should allow installing the TUI tools optional feature");
-assert.match(server, /function optionalFeaturePackageStatus\(featureId\)/, "server should report optional feature package install/update status");
+assert.match(server, /\["naturalConversation", "@firstpick\/pi-package-natural-conversation"\]/, "server should know the standalone Natural Conversation package for status\/install guidance without making it WebUI-owned");
+assert.match(server, /const NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "server should detect Natural Conversation from RPC-visible command aliases");
+assert.match(server, /function naturalConversationFeatureData\(tab[\s\S]*getCommandData\(tab\)[\s\S]*available[\s\S]*mode/, "server should expose a capability-based Natural Conversation feature snapshot");
+assert.match(server, /url\.pathname === "\/api\/features\/natural-conversation" && req\.method === "GET"[\s\S]*naturalConversationFeatureData\(tab\)/, "server should expose Natural Conversation feature metadata");
+assert.match(server, /url\.pathname === "\/api\/conversation-mode" && req\.method === "POST"[\s\S]*setNaturalConversationMode\(tab, body\)/, "server should toggle Natural Conversation through the package-owned slash command");
+assert.match(server, /url\.pathname === "\/api\/stt\/transcribe" \|\| url\.pathname === "\/api\/tts\/speech"[\s\S]*501[\s\S]*hosted\/local STT\/TTS fallbacks are not implemented/, "server STT\/TTS routes should be explicit later-phase placeholders");
+assert.match(server, /function ensureNaturalConversationPromptSafety\(tab, command\)[\s\S]*setThinkingLevelForTab\(tab, "off"/, "server should force thinking off before WebUI prompts while conversation mode is active");
+assert.match(server, /function enforceNaturalConversationCommandAllowed\(tab, command\)[\s\S]*thinking is forced off[\s\S]*slash commands are blocked from the Web UI shell/, "server should block unsafe direct RPC\/WebUI commands while conversation mode is active");
+assert.match(server, /function optionalFeaturePackageStatus\(featureId\)/, "server should report optional feature package install\/update status");
 assert.match(server, /function installOptionalFeaturePackage\(featureId\)/, "server should provide optional feature package installation helper");
 assert.match(server, /PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT/, "optional feature installs should support an explicit package-manager root override");
 assert.match(server, /function configuredAgentNpmRoot\(\)/, "global Web UI launches should consider Pi's agent npm root for optional packages");
@@ -1317,6 +1339,7 @@ assert.match(readme, /avoiding duplicate loads while keeping global `pi-webui` l
 assert.match(readme, /checks loaded Pi capabilities directly through RPC-visible commands and live widget events/, "README should document capability-based startup checks");
 assert.match(readme, /side panel shows each optional feature as enabled, disabled, installed-but-not-loaded, update-available, or install-needed/, "README should document optional feature side-panel controls");
 assert.match(readme, /Installing or updating a feature is an explicit, warned action with running\/failure feedback/, "README should document optional feature install and update warning behavior");
+assert.match(readme, /Natural Conversation Mode shell[\s\S]*\/talk[\s\S]*read-only/, "README should document the optional Natural Conversation WebUI shell");
 assert.match(readme, /\.\/dev\/scripts\/start-webui\.sh --dev --cwd \/path\/to\/project/, "README should document the dev helper launcher");
 assert.match(readme, /sync-pi-package-symlinks\.sh[\s\S]*only one copy is loaded/, "README should document dev companion symlink setup");
 assert.match(startScript, /--dev\)/, "start-webui.sh should accept a --dev flag");
@@ -1335,6 +1358,8 @@ for (const [name, range] of Object.entries(companionDependencies)) {
   assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require optional companion ${name}`);
 }
 assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
+assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-natural-conversation"], undefined, "webui package should not optionally depend on the standalone Natural Conversation package");
+assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-package-natural-conversation")), "webui Pi manifest should not load Natural Conversation directly; /talk must come from the standalone package");
 assert.ok(pkg.pi?.extensions?.includes("./index.ts"), "webui Pi manifest should load its own extension");
 for (const extensionPath of [
   "node_modules/@firstpick/pi-extension-git-footer-status/index.ts",

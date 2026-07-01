@@ -1600,6 +1600,11 @@ body.side-panel-collapsed .terminal-tabs-shell {
   outline: 1px solid rgba(137, 180, 250, 0.42);
   outline-offset: -1px;
 }
+.terminal-tab.conversation-mode-running,
+.terminal-tab-group-item.conversation-mode-running {
+  border-color: rgba(148, 226, 213, 0.68);
+  box-shadow: 0 0 1.15rem rgba(148, 226, 213, 0.24), inset 0 1px 0 rgba(255,255,255,0.06);
+}
 .terminal-tab.terminal-tab-drag-over,
 .terminal-tab-group-item.terminal-tab-drag-over {
   border-color: rgba(137, 180, 250, 0.82);
@@ -1656,6 +1661,22 @@ body.side-panel-collapsed .terminal-tabs-shell {
   line-height: 1.12;
   text-transform: uppercase;
   animation: terminal-tab-app-runner-pulse 1.35s ease-in-out infinite;
+}
+.terminal-tab-conversation-indicator {
+  flex: 0 0 auto;
+  padding: 0.04rem 0.36rem;
+  border: 1px solid rgba(148, 226, 213, 0.46);
+  border-radius: 999px;
+  color: var(--ctp-teal);
+  background: rgba(148, 226, 213, 0.13);
+  box-shadow: 0 0 0.7rem rgba(148, 226, 213, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.56rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.12;
+  text-transform: uppercase;
+  animation: terminal-tab-app-runner-pulse 1.5s ease-in-out infinite;
 }
 .terminal-tab.activity-working > .terminal-tab-button .terminal-tab-activity-indicator {
   background: var(--ctp-yellow);
@@ -4948,6 +4969,67 @@ summary { cursor: pointer; color: var(--warning); }
 }
 .composer-skill-tags[hidden] {
   display: none !important;
+}
+.composer-conversation-mode-chip {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-width: min(14rem, 100%);
+  margin: 0;
+  padding: 0.14rem 0.56rem;
+  border: 1px solid rgba(148, 226, 213, 0.52);
+  border-radius: 999px;
+  color: var(--ctp-teal);
+  background:
+    linear-gradient(120deg, rgba(148, 226, 213, 0.28), rgba(166, 227, 161, 0.10)),
+    var(--ctp-crust);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1rem rgba(148, 226, 213, 0.22);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.composer-conversation-mode-chip[hidden],
+.composer-conversation-end-button[hidden] {
+  display: none !important;
+}
+.composer-conversation-mode-chip:hover,
+.composer-conversation-mode-chip:focus-visible {
+  border-color: rgba(148, 226, 213, 0.78);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1.25rem rgba(148, 226, 213, 0.34);
+  transform: translateY(-1px);
+}
+.composer.conversation-mode-active {
+  border-color: rgba(148, 226, 213, 0.54);
+  box-shadow: 0 0 1.35rem rgba(148, 226, 213, 0.22), 0 1.2rem 2.6rem rgba(var(--ctp-crust-rgb), 0.34);
+}
+body.conversation-mode-active .composer::before {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent, var(--ctp-teal), var(--ctp-green), var(--ctp-teal), transparent);
+}
+.composer-conversation-menu-item.active {
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.50);
+  background:
+    linear-gradient(120deg, rgba(148, 226, 213, 0.20), rgba(166, 227, 161, 0.10)),
+    var(--ctp-crust);
+}
+.composer-conversation-end-button {
+  min-width: 8.4rem;
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.44);
+  background:
+    linear-gradient(120deg, rgba(148, 226, 213, 0.20), rgba(166, 227, 161, 0.10)),
+    var(--ctp-crust);
+  box-shadow: 0 0 1rem rgba(148, 226, 213, 0.22), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.composer-conversation-end-button:hover,
+.composer-conversation-end-button:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-green));
 }
 .composer-skill-tag {
   display: inline-flex;

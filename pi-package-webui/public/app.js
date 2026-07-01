@@ -52,6 +52,7 @@ const elements = {
   busyPromptBehaviorTag: $("#busyPromptBehaviorTag"),
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
+  conversationModeChip: $("#conversationModeChip"),
   skillEditorDialog: $("#skillEditorDialog"),
   skillEditorTitle: $("#skillEditorTitle"),
   skillEditorMeta: $("#skillEditorMeta"),
@@ -68,6 +69,7 @@ const elements = {
   steerButton: $("#steerButton"),
   followUpButton: $("#followUpButton"),
   abortButton: $("#abortButton"),
+  conversationModeEndButton: $("#conversationModeEndButton"),
   newSessionButton: $("#newSessionButton"),
   compactButton: $("#compactButton"),
   gitWorkflowButton: $("#gitWorkflowButton"),
@@ -86,6 +88,7 @@ const elements = {
   optionsMenuButton: $("#optionsMenuButton"),
   optionsMenu: $("#optionsMenu"),
   optionsCommandPaletteButton: $("#optionsCommandPaletteButton"),
+  optionsConversationModeButton: $("#optionsConversationModeButton"),
   optionsResumeButton: $("#optionsResumeButton"),
   optionsReloadButton: $("#optionsReloadButton"),
   optionsRemoteButton: $("#optionsRemoteButton"),
@@ -485,6 +488,8 @@ const GIT_INIT_STACK_STORAGE_KEY = "pi-webui-git-init-stack";
 const STATS_WEBUI_STATUS_KEY = "stats-webui";
 const STATS_WEBUI_PAYLOAD_TYPE = "firstpick.pi-extension-stats.overlay";
 const STATS_WEBUI_PAYLOAD_VERSION = 1;
+const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
+const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
 const REMOTE_WEBUI_CONTROLS_STATUS_KEY = "pi-remote-webui:controls";
 const REMOTE_WEBUI_CONTROLS_PAYLOAD_TYPE = "firstpick.pi-package-remote-webui.controls";
 const REMOTE_WEBUI_CONTROLS_PAYLOAD_VERSION = 1;
@@ -568,6 +573,7 @@ const todoProgressGoalByTab = new Map();
 const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
 const appRunnerDataByTab = new Map();
+const conversationModeByTab = new Map();
 const appRunnerInputDraftByRun = new Map();
 const appRunnerContextLineDraftByRun = new Map();
 const liveToolRuns = new Map();
@@ -590,6 +596,7 @@ const optionalFeatureAvailability = {
   todoProgressWidget: false,
   tuiToolsCommand: false,
   remoteWebui: false,
+  naturalConversation: false,
   themeBundle: false,
 };
 const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
@@ -666,6 +673,13 @@ const OPTIONAL_FEATURES = [
     description: "Trusted-LAN QR helper for opening the Web UI from mobile browsers.",
   },
   {
+    id: "naturalConversation",
+    label: "Natural Conversation",
+    packageName: "@firstpick/pi-package-natural-conversation",
+    capabilityLabel: "/talk, /voice, or /conversation",
+    description: "Per-tab conversation-mode shell that delegates safety constraints to the standalone package and reserves WebUI audio for later phases.",
+  },
+  {
     id: "gitFooterStatus",
     label: "Git footer status",
     packageName: "@firstpick/pi-extension-git-footer-status",
@@ -703,6 +717,9 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["skills", "tuiSkillsCommand"],
   ["tools", "tuiToolsCommand"],
   ["remote", "remoteWebui"],
+  ["talk", "naturalConversation"],
+  ["voice", "naturalConversation"],
+  ["conversation", "naturalConversation"],
   ["stats", "statsCommand"],
   ["git-footer-refresh", "gitFooterStatus"],
   ["todo-progress-status", "todoProgressWidget"],
@@ -4033,6 +4050,156 @@ function isOptionalFeatureEnabled(featureId) {
   return isOptionalFeatureDetected(featureId) && !isOptionalFeatureDisabled(featureId);
 }
 
+function defaultConversationModeState(patch = {}) {
+  return {
+    featureId: "naturalConversation",
+    available: false,
+    enabled: false,
+    uiState: "off",
+    statusText: "",
+    allowedTools: ["read", "grep", "find", "ls"],
+    provider: "browser-shell",
+    startedAt: null,
+    packageInstalled: false,
+    loadedCommands: [],
+    updatedAt: "",
+    ...patch,
+  };
+}
+
+function normalizeConversationModeState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const enabled = source.enabled === true;
+  return defaultConversationModeState({
+    ...source,
+    available: source.available === true,
+    enabled,
+    uiState: enabled ? cleanStatusText(source.uiState || "listening").toLowerCase() || "listening" : "off",
+    statusText: cleanStatusText(source.statusText || ""),
+    allowedTools: Array.isArray(source.allowedTools) && source.allowedTools.length ? source.allowedTools.map((name) => String(name)).filter(Boolean) : ["read", "grep", "find", "ls"],
+    packageInstalled: source.packageInstalled === true,
+    loadedCommands: Array.isArray(source.loadedCommands) ? source.loadedCommands.map((name) => String(name)).filter(Boolean) : [],
+  });
+}
+
+function updateConversationModeForTab(tabId = activeTabId, mode = {}, { render = true } = {}) {
+  if (!tabId) return normalizeConversationModeState(mode);
+  const previous = conversationModeByTab.get(tabId) || tabs.find((tab) => tab.id === tabId)?.conversationMode || {};
+  const next = normalizeConversationModeState({ ...previous, ...mode });
+  conversationModeByTab.set(tabId, next);
+  if (tabId === activeTabId && render) renderConversationModeControls();
+  return next;
+}
+
+function activeConversationMode() {
+  return normalizeConversationModeState(conversationModeByTab.get(activeTabId) || activeTab()?.conversationMode || {});
+}
+
+function conversationModeCommandName() {
+  for (const name of NATURAL_CONVERSATION_COMMAND_NAMES) {
+    const resolved = resolveAvailableCommandName(name, { rpcOnly: true });
+    if (resolved) return resolved;
+  }
+  return "";
+}
+
+function conversationModeButtonLabel(mode = activeConversationMode()) {
+  return mode.enabled ? "End Conversation" : "Start Conversation";
+}
+
+function conversationModeDisplayText(mode = activeConversationMode()) {
+  return mode.enabled ? `Voice: ${mode.uiState || "listening"}` : "Voice: off";
+}
+
+function conversationModeUnavailableText() {
+  return optionalFeatureUnavailableMessage("naturalConversation");
+}
+
+function renderConversationModeControls() {
+  const mode = activeConversationMode();
+  const commandName = conversationModeCommandName();
+  const commandAvailable = !!commandName && isOptionalFeatureEnabled("naturalConversation");
+  const active = mode.enabled === true;
+  document.body.classList.toggle("conversation-mode-active", active);
+  elements.composer?.classList.toggle("conversation-mode-active", active);
+
+  if (elements.optionsConversationModeButton) {
+    elements.optionsConversationModeButton.hidden = !commandAvailable && !active;
+    elements.optionsConversationModeButton.disabled = !commandName;
+    elements.optionsConversationModeButton.classList.toggle("active", active);
+    elements.optionsConversationModeButton.querySelector("span").textContent = conversationModeButtonLabel(mode);
+    const tooltip = commandName
+      ? `${active ? "End" : "Start"} Natural Conversation Mode for this Pi tab via /${commandName}. Safety is owned by @firstpick/pi-package-natural-conversation.`
+      : conversationModeUnavailableText();
+    elements.optionsConversationModeButton.title = tooltip;
+    elements.optionsConversationModeButton.setAttribute("data-tooltip", tooltip);
+    elements.optionsConversationModeButton.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+
+  if (elements.conversationModeChip) {
+    elements.conversationModeChip.hidden = !active;
+    elements.conversationModeChip.textContent = conversationModeDisplayText(mode);
+    elements.conversationModeChip.title = `Natural Conversation Mode is active in this tab. Thinking is forced off; tools are limited to ${mode.allowedTools.join(", ")}.`;
+  }
+
+  if (elements.conversationModeEndButton) {
+    elements.conversationModeEndButton.hidden = !active;
+    elements.conversationModeEndButton.disabled = !commandName;
+    elements.conversationModeEndButton.title = commandName ? `End Natural Conversation Mode with /${commandName} off.` : conversationModeUnavailableText();
+  }
+}
+
+function handleNaturalConversationStatus(statusText, tabId = activeTabId) {
+  const text = cleanStatusText(statusText || "");
+  const match = text.match(/voice\s*:\s*([a-z0-9_-]+)/i);
+  updateConversationModeForTab(tabId, {
+    available: true,
+    enabled: !!text,
+    uiState: text ? (match?.[1] || "listening").toLowerCase() : "off",
+    statusText: text,
+    loadedCommands: NATURAL_CONVERSATION_COMMAND_NAMES.filter((name) => hasLoadedRpcCommand(name)),
+  });
+}
+
+async function refreshNaturalConversationMode(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return;
+  try {
+    const response = await api("/api/conversation-mode", { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    updateConversationModeForTab(tabContext.tabId, response.data?.mode || {}, { render: true });
+    if (response.data?.available) optionalFeatureAvailability.naturalConversation = true;
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(`natural conversation status check failed: ${error.message || String(error)}`, "warn");
+  }
+}
+
+async function setNaturalConversationModeEnabled(enabled) {
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId) return;
+  const commandName = conversationModeCommandName();
+  if (!commandName) {
+    addEvent(conversationModeUnavailableText(), "warn");
+    await Promise.allSettled([refreshCommands(tabContext), refreshOptionalFeaturePackageStatuses()]);
+    return;
+  }
+  try {
+    const response = await api("/api/conversation-mode", { method: "POST", body: { enabled: enabled === true }, tabId: tabContext.tabId });
+    applyResponseTab(response);
+    if (!isCurrentTabContext(tabContext)) return;
+    updateConversationModeForTab(tabContext.tabId, response.data?.mode || {}, { render: true });
+    addEvent(enabled ? "Natural Conversation Mode started." : "Natural Conversation Mode ended.", "info");
+    if (enabled) addTransientMessage({ role: "native", title: "/talk", content: "Natural Conversation Mode is active. Thinking is off; write/shell workflows are blocked by the package safety controller.", level: "info" });
+    await Promise.allSettled([refreshState(tabContext), refreshCommands(tabContext)]);
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+  }
+}
+
+function toggleNaturalConversationMode() {
+  const mode = activeConversationMode();
+  return setNaturalConversationModeEnabled(!mode.enabled);
+}
+
 function renderOptionalFeatureDependentDisplays() {
   renderOptionalFeatureControls();
   renderThemeSelect();
@@ -4071,6 +4238,10 @@ function setOptionalFeatureDisabled(featureId, disabled) {
     statusEntries.delete(REMOTE_WEBUI_CONTROLS_STATUS_KEY);
     statusEntries.delete("pi-remote-webui");
     widgets.delete("pi-remote-webui");
+  }
+  if (featureId === "naturalConversation" && disabled && !activeConversationMode().enabled) {
+    statusEntries.delete(NATURAL_CONVERSATION_STATUS_KEY);
+    updateConversationModeForTab(activeTabId, { available: false, enabled: false, uiState: "off", statusText: "" }, { render: false });
   }
   storeDisabledOptionalFeatures();
   renderOptionalFeatureDependentDisplays();
@@ -4502,6 +4673,7 @@ function syncTabMetadata(nextTabs = []) {
     liveIds.add(tab.id);
     setTabActivity(tab.id, tab.activity);
     if (Object.prototype.hasOwnProperty.call(tab, "appRunner")) setAppRunnerData(tab.id, { activeRun: tab.appRunner });
+    if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
   }
   for (const tabId of tabActivities.keys()) {
     if (!liveIds.has(tabId)) {
@@ -4514,6 +4686,7 @@ function syncTabMetadata(nextTabs = []) {
       tabMessagesCache.delete(tabId);
       widgetsByTab.delete(tabId);
       appRunnerDataByTab.delete(tabId);
+      conversationModeByTab.delete(tabId);
       clearGitWorkflowForTab(tabId);
     }
   }
@@ -4529,6 +4702,8 @@ function applyTabMetadata(tab) {
   if (index === -1) tabs.push(tab);
   else tabs[index] = { ...tabs[index], ...tab };
   if (tab.activity) setTabActivity(tab.id, tab.activity);
+  if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
+  renderConversationModeControls();
   renderTabs();
   return true;
 }
@@ -5035,17 +5210,34 @@ function terminalAppRunnerTooltip(run) {
   return appRunnerIsRunning(run) ? ` · ${terminalAppRunnerLabel(run)}` : "";
 }
 
-function terminalTabMeta(tab, indicator) {
-  const meta = tab.running ? `${indicator.meta} · pid ${tab.pid || "…"}` : "stopped";
-  return tabAppRunnerRunningRun(tab) ? `${meta} · app runner` : meta;
+function tabConversationMode(tab) {
+  if (!tab?.id) return normalizeConversationModeState(tab?.conversationMode || {});
+  return normalizeConversationModeState(conversationModeByTab.get(tab.id) || tab.conversationMode || {});
 }
 
-function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null }) {
+function tabConversationModeActive(tab) {
+  return tabConversationMode(tab).enabled === true;
+}
+
+function terminalConversationModeTooltip(tab) {
+  const mode = tabConversationMode(tab);
+  return mode.enabled ? ` · natural conversation: ${mode.uiState || "listening"}` : "";
+}
+
+function terminalTabMeta(tab, indicator) {
+  const parts = [tab.running ? `${indicator.meta} · pid ${tab.pid || "…"}` : "stopped"];
+  if (tabAppRunnerRunningRun(tab)) parts.push("app runner");
+  if (tabConversationModeActive(tab)) parts.push("voice");
+  return parts.join(" · ");
+}
+
+function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false }) {
   const titleRow = make("span", "terminal-tab-title-row");
   const indicatorDot = make("span", "terminal-tab-activity-indicator");
   indicatorDot.setAttribute("aria-hidden", "true");
   titleRow.append(indicatorDot, make("span", "terminal-tab-title", title));
   if (appRunnerIsRunning(appRunnerRun)) titleRow.append(make("span", "terminal-tab-app-runner-indicator", "app"));
+  if (conversationModeActive) titleRow.append(make("span", "terminal-tab-conversation-indicator", "voice"));
   if (count !== null) titleRow.append(make("span", "terminal-tab-group-count", String(count)));
   button.append(titleRow, make("span", "terminal-tab-meta", meta));
 }
@@ -5055,7 +5247,9 @@ function renderTerminalTab(tab) {
   const indicator = tabIndicator(tab);
   const appRunnerRun = tabAppRunnerRunningRun(tab);
   const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
-  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}`);
+  const conversationModeActive = tabConversationModeActive(tab);
+  const conversationLabel = conversationModeActive ? `, natural conversation ${tabConversationMode(tab).uiState || "listening"}` : "";
+  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}`);
   wrapper.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: tab.id, target: { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button");
@@ -5063,10 +5257,10 @@ function renderTerminalTab(tab) {
   button.draggable = false;
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
-  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}`);
-  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)} · drag onto another tab or group to group`;
+  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}`);
+  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)} · drag onto another tab or group to group`;
   applyStyledTooltip(button, tooltip, { ariaLabel: false });
-  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun });
+  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button);
 
@@ -5091,7 +5285,9 @@ function renderTerminalTabGroupItem(tab, group) {
   const indicator = tabIndicator(tab);
   const appRunnerRun = tabAppRunnerRunningRun(tab);
   const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
-  const item = make("div", `terminal-tab-group-item activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}`);
+  const conversationModeActive = tabConversationModeActive(tab);
+  const conversationLabel = conversationModeActive ? `, natural conversation ${tabConversationMode(tab).uiState || "listening"}` : "";
+  const item = make("div", `terminal-tab-group-item activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}`);
   item.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(item, { sourceTabId: tab.id, target: group?.custom ? { type: "group", group } : { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button terminal-tab-group-item-button");
@@ -5099,10 +5295,10 @@ function renderTerminalTabGroupItem(tab, group) {
   button.draggable = false;
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
-  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}`);
-  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)} · drag onto another tab or group to group`;
+  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}`);
+  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)} · drag onto another tab or group to group`;
   applyStyledTooltip(button, tooltip, { ariaLabel: false });
-  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun });
+  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     switchTab(tab.id);
@@ -17062,6 +17258,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.todoProgressWidget = hasAvailableCommand("todo-progress-status") || optionalFeatureAvailability.todoProgressWidget || widgets.has("todo-progress");
   optionalFeatureAvailability.tuiToolsCommand = hasLoadedRpcCommand("tools");
   optionalFeatureAvailability.remoteWebui = hasAvailableCommand("remote") || optionalFeatureAvailability.remoteWebui || statusEntries.has("pi-remote-webui") || statusEntries.has(REMOTE_WEBUI_CONTROLS_STATUS_KEY) || widgets.has("pi-remote-webui");
+  optionalFeatureAvailability.naturalConversation = NATURAL_CONVERSATION_COMMAND_NAMES.some((name) => hasAvailableCommand(name)) || optionalFeatureAvailability.naturalConversation || statusEntries.has(NATURAL_CONVERSATION_STATUS_KEY) || activeConversationMode().available;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   requestGitFooterWebuiPayload();
   renderOptionalFeatureControls();
@@ -17213,6 +17410,12 @@ function renderOptionalFeatureControls() {
       optionalFeatureUnavailableMessage("statsCommand"),
     );
   }
+
+  const hasNaturalConversation = isOptionalFeatureEnabled("naturalConversation") || activeConversationMode().enabled;
+  if (elements.optionsConversationModeButton) {
+    elements.optionsConversationModeButton.hidden = !hasNaturalConversation;
+  }
+  renderConversationModeControls();
 
   const hasRemoteWebuiCommand = isOptionalFeatureEnabled("remoteWebui") && hasAvailableCommand("remote");
   if (elements.optionsRemoteButton) {
@@ -19817,6 +20020,7 @@ async function refreshAll(tabContext = activeTabContext()) {
     refreshMessages(tabContext),
     refreshModels(tabContext),
     refreshCommands(tabContext),
+    refreshNaturalConversationMode(tabContext),
     refreshStats(tabContext),
     refreshWorkspace(tabContext),
     refreshAppRunners(tabContext),
@@ -20339,6 +20543,7 @@ function handleExtensionUiRequest(request) {
       }
       if (statusKey === STATS_WEBUI_STATUS_KEY) handleStatsWebuiStatus(request.statusText);
       if (statusKey === BTW_WEBUI_STATUS_KEY) handleBtwWebuiStatus(request.statusText);
+      if (statusKey === NATURAL_CONVERSATION_STATUS_KEY) handleNaturalConversationStatus(request.statusText, request.tabId || activeTabId);
       if (statusKey === "pi-remote-webui") handleRemoteWebuiStatus(request.statusText);
       updateOptionalFeatureAvailability();
       if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) {
@@ -21094,6 +21299,9 @@ elements.releaseAurButton.addEventListener("click", () => runPublishWorkflow("/r
 elements.nativeSkillsButton.addEventListener("click", () => runNativeCommandMenu("/skills"));
 elements.nativeToolsButton.addEventListener("click", () => runNativeCommandMenu("/tools"));
 elements.optionsCommandPaletteButton.addEventListener("click", () => openCommandPalette());
+elements.optionsConversationModeButton?.addEventListener("click", () => toggleNaturalConversationMode());
+elements.conversationModeChip?.addEventListener("click", () => toggleNaturalConversationMode());
+elements.conversationModeEndButton?.addEventListener("click", () => setNaturalConversationModeEnabled(false));
 elements.optionsResumeButton.addEventListener("click", () => runNativeCommandMenu("/resume"));
 elements.optionsReloadButton.addEventListener("click", () => runNativeCommandMenu("/reload"));
 elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMenu("/remote"));

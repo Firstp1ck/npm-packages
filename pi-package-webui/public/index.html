@@ -123,6 +123,7 @@
                 aria-live="polite"
               >Follow-up</button>
               <div id="sessionSkillTags" class="composer-skill-tags" aria-live="polite" hidden></div>
+              <button id="conversationModeChip" class="composer-conversation-mode-chip" type="button" aria-live="polite" hidden>Voice: off</button>
             </div>
             <div id="busyPromptBehaviorMenu" class="composer-busy-mode-menu" role="menu" aria-labelledby="busyPromptBehaviorTag" hidden>
               <button class="composer-busy-mode-menu-item" type="button" role="menuitemradio" data-busy-prompt-behavior="followUp" aria-checked="true">
@@ -212,11 +213,14 @@
                   aria-haspopup="menu"
                   aria-expanded="false"
                   aria-controls="optionsMenu"
-                  data-tooltip="Options: command palette, resume, reload, remote, name, clone, settings, export, fork, or tree."
+                  data-tooltip="Options: command palette, natural conversation, resume, reload, remote, name, clone, settings, export, fork, or tree."
                 ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="8" cy="7" r="1.6" fill="currentColor"/><circle cx="16" cy="12" r="1.6" fill="currentColor"/><circle cx="11" cy="17" r="1.6" fill="currentColor"/></svg></button>
                 <div id="optionsMenu" class="composer-publish-menu-panel composer-options-menu-panel" role="menu" aria-label="Common Pi options">
                   <button id="optionsCommandPaletteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem">
                     <span>Command Palette</span>
+                  </button>
+                  <button id="optionsConversationModeButton" class="composer-publish-menu-item composer-options-menu-item composer-conversation-menu-item" type="button" role="menuitem" data-command="/talk" hidden>
+                    <span>Start Conversation</span>
                   </button>
                   <button id="optionsTreeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/tree">
                     <span>Tree</span>
@@ -290,6 +294,7 @@
               aria-label="Follow-up: type your message first, then tap this button to send it as a follow-up."
               data-tooltip="Follow-up usage:&#10;1. Type your message in the textarea.&#10;2. Tap Follow-up to send it as a follow-up.&#10;Use for extra context or the next request."
             >Follow-up</button>
+            <button id="conversationModeEndButton" class="composer-conversation-end-button" type="button" title="End Natural Conversation Mode for this Pi tab" aria-label="End Natural Conversation Mode" hidden>End conversation</button>
             <button id="abortButton" class="composer-abort-button danger" type="button" title="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" aria-label="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" hidden disabled>Abort</button>
             <button
               id="btwButton"

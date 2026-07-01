@@ -658,6 +658,51 @@ try {
   assert.equal(copy.body?.data?.status, "succeeded", "native /copy should succeed through the adapter");
   assert.equal(copy.body?.data?.copyText, "fake last text");
 
+  // Natural Conversation shell: /talk availability drives per-tab status and safety guards.
+  const conversationFeature = await request("127.0.0.1", `/api/features/natural-conversation?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(conversationFeature.status, 200);
+  assert.equal(conversationFeature.body?.data?.available, true, "fake /talk command should make Natural Conversation available");
+  assert.ok(conversationFeature.body?.data?.commands?.includes("talk"), "Natural Conversation feature data should expose loaded /talk commands");
+  assert.equal(conversationFeature.body?.data?.mode?.enabled, false, "Natural Conversation should start disabled per tab");
+
+  const conversationOn = await request("127.0.0.1", "/api/conversation-mode", {
+    method: "POST",
+    body: { enabled: true, tab: tabId },
+  });
+  assert.equal(conversationOn.status, 200, `conversation-mode on should succeed: ${conversationOn.body?.error || ""}`);
+  assert.equal(conversationOn.body?.data?.mode?.enabled, true, "conversation-mode on should update tab-local mode state");
+  assert.equal(conversationOn.body?.tab?.conversationMode?.enabled, true, "conversation mode should be included in returned tab metadata");
+
+  const conversationState = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(conversationState.status, 200);
+  assert.equal(conversationState.body?.data?.thinkingLevel, "off", "Natural Conversation shell should keep thinking forced off");
+
+  const blockedSlash = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { message: "/copy", tab: tabId } });
+  assert.equal(blockedSlash.status, 409, "non-/talk slash commands should be blocked while Natural Conversation is active");
+  assert.match(String(blockedSlash.body?.error || ""), /Natural Conversation Mode is active; slash commands are blocked/);
+
+  const blockedSettings = await request("127.0.0.1", "/api/settings", { method: "POST", body: { thinkingLevel: "high", tab: tabId } });
+  assert.equal(blockedSettings.status, 409, "settings changes should be blocked while Natural Conversation is active");
+  assert.match(String(blockedSettings.body?.error || ""), /settings changes are blocked/);
+
+  const blockedBash = await request("127.0.0.1", "/api/bash", { method: "POST", body: { command: "echo blocked", tab: tabId } });
+  assert.equal(blockedBash.status, 409, "user bash should be blocked while Natural Conversation is active");
+  assert.match(String(blockedBash.body?.error || ""), /bash is blocked|Natural Conversation Mode is active/);
+
+  const allowedConversationPrompt = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { message: "Explain the current repo briefly", tab: tabId } });
+  assert.equal(allowedConversationPrompt.status, 200, "ordinary prompts remain allowed while Natural Conversation is active");
+
+  const sttPlaceholder = await request("127.0.0.1", "/api/stt/transcribe", { method: "POST", body: { tab: tabId } });
+  assert.equal(sttPlaceholder.status, 501, "hosted/local STT placeholder route should be explicit and non-operational");
+  assert.match(String(sttPlaceholder.body?.error || ""), /STT\/TTS fallbacks are not implemented/);
+
+  const conversationOff = await request("127.0.0.1", "/api/conversation-mode", {
+    method: "POST",
+    body: { enabled: false, tab: tabId },
+  });
+  assert.equal(conversationOff.status, 200, `conversation-mode off should succeed: ${conversationOff.body?.error || ""}`);
+  assert.equal(conversationOff.body?.data?.mode?.enabled, false, "conversation-mode off should restore normal WebUI actions");
+
   // Bash FIFO queue: concurrent requests must execute serially on the RPC.
   const [bashA, bashB] = await Promise.all([
     request("127.0.0.1", "/api/bash", { method: "POST", body: { command: "echo a", tab: tabId }, timeoutMs: 10_000 }),

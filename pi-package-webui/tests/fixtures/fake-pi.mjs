@@ -2,15 +2,60 @@
 // Minimal JSONL RPC stub standing in for the pi coding agent so HTTP endpoint
 // tests can boot the real pi-webui server without a model provider.
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 
 const sessionIndex = process.argv.indexOf("--session");
 const sessionFile = sessionIndex !== -1 ? process.argv[sessionIndex + 1] : undefined;
 
 let activeBash = 0;
 let peakBash = 0;
+let thinkingLevel = "off";
+let conversationEnabled = false;
 
 function respond(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function emitEvent(payload) {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function conversationStatusText() {
+  return conversationEnabled ? "Voice: listening" : "";
+}
+
+function emitConversationStatus() {
+  emitEvent({
+    type: "extension_ui_request",
+    id: randomUUID(),
+    method: "setStatus",
+    statusKey: "natural-conversation",
+    statusText: conversationStatusText(),
+  });
+}
+
+function handleTalkPrompt(command, base) {
+  const message = String(command.message || "").trim();
+  const match = message.match(/^\/(talk|voice|conversation)(?:\s+(\S+))?/i);
+  if (!match) return false;
+  const subcommand = String(match[2] || "").toLowerCase();
+  if (!subcommand) conversationEnabled = !conversationEnabled;
+  else if (["on", "enable", "start"].includes(subcommand)) conversationEnabled = true;
+  else if (["off", "disable", "end", "stop"].includes(subcommand)) conversationEnabled = false;
+  emitConversationStatus();
+  respond({
+    ...base,
+    data: {
+      output: conversationEnabled ? "Natural Conversation Mode on." : "Natural Conversation Mode off.",
+      conversationMode: {
+        enabled: conversationEnabled,
+        uiState: conversationEnabled ? "listening" : "off",
+        statusText: conversationStatusText(),
+        allowedTools: ["read", "grep", "find", "ls"],
+      },
+    },
+  });
+  return true;
 }
 
 const rl = createInterface({ input: process.stdin });
@@ -32,7 +77,7 @@ rl.on("line", (line) => {
         ...base,
         data: {
           model: { provider: "fake", id: "fake-model" },
-          thinkingLevel: "off",
+          thinkingLevel,
           isStreaming: false,
           isCompacting: false,
           steeringMode: "one-at-a-time",
@@ -57,6 +102,26 @@ rl.on("line", (line) => {
           ],
         },
       });
+      return;
+    case "get_commands":
+      respond({
+        ...base,
+        data: {
+          commands: [
+            { name: "talk", source: "extension", description: "Toggle Natural Conversation Mode" },
+            { name: "voice", source: "extension", description: "Natural Conversation Mode alias" },
+            { name: "conversation", source: "extension", description: "Natural Conversation Mode alias" },
+          ],
+        },
+      });
+      return;
+    case "prompt":
+      if (handleTalkPrompt(command, base)) return;
+      respond({ ...base, data: { output: "fake prompt accepted" } });
+      return;
+    case "set_thinking_level":
+      thinkingLevel = String(command.level || "off");
+      respond({ ...base, data: { level: thinkingLevel } });
       return;
     case "get_available_models":
       respond({ ...base, data: { models: [{ provider: "fake", id: "fake-model", name: "Fake Model" }] } });
