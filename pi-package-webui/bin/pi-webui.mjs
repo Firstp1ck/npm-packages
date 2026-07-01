@@ -1128,6 +1128,31 @@ function nodeModulesParentForPackageRoot(root = packageRoot) {
   return root;
 }
 
+function prependNodePathEntries(entries) {
+  const existing = String(process.env.NODE_PATH || "").split(path.delimiter).filter(Boolean);
+  const seen = new Set();
+  const next = [];
+  for (const entry of [...entries, ...existing]) {
+    if (!entry) continue;
+    const normalized = path.resolve(entry);
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(normalized);
+  }
+  if (next.length) process.env.NODE_PATH = next.join(path.delimiter);
+}
+
+async function configureDevDependencyResolution() {
+  if (!webuiDevServer) return;
+  const workspaceRoot = await devWorkspaceRoot();
+  prependNodePathEntries([
+    workspaceRoot ? path.join(workspaceRoot, "node_modules") : "",
+    path.join(packageRoot, "node_modules"),
+    path.join(configuredAgentNpmRoot(), "node_modules"),
+  ]);
+}
+
 function declaredDependencySpec(pkg, packageName) {
   return firstDefined(
     pkg?.dependencies?.[packageName],
@@ -4829,6 +4854,7 @@ try {
 
 process.env.PI_WEBUI_HOST = options.host;
 process.env.PI_WEBUI_PORT = String(options.port);
+await configureDevDependencyResolution();
 
 const startupDelayMs = Number.parseInt(process.env.PI_WEBUI_START_DELAY_MS || "", 10);
 delete process.env.PI_WEBUI_START_DELAY_MS;

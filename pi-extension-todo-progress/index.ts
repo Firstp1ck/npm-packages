@@ -9,6 +9,7 @@ type TodoState = {
   offset: number;
   goal?: string;
   awaitingGoalCheck: boolean;
+  allowNextListReplacement: boolean;
 };
 type PersistedTodoState = TodoState & { version: 1 };
 
@@ -166,7 +167,7 @@ function shouldReplaceList(previousItems: TodoItem[], incomingItems: TodoItem[],
   return previousOverlapRatio >= 0.75 && incomingOverlapRatio >= 0.5;
 }
 
-function mergeChecklistItems(previousItems: TodoItem[], incomingItems: TodoItem[]): TodoItem[] {
+function mergeChecklistItems(previousItems: TodoItem[], incomingItems: TodoItem[], options: { allowReplacement?: boolean } = {}): TodoItem[] {
   if (incomingItems.length === 0) return previousItems.slice(0, MAX_ITEMS);
   if (previousItems.length === 0) return shouldAcceptInitialList(incomingItems) ? incomingItems.slice(0, MAX_ITEMS) : [];
 
@@ -174,6 +175,7 @@ function mergeChecklistItems(previousItems: TodoItem[], incomingItems: TodoItem[
   const incomingByKey = new Map(incomingItems.map((item) => [todoItemKey(item), item]));
   const overlap = incomingItems.filter((item) => previousByKey.has(todoItemKey(item))).length;
 
+  if (options.allowReplacement && shouldAcceptInitialList(incomingItems)) return incomingItems.slice(0, MAX_ITEMS);
   if (shouldReplaceList(previousItems, incomingItems, overlap)) return incomingItems.slice(0, MAX_ITEMS);
 
   // Otherwise only apply status/text changes for existing items. Do not append
@@ -229,6 +231,7 @@ function clear(ctx: ExtensionContext, s: TodoState, options: { keepGoal?: boolea
   s.offset = 0;
   s.goal = options.keepGoal ? goal : undefined;
   s.awaitingGoalCheck = false;
+  s.allowNextListReplacement = false;
   if (ctx.hasUI && hadWidget) ctx.ui.setWidget(KEY, undefined);
 }
 
@@ -244,6 +247,7 @@ function snapshotState(s: TodoState): PersistedTodoState {
     offset: s.offset,
     goal: s.goal,
     awaitingGoalCheck: s.awaitingGoalCheck,
+    allowNextListReplacement: s.allowNextListReplacement,
   };
 }
 
@@ -267,6 +271,7 @@ function restoreSnapshot(data: unknown): TodoState | undefined {
     offset: Math.max(0, Math.min(Number(snapshot.offset) || 0, Math.max(0, items.length - MAX_ROWS))),
     goal: typeof snapshot.goal === "string" && snapshot.goal.trim() ? snapshot.goal : undefined,
     awaitingGoalCheck: Boolean(snapshot.awaitingGoalCheck),
+    allowNextListReplacement: Boolean((snapshot as any).allowNextListReplacement),
   };
 }
 
@@ -311,13 +316,16 @@ function buildInjectedContext(s: TodoState): string {
       "",
       "Before the next execution step or tool call, emit checklist lines only for items whose status/text changed. If the checklist did not change, do not re-emit unchanged checklist lines.",
     );
+    if (s.allowNextListReplacement) {
+      lines.push("Compaction just completed. If the current plan needs to be restated, emit a complete new 2-6 item checklist; it may replace the previous list.");
+    }
   }
 
   return lines.join("\n");
 }
 
 export default function todoProgress(pi: ExtensionAPI) {
-  const state: TodoState = { visible: false, items: [], offset: 0, awaitingGoalCheck: false };
+  const state: TodoState = { visible: false, items: [], offset: 0, awaitingGoalCheck: false, allowNextListReplacement: false };
 
   function persistState() {
     pi.appendEntry(STATE_KEY, snapshotState(state));
@@ -341,6 +349,7 @@ export default function todoProgress(pi: ExtensionAPI) {
     state.offset = saved.offset;
     state.goal = saved.goal;
     state.awaitingGoalCheck = saved.awaitingGoalCheck;
+    state.allowNextListReplacement = saved.allowNextListReplacement;
     render(ctx, state);
   }
 
@@ -374,6 +383,7 @@ export default function todoProgress(pi: ExtensionAPI) {
   pi.on("input", async (event, ctx) => {
     if (!event.text.startsWith("/")) {
       clear(ctx, state);
+      state.goal = fallbackGoalFromPrompt(event.text);
       persistState();
     }
     return { action: "continue" as const };
@@ -398,14 +408,18 @@ export default function todoProgress(pi: ExtensionAPI) {
       return;
     }
 
-    const nextItems = mergeChecklistItems(previousItems, checklist);
+    const allowedReplacement = state.allowNextListReplacement;
+    const nextItems = mergeChecklistItems(previousItems, checklist, { allowReplacement: allowedReplacement });
+    const replacementAllowanceConsumed = allowedReplacement && shouldAcceptInitialList(checklist);
+    const nextAllowNextListReplacement = allowedReplacement && !replacementAllowanceConsumed;
     const nextAwaitingGoalCheck = isDoneList(nextItems);
     const nextOffset = Math.min(state.offset, Math.max(0, nextItems.length - MAX_ROWS));
-    const changed = state.goal !== previousGoal || !sameTodoItems(state.items, nextItems) || state.awaitingGoalCheck !== nextAwaitingGoalCheck || state.offset !== nextOffset || !state.visible;
+    const changed = state.goal !== previousGoal || !sameTodoItems(state.items, nextItems) || state.awaitingGoalCheck !== nextAwaitingGoalCheck || state.allowNextListReplacement !== nextAllowNextListReplacement || state.offset !== nextOffset || !state.visible;
 
     if (changed) {
       state.items = nextItems;
       state.awaitingGoalCheck = nextAwaitingGoalCheck;
+      state.allowNextListReplacement = nextAllowNextListReplacement;
       state.offset = nextOffset;
       state.visible = true;
       render(ctx, state);
@@ -418,6 +432,17 @@ export default function todoProgress(pi: ExtensionAPI) {
         content: event.message.content.map((c: any) => (c.type === "text" ? { ...c, text: stripChecklistLines(c.text) } : c)),
       },
     };
+  });
+
+  pi.on("session_compact", async (_event, ctx) => {
+    // Auto-compaction can resume the same agent run without a fresh
+    // before_agent_start/input cycle. The next assistant message may restate a
+    // compacted plan with low overlap against the pre-compaction checklist; let
+    // one complete checklist replace the active list instead of being ignored as
+    // an unrelated status block.
+    if (state.items.length > 0) state.allowNextListReplacement = true;
+    render(ctx, state);
+    persistState();
   });
 
   pi.on("agent_end", async (event, ctx) => {

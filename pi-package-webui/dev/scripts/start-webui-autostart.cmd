@@ -10,6 +10,8 @@ rem Optional environment overrides:
 rem   PI_WEBUI_NODE_EXE  Full path to node.exe when node is not on PATH.
 rem   PI_WEBUI_SCRIPT    Full path to bin\pi-webui.mjs.
 rem   PI_WEBUI_CWD       Working directory for Pi tabs.
+rem   PI_WEBUI_HOST      HTTP bind host (default: 127.0.0.1).
+rem   PI_WEBUI_PORT      HTTP port (default: 31415).
 
 set "NODE_EXE=%PI_WEBUI_NODE_EXE%"
 if not defined NODE_EXE (
@@ -89,10 +91,20 @@ if not exist "%PI_WEBUI_CWD%\" (
   exit /b 1
 )
 
+set "PI_WEBUI_HOST_RESOLVED=%PI_WEBUI_HOST%"
+if not defined PI_WEBUI_HOST_RESOLVED (
+  set "PI_WEBUI_HOST_RESOLVED=127.0.0.1"
+)
+
+set "PI_WEBUI_PORT_RESOLVED=%PI_WEBUI_PORT%"
+if not defined PI_WEBUI_PORT_RESOLVED (
+  set "PI_WEBUI_PORT_RESOLVED=31415"
+)
+
 if defined PI_WEBUI_SCRIPT_RESOLVED (
-  start "Pi Web UI" /min "%NODE_EXE%" "%PI_WEBUI_SCRIPT_RESOLVED%" --cwd "%PI_WEBUI_CWD%" --host 127.0.0.1 --port 31415
+  start "Pi Web UI" /min "%NODE_EXE%" "%PI_WEBUI_SCRIPT_RESOLVED%" --cwd "%PI_WEBUI_CWD%" --host "%PI_WEBUI_HOST_RESOLVED%" --port "%PI_WEBUI_PORT_RESOLVED%"
 ) else (
-  start "Pi Web UI" /min "%PI_WEBUI_BIN%" --cwd "%PI_WEBUI_CWD%" --host 127.0.0.1 --port 31415
+  start "Pi Web UI" /min "%PI_WEBUI_BIN%" --cwd "%PI_WEBUI_CWD%" --host "%PI_WEBUI_HOST_RESOLVED%" --port "%PI_WEBUI_PORT_RESOLVED%"
 )
 
 endlocal
