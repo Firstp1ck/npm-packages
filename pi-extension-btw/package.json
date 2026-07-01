@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-btw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ephemeral /btw side-question overlay command for Pi TUI and WebUI.",
   "license": "MIT",
   "type": "module",

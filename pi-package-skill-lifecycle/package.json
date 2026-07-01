@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-package-skill-lifecycle",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Self-contained Pi package for skill lifecycle management: memory, skill-bank audit, evaluation, creation, and refinement tools.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-skill-lifecycle#readme",
