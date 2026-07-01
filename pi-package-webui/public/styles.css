@@ -3006,10 +3006,126 @@ button.footer-meta {
   font-weight: 800;
   text-align: center;
 }
+.git-pull-result-panel {
+  display: grid;
+  gap: 0.68rem;
+  padding: 0.78rem;
+  border: 1px solid rgba(166, 227, 161, 0.28);
+  border-radius: 0.95rem;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(166, 227, 161, 0.14), transparent 18rem),
+    linear-gradient(135deg, rgba(var(--ctp-crust-rgb), 0.68), rgba(166, 227, 161, 0.07));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 0.55rem 1.4rem rgba(var(--ctp-crust-rgb), 0.18);
+}
+.git-pull-result-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.git-pull-result-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+.git-pull-result-kicker,
+.git-pull-file-list-label {
+  color: var(--ctp-green);
+  font-size: 0.66rem;
+  font-weight: 950;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.git-pull-result-copy strong {
+  color: var(--ctp-text);
+  font-size: 1rem;
+}
+.git-pull-result-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(var(--ctp-subtext-rgb), 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-pull-result-metrics,
 .git-changes-overview {
   display: grid;
   grid-template-columns: repeat(5, minmax(7rem, 1fr));
   gap: 0.5rem;
+}
+.git-pull-result-metrics {
+  grid-template-columns: repeat(4, minmax(7rem, 1fr));
+}
+.git-pull-file-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42rem;
+  min-width: 0;
+}
+.git-pull-file-list-label {
+  grid-column: 1 / -1;
+}
+.git-pull-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.42rem 0.56rem;
+  border: 1px solid rgba(180, 190, 254, 0.14);
+  border-radius: 0.58rem;
+  background: rgba(var(--ctp-crust-rgb), 0.42);
+}
+.git-pull-file-path,
+.git-pull-file-stats {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-pull-file-path {
+  color: var(--ctp-text);
+  font-weight: 850;
+}
+.git-pull-file-stats {
+  flex: 0 0 auto;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+.git-pull-file.success .git-pull-file-stats { color: var(--ctp-green); }
+.git-pull-file.danger .git-pull-file-stats { color: var(--ctp-red); }
+.git-pull-result-more {
+  grid-column: 1 / -1;
+  color: rgba(var(--ctp-subtext-rgb), 0.72);
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+.git-pull-output-details {
+  overflow: hidden;
+  border: 1px solid rgba(180, 190, 254, 0.14);
+  border-radius: 0.68rem;
+  background: rgba(var(--ctp-mantle-rgb), 0.42);
+}
+.git-pull-output-details summary {
+  cursor: pointer;
+  padding: 0.48rem 0.62rem;
+  color: rgba(var(--ctp-subtext-rgb), 0.82);
+  font-weight: 900;
+}
+.git-pull-output-details pre {
+  max-height: 18rem;
+  margin: 0;
+  overflow: auto;
+  padding: 0.62rem;
+  border-top: 1px solid rgba(180, 190, 254, 0.12);
+  color: rgba(var(--ctp-subtext-rgb), 0.84);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
 }
 .git-changes-chip {
   min-width: 0;

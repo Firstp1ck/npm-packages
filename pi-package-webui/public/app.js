@@ -299,7 +299,7 @@ let foregroundReconcileTimer = null;
 let eventSource = null;
 let activeDialog = null;
 let activeGitPrDialogResolve = null;
-let gitChangesState = { loading: false, pulling: false, error: "", message: "", data: null, tabId: null };
+let gitChangesState = { loading: false, pulling: false, error: "", message: "", pullResult: null, data: null, tabId: null };
 let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
@@ -502,6 +502,7 @@ const WORKFLOW_WIDGET_PAYLOAD_PREFIX = "WORKFLOW_WEBUI_PAYLOAD ";
 const WORKFLOW_SUBPROCESS_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.subprocess";
 const WORKFLOW_SUBPROCESS_PAYLOAD_VERSION = 1;
 const GIT_CHANGES_RENDER_ROW_LIMIT = 4000;
+const GIT_PULL_RESULT_FILE_LIMIT = 48;
 const LAST_USER_PROMPT_STORAGE_KEY = "pi-webui-last-user-prompts";
 const PROMPT_HISTORY_STORAGE_KEY = "pi-webui-prompt-history";
 const PROMPT_LIST_STORAGE_KEY = "pi-webui-prompt-lists";
@@ -7610,9 +7611,148 @@ function gitChangesGeneratedLabel(data) {
   return `Updated ${new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
 }
 
+function gitPullOutputLines(result = {}) {
+  return [result.stdout, result.stderr]
+    .map((value) => stripAnsi(value || "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim());
+}
+
+function parseGitPullSummaryLine(line) {
+  const text = String(line || "").trim();
+  if (!/\bfiles? changed\b|\binsertions?\(\+\)|\bdeletions?\(-\)/.test(text)) return null;
+  const numberFrom = (regex) => {
+    const match = text.match(regex);
+    return match ? Number.parseInt(String(match[1] || "0").replace(/,/g, ""), 10) || 0 : 0;
+  };
+  return {
+    summaryLine: text,
+    totalFiles: numberFrom(/([\d,]+)\s+files? changed/),
+    insertions: numberFrom(/([\d,]+)\s+insertions?\(\+\)/),
+    deletions: numberFrom(/([\d,]+)\s+deletions?\(-\)/),
+  };
+}
+
+function parseGitPullFileStatLine(line) {
+  const match = String(line || "").match(/^(.+?)\s+\|\s+(.+)$/);
+  if (!match) return null;
+  const path = match[1].trim();
+  const stats = match[2].trim();
+  if (!path || !stats) return null;
+  const tone = stats.includes("-") && !stats.includes("+") ? "danger" : stats.includes("+") ? "success" : "muted";
+  return { path, stats, tone };
+}
+
+function normalizeGitPullResult(result = {}) {
+  const outputLines = gitPullOutputLines(result);
+  const changedFiles = [];
+  const modeLines = [];
+  let updateRange = "";
+  let strategy = "";
+  let summary = null;
+  let alreadyUpToDate = false;
+
+  for (const line of outputLines) {
+    const text = line.trim();
+    const rangeMatch = text.match(/^Updating\s+([0-9a-f]+)\.\.([0-9a-f]+)/i);
+    if (!updateRange && rangeMatch) updateRange = `${rangeMatch[1]}…${rangeMatch[2]}`;
+    if (!strategy && (/^Fast-forward$/i.test(text) || /^Merge made by\b/i.test(text))) strategy = text;
+    if (/^Already up to date\.?$/i.test(text)) {
+      alreadyUpToDate = true;
+      strategy = text.replace(/\.?$/, ".");
+    }
+    const summaryLine = parseGitPullSummaryLine(text);
+    if (summaryLine) summary = summaryLine;
+    const stat = parseGitPullFileStatLine(text);
+    if (stat) changedFiles.push(stat);
+    if (/^(create|delete) mode\s+|^(rename|copy) (from|to)\s+/i.test(text)) modeLines.push(text);
+  }
+
+  return {
+    command: result.command || "git pull --ff-only",
+    outputLines,
+    changedFiles,
+    modeLines,
+    updateRange,
+    strategy,
+    alreadyUpToDate,
+    summaryLine: summary?.summaryLine || "",
+    totalFiles: summary?.totalFiles || changedFiles.length || 0,
+    insertions: summary?.insertions || 0,
+    deletions: summary?.deletions || 0,
+  };
+}
+
+function gitPullResultStatus(result) {
+  if (!result) return "";
+  if (result.alreadyUpToDate) return "Already up to date.";
+  const totalFiles = Number(result.totalFiles || 0) || 0;
+  const insertions = Number(result.insertions || 0) || 0;
+  const deletions = Number(result.deletions || 0) || 0;
+  if (totalFiles > 0) {
+    const parts = [`${totalFiles.toLocaleString()} file${totalFiles === 1 ? "" : "s"} changed`];
+    if (insertions > 0) parts.push(`+${insertions.toLocaleString()}`);
+    if (deletions > 0) parts.push(`−${deletions.toLocaleString()}`);
+    return `Pulled remote changes: ${parts.join(" · ")}.`;
+  }
+  if (result.summaryLine) return `Pulled remote changes: ${result.summaryLine}.`;
+  if (result.strategy) return `Pulled remote changes (${result.strategy}).`;
+  return "Pulled remote changes successfully.";
+}
+
+function renderGitPullResultPanel(result) {
+  if (!result) return null;
+  const panel = make("section", "git-pull-result-panel");
+  const header = make("div", "git-pull-result-header");
+  const copy = make("div", "git-pull-result-copy");
+  copy.append(
+    make("span", "git-pull-result-kicker", "Pull result"),
+    make("strong", undefined, gitPullResultStatus(result)),
+    make("span", "git-pull-result-meta", [result.updateRange, result.strategy, result.command].filter(Boolean).join(" · ")),
+  );
+  header.append(copy);
+  panel.append(header);
+
+  const metrics = make("div", "git-pull-result-metrics");
+  metrics.append(
+    gitChangesChip("changed", result.totalFiles || result.changedFiles.length || 0, (result.totalFiles || result.changedFiles.length) ? "warning" : "muted"),
+    gitChangesChip("insertions", result.insertions > 0 ? `+${result.insertions.toLocaleString()}` : 0, result.insertions > 0 ? "success" : "muted"),
+    gitChangesChip("deletions", result.deletions > 0 ? `−${result.deletions.toLocaleString()}` : 0, result.deletions > 0 ? "danger" : "muted"),
+    gitChangesChip("mode ops", result.modeLines.length || 0, result.modeLines.length ? "warning" : "muted"),
+  );
+  panel.append(metrics);
+
+  if (result.changedFiles.length) {
+    const list = make("div", "git-pull-file-list");
+    list.append(make("span", "git-pull-file-list-label", `${result.changedFiles.length} pulled file${result.changedFiles.length === 1 ? "" : "s"}`));
+    for (const file of result.changedFiles.slice(0, GIT_PULL_RESULT_FILE_LIMIT)) {
+      const row = make("div", `git-pull-file ${file.tone || ""}`.trim());
+      row.append(make("span", "git-pull-file-path", file.path), make("span", "git-pull-file-stats", file.stats));
+      list.append(row);
+    }
+    const remaining = result.changedFiles.length - GIT_PULL_RESULT_FILE_LIMIT;
+    if (remaining > 0) list.append(make("div", "git-pull-result-more", `${remaining} more file${remaining === 1 ? "" : "s"}; expand command output for the full git stat.`));
+    panel.append(list);
+  }
+
+  if (result.modeLines.length) {
+    const details = make("details", "git-pull-output-details git-pull-mode-details");
+    details.append(make("summary", undefined, `Mode changes (${result.modeLines.length})`), make("pre", undefined, result.modeLines.join("\n")));
+    panel.append(details);
+  }
+
+  const details = make("details", "git-pull-output-details");
+  details.append(make("summary", undefined, "Command output"), make("pre", undefined, result.outputLines.join("\n") || "No command output."));
+  panel.append(details);
+  return panel;
+}
+
 function renderGitChangesDialog() {
   if (!elements.gitChangesDialog || !elements.gitChangesBody) return;
-  const { loading, pulling, error, message, data } = gitChangesState;
+  const { loading, pulling, error, message, pullResult, data } = gitChangesState;
   const behind = Number(data?.remote?.behind ?? data?.summary?.behind ?? 0) || 0;
   const canPull = behind > 0 && data?.remote?.canPull !== false;
   const remoteNotice = !error && data?.remote?.error ? `Incoming diff unavailable: ${data.remote.error}` : "";
@@ -7652,6 +7792,7 @@ function renderGitChangesDialog() {
     return;
   }
 
+  if (pullResult) body.append(renderGitPullResultPanel(pullResult));
   body.append(renderGitChangesOverview(data));
   const parsedSections = (Array.isArray(data.sections) ? data.sections : [])
     .map((section) => ({ section, files: parseGitUnifiedDiff(section.diff || "") }))
@@ -7675,13 +7816,13 @@ function renderGitChangesDialog() {
 async function loadGitChangesDialog(tabContext = activeTabContext()) {
   const requestSerial = ++gitChangesRequestSerial;
   gitChangesUntrackedContentRequests.clear();
-  gitChangesState = { ...gitChangesState, loading: true, error: "", message: "", tabId: tabContext.tabId || activeTabId };
+  gitChangesState = { ...gitChangesState, loading: true, error: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId };
   renderGitChangesDialog();
   try {
     const response = await api("/api/git-changes", { tabId: tabContext.tabId });
     if (requestSerial !== gitChangesRequestSerial) return;
     if (!response.ok) throw new Error(response.error || "Failed to load git changes");
-    gitChangesState = { loading: false, pulling: false, error: "", message: "", data: response.data || null, tabId: tabContext.tabId || activeTabId };
+    gitChangesState = { loading: false, pulling: false, error: "", message: "", pullResult: null, data: response.data || null, tabId: tabContext.tabId || activeTabId };
   } catch (error) {
     if (requestSerial !== gitChangesRequestSerial) return;
     gitChangesState = { ...gitChangesState, loading: false, error: error.message || String(error) };
@@ -7694,7 +7835,7 @@ function openGitChangesDialog() {
   hideFooterTooltip();
   const tabContext = activeTabContext();
   const tabId = tabContext.tabId || activeTabId;
-  gitChangesState = { loading: true, pulling: false, error: "", message: "", data: gitChangesState.tabId === tabId ? gitChangesState.data : null, tabId };
+  gitChangesState = { loading: true, pulling: false, error: "", message: "", pullResult: null, data: gitChangesState.tabId === tabId ? gitChangesState.data : null, tabId };
   renderGitChangesDialog();
   if (!elements.gitChangesDialog.open) elements.gitChangesDialog.showModal();
   loadGitChangesDialog(tabContext).catch((error) => addEvent(error.message || String(error), "error"));
@@ -7713,7 +7854,7 @@ async function pullGitChangesDialog() {
   if (!window.confirm(`Run git pull --ff-only in ${root}?`)) return;
 
   const requestSerial = ++gitChangesRequestSerial;
-  gitChangesState = { ...gitChangesState, pulling: true, loading: false, error: "", message: "", tabId: tabContext.tabId };
+  gitChangesState = { ...gitChangesState, pulling: true, loading: false, error: "", message: "", pullResult: null, tabId: tabContext.tabId };
   renderGitChangesDialog();
   try {
     const response = await api("/api/git-changes/pull", { method: "POST", body: {}, tabId: tabContext.tabId });
@@ -7722,12 +7863,13 @@ async function pullGitChangesDialog() {
       const detail = [response.error, response.data?.stderr || response.data?.stdout].filter(Boolean).join("\n").trim();
       throw new Error(detail || "Failed to pull git changes");
     }
-    const output = String(response.data?.stdout || response.data?.stderr || "").trim();
+    const pullResult = normalizeGitPullResult(response.data || {});
     gitChangesState = {
       loading: false,
       pulling: false,
       error: "",
-      message: output || "Pulled remote changes successfully.",
+      message: gitPullResultStatus(pullResult),
+      pullResult,
       data: response.data?.changes || gitChangesState.data,
       tabId: tabContext.tabId,
     };
