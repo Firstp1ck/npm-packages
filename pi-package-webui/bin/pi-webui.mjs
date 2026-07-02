@@ -81,7 +81,7 @@ const UPDATE_STATUS_CACHE_MS = 10 * 60 * 1000;
 const UPDATE_STATUS_TIMEOUT_MS = 10 * 1000;
 const PI_UPDATE_TIMEOUT_MS = 15 * 60 * 1000;
 const PI_UPDATE_OUTPUT_MAX_CHARS = 120_000;
-const UPDATE_PACKAGE_NAMES = [PI_CODING_AGENT_PACKAGE, WEBUI_PACKAGE];
+const CORE_UPDATE_PACKAGE_NAMES = [PI_CODING_AGENT_PACKAGE, WEBUI_PACKAGE];
 const PACKAGE_UPDATE_TIMEOUT_MS = 15 * 60 * 1000;
 const PACKAGE_UPDATE_OUTPUT_MAX_CHARS = 120_000;
 const CODEX_USAGE_TIMEOUT_MS = 15 * 1000;
@@ -261,6 +261,11 @@ const WEBUI_CONTROLLED_PACKAGES = new Set([
     .filter(([featureId]) => featureId !== NATURAL_CONVERSATION_FEATURE_ID)
     .map(([, packageName]) => packageName),
 ]);
+const UPDATE_PACKAGE_NAMES = [...new Set([
+  ...CORE_UPDATE_PACKAGE_NAMES,
+  ...WEBUI_CONTROLLED_PACKAGES,
+  ...OPTIONAL_FEATURE_PACKAGES.values(),
+])].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
 const PACKAGE_NAME_CACHE = new Map();
@@ -671,7 +676,9 @@ function makeHttpError(statusCode, message) {
 
 function sendError(res, statusCode, error) {
   const message = statusCode >= 500 ? sanitizeError(error) : formatCliError(error);
-  sendJson(res, statusCode, { ok: false, error: message });
+  const payload = { ok: false, error: message };
+  if (error?.optionalFeatureInstall) payload.optionalFeatureInstall = error.optionalFeatureInstall;
+  sendJson(res, statusCode, payload);
 }
 
 function formatBytes(bytes) {
@@ -1287,25 +1294,115 @@ async function optionalFeaturePackageStatuses() {
   return { features };
 }
 
+function optionalFeatureInstallOutputTail(result, maxLength = 4000) {
+  const text = stripAnsi([result?.stderr, result?.stdout].filter(Boolean).join("\n").trim());
+  if (text.length <= maxLength) return text;
+  return `…${text.slice(-Math.max(0, maxLength - 1))}`;
+}
+
+function optionalFeatureInstallFailureKind(result, message = "") {
+  const combined = `${message}\n${result?.error || ""}\n${result?.stderr || ""}\n${result?.stdout || ""}`;
+  if (result?.timedOut) return "timeout";
+  if (/\b(?:ENOENT|command not found|not recognized|spawn\s+\S+\s+ENOENT)\b/i.test(combined)) return "npm-not-found";
+  if (/\b(?:EACCES|EPERM|permission denied|access denied)\b/i.test(combined)) return "permission";
+  if (/\b(?:EAI_AGAIN|ENOTFOUND|ECONNRESET|ETIMEDOUT|network timeout|registry\.npmjs\.org|fetch failed)\b/i.test(combined)) return "network";
+  return "npm-exit";
+}
+
+function optionalFeatureInstallFailureHint(kind, { command, installRoot } = {}) {
+  switch (kind) {
+    case "install-root":
+      return `Set ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} to the Pi/Web UI npm package root, then retry.`;
+    case "npm-not-found":
+      return "npm could not be started. Install npm or set PI_WEBUI_NPM_BIN to an absolute npm-compatible executable path.";
+    case "permission":
+      return `The Web UI process cannot write to ${installRoot || "the selected npm prefix"}. Retry from the owning user or use ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} with a writable package root.`;
+    case "network":
+      return "npm could not reach the registry reliably. Check network/proxy/registry settings, then retry or run the copied command manually.";
+    case "timeout":
+      return "npm did not finish within 5 minutes. Check for a stuck package manager, lock contention, or slow network, then retry manually.";
+    case "status-check":
+      return "npm finished, but Web UI could not verify the package status. Reload the Web UI and recheck Optional features.";
+    default:
+      return command ? "Run the copied npm command manually on the Web UI host to see full package-manager diagnostics." : "Check the activity log and npm output, then retry.";
+  }
+}
+
+function makeOptionalFeatureInstallError(statusCode, message, details = {}) {
+  const error = makeHttpError(statusCode, message);
+  error.optionalFeatureInstall = {
+    kind: details.kind || "unknown",
+    featureId: details.featureId || "",
+    packageName: details.packageName || "",
+    installRoot: details.installRoot || "",
+    command: details.command || "",
+    exitCode: details.exitCode,
+    timedOut: details.timedOut === true,
+    message,
+    hint: details.hint || optionalFeatureInstallFailureHint(details.kind, details),
+    outputTail: details.outputTail || "",
+  };
+  return error;
+}
+
 async function installOptionalFeaturePackage(featureId) {
   const beforeStatus = await optionalFeaturePackageStatus(featureId);
   const packageName = beforeStatus.packageName;
 
-  const installRoot = await optionalDependencyInstallRoot();
+  let installRoot;
+  try {
+    installRoot = await optionalDependencyInstallRoot();
+  } catch (error) {
+    const message = formatCliError(error);
+    throw makeOptionalFeatureInstallError(error?.statusCode || 500, message, {
+      kind: "install-root",
+      featureId,
+      packageName,
+      hint: optionalFeatureInstallFailureHint("install-root"),
+    });
+  }
+
   const npmCommand = process.env.PI_WEBUI_NPM_BIN || "npm";
   const args = ["install", "--prefix", installRoot, packageName];
+  const command = formatCommandForDisplay(npmCommand, args);
   const result = await runCommand(npmCommand, args, {
     cwd: installRoot,
     timeoutMs: 5 * 60 * 1000,
     maxOutputLength: 80000,
   });
-  const command = formatCommandForDisplay(npmCommand, args);
   const ok = result.exitCode === 0 && !result.timedOut && !result.error;
   if (!ok) {
-    const details = [result.error, result.timedOut ? "timed out" : undefined, result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join("\n");
-    throw makeHttpError(500, `Optional feature install failed: ${command}${details ? `\n${details}` : ""}`);
+    const kind = optionalFeatureInstallFailureKind(result);
+    const message = result.timedOut
+      ? `Optional feature install timed out after 5 minutes: ${command}`
+      : result.error
+        ? `Optional feature install could not start: ${command}`
+        : `Optional feature install failed with exit code ${result.exitCode ?? "unknown"}: ${command}`;
+    throw makeOptionalFeatureInstallError(result.timedOut ? 504 : 500, message, {
+      kind,
+      featureId,
+      packageName,
+      installRoot,
+      command,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      outputTail: optionalFeatureInstallOutputTail(result),
+    });
   }
-  const afterStatus = await optionalFeaturePackageStatus(featureId);
+  let afterStatus;
+  try {
+    afterStatus = await optionalFeaturePackageStatus(featureId);
+  } catch (error) {
+    const message = `Optional feature install finished, but status verification failed: ${formatCliError(error)}`;
+    throw makeOptionalFeatureInstallError(error?.statusCode || 500, message, {
+      kind: "status-check",
+      featureId,
+      packageName,
+      installRoot,
+      command,
+      outputTail: optionalFeatureInstallOutputTail(result),
+    });
+  }
   const operation = beforeStatus.installed ? "Updated" : "Installed";
   return {
     featureId,
@@ -6217,7 +6314,7 @@ async function currentWebuiPackageUpdateTask() {
   const sourceCheckout = webuiDevServer || !String(packageRoot).split(path.sep).includes("node_modules");
   if (sourceCheckout) {
     const manifest = await readJsonFileIfExists(path.join(packageRoot, "package.json"));
-    const packages = Object.keys(manifest?.dependencies || {}).filter(isWebuiOrPiPackageName).sort();
+    const packages = declaredWebuiPiPackageNames(manifest);
     return npmPrefixUpdateTask("current Web UI checkout package dependencies", packageRoot, packages);
   }
 
@@ -6230,6 +6327,36 @@ async function agentPackageRootUpdateTask() {
   const installRoot = configuredAgentNpmRoot();
   const packages = await packagesPresentInInstallPrefix(installRoot);
   return npmPrefixUpdateTask("Pi agent npm package root", installRoot, packages);
+}
+
+async function optionalFeatureInstallRootUpdateTask() {
+  const configuredRoot = process.env[OPTIONAL_FEATURE_INSTALL_ROOT_ENV];
+  if (!configuredRoot) return null;
+  const installRoot = path.resolve(expandUserPath(configuredRoot));
+  const packages = await packagesPresentInInstallPrefix(installRoot);
+  return npmPrefixUpdateTask("configured optional-feature npm root", installRoot, packages);
+}
+
+function activeProjectPackageRoots() {
+  const roots = new Set();
+  const add = (cwd) => {
+    if (!cwd) return;
+    roots.add(path.join(path.resolve(cwd), ".pi", "npm"));
+  };
+  add(options.cwd);
+  for (const tab of tabs.values()) add(tab.cwd);
+  for (const tab of closedRestorableTabs) add(tab.cwd);
+  return [...roots].sort();
+}
+
+async function projectPackageRootUpdateTasks() {
+  const tasks = [];
+  for (const installRoot of activeProjectPackageRoots()) {
+    const packages = await packagesPresentInInstallPrefix(installRoot);
+    const task = npmPrefixUpdateTask(`project Pi package root (${displayPath(path.dirname(installRoot))})`, installRoot, packages);
+    if (task) tasks.push(task);
+  }
+  return tasks;
 }
 
 async function npmGlobalNodeModulesRoot() {
@@ -6296,8 +6423,33 @@ function uniqueUpdateTasks(tasks) {
 }
 
 async function resolveUpdateTasks({ all = false } = {}) {
+  const piTask = await resolvePiUpdateCommand({ all });
+  if (!all) return uniqueUpdateTasks([piTask]);
+
+  const [
+    currentWebuiTask,
+    agentTask,
+    optionalFeatureTask,
+    projectTasks,
+    globalNpmTask,
+    globalBunTask,
+  ] = await Promise.all([
+    currentWebuiPackageUpdateTask(),
+    agentPackageRootUpdateTask(),
+    optionalFeatureInstallRootUpdateTask(),
+    projectPackageRootUpdateTasks(),
+    npmGlobalPackageRootUpdateTask(),
+    bunGlobalPackageRootUpdateTask(),
+  ]);
+
   return uniqueUpdateTasks([
-    await resolvePiUpdateCommand({ all }),
+    piTask,
+    currentWebuiTask,
+    agentTask,
+    optionalFeatureTask,
+    ...projectTasks,
+    globalNpmTask,
+    globalBunTask,
   ]);
 }
 
