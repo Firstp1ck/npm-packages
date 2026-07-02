@@ -5108,8 +5108,72 @@ summary { cursor: pointer; color: var(--warning); }
   white-space: nowrap;
 }
 .composer-conversation-mode-chip[hidden],
-.composer-conversation-end-button[hidden] {
+.composer-conversation-end-button[hidden],
+.composer-conversation-voice-menu[hidden] {
   display: none !important;
+}
+.composer-conversation-voice-button {
+  width: clamp(5.6rem, 14vw, 8.8rem);
+  min-width: 5.6rem;
+  max-width: 8.8rem;
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.44);
+  background:
+    linear-gradient(120deg, rgba(148, 226, 213, 0.14), rgba(166, 227, 161, 0.08)),
+    var(--ctp-crust);
+}
+.composer-conversation-voice-button > span {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-conversation-voice-button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.composer-conversation-voice-menu-panel {
+  width: min(22rem, calc(100vw - 2rem));
+  min-width: min(16rem, calc(100vw - 2rem));
+}
+.composer-conversation-voice-item {
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.30);
+  background:
+    linear-gradient(120deg, rgba(148, 226, 213, 0.12), rgba(166, 227, 161, 0.08)),
+    var(--ctp-crust);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: normal;
+}
+.composer-conversation-voice-item.active {
+  border-color: rgba(148, 226, 213, 0.78);
+  box-shadow: 0 0 0.8rem rgba(148, 226, 213, 0.28);
+}
+.composer-conversation-voice-item.pending,
+.composer-conversation-voice-notice {
+  color: var(--ctp-green);
+  border-color: rgba(166, 227, 161, 0.50);
+  cursor: progress;
+  white-space: normal;
+}
+.composer-conversation-voice-notice.error {
+  color: var(--ctp-red);
+  border-color: rgba(243, 139, 168, 0.55);
+  cursor: default;
+}
+.composer-conversation-voice-item:hover,
+.composer-conversation-voice-item:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-green));
 }
 .composer-conversation-mode-chip:hover,
 .composer-conversation-mode-chip:focus-visible {
@@ -5652,7 +5716,7 @@ button.composer-skill-tag:focus-visible {
   display: flex;
 }
 .composer-options-menu-panel {
-  max-height: min(calc(var(--visual-viewport-height, 100dvh) - 2rem), 44rem);
+  max-height: min(calc(var(--visual-viewport-height, 100dvh) - 2rem), 48rem);
 }
 .composer-publish-menu.open .composer-publish-button {
   border-color: rgba(250, 179, 135, 0.58);
@@ -8982,8 +9046,21 @@ button.workspace-dashboard-chip {
   max-height: inherit;
   min-height: 0;
 }
-.edit-retry-dialog form {
+.edit-retry-dialog {
   width: min(44rem, calc(100vw - 2rem));
+  max-height: calc(var(--visual-viewport-height, 100dvh) - 2rem);
+  overflow: hidden;
+}
+.edit-retry-dialog form {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  width: 100%;
+  max-height: calc(var(--visual-viewport-height, 100dvh) - 4rem);
+  min-height: 0;
+}
+.edit-retry-dialog h2,
+.edit-retry-dialog p {
+  min-width: 0;
 }
 .command-palette-header {
   display: flex;
@@ -9133,8 +9210,15 @@ button.workspace-dashboard-chip {
 }
 .edit-retry-text {
   width: 100%;
-  min-height: 12rem;
+  min-width: 0;
+  min-height: min(12rem, 38vh);
+  max-height: min(32rem, 48vh);
   margin-top: 0.65rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .edit-retry-status.error { color: var(--ctp-red); }
 .edit-retry-status.info { color: var(--ctp-subtext); }
@@ -9271,4 +9355,74 @@ button.workspace-dashboard-chip {
   .message.has-edit-retry-action:not(.toolResult):not(.bashExecution):not(.compactionSummary) > .message-body {
     padding-right: 5rem;
   }
+}
+
+/* Natural Conversation browser voice loop (Phase 3): per-state chip accents
+   and the remote microphone consent banner. */
+.composer-conversation-mode-chip[data-voice-state="speaking"] {
+  color: var(--ctp-green);
+  border-color: rgba(166, 227, 161, 0.6);
+  box-shadow: 0 0 0.55rem rgba(166, 227, 161, 0.35);
+}
+.composer-conversation-mode-chip[data-voice-state="transcribing"],
+.composer-conversation-mode-chip[data-voice-state="answering"] {
+  color: var(--ctp-blue);
+  border-color: rgba(137, 180, 250, 0.55);
+}
+.composer-conversation-mode-chip[data-voice-state="interrupting"],
+.composer-conversation-mode-chip[data-voice-state="silence"] {
+  color: var(--ctp-yellow);
+  border-color: rgba(249, 226, 175, 0.6);
+}
+.composer-conversation-mode-chip[data-voice-state="paused"],
+.composer-conversation-mode-chip[data-voice-state="error"] {
+  color: var(--ctp-red);
+  border-color: rgba(243, 139, 168, 0.62);
+  box-shadow: 0 0 0.55rem rgba(243, 139, 168, 0.3);
+}
+
+.composer-remote-mic-consent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0.5rem 0.75rem 0.65rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(250, 179, 135, 0.55);
+  border-radius: 0.65rem;
+  background: linear-gradient(135deg, rgba(250, 179, 135, 0.14), rgba(243, 139, 168, 0.1)), var(--ctp-crust);
+  box-shadow: 0 0 0.65rem rgba(250, 179, 135, 0.22);
+}
+.composer-remote-mic-consent[hidden] {
+  display: none !important;
+}
+.composer-remote-mic-consent-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+  color: var(--ctp-peach);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.composer-remote-mic-consent-button {
+  flex: 0 0 auto;
+  padding: 0.42rem 0.8rem;
+  border: 1px solid rgba(250, 179, 135, 0.6);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(250, 179, 135, 0.24), rgba(243, 139, 168, 0.18)), var(--ctp-crust);
+  color: var(--ctp-peach);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.composer-remote-mic-consent-button:hover:not(:disabled),
+.composer-remote-mic-consent-button:focus-visible:not(:disabled) {
+  background: linear-gradient(135deg, var(--ctp-peach), var(--ctp-maroon));
+  color: #11111b;
+}
+.composer-remote-mic-consent-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }

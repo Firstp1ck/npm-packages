@@ -49,7 +49,7 @@
     "pi-webui": "./bin/pi-webui.mjs"
   },
   "scripts": {
-    "check": "node --check public/app.js && node --check bin/pi-webui.mjs && node --check webui-rpc-helper.mjs && node --check lib/trust-boundaries.mjs && node --check lib/native-command-adapter.mjs && node --check lib/session-actions.mjs && node --check lib/auth-actions.mjs && node --check lib/temp-artifacts.mjs && node tests/run-all.mjs",
+    "check": "node --check public/app.js && node --check public/voice-conversation.mjs && node --check bin/pi-webui.mjs && node --check webui-rpc-helper.mjs && node --check lib/trust-boundaries.mjs && node --check lib/native-command-adapter.mjs && node --check lib/session-actions.mjs && node --check lib/auth-actions.mjs && node --check lib/temp-artifacts.mjs && node tests/run-all.mjs",
     "test": "node tests/run-all.mjs"
   },
   "dependencies": {

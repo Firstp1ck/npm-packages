@@ -118,6 +118,47 @@ test("user bash is blocked while enabled", () => {
   assert.match(blocked?.result.output ?? "", /blocks/);
 });
 
+test("silence events arm only on questions and fire exactly once", () => {
+  const pi = new MockPi();
+  const controller = createConversationController(pi);
+  controller.enable(mockCtx(), { silenceTimeoutMs: 8000 });
+
+  // A statement never arms the timer.
+  assert.equal(controller.handleConversationSilence({ phase: "arm", assistantText: "All done." }).action, "ignored");
+  assert.equal(controller.handleConversationSilence({ phase: "fire" }).action, "ignored");
+
+  // A question arms it; firing produces the exact WebUI-parity wording once.
+  const armed = controller.handleConversationSilence({ phase: "arm", assistantText: "Should I continue?" });
+  assert.equal(armed.action, "armed");
+  assert.equal(armed.timeoutMs, 8000);
+  const fired = controller.handleConversationSilence({ phase: "fire" });
+  assert.equal(fired.action, "send-silence-event");
+  assert.equal(
+    fired.message,
+    "[Conversation mode: the user stayed silent for 8s after your question. Treat the silence as possible confusion, discomfort, missing context, or an unneeded question; reframe, explain why you asked, or continue without pressuring the user. Do not invent intent from the silence.]",
+  );
+  assert.equal(controller.getState().uiState, "silence");
+  assert.equal(controller.handleConversationSilence({ phase: "fire" }).action, "ignored", "one event per question");
+});
+
+test("silence events can be cancelled and respect disabled mode", () => {
+  const pi = new MockPi();
+  const controller = createConversationController(pi);
+
+  // Disabled mode never arms.
+  assert.equal(controller.handleConversationSilence({ phase: "arm", assistantText: "Ready?" }).action, "ignored");
+
+  controller.enable(mockCtx());
+  controller.handleConversationSilence({ phase: "arm", assistantText: "Ready?" });
+  assert.equal(controller.handleConversationSilence({ phase: "cancel" }).action, "cancelled");
+  assert.equal(controller.handleConversationSilence({ phase: "fire" }).action, "ignored");
+
+  // silenceEnabled=false blocks arming entirely.
+  controller.disable(mockCtx());
+  controller.enable(mockCtx(), { silenceEnabled: false });
+  assert.equal(controller.handleConversationSilence({ phase: "arm", assistantText: "Ready?" }).action, "ignored");
+});
+
 test("extension package manifest and native commands are wired", async () => {
   const [pkgRaw, source] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -127,7 +168,24 @@ test("extension package manifest and native commands are wired", async () => {
 
   assert.deepEqual(pkg.pi.extensions, ["./extensions/natural-conversation.ts"]);
   assert.match(source, /COMMAND_NAMES = \["talk", "voice", "conversation"\]/);
+  assert.match(source, /@firstpick\/pi-package-natural-conversation\/controller/);
+  assert.match(source, /@firstpick\/pi-package-natural-conversation\/native-audio-loop/);
+  assert.match(source, /@firstpick\/pi-package-natural-conversation\/setup-wizard/);
+  assert.doesNotMatch(source, /\.\.\/lib\/conversation-controller\.mjs/);
   assert.match(source, /pi\.on\("tool_call"/);
   assert.match(source, /pi\.on\("before_agent_start"/);
   assert.match(source, /pi\.on\("user_bash"/);
+  assert.match(source, /pi\.on\("agent_start"/);
+  assert.match(source, /pi\.on\("agent_end"/);
+  assert.match(source, /pi\.on\("tool_execution_start"/);
+
+  // Safety-critical teardown ordering: the companion must die before
+  // tools/thinking are restored, in both /talk off and session_shutdown.
+  assert.match(source, /await loop\.stop\(ctx, \{ notify: false \}\);\n\s*controller\.disable\(ctx\);/);
+  assert.match(source, /await loop\.stop\(ctx, \{ notify: false \}\);\n\s*controller\.shutdown\(ctx\);/);
+
+  // New exports must resolve for the extension imports.
+  assert.equal(pkg.exports["./native-audio-loop"], "./lib/native-audio-loop.mjs");
+  assert.equal(pkg.exports["./setup-wizard"], "./lib/setup-wizard.mjs");
+  assert.equal(pkg.exports["./voice-config"], "./lib/voice-config.mjs");
 });
