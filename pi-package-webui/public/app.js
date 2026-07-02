@@ -136,6 +136,7 @@ const elements = {
   themeSearchInput: $("#themeSearchInput"),
   themeSearchResults: $("#themeSearchResults"),
   themeSelect: $("#themeSelect"),
+  themeSchemeToggle: $("#themeSchemeToggle"),
   backgroundInput: $("#backgroundInput"),
   backgroundChooseButton: $("#backgroundChooseButton"),
   backgroundClearButton: $("#backgroundClearButton"),
@@ -520,6 +521,17 @@ const LONG_INPUT_ATTACHMENT_MIME_TYPE = "text/plain";
 const INLINE_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const BACKGROUND_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const DEFAULT_THEME_NAME = "catppuccin-mocha";
+// Theme scheme mode (Light / Dark / Auto). The picker chooses the theme for the
+// active scheme; "auto" follows the OS prefers-color-scheme and swaps between the
+// remembered light and dark picks. Existing users keep their theme (see migration
+// in initializeThemes), so auto is strictly opt-in.
+const THEME_MODE_STORAGE_KEY = "pi-webui-theme-mode";
+const THEME_LIGHT_STORAGE_KEY = "pi-webui-theme-light";
+const THEME_DARK_STORAGE_KEY = "pi-webui-theme-dark";
+const THEME_LIGHT_DEFAULT = "catppuccin-latte";
+const THEME_DARK_DEFAULT = "catppuccin-mocha";
+const THEME_SCHEME_MODES = new Set(["light", "dark", "auto"]);
+let themeSchemeMode = "light"; // "light" | "dark" | "auto"; finalized in initializeThemes
 const TERMINAL_TABS_LAYOUTS = new Set(["top", "left"]);
 const TERMINAL_TABS_LAYOUT_LABELS = { top: "Top bar", left: "Left sidebar" };
 const BUSY_PROMPT_BEHAVIOR_VALUES = new Set(["followUp", "steer"]);
@@ -566,6 +578,7 @@ const AGENT_DONE_NOTIFICATION_TAG_PREFIX = "pi-webui-agent-done";
 const BLOCKED_TAB_NOTIFICATION_ICON = "/icon-192.png";
 const mobileViewMedia = window.matchMedia?.(MOBILE_VIEW_QUERY) || null;
 const sidePanelOverlayMedia = window.matchMedia?.(SIDE_PANEL_OVERLAY_QUERY) || mobileViewMedia;
+const colorSchemeMedia = window.matchMedia?.("(prefers-color-scheme: dark)") || null;
 const statusEntries = new Map();
 const widgets = new Map();
 const widgetsByTab = new Map();
@@ -4003,6 +4016,42 @@ function storeThemeName(name) {
   }
 }
 
+function storedThemeMode() {
+  try {
+    const raw = localStorage.getItem(THEME_MODE_STORAGE_KEY);
+    return THEME_SCHEME_MODES.has(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeThemeMode(mode) {
+  try {
+    localStorage.setItem(THEME_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage failures; the mode still applies for this page load.
+  }
+}
+
+function storedSchemeTheme(scheme) {
+  const key = scheme === "dark" ? THEME_DARK_STORAGE_KEY : THEME_LIGHT_STORAGE_KEY;
+  const fallback = scheme === "dark" ? THEME_DARK_DEFAULT : THEME_LIGHT_DEFAULT;
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeSchemeTheme(scheme, name) {
+  const key = scheme === "dark" ? THEME_DARK_STORAGE_KEY : THEME_LIGHT_STORAGE_KEY;
+  try {
+    localStorage.setItem(key, name);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function loadDisabledOptionalFeatures() {
   try {
     const parsed = JSON.parse(localStorage.getItem(OPTIONAL_FEATURES_STORAGE_KEY) || "[]");
@@ -4453,6 +4502,89 @@ function applyTheme(theme, { persist = false, announce = false } = {}) {
   if (announce) addEvent(`theme changed to ${theme.label || displayThemeName(theme.name) || theme.name}`);
 }
 
+function osPrefersDark() {
+  return !!(colorSchemeMedia && colorSchemeMedia.matches);
+}
+
+function effectiveScheme() {
+  if (themeSchemeMode === "auto") return osPrefersDark() ? "dark" : "light";
+  return themeSchemeMode === "dark" ? "dark" : "light";
+}
+
+function themeIsLight(theme) {
+  if (!theme) return false;
+  return relativeLuminance(themeExportColor(theme, "pageBg", "#11111b")) > 0.62;
+}
+
+function effectiveThemeName() {
+  const scheme = effectiveScheme();
+  const name = storedSchemeTheme(scheme);
+  if (availableThemes.some((theme) => theme.name === name)) return name;
+  return scheme === "dark" ? THEME_DARK_DEFAULT : THEME_LIGHT_DEFAULT;
+}
+
+function renderThemeSchemeToggle() {
+  const group = elements.themeSchemeToggle;
+  if (!group) return;
+  for (const button of group.querySelectorAll("[data-scheme-mode]")) {
+    const active = button.dataset.schemeMode === themeSchemeMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+// Apply the theme for the current scheme (mode + OS), keeping the legacy single-theme
+// key in sync so other readers and reloads stay correct.
+async function applySchemeTheme(options = {}) {
+  const name = effectiveThemeName();
+  await setThemeByName(name, { ...options, persist: false });
+  storeThemeName(name);
+  renderThemeSchemeToggle();
+}
+
+// A theme picked from the selector/search is assigned to the active scheme's slot.
+async function chooseTheme(name, options = {}) {
+  storeSchemeTheme(effectiveScheme(), name);
+  storeThemeName(name);
+  await setThemeByName(name, { ...options, persist: false });
+  renderThemeSchemeToggle();
+}
+
+function handleOsSchemeChange() {
+  if (themeSchemeMode !== "auto") return;
+  applySchemeTheme({ announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
+}
+
+function updateColorSchemeListener() {
+  if (!colorSchemeMedia?.addEventListener) return;
+  colorSchemeMedia.removeEventListener("change", handleOsSchemeChange);
+  if (themeSchemeMode === "auto") colorSchemeMedia.addEventListener("change", handleOsSchemeChange);
+}
+
+async function setThemeSchemeMode(mode, { announce = false } = {}) {
+  if (!THEME_SCHEME_MODES.has(mode)) return;
+  if (themeSchemeMode === mode) {
+    renderThemeSchemeToggle();
+    return;
+  }
+  themeSchemeMode = mode;
+  storeThemeMode(mode);
+  updateColorSchemeListener();
+  await applySchemeTheme({ announce });
+}
+
+// First run with the scheme switch: migrate a pre-existing single theme into the slot
+// matching its own light/dark scheme and default the mode to that scheme, so existing
+// users see no change and auto stays opt-in.
+function seedThemeSchemeFromStoredTheme() {
+  const stored = storedThemeName();
+  const storedTheme = availableThemes.find((theme) => theme.name === stored);
+  const scheme = themeIsLight(storedTheme) ? "light" : "dark";
+  if (storedTheme) storeSchemeTheme(scheme, stored);
+  storeThemeMode(scheme);
+  return scheme;
+}
+
 function themeDisplayLabel(theme) {
   return theme?.label || displayThemeName(theme?.name) || theme?.name || "";
 }
@@ -4480,7 +4612,7 @@ function renderThemeSearchResults(themes = []) {
     button.append(make("span", "model-search-result-main", themeDisplayLabel(theme)));
     button.addEventListener("click", () => {
       if (elements.themeSelect) elements.themeSelect.value = theme.name;
-      setThemeByName(theme.name, { persist: true, announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
+      chooseTheme(theme.name, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
     });
     elements.themeSearchResults.append(button);
   }
@@ -4582,11 +4714,12 @@ async function initializeThemes() {
   availableThemes = Array.isArray(response.data?.themes) ? response.data.themes : [];
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   renderOptionalFeatureControls();
-  const stored = storedThemeName();
-  currentThemeName = availableThemes.some((theme) => theme.name === stored) ? stored : DEFAULT_THEME_NAME;
+  themeSchemeMode = storedThemeMode() ?? seedThemeSchemeFromStoredTheme();
   renderThemeSelect();
-  await setThemeByName(currentThemeName, { persist: false, includeLegacy: true });
-  if (isOptionalFeatureEnabled("themeBundle") && !availableThemes.some((theme) => theme.name === currentThemeName) && availableThemes[0]) await setThemeByName(availableThemes[0].name, { persist: false });
+  renderThemeSchemeToggle();
+  updateColorSchemeListener();
+  await applySchemeTheme({ includeLegacy: true });
+  if (isOptionalFeatureEnabled("themeBundle") && !availableThemes.some((theme) => theme.name === currentThemeName) && availableThemes[0]) await chooseTheme(availableThemes[0].name, {});
   if (!availableThemes.length) addEvent("theme bundle unavailable; using built-in default theme", "warn");
 }
 
@@ -17849,7 +17982,7 @@ function openNativeThemeSelector() {
       activeId: currentThemeName,
       onSelect: async (item) => {
         try {
-          await setThemeByName(item.theme.name, { persist: true, announce: true });
+          await chooseTheme(item.theme.name, { announce: true });
           addTransientMessage({ role: "native", title: "/theme", content: `Theme set to ${item.label}.`, level: "info" });
           closeNativeCommandDialog();
         } catch (error) {
@@ -21838,7 +21971,7 @@ elements.themeSearchInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
     const [theme] = populateThemeSelect(availableThemes, elements.themeSearchInput.value);
-    if (theme) setThemeByName(theme.name, { persist: true, announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
+    if (theme) chooseTheme(theme.name, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
   } else if (event.key === "Escape") {
     elements.themeSearchInput.value = "";
     populateThemeSelect(availableThemes, "");
@@ -21846,7 +21979,12 @@ elements.themeSearchInput?.addEventListener("keydown", (event) => {
   }
 });
 elements.themeSelect.addEventListener("change", () => {
-  setThemeByName(elements.themeSelect.value, { persist: true, announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
+  chooseTheme(elements.themeSelect.value, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.themeSchemeToggle?.querySelectorAll("[data-scheme-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    setThemeSchemeMode(button.dataset.schemeMode, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
+  });
 });
 if (elements.backgroundChooseButton && elements.backgroundInput) {
   elements.backgroundChooseButton.addEventListener("click", () => elements.backgroundInput.click());
