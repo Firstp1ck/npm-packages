@@ -5930,6 +5930,11 @@ button.composer-skill-tag:focus-visible {
   display: none !important;
   opacity: 0 !important;
 }
+.composer-publish-menu-panel .composer-publish-menu-item[data-tooltip]::before,
+.composer-publish-menu-panel .composer-publish-menu-item[data-tooltip]::after {
+  display: none !important;
+  opacity: 0 !important;
+}
 
 .details {
   display: grid;

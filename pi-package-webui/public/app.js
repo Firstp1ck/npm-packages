@@ -4184,8 +4184,7 @@ function renderConversationModeControls() {
     const tooltip = commandName
       ? `${active ? "End" : "Start"} Natural Conversation Mode for this Pi tab via /${commandName}. Safety is owned by @firstpick/pi-package-natural-conversation.`
       : conversationModeUnavailableText();
-    elements.optionsConversationModeButton.title = tooltip;
-    elements.optionsConversationModeButton.setAttribute("data-tooltip", tooltip);
+    applyStyledTooltip(elements.optionsConversationModeButton, tooltip, { ariaLabel: false, align: "end" });
     elements.optionsConversationModeButton.setAttribute("aria-pressed", active ? "true" : "false");
   }
 
