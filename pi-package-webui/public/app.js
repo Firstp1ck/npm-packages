@@ -70,6 +70,13 @@ const elements = {
   followUpButton: $("#followUpButton"),
   abortButton: $("#abortButton"),
   conversationModeEndButton: $("#conversationModeEndButton"),
+  conversationVoiceMenu: $("#conversationVoiceMenu"),
+  conversationVoiceButton: $("#conversationVoiceButton"),
+  conversationVoiceButtonLabel: $("#conversationVoiceButtonLabel"),
+  conversationVoiceMenuPanel: $("#conversationVoiceMenuPanel"),
+  remoteMicStreamingConsent: $("#remoteMicStreamingConsent"),
+  remoteMicStreamingConsentText: $("#remoteMicStreamingConsentText"),
+  remoteMicStreamingConsentButton: $("#remoteMicStreamingConsentButton"),
   newSessionButton: $("#newSessionButton"),
   compactButton: $("#compactButton"),
   gitWorkflowButton: $("#gitWorkflowButton"),
@@ -1029,6 +1036,7 @@ function isInteractiveDropdownOpen() {
       || nativeCommandMenuOpen
       || appRunnerMenuOpen
       || optionsMenuOpen
+      || conversationVoiceMenuOpen
       || busyPromptBehaviorMenuOpen
       || newTabMenuOpen
       || isFooterPickerOpen()
@@ -1120,6 +1128,7 @@ function mobileDropdownConfigs() {
     { menu: elements.nativeCommandMenuButton?.parentElement, button: elements.nativeCommandMenuButton, panel: elements.nativeCommandMenuButton?.parentElement?.querySelector(".composer-publish-menu-panel") },
     { menu: elements.optionsMenuButton?.parentElement, button: elements.optionsMenuButton, panel: elements.optionsMenu },
     { menu: elements.appRunnerMenu, button: elements.appRunnerMenuButton, panel: elements.appRunnerMenuPanel },
+    { menu: elements.conversationVoiceMenu, button: elements.conversationVoiceButton, panel: elements.conversationVoiceMenuPanel },
   ];
 }
 
@@ -4062,6 +4071,7 @@ function defaultConversationModeState(patch = {}) {
     enabled: false,
     uiState: "off",
     statusText: "",
+    partialTranscript: "",
     allowedTools: ["read", "grep", "find", "ls"],
     provider: "browser-shell",
     startedAt: null,
@@ -4081,16 +4091,25 @@ function normalizeConversationModeState(value = {}) {
     enabled,
     uiState: enabled ? cleanStatusText(source.uiState || "listening").toLowerCase() || "listening" : "off",
     statusText: cleanStatusText(source.statusText || ""),
+    partialTranscript: cleanStatusText(source.partialTranscript || ""),
     allowedTools: Array.isArray(source.allowedTools) && source.allowedTools.length ? source.allowedTools.map((name) => String(name)).filter(Boolean) : ["read", "grep", "find", "ls"],
     packageInstalled: source.packageInstalled === true,
     loadedCommands: Array.isArray(source.loadedCommands) ? source.loadedCommands.map((name) => String(name)).filter(Boolean) : [],
   });
 }
 
-function updateConversationModeForTab(tabId = activeTabId, mode = {}, { render = true } = {}) {
+function updateConversationModeForTab(tabId = activeTabId, mode = {}, { render = true, voiceLoop = false } = {}) {
   if (!tabId) return normalizeConversationModeState(mode);
   const previous = conversationModeByTab.get(tabId) || tabs.find((tab) => tab.id === tabId)?.conversationMode || {};
-  const next = normalizeConversationModeState({ ...previous, ...mode });
+  let patch = mode && typeof mode === "object" ? mode : {};
+  if (!voiceLoop && patch.enabled !== false && voiceConversationActiveFor(tabId)) {
+    // While the browser voice loop runs, it owns uiState/statusText; server
+    // snapshots would otherwise reset "speaking"/"transcribing" to "listening".
+    patch = { ...patch };
+    delete patch.uiState;
+    delete patch.statusText;
+  }
+  const next = normalizeConversationModeState({ ...previous, ...patch });
   conversationModeByTab.set(tabId, next);
   if (tabId === activeTabId && render) renderConversationModeControls();
   return next;
@@ -4112,8 +4131,41 @@ function conversationModeButtonLabel(mode = activeConversationMode()) {
   return mode.enabled ? "End Conversation" : "Start Conversation";
 }
 
+function conversationModePartialPreview(text = "") {
+  const normalized = cleanStatusText(text || "");
+  if (!normalized) return "";
+  return normalized.length > 42 ? `${normalized.slice(0, 39)}…` : normalized;
+}
+
+// Declared before renderConversationModeControls ever runs (it is called
+// during initial render passes) so the voice-menu block never hits a TDZ.
+let conversationVoiceSwitching = false;
+let conversationVoicesLoadedForTab = null;
+let conversationVoiceMenuOpen = false;
+let conversationVoiceLastData = null;
+let conversationVoicePending = null;
+
+// Same open/close contract as the Common-Pi-options menu: click toggles the
+// panel (hover/focus-within still work on desktop via CSS), so it also works
+// on touch devices where :hover never fires.
+function setConversationVoiceMenuOpen(open) {
+  conversationVoiceMenuOpen = !!open;
+  elements.conversationVoiceButton?.setAttribute("aria-expanded", conversationVoiceMenuOpen ? "true" : "false");
+  elements.conversationVoiceButton?.classList.toggle("menu-open", conversationVoiceMenuOpen);
+  elements.conversationVoiceMenu?.classList.toggle("open", conversationVoiceMenuOpen);
+  scheduleMobileDropdownScrollBoundsUpdate();
+}
+
 function conversationModeDisplayText(mode = activeConversationMode()) {
-  return mode.enabled ? `Voice: ${mode.uiState || "listening"}` : "Voice: off";
+  if (!mode.enabled) return "Voice: off";
+  // Voice-switch progress ("downloading de_DE-thorsten-high 42%", "testing …")
+  // arrives via the package status text; show it verbatim instead of the bare state.
+  const progressDetail = /^voice\s*:\s*((?:downloading|testing)\s.+)$/i.exec(mode.statusText || "")?.[1];
+  const uiState = progressDetail || mode.uiState || "listening";
+  const provider = nativeConversationAudioEngaged() ? "native audio" : voiceConversationVisibleProviderLabel();
+  const prefix = provider ? `Voice: ${uiState} · ${provider}` : `Voice: ${uiState}`;
+  const partial = uiState === "transcribing" ? conversationModePartialPreview(mode.partialTranscript) : "";
+  return partial ? `${prefix} — “${partial}”` : prefix;
 }
 
 function conversationModeUnavailableText() {
@@ -4136,15 +4188,17 @@ function renderConversationModeControls() {
     const tooltip = commandName
       ? `${active ? "End" : "Start"} Natural Conversation Mode for this Pi tab via /${commandName}. Safety is owned by @firstpick/pi-package-natural-conversation.`
       : conversationModeUnavailableText();
-    elements.optionsConversationModeButton.title = tooltip;
-    elements.optionsConversationModeButton.setAttribute("data-tooltip", tooltip);
+    applyStyledTooltip(elements.optionsConversationModeButton, tooltip, { ariaLabel: false, align: "end" });
     elements.optionsConversationModeButton.setAttribute("aria-pressed", active ? "true" : "false");
   }
 
   if (elements.conversationModeChip) {
     elements.conversationModeChip.hidden = !active;
     elements.conversationModeChip.textContent = conversationModeDisplayText(mode);
-    elements.conversationModeChip.title = `Natural Conversation Mode is active in this tab. Thinking is forced off; tools are limited to ${mode.allowedTools.join(", ")}.`;
+    elements.conversationModeChip.setAttribute("data-voice-state", active ? mode.uiState || "listening" : "off");
+    const chipAction = mode.uiState === "paused" ? "Click to resume browser listening." : "Click to pause browser listening; use End conversation to leave the safe mode.";
+    elements.conversationModeChip.title = `Natural Conversation Mode is active in this tab (${voiceConversationProviderLabel()}). Thinking is forced off; tools are limited to ${mode.allowedTools.join(", ")}. ${chipAction}`;
+    elements.conversationModeChip.setAttribute("aria-label", `Natural Conversation Mode ${mode.uiState || "listening"}. ${chipAction}`);
   }
 
   if (elements.conversationModeEndButton) {
@@ -4152,6 +4206,27 @@ function renderConversationModeControls() {
     elements.conversationModeEndButton.disabled = !commandName;
     elements.conversationModeEndButton.title = commandName ? `End Natural Conversation Mode with /${commandName} off.` : conversationModeUnavailableText();
   }
+
+  if (elements.conversationVoiceMenu) {
+    elements.conversationVoiceMenu.hidden = !active;
+    if (!active && conversationVoiceMenuOpen) setConversationVoiceMenuOpen(false);
+    if (elements.conversationVoiceButton) elements.conversationVoiceButton.disabled = conversationVoiceSwitching || !commandName;
+    if (active && commandName && conversationVoicesLoadedForTab !== activeTabId) void loadConversationVoices();
+  }
+
+  const awaitingRemoteMicConsent = active && !remoteMicConsentGranted(activeTabId);
+  if (elements.remoteMicStreamingConsent) {
+    elements.remoteMicStreamingConsent.hidden = !awaitingRemoteMicConsent;
+    if (awaitingRemoteMicConsent && elements.remoteMicStreamingConsentText) {
+      elements.remoteMicStreamingConsentText.textContent = remoteMicConsentDisclosureText();
+    }
+  }
+  if (elements.remoteMicStreamingConsentButton) {
+    // The consent button stays disabled unless its disclosure is visible.
+    elements.remoteMicStreamingConsentButton.disabled = !awaitingRemoteMicConsent;
+  }
+
+  syncVoiceConversationLoop();
 }
 
 function handleNaturalConversationStatus(statusText, tabId = activeTabId) {
@@ -4189,6 +4264,10 @@ async function setNaturalConversationModeEnabled(enabled) {
   }
   try {
     const response = await api("/api/conversation-mode", { method: "POST", body: { enabled: enabled === true }, tabId: tabContext.tabId });
+    if (enabled !== true) {
+      stopVoiceConversationLoop();
+      remoteMicConsentTabs.delete(tabContext.tabId);
+    }
     applyResponseTab(response);
     if (!isCurrentTabContext(tabContext)) return;
     updateConversationModeForTab(tabContext.tabId, response.data?.mode || {}, { render: true });
@@ -4203,6 +4282,449 @@ async function setNaturalConversationModeEnabled(enabled) {
 function toggleNaturalConversationMode() {
   const mode = activeConversationMode();
   return setNaturalConversationModeEnabled(!mode.enabled);
+}
+
+// --- Conversation voice dropdown (native Piper voices via /talk voice) -------
+// The list comes from GET /api/conversation-voices (server reads voice.json
+// and the piper voice directory); switching posts to /api/conversation-voice,
+// which runs `/talk voice <id>` in the package over RPC. Missing voices are
+// downloaded by the package; progress streams back through the voice chip's
+// status text ("Voice: downloading <id> <pct>%").
+
+function conversationVoiceLanguageLabel(voiceId) {
+  const locale = String(voiceId || "").split("-", 1)[0] || "";
+  const language = locale.split("_")[0]?.toUpperCase() || "";
+  return ["DE", "EN"].includes(language) ? language : language;
+}
+
+function conversationVoiceGenderLabel(voiceId) {
+  const id = String(voiceId || "").toLowerCase();
+  if (id.includes("thorsten")) return "M";
+  if (id.includes("lessac") || id.includes("alba")) return "F";
+  return "";
+}
+
+function conversationVoiceShortLabel(voiceId) {
+  // "de_DE-thorsten-medium" → "DE M Thorsten med" keeps the controls compact.
+  const text = String(voiceId || "").trim();
+  if (!text) return "Voice";
+  const parts = text.split("-").filter(Boolean);
+  const language = conversationVoiceLanguageLabel(text);
+  const gender = conversationVoiceGenderLabel(text);
+  const quality = parts.at(-1) || "";
+  const qualityLabel = quality === "medium" ? "med" : quality === "high" ? "high" : quality;
+  const nameParts = parts.length >= 3 ? parts.slice(1, -1) : parts.slice(1);
+  const name = nameParts.join(" ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return [language, gender, name, qualityLabel].filter(Boolean).join(" ") || text;
+}
+
+function conversationVoiceById(data, voiceId) {
+  const wanted = String(voiceId || "").trim();
+  const voices = Array.isArray(data?.voices) ? data.voices : [];
+  return voices.find((voice) => voice?.id === wanted) || null;
+}
+
+function conversationVoiceDownloadSizeText(voice) {
+  const sizeMb = Number(voice?.sizeMb);
+  return Number.isFinite(sizeMb) && sizeMb > 0 ? ` (${sizeMb} MB)` : "";
+}
+
+function conversationVoiceStartMessage(voice, voiceId) {
+  const wanted = String(voiceId || voice?.id || "voice").trim();
+  if (voice?.downloaded) return `Selecting conversation voice ${wanted}…`;
+  return `Downloading conversation voice ${wanted}${conversationVoiceDownloadSizeText(voice)}, then selecting it…`;
+}
+
+function showConversationVoiceFeedback(message, level = "info") {
+  const text = cleanStatusText(message || "");
+  if (!text) return;
+  addEvent(text, level);
+  addTransientMessage({ role: level === "error" ? "error" : "native", title: "/talk voice", content: text, level });
+}
+
+function renderConversationVoicePanelNotice(message, level = "info") {
+  const panel = elements.conversationVoiceMenuPanel;
+  if (!panel) return;
+  panel.innerHTML = "";
+  const notice = document.createElement("div");
+  notice.className = "composer-publish-menu-item composer-conversation-voice-item composer-conversation-voice-notice";
+  notice.classList.toggle("error", level === "error");
+  notice.setAttribute("role", level === "error" ? "alert" : "status");
+  notice.textContent = message;
+  panel.appendChild(notice);
+}
+
+function renderConversationVoiceOptions(data = conversationVoiceLastData) {
+  const panel = elements.conversationVoiceMenuPanel;
+  if (!panel) return;
+  const source = data || conversationVoiceLastData || {};
+  conversationVoiceLastData = source;
+  const voices = Array.isArray(source?.voices) ? source.voices : [];
+  panel.innerHTML = "";
+  if (elements.conversationVoiceButtonLabel) {
+    elements.conversationVoiceButtonLabel.textContent = source?.current ? conversationVoiceShortLabel(source.current) : "Voice";
+  }
+  if (conversationVoicePending) {
+    const pending = document.createElement("div");
+    pending.className = "composer-publish-menu-item composer-conversation-voice-item composer-conversation-voice-notice pending";
+    pending.setAttribute("role", "status");
+    pending.setAttribute("aria-live", "polite");
+    pending.textContent = conversationVoicePending.message;
+    panel.appendChild(pending);
+  }
+  if (voices.length === 0) {
+    const empty = document.createElement("button");
+    empty.className = "composer-publish-menu-item composer-conversation-voice-item";
+    empty.type = "button";
+    empty.disabled = true;
+    empty.textContent = "No Piper voices — run /talk setup";
+    panel.appendChild(empty);
+    return;
+  }
+  for (const voice of voices) {
+    const item = document.createElement("button");
+    const pendingForItem = conversationVoicePending?.voiceId === voice.id;
+    item.className = "composer-publish-menu-item composer-conversation-voice-item";
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.dataset.voiceId = voice.id;
+    item.classList.toggle("active", voice.current === true);
+    item.classList.toggle("pending", pendingForItem);
+    const label = conversationVoiceShortLabel(voice.id);
+    item.textContent = pendingForItem
+      ? conversationVoicePending.message
+      : voice.current
+        ? `${label} ✓`
+        : voice.downloaded
+          ? label
+          : `${label} ↓${conversationVoiceDownloadSizeText(voice)}`;
+    item.title = voice.current
+      ? `${voice.note || voice.id} — current voice`
+      : voice.downloaded
+        ? `${voice.note || voice.id} — select this installed Piper voice`
+        : `${voice.note || voice.id} — download and select with /talk voice ${voice.id}`;
+    if (!voice.current) {
+      item.setAttribute("aria-label", voice.downloaded ? `Select conversation voice ${voice.id}` : `Download and select conversation voice ${voice.id}`);
+    }
+    item.disabled = conversationVoiceSwitching || voice.current === true;
+    let pointerActivated = false;
+    const chooseVoice = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void switchConversationVoice(voice.id);
+    };
+    item.addEventListener("pointerdown", (event) => {
+      pointerActivated = true;
+      chooseVoice(event);
+    });
+    item.addEventListener("click", (event) => {
+      if (pointerActivated) {
+        pointerActivated = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      chooseVoice(event);
+    });
+    panel.appendChild(item);
+  }
+}
+
+async function loadConversationVoices(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return;
+  try {
+    const response = await api("/api/conversation-voices", { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    conversationVoicesLoadedForTab = tabContext.tabId;
+    conversationVoiceLastData = response.data;
+    renderConversationVoiceOptions(response.data);
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      conversationVoicesLoadedForTab = null;
+      const message = `conversation voice list failed: ${error.message || String(error)}`;
+      addEvent(message, "warn");
+      renderConversationVoicePanelNotice(message, "error");
+    }
+  }
+}
+
+async function switchConversationVoice(voiceId) {
+  const wanted = String(voiceId || "").trim();
+  if (!wanted) return;
+  if (conversationVoiceSwitching) {
+    if (conversationVoicePending?.voiceId === wanted) return;
+    addEvent(`Already switching conversation voice to ${conversationVoicePending?.voiceId || "another voice"}; wait for it to finish.`, "warn");
+    return;
+  }
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId) return;
+  const voice = conversationVoiceById(conversationVoiceLastData, wanted);
+  const downloading = voice?.downloaded !== true;
+  const startMessage = conversationVoiceStartMessage(voice, wanted);
+  conversationVoiceSwitching = true;
+  const label = conversationVoiceShortLabel(wanted);
+  conversationVoicePending = { voiceId: wanted, phase: downloading ? "downloading" : "selecting", message: downloading ? `${label} ↓${conversationVoiceDownloadSizeText(voice)}…` : `${label}…` };
+  setConversationVoiceMenuOpen(true);
+  renderConversationVoiceOptions();
+  if (elements.conversationVoiceButton) elements.conversationVoiceButton.disabled = true;
+  if (elements.conversationVoiceButtonLabel) elements.conversationVoiceButtonLabel.textContent = `→ ${conversationVoiceShortLabel(wanted)}…`;
+  updateConversationModeForTab(tabContext.tabId, {
+    uiState: downloading ? "downloading" : "testing",
+    statusText: downloading ? `Voice: downloading ${wanted} starting` : `Voice: testing ${wanted}`,
+  }, { render: true, voiceLoop: true });
+  showConversationVoiceFeedback(`${startMessage} Progress appears on the Voice chip.`, "info");
+  try {
+    const response = await api("/api/conversation-voice", { method: "POST", body: { voice: wanted }, tabId: tabContext.tabId });
+    if (isCurrentTabContext(tabContext)) {
+      applyResponseTab(response);
+      conversationVoiceLastData = response.data;
+      conversationVoicesLoadedForTab = tabContext.tabId;
+      const current = response.data?.current || wanted;
+      const output = cleanStatusText(response.data?.response?.data?.output || response.data?.response?.data?.message || "");
+      renderConversationVoiceOptions(response.data);
+      showConversationVoiceFeedback(`${downloading ? "Downloaded and selected" : "Selected"} conversation voice ${current}.${output ? ` ${output}` : ""}`, "info");
+      setConversationVoiceMenuOpen(false);
+    }
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      updateConversationModeForTab(tabContext.tabId, { uiState: "error", statusText: "Voice: error" }, { render: true, voiceLoop: true });
+      showConversationVoiceFeedback(`Voice switch failed: ${error.message || String(error)}`, "error");
+      await loadConversationVoices(tabContext);
+    }
+  } finally {
+    conversationVoiceSwitching = false;
+    conversationVoicePending = null;
+    if (isCurrentTabContext(tabContext)) {
+      if (elements.conversationVoiceButton) elements.conversationVoiceButton.disabled = false;
+      renderConversationVoiceOptions();
+      renderConversationModeControls();
+    }
+  }
+}
+
+// --- Natural Conversation browser voice loop (Phase 3) -----------------------
+// Browser Web Speech STT/TTS drives the active tab's conversation mode. The
+// controller logic lives in voice-conversation.mjs (dynamically imported so
+// app.js stays parseable as a plain script) and is tab-scoped: switching tabs
+// or disabling the mode tears the loop down.
+
+const remoteMicConsentTabs = new Set();
+const VOICE_CONVERSATION_SILENCE_TIMEOUT_MS = 8000;
+let voiceConversation = null;
+let voiceConversationTabId = null;
+let voiceConversationStartToken = 0;
+let voiceConversationStartingForTab = null;
+let voiceConversationModulePromise = null;
+
+function isLocalhostWebui() {
+  const hostname = String(location.hostname || "").toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+}
+
+function remoteMicConsentGranted(tabId = activeTabId) {
+  if (isLocalhostWebui()) return true;
+  return !!tabId && remoteMicConsentTabs.has(tabId);
+}
+
+function remoteMicConsentDisclosureText() {
+  const host = location.host || "this Pi host";
+  const provider = browserSpeechRecognitionCtor() ? "your browser's speech service" : "a browser speech service (unavailable in this browser)";
+  return `Remote session: enabling the microphone captures audio in this browser tab and transcribes it with ${provider}; audio snippets may leave this device to your browser vendor. Only the resulting text transcripts are sent to Pi at ${host} — raw audio is never streamed to the Pi host. Consent applies to this tab only and ends with the conversation. Use End conversation to stop capture at any time.`;
+}
+
+function browserSpeechRecognitionCtor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function voiceConversationProviderLabel() {
+  const stt = browserSpeechRecognitionCtor() ? "browser mic" : "no browser STT";
+  const tts = window.speechSynthesis ? "browser voice" : "no browser TTS";
+  return `${stt}, ${tts}`;
+}
+
+function voiceConversationVisibleProviderLabel() {
+  const hasStt = !!browserSpeechRecognitionCtor();
+  const hasTts = !!window.speechSynthesis;
+  if (hasStt && hasTts) return "browser STT/TTS";
+  if (hasStt) return "browser STT";
+  if (hasTts) return "browser TTS only";
+  return "speech unsupported";
+}
+
+function voiceConversationActiveFor(tabId = activeTabId) {
+  return !!voiceConversation && !!tabId && voiceConversationTabId === tabId && voiceConversation.isActive();
+}
+
+function updateVoiceConversationModeFromController(tabId = voiceConversationTabId) {
+  if (!tabId || !voiceConversation) return;
+  const state = voiceConversation.getState?.() || {};
+  const uiState = state.uiState || "listening";
+  updateConversationModeForTab(tabId, { uiState, statusText: `Voice: ${uiState}`, partialTranscript: state.partialTranscript || "" }, { render: true, voiceLoop: true });
+}
+
+function toggleVoiceConversationPaused() {
+  if (!activeTabId || !activeConversationMode().enabled) return;
+  if (!voiceConversationActiveFor(activeTabId)) {
+    if (!remoteMicConsentGranted(activeTabId)) {
+      addEvent("Remote Web UI session: allow remote microphone streaming before resuming the browser voice loop.", "warn");
+      renderConversationModeControls();
+      return;
+    }
+    void startVoiceConversationLoop(activeTabId);
+    return;
+  }
+  const next = voiceConversation.togglePaused?.();
+  updateVoiceConversationModeFromController(activeTabId);
+  addEvent(next?.userPaused ? "Browser voice loop paused; Natural Conversation safety remains active." : "Browser voice loop resumed.", "info");
+}
+
+function loadVoiceConversationModule() {
+  if (!voiceConversationModulePromise) {
+    voiceConversationModulePromise = import("./voice-conversation.mjs?v=1");
+    voiceConversationModulePromise.catch(() => {
+      voiceConversationModulePromise = null;
+    });
+  }
+  return voiceConversationModulePromise;
+}
+
+function speakableTextFromMarkdown(text) {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, " Code block omitted. ")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/(\*\*|__|\*|_|~~)(\S(?:[^*_~]*\S)?)\1/g, "$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function latestAssistantSpokenText() {
+  for (let index = latestMessages.length - 1; index >= 0; index -= 1) {
+    const message = latestMessages[index];
+    if (message?.role !== "assistant") continue;
+    const finalMessage = assistantDisplayMessages(message).find((item) => item?.title === "final output");
+    return finalMessage ? textFromContent(finalMessage.content) : "";
+  }
+  return "";
+}
+
+function assistantTextAsksQuestion(text) {
+  const lines = String(text || "").trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines[lines.length - 1] || "";
+  return /\?["')\]]*$/.test(lastLine);
+}
+
+async function startVoiceConversationLoop(tabId = activeTabId) {
+  if (!tabId || voiceConversationActiveFor(tabId) || voiceConversationStartingForTab === tabId) return;
+  if (voiceConversation) stopVoiceConversationLoop();
+  if (!remoteMicConsentGranted(tabId)) {
+    const mode = normalizeConversationModeState(conversationModeByTab.get(tabId) || {});
+    if (mode.uiState !== "paused") {
+      updateConversationModeForTab(tabId, { uiState: "paused", statusText: "Voice: paused" }, { render: true, voiceLoop: true });
+      addEvent("Remote Web UI session: the microphone stays off until you allow remote microphone streaming for this tab.", "warn");
+    }
+    return;
+  }
+  const token = ++voiceConversationStartToken;
+  voiceConversationStartingForTab = tabId;
+  let module = null;
+  try {
+    module = await loadVoiceConversationModule();
+  } catch (error) {
+    addEvent(`failed to load the voice conversation module: ${error?.message || String(error)}`, "error");
+    return;
+  } finally {
+    voiceConversationStartingForTab = null;
+  }
+  if (token !== voiceConversationStartToken || tabId !== activeTabId) return;
+  if (!activeConversationMode().enabled) return;
+  const controller = module.createVoiceConversationController({
+    recognitionFactory: () => {
+      const Recognition = browserSpeechRecognitionCtor();
+      if (!Recognition) return null;
+      try {
+        const recognition = new Recognition();
+        recognition.lang = navigator.language || "en-US";
+        return recognition;
+      } catch {
+        return null;
+      }
+    },
+    synthesis: window.speechSynthesis || null,
+    utteranceFactory: (text) => new SpeechSynthesisUtterance(text),
+    sendTranscript: async (text, { reason } = {}) => {
+      if (!voiceConversationActiveFor(tabId) || tabId !== activeTabId) return;
+      if (reason === "interrupt" && currentState?.isStreaming) {
+        await sendPrompt("steer", `[Voice interruption: the user started speaking over the current answer.] ${text}`, { targetTabId: tabId, throwOnError: true });
+        return;
+      }
+      await sendPrompt("prompt", text, { targetTabId: tabId, throwOnError: true });
+    },
+    sendSilenceEvent: async ({ silentSeconds } = {}) => {
+      if (!voiceConversationActiveFor(tabId) || tabId !== activeTabId) return;
+      await sendPrompt("prompt", module.voiceSilenceEventMessage(silentSeconds), { targetTabId: tabId, throwOnError: true });
+    },
+    onPartialTranscript: (partialTranscript) => {
+      if (voiceConversationTabId !== tabId) return;
+      updateConversationModeForTab(tabId, { uiState: partialTranscript ? "transcribing" : undefined, partialTranscript }, { render: true, voiceLoop: true });
+    },
+    onStateChange: (uiState, state = {}) => {
+      if (voiceConversationTabId !== tabId || uiState === "off") return;
+      updateConversationModeForTab(tabId, { uiState, statusText: `Voice: ${uiState}`, partialTranscript: state.partialTranscript || "" }, { render: true, voiceLoop: true });
+    },
+    onEvent: (message, level = "info") => addEvent(message, level),
+    bargeInEnabled: false,
+    silenceTimeoutMs: VOICE_CONVERSATION_SILENCE_TIMEOUT_MS,
+  });
+  voiceConversation = controller;
+  voiceConversationTabId = tabId;
+  controller.start();
+}
+
+function stopVoiceConversationLoop() {
+  voiceConversationStartToken += 1;
+  const controller = voiceConversation;
+  voiceConversation = null;
+  voiceConversationTabId = null;
+  if (controller) {
+    try {
+      controller.stop();
+    } catch {
+      // Tearing down a broken speech engine must not break the UI.
+    }
+  }
+}
+
+// The package's native audio loop (mic + Piper TTS on the Pi host) announces
+// itself through its "natural-conversation-audio" widget. While it is armed —
+// listening or paused — the browser Web Speech loop must stand down entirely,
+// otherwise both loops transcribe the same speech and speak every answer twice
+// (native Piper voice + browser voice).
+function nativeConversationAudioEngaged() {
+  return widgets.has("natural-conversation-audio");
+}
+
+function syncVoiceConversationLoop() {
+  const mode = activeConversationMode();
+  const shouldRun = mode.enabled === true && !!activeTabId && !nativeConversationAudioEngaged();
+  if (voiceConversation && (!shouldRun || voiceConversationTabId !== activeTabId)) stopVoiceConversationLoop();
+  if (shouldRun && !voiceConversationActiveFor(activeTabId)) void startVoiceConversationLoop(activeTabId);
+}
+
+async function handleVoiceConversationTurnEnd(tabContext = activeTabContext()) {
+  const tabId = tabContext.tabId;
+  if (!voiceConversationActiveFor(tabId)) return;
+  try {
+    await refreshMessages(tabContext);
+  } catch {
+    // Speak whatever transcript state we already have.
+  }
+  if (!isCurrentTabContext(tabContext) || !voiceConversationActiveFor(tabId)) return;
+  const spoken = speakableTextFromMarkdown(latestAssistantSpokenText());
+  voiceConversation.handleAssistantTurnEnd(spoken, { askedQuestion: assistantTextAsksQuestion(spoken) });
 }
 
 function renderOptionalFeatureDependentDisplays() {
@@ -4692,6 +5214,8 @@ function syncTabMetadata(nextTabs = []) {
       widgetsByTab.delete(tabId);
       appRunnerDataByTab.delete(tabId);
       conversationModeByTab.delete(tabId);
+      remoteMicConsentTabs.delete(tabId);
+      if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
     }
   }
@@ -5035,6 +5559,9 @@ function setWidgetForTab(tabId, widgetKey, request) {
   if (targetTabId === activeTabId) {
     if (hasLines) widgets.set(widgetKey, request);
     else widgets.delete(widgetKey);
+    // Native audio starting/stopping must immediately re-arbitrate which
+    // voice loop (native vs. browser Web Speech) owns this conversation.
+    if (widgetKey === "natural-conversation-audio") queueMicrotask(() => renderConversationModeControls());
   }
 
   return true;
@@ -5534,6 +6061,7 @@ async function switchTab(tabId) {
   cacheMessagesForTab(activeTabId);
   cacheWidgetsForTab(activeTabId);
   const tabContext = setActiveTabId(tabId, { remember: true });
+  if (voiceConversation && voiceConversationTabId !== tabId) stopVoiceConversationLoop();
   resetActiveTabUi();
   renderTabs();
   restoreActiveDraft();
@@ -20758,6 +21286,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   const rawMessage = usesPromptInput ? elements.promptInput.value : explicitMessage;
   const originalMessage = String(rawMessage || "").trim();
   if (!targetTabId) return;
+  if (voiceConversationActiveFor(targetTabId)) voiceConversation.handleUserActivity();
   const tabContext = activeTabContext(targetTabId);
   const attachments = usesPromptInput ? [...attachmentsForTab(targetTabId)] : [];
   if (!originalMessage && attachments.length === 0) return;
@@ -21192,6 +21721,7 @@ function handleEvent(event) {
       break;
     case "agent_start":
       if (currentState) currentState = { ...currentState, isStreaming: true };
+      if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ streaming: true });
       setRunIndicatorActivity("Agent run started; waiting for first output or action…");
       addEvent("agent started");
       scheduleRefreshState();
@@ -21204,6 +21734,10 @@ function handleEvent(event) {
       notifyAgentDone(event.tabId || activeTabId, { activity: event.tabActivity, tabTitle: event.tabTitle });
       clearContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
       if (currentState) currentState = { ...currentState, isStreaming: false };
+      // handleAssistantTurnEnd resets the controller's streaming/tool flags and
+      // flushes queued interruptions itself; calling setAssistantActivity here
+      // first would flush the queue and then speak the interrupted answer.
+      if (voiceConversationActiveFor(event.tabId || activeTabId)) void handleVoiceConversationTurnEnd(tabContext);
       clearRunIndicatorActivity();
       markTabOutputSeen();
       requestGitFooterWebuiPayload(tabContext, { force: true });
@@ -21243,6 +21777,7 @@ function handleEvent(event) {
       break;
     case "tool_execution_start":
       streamToolCallSeen = true;
+      if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: true });
       suppressStreamingAssistantTextBeforeToolCall();
       removeStreamingToolCallCard();
       handleToolExecutionStart(event);
@@ -21254,6 +21789,7 @@ function handleEvent(event) {
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`, { scroll: false });
       break;
     case "tool_execution_end":
+      if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
       handleToolExecutionEnd(event);
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
       addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info");
@@ -21647,8 +22183,27 @@ elements.nativeSkillsButton.addEventListener("click", () => runNativeCommandMenu
 elements.nativeToolsButton.addEventListener("click", () => runNativeCommandMenu("/tools"));
 elements.optionsCommandPaletteButton.addEventListener("click", () => openCommandPalette());
 elements.optionsConversationModeButton?.addEventListener("click", () => toggleNaturalConversationMode());
-elements.conversationModeChip?.addEventListener("click", () => toggleNaturalConversationMode());
+elements.conversationModeChip?.addEventListener("click", () => toggleVoiceConversationPaused());
 elements.conversationModeEndButton?.addEventListener("click", () => setNaturalConversationModeEnabled(false));
+// The voice menu opens on click (and on hover/focus via CSS on desktop);
+// refresh the voice list whenever it is opened so download states stay fresh.
+elements.conversationVoiceButton?.addEventListener("click", () => {
+  setConversationVoiceMenuOpen(!conversationVoiceMenuOpen);
+  if (conversationVoiceMenuOpen && !conversationVoiceSwitching) void loadConversationVoices();
+});
+elements.conversationVoiceMenu?.addEventListener("pointerenter", () => {
+  if (!conversationVoiceSwitching) void loadConversationVoices();
+});
+elements.conversationVoiceMenu?.addEventListener("pointerleave", () => setConversationVoiceMenuOpen(false));
+elements.conversationVoiceMenu?.addEventListener("focusin", () => {
+  if (!conversationVoiceSwitching) void loadConversationVoices();
+});
+elements.remoteMicStreamingConsentButton?.addEventListener("click", () => {
+  if (!activeTabId) return;
+  remoteMicConsentTabs.add(activeTabId);
+  addEvent("Remote microphone streaming allowed for this tab. Consent ends with the conversation or the tab.", "info");
+  renderConversationModeControls();
+});
 elements.optionsResumeButton.addEventListener("click", () => runNativeCommandMenu("/resume"));
 elements.optionsReloadButton.addEventListener("click", () => runNativeCommandMenu("/reload"));
 elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMenu("/remote"));
@@ -22147,6 +22702,9 @@ document.addEventListener("pointerdown", (event) => {
   if (optionsMenuOpen && !event.target?.closest?.(".composer-options-menu")) {
     setOptionsMenuOpen(false);
   }
+  if (conversationVoiceMenuOpen && !event.target?.closest?.(".composer-conversation-voice-menu")) {
+    setConversationVoiceMenuOpen(false);
+  }
   if (busyPromptBehaviorMenuOpen && !event.target?.closest?.(".composer-context-tags, .composer-busy-mode-menu")) {
     setBusyPromptBehaviorMenuOpen(false);
   }
@@ -22371,6 +22929,10 @@ window.addEventListener("keydown", (event) => {
   }
   if (optionsMenuOpen) {
     setOptionsMenuOpen(false);
+    return;
+  }
+  if (conversationVoiceMenuOpen) {
+    setConversationVoiceMenuOpen(false);
     return;
   }
   if (busyPromptBehaviorMenuOpen) {

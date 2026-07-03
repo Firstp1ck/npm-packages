@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=60" />
+    <link rel="stylesheet" href="/styles.css?v=62" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -294,6 +294,10 @@
               aria-label="Follow-up: type your message first, then tap this button to send it as a follow-up."
               data-tooltip="Follow-up usage:&#10;1. Type your message in the textarea.&#10;2. Tap Follow-up to send it as a follow-up.&#10;Use for extra context or the next request."
             >Follow-up</button>
+            <div id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" hidden>
+              <button id="conversationVoiceButton" class="composer-publish-button composer-conversation-voice-button" type="button" title="Switch the spoken Piper voice. Voices marked with a size are downloaded when selected; progress shows on the voice chip." aria-label="Conversation voice" aria-haspopup="menu" aria-expanded="false" aria-controls="conversationVoiceMenuPanel"><span id="conversationVoiceButtonLabel">Voice</span></button>
+              <div id="conversationVoiceMenuPanel" class="composer-publish-menu-panel composer-conversation-voice-menu-panel" role="menu" aria-label="Conversation voices"></div>
+            </div>
             <button id="conversationModeEndButton" class="composer-conversation-end-button" type="button" title="End Natural Conversation Mode for this Pi tab" aria-label="End Natural Conversation Mode" hidden>End conversation</button>
             <button id="abortButton" class="composer-abort-button danger" type="button" title="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" aria-label="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" hidden disabled>Abort</button>
             <button
@@ -308,6 +312,10 @@
             <button id="sendButton" type="submit" class="primary" title="Send prompt">Send</button>
           </div>
         </form>
+        <div id="remoteMicStreamingConsent" class="composer-remote-mic-consent" role="alert" hidden>
+          <span id="remoteMicStreamingConsentText" class="composer-remote-mic-consent-text"></span>
+          <button id="remoteMicStreamingConsentButton" class="composer-remote-mic-consent-button" type="button" aria-describedby="remoteMicStreamingConsentText" disabled>Allow remote microphone streaming</button>
+        </div>
       </section>
 
       <button id="sidePanelBackdrop" class="side-panel-backdrop" type="button" aria-label="Close side panel" hidden></button>
@@ -754,6 +762,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=59"></script>
+    <script type="module" src="/app.js?v=60"></script>
   </body>
 </html>

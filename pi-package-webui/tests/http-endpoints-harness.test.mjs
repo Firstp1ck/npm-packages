@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
@@ -72,6 +73,28 @@ const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
 const settingsFile = path.join(cwd, "webui-settings.json");
 await chmod(fakePi, 0o755);
 
+const voiceProviderRequests = [];
+const voiceProvider = createServer(async (req, res) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = Buffer.concat(chunks);
+  voiceProviderRequests.push({ method: req.method, url: req.url, contentType: req.headers["content-type"], bodyLength: body.length });
+  if (req.url === "/stt") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ text: "fake transcript from local stt" }));
+    return;
+  }
+  if (req.url === "/tts") {
+    res.writeHead(200, { "content-type": "audio/mpeg" });
+    res.end(Buffer.from("fake mp3 bytes"));
+    return;
+  }
+  res.writeHead(404, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "not found" }));
+});
+await new Promise((resolve) => voiceProvider.listen(0, "127.0.0.1", resolve));
+const voiceProviderPort = voiceProvider.address().port;
+
 const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.0.0.0", "--port", String(port), "--pi", fakePi], {
   stdio: ["ignore", "pipe", "pipe"],
   env: {
@@ -81,6 +104,8 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     GIT_COMMITTER_NAME: "Pi WebUI Test",
     GIT_COMMITTER_EMAIL: "pi-webui-test@example.invalid",
     PI_WEBUI_SETTINGS_FILE: settingsFile,
+    PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
+    PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
   },
 });
 let serverOutput = "";
@@ -139,6 +164,17 @@ try {
   assert.equal(gzipResponse.status, 200);
   assert.equal(gzipResponse.headers.get("content-encoding"), "gzip", "styles.css should fall back to gzip");
   await gzipResponse.arrayBuffer();
+
+  // The browser voice loop is dynamically imported by app.js; a missing static
+  // allowlist entry would 404 the module and silently disable voice mode.
+  const voiceModuleResponse = await fetch(`http://127.0.0.1:${port}/voice-conversation.mjs`, {
+    signal: AbortSignal.timeout(5_000),
+  });
+  assert.equal(voiceModuleResponse.status, 200, "voice-conversation.mjs must be served for the Natural Conversation browser voice loop");
+  assert.match(voiceModuleResponse.headers.get("content-type") || "", /text\/javascript/, "voice-conversation.mjs should use a JavaScript MIME type");
+  const voiceModuleBody = await voiceModuleResponse.arrayBuffer();
+  const rawVoiceModuleSize = (await stat(join(root, "public", "voice-conversation.mjs"))).size;
+  assert.equal(voiceModuleBody.byteLength, rawVoiceModuleSize, "served voice-conversation.mjs should match the raw file byte-for-byte in size");
 
   const mermaidModuleResponse = await fetch(`http://127.0.0.1:${port}/vendor/mermaid/mermaid.esm.min.mjs`, {
     signal: AbortSignal.timeout(5_000),
@@ -665,6 +701,19 @@ try {
   assert.ok(conversationFeature.body?.data?.commands?.includes("talk"), "Natural Conversation feature data should expose loaded /talk commands");
   assert.equal(conversationFeature.body?.data?.mode?.enabled, false, "Natural Conversation should start disabled per tab");
 
+  const conversationVoices = await request("127.0.0.1", `/api/conversation-voices?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(conversationVoices.status, 200);
+  assert.ok(Array.isArray(conversationVoices.body?.data?.voices), "conversation-voices should return a voices array");
+  assert.ok(
+    conversationVoices.body.data.voices.some((voice) => voice.id === "de_DE-thorsten-medium"),
+    "conversation-voices should include the mirrored Piper catalog",
+  );
+  const badVoice = await request("127.0.0.1", "/api/conversation-voice", {
+    method: "POST",
+    body: { voice: "../etc/passwd; rm -rf", tab: tabId },
+  });
+  assert.equal(badVoice.status, 400, "conversation-voice must reject ids that are not plain voice names");
+
   const conversationOn = await request("127.0.0.1", "/api/conversation-mode", {
     method: "POST",
     body: { enabled: true, tab: tabId },
@@ -692,9 +741,18 @@ try {
   const allowedConversationPrompt = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { message: "Explain the current repo briefly", tab: tabId } });
   assert.equal(allowedConversationPrompt.status, 200, "ordinary prompts remain allowed while Natural Conversation is active");
 
-  const sttPlaceholder = await request("127.0.0.1", "/api/stt/transcribe", { method: "POST", body: { tab: tabId } });
-  assert.equal(sttPlaceholder.status, 501, "hosted/local STT placeholder route should be explicit and non-operational");
-  assert.match(String(sttPlaceholder.body?.error || ""), /STT\/TTS fallbacks are not implemented/);
+  const localStt = await request("127.0.0.1", "/api/stt/transcribe", { method: "POST", body: { tab: tabId, provider: "local", mimeType: "audio/webm", audioBase64: Buffer.from("fake audio").toString("base64") } });
+  assert.equal(localStt.status, 200, `local STT fallback should transcribe through the configured endpoint: ${localStt.body?.error || ""}`);
+  assert.equal(localStt.body?.data?.provider, "local");
+  assert.equal(localStt.body?.data?.text, "fake transcript from local stt");
+  assert.ok(voiceProviderRequests.some((item) => item.url === "/stt" && /multipart\/form-data/.test(String(item.contentType || ""))), "local STT should receive a multipart audio upload");
+
+  const localTts = await request("127.0.0.1", "/api/tts/speech", { method: "POST", body: { tab: tabId, provider: "local", text: "Say this aloud" } });
+  assert.equal(localTts.status, 200, `local TTS fallback should synthesize through the configured endpoint: ${localTts.body?.error || ""}`);
+  assert.equal(localTts.body?.data?.provider, "local");
+  assert.equal(localTts.body?.data?.contentType, "audio/mpeg");
+  assert.equal(Buffer.from(localTts.body?.data?.audioBase64 || "", "base64").toString("utf8"), "fake mp3 bytes");
+  assert.ok(voiceProviderRequests.some((item) => item.url === "/tts" && /application\/json/.test(String(item.contentType || ""))), "local TTS should receive a JSON text synthesis request");
 
   const conversationOff = await request("127.0.0.1", "/api/conversation-mode", {
     method: "POST",
@@ -737,6 +795,20 @@ try {
   if (lan) {
     const remoteHealthBeforeAuth = await request(lan, "/api/health");
     assert.equal(remoteHealthBeforeAuth.status, 200, "LAN clients should connect without a PIN while auth is off");
+
+    const remoteSttWithoutConsent = await request(lan, "/api/stt/transcribe", {
+      method: "POST",
+      body: { tab: tabId, provider: "local", mimeType: "audio/webm", audioBase64: Buffer.from("fake remote audio").toString("base64") },
+    });
+    assert.equal(remoteSttWithoutConsent.status, 403, "remote STT uploads must require explicit microphone streaming consent");
+    assert.match(String(remoteSttWithoutConsent.body?.error || ""), /explicit.*remote microphone streaming consent/i);
+
+    const remoteSttWithConsent = await request(lan, "/api/stt/transcribe", {
+      method: "POST",
+      body: { tab: tabId, provider: "local", mimeType: "audio/webm", audioBase64: Buffer.from("fake remote audio").toString("base64"), remoteMicStreamingConsentAccepted: true },
+    });
+    assert.equal(remoteSttWithConsent.status, 200, "remote STT uploads should proceed after explicit per-request consent");
+    assert.equal(remoteSttWithConsent.body?.data?.text, "fake transcript from local stt");
 
     const remoteDelete = await request(lan, "/api/session-delete", {
       method: "POST",
@@ -829,6 +901,7 @@ try {
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("exit", resolve));
   }
+  await new Promise((resolve) => voiceProvider.close(() => resolve()));
   await rmWithRetry(cwd);
 }
 

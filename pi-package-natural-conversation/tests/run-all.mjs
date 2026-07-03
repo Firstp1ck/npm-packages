@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(__dirname, "..");
+const testFiles = readdirSync(__dirname)
+  .filter((name) => name.endsWith(".test.mjs"))
+  .map((name) => join("tests", name));
 
-const result = spawnSync(process.execPath, ["--test", join("tests", "conversation-controller.test.mjs")], {
+const result = spawnSync(process.execPath, ["--test", ...testFiles], {
   cwd: packageRoot,
   stdio: "inherit",
 });

@@ -1,5 +1,5 @@
 ---
-description: Produce a precise status snapshot for a feature/fix: goal, approach, gap, and next step.
+description: "Produce a precise status snapshot for a feature/fix: goal, approach, gap, and next step."
 ---
 Summarize understanding of the current feature/fix work.
 
