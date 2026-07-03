@@ -147,7 +147,7 @@ Environment variables:
 - Detected app runner dropdown for the active tab cwd, including Cargo, Bun, npm/npx/pnpm, Python/uv, Go/Golang, Zig, C/C++, Docker Compose, root/dev/scripts shell scripts, and other common project runners with live output pinned at the top of the terminal. Running app runners expose line-oriented stdin in the widget for interactive scripts. Projects can add browseable custom runners in `.pi-webui-runners.json` with a command (default `./`) plus a relative path to the file to run.
 - Guided Git workflow for existing repos and new repos: initialize, create README/.gitignore, initial commit, rename to `main`, add a GitHub remote, pull fetched incoming changes, stage, generate or type commit messages, push, and optionally create a PR.
 - Browser support for Pi extension UI prompts, widgets, status updates, `/btw` side-question output widgets with optional context transfer/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications.
-- Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update` for Pi-only updates, while **Update Pi + Packages & Restart** runs `pi update --all` for Pi plus configured packages.
+- Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update` for Pi-only updates, while **Update Pi + Packages & Restart** runs `pi update --all` plus detected Web UI/Optional Feature package-root updates for Pi plus configured, local agent, project, global npm, and global Bun package roots.
 - Feedback reactions (`👍`, `👎`, `?`) on final assistant output plus tool/bash action cards, which can ask Pi to create or update a LEARNING.
 - Mobile-friendly layout, PWA install support where the browser allows it, backend-offline recovery, and a dedicated server-restart overlay while confirmed restart/update actions run.
 
@@ -321,7 +321,7 @@ Useful browser endpoints exposed by the local server include:
 - `POST /api/action-feedback?tab=<tabId>` for feedback on final assistant output and action cards.
 - `GET /api/optional-features` for optional companion package install/update status.
 - `POST /api/optional-feature-install` for installing or updating known optional companion packages from the side panel.
-- `GET /api/update-status`, localhost-only `POST /api/restart`, and localhost-only `POST /api/update` for checking Pi/Web UI updates and restarting the Web UI. Use `POST /api/update?all=1` to run `pi update --all` for Pi plus configured packages.
+- `GET /api/update-status`, localhost-only `POST /api/restart`, and localhost-only `POST /api/update` for checking Pi/Web UI updates and restarting the Web UI. Use `POST /api/update?all=1` to run `pi update --all` plus detected Web UI/Optional Feature package-root updates for Pi plus configured, local agent, project, global npm, and global Bun package roots.
 - `GET /api/network`, localhost-only `POST /api/network/open`, localhost-only `POST /api/network/close`, `GET /api/remote-auth`, `POST /api/remote-auth`, and localhost-only `POST /api/remote-auth/settings` for trusted-LAN exposure and optional 4-digit PIN authentication when serving non-local browser clients.
 
 For local development, run the checkout helper directly, for example:

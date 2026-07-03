@@ -496,11 +496,13 @@ assert.match(server, /url\.pathname === "\/api\/restart" && req\.method === "POS
 assert.match(server, /PI_WEBUI_RESTORE_TABS: JSON\.stringify\(restorableTabs \|\| \[\]\)/, "server restart should preserve restorable tab metadata");
 assert.match(server, /if \(webuiDevServer\) env\.PI_WEBUI_DEV = "1";/, "server restart should explicitly preserve dev mode");
 assert.match(server, /const updateArgs = all \? \["update", "--all"\] : \["update"\]/, "server update should use pi update by default and pi update --all for package-inclusive updates");
-assert.match(server, /async function resolveUpdateTasks\(\{ all = false \} = \{\}\)[\s\S]*await resolvePiUpdateCommand\(\{ all \}\)/, "server update should resolve a single Pi update command with the selected all mode");
+assert.match(server, /async function resolveUpdateTasks\(\{ all = false \} = \{\}\)[\s\S]*if \(!all\) return uniqueUpdateTasks\(\[piTask\]\)[\s\S]*currentWebuiPackageUpdateTask\(\)[\s\S]*agentPackageRootUpdateTask\(\)[\s\S]*projectPackageRootUpdateTasks\(\)[\s\S]*npmGlobalPackageRootUpdateTask\(\)[\s\S]*bunGlobalPackageRootUpdateTask\(\)/, "server all-update should run pi update plus detected local/global Pi package root tasks");
+assert.match(server, /const UPDATE_PACKAGE_NAMES = \[\.\.\.new Set\(\[[\s\S]*WEBUI_CONTROLLED_PACKAGES[\s\S]*OPTIONAL_FEATURE_PACKAGES\.values\(\)/, "package-inclusive updates should include Web UI controlled Optional Feature packages");
 assert.match(app, /const command = all \? "pi update --all" : "pi update"/, "frontend update confirmation should describe self-only and all update commands");
+assert.match(app, /Optional Features, and detected Pi package roots/, "frontend all-update confirmation should describe optional-feature and detected-root coverage");
 assert.match(app, /api\(all \? "\/api\/update\?all=1" : "\/api\/update"/, "frontend all update should call the explicit all-mode endpoint");
 assert.match(html, /<option value="update-all">Update Pi \+ Packages &amp; Restart<\/option>/, "side panel should expose pi update --all as a separate server action");
-assert.match(readme, /`pi update` for Pi-only updates[\s\S]*`pi update --all` for Pi plus configured packages/, "README should document self-only and all update modes");
+assert.match(readme, /`pi update` for Pi-only updates[\s\S]*`pi update --all` plus detected Web UI\/Optional Feature package-root updates/, "README should document self-only and expanded all update modes");
 assert.match(server, /async function closeNetworkAccess\(\)/, "server should expose a local-only rebind helper for closing network access");
 assert.match(server, /url\.pathname === "\/api\/network\/close" && req\.method === "POST"/, "server should route network close requests");
 assert.match(server, /server\.closeAllConnections\?\.\(\)/, "network rebind should force-close long-lived clients so close-to-localhost can complete");
