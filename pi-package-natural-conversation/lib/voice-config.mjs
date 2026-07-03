@@ -1,12 +1,15 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { CONVERSATION_STYLE_IDS, DEFAULT_CONVERSATION_STYLE } from "./conversation-controller.mjs";
 
 export const VOICE_CONFIG_VERSION = 1;
 export const PROTOCOL_VERSION = 1;
 
 export const STT_PROVIDERS = Object.freeze(["local-endpoint", "groq", "openai"]);
 export const TTS_PROVIDERS = Object.freeze(["local-endpoint", "piper", "espeak-ng", "openai"]);
+
+export const DEFAULT_ACK_PHRASES = Object.freeze(["Got it, one second.", "Okay, let me check.", "One moment."]);
 
 const value = (validate, fallback) => ({ kind: "value", validate, fallback });
 const bool = (fallback) => value((v) => typeof v === "boolean", fallback);
@@ -20,6 +23,16 @@ const stringOrNull = (fallback) => value((v) => v === null || (typeof v === "str
 const oneOf = (choices, fallback) => value((v) => choices.includes(v), fallback);
 const argvOrNull = (fallback) =>
   value((v) => v === null || (Array.isArray(v) && v.length > 0 && v.every((item) => typeof item === "string")), fallback);
+const phraseArray = (fallback) =>
+  value(
+    (v) => Array.isArray(v) && v.length > 0 && v.length <= 8 && v.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= 120),
+    fallback,
+  );
+const toolNameArray = (fallback) =>
+  value(
+    (v) => Array.isArray(v) && v.length <= 32 && v.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= 64),
+    fallback,
+  );
 const isoOrNull = () => value((v) => v === null || (typeof v === "string" && !Number.isNaN(Date.parse(v))), null);
 
 const VOICE_CONFIG_SCHEMA = {
@@ -79,6 +92,13 @@ const VOICE_CONFIG_SCHEMA = {
             rate: finite(1.0, { min: 0.5, max: 2.0 }),
             timeoutMs: finite(20000, { min: 1000, max: 120000 }),
             fallback: oneOf(["espeak-ng", "none"], "espeak-ng"),
+            // Speak completed sentences while the answer is still streaming.
+            // Falls back to final-answer-only speech automatically when the
+            // host Pi does not emit message_update deltas.
+            streamSentences: bool(true),
+            // Keep one piper process alive with the model loaded (~100 ms per
+            // sentence instead of ~800 ms). Exec-per-utterance when false.
+            keepWarm: bool(true),
           },
         },
         headphones: bool(false),
@@ -87,6 +107,23 @@ const VOICE_CONFIG_SCHEMA = {
           fields: {
             enabled: bool(false),
             selfEchoOverlap: finite(0.6, { min: 0, max: 1 }),
+            // Cancel TTS as soon as VAD confirms the user speaking. Only acted
+            // on in headphones mode, where the mic cannot hear our playback.
+            cancelOnSpeechStart: bool(true),
+            // Sustained VOICED-speech time before speech counts as a real
+            // barge-in (debounces coughs/keystrokes away from cancelOnSpeechStart).
+            confirmMs: finite(250, { min: 0, max: 2000 }),
+            // Barge-in frames must beat the start threshold by this many dB —
+            // interrupting is deliberate, so it may demand a louder voice.
+            marginDb: finite(5, { min: 0, max: 30 }),
+          },
+        },
+        acknowledgement: {
+          kind: "object",
+          fields: {
+            enabled: bool(false),
+            delayMs: finite(700, { min: 200, max: 5000 }),
+            phrases: phraseArray(DEFAULT_ACK_PHRASES),
           },
         },
         silence: {
@@ -97,6 +134,22 @@ const VOICE_CONFIG_SCHEMA = {
           },
         },
         allowRemoteProviders: bool(false),
+      },
+    },
+    style: {
+      kind: "object",
+      fields: {
+        preset: oneOf([...CONVERSATION_STYLE_IDS], DEFAULT_CONVERSATION_STYLE),
+      },
+    },
+    tools: {
+      kind: "object",
+      fields: {
+        // Extra tool names allowed in conversation mode on top of the
+        // read-only defaults (read/grep/find/ls) — e.g. search tools from
+        // other extensions. The tool-call guard still blocks everything else;
+        // only add tools that cannot write or run commands.
+        allow: toolNameArray([]),
       },
     },
     consent: {

@@ -1,5 +1,39 @@
 const CODE_BLOCK_PLACEHOLDER = "Code block omitted.";
 
+// Phrases whisper famously invents from silence/noise (training-data artifacts
+// from video outros and subtitle credits), normalized to letters-only.
+const STT_HALLUCINATION_EXACT = new Set([
+  "thankyou",
+  "thankyouverymuch",
+  "thanks",
+  "thanksforwatching",
+  "thankyouforwatching",
+  "you",
+  "bye",
+  "byebye",
+  "goodbye",
+  "sobye",
+  "danke",
+  "dankeschön",
+  "vielendank",
+  "tschüss",
+  "bisbald",
+  "biszumnächstenmal",
+  "daswars",
+]);
+const STT_HALLUCINATION_PATTERNS = /amaraorg|untertitel|subtitles|copyright|thanksforwatching/;
+
+/**
+ * True when a transcript matches a known whisper hallucination phrase. Only
+ * a hint: callers must combine it with audio evidence (e.g. low voicedMs)
+ * so a genuine spoken "thank you" is never dropped.
+ */
+export function isLikelySttHallucination(text) {
+  const normalized = String(text ?? "").toLowerCase().replace(/[^\p{L}]+/gu, "");
+  if (!normalized) return true;
+  return STT_HALLUCINATION_EXACT.has(normalized) || STT_HALLUCINATION_PATTERNS.test(normalized);
+}
+
 /**
  * Reduce assistant markdown to text suitable for TTS. Tool cards never reach
  * this function; it only sees final assistant message text.

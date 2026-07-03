@@ -34,6 +34,8 @@ const state = {
   lastCaptureDataAt: 0,
   watchdogTimer: null,
   vad: null,
+  speechConfirmPending: false, // true between speech_start and speech_confirmed
+  utteranceCapturedDuring: null, // latched at speech_start (utterances often END after playback stopped)
   stt: null,
   sttError: null,
   ttsChain: [],
@@ -83,12 +85,23 @@ function cleanupPidFile() {
   if (state.pidDir) removePidFile(state.pidDir, process.pid);
 }
 
+function disposeTtsChain() {
+  for (const adapter of state.ttsChain) {
+    try {
+      adapter.dispose?.();
+    } catch {
+      // best effort
+    }
+  }
+}
+
 function shutdownNow(exitCode = 0) {
   if (state.shuttingDown) return;
   state.shuttingDown = true;
   if (state.watchdogTimer) clearInterval(state.watchdogTimer);
   stopCapture();
   cancelAllSpeech();
+  disposeTtsChain();
   killChildrenSync();
   cleanupPidFile();
   process.exit(exitCode);
@@ -99,6 +112,7 @@ function shutdownNow(exitCode = 0) {
 function dieNow() {
   if (state.shuttingDown) return;
   state.shuttingDown = true;
+  disposeTtsChain();
   killChildrenSync();
   cleanupPidFile();
   process.exit(0);
@@ -147,6 +161,7 @@ function stopCapture() {
   const child = state.captureChild;
   state.captureChild = null;
   state.captureBuffer = Buffer.alloc(0);
+  state.speechConfirmPending = false;
   state.vad?.reset();
   if (child && child.exitCode === null) {
     try {
@@ -205,6 +220,7 @@ function handleFrame(frame) {
   if (!gateIsOpen()) {
     // Half-duplex: keep the device warm but never treat gated audio as speech.
     if (state.vad.isSpeaking()) state.vad.reset();
+    state.speechConfirmPending = false;
     const now = Date.now();
     if (now - state.lastLevelAt >= LEVEL_INTERVAL_MS) {
       state.lastLevelAt = now;
@@ -222,18 +238,37 @@ function handleFrame(frame) {
         send({ type: "level", rmsDb: round1(event.rmsDb) });
       }
     } else if (event.type === "speech_start") {
+      state.speechConfirmPending = true;
+      state.utteranceCapturedDuring = capturedDuring;
       sendState("capturing");
       send({ type: "vad", event: "speech_start" });
     } else if (event.type === "speech_end") {
+      state.speechConfirmPending = false;
       send({ type: "vad", event: "speech_end" });
-      void transcribeUtterance(event.pcm, event.durationMs, capturedDuring);
+      void transcribeUtterance(event.pcm, event.durationMs, state.utteranceCapturedDuring ?? capturedDuring, event.voicedMs);
+      state.utteranceCapturedDuring = null;
     } else if (event.type === "discarded") {
+      state.speechConfirmPending = false;
+      state.utteranceCapturedDuring = null;
       sendState("listening");
+    }
+  }
+
+  // Debounced barge-in signal: speech_start fires on ~100 ms of energy, which
+  // a cough or keystroke can fake. speech_confirmed only fires once VOICED
+  // speech (frames above threshold + marginDb that are pitch-periodic) has
+  // persisted for bargeIn.confirmMs, so the parent can safely cancel TTS on
+  // it. Non-voice noise rarely accumulates voiced frames at all.
+  if (state.speechConfirmPending && state.vad.isSpeaking()) {
+    const confirmMs = state.config.bargeIn?.confirmMs ?? 250;
+    if (state.vad.getVoicedSpeechFrames() * state.vad.frameMs >= confirmMs) {
+      state.speechConfirmPending = false;
+      send({ type: "vad", event: "speech_confirmed" });
     }
   }
 }
 
-async function transcribeUtterance(pcm, utteranceMs, capturedDuring) {
+async function transcribeUtterance(pcm, utteranceMs, capturedDuring, voicedMs = 0) {
   sendState("transcribing");
   if (!state.stt) {
     sendError("stt-not-configured", state.sttError ?? "STT provider is not configured; run /talk setup");
@@ -246,7 +281,7 @@ async function transcribeUtterance(pcm, utteranceMs, capturedDuring) {
     state.sttFailures = 0;
     const trimmed = String(text ?? "").trim();
     if (trimmed) {
-      send({ type: "final-transcript", text: trimmed, utteranceMs, sttMs: ms, capturedDuring });
+      send({ type: "final-transcript", text: trimmed, utteranceMs, sttMs: ms, capturedDuring, voicedMs });
       send({ type: "metrics", turn: { utteranceMs, sttMs: ms } });
     }
   } catch (error) {
@@ -522,6 +557,7 @@ function handleHello(message) {
   state.consent = message.config?.consent ?? {};
   state.vad = createEnergyVad({
     ...state.config.vad,
+    bargeInMarginDb: state.config.bargeIn?.marginDb,
     sampleRateHz: state.config.capture?.sampleRateHz ?? 16000,
   });
 
@@ -533,6 +569,8 @@ function handleHello(message) {
   }
   try {
     state.ttsChain = createTtsChain({ native: state.config, consent: state.consent }, {});
+    // Preload heavyweight engines (piper model ≈ 700 ms) before the first turn.
+    for (const adapter of state.ttsChain) adapter.warmup?.();
   } catch (error) {
     state.ttsChain = [];
     state.ttsError = error.message;
@@ -612,8 +650,12 @@ function handleMessage(message) {
     case "set-config":
       if (state.config && message.patch) {
         deepMerge(state.config, message.patch);
-        if (message.patch.vad) {
-          state.vad = createEnergyVad({ ...state.config.vad, sampleRateHz: state.config.capture?.sampleRateHz ?? 16000 });
+        if (message.patch.vad || message.patch.bargeIn) {
+          state.vad = createEnergyVad({
+            ...state.config.vad,
+            bargeInMarginDb: state.config.bargeIn?.marginDb,
+            sampleRateHz: state.config.capture?.sampleRateHz ?? 16000,
+          });
         }
         if (message.patch.stt) {
           try {
@@ -625,8 +667,10 @@ function handleMessage(message) {
           }
         }
         if (message.patch.tts) {
+          disposeTtsChain();
           try {
             state.ttsChain = createTtsChain({ native: state.config, consent: state.consent }, {});
+            for (const adapter of state.ttsChain) adapter.warmup?.();
             state.ttsError = null;
           } catch (error) {
             state.ttsChain = [];

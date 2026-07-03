@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { speakableTextFromMarkdown, splitIntoSpeechChunks } from "../lib/native-audio/speech-text.mjs";
+import { isLikelySttHallucination, speakableTextFromMarkdown, splitIntoSpeechChunks } from "../lib/native-audio/speech-text.mjs";
 import { isSelfEcho, tokenOverlapRatio } from "../lib/native-audio/self-echo.mjs";
+
+test("known whisper hallucination phrases are flagged; real requests are not", () => {
+  for (const phrase of ["Thank you.", "Thank you!", "Thanks for watching!", "you", "Bye.", "Vielen Dank.", "Untertitelung des ZDF, 2020", "Subtitles by the Amara.org community", "..."]) {
+    assert.equal(isLikelySttHallucination(phrase), true, phrase);
+  }
+  for (const phrase of ["Thank you, now open the readme", "What does this function do?", "Kannst du das erklären?", "stop"]) {
+    assert.equal(isLikelySttHallucination(phrase), false, phrase);
+  }
+});
 
 test("markdown is reduced to speakable text with code blocks omitted", () => {
   const markdown = [

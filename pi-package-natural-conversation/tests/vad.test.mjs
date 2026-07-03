@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createEnergyVad, frameRmsDb, VAD_DEFAULTS } from "../lib/native-audio/vad.mjs";
+import { createEnergyVad, frameRmsDb, frameVoicedness, VAD_DEFAULTS } from "../lib/native-audio/vad.mjs";
 
 const FRAME_SAMPLES = 512;
 
@@ -23,6 +23,17 @@ function collect(vad, frames) {
 }
 
 const LOUD = toneFrame(8000); // sine RMS ≈ -15.3 dBFS, far above the -50 default floor + 9 dB
+
+// Deterministic loud white noise (seeded LCG): high energy, no pitch period.
+function noiseFrame(amplitude = 8000, seed = 12345) {
+  const frame = new Int16Array(FRAME_SAMPLES);
+  let value = seed;
+  for (let i = 0; i < FRAME_SAMPLES; i++) {
+    value = (value * 1103515245 + 12345) & 0x7fffffff;
+    frame[i] = Math.round(((value / 0x7fffffff) * 2 - 1) * amplitude);
+  }
+  return frame;
+}
 
 test("frameRmsDb computes sensible levels", () => {
   assert.equal(frameRmsDb(silenceFrame()), -Infinity);
@@ -60,6 +71,7 @@ test("hangover ends the utterance and pre-roll is included", () => {
   assert.deepEqual(events.map((e) => e.type), ["speech_start", "speech_end"]);
   const end = events[1];
   assert.equal(end.forced, false);
+  assert.ok(end.voicedMs >= 250, `voiced tone must report voice evidence, got ${end.voicedMs}ms`);
   // The utterance must start with pre-roll frames (value 3), not the loud tone.
   const firstSample = end.pcm.readInt16LE(0);
   assert.equal(firstSample, 3);
@@ -76,6 +88,63 @@ test("short clicks are discarded without an STT call", () => {
   ]);
   assert.deepEqual(events.map((e) => e.type), ["speech_start", "discarded"]);
   assert.equal(events[1].reason, "too-short");
+});
+
+test("active speech frames exclude trailing hangover (barge-in debounce input)", () => {
+  const vad = createEnergyVad();
+  assert.equal(vad.getActiveSpeechFrames(), 0);
+
+  // A short blip: active frames stay near the trigger count while silence
+  // accumulates in the hangover, so a 250 ms debounce never confirms it.
+  collect(vad, Array.from({ length: 4 }, () => LOUD));
+  const afterBlip = vad.getActiveSpeechFrames();
+  assert.ok(afterBlip >= 3 && afterBlip <= 4, `blip active frames: ${afterBlip}`);
+  collect(vad, Array.from({ length: 10 }, silenceFrame)); // 320 ms of quiet, still within hangover
+  assert.equal(vad.isSpeaking(), true);
+  assert.ok(vad.getActiveSpeechFrames() <= afterBlip, "hangover silence must not count as active speech");
+
+  // Sustained speech keeps growing past any debounce window.
+  collect(vad, Array.from({ length: 12 }, () => LOUD));
+  assert.ok(vad.getActiveSpeechFrames() * 32 >= 250, `sustained speech active ms: ${vad.getActiveSpeechFrames() * 32}`);
+
+  // After the utterance ends, the counter resets.
+  collect(vad, Array.from({ length: Math.ceil(VAD_DEFAULTS.hangoverMs / 32) }, silenceFrame));
+  assert.equal(vad.isSpeaking(), false);
+  assert.equal(vad.getActiveSpeechFrames(), 0);
+});
+
+test("voicedness separates periodic (voice-like) audio from noise", () => {
+  assert.ok(frameVoicedness(LOUD) > 0.8, `tone voicedness ${frameVoicedness(LOUD)}`);
+  assert.ok(frameVoicedness(noiseFrame()) < 0.4, `noise voicedness ${frameVoicedness(noiseFrame())}`);
+  assert.equal(frameVoicedness(silenceFrame()), 0);
+});
+
+test("loud non-voice noise accumulates active frames but not voiced frames", () => {
+  const vad = createEnergyVad();
+  // 20 frames (~640 ms) of loud white noise — starts an utterance…
+  let seed = 1;
+  const frames = Array.from({ length: 20 }, () => noiseFrame(8000, seed++));
+  collect(vad, frames);
+  assert.equal(vad.isSpeaking(), true);
+  assert.ok(vad.getActiveSpeechFrames() >= 15, "noise is loud enough to count as active");
+  // …but almost none of it passes the voiced check, so a 250 ms barge-in
+  // confirmation (≈ 8 frames) can never be reached by typing/clatter.
+  assert.ok(vad.getVoicedSpeechFrames() <= 2, `voiced frames from noise: ${vad.getVoicedSpeechFrames()}`);
+
+  // A voice-like tone at the same level confirms quickly.
+  const voiced = createEnergyVad();
+  collect(voiced, Array.from({ length: 20 }, () => LOUD));
+  assert.ok(voiced.getVoicedSpeechFrames() * 32 >= 250, `voiced ms: ${voiced.getVoicedSpeechFrames() * 32}`);
+});
+
+test("quiet voice below the barge-in margin stays unconfirmed but still transcribes", () => {
+  // Fixed threshold -30 dBFS; tone at ~-27 dBFS is 3 dB above it — enough to
+  // start an utterance, not enough to clear the +5 dB barge-in margin.
+  const vad = createEnergyVad({ thresholdDb: -30 });
+  const soft = toneFrame(2100); // RMS ≈ -26.9 dBFS
+  collect(vad, Array.from({ length: 20 }, () => soft));
+  assert.equal(vad.isSpeaking(), true, "soft speech still opens an utterance");
+  assert.equal(vad.getVoicedSpeechFrames(), 0, "but never confirms a barge-in");
 });
 
 test("max utterance duration forces an endpoint", () => {

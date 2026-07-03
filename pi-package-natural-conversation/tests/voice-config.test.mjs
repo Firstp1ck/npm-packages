@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULT_ACK_PHRASES,
   defaultVoiceConfig,
   validateVoiceConfig,
   loadVoiceConfig,
@@ -30,6 +31,37 @@ test("default config matches the plan §7 draft schema", () => {
   assert.equal(config.native.silence.timeoutMs, 8000);
   assert.equal(config.native.allowRemoteProviders, false);
   assert.deepEqual(config.consent, { nativeAudioAcceptedAt: null, hostedSttAcceptedAt: null, hostedTtsAcceptedAt: null });
+  // naturalness features (plan Phases 2/3/5)
+  assert.equal(config.style.preset, "natural");
+  assert.deepEqual(config.native.acknowledgement, { enabled: false, delayMs: 700, phrases: [...DEFAULT_ACK_PHRASES] });
+  assert.equal(config.native.bargeIn.cancelOnSpeechStart, true);
+  assert.equal(config.native.bargeIn.confirmMs, 250);
+  assert.equal(config.native.bargeIn.marginDb, 5);
+  assert.deepEqual(config.tools.allow, []);
+});
+
+test("style, acknowledgement, and barge-in cancel values are validated", () => {
+  const { config, warnings } = validateVoiceConfig({
+    version: 1,
+    style: { preset: "shakespearean" },
+    tools: { allow: [42, "ok"] },
+    native: {
+      acknowledgement: { enabled: true, delayMs: 50, phrases: [] },
+      bargeIn: { cancelOnSpeechStart: "yes" },
+    },
+  });
+  assert.equal(config.style.preset, "natural");
+  assert.deepEqual(config.tools.allow, [], "non-string tool names invalidate the list");
+  assert.ok(warnings.some((w) => w.includes("tools.allow")));
+  const valid = validateVoiceConfig({ version: 1, tools: { allow: ["brave_search"] } });
+  assert.deepEqual(valid.config.tools.allow, ["brave_search"]);
+  assert.equal(config.native.acknowledgement.enabled, true);
+  assert.equal(config.native.acknowledgement.delayMs, 700, "out-of-range delay falls back");
+  assert.deepEqual(config.native.acknowledgement.phrases, [...DEFAULT_ACK_PHRASES], "empty phrase list falls back");
+  assert.equal(config.native.bargeIn.cancelOnSpeechStart, true);
+  assert.ok(warnings.some((w) => w.includes("style.preset")));
+  assert.ok(warnings.some((w) => w.includes("acknowledgement.delayMs")));
+  assert.ok(warnings.some((w) => w.includes("acknowledgement.phrases")));
 });
 
 test("invalid values fall back to defaults with warnings; unknown keys are dropped", () => {

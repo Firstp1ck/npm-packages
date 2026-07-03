@@ -37,7 +37,16 @@ export function createTtsChain({ native, consent }, { env = process.env, fetchIm
   if (tts.provider === "local-endpoint") {
     chain.push(createLocalTtsAdapter({ url: tts.url, voice: tts.voice, timeoutMs: tts.timeoutMs, fetchImpl }));
   } else if (tts.provider === "piper") {
-    chain.push(createPiperTtsAdapter({ modelPath: tts.modelPath, env, spawn, findExec }));
+    chain.push(
+      createPiperTtsAdapter({
+        modelPath: tts.modelPath,
+        keepWarm: tts.keepWarm !== false,
+        timeoutMs: tts.timeoutMs,
+        env,
+        spawn,
+        findExec,
+      }),
+    );
   } else if (tts.provider === "openai") {
     requireHostedConsent("tts", tts.provider, { native, consent });
     chain.push(createOpenAiTtsAdapter({ env, voice: tts.voice, timeoutMs: tts.timeoutMs, fetchImpl }));

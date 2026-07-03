@@ -211,7 +211,7 @@ test("start performs the handshake, opens the gate, and shows widget + footer st
   assert.match(ctx.widgets.get("natural-conversation-audio")[0], /Voice listening/);
 });
 
-test("idle transcripts dispatch through pi.sendUserMessage with no deliverAs", async () => {
+test("transcripts always carry deliverAs so a streaming race can never throw", async () => {
   const { pi, controller, loop, children } = makeLoop();
   const ctx = mockCtx();
   controller.enable(ctx);
@@ -222,7 +222,10 @@ test("idle transcripts dispatch through pi.sendUserMessage with no deliverAs", a
 
   assert.equal(pi.sentMessages.length, 1);
   assert.equal(pi.sentMessages[0].content, "how does this work");
-  assert.equal(pi.sentMessages[0].options, undefined);
+  // sendUserMessage rejects ASYNCHRONOUSLY when the agent is streaming and no
+  // deliverAs is given; passing it unconditionally is the only safe shape
+  // (it is ignored while idle).
+  assert.deepEqual(pi.sentMessages[0].options, { deliverAs: "steer" });
 });
 
 test("transcripts while streaming coalesce into one capped steer message", async () => {
@@ -283,6 +286,58 @@ test("agent_end speaks the final answer in chunks and silence event fires after 
   assert.match(silenceMessages[0].content, /\[Conversation mode: the user stayed silent for \d+s after your question\./);
 });
 
+test("hallucinated transcripts from noise are dropped; genuinely spoken ones pass", async () => {
+  const { pi, controller, loop, children } = makeLoop();
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  // Whisper's classic noise artifact: blocklisted phrase, no voice evidence.
+  child.reply({ type: "final-transcript", text: "Thank you.", utteranceMs: 600, sttMs: 80, capturedDuring: "listening", voicedMs: 64 });
+  await sleep(20);
+  assert.equal(pi.sentMessages.length, 0, "noise-born 'Thank you.' must not become a turn");
+
+  // The same words actually spoken (plenty of voiced audio) go through.
+  child.reply({ type: "final-transcript", text: "Thank you.", utteranceMs: 900, sttMs: 80, capturedDuring: "listening", voicedMs: 700 });
+  await sleep(20);
+  assert.equal(pi.sentMessages.length, 1);
+
+  // Non-blocklisted text passes regardless of voiced evidence.
+  child.reply({ type: "final-transcript", text: "please open the readme", utteranceMs: 900, sttMs: 80, capturedDuring: "listening", voicedMs: 0 });
+  await sleep(20);
+  assert.equal(pi.sentMessages.length, 2);
+});
+
+test("late echo transcripts in inter-sentence gaps are still dropped", async () => {
+  const { pi, controller, loop, children } = makeLoop();
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  // Streamed sentence plays and finishes; the agent is still generating.
+  loop.handleAgentStart(ctx);
+  loop.handleTurnStart(ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "Search is not giving me a clean current read right now. " } }, ctx);
+  const speak = child.messagesOfType("speak")[0];
+  child.reply({ type: "speak-ended", id: speak.id, cancelled: false });
+  await sleep(20);
+  assert.equal(loop._state.pendingSpeakIds.size, 0, "gap between sentences: nothing pending");
+
+  // The echo's transcript arrives now — capturedDuring 'listening', no
+  // pending speaks — and must still be recognized as our own voice.
+  child.reply({ type: "final-transcript", text: "Search is not giving me", utteranceMs: 800, sttMs: 200, capturedDuring: "listening", voicedMs: 600 });
+  await sleep(60); // > steerDebounceMs
+  assert.equal(pi.sentMessages.length, 0, "late echo must not become a steer/turn");
+
+  // A genuinely different interruption in the same gap still goes through.
+  child.reply({ type: "final-transcript", text: "stop please switch to the other topic", utteranceMs: 900, sttMs: 100, capturedDuring: "listening", voicedMs: 700 });
+  await sleep(60);
+  assert.equal(pi.sentMessages.length, 1);
+  assert.deepEqual(pi.sentMessages[0].options, { deliverAs: "steer" });
+});
+
 test("self-echo transcripts captured while speaking are dropped", async () => {
   const { pi, controller, loop, children } = makeLoop();
   const ctx = mockCtx();
@@ -304,6 +359,206 @@ test("self-echo transcripts captured while speaking are dropped", async () => {
   });
   await sleep(20);
   assert.equal(pi.sentMessages.length, 0, "echo of our own TTS must not become a user turn");
+});
+
+test("delayed acknowledgement fires only when the answer is slow", async () => {
+  const config = makeConfig();
+  config.native.acknowledgement = { enabled: true, delayMs: 20, phrases: ["Got it."] };
+  const { controller, loop, children } = makeLoop({ config });
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  child.reply({ type: "final-transcript", text: "please explain how the voice loop works", utteranceMs: 1500, sttMs: 100, capturedDuring: "listening" });
+  await sleep(10);
+  loop.handleAgentStart(ctx);
+  await sleep(60); // > delayMs while the agent is still working
+
+  const speaks = child.messagesOfType("speak");
+  assert.equal(speaks.length, 1, "slow turn gets exactly one acknowledgement");
+  assert.equal(speaks[0].text, "Got it.");
+  assert.match(speaks[0].id, /^a/, "ack ids are distinct from answer chunk ids");
+
+  // The real answer still arrives afterwards without duplication.
+  loop.handleAgentEnd({ type: "agent_end", messages: [{ role: "assistant", content: "Here is the answer." }] }, ctx);
+  const answerSpeaks = child.messagesOfType("speak").filter((m) => m.id.startsWith("s"));
+  assert.equal(answerSpeaks.length, 1);
+});
+
+test("no acknowledgement for fast turns, short prompts, or when disabled", async () => {
+  const config = makeConfig();
+  config.native.acknowledgement = { enabled: true, delayMs: 20, phrases: ["Got it."] };
+  const { controller, loop, children } = makeLoop({ config });
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  // Fast turn: agent_end lands before the delay expires.
+  child.reply({ type: "final-transcript", text: "please explain how the voice loop works", utteranceMs: 1500, sttMs: 100, capturedDuring: "listening" });
+  await sleep(10);
+  loop.handleAgentStart(ctx);
+  loop.handleAgentEnd({ type: "agent_end", messages: [{ role: "assistant", content: "Quick answer." }] }, ctx);
+  await sleep(60);
+  assert.equal(child.messagesOfType("speak").filter((m) => m.text === "Got it.").length, 0, "fast turns are never acknowledged");
+
+  // Short prompt: never armed even though the turn stays open.
+  for (const speak of child.messagesOfType("speak")) child.reply({ type: "speak-ended", id: speak.id, cancelled: false });
+  await sleep(10);
+  child.reply({ type: "final-transcript", text: "hi", utteranceMs: 300, sttMs: 50, capturedDuring: "listening" });
+  await sleep(10);
+  loop.handleAgentStart(ctx);
+  await sleep(60);
+  assert.equal(child.messagesOfType("speak").filter((m) => m.text === "Got it.").length, 0, "short prompts are never acknowledged");
+
+  // Disabled (default config): no ack even on a slow turn.
+  const second = makeLoop();
+  second.controller.enable(ctx);
+  await second.loop.start(ctx);
+  second.children[0].reply({ type: "final-transcript", text: "please explain how the voice loop works", utteranceMs: 1500, sttMs: 100, capturedDuring: "listening" });
+  await sleep(10);
+  second.loop.handleAgentStart(ctx);
+  await sleep(60);
+  assert.equal(second.children[0].messagesOfType("speak").length, 0, "acknowledgements are opt-in");
+});
+
+test("headphones barge-in cancels TTS on VAD speech start", async () => {
+  const config = makeConfig();
+  config.native.headphones = true;
+  const { controller, loop, children } = makeLoop({ config });
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  loop.handleAgentStart(ctx);
+  loop.handleAgentEnd(
+    { type: "agent_end", messages: [{ role: "assistant", content: "This is a long answer that keeps playing while the user starts talking." }] },
+    ctx,
+  );
+  assert.ok(child.messagesOfType("gate").some((m) => m.mode === "barge_in"), "headphones mode keeps the mic open while speaking");
+  assert.ok(child.messagesOfType("speak").length > 0);
+
+  // Raw speech_start is noise-prone (keystrokes, coughs) and must not cancel.
+  child.reply({ type: "vad", event: "speech_start" });
+  await sleep(10);
+  assert.equal(child.messagesOfType("cancel-speak").length, 0, "unconfirmed speech never cancels playback");
+
+  child.reply({ type: "vad", event: "speech_confirmed" });
+  await sleep(10);
+  assert.equal(child.messagesOfType("cancel-speak").length, 1, "confirmed speech cancels playback immediately");
+});
+
+test("speech-start cancel stays off without headphones or when disabled", async () => {
+  // Speakers (no headphones): the mic hears our own TTS, so speech_start must not cancel.
+  const speakers = makeConfig();
+  speakers.native.bargeIn.enabled = true;
+  const first = makeLoop({ config: speakers });
+  const ctx = mockCtx();
+  first.controller.enable(ctx);
+  await first.loop.start(ctx);
+  first.loop.handleAgentStart(ctx);
+  first.loop.handleAgentEnd({ type: "agent_end", messages: [{ role: "assistant", content: "An answer played over speakers." }] }, ctx);
+  first.children[0].reply({ type: "vad", event: "speech_confirmed" });
+  await sleep(10);
+  assert.equal(first.children[0].messagesOfType("cancel-speak").length, 0, "no speech-start cancel on speakers");
+
+  // Headphones but cancelOnSpeechStart=false: transcript-level cancel only.
+  const optedOut = makeConfig();
+  optedOut.native.headphones = true;
+  optedOut.native.bargeIn.cancelOnSpeechStart = false;
+  const second = makeLoop({ config: optedOut });
+  second.controller.enable(ctx);
+  await second.loop.start(ctx);
+  second.loop.handleAgentStart(ctx);
+  second.loop.handleAgentEnd({ type: "agent_end", messages: [{ role: "assistant", content: "An answer that should keep playing." }] }, ctx);
+  second.children[0].reply({ type: "vad", event: "speech_confirmed" });
+  await sleep(10);
+  assert.equal(second.children[0].messagesOfType("cancel-speak").length, 0);
+});
+
+test("sentence streaming speaks during the turn and agent_end never duplicates", async () => {
+  const { controller, loop, children } = makeLoop();
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  loop.handleAgentStart(ctx);
+  loop.handleTurnStart(ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_start" } }, ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "The first sentence arrives here. And the se" } }, ctx);
+  assert.equal(child.messagesOfType("speak").length, 1, "first completed sentence speaks immediately");
+  assert.match(child.messagesOfType("speak")[0].text, /first sentence arrives here/);
+  assert.ok(child.messagesOfType("gate").some((m) => m.mode === "closed"), "gate closes when streamed speech starts");
+
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "cond one finishes now. Trailing partial" } }, ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_end" } }, ctx);
+  const streamedSpeaks = child.messagesOfType("speak");
+  assert.equal(streamedSpeaks.length, 3, "second sentence and flushed tail speak too");
+
+  loop.handleAgentEnd(
+    {
+      type: "agent_end",
+      messages: [{ role: "assistant", content: "The first sentence arrives here. And the second one finishes now. Trailing partial" }],
+    },
+    ctx,
+  );
+  assert.equal(child.messagesOfType("speak").length, 3, "agent_end must not re-speak streamed text");
+  assert.notEqual(child.messagesOfType("gate").at(-1).mode, "open", "gate stays closed while streamed speech is still playing");
+
+  for (const speak of streamedSpeaks) child.reply({ type: "speak-ended", id: speak.id, cancelled: false });
+  await sleep(20);
+  assert.equal(child.messagesOfType("gate").at(-1).mode, "open", "gate reopens after the last streamed chunk finishes");
+  assert.equal(controller.getState().uiState, "listening");
+});
+
+test("interrupting a streamed answer suppresses speech until the next turn", async () => {
+  const { pi, controller, loop, children } = makeLoop();
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  loop.handleAgentStart(ctx);
+  loop.handleTurnStart(ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "A long answer begins with this sentence. " } }, ctx);
+  assert.equal(child.messagesOfType("speak").length, 1);
+
+  // The user talks over it.
+  child.reply({ type: "final-transcript", text: "actually stop and do something else", utteranceMs: 900, sttMs: 90, capturedDuring: "listening" });
+  await sleep(60); // > steerDebounceMs
+  assert.equal(child.messagesOfType("cancel-speak").length, 1, "pending streamed speech is flushed");
+  assert.deepEqual(pi.sentMessages.at(-1).options, { deliverAs: "steer" });
+
+  // More deltas from the interrupted turn stay silent…
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "This continuation must not be voiced. " } }, ctx);
+  assert.equal(child.messagesOfType("speak").length, 1);
+
+  // …but the next turn (the steer response) speaks again.
+  loop.handleTurnStart(ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "Okay, switching to the new task now. " } }, ctx);
+  assert.equal(child.messagesOfType("speak").length, 2);
+  assert.match(child.messagesOfType("speak").at(-1).text, /switching to the new task/);
+});
+
+test("streamSentences=false keeps the final-answer-only pipeline", async () => {
+  const config = makeConfig();
+  config.native.tts.streamSentences = false;
+  const { controller, loop, children } = makeLoop({ config });
+  const ctx = mockCtx();
+  controller.enable(ctx);
+  await loop.start(ctx);
+  const child = children[0];
+
+  loop.handleAgentStart(ctx);
+  loop.handleTurnStart(ctx);
+  loop.handleMessageUpdate({ assistantMessageEvent: { type: "text_delta", delta: "A complete sentence right away. " } }, ctx);
+  assert.equal(child.messagesOfType("speak").length, 0, "no streamed speech when disabled");
+
+  loop.handleAgentEnd({ type: "agent_end", messages: [{ role: "assistant", content: "A complete sentence right away." }] }, ctx);
+  assert.equal(child.messagesOfType("speak").length, 1, "final answer still speaks");
 });
 
 test("stop escalates: shutdown → stdin close → SIGTERM group → SIGKILL group", async () => {

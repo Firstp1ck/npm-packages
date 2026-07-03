@@ -3,7 +3,8 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { loadVoiceConfig, resolveRuntimeVoiceConfig, hasNativeConsent, safeEndpointLabel } from "./voice-config.mjs";
 import { sweepStalePidFiles, voiceRuntimeDir } from "./native-audio/pidfiles.mjs";
-import { speakableTextFromMarkdown, splitIntoSpeechChunks } from "./native-audio/speech-text.mjs";
+import { isLikelySttHallucination, speakableTextFromMarkdown, splitIntoSpeechChunks } from "./native-audio/speech-text.mjs";
+import { createSentenceStream } from "./native-audio/sentence-stream.mjs";
 import { isSelfEcho } from "./native-audio/self-echo.mjs";
 
 export const PROTOCOL_VERSION = 1;
@@ -73,7 +74,15 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
     pendingSpeakIds: new Set(),
     lastSpokenText: "",
     lastAnswerText: "",
+    lastSpeakEndedAtMs: 0,
     silenceTimer: null,
+    ackTimer: null,
+    ackCounter: 0,
+    stream: {
+      extractor: createSentenceStream(),
+      spokeAny: false, // any streamed sentence enqueued this agent run
+      suppressed: false, // user interrupted; hold streamed speech until the next turn
+    },
     metrics: {},
     probeWaiters: new Map(),
     probeCounter: 0,
@@ -133,7 +142,7 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
   }
 
   function clearTimers() {
-    for (const key of ["restartTimer", "steerTimer", "silenceTimer"]) {
+    for (const key of ["restartTimer", "steerTimer", "silenceTimer", "ackTimer"]) {
       if (state[key]) {
         clearTimeout(state[key]);
         state[key] = null;
@@ -420,6 +429,9 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
         break;
       case "vad":
         if (message.event === "speech_start") cancelSilenceTimer();
+        // Cancel on confirmed speech only: raw speech_start fires on ~100 ms
+        // of energy, and a keystroke or cough must not cut the answer off.
+        else if (message.event === "speech_confirmed") maybeCancelSpeechOnBargeIn();
         break;
       case "final-transcript":
         handleFinalTranscript(message);
@@ -428,10 +440,18 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
         break;
       case "speak-ended":
         state.pendingSpeakIds.delete(message.id);
-        if (state.pendingSpeakIds.size === 0 && !state.agentStreaming && state.phase === "running") {
-          sendToCompanion({ type: "gate", mode: "open" });
-          setUiState("listening");
-          armSilenceTimer();
+        state.lastSpeakEndedAtMs = now();
+        if (state.pendingSpeakIds.size === 0 && state.phase === "running") {
+          if (!state.agentStreaming) {
+            sendToCompanion({ type: "gate", mode: "open" });
+            setUiState("listening");
+            armSilenceTimer();
+          } else {
+            // Streamed speech drained mid-turn: go back to interrupt-only
+            // listening until the next sentence (or the end of the turn).
+            sendToCompanion({ type: "gate", mode: "interrupt_only" });
+            setUiState("answering");
+          }
         }
         break;
       case "metrics":
@@ -471,16 +491,15 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
   // ------------------------------------------------------------------
 
   function dispatchUserMessage(text, options) {
+    // Always send deliverAs: Pi ignores it when the agent is idle and queues
+    // the message when it is streaming. Without it, a race between our
+    // agentStreaming flag and the session's real state makes sendUserMessage
+    // reject ASYNCHRONOUSLY ("Agent is already processing…") — which a
+    // try/catch here cannot intercept, so prevention is the only fix.
     try {
-      pi.sendUserMessage(text, options);
+      pi.sendUserMessage(text, { deliverAs: "steer", ...options });
     } catch {
-      // The agent may have started streaming between our check and the send;
-      // steer is always legal while streaming.
-      try {
-        pi.sendUserMessage(text, { deliverAs: "steer" });
-      } catch {
-        notify(state.lastCtx, "Failed to deliver voice transcript to the agent.", "error");
-      }
+      notify(state.lastCtx, "Failed to deliver voice transcript to the agent.", "error");
     }
   }
 
@@ -492,18 +511,28 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
     if (state.pendingInterrupts.length === 0) return;
     const joined = state.pendingInterrupts.join("\n");
     state.pendingInterrupts = [];
-    if (state.agentStreaming) dispatchUserMessage(joined, { deliverAs: "steer" });
-    else dispatchUserMessage(joined);
+    dispatchUserMessage(joined); // steer while streaming, plain turn when idle
   }
 
   function handleFinalTranscript(message) {
     const text = String(message.text ?? "").trim();
     if (!text || !controller.isEnabled() || state.phase !== "running") return;
+
+    // Whisper invents outro phrases ("Thank you.") from noise-only audio.
+    // Drop them when the utterance carried almost no voice-like signal; a
+    // real spoken thank-you easily exceeds 300 ms of voiced frames.
+    if (isLikelySttHallucination(text) && (message.voicedMs ?? 0) < 300) return;
+
     cancelSilenceTimer();
 
+    // Echo window: with sentence streaming, an echo's transcript often lands
+    // AFTER its sentence finished playing (STT + hangover delay), when no
+    // speak is pending anymore — so also match while the turn is streaming
+    // and for a grace period after the last chunk ended.
     const overlap = state.resolvedNative?.bargeIn?.selfEchoOverlap ?? 0.6;
-    if ((message.capturedDuring === "speaking" || state.pendingSpeakIds.size > 0) && state.lastSpokenText &&
-      isSelfEcho(text, state.lastSpokenText, { threshold: overlap })) {
+    const echoWindow = message.capturedDuring === "speaking" || state.pendingSpeakIds.size > 0 ||
+      state.agentStreaming || now() - state.lastSpeakEndedAtMs < 2000;
+    if (echoWindow && state.lastSpokenText && isSelfEcho(text, state.lastSpokenText, { threshold: overlap })) {
       return; // our own TTS audio picked up by the mic
     }
 
@@ -512,7 +541,13 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
       sendToCompanion({ type: "cancel-speak" });
     }
 
+    cancelAckTimer(); // the user is talking again; never acknowledge over them
+
     if (state.agentStreaming) {
+      // Stop voicing the answer being interrupted; the response to the steer
+      // arrives in a fresh turn, which lifts the suppression.
+      state.stream.suppressed = true;
+      state.stream.extractor.reset();
       const result = controller.handleConversationInterrupt(text, { toolPhaseActive: state.toolPhaseActive });
       if (result.action === "ignored") return;
       if (state.pendingInterrupts.length >= timings.maxPendingInterrupts) {
@@ -534,6 +569,127 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
 
     setUiState("answering");
     dispatchUserMessage(text);
+    armAckTimer(text);
+  }
+
+  // ------------------------------------------------------------------
+  // delayed acknowledgement (plan Phase 3)
+  // ------------------------------------------------------------------
+
+  function cancelAckTimer() {
+    if (state.ackTimer) {
+      clearTimeout(state.ackTimer);
+      state.ackTimer = null;
+    }
+  }
+
+  /**
+   * Fill dead air on slow turns only: a short spoken acknowledgement fires
+   * when the assistant has not produced a speakable answer within delayMs.
+   * Fast turns cancel the timer in handleAgentEnd before it fires; very
+   * short prompts and turns with TTS already active never arm it.
+   */
+  function armAckTimer(transcript) {
+    cancelAckTimer();
+    const ack = state.resolvedNative?.acknowledgement;
+    if (!ack?.enabled) return;
+    if (transcript.split(/\s+/).length < 3) return;
+    if (state.pendingSpeakIds.size > 0) return;
+    state.ackTimer = setTimeout(() => {
+      state.ackTimer = null;
+      if (state.phase !== "running" || state.pendingSpeakIds.size > 0) return;
+      const phrases = Array.isArray(ack.phrases) && ack.phrases.length > 0 ? ack.phrases : ["Got it, one second."];
+      const phrase = phrases[state.ackCounter % phrases.length];
+      state.ackCounter += 1;
+      state.lastSpokenText = phrase;
+      state.speakCounter += 1;
+      const id = `a${state.speakCounter}`;
+      state.pendingSpeakIds.add(id);
+      sendToCompanion({ type: "speak", id, text: phrase });
+    }, ack.delayMs ?? 700);
+    state.ackTimer.unref?.();
+  }
+
+  // ------------------------------------------------------------------
+  // barge-in (plan Phase 5)
+  // ------------------------------------------------------------------
+
+  /**
+   * Cancel TTS the moment VAD hears the user, instead of waiting for the
+   * final transcript. Headphones-only: on speakers the mic hears our own
+   * playback, and the resulting speech_start would cancel every answer.
+   */
+  function maybeCancelSpeechOnBargeIn() {
+    if (state.pendingSpeakIds.size === 0) return;
+    if (state.resolvedNative?.headphones !== true) return;
+    if (state.resolvedNative?.bargeIn?.cancelOnSpeechStart !== true) return;
+    sendToCompanion({ type: "cancel-speak" });
+    // Visible trace so unwanted cutoffs can be attributed to this path
+    // (vs. playback errors) when diagnosing sensitivity.
+    notify(state.lastCtx, "Voice barge-in: playback cancelled (confirmed speech).", "info");
+  }
+
+  // ------------------------------------------------------------------
+  // sentence-level TTS streaming (plan Phase 4)
+  // ------------------------------------------------------------------
+
+  function resetStreamState() {
+    state.stream.spokeAny = false;
+    state.stream.suppressed = false;
+    state.stream.extractor.reset();
+  }
+
+  function enqueueStreamText(rawText) {
+    if (state.phase !== "running" || state.stream.suppressed || state.toolPhaseActive) return;
+    const speakable = speakableTextFromMarkdown(rawText);
+    if (!speakable) return;
+    const chunks = splitIntoSpeechChunks(speakable);
+    if (chunks.length === 0) return;
+    cancelAckTimer(); // real speech beats filler
+    if (state.pendingSpeakIds.size === 0) {
+      const bargeIn = state.resolvedNative?.headphones || state.resolvedNative?.bargeIn?.enabled;
+      sendToCompanion({ type: "gate", mode: bargeIn ? "barge_in" : "closed" });
+      setUiState("speaking");
+    }
+    state.stream.spokeAny = true;
+    state.lastSpokenText = `${state.lastSpokenText} ${speakable}`.slice(-1500);
+    for (const chunk of chunks) {
+      state.speakCounter += 1;
+      const id = `s${state.speakCounter}`;
+      state.pendingSpeakIds.add(id);
+      sendToCompanion({ type: "speak", id, text: chunk });
+    }
+  }
+
+  /**
+   * Assistant streaming deltas → incremental speech. Only completed
+   * sentences outside code fences are enqueued; the final-answer path in
+   * handleAgentEnd stays as the fallback (and speaks nothing extra when
+   * streaming already voiced the turn).
+   */
+  function handleMessageUpdate(event, ctx) {
+    ctxOf(ctx);
+    if (!controller.isEnabled() || state.phase !== "running") return;
+    if (state.resolvedNative?.tts?.streamSentences === false) return;
+    const streamEvent = event?.assistantMessageEvent;
+    if (!streamEvent) return;
+    if (streamEvent.type === "text_start") {
+      state.stream.extractor.reset();
+    } else if (streamEvent.type === "text_delta" && typeof streamEvent.delta === "string") {
+      const ready = state.stream.extractor.push(streamEvent.delta);
+      if (ready) enqueueStreamText(ready);
+    } else if (streamEvent.type === "text_end") {
+      const rest = state.stream.extractor.flush();
+      if (rest) enqueueStreamText(rest);
+    }
+  }
+
+  function handleTurnStart(ctx) {
+    ctxOf(ctx);
+    // A new LLM response begins (first turn, after a tool phase, or after a
+    // steer): speech may flow again and no stale partial sentence survives.
+    state.stream.suppressed = false;
+    state.stream.extractor.reset();
   }
 
   // ------------------------------------------------------------------
@@ -548,6 +704,7 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
     ctxOf(ctx);
     state.agentStreaming = true;
     state.toolPhaseActive = false;
+    resetStreamState();
     if (!active()) return;
     cancelSilenceTimer();
     sendToCompanion({ type: "gate", mode: "interrupt_only" });
@@ -588,6 +745,9 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
     const target = ctxOf(ctx);
     state.agentStreaming = false;
     state.toolPhaseActive = false;
+    cancelAckTimer(); // the real answer is here (or the turn died) — no filler needed
+    const streamedThisRun = state.stream.spokeAny;
+    resetStreamState();
     if (!controller.isEnabled()) return;
 
     // Transcripts that arrived at the very end of a turn become a new turn.
@@ -600,9 +760,12 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
     const rawText = finalAssistantText(event);
     state.lastAnswerText = rawText.trim();
     const speakable = speakableTextFromMarkdown(rawText);
-    const chunks = state.phase === "running" ? splitIntoSpeechChunks(speakable) : [];
+    // Streaming already enqueued this turn's sentences — never speak twice.
+    const chunks = state.phase === "running" && !streamedThisRun ? splitIntoSpeechChunks(speakable) : [];
 
     if (chunks.length === 0) {
+      if (streamedThisRun) state.lastSpokenText = speakable.slice(-1500);
+      if (state.pendingSpeakIds.size > 0) return; // streamed speech still playing; speak-ended reopens the gate
       sendToCompanion({ type: "gate", mode: "open" });
       setUiState("listening", target);
       armSilenceTimer();
@@ -825,6 +988,8 @@ export function createNativeAudioLoop(pi, controller, deps = {}) {
     getPhase: () => state.phase,
     handleAgentStart,
     handleAgentEnd,
+    handleMessageUpdate,
+    handleTurnStart,
     handleToolExecutionStart,
     handleToolExecutionEnd,
     notifyUserInput,

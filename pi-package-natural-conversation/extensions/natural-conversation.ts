@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createConversationController } from "@firstpick/pi-package-natural-conversation/controller";
+import { CONVERSATION_STYLES, DEFAULT_ALLOWED_TOOLS, createConversationController } from "@firstpick/pi-package-natural-conversation/controller";
 import { createNativeAudioLoop } from "@firstpick/pi-package-natural-conversation/native-audio-loop";
 import { runSetupWizard } from "@firstpick/pi-package-natural-conversation/setup-wizard";
-import { loadVoiceConfig } from "@firstpick/pi-package-natural-conversation/voice-config";
+import { loadVoiceConfig, saveVoiceConfig } from "@firstpick/pi-package-natural-conversation/voice-config";
 import { listPiperVoices, switchPiperVoice, voiceListText, VOICE_CATALOG } from "@firstpick/pi-package-natural-conversation/voice-switch";
 
 const COMMAND_NAMES = ["talk", "voice", "conversation"] as const;
@@ -23,10 +23,15 @@ const COMMAND_COMPLETIONS = [
   "metrics",
   "voice",
   ...VOICE_CATALOG.map((voice) => `voice ${voice.id}`),
+  "style",
+  ...Object.keys(CONVERSATION_STYLES).map((preset) => `style ${preset}`),
+  "tools",
+  "tools allow",
+  "tools deny",
 ];
 
 function usage(commandName = "talk"): string {
-  return `Usage: /${commandName} [on|off|status|setup|audio on|audio off|pause|resume|doctor [mic|speaker|stt|tts]|voice [<id>]|metrics]`;
+  return `Usage: /${commandName} [on|off|status|setup|audio on|audio off|pause|resume|doctor [mic|speaker|stt|tts]|voice [<id>]|style [<preset>]|tools [allow|deny <tool>...]|metrics]`;
 }
 
 function words(args: string | undefined): string[] {
@@ -48,6 +53,8 @@ export default function naturalConversationExtension(pi: ExtensionAPI): void {
         silenceEnabled: config.native.silence.enabled,
         silenceTimeoutMs: config.native.silence.timeoutMs,
         bargeInEnabled: config.native.bargeIn.enabled === true || config.native.headphones === true,
+        stylePreset: config.style.preset,
+        allowedTools: [...DEFAULT_ALLOWED_TOOLS, ...config.tools.allow],
       };
       autoStart = config.native.enabled === true && config.native.autoStartWithTalkOn === true;
     } catch {
@@ -136,6 +143,70 @@ export default function naturalConversationExtension(pi: ExtensionAPI): void {
       return;
     }
 
+    if (subcommand === "style") {
+      const preset = parts[1] ?? "";
+      const current = controller.getStyle();
+      if (!preset || preset === "list") {
+        const lines = Object.keys(CONVERSATION_STYLES).map(
+          (id) => `${id === current ? "●" : " "} ${id} — ${CONVERSATION_STYLES[id].label}`,
+        );
+        ctx.ui.notify([`Spoken styles (/${commandName} style <preset> to switch):`, ...lines].join("\n"), "info");
+        return;
+      }
+      if (!CONVERSATION_STYLES[preset]) {
+        ctx.ui.notify(`Unknown style '${preset}'. Available: ${Object.keys(CONVERSATION_STYLES).join(", ")}`, "warning");
+        return;
+      }
+      controller.setStyle(preset, ctx);
+      try {
+        const { config } = loadVoiceConfig();
+        config.style.preset = preset;
+        saveVoiceConfig(config);
+      } catch {
+        ctx.ui.notify("Style applied for this session, but voice.json could not be updated.", "warning");
+      }
+      ctx.ui.notify(`Spoken style: ${preset} — ${CONVERSATION_STYLES[preset].label}. Takes effect on the next answer.`, "info");
+      return;
+    }
+
+    if (subcommand === "tools") {
+      const action = parts[1] ?? "";
+      // Preserve case for tool names (words() lowercases; names may not be).
+      const names = (args ?? "").trim().split(/\s+/).slice(2).filter(Boolean);
+      let config;
+      try {
+        config = loadVoiceConfig().config;
+      } catch {
+        ctx.ui.notify("Could not read voice.json.", "error");
+        return;
+      }
+      if (action === "allow" || action === "deny") {
+        if (names.length === 0) {
+          ctx.ui.notify(`Usage: /${commandName} tools allow|deny <tool> [...]`, "warning");
+          return;
+        }
+        const extras = new Set<string>(config.tools.allow);
+        for (const name of names) {
+          if (action === "allow") extras.add(name);
+          else extras.delete(name);
+        }
+        config.tools.allow = [...extras];
+        saveVoiceConfig(config);
+        controller.setAllowedTools([...DEFAULT_ALLOWED_TOOLS, ...config.tools.allow], ctx);
+        ctx.ui.notify(`Conversation tools: ${[...DEFAULT_ALLOWED_TOOLS, ...config.tools.allow].join(", ")}`, "info");
+        return;
+      }
+      ctx.ui.notify(
+        [
+          `Read-only defaults: ${DEFAULT_ALLOWED_TOOLS.join(", ")}`,
+          `Extra allowed: ${config.tools.allow.length > 0 ? config.tools.allow.join(", ") : "(none)"}`,
+          `Add with /${commandName} tools allow <tool>. Only allow read-only tools — conversation mode stays nondestructive.`,
+        ].join("\n"),
+        "info",
+      );
+      return;
+    }
+
     if (subcommand === "metrics") {
       ctx.ui.notify(loop.statusLines().join("\n"), "info");
       return;
@@ -187,6 +258,11 @@ export default function naturalConversationExtension(pi: ExtensionAPI): void {
 
   pi.on("turn_start", async (_event, ctx: ExtensionContext) => {
     controller.ensureConversationConstraints(ctx);
+    loop.handleTurnStart(ctx);
+  });
+
+  pi.on("message_update", async (event, ctx: ExtensionContext) => {
+    loop.handleMessageUpdate(event, ctx);
   });
 
   pi.on("agent_start", async (_event, ctx: ExtensionContext) => {

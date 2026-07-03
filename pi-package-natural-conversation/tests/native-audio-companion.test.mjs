@@ -168,7 +168,10 @@ test("companion full loop: handshake, capture → VAD → STT transcript, speak 
     companion.send({ type: "gate", mode: "open" });
 
     await companion.waitFor((m) => m.type === "vad" && m.event === "speech_start", { label: "speech_start" });
+    // The 700 ms test utterance must pass the 250 ms barge-in debounce exactly once.
+    await companion.waitFor((m) => m.type === "vad" && m.event === "speech_confirmed", { label: "speech_confirmed" });
     const transcript = await companion.waitFor((m) => m.type === "final-transcript", { label: "final-transcript" });
+    assert.equal(companion.messages.filter((m) => m.type === "vad" && m.event === "speech_confirmed").length, 1);
     assert.equal(transcript.text, "hello companion");
     assert.equal(transcript.capturedDuring, "listening");
     assert.ok(transcript.utteranceMs >= 300, `utteranceMs ${transcript.utteranceMs}`);
