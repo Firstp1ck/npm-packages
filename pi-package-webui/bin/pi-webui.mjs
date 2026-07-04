@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { access, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, networkInterfaces, tmpdir } from "node:os";
+import { homedir, networkInterfaces, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -88,6 +88,10 @@ const CODEX_USAGE_TIMEOUT_MS = 15 * 1000;
 const CODEX_TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
 const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
 const OPENAI_CODEX_USAGE_ENDPOINT = process.env.PI_WEBUI_CODEX_USAGE_URL || "https://chatgpt.com/backend-api/wham/usage";
+const CLAUDE_USAGE_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PI_WEBUI_CLAUDE_USAGE_TIMEOUT_MS || "30000", 10) || 30000);
+const CLAUDE_USAGE_OUTPUT_MAX_CHARS = 60_000;
+const CLAUDE_USAGE_COMMAND = process.env.PI_WEBUI_CLAUDE_BIN || "claude";
+const CLAUDE_USAGE_ARGS = ["--safe-mode", "--no-session-persistence", "-p", "/usage", "--output-format", "json"];
 const BODY_LIMIT_BYTES = 1024 * 1024;
 const SKILL_FILE_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const PROMPT_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
@@ -129,6 +133,8 @@ const EXTENSION_UI_BLOCKING_METHODS = new Set(["select", "confirm", "input", "ed
 const STATUS_RPC_TIMEOUT_MS = 1_800;
 const FAST_PICK_LIMIT = 30;
 const PATH_SUGGESTION_LIMIT = 20;
+const BANG_SUGGESTION_LIMIT = 24;
+const BANG_SUGGESTION_QUERY_LIMIT = 512;
 const PATH_SUGGESTION_QUERY_LIMIT = 512;
 const PATH_SUGGESTION_SCAN_LIMIT = 5000;
 const PATH_SUGGESTION_MAX_OUTPUT_LENGTH = 300000;
@@ -244,6 +250,8 @@ function parseSlashCommand(message) {
 }
 const NATURAL_CONVERSATION_FEATURE_ID = "naturalConversation";
 const OPTIONAL_FEATURE_PACKAGES = new Map([
+  ["bangCommandAutocomplete", "@firstpick/pi-extension-bang-command-autocomplete"],
+  ["fishUserBash", "@firstpick/pi-extension-fish-user-bash"],
   ["btwCommand", "@firstpick/pi-extension-btw"],
   ["gitWorkflow", "@firstpick/pi-prompts-git-pr"],
   ["releaseNpm", "@firstpick/pi-extension-release-npm"],
@@ -3129,6 +3137,238 @@ async function getOpenAICodexUsageStatus({ forceRefresh = false } = {}) {
   };
 }
 
+const CLAUDE_USAGE_MONTHS = new Map([
+  ["jan", 1], ["january", 1], ["feb", 2], ["february", 2],
+  ["mar", 3], ["march", 3], ["apr", 4], ["april", 4], ["may", 5],
+  ["jun", 6], ["june", 6], ["jul", 7], ["july", 7], ["aug", 8], ["august", 8],
+  ["sep", 9], ["sept", 9], ["september", 9], ["oct", 10], ["october", 10],
+  ["nov", 11], ["november", 11], ["dec", 12], ["december", 12],
+]);
+const CLAUDE_USAGE_WEEKDAYS = new Map([
+  ["sun", 0], ["sunday", 0], ["mon", 1], ["monday", 1],
+  ["tue", 2], ["tues", 2], ["tuesday", 2], ["wed", 3], ["wednesday", 3],
+  ["thu", 4], ["thur", 4], ["thurs", 4], ["thursday", 4],
+  ["fri", 5], ["friday", 5], ["sat", 6], ["saturday", 6],
+]);
+
+function normalizedTimeZone(value) {
+  const timeZone = String(value || "").trim();
+  if (!timeZone) return "";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return "";
+  }
+}
+
+function datePartsInTimeZone(date, timeZone) {
+  const parts = {};
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hourCycle: "h23",
+  });
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type !== "literal") parts[part.type] = Number(part.value);
+  }
+  if (parts.hour === 24) parts.hour = 0;
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour || 0,
+    minute: parts.minute || 0,
+    second: parts.second || 0,
+  };
+}
+
+function zonedDateTimeToUtc(parts, timeZone) {
+  const targetWallTime = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour || 0, parts.minute || 0, parts.second || 0);
+  let guess = targetWallTime;
+  for (let index = 0; index < 4; index++) {
+    const actual = datePartsInTimeZone(new Date(guess), timeZone);
+    const actualWallTime = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour || 0, actual.minute || 0, actual.second || 0);
+    const delta = targetWallTime - actualWallTime;
+    if (delta === 0) break;
+    guess += delta;
+  }
+  return new Date(guess);
+}
+
+function parseClaudeUsageClock(hourValue, minuteValue, meridiemValue) {
+  let hour = Number(hourValue);
+  const minute = minuteValue === undefined || minuteValue === "" ? 0 : Number(minuteValue);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  const meridiem = String(meridiemValue || "").replace(/\./g, "").toLowerCase();
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return null;
+    if (meridiem === "pm" && hour !== 12) hour += 12;
+    if (meridiem === "am" && hour === 12) hour = 0;
+  } else if (hour < 0 || hour > 23) return null;
+  return { hour, minute };
+}
+
+function parseClaudeUsageMonthReset(dateText, timeZone, now) {
+  const match = String(dateText || "").trim().match(/^([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?$/i);
+  if (!match) return null;
+  const month = CLAUDE_USAGE_MONTHS.get(match[1].toLowerCase());
+  const day = Number(match[2]);
+  const clock = parseClaudeUsageClock(match[3], match[4], match[5]);
+  if (!month || !Number.isInteger(day) || day < 1 || day > 31 || !clock) return null;
+  const nowParts = datePartsInTimeZone(now, timeZone);
+  let resetDate = zonedDateTimeToUtc({ year: nowParts.year, month, day, ...clock }, timeZone);
+  if (resetDate.getTime() < now.getTime() - 60_000) resetDate = zonedDateTimeToUtc({ year: nowParts.year + 1, month, day, ...clock }, timeZone);
+  return Number.isFinite(resetDate.getTime()) ? resetDate : null;
+}
+
+function parseClaudeUsageWeekdayReset(dateText, timeZone, now) {
+  const match = String(dateText || "").trim().match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?$/i);
+  if (!match) return null;
+  const weekday = CLAUDE_USAGE_WEEKDAYS.get(match[1].toLowerCase());
+  const clock = parseClaudeUsageClock(match[2], match[3], match[4]);
+  if (weekday === undefined || !clock) return null;
+  const nowParts = datePartsInTimeZone(now, timeZone);
+  const currentWeekday = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day)).getUTCDay();
+  let deltaDays = (weekday - currentWeekday + 7) % 7;
+  let date = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + deltaDays));
+  let resetDate = zonedDateTimeToUtc({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), ...clock }, timeZone);
+  if (resetDate.getTime() < now.getTime() - 60_000) {
+    deltaDays += 7;
+    date = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + deltaDays));
+    resetDate = zonedDateTimeToUtc({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), ...clock }, timeZone);
+  }
+  return Number.isFinite(resetDate.getTime()) ? resetDate : null;
+}
+
+function parseClaudeUsageReset(resetText, now = new Date()) {
+  const text = String(resetText || "").trim();
+  if (!text) return { resetText: "" };
+  const rawTimeZone = text.match(/\(([^)]+)\)\s*$/)?.[1] || "";
+  const timeZone = normalizedTimeZone(rawTimeZone) || normalizedTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const dateText = text.replace(/\s*\([^)]+\)\s*$/, "").trim();
+  if (!timeZone) return { resetText: text, timeZone: rawTimeZone || null };
+  const resetDate = parseClaudeUsageMonthReset(dateText, timeZone, now) || parseClaudeUsageWeekdayReset(dateText, timeZone, now);
+  if (!resetDate) return { resetText: text, timeZone };
+  return {
+    resetText: text,
+    timeZone,
+    resetsAt: resetDate.toISOString(),
+    resetAfterSeconds: Math.max(0, Math.round((resetDate.getTime() - now.getTime()) / 1000)),
+  };
+}
+
+function parseClaudeUsageWindowLine(line, now) {
+  const match = String(line || "").trim().match(/^(.+?):\s+(\d+(?:\.\d+)?)%\s+used\s+[·-]\s+resets\s+(.+)$/i);
+  if (!match) return null;
+  return {
+    label: match[1].trim(),
+    usedPercent: Number(match[2]),
+    ...parseClaudeUsageReset(match[3], now),
+  };
+}
+
+function parseClaudeUsageActivityHeader(line) {
+  const match = String(line || "").trim().match(/^(.+?)\s+[·-]\s+(\d+)\s+requests?\s+[·-]\s+(\d+)\s+sessions?$/i);
+  if (!match) return null;
+  return { label: match[1].trim(), requests: Number(match[2]), sessions: Number(match[3]), details: [] };
+}
+
+function parseClaudeUsageActivityDetail(line) {
+  const text = String(line || "").trim();
+  const percentMatch = text.match(/^(\d+(?:\.\d+)?)%\s+(.+)$/);
+  if (percentMatch) return { text, percent: Number(percentMatch[1]), description: percentMatch[2] };
+  return { text };
+}
+
+function parseClaudeUsageText(text, now = new Date()) {
+  const summary = [];
+  const notes = [];
+  const windows = [];
+  const activity = [];
+  let activityTitle = "";
+  let currentActivity = null;
+  for (const rawLine of stripAnsi(text).replace(/\r/g, "").split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const window = parseClaudeUsageWindowLine(line, now);
+    if (window) {
+      windows.push(window);
+      currentActivity = null;
+      continue;
+    }
+    const activityHeader = parseClaudeUsageActivityHeader(line);
+    if (activityHeader) {
+      activity.push(activityHeader);
+      currentActivity = activityHeader;
+      continue;
+    }
+    if (currentActivity && /^\s+/.test(rawLine)) {
+      currentActivity.details.push(parseClaudeUsageActivityDetail(line));
+      continue;
+    }
+    if (/^what'?s contributing/i.test(line)) {
+      activityTitle = line;
+      currentActivity = null;
+      continue;
+    }
+    if (summary.length === 0 && /using your subscription|claude code usage/i.test(line)) summary.push(line);
+    else notes.push(line);
+  }
+  return { summary: summary[0] || "", windows, activityTitle, activity, notes };
+}
+
+async function getClaudeCodeUsageStatus() {
+  const result = await runCommand(CLAUDE_USAGE_COMMAND, CLAUDE_USAGE_ARGS, {
+    cwd: options.cwd,
+    timeoutMs: CLAUDE_USAGE_TIMEOUT_MS,
+    maxOutputLength: CLAUDE_USAGE_OUTPUT_MAX_CHARS,
+  });
+  const command = formatCommandForDisplay(CLAUDE_USAGE_COMMAND, CLAUDE_USAGE_ARGS);
+  if (result.timedOut) throw makeHttpError(504, `Claude usage command timed out: ${command}`);
+  if (result.error && result.exitCode === undefined) throw makeHttpError(502, `Claude usage command failed: ${result.error}`);
+  if (result.exitCode !== 0) {
+    const detail = truncateLongText(stripAnsi(result.stderr || result.stdout || ""), 2000).trim();
+    throw makeHttpError(502, `Claude usage command exited ${result.exitCode}${detail ? `: ${detail}` : ""}`);
+  }
+  const stdout = stripAnsi(result.stdout || "").trim();
+  if (!stdout) throw makeHttpError(502, "Claude usage command returned no output");
+  let usageText = stdout;
+  let outputFormat = "text";
+  let sessionId = null;
+  let durationMs = undefined;
+  if (stdout.startsWith("{")) {
+    let parsed;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      throw makeHttpError(502, "Claude usage command returned invalid JSON");
+    }
+    outputFormat = "json";
+    sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
+    durationMs = numericValue(parsed.duration_ms);
+    if (parsed.is_error) throw makeHttpError(502, parsed.result || "Claude usage command returned an error");
+    if (typeof parsed.result === "string") usageText = parsed.result;
+  }
+  const fetchedAt = new Date();
+  return {
+    available: true,
+    providerId: "claude-code",
+    source: "claude-code-cli",
+    command,
+    outputFormat,
+    fetchedAt: fetchedAt.toISOString(),
+    durationMs,
+    sessionId,
+    ...parseClaudeUsageText(usageText, fetchedAt),
+  };
+}
+
 async function configuredScopedModelPatterns(cwd = options.cwd) {
   const cliPatterns = parseCliScopedModelPatterns();
   if (cliPatterns !== undefined) return { patterns: cliPatterns, source: "cli" };
@@ -3293,6 +3533,209 @@ function normalizeSuggestionPath(value) {
 
 function cleanPathSuggestionQuery(value) {
   return normalizeSuggestionPath(value).replace(/\0/g, "").slice(0, PATH_SUGGESTION_QUERY_LIMIT);
+}
+
+const BANG_COMMON_COMMANDS_BASE = [
+  "ls", "la", "ll", "cd", "pwd", "cat", "less", "bat", "rg", "fd", "find", "grep", "sed", "awk", "jq",
+  "git", "gh", "g", "pnpm", "bun", "npm", "node", "python", "python3", "uv", "cargo", "rustc", "make", "just",
+  "docker", "docker-compose", "curl", "wget", "ssh", "scp", "rsync", "tmux", "htop", "btop",
+];
+const BANG_COMMON_COMMANDS_UNIX = ["systemctl", "journalctl"];
+const BANG_COMMON_COMMANDS_LINUX = ["pacman", "yay"];
+
+function bangCommonCommands() {
+  const commands = [...BANG_COMMON_COMMANDS_BASE];
+  const currentPlatform = platform();
+  if (currentPlatform !== "win32") commands.push(...BANG_COMMON_COMMANDS_UNIX);
+  if (currentPlatform === "linux") commands.push(...BANG_COMMON_COMMANDS_LINUX);
+  return commands;
+}
+
+function cleanBangSuggestionQuery(value) {
+  return String(value || "").replace(/\0/g, "").replace(/^!+/, "").slice(0, BANG_SUGGESTION_QUERY_LIMIT);
+}
+
+function parseBangCommandLine(commandLine) {
+  const trimmed = String(commandLine || "").trim();
+  if (!trimmed || trimmed.startsWith("#")) return { flags: [] };
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  let startIndex = 0;
+  let executable = tokens[startIndex] || "";
+  if (executable === "sudo") {
+    startIndex += 1;
+    executable = tokens[startIndex] || "";
+  }
+  executable = executable.replace(/^!+/, "");
+  if (!executable) return { flags: [] };
+  const flags = tokens.slice(startIndex + 1).filter((token) => token.startsWith("-") && token !== "-");
+  return { executable, flags };
+}
+
+function bangExecutable(commandLine) {
+  return parseBangCommandLine(commandLine).executable;
+}
+
+async function readTextFileIfExists(filePath) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function readFishHistoryExecutables() {
+  const fishDataHome = process.env.XDG_DATA_HOME?.trim() || path.join(homedir(), ".local", "share");
+  const content = await readTextFileIfExists(path.join(fishDataHome, "fish", "fish_history"));
+  const commands = [];
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^\s*-\s*cmd:\s*(.*)$/);
+    const executable = match ? bangExecutable(match[1]) : "";
+    if (executable) commands.push(executable);
+  }
+  return commands;
+}
+
+async function readBashHistoryExecutables() {
+  const content = await readTextFileIfExists(path.join(homedir(), ".bash_history"));
+  return content.split(/\r?\n/).map((line) => bangExecutable(line)).filter(Boolean);
+}
+
+async function readZshHistoryExecutables() {
+  const content = await readTextFileIfExists(path.join(homedir(), ".zsh_history"));
+  return content
+    .split(/\r?\n/)
+    .map((line) => bangExecutable(line.includes(";") ? line.slice(line.indexOf(";") + 1) : line))
+    .filter(Boolean);
+}
+
+function bangRuntimeStorePath() {
+  const configured = process.env.PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH?.trim();
+  return configured ? path.resolve(expandUserPath(configured)) : path.join(agentDir, "state", "bang-command-autocomplete-runtime.json");
+}
+
+async function readBangRuntimeData() {
+  const empty = { commands: new Set(), flagsByCommand: new Map(), lines: new Set() };
+  const parsed = await readJsonFileIfExists(bangRuntimeStorePath());
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const line = String(item || "").trim();
+      if (!line) continue;
+      const executable = bangExecutable(line);
+      if (executable) empty.commands.add(executable);
+      empty.lines.add(line.replace(/^!+/, ""));
+    }
+    return empty;
+  }
+  if (!parsed || typeof parsed !== "object") return empty;
+  for (const item of Array.isArray(parsed.commands) ? parsed.commands : []) {
+    const command = String(item || "").trim();
+    if (command) empty.commands.add(command);
+  }
+  if (parsed.flags && typeof parsed.flags === "object") {
+    for (const [command, flags] of Object.entries(parsed.flags)) {
+      const normalizedCommand = String(command || "").trim();
+      if (!normalizedCommand || !Array.isArray(flags)) continue;
+      const normalizedFlags = flags.map((flag) => String(flag || "").trim()).filter(Boolean);
+      if (normalizedFlags.length) empty.flagsByCommand.set(normalizedCommand, new Set(normalizedFlags));
+    }
+  }
+  for (const item of Array.isArray(parsed.lines) ? parsed.lines : []) {
+    const line = String(item || "").trim().replace(/^!+/, "");
+    if (line) empty.lines.add(line);
+  }
+  return empty;
+}
+
+async function buildBangCommandIndex(includeHistory, runtimeData) {
+  const merged = new Map();
+  for (const command of bangCommonCommands()) merged.set(command, "common");
+  if (includeHistory) {
+    const historyExecutables = [
+      ...await readFishHistoryExecutables(),
+      ...await readBashHistoryExecutables(),
+      ...await readZshHistoryExecutables(),
+    ];
+    for (let index = historyExecutables.length - 1; index >= 0; index--) {
+      const command = historyExecutables[index];
+      if (command && (!merged.has(command) || merged.get(command) === "common")) merged.set(command, "history");
+    }
+  }
+  for (const command of runtimeData.commands) merged.set(command, "runtime");
+  return Array.from(merged.entries()).map(([command, source]) => ({ command, source }));
+}
+
+function rankBangValues(values, query) {
+  const q = String(query || "").toLowerCase();
+  const startsWith = [];
+  const includes = [];
+  for (const value of values) {
+    const text = typeof value === "string" ? value : value.command;
+    const lower = String(text || "").toLowerCase();
+    if (!q || lower.startsWith(q)) startsWith.push(value);
+    else if (lower.includes(q)) includes.push(value);
+  }
+  return [...startsWith, ...includes].slice(0, BANG_SUGGESTION_LIMIT);
+}
+
+function bangSuggestion(insertText, label, description, kind = "command") {
+  return { insertText, label, description, kind };
+}
+
+function bangSourceLabel(source) {
+  if (source === "history") return "shell history";
+  if (source === "runtime") return "current session";
+  return "common command";
+}
+
+async function getBangSuggestionData(tab, rawQuery) {
+  const query = cleanBangSuggestionQuery(rawQuery);
+  const includeHistory = isTruthyEnv(process.env.PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY);
+  const runtimeData = await readBangRuntimeData();
+  const commandIndex = await buildBangCommandIndex(includeHistory, runtimeData);
+  const suggestions = [];
+  const flagMatch = query.match(/^(\S+)\s+(\S*)$/);
+
+  if (flagMatch && (!flagMatch[2] || flagMatch[2].startsWith("-"))) {
+    const command = flagMatch[1];
+    const partialFlag = flagMatch[2] || "";
+    for (const flag of rankBangValues(Array.from(runtimeData.flagsByCommand.get(command) || []), partialFlag)) {
+      suggestions.push(bangSuggestion(`${command} ${flag}`, `!${command} ${flag}`, `learned for ${command}`, "flag"));
+    }
+  }
+
+  if (query.includes(" ")) {
+    for (const lineCandidate of rankBangValues(Array.from(runtimeData.lines), query)) {
+      suggestions.push(bangSuggestion(lineCandidate, `!${lineCandidate}`, "learned full line", "line"));
+    }
+  }
+
+  if (!query.includes(" ")) {
+    const ranked = rankBangValues(commandIndex, query);
+    for (const entry of ranked) {
+      suggestions.push(bangSuggestion(entry.command, `!${entry.command}`, bangSourceLabel(entry.source), "command"));
+    }
+    for (const entry of ranked) {
+      for (const flag of Array.from(runtimeData.flagsByCommand.get(entry.command) || []).slice(0, 3)) {
+        suggestions.push(bangSuggestion(`${entry.command} ${flag}`, `!${entry.command} ${flag}`, "learned command + flag", "flag"));
+      }
+    }
+    for (const lineCandidate of rankBangValues(Array.from(runtimeData.lines), query)) {
+      if (lineCandidate.startsWith(query)) suggestions.push(bangSuggestion(lineCandidate, `!${lineCandidate}`, "learned full line", "line"));
+    }
+  }
+
+  const seen = new Set();
+  return {
+    cwd: tab.cwd,
+    displayCwd: displayPath(tab.cwd),
+    query,
+    suggestions: suggestions.filter((item) => {
+      const key = item.insertText;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, BANG_SUGGESTION_LIMIT),
+  };
 }
 
 function splitSuggestionPathQuery(query) {
@@ -8810,6 +9253,15 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/claude-usage" && req.method === "GET") {
+      try {
+        sendJson(res, 200, { ok: true, data: await getClaudeCodeUsageStatus() });
+      } catch (error) {
+        sendJson(res, error?.statusCode || 500, { ok: false, error: error?.message || "Failed to read Claude usage" });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/network" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: networkStatus({ includeAuthPin: isLocalRequest(req) }) });
       return;
@@ -8980,6 +9432,12 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/path-suggestions" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await getPathSuggestionData(tab, url.searchParams.get("query")) });
+      return;
+    }
+
+    if (url.pathname === "/api/bang-suggestions" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await getBangSuggestionData(tab, url.searchParams.get("query")) });
       return;
     }
 

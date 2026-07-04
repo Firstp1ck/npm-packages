@@ -126,6 +126,8 @@ Environment variables:
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
 - `PI_WEBUI_NPM_BIN=/path/to/npm` selects the npm executable used by optional feature install/update actions.
+- `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
+- `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
 
 Optional Natural Conversation server-side voice fallback variables:
 
@@ -144,7 +146,7 @@ Optional Natural Conversation server-side voice fallback variables:
 - Automatic tab naming from the first prompt, with `--name <name>` still available for an explicit initial tab name.
 - Streaming chat transcript with Markdown, copy buttons for fenced code blocks, rendered Mermaid diagrams from fenced `mermaid`/`mmd` code blocks, thinking output, tool/bash cards, queue and compaction events, edit-and-retry from user prompts, transcript search, copy buttons, and guarded abort controls that require holding Esc or the Abort button for 3 seconds.
 - Prompt composer with uploads, drag/drop/paste, inline image support, generated text attachments for long input or clipboard text, editable text attachments, slash-command autocomplete, and `@` file/path references with live suggestions.
-- Leading `!` and `!!` user-bash commands from the composer, serialized per tab; `!` keeps output in the next model context and `!!` excludes it.
+- Leading `!` and `!!` user-bash commands from the composer, serialized per tab; `!` keeps output in the next model context and `!!` excludes it. When the optional `@firstpick/pi-extension-bang-command-autocomplete` companion is loaded, the browser composer also suggests `!`/`!!` shell commands through `GET /api/bang-suggestions?tab=<tabId>&query=<command>`. When the optional `@firstpick/pi-extension-fish-user-bash` companion is loaded, Web UI user-bash execution emits the Pi `user_bash` event so the companion can provide the selected shell backend.
 - Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions.
 - Browser voice loop for Natural Conversation Mode (`public/voice-conversation.mjs`): while the mode is active in a tab, the browser's Web Speech APIs listen for speech, send final transcripts as normal prompts, and speak Pi's final answers. The microphone pauses while answers are spoken (echo prevention), speech during final-output streaming becomes a steering interruption, speech during tool execution is queued until the tool phase ends, and silence after a spoken question sends a single structured silence event. Remote (non-localhost) sessions keep the microphone off until the per-tab `Allow remote microphone streaming` consent is granted; only text transcripts ever reach the Pi host on the browser-default path. Opt-in server-side fallback routes are available for local/Groq/OpenAI STT and local/OpenAI TTS when configured with server-side env vars; remote/LAN raw-audio STT fallback uploads require explicit per-request consent.
 - Browser-native Pi dialogs for `/model`, `/settings`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`.
@@ -320,6 +322,7 @@ Useful browser endpoints exposed by the local server include:
 - `POST /api/prompt`, `POST /api/follow-up`, `POST /api/steer`, `POST /api/bash`, `POST /api/abort`, and `POST /api/abort-bash` for tab-scoped Pi interaction.
 - `POST /api/attachments` for uploaded/generated prompt attachments and inline images.
 - `GET /api/path-suggestions?tab=<tabId>&query=<path>` for `@` file/path references with live suggestions.
+- `GET /api/bang-suggestions?tab=<tabId>&query=<command>` for optional `@firstpick/pi-extension-bang-command-autocomplete` `!`/`!!` command suggestions.
 - `GET /api/path-fast-picks` and `POST /api/path-fast-picks` for server-persisted cwd fast picks.
 - `GET /api/native-parity` for the packaged native TUI/Web UI parity matrix.
 - `GET /api/settings`, `POST /api/settings`, `GET /api/tools`, `POST /api/tools`, `GET /api/skills`, and `POST /api/skills` for browser-native Pi settings/tool/skill selectors.
@@ -353,6 +356,8 @@ When the standalone global `pi-webui` launcher is used, optional companion insta
 Optional companions:
 
 - `@firstpick/pi-package-natural-conversation` — standalone `/talk` Natural Conversation Mode package. Web UI does not import or load it directly; it detects the package through RPC-visible `/talk`, `/voice`, or `/conversation` commands and renders the optional shell only for tabs where those commands are available.
+- `@firstpick/pi-extension-bang-command-autocomplete` — `!`/`!!` shell-command autocomplete. Native Pi TUI autocomplete still uses the companion provider; Web UI uses its own browser endpoint because RPC autocomplete providers do not reach the browser composer.
+- `@firstpick/pi-extension-fish-user-bash` — fish/user-shell backend for `!`/`!!` user bash. Web UI emits Pi `user_bash` from the RPC helper so the companion can supply shell operations before default bash execution.
 - `@firstpick/pi-extension-btw` — ephemeral `/btw` side-question command with a TUI overlay, Web UI live output widget, and Transfer Context action.
 - `@firstpick/pi-prompts-git-pr` — guided Git commit/push workflow.
 - `@firstpick/pi-extension-release-npm` — NPM publish menu and release widgets.

@@ -162,6 +162,7 @@ assert.match(server, /case "\/api\/abort-bash":[\s\S]*?return \{ type: "abort_ba
 assert.match(app, /function parseUserBashInput\(message\)[\s\S]*?text\.startsWith\("!!"\)/, "frontend should detect !! bash commands before prompt forwarding");
 assert.match(app, /const userBash = kind === "prompt" && attachments\.length === 0 \? parseUserBashInput\(originalMessage\) : null/, "prompt sending should intercept user bash only for plain prompt input");
 assert.match(app, /api\("\/api\/bash", \{ method: "POST", body: \{ command, excludeFromContext \}/, "frontend should send user bash commands to the bash endpoint");
+assert.match(app, /function isCompleteUserBashMessage\(message\)[\s\S]*?title\.includes\("complete"\)[\s\S]*?function shouldOpenMessageCollapseByDefault\(message\)[\s\S]*?isCompleteUserBashMessage\(message\)/, "frontend should expand completed user bash cards by default without toggling all tool output");
 assert.match(app, /api\("\/api\/abort-bash", \{ method: "POST", body: \{\}, tabId: tabContext\.tabId \}\)/, "abort should target active user bash before agent abort");
 assert.match(server, /async function cycleTabModel\(tab, direction = "forward"\)/, "server should provide scoped\/all model cycling helper");
 assert.match(server, /url\.pathname === "\/api\/model-cycle" && req\.method === "POST"/, "server should expose model-cycle endpoint for shortcuts");

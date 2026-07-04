@@ -23,16 +23,22 @@ const [pkgRaw, html, css, app, server, extension, readme, startScript, manifestR
 ]);
 const pkg = JSON.parse(pkgRaw);
 const manifest = JSON.parse(manifestRaw);
+const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
+const helper = await readFile(join(root, "webui-rpc-helper.mjs"), "utf8");
 const companionDependencies = {
-  "@firstpick/pi-extension-btw": "^0.1.0",
-  "@firstpick/pi-extension-git-footer-status": "^0.3.3",
-  "@firstpick/pi-extension-release-aur": "^0.1.6",
+  "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
+  "@firstpick/pi-extension-btw": "^0.1.2",
+  "@firstpick/pi-extension-fish-user-bash": "^0.2.0",
+  "@firstpick/pi-extension-git-footer-status": "^0.3.6",
+  "@firstpick/pi-extension-release-aur": "^0.1.7",
   "@firstpick/pi-extension-release-npm": "^0.4.0",
   "@firstpick/pi-extension-safety-guard": "^0.2.3",
   "@firstpick/pi-extension-setup-skills": "^0.1.8",
-  "@firstpick/pi-extension-stats": "^0.2.6",
-  "@firstpick/pi-extension-todo-progress": "^0.2.5",
+  "@firstpick/pi-extension-stats": "^0.2.8",
+  "@firstpick/pi-extension-todo-progress": "^0.2.7",
   "@firstpick/pi-extension-tools": "^0.1.6",
+  "@firstpick/pi-extension-workflows": "^0.1.2",
+  "@firstpick/pi-package-remote-webui": "^0.1.5",
   "@firstpick/pi-prompts-git-pr": "^0.1.2",
   "@firstpick/pi-themes-bundle": "^0.1.4",
 };
@@ -753,7 +759,10 @@ assert.match(css, /\.composer-remote-mic-consent[\s\S]*\.composer-remote-mic-con
 assert.match(css, /\.composer-conversation-mode-chip\[data-voice-state="speaking"\]/, "conversation chip should style voice states");
 assert.match(serviceWorker.toString(), /\/voice-conversation\.mjs/, "service worker app shell should include the voice module");
 assert.ok(pkg.scripts.check.includes("node --check public/voice-conversation.mjs"), "npm run check should parse the voice module");
-assert.match(app, /function updateOptionalFeatureAvailability\(\)[\s\S]*hasAvailableCommand\("git-staged-msg"\)[\s\S]*hasAvailableCommand\("release-npm"\)[\s\S]*hasAvailableCommand\("release-aur"\)[\s\S]*hasAvailableCommand\("safety-guard"\)[\s\S]*hasLoadedRpcCommand\("skills"\)[\s\S]*hasAvailableCommand\("todo-progress-status"\)[\s\S]*hasLoadedRpcCommand\("tools"\)[\s\S]*hasAvailableCommand\("remote"\)[\s\S]*NATURAL_CONVERSATION_COMMAND_NAMES\.some\(\(name\) => hasAvailableCommand\(name\)\)/, "optional feature detection should call RPC-visible commands directly and distinguish native resource selectors from TUI companions");
+assert.match(app, /id: "bangCommandAutocomplete"[\s\S]*packageName: "@firstpick\/pi-extension-bang-command-autocomplete"[\s\S]*capabilityLabel: "\/bang-status or \/bang-refresh"/, "optional features should list bang-command autocomplete by loaded command capability");
+assert.match(app, /id: "fishUserBash"[\s\S]*packageName: "@firstpick\/pi-extension-fish-user-bash"[\s\S]*capabilityLabel: "\/user-bash-shell"/, "optional features should list fish user-bash by loaded command capability");
+assert.match(app, /OPTIONAL_COMMAND_FEATURES = new Map\(\[[\s\S]*\["bang-refresh", "bangCommandAutocomplete"\][\s\S]*\["bang-status", "bangCommandAutocomplete"\][\s\S]*\["user-bash-shell", "fishUserBash"\]/, "optional command mapping should gate bang and fish companion commands");
+assert.match(app, /function updateOptionalFeatureAvailability\(\)[\s\S]*hasAvailableCommand\("bang-status"\) \|\| hasAvailableCommand\("bang-refresh"\)[\s\S]*hasAvailableCommand\("user-bash-shell"\)[\s\S]*hasAvailableCommand\("git-staged-msg"\)[\s\S]*hasAvailableCommand\("release-npm"\)[\s\S]*hasAvailableCommand\("release-aur"\)[\s\S]*hasAvailableCommand\("safety-guard"\)[\s\S]*hasLoadedRpcCommand\("skills"\)[\s\S]*hasAvailableCommand\("todo-progress-status"\)[\s\S]*hasLoadedRpcCommand\("tools"\)[\s\S]*hasAvailableCommand\("remote"\)[\s\S]*NATURAL_CONVERSATION_COMMAND_NAMES\.some\(\(name\) => hasAvailableCommand\(name\)\)/, "optional feature detection should call RPC-visible commands directly and distinguish native resource selectors from TUI companions");
 assert.match(app, /hasRemoteWebuiCommand = isOptionalFeatureEnabled\("remoteWebui"\) && hasAvailableCommand\("remote"\)[\s\S]*optionsRemoteButton\.hidden = !hasRemoteWebuiCommand[\s\S]*syncRemoteWebuiControlVisibility\(hasRemoteWebuiCommand\)/, "Options menu should track /remote availability and delegate network card visibility");
 assert.match(app, /function syncRemoteWebuiControlVisibility[\s\S]*networkControlField\.hidden = !hasRemoteWebuiCommand/, "Remote WebUI network card should render whenever the optional feature and /remote command are enabled");
 assert.match(app, /if \(featureId === "remoteWebui"\) syncRemoteWebuiControlVisibility\(false\)/, "Disabling Remote WebUI should immediately hide browser network controls before broader rerendering");
@@ -981,9 +990,16 @@ assert.match(app, /let pathSuggestActiveQuery = null/, "@ autocomplete should tr
 assert.match(app, /pathSuggestActiveQuery === trigger\.query[\s\S]*?return;/, "@ autocomplete should skip duplicate same-query fetches from input and keyup events");
 assert.match(app, /const keepExistingPathMenu = suggestionMode === "path"[\s\S]*?if \(!keepExistingPathMenu\) \{[\s\S]*?Finding paths…/, "@ autocomplete should keep the existing menu visible while refreshing a new path query");
 assert.match(app, /elements\.commandSuggest\.setAttribute\("aria-busy", "true"\)/, "@ autocomplete should mark async path refreshes busy without clearing rendered suggestions");
+assert.match(app, /function getBangTrigger\(\)/, "prompt composer should detect leading ! and !! shell command triggers");
+assert.match(app, /function renderBangSuggestions\(trigger[\s\S]*api\(`\/api\/bang-suggestions\?query=\$\{encodeURIComponent\(trigger\.query\)\}`/, "bang autocomplete should load suggestions from the Web UI server as the user types");
+assert.match(app, /function renderBangSuggestionItems\(trigger[\s\S]*insertBangSuggestion\(index\)/, "bang autocomplete should render clickable shell command suggestions");
+assert.match(app, /function insertBangSuggestion\(index = commandSuggestIndex\)/, "accepting a bang suggestion should insert a shell command after the ! or !! prefix");
+assert.match(app, /if \(suggestionMode === "bang"\) return insertBangSuggestion\(index\)/, "generic autocomplete insertion should route bang suggestions to the bang inserter");
+assert.match(app, /isOptionalFeatureEnabled\("bangCommandAutocomplete"\)[\s\S]*renderBangSuggestions\(bangTrigger/, "bang autocomplete should only render when the optional companion is detected and enabled");
 assert.match(app, /function setActiveCommandSuggestionFromPointerMove\(index, event\)/, "command and path autocomplete should route pointer selection through movement detection");
 assert.match(app, /item\.addEventListener\("pointermove", \(event\) => setActiveCommandSuggestionFromPointerMove\(index, event\)\);[\s\S]*?item\.addEventListener\("click", \(\) => insertCommandSuggestion\(index\)\);/, "slash command autocomplete should only follow pointer movement before click insertion");
 assert.match(app, /item\.addEventListener\("pointermove", \(event\) => setActiveCommandSuggestionFromPointerMove\(index, event\)\);[\s\S]*?item\.addEventListener\("click", \(\) => insertPathSuggestion\(index\)\);/, "path autocomplete should only follow pointer movement before click insertion");
+assert.match(app, /item\.addEventListener\("pointermove", \(event\) => setActiveCommandSuggestionFromPointerMove\(index, event\)\);[\s\S]*?item\.addEventListener\("click", \(\) => insertBangSuggestion\(index\)\);/, "bang autocomplete should only follow pointer movement before click insertion");
 assert.doesNotMatch(app, /addEventListener\("mouseenter", \(\) => setActiveCommandSuggestion\(index\)\)/, "autocomplete should not change active selection on stationary mouseenter");
 assert.match(app, /function resizePromptInput\(\)/, "prompt textarea should auto-resize from a one-line default");
 assert.match(app, /elements\.promptInput\.addEventListener\("input", \(\) => \{[\s\S]*?resizePromptInput\(\);/, "prompt textarea should resize whenever the user edits it");
@@ -1314,6 +1330,10 @@ assert.match(server, /function fastPicksStorageFile\(/, "server should define a 
 assert.match(server, /PI_WEBUI_FAST_PICKS_FILE/, "server should allow overriding the fast-picks storage path");
 assert.match(server, /async function getPathSuggestionData\(tab, rawQuery\)/, "server should compute @ file\/path reference suggestions for the active tab cwd");
 assert.match(server, /url\.pathname === "\/api\/path-suggestions" && req\.method === "GET"/, "server should expose GET /api/path-suggestions for @ reference autocomplete");
+assert.match(server, /async function getBangSuggestionData\(tab, rawQuery\)/, "server should compute ! and !! shell command suggestions for the active tab cwd");
+assert.match(server, /PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY/, "server bang suggestions should support the companion's history knob");
+assert.match(server, /PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH/, "server bang suggestions should support the companion's runtime-store knob");
+assert.match(server, /url\.pathname === "\/api\/bang-suggestions" && req\.method === "GET"/, "server should expose GET /api/bang-suggestions for bang-command autocomplete");
 assert.match(server, /url\.pathname === "\/api\/path-fast-picks" && req\.method === "GET"/, "server should expose GET /api/path-fast-picks");
 assert.match(server, /url\.pathname === "\/api\/path-fast-picks" && req\.method === "POST"/, "server should expose POST /api/path-fast-picks");
 assert.match(server, /url\.pathname === "\/api\/scoped-models" && req\.method === "GET"/, "server should expose GET /api/scoped-models");
@@ -1329,6 +1349,8 @@ assert.match(server, /type: "set_follow_up_mode"/, "server should expose follow-
 assert.match(server, /type: "set_auto_compaction"/, "server should expose auto-compaction changes for native /settings");
 assert.match(server, /@firstpick\/pi-themes-bundle/, "server should discover themes from the optional theme package");
 assert.match(server, /const OPTIONAL_FEATURE_PACKAGES = new Map/, "server should whitelist optional feature packages for install actions");
+assert.match(server, /\["bangCommandAutocomplete", "@firstpick\/pi-extension-bang-command-autocomplete"\]/, "server should allow installing the bang autocomplete optional feature");
+assert.match(server, /\["fishUserBash", "@firstpick\/pi-extension-fish-user-bash"\]/, "server should allow installing the fish user-bash optional feature");
 assert.match(server, /\["btwCommand", "@firstpick\/pi-extension-btw"\]/, "server should allow installing the /btw optional feature");
 assert.match(server, /\["safetyGuard", "@firstpick\/pi-extension-safety-guard"\]/, "server should allow installing the safety guard optional feature");
 assert.match(server, /\["tuiSkillsCommand", "@firstpick\/pi-extension-setup-skills"\]/, "server should allow installing the TUI skills optional feature");
@@ -1376,6 +1398,8 @@ assert.match(readme, /Automatic tab naming from the first prompt/, "README shoul
 assert.match(readme, /Feedback reactions \(`👍`, `👎`, `\?`\) on final assistant output plus tool\/bash action cards/, "README should describe final-output and action feedback reactions");
 assert.match(readme, /POST \/api\/action-feedback\?tab=<tabId>/, "README should document the action-feedback endpoint");
 assert.match(readme, /`@` file\/path references with live suggestions/, "README should describe @ file/path reference autocomplete");
+assert.match(readme, /optional `@firstpick\/pi-extension-bang-command-autocomplete` companion[\s\S]*GET \/api\/bang-suggestions\?tab=<tabId>&query=<command>/, "README should document optional bang-command autocomplete and its endpoint");
+assert.match(readme, /optional `@firstpick\/pi-extension-fish-user-bash` companion/, "README should document optional fish user-bash integration");
 assert.match(readme, /GET \/api\/path-suggestions\?tab=<tabId>&query=<path>/, "README should document the path-suggestions endpoint");
 assert.match(readme, /GET \/api\/optional-features/, "README should document optional feature status endpoint");
 assert.match(readme, /POST \/api\/optional-feature-install/, "README should document optional feature install endpoint");
@@ -1407,12 +1431,17 @@ assert.ok(!pkg.files?.some((entry) => entry === "dev/scripts" || entry.startsWit
 for (const [name, range] of Object.entries(companionDependencies)) {
   assert.equal(pkg.optionalDependencies?.[name], range, `webui package should optionally depend on ${name}`);
   assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require optional companion ${name}`);
+  assert.equal(lock.packages?.[""]?.optionalDependencies?.[name], range, `package-lock root should optionally depend on ${name}`);
+  assert.equal(lock.packages?.[""]?.dependencies?.[name], undefined, `package-lock root should not require optional companion ${name}`);
+  assert.ok(lock.packages?.[`node_modules/${name}`], `package-lock should include resolved optional companion ${name}`);
 }
 assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
 assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-natural-conversation"], undefined, "webui package should not optionally depend on the standalone Natural Conversation package");
 assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-package-natural-conversation")), "webui Pi manifest should not load Natural Conversation directly; /talk must come from the standalone package");
 assert.ok(pkg.pi?.extensions?.includes("./index.ts"), "webui Pi manifest should load its own extension");
 for (const extensionPath of [
+  "node_modules/@firstpick/pi-extension-bang-command-autocomplete/index.ts",
+  "node_modules/@firstpick/pi-extension-fish-user-bash/index.ts",
   "node_modules/@firstpick/pi-extension-git-footer-status/index.ts",
   "node_modules/@firstpick/pi-extension-release-aur/index.ts",
   "node_modules/@firstpick/pi-extension-release-npm/index.ts",
@@ -1425,6 +1454,8 @@ for (const extensionPath of [
   assert.ok(pkg.pi?.extensions?.includes(extensionPath), `webui Pi manifest should load ${extensionPath} when present`);
 }
 for (const siblingExtensionPath of [
+  "../pi-extension-bang-command-autocomplete/index.ts",
+  "../pi-extension-fish-user-bash/index.ts",
   "../pi-extension-git-footer-status/index.ts",
   "../pi-extension-release-aur/index.ts",
   "../pi-extension-release-npm/index.ts",
@@ -1436,6 +1467,10 @@ for (const siblingExtensionPath of [
 ]) {
   assert.ok(!pkg.pi?.extensions?.includes(siblingExtensionPath), `webui Pi manifest should avoid duplicate sibling load path ${siblingExtensionPath}`);
 }
+assert.match(helper, /function installRpcUserBashSupport\(\)/, "Web UI RPC helper should patch RPC bash execution for user_bash events");
+assert.match(helper, /runner\?\.hasHandlers\?\.\("user_bash"\)[\s\S]*runner\.emitUserBash/, "Web UI RPC helper should emit user_bash before default bash execution");
+assert.match(helper, /eventResult\?\.operations[\s\S]*original\.call\(this, command, onChunk, nextOptions\)/, "Web UI RPC helper should pass extension-provided bash operations to Pi execution");
+assert.match(helper, /eventResult\?\.result[\s\S]*recordBashResult/, "Web UI RPC helper should preserve extension-provided bash results in session history");
 assert.ok(pkg.pi?.skills?.includes("node_modules/@firstpick/pi-extension-release-aur/skills"), "webui Pi manifest should load release-aur nested skills when present");
 assert.ok(!pkg.pi?.skills?.includes("../pi-extension-release-aur/skills"), "webui Pi manifest should avoid duplicate release-aur sibling skills");
 assert.ok(pkg.pi?.prompts?.includes("node_modules/@firstpick/pi-prompts-git-pr/prompts"), "webui Pi manifest should load guided-git nested prompts when present");

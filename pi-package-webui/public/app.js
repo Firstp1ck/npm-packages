@@ -175,6 +175,8 @@ const elements = {
   optionalFeaturesBox: $("#optionalFeaturesBox"),
   codexUsageBox: $("#codexUsageBox"),
   refreshCodexUsageButton: $("#refreshCodexUsageButton"),
+  claudeUsageBox: $("#claudeUsageBox"),
+  refreshClaudeUsageButton: $("#refreshClaudeUsageButton"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
   sidePanelBackdrop: $("#sidePanelBackdrop"),
@@ -341,12 +343,16 @@ let availableCommands = [];
 let rawAvailableCommands = [];
 let commandSuggestions = [];
 let pathSuggestions = [];
+let bangSuggestions = [];
 let suggestionMode = "none";
 let commandSuggestIndex = 0;
 let lastPointerPosition = null;
 let pathSuggestActiveQuery = null;
 let pathSuggestRequestSerial = 0;
 let pathSuggestAbortController = null;
+let bangSuggestActiveQuery = null;
+let bangSuggestRequestSerial = 0;
+let bangSuggestAbortController = null;
 let latestStats = null;
 let statsOverlayActiveTab = "overview";
 let statsOverlayLoading = false;
@@ -372,6 +378,11 @@ let codexUsageError = null;
 let codexUsageLoading = false;
 let refreshCodexUsageTimer = null;
 let codexUsageRenderTimer = null;
+let latestClaudeUsage = null;
+let claudeUsageError = null;
+let claudeUsageLoading = false;
+let refreshClaudeUsageTimer = null;
+let claudeUsageRenderTimer = null;
 let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
@@ -562,6 +573,8 @@ const CHAT_PROGRAMMATIC_SCROLL_GRACE_MS = 500;
 const CHAT_USER_SCROLL_INTENT_MS = 700;
 const CODEX_USAGE_REFRESH_MS = 5 * 60 * 1000;
 const CODEX_USAGE_RENDER_TICK_MS = 30 * 1000;
+const CLAUDE_USAGE_REFRESH_MS = 5 * 60 * 1000;
+const CLAUDE_USAGE_RENDER_TICK_MS = 30 * 1000;
 const UPDATE_STATUS_REFRESH_MS = 6 * 60 * 60 * 1000;
 const UPDATE_STATUS_INITIAL_DELAY_MS = 1800;
 const RUN_INDICATOR_TICK_MS = 1000;
@@ -615,6 +628,8 @@ let liveToolRenderTimer = null;
 // commands and live widget events), not npm package folders. This keeps local dev
 // symlinks and independently installed packages working.
 const optionalFeatureAvailability = {
+  bangCommandAutocomplete: false,
+  fishUserBash: false,
   btwCommand: false,
   gitWorkflow: false,
   releaseNpm: false,
@@ -633,6 +648,20 @@ const optionalFeatureAvailability = {
 const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
 const APP_RUNNER_CONTEXT_MAX_LINES = 1000;
 const OPTIONAL_FEATURES = [
+  {
+    id: "bangCommandAutocomplete",
+    label: "! command autocomplete",
+    packageName: "@firstpick/pi-extension-bang-command-autocomplete",
+    capabilityLabel: "/bang-status or /bang-refresh",
+    description: "Autocomplete for native ! and !! shell commands in the Web UI composer.",
+  },
+  {
+    id: "fishUserBash",
+    label: "Fish user bash",
+    packageName: "@firstpick/pi-extension-fish-user-bash",
+    capabilityLabel: "/user-bash-shell",
+    description: "Run Web UI ! and !! shell commands through the user shell selected by fish-user-bash.",
+  },
   {
     id: "btwCommand",
     label: "/btw side questions",
@@ -734,6 +763,9 @@ const OPTIONAL_FEATURES = [
 ];
 const OPTIONAL_FEATURE_BY_ID = new Map(OPTIONAL_FEATURES.map((feature) => [feature.id, feature]));
 const OPTIONAL_COMMAND_FEATURES = new Map([
+  ["bang-refresh", "bangCommandAutocomplete"],
+  ["bang-status", "bangCommandAutocomplete"],
+  ["user-bash-shell", "fishUserBash"],
   ["btw", "btwCommand"],
   ["btw-transfer", "btwCommand"],
   ["btw-status", "btwCommand"],
@@ -10585,6 +10617,137 @@ function initializeCodexUsage() {
   codexUsageRenderTimer = setInterval(renderCodexUsage, CODEX_USAGE_RENDER_TICK_MS);
 }
 
+function claudeUsageResetDate(window) {
+  const resetAt = window?.resetsAt ? new Date(window.resetsAt) : null;
+  if (resetAt && Number.isFinite(resetAt.getTime())) return resetAt;
+  const resetAfterSeconds = Number(window?.resetAfterSeconds);
+  if (Number.isFinite(resetAfterSeconds) && resetAfterSeconds >= 0) return new Date(Date.now() + resetAfterSeconds * 1000);
+  return null;
+}
+
+function formatClaudeUsageReset(window) {
+  const resetDate = claudeUsageResetDate(window);
+  if (resetDate) {
+    const diff = resetDate.getTime() - Date.now();
+    if (diff <= 0) return "resetting now";
+    return `resets in ${formatDurationParts(diff)}`;
+  }
+  return window?.resetText ? `resets ${window.resetText}` : "reset unknown";
+}
+
+function renderClaudeUsageWindow(box, window) {
+  const usedPercent = Number(window?.usedPercent);
+  const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
+  const item = make("div", "claude-usage-bucket");
+  const row = make("div", "claude-usage-row");
+  row.append(
+    make("span", "claude-usage-label", window?.label || "Usage window"),
+    make("strong", "claude-usage-percent", formatCodexPercent(usedPercent)),
+  );
+  const meter = make("div", "claude-usage-meter");
+  const fill = make("span", "claude-usage-meter-fill");
+  fill.style.width = `${fillPercent}%`;
+  meter.append(fill);
+  item.append(row, meter, make("div", "claude-usage-reset", formatClaudeUsageReset(window)));
+  box.append(item);
+}
+
+function renderClaudeUsageActivity(box, activity) {
+  if (!Array.isArray(activity) || activity.length === 0) return;
+  const title = make("div", "claude-usage-activity-title", latestClaudeUsage?.activityTitle || "What's contributing to your limits usage?");
+  box.append(title);
+  for (const item of activity.slice(0, 2)) {
+    const group = make("div", "claude-usage-activity-group");
+    const row = make("div", "claude-usage-row");
+    row.append(
+      make("span", "claude-usage-label", item.label || "Activity"),
+      make("span", "claude-usage-reset", `${Number(item.requests || 0)} requests · ${Number(item.sessions || 0)} sessions`),
+    );
+    group.append(row);
+    for (const detail of (Array.isArray(item.details) ? item.details : []).slice(0, 4)) {
+      group.append(make("div", "claude-usage-detail", detail?.text || String(detail || "")));
+    }
+    box.append(group);
+  }
+}
+
+function renderClaudeUsage() {
+  const box = elements.claudeUsageBox;
+  if (!box) return;
+  if (elements.refreshClaudeUsageButton) {
+    elements.refreshClaudeUsageButton.disabled = claudeUsageLoading;
+    elements.refreshClaudeUsageButton.textContent = claudeUsageLoading ? "Refreshing…" : "Refresh usage";
+  }
+
+  box.replaceChildren();
+  box.classList.toggle("muted", !latestClaudeUsage);
+
+  if (!latestClaudeUsage && claudeUsageLoading) {
+    box.textContent = "Checking Claude usage…";
+    return;
+  }
+  if (!latestClaudeUsage && claudeUsageError) {
+    const title = make("div", "claude-usage-unavailable", "Usage unavailable");
+    const detail = make("div", "claude-usage-detail", claudeUsageError.message || String(claudeUsageError));
+    box.append(title, detail);
+    return;
+  }
+  if (!latestClaudeUsage) {
+    box.textContent = "Claude usage has not loaded yet.";
+    return;
+  }
+
+  const header = make("div", "claude-usage-summary");
+  header.append(
+    make("span", "claude-usage-plan", "Claude Code"),
+    make("span", "claude-usage-fetched", latestClaudeUsage.fetchedAt ? `updated ${formatDurationParts(Date.now() - new Date(latestClaudeUsage.fetchedAt).getTime())} ago` : "updated now"),
+  );
+  box.append(header);
+
+  if (latestClaudeUsage.summary) box.append(make("div", "claude-usage-detail", latestClaudeUsage.summary));
+  const windows = Array.isArray(latestClaudeUsage.windows) ? latestClaudeUsage.windows : [];
+  if (windows.length === 0) {
+    box.append(make("div", "claude-usage-detail", "No Claude usage windows were returned."));
+  } else {
+    for (const window of windows.slice(0, 6)) renderClaudeUsageWindow(box, window);
+  }
+
+  renderClaudeUsageActivity(box, latestClaudeUsage.activity);
+  if (claudeUsageError) {
+    box.append(make("div", "claude-usage-detail", `Latest refresh failed: ${claudeUsageError.message || claudeUsageError}`));
+  }
+}
+
+async function refreshClaudeUsage() {
+  if (claudeUsageLoading) return;
+  claudeUsageLoading = true;
+  renderClaudeUsage();
+  try {
+    const response = await api("/api/claude-usage", { scoped: false });
+    latestClaudeUsage = response.data || null;
+    claudeUsageError = null;
+  } catch (error) {
+    claudeUsageError = error;
+  } finally {
+    claudeUsageLoading = false;
+    renderClaudeUsage();
+  }
+}
+
+function scheduleRefreshClaudeUsage(delay = CLAUDE_USAGE_REFRESH_MS) {
+  clearTimeout(refreshClaudeUsageTimer);
+  refreshClaudeUsageTimer = setTimeout(() => {
+    refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
+  }, delay);
+}
+
+function initializeClaudeUsage() {
+  renderClaudeUsage();
+  refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
+  clearInterval(claudeUsageRenderTimer);
+  claudeUsageRenderTimer = setInterval(renderClaudeUsage, CLAUDE_USAGE_RENDER_TICK_MS);
+}
+
 function renderStatus() {
   if (deferUiRenderDuringPointerActivation("status", renderStatus)) return;
   const state = currentState;
@@ -16065,6 +16228,19 @@ function messageTitle(message) {
   return message.role || "message";
 }
 
+function isCompleteUserBashMessage(message) {
+  if (message?.role !== "bashExecution") return false;
+  const title = String(message.title || "").toLowerCase();
+  if (title.includes("queued")) return false;
+  if (title.includes("complete")) return true;
+  if (message.exitCode !== undefined || message.cancelled !== undefined || message.truncated !== undefined || message.fullOutputPath) return true;
+  return !title && message.output !== undefined;
+}
+
+function shouldOpenMessageCollapseByDefault(message) {
+  return !!message?.isError || toolOutputGloballyExpanded || isCompleteUserBashMessage(message);
+}
+
 function assistantThinkingText(part) {
   if (!part || typeof part !== "object") return "";
   if (part.type !== "thinking" && typeof part.thinking !== "string") return "";
@@ -17245,7 +17421,7 @@ function appendMessage(message, { streaming = false, messageIndex = -1, transien
 
   if (isCollapsibleOutput) {
     const details = make("details", "message-collapse");
-    if (message.isError || toolOutputGloballyExpanded) details.open = true;
+    if (shouldOpenMessageCollapseByDefault(message)) details.open = true;
     details.append(header, body);
     bubble.append(details);
     if (message.role === "toolResult" && !message.isError) {
@@ -18251,6 +18427,8 @@ function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force =
 }
 
 function updateOptionalFeatureAvailability() {
+  optionalFeatureAvailability.bangCommandAutocomplete = hasAvailableCommand("bang-status") || hasAvailableCommand("bang-refresh");
+  optionalFeatureAvailability.fishUserBash = hasAvailableCommand("user-bash-shell");
   optionalFeatureAvailability.btwCommand = hasAvailableCommand("btw") || optionalFeatureAvailability.btwCommand || statusEntries.has(BTW_WEBUI_STATUS_KEY) || widgets.has(BTW_OUTPUT_WIDGET_KEY);
   optionalFeatureAvailability.gitWorkflow = hasAvailableCommand("git-staged-msg");
   optionalFeatureAvailability.releaseNpm = hasAvailableCommand("release-npm");
@@ -20596,6 +20774,26 @@ function normalizePathSuggestions(suggestions) {
     });
 }
 
+function normalizeBangSuggestions(suggestions) {
+  const seen = new Set();
+  return (suggestions || [])
+    .map((suggestion) => {
+      const insertText = String(suggestion.insertText || suggestion.value || "").trim().replace(/^!+/, "");
+      const label = String(suggestion.label || `!${insertText}`).trim();
+      return {
+        insertText,
+        label,
+        description: String(suggestion.description || "shell command").trim(),
+        kind: String(suggestion.kind || "command").trim(),
+      };
+    })
+    .filter((suggestion) => {
+      if (!suggestion.insertText || seen.has(suggestion.insertText)) return false;
+      seen.add(suggestion.insertText);
+      return true;
+    });
+}
+
 function getCommandTrigger() {
   const input = elements.promptInput;
   const cursor = input.selectionStart ?? input.value.length;
@@ -20631,6 +20829,21 @@ function getPathTrigger() {
   if (!match) return null;
   const query = match[2] || "";
   return { start: cursor - query.length - 1, end: cursor, query, quoted: false };
+}
+
+function getBangTrigger() {
+  const input = elements.promptInput;
+  const cursor = input.selectionStart ?? input.value.length;
+  const selectionEnd = input.selectionEnd ?? cursor;
+  if (cursor !== selectionEnd) return null;
+
+  const beforeCursor = input.value.slice(0, cursor);
+  const match = beforeCursor.match(/^\s*(!!?)([^\n]*)$/);
+  if (!match) return null;
+  const afterBang = match[2] || "";
+  const leadingSpaceLength = afterBang.match(/^\s*/)?.[0]?.length || 0;
+  const query = afterBang.slice(leadingSpaceLength);
+  return { start: cursor - query.length, end: cursor, query, bangPrefix: match[1] };
 }
 
 function scoreCommandSuggestion(command, query) {
@@ -20670,7 +20883,9 @@ function commandMatchesSearch(command, query) {
 }
 
 function activeSuggestionCount() {
-  return suggestionMode === "path" ? pathSuggestions.length : commandSuggestions.length;
+  if (suggestionMode === "path") return pathSuggestions.length;
+  if (suggestionMode === "bang") return bangSuggestions.length;
+  return commandSuggestions.length;
 }
 
 function abortPathSuggestionRequest() {
@@ -20684,13 +20899,26 @@ function cancelPathSuggestionRequest() {
   abortPathSuggestionRequest();
 }
 
+function abortBangSuggestionRequest() {
+  bangSuggestAbortController?.abort();
+  bangSuggestAbortController = null;
+}
+
+function cancelBangSuggestionRequest() {
+  bangSuggestRequestSerial++;
+  bangSuggestActiveQuery = null;
+  abortBangSuggestionRequest();
+}
+
 function hideCommandSuggestions() {
   cancelPathSuggestionRequest();
+  cancelBangSuggestionRequest();
   elements.commandSuggest.hidden = true;
   elements.commandSuggest.removeAttribute("aria-busy");
   elements.commandSuggest.replaceChildren();
   commandSuggestions = [];
   pathSuggestions = [];
+  bangSuggestions = [];
   suggestionMode = "none";
   commandSuggestIndex = 0;
   scheduleDeferredUiFlushAfterDropdownClose();
@@ -20739,6 +20967,7 @@ function setActiveCommandSuggestionFromPointerMove(index, event) {
 function renderCommandSuggestionItems(trigger, { keepIndex = false } = {}) {
   suggestionMode = "command";
   pathSuggestions = [];
+  bangSuggestions = [];
   commandSuggestions = getCommandMatches(trigger.query);
   elements.commandSuggest.replaceChildren();
 
@@ -20781,6 +21010,7 @@ function formatPathReference(pathText, forceQuoted = false) {
 function renderPathSuggestionItems(trigger, { keepIndex = false } = {}) {
   suggestionMode = "path";
   commandSuggestions = [];
+  bangSuggestions = [];
   elements.commandSuggest.replaceChildren();
 
   if (pathSuggestions.length === 0) {
@@ -20811,6 +21041,7 @@ function renderPathSuggestionItems(trigger, { keepIndex = false } = {}) {
 }
 
 async function renderPathSuggestions(trigger, { keepIndex = false } = {}) {
+  cancelBangSuggestionRequest();
   if (suggestionMode === "path" && pathSuggestActiveQuery === trigger.query && !elements.commandSuggest.hidden) {
     if (keepIndex && activeSuggestionCount() > 0) setActiveCommandSuggestion(commandSuggestIndex);
     return;
@@ -20849,9 +21080,90 @@ async function renderPathSuggestions(trigger, { keepIndex = false } = {}) {
   }
 }
 
+function renderBangSuggestionItems(trigger, { keepIndex = false } = {}) {
+  suggestionMode = "bang";
+  commandSuggestions = [];
+  pathSuggestions = [];
+  elements.commandSuggest.replaceChildren();
+
+  if (bangSuggestions.length === 0) {
+    elements.commandSuggest.append(make("div", "command-suggest-empty", `No shell command matches !${trigger.query}`));
+    elements.commandSuggest.hidden = false;
+    return;
+  }
+
+  for (const [index, suggestion] of bangSuggestions.entries()) {
+    const item = make("button", "command-suggest-item bang-suggest-item");
+    item.type = "button";
+    item.setAttribute("role", "option");
+    item.addEventListener("mousedown", (event) => event.preventDefault());
+    item.addEventListener("pointermove", (event) => setActiveCommandSuggestionFromPointerMove(index, event));
+    item.addEventListener("click", () => insertBangSuggestion(index));
+
+    item.append(
+      make("span", "command-suggest-name bang-suggest-name", suggestion.label || `!${suggestion.insertText}`),
+      make("span", "command-suggest-desc", suggestion.description || "shell command"),
+      make("span", "command-suggest-source", suggestion.kind || "command"),
+    );
+    elements.commandSuggest.append(item);
+  }
+
+  elements.commandSuggest.hidden = false;
+  setActiveCommandSuggestion(keepIndex ? commandSuggestIndex : 0);
+}
+
+async function renderBangSuggestions(trigger, { keepIndex = false } = {}) {
+  cancelPathSuggestionRequest();
+  const activeQuery = `${trigger.bangPrefix}\0${trigger.query}`;
+  if (suggestionMode === "bang" && bangSuggestActiveQuery === activeQuery && !elements.commandSuggest.hidden) {
+    if (keepIndex && activeSuggestionCount() > 0) setActiveCommandSuggestion(commandSuggestIndex);
+    return;
+  }
+
+  const keepExistingBangMenu = suggestionMode === "bang" && !elements.commandSuggest.hidden && elements.commandSuggest.childElementCount > 0;
+  abortBangSuggestionRequest();
+  const requestSerial = ++bangSuggestRequestSerial;
+  const controller = new AbortController();
+  bangSuggestActiveQuery = activeQuery;
+  bangSuggestAbortController = controller;
+  suggestionMode = "bang";
+  commandSuggestions = [];
+  pathSuggestions = [];
+  if (!keepExistingBangMenu) {
+    bangSuggestions = [];
+    elements.commandSuggest.replaceChildren(make("div", "command-suggest-empty", "Finding shell commands…"));
+  }
+  elements.commandSuggest.hidden = false;
+  elements.commandSuggest.setAttribute("aria-busy", "true");
+
+  try {
+    const response = await api(`/api/bang-suggestions?query=${encodeURIComponent(trigger.query)}`, { signal: controller.signal });
+    if (requestSerial !== bangSuggestRequestSerial || document.activeElement !== elements.promptInput) return;
+    bangSuggestions = normalizeBangSuggestions(response.data?.suggestions || []);
+    renderBangSuggestionItems(trigger, { keepIndex });
+  } catch (error) {
+    if (error?.name === "AbortError" || requestSerial !== bangSuggestRequestSerial) return;
+    bangSuggestions = [];
+    elements.commandSuggest.replaceChildren(make("div", "command-suggest-empty", `Shell command suggestions unavailable: ${error.message}`));
+    elements.commandSuggest.hidden = false;
+  } finally {
+    if (requestSerial === bangSuggestRequestSerial) {
+      bangSuggestAbortController = null;
+      elements.commandSuggest.removeAttribute("aria-busy");
+    }
+  }
+}
+
 function renderCommandSuggestions({ keepIndex = false } = {}) {
   if (document.activeElement !== elements.promptInput) {
     hideCommandSuggestions();
+    return;
+  }
+
+  const bangTrigger = getBangTrigger();
+  if (bangTrigger) {
+    if (isOptionalFeatureEnabled("bangCommandAutocomplete")) renderBangSuggestions(bangTrigger, { keepIndex });
+    else hideCommandSuggestions();
     return;
   }
 
@@ -20862,6 +21174,7 @@ function renderCommandSuggestions({ keepIndex = false } = {}) {
   }
 
   cancelPathSuggestionRequest();
+  cancelBangSuggestionRequest();
   const trigger = getCommandTrigger();
   if (!trigger || availableCommands.length === 0) {
     hideCommandSuggestions();
@@ -20873,6 +21186,7 @@ function renderCommandSuggestions({ keepIndex = false } = {}) {
 
 function insertCommandSuggestion(index = commandSuggestIndex) {
   if (suggestionMode === "path") return insertPathSuggestion(index);
+  if (suggestionMode === "bang") return insertBangSuggestion(index);
   const command = commandSuggestions[index];
   const trigger = getCommandTrigger();
   if (!command || !trigger) return false;
@@ -20891,6 +21205,26 @@ function insertCommandSuggestion(index = commandSuggestIndex) {
   const cursor = trigger.start + commandText.length + whitespaceOffset;
   input.setSelectionRange(cursor, cursor);
   input.focus();
+  hideCommandSuggestions();
+  return true;
+}
+
+function insertBangSuggestion(index = commandSuggestIndex) {
+  const suggestion = bangSuggestions[index];
+  const trigger = getBangTrigger();
+  if (!suggestion || !trigger) return false;
+
+  const input = elements.promptInput;
+  const value = input.value;
+  const suffix = value.slice(trigger.end);
+  const commandText = suggestion.insertText.replace(/^!+/, "");
+  const separator = suggestion.kind === "line" || (suffix && /^\s/.test(suffix)) ? "" : " ";
+  input.value = `${value.slice(0, trigger.start)}${commandText}${separator}${suffix}`;
+
+  const cursor = trigger.start + commandText.length + separator.length;
+  input.setSelectionRange(cursor, cursor);
+  input.focus();
+  resizePromptInput();
   hideCommandSuggestions();
   return true;
 }
@@ -21995,6 +22329,7 @@ function handleEvent(event) {
       scheduleRefreshMessages();
       scheduleRefreshFooter();
       scheduleRefreshCodexUsage(2200);
+      scheduleRefreshClaudeUsage(2200);
       renderFeedbackTray();
       {
         const workflowTabId = event.tabId || activeTabId;
@@ -23295,6 +23630,9 @@ elements.gitChangesDialog?.addEventListener("close", () => {
 elements.refreshCodexUsageButton?.addEventListener("click", () => {
   refreshCodexUsage({ forceAuthRefresh: true }).finally(() => scheduleRefreshCodexUsage());
 });
+elements.refreshClaudeUsageButton?.addEventListener("click", () => {
+  refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
+});
 elements.pathPickerCreateNameInput.addEventListener("input", updateCreateDirectoryControls);
 elements.pathPickerCreateNameInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
@@ -23430,6 +23768,7 @@ restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
 restoreSidePanelState();
 initializeCodexUsage();
+initializeClaudeUsage();
 initializeUpdateNotifications();
 bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();

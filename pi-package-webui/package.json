@@ -23,6 +23,8 @@
     "image": "https://raw.githubusercontent.com/Firstp1ck/npm-packages/main/pi-package-webui/images/Webui_MainWindow_v0.4.8.png",
     "extensions": [
       "./index.ts",
+      "node_modules/@firstpick/pi-extension-bang-command-autocomplete/index.ts",
+      "node_modules/@firstpick/pi-extension-fish-user-bash/index.ts",
       "node_modules/@firstpick/pi-extension-btw/index.ts",
       "node_modules/@firstpick/pi-extension-git-footer-status/index.ts",
       "node_modules/@firstpick/pi-extension-release-aur/index.ts",
@@ -57,7 +59,9 @@
     "mermaid": "^11.15.0"
   },
   "optionalDependencies": {
+    "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
     "@firstpick/pi-extension-btw": "^0.1.2",
+    "@firstpick/pi-extension-fish-user-bash": "^0.2.0",
     "@firstpick/pi-extension-git-footer-status": "^0.3.6",
     "@firstpick/pi-extension-release-aur": "^0.1.7",
     "@firstpick/pi-extension-release-npm": "^0.4.0",

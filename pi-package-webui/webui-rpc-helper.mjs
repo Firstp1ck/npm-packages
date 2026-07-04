@@ -36,6 +36,35 @@ function installActiveCommandSessionCapture() {
 
 installActiveCommandSessionCapture();
 
+function installRpcUserBashSupport() {
+  const proto = AgentSession?.prototype;
+  if (!proto || proto.__webuiHelperUserBashSupportInstalled) return;
+  const original = proto.executeBash;
+  if (typeof original !== "function") return;
+  Object.defineProperty(proto, "__webuiHelperUserBashSupportInstalled", { value: true });
+  proto.executeBash = async function webuiHelperExecuteBash(command, onChunk, options = {}) {
+    const runner = this.extensionRunner;
+    const eventResult = runner?.hasHandlers?.("user_bash")
+      ? await runner.emitUserBash({
+        type: "user_bash",
+        command,
+        excludeFromContext: options?.excludeFromContext === true,
+        cwd: this.sessionManager?.getCwd?.() || this._cwd || process.cwd(),
+      })
+      : undefined;
+
+    if (eventResult?.result) {
+      this.recordBashResult(command, eventResult.result, { excludeFromContext: options?.excludeFromContext === true });
+      return eventResult.result;
+    }
+
+    const nextOptions = eventResult?.operations ? { ...options, operations: eventResult.operations } : options;
+    return original.call(this, command, onChunk, nextOptions);
+  };
+}
+
+installRpcUserBashSupport();
+
 function responseMessage(payload) {
   return `${RESPONSE_PREFIX}${JSON.stringify(payload)}`;
 }
