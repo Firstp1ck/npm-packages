@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-cd",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Pi /cd command with ranked directory suggestions, persistent history, and aliases.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-cd#readme",

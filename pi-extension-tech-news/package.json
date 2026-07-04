@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-tech-news",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Tech news tools and commands for Pi using Hacker News, Reddit, Socket.dev, and daily.dev sources.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-tech-news#readme",

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-package-remote-webui",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi /remote command that opens the existing Pi Web UI to a trusted LAN and shows a QR code for mobile.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-remote-webui#readme",

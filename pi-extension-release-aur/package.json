@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-release-aur",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Pi commands and skill for deterministic AUR setup, review, and release workflows.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-release-aur#readme",

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-package-natural-conversation",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Safe per-process Natural Conversation Mode for Pi, with /talk commands and read-only tool constraints.",
   "license": "MIT",
   "type": "module",
