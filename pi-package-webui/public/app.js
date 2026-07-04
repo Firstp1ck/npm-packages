@@ -19191,7 +19191,7 @@ async function openNativeSettingsDialog() {
     showImages: nativeSettingToggle("Show terminal images", settings.showImages !== false, "Native TUI inline image rendering preference.", { label: "TUI", tone: "tui" }),
     imageWidth: nativeSettingSelect("Terminal image width", settings.imageWidthCells || 60, SETTINGS_IMAGE_WIDTH_OPTIONS, "Native TUI inline image width in terminal cells.", { label: "TUI", tone: "tui" }),
     skillCommands: nativeSettingToggle("Skill commands", settings.enableSkillCommands !== false, "Register skills as /skill:name commands.", { label: "reload", tone: "reload" }),
-    anthropicWarning: nativeSettingToggle("Anthropic extra usage warning", settings.warnings?.anthropicExtraUsage !== false, "Warn when Anthropic subscription auth may use paid extra usage.", { label: "safety", tone: "safety" }),
+    anthropicWarning: nativeSettingToggle("Anthropic Agent SDK usage", settings.warnings?.anthropicExtraUsage !== false, "Native TUI setting for the suppressed Anthropic Agent SDK billing-path warning.", { label: "safety", tone: "safety" }),
     collapseChangelog: nativeSettingToggle("Collapse changelog", settings.collapseChangelog === true, "Show condensed changelog after updates.", { label: "startup", tone: "startup" }),
     quietStartup: nativeSettingToggle("Quiet startup", settings.quietStartup === true, "Disable verbose printing at startup.", { label: "startup", tone: "startup" }),
     installTelemetry: nativeSettingToggle("Install telemetry", settings.enableInstallTelemetry !== false, "Send anonymous version/update ping after changelog-detected updates.", { label: "startup", tone: "startup" }),

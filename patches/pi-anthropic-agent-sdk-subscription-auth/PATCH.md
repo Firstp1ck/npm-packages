@@ -36,7 +36,7 @@ Anthropic's current support article says Claude Agent SDK usage, `claude -p`, an
 
 ### Expected outcome
 
-Anthropic OAuth requests from Pi keep using OAuth bearer auth, but send the current Agent SDK attribution/identity shape. The stale warning text no longer says all third-party harness usage necessarily draws directly from extra usage outside plan limits.
+Anthropic OAuth requests from Pi keep using OAuth bearer auth, but send the current Agent SDK attribution/identity shape. The stale subscription-auth warning is suppressed. If Anthropic returns the exact extra-usage third-party-app error again, Pi asks whether to apply this saved `PATCH.md`; on confirmation it switches the current agent to `openai-codex/gpt-5.5` and queues a recovery turn that implements this patch.
 
 ## Scope (exact files changed)
 
@@ -44,6 +44,8 @@ Path variables:
 
 - `PI_GLOBAL=${HOME}/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent`
 - `PI_WEBUI=${HOME}/npm-packages/pi-package-webui/node_modules/@earendil-works`
+- `PI_WEBUI_PKG=${HOME}/npm-packages/pi-package-webui`
+- `PI_AGENT=${HOME}/.pi/agent`
 
 Files:
 
@@ -58,6 +60,8 @@ Files:
 9. `${PI_WEBUI}/pi-coding-agent/dist/modes/interactive/components/settings-selector.js`
 10. `${PI_WEBUI}/pi-coding-agent/docs/providers.md`
 11. `${PI_WEBUI}/pi-coding-agent/docs/settings.md`
+12. `${PI_WEBUI_PKG}/public/app.js`
+13. `${PI_AGENT}/extensions/anthropic-subscription-auth-recovery.ts`
 
 ## Change 1 — Update Anthropic OAuth request identity to Agent SDK shape
 
@@ -131,7 +135,7 @@ params.system = [
 
 Anthropic now distinguishes Agent SDK / third-party app traffic using request metadata that current Claude Code/Agent SDK emits. Pi's older OAuth request shape can be classified as legacy third-party extra-usage traffic and rejected with the 400 `Third-party apps now draw from your extra usage...` message.
 
-## Change 2 — Update stale Anthropic extra-usage warning text
+## Change 2 — Suppress the runtime Anthropic subscription-auth warning
 
 **File:** `${PI_GLOBAL}/dist/modes/interactive/interactive-mode.js`
 
@@ -141,15 +145,18 @@ Also applied to:
 
 ### What was changed
 
-Changed the warning constant to avoid the old unconditional extra-usage claim:
+Changed `maybeWarnAboutAnthropicSubscriptionAuth()` to return immediately, so startup, model switching, and login flows no longer emit the Anthropic subscription-auth warning:
 
 ```js
-const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING = "Anthropic subscription auth is active. Claude Agent SDK / third-party app usage uses Anthropic's Agent SDK billing path: monthly Agent SDK credit first when available, then usage credits if enabled. Manage usage at https://claude.ai/settings/usage.";
+async maybeWarnAboutAnthropicSubscriptionAuth(_model = this.session.model) {
+    // Suppressed: patched Anthropic OAuth requests use Agent SDK billing attribution.
+    return;
+}
 ```
 
 ### Why
 
-The previous text said third-party harness usage draws from extra usage and is billed per token, not plan limits. Anthropic's current support wording is more nuanced: eligible users can claim a separate monthly Agent SDK credit, and usage past that credit can draw from usage credits if enabled.
+The patched OAuth request shape is intended to follow the current Agent SDK billing path. The old warning is now noisy and no longer actionable; recovery is handled by the dedicated popup in Change 6 if Anthropic still returns the extra-usage error.
 
 ## Change 3 — Update warnings settings copy
 
@@ -158,6 +165,7 @@ The previous text said third-party harness usage draws from extra usage and is b
 Also applied to:
 
 - `${PI_WEBUI}/pi-coding-agent/dist/modes/interactive/components/settings-selector.js`
+- `${PI_WEBUI_PKG}/public/app.js`
 
 ### What was changed
 
@@ -166,6 +174,12 @@ Changed the warnings settings label/description:
 ```js
 label: "Anthropic Agent SDK usage",
 description: "Warn when Anthropic subscription auth uses the Agent SDK billing path",
+```
+
+Changed the WebUI native settings copy to avoid the stale extra-usage wording:
+
+```js
+anthropicWarning: nativeSettingToggle("Anthropic Agent SDK usage", settings.warnings?.anthropicExtraUsage !== false, "Native TUI setting for the suppressed Anthropic Agent SDK billing-path warning.", { label: "safety", tone: "safety" }),
 ```
 
 ### Why
@@ -212,6 +226,36 @@ Changed the warning setting description to:
 
 Keeps local settings documentation consistent with the updated warning copy.
 
+## Change 6 — Add recovery popup that queues PATCH.md application on OpenAI Codex
+
+**File:** `${PI_AGENT}/extensions/anthropic-subscription-auth-recovery.ts`
+
+### What was changed
+
+Added a global Pi extension that watches `agent_end` messages for the exact Anthropic error:
+
+```text
+Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.
+```
+
+When that error appears, the extension shows a confirmation dialog. If confirmed, it switches the current agent to `openai-codex/gpt-5.5` and queues a follow-up user message instructing the agent to implement this patch via the `patch-md` skill:
+
+```ts
+const PATCH_PATH = "/home/firstpick/npm-packages/patches/pi-anthropic-agent-sdk-subscription-auth/PATCH.md";
+const RECOVERY_PROVIDER = "openai-codex";
+const RECOVERY_MODEL = "gpt-5.5";
+
+const recoveryModel = ctx.modelRegistry.find(RECOVERY_PROVIDER, RECOVERY_MODEL);
+const switched = await pi.setModel(recoveryModel);
+pi.sendUserMessage(buildPatchPrompt(previousModel), { deliverAs: "followUp" });
+```
+
+The queued prompt explicitly says to use `patch-md`, apply the `PATCH.md` exactly, avoid live Anthropic verification unless approved, and report modified files plus verification results.
+
+### Why
+
+If the request-shape patch is overwritten by a Pi update or Anthropic changes classification again, the user gets an immediate recovery path without manually finding this patch document or switching away from the failing Anthropic model.
+
 ## Verification steps
 
 Run syntax checks:
@@ -222,6 +266,9 @@ node --check "${HOME}/npm-packages/pi-package-webui/node_modules/@earendil-works
 node --check "${HOME}/npm-packages/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js"
 node --check "${HOME}/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"
 node --check "${HOME}/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/settings-selector.js"
+node --check "${HOME}/npm-packages/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"
+node --check "${HOME}/npm-packages/pi-package-webui/public/app.js"
+node --experimental-strip-types --check "${HOME}/.pi/agent/extensions/anthropic-subscription-auth-recovery.ts"
 ```
 
 Run a local no-secret capture against the patched `pi-ai` stream implementation:
@@ -274,6 +321,18 @@ Expected capture includes:
 - first system block begins `x-anthropic-billing-header: cc_version=2.1.201.986; cc_entrypoint=sdk-cli;`.
 - second system block is `You are a Claude agent, built on Anthropic's Claude Agent SDK.` and has 1h cache control.
 
+Run targeted static checks:
+
+```bash
+! grep -R "showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING)" \
+  "${HOME}/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js" \
+  "${HOME}/npm-packages/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"
+grep -F "openai-codex" "${HOME}/.pi/agent/extensions/anthropic-subscription-auth-recovery.ts"
+grep -F "pi-anthropic-agent-sdk-subscription-auth/PATCH.md" "${HOME}/.pi/agent/extensions/anthropic-subscription-auth-recovery.ts"
+```
+
+Expected static-check result: no `showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING)` call sites remain in either installed `interactive-mode.js`, and the recovery extension contains both `openai-codex` and this `PATCH.md` path.
+
 Optional live verification, only if you accept possible Anthropic billing/usage-credit consumption:
 
 ```bash
@@ -282,7 +341,7 @@ pi --provider anthropic --model claude-haiku-4-5 -p --tools '' 'Reply with exact
 
 ## Operational notes
 
-- Restart Pi after patching. `/reload` is not enough for already-loaded `pi-ai` module code in a running process.
+- Restart Pi after patching. `/reload` can load the new recovery extension and warning suppression, but a full restart is still required for already-loaded `pi-ai` module code in a running process.
 - This edits built `dist/` files inside installed npm packages. A `pi update`, global reinstall, or `npm install` can overwrite these changes.
 - The exact Claude Code build suffix (`986`) was observed from local Claude Code 2.1.201 request capture. If Anthropic changes classification again, recapture current Claude Code with a local `ANTHROPIC_BASE_URL` test server and update `claudeCodeVersion`, `claudeCodeBuild`, `claudeCodeEntrypoint`, beta list, and identity blocks accordingly.
 - Live Anthropic verification was intentionally left optional because it may consume subscription/Agent SDK credit or usage credits.
