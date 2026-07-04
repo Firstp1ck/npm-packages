@@ -398,6 +398,11 @@
                 </div>
                 <div class="control-field">
                   <label for="themeSelect" id="themeControlLabel" title="Open or close theme search" tabindex="0">Theme</label>
+                  <div id="themeSchemeToggle" class="theme-scheme-toggle" role="group" aria-label="Theme mode">
+                    <button type="button" data-scheme-mode="light" aria-pressed="false" title="Always use your light theme">Light</button>
+                    <button type="button" data-scheme-mode="dark" aria-pressed="false" title="Always use your dark theme">Dark</button>
+                    <button type="button" data-scheme-mode="auto" aria-pressed="false" title="Follow your system light/dark setting">Auto</button>
+                  </div>
                   <input id="themeSearchInput" class="model-search-input theme-search-input" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
                   <select id="themeSelect" title="Theme"></select>
                   <div id="themeSearchResults" class="model-search-results theme-search-results" role="listbox" aria-label="Theme search results" hidden></div>
