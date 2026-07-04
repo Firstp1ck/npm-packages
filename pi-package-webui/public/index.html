@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=62" />
+    <link rel="stylesheet" href="/styles.css?v=63" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -73,6 +73,7 @@
               </div>
             </div>
           </div>
+          <button id="splitTabButton" class="terminal-split-button" type="button" aria-label="Split the active terminal to the right" aria-pressed="false"><svg class="terminal-split-icon terminal-split-icon-split" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M15 12h4m0 0-2-2m2 2-2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="terminal-split-icon terminal-split-icon-unsplit" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M19 12h-4m0 0 2-2m-2 2 2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button id="commandPaletteButton" class="terminal-command-palette-button" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button id="closeAllTabsButton" class="terminal-close-all-button" type="button" aria-label="Close all terminal tabs">Close all Tabs</button>
@@ -316,6 +317,18 @@
           <span id="remoteMicStreamingConsentText" class="composer-remote-mic-consent-text"></span>
           <button id="remoteMicStreamingConsentButton" class="composer-remote-mic-consent-button" type="button" aria-describedby="remoteMicStreamingConsentText" disabled>Allow remote microphone streaming</button>
         </div>
+      </section>
+
+      <section id="terminalSplitShell" class="terminal-split-shell" aria-label="Split terminal" hidden>
+        <header class="terminal-split-toolbar">
+          <div class="terminal-split-heading">
+            <span class="terminal-split-kicker">Split terminal</span>
+            <strong id="terminalSplitTitle">Independent terminal</strong>
+            <span id="terminalSplitMeta" class="terminal-split-meta muted"></span>
+          </div>
+          <button id="terminalSplitCloseButton" class="terminal-split-close-button" type="button" aria-label="Close split terminal view">Close split</button>
+        </header>
+        <iframe id="terminalSplitFrame" class="terminal-split-frame" title="Independent split terminal"></iframe>
       </section>
 
       <button id="sidePanelBackdrop" class="side-panel-backdrop" type="button" aria-label="Close side panel" hidden></button>
@@ -762,6 +775,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=60"></script>
+    <script type="module" src="/app.js?v=61"></script>
   </body>
 </html>
