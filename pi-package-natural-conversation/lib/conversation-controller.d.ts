@@ -2,6 +2,11 @@ export declare const DEFAULT_ALLOWED_TOOLS: readonly string[];
 export declare const CONVERSATION_STATUS_KEY = "natural-conversation";
 export declare const CONVERSATION_SYSTEM_PROMPT: string;
 
+export type ConversationStyle = { label: string; prompt: string };
+export declare const CONVERSATION_STYLES: Readonly<Record<string, ConversationStyle>>;
+export declare const CONVERSATION_STYLE_IDS: readonly string[];
+export declare const DEFAULT_CONVERSATION_STYLE: string;
+
 export type ConversationUiState =
   | "off"
   | "listening"
@@ -18,6 +23,7 @@ export type ConversationModeState = {
   previousThinkingLevel?: string;
   previousActiveTools?: string[];
   allowedTools: string[];
+  stylePreset?: string;
   startedAt?: string;
   uiState?: ConversationUiState;
   bargeInEnabled?: boolean;
@@ -39,6 +45,9 @@ export declare function createConversationController(
   getState(): ConversationModeState;
   statusText(): string;
   buildSystemPrompt(systemPrompt?: string): string;
+  setStyle(preset: string, ctx?: any): ConversationModeState | undefined;
+  getStyle(): string;
+  setAllowedTools(names: readonly string[], ctx?: any): ConversationModeState;
   handleToolCall(event: { toolName?: string }): { block: true; reason: string } | undefined;
   handleUserBash(): { result: { output: string; exitCode: number; cancelled: boolean; truncated: boolean } } | undefined;
   setUiState(uiState: ConversationUiState, ctx?: any): ConversationModeState;

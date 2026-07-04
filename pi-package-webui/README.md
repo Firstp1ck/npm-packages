@@ -127,6 +127,15 @@ Environment variables:
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
 - `PI_WEBUI_NPM_BIN=/path/to/npm` selects the npm executable used by optional feature install/update actions.
 
+Optional Natural Conversation server-side voice fallback variables:
+
+- `PI_VOICE_STT_URL` enables a local STT endpoint for `POST /api/stt/transcribe`; Web UI forwards audio as multipart form data.
+- `PI_VOICE_TTS_URL` enables a local TTS endpoint for `POST /api/tts/speech`; Web UI forwards `{ text, voice, format }` JSON.
+- `PI_VOICE_STT_PROVIDER=groq|openai` selects hosted STT when no request provider is supplied; set `GROQ_API_KEY` or `OPENAI_API_KEY` server-side.
+- `PI_VOICE_TTS_PROVIDER=openai` selects hosted OpenAI TTS when no request provider is supplied; set `OPENAI_API_KEY` server-side.
+- `PI_VOICE_GROQ_STT_MODEL`, `PI_VOICE_OPENAI_STT_MODEL`, `PI_VOICE_OPENAI_TTS_MODEL`, `PI_VOICE_OPENAI_TTS_VOICE`, `PI_VOICE_OPENAI_TTS_FORMAT`, `PI_VOICE_TTS_VOICE`, and `PI_VOICE_TTS_FORMAT` tune fallback models/voices/formats.
+- `PI_VOICE_PROVIDER_TIMEOUT_MS` controls outbound fallback-provider timeout. API keys are never sent from the browser; remote/LAN raw-audio STT uploads must include explicit per-request microphone-streaming consent.
+
 ## Main features
 
 - Pathless `pi-webui` startup: the server opens first, then the browser prompts for the first terminal CWD.
@@ -136,7 +145,8 @@ Environment variables:
 - Streaming chat transcript with Markdown, copy buttons for fenced code blocks, rendered Mermaid diagrams from fenced `mermaid`/`mmd` code blocks, thinking output, tool/bash cards, queue and compaction events, edit-and-retry from user prompts, transcript search, copy buttons, and guarded abort controls that require holding Esc or the Abort button for 3 seconds.
 - Prompt composer with uploads, drag/drop/paste, inline image support, generated text attachments for long input or clipboard text, editable text attachments, slash-command autocomplete, and `@` file/path references with live suggestions.
 - Leading `!` and `!!` user-bash commands from the composer, serialized per tab; `!` keeps output in the next model context and `!!` excludes it.
-- Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions. Browser STT/TTS audio remains a later-phase placeholder.
+- Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions.
+- Browser voice loop for Natural Conversation Mode (`public/voice-conversation.mjs`): while the mode is active in a tab, the browser's Web Speech APIs listen for speech, send final transcripts as normal prompts, and speak Pi's final answers. The microphone pauses while answers are spoken (echo prevention), speech during final-output streaming becomes a steering interruption, speech during tool execution is queued until the tool phase ends, and silence after a spoken question sends a single structured silence event. Remote (non-localhost) sessions keep the microphone off until the per-tab `Allow remote microphone streaming` consent is granted; only text transcripts ever reach the Pi host on the browser-default path. Opt-in server-side fallback routes are available for local/Groq/OpenAI STT and local/OpenAI TTS when configured with server-side env vars; remote/LAN raw-audio STT fallback uploads require explicit per-request consent.
 - Browser-native Pi dialogs for `/model`, `/settings`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`.
 - Runtime `/tools` and `/skills` selectors backed by the hidden Web UI RPC helper; skill toggles persist on the session branch, disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags.
 - Session resume/switch, metadata rename, and localhost-only safe delete with active/open-tab/session-directory guards.
@@ -147,7 +157,7 @@ Environment variables:
 - Detected app runner dropdown for the active tab cwd, including Cargo, Bun, npm/npx/pnpm, Python/uv, Go/Golang, Zig, C/C++, Docker Compose, root/dev/scripts shell scripts, and other common project runners with live output pinned at the top of the terminal. Running app runners expose line-oriented stdin in the widget for interactive scripts. Projects can add browseable custom runners in `.pi-webui-runners.json` with a command (default `./`) plus a relative path to the file to run.
 - Guided Git workflow for existing repos and new repos: initialize, create README/.gitignore, initial commit, rename to `main`, add a GitHub remote, pull fetched incoming changes, stage, generate or type commit messages, push, and optionally create a PR.
 - Browser support for Pi extension UI prompts, widgets, status updates, `/btw` side-question output widgets with optional context transfer/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications.
-- Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update` for Pi-only updates, while **Update Pi + Packages & Restart** runs `pi update --all` for Pi plus configured packages.
+- Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update` for Pi-only updates, while **Update Pi + Packages & Restart** runs `pi update --all` plus detected Web UI/Optional Feature package-root updates for Pi plus configured, local agent, project, global npm, and global Bun package roots.
 - Feedback reactions (`👍`, `👎`, `?`) on final assistant output plus tool/bash action cards, which can ask Pi to create or update a LEARNING.
 - Mobile-friendly layout, PWA install support where the browser allows it, backend-offline recovery, and a dedicated server-restart overlay while confirmed restart/update actions run.
 
@@ -321,7 +331,7 @@ Useful browser endpoints exposed by the local server include:
 - `POST /api/action-feedback?tab=<tabId>` for feedback on final assistant output and action cards.
 - `GET /api/optional-features` for optional companion package install/update status.
 - `POST /api/optional-feature-install` for installing or updating known optional companion packages from the side panel.
-- `GET /api/update-status`, localhost-only `POST /api/restart`, and localhost-only `POST /api/update` for checking Pi/Web UI updates and restarting the Web UI. Use `POST /api/update?all=1` to run `pi update --all` for Pi plus configured packages.
+- `GET /api/update-status`, localhost-only `POST /api/restart`, and localhost-only `POST /api/update` for checking Pi/Web UI updates and restarting the Web UI. Use `POST /api/update?all=1` to run `pi update --all` plus detected Web UI/Optional Feature package-root updates for Pi plus configured, local agent, project, global npm, and global Bun package roots.
 - `GET /api/network`, localhost-only `POST /api/network/open`, localhost-only `POST /api/network/close`, `GET /api/remote-auth`, `POST /api/remote-auth`, and localhost-only `POST /api/remote-auth/settings` for trusted-LAN exposure and optional 4-digit PIN authentication when serving non-local browser clients.
 
 For local development, run the checkout helper directly, for example:

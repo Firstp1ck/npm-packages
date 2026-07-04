@@ -71,7 +71,11 @@ function runCommand(command, args, { cwd, timeoutMs = GIT_DEFAULT_TIMEOUT_MS, ma
       if (stderr.length > maxOutputLength) stderr = stderr.slice(-maxOutputLength);
     });
     child.on("error", (error) => finish({ exitCode: undefined, stdout, stderr, error: error?.message || String(error) }));
-    child.on("exit", (exitCode, signal) => finish({ exitCode, signal, stdout, stderr, timedOut: false }));
+    // "close", not "exit": exit can fire before the stdio pipes flush, which
+    // intermittently yields empty/truncated stdout for a successful command
+    // (e.g. `git rev-parse --show-toplevel` → "" → path.resolve("") →
+    // process.cwd() → worktree data read from the wrong repository).
+    child.on("close", (exitCode, signal) => finish({ exitCode, signal, stdout, stderr, timedOut: false }));
   });
 }
 
