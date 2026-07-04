@@ -1040,6 +1040,35 @@ body.embedded-split .side-panel-backdrop {
   min-height: 2.25rem;
   padding: 0.36rem 0.58rem;
 }
+.theme-search-result-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+.theme-search-result-scheme {
+  justify-self: end;
+  padding: 0.08rem 0.42rem;
+  border: 1px solid rgba(var(--ctp-subtext-rgb), 0.22);
+  border-radius: 999px;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  background: rgba(var(--ctp-surface-rgb), 0.36);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.theme-search-result-scheme.light {
+  color: #f9e2af;
+  border-color: rgba(249, 226, 175, 0.36);
+  background: rgba(249, 226, 175, 0.12);
+}
+.theme-search-result-scheme.dark {
+  color: #89b4fa;
+  border-color: rgba(137, 180, 250, 0.34);
+  background: rgba(137, 180, 250, 0.12);
+}
 .background-input {
   position: absolute;
   width: 1px;

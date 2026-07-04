@@ -4926,7 +4926,7 @@ function rgbaColor(rgb, alpha) {
 }
 
 function relativeLuminance(color) {
-  const rgb = hexToRgb(color);
+  const rgb = cssColorToRgb(color);
   if (!rgb) return 0;
   const channel = (value) => {
     const normalized = value / 255;
@@ -5036,7 +5036,10 @@ function applyTheme(theme, { persist = false, announce = false } = {}) {
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", pageBg);
   currentThemeName = theme.name;
   if (elements.themeSelect && elements.themeSelect.value !== theme.name) elements.themeSelect.value = theme.name;
-  if (persist) storeThemeName(theme.name);
+  if (persist) {
+    storeSchemeTheme(isLight ? "light" : "dark", theme.name);
+    storeThemeName(theme.name);
+  }
   if (announce) addEvent(`theme changed to ${theme.label || displayThemeName(theme.name) || theme.name}`);
 }
 
@@ -5058,7 +5061,9 @@ function effectiveThemeName() {
   const scheme = effectiveScheme();
   const name = storedSchemeTheme(scheme);
   if (availableThemes.some((theme) => theme.name === name)) return name;
-  return scheme === "dark" ? THEME_DARK_DEFAULT : THEME_LIGHT_DEFAULT;
+  const fallback = scheme === "dark" ? THEME_DARK_DEFAULT : THEME_LIGHT_DEFAULT;
+  if (availableThemes.some((theme) => theme.name === fallback)) return fallback;
+  return availableThemes[0]?.name || fallback;
 }
 
 function renderThemeSchemeToggle() {
@@ -5071,21 +5076,17 @@ function renderThemeSchemeToggle() {
   }
 }
 
-// Apply the theme for the current scheme (mode + OS), keeping the legacy single-theme
-// key in sync so other readers and reloads stay correct.
+// Apply the theme for the current scheme (mode + OS). Never persists: the scheme
+// slots and the legacy key only record explicit user picks, so one degraded theme
+// bundle load cannot clobber stored choices.
 async function applySchemeTheme(options = {}) {
-  const name = effectiveThemeName();
-  await setThemeByName(name, { ...options, persist: false });
-  storeThemeName(name);
-  renderThemeSchemeToggle();
+  await setThemeByName(effectiveThemeName(), { ...options, persist: false });
 }
 
-// A theme picked from the selector/search is assigned to the active scheme's slot.
+// A theme picked from the selector/search is assigned to its own light/dark slot.
+// Persistence happens inside applyTheme, only after the theme was validated and applied.
 async function chooseTheme(name, options = {}) {
-  storeSchemeTheme(effectiveScheme(), name);
-  storeThemeName(name);
-  await setThemeByName(name, { ...options, persist: false });
-  renderThemeSchemeToggle();
+  await setThemeByName(name, { ...options, persist: true });
 }
 
 function handleOsSchemeChange() {
@@ -5094,9 +5095,14 @@ function handleOsSchemeChange() {
 }
 
 function updateColorSchemeListener() {
-  if (!colorSchemeMedia?.addEventListener) return;
-  colorSchemeMedia.removeEventListener("change", handleOsSchemeChange);
-  if (themeSchemeMode === "auto") colorSchemeMedia.addEventListener("change", handleOsSchemeChange);
+  if (!colorSchemeMedia) return;
+  if (typeof colorSchemeMedia.addEventListener === "function") {
+    colorSchemeMedia.removeEventListener("change", handleOsSchemeChange);
+    if (themeSchemeMode === "auto") colorSchemeMedia.addEventListener("change", handleOsSchemeChange);
+  } else {
+    colorSchemeMedia.removeListener?.(handleOsSchemeChange);
+    if (themeSchemeMode === "auto") colorSchemeMedia.addListener?.(handleOsSchemeChange);
+  }
 }
 
 async function setThemeSchemeMode(mode, { announce = false } = {}) {
@@ -5108,6 +5114,7 @@ async function setThemeSchemeMode(mode, { announce = false } = {}) {
   themeSchemeMode = mode;
   storeThemeMode(mode);
   updateColorSchemeListener();
+  renderThemeSchemeToggle();
   await applySchemeTheme({ announce });
 }
 
@@ -5117,8 +5124,11 @@ async function setThemeSchemeMode(mode, { announce = false } = {}) {
 function seedThemeSchemeFromStoredTheme() {
   const stored = storedThemeName();
   const storedTheme = availableThemes.find((theme) => theme.name === stored);
+  // Degraded load (empty bundle or stored theme missing): fall back for this page
+  // load only, without persisting, so the migration retries once the bundle is healthy.
+  if (!storedTheme) return "dark";
   const scheme = themeIsLight(storedTheme) ? "light" : "dark";
-  if (storedTheme) storeSchemeTheme(scheme, stored);
+  storeSchemeTheme(scheme, stored);
   storeThemeMode(scheme);
   return scheme;
 }
@@ -5147,7 +5157,10 @@ function renderThemeSearchResults(themes = []) {
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", String(selected));
     button.title = themeSearchText(theme);
-    button.append(make("span", "model-search-result-main", themeDisplayLabel(theme)));
+    const title = make("span", "theme-search-result-title");
+    title.append(make("span", "model-search-result-main", themeDisplayLabel(theme)));
+    title.append(make("span", `theme-search-result-scheme ${themeIsLight(theme) ? "light" : "dark"}`, themeIsLight(theme) ? "Light" : "Dark"));
+    button.append(title);
     button.addEventListener("click", () => {
       if (elements.themeSelect) elements.themeSelect.value = theme.name;
       chooseTheme(theme.name, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
@@ -5257,7 +5270,6 @@ async function initializeThemes() {
   renderThemeSchemeToggle();
   updateColorSchemeListener();
   await applySchemeTheme({ includeLegacy: true });
-  if (isOptionalFeatureEnabled("themeBundle") && !availableThemes.some((theme) => theme.name === currentThemeName) && availableThemes[0]) await chooseTheme(availableThemes[0].name, {});
   if (!availableThemes.length) addEvent("theme bundle unavailable; using built-in default theme", "warn");
 }
 
