@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { appendDisplayChunk, appendRunLog, createRunLog as createSharedRunLog, formatElapsed, isCtrlC, isCtrlO, listRunLogs, outputLinesFromDisplay, resolveUserPath, saveRunLog as saveSharedRunLog, shellQuote, stripAnsi, truncateLine, type RunLog, type RunLogEntry } from "@firstpick/pi-utils";
+import { appendDisplayChunk, appendRunLog, createRunLog as createSharedRunLog, escapeRegExp, formatElapsed, isCtrlC, isCtrlO, listRunLogs, outputLinesFromDisplay, resolveUserPath, saveRunLog as saveSharedRunLog, shellQuote, stripAnsi, truncateLine, type RunLog, type RunLogEntry } from "@firstpick/pi-utils";
 
 const STATUS_KEY = "release-aur";
 const OUTPUT_WIDGET_KEY = "release-aur:output";
@@ -518,10 +518,6 @@ function userPath(value: string): string {
 
 function sshConfigIdentityPath(keyPath: string): string {
   return userPath(keyPath);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function managedAurSshConfigBlock(keyPath: string): string {

@@ -29,6 +29,25 @@ export type AbortableProcess = ChildProcessByStdio<null, Readable, Readable> & {
   abortReleaseStep?: () => void;
 };
 
+export type KillTarget = number | {
+  pid?: number | null;
+  kill?: (signal?: NodeJS.Signals) => boolean;
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
+};
+
+export type KillGracefullyOptions = {
+  termSignal?: NodeJS.Signals;
+  killSignal?: NodeJS.Signals;
+  killAfterMs?: number;
+  processGroup?: boolean;
+};
+
+export type ReadLinesOptions = {
+  encoding?: BufferEncoding;
+  emitFinalEmptyLine?: boolean;
+};
+
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -51,6 +70,74 @@ export function resolveExecutableFromPath(binName: string, envPath = process.env
 export async function commandExists(command: string, args: string[] = ["--version"], timeoutMs = 3000): Promise<boolean> {
   const result = await runCommand(command, args, { timeoutMs });
   return result.ok;
+}
+
+function killTargetPid(target: KillTarget): number | undefined {
+  return typeof target === "number" ? target : typeof target.pid === "number" ? target.pid : undefined;
+}
+
+function signalKillTarget(target: KillTarget, signal: NodeJS.Signals, processGroup: boolean): boolean {
+  const pid = killTargetPid(target);
+  if (processGroup && pid && pid > 0) {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch {
+      // Fall through to direct child/PID signaling below.
+    }
+  }
+  try {
+    if (typeof target === "number") {
+      process.kill(target, signal);
+      return true;
+    }
+    return target.kill?.(signal) ?? false;
+  } catch {
+    return false;
+  }
+}
+
+export function isProcessRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid === 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function killTargetStillRunning(target: KillTarget, processGroup: boolean): boolean {
+  if (typeof target !== "number" && (target.exitCode !== null && target.exitCode !== undefined || target.signalCode !== null && target.signalCode !== undefined)) return false;
+  const pid = killTargetPid(target);
+  if (!pid || pid === 0) return false;
+  return isProcessRunning(processGroup && pid > 0 ? -pid : pid);
+}
+
+export function killGracefully(target: KillTarget, options: KillGracefullyOptions = {}): boolean {
+  const termSignal = options.termSignal ?? "SIGTERM";
+  const killSignal = options.killSignal ?? "SIGKILL";
+  const killAfterMs = options.killAfterMs ?? 5000;
+  const processGroup = options.processGroup ?? false;
+  const signaled = signalKillTarget(target, termSignal, processGroup);
+  if (killAfterMs > 0) {
+    setTimeout(() => {
+      if (killTargetStillRunning(target, processGroup)) signalKillTarget(target, killSignal, processGroup);
+    }, killAfterMs).unref?.();
+  }
+  return signaled;
+}
+
+export async function readLines(stream: AsyncIterable<Buffer | string>, onLine: (line: string) => void | Promise<void>, options: ReadLinesOptions = {}): Promise<void> {
+  const encoding = options.encoding ?? "utf8";
+  let buffer = "";
+  for await (const chunk of stream) {
+    buffer += typeof chunk === "string" ? chunk : chunk.toString(encoding);
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) await onLine(line);
+  }
+  if (buffer || options.emitFinalEmptyLine) await onLine(buffer);
 }
 
 function trimBuffer(value: string, maxChars: number | undefined): string {

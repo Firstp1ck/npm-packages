@@ -35,6 +35,9 @@
     "check": "node --check lib/conversation-controller.mjs && node --check lib/native-audio-loop.mjs && node --check lib/native-audio-companion.mjs && node --check lib/setup-wizard.mjs && node --check lib/voice-config.mjs && node --test tests/*.test.mjs",
     "test": "node --test tests/*.test.mjs"
   },
+  "dependencies": {
+    "@firstpick/pi-utils": "^0.2.3"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },

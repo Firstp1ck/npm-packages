@@ -1,14 +1,15 @@
-import { access } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   collectInitialPromptCalibration,
   createInitialPromptEstimateService,
+  envFlag,
   estimateStableInitialPromptFromPiContext,
   estimateTokensFromCharCount,
   formatTokens,
+  formatUserPath,
+  pathExists,
   type InitialPromptEstimateSnapshot,
   type InitialPromptInputEstimate,
 } from "@firstpick/pi-utils";
@@ -153,14 +154,6 @@ type GitRefreshOptions = {
   publishIfUnchanged?: boolean;
 };
 
-function envFlag(name: string, fallback = false): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
-  if (!raw) return fallback;
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return fallback;
-}
-
 function envMs(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -173,10 +166,7 @@ const GIT_INITIAL_FETCH_ENABLED = envFlag("PI_GIT_FOOTER_FETCH", true);
 const PROMPT_ESTIMATE_ENABLED = !envFlag("PI_GIT_FOOTER_DISABLE_PROMPT_ESTIMATE", false);
 
 function formatCwd(cwd: string): string {
-  const home = homedir();
-  if (cwd === home) return "~";
-  if (cwd.startsWith(`${home}${sep}`)) return `~/${cwd.slice(home.length + 1).split(sep).join("/")}`;
-  return cwd;
+  return formatUserPath(cwd);
 }
 
 function normalizeTimestampMs(timestamp: number): number {
@@ -255,15 +245,6 @@ function gitFetchResultMessage(result: { stdout?: string; stderr?: string; code?
   if (output) return output;
   if (result.killed) return "git fetch timed out";
   return result.code === 0 ? "git fetch completed" : `git fetch failed with exit code ${result.code ?? "unknown"}`;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function toAgeLabel(epochSeconds: number): string | undefined {

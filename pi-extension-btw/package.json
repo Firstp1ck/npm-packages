@@ -23,6 +23,9 @@
       "./index.ts"
     ]
   },
+  "dependencies": {
+    "@firstpick/pi-utils": "^0.2.3"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

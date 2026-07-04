@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getAgentEnvPath, getWorkspaceEnvPath } from "./paths";
+import { getAgentEnvPath, getWorkspaceEnvPath } from "./paths.ts";
 
 export type EnvResolution = {
   value?: string;
@@ -8,10 +8,16 @@ export type EnvResolution = {
   path?: string;
 };
 
-export function envFlag(name: string, fallback = false): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
+export function parseBooleanFlag(value: string | undefined, fallback = false): boolean {
+  const raw = value?.trim().toLowerCase();
   if (!raw) return fallback;
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+  return fallback;
+}
+
+export function envFlag(name: string, fallback = false): boolean {
+  return parseBooleanFlag(process.env[name], fallback);
 }
 
 export function parseEnvFile(filePath: string): Record<string, string> {

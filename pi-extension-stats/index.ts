@@ -10,7 +10,9 @@ import {
   estimatePromptInjectionTokens,
   estimateStableInitialPromptFromPiContext,
   estimateTokensFromCharCount,
+  extractXmlTag,
   formatTokens,
+  truncate,
   type InitialPromptCalibration,
   type InitialPromptEstimateSnapshot,
   type InitialPromptInputEstimate,
@@ -286,33 +288,11 @@ type ContextFileDetail = {
   chars?: number;
 };
 
-function shortenText(text: string | undefined, maxLength = 90): string {
-  const normalized = (text ?? "").replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
 function formatCountedNames(names: string[], limit = 18): string {
   if (names.length === 0) return "none";
   const shown = names.slice(0, limit).join(", ");
   const remaining = names.length - limit;
   return remaining > 0 ? `${shown}, … +${remaining} more` : shown;
-}
-
-function xmlUnescape(value: string): string {
-  return value
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-function extractXmlTag(block: string, tag: string): string | undefined {
-  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = block.match(new RegExp(`<${escapedTag}>([\\s\\S]*?)<\\/${escapedTag}>`, "i"));
-  const value = match?.[1]?.trim();
-  return value ? xmlUnescape(value) : undefined;
 }
 
 function extractAvailableToolPromptEntries(systemPrompt: string): ToolPromptEntry[] {
@@ -460,7 +440,7 @@ function formatInitialPromptDetailedLines(
         ...tool,
         tokens: estimateToolSchemaTokens(tool),
         parametersSummary: getToolParameterSummary(tool.parameters),
-        description: shortenText(tool.description, 72),
+        description: truncate(tool.description ?? "", 72),
       }))
       .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
     const shown = toolSummaries.slice(0, 12);
@@ -483,7 +463,7 @@ function formatInitialPromptDetailedLines(
     const shown = skills.slice(0, 10);
     const remaining = skills.length - shown.length;
     const skillLines = shown.map((skill) => {
-      const description = skill.description ? ` — ${shortenText(skill.description, 96)}` : "";
+      const description = skill.description ? ` — ${truncate(skill.description, 96)}` : "";
       return `• ${skill.name}${description}`;
     });
     if (remaining > 0) skillLines.push(`… ${remaining} more skill${remaining === 1 ? "" : "s"}: ${formatCountedNames(skills.slice(shown.length).map((skill) => skill.name), 16)}`);

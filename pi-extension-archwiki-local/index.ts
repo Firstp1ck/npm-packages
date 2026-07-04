@@ -1,10 +1,8 @@
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createLocalWikiEngine, jsonToolResult } from "@firstpick/pi-utils";
+import { commandExists, createLocalWikiEngine, jsonToolResult, pathExists, runCommand } from "@firstpick/pi-utils";
 
 const DOCS_PATH = "/usr/share/doc/arch-wiki/html/en";
 const CACHE_DIR = path.join(os.homedir(), ".cache", "pi", "archwiki-local");
@@ -26,12 +24,9 @@ const SEARCH_STOPWORDS = ["a", "an", "and", "are", "arch", "archlinux", "as", "a
 const TERM_WEIGHTS: Record<string, number> = { configuration: 0.65, desktop: 0.75, guide: 0.45, installation: 0.7, linux: 0.35, service: 0.7, setup: 0.65, system: 0.55, troubleshooting: 0.75 };
 const ARCH_LINUX_PROMPT_RE = /\b(arch\s*linux|archlinux|arch-based|endeavouros|endeavour\s*os|cachyos|cachy\s*os|manjaro|garuda|artix|blackarch|arcolinux|archlabs|rebornos|crystal\s*linux|xerolinux|pacman|makepkg|pkgbuild|aur|mkinitcpio|initramfs|systemd|journalctl|systemctl|networkmanager|resolvectl|systemd-resolved|pipewire|wireplumber|alsa|wayland|xorg|nvidia|amdgpu|bluetooth|bluez|btrfs|luks|dm-crypt|pacman-key|keyring|invalid signature|corrupted package)\b/i;
 
-async function exists(filePath: string): Promise<boolean> { try { await fs.access(filePath); return true; } catch { return false; } }
-async function canRun(command: string, args: string[]): Promise<boolean> { try { return await new Promise((resolve) => execFile(command, args, { timeout: 3000 }, (error) => resolve(!error))); } catch { return false; } }
-async function runCommand(command: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }> { try { return await new Promise((resolve) => execFile(command, args, { timeout: 120000 }, (error, stdout, stderr) => resolve({ ok: !error, stdout, stderr, error: error instanceof Error ? error.message : undefined }))); } catch (error) { return { ok: false, stdout: "", stderr: "", error: error instanceof Error ? error.message : String(error) }; } }
-async function packageVersion(): Promise<string | undefined> { const result = await runCommand("pacman", ["-Q", "arch-wiki-docs"]); return result.ok ? result.stdout.trim() || undefined : undefined; }
-async function packageUpdateAvailable(): Promise<string | undefined> { const result = await runCommand("pacman", ["-Qu", "arch-wiki-docs"]); return result.ok && result.stdout.trim() ? result.stdout.trim() : undefined; }
-async function installOrUpdatePackage(): Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }> { const isRoot = typeof process.getuid === "function" && process.getuid() === 0; if (isRoot) return runCommand("pacman", ["-S", "--needed", "arch-wiki-docs"]); if (await canRun("sudo", ["-n", "true"])) return runCommand("sudo", ["-n", "pacman", "-S", "--needed", "arch-wiki-docs"]); return { ok: false, stdout: "", stderr: "", error: "Automatic install/update requires root or passwordless sudo." }; }
+async function packageVersion(): Promise<string | undefined> { const result = await runCommand("pacman", ["-Q", "arch-wiki-docs"], { timeoutMs: 120000 }); return result.ok ? result.stdout.trim() || undefined : undefined; }
+async function packageUpdateAvailable(): Promise<string | undefined> { const result = await runCommand("pacman", ["-Qu", "arch-wiki-docs"], { timeoutMs: 120000 }); return result.ok && result.stdout.trim() ? result.stdout.trim() : undefined; }
+async function installOrUpdatePackage(): Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }> { const isRoot = typeof process.getuid === "function" && process.getuid() === 0; if (isRoot) return runCommand("pacman", ["-S", "--needed", "arch-wiki-docs"], { timeoutMs: 120000 }); if (await commandExists("sudo", ["-n", "true"], 3000)) return runCommand("sudo", ["-n", "pacman", "-S", "--needed", "arch-wiki-docs"], { timeoutMs: 120000 }); return { ok: false, stdout: "", stderr: "", error: "Automatic install/update requires root or passwordless sudo." }; }
 
 function stripHtmlTitle(html: string, filePath: string, fallback: string): string {
   const raw = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "";
@@ -61,11 +56,11 @@ const wiki = createLocalWikiEngine({
   titleFromHtml: stripHtmlTitle,
   transformText: transformArchText,
   metadataExtra: async () => ({ archWikiDocsPackage: await packageVersion() }),
-  statusExtra: async () => ({ docsPathExists: await exists(DOCS_PATH), docsInstalled: await wiki.available(), installCommand: INSTALL_COMMAND, cacheDir: CACHE_DIR, archWikiDocsPackage: await packageVersion() }),
+  statusExtra: async () => ({ docsPathExists: await pathExists(DOCS_PATH), docsInstalled: await wiki.available(), installCommand: INSTALL_COMMAND, cacheDir: CACHE_DIR, archWikiDocsPackage: await packageVersion() }),
 });
 
 async function executeSetup() {
-  if (!await canRun("pacman", ["--version"])) return { ok: false, message: `pacman is not available. Please install local ArchWiki docs manually: ${INSTALL_COMMAND}` };
+  if (!await commandExists("pacman", ["--version"], 3000)) return { ok: false, message: `pacman is not available. Please install local ArchWiki docs manually: ${INSTALL_COMMAND}` };
   if (await wiki.available()) {
     const current = await wiki.status();
     const update = await packageUpdateAvailable();

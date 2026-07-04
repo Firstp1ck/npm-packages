@@ -8,6 +8,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncate as truncatePlain } from "@firstpick/pi-utils";
 
 const WEBUI_STATUS_KEY = "btw-webui";
 const WEBUI_OUTPUT_WIDGET_KEY = "btw:output";
@@ -151,11 +152,6 @@ function assistantText(message: { content?: any[] } | undefined): string {
 
 function modelLabel(ctx: ExtensionCommandContext): string | undefined {
   return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-}
-
-function truncatePlain(value: string, max = 180): string {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 function decodeTransferPayload(args: string): BtwTransferPayload {

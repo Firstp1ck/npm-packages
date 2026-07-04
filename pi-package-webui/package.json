@@ -53,21 +53,21 @@
     "test": "node tests/run-all.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.2",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
     "mermaid": "^11.15.0"
   },
   "optionalDependencies": {
-    "@firstpick/pi-extension-btw": "^0.1.0",
-    "@firstpick/pi-extension-git-footer-status": "^0.3.3",
+    "@firstpick/pi-extension-btw": "^0.1.1",
+    "@firstpick/pi-extension-git-footer-status": "^0.3.5",
     "@firstpick/pi-extension-release-aur": "^0.1.6",
     "@firstpick/pi-extension-release-npm": "^0.4.0",
     "@firstpick/pi-extension-safety-guard": "^0.2.3",
     "@firstpick/pi-extension-setup-skills": "^0.1.8",
-    "@firstpick/pi-extension-stats": "^0.2.6",
-    "@firstpick/pi-extension-todo-progress": "^0.2.5",
+    "@firstpick/pi-extension-stats": "^0.2.7",
+    "@firstpick/pi-extension-todo-progress": "^0.2.7",
     "@firstpick/pi-extension-tools": "^0.1.6",
-    "@firstpick/pi-extension-workflows": "^0.1.0",
-    "@firstpick/pi-package-remote-webui": "^0.1.2",
+    "@firstpick/pi-extension-workflows": "^0.1.1",
+    "@firstpick/pi-package-remote-webui": "^0.1.4",
     "@firstpick/pi-prompts-git-pr": "^0.1.2",
     "@firstpick/pi-themes-bundle": "^0.1.4"
   },

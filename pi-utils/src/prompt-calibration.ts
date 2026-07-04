@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { resolve } from "node:path";
-import type { InitialPromptCalibration, InitialPromptInputEstimate } from "./tokens";
+import type { InitialPromptCalibration, InitialPromptInputEstimate } from "./tokens.ts";
 
 export const INITIAL_PROMPT_CALIBRATION_CUSTOM_TYPE = "stats_initial_prompt_estimate";
 

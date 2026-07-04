@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { expandTilde, formatUserPath as formatPath, getAgentDir, writeJsonFileAtomicSync } from "@firstpick/pi-utils";
 
 type CdHistoryEntry = {
   path: string;
@@ -47,11 +48,6 @@ const RESERVED_ALIAS_NAMES = new Set([
   "--status",
 ]);
 
-function getAgentDir(): string {
-  const configured = process.env.PI_CODING_AGENT_DIR?.trim();
-  return configured ? path.resolve(expandTilde(configured)) : path.join(os.homedir(), ".pi", "agent");
-}
-
 function getStorePath(): string {
   const configured = process.env.PI_CD_HISTORY_STORE_PATH?.trim();
   return configured ? path.resolve(expandTilde(configured)) : path.join(getAgentDir(), "state", "cd-history.json");
@@ -59,14 +55,6 @@ function getStorePath(): string {
 
 function emptyStore(): CdStore {
   return { version: STORE_VERSION, aliases: {}, history: [] };
-}
-
-function expandTilde(input: string): string {
-  if (input === "~") return os.homedir();
-  if (input.startsWith(`~${path.sep}`) || input.startsWith("~/")) {
-    return path.join(os.homedir(), input.slice(2));
-  }
-  return input;
 }
 
 function canonicalPath(input: string, baseDir?: string): string {
@@ -90,17 +78,6 @@ function isDirectory(input: string): boolean {
 function normalizeDirectory(input: string, baseDir?: string): string | undefined {
   const resolved = canonicalPath(input, baseDir);
   return isDirectory(resolved) ? resolved : undefined;
-}
-
-function formatPath(input: string): string {
-  const home = os.homedir();
-  const resolvedHome = path.resolve(home);
-  const resolved = path.resolve(input);
-  if (resolved === resolvedHome) return "~";
-  if (resolved.startsWith(`${resolvedHome}${path.sep}`)) {
-    return `~/${path.relative(resolvedHome, resolved).split(path.sep).join("/")}`;
-  }
-  return resolved.split(path.sep).join(path.sep);
 }
 
 function formatAge(timestamp: number): string {
@@ -157,11 +134,7 @@ function readStore(storePath: string): CdStore {
 
 function writeStore(storePath: string, store: CdStore): void {
   try {
-    fs.mkdirSync(path.dirname(storePath), { recursive: true });
-    const compacted = compactStore(store);
-    const tempPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempPath, `${JSON.stringify(compacted, null, 2)}\n`, "utf8");
-    fs.renameSync(tempPath, storePath);
+    writeJsonFileAtomicSync(storePath, compactStore(store));
   } catch {
     // Directory changes should still work if persistence fails.
   }

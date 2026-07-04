@@ -1,10 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createLocalWikiEngine, jsonToolResult } from "@firstpick/pi-utils";
+import { createLocalWikiEngine, jsonToolResult, pathExists, runCommand } from "@firstpick/pi-utils";
 
 interface RepoSpec { name: string; repoUrl: string; sparsePatterns: string[]; }
 type ProgressReporter = (line: string) => void | Promise<void>;
@@ -59,12 +58,8 @@ const REPOS: RepoSpec[] = [
 const BINARY_EXCLUDE_PATTERNS = ["!**/*.png", "!**/*.jpg", "!**/*.jpeg", "!**/*.gif", "!**/*.webp", "!**/*.svg", "!**/*.ico", "!**/*.pdf", "!**/*.zip", "!**/*.tar", "!**/*.tar.gz", "!**/*.tgz", "!**/*.xz", "!**/*.zst", "!**/*.mp4", "!**/*.webm", "!**/*.mov", "!**/*.ttf", "!**/*.woff", "!**/*.woff2", "!**/*.otf"];
 const MISSING_DOCS_MESSAGE = `Local ${CONFIG.displayName} docs are not available at ${CONFIG.docsPath}. Run ${CONFIG.setupCommand} to set them up.`;
 
-async function exists(filePath: string): Promise<boolean> { try { await fs.access(filePath); return true; } catch { return false; } }
-async function runCommand(command: string, args: string[], cwd?: string): Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }> {
-  return await new Promise((resolve) => execFile(command, args, { cwd, timeout: 300000 }, (error, stdout, stderr) => resolve({ ok: !error, stdout, stderr, error: error instanceof Error ? error.message : undefined })));
-}
 function repoPath(repo: RepoSpec): string { return path.join(CONFIG.docsPath, repo.name); }
-async function gitRevision(repo: RepoSpec): Promise<string | undefined> { if (!await exists(path.join(repoPath(repo), ".git"))) return undefined; const r = await runCommand("git", ["rev-parse", "--short", "HEAD"], repoPath(repo)); return r.ok ? r.stdout.trim() || undefined : undefined; }
+async function gitRevision(repo: RepoSpec): Promise<string | undefined> { if (!await pathExists(path.join(repoPath(repo), ".git"))) return undefined; const r = await runCommand("git", ["rev-parse", "--short", "HEAD"], { cwd: repoPath(repo), timeoutMs: 300000 }); return r.ok ? r.stdout.trim() || undefined : undefined; }
 async function gitRevisions(): Promise<Record<string, string | undefined>> { const result: Record<string, string | undefined> = {}; for (const repo of REPOS) result[repo.name] = await gitRevision(repo); return result; }
 
 const wiki = createLocalWikiEngine({
@@ -85,20 +80,20 @@ const wiki = createLocalWikiEngine({
 
 async function setupRepo(repo: RepoSpec, progress?: ProgressReporter): Promise<string> {
   const target = repoPath(repo);
-  if (!await exists(target)) {
+  if (!await pathExists(target)) {
     await fs.mkdir(CONFIG.docsPath, { recursive: true });
     await progress?.(`${repo.name}: cloning sparse, shallow docs from ${repo.repoUrl}`);
-    const clone = await runCommand("git", ["clone", "--filter=blob:none", "--depth=1", "--sparse", "--no-checkout", repo.repoUrl, target], CONFIG.docsPath);
+    const clone = await runCommand("git", ["clone", "--filter=blob:none", "--depth=1", "--sparse", "--no-checkout", repo.repoUrl, target], { cwd: CONFIG.docsPath, timeoutMs: 300000 });
     if (!clone.ok) return `${repo.name}: clone failed: ${clone.stderr || clone.error}`;
     await progress?.(`${repo.name}: configuring sparse checkout patterns`);
-    const init = await runCommand("git", ["sparse-checkout", "init", "--no-cone"], target);
+    const init = await runCommand("git", ["sparse-checkout", "init", "--no-cone"], { cwd: target, timeoutMs: 300000 });
     if (!init.ok) return `${repo.name}: sparse init failed: ${init.stderr || init.error}`;
     await fs.writeFile(path.join(target, ".git", "info", "sparse-checkout"), `${[...repo.sparsePatterns, ...BINARY_EXCLUDE_PATTERNS].join("\n")}\n`);
     await progress?.(`${repo.name}: checking out documentation files only`);
-    const checkout = await runCommand("git", ["checkout"], target);
+    const checkout = await runCommand("git", ["checkout"], { cwd: target, timeoutMs: 300000 });
     return checkout.ok ? `${repo.name}: cloned sparse docs` : `${repo.name}: checkout failed: ${checkout.stderr || checkout.error}`;
   }
-  if (await exists(path.join(target, ".git"))) { await progress?.(`${repo.name}: updating existing checkout`); const pull = await runCommand("git", ["pull", "--ff-only"], target); return pull.ok ? `${repo.name}: updated` : `${repo.name}: update failed: ${pull.stderr || pull.error}`; }
+  if (await pathExists(path.join(target, ".git"))) { await progress?.(`${repo.name}: updating existing checkout`); const pull = await runCommand("git", ["pull", "--ff-only"], { cwd: target, timeoutMs: 300000 }); return pull.ok ? `${repo.name}: updated` : `${repo.name}: update failed: ${pull.stderr || pull.error}`; }
   return `${repo.name}: path exists but is not a Git checkout: ${target}`;
 }
 async function executeSetup(progress?: ProgressReporter) { const messages: string[] = []; await progress?.(`setup: target docs path is ${CONFIG.docsPath}`); for (const repo of REPOS) { const message = await setupRepo(repo, progress); messages.push(message); await progress?.(message); } await progress?.("cache: indexing local documentation corpus"); try { await wiki.buildCache(); messages.push("cache: rebuilt search index"); await progress?.("cache: rebuilt search index"); } catch (error) { const message = `cache: ${(error as Error).message}`; messages.push(message); await progress?.(message); } const ok = await wiki.available(); await progress?.(ok ? "setup: complete" : "setup: incomplete; local docs are still unavailable"); return { ok, message: messages.join("\n") }; }

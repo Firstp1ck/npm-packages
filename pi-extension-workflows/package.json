@@ -25,6 +25,9 @@
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/schema.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/loader.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/runner.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/extension.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/workflow-test.test.mjs",
     "check": "npm test"
   },
+  "dependencies": {
+    "@firstpick/pi-utils": "^0.2.3"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"

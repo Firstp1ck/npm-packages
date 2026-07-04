@@ -5,6 +5,8 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { killGracefully } from "@firstpick/pi-utils/process";
+import { truncate } from "@firstpick/pi-utils/text";
 import {
   DEFAULT_PORT,
   REMOTE_CONTROLS_STATUS_KEY,
@@ -97,10 +99,7 @@ function releaseStartedChild(child: WebuiChild): void {
 }
 
 function terminateFailedChild(child: WebuiChild): void {
-  if (child.exitCode === null) child.kill("SIGTERM");
-  setTimeout(() => {
-    if (child.exitCode === null) child.kill("SIGKILL");
-  }, 2_000).unref?.();
+  killGracefully(child, { killAfterMs: 2_000 });
   child.stdout.destroy();
   child.stderr.destroy();
 }
@@ -178,15 +177,10 @@ function clearRemoteWidget(ctx: ExtensionCommandContext): void {
   ctx.ui.setWidget(REMOTE_WIDGET_KEY, undefined);
 }
 
-function truncatePlainLine(line: string, width: number): string {
-  if (width <= 0) return "";
-  return line.length > width ? line.slice(0, width) : line;
-}
-
 function formatWidgetLine(line: string, width: number): string {
   if (width <= 0) return "";
   if (width === 1) return " ";
-  return ` ${truncatePlainLine(line, width - 1)}`;
+  return ` ${truncate(line, width - 1, { ellipsis: "", collapseWhitespace: false, trimEnd: false })}`;
 }
 
 function setFullRemoteWidget(ctx: ExtensionCommandContext, lines: string[]): void {

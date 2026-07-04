@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { jsonToolResult, slugify as slugifyText, tokenizeArgs } from "@firstpick/pi-utils";
+import { jsonToolResult, pathExists, slugify as slugifyText, titleCaseFromSlug, tokenizeArgs } from "@firstpick/pi-utils";
 import { Type } from "typebox";
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -46,10 +46,6 @@ function slugify(input: string): string {
   const slug = slugifyText(input);
   if (!slug) throw new Error(`Cannot derive slug from '${input}'.`);
   return slug;
-}
-
-function titleCaseFromSlug(slug: string): string {
-  return slug.split("-").filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
 }
 
 function humanizeOwner(owner: string): string {
@@ -185,10 +181,6 @@ function renderTemplate(text: string, values: Record<string, string>): string {
   });
 }
 
-async function exists(filePath: string): Promise<boolean> {
-  try { await fs.access(filePath); return true; } catch { return false; }
-}
-
 async function listDirs(root: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
@@ -207,10 +199,10 @@ async function templateRoots(cwd: string): Promise<string[]> {
 }
 
 async function resolveTemplate(template: string, cwd: string): Promise<string> {
-  if (path.isAbsolute(template) && await exists(template)) return template;
+  if (path.isAbsolute(template) && await pathExists(template)) return template;
   for (const root of await templateRoots(cwd)) {
     const candidate = path.resolve(root, template);
-    if (await exists(candidate)) return candidate;
+    if (await pathExists(candidate)) return candidate;
   }
   throw new Error(`Template '${template}' not found. Checked: ${(await templateRoots(cwd)).join(", ")}`);
 }
@@ -237,7 +229,7 @@ async function buildPlan(templateDir: string, targetDir: string, values: Record<
   for (const source of files) {
     const rel = path.relative(templateDir, source);
     const target = path.join(targetDir, renderRelativePath(rel, values));
-    const targetExists = await exists(target);
+    const targetExists = await pathExists(target);
     plan.push({ source, target, action: targetExists ? (overwrite ? "overwrite" : "skip") : "create" });
   }
   return plan;
@@ -262,7 +254,7 @@ async function applyPlan(plan: PlanEntry[], values: Record<string, string>) {
 async function scaffoldWiki(input: WikiSpec & { dryRun?: boolean; overwrite?: boolean }, cwd: string, operation: "create" | "update") {
   const spec = normalizeSpec(input, cwd);
   const templateDir = await resolveTemplate(spec.template, cwd);
-  const targetExists = await exists(spec.targetDir);
+  const targetExists = await pathExists(spec.targetDir);
   if (operation === "create" && targetExists && input.overwrite !== true) {
     throw new Error(`Target already exists: ${spec.targetDir}. Set overwrite=true to write into it.`);
   }
@@ -293,17 +285,17 @@ async function validatePackage(targetDir: string, cwd: string) {
   const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
   const packageJsonPath = path.join(resolved, "package.json");
   const indexPath = path.join(resolved, "index.ts");
-  checks.push({ name: "target directory", ok: await exists(resolved), detail: resolved });
-  checks.push({ name: "package.json", ok: await exists(packageJsonPath), detail: packageJsonPath });
-  checks.push({ name: "index.ts", ok: await exists(indexPath), detail: indexPath });
-  if (await exists(indexPath)) {
+  checks.push({ name: "target directory", ok: await pathExists(resolved), detail: resolved });
+  checks.push({ name: "package.json", ok: await pathExists(packageJsonPath), detail: packageJsonPath });
+  checks.push({ name: "index.ts", ok: await pathExists(indexPath), detail: indexPath });
+  if (await pathExists(indexPath)) {
     const indexText = await fs.readFile(indexPath, "utf8");
     const registersSetupCommand = /registerCommand\(\s*["'`][^"'`]*-local-setup["'`]/.test(indexText) || indexText.includes("-wiki-local-setup");
     checks.push({ name: "setup command", ok: registersSetupCommand && indexText.includes("executeSetup"), detail: "index.ts registers an idempotent local docs setup command" });
   }
 
   let packageJson: any;
-  if (await exists(packageJsonPath)) {
+  if (await pathExists(packageJsonPath)) {
     try {
       packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
       checks.push({ name: "package.json parses", ok: true, detail: packageJson.name ?? "missing name" });
@@ -314,7 +306,7 @@ async function validatePackage(targetDir: string, cwd: string) {
     }
   }
 
-  const files = await exists(resolved) ? await walkFiles(resolved) : [];
+  const files = await pathExists(resolved) ? await walkFiles(resolved) : [];
   const skillFiles = files.filter((file) => path.basename(file) === "SKILL.md" && file.includes(`${path.sep}skills${path.sep}`));
   checks.push({ name: "skill file", ok: skillFiles.length > 0, detail: skillFiles.join(", ") || "none" });
 

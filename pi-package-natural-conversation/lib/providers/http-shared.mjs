@@ -1,12 +1,9 @@
+import { combinedSignal } from "@firstpick/pi-utils/http";
+
 export function providerError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
-}
-
-export function combinedSignal(timeoutMs, signal) {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 /** Tolerant transcript extraction, byte-compatible with the Phase-4 WebUI contract. */

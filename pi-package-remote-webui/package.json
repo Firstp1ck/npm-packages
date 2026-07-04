@@ -30,7 +30,8 @@
     "test": "node tests/run-all.mjs"
   },
   "dependencies": {
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "@firstpick/pi-utils": "^0.2.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

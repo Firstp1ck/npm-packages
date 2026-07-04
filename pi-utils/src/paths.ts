@@ -1,9 +1,10 @@
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 export function getAgentDir(): string {
   const env = process.env.PI_CODING_AGENT_DIR?.trim();
-  if (env) return path.resolve(env);
+  if (env) return path.resolve(expandTilde(env));
   return path.join(os.homedir(), ".pi", "agent");
 }
 
@@ -25,6 +26,25 @@ export function getAgentSettingsPath(): string {
 
 export function getWorkspaceEnvPath(cwd = process.cwd()): string {
   return path.join(cwd, ".env");
+}
+
+export async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const exists = pathExists;
+
+export function xdgDataHome(env: NodeJS.ProcessEnv = process.env, homeDir = os.homedir()): string {
+  return env.XDG_DATA_HOME?.trim() || path.join(homeDir, ".local", "share");
+}
+
+export function xdgConfigHome(env: NodeJS.ProcessEnv = process.env, homeDir = os.homedir()): string {
+  return env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config");
 }
 
 export function expandTilde(input: string, homeDir = os.homedir()): string {

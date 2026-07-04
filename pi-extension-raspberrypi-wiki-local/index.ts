@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createLocalWikiEngine, jsonToolResult, runCommand } from "@firstpick/pi-utils";
+import { createLocalWikiEngine, jsonToolResult, pathExists, runCommand } from "@firstpick/pi-utils";
 import { Type } from "typebox";
 
 const CONFIG = {
@@ -70,17 +70,8 @@ const MISSING_DOCS_MESSAGE = `Local ${CONFIG.displayName} docs are not available
 
 type SetupProgress = (message: string, level?: "info" | "warning") => void;
 
-async function exists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function gitRevision(): Promise<string | undefined> {
-  if (!await exists(path.join(CONFIG.docsPath, ".git"))) return undefined;
+  if (!await pathExists(path.join(CONFIG.docsPath, ".git"))) return undefined;
   const result = await runCommand("git", ["rev-parse", "--short", "HEAD"], { cwd: CONFIG.docsPath, timeoutMs: 120000 });
   return result.ok ? result.stdout.trim() || undefined : undefined;
 }
@@ -108,14 +99,14 @@ async function executeSetup(progress?: SetupProgress): Promise<{ ok: boolean; me
     return { ok: false, message: `No repoUrl configured. Populate ${CONFIG.docsPath} with local docs, then retry the wiki tools.` };
   }
 
-  if (!await exists(CONFIG.docsPath)) {
+  if (!await pathExists(CONFIG.docsPath)) {
     const parent = path.dirname(CONFIG.docsPath);
     progress?.(`Creating parent directory ${parent} if needed...`);
     await fs.mkdir(parent, { recursive: true });
     progress?.(`Cloning ${CONFIG.displayName} docs from ${CONFIG.repoUrl} into ${CONFIG.docsPath}. This can take a while for large documentation repositories...`);
     const clone = await runCommand("git", ["clone", "--depth=1", CONFIG.repoUrl, CONFIG.docsPath], { cwd: parent, timeoutMs: 120000 });
     if (!clone.ok) return { ok: false, message: `Clone failed: ${clone.stderr || clone.error}` };
-  } else if (await exists(path.join(CONFIG.docsPath, ".git"))) {
+  } else if (await pathExists(path.join(CONFIG.docsPath, ".git"))) {
     progress?.(`Existing Git checkout found at ${CONFIG.docsPath}. Running git pull --ff-only...`);
     const pull = await runCommand("git", ["pull", "--ff-only"], { cwd: CONFIG.docsPath, timeoutMs: 120000 });
     if (!pull.ok) return { ok: false, message: `Update failed: ${pull.stderr || pull.error}` };

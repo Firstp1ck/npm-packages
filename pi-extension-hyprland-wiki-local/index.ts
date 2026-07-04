@@ -1,10 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createLocalWikiEngine, jsonToolResult } from "@firstpick/pi-utils";
+import { createLocalWikiEngine, jsonToolResult, pathExists, runCommand } from "@firstpick/pi-utils";
 
 const REPO_URL = "https://github.com/hyprwm/hyprland-wiki.git";
 const REPO_PATH = path.join(os.homedir(), ".hyprwiki");
@@ -26,10 +25,8 @@ const QUERY_EXPANSIONS: Record<string, string[]> = {
 const SEARCH_STOPWORDS = ["a", "an", "and", "are", "as", "at", "be", "by", "can", "docs", "for", "from", "help", "how", "hypr", "hyprland", "i", "in", "is", "it", "of", "on", "or", "the", "this", "to", "use", "using", "wiki", "with", "you", "your"];
 const TERM_WEIGHTS: Record<string, number> = { basics: 0.6, config: 0.65, configuring: 0.65, ecosystem: 0.7, general: 0.6, installation: 0.75, variables: 0.75, wayland: 0.75 };
 
-async function exists(filePath: string): Promise<boolean> { try { await fs.access(filePath); return true; } catch { return false; } }
-async function runCommand(command: string, args: string[], cwd?: string): Promise<{ ok: boolean; stdout: string; stderr: string; error?: string }> { return await new Promise((resolve) => execFile(command, args, { cwd, timeout: 120000 }, (error, stdout, stderr) => resolve({ ok: !error, stdout, stderr, error: error instanceof Error ? error.message : undefined }))); }
-async function gitRevision(): Promise<string | undefined> { if (!await exists(path.join(REPO_PATH, ".git"))) return undefined; const result = await runCommand("git", ["rev-parse", "--short", "HEAD"], REPO_PATH); return result.ok ? result.stdout.trim() || undefined : undefined; }
-async function gitRemote(): Promise<string | undefined> { if (!await exists(path.join(REPO_PATH, ".git"))) return undefined; const result = await runCommand("git", ["remote", "get-url", "origin"], REPO_PATH); return result.ok ? result.stdout.trim() || undefined : undefined; }
+async function gitRevision(): Promise<string | undefined> { if (!await pathExists(path.join(REPO_PATH, ".git"))) return undefined; const result = await runCommand("git", ["rev-parse", "--short", "HEAD"], { cwd: REPO_PATH, timeoutMs: 120000 }); return result.ok ? result.stdout.trim() || undefined : undefined; }
+async function gitRemote(): Promise<string | undefined> { if (!await pathExists(path.join(REPO_PATH, ".git"))) return undefined; const result = await runCommand("git", ["remote", "get-url", "origin"], { cwd: REPO_PATH, timeoutMs: 120000 }); return result.ok ? result.stdout.trim() || undefined : undefined; }
 
 const wiki = createLocalWikiEngine({
   displayName: "Hyprland Wiki",
@@ -47,14 +44,14 @@ const wiki = createLocalWikiEngine({
 });
 
 async function executeSetup(): Promise<{ ok: boolean; message: string }> {
-  if (!await exists(REPO_PATH)) {
+  if (!await pathExists(REPO_PATH)) {
     const parent = path.dirname(REPO_PATH);
     await fs.mkdir(parent, { recursive: true });
-    const clone = await runCommand("git", ["clone", REPO_URL, REPO_PATH], parent);
+    const clone = await runCommand("git", ["clone", REPO_URL, REPO_PATH], { cwd: parent, timeoutMs: 120000 });
     return { ok: clone.ok, message: clone.ok ? `Cloned Hyprland Wiki to ${REPO_PATH}.` : `Clone failed: ${clone.stderr || clone.error}` };
   }
-  if (await exists(path.join(REPO_PATH, ".git"))) {
-    const pull = await runCommand("git", ["pull", "--ff-only"], REPO_PATH);
+  if (await pathExists(path.join(REPO_PATH, ".git"))) {
+    const pull = await runCommand("git", ["pull", "--ff-only"], { cwd: REPO_PATH, timeoutMs: 120000 });
     return { ok: pull.ok, message: pull.ok ? `Updated Hyprland Wiki at ${REPO_PATH}.` : `Update failed: ${pull.stderr || pull.error}` };
   }
   return { ok: await wiki.available(), message: `Docs path exists but is not a Git checkout: ${REPO_PATH}` };

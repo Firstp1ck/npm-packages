@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-utils",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Shared utilities for Firstpick Pi extension packages.",
   "main": "index.ts",
   "exports": {
@@ -16,7 +16,9 @@
     "./async": "./src/async.ts",
     "./cli": "./src/cli.ts",
     "./json": "./src/json.ts",
+    "./http": "./src/http.ts",
     "./process": "./src/process.ts",
+    "./git": "./src/git.ts",
     "./tool-result": "./src/tool-result.ts",
     "./markdown": "./src/markdown.ts",
     "./release-log": "./src/release-log.ts",
@@ -42,8 +44,8 @@
     ]
   },
   "scripts": {
-    "check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/initial-prompt-estimate-state.test.mjs",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/initial-prompt-estimate-state.test.mjs"
+    "check": "npm test",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/initial-prompt-estimate-state.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/reusable-utils.test.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

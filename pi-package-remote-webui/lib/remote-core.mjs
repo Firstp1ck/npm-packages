@@ -1,4 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { takeValue, tokenizeArgs } from "@firstpick/pi-utils/cli";
+import { fetchJsonWithTimeout as fetchJsonWithTimeoutBase } from "@firstpick/pi-utils/http";
+
+export { tokenizeArgs };
 
 export const DEFAULT_PORT = 31415;
 export const DEFAULT_LOCAL_HOST = "127.0.0.1";
@@ -12,53 +16,6 @@ export const REMOTE_CONTROLS_PAYLOAD_TYPE = "firstpick.pi-package-remote-webui.c
 export const REMOTE_CONTROLS_PAYLOAD_VERSION = 1;
 
 const ACTIONS = new Set(["open", "status", "close", "refresh", "auth"]);
-
-export function tokenizeArgs(input = "") {
-  const tokens = [];
-  let current = "";
-  let quote;
-  let escaped = false;
-
-  for (const char of String(input || "")) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) quote = undefined;
-      else current += char;
-      continue;
-    }
-    if (char === "\"" || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-
-  if (escaped) current += "\\";
-  if (quote) throw new Error(`Unclosed ${quote} quote`);
-  if (current) tokens.push(current);
-  return tokens;
-}
-
-function takeValue(tokens, index, flag) {
-  const value = tokens[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
-}
 
 export function parsePort(value, label = "port") {
   const port = Number.parseInt(String(value || ""), 10);
@@ -157,18 +114,8 @@ export function endpointUrl(port, path) {
 }
 
 export async function fetchJsonWithTimeout(url, init = {}, timeoutMs = 1_500, fetchImpl = globalThis.fetch) {
-  if (typeof fetchImpl !== "function") throw new Error("fetch is not available in this Node.js runtime");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl(url, { ...init, signal: controller.signal });
-    const body = await response.json().catch(() => undefined);
-    return { ok: response.ok, status: response.status, body };
-  } catch (error) {
-    return { ok: false, status: 0, body: undefined, error };
-  } finally {
-    clearTimeout(timeout);
-  }
+  const result = await fetchJsonWithTimeoutBase(url, init, { timeoutMs, fetchImpl });
+  return { body: undefined, ...result };
 }
 
 export class RemoteWebuiController {

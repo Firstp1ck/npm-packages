@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SDKCustomTool } from "@cursor/sdk";
+import { parseBooleanFlag } from "@firstpick/pi-utils/env";
+import { formatBytes } from "@firstpick/pi-utils/text";
 
 // Keep provider replay truncation aligned with Pi's normal tool-output truncation defaults.
 // These mirror @earendil-works/pi-coding-agent DEFAULT_MAX_BYTES / DEFAULT_MAX_LINES
@@ -69,14 +71,6 @@ type TextPreview = {
 	sha256: string;
 };
 
-function envBoolean(value: string | undefined, fallback: boolean): boolean {
-	if (value === undefined) return fallback;
-	const normalized = value.trim().toLowerCase();
-	if (["0", "false", "no", "off"].includes(normalized)) return false;
-	if (["1", "true", "yes", "on"].includes(normalized)) return true;
-	return fallback;
-}
-
 function byteLength(text: string): number {
 	return Buffer.byteLength(text, "utf8");
 }
@@ -93,13 +87,6 @@ function sha256(text: string): string {
 export function deterministicToolResultRecoveryId(toolName: string, toolCallId: string | undefined, contentSha256: string): string {
 	const stableIdentity = JSON.stringify({ toolName, toolCallId: toolCallId ?? null, contentSha256 });
 	return `ptr_${createHash("sha256").update(stableIdentity).digest("hex").slice(0, 24)}`;
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	const kib = bytes / 1024;
-	if (kib < 1024) return `${kib.toFixed(1)} KiB`;
-	return `${(kib / 1024).toFixed(1)} MiB`;
 }
 
 function normalizeText(value: unknown): string {
@@ -171,7 +158,7 @@ export function providerToolResultSerializationOptionsFromEnv(
 	},
 ): ProviderToolResultSerializationOptions {
 	return {
-		truncateToolResults: envBoolean(env.CURSOR_COMPOSER_PROVIDER_TRUNCATE_TOOL_RESULTS, true),
+		truncateToolResults: parseBooleanFlag(env.CURSOR_COMPOSER_PROVIDER_TRUNCATE_TOOL_RESULTS, true),
 		maxToolResultBytes: defaults.maxToolResultBytes,
 		maxToolResultLines: defaults.maxToolResultLines,
 	};
@@ -286,8 +273,8 @@ export function serializeToolResultContent(
 		`Tool: ${toolName}.`,
 		...(metadata?.toolCallId ? [`Tool call ID: ${metadata.toolCallId}.`] : []),
 		...(recoveryId ? [`Recovery ID: ${recoveryId}.`] : []),
-		`Original: ${preview.originalLines} lines, ${formatBytes(preview.originalBytes)}.`,
-		`Included preview: ${preview.previewLines} lines, ${formatBytes(preview.previewBytes)}.`,
+		`Original: ${preview.originalLines} lines, ${formatBytes(preview.originalBytes, { binary: true, precision: 1, trimTrailingZeros: false })}.`,
+		`Included preview: ${preview.previewLines} lines, ${formatBytes(preview.previewBytes, { binary: true, precision: 1, trimTrailingZeros: false })}.`,
 		`Original SHA-256: ${preview.sha256}.`,
 		"Reason: avoid resending very large prior Pi tool outputs to Cursor Composer on every provider turn.",
 		...(recoveryId
@@ -397,8 +384,8 @@ export function readToolResultRecoveryRecord(
 		`Recovered exact Pi tool result slice for ${record.toolName}.`,
 		`Recovery ID: ${record.id}.`,
 		...(record.toolCallId ? [`Tool call ID: ${record.toolCallId}.`] : []),
-		`Original: ${record.originalLines} lines, ${formatBytes(record.originalBytes)}, SHA-256 ${record.sha256}.`,
-		`Returned lines ${actualStartLine}-${actualEndLine}${truncatedByBytes ? `, clipped to ${formatBytes(maxBytes)}` : ""}.`,
+		`Original: ${record.originalLines} lines, ${formatBytes(record.originalBytes, { binary: true, precision: 1, trimTrailingZeros: false })}, SHA-256 ${record.sha256}.`,
+		`Returned lines ${actualStartLine}-${actualEndLine}${truncatedByBytes ? `, clipped to ${formatBytes(maxBytes, { binary: true, precision: 1, trimTrailingZeros: false })}` : ""}.`,
 		endIndex < record.originalLines || truncatedByBytes ? "Request a later startLine or smaller lineCount for more exact content." : "End of recovered output.",
 	].join("\n");
 

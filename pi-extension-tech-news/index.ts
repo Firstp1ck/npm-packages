@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { getAgentEnvPath, resolveEnvValue, upsertEnvValue, withExtensionWorkingIndicator, type ExtensionWorkingIndicator } from "@firstpick/pi-utils";
+import { extractXmlTag as getXmlTag, getAgentEnvPath, resolveEnvValue, upsertEnvValue, withExtensionWorkingIndicator, type ExtensionWorkingIndicator } from "@firstpick/pi-utils";
 import { Type } from "typebox";
 
 const HN_BASE_URL = "https://hacker-news.firebaseio.com/v0";
@@ -812,22 +812,6 @@ async function fetchXRecentSearch(limit: number, query: string, rankMode: Twitte
     };
   });
   return sortTwitterEntries(mapped, rankMode).slice(0, limit);
-}
-
-function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&gt;/g, ">")
-    .replace(/&lt;/g, "<")
-    .replace(/&amp;/g, "&");
-}
-
-function getXmlTag(block: string, tag: string): string | undefined {
-  const match = block.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "i"));
-  return match ? decodeXmlEntities(match[1] ?? "").trim() : undefined;
 }
 
 function parseRssItems(xml: string): RssItem[] {

@@ -1,15 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { InitialPromptCalibration, InitialPromptInputEstimate, InitialPromptToolInfo } from "./tokens";
+import type { InitialPromptCalibration, InitialPromptInputEstimate, InitialPromptToolInfo } from "./tokens.ts";
 import {
   estimateInitialPromptForPiContext,
   estimateInitialPromptFromPiExport,
   getActiveInitialPromptToolInfos,
   type ExportBackedInitialPromptEstimate,
-} from "./prompt-export-estimate";
+} from "./prompt-export-estimate.ts";
 import {
   buildInitialPromptEstimateKey,
   resolveInitialPromptEstimateRefreshDecision,
-} from "./initial-prompt-estimate-state";
+} from "./initial-prompt-estimate-state.ts";
 
 export type InitialPromptEstimatePiApi = Pick<ExtensionAPI, "getActiveTools" | "getAllTools">;
 export type InitialPromptEstimateContext = Pick<ExtensionContext, "getSystemPrompt" | "sessionManager">;

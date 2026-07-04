@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { InitialPromptCalibration, InitialPromptInputEstimate, InitialPromptToolInfo } from "./tokens";
-import { estimateInitialPromptInput } from "./tokens";
+import type { InitialPromptCalibration, InitialPromptInputEstimate, InitialPromptToolInfo } from "./tokens.ts";
+import { estimateInitialPromptInput } from "./tokens.ts";
 
 export type ExportBackedInitialPromptEstimate = {
   estimate: InitialPromptInputEstimate;

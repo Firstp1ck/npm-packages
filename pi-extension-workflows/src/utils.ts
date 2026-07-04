@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { formatDurationBetween } from "@firstpick/pi-utils/text";
 
 export async function mapWithConcurrencyLimit<TIn, TOut>(
   items: TIn[],
@@ -77,16 +78,7 @@ export function splitFirstToken(input: string): { token: string; rest: string } 
 }
 
 export function formatDuration(startIso: string, endIso = new Date().toISOString()): string {
-  const start = Date.parse(startIso);
-  const end = Date.parse(endIso);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return "unknown";
-  const ms = Math.max(0, end - start);
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return `${minutes}m ${remainder}s`;
+  return formatDurationBetween(startIso, endIso, { invalidFallback: "unknown" });
 }
 
 export function truncateText(text: string, maxBytes = 50 * 1024): string {
