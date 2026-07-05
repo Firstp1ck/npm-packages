@@ -8727,6 +8727,11 @@ function remoteAuthRequired() {
 }
 
 function generateRemotePin() {
+  const envPin = process.env.PI_WEBUI_REMOTE_PIN;
+  if (envPin !== undefined && envPin !== "") {
+    if (/^\d{4}$/.test(envPin)) return envPin;
+    console.warn(`Pi Web UI: PI_WEBUI_REMOTE_PIN must be exactly 4 digits, got ${JSON.stringify(envPin)}; falling back to random PIN.`);
+  }
   return String(randomInt(0, 10_000)).padStart(4, "0");
 }
 

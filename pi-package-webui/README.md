@@ -122,6 +122,7 @@ Environment variables:
 - `PI_WEBUI_HOST` and `PI_WEBUI_PORT` set the default bind address.
 - `PI_WEBUI_PI_BIN=/path/to/pi` selects the Pi executable when `--pi` is not passed.
 - `PI_WEBUI_REMOTE_AUTH=1` starts with Remote PIN authentication enabled.
+- `PI_WEBUI_REMOTE_PIN=4404` pins the Remote PIN to a fixed 4-digit value instead of generating a new random PIN on every server start. Useful for headless / supervised deployments (e.g. behind a reverse proxy on a trusted LAN) where the operator needs a stable PIN. If the value is not exactly 4 digits, a random PIN is generated and a warning is logged. Leaving it unset preserves the default random-PIN behavior.
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as the Remote PIN auth preference.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
