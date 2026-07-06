@@ -911,6 +911,24 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
 
   const getFooterContext = (fallback: ExtensionContext): ExtensionContext => latestFooterContext ?? fallback;
 
+  // A captured pi/command ctx becomes stale after ctx.newSession(), ctx.fork(),
+  // ctx.switchSession(), or ctx.reload() — which fresh-context subagents (e.g.
+  // scout) trigger. Accessing a stale ctx (pi.exec, ctx.ui, ctx.cwd, ...)
+  // throws synchronously, which bypasses runGit's `.catch(() => undefined)`
+  // (the throw happens before a promise exists) and surfaces as an unhandled
+  // rejection from the background timers below, killing the subagent process.
+  // Detect it so timer/async refresh paths can stop the dead auto-refresh and
+  // swallow instead of crashing.
+  const isStaleExtensionContextError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("extension ctx is stale");
+  };
+
+  const swallowStaleExtensionContext = (error: unknown): void => {
+    if (isStaleExtensionContextError(error)) stopGitAutoRefresh();
+    // Best-effort background work: never propagate.
+  };
+
   const mergeRefreshOptions = (current: GitRefreshOptions | null, next: GitRefreshOptions = {}): GitRefreshOptions => {
     const merged: GitRefreshOptions = {};
     if ((current === null || current.publishIfUnchanged === false) && next.publishIfUnchanged === false) merged.publishIfUnchanged = false;
@@ -939,7 +957,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     rememberFooterContext(ctx);
     promptEstimateRefreshTimer = setTimeout(() => {
       promptEstimateRefreshTimer = null;
-      void refreshPromptInjectionEstimate(getEstimateContext(ctx));
+      void refreshPromptInjectionEstimate(getEstimateContext(ctx)).catch(swallowStaleExtensionContext);
     }, Math.max(0, delayMs));
     promptEstimateRefreshTimer.unref?.();
   };
@@ -1000,10 +1018,14 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   };
 
   const publishWebuiFooter = (ctx: ExtensionContext, snapshot: GitSnapshot | null = latestGitSnapshot) => {
-    const footerCtx = getFooterContext(ctx);
-    lastWebuiFooterPublishMs = Date.now();
-    const payload = buildWebuiFooterPayload(footerCtx, snapshot, buildFooterTelemetry(footerCtx), latestGitFetchState);
-    footerCtx.ui.setStatus(WEBUI_FOOTER_STATUS_KEY, JSON.stringify(payload));
+    try {
+      const footerCtx = getFooterContext(ctx);
+      lastWebuiFooterPublishMs = Date.now();
+      const payload = buildWebuiFooterPayload(footerCtx, snapshot, buildFooterTelemetry(footerCtx), latestGitFetchState);
+      footerCtx.ui.setStatus(WEBUI_FOOTER_STATUS_KEY, JSON.stringify(payload));
+    } catch (error) {
+      swallowStaleExtensionContext(error);
+    }
   };
 
   const scheduleWebuiFooterPublish = (ctx: ExtensionContext, delayMs = 250) => {
@@ -1113,11 +1135,15 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     rememberFooterContext(ctx);
     footerUsageRecomputeTimer = setTimeout(() => {
       footerUsageRecomputeTimer = null;
-      const footerCtx = getFooterContext(ctx);
-      footerUsageSnapshot = recomputeFooterUsageSnapshot(footerCtx);
-      refreshPromptCalibrationCapability(footerCtx);
-      requestFooterRender?.();
-      publishWebuiFooter(footerCtx);
+      try {
+        const footerCtx = getFooterContext(ctx);
+        footerUsageSnapshot = recomputeFooterUsageSnapshot(footerCtx);
+        refreshPromptCalibrationCapability(footerCtx);
+        requestFooterRender?.();
+        publishWebuiFooter(footerCtx);
+      } catch (error) {
+        swallowStaleExtensionContext(error);
+      }
     }, Math.max(0, delayMs));
     footerUsageRecomputeTimer.unref?.();
   };
@@ -1194,6 +1220,12 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           pendingRefreshOptions = null;
           await refreshOnce(getFooterContext(ctx), nextOptions);
         }
+      } catch (error) {
+        // readGitSnapshot -> pi.exec throws "extension ctx is stale"
+        // synchronously when the session that scheduled this auto-refresh was
+        // replaced/reloaded. Stop the timer so we stop poking the dead ctx;
+        // the next session_start restarts it with a fresh ctx.
+        swallowStaleExtensionContext(error);
       } finally {
         refreshPromise = null;
       }
@@ -1405,7 +1437,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     });
 
     void refresh(ctx).then(() => {
-      void runInitialGitFetch(ctx, sessionSerial);
+      void runInitialGitFetch(ctx, sessionSerial).catch(swallowStaleExtensionContext);
     });
     startGitAutoRefresh(ctx);
   });
