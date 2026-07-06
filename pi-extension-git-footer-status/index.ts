@@ -866,6 +866,8 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   let promptEstimateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let footerUsageRecomputeTimer: ReturnType<typeof setTimeout> | null = null;
   let gitAutoRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  // Non-UI modes (json/print) have no footer consumer; skip all background work.
+  let backgroundWorkEnabled = false;
   let lastWebuiFooterPublishMs = 0;
   let promptEstimateCanCalibrateCurrent = false;
   let accountedAssistantUsageKeys = new Set<string>();
@@ -924,9 +926,19 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     return message.includes("extension ctx is stale");
   };
 
-  const swallowStaleExtensionContext = (error: unknown): void => {
-    if (isStaleExtensionContextError(error)) stopGitAutoRefresh();
-    // Best-effort background work: never propagate.
+  /** Returns true when the error was a stale-ctx error and has been handled. */
+  const handleStaleExtensionContext = (error: unknown): boolean => {
+    if (!isStaleExtensionContextError(error)) return false;
+    stopGitAutoRefresh();
+    return true;
+  };
+
+  /** Terminal handler for background/timer work: never throws, never rejects. */
+  const swallowBackgroundError = (error: unknown): void => {
+    if (handleStaleExtensionContext(error)) return;
+    if (envFlag("PI_GIT_FOOTER_DEBUG", false)) {
+      console.error("[git-footer-status] background task failed:", error);
+    }
   };
 
   const mergeRefreshOptions = (current: GitRefreshOptions | null, next: GitRefreshOptions = {}): GitRefreshOptions => {
@@ -955,9 +967,11 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   const schedulePromptInjectionEstimateRefresh = (ctx: ExtensionContext, delayMs = PROMPT_ESTIMATE_REFRESH_DELAY_MS) => {
     if (!PROMPT_ESTIMATE_ENABLED || promptEstimateRefreshTimer || promptEstimateRefreshPromise) return;
     rememberFooterContext(ctx);
+    const scheduledSerial = activeSessionSerial;
     promptEstimateRefreshTimer = setTimeout(() => {
       promptEstimateRefreshTimer = null;
-      void refreshPromptInjectionEstimate(getEstimateContext(ctx)).catch(swallowStaleExtensionContext);
+      if (scheduledSerial !== activeSessionSerial) return;
+      void refreshPromptInjectionEstimate(getEstimateContext(ctx)).catch(swallowBackgroundError);
     }, Math.max(0, delayMs));
     promptEstimateRefreshTimer.unref?.();
   };
@@ -1024,7 +1038,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       const payload = buildWebuiFooterPayload(footerCtx, snapshot, buildFooterTelemetry(footerCtx), latestGitFetchState);
       footerCtx.ui.setStatus(WEBUI_FOOTER_STATUS_KEY, JSON.stringify(payload));
     } catch (error) {
-      swallowStaleExtensionContext(error);
+      swallowBackgroundError(error);
     }
   };
 
@@ -1032,8 +1046,10 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     if (webuiFooterPublishTimer) return;
     const elapsedMs = Date.now() - lastWebuiFooterPublishMs;
     const waitMs = Math.max(0, Math.min(delayMs, delayMs - elapsedMs));
+    const scheduledSerial = activeSessionSerial;
     webuiFooterPublishTimer = setTimeout(() => {
       webuiFooterPublishTimer = null;
+      if (scheduledSerial !== activeSessionSerial) return;
       // Do not capture latestGitSnapshot when scheduling. During streaming,
       // git auto-refresh can publish a newer snapshot before this throttle fires;
       // replaying the old snapshot makes Web UI CHANGES flip back and forth.
@@ -1133,8 +1149,10 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   const scheduleFooterUsageRecompute = (ctx: ExtensionContext, delayMs = FOOTER_USAGE_RECOMPUTE_DELAY_MS) => {
     if (footerUsageRecomputeTimer) return;
     rememberFooterContext(ctx);
+    const scheduledSerial = activeSessionSerial;
     footerUsageRecomputeTimer = setTimeout(() => {
       footerUsageRecomputeTimer = null;
+      if (scheduledSerial !== activeSessionSerial) return;
       try {
         const footerCtx = getFooterContext(ctx);
         footerUsageSnapshot = recomputeFooterUsageSnapshot(footerCtx);
@@ -1142,7 +1160,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
         requestFooterRender?.();
         publishWebuiFooter(footerCtx);
       } catch (error) {
-        swallowStaleExtensionContext(error);
+        swallowBackgroundError(error);
       }
     }, Math.max(0, delayMs));
     footerUsageRecomputeTimer.unref?.();
@@ -1211,7 +1229,15 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   };
 
   const refresh = async (ctx: ExtensionContext, options: GitRefreshOptions = {}) => {
-    rememberFooterContext(ctx);
+    // A stale ctx throws synchronously from ctx.cwd here; because refresh is
+    // async, that throw would reject the returned promise before the guarded
+    // IIFE below is reachable, and fire-and-forget callers discard the promise.
+    try {
+      rememberFooterContext(ctx);
+    } catch (error) {
+      swallowBackgroundError(error);
+      return;
+    }
     pendingRefreshOptions = mergeRefreshOptions(pendingRefreshOptions, options);
     refreshPromise ??= (async () => {
       try {
@@ -1225,7 +1251,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
         // synchronously when the session that scheduled this auto-refresh was
         // replaced/reloaded. Stop the timer so we stop poking the dead ctx;
         // the next session_start restarts it with a fresh ctx.
-        swallowStaleExtensionContext(error);
+        swallowBackgroundError(error);
       } finally {
         refreshPromise = null;
       }
@@ -1243,8 +1269,10 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     rememberFooterContext(ctx);
     stopGitAutoRefresh();
     if (GIT_AUTO_REFRESH_INTERVAL_MS <= 0) return;
+    const scheduledSerial = activeSessionSerial;
     gitAutoRefreshTimer = setInterval(() => {
-      void refresh(getFooterContext(ctx), { publishIfUnchanged: false });
+      if (scheduledSerial !== activeSessionSerial) return;
+      void refresh(getFooterContext(ctx), { publishIfUnchanged: false }).catch(swallowBackgroundError);
     }, GIT_AUTO_REFRESH_INTERVAL_MS);
     gitAutoRefreshTimer.unref?.();
   };
@@ -1286,7 +1314,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       .finally(() => {
         if (sessionSerial !== activeSessionSerial) return;
         gitInitialFetchPromise = null;
-        void refresh(ctx);
+        void refresh(ctx).catch(swallowBackgroundError);
         requestFooterRender?.();
       });
 
@@ -1294,6 +1322,8 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    backgroundWorkEnabled = ctx.hasUI;
+    if (!backgroundWorkEnabled) return;
     const sessionSerial = ++activeSessionSerial;
     gitInitialFetchPromise = null;
     latestGitFetchState = { status: "idle" };
@@ -1436,26 +1466,29 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       };
     });
 
-    void refresh(ctx).then(() => {
-      void runInitialGitFetch(ctx, sessionSerial).catch(swallowStaleExtensionContext);
-    });
+    void refresh(ctx)
+      .then(() => runInitialGitFetch(ctx, sessionSerial))
+      .catch(swallowBackgroundError);
     startGitAutoRefresh(ctx);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
+    if (!backgroundWorkEnabled) return;
     schedulePromptInjectionEstimateRefresh(ctx);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
     resetLiveAssistantState();
     refreshPromptCalibrationCapability(ctx);
     requestFooterRender?.();
     schedulePromptInjectionEstimateRefresh(ctx);
-    void refresh(ctx);
+    void refresh(ctx).catch(swallowBackgroundError);
   });
 
   pi.on("message_start", (event, ctx) => {
+    if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
     if (event.message.role === "assistant") {
       currentAssistantStartMs = Date.now();
@@ -1469,6 +1502,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   });
 
   pi.on("message_update", (event, ctx) => {
+    if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
     if (event.message.role !== "assistant" || currentAssistantStartMs === null) return;
 
@@ -1505,6 +1539,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event, ctx) => {
+    if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
     if (event.message.role === "assistant") {
       const assistantMessage = event.message as AssistantMessage;
@@ -1517,6 +1552,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", async (event, ctx) => {
+    if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
     // Safety net for runtimes where message_end fires before usage is populated.
     if (event.message.role === "assistant") {
@@ -1528,10 +1564,11 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     refreshPromptCalibrationCapability(ctx);
     requestFooterRender?.();
     schedulePromptInjectionEstimateRefresh(ctx);
-    void refresh(ctx);
+    void refresh(ctx).catch(swallowBackgroundError);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    backgroundWorkEnabled = false;
     activeSessionSerial += 1;
     gitInitialFetchPromise = null;
     latestGitFetchState = { status: "idle" };
@@ -1551,9 +1588,14 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     latestGitSnapshotFingerprint = null;
     latestFooterContext = null;
     latestFooterCwd = "";
-    ctx.ui.setStatus(GIT_FOOTER_STATUS_KEY, undefined);
-    ctx.ui.setStatus(WEBUI_FOOTER_STATUS_KEY, undefined);
-    ctx.ui.setFooter(undefined);
+    try {
+      ctx.ui.setStatus(GIT_FOOTER_STATUS_KEY, undefined);
+      ctx.ui.setStatus(WEBUI_FOOTER_STATUS_KEY, undefined);
+      ctx.ui.setFooter(undefined);
+    } catch (error) {
+      // Shutdown can race context invalidation.
+      swallowBackgroundError(error);
+    }
   });
 
   pi.registerCommand("git-footer-refresh", {
