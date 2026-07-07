@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=64" />
+    <link rel="stylesheet" href="/styles.css?v=66" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -332,6 +332,7 @@
       </section>
 
       <section id="fileViewerPane" class="file-viewer-pane" aria-label="File viewer and editor" hidden>
+        <div id="fileViewerResizeHandle" class="file-viewer-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize file viewer width" tabindex="0" title="Drag to resize file viewer"></div>
         <header class="file-viewer-header">
           <div class="file-viewer-title-block">
             <span class="file-viewer-kicker">File</span>
@@ -505,6 +506,10 @@
                     <p id="fileTreeCwd" class="file-tree-cwd muted"></p>
                   </div>
                   <button id="fileTreeRefreshButton" type="button">Refresh</button>
+                </div>
+                <div class="file-tree-search" role="search">
+                  <input id="fileTreeSearchInput" class="file-tree-search-input" type="search" placeholder="Search files and folders…" autocomplete="off" spellcheck="false" aria-label="Search workspace files and folders" />
+                  <button id="fileTreeSearchClearButton" type="button" aria-label="Clear file search" hidden disabled>Clear</button>
                 </div>
                 <p class="file-tree-hint muted">Double-click a file to open it in WebUI. Right-click files or folders for WebUI/default-editor actions. Folders expand lazily and start collapsed.</p>
                 <div id="fileTreeRoot" class="file-tree" role="tree" aria-label="Workspace file tree"></div>
@@ -853,6 +858,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=64"></script>
+    <script type="module" src="/app.js?v=66"></script>
   </body>
 </html>

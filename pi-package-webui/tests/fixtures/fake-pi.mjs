@@ -29,8 +29,46 @@ let conversationEnabled = false;
 
 const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
+const staticEntries = [
+  { type: "message", id: "u0000001", parentId: null, timestamp: new Date(1000).toISOString(), message: { role: "user", content: "fake prompt", timestamp: 1000 } },
+  { type: "message", id: "a0000001", parentId: "u0000001", timestamp: new Date(2000).toISOString(), message: { role: "assistant", content: [{ type: "text", text: "fake answer" }], timestamp: 2000 } },
+  { type: "message", id: "u0000002", parentId: "a0000001", timestamp: new Date(3000).toISOString(), message: { role: "user", content: "fake follow-up", timestamp: 3000 } },
+];
+const dynamicEntries = [];
 const dynamicMessages = [];
+let dynamicLeafId = "u0000002";
 let scriptedStreaming = false;
+
+function allSessionEntries() {
+  return [...staticEntries, ...dynamicEntries];
+}
+
+function messageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => typeof part === "string" ? part : part?.type === "text" ? part.text || "" : "").filter(Boolean).join(" ");
+}
+
+function forkMessages() {
+  return allSessionEntries()
+    .filter((entry) => entry.type === "message" && entry.message?.role === "user")
+    .map((entry) => ({ entryId: entry.id, text: messageText(entry.message.content) }));
+}
+
+function appendDynamicMessage(message) {
+  const prefix = message.role === "assistant" ? "a" : "u";
+  const entry = {
+    type: "message",
+    id: `${prefix}${randomUUID().replace(/-/g, "").slice(0, 7)}`,
+    parentId: dynamicLeafId,
+    timestamp: new Date().toISOString(),
+    message,
+  };
+  dynamicEntries.push(entry);
+  dynamicMessages.push(message);
+  dynamicLeafId = entry.id;
+  return entry;
+}
 
 function logJsonLine(entry) {
   if (!commandLogFile) return;
@@ -91,8 +129,9 @@ function runVoiceScriptFlow({ text, chunks, chunkSpacingMs = 60, toolPhase = fal
   steps.push({
     afterMs: chunkSpacingMs,
     run: () => {
-      dynamicMessages.push({ role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() });
-      emitScriptedEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } });
+      const message = { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() };
+      appendDynamicMessage(message);
+      emitScriptedEvent({ type: "message_end", message });
     },
   });
   steps.push({
@@ -110,7 +149,7 @@ function handleVoiceScriptPrompt(command, base) {
   const message = String(command.message || "");
   const marker = ["voice test say", "voice test question", "voice test tool", "voice test slow"].find((item) => message.includes(item));
   if (!marker) return false;
-  dynamicMessages.push({ role: "user", content: message, timestamp: Date.now() });
+  appendDynamicMessage({ role: "user", content: message, timestamp: Date.now() });
   respond({ ...base, data: { output: "voice scripted prompt accepted" } });
   if (marker === "voice test say") {
     runVoiceScriptFlow({ text: "Okay, this is the spoken answer." });
@@ -257,6 +296,23 @@ rl.on("line", (line) => {
         },
       });
       return;
+    case "get_fork_messages":
+      respond({ ...base, data: { messages: forkMessages() } });
+      return;
+    case "get_entries": {
+      const entries = allSessionEntries();
+      if (command.since !== undefined) {
+        const sinceIndex = entries.findIndex((entry) => entry.id === command.since);
+        if (sinceIndex === -1) {
+          respond({ ...base, success: false, error: `Entry not found: ${command.since}` });
+          return;
+        }
+        respond({ ...base, data: { entries: entries.slice(sinceIndex + 1), leafId: dynamicLeafId } });
+        return;
+      }
+      respond({ ...base, data: { entries, leafId: dynamicLeafId } });
+      return;
+    }
     case "prompt":
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;

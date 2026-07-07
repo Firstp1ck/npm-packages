@@ -70,8 +70,19 @@ function runGitFixture(args, cwd, message) {
 }
 
 const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
-const settingsFile = path.join(cwd, "webui-settings.json");
+const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-side-effects-"));
+const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
+const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
+const openCommandScript = path.join(harnessSideEffectsRoot, "fake-open-default.mjs");
+const fakeOpenBinDir = path.join(harnessSideEffectsRoot, "bin");
 await chmod(fakePi, 0o755);
+await mkdir(fakeOpenBinDir, { recursive: true });
+await writeFile(openCommandScript, `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "custom-open\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
+await chmod(openCommandScript, 0o755);
+await writeFile(path.join(fakeOpenBinDir, "xdg-open"), `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "xdg-open\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
+await writeFile(path.join(fakeOpenBinDir, "gio"), `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "gio\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
+await writeFile(path.join(fakeOpenBinDir, "xdg-mime"), `#!/usr/bin/env node\nconst [,, verb, mode, value = ""] = process.argv;\nif (verb === "query" && mode === "filetype") {\n  if (value.endsWith(".piunknown")) console.log("application/x-pi-unknown");\n  else if (value.endsWith(".md")) console.log("text/markdown");\n  else console.log("text/plain");\n  process.exit(0);\n}\nif (verb === "query" && mode === "default") {\n  if (value === "text/plain") console.log("fake-text-editor.desktop");\n  process.exit(0);\n}\nprocess.exit(1);\n`, "utf8");
+await Promise.all(["xdg-open", "gio", "xdg-mime"].map((name) => chmod(path.join(fakeOpenBinDir, name), 0o755)));
 
 const voiceProviderRequests = [];
 const voiceProvider = createServer(async (req, res) => {
@@ -103,7 +114,12 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     GIT_AUTHOR_EMAIL: "pi-webui-test@example.invalid",
     GIT_COMMITTER_NAME: "Pi WebUI Test",
     GIT_COMMITTER_EMAIL: "pi-webui-test@example.invalid",
+    PATH: `${fakeOpenBinDir}${path.delimiter}${process.env.PATH || ""}`,
+    PI_CODING_AGENT_DIR: path.join(harnessSideEffectsRoot, "agent"),
     PI_WEBUI_SETTINGS_FILE: settingsFile,
+    ...(process.platform === "linux" ? {} : { PI_WEBUI_OPEN_COMMAND: openCommandScript }),
+    PI_WEBUI_OPEN_LOG: openCommandLog,
+    FAKE_PI_VOICE_SCRIPTS: "1",
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
   },
@@ -200,6 +216,45 @@ try {
   const state = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);
   assert.equal(state.status, 200);
   assert.equal(state.body?.data?.model?.provider, "fake", "state should come from the fake pi RPC");
+
+  const forkSourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "fork-running-source" } });
+  assert.equal(forkSourceTab.status, 201, `fork source tab should open: ${forkSourceTab.body?.error || ""}`);
+  const forkSourceTabId = forkSourceTab.body?.data?.tab?.id;
+  assert.ok(forkSourceTabId, "fork source tab should have an id");
+  const runningPrompt = "voice test slow fork fixture";
+  const runningPromptResponse = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { message: runningPrompt, tab: forkSourceTabId }, timeoutMs: 10_000 });
+  assert.equal(runningPromptResponse.status, 200, `slow scripted prompt should start: ${runningPromptResponse.body?.error || ""}`);
+  let streamingState;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    streamingState = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(forkSourceTabId)}`);
+    if (streamingState.body?.data?.isStreaming === true) break;
+    await delay(100);
+  }
+  assert.equal(streamingState?.body?.data?.isStreaming, true, "source tab should still be running before fork");
+  const forkMessagesWhileRunning = await request("127.0.0.1", `/api/fork-messages?tab=${encodeURIComponent(forkSourceTabId)}`);
+  assert.equal(forkMessagesWhileRunning.status, 200, "fork selector data should load while the source tab is running");
+  const runningForkPoint = (forkMessagesWhileRunning.body?.data?.messages || []).find((item) => item.text === runningPrompt);
+  assert.ok(runningForkPoint?.entryId, "running prompt should be available as a fork point");
+  const forkWhileRunning = await request("127.0.0.1", "/api/fork", { method: "POST", body: { tab: forkSourceTabId, entryId: runningForkPoint.entryId }, timeoutMs: 10_000 });
+  assert.equal(forkWhileRunning.status, 200, `fork while running should succeed: ${forkWhileRunning.body?.error || ""}`);
+  const forkedTabId = forkWhileRunning.body?.data?.tab?.id;
+  assert.ok(forkedTabId, "fork response should include the opened fork tab");
+  assert.notEqual(forkedTabId, forkSourceTabId, "forking should create a new tab instead of replacing the running source tab");
+  assert.equal(forkWhileRunning.body?.data?.text, runningPrompt, "fork response should restore the selected prompt text for editing");
+  assert.ok((forkWhileRunning.body?.data?.tabs || []).some((tab) => tab.id === forkSourceTabId), "fork response should keep the original running tab in the tab list");
+  assert.ok((forkWhileRunning.body?.data?.tabs || []).some((tab) => tab.id === forkedTabId), "fork response should include the new fork tab in the tab list");
+  assert.match(String(forkWhileRunning.body?.data?.sessionFile || ""), /\.jsonl$/, "fork response should include the new session file");
+  const forkSessionContent = await readFile(forkWhileRunning.body.data.sessionFile, "utf8");
+  assert.match(forkSessionContent, /"type":"session"/, "forked session file should be written before opening its tab");
+  const sourceAfterFork = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(forkSourceTabId)}`);
+  assert.equal(sourceAfterFork.status, 200, "source tab should still respond after forking");
+  for (let attempt = 0; attempt < 40 && sourceAfterFork.body?.data?.isStreaming; attempt++) {
+    const next = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(forkSourceTabId)}`);
+    if (!next.body?.data?.isStreaming) break;
+    await delay(100);
+  }
+  const closeForkTestTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [forkSourceTabId, forkedTabId] }, timeoutMs: 10_000 });
+  assert.equal(closeForkTestTabs.status, 200, "fork test tabs should close before continuing baseline endpoint checks");
 
   const gitAvailable = spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
   if (gitAvailable) {
@@ -699,10 +754,20 @@ try {
   const viewerRelative = "files-fixture/viewer.txt";
   const markdownRelative = "files-fixture/docs/readme.md";
   const binaryRelative = "files-fixture/binary.bin";
+  const noDefaultRelative = "files-fixture/no-default.piunknown";
   const largeRelative = "files-fixture/large.txt";
+  const depthEightFileRelative = "deep-search/f1/f2/f3/f4/f5/f6/depth-eight-file.txt";
+  const depthEightDirectoryRelative = "deep-search/d1/d2/d3/d4/d5/d6/depth-eight-dir";
+  const depthNineFileRelative = "deep-search/t1/t2/t3/t4/t5/t6/t7/too-deep-file.txt";
   await mkdir(path.join(filesRoot, "docs"), { recursive: true });
+  await mkdir(path.join(cwd, path.dirname(depthEightFileRelative)), { recursive: true });
+  await mkdir(path.join(cwd, depthEightDirectoryRelative), { recursive: true });
+  await mkdir(path.join(cwd, path.dirname(depthNineFileRelative)), { recursive: true });
   await writeFile(path.join(cwd, viewerRelative), "hello file viewer\nsecond line\n", "utf8");
   await writeFile(path.join(cwd, markdownRelative), "# File Viewer\n\nMarkdown preview support.\n", "utf8");
+  await writeFile(path.join(cwd, noDefaultRelative), "unknown extension should use text/plain editor fallback\n", "utf8");
+  await writeFile(path.join(cwd, depthEightFileRelative), "depth 8 search fixture\n", "utf8");
+  await writeFile(path.join(cwd, depthNineFileRelative), "depth 9 search fixture\n", "utf8");
   await writeFile(path.join(cwd, binaryRelative), Buffer.from([0, 1, 2, 3]));
   await writeFile(path.join(cwd, largeRelative), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
 
@@ -713,6 +778,27 @@ try {
   assert.equal(fileTreeEntries.find((entry) => entry.name === "docs")?.type, "directory", "file tree should identify subdirectories");
   assert.equal(fileTreeEntries.find((entry) => entry.name === "viewer.txt")?.type, "file", "file tree should identify regular files");
 
+  const fileSearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("readme")}`);
+  assert.equal(fileSearch.status, 200, `file search endpoint should search workspace files: ${fileSearch.body?.error || ""}`);
+  assert.equal(fileSearch.body?.ok, true);
+  const fileSearchEntries = fileSearch.body?.data?.entries || [];
+  assert.equal(fileSearchEntries.find((entry) => entry.path === markdownRelative)?.type, "file", "file search should find matching files recursively");
+
+  const directorySearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("docs")}`);
+  assert.equal(directorySearch.status, 200, `file search endpoint should search directories: ${directorySearch.body?.error || ""}`);
+  assert.equal(directorySearch.body?.data?.entries?.find((entry) => entry.path === "files-fixture/docs")?.type, "directory", "file search should find matching directories");
+
+  const depthLimitedSearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("depth")}`);
+  assert.equal(depthLimitedSearch.status, 200, `file search endpoint should honor depth-limited recursive search: ${depthLimitedSearch.body?.error || ""}`);
+  assert.equal(depthLimitedSearch.body?.data?.maxDepth, 8, "file search should advertise the recursive depth cap");
+  assert.equal(depthLimitedSearch.body?.data?.entries?.find((entry) => entry.path === depthEightFileRelative)?.type, "file", "file search should find matching files at depth 8");
+  assert.equal(depthLimitedSearch.body?.data?.entries?.find((entry) => entry.path === depthEightDirectoryRelative)?.type, "directory", "file search should find matching directories at depth 8");
+  assert.equal(depthLimitedSearch.body?.data?.entries?.some((entry) => entry.path === depthNineFileRelative), false, "file search should not descend past depth 8");
+
+  const emptyFileSearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=`);
+  assert.equal(emptyFileSearch.status, 200, "empty file search should be accepted");
+  assert.deepEqual(emptyFileSearch.body?.data?.entries, [], "empty file search should not scan the workspace");
+
   const textContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(viewerRelative)}`);
   assert.equal(textContent.status, 200, `text file should open in WebUI: ${textContent.body?.error || ""}`);
   assert.equal(textContent.body?.data?.content, "hello file viewer\nsecond line\n");
@@ -721,6 +807,37 @@ try {
   const markdownContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(markdownRelative)}`);
   assert.equal(markdownContent.status, 200, `markdown file should open in WebUI: ${markdownContent.body?.error || ""}`);
   assert.equal(markdownContent.body?.data?.language, "markdown", "markdown files should get markdown viewer support metadata");
+
+  const emptyDefaultOpen = await request("127.0.0.1", "/api/files/open-default", { method: "POST", body: { tab: tabId, path: "" } });
+  assert.equal(emptyDefaultOpen.status, 400, "default editor opens should reject empty paths instead of opening the workspace root");
+  assert.match(String(emptyDefaultOpen.body?.error || ""), /Path to open is required/i);
+
+  const defaultOpen = await request("127.0.0.1", "/api/files/open-default", { method: "POST", body: { tab: tabId, path: viewerRelative } });
+  assert.equal(defaultOpen.status, 200, `default editor should open the requested file: ${defaultOpen.body?.error || ""}`);
+  assert.equal(defaultOpen.body?.data?.path, viewerRelative, "default editor endpoint should report the requested file path");
+  const openedAbsolutePath = path.join(cwd, viewerRelative);
+  let openLog = "";
+  for (let attempt = 0; attempt < 20; attempt++) {
+    openLog = await readFile(openCommandLog, "utf8").catch(() => "");
+    if (openLog.includes(openedAbsolutePath)) break;
+    await delay(50);
+  }
+  assert.ok(openLog.includes(openedAbsolutePath), "default editor command should receive the currently opened file path");
+
+  if (process.platform === "linux") {
+    const fallbackOpen = await request("127.0.0.1", "/api/files/open-default", { method: "POST", body: { tab: tabId, path: noDefaultRelative } });
+    assert.equal(fallbackOpen.status, 200, `default editor should fall back to the .txt editor for unassociated files: ${fallbackOpen.body?.error || ""}`);
+    assert.equal(fallbackOpen.body?.data?.path, noDefaultRelative, "default editor fallback should report the requested file path");
+    assert.equal(fallbackOpen.body?.data?.fallbackToTextEditor, true, "unassociated files should be opened through the text/plain fallback");
+    assert.equal(fallbackOpen.body?.data?.desktopFile, "fake-text-editor.desktop", "fallback should use the text/plain desktop app association");
+    const fallbackAbsolutePath = path.join(cwd, noDefaultRelative);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      openLog = await readFile(openCommandLog, "utf8").catch(() => "");
+      if (openLog.includes(`gio\tlaunch\tfake-text-editor.desktop\t${fallbackAbsolutePath}`)) break;
+      await delay(50);
+    }
+    assert.ok(openLog.includes(`gio\tlaunch\tfake-text-editor.desktop\t${fallbackAbsolutePath}`), "default editor fallback should invoke the text/plain editor for the requested file");
+  }
 
   const savedFile = await request("127.0.0.1", "/api/files/content", {
     method: "POST",
@@ -995,6 +1112,7 @@ try {
   }
   await new Promise((resolve) => voiceProvider.close(() => resolve()));
   await rmWithRetry(cwd);
+  await rmWithRetry(harnessSideEffectsRoot);
 }
 
 console.log("http-endpoints-harness.test.mjs passed");

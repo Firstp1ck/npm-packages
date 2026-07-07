@@ -181,7 +181,10 @@ const elements = {
   fileTreeRoot: $("#fileTreeRoot"),
   fileTreeStatus: $("#fileTreeStatus"),
   fileTreeRefreshButton: $("#fileTreeRefreshButton"),
+  fileTreeSearchInput: $("#fileTreeSearchInput"),
+  fileTreeSearchClearButton: $("#fileTreeSearchClearButton"),
   fileViewerPane: $("#fileViewerPane"),
+  fileViewerResizeHandle: $("#fileViewerResizeHandle"),
   fileViewerTitle: $("#fileViewerTitle"),
   fileViewerMeta: $("#fileViewerMeta"),
   fileViewerOpenDefaultButton: $("#fileViewerOpenDefaultButton"),
@@ -294,10 +297,13 @@ let tabDrafts = new Map();
 let tabAttachments = new Map();
 let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
-let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0 };
+let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0 };
 let activeFileViewer = null;
 let fileViewerSelection = null;
 let fileContextMenuState = null;
+let fileViewerResizeState = null;
+let fileTreeSearchTimer = null;
+let fileTreeSearchRequestSerial = 0;
 let tabActivities = new Map();
 let tabSeenCompletionSerials = new Map();
 let streamBubble = null;
@@ -558,6 +564,9 @@ const LAST_USER_PROMPT_STORAGE_KEY = "pi-webui-last-user-prompts";
 const PROMPT_HISTORY_STORAGE_KEY = "pi-webui-prompt-history";
 const PROMPT_LIST_STORAGE_KEY = "pi-webui-prompt-lists";
 const WORKSPACE_DASHBOARD_STORAGE_KEY = "pi-webui-workspace-dashboard-collapsed";
+const FILE_VIEWER_WIDTH_STORAGE_KEY = "pi-webui-file-viewer-width";
+const FILE_VIEWER_WIDTH_DEFAULT_PX = 520;
+const FILE_VIEWER_WIDTH_MIN_PX = 384;
 const FILE_VIEWER_CONTEXT_RADIUS_LINES = 6;
 const FILE_TREE_ROOT_PATH = "";
 const POINTER_ACTIVATION_SELECTOR = "button, a[href], input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])";
@@ -2828,19 +2837,17 @@ async function submitEditRetry({ send = false } = {}) {
     const forkMessage = await resolveForkMessageForEdit(message, messageIndex, tabContext.tabId);
     setEditRetryStatus("Forking session…");
     const result = await api("/api/fork", { method: "POST", body: { entryId: forkMessage.entryId }, tabId: tabContext.tabId });
-    applyResponseTab(result);
-    if (!isCurrentTabContext(tabContext)) return;
+    const forkTab = await switchToResponseTab(result);
+    const forkTabId = forkTab?.id || activeTabId;
     closeEditRetryDialog();
-    await refreshAll(tabContext);
-    if (!isCurrentTabContext(tabContext)) return;
     if (send) {
-      addEvent("forked session; sending edited prompt", "info");
-      await sendPrompt("prompt", editedText, { targetTabId: tabContext.tabId, throwOnError: true });
+      addEvent("forked session in a new tab; sending edited prompt", "info");
+      await sendPrompt("prompt", editedText, { targetTabId: forkTabId, throwOnError: true });
     } else {
       elements.promptInput.value = editedText;
       resizePromptInput();
       focusPromptInput({ defer: true });
-      addEvent("forked session; edited prompt restored in composer", "info");
+      addEvent("forked session in a new tab; edited prompt restored in composer", "info");
     }
   } catch (error) {
     setEditRetryStatus(error.message || String(error), "error");
@@ -5394,8 +5401,44 @@ function setFileViewerStatus(message = "", level = "muted") {
   elements.fileViewerStatus.className = `file-viewer-status ${level || "muted"}`;
 }
 
+function emptyFileTreeState(requestSerial = 0) {
+  return { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0 };
+}
+
+function fileTreeSearchQueryText() {
+  return String(elements.fileTreeSearchInput?.value || "").trim();
+}
+
+function fileSearchApiPath(query = "") {
+  const params = new URLSearchParams({ q: query });
+  return `/api/files/search?${params.toString()}`;
+}
+
+function fileTreeEntriesStatus(entries = [], { truncated = false, total = entries.length, searchQuery = "" } = {}) {
+  const count = entries.length;
+  if (searchQuery) {
+    if (!count) return `0 matches for “${searchQuery}”.`;
+    const label = count === 1 ? "match" : "matches";
+    return truncated ? `Showing first ${count} ${label} for “${searchQuery}”.` : `${count} ${label} for “${searchQuery}”.`;
+  }
+  return truncated ? `Showing ${count} of ${total || count} entries.` : `${count} item${count === 1 ? "" : "s"}.`;
+}
+
+function updateFileTreeSearchControls() {
+  const query = fileTreeSearchQueryText();
+  if (elements.fileTreeSearchClearButton) {
+    elements.fileTreeSearchClearButton.hidden = !query;
+    elements.fileTreeSearchClearButton.disabled = !query;
+  }
+}
+
 function resetFileTreeState() {
-  fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: fileTreeState.requestSerial + 1 };
+  clearTimeout(fileTreeSearchTimer);
+  fileTreeSearchTimer = null;
+  fileTreeSearchRequestSerial += 1;
+  fileTreeState = emptyFileTreeState(fileTreeState.requestSerial + 1);
+  if (elements.fileTreeSearchInput) elements.fileTreeSearchInput.value = "";
+  updateFileTreeSearchControls();
   renderFileTree();
 }
 
@@ -5413,7 +5456,25 @@ function renderFileTree() {
   const root = elements.fileTreeRoot;
   if (!root) return;
   root.replaceChildren();
+  updateFileTreeSearchControls();
   if (elements.fileTreeCwd) elements.fileTreeCwd.textContent = fileTreeState.root || latestWorkspace?.displayCwd || activeTab()?.cwd || "";
+  const searchQuery = fileTreeState.searchQuery || fileTreeSearchQueryText();
+  root.classList.toggle("searching", !!searchQuery);
+  if (searchQuery) {
+    if (fileTreeState.searchLoading) {
+      root.append(make("div", "file-tree-loading muted", `Searching for “${searchQuery}”…`));
+      return;
+    }
+    if (!fileTreeState.searchEntries.length) {
+      root.append(make("div", "file-tree-empty muted", `No files or folders match “${searchQuery}”.`));
+      return;
+    }
+    const list = make("ul", "file-tree-list root search-results");
+    list.setAttribute("role", "group");
+    for (const entry of fileTreeState.searchEntries) appendFileSearchEntry(list, entry);
+    root.append(list);
+    return;
+  }
   const entries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
   if (!entries.length) {
     root.append(make("div", "file-tree-empty muted", fileTreeState.loading.has(FILE_TREE_ROOT_PATH) ? "Loading files…" : "No files loaded."));
@@ -5423,6 +5484,67 @@ function renderFileTree() {
   list.setAttribute("role", "group");
   for (const entry of entries) appendFileTreeEntry(list, entry, 0);
   root.append(list);
+}
+
+function appendFileSearchEntry(parent, entry) {
+  const path = normalizeFileTreePath(entry.path);
+  const isDirectory = entry.type === "directory" || entry.directory === true;
+  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  item.setAttribute("role", "none");
+  const button = make("button", "file-tree-item file-tree-search-item");
+  button.type = "button";
+  button.dataset.path = path;
+  button.dataset.type = entry.type || "file";
+  button.style.setProperty("--file-tree-depth", "0");
+  button.setAttribute("role", "treeitem");
+  button.title = [path || ".", entry.error || ""].filter(Boolean).join("\n");
+  const label = make("span", "file-tree-search-label");
+  label.append(
+    make("span", "file-tree-name", entry.name || fileDisplayName(path)),
+    make("span", "file-tree-search-path", path || "."),
+  );
+  button.append(
+    make("span", "file-tree-icon", fileEntryIcon(entry)),
+    label,
+  );
+  if (entry.type === "file") button.append(make("span", "file-tree-kind", entry.extension || "file"));
+  else if (entry.type && entry.type !== "directory") button.append(make("span", "file-tree-kind", entry.type));
+  if (entry.error) button.append(make("span", "file-tree-error", entry.error));
+  button.addEventListener("click", () => {
+    fileTreeState.selectedPath = path;
+    renderFileTree();
+  });
+  button.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    if (isDirectory) revealFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
+    else if (entry.type === "file") openFileInViewer(path);
+  });
+  button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
+  item.append(button);
+  parent.append(item);
+}
+
+async function revealFileTreeEntry(entry = {}) {
+  const targetPath = normalizeFileTreePath(entry.path || "");
+  if (!targetPath && targetPath !== FILE_TREE_ROOT_PATH) return;
+  const isDirectory = entry.type === "directory" || entry.directory === true;
+  const parentPath = isDirectory ? targetPath : fileParentPath(targetPath);
+  clearFileTreeSearch();
+  fileTreeState.selectedPath = targetPath;
+  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH);
+  let currentPath = "";
+  for (const part of parentPath.split("/").filter(Boolean)) {
+    currentPath = currentPath ? `${currentPath}/${part}` : part;
+    fileTreeState.expanded.add(currentPath);
+    renderFileTree();
+    await loadFileTreeDirectory(currentPath);
+  }
+  if (isDirectory) {
+    fileTreeState.expanded.add(targetPath);
+    await loadFileTreeDirectory(targetPath);
+  }
+  fileTreeState.selectedPath = targetPath;
+  renderFileTree();
 }
 
 function appendFileTreeEntry(parent, entry, depth = 0) {
@@ -5490,7 +5612,7 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
     }
     const entries = Array.isArray(data.entries) ? data.entries : [];
     fileTreeState.entriesByPath.set(normalized, entries);
-    setFileTreeStatus(data.truncated ? `Showing ${entries.length} of ${data.total || entries.length} entries.` : `${entries.length} item${entries.length === 1 ? "" : "s"}.`);
+    setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length }));
     return entries;
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
@@ -5504,10 +5626,91 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
   }
 }
 
+function clearFileTreeSearch({ focus = false } = {}) {
+  clearTimeout(fileTreeSearchTimer);
+  fileTreeSearchTimer = null;
+  fileTreeSearchRequestSerial += 1;
+  if (elements.fileTreeSearchInput) elements.fileTreeSearchInput.value = "";
+  fileTreeState.searchQuery = "";
+  fileTreeState.searchEntries = [];
+  fileTreeState.searchLoading = false;
+  fileTreeState.searchTruncated = false;
+  fileTreeState.searchTotal = 0;
+  updateFileTreeSearchControls();
+  const rootEntries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
+  setFileTreeStatus(rootEntries.length ? fileTreeEntriesStatus(rootEntries) : "");
+  renderFileTree();
+  if (focus) elements.fileTreeSearchInput?.focus();
+}
+
+async function runFileTreeSearch() {
+  clearTimeout(fileTreeSearchTimer);
+  fileTreeSearchTimer = null;
+  const query = fileTreeSearchQueryText();
+  fileTreeSearchRequestSerial += 1;
+  const serial = fileTreeSearchRequestSerial;
+  if (!query) {
+    clearFileTreeSearch();
+    return [];
+  }
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId) return [];
+  fileTreeState.searchQuery = query;
+  fileTreeState.searchLoading = true;
+  fileTreeState.searchEntries = [];
+  fileTreeState.searchTruncated = false;
+  fileTreeState.searchTotal = 0;
+  setFileTreeStatus(`Searching for “${query}”…`);
+  renderFileTree();
+  try {
+    const response = await api(fileSearchApiPath(query), { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext) || serial !== fileTreeSearchRequestSerial) return [];
+    const data = response.data || {};
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (data.root) fileTreeState.root = data.root;
+    fileTreeState.searchQuery = data.query || query;
+    fileTreeState.searchEntries = entries;
+    fileTreeState.searchLoading = false;
+    fileTreeState.searchTruncated = !!data.truncated;
+    fileTreeState.searchTotal = Number(data.total || entries.length) || entries.length;
+    setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length, searchQuery: fileTreeState.searchQuery }), entries.length ? "success" : "muted");
+    return entries;
+  } catch (error) {
+    if (isCurrentTabContext(tabContext) && serial === fileTreeSearchRequestSerial) {
+      fileTreeState.searchLoading = false;
+      fileTreeState.searchEntries = [];
+      setFileTreeStatus(error.message || String(error), "error");
+      addEvent(`file search failed: ${error.message || String(error)}`, "error");
+    }
+    return [];
+  } finally {
+    if (isCurrentTabContext(tabContext) && serial === fileTreeSearchRequestSerial) renderFileTree();
+  }
+}
+
+function scheduleFileTreeSearch(delay = 180) {
+  clearTimeout(fileTreeSearchTimer);
+  const query = fileTreeSearchQueryText();
+  updateFileTreeSearchControls();
+  if (!query) {
+    clearFileTreeSearch();
+    return;
+  }
+  fileTreeSearchRequestSerial += 1;
+  fileTreeState.searchQuery = query;
+  fileTreeState.searchLoading = true;
+  setFileTreeStatus(`Searching for “${query}”…`);
+  renderFileTree();
+  fileTreeSearchTimer = setTimeout(() => {
+    runFileTreeSearch().catch((error) => addEvent(error.message || String(error), "error"));
+  }, delay);
+}
+
 async function refreshFileTreeRoot(tabContext = activeTabContext()) {
   if (!tabContext.tabId || !elements.fileTreeRoot) return;
   if (!isCurrentTabContext(tabContext)) return;
-  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
+  if (fileTreeSearchQueryText()) await runFileTreeSearch();
+  else await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
 }
 
 async function toggleFileTreeDirectory(path = "", { force = false } = {}) {
@@ -5546,9 +5749,16 @@ function showFileContextMenu(event, entry) {
   menu.style.top = `${top}px`;
 }
 
-async function openPathInDefaultEditor(path = activeFileViewer?.path || "") {
+function currentFileViewerPath() {
+  return normalizeFileTreePath(activeFileViewer?.path || elements.fileViewerOpenDefaultButton?.dataset.path || "");
+}
+
+async function openPathInDefaultEditor(path = currentFileViewerPath()) {
   const normalized = normalizeFileTreePath(path);
-  if (!normalized && normalized !== FILE_TREE_ROOT_PATH) return;
+  if (!normalized) {
+    addEvent("No file is currently open in the WebUI viewer.", "warn");
+    return;
+  }
   const tabContext = activeTabContext();
   try {
     const response = await api("/api/files/open-default", { method: "POST", body: { path: normalized }, tabId: tabContext.tabId });
@@ -5558,10 +5768,139 @@ async function openPathInDefaultEditor(path = activeFileViewer?.path || "") {
   }
 }
 
+function readStoredFileViewerWidth() {
+  try {
+    const width = Number.parseFloat(localStorage.getItem(FILE_VIEWER_WIDTH_STORAGE_KEY) || "");
+    return Number.isFinite(width) && width >= FILE_VIEWER_WIDTH_MIN_PX ? width : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistFileViewerWidth(width) {
+  try {
+    localStorage.setItem(FILE_VIEWER_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch {
+    // Ignore storage failures; resizing should still work for this page load.
+  }
+}
+
+function fileViewerMaxWidth() {
+  const layout = document.querySelector(".layout");
+  const layoutRect = layout?.getBoundingClientRect?.();
+  const layoutWidth = layoutRect?.width || window.innerWidth || FILE_VIEWER_WIDTH_DEFAULT_PX;
+  const layoutStyle = layout ? getComputedStyle(layout) : null;
+  const gap = Number.parseFloat(layoutStyle?.columnGap || layoutStyle?.gap || "0") || 0;
+  const sidePanelVisible = !document.body.classList.contains("side-panel-collapsed") && elements.sidePanel && getComputedStyle(elements.sidePanel).display !== "none";
+  const sidePanelWidth = sidePanelVisible ? elements.sidePanel.getBoundingClientRect().width : 0;
+  const splitOpen = document.body.classList.contains("terminal-split-open");
+  const primaryMinWidth = splitOpen ? 560 : 320;
+  const gapCount = splitOpen ? (sidePanelVisible ? 3 : 2) : (sidePanelVisible ? 2 : 1);
+  const available = layoutWidth - sidePanelWidth - primaryMinWidth - (gap * gapCount);
+  return Math.max(FILE_VIEWER_WIDTH_MIN_PX, Math.min(Math.floor(layoutWidth * 0.78), Math.floor(available)));
+}
+
+function clampFileViewerWidth(width) {
+  const number = Number(width);
+  const max = fileViewerMaxWidth();
+  const fallback = readStoredFileViewerWidth() || FILE_VIEWER_WIDTH_DEFAULT_PX;
+  return Math.max(FILE_VIEWER_WIDTH_MIN_PX, Math.min(max, Number.isFinite(number) ? number : fallback));
+}
+
+function currentFileViewerWidth() {
+  const width = elements.fileViewerPane?.getBoundingClientRect?.().width;
+  return Number.isFinite(width) && width > 0 ? width : readStoredFileViewerWidth() || FILE_VIEWER_WIDTH_DEFAULT_PX;
+}
+
+function updateFileViewerResizeHandle(width = currentFileViewerWidth()) {
+  const handle = elements.fileViewerResizeHandle;
+  if (!handle) return;
+  const resizeAvailable = !!activeFileViewer && !isSidePanelOverlayView();
+  handle.hidden = !resizeAvailable;
+  handle.setAttribute("aria-valuemin", String(FILE_VIEWER_WIDTH_MIN_PX));
+  handle.setAttribute("aria-valuemax", String(fileViewerMaxWidth()));
+  handle.setAttribute("aria-valuenow", String(Math.round(width)));
+  handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
+}
+
+function applyFileViewerWidth(width, { persist = false } = {}) {
+  const clamped = clampFileViewerWidth(width);
+  document.documentElement.style.setProperty("--file-viewer-width", `${Math.round(clamped)}px`);
+  updateFileViewerResizeHandle(clamped);
+  if (persist) persistFileViewerWidth(clamped);
+  return clamped;
+}
+
+function restoreFileViewerWidthPreference() {
+  const width = readStoredFileViewerWidth();
+  if (width) document.documentElement.style.setProperty("--file-viewer-width", `${Math.round(width)}px`);
+  updateFileViewerResizeHandle(width || FILE_VIEWER_WIDTH_DEFAULT_PX);
+}
+
+function beginFileViewerResize(event) {
+  if (!activeFileViewer || isSidePanelOverlayView()) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  const startWidth = currentFileViewerWidth();
+  fileViewerResizeState = { pointerId: event.pointerId, startX: event.clientX, startWidth, width: startWidth };
+  document.body.classList.add("file-viewer-resizing");
+  elements.fileViewerResizeHandle?.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", updateFileViewerResize, { passive: false });
+  window.addEventListener("pointerup", finishFileViewerResize, { passive: false });
+  window.addEventListener("pointercancel", finishFileViewerResize, { passive: false });
+}
+
+function updateFileViewerResize(event) {
+  const state = fileViewerResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault();
+  state.width = applyFileViewerWidth(state.startWidth + (state.startX - event.clientX));
+}
+
+function finishFileViewerResize(event) {
+  const state = fileViewerResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault?.();
+  elements.fileViewerResizeHandle?.releasePointerCapture?.(state.pointerId);
+  window.removeEventListener("pointermove", updateFileViewerResize);
+  window.removeEventListener("pointerup", finishFileViewerResize);
+  window.removeEventListener("pointercancel", finishFileViewerResize);
+  document.body.classList.remove("file-viewer-resizing");
+  applyFileViewerWidth(state.width, { persist: true });
+  fileViewerResizeState = null;
+}
+
+function handleFileViewerResizeKeydown(event) {
+  if (!activeFileViewer || isSidePanelOverlayView()) return;
+  const step = event.shiftKey ? 80 : 24;
+  const current = currentFileViewerWidth();
+  let next = current;
+  if (event.key === "ArrowLeft") next = current + step;
+  else if (event.key === "ArrowRight") next = current - step;
+  else if (event.key === "Home") next = FILE_VIEWER_WIDTH_MIN_PX;
+  else if (event.key === "End") next = fileViewerMaxWidth();
+  else return;
+  event.preventDefault();
+  applyFileViewerWidth(next, { persist: true });
+}
+
+function syncFileViewerWidthForViewport() {
+  if (!activeFileViewer) {
+    updateFileViewerResizeHandle();
+    return;
+  }
+  if (isSidePanelOverlayView()) {
+    updateFileViewerResizeHandle();
+    return;
+  }
+  applyFileViewerWidth(currentFileViewerWidth());
+}
+
 async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
   if (!entry) return;
   const path = normalizeFileTreePath(entry.path || "");
   if (entry.type === "directory" || entry.directory === true) {
+    if (fileTreeState.searchQuery || fileTreeSearchQueryText()) return revealFileTreeEntry(entry);
     fileTreeState.expanded.add(path);
     await loadFileTreeDirectory(path);
     return;
@@ -5587,7 +5926,9 @@ function updateFileViewerUi() {
   const open = !!activeFileViewer;
   document.body.classList.toggle("file-viewer-open", open);
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
+  updateFileViewerResizeHandle();
   if (!open) return;
+  if (!isSidePanelOverlayView()) applyFileViewerWidth(currentFileViewerWidth());
   const viewer = activeFileViewer;
   const isMarkdown = viewer.language === "markdown";
   const mode = viewer.mode === "preview" && isMarkdown ? "preview" : "source";
@@ -5616,7 +5957,11 @@ function updateFileViewerUi() {
     if (mode === "preview") renderMarkdown(elements.fileViewerPreview, viewer.content || "");
   }
   if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = !viewer.dirty;
-  if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.disabled = !viewer.path;
+  if (elements.fileViewerOpenDefaultButton) {
+    const viewerPath = normalizeFileTreePath(viewer.path || "");
+    elements.fileViewerOpenDefaultButton.dataset.path = viewerPath;
+    elements.fileViewerOpenDefaultButton.disabled = !viewerPath;
+  }
   renderFileViewerSelectionBar();
 }
 
@@ -5744,7 +6089,9 @@ function closeFileViewer() {
   activeFileViewer = null;
   clearFileViewerSelection();
   document.body.classList.remove("file-viewer-open");
+  updateFileViewerResizeHandle();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
+  if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.dataset.path = "";
   if (elements.fileViewerEditor) elements.fileViewerEditor.value = "";
   if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
   setFileViewerStatus("");
@@ -5906,6 +6253,23 @@ function applyTabMetadata(tab) {
 
 function applyResponseTab(response) {
   return applyTabMetadata(response?.tab || response?.data?.tab);
+}
+
+function syncResponseTabs(response) {
+  const payload = response?.data || {};
+  if (Array.isArray(payload.tabs)) {
+    tabs = payload.tabs;
+    syncTabMetadata(tabs);
+  }
+  const tab = response?.tab || payload.tab || null;
+  if (tab) applyTabMetadata(tab);
+  return tab;
+}
+
+async function switchToResponseTab(response) {
+  const tab = syncResponseTabs(response);
+  if (tab?.id) await switchTab(tab.id);
+  return tab;
 }
 
 function activityForTab(tab) {
@@ -19746,7 +20110,7 @@ async function openNativeForkSelector() {
         setNativeCommandError("");
         try {
           const result = await nativeCommandApi("/api/fork", { method: "POST", body: { entryId: item.message.entryId } });
-          applyResponseTab(result);
+          await switchToResponseTab(result);
           const restoredText = result.data?.text || result.data?.result?.text || "";
           if (restoredText) {
             elements.promptInput.value = restoredText;
@@ -19755,7 +20119,6 @@ async function openNativeForkSelector() {
           }
           addTransientMessage({ role: "native", title: "/fork", content: result.data?.message || "Forked the current session.", level: "info" });
           closeNativeCommandDialog();
-          await refreshAll();
         } catch (error) {
           setNativeCommandError(error.message || String(error));
         }
@@ -23990,6 +24353,7 @@ window.addEventListener("online", () => scheduleForegroundReconcile("network onl
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
 });
+window.addEventListener("resize", syncFileViewerWidthForViewport, { passive: true });
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (event.defaultPrevented) return;
@@ -24121,6 +24485,17 @@ elements.refreshClaudeUsageButton?.addEventListener("click", () => {
   refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
 });
 elements.fileTreeRefreshButton?.addEventListener("click", () => refreshFileTreeRoot().catch((error) => addEvent(error.message || String(error), "error")));
+elements.fileTreeSearchInput?.addEventListener("input", () => scheduleFileTreeSearch());
+elements.fileTreeSearchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runFileTreeSearch().catch((error) => addEvent(error.message || String(error), "error"));
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    clearFileTreeSearch({ focus: true });
+  }
+});
+elements.fileTreeSearchClearButton?.addEventListener("click", () => clearFileTreeSearch({ focus: true }));
 elements.fileContextMenu?.addEventListener("click", (event) => {
   const button = event.target?.closest?.("[data-file-menu-action]");
   if (!button) return;
@@ -24131,7 +24506,9 @@ elements.fileContextMenu?.addEventListener("click", (event) => {
   if (action === "open-default") openPathInDefaultEditor(entry.path).catch((error) => addEvent(error.message || String(error), "error"));
   else if (action === "open-webui") openFileTreeEntryInWebui(entry).catch((error) => addEvent(error.message || String(error), "error"));
 });
-elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(activeFileViewer?.path || ""));
+elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(currentFileViewerPath()));
+elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewerResize);
+elements.fileViewerResizeHandle?.addEventListener("keydown", handleFileViewerResizeKeydown);
 elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
 elements.fileViewerCloseButton?.addEventListener("click", closeFileViewer);
 elements.fileViewerSourceModeButton?.addEventListener("click", () => setFileViewerMode("source"));
@@ -24269,6 +24646,7 @@ elements.promptInput.addEventListener("blur", () => {
 });
 
 resizePromptInput();
+restoreFileViewerWidthPreference();
 focusPromptInput({ defer: true });
 restoreStoredSkillUsage();
 restoreBusyPromptBehaviorSetting();

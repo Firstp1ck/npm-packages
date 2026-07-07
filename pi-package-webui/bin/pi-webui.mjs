@@ -98,6 +98,10 @@ const FILE_VIEWER_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_VIEWER_BODY_LIMIT_BYTES = FILE_VIEWER_MAX_BYTES + 64 * 1024;
 const FILE_TREE_MAX_ENTRIES = 1200;
 const FILE_TREE_ENTRY_STAT_CONCURRENCY = 32;
+const FILE_SEARCH_MAX_RESULTS = 200;
+const FILE_SEARCH_MAX_SCANNED = 12_000;
+const FILE_SEARCH_MAX_DEPTH = 8;
+const FILE_SEARCH_EXCLUDED_DIRS = new Set([".git", "node_modules"]);
 const PROMPT_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
 const VOICE_AUDIO_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
 const VOICE_AUDIO_JSON_BODY_LIMIT_BYTES = Math.ceil(VOICE_AUDIO_BODY_LIMIT_BYTES * 1.4) + 1024 * 1024;
@@ -8197,6 +8201,97 @@ async function getFileTreeData(tab, requestedPath = "") {
   };
 }
 
+function normalizeFileSearchQuery(value = "") {
+  const query = String(value || "").trim().replace(/\s+/g, " ");
+  if (query.includes("\0")) throw makeHttpError(400, "Search query cannot contain null bytes");
+  if (query.length > 160) throw makeHttpError(400, "Search query is too long");
+  return query;
+}
+
+function fileSearchMatches(entry, queryLower) {
+  const name = String(entry.name || "").toLowerCase();
+  const filePath = String(entry.path || "").toLowerCase();
+  return name.includes(queryLower) || filePath.includes(queryLower);
+}
+
+async function getFileSearchData(tab, rawQuery = "") {
+  const query = normalizeFileSearchQuery(rawQuery);
+  if (!query) {
+    const root = path.resolve(tab?.cwd || options.cwd);
+    return { root, displayRoot: displayPath(root), query, entries: [], truncated: false, total: 0, scanned: 0, maxDepth: FILE_SEARCH_MAX_DEPTH };
+  }
+  const resolved = await resolveWorkspacePath(tab, "");
+  if (!resolved.info?.isDirectory()) throw makeHttpError(400, "Workspace root is not a directory");
+  const queryLower = query.toLowerCase();
+  const entries = [];
+  const queue = [{ dirPath: resolved.root, relative: "", depth: 0 }];
+  const visitedRealDirs = new Set([resolved.realRoot]);
+  let scanned = 0;
+  let truncated = false;
+
+  while (queue.length && scanned < FILE_SEARCH_MAX_SCANNED && entries.length < FILE_SEARCH_MAX_RESULTS) {
+    const current = queue.shift();
+    let dirents = [];
+    try {
+      dirents = await readdir(current.dirPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    dirents.sort((a, b) => {
+      const aRank = a.isDirectory() ? 0 : a.isFile() ? 1 : 2;
+      const bRank = b.isDirectory() ? 0 : b.isFile() ? 1 : 2;
+      return aRank - bRank || a.name.localeCompare(b.name);
+    });
+
+    for (const dirent of dirents) {
+      if (scanned >= FILE_SEARCH_MAX_SCANNED || entries.length >= FILE_SEARCH_MAX_RESULTS) break;
+      scanned += 1;
+      const targetPath = path.join(current.dirPath, dirent.name);
+      const relative = (current.relative ? `${current.relative}/${dirent.name}` : dirent.name).split(path.sep).join("/");
+      const depth = current.depth + 1;
+      try {
+        const [info, realTarget] = await Promise.all([stat(targetPath), realpath(targetPath).catch(() => targetPath)]);
+        const outsideRoot = realTarget !== resolved.realRoot && !pathInside(resolved.realRoot, realTarget);
+        const type = outsideRoot ? "other" : fileTreeEntryType(dirent, info);
+        const entry = {
+          name: dirent.name,
+          path: relative,
+          type,
+          directory: type === "directory",
+          file: type === "file",
+          symlink: dirent.isSymbolicLink(),
+          outsideRoot,
+          size: info.size,
+          mtimeMs: info.mtimeMs,
+          extension: path.extname(dirent.name).toLowerCase(),
+          depth,
+          canOpenInWebui: type === "file",
+        };
+        if (fileSearchMatches(entry, queryLower)) entries.push(entry);
+        if (depth < FILE_SEARCH_MAX_DEPTH && type === "directory" && !FILE_SEARCH_EXCLUDED_DIRS.has(dirent.name) && !visitedRealDirs.has(realTarget)) {
+          visitedRealDirs.add(realTarget);
+          queue.push({ dirPath: targetPath, relative, depth });
+        }
+      } catch (error) {
+        const entry = { name: dirent.name, path: relative, type: "error", directory: false, file: false, depth, error: sanitizeError(error), canOpenInWebui: false };
+        if (fileSearchMatches(entry, queryLower)) entries.push(entry);
+      }
+    }
+  }
+  truncated = queue.length > 0 || scanned >= FILE_SEARCH_MAX_SCANNED || entries.length >= FILE_SEARCH_MAX_RESULTS;
+  return {
+    root: resolved.root,
+    displayRoot: displayPath(resolved.root),
+    query,
+    entries,
+    truncated,
+    total: entries.length,
+    scanned,
+    maxDepth: FILE_SEARCH_MAX_DEPTH,
+    excludedDirs: [...FILE_SEARCH_EXCLUDED_DIRS],
+  };
+}
+
 function assertTextFileBuffer(buffer) {
   if (isLikelyBinaryBuffer(buffer)) throw makeHttpError(415, "File appears to be binary; only text files can be opened in WebUI");
 }
@@ -8256,13 +8351,42 @@ function defaultEditorCommand(targetPath) {
   return { command: process.env.PI_WEBUI_OPEN_COMMAND || "xdg-open", args: [targetPath] };
 }
 
+function firstCommandOutputLine(value = "") {
+  return String(value || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+}
+
+async function queryXdgMime(args = [], cwd = options.cwd) {
+  const result = await runCommand("xdg-mime", args, { cwd, timeoutMs: 1500, maxOutputLength: 4096 });
+  if (result.exitCode !== 0) return "";
+  return firstCommandOutputLine(result.stdout);
+}
+
+async function linuxDefaultEditorCommand(targetPath, { cwd = options.cwd, isFile = true } = {}) {
+  if (process.env.PI_WEBUI_OPEN_COMMAND) return defaultEditorCommand(targetPath);
+  if (!isFile) return defaultEditorCommand(targetPath);
+  const fileMime = await queryXdgMime(["query", "filetype", targetPath], cwd);
+  const fileDefaultDesktop = fileMime ? await queryXdgMime(["query", "default", fileMime], cwd) : "";
+  if (fileDefaultDesktop) return { command: "xdg-open", args: [targetPath], mime: fileMime, desktopFile: fileDefaultDesktop, fallbackToTextEditor: false };
+  const textDefaultDesktop = await queryXdgMime(["query", "default", "text/plain"], cwd);
+  if (textDefaultDesktop) {
+    return { command: "gio", args: ["launch", textDefaultDesktop, targetPath], mime: fileMime, desktopFile: textDefaultDesktop, fallbackToTextEditor: true };
+  }
+  return { ...defaultEditorCommand(targetPath), mime: fileMime, fallbackToTextEditor: false };
+}
+
+async function defaultEditorCommandForPath(targetPath, options = {}) {
+  if (platform() === "linux") return linuxDefaultEditorCommand(targetPath, options);
+  return defaultEditorCommand(targetPath);
+}
+
 async function openPathInDefaultEditor(tab, requestedPath = "") {
+  if (!String(requestedPath || "").trim()) throw makeHttpError(400, "Path to open is required");
   const resolved = await resolveWorkspacePath(tab, requestedPath);
-  const { command, args } = defaultEditorCommand(resolved.targetPath);
+  const { command, args, mime, desktopFile, fallbackToTextEditor } = await defaultEditorCommandForPath(resolved.targetPath, { cwd: resolved.root, isFile: !!resolved.info?.isFile?.() });
   const child = spawn(command, args, { cwd: resolved.root, stdio: "ignore", detached: true, windowsHide: true });
   child.on("error", () => {});
   child.unref?.();
-  return { path: resolved.relative, command: [command, ...args].join(" ") };
+  return { path: resolved.relative, command: [command, ...args].join(" "), mime, desktopFile, fallbackToTextEditor: !!fallbackToTextEditor };
 }
 
 function configuredSessionDir() {
@@ -8340,13 +8464,111 @@ function extractSessionTextContent(content) {
     .map((part) => {
       if (typeof part === "string") return part;
       if (part?.type === "text" && typeof part.text === "string") return part.text;
-      if (part?.type === "toolCall") return `[tool call: ${part.toolName || "tool"}]`;
+      if (part?.type === "toolCall") return `[tool call: ${part.toolName || part.name || "tool"}]`;
       if (part?.type === "thinking") return "[thinking]";
       if (part?.type === "image") return "[image]";
       return "";
     })
     .filter(Boolean)
     .join(" ");
+}
+
+function generatedSessionEntryId(usedIds) {
+  let id = "";
+  do {
+    id = randomUUID().replace(/-/g, "").slice(0, 8);
+  } while (usedIds.has(id));
+  usedIds.add(id);
+  return id;
+}
+
+async function writeForkedSessionFromEntries({ entries, targetLeafId, cwd, parentSession }) {
+  const manager = SessionManager.create(cwd, configuredSessionDir(), { parentSession });
+  const header = manager.getHeader();
+  const sessionFile = manager.getSessionFile();
+  if (!header || !sessionFile) throw new Error("Failed to create forked session metadata");
+
+  const outputEntries = [header];
+  if (targetLeafId) {
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const pathEntries = [];
+    let current = byId.get(targetLeafId);
+    while (current) {
+      pathEntries.push(current);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    pathEntries.reverse();
+    if (!pathEntries.length) throw makeHttpError(400, `Fork target entry not found in the active session: ${targetLeafId}`);
+
+    const pathWithoutLabels = [];
+    let pathParentId = null;
+    for (const entry of pathEntries) {
+      if (entry.type === "label") continue;
+      pathWithoutLabels.push({ ...entry, parentId: pathParentId });
+      pathParentId = entry.id;
+    }
+    outputEntries.push(...pathWithoutLabels);
+
+    const pathEntryIds = new Set(pathWithoutLabels.map((entry) => entry.id));
+    const labelsByTarget = new Map();
+    const labelTimestampsByTarget = new Map();
+    for (const entry of entries) {
+      if (entry?.type !== "label" || !pathEntryIds.has(entry.targetId)) continue;
+      if (entry.label) {
+        labelsByTarget.set(entry.targetId, entry.label);
+        labelTimestampsByTarget.set(entry.targetId, entry.timestamp);
+      } else {
+        labelsByTarget.delete(entry.targetId);
+        labelTimestampsByTarget.delete(entry.targetId);
+      }
+    }
+
+    let labelParentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
+    const usedIds = new Set([...pathEntryIds, header.id]);
+    for (const [targetId, label] of labelsByTarget) {
+      const labelEntry = {
+        type: "label",
+        id: generatedSessionEntryId(usedIds),
+        parentId: labelParentId,
+        timestamp: labelTimestampsByTarget.get(targetId) || new Date().toISOString(),
+        targetId,
+        label,
+      };
+      outputEntries.push(labelEntry);
+      labelParentId = labelEntry.id;
+    }
+  }
+
+  await writeFile(sessionFile, `${outputEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { flag: "wx" });
+  return sessionFile;
+}
+
+async function createForkedSessionFile(tab, entryId) {
+  requirePersistentSessions();
+  const targetEntryId = String(entryId || "").trim();
+  if (!targetEntryId) throw makeHttpError(400, "entryId is required");
+
+  const state = await currentSessionState(tab).catch(() => tab.lastState || {});
+  if (state.isCompacting) throw makeHttpError(409, "Wait for compaction to finish before forking the session.");
+  const parentSession = state.sessionFile || tabRestorableSessionFile(tab);
+
+  const entriesResponse = await safeRpcResponse(tab, { type: "get_entries" }, REQUEST_TIMEOUT_MS);
+  if (entriesResponse.success === false) throw makeHttpError(400, entriesResponse.error || "failed to load session entries");
+  const entries = Array.isArray(entriesResponse.data?.entries) ? entriesResponse.data.entries : [];
+  const selectedEntry = entries.find((entry) => entry?.id === targetEntryId);
+  if (!selectedEntry) throw makeHttpError(400, `Fork target entry not found in the active session: ${targetEntryId}`);
+  if (selectedEntry.type !== "message" || selectedEntry.message?.role !== "user") {
+    throw makeHttpError(400, "Fork point must be a user message");
+  }
+
+  const text = extractSessionTextContent(selectedEntry.message.content).trim();
+  const sessionFile = await writeForkedSessionFromEntries({
+    entries,
+    targetLeafId: selectedEntry.parentId || null,
+    cwd: tab.cwd,
+    parentSession,
+  });
+  return { sessionFile, text, parentSession, targetEntryId };
 }
 
 function sessionTreeEntryLabel(entry) {
@@ -8420,18 +8642,26 @@ async function requireIdleForSessionAction(tab, actionLabel) {
 }
 
 async function runForkCommand(tab, entryId) {
-  await requireIdleForSessionAction(tab, "forking the session");
-  const targetEntryId = String(entryId || "").trim();
-  if (!targetEntryId) throw makeHttpError(400, "entryId is required");
-  const response = await tab.rpc.send({ type: "fork", entryId: targetEntryId });
-  if (response.success === false) return response;
-  const state = await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS);
-  if (state.ok) rememberTabState(tab, state.data);
+  const fork = await createForkedSessionFile(tab, entryId);
+  const title = uniqueTabTitle(generatedTabTitleFromPrompt(fork.text) || `${tab.title || "Session"} fork`, null);
+  const forkTab = await createTab({
+    title,
+    titleSource: title ? "auto" : undefined,
+    conversationStarted: true,
+    cwd: tab.cwd,
+    sessionFile: fork.sessionFile,
+    gitWorkspace: tab.gitWorkspace,
+  });
+  const forkTabMeta = tabMeta(forkTab);
   return rpcSuccess("fork", {
-    message: response.data?.cancelled ? "Fork cancelled." : "Forked the current session.",
-    text: response.data?.text || "",
-    result: response.data,
-    tab: tabMeta(tab),
+    message: "Forked the current session in a new terminal tab.",
+    text: fork.text || "",
+    result: { cancelled: false, text: fork.text || "", sessionFile: fork.sessionFile, targetEntryId: fork.targetEntryId },
+    sessionFile: fork.sessionFile,
+    parentSession: fork.parentSession,
+    tab: forkTabMeta,
+    tabs: listTabs(),
+    sourceTab: tabMeta(tab),
   });
 }
 
@@ -9632,6 +9862,12 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/files/search" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await getFileSearchData(tab, url.searchParams.get("q") || url.searchParams.get("query") || "") });
+      return;
+    }
+
     if (url.pathname === "/api/files/content" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await getFileContentData(tab, url.searchParams.get("path") || "") });
@@ -9701,7 +9937,7 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "session fork actions are blocked");
       const response = await runForkCommand(tab, body.entryId);
-      sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
+      sendJson(res, response.success === false ? 400 : 200, response);
       return;
     }
 

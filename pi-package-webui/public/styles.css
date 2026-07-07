@@ -70,6 +70,7 @@
   --tooltip-hover-delay: 500ms;
   --tooltip-blend-duration: 160ms;
   --tooltip-blend-ease: ease;
+  --file-viewer-width: 520px;
 
   font-size: 80%;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -316,16 +317,16 @@ body.terminal-split-open.side-panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 body.file-viewer-open .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(24rem, 33vw) minmax(20rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(24rem, var(--file-viewer-width)) minmax(20rem, 24rem);
 }
 body.file-viewer-open.side-panel-collapsed .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(24rem, 33vw);
+  grid-template-columns: minmax(0, 1fr) minmax(24rem, var(--file-viewer-width));
 }
 body.terminal-split-open.file-viewer-open .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, 33vw) minmax(20rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, var(--file-viewer-width)) minmax(20rem, 24rem);
 }
 body.terminal-split-open.file-viewer-open.side-panel-collapsed .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, 33vw);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, var(--file-viewer-width));
 }
 body.side-panel-collapsed .side-panel {
   display: none;
@@ -732,6 +733,51 @@ body.side-panel-collapsed .terminal-tabs-shell {
   background: var(--panel-gradient);
   box-shadow: 0 1rem 3rem var(--shadow), 0 0 2rem rgba(137, 180, 250, 0.10), inset 0 1px 0 rgba(255,255,255,0.06);
 }
+.file-viewer-resize-handle {
+  position: absolute;
+  top: 50%;
+  left: -0.78rem;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 5.2rem;
+  padding: 0;
+  cursor: col-resize;
+  touch-action: none;
+  transform: translateY(-50%);
+  border: 1px solid rgba(148, 226, 213, 0.36);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(var(--ctp-surface-rgb), 0.82), rgba(var(--ctp-crust-rgb), 0.90)),
+    var(--neon-gradient);
+  box-shadow: 0 0 1rem rgba(148, 226, 213, 0.22), 0 0.7rem 1.4rem rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.file-viewer-resize-handle::before {
+  content: "";
+  width: 0.28rem;
+  height: 3.1rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--ctp-pink), var(--ctp-blue), var(--ctp-teal));
+  box-shadow: 0 0 0.75rem rgba(137, 180, 250, 0.48);
+}
+.file-viewer-resize-handle:hover,
+.file-viewer-resize-handle:focus-visible,
+body.file-viewer-resizing .file-viewer-resize-handle {
+  border-color: rgba(148, 226, 213, 0.72);
+  box-shadow: 0 0 1.35rem rgba(148, 226, 213, 0.34), 0 0.9rem 1.7rem rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.11);
+  outline: none;
+}
+.file-viewer-resize-handle[hidden] {
+  display: none;
+}
+body.file-viewer-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.file-viewer-resizing * {
+  cursor: col-resize !important;
+}
 .file-viewer-header {
   flex: 0 0 auto;
   display: flex;
@@ -1131,6 +1177,28 @@ body.embedded-split .side-panel-backdrop {
   padding: 0.35rem 0.62rem;
   font-size: 0.74rem;
 }
+.file-tree-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.42rem;
+  align-items: center;
+}
+.file-tree-search-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.2rem;
+  padding: 0.36rem 0.62rem;
+  font-size: 0.74rem;
+}
+.file-tree-search button {
+  width: auto;
+  min-height: 2.2rem;
+  padding: 0.35rem 0.62rem;
+  font-size: 0.74rem;
+}
+.file-tree-search button[hidden] {
+  display: none;
+}
 .file-tree-cwd {
   margin: 0.16rem 0 0;
   overflow-wrap: anywhere;
@@ -1205,6 +1273,23 @@ body.embedded-split .side-panel-backdrop {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.file-tree-search-label {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+.file-tree-search-path {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(var(--ctp-subtext-rgb), 0.68);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-tree-search-item {
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 .file-tree-kind {
   color: rgba(var(--ctp-subtext-rgb), 0.64);
@@ -8332,6 +8417,9 @@ button.composer-skill-tag:focus-visible {
     height: calc(var(--visual-viewport-height, 100dvh) - 2rem);
     min-height: 28rem;
   }
+  .file-viewer-resize-handle {
+    display: none;
+  }
   .chat { flex-basis: 0; }
   body:not(.side-panel-collapsed) { overflow: hidden; }
   body:not(.side-panel-collapsed) .chat-panel {
@@ -8429,6 +8517,9 @@ button.composer-skill-tag:focus-visible {
     height: var(--visual-viewport-height, 100dvh);
     min-height: 0;
     border-radius: 0;
+  }
+  .file-viewer-resize-handle {
+    display: none;
   }
   .file-viewer-header,
   .file-selection-bar {
