@@ -261,6 +261,7 @@ assert.match(css, /\.message\.toolResult \.message-collapse\[open\] > \.message-
 assert.match(css, /\.tool-output-details\[open\] > \.tool-output-code \{[\s\S]*?max-height:\s*min\(34rem, 52dvh\);[\s\S]*?overflow:\s*auto/, "expanded live tool output should get an internal scrollbar");
 assert.match(css, /\.run-indicator-pulse \{[\s\S]*?animation:\s*run-indicator-pulse/, "active agent run indicator should have an animated pulse");
 assert.match(css, /\.optional-features-box \{[\s\S]*?display:\s*grid/, "optional features should render as a side-panel feature list");
+assert.match(css, /\.optional-feature-section \{[\s\S]*?display:\s*grid[\s\S]*?\.optional-feature-section-list \{[\s\S]*?display:\s*grid/, "optional features should render grouped type subsections");
 assert.match(css, /\.btw-widget \{[\s\S]*?\.btw-widget-composer \{[\s\S]*?\.btw-transfer-action \{[\s\S]*?\.btw-live-widget \.release-npm-output-details\[open\] \.release-npm-terminal \{[\s\S]*?height:\s*clamp/, "/btw should render as a non-blocking release-style output widget with its own input and transfer action");
 assert.match(css, /\.prompt-list-controls \{[\s\S]*?display:\s*grid/, "Queue prompt-list controls should render as a side-panel control group");
 assert.match(css, /\.prompt-list-dialog \{[\s\S]*?width:\s*min\(58rem/, "prompt-list editor dialog should have a wider prompt-friendly layout");
@@ -595,6 +596,8 @@ assert.match(app, /const node = make\("details", "widget todo-widget"\)/, "todo-
 assert.match(app, /Optional feature detection intentionally checks loaded Pi capabilities/, "optional Web UI features should be detected through loaded capabilities, not package folders");
 assert.match(app, /function resetOptionalFeatureAvailability\(\)/, "optional feature state should reset across active-tab and reload boundaries");
 assert.match(app, /function renderOptionalFeaturePanel\(\)/, "side panel should render optional feature installed/enabled state");
+assert.match(app, /const OPTIONAL_FEATURE_SECTIONS = \[[\s\S]*label: "Composer & commands"[\s\S]*label: "Workflows & releases"[\s\S]*label: "Safety & access"[\s\S]*label: "UI widgets & native parity"[\s\S]*label: "Conversation"/, "optional features should be grouped into five type subsections");
+assert.match(app, /function renderOptionalFeatureSection\(section, features\)[\s\S]*optional-feature-section[\s\S]*optional-feature-section-title[\s\S]*optional-feature-section-list/, "optional feature panel should render subsection headers and lists");
 assert.match(app, /function setSidePanelSectionCollapsed\(record, collapsed/, "side panel sections should have explicit collapse/expand behavior");
 assert.match(
   app,

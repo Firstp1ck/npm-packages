@@ -798,6 +798,38 @@ const OPTIONAL_FEATURES = [
   },
 ];
 const OPTIONAL_FEATURE_BY_ID = new Map(OPTIONAL_FEATURES.map((feature) => [feature.id, feature]));
+const OPTIONAL_FEATURE_SECTIONS = [
+  {
+    id: "composer-commands",
+    label: "Composer & commands",
+    description: "Input helpers and lightweight commands that change how prompts and shell actions are launched.",
+    featureIds: ["bangCommandAutocomplete", "fishUserBash", "btwCommand"],
+  },
+  {
+    id: "workflows-releases",
+    label: "Workflows & releases",
+    description: "Guided workflows, task runners, and publishing actions with visible execution state.",
+    featureIds: ["gitWorkflow", "workflows", "releaseNpm", "releaseAur"],
+  },
+  {
+    id: "safety-access",
+    label: "Safety & access",
+    description: "Guardrails and network-facing helpers that affect trust boundaries.",
+    featureIds: ["safetyGuard", "remoteWebui"],
+  },
+  {
+    id: "widgets-native-parity",
+    label: "UI widgets & native parity",
+    description: "Status widgets, dashboards, themes, and browser access to terminal-native controls.",
+    featureIds: ["tuiSkillsCommand", "todoProgressWidget", "tuiToolsCommand", "gitFooterStatus", "statsCommand", "themeBundle"],
+  },
+  {
+    id: "conversation",
+    label: "Conversation",
+    description: "Talk and voice-oriented interaction modes.",
+    featureIds: ["naturalConversation"],
+  },
+];
 const OPTIONAL_COMMAND_FEATURES = new Map([
   ["bang-refresh", "bangCommandAutocomplete"],
   ["bang-status", "bangCommandAutocomplete"],
@@ -19374,81 +19406,118 @@ function renderOptionalFeaturePanel() {
     elements.optionalFeaturesBox.append(notice);
   }
 
-  for (const feature of OPTIONAL_FEATURES) {
-    const detected = isOptionalFeatureDetected(feature.id);
-    const enabled = isOptionalFeatureEnabled(feature.id);
-    const installState = optionalFeatureInstallState(feature.id);
-    const installing = optionalFeatureInstallInProgress.has(feature.id) || optionalFeatureInstallIsActive(installState);
-    const failed = installState?.phase === "failed";
-    const packageStatus = optionalFeaturePackageStatus(feature.id);
-    const status = optionalFeatureStatus(feature.id);
-    const row = make("div", `optional-feature-row ${status.className}`);
-    const tooltip = optionalFeatureTooltip(feature, status);
-    row.dataset.tooltip = tooltip;
-    row.setAttribute("aria-label", tooltip.replace(/\s+/g, " "));
-    row.tabIndex = 0;
-
-    const main = make("div", "optional-feature-main");
-    const title = make("div", "optional-feature-title");
-    title.append(make("strong", undefined, feature.label), make("span", `optional-feature-pill ${status.className}`, status.label));
-    main.append(title);
-    if (status.detail) {
-      const detail = make("div", `optional-feature-detail ${status.className === "failed" ? "error" : ""}`.trim(), status.detail);
-      detail.setAttribute("aria-live", installing ? "polite" : "off");
-      main.append(detail);
-    }
-    if (installing) {
-      const progress = make("div", "optional-feature-progress");
-      progress.setAttribute("aria-hidden", "true");
-      progress.append(make("span"));
-      main.append(progress);
-    }
-    if (status.hint) main.append(make("div", "optional-feature-hint", status.hint));
-    if (status.command) {
-      const command = make("div", "optional-feature-command");
-      command.append(make("code", undefined, status.command));
-      main.append(command);
-    }
-    if (failed && installState?.outputTail) main.append(make("pre", "optional-feature-error-output", installState.outputTail));
-
-    const actions = make("div", "optional-feature-actions");
-    const action = make("button", "optional-feature-action");
-    action.type = "button";
-    action.disabled = installing;
-    if (installing) {
-      action.textContent = installState?.actionLabel === "Update" ? "Updating…" : "Installing…";
-      action.setAttribute("aria-busy", "true");
-    } else if (failed) {
-      const retryAsUpdate = installState?.actionLabel === "Update" || packageStatus?.updateAvailable;
-      action.textContent = "Retry…";
-      action.classList.add(retryAsUpdate ? "update" : "install");
-      action.addEventListener("click", () => installOptionalFeature(feature.id, { update: retryAsUpdate }));
-    } else if (packageStatus?.updateAvailable) {
-      action.textContent = "Update…";
-      action.classList.add("update");
-      action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
-    } else if (detected) {
-      action.textContent = enabled ? "Disable" : "Enable";
-      action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, enabled));
-    } else if (packageStatus?.installed) {
-      action.textContent = "Reload";
-      action.addEventListener("click", () => sendPrompt("prompt", "/reload"));
-    } else {
-      action.textContent = "Install…";
-      action.classList.add("install");
-      action.addEventListener("click", () => installOptionalFeature(feature.id));
-    }
-    actions.append(action);
-    if (status.command) {
-      const copyCommand = make("button", "optional-feature-action copy-command", "Copy cmd");
-      copyCommand.type = "button";
-      copyCommand.addEventListener("click", () => copyOptionalFeatureInstallCommand(feature.id));
-      actions.append(copyCommand);
-    }
-
-    row.append(main, actions);
-    elements.optionalFeaturesBox.append(row);
+  const renderedFeatureIds = new Set();
+  for (const section of OPTIONAL_FEATURE_SECTIONS) {
+    const sectionFeatures = section.featureIds
+      .map((featureId) => OPTIONAL_FEATURE_BY_ID.get(featureId))
+      .filter(Boolean);
+    if (!sectionFeatures.length) continue;
+    for (const feature of sectionFeatures) renderedFeatureIds.add(feature.id);
+    renderOptionalFeatureSection(section, sectionFeatures);
   }
+
+  const uncategorizedFeatures = OPTIONAL_FEATURES.filter((feature) => !renderedFeatureIds.has(feature.id));
+  if (uncategorizedFeatures.length) {
+    renderOptionalFeatureSection({
+      id: "other",
+      label: "Other",
+      description: "Optional companions that have not been assigned to a type section yet.",
+    }, uncategorizedFeatures);
+  }
+}
+
+function renderOptionalFeatureSection(section, features) {
+  const sectionNode = make("section", "optional-feature-section");
+  sectionNode.dataset.optionalFeatureSection = section.id;
+
+  const header = make("div", "optional-feature-section-header");
+  header.append(
+    make("div", "optional-feature-section-title", section.label),
+    make("span", "optional-feature-section-count", String(features.length)),
+  );
+  sectionNode.append(header);
+  if (section.description) sectionNode.append(make("div", "optional-feature-section-description", section.description));
+
+  const list = make("div", "optional-feature-section-list");
+  for (const feature of features) list.append(renderOptionalFeatureRow(feature));
+  sectionNode.append(list);
+  elements.optionalFeaturesBox.append(sectionNode);
+}
+
+function renderOptionalFeatureRow(feature) {
+  const detected = isOptionalFeatureDetected(feature.id);
+  const enabled = isOptionalFeatureEnabled(feature.id);
+  const installState = optionalFeatureInstallState(feature.id);
+  const installing = optionalFeatureInstallInProgress.has(feature.id) || optionalFeatureInstallIsActive(installState);
+  const failed = installState?.phase === "failed";
+  const packageStatus = optionalFeaturePackageStatus(feature.id);
+  const status = optionalFeatureStatus(feature.id);
+  const row = make("div", `optional-feature-row ${status.className}`);
+  const tooltip = optionalFeatureTooltip(feature, status);
+  row.dataset.tooltip = tooltip;
+  row.setAttribute("aria-label", tooltip.replace(/\s+/g, " "));
+  row.tabIndex = 0;
+
+  const main = make("div", "optional-feature-main");
+  const title = make("div", "optional-feature-title");
+  title.append(make("strong", undefined, feature.label), make("span", `optional-feature-pill ${status.className}`, status.label));
+  main.append(title);
+  if (status.detail) {
+    const detail = make("div", `optional-feature-detail ${status.className === "failed" ? "error" : ""}`.trim(), status.detail);
+    detail.setAttribute("aria-live", installing ? "polite" : "off");
+    main.append(detail);
+  }
+  if (installing) {
+    const progress = make("div", "optional-feature-progress");
+    progress.setAttribute("aria-hidden", "true");
+    progress.append(make("span"));
+    main.append(progress);
+  }
+  if (status.hint) main.append(make("div", "optional-feature-hint", status.hint));
+  if (status.command) {
+    const command = make("div", "optional-feature-command");
+    command.append(make("code", undefined, status.command));
+    main.append(command);
+  }
+  if (failed && installState?.outputTail) main.append(make("pre", "optional-feature-error-output", installState.outputTail));
+
+  const actions = make("div", "optional-feature-actions");
+  const action = make("button", "optional-feature-action");
+  action.type = "button";
+  action.disabled = installing;
+  if (installing) {
+    action.textContent = installState?.actionLabel === "Update" ? "Updating…" : "Installing…";
+    action.setAttribute("aria-busy", "true");
+  } else if (failed) {
+    const retryAsUpdate = installState?.actionLabel === "Update" || packageStatus?.updateAvailable;
+    action.textContent = "Retry…";
+    action.classList.add(retryAsUpdate ? "update" : "install");
+    action.addEventListener("click", () => installOptionalFeature(feature.id, { update: retryAsUpdate }));
+  } else if (packageStatus?.updateAvailable) {
+    action.textContent = "Update…";
+    action.classList.add("update");
+    action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
+  } else if (detected) {
+    action.textContent = enabled ? "Disable" : "Enable";
+    action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, enabled));
+  } else if (packageStatus?.installed) {
+    action.textContent = "Reload";
+    action.addEventListener("click", () => sendPrompt("prompt", "/reload"));
+  } else {
+    action.textContent = "Install…";
+    action.classList.add("install");
+    action.addEventListener("click", () => installOptionalFeature(feature.id));
+  }
+  actions.append(action);
+  if (status.command) {
+    const copyCommand = make("button", "optional-feature-action copy-command", "Copy cmd");
+    copyCommand.type = "button";
+    copyCommand.addEventListener("click", () => copyOptionalFeatureInstallCommand(feature.id));
+    actions.append(copyCommand);
+  }
+
+  row.append(main, actions);
+  return row;
 }
 
 function renderOptionalFeatureControls() {

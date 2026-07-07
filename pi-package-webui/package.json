@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-package-webui",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Pi Web UI companion package with a local browser UI CLI plus /webui-start and /webui-status commands.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-webui#readme",
@@ -62,7 +62,7 @@
     "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
     "@firstpick/pi-extension-btw": "^0.1.2",
     "@firstpick/pi-extension-fish-user-bash": "^0.2.1",
-    "@firstpick/pi-extension-git-footer-status": "^0.3.6",
+    "@firstpick/pi-extension-git-footer-status": "^0.3.7",
     "@firstpick/pi-extension-release-aur": "^0.1.7",
     "@firstpick/pi-extension-release-npm": "^0.4.0",
     "@firstpick/pi-extension-safety-guard": "^0.2.3",
