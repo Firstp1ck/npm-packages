@@ -94,6 +94,10 @@ const CLAUDE_USAGE_COMMAND = process.env.PI_WEBUI_CLAUDE_BIN || "claude";
 const CLAUDE_USAGE_ARGS = ["--safe-mode", "--no-session-persistence", "-p", "/usage", "--output-format", "json"];
 const BODY_LIMIT_BYTES = 1024 * 1024;
 const SKILL_FILE_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+const FILE_VIEWER_MAX_BYTES = 2 * 1024 * 1024;
+const FILE_VIEWER_BODY_LIMIT_BYTES = FILE_VIEWER_MAX_BYTES + 64 * 1024;
+const FILE_TREE_MAX_ENTRIES = 1200;
+const FILE_TREE_ENTRY_STAT_CONCURRENCY = 32;
 const PROMPT_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
 const VOICE_AUDIO_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
 const VOICE_AUDIO_JSON_BODY_LIMIT_BYTES = Math.ceil(VOICE_AUDIO_BODY_LIMIT_BYTES * 1.4) + 1024 * 1024;
@@ -5184,6 +5188,7 @@ async function serveStatic(req, res, url) {
 
 function requestBodyLimitForPath(pathname) {
   if (pathname === "/api/attachments") return UPLOAD_BODY_LIMIT_BYTES;
+  if (pathname === "/api/files/content") return FILE_VIEWER_BODY_LIMIT_BYTES;
   if (["/api/prompt", "/api/steer", "/api/follow-up"].includes(pathname)) return PROMPT_BODY_LIMIT_BYTES;
   return BODY_LIMIT_BYTES;
 }
@@ -8094,6 +8099,172 @@ function resolveTabPath(tab, value) {
   return path.isAbsolute(text) ? text : path.resolve(tab?.cwd || options.cwd, text);
 }
 
+async function workspaceRoot(tab) {
+  const root = path.resolve(tab?.cwd || options.cwd);
+  return { root, realRoot: await realpath(root).catch(() => root) };
+}
+
+async function resolveWorkspacePath(tab, value = "", { mustExist = true } = {}) {
+  const { root, realRoot } = await workspaceRoot(tab);
+  const text = String(value || "").trim();
+  if (text.includes("\0")) throw makeHttpError(400, "Path cannot contain null bytes");
+  const targetPath = text ? (path.isAbsolute(text) ? path.resolve(text) : path.resolve(root, text)) : root;
+  if (targetPath !== root && !pathInside(root, targetPath)) throw makeHttpError(403, "Path must stay inside the active tab working directory");
+  let info = null;
+  let realTarget = targetPath;
+  try {
+    info = await stat(targetPath);
+    realTarget = await realpath(targetPath).catch(() => targetPath);
+  } catch (error) {
+    if (mustExist) throw makeHttpError(error?.code === "ENOENT" ? 404 : 400, `Path not found: ${displayPath(targetPath)}`);
+  }
+  if (realTarget !== realRoot && !pathInside(realRoot, realTarget)) throw makeHttpError(403, "Resolved path escapes the active tab working directory");
+  const relative = path.relative(root, targetPath).split(path.sep).join("/");
+  return { root, realRoot, targetPath, realTarget, relative, info };
+}
+
+function fileViewerLanguage(filePath) {
+  const ext = path.extname(String(filePath || "")).toLowerCase();
+  if (ext === ".md" || ext === ".markdown") return "markdown";
+  return "text";
+}
+
+function fileTreeEntryType(dirent, info) {
+  if (info?.isDirectory?.() || dirent?.isDirectory?.()) return "directory";
+  if (info?.isFile?.() || dirent?.isFile?.()) return "file";
+  return dirent?.isSymbolicLink?.() ? "symlink" : "other";
+}
+
+async function statFileTreeEntries(dirPath, dirents, root, realRoot) {
+  const ordered = [...dirents].sort((a, b) => {
+    const aRank = a.isDirectory() ? 0 : a.isFile() ? 1 : 2;
+    const bRank = b.isDirectory() ? 0 : b.isFile() ? 1 : 2;
+    return aRank - bRank || a.name.localeCompare(b.name);
+  });
+  const selected = ordered.slice(0, FILE_TREE_MAX_ENTRIES);
+  const entries = [];
+  let cursor = 0;
+  async function worker() {
+    while (cursor < selected.length) {
+      const dirent = selected[cursor++];
+      const targetPath = path.join(dirPath, dirent.name);
+      const relative = path.relative(root, targetPath).split(path.sep).join("/");
+      try {
+        const [info, realTarget] = await Promise.all([stat(targetPath), realpath(targetPath).catch(() => targetPath)]);
+        const outsideRoot = realTarget !== realRoot && !pathInside(realRoot, realTarget);
+        const type = outsideRoot ? "other" : fileTreeEntryType(dirent, info);
+        entries.push({
+          name: dirent.name,
+          path: relative,
+          type,
+          directory: type === "directory",
+          file: type === "file",
+          symlink: dirent.isSymbolicLink(),
+          outsideRoot,
+          size: info.size,
+          mtimeMs: info.mtimeMs,
+          extension: path.extname(dirent.name).toLowerCase(),
+          canOpenInWebui: type === "file",
+        });
+      } catch (error) {
+        entries.push({ name: dirent.name, path: relative, type: "error", directory: false, file: false, error: sanitizeError(error), canOpenInWebui: false });
+      }
+    }
+  }
+  const workers = Array.from({ length: Math.min(FILE_TREE_ENTRY_STAT_CONCURRENCY, selected.length) }, () => worker());
+  await Promise.all(workers);
+  entries.sort((a, b) => {
+    const aRank = a.type === "directory" ? 0 : a.type === "file" ? 1 : 2;
+    const bRank = b.type === "directory" ? 0 : b.type === "file" ? 1 : 2;
+    return aRank - bRank || a.name.localeCompare(b.name);
+  });
+  return { entries, truncated: ordered.length > selected.length, total: ordered.length };
+}
+
+async function getFileTreeData(tab, requestedPath = "") {
+  const resolved = await resolveWorkspacePath(tab, requestedPath);
+  if (!resolved.info?.isDirectory()) throw makeHttpError(400, "Path is not a directory");
+  const dirents = await readdir(resolved.targetPath, { withFileTypes: true });
+  const listed = await statFileTreeEntries(resolved.targetPath, dirents, resolved.root, resolved.realRoot);
+  return {
+    root: resolved.root,
+    displayRoot: displayPath(resolved.root),
+    path: resolved.relative,
+    displayPath: displayPath(resolved.targetPath),
+    entries: listed.entries,
+    truncated: listed.truncated,
+    total: listed.total,
+  };
+}
+
+function assertTextFileBuffer(buffer) {
+  if (isLikelyBinaryBuffer(buffer)) throw makeHttpError(415, "File appears to be binary; only text files can be opened in WebUI");
+}
+
+async function getFileContentData(tab, requestedPath = "") {
+  const resolved = await resolveWorkspacePath(tab, requestedPath);
+  if (!resolved.info?.isFile()) throw makeHttpError(400, "Path is not a regular file");
+  if (resolved.info.size > FILE_VIEWER_MAX_BYTES) throw makeHttpError(413, `File is too large to open in WebUI (limit ${formatBytes(FILE_VIEWER_MAX_BYTES)})`);
+  const buffer = await readFile(resolved.targetPath);
+  assertTextFileBuffer(buffer);
+  return {
+    root: resolved.root,
+    path: resolved.relative,
+    name: path.basename(resolved.targetPath),
+    content: buffer.toString("utf8"),
+    size: resolved.info.size,
+    mtimeMs: resolved.info.mtimeMs,
+    extension: path.extname(resolved.targetPath).toLowerCase(),
+    language: fileViewerLanguage(resolved.targetPath),
+  };
+}
+
+async function saveFileContentData(tab, body = {}) {
+  if (typeof body.content !== "string") throw makeHttpError(400, "File content must be a string");
+  if (body.content.includes("\0")) throw makeHttpError(400, "File content cannot contain null bytes");
+  if (Buffer.byteLength(body.content, "utf8") > FILE_VIEWER_MAX_BYTES) throw makeHttpError(413, `File is too large to save in WebUI (limit ${formatBytes(FILE_VIEWER_MAX_BYTES)})`);
+  const resolved = await resolveWorkspacePath(tab, body.path || body.filePath || "");
+  if (!resolved.info?.isFile()) throw makeHttpError(400, "Path is not a regular file");
+  if (resolved.info.size > FILE_VIEWER_MAX_BYTES) throw makeHttpError(413, `File is too large to save in WebUI (limit ${formatBytes(FILE_VIEWER_MAX_BYTES)})`);
+  assertTextFileBuffer(await readFile(resolved.targetPath));
+  const expectedMtimeMs = Number(body.mtimeMs);
+  if (Number.isFinite(expectedMtimeMs) && Math.abs(resolved.info.mtimeMs - expectedMtimeMs) > 5) {
+    throw makeHttpError(409, "File changed on disk after it was opened. Reopen it before saving.");
+  }
+  const tmpFile = `${resolved.targetPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tmpFile, body.content, { encoding: "utf8", mode: resolved.info.mode & 0o777 });
+    await rename(tmpFile, resolved.targetPath);
+  } catch (error) {
+    await rm(tmpFile, { force: true }).catch(() => {});
+    throw error;
+  }
+  const nextStats = await stat(resolved.targetPath);
+  return {
+    path: resolved.relative,
+    name: path.basename(resolved.targetPath),
+    size: nextStats.size,
+    mtimeMs: nextStats.mtimeMs,
+    extension: path.extname(resolved.targetPath).toLowerCase(),
+    language: fileViewerLanguage(resolved.targetPath),
+  };
+}
+
+function defaultEditorCommand(targetPath) {
+  if (platform() === "win32") return { command: "cmd", args: ["/c", "start", "", targetPath] };
+  if (platform() === "darwin") return { command: "open", args: [targetPath] };
+  return { command: process.env.PI_WEBUI_OPEN_COMMAND || "xdg-open", args: [targetPath] };
+}
+
+async function openPathInDefaultEditor(tab, requestedPath = "") {
+  const resolved = await resolveWorkspacePath(tab, requestedPath);
+  const { command, args } = defaultEditorCommand(resolved.targetPath);
+  const child = spawn(command, args, { cwd: resolved.root, stdio: "ignore", detached: true, windowsHide: true });
+  child.on("error", () => {});
+  child.unref?.();
+  return { path: resolved.relative, command: [command, ...args].join(" ") };
+}
+
 function configuredSessionDir() {
   for (let index = 0; index < options.piArgs.length; index++) {
     const arg = options.piArgs[index];
@@ -9452,6 +9623,35 @@ const server = createServer(async (req, res) => {
       ensureNaturalConversationRouteAllowed(tab, "path fast-pick changes are blocked");
       const picks = await writePathFastPicks(body.picks ?? body);
       sendJson(res, 200, { ok: true, data: { picks } });
+      return;
+    }
+
+    if (url.pathname === "/api/files" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await getFileTreeData(tab, url.searchParams.get("path") || "") });
+      return;
+    }
+
+    if (url.pathname === "/api/files/content" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await getFileContentData(tab, url.searchParams.get("path") || "") });
+      return;
+    }
+
+    if (url.pathname === "/api/files/content" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
+      const tab = getRequestedTab(req, url, body);
+      if (isNaturalConversationActive(tab)) throw makeHttpError(409, "file edits are blocked");
+      sendJson(res, 200, { ok: true, data: await saveFileContentData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/files/open-default" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await openPathInDefaultEditor(tab, body.path || body.filePath || "") });
       return;
     }
 

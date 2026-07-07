@@ -177,6 +177,27 @@ const elements = {
   refreshCodexUsageButton: $("#refreshCodexUsageButton"),
   claudeUsageBox: $("#claudeUsageBox"),
   refreshClaudeUsageButton: $("#refreshClaudeUsageButton"),
+  fileTreeCwd: $("#fileTreeCwd"),
+  fileTreeRoot: $("#fileTreeRoot"),
+  fileTreeStatus: $("#fileTreeStatus"),
+  fileTreeRefreshButton: $("#fileTreeRefreshButton"),
+  fileViewerPane: $("#fileViewerPane"),
+  fileViewerTitle: $("#fileViewerTitle"),
+  fileViewerMeta: $("#fileViewerMeta"),
+  fileViewerOpenDefaultButton: $("#fileViewerOpenDefaultButton"),
+  fileViewerSaveButton: $("#fileViewerSaveButton"),
+  fileViewerCloseButton: $("#fileViewerCloseButton"),
+  fileViewerHelp: $("#fileViewerHelp"),
+  fileViewerSourceModeButton: $("#fileViewerSourceModeButton"),
+  fileViewerPreviewModeButton: $("#fileViewerPreviewModeButton"),
+  fileViewerEditor: $("#fileViewerEditor"),
+  fileViewerPreview: $("#fileViewerPreview"),
+  fileViewerStatus: $("#fileViewerStatus"),
+  fileSelectionBar: $("#fileSelectionBar"),
+  fileSelectionSummary: $("#fileSelectionSummary"),
+  fileSelectionCommentInput: $("#fileSelectionCommentInput"),
+  fileSelectionSendButton: $("#fileSelectionSendButton"),
+  fileContextMenu: $("#fileContextMenu"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
   sidePanelBackdrop: $("#sidePanelBackdrop"),
@@ -273,6 +294,10 @@ let tabDrafts = new Map();
 let tabAttachments = new Map();
 let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
+let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0 };
+let activeFileViewer = null;
+let fileViewerSelection = null;
+let fileContextMenuState = null;
 let tabActivities = new Map();
 let tabSeenCompletionSerials = new Map();
 let streamBubble = null;
@@ -533,6 +558,8 @@ const LAST_USER_PROMPT_STORAGE_KEY = "pi-webui-last-user-prompts";
 const PROMPT_HISTORY_STORAGE_KEY = "pi-webui-prompt-history";
 const PROMPT_LIST_STORAGE_KEY = "pi-webui-prompt-lists";
 const WORKSPACE_DASHBOARD_STORAGE_KEY = "pi-webui-workspace-dashboard-collapsed";
+const FILE_VIEWER_CONTEXT_RADIUS_LINES = 6;
+const FILE_TREE_ROOT_PATH = "";
 const POINTER_ACTIVATION_SELECTOR = "button, a[href], input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])";
 const POINTER_ACTIVATION_RENDER_DEFER_MAX_MS = 1200;
 const PROMPT_HISTORY_LIMIT_PER_TAB = 50;
@@ -5326,6 +5353,457 @@ function isCurrentTabContext(context) {
   return !!context && context.tabId === activeTabId && context.generation === activeTabGeneration;
 }
 
+function normalizeFileTreePath(value = "") {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "").replace(/\/+$/g, "");
+}
+
+function fileApiPath(basePath, filePath = "") {
+  const path = normalizeFileTreePath(filePath);
+  if (!path) return basePath;
+  const params = new URLSearchParams({ path });
+  return `${basePath}?${params.toString()}`;
+}
+
+function fileParentPath(filePath = "") {
+  const normalized = normalizeFileTreePath(filePath);
+  const index = normalized.lastIndexOf("/");
+  return index === -1 ? FILE_TREE_ROOT_PATH : normalized.slice(0, index);
+}
+
+function fileDisplayName(path = "") {
+  const normalized = normalizeFileTreePath(path);
+  return normalized ? normalized.split("/").pop() || normalized : ".";
+}
+
+function fileEntryIcon(entry = {}) {
+  if (entry.type === "directory") return "▸";
+  if (entry.type === "file") return entry.extension === ".md" || entry.extension === ".markdown" ? "Md" : "TXT";
+  if (entry.type === "error") return "!";
+  return "·";
+}
+
+function setFileTreeStatus(message = "", level = "muted") {
+  if (!elements.fileTreeStatus) return;
+  elements.fileTreeStatus.textContent = message;
+  elements.fileTreeStatus.className = `file-tree-status ${level || "muted"}`;
+}
+
+function setFileViewerStatus(message = "", level = "muted") {
+  if (!elements.fileViewerStatus) return;
+  elements.fileViewerStatus.textContent = message;
+  elements.fileViewerStatus.className = `file-viewer-status ${level || "muted"}`;
+}
+
+function resetFileTreeState() {
+  fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: fileTreeState.requestSerial + 1 };
+  renderFileTree();
+}
+
+function fileEntryByPath(filePath = "") {
+  const normalized = normalizeFileTreePath(filePath);
+  if (!normalized) return { name: ".", path: "", type: "directory", directory: true };
+  for (const entries of fileTreeState.entriesByPath.values()) {
+    const found = entries.find((entry) => normalizeFileTreePath(entry.path) === normalized);
+    if (found) return found;
+  }
+  return null;
+}
+
+function renderFileTree() {
+  const root = elements.fileTreeRoot;
+  if (!root) return;
+  root.replaceChildren();
+  if (elements.fileTreeCwd) elements.fileTreeCwd.textContent = fileTreeState.root || latestWorkspace?.displayCwd || activeTab()?.cwd || "";
+  const entries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
+  if (!entries.length) {
+    root.append(make("div", "file-tree-empty muted", fileTreeState.loading.has(FILE_TREE_ROOT_PATH) ? "Loading files…" : "No files loaded."));
+    return;
+  }
+  const list = make("ul", "file-tree-list root");
+  list.setAttribute("role", "group");
+  for (const entry of entries) appendFileTreeEntry(list, entry, 0);
+  root.append(list);
+}
+
+function appendFileTreeEntry(parent, entry, depth = 0) {
+  const path = normalizeFileTreePath(entry.path);
+  const isDirectory = entry.type === "directory" || entry.directory === true;
+  const expanded = isDirectory && fileTreeState.expanded.has(path);
+  const loading = isDirectory && fileTreeState.loading.has(path);
+  const item = make("li", `file-tree-node ${entry.type || "file"}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  item.setAttribute("role", "none");
+  const button = make("button", "file-tree-item");
+  button.type = "button";
+  button.dataset.path = path;
+  button.dataset.type = entry.type || "file";
+  button.style.setProperty("--file-tree-depth", String(depth));
+  button.setAttribute("role", "treeitem");
+  if (isDirectory) button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  button.title = [path || ".", entry.error || ""].filter(Boolean).join("\n");
+  button.append(
+    make("span", `file-tree-icon ${isDirectory && expanded ? "expanded" : ""}`, loading ? "…" : fileEntryIcon(entry)),
+    make("span", "file-tree-name", entry.name || fileDisplayName(path)),
+  );
+  if (entry.type === "file") button.append(make("span", "file-tree-kind", entry.extension || "file"));
+  if (entry.error) button.append(make("span", "file-tree-error", entry.error));
+  button.addEventListener("click", () => {
+    fileTreeState.selectedPath = path;
+    if (isDirectory) toggleFileTreeDirectory(path);
+    else renderFileTree();
+  });
+  button.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    if (isDirectory) toggleFileTreeDirectory(path, { force: true });
+    else openFileInViewer(path);
+  });
+  button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
+  item.append(button);
+  if (isDirectory && expanded) {
+    const children = fileTreeState.entriesByPath.get(path) || [];
+    const childList = make("ul", "file-tree-list");
+    childList.setAttribute("role", "group");
+    if (loading) childList.append(make("li", "file-tree-loading muted", "Loading…"));
+    else if (!children.length) childList.append(make("li", "file-tree-empty muted", "Empty"));
+    else for (const child of children) appendFileTreeEntry(childList, child, depth + 1);
+    item.append(childList);
+  }
+  parent.append(item);
+}
+
+async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false } = {}) {
+  const normalized = normalizeFileTreePath(path);
+  if (!force && fileTreeState.entriesByPath.has(normalized)) return fileTreeState.entriesByPath.get(normalized);
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId || fileTreeState.loading.has(normalized)) return [];
+  const serial = ++fileTreeState.requestSerial;
+  fileTreeState.loading.add(normalized);
+  setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
+  renderFileTree();
+  try {
+    const response = await api(fileApiPath("/api/files", normalized), { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext) || serial < fileTreeState.requestSerial) return [];
+    const data = response.data || {};
+    if (!normalized && data.root && data.root !== fileTreeState.root) {
+      fileTreeState.root = data.root;
+      fileTreeState.entriesByPath.clear();
+      fileTreeState.expanded.clear();
+    }
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    fileTreeState.entriesByPath.set(normalized, entries);
+    setFileTreeStatus(data.truncated ? `Showing ${entries.length} of ${data.total || entries.length} entries.` : `${entries.length} item${entries.length === 1 ? "" : "s"}.`);
+    return entries;
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      setFileTreeStatus(error.message || String(error), "error");
+      addEvent(`file tree failed: ${error.message || String(error)}`, "error");
+    }
+    return [];
+  } finally {
+    fileTreeState.loading.delete(normalized);
+    if (isCurrentTabContext(tabContext)) renderFileTree();
+  }
+}
+
+async function refreshFileTreeRoot(tabContext = activeTabContext()) {
+  if (!tabContext.tabId || !elements.fileTreeRoot) return;
+  if (!isCurrentTabContext(tabContext)) return;
+  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
+}
+
+async function toggleFileTreeDirectory(path = "", { force = false } = {}) {
+  const normalized = normalizeFileTreePath(path);
+  if (!normalized && normalized !== FILE_TREE_ROOT_PATH) return;
+  const currentlyExpanded = fileTreeState.expanded.has(normalized);
+  if (currentlyExpanded && !force) {
+    fileTreeState.expanded.delete(normalized);
+    renderFileTree();
+    return;
+  }
+  fileTreeState.expanded.add(normalized);
+  renderFileTree();
+  await loadFileTreeDirectory(normalized);
+}
+
+function closeFileContextMenu() {
+  fileContextMenuState = null;
+  if (elements.fileContextMenu) elements.fileContextMenu.hidden = true;
+}
+
+function showFileContextMenu(event, entry) {
+  if (!elements.fileContextMenu) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const path = normalizeFileTreePath(entry?.path || "");
+  fileContextMenuState = { entry: { ...entry, path } };
+  const menu = elements.fileContextMenu;
+  const webui = menu.querySelector('[data-file-menu-action="open-webui"]');
+  if (webui) webui.textContent = entry?.type === "directory" ? "Open in WebUI" : "Open in WebUI";
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, Math.max(0, window.innerWidth - rect.width - 8));
+  const top = Math.min(event.clientY, Math.max(0, window.innerHeight - rect.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+async function openPathInDefaultEditor(path = activeFileViewer?.path || "") {
+  const normalized = normalizeFileTreePath(path);
+  if (!normalized && normalized !== FILE_TREE_ROOT_PATH) return;
+  const tabContext = activeTabContext();
+  try {
+    const response = await api("/api/files/open-default", { method: "POST", body: { path: normalized }, tabId: tabContext.tabId });
+    if (isCurrentTabContext(tabContext)) addEvent(`opened ${response.data?.path || normalized || "."} in the default editor`, "info");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+  }
+}
+
+async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
+  if (!entry) return;
+  const path = normalizeFileTreePath(entry.path || "");
+  if (entry.type === "directory" || entry.directory === true) {
+    fileTreeState.expanded.add(path);
+    await loadFileTreeDirectory(path);
+    return;
+  }
+  await openFileInViewer(path);
+}
+
+function setFileViewerMode(mode = "source") {
+  if (!activeFileViewer) return;
+  const nextMode = mode === "preview" && activeFileViewer.language === "markdown" ? "preview" : "source";
+  activeFileViewer.mode = nextMode;
+  updateFileViewerUi();
+}
+
+function setFileViewerDirty(dirty) {
+  if (!activeFileViewer) return;
+  activeFileViewer.dirty = !!dirty;
+  if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = !activeFileViewer.dirty;
+  if (activeFileViewer.dirty) setFileViewerStatus("Unsaved file edits.", "warn");
+}
+
+function updateFileViewerUi() {
+  const open = !!activeFileViewer;
+  document.body.classList.toggle("file-viewer-open", open);
+  if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
+  if (!open) return;
+  const viewer = activeFileViewer;
+  const isMarkdown = viewer.language === "markdown";
+  const mode = viewer.mode === "preview" && isMarkdown ? "preview" : "source";
+  viewer.mode = mode;
+  if (elements.fileViewerTitle) elements.fileViewerTitle.textContent = viewer.name || fileDisplayName(viewer.path);
+  if (elements.fileViewerMeta) {
+    const lineCount = textLineCount(viewer.content || "");
+    elements.fileViewerMeta.textContent = [viewer.path, formatBytes(viewer.size), `${lineCount} ${lineCount === 1 ? "line" : "lines"}`].filter(Boolean).join(" · ");
+  }
+  if (elements.fileViewerSourceModeButton) {
+    elements.fileViewerSourceModeButton.setAttribute("aria-pressed", mode === "source" ? "true" : "false");
+    elements.fileViewerSourceModeButton.classList.toggle("active", mode === "source");
+  }
+  if (elements.fileViewerPreviewModeButton) {
+    elements.fileViewerPreviewModeButton.hidden = !isMarkdown;
+    elements.fileViewerPreviewModeButton.disabled = !isMarkdown;
+    elements.fileViewerPreviewModeButton.setAttribute("aria-pressed", mode === "preview" ? "true" : "false");
+    elements.fileViewerPreviewModeButton.classList.toggle("active", mode === "preview");
+  }
+  if (elements.fileViewerEditor) {
+    elements.fileViewerEditor.hidden = mode !== "source";
+    if (elements.fileViewerEditor.value !== viewer.content) elements.fileViewerEditor.value = viewer.content || "";
+  }
+  if (elements.fileViewerPreview) {
+    elements.fileViewerPreview.hidden = mode !== "preview";
+    if (mode === "preview") renderMarkdown(elements.fileViewerPreview, viewer.content || "");
+  }
+  if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = !viewer.dirty;
+  if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.disabled = !viewer.path;
+  renderFileViewerSelectionBar();
+}
+
+function clearFileViewerSelection() {
+  fileViewerSelection = null;
+  renderFileViewerSelectionBar();
+}
+
+function selectedTextFromEditor() {
+  const editor = elements.fileViewerEditor;
+  if (!editor || editor.hidden || !activeFileViewer) return null;
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return { start, end, text: editor.value.slice(start, end) };
+}
+
+function lineColumnForOffset(text, offset) {
+  const prefix = String(text || "").slice(0, Math.max(0, offset));
+  const lines = prefix.split("\n");
+  return { line: lines.length, column: (lines.at(-1) || "").length + 1 };
+}
+
+function fileSelectionLineRange(text, start, end) {
+  const startPos = lineColumnForOffset(text, start);
+  const endPos = lineColumnForOffset(text, end);
+  return { startLine: startPos.line, endLine: endPos.line, startColumn: startPos.column, endColumn: endPos.column };
+}
+
+function fileSelectionContext(text, start, end, radius = FILE_VIEWER_CONTEXT_RADIUS_LINES) {
+  const value = String(text || "");
+  const lines = value.split("\n");
+  const range = fileSelectionLineRange(value, start, end);
+  const fromLine = Math.max(1, range.startLine - radius);
+  const toLine = Math.min(lines.length, range.endLine + radius);
+  const contextLines = [];
+  for (let line = fromLine; line <= toLine; line += 1) {
+    contextLines.push(`${String(line).padStart(4, " ")}: ${lines[line - 1] || ""}`);
+  }
+  return { ...range, fromLine, toLine, context: contextLines.join("\n") };
+}
+
+function updateFileViewerSelectionFromEditor() {
+  if (!activeFileViewer) return;
+  const selected = selectedTextFromEditor();
+  if (!selected || !selected.text.trim()) {
+    clearFileViewerSelection();
+    return;
+  }
+  const context = fileSelectionContext(elements.fileViewerEditor.value || "", selected.start, selected.end);
+  fileViewerSelection = { ...context, ...selected, path: activeFileViewer.path, fileName: activeFileViewer.name };
+  renderFileViewerSelectionBar();
+}
+
+function updateFileViewerSelectionFromPreview() {
+  if (!activeFileViewer || elements.fileViewerPreview?.hidden) return;
+  const selection = window.getSelection?.();
+  const preview = elements.fileViewerPreview;
+  if (!preview || !selection?.anchorNode || !selection?.focusNode || !preview.contains(selection.anchorNode) || !preview.contains(selection.focusNode)) return;
+  const text = String(selection.toString?.() || "").trim();
+  if (!text) {
+    clearFileViewerSelection();
+    return;
+  }
+  const content = activeFileViewer.content || "";
+  const start = Math.max(0, content.indexOf(text));
+  const end = start >= 0 ? start + text.length : start;
+  const context = start >= 0
+    ? fileSelectionContext(content, start, end)
+    : { startLine: 1, endLine: textLineCount(content), startColumn: 1, endColumn: 1, fromLine: 1, toLine: textLineCount(content), context: content.slice(0, 4000) };
+  fileViewerSelection = { ...context, start, end, text, path: activeFileViewer.path, fileName: activeFileViewer.name };
+  renderFileViewerSelectionBar();
+}
+
+function renderFileViewerSelectionBar() {
+  if (!elements.fileSelectionBar) return;
+  const hasSelection = !!fileViewerSelection?.text;
+  elements.fileSelectionBar.hidden = !hasSelection;
+  if (!hasSelection) return;
+  const lineLabel = fileViewerSelection.startLine === fileViewerSelection.endLine
+    ? `line ${fileViewerSelection.startLine}`
+    : `lines ${fileViewerSelection.startLine}-${fileViewerSelection.endLine}`;
+  if (elements.fileSelectionSummary) elements.fileSelectionSummary.textContent = `${lineLabel} · ${fileViewerSelection.text.length} chars selected`;
+}
+
+function fileSelectionPrompt() {
+  if (!activeFileViewer || !fileViewerSelection?.text) return "";
+  const comment = (elements.fileSelectionCommentInput?.value || "").trim();
+  const selection = fileViewerSelection;
+  const range = selection.startLine === selection.endLine
+    ? `line ${selection.startLine}, columns ${selection.startColumn}-${selection.endColumn}`
+    : `lines ${selection.startLine}-${selection.endLine}`;
+  return [
+    `File selection from ${activeFileViewer.path} (${range}).`,
+    comment ? `User comment: ${comment}` : "User comment: <none>",
+    "",
+    "Selected text:",
+    "```",
+    selection.text,
+    "```",
+    "",
+    `Surrounding context (${selection.fromLine}-${selection.toLine}):`,
+    "```",
+    selection.context || selection.text,
+    "```",
+  ].join("\n");
+}
+
+async function sendFileSelectionToSession() {
+  const prompt = fileSelectionPrompt();
+  if (!prompt) return;
+  if (elements.fileSelectionSendButton) elements.fileSelectionSendButton.disabled = true;
+  try {
+    await sendPrompt("prompt", prompt, { targetTabId: activeTabId, throwOnError: true });
+    if (elements.fileSelectionCommentInput) elements.fileSelectionCommentInput.value = "";
+    setFileViewerStatus("Selection sent to the current Pi session.", "success");
+  } catch (error) {
+    setFileViewerStatus(error.message || String(error), "error");
+  } finally {
+    if (elements.fileSelectionSendButton) elements.fileSelectionSendButton.disabled = false;
+  }
+}
+
+function closeFileViewer() {
+  activeFileViewer = null;
+  clearFileViewerSelection();
+  document.body.classList.remove("file-viewer-open");
+  if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
+  if (elements.fileViewerEditor) elements.fileViewerEditor.value = "";
+  if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
+  setFileViewerStatus("");
+}
+
+async function openFileInViewer(path = "") {
+  const normalized = normalizeFileTreePath(path);
+  if (!normalized) return;
+  const tabContext = activeTabContext();
+  fileTreeState.selectedPath = normalized;
+  renderFileTree();
+  setFileViewerStatus(`Opening ${normalized}…`);
+  try {
+    const response = await api(fileApiPath("/api/files/content", normalized), { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const data = response.data || {};
+    activeFileViewer = {
+      path: normalizeFileTreePath(data.path || normalized),
+      name: data.name || fileDisplayName(normalized),
+      content: String(data.content || ""),
+      size: Number(data.size) || 0,
+      mtimeMs: Number(data.mtimeMs) || 0,
+      extension: data.extension || "",
+      language: data.language || "text",
+      mode: data.language === "markdown" ? "preview" : "source",
+      dirty: false,
+    };
+    if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
+    clearFileViewerSelection();
+    updateFileViewerUi();
+    setFileViewerStatus("Opened in WebUI.", "success");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      setFileViewerStatus(error.message || String(error), "error");
+      addEvent(`file open failed: ${error.message || String(error)}`, "error");
+    }
+  }
+}
+
+async function saveActiveFileViewer() {
+  if (!activeFileViewer || !elements.fileViewerEditor) return;
+  const tabContext = activeTabContext();
+  const content = elements.fileViewerEditor.value || "";
+  if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = true;
+  setFileViewerStatus(`Saving ${activeFileViewer.path}…`);
+  try {
+    const response = await api("/api/files/content", { method: "POST", body: { path: activeFileViewer.path, content, mtimeMs: activeFileViewer.mtimeMs }, tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const data = response.data || {};
+    activeFileViewer = { ...activeFileViewer, ...data, path: normalizeFileTreePath(data.path || activeFileViewer.path), content, dirty: false };
+    updateFileViewerUi();
+    await loadFileTreeDirectory(fileParentPath(activeFileViewer.path), { force: true });
+    setFileViewerStatus("Saved.", "success");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) setFileViewerStatus(error.message || String(error), "error");
+    if (activeFileViewer && elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = false;
+  }
+}
+
 function eventTargetsActiveTab(event) {
   return !event?.tabId || event.tabId === activeTabId;
 }
@@ -5785,6 +6263,8 @@ function resetActiveTabUi() {
   latestWorkspace = null;
   latestMessages = [];
   latestMessagesSessionKey = "";
+  closeFileViewer();
+  resetFileTreeState();
   clearRunIndicatorActivity({ render: false });
   statusEntries.clear();
   restoreWidgetsForActiveTab();
@@ -21482,6 +21962,7 @@ async function refreshAll(tabContext = activeTabContext()) {
     refreshNaturalConversationMode(tabContext),
     refreshStats(tabContext),
     refreshWorkspace(tabContext),
+    refreshFileTreeRoot(tabContext),
     refreshAppRunners(tabContext),
     refreshNativeSettings(tabContext),
     refreshNetworkStatus(),
@@ -22244,10 +22725,13 @@ function handleEvent(event) {
     case "webui_cwd_changed":
       addEvent(`${event.tabTitle || "terminal"} cwd changed to ${event.cwd}`);
       setAppRunnerData(event.tabId || activeTabId, { cwd: event.cwd, activeRun: null, runners: [] });
+      closeFileViewer();
+      resetFileTreeState();
       renderAppRunnerControls();
       renderWidgets();
       renderTabs();
       refreshTabs().catch((error) => addEvent(error.message, "error"));
+      refreshFileTreeRoot(tabContext).catch((error) => addEvent(error.message, "error"));
       refreshAppRunners(tabContext).catch((error) => addEvent(error.message, "error"));
       scheduleRefreshFooter();
       break;
@@ -23309,6 +23793,9 @@ document.addEventListener("pointerdown", (event) => {
     setFooterThinkingPickerOpen(false);
     setFooterBranchPickerOpen(false);
   }
+  if (elements.fileContextMenu && !elements.fileContextMenu.hidden && !event.target?.closest?.(".file-context-menu")) {
+    closeFileContextMenu();
+  }
 }, { passive: true });
 document.addEventListener("pointermove", (event) => {
   if (openTerminalTabGroupKey && !event.target?.closest?.(".terminal-tab-group")) {
@@ -23632,6 +24119,49 @@ elements.refreshCodexUsageButton?.addEventListener("click", () => {
 });
 elements.refreshClaudeUsageButton?.addEventListener("click", () => {
   refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
+});
+elements.fileTreeRefreshButton?.addEventListener("click", () => refreshFileTreeRoot().catch((error) => addEvent(error.message || String(error), "error")));
+elements.fileContextMenu?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-file-menu-action]");
+  if (!button) return;
+  const entry = fileContextMenuState?.entry;
+  closeFileContextMenu();
+  if (!entry) return;
+  const action = button.dataset.fileMenuAction || "";
+  if (action === "open-default") openPathInDefaultEditor(entry.path).catch((error) => addEvent(error.message || String(error), "error"));
+  else if (action === "open-webui") openFileTreeEntryInWebui(entry).catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(activeFileViewer?.path || ""));
+elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
+elements.fileViewerCloseButton?.addEventListener("click", closeFileViewer);
+elements.fileViewerSourceModeButton?.addEventListener("click", () => setFileViewerMode("source"));
+elements.fileViewerPreviewModeButton?.addEventListener("click", () => setFileViewerMode("preview"));
+elements.fileViewerEditor?.addEventListener("input", () => {
+  if (!activeFileViewer) return;
+  activeFileViewer.content = elements.fileViewerEditor.value || "";
+  activeFileViewer.size = new Blob([activeFileViewer.content]).size;
+  setFileViewerDirty(true);
+  updateFileViewerSelectionFromEditor();
+});
+for (const eventName of ["select", "keyup", "mouseup"]) {
+  elements.fileViewerEditor?.addEventListener(eventName, updateFileViewerSelectionFromEditor);
+}
+elements.fileViewerEditor?.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "s") return;
+  event.preventDefault();
+  if (!elements.fileViewerSaveButton?.disabled) saveActiveFileViewer();
+});
+for (const eventName of ["keyup", "mouseup"]) {
+  elements.fileViewerPreview?.addEventListener(eventName, () => setTimeout(updateFileViewerSelectionFromPreview, 0));
+}
+document.addEventListener("selectionchange", () => {
+  if (activeFileViewer && elements.fileViewerPreview && !elements.fileViewerPreview.hidden) updateFileViewerSelectionFromPreview();
+});
+elements.fileSelectionSendButton?.addEventListener("click", () => sendFileSelectionToSession());
+elements.fileSelectionCommentInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  sendFileSelectionToSession();
 });
 elements.pathPickerCreateNameInput.addEventListener("input", updateCreateDirectoryControls);
 elements.pathPickerCreateNameInput.addEventListener("keydown", (event) => {

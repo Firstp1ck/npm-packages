@@ -18,6 +18,8 @@ export const LOCALHOST_ONLY_POST_ROUTES = new Map([
   ["/api/shutdown", "Shutdown is only allowed from localhost"],
   ["/api/optional-feature-install", "Installing optional Web UI features is only allowed from localhost"],
   ["/api/skill-file", "Saving skill files is only allowed from localhost"],
+  ["/api/files/content", "Saving files from the Web UI is only allowed from localhost"],
+  ["/api/files/open-default", "Opening files in the default editor is only allowed from localhost"],
   ["/api/session-delete", "Deleting sessions is only allowed from localhost"],
   ["/api/auth-logout", "Removing stored provider credentials is only allowed from localhost"],
 ]);

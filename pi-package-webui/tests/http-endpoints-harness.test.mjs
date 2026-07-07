@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -694,6 +694,82 @@ try {
   assert.equal(copy.body?.data?.status, "succeeded", "native /copy should succeed through the adapter");
   assert.equal(copy.body?.data?.copyText, "fake last text");
 
+  // File tree/viewer APIs stay scoped to the requested tab cwd and reject unsafe content.
+  const filesRoot = path.join(cwd, "files-fixture");
+  const viewerRelative = "files-fixture/viewer.txt";
+  const markdownRelative = "files-fixture/docs/readme.md";
+  const binaryRelative = "files-fixture/binary.bin";
+  const largeRelative = "files-fixture/large.txt";
+  await mkdir(path.join(filesRoot, "docs"), { recursive: true });
+  await writeFile(path.join(cwd, viewerRelative), "hello file viewer\nsecond line\n", "utf8");
+  await writeFile(path.join(cwd, markdownRelative), "# File Viewer\n\nMarkdown preview support.\n", "utf8");
+  await writeFile(path.join(cwd, binaryRelative), Buffer.from([0, 1, 2, 3]));
+  await writeFile(path.join(cwd, largeRelative), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
+
+  const fileTree = await request("127.0.0.1", `/api/files?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent("files-fixture")}`);
+  assert.equal(fileTree.status, 200, `file tree endpoint should list workspace directories: ${fileTree.body?.error || ""}`);
+  assert.equal(fileTree.body?.ok, true);
+  const fileTreeEntries = fileTree.body?.data?.entries || [];
+  assert.equal(fileTreeEntries.find((entry) => entry.name === "docs")?.type, "directory", "file tree should identify subdirectories");
+  assert.equal(fileTreeEntries.find((entry) => entry.name === "viewer.txt")?.type, "file", "file tree should identify regular files");
+
+  const textContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(viewerRelative)}`);
+  assert.equal(textContent.status, 200, `text file should open in WebUI: ${textContent.body?.error || ""}`);
+  assert.equal(textContent.body?.data?.content, "hello file viewer\nsecond line\n");
+  assert.equal(textContent.body?.data?.language, "text");
+
+  const markdownContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(markdownRelative)}`);
+  assert.equal(markdownContent.status, 200, `markdown file should open in WebUI: ${markdownContent.body?.error || ""}`);
+  assert.equal(markdownContent.body?.data?.language, "markdown", "markdown files should get markdown viewer support metadata");
+
+  const savedFile = await request("127.0.0.1", "/api/files/content", {
+    method: "POST",
+    body: { tab: tabId, path: viewerRelative, content: "updated from WebUI\n", mtimeMs: textContent.body?.data?.mtimeMs },
+  });
+  assert.equal(savedFile.status, 200, `file save should succeed from localhost: ${savedFile.body?.error || ""}`);
+  assert.equal(await readFile(path.join(cwd, viewerRelative), "utf8"), "updated from WebUI\n", "file save endpoint should write UTF-8 text content");
+
+  const binaryContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(binaryRelative)}`);
+  assert.equal(binaryContent.status, 415, "binary files should be rejected by the WebUI file viewer");
+  assert.match(String(binaryContent.body?.error || ""), /binary/i);
+
+  const oversizedContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(largeRelative)}`);
+  assert.equal(oversizedContent.status, 413, "oversized files should be rejected by the WebUI file viewer");
+  assert.match(String(oversizedContent.body?.error || ""), /too large/i);
+
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-files-outside-"));
+  try {
+    const outsideFile = path.join(outsideRoot, "outside.txt");
+    await writeFile(outsideFile, "outside\n", "utf8");
+    const outsideAbsolute = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(outsideFile)}`);
+    assert.equal(outsideAbsolute.status, 403, "absolute paths outside the active tab cwd should be rejected");
+    assert.match(String(outsideAbsolute.body?.error || ""), /active tab working directory/i);
+
+    const symlinkPath = path.join(filesRoot, "outside-link.txt");
+    try {
+      await symlink(outsideFile, symlinkPath);
+      const symlinkEscape = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent("files-fixture/outside-link.txt")}`);
+      assert.equal(symlinkEscape.status, 403, "symlinks resolving outside the active tab cwd should be rejected");
+      assert.match(String(symlinkEscape.body?.error || ""), /escapes the active tab working directory/i);
+    } catch (error) {
+      if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+      console.log(`http-endpoints-harness: symlink unavailable (${error.code}); skipping file symlink confinement check`);
+    }
+  } finally {
+    await rmWithRetry(outsideRoot);
+  }
+
+  const filesTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: filesRoot, title: "files-fixture" } });
+  assert.equal(filesTab.status, 201, `file fixture tab should open: ${filesTab.body?.error || ""}`);
+  const filesTabId = filesTab.body?.data?.tab?.id;
+  assert.ok(filesTabId, "file fixture tab should have an id");
+  const scopedFileContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(filesTabId)}&path=${encodeURIComponent("viewer.txt")}`);
+  assert.equal(scopedFileContent.status, 200, "file paths should resolve against the requested tab cwd");
+  const wrongTabContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent("viewer.txt")}`);
+  assert.equal(wrongTabContent.status, 404, "file paths should not bleed across tab cwd scopes");
+  const closeFilesTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [filesTabId] }, timeoutMs: 10_000 });
+  assert.equal(closeFilesTab.status, 200, "file fixture tab should close after scoped file checks");
+
   // Natural Conversation shell: /talk availability drives per-tab status and safety guards.
   const conversationFeature = await request("127.0.0.1", `/api/features/natural-conversation?tab=${encodeURIComponent(tabId)}`);
   assert.equal(conversationFeature.status, 200);
@@ -737,6 +813,10 @@ try {
   const blockedBash = await request("127.0.0.1", "/api/bash", { method: "POST", body: { command: "echo blocked", tab: tabId } });
   assert.equal(blockedBash.status, 409, "user bash should be blocked while Natural Conversation is active");
   assert.match(String(blockedBash.body?.error || ""), /bash is blocked|Natural Conversation Mode is active/);
+
+  const blockedFileSave = await request("127.0.0.1", "/api/files/content", { method: "POST", body: { tab: tabId, path: viewerRelative, content: "blocked by conversation mode\n" } });
+  assert.equal(blockedFileSave.status, 409, "file edits should be blocked while Natural Conversation is active");
+  assert.equal(blockedFileSave.body?.error, "file edits are blocked");
 
   const allowedConversationPrompt = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { message: "Explain the current repo briefly", tab: tabId } });
   assert.equal(allowedConversationPrompt.status, 200, "ordinary prompts remain allowed while Natural Conversation is active");
@@ -815,6 +895,18 @@ try {
       body: { sessionPath: path.join(cwd, "outside.jsonl"), confirmed: true, tab: tabId },
     });
     assert.equal(remoteDelete.status, 403, "session delete must be localhost-only");
+
+    const remoteFileSave = await request(lan, "/api/files/content", {
+      method: "POST",
+      body: { tab: tabId, path: viewerRelative, content: "remote save should be blocked\n" },
+    });
+    assert.equal(remoteFileSave.status, 403, "file saves must be localhost-only");
+
+    const remoteFileOpenDefault = await request(lan, "/api/files/open-default", {
+      method: "POST",
+      body: { tab: tabId, path: viewerRelative },
+    });
+    assert.equal(remoteFileOpenDefault.status, 403, "opening files in the default editor must be localhost-only");
 
     const remoteExport = await request(lan, "/api/prompt", {
       method: "POST",

@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=63" />
+    <link rel="stylesheet" href="/styles.css?v=64" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -331,6 +331,38 @@
         <iframe id="terminalSplitFrame" class="terminal-split-frame" title="Independent split terminal"></iframe>
       </section>
 
+      <section id="fileViewerPane" class="file-viewer-pane" aria-label="File viewer and editor" hidden>
+        <header class="file-viewer-header">
+          <div class="file-viewer-title-block">
+            <span class="file-viewer-kicker">File</span>
+            <strong id="fileViewerTitle">No file open</strong>
+            <span id="fileViewerMeta" class="file-viewer-meta muted"></span>
+          </div>
+          <div class="file-viewer-actions">
+            <button id="fileViewerOpenDefaultButton" type="button">Open in Default Editor</button>
+            <button id="fileViewerSaveButton" class="primary" type="button" disabled>Save</button>
+            <button id="fileViewerCloseButton" type="button" aria-label="Close file viewer">Close</button>
+          </div>
+        </header>
+        <p id="fileViewerHelp" class="file-viewer-help muted">Markdown files can be viewed as Preview or Source. Select text in the file, add a one-line comment, then Send to include the selection and surrounding context in this Pi session.</p>
+        <div id="fileSelectionBar" class="file-selection-bar" hidden>
+          <span id="fileSelectionSummary" class="file-selection-summary">No selection</span>
+          <input id="fileSelectionCommentInput" class="file-selection-comment" type="text" placeholder="Comment for Pi about this selection…" autocomplete="off" />
+          <button id="fileSelectionSendButton" class="primary" type="button">Send</button>
+        </div>
+        <div class="file-viewer-mode-row">
+          <div class="file-viewer-mode-toggle" role="group" aria-label="File view mode">
+            <button id="fileViewerSourceModeButton" type="button" aria-pressed="true">Source</button>
+            <button id="fileViewerPreviewModeButton" type="button" aria-pressed="false">Preview</button>
+          </div>
+        </div>
+        <div class="file-viewer-content">
+          <textarea id="fileViewerEditor" class="file-viewer-editor" spellcheck="false" aria-label="File contents"></textarea>
+          <div id="fileViewerPreview" class="file-viewer-preview markdown-body" tabindex="0" hidden></div>
+        </div>
+        <p id="fileViewerStatus" class="file-viewer-status muted" role="status" aria-live="polite"></p>
+      </section>
+
       <button id="sidePanelBackdrop" class="side-panel-backdrop" type="button" aria-label="Close side panel" hidden></button>
       <aside id="sidePanel" class="side-panel">
         <div class="side-panel-header">
@@ -458,6 +490,28 @@
               </div>
             </div>
           </section>
+          <section class="side-panel-section collapsed" data-side-panel-section="files">
+            <h2>
+              <button id="sidePanelSectionToggleFiles" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionFiles" aria-label="Expand Files section" title="Expand Files section" data-side-panel-section-toggle="files">
+                <span class="side-panel-section-label">Files</span>
+                <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+              </button>
+            </h2>
+            <div id="sidePanelSectionFiles" class="side-panel-section-content" hidden>
+              <div class="file-tree-panel">
+                <div class="file-tree-toolbar">
+                  <div>
+                    <strong>Workspace files</strong>
+                    <p id="fileTreeCwd" class="file-tree-cwd muted"></p>
+                  </div>
+                  <button id="fileTreeRefreshButton" type="button">Refresh</button>
+                </div>
+                <p class="file-tree-hint muted">Double-click a file to open it in WebUI. Right-click files or folders for WebUI/default-editor actions. Folders expand lazily and start collapsed.</p>
+                <div id="fileTreeRoot" class="file-tree" role="tree" aria-label="Workspace file tree"></div>
+                <p id="fileTreeStatus" class="file-tree-status muted" role="status" aria-live="polite"></p>
+              </div>
+            </div>
+          </section>
           <section class="side-panel-section collapsed" data-side-panel-section="optional-features">
             <h2>
               <button id="sidePanelSectionToggleOptionalFeatures" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionOptionalFeatures" aria-label="Expand Optional features section" title="Expand Optional features section" data-side-panel-section-toggle="optional-features">
@@ -561,6 +615,11 @@
         </div>
       </aside>
     </main>
+
+    <div id="fileContextMenu" class="file-context-menu" role="menu" hidden>
+      <button type="button" role="menuitem" data-file-menu-action="open-default">Open in Default Editor</button>
+      <button type="button" role="menuitem" data-file-menu-action="open-webui">Open in WebUI</button>
+    </div>
 
     <dialog id="extensionDialog" class="extension-dialog">
       <form id="dialogForm" method="dialog">
@@ -794,6 +853,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=62"></script>
+    <script type="module" src="/app.js?v=64"></script>
   </body>
 </html>
