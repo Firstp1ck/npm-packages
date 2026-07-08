@@ -307,10 +307,11 @@ let tabDrafts = new Map();
 let tabAttachments = new Map();
 let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
-let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0 };
+let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0, gitStatusRoot: "", gitStatusByPath: new Map() };
 let activeFileViewer = null;
 let fileViewerSelection = null;
 let fileContextMenuState = null;
+let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let fileTreeSearchTimer = null;
 let fileTreeSearchRequestSerial = 0;
@@ -632,6 +633,7 @@ const FILE_VIEWER_WIDTH_DEFAULT_PX = 520;
 const FILE_VIEWER_WIDTH_MIN_PX = 384;
 const FILE_VIEWER_CONTEXT_RADIUS_LINES = 6;
 const FILE_TREE_ROOT_PATH = "";
+const FILE_TREE_DRAG_MIME = "application/x-pi-webui-file-path";
 const POINTER_ACTIVATION_SELECTOR = "button, a[href], input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])";
 const POINTER_ACTIVATION_RENDER_DEFER_MAX_MS = 1200;
 const PROMPT_HISTORY_LIMIT_PER_TAB = 50;
@@ -5487,6 +5489,67 @@ function fileEntryIcon(entry = {}) {
   return "·";
 }
 
+function normalizeFileTreeGitStatus(status = {}) {
+  if (!status || status.changed !== true) return null;
+  const kind = ["changed", "modified", "staged", "untracked", "conflicted"].includes(String(status.kind || "")) ? String(status.kind) : "changed";
+  return {
+    changed: true,
+    kind,
+    status: String(status.status || "").slice(0, 4),
+    direct: status.direct === true,
+    changedDescendants: Math.max(0, Number(status.changedDescendants || 0) || 0),
+  };
+}
+
+function fileTreeGitStatusForEntry(entry = {}) {
+  const own = normalizeFileTreeGitStatus(entry.gitStatus);
+  if (own) return own;
+  return fileTreeState.gitStatusByPath.get(normalizeFileTreePath(entry.path || "")) || null;
+}
+
+function fileTreeGitStatusClasses(status) {
+  const normalized = normalizeFileTreeGitStatus(status);
+  if (!normalized) return "";
+  return `git-changed git-${normalized.kind} ${normalized.direct ? "git-direct" : "git-descendants"}`;
+}
+
+function fileTreeGitStatusTitle(status) {
+  const normalized = normalizeFileTreeGitStatus(status);
+  if (!normalized) return "";
+  if (normalized.direct) {
+    const state = normalized.status ? ` (${normalized.status})` : "";
+    return `Git ${normalized.kind}${state}`;
+  }
+  const count = normalized.changedDescendants || 0;
+  return count > 0 ? `Git changes in ${count} descendant${count === 1 ? "" : "s"}` : "Git changes in this folder";
+}
+
+function fileTreeGitStatusBadge(status) {
+  const normalized = normalizeFileTreeGitStatus(status);
+  if (!normalized) return null;
+  const label = normalized.direct ? (normalized.status || "●") : (normalized.changedDescendants > 1 ? `Δ${normalized.changedDescendants}` : "Δ");
+  const badge = make("span", `file-tree-git-badge ${normalized.kind} ${normalized.direct ? "direct" : "descendants"}`, label);
+  badge.title = fileTreeGitStatusTitle(normalized);
+  badge.setAttribute("aria-label", badge.title);
+  return badge;
+}
+
+function updateFileTreeGitStatus(gitStatus, entries = []) {
+  const next = new Map();
+  for (const status of Array.isArray(gitStatus?.entries) ? gitStatus.entries : []) {
+    const path = normalizeFileTreePath(status.path || "");
+    const normalized = normalizeFileTreeGitStatus(status);
+    if (path && normalized) next.set(path, normalized);
+  }
+  for (const entry of entries) {
+    const path = normalizeFileTreePath(entry?.path || "");
+    const normalized = normalizeFileTreeGitStatus(entry?.gitStatus);
+    if (path && normalized) next.set(path, normalized);
+  }
+  fileTreeState.gitStatusRoot = String(gitStatus?.root || "");
+  fileTreeState.gitStatusByPath = next;
+}
+
 function setFileTreeStatus(message = "", level = "muted") {
   if (!elements.fileTreeStatus) return;
   elements.fileTreeStatus.textContent = message;
@@ -5500,7 +5563,7 @@ function setFileViewerStatus(message = "", level = "muted") {
 }
 
 function emptyFileTreeState(requestSerial = 0) {
-  return { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0 };
+  return { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0, gitStatusRoot: "", gitStatusByPath: new Map() };
 }
 
 function fileTreeSearchQueryText() {
@@ -5587,7 +5650,9 @@ function renderFileTree() {
 function appendFileSearchEntry(parent, entry) {
   const path = normalizeFileTreePath(entry.path);
   const isDirectory = entry.type === "directory" || entry.directory === true;
-  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  const gitStatus = fileTreeGitStatusForEntry(entry);
+  const gitStatusClasses = fileTreeGitStatusClasses(gitStatus);
+  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
   item.setAttribute("role", "none");
   const button = make("button", "file-tree-item file-tree-search-item");
   button.type = "button";
@@ -5595,7 +5660,7 @@ function appendFileSearchEntry(parent, entry) {
   button.dataset.type = entry.type || "file";
   button.style.setProperty("--file-tree-depth", "0");
   button.setAttribute("role", "treeitem");
-  button.title = [path || ".", entry.error || ""].filter(Boolean).join("\n");
+  button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   const label = make("span", "file-tree-search-label");
   label.append(
     make("span", "file-tree-name", entry.name || fileDisplayName(path)),
@@ -5605,6 +5670,8 @@ function appendFileSearchEntry(parent, entry) {
     make("span", "file-tree-icon", fileEntryIcon(entry)),
     label,
   );
+  const gitBadge = fileTreeGitStatusBadge(gitStatus);
+  if (gitBadge) button.append(gitBadge);
   if (entry.type === "file") button.append(make("span", "file-tree-kind", entry.extension || "file"));
   else if (entry.type && entry.type !== "directory") button.append(make("span", "file-tree-kind", entry.type));
   if (entry.error) button.append(make("span", "file-tree-error", entry.error));
@@ -5618,6 +5685,7 @@ function appendFileSearchEntry(parent, entry) {
     else if (entry.type === "file") openFileInViewer(path);
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
+  bindFileTreeDragAndDrop(button, item, entry);
   item.append(button);
   parent.append(item);
 }
@@ -5650,7 +5718,9 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   const isDirectory = entry.type === "directory" || entry.directory === true;
   const expanded = isDirectory && fileTreeState.expanded.has(path);
   const loading = isDirectory && fileTreeState.loading.has(path);
-  const item = make("li", `file-tree-node ${entry.type || "file"}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  const gitStatus = fileTreeGitStatusForEntry(entry);
+  const gitStatusClasses = fileTreeGitStatusClasses(gitStatus);
+  const item = make("li", `file-tree-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
   item.setAttribute("role", "none");
   const button = make("button", "file-tree-item");
   button.type = "button";
@@ -5659,11 +5729,13 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   button.style.setProperty("--file-tree-depth", String(depth));
   button.setAttribute("role", "treeitem");
   if (isDirectory) button.setAttribute("aria-expanded", expanded ? "true" : "false");
-  button.title = [path || ".", entry.error || ""].filter(Boolean).join("\n");
+  button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   button.append(
     make("span", `file-tree-icon ${isDirectory && expanded ? "expanded" : ""}`, loading ? "…" : fileEntryIcon(entry)),
     make("span", "file-tree-name", entry.name || fileDisplayName(path)),
   );
+  const gitBadge = fileTreeGitStatusBadge(gitStatus);
+  if (gitBadge) button.append(gitBadge);
   if (entry.type === "file") button.append(make("span", "file-tree-kind", entry.extension || "file"));
   if (entry.error) button.append(make("span", "file-tree-error", entry.error));
   button.addEventListener("click", () => {
@@ -5677,6 +5749,7 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
     else openFileInViewer(path);
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
+  bindFileTreeDragAndDrop(button, item, entry);
   item.append(button);
   if (isDirectory && expanded) {
     const children = fileTreeState.entriesByPath.get(path) || [];
@@ -5709,6 +5782,7 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
       fileTreeState.expanded.clear();
     }
     const entries = Array.isArray(data.entries) ? data.entries : [];
+    updateFileTreeGitStatus(data.gitStatus, entries);
     fileTreeState.entriesByPath.set(normalized, entries);
     setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length }));
     return entries;
@@ -5766,6 +5840,7 @@ async function runFileTreeSearch() {
     const data = response.data || {};
     const entries = Array.isArray(data.entries) ? data.entries : [];
     if (data.root) fileTreeState.root = data.root;
+    updateFileTreeGitStatus(data.gitStatus, entries);
     fileTreeState.searchQuery = data.query || query;
     fileTreeState.searchEntries = entries;
     fileTreeState.searchLoading = false;
@@ -5864,6 +5939,352 @@ async function openPathInDefaultEditor(path = currentFileViewerPath()) {
   } catch (error) {
     if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
   }
+}
+
+function filePathWithinOrEqual(filePath = "", parentPath = "") {
+  const path = normalizeFileTreePath(filePath);
+  const parent = normalizeFileTreePath(parentPath);
+  if (!parent) return path === parent;
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
+function remapFileTreePathAfterMove(filePath = "", sourcePath = "", destinationPath = "") {
+  const path = normalizeFileTreePath(filePath);
+  const source = normalizeFileTreePath(sourcePath);
+  const destination = normalizeFileTreePath(destinationPath);
+  if (!path || !source || !destination) return path;
+  if (path === source) return destination;
+  return path.startsWith(`${source}/`) ? `${destination}/${path.slice(source.length + 1)}` : path;
+}
+
+function fileExtensionForPath(filePath = "") {
+  const name = fileDisplayName(filePath);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+function fileLanguageForPath(filePath = "") {
+  const extension = fileExtensionForPath(filePath);
+  return extension === ".md" || extension === ".markdown" ? "markdown" : "text";
+}
+
+function fileOperationTypeLabel(entry = {}) {
+  if (entry.type === "directory" || entry.directory === true) return "directory";
+  if (entry.type === "file" || entry.file === true) return "file";
+  return "entry";
+}
+
+function fileTreeEntryIsMovable(entry = {}) {
+  const path = normalizeFileTreePath(entry.path || "");
+  return !!path && (entry.type === "file" || entry.file === true || entry.type === "directory" || entry.directory === true);
+}
+
+function fileTreeEntryIsDirectory(entry = {}) {
+  return entry.type === "directory" || entry.directory === true;
+}
+
+function fileTreeDragSourceFromEvent(event) {
+  const statePath = normalizeFileTreePath(fileTreeDragState?.sourcePath || "");
+  return statePath ? { path: statePath, type: fileTreeDragState?.sourceType || "entry", entry: fileTreeDragState?.entry || null } : null;
+}
+
+function fileTreeEntryFromElement(element) {
+  const path = normalizeFileTreePath(element?.dataset?.path || "");
+  const type = element?.dataset?.type || "";
+  return path || type ? { path, type, directory: type === "directory", file: type === "file" } : null;
+}
+
+function fileTreeDropTargetFromEvent(event) {
+  const button = event?.target?.closest?.(".file-tree-item");
+  if (!button || !elements.fileTreeRoot?.contains?.(button)) return null;
+  const entry = fileTreeEntryFromElement(button);
+  if (!entry || !fileTreeEntryIsDirectory(entry)) return null;
+  return { entry, item: button.closest(".file-tree-node"), button };
+}
+
+function fileTreeCanDropOnDirectory(sourcePath = "", targetDirectoryPath = "", sourceEntry = fileTreeDragState?.entry) {
+  const source = normalizeFileTreePath(sourcePath);
+  const target = normalizeFileTreePath(targetDirectoryPath);
+  if (!source) return false;
+  if (fileParentPath(source) === target) return false;
+  if (fileTreeEntryIsDirectory(sourceEntry || {}) && (target === source || target.startsWith(`${source}/`))) return false;
+  return true;
+}
+
+function clearFileTreeDragVisuals() {
+  for (const node of document.querySelectorAll(".file-tree-node.dragging, .file-tree-node.drop-target, .file-tree-node.drop-blocked")) {
+    node.classList.remove("dragging", "drop-target", "drop-blocked");
+  }
+  elements.fileTreeRoot?.classList.remove("drag-root-drop", "drop-blocked");
+}
+
+function finishFileTreeDrag() {
+  clearFileTreeDragVisuals();
+  fileTreeDragState = null;
+}
+
+function beginFileTreeDrag(event, entry = {}, item) {
+  if (!fileTreeEntryIsMovable(entry)) {
+    event.preventDefault();
+    return;
+  }
+  const sourcePath = normalizeFileTreePath(entry.path || "");
+  closeFileContextMenu();
+  fileTreeDragState = { sourcePath, sourceType: fileOperationTypeLabel(entry), entry: { ...entry, path: sourcePath } };
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData(FILE_TREE_DRAG_MIME, sourcePath);
+  event.dataTransfer.setData("text/plain", sourcePath);
+  item?.classList.add("dragging");
+  setFileTreeStatus(`Drag ${sourcePath} onto a folder or empty file-tree space to move it.`);
+}
+
+function updateFileTreeDropTarget(event, entry = {}, item) {
+  const source = fileTreeDragSourceFromEvent(event);
+  if (!source || !fileTreeEntryIsDirectory(entry)) return false;
+  const targetPath = normalizeFileTreePath(entry.path || "");
+  const allowed = fileTreeCanDropOnDirectory(source.path, targetPath, source.entry);
+  for (const node of document.querySelectorAll(".file-tree-node.drop-target, .file-tree-node.drop-blocked")) node.classList.remove("drop-target", "drop-blocked");
+  elements.fileTreeRoot?.classList.remove("drag-root-drop", "drop-blocked");
+  if (!allowed) {
+    item?.classList.add("drop-blocked");
+    event.dataTransfer.dropEffect = "none";
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = "move";
+  item?.classList.add("drop-target");
+  if (fileTreeDragState) fileTreeDragState.targetPath = targetPath;
+  return true;
+}
+
+function clearFileTreeDropTarget(event, item) {
+  if (!item?.contains?.(event.relatedTarget)) item?.classList.remove("drop-target", "drop-blocked");
+}
+
+async function dropFileTreeEntry(event, entry = {}) {
+  const source = fileTreeDragSourceFromEvent(event);
+  if (!source || !fileTreeEntryIsDirectory(entry)) return;
+  const targetPath = normalizeFileTreePath(entry.path || "");
+  if (!fileTreeCanDropOnDirectory(source.path, targetPath, source.entry)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  finishFileTreeDrag();
+  await moveFileTreeEntryToDestination(source.entry || { path: source.path, type: source.type }, targetPath, { viaDragDrop: true });
+}
+
+function bindFileTreeDragAndDrop(button, item, entry = {}) {
+  if (!button || !item) return;
+  const movable = fileTreeEntryIsMovable(entry);
+  button.draggable = movable;
+  button.classList.toggle("file-tree-draggable", movable);
+  if (movable) {
+    button.addEventListener("dragstart", (event) => beginFileTreeDrag(event, entry, item));
+    button.addEventListener("dragend", finishFileTreeDrag);
+  }
+  if (fileTreeEntryIsDirectory(entry)) {
+    for (const target of [button, item]) {
+      target.addEventListener("dragenter", (event) => updateFileTreeDropTarget(event, entry, item));
+      target.addEventListener("dragover", (event) => updateFileTreeDropTarget(event, entry, item));
+      target.addEventListener("dragleave", (event) => clearFileTreeDropTarget(event, item));
+      target.addEventListener("drop", (event) => dropFileTreeEntry(event, entry).catch((error) => addEvent(error.message || String(error), "error")));
+    }
+  }
+}
+
+function handleFileTreeRootDragOver(event) {
+  const delegatedTarget = fileTreeDropTargetFromEvent(event);
+  if (delegatedTarget) {
+    updateFileTreeDropTarget(event, delegatedTarget.entry, delegatedTarget.item);
+    return;
+  }
+  const source = fileTreeDragSourceFromEvent(event);
+  if (!source) return;
+  const allowed = fileTreeCanDropOnDirectory(source.path, FILE_TREE_ROOT_PATH, source.entry);
+  elements.fileTreeRoot?.classList.toggle("drop-blocked", !allowed);
+  if (!allowed) {
+    event.dataTransfer.dropEffect = "none";
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  elements.fileTreeRoot?.classList.add("drag-root-drop");
+}
+
+function handleFileTreeRootDragLeave(event) {
+  if (elements.fileTreeRoot?.contains?.(event.relatedTarget)) return;
+  elements.fileTreeRoot?.classList.remove("drag-root-drop", "drop-blocked");
+}
+
+async function handleFileTreeRootDrop(event) {
+  const delegatedTarget = fileTreeDropTargetFromEvent(event);
+  if (delegatedTarget) {
+    await dropFileTreeEntry(event, delegatedTarget.entry);
+    return;
+  }
+  const source = fileTreeDragSourceFromEvent(event);
+  if (!source || !fileTreeCanDropOnDirectory(source.path, FILE_TREE_ROOT_PATH, source.entry)) return;
+  event.preventDefault();
+  finishFileTreeDrag();
+  await moveFileTreeEntryToDestination(source.entry || { path: source.path, type: source.type }, FILE_TREE_ROOT_PATH, { viaDragDrop: true });
+}
+
+function clearFileTreeEntryCache(filePath = "") {
+  const normalized = normalizeFileTreePath(filePath);
+  if (!normalized) {
+    fileTreeState.entriesByPath.clear();
+    fileTreeState.expanded.clear();
+    fileTreeState.loading.clear();
+    return;
+  }
+  for (const key of [...fileTreeState.entriesByPath.keys()]) {
+    if (key === normalized || key.startsWith(`${normalized}/`)) fileTreeState.entriesByPath.delete(key);
+  }
+  for (const key of [...fileTreeState.expanded]) {
+    if (key === normalized || key.startsWith(`${normalized}/`)) fileTreeState.expanded.delete(key);
+  }
+  for (const key of [...fileTreeState.loading]) {
+    if (key === normalized || key.startsWith(`${normalized}/`)) fileTreeState.loading.delete(key);
+  }
+}
+
+async function refreshFileTreeAfterOperation(paths = []) {
+  if (fileTreeSearchQueryText()) {
+    await runFileTreeSearch();
+    return;
+  }
+  const uniquePaths = [...new Set(paths.map((item) => normalizeFileTreePath(item)))];
+  if (!uniquePaths.length) {
+    renderFileTree();
+    return;
+  }
+  for (const path of uniquePaths) await loadFileTreeDirectory(path, { force: true });
+  renderFileTree();
+}
+
+function updateActiveFileViewerAfterMove(sourcePath = "", destinationPath = "") {
+  if (!activeFileViewer) return;
+  const currentPath = normalizeFileTreePath(activeFileViewer.path || "");
+  const nextPath = remapFileTreePathAfterMove(currentPath, sourcePath, destinationPath);
+  if (!nextPath || nextPath === currentPath) return;
+  const language = fileLanguageForPath(nextPath);
+  activeFileViewer = {
+    ...activeFileViewer,
+    path: nextPath,
+    name: fileDisplayName(nextPath),
+    extension: fileExtensionForPath(nextPath),
+    language,
+    mode: activeFileViewer.mode === "preview" && language === "markdown" ? "preview" : "source",
+  };
+  if (fileViewerSelection) fileViewerSelection = { ...fileViewerSelection, path: nextPath, fileName: activeFileViewer.name };
+  updateFileViewerUi();
+}
+
+function closeActiveFileViewerIfDeleted(deletedPath = "") {
+  if (!activeFileViewer || !filePathWithinOrEqual(activeFileViewer.path, deletedPath)) return false;
+  closeFileViewer();
+  return true;
+}
+
+async function deleteFileTreeEntry(entry = fileContextMenuState?.entry) {
+  if (!entry) return;
+  const sourcePath = normalizeFileTreePath(entry.path || "");
+  if (!sourcePath) {
+    addEvent("Workspace root cannot be deleted from the Files panel.", "warn");
+    return;
+  }
+  const typeLabel = fileOperationTypeLabel(entry);
+  const dirtyWarning = activeFileViewer?.dirty && filePathWithinOrEqual(activeFileViewer.path, sourcePath)
+    ? "\n\nThe currently open file has unsaved edits that will be discarded from the viewer."
+    : "";
+  const recursiveWarning = typeLabel === "directory" ? "\n\nThis permanently deletes the directory and all of its contents." : "";
+  if (!window.confirm(`Delete ${typeLabel} ${sourcePath}?${recursiveWarning}${dirtyWarning}\n\nThis cannot be undone.`)) return;
+  const tabContext = activeTabContext();
+  setFileTreeStatus(`Deleting ${sourcePath}…`);
+  try {
+    const response = await api("/api/files", { method: "DELETE", body: { path: sourcePath, confirmed: true }, tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const data = response.data || {};
+    closeActiveFileViewerIfDeleted(sourcePath);
+    clearFileTreeEntryCache(sourcePath);
+    fileTreeState.selectedPath = "";
+    await refreshFileTreeAfterOperation([data.parentPath ?? fileParentPath(sourcePath)]);
+    setFileTreeStatus(`Deleted ${data.path || sourcePath}.`, "success");
+    addEvent(`deleted ${data.path || sourcePath}`, "warn");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      setFileTreeStatus(error.message || String(error), "error");
+      addEvent(`file delete failed: ${error.message || String(error)}`, "error");
+    }
+  }
+}
+
+async function moveFileTreeEntryToDestination(entry = {}, destinationPath = "", { viaDragDrop = false, confirmMove = false } = {}) {
+  const sourcePath = normalizeFileTreePath(entry.path || "");
+  const normalizedDestination = normalizeFileTreePath(destinationPath);
+  if (!sourcePath) {
+    addEvent("Workspace root cannot be moved from the Files panel.", "warn");
+    return;
+  }
+  if (!normalizedDestination && normalizedDestination !== FILE_TREE_ROOT_PATH) {
+    addEvent("Destination path is required.", "warn");
+    return;
+  }
+  const typeLabel = fileOperationTypeLabel(entry);
+  if (confirmMove && !window.confirm(`Move ${typeLabel}?\n\nFrom: ${sourcePath}\nTo: ${normalizedDestination || "."}\n\nExisting destination paths are refused.`)) return;
+  const tabContext = activeTabContext();
+  const isDirectory = fileTreeEntryIsDirectory(entry);
+  const restoreSourceExpanded = isDirectory && fileTreeState.expanded.has(sourcePath) && !fileTreeSearchQueryText();
+  const expandDestinationDirectory = viaDragDrop && !fileTreeSearchQueryText();
+  setFileTreeStatus(`Moving ${sourcePath}…`);
+  try {
+    const response = await api("/api/files/move", { method: "POST", body: { path: sourcePath, toPath: normalizedDestination || ".", confirmed: true }, tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const data = response.data || {};
+    const nextPath = normalizeFileTreePath(data.destination || normalizedDestination);
+    const sourceParent = data.parentPath ?? fileParentPath(sourcePath);
+    const destinationParent = data.destinationParentPath ?? fileParentPath(nextPath);
+    clearFileTreeEntryCache(sourcePath);
+    clearFileTreeEntryCache(nextPath);
+    if (restoreSourceExpanded && nextPath) fileTreeState.expanded.add(nextPath);
+    if (expandDestinationDirectory) fileTreeState.expanded.add(normalizedDestination);
+    fileTreeState.selectedPath = nextPath;
+    updateActiveFileViewerAfterMove(sourcePath, nextPath);
+    await refreshFileTreeAfterOperation([sourceParent, destinationParent]);
+    if (restoreSourceExpanded && nextPath) await loadFileTreeDirectory(nextPath, { force: true });
+    if (expandDestinationDirectory) await loadFileTreeDirectory(normalizedDestination, { force: true });
+    renderFileTree();
+    setFileTreeStatus(`Moved ${sourcePath} to ${nextPath}.`, "success");
+    addEvent(`${viaDragDrop ? "drag-moved" : "moved"} ${sourcePath} to ${nextPath}`, "info");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      setFileTreeStatus(error.message || String(error), "error");
+      addEvent(`file move failed: ${error.message || String(error)}`, "error");
+    }
+  }
+}
+
+async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
+  if (!entry) return;
+  const sourcePath = normalizeFileTreePath(entry.path || "");
+  if (!sourcePath) {
+    addEvent("Workspace root cannot be moved from the Files panel.", "warn");
+    return;
+  }
+  const typeLabel = fileOperationTypeLabel(entry);
+  const destinationInput = window.prompt([
+    `Move/rename ${typeLabel} ${sourcePath}`,
+    "",
+    "Enter a destination path inside the current workspace.",
+    `Existing directories receive the ${typeLabel} as a child.`,
+  ].join("\n"), sourcePath);
+  if (destinationInput === null) return;
+  const destinationPath = String(destinationInput || "").trim();
+  if (!destinationPath) {
+    addEvent("Destination path is required.", "warn");
+    return;
+  }
+  await moveFileTreeEntryToDestination(entry, destinationPath, { confirmMove: true });
 }
 
 function readStoredFileViewerWidth() {
@@ -26035,6 +26456,9 @@ elements.refreshClaudeUsageButton?.addEventListener("click", () => {
   refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
 });
 elements.fileTreeRefreshButton?.addEventListener("click", () => refreshFileTreeRoot().catch((error) => addEvent(error.message || String(error), "error")));
+elements.fileTreeRoot?.addEventListener("dragover", handleFileTreeRootDragOver);
+elements.fileTreeRoot?.addEventListener("dragleave", handleFileTreeRootDragLeave);
+elements.fileTreeRoot?.addEventListener("drop", (event) => handleFileTreeRootDrop(event).catch((error) => addEvent(error.message || String(error), "error")));
 elements.fileTreeSearchInput?.addEventListener("input", () => scheduleFileTreeSearch());
 elements.fileTreeSearchInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -26055,6 +26479,8 @@ elements.fileContextMenu?.addEventListener("click", (event) => {
   const action = button.dataset.fileMenuAction || "";
   if (action === "open-default") openPathInDefaultEditor(entry.path).catch((error) => addEvent(error.message || String(error), "error"));
   else if (action === "open-webui") openFileTreeEntryInWebui(entry).catch((error) => addEvent(error.message || String(error), "error"));
+  else if (action === "move") moveFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
+  else if (action === "delete") deleteFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
 });
 elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(currentFileViewerPath()));
 elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewerResize);

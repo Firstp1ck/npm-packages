@@ -3952,6 +3952,7 @@ let activeGitWorkflowProcess = null;
 const GIT_CHANGES_COMMAND_TIMEOUT_MS = 5000;
 const GIT_CHANGES_DIFF_MAX_OUTPUT = 500_000;
 const GIT_PULL_TIMEOUT_MS = 15 * 60 * 1000;
+const GIT_STATUS_KIND_RANK = Object.freeze({ changed: 0, untracked: 1, modified: 2, staged: 3, conflicted: 4 });
 
 async function getGitRoot(cwd) {
   const result = await runCommand("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 2000 });
@@ -4016,6 +4017,118 @@ function summarizeGitPorcelainStatus(statusText) {
     if (line.startsWith("? ")) summary.untracked += 1;
   }
   return summary;
+}
+
+function normalizeGitStatusPath(value = "") {
+  return String(value || "").replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/g, "");
+}
+
+function gitStatusKindFromPorcelainEntry(entry = {}) {
+  const x = entry.x || " ";
+  const y = entry.y || " ";
+  if (x === "?" && y === "?") return "untracked";
+  if (x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D")) return "conflicted";
+  if (x !== " " && x !== "?" && x !== ".") return "staged";
+  if (y !== " " && y !== "?" && y !== ".") return "modified";
+  return "changed";
+}
+
+function gitStatusLabelFromPorcelainEntry(entry = {}) {
+  const x = entry.x || " ";
+  const y = entry.y || " ";
+  if (x === "?" && y === "?") return "??";
+  return `${x}${y}`.replace(/\s/g, "").trim() || "•";
+}
+
+function mergeGitStatusIndexEntry(index, repoPath, patch = {}) {
+  const key = normalizeGitStatusPath(repoPath);
+  if (!key) return;
+  const existing = index.get(key) || { changed: true, kind: "changed", status: "", direct: false, changedDescendants: 0 };
+  const existingRank = GIT_STATUS_KIND_RANK[existing.kind] ?? 0;
+  const nextRank = GIT_STATUS_KIND_RANK[patch.kind] ?? 0;
+  index.set(key, {
+    changed: true,
+    kind: nextRank > existingRank ? patch.kind : existing.kind,
+    status: patch.direct === true ? (patch.status || existing.status || "") : (existing.status || ""),
+    direct: existing.direct === true || patch.direct === true,
+    changedDescendants: (Number(existing.changedDescendants || 0) || 0) + (Number(patch.changedDescendants || 0) || 0),
+  });
+}
+
+function addGitStatusAncestorEntries(index, repoPath, kind) {
+  const parts = normalizeGitStatusPath(repoPath).split("/").filter(Boolean);
+  parts.pop();
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    mergeGitStatusIndexEntry(index, current, { kind, changedDescendants: 1 });
+  }
+}
+
+function buildGitStatusIndexFromPorcelain(statusText = "") {
+  const index = new Map();
+  for (const entry of parseGitPorcelainZEntries(statusText)) {
+    const filePath = normalizeGitStatusPath(entry.path);
+    if (!filePath) continue;
+    const kind = gitStatusKindFromPorcelainEntry(entry);
+    mergeGitStatusIndexEntry(index, filePath, { kind, status: gitStatusLabelFromPorcelainEntry(entry), direct: true });
+    addGitStatusAncestorEntries(index, filePath, kind);
+    if (entry.oldPath) addGitStatusAncestorEntries(index, entry.oldPath, kind);
+  }
+  return index;
+}
+
+async function readWorkspaceGitStatusIndex(workspaceRoot) {
+  try {
+    const root = await getGitRoot(workspaceRoot);
+    const statusText = await runGitReadCommand(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { maxOutputLength: 120_000 });
+    return { root, entries: buildGitStatusIndexFromPorcelain(statusText) };
+  } catch {
+    return null;
+  }
+}
+
+function gitStatusForWorkspaceEntry(workspaceRoot, entry, gitStatus) {
+  if (!gitStatus?.root || !gitStatus.entries?.size || !entry?.path) return null;
+  const absolute = path.resolve(workspaceRoot, entry.path);
+  if (absolute !== gitStatus.root && !pathInside(gitStatus.root, absolute)) return null;
+  const repoPath = normalizeGitStatusPath(path.relative(gitStatus.root, absolute).split(path.sep).join("/"));
+  const status = gitStatus.entries.get(repoPath);
+  if (!status?.changed) return null;
+  return {
+    changed: true,
+    kind: status.kind || "changed",
+    status: status.status || "",
+    direct: status.direct === true,
+    changedDescendants: Number(status.changedDescendants || 0) || 0,
+  };
+}
+
+function withFileTreeGitStatus(entries = [], workspaceRoot, gitStatus) {
+  if (!gitStatus?.entries?.size) return entries;
+  return entries.map((entry) => {
+    const status = gitStatusForWorkspaceEntry(workspaceRoot, entry, gitStatus);
+    return status ? { ...entry, gitStatus: status } : entry;
+  });
+}
+
+function fileTreeGitStatusPayload(workspaceRoot, gitStatus) {
+  if (!gitStatus?.root || !gitStatus.entries?.size) return null;
+  const root = path.resolve(workspaceRoot);
+  const entries = [];
+  for (const [repoPath, status] of gitStatus.entries.entries()) {
+    const absolute = path.resolve(gitStatus.root, repoPath);
+    if (absolute !== root && !pathInside(root, absolute)) continue;
+    entries.push({
+      path: path.relative(root, absolute).split(path.sep).join("/"),
+      changed: true,
+      kind: status.kind || "changed",
+      status: status.status || "",
+      direct: status.direct === true,
+      changedDescendants: Number(status.changedDescendants || 0) || 0,
+    });
+  }
+  return { root: gitStatus.root, entries };
 }
 
 function resolveGitRelativePath(root, relativePath) {
@@ -8914,13 +9027,17 @@ async function getFileTreeData(tab, requestedPath = "") {
   const resolved = await resolveWorkspacePath(tab, requestedPath);
   if (!resolved.info?.isDirectory()) throw makeHttpError(400, "Path is not a directory");
   const dirents = await readdir(resolved.targetPath, { withFileTypes: true });
-  const listed = await statFileTreeEntries(resolved.targetPath, dirents, resolved.root, resolved.realRoot);
+  const [listed, gitStatus] = await Promise.all([
+    statFileTreeEntries(resolved.targetPath, dirents, resolved.root, resolved.realRoot),
+    readWorkspaceGitStatusIndex(resolved.root),
+  ]);
   return {
     root: resolved.root,
     displayRoot: displayPath(resolved.root),
     path: resolved.relative,
     displayPath: displayPath(resolved.targetPath),
-    entries: listed.entries,
+    entries: withFileTreeGitStatus(listed.entries, resolved.root, gitStatus),
+    gitStatus: fileTreeGitStatusPayload(resolved.root, gitStatus),
     truncated: listed.truncated,
     total: listed.total,
   };
@@ -8947,6 +9064,7 @@ async function getFileSearchData(tab, rawQuery = "") {
   }
   const resolved = await resolveWorkspacePath(tab, "");
   if (!resolved.info?.isDirectory()) throw makeHttpError(400, "Workspace root is not a directory");
+  const gitStatus = await readWorkspaceGitStatusIndex(resolved.root);
   const queryLower = query.toLowerCase();
   const entries = [];
   const queue = [{ dirPath: resolved.root, relative: "", depth: 0 }];
@@ -9008,7 +9126,8 @@ async function getFileSearchData(tab, rawQuery = "") {
     root: resolved.root,
     displayRoot: displayPath(resolved.root),
     query,
-    entries,
+    entries: withFileTreeGitStatus(entries, resolved.root, gitStatus),
+    gitStatus: fileTreeGitStatusPayload(resolved.root, gitStatus),
     truncated,
     total: entries.length,
     scanned,
@@ -9067,6 +9186,103 @@ async function saveFileContentData(tab, body = {}) {
     mtimeMs: nextStats.mtimeMs,
     extension: path.extname(resolved.targetPath).toLowerCase(),
     language: fileViewerLanguage(resolved.targetPath),
+  };
+}
+
+function workspaceRelativePath(root, targetPath) {
+  return path.relative(root, targetPath).split(path.sep).join("/");
+}
+
+function fileOperationEntryType(info) {
+  if (info?.isDirectory?.()) return "directory";
+  if (info?.isFile?.()) return "file";
+  return "other";
+}
+
+function assertWorkspaceEntryMutable(resolved, action) {
+  if (!resolved.relative) throw makeHttpError(400, `Workspace root cannot be ${action}`);
+  const type = fileOperationEntryType(resolved.info);
+  if (type !== "file" && type !== "directory") throw makeHttpError(400, "Only regular files and directories can be modified from WebUI");
+  return type;
+}
+
+async function existingDestinationStats(targetPath) {
+  try {
+    return await stat(targetPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw makeHttpError(400, `Cannot access destination: ${displayPath(targetPath)}`);
+  }
+}
+
+async function resolveWorkspaceMoveDestination(tab, source, rawDestination = "") {
+  const destinationText = String(rawDestination || "").trim();
+  if (!destinationText) throw makeHttpError(400, "Destination path is required");
+  if (destinationText.includes("\0")) throw makeHttpError(400, "Destination path cannot contain null bytes");
+
+  const candidatePath = path.isAbsolute(destinationText) ? path.resolve(destinationText) : path.resolve(source.root, destinationText);
+  if (candidatePath !== source.root && !pathInside(source.root, candidatePath)) throw makeHttpError(403, "Destination path must stay inside the active tab working directory");
+
+  const candidateInfo = await existingDestinationStats(candidatePath);
+  let targetPath = candidatePath;
+  let targetInfo = candidateInfo;
+  if (candidateInfo?.isDirectory?.()) {
+    targetPath = path.join(candidatePath, path.basename(source.targetPath));
+    targetInfo = await existingDestinationStats(targetPath);
+  }
+
+  if (path.resolve(targetPath) === path.resolve(source.targetPath)) throw makeHttpError(400, "Source and destination are the same path");
+  if (targetInfo) throw makeHttpError(409, `Destination already exists: ${workspaceRelativePath(source.root, targetPath)}`);
+  if (source.info?.isDirectory?.() && pathInside(source.targetPath, targetPath)) throw makeHttpError(400, "A directory cannot be moved into itself or one of its descendants");
+
+  const parentPath = path.dirname(targetPath);
+  if (parentPath !== source.root && !pathInside(source.root, parentPath)) throw makeHttpError(403, "Destination parent must stay inside the active tab working directory");
+  const parentInfo = await stat(parentPath).catch((error) => {
+    if (error?.code === "ENOENT") throw makeHttpError(404, `Destination parent not found: ${displayPath(parentPath)}`);
+    throw makeHttpError(400, `Cannot access destination parent: ${displayPath(parentPath)}`);
+  });
+  if (!parentInfo?.isDirectory?.()) throw makeHttpError(400, "Destination parent is not a directory");
+  const realParent = await realpath(parentPath).catch(() => parentPath);
+  if (realParent !== source.realRoot && !pathInside(source.realRoot, realParent)) throw makeHttpError(403, "Destination parent escapes the active tab working directory");
+
+  return {
+    targetPath,
+    relative: workspaceRelativePath(source.root, targetPath),
+    parentPath: workspaceRelativePath(source.root, parentPath),
+  };
+}
+
+async function deleteFileSystemEntryData(tab, body = {}) {
+  if (body.confirmed !== true) throw makeHttpError(409, "Deleting files or directories requires confirmed: true");
+  const resolved = await resolveWorkspacePath(tab, body.path || body.filePath || "");
+  const type = assertWorkspaceEntryMutable(resolved, "deleted");
+  await rm(resolved.targetPath, { recursive: type === "directory" });
+  return {
+    path: resolved.relative,
+    name: path.basename(resolved.targetPath),
+    type,
+    parentPath: workspaceRelativePath(resolved.root, path.dirname(resolved.targetPath)),
+    deleted: true,
+  };
+}
+
+async function moveFileSystemEntryData(tab, body = {}) {
+  if (body.confirmed !== true) throw makeHttpError(409, "Moving files or directories requires confirmed: true");
+  const source = await resolveWorkspacePath(tab, body.path || body.filePath || body.sourcePath || "");
+  const type = assertWorkspaceEntryMutable(source, "moved");
+  const destination = await resolveWorkspaceMoveDestination(tab, source, body.toPath || body.destinationPath || body.destination || "");
+  await rename(source.targetPath, destination.targetPath);
+  const nextStats = await stat(destination.targetPath).catch(() => null);
+  return {
+    path: source.relative,
+    destination: destination.relative,
+    name: path.basename(destination.targetPath),
+    type,
+    parentPath: workspaceRelativePath(source.root, path.dirname(source.targetPath)),
+    destinationParentPath: destination.parentPath,
+    moved: true,
+    size: nextStats?.size,
+    mtimeMs: nextStats?.mtimeMs,
   };
 }
 
@@ -10584,6 +10800,24 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/files" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await getFileTreeData(tab, url.searchParams.get("path") || "") });
+      return;
+    }
+
+    if (url.pathname === "/api/files" && req.method === "DELETE") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "file deletion is blocked");
+      sendJson(res, 200, { ok: true, data: await deleteFileSystemEntryData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/files/move" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "file moves are blocked");
+      sendJson(res, 200, { ok: true, data: await moveFileSystemEntryData(tab, body) });
       return;
     }
 

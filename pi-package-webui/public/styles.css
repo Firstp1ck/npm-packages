@@ -1235,7 +1235,7 @@ body.embedded-split .side-panel-backdrop {
 }
 .file-tree-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 0.36rem;
   align-items: center;
   width: 100%;
@@ -1255,6 +1255,87 @@ body.embedded-split .side-panel-backdrop {
   border-color: rgba(137, 180, 250, 0.30);
   background: rgba(var(--ctp-surface-rgb), 0.34);
   box-shadow: inset 2px 0 0 var(--ctp-blue);
+}
+.file-tree-item.file-tree-draggable {
+  cursor: grab;
+}
+.file-tree-node.dragging > .file-tree-item {
+  cursor: grabbing;
+  opacity: 0.58;
+  border-color: rgba(137, 180, 250, 0.46);
+  background: rgba(137, 180, 250, 0.12);
+}
+.file-tree-node.drop-target > .file-tree-item,
+.file-tree.drag-root-drop {
+  border-color: rgba(166, 227, 161, 0.62);
+  background: rgba(166, 227, 161, 0.12);
+  box-shadow: inset 2px 0 0 var(--ctp-green), 0 0 0 1px rgba(166, 227, 161, 0.12);
+}
+.file-tree-node.drop-blocked > .file-tree-item,
+.file-tree.drop-blocked {
+  border-color: rgba(243, 139, 168, 0.56);
+  background: rgba(243, 139, 168, 0.10);
+  box-shadow: inset 2px 0 0 var(--ctp-red);
+}
+.file-tree-node.git-changed {
+  --file-tree-git-color: var(--ctp-yellow);
+  --file-tree-git-bg: rgba(249, 226, 175, 0.10);
+  --file-tree-git-border: rgba(249, 226, 175, 0.36);
+}
+.file-tree-node.git-staged {
+  --file-tree-git-color: var(--ctp-green);
+  --file-tree-git-bg: rgba(166, 227, 161, 0.10);
+  --file-tree-git-border: rgba(166, 227, 161, 0.34);
+}
+.file-tree-node.git-untracked {
+  --file-tree-git-color: var(--ctp-blue);
+  --file-tree-git-bg: rgba(137, 180, 250, 0.10);
+  --file-tree-git-border: rgba(137, 180, 250, 0.34);
+}
+.file-tree-node.git-conflicted {
+  --file-tree-git-color: var(--ctp-red);
+  --file-tree-git-bg: rgba(243, 139, 168, 0.12);
+  --file-tree-git-border: rgba(243, 139, 168, 0.42);
+}
+.file-tree-node.git-modified {
+  --file-tree-git-color: var(--ctp-yellow);
+  --file-tree-git-bg: rgba(249, 226, 175, 0.10);
+  --file-tree-git-border: rgba(249, 226, 175, 0.36);
+}
+.file-tree-node.git-changed > .file-tree-item {
+  border-color: var(--file-tree-git-border);
+  background: linear-gradient(90deg, var(--file-tree-git-bg), transparent 72%);
+  box-shadow: inset 2px 0 0 var(--file-tree-git-color);
+}
+.file-tree-node.git-descendants > .file-tree-item {
+  border-color: color-mix(in srgb, var(--file-tree-git-border) 72%, transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--file-tree-git-bg) 70%, transparent), transparent 78%);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--file-tree-git-color) 72%, transparent);
+}
+.file-tree-node.selected.git-changed > .file-tree-item {
+  box-shadow: inset 2px 0 0 var(--ctp-blue), inset 5px 0 0 var(--file-tree-git-color);
+}
+.file-tree-node.git-direct > .file-tree-item .file-tree-name {
+  color: var(--ctp-text);
+  font-weight: 900;
+}
+.file-tree-git-badge {
+  justify-self: end;
+  min-width: 1.35rem;
+  padding: 0.08rem 0.28rem;
+  color: var(--file-tree-git-color, var(--ctp-yellow));
+  border: 1px solid var(--file-tree-git-border, rgba(249, 226, 175, 0.36));
+  border-radius: 999px;
+  background: rgba(var(--ctp-crust-rgb), 0.42);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.58rem;
+  font-weight: 950;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  text-align: center;
+}
+.file-tree-git-badge.descendants {
+  opacity: 0.82;
 }
 .file-tree-icon {
   display: inline-grid;
@@ -1289,7 +1370,7 @@ body.embedded-split .side-panel-backdrop {
   white-space: nowrap;
 }
 .file-tree-search-item {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 .file-tree-kind {
   color: rgba(var(--ctp-subtext-rgb), 0.64);

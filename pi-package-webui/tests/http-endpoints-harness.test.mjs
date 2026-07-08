@@ -53,6 +53,10 @@ async function rmWithRetry(target) {
   throw lastError;
 }
 
+async function pathExists(target) {
+  return !!(await stat(target).catch(() => null));
+}
+
 function runGitFixture(args, cwd, message) {
   const result = spawnSync("git", args, {
     cwd,
@@ -1070,6 +1074,12 @@ try {
   const binaryRelative = "files-fixture/binary.bin";
   const noDefaultRelative = "files-fixture/no-default.piunknown";
   const largeRelative = "files-fixture/large.txt";
+  const movableFileRelative = "files-fixture/move-me.txt";
+  const movedFileRelative = "files-fixture/docs/moved-file.txt";
+  const movableDirectoryRelative = "files-fixture/move-dir";
+  const movedDirectoryRelative = "files-fixture/docs/move-dir";
+  const deleteFileRelative = "files-fixture/delete-me.txt";
+  const deleteDirectoryRelative = "files-fixture/delete-dir";
   const depthEightFileRelative = "deep-search/f1/f2/f3/f4/f5/f6/depth-eight-file.txt";
   const depthEightDirectoryRelative = "deep-search/d1/d2/d3/d4/d5/d6/depth-eight-dir";
   const depthNineFileRelative = "deep-search/t1/t2/t3/t4/t5/t6/t7/too-deep-file.txt";
@@ -1084,6 +1094,12 @@ try {
   await writeFile(path.join(cwd, depthNineFileRelative), "depth 9 search fixture\n", "utf8");
   await writeFile(path.join(cwd, binaryRelative), Buffer.from([0, 1, 2, 3]));
   await writeFile(path.join(cwd, largeRelative), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
+  await writeFile(path.join(cwd, movableFileRelative), "move me\n", "utf8");
+  await mkdir(path.join(cwd, movableDirectoryRelative), { recursive: true });
+  await writeFile(path.join(cwd, movableDirectoryRelative, "nested.txt"), "nested move\n", "utf8");
+  await writeFile(path.join(cwd, deleteFileRelative), "delete me\n", "utf8");
+  await mkdir(path.join(cwd, deleteDirectoryRelative), { recursive: true });
+  await writeFile(path.join(cwd, deleteDirectoryRelative, "nested.txt"), "nested delete\n", "utf8");
 
   const fileTree = await request("127.0.0.1", `/api/files?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent("files-fixture")}`);
   assert.equal(fileTree.status, 200, `file tree endpoint should list workspace directories: ${fileTree.body?.error || ""}`);
@@ -1160,6 +1176,40 @@ try {
   assert.equal(savedFile.status, 200, `file save should succeed from localhost: ${savedFile.body?.error || ""}`);
   assert.equal(await readFile(path.join(cwd, viewerRelative), "utf8"), "updated from WebUI\n", "file save endpoint should write UTF-8 text content");
 
+  const moveUnconfirmed = await request("127.0.0.1", "/api/files/move", { method: "POST", body: { tab: tabId, path: movableFileRelative, toPath: movedFileRelative } });
+  assert.equal(moveUnconfirmed.status, 409, "file moves require explicit confirmation");
+
+  const moveFile = await request("127.0.0.1", "/api/files/move", { method: "POST", body: { tab: tabId, path: movableFileRelative, toPath: movedFileRelative, confirmed: true } });
+  assert.equal(moveFile.status, 200, `file move should succeed from localhost: ${moveFile.body?.error || ""}`);
+  assert.equal(moveFile.body?.data?.destination, movedFileRelative, "move endpoint should report the new relative file path");
+  assert.equal(await readFile(path.join(cwd, movedFileRelative), "utf8"), "move me\n", "move endpoint should relocate file contents");
+  assert.equal(await pathExists(path.join(cwd, movableFileRelative)), false, "move endpoint should remove the original file path");
+
+  const moveDirectory = await request("127.0.0.1", "/api/files/move", { method: "POST", body: { tab: tabId, path: movableDirectoryRelative, toPath: "files-fixture/docs", confirmed: true } });
+  assert.equal(moveDirectory.status, 200, `directory move should succeed from localhost: ${moveDirectory.body?.error || ""}`);
+  assert.equal(moveDirectory.body?.data?.destination, movedDirectoryRelative, "moving to an existing directory should place the source under that directory");
+  assert.equal(await readFile(path.join(cwd, movedDirectoryRelative, "nested.txt"), "utf8"), "nested move\n", "move endpoint should relocate directory contents");
+  assert.equal(await pathExists(path.join(cwd, movableDirectoryRelative)), false, "directory move endpoint should remove the original directory path");
+
+  const moveExistingDestination = await request("127.0.0.1", "/api/files/move", { method: "POST", body: { tab: tabId, path: movedFileRelative, toPath: markdownRelative, confirmed: true } });
+  assert.equal(moveExistingDestination.status, 409, "move endpoint should refuse to overwrite an existing destination");
+
+  const deleteUnconfirmed = await request("127.0.0.1", "/api/files", { method: "DELETE", body: { tab: tabId, path: deleteFileRelative } });
+  assert.equal(deleteUnconfirmed.status, 409, "file deletes require explicit confirmation");
+
+  const deleteFile = await request("127.0.0.1", "/api/files", { method: "DELETE", body: { tab: tabId, path: deleteFileRelative, confirmed: true } });
+  assert.equal(deleteFile.status, 200, `file delete should succeed from localhost: ${deleteFile.body?.error || ""}`);
+  assert.equal(deleteFile.body?.data?.deleted, true, "delete endpoint should report successful file deletion");
+  assert.equal(await pathExists(path.join(cwd, deleteFileRelative)), false, "delete endpoint should remove regular files");
+
+  const deleteDirectory = await request("127.0.0.1", "/api/files", { method: "DELETE", body: { tab: tabId, path: deleteDirectoryRelative, confirmed: true } });
+  assert.equal(deleteDirectory.status, 200, `directory delete should succeed from localhost: ${deleteDirectory.body?.error || ""}`);
+  assert.equal(deleteDirectory.body?.data?.type, "directory", "delete endpoint should report directory deletions");
+  assert.equal(await pathExists(path.join(cwd, deleteDirectoryRelative)), false, "delete endpoint should remove directories recursively");
+
+  const deleteWorkspaceRoot = await request("127.0.0.1", "/api/files", { method: "DELETE", body: { tab: tabId, path: "", confirmed: true } });
+  assert.equal(deleteWorkspaceRoot.status, 400, "delete endpoint must refuse deleting the active workspace root");
+
   const binaryContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(binaryRelative)}`);
   assert.equal(binaryContent.status, 415, "binary files should be rejected by the WebUI file viewer");
   assert.match(String(binaryContent.body?.error || ""), /binary/i);
@@ -1175,6 +1225,12 @@ try {
     const outsideAbsolute = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(outsideFile)}`);
     assert.equal(outsideAbsolute.status, 403, "absolute paths outside the active tab cwd should be rejected");
     assert.match(String(outsideAbsolute.body?.error || ""), /active tab working directory/i);
+
+    const outsideDelete = await request("127.0.0.1", "/api/files", { method: "DELETE", body: { tab: tabId, path: outsideFile, confirmed: true } });
+    assert.equal(outsideDelete.status, 403, "delete endpoint should reject absolute paths outside the active tab cwd");
+
+    const outsideMoveDestination = await request("127.0.0.1", "/api/files/move", { method: "POST", body: { tab: tabId, path: movedFileRelative, toPath: outsideFile, confirmed: true } });
+    assert.equal(outsideMoveDestination.status, 403, "move endpoint should reject destinations outside the active tab cwd");
 
     const symlinkPath = path.join(filesRoot, "outside-link.txt");
     try {
@@ -1248,6 +1304,14 @@ try {
   const blockedFileSave = await request("127.0.0.1", "/api/files/content", { method: "POST", body: { tab: tabId, path: viewerRelative, content: "blocked by conversation mode\n" } });
   assert.equal(blockedFileSave.status, 409, "file edits should be blocked while Natural Conversation is active");
   assert.equal(blockedFileSave.body?.error, "file edits are blocked");
+
+  const blockedFileDelete = await request("127.0.0.1", "/api/files", { method: "DELETE", body: { tab: tabId, path: viewerRelative, confirmed: true } });
+  assert.equal(blockedFileDelete.status, 409, "file deletes should be blocked while Natural Conversation is active");
+  assert.match(String(blockedFileDelete.body?.error || ""), /file deletion is blocked/i);
+
+  const blockedFileMove = await request("127.0.0.1", "/api/files/move", { method: "POST", body: { tab: tabId, path: viewerRelative, toPath: "files-fixture/blocked-move.txt", confirmed: true } });
+  assert.equal(blockedFileMove.status, 409, "file moves should be blocked while Natural Conversation is active");
+  assert.match(String(blockedFileMove.body?.error || ""), /file moves are blocked/i);
 
   const allowedConversationPrompt = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { message: "Explain the current repo briefly", tab: tabId } });
   assert.equal(allowedConversationPrompt.status, 200, "ordinary prompts remain allowed while Natural Conversation is active");
@@ -1338,6 +1402,18 @@ try {
       body: { tab: tabId, path: viewerRelative },
     });
     assert.equal(remoteFileOpenDefault.status, 403, "opening files in the default editor must be localhost-only");
+
+    const remoteFileDelete = await request(lan, "/api/files", {
+      method: "DELETE",
+      body: { tab: tabId, path: viewerRelative, confirmed: true },
+    });
+    assert.equal(remoteFileDelete.status, 403, "file deletes must be localhost-only");
+
+    const remoteFileMove = await request(lan, "/api/files/move", {
+      method: "POST",
+      body: { tab: tabId, path: viewerRelative, toPath: "files-fixture/remote-move.txt", confirmed: true },
+    });
+    assert.equal(remoteFileMove.status, 403, "file moves must be localhost-only");
 
     const remoteExport = await request(lan, "/api/prompt", {
       method: "POST",
