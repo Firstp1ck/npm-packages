@@ -112,6 +112,7 @@ const elements = {
   optionsForkButton: $("#optionsForkButton"),
   optionsTreeButton: $("#optionsTreeButton"),
   optionsStatsButton: $("#optionsStatsButton"),
+  optionsFooterVisibilityButton: $("#optionsFooterVisibilityButton"),
   gitWorkflowPanel: $("#gitWorkflowPanel"),
   gitWorkflowKicker: $("#gitWorkflowKicker"),
   gitWorkflowTitle: $("#gitWorkflowTitle"),
@@ -132,6 +133,7 @@ const elements = {
   gitChangesStatus: $("#gitChangesStatus"),
   gitChangesBody: $("#gitChangesBody"),
   gitChangesRefreshButton: $("#gitChangesRefreshButton"),
+  gitChangesFetchButton: $("#gitChangesFetchButton"),
   gitChangesPullButton: $("#gitChangesPullButton"),
   gitChangesCloseButton: $("#gitChangesCloseButton"),
   modelControlLabel: $("#modelControlLabel"),
@@ -278,6 +280,14 @@ const elements = {
   appRunnerInfoDialog: $("#appRunnerInfoDialog"),
   appRunnerInfoBody: $("#appRunnerInfoBody"),
   appRunnerInfoCloseButton: $("#appRunnerInfoCloseButton"),
+  gitFooterVisibilityDialog: $("#gitFooterVisibilityDialog"),
+  gitFooterVisibilityBody: $("#gitFooterVisibilityBody"),
+  gitFooterVisibilityStatus: $("#gitFooterVisibilityStatus"),
+  gitFooterVisibilitySelectAllButton: $("#gitFooterVisibilitySelectAllButton"),
+  gitFooterVisibilitySelectNoneButton: $("#gitFooterVisibilitySelectNoneButton"),
+  gitFooterVisibilityCloseButton: $("#gitFooterVisibilityCloseButton"),
+  gitFooterVisibilityResetButton: $("#gitFooterVisibilityResetButton"),
+  gitFooterVisibilityApplyButton: $("#gitFooterVisibilityApplyButton"),
   statsOverlayDialog: $("#statsOverlayDialog"),
   statsOverlaySubtitle: $("#statsOverlaySubtitle"),
   statsOverlayScope: $("#statsOverlayScope"),
@@ -346,7 +356,8 @@ let foregroundReconcileTimer = null;
 let eventSource = null;
 let activeDialog = null;
 let activeGitPrDialogResolve = null;
-let gitChangesState = { loading: false, pulling: false, error: "", message: "", pullResult: null, data: null, tabId: null };
+let gitChangesState = { loading: false, pulling: false, fetching: false, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, data: null, operation: null, lastFetch: null, tabId: null };
+let gitToolsState = { tabId: null, openSections: new Set(), cache: {}, busy: new Set(), notice: {} };
 let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
@@ -541,6 +552,58 @@ const GIT_FOOTER_WEBUI_PAYLOAD_TYPE = "firstpick.git-footer-status.footer";
 const GIT_FOOTER_WEBUI_PAYLOAD_VERSION = 1;
 const GIT_FOOTER_WEBUI_PAYLOAD_CACHE_KEY = "pi-webui-git-footer-webui-payload-cache";
 const GIT_FOOTER_STATUS_SETUP_STORAGE_KEY = "pi-webui-git-footer-status-setup";
+const GIT_FOOTER_WEBUI_VISIBILITY_DEFAULTS = Object.freeze({
+  tokens: true,
+  cache: true,
+  pi: true,
+  speed: true,
+  cost: true,
+  context: true,
+  model: true,
+  thinking: true,
+  cwd: true,
+  "cwd-branch": true,
+  "git-status": true,
+  "extension-statuses": true,
+  git: true,
+  "git-state": true,
+  sync: true,
+  changes: true,
+  "git-extra": true,
+  worktree: true,
+  "context-meta": true,
+  "git-branch-indicator": false,
+  "git-detached": true,
+  "git-operation": true,
+  "git-ahead": true,
+  "git-behind": true,
+  "git-upstream": true,
+  "git-staged": true,
+  "git-unstaged": true,
+  "git-untracked": true,
+  "git-conflicted": true,
+  "git-clean": true,
+  "git-stash": true,
+  "git-submodules": true,
+  "git-worktrees": true,
+  "git-tag": true,
+  "git-last-commit-age": true,
+  "git-signing-mismatch": true,
+  "webui-fetch-state": true,
+  "webui-refresh-button": true,
+  "webui-details-button": true,
+  "webui-cwd-picker": true,
+  "webui-pi-calibration": true,
+  "webui-context-auto-compaction": true,
+  "webui-branch-picker": true,
+  "webui-git-init": true,
+  "webui-sync-push": true,
+  "webui-changes-modal": true,
+  "webui-git-tools-modal": true,
+  "webui-model-picker": true,
+  "webui-thinking-picker": true,
+  "webui-changed-files-popover": true,
+});
 const GIT_INIT_STACK_STORAGE_KEY = "pi-webui-git-init-stack";
 const STATS_WEBUI_STATUS_KEY = "stats-webui";
 const STATS_WEBUI_PAYLOAD_TYPE = "firstpick.pi-extension-stats.overlay";
@@ -853,6 +916,7 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["conversation", "naturalConversation"],
   ["stats", "statsCommand"],
   ["git-footer-refresh", "gitFooterStatus"],
+  ["git-footer-visibility", "gitFooterStatus"],
   ["todo-progress-status", "todoProgressWidget"],
 ]);
 const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
@@ -887,6 +951,8 @@ let optionalFeaturePackageStatusError = "";
 const gitFooterPayloadRefreshInFlightByTab = new Set();
 const gitFooterSyncPushInFlightByTab = new Set();
 const gitFooterPiCalibrationInFlightByTab = new Set();
+let gitFooterVisibilityApplyInFlight = false;
+let gitFooterVisibilityDirty = false;
 
 function createGitWorkflowActionsDone(patch = {}) {
   return {
@@ -6514,7 +6580,7 @@ function restoreActiveDraft() {
 
 function focusPromptInput({ defer = false } = {}) {
   const focus = () => {
-    if (!elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
+    if (!elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
     try {
       elements.promptInput.focus({ preventScroll: true });
     } catch {
@@ -6679,6 +6745,7 @@ function resetActiveTabUi() {
   hideCommandSuggestions();
   cancelPendingDialogs();
   if (elements.nativeCommandDialog.open) closeNativeCommandDialog();
+  if (elements.gitFooterVisibilityDialog?.open) closeGitFooterVisibilityDialog();
   if (pathPickerState) closePathPicker(null);
   bindGitWorkflowToActiveTab();
   resetChatOutput();
@@ -8361,6 +8428,297 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   thinking: "Reasoning/thinking effort for this tab.",
 };
 
+const GIT_FOOTER_VISIBILITY_GROUPS = Object.freeze([
+  {
+    label: "Cards & chips",
+    description: "Main footer cards and extra status chips rendered in the browser footer.",
+    keys: ["tokens", "cache", "pi", "speed", "cost", "context", "cwd", "git", "git-state", "sync", "changes", "git-extra", "worktree", "model", "thinking", "context-meta"],
+  },
+  {
+    label: "Git subitems",
+    description: "Fine-grained pieces inside the Git branch, sync, changes, and git+ chips.",
+    keys: ["git-branch-indicator", "git-detached", "git-operation", "git-ahead", "git-behind", "git-upstream", "git-staged", "git-unstaged", "git-untracked", "git-conflicted", "git-clean", "git-stash", "git-submodules", "git-worktrees", "git-tag", "git-last-commit-age", "git-signing-mismatch", "webui-fetch-state"],
+  },
+  {
+    label: "WebUI actions & modals",
+    description: "Buttons, pickers, popovers, and modal affordances attached to footer chips.",
+    keys: ["webui-refresh-button", "webui-details-button", "webui-cwd-picker", "webui-pi-calibration", "webui-context-auto-compaction", "webui-branch-picker", "webui-git-init", "webui-sync-push", "webui-changes-modal", "webui-git-tools-modal", "webui-model-picker", "webui-thinking-picker", "webui-changed-files-popover"],
+  },
+  {
+    label: "Native parity keys",
+    description: "Keys shared with the native footer command set; these are kept for parity even when they have little browser-visible effect.",
+    keys: ["cwd-branch", "git-status", "extension-statuses"],
+  },
+]);
+const GIT_FOOTER_VISIBILITY_GROUPED_KEYS = new Set(GIT_FOOTER_VISIBILITY_GROUPS.flatMap((group) => group.keys));
+const GIT_FOOTER_VISIBILITY_DIALOG_KEYS = Object.freeze([
+  ...GIT_FOOTER_VISIBILITY_GROUPS.flatMap((group) => group.keys),
+  ...Object.keys(GIT_FOOTER_WEBUI_VISIBILITY_DEFAULTS).filter((key) => !GIT_FOOTER_VISIBILITY_GROUPED_KEYS.has(key)),
+]);
+const GIT_FOOTER_VISIBILITY_LABELS = Object.freeze({
+  tokens: "Tokens card",
+  cache: "Cache card",
+  pi: "PI estimate card",
+  speed: "Speed card",
+  cost: "Cost card",
+  context: "Context card",
+  cwd: "Working directory chip",
+  git: "Git branch chip",
+  "git-state": "Git state chip",
+  sync: "Sync chip",
+  changes: "Changes chip",
+  "git-extra": "Git+ chip",
+  worktree: "Worktree chip",
+  model: "Model chip",
+  thinking: "Thinking chip",
+  "context-meta": "Context meta chip",
+  "git-branch-indicator": "Branch indicator",
+  "git-detached": "Detached marker",
+  "git-operation": "Operation marker",
+  "git-ahead": "Ahead count",
+  "git-behind": "Behind count",
+  "git-upstream": "Upstream name",
+  "git-staged": "Staged count",
+  "git-unstaged": "Unstaged count",
+  "git-untracked": "Untracked count",
+  "git-conflicted": "Conflicted count",
+  "git-clean": "Clean marker",
+  "git-stash": "Stash count",
+  "git-submodules": "Submodule state",
+  "git-worktrees": "Worktree count",
+  "git-tag": "HEAD tag",
+  "git-last-commit-age": "Last commit age",
+  "git-signing-mismatch": "Signing mismatch",
+  "webui-fetch-state": "Fetch state",
+  "webui-refresh-button": "Refresh button",
+  "webui-details-button": "Details button",
+  "webui-cwd-picker": "CWD picker",
+  "webui-pi-calibration": "PI calibration action",
+  "webui-context-auto-compaction": "Auto-compaction action",
+  "webui-branch-picker": "Branch/worktree picker",
+  "webui-git-init": "Git init affordance",
+  "webui-sync-push": "Sync push action",
+  "webui-changes-modal": "Changes modal",
+  "webui-git-tools-modal": "Git tools modal",
+  "webui-model-picker": "Model picker",
+  "webui-thinking-picker": "Thinking picker",
+  "webui-changed-files-popover": "Changed-files popover",
+  "cwd-branch": "CWD branch suffix",
+  "git-status": "Native git status line",
+  "extension-statuses": "Extension status line",
+});
+const GIT_FOOTER_VISIBILITY_HINTS = Object.freeze({
+  "context-meta": "Secondary context chip shown in the footer details row.",
+  "git-branch-indicator": "Optional branch glyph/name inside the generated git state section; off by default in WebUI.",
+  "git-detached": "Detached-HEAD warning inside the git state chip.",
+  "git-operation": "Merge/rebase/cherry-pick/revert/bisect operation text inside the git state chip.",
+  "git-ahead": "Outgoing commit count inside the sync chip.",
+  "git-behind": "Incoming commit count inside the sync/changes chips.",
+  "git-upstream": "Tracked upstream branch name inside the sync chip.",
+  "git-staged": "Staged-file count inside the changes chip.",
+  "git-unstaged": "Modified-but-unstaged count inside the changes chip.",
+  "git-untracked": "Untracked-file count inside the changes chip.",
+  "git-conflicted": "Conflict count inside the changes chip.",
+  "git-clean": "Clean working-tree checkmark inside the changes chip.",
+  "git-stash": "Stash count inside the git+ chip.",
+  "git-submodules": "Dirty submodule count inside the git+ chip.",
+  "git-worktrees": "Repository worktree count inside the git+ chip.",
+  "git-tag": "Tag at HEAD inside the git+ chip.",
+  "git-last-commit-age": "Last-commit age inside the git+ chip.",
+  "git-signing-mismatch": "Signing-key mismatch marker inside the git+ chip.",
+  "webui-fetch-state": "Fetch progress/success/error marker in the changes chip.",
+  "webui-refresh-button": "Floating footer refresh button.",
+  "webui-details-button": "Mobile/details-row expander button.",
+  "webui-cwd-picker": "Click action on the working-directory chip.",
+  "webui-pi-calibration": "Click action on the PI card for calibration/probe commands.",
+  "webui-context-auto-compaction": "Click action on context chips for auto-compaction.",
+  "webui-branch-picker": "Click action on the git branch/worktree chips.",
+  "webui-git-init": "Git initialization affordance when a tab has no repository.",
+  "webui-sync-push": "Click-to-push action on outgoing sync chips.",
+  "webui-changes-modal": "Click action opening the changes/conflicts modal.",
+  "webui-git-tools-modal": "Click action opening extra git tools.",
+  "webui-model-picker": "Click action opening the footer model picker.",
+  "webui-thinking-picker": "Click action opening the thinking-effort picker.",
+  "webui-changed-files-popover": "Hover/focus popover listing changed files from the changes chip.",
+  "cwd-branch": "Native footer branch suffix for the cwd text; included here for command parity.",
+  "git-status": "Native footer git status status-entry gate; included here for command parity.",
+  "extension-statuses": "Native footer extension-status gate; included here for command parity.",
+});
+
+function gitFooterVisibilityLabel(key) {
+  return GIT_FOOTER_VISIBILITY_LABELS[key] || String(key).split("-").map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : part).join(" ");
+}
+
+function gitFooterVisibilityHint(key) {
+  return GIT_FOOTER_VISIBILITY_HINTS[key] || GIT_FOOTER_TOOLTIP_COPY[key] || `Controls the ${key} footer visibility key for the Web UI.`;
+}
+
+function gitFooterVisibilityCommandName() {
+  return resolveAvailableCommandName("git-footer-visibility", { rpcOnly: true });
+}
+
+function gitFooterVisibilityCommandAvailable() {
+  return !!gitFooterVisibilityCommandName();
+}
+
+function currentGitFooterVisibilityState() {
+  return normalizeGitFooterWebuiVisibility(parseGitFooterWebuiPayload()?.visibility);
+}
+
+function setGitFooterVisibilityStatus(message = "", level = "muted") {
+  if (!elements.gitFooterVisibilityStatus) return;
+  elements.gitFooterVisibilityStatus.textContent = message;
+  elements.gitFooterVisibilityStatus.className = `git-footer-visibility-status ${level || "muted"}`;
+  elements.gitFooterVisibilityStatus.hidden = !message;
+}
+
+function setGitFooterVisibilityBusy(busy) {
+  gitFooterVisibilityApplyInFlight = !!busy;
+  const commandAvailable = gitFooterVisibilityCommandAvailable();
+  for (const button of [elements.gitFooterVisibilityApplyButton, elements.gitFooterVisibilityResetButton]) {
+    if (button) button.disabled = gitFooterVisibilityApplyInFlight || !commandAvailable;
+  }
+  const inputs = elements.gitFooterVisibilityBody?.querySelectorAll("input[data-git-footer-visibility-key]") || [];
+  for (const input of inputs) input.disabled = gitFooterVisibilityApplyInFlight || !commandAvailable;
+  for (const button of [elements.gitFooterVisibilitySelectAllButton, elements.gitFooterVisibilitySelectNoneButton]) {
+    if (button) button.disabled = gitFooterVisibilityApplyInFlight || !commandAvailable;
+  }
+  if (elements.gitFooterVisibilityCloseButton) elements.gitFooterVisibilityCloseButton.disabled = gitFooterVisibilityApplyInFlight;
+}
+
+function renderGitFooterVisibilityToggle(key, visibility) {
+  const label = make("label", "toggle-control git-footer-visibility-toggle");
+  const input = make("input");
+  input.type = "checkbox";
+  input.checked = visibility[key] ?? true;
+  input.dataset.gitFooterVisibilityKey = key;
+  input.addEventListener("change", () => {
+    gitFooterVisibilityDirty = true;
+    setGitFooterVisibilityStatus("Unsaved WebUI footer visibility changes.", "warn");
+  });
+  const text = make("span", "git-footer-visibility-toggle-text");
+  text.append(
+    make("span", "toggle-control-label", gitFooterVisibilityLabel(key)),
+    make("span", "toggle-control-hint", gitFooterVisibilityHint(key)),
+    make("code", "git-footer-visibility-key", key),
+  );
+  label.append(input, text);
+  return label;
+}
+
+function renderGitFooterVisibilityDialog() {
+  if (!elements.gitFooterVisibilityBody) return;
+  const visibility = currentGitFooterVisibilityState();
+  elements.gitFooterVisibilityBody.replaceChildren();
+  for (const group of GIT_FOOTER_VISIBILITY_GROUPS) {
+    const section = make("section", "git-footer-visibility-group");
+    const header = make("div", "git-footer-visibility-group-header");
+    header.append(make("h3", "", group.label), make("p", "muted", group.description));
+    const grid = make("div", "git-footer-visibility-grid");
+    for (const key of group.keys) grid.append(renderGitFooterVisibilityToggle(key, visibility));
+    section.append(header, grid);
+    elements.gitFooterVisibilityBody.append(section);
+  }
+  setGitFooterVisibilityBusy(gitFooterVisibilityApplyInFlight);
+  if (!gitFooterVisibilityDirty) {
+    setGitFooterVisibilityStatus(
+      gitFooterVisibilityCommandAvailable()
+        ? "Runtime changes last until Pi/package restart. Use PI_GIT_FOOTER_WEBUI_HIDE or per-key env vars for persistence."
+        : commandUnavailableMessage("git-footer-visibility"),
+      gitFooterVisibilityCommandAvailable() ? "muted" : "warn",
+    );
+  }
+}
+
+function readGitFooterVisibilitySelection() {
+  const next = currentGitFooterVisibilityState();
+  const inputs = elements.gitFooterVisibilityBody?.querySelectorAll("input[data-git-footer-visibility-key]") || [];
+  for (const input of inputs) {
+    const key = input.dataset.gitFooterVisibilityKey;
+    if (key && key in next) next[key] = input.checked;
+  }
+  return next;
+}
+
+async function runGitFooterVisibilityCommand(action, keys = []) {
+  const commandName = gitFooterVisibilityCommandName();
+  if (!commandName) throw new Error(commandUnavailableMessage("git-footer-visibility"));
+  const suffix = keys.length > 0 ? ` ${keys.join(" ")}` : "";
+  await sendPrompt("prompt", `/${commandName} ${action} webui${suffix}`, { targetTabId: activeTabId, throwOnError: true });
+}
+
+async function applyGitFooterVisibilityDialog() {
+  if (gitFooterVisibilityApplyInFlight) return;
+  const current = currentGitFooterVisibilityState();
+  const next = readGitFooterVisibilitySelection();
+  const show = [];
+  const hide = [];
+  for (const key of GIT_FOOTER_VISIBILITY_DIALOG_KEYS) {
+    if (next[key] === current[key]) continue;
+    if (next[key]) show.push(key);
+    else hide.push(key);
+  }
+  if (show.length === 0 && hide.length === 0) {
+    gitFooterVisibilityDirty = false;
+    setGitFooterVisibilityStatus("No footer visibility changes to apply.", "muted");
+    return;
+  }
+
+  setGitFooterVisibilityBusy(true);
+  setGitFooterVisibilityStatus("Applying WebUI footer visibility…", "muted");
+  try {
+    if (hide.length) await runGitFooterVisibilityCommand("hide", hide);
+    if (show.length) await runGitFooterVisibilityCommand("show", show);
+    gitFooterVisibilityDirty = false;
+    setGitFooterVisibilityStatus(`Applied ${hide.length + show.length} WebUI footer visibility change${hide.length + show.length === 1 ? "" : "s"}.`, "success");
+    requestGitFooterWebuiPayload(activeTabContext(), { force: true, allowDuringRun: true });
+    renderFooter();
+  } catch (error) {
+    setGitFooterVisibilityStatus(error.message || String(error), "error");
+  } finally {
+    setGitFooterVisibilityBusy(false);
+  }
+}
+
+async function resetGitFooterVisibilityDialog() {
+  if (gitFooterVisibilityApplyInFlight) return;
+  setGitFooterVisibilityBusy(true);
+  setGitFooterVisibilityStatus("Resetting WebUI footer visibility…", "muted");
+  try {
+    await runGitFooterVisibilityCommand("reset");
+    gitFooterVisibilityDirty = false;
+    setGitFooterVisibilityStatus("Reset WebUI footer visibility overrides.", "success");
+    requestGitFooterWebuiPayload(activeTabContext(), { force: true, allowDuringRun: true });
+  } catch (error) {
+    setGitFooterVisibilityStatus(error.message || String(error), "error");
+  } finally {
+    setGitFooterVisibilityBusy(false);
+  }
+}
+
+function setGitFooterVisibilitySelection(checked) {
+  const inputs = elements.gitFooterVisibilityBody?.querySelectorAll("input[data-git-footer-visibility-key]") || [];
+  for (const input of inputs) input.checked = !!checked;
+  gitFooterVisibilityDirty = true;
+  setGitFooterVisibilityStatus(checked ? "Selected all WebUI footer options." : "Deselected all WebUI footer options.", "warn");
+}
+
+function openGitFooterVisibilityDialog() {
+  if (!elements.gitFooterVisibilityDialog) return;
+  setOptionsMenuOpen(false);
+  hideFooterTooltip();
+  gitFooterVisibilityDirty = false;
+  renderGitFooterVisibilityDialog();
+  if (!elements.gitFooterVisibilityDialog.open) elements.gitFooterVisibilityDialog.showModal();
+  queueMicrotask(() => elements.gitFooterVisibilityBody?.querySelector("input")?.focus());
+}
+
+function closeGitFooterVisibilityDialog() {
+  gitFooterVisibilityDirty = false;
+  gitFooterVisibilityApplyInFlight = false;
+  if (elements.gitFooterVisibilityDialog?.open) elements.gitFooterVisibilityDialog.close();
+}
+
 function cleanFooterPayloadText(value, fallback = "", maxLength = 240) {
   const text = cleanStatusText(value).slice(0, maxLength);
   return text || fallback;
@@ -8381,6 +8739,30 @@ function normalizeFooterPayloadChangedFile(value) {
   return file;
 }
 
+function normalizeGitFooterWebuiVisibility(value) {
+  const visibility = { ...GIT_FOOTER_WEBUI_VISIBILITY_DEFAULTS };
+  if (!value || typeof value !== "object") return visibility;
+  for (const key of Object.keys(visibility)) {
+    if (typeof value[key] === "boolean") visibility[key] = value[key];
+  }
+  return visibility;
+}
+
+function gitFooterPayloadVisible(payload, key) {
+  if (!key) return true;
+  if (typeof payload?.visibility?.[key] === "boolean") return payload.visibility[key];
+  return GIT_FOOTER_WEBUI_VISIBILITY_DEFAULTS[key] ?? true;
+}
+
+function currentGitFooterPayloadVisible(key) {
+  return gitFooterPayloadVisible(parseGitFooterWebuiPayload(), key);
+}
+
+function gitFooterPayloadVisibilityKey(payload) {
+  const visibility = normalizeGitFooterWebuiVisibility(payload?.visibility);
+  return Object.keys(visibility).sort().map((key) => `${key}:${visibility[key] ? 1 : 0}`).join("|");
+}
+
 function normalizeFooterPayloadChip(value, index) {
   if (!value || typeof value !== "object") return null;
   const key = cleanFooterPayloadText(value.key, `item-${index}`).replace(/[^a-z0-9_.:-]/gi, "-").slice(0, 64) || `item-${index}`;
@@ -8396,7 +8778,14 @@ function normalizeFooterPayloadChip(value, index) {
   if (FOOTER_PAYLOAD_ACTIONS.has(value.action)) chip.action = value.action;
   if (Array.isArray(value.files)) {
     const files = value.files.map(normalizeFooterPayloadChangedFile).filter(Boolean).slice(0, 80);
-    if (files.length) chip.files = files;
+    if (files.length) {
+      chip.files = files;
+      const filesTotal = Number(value.filesTotal);
+      if (value.filesTruncated === true && Number.isFinite(filesTotal) && filesTotal > files.length) {
+        chip.filesTotal = filesTotal;
+        chip.filesTruncated = true;
+      }
+    }
   }
   if (value.contextUsage && typeof value.contextUsage === "object") {
     const percent = typeof value.contextUsage.percent === "number" ? value.contextUsage.percent : Number.NaN;
@@ -8421,8 +8810,9 @@ function parseGitFooterWebuiPayloadRaw(raw) {
     if (!parsed || parsed.type !== GIT_FOOTER_WEBUI_PAYLOAD_TYPE || parsed.version !== GIT_FOOTER_WEBUI_PAYLOAD_VERSION) return null;
     const main = Array.isArray(parsed.main) ? parsed.main.map(normalizeFooterPayloadChip).filter(Boolean).slice(0, 8) : [];
     const meta = Array.isArray(parsed.meta) ? parsed.meta.map(normalizeFooterPayloadChip).filter(Boolean).slice(0, 10) : [];
-    if (!main.length && !meta.length) return null;
-    return { main, meta };
+    const visibility = normalizeGitFooterWebuiVisibility(parsed.visibility);
+    if (!main.length && !meta.length && !parsed.visibility) return null;
+    return { main, meta, visibility };
   } catch {
     return null;
   }
@@ -8525,14 +8915,23 @@ function parseGitFooterWebuiPayload() {
   return parseGitFooterWebuiPayloadRaw(readCachedGitFooterWebuiPayloadRaw());
 }
 
+function footerPayloadChipVisible(payload, chip, area = "main") {
+  if (!chip?.key) return true;
+  if (area === "meta" && chip.key === "context") return gitFooterPayloadVisible(payload, "context-meta");
+  return gitFooterPayloadVisible(payload, chip.key);
+}
+
 function footerPayloadWithLiveModel(payload) {
   if (!payload) return payload;
+  const visible = (key) => gitFooterPayloadVisible(payload, key);
+  const mainSource = payload.main.filter((chip) => footerPayloadChipVisible(payload, chip, "main"));
+  const metaSource = payload.meta.filter((chip) => footerPayloadChipVisible(payload, chip, "meta"));
   const model = currentState?.model ? shortModelLabel(currentState.model) : "";
   const effort = footerThinkingDisplay();
   const workspace = normalizeGitWorkspaceInfo(activeTab()?.gitWorkspace);
   const worktreeLabel = gitWorkspaceBadgeLabel(workspace);
-  const hasThinkingChip = [...payload.main, ...payload.meta].some((chip) => chip?.key === "thinking");
-  const hasWorktreeChip = [...payload.main, ...payload.meta].some((chip) => chip?.key === "worktree");
+  const hasThinkingChip = [...mainSource, ...metaSource].some((chip) => chip?.key === "thinking");
+  const hasWorktreeChip = [...mainSource, ...metaSource].some((chip) => chip?.key === "worktree");
   const contextChip = (chip) => {
     const usageUnknown = contextUsageUnknownAfterCompaction();
     const value = usageUnknown ? footerContextDisplayWithAuto(unknownFooterContextText(chip?.contextUsage)) : footerContextDisplayWithAuto(chip?.value);
@@ -8543,16 +8942,17 @@ function footerPayloadWithLiveModel(payload) {
   const worktreeChip = () => ({ key: "worktree", label: "worktree", value: worktreeLabel, icon: "🌳", tone: workspace?.isMainWorktree ? "teal" : "green", title: workspace?.worktreePath || "Git worktree" });
   const splitChip = (chip) => {
     if (chip?.key === "context") return [contextChip(chip)];
-    if (chip?.key === "thinking") return [effortChip(chip)];
+    if (chip?.key === "thinking") return visible("thinking") ? [effortChip(chip)] : [];
     if (chip?.key !== "model" || !model) return [chip];
     const modelChip = { ...chip, value: model, title: `model: ${model}` };
-    return hasThinkingChip ? [modelChip] : [modelChip, effortChip(chip)];
+    return hasThinkingChip || !visible("thinking") ? [modelChip] : [modelChip, effortChip(chip)];
   };
-  const meta = payload.meta.flatMap(splitChip);
-  if (worktreeLabel && !hasWorktreeChip) meta.splice(Math.min(meta.length, 2), 0, worktreeChip());
+  const meta = metaSource.flatMap(splitChip);
+  if (visible("worktree") && worktreeLabel && !hasWorktreeChip) meta.splice(Math.min(meta.length, 2), 0, worktreeChip());
   return {
-    main: payload.main.flatMap(splitChip),
+    main: mainSource.flatMap(splitChip),
     meta,
+    visibility: payload.visibility,
   };
 }
 
@@ -8669,26 +9069,29 @@ function renderChangedFilesGroup(kind, files) {
   return group;
 }
 
-function applyFooterChangedFilesDropdown(node, chip) {
-  if (chip?.key !== "changes" || !Array.isArray(chip.files) || chip.files.length === 0) return node;
+function applyFooterChangedFilesDropdown(node, chip, payload) {
+  if (!gitFooterPayloadVisible(payload, "webui-changed-files-popover") || chip?.key !== "changes" || !Array.isArray(chip.files) || chip.files.length === 0) return node;
   node.classList.add("footer-changes-with-files");
   node.tabIndex = 0;
   node.removeAttribute("data-tooltip");
   node.setAttribute("aria-label", `changes: ${chip.value}. Hover or focus to choose changed files. Click a file to add it as an @ reference.`);
 
   const popover = make("span", "footer-changed-files-popover");
-  popover.append(make("span", "footer-changed-files-title", "Changed files"));
+  popover.append(make("span", "footer-changed-files-title", chip.filesTruncated ? `Changed files (showing ${chip.files.length} of ${chip.filesTotal})` : "Changed files"));
   for (const kind of FOOTER_CHANGED_FILE_KIND_ORDER) {
     const group = renderChangedFilesGroup(kind, chip.files.filter((file) => file.kind === kind));
     if (group) popover.append(group);
   }
+  if (chip.filesTruncated) popover.append(make("span", "footer-changed-files-truncated", `${chip.filesTotal - chip.files.length} more files not shown; open the Git Changes dialog for the full list.`));
   node.append(popover);
   return node;
 }
 
-function renderGitFooterPayloadMetric(chip) {
+function renderGitFooterPayloadMetric(chip, payload) {
   const options = { tooltipAlign: gitFooterTooltipAlign(chip) };
-  const action = applyGitFooterPiCalibrationOptions(chip, options) || applyGitFooterContextToggleOptions(chip, options);
+  const piAction = gitFooterPayloadVisible(payload, "webui-pi-calibration") ? applyGitFooterPiCalibrationOptions(chip, options) : "";
+  const contextAction = gitFooterPayloadVisible(payload, "webui-context-auto-compaction") ? applyGitFooterContextToggleOptions(chip, options) : "";
+  const action = piAction || contextAction;
   options.title = gitFooterPayloadTooltip(chip, { action });
   const node = footerMetric(chip.icon || "•", chip.label, chip.value, chip.tone ? `tone-${chip.tone}` : "", options);
   return chip.contextUsage ? applyFooterContextUsage(node, chip.contextUsage) : node;
@@ -8703,6 +9106,12 @@ function gitFooterSyncChipHasOutgoing(chip) {
   return chip?.key === "sync" && gitFooterSyncOutgoingCount(chip.value) > 0;
 }
 
+function gitFooterCurrentBranch() {
+  const gitChip = parseGitFooterWebuiPayload()?.meta?.find((chip) => chip.key === "git");
+  const value = cleanFooterPayloadText(gitChip?.value, "").toLowerCase();
+  return value && value !== "no repo" ? cleanFooterPayloadText(gitChip.value, "") : "";
+}
+
 async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
   if (!tabId || gitFooterSyncPushInFlightByTab.has(tabId)) return;
   const outgoing = gitFooterSyncOutgoingCount(syncValue);
@@ -8711,14 +9120,47 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
   const tab = tabs.find((item) => item.id === tabId);
   const target = tab?.title || tab?.cwd || "this tab";
   hideFooterTooltip();
-  if (!window.confirm(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?`)) return;
+  const branch = gitFooterCurrentBranch();
+  const protectedWarning = ["main", "master"].includes(branch)
+    ? `\n\nWarning: ${branch} is usually a protected/shared branch. Consider pushing a feature branch and opening a PR instead.`
+    : "";
+  if (!window.confirm(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?${protectedWarning}`)) return;
 
   gitFooterSyncPushInFlightByTab.add(tabId);
   if (isCurrentTabContext(tabContext)) renderFooter();
   try {
     const response = await api("/api/git-workflow/push", { method: "POST", body: {}, tabId });
     if (!response.ok) {
-      const detail = [response.error, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
+      if (response.code === "NO_UPSTREAM") {
+        const publish = window.confirm(`${response.error}\n\n${response.hint || ""}\n\nRun git push -u to publish ${branch || "the current branch"} and set its upstream?`);
+        if (publish) {
+          const upstreamResponse = await api("/api/git-workflow/push", { method: "POST", body: { setUpstream: true }, tabId });
+          if (!upstreamResponse.ok) throw new Error([upstreamResponse.error, upstreamResponse.hint].filter(Boolean).join("\n"));
+          addEvent(`Published ${upstreamResponse.data?.branch || "branch"} to ${upstreamResponse.data?.remote || "the remote"} and set its upstream.`, "success");
+          requestGitFooterWebuiPayload(tabContext, { force: true });
+          return;
+        }
+        throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
+      }
+      if (response.code === "NON_FAST_FORWARD") {
+        const forcePush = window.confirm([
+          response.error,
+          "",
+          response.hint || "",
+          "",
+          "Recommended: open the Git Changes dialog, fetch, and review the incoming diff first.",
+          `DANGER: force-push ${branch || "the current branch"} with --force-with-lease instead? This rewrites the remote branch (but still refuses if the remote moved past what you fetched).`,
+        ].join("\n"));
+        if (forcePush) {
+          const forceResponse = await api("/api/git-workflow/push", { method: "POST", body: { forceWithLease: true, confirmed: true }, tabId });
+          if (!forceResponse.ok) throw new Error([forceResponse.error, forceResponse.hint].filter(Boolean).join("\n"));
+          addEvent("Force-pushed with --force-with-lease.", "success");
+          requestGitFooterWebuiPayload(tabContext, { force: true });
+          return;
+        }
+        throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
+      }
+      const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
       throw new Error(detail || "git push failed");
     }
     addEvent(`Pushed ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"}.`, "success");
@@ -8731,43 +9173,51 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
   }
 }
 
-function renderGitFooterPayloadMeta(chip, tab) {
+function renderGitFooterPayloadMeta(chip, tab, payload) {
   const options = {};
+  const visible = (key) => gitFooterPayloadVisible(payload, key);
   let action = "";
-  if (chip.key === "cwd" && tab) {
+  if (chip.key === "cwd" && tab && visible("webui-cwd-picker")) {
     options.onClick = changeActiveTabCwd;
     action = `Click to change the working directory for ${tab.title}.`;
-  } else if (chip.key === "git" && cleanFooterPayloadText(chip.value, "").toLowerCase() === "no repo") {
+  } else if (chip.key === "git" && cleanFooterPayloadText(chip.value, "").toLowerCase() === "no repo" && visible("webui-git-init")) {
     options.onClick = () => startGitInitWorkflow();
     action = "No Git repository detected. Click to initialize a repo, create README.md, add origin, and push main.";
-  } else if (chip.key === "git") {
+  } else if (chip.key === "git" && visible("webui-branch-picker")) {
     options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
     action = "Click to open, create, or switch branches. Worktree actions are the safe default for parallel work.";
-  } else if (chip.key === "worktree") {
+  } else if (chip.key === "worktree" && visible("webui-branch-picker")) {
     options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
     action = "Click to manage branch worktrees for this repository.";
-  } else if (chip.key === "sync" && gitFooterSyncChipHasOutgoing(chip)) {
+  } else if (chip.key === "sync" && visible("webui-sync-push") && gitFooterSyncChipHasOutgoing(chip)) {
     const tabId = tab?.id || activeTabId;
     const inFlight = tabId ? gitFooterSyncPushInFlightByTab.has(tabId) : false;
     options.onClick = () => pushGitFooterSync(tabId, chip.value);
     options.ariaBusy = inFlight;
     options.disabled = inFlight;
     action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
-  } else if (chip.key === "changes") {
+  } else if (chip.key === "changes" && visible("webui-changes-modal")) {
     options.onClick = openGitChangesDialog;
     action = "Click to view the current git diff.";
-  } else if (chip.key === "model") {
+  } else if (chip.key === "git-state" && visible("webui-changes-modal")) {
+    options.onClick = openGitChangesDialog;
+    action = "Click to open the conflicts and operation panel with continue/abort actions.";
+  } else if (chip.key === "git-extra" && visible("webui-git-tools-modal")) {
+    const toolsSection = gitToolsSectionForExtraChip(chip.value);
+    options.onClick = () => openGitToolsFromFooter(toolsSection);
+    action = `Click to open git tools (${toolsSection} first): stash, worktrees, undo, submodules, tags, signing.`;
+  } else if (chip.key === "model" && visible("webui-model-picker")) {
     options.onClick = () => setFooterModelPickerOpen(!footerModelPickerOpen);
     action = "Click to choose another model.";
-  } else if (chip.key === "thinking") {
+  } else if (chip.key === "thinking" && visible("webui-thinking-picker")) {
     options.onClick = () => setFooterThinkingPickerOpen(!footerThinkingPickerOpen);
     action = "Click to change thinking effort.";
   }
-  action = applyGitFooterContextToggleOptions(chip, options) || action;
+  action = (visible("webui-context-auto-compaction") ? applyGitFooterContextToggleOptions(chip, options) : "") || action;
   options.title = gitFooterPayloadTooltip(chip, { action });
   options.tooltipAlign = gitFooterTooltipAlign(chip);
   const node = footerMeta(chip.label, chip.value, footerMetaClassForPayload(chip), options);
-  applyFooterChangedFilesDropdown(node, chip);
+  applyFooterChangedFilesDropdown(node, chip, payload);
   if (["git", "worktree"].includes(chip.key) && options.onClick && cleanFooterPayloadText(chip.value, "").toLowerCase() !== "no repo") {
     node.setAttribute("aria-haspopup", "listbox");
     node.setAttribute("aria-expanded", footerBranchPickerOpen ? "true" : "false");
@@ -8791,12 +9241,12 @@ function gitFooterChipShapeKey(chip) {
   return JSON.stringify(shape);
 }
 
-function gitFooterPickerStateKey() {
+function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
   const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -8848,7 +9298,11 @@ function renderGitFooterRefreshButton() {
 
 function renderGitFooterPayload(payload) {
   const tab = activeTab();
-  const pickerKey = gitFooterPickerStateKey();
+  if (!gitFooterPayloadVisible(payload, "webui-details-button")) mobileFooterExpanded = false;
+  if (!gitFooterPayloadVisible(payload, "webui-model-picker")) footerModelPickerOpen = false;
+  if (!gitFooterPayloadVisible(payload, "webui-thinking-picker")) footerThinkingPickerOpen = false;
+  if (!gitFooterPayloadVisible(payload, "webui-branch-picker")) footerBranchPickerOpen = false;
+  const pickerKey = gitFooterPickerStateKey(payload);
   const mainKeys = payload.main.map(gitFooterChipShapeKey);
   const metaKeys = payload.meta.map(gitFooterChipShapeKey);
 
@@ -8879,23 +9333,28 @@ function renderGitFooterPayload(payload) {
   elements.statusBar.classList.add("statusbar-git-footer");
   document.body.classList.toggle("footer-model-picker-open", isFooterPickerOpen());
 
-  const mainNodes = payload.main.map(renderGitFooterPayloadMetric);
+  const mainNodes = payload.main.map((chip) => renderGitFooterPayloadMetric(chip, payload));
   const row1 = make("div", "footer-line footer-line-main");
   row1.append(...mainNodes);
 
-  const footerToggle = make("button", "footer-details-toggle", mobileFooterExpanded ? "Less" : "Details");
-  footerToggle.type = "button";
-  footerToggle.setAttribute("aria-expanded", mobileFooterExpanded ? "true" : "false");
-  footerToggle.addEventListener("click", () => setMobileFooterExpanded(!mobileFooterExpanded));
-
-  const metaNodes = payload.meta.map((chip) => renderGitFooterPayloadMeta(chip, tab));
+  const metaNodes = payload.meta.map((chip) => renderGitFooterPayloadMeta(chip, tab, payload));
   const row2 = make("div", "footer-line footer-line-meta");
-  row2.append(...metaNodes, footerToggle);
+  const row2Children = [...metaNodes];
+  if (gitFooterPayloadVisible(payload, "webui-details-button")) {
+    const footerToggle = make("button", "footer-details-toggle", mobileFooterExpanded ? "Less" : "Details");
+    footerToggle.type = "button";
+    footerToggle.setAttribute("aria-expanded", mobileFooterExpanded ? "true" : "false");
+    footerToggle.addEventListener("click", () => setMobileFooterExpanded(!mobileFooterExpanded));
+    row2Children.push(footerToggle);
+  }
+  row2.append(...row2Children);
 
-  elements.statusBar.append(row1, row2, renderGitFooterRefreshButton());
-  if (footerModelPickerOpen) elements.statusBar.append(renderFooterModelPicker());
-  if (footerThinkingPickerOpen) elements.statusBar.append(renderFooterThinkingPicker());
-  if (footerBranchPickerOpen) elements.statusBar.append(renderFooterBranchPicker());
+  const statusChildren = [row1, row2];
+  if (gitFooterPayloadVisible(payload, "webui-refresh-button")) statusChildren.push(renderGitFooterRefreshButton());
+  elements.statusBar.append(...statusChildren);
+  if (footerModelPickerOpen && gitFooterPayloadVisible(payload, "webui-model-picker")) elements.statusBar.append(renderFooterModelPicker());
+  if (footerThinkingPickerOpen && gitFooterPayloadVisible(payload, "webui-thinking-picker")) elements.statusBar.append(renderFooterThinkingPicker());
+  if (footerBranchPickerOpen && gitFooterPayloadVisible(payload, "webui-branch-picker")) elements.statusBar.append(renderFooterBranchPicker());
   gitFooterRenderCache = { pickerKey, mainKeys, metaKeys, mainNodes, metaNodes };
   setMobileFooterExpanded(mobileFooterExpanded);
   updateFooterModelPickerPosition();
@@ -9089,7 +9548,81 @@ function renderGitDiffGrid(file) {
   return grid;
 }
 
-function renderGitDiffFile(file) {
+function gitFileActionButtons(actions) {
+  if (!actions?.length) return null;
+  const wrap = make("span", "git-file-actions");
+  for (const action of actions) {
+    const button = make("button", `git-file-action ${action.className || ""}`.trim(), action.label);
+    button.type = "button";
+    button.title = action.title || action.label;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      action.onClick();
+    });
+    wrap.append(button);
+  }
+  return wrap;
+}
+
+function copyGitTextToClipboard(text, label = "text") {
+  navigator.clipboard?.writeText(text)
+    .then(() => addEvent(`Copied ${label}: ${text}`, "info"))
+    .catch(() => addEvent(`Clipboard unavailable; copy the ${label} manually.`, "error"));
+}
+
+function copyGitPathToClipboard(path) {
+  copyGitTextToClipboard(path, "path");
+}
+
+// Git paths are repo-root-relative; the file viewer resolves against the tab
+// cwd. Translate when the tab sits at (or above within) the repo root.
+async function openGitFileFromChanges(repoRelPath) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  const root = gitChangesState.data?.root || "";
+  const tab = tabs.find((item) => item.id === tabId);
+  let viewerPath = repoRelPath;
+  if (root && tab?.cwd) {
+    const absolute = `${root.replace(/\/+$/, "")}/${repoRelPath}`;
+    const cwd = tab.cwd.replace(/\/+$/, "");
+    if (absolute.startsWith(`${cwd}/`)) viewerPath = absolute.slice(cwd.length + 1);
+    else if (root !== cwd) {
+      addEvent(`Cannot open ${repoRelPath}: it is outside this tab's working directory.`, "error");
+      return;
+    }
+  }
+  closeGitChangesDialog();
+  setSidePanelCollapsed(false);
+  await openFileInViewer(viewerPath);
+}
+
+function gitChangesCommonFileActions(path) {
+  return [
+    { label: "Open", title: "Open this file in the WebUI file viewer", onClick: () => openGitFileFromChanges(path) },
+    { label: "Copy path", title: "Copy the repo-relative path", onClick: () => copyGitPathToClipboard(path) },
+  ];
+}
+
+function gitChangesFileActionsFor(sectionKey, path) {
+  if (!path || gitChangesState.loading || gitChangesState.pulling || gitChangesState.fetching) return [];
+  if (sectionKey === "unstaged") {
+    return [
+      { label: "Stage", title: `git add -- ${path}`, onClick: () => runGitFileAction("stage", path) },
+      ...gitChangesCommonFileActions(path),
+      { label: "Discard", className: "danger", title: `git restore -- ${path} (destructive)`, onClick: () => runGitFileAction("discard", path) },
+    ];
+  }
+  if (sectionKey === "staged") {
+    return [
+      { label: "Unstage", title: `git restore --staged -- ${path}`, onClick: () => runGitFileAction("unstage", path) },
+      ...gitChangesCommonFileActions(path),
+    ];
+  }
+  if (sectionKey === "incoming") return [{ label: "Copy path", title: "Copy the repo-relative path", onClick: () => copyGitPathToClipboard(path) }];
+  return [];
+}
+
+function renderGitDiffFile(file, actions = []) {
   const details = make("details", `git-diff-file ${file.className || ""}`.trim());
   details.open = true;
   details.dataset.gitDiffFile = file.path || "diff";
@@ -9098,6 +9631,8 @@ function renderGitDiffFile(file) {
     make("span", "git-diff-file-name", file.path || "diff"),
     make("span", "git-diff-file-stats", file.statsText || `+${file.additions || 0} −${file.deletions || 0}`),
   );
+  const actionButtons = gitFileActionButtons(actions);
+  if (actionButtons) summary.append(actionButtons);
   details.append(summary);
   if (file.hunks?.length) {
     details.append(renderGitDiffGrid(file));
@@ -9115,7 +9650,20 @@ function renderGitDiffSection(section, files) {
     make("div", "git-diff-section-title", section?.label || "Git diff"),
     make("div", "git-diff-section-meta", `${files.length} file${files.length === 1 ? "" : "s"} · ${section?.command || "git diff"}`),
   );
-  wrapper.append(header, ...files.map(renderGitDiffFile));
+  wrapper.append(header);
+  if (section?.truncated) {
+    const notice = make("div", "git-diff-truncated-notice");
+    const fullCommand = String(section?.command || "git diff").replace(/\s--unified=0\b/, "");
+    notice.append(make("span", undefined, `Diff truncated at ${formatBytes(section.capBytes || 0)} — showing the tail. Use the per-file Open buttons for full contents, or run the full command in a terminal:`));
+    notice.append(make("code", "git-tools-command", fullCommand));
+    const copy = make("button", "git-file-action", "Copy command");
+    copy.type = "button";
+    copy.title = "Copy the full diff command";
+    copy.addEventListener("click", () => copyGitTextToClipboard(fullCommand, "command"));
+    notice.append(copy);
+    wrapper.append(notice);
+  }
+  wrapper.append(...files.map((file) => renderGitDiffFile(file, gitChangesFileActionsFor(section?.key, file.path))));
   return wrapper;
 }
 
@@ -9189,9 +9737,21 @@ function renderGitUntrackedLoadingFile(entry) {
 }
 
 function renderGitUntrackedFile(entry) {
-  if (entry.contentMissing) return renderGitUntrackedLoadingFile(entry);
-  if (entry.error || entry.binary) return renderGitUntrackedRawFile(entry);
-  return renderGitDiffFile(gitUntrackedEntryToDiffFile(entry));
+  const node = entry.contentMissing
+    ? renderGitUntrackedLoadingFile(entry)
+    : entry.error || entry.binary
+      ? renderGitUntrackedRawFile(entry)
+      : renderGitDiffFile(gitUntrackedEntryToDiffFile(entry));
+  if (!gitChangesState.loading && !gitChangesState.pulling && !gitChangesState.fetching) {
+    const summary = node.querySelector("summary");
+    const actions = gitFileActionButtons([
+      { label: "Stage", title: `git add -- ${entry.path}`, onClick: () => runGitFileAction("stage", entry.path) },
+      ...gitChangesCommonFileActions(entry.path),
+      { label: "Delete", className: "danger", title: "Delete this untracked file from disk (destructive)", onClick: () => runGitFileAction("delete-untracked", entry.path) },
+    ]);
+    if (summary && actions) summary.append(actions);
+  }
+  return node;
 }
 
 function replaceGitUntrackedEntry(entry, tabId = gitChangesState.tabId) {
@@ -9442,9 +10002,12 @@ function renderGitPullResultPanel(result) {
 
 function renderGitChangesDialog() {
   if (!elements.gitChangesDialog || !elements.gitChangesBody) return;
-  const { loading, pulling, error, message, pullResult, data } = gitChangesState;
+  const { loading, pulling, fetching, error, message, pullResult, data, operation } = gitChangesState;
+  const busyAction = pulling || fetching;
   const behind = Number(data?.remote?.behind ?? data?.summary?.behind ?? 0) || 0;
-  const canPull = behind > 0 && data?.remote?.canPull !== false;
+  const diverged = data?.remote?.diverged === true;
+  const canPull = behind > 0 && data?.remote?.canPull !== false && !diverged;
+  const hasOperation = Boolean(operation?.operation);
   const remoteNotice = !error && data?.remote?.error ? `Incoming diff unavailable: ${data.remote.error}` : "";
   if (elements.gitChangesTitle) elements.gitChangesTitle.textContent = "Git Changes";
   if (elements.gitChangesSubtitle) {
@@ -9452,16 +10015,25 @@ function renderGitChangesDialog() {
     elements.gitChangesSubtitle.textContent = data?.remote?.upstream ? `${base} · upstream ${data.remote.upstream}` : base;
   }
   if (elements.gitChangesRefreshButton) {
-    elements.gitChangesRefreshButton.disabled = loading || pulling;
+    elements.gitChangesRefreshButton.disabled = loading || busyAction;
     elements.gitChangesRefreshButton.textContent = loading ? "Refreshing…" : "Refresh";
   }
+  if (elements.gitChangesFetchButton) {
+    elements.gitChangesFetchButton.disabled = loading || busyAction || !data?.root;
+    elements.gitChangesFetchButton.textContent = fetching ? "Fetching…" : "Fetch";
+    elements.gitChangesFetchButton.title = "Run git fetch --prune to refresh remote tracking state";
+  }
   if (elements.gitChangesPullButton) {
-    elements.gitChangesPullButton.disabled = loading || pulling || !canPull;
+    elements.gitChangesPullButton.disabled = loading || busyAction || !canPull;
     elements.gitChangesPullButton.textContent = pulling ? "Pulling…" : behind > 0 ? `Pull ↓${behind}` : "Pull";
-    elements.gitChangesPullButton.title = canPull ? "Run git pull --ff-only for the current repository" : "No remote commits to pull";
+    elements.gitChangesPullButton.title = canPull
+      ? "Run git pull --ff-only for the current repository"
+      : diverged
+        ? "Local and remote branches have diverged; use the integrate actions below instead of one-click pull."
+        : "No remote commits to pull";
   }
   if (elements.gitChangesStatus) {
-    const statusText = error || (pulling ? "Pulling changes…" : loading ? "Loading git diff…" : message || remoteNotice || (data ? gitChangesGeneratedLabel(data) : ""));
+    const statusText = error || (pulling ? "Pulling changes…" : fetching ? "Fetching from remote…" : loading ? "Loading git diff…" : message || remoteNotice || (data ? gitChangesGeneratedLabel(data) : ""));
     elements.gitChangesStatus.className = `git-changes-status ${error || remoteNotice ? "error" : message ? "success" : "muted"}`;
     elements.gitChangesStatus.textContent = statusText;
     elements.gitChangesStatus.hidden = !elements.gitChangesStatus.textContent;
@@ -9483,7 +10055,18 @@ function renderGitChangesDialog() {
   }
 
   if (pullResult) body.append(renderGitPullResultPanel(pullResult));
+  if (hasOperation) {
+    const panel = renderGitOperationPanel(operation);
+    if (panel) body.append(panel);
+  }
   body.append(renderGitChangesOverview(data));
+  const fetchStateLines = gitChangesFetchStateLines();
+  if (fetchStateLines.length) {
+    const fetchNote = make("div", "git-tools-note git-fetch-state-note");
+    for (const line of fetchStateLines) fetchNote.append(make("div", undefined, line));
+    body.append(fetchNote);
+  }
+  if (diverged && !hasOperation) body.append(renderGitDivergedBar(data));
   const parsedSections = (Array.isArray(data.sections) ? data.sections : [])
     .map((section) => ({ section, files: parseGitUnifiedDiff(section.diff || "") }))
     .filter((entry) => entry.files.length > 0);
@@ -9496,23 +10079,40 @@ function renderGitChangesDialog() {
   }
   for (const entry of parsedSections) body.append(renderGitDiffSection(entry.section, entry.files));
   if (untracked.length) body.append(renderGitUntrackedSection(untracked));
-  if (!hasVisibleFiles) {
+  if (!hasVisibleFiles && !hasOperation) {
     const emptyMessage = behind > 0 ? "No textual incoming diff was available for the remote commits." : "Working tree is clean. No staged, unstaged, untracked, or incoming diff.";
     body.append(make("div", "git-changes-empty success", emptyMessage));
   }
+  body.append(renderGitToolsSection());
   if (hasVisibleFiles) requestAnimationFrame(updateGitChangesCurrentFileHeader);
 }
 
 async function loadGitChangesDialog(tabContext = activeTabContext()) {
   const requestSerial = ++gitChangesRequestSerial;
   gitChangesUntrackedContentRequests.clear();
-  gitChangesState = { ...gitChangesState, loading: true, error: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId };
+  gitChangesState = { ...gitChangesState, loading: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId };
   renderGitChangesDialog();
   try {
-    const response = await api("/api/git-changes", { tabId: tabContext.tabId });
+    const [response, operationResponse] = await Promise.all([
+      api("/api/git-changes", { tabId: tabContext.tabId }),
+      api("/api/git-operation", { tabId: tabContext.tabId }).catch(() => null),
+    ]);
     if (requestSerial !== gitChangesRequestSerial) return;
     if (!response.ok) throw new Error(response.error || "Failed to load git changes");
-    gitChangesState = { loading: false, pulling: false, error: "", message: "", pullResult: null, data: response.data || null, tabId: tabContext.tabId || activeTabId };
+    gitChangesState = {
+      ...gitChangesState,
+      loading: false,
+      pulling: false,
+      fetching: false,
+      error: "",
+      errorCode: "",
+      errorHint: "",
+      message: "",
+      pullResult: null,
+      data: response.data || null,
+      operation: operationResponse?.ok ? operationResponse.data : null,
+      tabId: tabContext.tabId || activeTabId,
+    };
   } catch (error) {
     if (requestSerial !== gitChangesRequestSerial) return;
     gitChangesState = { ...gitChangesState, loading: false, error: error.message || String(error) };
@@ -9525,7 +10125,22 @@ function openGitChangesDialog() {
   hideFooterTooltip();
   const tabContext = activeTabContext();
   const tabId = tabContext.tabId || activeTabId;
-  gitChangesState = { loading: true, pulling: false, error: "", message: "", pullResult: null, data: gitChangesState.tabId === tabId ? gitChangesState.data : null, tabId };
+  if (gitToolsState.tabId !== tabId) resetGitToolsState(tabId);
+  gitChangesState = {
+    ...gitChangesState,
+    loading: true,
+    pulling: false,
+    fetching: false,
+    error: "",
+    errorCode: "",
+    errorHint: "",
+    message: "",
+    pullResult: null,
+    data: gitChangesState.tabId === tabId ? gitChangesState.data : null,
+    operation: gitChangesState.tabId === tabId ? gitChangesState.operation : null,
+    lastFetch: gitChangesState.tabId === tabId ? gitChangesState.lastFetch : null,
+    tabId,
+  };
   renderGitChangesDialog();
   if (!elements.gitChangesDialog.open) elements.gitChangesDialog.showModal();
   loadGitChangesDialog(tabContext).catch((error) => addEvent(error.message || String(error), "error"));
@@ -9539,25 +10154,30 @@ function refreshGitChangesDialog() {
 async function pullGitChangesDialog() {
   const tabContext = { tabId: gitChangesState.tabId || activeTabId };
   const behind = Number(gitChangesState.data?.remote?.behind ?? gitChangesState.data?.summary?.behind ?? 0) || 0;
-  if (behind <= 0 || gitChangesState.pulling || gitChangesState.loading) return;
+  if (behind <= 0 || gitChangesState.pulling || gitChangesState.loading || gitChangesState.fetching) return;
+  if (gitChangesState.data?.remote?.diverged === true) return;
   const root = gitChangesState.data?.root || "the current repository";
   if (!window.confirm(`Run git pull --ff-only in ${root}?`)) return;
 
   const requestSerial = ++gitChangesRequestSerial;
-  gitChangesState = { ...gitChangesState, pulling: true, loading: false, error: "", message: "", pullResult: null, tabId: tabContext.tabId };
+  gitChangesState = { ...gitChangesState, pulling: true, loading: false, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId };
   renderGitChangesDialog();
   try {
     const response = await api("/api/git-changes/pull", { method: "POST", body: {}, tabId: tabContext.tabId });
     if (requestSerial !== gitChangesRequestSerial) return;
     if (!response.ok) {
-      const detail = [response.error, response.data?.stderr || response.data?.stdout].filter(Boolean).join("\n").trim();
+      gitChangesState = { ...gitChangesState, errorCode: response.code || "" };
+      const detail = [response.error, response.hint].filter(Boolean).join("\n").trim();
       throw new Error(detail || "Failed to pull git changes");
     }
     const pullResult = normalizeGitPullResult(response.data || {});
     gitChangesState = {
+      ...gitChangesState,
       loading: false,
       pulling: false,
       error: "",
+      errorCode: "",
+      errorHint: "",
       message: gitPullResultStatus(pullResult),
       pullResult,
       data: response.data?.changes || gitChangesState.data,
@@ -9576,8 +10196,740 @@ async function pullGitChangesDialog() {
 function closeGitChangesDialog() {
   gitChangesRequestSerial += 1;
   gitChangesUntrackedContentRequests.clear();
-  gitChangesState = { ...gitChangesState, loading: false, pulling: false };
+  gitChangesState = { ...gitChangesState, loading: false, pulling: false, fetching: false };
   if (elements.gitChangesDialog?.open) elements.gitChangesDialog.close();
+}
+
+async function fetchGitChangesDialog() {
+  const tabId = gitChangesState.tabId || activeTabId;
+  if (gitChangesState.fetching || gitChangesState.loading || gitChangesState.pulling) return;
+  const requestSerial = ++gitChangesRequestSerial;
+  gitChangesState = { ...gitChangesState, fetching: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null };
+  renderGitChangesDialog();
+  try {
+    const response = await api("/api/git-fetch", { method: "POST", body: {}, tabId });
+    if (requestSerial !== gitChangesRequestSerial) return;
+    if (!response.ok) {
+      gitChangesState = { ...gitChangesState, errorCode: response.code || "" };
+      throw new Error([response.error, response.hint].filter(Boolean).join("\n") || "git fetch failed");
+    }
+    const summaryLine = String(response.data?.summary || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-1)[0] || "";
+    gitChangesState = {
+      ...gitChangesState,
+      fetching: false,
+      data: response.data?.changes || gitChangesState.data,
+      lastFetch: { at: Date.now(), summary: summaryLine, error: "" },
+      message: summaryLine && !/^fetching/i.test(summaryLine) ? `Fetched (--prune). ${summaryLine}` : "Fetched remote state (git fetch --prune).",
+    };
+    addEvent("Fetched remote state (git fetch --prune).", "success");
+    requestGitFooterWebuiPayload(activeTabContext(tabId), { force: true });
+  } catch (error) {
+    if (requestSerial !== gitChangesRequestSerial) return;
+    gitChangesState = { ...gitChangesState, fetching: false, error: error.message || String(error), lastFetch: { at: Date.now(), summary: "", error: error.message || String(error) } };
+  }
+  renderGitChangesDialog();
+}
+
+// Fetch state lines shown inside the dialog: the extension's startup/tab fetch
+// state (from the changes-chip tooltip payload) plus this dialog's last fetch.
+function gitChangesFetchStateLines() {
+  const lines = [];
+  const chip = parseGitFooterWebuiPayload()?.meta?.find((item) => item.key === "changes");
+  const extensionLine = String(chip?.title || "").split("\n").find((line) => /git fetch/i.test(line));
+  if (extensionLine) lines.push(`Tab fetch state: ${extensionLine.trim()}`);
+  const lastFetch = gitChangesState.lastFetch;
+  if (lastFetch?.at) {
+    const time = new Date(lastFetch.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    lines.push(lastFetch.error ? `Last fetch from this dialog at ${time} failed: ${lastFetch.error}` : `Last fetch from this dialog at ${time}${lastFetch.summary ? ` — ${lastFetch.summary}` : " completed."}`);
+  }
+  return lines;
+}
+
+async function integrateGitChangesDialog(mode) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  const data = gitChangesState.data;
+  const upstream = data?.remote?.upstream || "@{upstream}";
+  const command = mode === "merge" ? `git merge --no-edit ${upstream}` : `git rebase ${upstream}`;
+  if (!window.confirm([
+    `${mode === "merge" ? "Merge" : "Rebase onto"} ${upstream} in ${data?.root || "the current repository"}?`,
+    "",
+    `Command: ${command}`,
+    mode === "rebase" ? "Rebase rewrites local commits. Conflicts open the conflicts panel." : "Conflicts open the conflicts panel.",
+    "For risky integration, prefer a separate worktree instead.",
+  ].join("\n"))) return;
+  gitChangesState = { ...gitChangesState, pulling: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null };
+  renderGitChangesDialog();
+  try {
+    const response = await api("/api/git-changes/integrate", { method: "POST", body: { mode, confirmed: true }, tabId });
+    if (!response.ok) {
+      const errText = [response.error, response.hint].filter(Boolean).join("\n") || `git ${mode} failed`;
+      gitChangesState = { ...gitChangesState, pulling: false };
+      await loadGitChangesDialog({ tabId });
+      gitChangesState = { ...gitChangesState, error: errText, errorCode: response.code || "" };
+      renderGitChangesDialog();
+      return;
+    }
+    gitChangesState = { ...gitChangesState, pulling: false, message: `Integrated ${upstream} via ${mode}.`, data: response.data?.changes || gitChangesState.data };
+    addEvent(`Integrated ${upstream} via ${mode}.`, "success");
+    renderGitChangesDialog();
+    requestGitFooterWebuiPayload(activeTabContext(tabId), { force: true });
+  } catch (error) {
+    gitChangesState = { ...gitChangesState, pulling: false, error: error.message || String(error) };
+    renderGitChangesDialog();
+  }
+}
+
+async function runGitFileAction(action, path) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  const root = gitChangesState.data?.root || "the repository";
+  const config = {
+    stage: { url: "/api/git-changes/stage-file", body: { path }, label: `Staged ${path}.` },
+    unstage: { url: "/api/git-changes/unstage-file", body: { path }, label: `Unstaged ${path}.` },
+    discard: {
+      url: "/api/git-changes/discard-file",
+      body: { path, confirmed: true },
+      label: `Discarded changes in ${path}.`,
+      confirm: `Discard working tree changes in ${path}?\n\nRepository: ${root}\nCommand: git restore -- ${path}\n\nThis permanently reverts unstaged edits to this file.`,
+    },
+    "delete-untracked": {
+      url: "/api/git-changes/delete-untracked",
+      body: { path, confirmed: true },
+      label: `Deleted untracked file ${path}.`,
+      confirm: `Delete untracked file ${path}?\n\nRepository: ${root}\n\nThis permanently removes the file from disk.`,
+    },
+  }[action];
+  if (!config) return;
+  if (config.confirm && !window.confirm(config.confirm)) return;
+  try {
+    const response = await api(config.url, { method: "POST", body: config.body, tabId });
+    if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || `git ${action} failed`);
+    gitChangesState = { ...gitChangesState, data: response.data?.changes || gitChangesState.data, message: config.label, error: "", errorCode: "", errorHint: "" };
+    addEvent(config.label, "success");
+    renderGitChangesDialog();
+    requestGitFooterWebuiPayload(activeTabContext(tabId), { force: true });
+  } catch (error) {
+    gitChangesState = { ...gitChangesState, error: error.message || String(error) };
+    renderGitChangesDialog();
+    addEvent(error.message || String(error), "error");
+  }
+}
+
+const GIT_OPERATION_TITLES = {
+  merge: "Merge in progress",
+  rebase: "Rebase in progress",
+  "cherry-pick": "Cherry-pick in progress",
+  revert: "Revert in progress",
+  bisect: "Bisect in progress",
+};
+
+function renderGitConflictPreview(preview) {
+  if (!preview) return null;
+  if (preview.kind === "binary") return make("pre", "git-conflict-preview muted", `Binary file (${formatBytes(preview.size || 0)}); resolve it with an external tool, then mark it resolved.`);
+  if (preview.kind === "large") return make("pre", "git-conflict-preview muted", `File too large to preview (${formatBytes(preview.size || 0)}).`);
+  if (preview.kind === "missing") return make("pre", "git-conflict-preview muted", "File is missing in the working tree (deleted on one side).");
+  if (preview.kind === "error") return make("pre", "git-conflict-preview muted", preview.error || "Preview unavailable.");
+  if (preview.kind !== "text") return null;
+  if (!preview.hunks?.length) {
+    return make("pre", "git-conflict-preview muted", preview.hasMarkers ? "Conflict markers present." : "No conflict markers found; the file may already be resolved — mark it resolved to stage it.");
+  }
+  const text = preview.hunks.map((hunk) => hunk.lines.join("\n") + (hunk.truncated ? "\n…" : "")).join("\n⋯\n");
+  return make("pre", "git-conflict-preview", text);
+}
+
+async function runGitOperationRequest(url, body, successLabel) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  gitToolsState.busy.add("operation");
+  renderGitChangesDialog();
+  try {
+    const response = await api(url, { method: "POST", body, tabId });
+    if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || "git operation failed");
+    gitToolsState.busy.delete("operation");
+    addEvent(`${successLabel}.`, "success");
+    await loadGitChangesDialog({ tabId });
+    gitChangesState = { ...gitChangesState, message: `${successLabel}.` };
+    renderGitChangesDialog();
+    requestGitFooterWebuiPayload(activeTabContext(tabId), { force: true });
+  } catch (error) {
+    gitToolsState.busy.delete("operation");
+    gitChangesState = { ...gitChangesState, error: error.message || String(error) };
+    renderGitChangesDialog();
+  }
+}
+
+function renderGitOperationPanel(operation) {
+  const kind = operation?.operation;
+  if (!kind) return null;
+  const busy = gitToolsState.busy.has("operation") || gitChangesState.loading || gitChangesState.pulling || gitChangesState.fetching;
+  const conflicts = operation.conflicts || [];
+  const panel = make("section", "git-operation-panel");
+  const header = make("div", "git-operation-header");
+  header.append(
+    make("strong", "git-operation-title", GIT_OPERATION_TITLES[kind] || `${kind} in progress`),
+    make("span", "git-operation-meta", `${conflicts.length} conflicted file${conflicts.length === 1 ? "" : "s"} · ${operation.root || ""}`),
+  );
+  panel.append(header);
+
+  if (kind === "bisect") {
+    if (operation.bisect?.log) panel.append(make("pre", "git-conflict-preview", operation.bisect.log));
+    const row = make("div", "git-operation-actions");
+    for (const verdict of ["good", "bad", "skip"]) {
+      const button = make("button", "git-operation-button", `bisect ${verdict}`);
+      button.type = "button";
+      button.disabled = busy;
+      button.title = `git bisect ${verdict}`;
+      button.addEventListener("click", () => runGitOperationRequest("/api/git-operation/bisect", { verdict }, `Marked the current revision as ${verdict}`));
+      row.append(button);
+    }
+    const reset = make("button", "git-operation-button danger", "Reset bisect");
+    reset.type = "button";
+    reset.disabled = busy;
+    reset.title = "git bisect reset";
+    reset.addEventListener("click", () => {
+      if (!window.confirm(`Reset the bisect session in ${operation.root}?\n\nCommand: git bisect reset\nThis returns to the pre-bisect checkout.`)) return;
+      runGitOperationRequest("/api/git-operation/bisect", { verdict: "reset", confirmed: true }, "Reset the bisect session");
+    });
+    row.append(reset);
+    panel.append(row);
+    return panel;
+  }
+
+  if (conflicts.length) {
+    const list = make("div", "git-conflict-list");
+    for (const conflict of conflicts) {
+      const item = make("details", "git-conflict-file");
+      item.open = conflicts.length <= 3;
+      const summary = make("summary", "git-conflict-summary");
+      summary.append(
+        make("span", "git-conflict-status", conflict.status || "UU"),
+        make("span", "git-conflict-path", conflict.path),
+      );
+      const actions = gitFileActionButtons([
+        {
+          label: "Mark resolved",
+          title: `git add -- ${conflict.path}`,
+          onClick: () => runGitOperationRequest("/api/git-operation/stage-file", { path: conflict.path }, `Marked ${conflict.path} as resolved`),
+        },
+      ]);
+      if (actions) summary.append(actions);
+      item.append(summary);
+      const preview = renderGitConflictPreview(conflict.preview);
+      if (preview) item.append(preview);
+      list.append(item);
+    }
+    panel.append(list);
+  } else {
+    panel.append(make("div", "git-changes-empty success", "No unmerged paths remain. Continue to finish the operation."));
+  }
+
+  const row = make("div", "git-operation-actions");
+  const refresh = make("button", "git-operation-button", "Refresh conflicts");
+  refresh.type = "button";
+  refresh.disabled = busy;
+  refresh.addEventListener("click", refreshGitChangesDialog);
+  row.append(refresh);
+
+  const cont = make("button", "git-operation-button primary", kind === "merge" ? "Continue (commit merge)" : "Continue");
+  cont.type = "button";
+  cont.disabled = busy || operation.canContinue !== true;
+  cont.title = operation.canContinue ? operation.commands?.continue || "" : "Resolve and stage every conflicted file first.";
+  cont.addEventListener("click", () => runGitOperationRequest("/api/git-operation/continue", {}, `Continued the ${kind}`));
+  row.append(cont);
+
+  if (operation.canSkip) {
+    const skip = make("button", "git-operation-button", "Skip");
+    skip.type = "button";
+    skip.disabled = busy;
+    skip.title = operation.commands?.skip || "";
+    skip.addEventListener("click", () => {
+      if (!window.confirm(`Skip the current ${kind} step?\n\nCommand: ${operation.commands?.skip || `git ${kind} --skip`}\nThe skipped commit is left out of the result.`)) return;
+      runGitOperationRequest("/api/git-operation/skip", {}, `Skipped the current ${kind} step`);
+    });
+    row.append(skip);
+  }
+
+  const abort = make("button", "git-operation-button danger", "Abort");
+  abort.type = "button";
+  abort.disabled = busy;
+  abort.title = operation.commands?.abort || "";
+  abort.addEventListener("click", () => {
+    const summary = operation.summary || {};
+    if (!window.confirm([
+      `Abort the ${kind} in ${operation.root}?`,
+      "",
+      `Command: ${operation.commands?.abort || `git ${kind} --abort`}`,
+      `Working tree: ${summary.staged || 0} staged · ${summary.unstaged || 0} unstaged · ${conflicts.length} conflicted`,
+      "",
+      "This discards the in-progress operation state and returns to the pre-operation HEAD.",
+    ].join("\n"))) return;
+    runGitOperationRequest("/api/git-operation/abort", { confirmed: true }, `Aborted the ${kind}`);
+  });
+  row.append(abort);
+  panel.append(row);
+  return panel;
+}
+
+function renderGitDivergedBar(data) {
+  const remote = data?.remote || {};
+  const bar = make("section", "git-diverged-bar");
+  bar.append(make("strong", "git-diverged-title", `Diverged from ${remote.upstream || "upstream"}: ↑${remote.ahead || 0} local · ↓${remote.behind || 0} remote.`));
+  bar.append(make("div", "git-tools-note", "One-click pull is disabled. Review the incoming diff below, then integrate explicitly — a separate worktree is the safest place for risky integration."));
+  const row = make("div", "git-operation-actions");
+  const busy = gitChangesState.loading || gitChangesState.pulling || gitChangesState.fetching;
+  const addButton = (label, className, title, handler) => {
+    const button = make("button", `git-operation-button ${className}`.trim(), label);
+    button.type = "button";
+    button.disabled = busy;
+    button.title = title;
+    button.addEventListener("click", handler);
+    row.append(button);
+  };
+  addButton("Merge upstream…", "", `git merge --no-edit ${remote.upstream || "@{upstream}"}`, () => integrateGitChangesDialog("merge"));
+  addButton("Rebase onto upstream…", "", `git rebase ${remote.upstream || "@{upstream}"}`, () => integrateGitChangesDialog("rebase"));
+  addButton("Create integration worktree", "", "Open the branch picker to integrate in a separate worktree tab", () => {
+    closeGitChangesDialog();
+    openBranchWorktreePicker();
+  });
+  bar.append(row);
+  return bar;
+}
+
+// ---- Git tools (stash, undo, worktrees, submodules, tags, signing) ----
+
+const GIT_TOOLS_SECTIONS = [
+  { key: "stash", title: "Stash", detail: "List, apply, pop, drop, or create stashes." },
+  { key: "undo", title: "Undo & recovery", detail: "Undo the last unpushed commit, amend its message, review recent HEAD history." },
+  { key: "worktrees", title: "Worktrees", detail: "Health, removal, and pruning of git worktrees." },
+  { key: "submodules", title: "Submodules", detail: "Status and recursive update." },
+  { key: "tags", title: "Tags", detail: "Recent tags and annotated tag creation." },
+  { key: "signing", title: "Signing", detail: "Commit signing configuration and diagnostics." },
+];
+
+const GIT_TOOLS_ENDPOINTS = {
+  stash: "/api/git-stash",
+  undo: "/api/git-undo",
+  worktrees: "/api/git-worktrees",
+  submodules: "/api/git-submodules",
+  tags: "/api/git-tags",
+  signing: "/api/git-signing",
+};
+
+function resetGitToolsState(tabId) {
+  gitToolsState = { tabId, openSections: new Set(), cache: {}, busy: new Set(), notice: {} };
+}
+
+async function loadGitToolsSection(key, { force = false } = {}) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  if (!force && gitToolsState.cache[key]) return;
+  if (gitToolsState.busy.has(`load:${key}`)) return;
+  gitToolsState.busy.add(`load:${key}`);
+  try {
+    const response = await api(GIT_TOOLS_ENDPOINTS[key], { tabId });
+    if (!response.ok) throw new Error(response.error || `Failed to load ${key}`);
+    gitToolsState.cache[key] = response.data;
+    if (key === "undo") {
+      const reflog = await api("/api/git-reflog", { tabId }).catch(() => null);
+      gitToolsState.cache.reflog = reflog?.ok ? reflog.data : null;
+    }
+    gitToolsState.notice[key] = "";
+  } catch (error) {
+    gitToolsState.notice[key] = error.message || String(error);
+  } finally {
+    gitToolsState.busy.delete(`load:${key}`);
+    renderGitChangesDialog();
+  }
+}
+
+async function runGitToolAction(sectionKey, { url, method = "POST", body, confirm, success, successMessage, refreshChanges = false }) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  if (confirm && !window.confirm(confirm)) return;
+  gitToolsState.busy.add(sectionKey);
+  renderGitChangesDialog();
+  try {
+    const response = await api(url, { method, body, tabId });
+    if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || "git action failed");
+    const finalMessage = (typeof successMessage === "function" ? successMessage(response) : "") || success;
+    gitToolsState.notice[sectionKey] = "";
+    gitToolsState.busy.delete(sectionKey);
+    addEvent(finalMessage, "success");
+    await loadGitToolsSection(sectionKey, { force: true });
+    if (refreshChanges) await loadGitChangesDialog({ tabId });
+    gitChangesState = { ...gitChangesState, message: finalMessage };
+    renderGitChangesDialog();
+    requestGitFooterWebuiPayload(activeTabContext(tabId), { force: true });
+  } catch (error) {
+    gitToolsState.busy.delete(sectionKey);
+    gitToolsState.notice[sectionKey] = error.message || String(error);
+    renderGitChangesDialog();
+  }
+}
+
+function gitToolsButton(label, { className = "", disabled = false, title = "" } = {}, handler) {
+  const button = make("button", `git-operation-button ${className}`.trim(), label);
+  button.type = "button";
+  button.disabled = disabled;
+  if (title) button.title = title;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+// Apply/pop/drop always show the stash's --stat preview in the confirmation,
+// so no stash is modified sight-unseen.
+async function confirmGitStashActionWithPreview(stash, question) {
+  const tabId = gitChangesState.tabId || activeTabId;
+  let statText = "";
+  try {
+    const preview = await api(`/api/git-stash/show?ref=${encodeURIComponent(stash.ref)}`, { tabId });
+    statText = preview?.ok ? String(preview.data?.stat || "").trim() : "";
+  } catch {
+    // Preview is best-effort; the confirmation still shows the stash subject.
+  }
+  return window.confirm([
+    question,
+    "",
+    stash.subject || stash.ref,
+    "",
+    statText ? `Preview (git stash show --stat):\n${statText.slice(0, 2000)}` : "Preview unavailable.",
+  ].join("\n"));
+}
+
+function renderGitStashTools(body, data, busy) {
+  const row = make("div", "git-operation-actions");
+  row.append(
+    gitToolsButton("Stash tracked changes", { disabled: busy, title: "git stash push" }, () =>
+      runGitToolAction("stash", { url: "/api/git-stash/save", body: {}, success: "Stashed tracked changes.", refreshChanges: true })),
+    gitToolsButton("Stash incl. untracked", { disabled: busy, title: "git stash push --include-untracked" }, () =>
+      runGitToolAction("stash", { url: "/api/git-stash/save", body: { includeUntracked: true }, success: "Stashed tracked and untracked changes.", refreshChanges: true })),
+  );
+  body.append(row);
+  const stashes = data.stashes || [];
+  if (!stashes.length) {
+    body.append(make("div", "git-changes-empty", "No stashes."));
+    return body;
+  }
+  for (const stash of stashes) {
+    const item = make("details", "git-tools-item");
+    const summary = make("summary", "git-tools-item-summary");
+    summary.append(make("span", "git-tools-item-ref", stash.ref), make("span", "git-tools-item-subject", stash.subject || ""));
+    const actions = gitFileActionButtons([
+      {
+        label: "Apply",
+        title: `git stash apply ${stash.ref}`,
+        onClick: () => confirmGitStashActionWithPreview(stash, `Apply ${stash.ref} to the working tree?`).then((confirmed) => {
+          if (confirmed) runGitToolAction("stash", { url: "/api/git-stash/apply", body: { ref: stash.ref }, success: `Applied ${stash.ref}.`, refreshChanges: true });
+        }),
+      },
+      {
+        label: "Pop",
+        title: `git stash pop ${stash.ref}`,
+        onClick: () => confirmGitStashActionWithPreview(stash, `Pop ${stash.ref}? This applies the stash and removes the entry on success.`).then((confirmed) => {
+          if (confirmed) runGitToolAction("stash", { url: "/api/git-stash/pop", body: { ref: stash.ref }, success: `Popped ${stash.ref}.`, refreshChanges: true });
+        }),
+      },
+      {
+        label: "Drop",
+        className: "danger",
+        title: `git stash drop ${stash.ref}`,
+        onClick: () => confirmGitStashActionWithPreview(stash, `Drop ${stash.ref}? This permanently deletes the stash entry.`).then((confirmed) => {
+          if (confirmed) runGitToolAction("stash", { url: "/api/git-stash/drop", body: { ref: stash.ref, confirmed: true }, success: `Dropped ${stash.ref}.` });
+        }),
+      },
+    ]);
+    if (actions) summary.append(actions);
+    item.append(summary);
+    item.addEventListener("toggle", async () => {
+      if (!item.open || item.dataset.previewLoaded) return;
+      item.dataset.previewLoaded = "1";
+      const placeholder = make("pre", "git-conflict-preview muted", "Loading stash preview…");
+      item.append(placeholder);
+      const preview = await api(`/api/git-stash/show?ref=${encodeURIComponent(stash.ref)}`, { tabId: gitChangesState.tabId || activeTabId }).catch(() => null);
+      const text = preview?.ok ? [preview.data?.stat, preview.data?.patch].filter(Boolean).join("\n\n") : "Preview unavailable.";
+      placeholder.textContent = text || "Empty stash preview.";
+      placeholder.classList.toggle("muted", !preview?.ok);
+    });
+    body.append(item);
+  }
+  return body;
+}
+
+function renderGitUndoTools(body, data, busy) {
+  const last = data.lastCommit;
+  body.append(make("div", "git-tools-note", last ? `Last commit: ${last.hash} ${last.subject}` : "No commits yet."));
+  const row = make("div", "git-operation-actions");
+  row.append(gitToolsButton(
+    "Undo last commit (keep changes)",
+    { disabled: busy || !data.canUndoLastCommit, title: data.canUndoLastCommit ? "git reset --soft HEAD~1" : "Requires an unpushed commit with a parent and no operation in progress." },
+    () => runGitToolAction("undo", {
+      url: "/api/git-undo/last-commit",
+      body: { confirmed: true },
+      confirm: [
+        `Undo the last commit in ${data.root}?`,
+        "",
+        `Commit: ${last?.hash || ""} ${last?.subject || ""}`,
+        "Command: git reset --soft HEAD~1 (the commit's changes stay staged)",
+        "Restore afterwards with: git reset --soft ORIG_HEAD",
+      ].join("\n"),
+      success: "Undid the last commit; its changes remain staged.",
+      successMessage: (response) => {
+        const undone = response.data?.undoneCommit;
+        const restore = response.data?.restoreCommand || "git reset --soft ORIG_HEAD";
+        return `Undid commit ${undone?.hash || ""} "${undone?.subject || ""}"; its changes remain staged. Restore with: ${restore}`;
+      },
+      refreshChanges: true,
+    }),
+  ));
+  row.append(gitToolsButton(
+    "Amend last commit message",
+    { disabled: busy || !data.canAmendMessage, title: data.canAmendMessage ? "git commit --amend -m <message>" : "Requires an unpushed commit and an empty staging area." },
+    () => {
+      const message = window.prompt("New commit message:", last?.subject || "");
+      if (!message || !message.trim()) return;
+      runGitToolAction("undo", {
+        url: "/api/git-undo/amend-message",
+        body: { confirmed: true, message: message.trim() },
+        confirm: `Rewrite the last commit message?\n\nOld: ${last?.subject || ""}\nNew: ${message.trim()}`,
+        success: "Amended the last commit message.",
+        successMessage: (response) => {
+          const previous = response.data?.previousCommit;
+          const restore = response.data?.restoreCommand || "git reset --soft ORIG_HEAD";
+          return `Amended the last commit message${previous?.hash ? ` (was ${previous.hash} "${previous.subject}")` : ""}. Restore with: ${restore}`;
+        },
+      });
+    },
+  ));
+  body.append(row);
+  const reflog = gitToolsState.cache.reflog;
+  if (reflog?.entries?.length) {
+    const details = make("details", "git-tools-item");
+    details.append(make("summary", "git-tools-item-summary", `Recent HEAD history (${reflog.entries.length})`));
+    details.append(make("pre", "git-conflict-preview", reflog.entries.map((entry) => `${entry.selector}\t${entry.hash}\t${entry.subject}`).join("\n")));
+    body.append(details);
+    body.append(make("div", "git-tools-note", "Recovery from here is read-only: copy a hash and use git reset/cherry-pick in a terminal."));
+  }
+  return body;
+}
+
+function renderGitWorktreeTools(body, data, busy) {
+  const worktrees = data.worktrees || [];
+  for (const worktree of worktrees) {
+    const item = make("div", "git-tools-row");
+    const health = [
+      worktree.isMainWorktree ? "main" : "",
+      worktree.current ? "current" : "",
+      worktree.detached ? "detached" : "",
+      worktree.locked ? `locked${worktree.lockedReason ? `: ${worktree.lockedReason}` : ""}` : "",
+      worktree.prunable ? "prunable" : "",
+    ].filter(Boolean).join(" · ");
+    item.append(
+      make("span", "git-tools-item-ref", worktree.branch || "detached"),
+      make("span", "git-tools-item-subject", `${normalizeDisplayPath(worktree.path)}${health ? ` · ${health}` : ""}`),
+    );
+    if (!worktree.isMainWorktree && !worktree.current) {
+      const actions = gitFileActionButtons([
+        {
+          label: "Remove",
+          className: "danger",
+          title: `git worktree remove ${worktree.path}`,
+          onClick: () => runGitToolAction("worktrees", {
+            method: "DELETE",
+            url: "/api/git-worktrees",
+            body: { path: worktree.path, confirmed: true },
+            confirm: [
+              `Remove worktree ${worktree.path}?`,
+              "",
+              `Branch: ${worktree.branch || "detached"}`,
+              "This deletes the checkout directory. Dirty worktrees and worktrees with open tabs are refused.",
+            ].join("\n"),
+            success: `Removed worktree ${worktree.path}.`,
+          }),
+        },
+      ]);
+      if (actions) item.append(actions);
+    }
+    body.append(item);
+  }
+  const row = make("div", "git-operation-actions");
+  row.append(gitToolsButton("Prune stale worktrees…", { disabled: busy, title: "git worktree prune (with dry-run preview)" }, async () => {
+    const tabId = gitChangesState.tabId || activeTabId;
+    try {
+      const preview = await api("/api/git-worktrees/prune", { tabId });
+      const previewData = preview?.data || preview || {};
+      const output = String(previewData.output || "").trim();
+      const prunable = previewData.prunable || [];
+      if (!output && !prunable.length) {
+        window.alert("No stale worktree records to prune.");
+        return;
+      }
+      const lines = prunable.map((item) => `${item.path}${item.reason ? ` (${item.reason})` : ""}`).join("\n");
+      runGitToolAction("worktrees", {
+        url: "/api/git-worktrees/prune",
+        body: { confirmed: true },
+        confirm: `Prune stale worktree records?\n\nDry run:\n${output || lines || "(no output)"}\n\nThis removes administrative records for worktree directories that no longer exist.`,
+        success: "Pruned stale worktree records.",
+      });
+    } catch (error) {
+      gitToolsState.notice.worktrees = error.message || String(error);
+      renderGitChangesDialog();
+    }
+  }));
+  body.append(row);
+  return body;
+}
+
+function renderGitSubmoduleTools(body, data, busy) {
+  if (!data.hasSubmodules) {
+    body.append(make("div", "git-changes-empty", "This repository has no submodules."));
+    return body;
+  }
+  for (const submodule of data.submodules || []) {
+    const item = make("div", "git-tools-row");
+    item.append(
+      make("span", "git-tools-item-ref", submodule.state),
+      make("span", "git-tools-item-subject", `${submodule.path} · ${String(submodule.sha || "").slice(0, 10)}${submodule.describe ? ` · ${submodule.describe}` : ""}`),
+    );
+    const actions = gitFileActionButtons([
+      {
+        label: "Open tab",
+        title: "Open a Web UI tab rooted at this submodule",
+        onClick: () => {
+          const root = String(data.root || "").replace(/\/+$/, "");
+          closeGitChangesDialog();
+          createTerminalTab(`${root}/${submodule.path}`).catch((error) => addEvent(error.message || String(error), "error"));
+        },
+      },
+      { label: "Copy path", title: "Copy the submodule path", onClick: () => copyGitPathToClipboard(submodule.path) },
+    ]);
+    if (actions) item.append(actions);
+    body.append(item);
+  }
+  const row = make("div", "git-operation-actions");
+  row.append(gitToolsButton("Update / init recursively…", { disabled: busy, title: "git submodule update --init --recursive" }, () =>
+    runGitToolAction("submodules", {
+      url: "/api/git-submodules/update",
+      body: { confirmed: true },
+      confirm: "Run git submodule update --init --recursive?\n\nThis can check out new commits in every submodule and may take a while.",
+      success: "Updated submodules recursively.",
+      refreshChanges: true,
+    })));
+  body.append(row);
+  return body;
+}
+
+function renderGitTagTools(body, data, busy) {
+  const tags = data.tags || [];
+  if (!tags.length) body.append(make("div", "git-changes-empty", "No tags."));
+  for (const tag of tags.slice(0, 15)) {
+    const item = make("div", "git-tools-row");
+    item.append(
+      make("span", "git-tools-item-ref", tag.name),
+      make("span", "git-tools-item-subject", [tag.annotated ? "annotated" : "lightweight", tag.target ? `@ ${tag.target}` : "", tag.atHead ? "at HEAD" : "", tag.date || ""].filter(Boolean).join(" · ")),
+    );
+    body.append(item);
+  }
+  const row = make("div", "git-operation-actions");
+  row.append(gitToolsButton("Create annotated tag…", { disabled: busy, title: "git tag -a <name> -m <message> (never pushed automatically)" }, () => {
+    const name = window.prompt("Tag name (annotated tag at HEAD):", "");
+    if (!name || !name.trim()) return;
+    const message = window.prompt("Tag message:", name.trim());
+    if (message === null) return;
+    runGitToolAction("tags", {
+      url: "/api/git-tags/create",
+      body: { confirmed: true, name: name.trim(), message: (message || name).trim() },
+      confirm: `Create annotated tag ${name.trim()} at HEAD?\n\nTags are not pushed automatically; push explicitly with: git push origin ${name.trim()}`,
+      success: `Created tag ${name.trim()}.`,
+    });
+  }));
+  body.append(row);
+  return body;
+}
+
+function renderGitSigningTools(body, data) {
+  body.append(make("div", "git-tools-note", `commit.gpgsign: ${data.commitSignRequired ? "true" : "false"} · gpg.format: ${data.gpgFormat} · user.signingkey: ${data.signingKey}`));
+  if (data.lastCommit) body.append(make("div", "git-tools-note", `Last commit ${data.lastCommit.hash}: signature state ${data.lastCommit.signState}${data.lastCommit.signer ? ` (${data.lastCommit.signer})` : ""}`));
+  body.append(make("div", `git-tools-note${data.mismatch ? " error" : ""}`, data.mismatch ? "Signing mismatch: signing is required but the last commit is not validly signed." : "No signing mismatch detected."));
+  for (const suggestion of data.suggestions || []) {
+    const item = make("div", "git-tools-row");
+    item.append(make("span", "git-tools-item-subject", suggestion.label), make("code", "git-tools-command", suggestion.command));
+    const actions = gitFileActionButtons([
+      { label: "Copy", title: "Copy this command", onClick: () => navigator.clipboard?.writeText(suggestion.command).catch(() => {}) },
+    ]);
+    if (actions) item.append(actions);
+    body.append(item);
+  }
+  body.append(make("div", "git-tools-note", "Commands are copyable only; config is never rewritten automatically."));
+  return body;
+}
+
+function renderGitToolsSectionBody(key) {
+  const body = make("div", "git-tools-body");
+  const notice = gitToolsState.notice[key];
+  if (notice) body.append(make("div", "git-changes-empty error", notice));
+  const data = gitToolsState.cache[key];
+  const busy = gitToolsState.busy.has(key) || gitToolsState.busy.has(`load:${key}`);
+  if (!data) {
+    if (!notice) body.append(make("div", "git-changes-empty", "Loading…"));
+    return body;
+  }
+  switch (key) {
+    case "stash":
+      return renderGitStashTools(body, data, busy);
+    case "undo":
+      return renderGitUndoTools(body, data, busy);
+    case "worktrees":
+      return renderGitWorktreeTools(body, data, busy);
+    case "submodules":
+      return renderGitSubmoduleTools(body, data, busy);
+    case "tags":
+      return renderGitTagTools(body, data, busy);
+    case "signing":
+      return renderGitSigningTools(body, data);
+    default:
+      return body;
+  }
+}
+
+function renderGitToolsSection() {
+  const wrapper = make("section", "git-tools");
+  wrapper.append(make("div", "git-diff-section-heading git-tools-heading", "Git tools"));
+  for (const section of GIT_TOOLS_SECTIONS) {
+    const details = make("details", "git-tools-section");
+    details.dataset.gitTools = section.key;
+    details.open = gitToolsState.openSections.has(section.key);
+    const summary = make("summary", "git-tools-summary");
+    summary.append(make("span", "git-tools-title", section.title), make("span", "git-tools-detail", section.detail));
+    details.append(summary);
+    if (details.open) details.append(renderGitToolsSectionBody(section.key));
+    details.addEventListener("toggle", () => {
+      if (details.open) {
+        if (gitToolsState.openSections.has(section.key)) return;
+        gitToolsState.openSections.add(section.key);
+        loadGitToolsSection(section.key);
+        renderGitChangesDialog();
+      } else {
+        gitToolsState.openSections.delete(section.key);
+      }
+    });
+    wrapper.append(details);
+  }
+  return wrapper;
+}
+
+// Route the git+ chip to the tools section matching its leading indicator
+// (📦 stash, 🧩 submodules, 🔓 signing, 🏷 tag, 🌳 worktrees).
+function gitToolsSectionForExtraChip(value = "") {
+  const text = String(value || "");
+  if (text.includes("📦")) return "stash";
+  if (text.includes("🧩")) return "submodules";
+  if (text.includes("🔓")) return "signing";
+  if (text.includes("🏷")) return "tags";
+  if (text.includes("🌳")) return "worktrees";
+  return "stash";
+}
+
+function openGitToolsFromFooter(section = "stash") {
+  openGitChangesDialog();
+  gitToolsState.openSections.add(section);
+  loadGitToolsSection(section);
+  renderGitChangesDialog();
 }
 
 function gitFooterFallbackMessage() {
@@ -10042,6 +11394,7 @@ function applyOptimisticGitFooterBranch(branch, tabContext = activeTabContext())
     generatedAt: Date.now(),
     main: payload.main,
     meta: payload.meta.map((chip) => chip.key === "git" ? { ...chip, value: nextBranch, title: `git branch: ${nextBranch}` } : chip),
+    visibility: payload.visibility,
   };
   const nextRaw = JSON.stringify(nextPayload);
   statusEntries.set(GIT_FOOTER_WEBUI_STATUS_KEY, nextRaw);
@@ -10140,15 +11493,33 @@ function footerBranchAgentWarningLines(tabContext = activeTabContext()) {
   ];
 }
 
+function footerBranchDirtySummaryLines() {
+  const changesChip = parseGitFooterWebuiPayload()?.meta?.find((chip) => chip.key === "changes");
+  const files = Array.isArray(changesChip?.files) ? changesChip.files : [];
+  if (!files.length) return [];
+  const counts = {};
+  for (const file of files) counts[file.kind] = (counts[file.kind] || 0) + 1;
+  const parts = FOOTER_CHANGED_FILE_KIND_ORDER
+    .filter((kind) => counts[kind])
+    .map((kind) => `${counts[kind]} ${FOOTER_CHANGED_FILE_KIND_LABELS[kind]?.toLowerCase() || kind}`);
+  const total = changesChip?.filesTruncated && changesChip?.filesTotal ? changesChip.filesTotal : files.length;
+  return [
+    `Dirty working tree: ${total} changed file${total === 1 ? "" : "s"} (${parts.join(", ")}).`,
+    "Switching branches carries these changes along; consider a worktree instead.",
+  ];
+}
+
 function confirmFooterGitBranchAction(branch, { create = false, requireConfirm = false, tabContext = activeTabContext() } = {}) {
   const branchName = cleanStatusText(branch);
   const warningLines = footerBranchAgentWarningLines(tabContext);
-  if (!requireConfirm && warningLines.length === 0) return true;
+  const dirtyLines = footerBranchDirtySummaryLines();
+  if (!requireConfirm && warningLines.length === 0 && dirtyLines.length === 0) return true;
   const action = create ? "Create and switch to new git branch" : "Switch git branch";
   const message = [
     `${action}: ${branchName}?`,
     "",
     `Repository: ${footerBranchPickerState.root || currentGitFooterCacheCwd(tabContext.tabId) || "current tab"}`,
+    ...dirtyLines,
     ...warningLines,
     "",
     "Continue?",
@@ -10535,23 +11906,91 @@ function renderFooterBranchOption(branch, state = footerBranchPickerState) {
   return row;
 }
 
+async function removeFooterGitWorktree(worktree, tabContext = activeTabContext()) {
+  const tabId = tabContext.tabId || activeTabId;
+  if (!window.confirm([
+    `Remove worktree ${worktree.path}?`,
+    "",
+    `Branch: ${worktree.branch || "detached"}`,
+    "Command: git worktree remove",
+    "This deletes the checkout directory. Dirty worktrees and worktrees with open tabs are refused.",
+  ].join("\n"))) return;
+  footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "" };
+  renderFooter();
+  try {
+    const response = await api("/api/git-worktrees", { method: "DELETE", body: { path: worktree.path, confirmed: true }, tabId });
+    if (!response.ok) throw new Error(response.error || "Failed to remove the worktree");
+    addEvent(`Removed worktree ${worktree.path}.`, "success");
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+  }
+  await loadFooterBranchPicker(tabContext).catch(() => {});
+}
+
+async function pruneFooterGitWorktrees(tabContext = activeTabContext()) {
+  const tabId = tabContext.tabId || activeTabId;
+  try {
+    const preview = await api("/api/git-worktrees/prune", { tabId });
+    const previewData = preview?.data || {};
+    const prunable = previewData.prunable || [];
+    const output = String(previewData.output || "").trim();
+    if (!prunable.length && !output) {
+      addEvent("No stale worktree records to prune.", "info");
+      return;
+    }
+    const lines = prunable.map((item) => `${item.path}${item.reason ? ` (${item.reason})` : ""}`).join("\n");
+    if (!window.confirm(`Prune stale worktree records?\n\nDry run:\n${output || lines || "(no output)"}\n\nThis removes administrative records for worktree directories that no longer exist.`)) return;
+    const response = await api("/api/git-worktrees/prune", { method: "POST", body: { confirmed: true }, tabId });
+    if (!response.ok) throw new Error(response.error || "Failed to prune worktrees");
+    addEvent("Pruned stale worktree records.", "success");
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+  }
+  await loadFooterBranchPicker(tabContext).catch(() => {});
+}
+
 function renderFooterWorktreeList(state = footerBranchPickerState) {
-  const worktrees = (state.worktrees || []).filter((item) => item.path && !item.prunable);
-  if (worktrees.length <= 1) return null;
+  const allWorktrees = (state.worktrees || []).filter((item) => item.path);
+  const worktrees = allWorktrees.filter((item) => !item.prunable);
+  const prunableCount = allWorktrees.length - worktrees.length;
+  if (worktrees.length <= 1 && prunableCount === 0) return null;
+  const busy = state.loading || !!state.switching;
   const section = make("div", "footer-branch-worktree-section");
   section.append(make("div", "footer-branch-section-title", `Open worktrees (${worktrees.length})`));
   for (const worktree of worktrees.slice(0, 8)) {
     const selected = worktree.current || worktree.path === state.currentWorktreePath;
+    const row = make("div", "footer-branch-option-row");
     const button = make("button", `footer-model-option footer-worktree-option${selected ? " active" : ""}`);
     button.type = "button";
-    button.disabled = selected || state.loading || !!state.switching;
+    button.disabled = selected || busy;
     button.title = selected ? `Current worktree: ${worktree.path}` : `Open worktree: ${worktree.path}`;
+    const health = [
+      worktree.detached ? "detached" : "",
+      worktree.locked ? `locked${worktree.lockedReason ? `: ${worktree.lockedReason}` : ""}` : "",
+    ].filter(Boolean).join(" · ");
     button.append(
       make("span", "footer-model-option-main", worktree.branch || "detached"),
-      make("span", "footer-model-option-name", `${selected ? "current" : "open"} · ${normalizeDisplayPath(worktree.path)}`),
+      make("span", "footer-model-option-name", `${selected ? "current" : "open"}${health ? ` · ${health}` : ""} · ${normalizeDisplayPath(worktree.path)}`),
     );
     if (!button.disabled) button.addEventListener("click", () => openFooterGitWorktree(worktree.path, { branchName: worktree.branch || "", skipConfirm: true }));
-    section.append(button);
+    row.append(button);
+    if (!selected && !worktree.isMainWorktree) {
+      const remove = make("button", "footer-branch-advanced-action footer-worktree-remove", "Remove");
+      remove.type = "button";
+      remove.disabled = busy || worktree.locked;
+      remove.title = worktree.locked ? `Worktree is locked${worktree.lockedReason ? `: ${worktree.lockedReason}` : ""}` : `git worktree remove ${worktree.path}`;
+      remove.addEventListener("click", () => removeFooterGitWorktree(worktree));
+      row.append(remove);
+    }
+    section.append(row);
+  }
+  if (prunableCount > 0) {
+    const prune = make("button", "footer-branch-advanced-action footer-worktree-prune", `Prune ${prunableCount} stale worktree record${prunableCount === 1 ? "" : "s"}…`);
+    prune.type = "button";
+    prune.disabled = busy;
+    prune.title = "git worktree prune (with dry-run preview)";
+    prune.addEventListener("click", () => pruneFooterGitWorktrees());
+    section.append(prune);
   }
   return section;
 }
@@ -17124,11 +18563,31 @@ function assistantThinkingText(part) {
   return typeof part.content === "string" ? part.content : "";
 }
 
+function stripEmptyHtmlComments(text) {
+  return String(text || "")
+    .replace(/^[^\S\n]*<!--[\s\r\n]*-->[^\S\n]*(?:\n|$)/gm, "")
+    .replace(/<!--[\s\r\n]*-->/g, "")
+    .replace(/\n[^\S\n]*(?:\n[^\S\n]*){2,}/g, "\n\n");
+}
+
 function visibleThinkingText(text) {
-  const value = String(text || "");
+  const value = stripEmptyHtmlComments(text);
   const trimmed = value.trim();
   if (!trimmed || trimmed === UNEXPOSED_THINKING_TEXT) return "";
   return value;
+}
+
+function renderThinkingMarkdown(block, text) {
+  if (!block) return;
+  block._rawThinkingText = String(text || "");
+  renderMarkdown(block, block._rawThinkingText);
+}
+
+function appendThinkingMarkdown(parent, text) {
+  const block = appendMarkdown(parent, text);
+  block.classList.add("thinking-text");
+  block._rawThinkingText = String(text || "");
+  return block;
 }
 
 function escapeRegExp(value) {
@@ -18286,7 +19745,7 @@ function appendMessage(message, { streaming = false, messageIndex = -1, transien
     bubble._toolRenderSignature = toolExecutionRenderSignature(message);
   } else if (message.role === "thinking") {
     const thinkingText = visibleThinkingText(message.thinking || textFromContent(message.content));
-    if (thinkingOutputVisible && thinkingText) appendText(body, thinkingText, "thinking-text");
+    if (thinkingOutputVisible && thinkingText) appendThinkingMarkdown(body, thinkingText);
   } else if (message.role === "toolCall") {
     renderToolCallMessageBody(body, message);
   } else if (message.role === "assistantEvent") {
@@ -19312,7 +20771,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.workflows = hasAvailableCommand("workflow") || hasAvailableCommand("workflow-clear") || optionalFeatureAvailability.workflows || widgets.has("workflow") || widgets.has("workflow:subprocess");
   optionalFeatureAvailability.safetyGuard = hasAvailableCommand("safety-guard") || optionalFeatureAvailability.safetyGuard || statusEntries.has("safety-guard");
   optionalFeatureAvailability.statsCommand = hasAvailableCommand("stats");
-  optionalFeatureAvailability.gitFooterStatus = hasAvailableCommand("git-footer-refresh") || optionalFeatureAvailability.gitFooterStatus || statusEntries.has("git-footer") || statusEntries.has(GIT_FOOTER_WEBUI_STATUS_KEY);
+  optionalFeatureAvailability.gitFooterStatus = hasAvailableCommand("git-footer-refresh") || hasAvailableCommand("git-footer-visibility") || optionalFeatureAvailability.gitFooterStatus || statusEntries.has("git-footer") || statusEntries.has(GIT_FOOTER_WEBUI_STATUS_KEY);
   optionalFeatureAvailability.tuiSkillsCommand = hasLoadedRpcCommand("skills");
   optionalFeatureAvailability.todoProgressWidget = hasAvailableCommand("todo-progress-status") || optionalFeatureAvailability.todoProgressWidget || widgets.has("todo-progress");
   optionalFeatureAvailability.tuiToolsCommand = hasLoadedRpcCommand("tools");
@@ -19572,6 +21031,16 @@ function renderOptionalFeatureControls() {
       elements.optionsStatsButton,
       hasStatsCommand,
       optionalFeatureUnavailableMessage("statsCommand"),
+    );
+  }
+
+  const hasGitFooterVisibility = isOptionalFeatureEnabled("gitFooterStatus") && gitFooterVisibilityCommandAvailable();
+  if (elements.optionsFooterVisibilityButton) {
+    elements.optionsFooterVisibilityButton.hidden = !hasGitFooterVisibility;
+    setOptionalControlState(
+      elements.optionsFooterVisibilityButton,
+      hasGitFooterVisibility,
+      commandUnavailableMessage("git-footer-visibility"),
     );
   }
 
@@ -20913,7 +22382,8 @@ function ensureStreamingThinkingBubble() {
   if (streamThinkingBubble?.parentElement === elements.chat) return true;
   const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true });
   streamThinkingBubble = created.bubble;
-  streamThinking = appendText(created.body, "", "thinking-text");
+  streamThinking = make("div", "markdown-body thinking-text");
+  created.body.append(streamThinking);
   renderRunIndicator({ scroll: false });
   scrollChatToBottom();
   return true;
@@ -20921,7 +22391,7 @@ function ensureStreamingThinkingBubble() {
 
 function showStreamingThinking(initialText = "") {
   if (!ensureStreamingThinkingBubble()) return;
-  if (initialText && !streamThinking.textContent) streamThinking.textContent = initialText;
+  if (initialText && !streamThinking.textContent) renderThinkingMarkdown(streamThinking, initialText);
 }
 
 function resetStreamBubble() {
@@ -20951,7 +22421,7 @@ function liveStreamRenderActive() {
  * re-append the live thinking/text bubbles so no partial output is lost.
  */
 function restoreStreamRenderAfterChatRebuild() {
-  const thinkingText = streamThinking?.textContent || "";
+  const thinkingText = streamThinking?._rawThinkingText || streamThinking?.textContent || "";
   const thinkingComplete = streamThinkingBubble?.classList.contains("complete") === true;
   const toolCallWasVisible = !!(streamToolCallBubble?.parentElement === elements.chat || streamToolCallRawArguments || streamToolCallName);
   streamBubble = null;
@@ -21068,7 +22538,7 @@ function setStreamingThinkingText(text) {
   const thinking = visibleThinkingText(text);
   if (!thinkingOutputVisible || !thinking) return false;
   showStreamingThinking("");
-  if (streamThinking) streamThinking.textContent = thinking;
+  if (streamThinking) renderThinkingMarkdown(streamThinking, thinking);
   return true;
 }
 
@@ -21127,8 +22597,7 @@ function handleMessageUpdate(event) {
     const synced = syncStreamingThinkingFromUpdate(event, update);
     if (thinkingOutputVisible && delta && (!synced || !streamThinking?.textContent)) {
       showStreamingThinking("");
-      if (streamThinking?.textContent === "Thinking…") streamThinking.textContent = "";
-      if (streamThinking) streamThinking.textContent += delta;
+      if (streamThinking) renderThinkingMarkdown(streamThinking, `${streamThinking._rawThinkingText || ""}${delta}`);
     }
     scheduleChatFollowScroll();
   } else if (update.type === "thinking_end") {
@@ -23717,6 +25186,17 @@ elements.optionsExportButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsForkButton.addEventListener("click", () => runNativeCommandMenu("/fork"));
 elements.optionsTreeButton.addEventListener("click", () => runNativeCommandMenu("/tree"));
 elements.optionsStatsButton?.addEventListener("click", () => openStatsOverlay({ refresh: true }));
+elements.optionsFooterVisibilityButton?.addEventListener("click", openGitFooterVisibilityDialog);
+elements.gitFooterVisibilitySelectAllButton?.addEventListener("click", () => setGitFooterVisibilitySelection(true));
+elements.gitFooterVisibilitySelectNoneButton?.addEventListener("click", () => setGitFooterVisibilitySelection(false));
+elements.gitFooterVisibilityCloseButton?.addEventListener("click", closeGitFooterVisibilityDialog);
+elements.gitFooterVisibilityResetButton?.addEventListener("click", () => resetGitFooterVisibilityDialog());
+elements.gitFooterVisibilityApplyButton?.addEventListener("click", () => applyGitFooterVisibilityDialog());
+elements.gitFooterVisibilityDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
+elements.gitFooterVisibilityDialog?.addEventListener("close", () => {
+  gitFooterVisibilityDirty = false;
+  gitFooterVisibilityApplyInFlight = false;
+});
 elements.statsOverlayRefreshButton?.addEventListener("click", () => requestStatsOverlayRefresh());
 elements.statsOverlayScope?.addEventListener("change", () => {
   const custom = elements.statsOverlayScope?.value === "custom";
@@ -24516,6 +25996,7 @@ window.addEventListener("blur", () => {
 });
 
 elements.gitChangesRefreshButton?.addEventListener("click", refreshGitChangesDialog);
+elements.gitChangesFetchButton?.addEventListener("click", () => fetchGitChangesDialog().catch((error) => addEvent(error.message || String(error), "error")));
 elements.gitChangesPullButton?.addEventListener("click", () => pullGitChangesDialog().catch((error) => addEvent(error.message || String(error), "error")));
 elements.gitChangesCloseButton?.addEventListener("click", closeGitChangesDialog);
 elements.gitChangesBody?.addEventListener("scroll", updateGitChangesCurrentFileHeader, { passive: true });

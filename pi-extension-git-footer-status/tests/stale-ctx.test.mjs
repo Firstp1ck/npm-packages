@@ -63,6 +63,20 @@ registerHooks({
         format: "module",
         shortCircuit: true,
         source: `
+          export class Container {
+            children = [];
+            addChild(component) { this.children.push(component); }
+            render(width) { return this.children.flatMap((component) => component.render?.(width) ?? []); }
+            invalidate() { for (const component of this.children) component.invalidate?.(); }
+          }
+          export const Key = { ctrl: (key) => \`ctrl+\${key}\` };
+          export const matchesKey = (data, key) => data === key;
+          export class SettingsList {
+            constructor() {}
+            handleInput() {}
+            render() { return []; }
+            invalidate() {}
+          }
           export const truncateToWidth = (s) => String(s);
           export const visibleWidth = (s) => String(s).length;
         `,

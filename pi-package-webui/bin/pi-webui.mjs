@@ -40,9 +40,11 @@ import {
   WORKTREE_ERROR_CODES,
   createGitWorktree,
   gitWorktreeErrorPayload,
+  isGitLockFailure,
   listGitWorktrees,
   openGitWorktree,
   pathInside,
+  pruneGitWorktrees,
   removeGitWorktree,
 } from "../lib/git-worktrees.mjs";
 
@@ -1116,17 +1118,21 @@ function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
+      // LC_ALL=C keeps tool output in English so error classification works
+      // regardless of locale.
+      env: { ...process.env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
+    let stdoutTruncated = false;
     let settled = false;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve(result);
+      resolve({ stdoutTruncated, ...result });
     };
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
@@ -1134,7 +1140,10 @@ function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20
     }, timeoutMs);
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
-      if (stdout.length > maxOutputLength) stdout = stdout.slice(-maxOutputLength);
+      if (stdout.length > maxOutputLength) {
+        stdout = stdout.slice(-maxOutputLength);
+        stdoutTruncated = true;
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);
@@ -3952,14 +3961,20 @@ async function getGitRoot(cwd) {
   return path.resolve(result.stdout.trim());
 }
 
-async function runGitReadCommand(root, args, { timeoutMs = GIT_CHANGES_COMMAND_TIMEOUT_MS, maxOutputLength = GIT_CHANGES_DIFF_MAX_OUTPUT } = {}) {
+async function runGitReadCommandDetailed(root, args, { timeoutMs = GIT_CHANGES_COMMAND_TIMEOUT_MS, maxOutputLength = GIT_CHANGES_DIFF_MAX_OUTPUT } = {}) {
   const result = await runCommand("git", args, { cwd: root, timeoutMs, maxOutputLength });
-  if (result.exitCode === 0 && !result.timedOut && !result.error) return result.stdout;
+  if (result.exitCode === 0 && !result.timedOut && !result.error) {
+    return { output: result.stdout, truncated: result.stdoutTruncated === true, capBytes: maxOutputLength };
+  }
   const command = formatGitCommand(args);
   const message = result.timedOut
     ? `${command} timed out`
     : (result.stderr || result.stdout || result.error || `${command} failed with exit code ${result.exitCode ?? "unknown"}`);
   throw new Error(String(message).trim());
+}
+
+async function runGitReadCommand(root, args, options = {}) {
+  return (await runGitReadCommandDetailed(root, args, options)).output;
 }
 
 function gitBranchFromPorcelainStatus(statusText) {
@@ -4067,23 +4082,31 @@ async function gitUpstreamRef(root) {
 
 async function readGitIncomingChanges(root, summary) {
   const upstream = await gitUpstreamRef(root);
+  const ahead = Number(summary?.ahead || 0) || 0;
+  const behind = Number(summary?.behind || 0) || 0;
+  const diverged = ahead > 0 && behind > 0;
   const remote = {
     upstream,
-    behind: Number(summary?.behind || 0) || 0,
-    canPull: !!upstream && (Number(summary?.behind || 0) || 0) > 0,
+    ahead,
+    behind,
+    diverged,
+    // Fast-forward pull is only possible when we are strictly behind.
+    canPull: !!upstream && behind > 0 && !diverged,
   };
-  if (!remote.canPull) return { remote, section: null };
+  if (!upstream || behind <= 0) return { remote, section: null };
 
   const diffArgs = ["diff", "--no-ext-diff", "--no-color", "--find-renames", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", "HEAD..@{upstream}"];
   try {
-    const diff = await runGitReadCommand(root, diffArgs);
+    const diff = await runGitReadCommandDetailed(root, diffArgs);
     return {
       remote,
       section: {
         key: "incoming",
         label: `Incoming from ${upstream}`,
         command: `git diff --unified=0 HEAD..${upstream}`,
-        diff: diff.trimEnd(),
+        diff: diff.output.trimEnd(),
+        truncated: diff.truncated,
+        capBytes: diff.capBytes,
       },
     };
   } catch (error) {
@@ -4093,10 +4116,13 @@ async function readGitIncomingChanges(root, summary) {
 
 async function pullGitChanges(cwd) {
   const root = await getGitRoot(cwd);
-  const payload = gitWorkflowCommandPayload(await runGitWorkflowCommand(["pull", "--ff-only"], { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS }));
+  const payload = await runGuardedGitMutation(["pull", "--ff-only"], { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
   if (payload.data) payload.data.root = root;
   if (payload.ok) payload.data.changes = await readGitChanges(root);
-  else payload.error = (payload.data?.stderr || payload.data?.stdout || payload.error || "git pull --ff-only failed").trim();
+  else {
+    payload.error = (payload.data?.stderr || payload.data?.stdout || payload.error || "git pull --ff-only failed").trim();
+    applyGitSyncFailure(payload);
+  }
   return payload;
 }
 
@@ -4106,8 +4132,8 @@ async function readGitChanges(cwd) {
   const [statusText, porcelainStatusText, unstagedDiff, stagedDiff, untrackedText] = await Promise.all([
     runGitReadCommand(root, ["status", "--short", "--branch", "--untracked-files=all"], { maxOutputLength: 120_000 }),
     runGitReadCommand(root, ["status", "--porcelain=2", "--branch", "--untracked-files=all"], { maxOutputLength: 120_000 }),
-    runGitReadCommand(root, diffArgs),
-    runGitReadCommand(root, ["diff", "--cached", "--no-ext-diff", "--no-color", "--find-renames", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/"]),
+    runGitReadCommandDetailed(root, diffArgs),
+    runGitReadCommandDetailed(root, ["diff", "--cached", "--no-ext-diff", "--no-color", "--find-renames", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/"]),
     runGitReadCommand(root, ["ls-files", "--others", "--exclude-standard"], { maxOutputLength: 120_000 }),
   ]);
   const summary = summarizeGitPorcelainStatus(porcelainStatusText);
@@ -4124,10 +4150,667 @@ async function readGitChanges(cwd) {
     status: statusText.trimEnd(),
     sections: [
       incoming.section,
-      { key: "staged", label: "Staged", command: "git diff --cached --unified=0", diff: stagedDiff.trimEnd() },
-      { key: "unstaged", label: "Unstaged", command: "git diff --unified=0", diff: unstagedDiff.trimEnd() },
+      { key: "staged", label: "Staged", command: "git diff --cached --unified=0", diff: stagedDiff.output.trimEnd(), truncated: stagedDiff.truncated, capBytes: stagedDiff.capBytes },
+      { key: "unstaged", label: "Unstaged", command: "git diff --unified=0", diff: unstagedDiff.output.trimEnd(), truncated: unstagedDiff.truncated, capBytes: unstagedDiff.capBytes },
     ].filter(Boolean),
     untracked,
+  };
+}
+
+const GIT_LOCK_RETRY_ATTEMPTS = 3;
+const GIT_LOCK_RETRY_DELAY_MS = 250;
+const GIT_FETCH_TIMEOUT_MS = 2 * 60 * 1000;
+const GIT_CONFLICT_PREVIEW_MAX_BYTES = 200_000;
+const GIT_STASH_PATCH_MAX_OUTPUT = 200_000;
+const PROTECTED_GIT_BRANCHES = new Set(["main", "master"]);
+
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function requireConfirmed(body, action) {
+  if (body?.confirmed !== true) throw makeHttpError(409, `${action} requires confirmed: true.`);
+}
+
+// Retry transient index.lock contention before reporting failure; the shared
+// isGitLockFailure classifier keeps this consistent with worktree mutations.
+async function runGitMutationCommand(args, options = {}) {
+  let result;
+  for (let attempt = 0; attempt < GIT_LOCK_RETRY_ATTEMPTS; attempt++) {
+    result = await runGitWorkflowCommand(args, options);
+    const ok = result.exitCode === 0 && !result.timedOut && !result.cancelled && !result.error;
+    if (ok || !isGitLockFailure(result)) return result;
+    if (attempt < GIT_LOCK_RETRY_ATTEMPTS - 1) await sleepMs(GIT_LOCK_RETRY_DELAY_MS * (attempt + 1));
+  }
+  return result;
+}
+
+function gitMutationPayload(result) {
+  const payload = gitWorkflowCommandPayload(result);
+  if (!payload.ok) {
+    if (isGitLockFailure(result)) {
+      payload.code = "REPO_BUSY";
+      payload.hint = "Another git process is using this repository. Retry once it finishes.";
+    }
+    payload.error = String(result?.stderr || result?.stdout || payload.error || "git command failed").trim();
+  }
+  return payload;
+}
+
+async function runGuardedGitMutation(args, options = {}) {
+  try {
+    return gitMutationPayload(await runGitMutationCommand(args, options));
+  } catch (error) {
+    if (/already running/i.test(error?.message || "")) {
+      return { ok: false, code: "REPO_BUSY", error: sanitizeError(error), hint: "Another git workflow command is already running in the Web UI." };
+    }
+    throw error;
+  }
+}
+
+// Turn raw git remote-operation stderr into an actionable state. Returns null
+// when no known pattern matches (caller keeps the raw error).
+function classifyGitSyncFailure(result, { push = false } = {}) {
+  const text = `${result?.stderr || ""}\n${result?.stdout || ""}`.toLowerCase();
+  if (result?.timedOut) return { code: "NETWORK", hint: "The remote did not respond before the timeout. Check connectivity and retry." };
+  if (isGitLockFailure(result)) return { code: "REPO_BUSY", hint: "Another git process is using this repository. Retry once it finishes." };
+  if (/terminal prompts disabled|authentication failed|permission denied|access denied|could not read username|could not read password|publickey|invalid credentials/.test(text)) {
+    return { code: "AUTH", hint: "Authentication failed and interactive prompts are disabled in the Web UI. Refresh your credentials or SSH agent in a terminal, then retry." };
+  }
+  if (/could not resolve host|failed to connect|connection (?:refused|reset|timed out)|network is unreachable|operation timed out/.test(text)) {
+    return { code: "NETWORK", hint: "The remote could not be reached. Check connectivity and retry." };
+  }
+  if (push && /protected branch|gh006/.test(text)) {
+    return { code: "PROTECTED_BRANCH", hint: "The remote refused the push because the branch is protected. Push to a feature branch and open a PR instead." };
+  }
+  if (push && /\[rejected\]|non-fast-forward|fetch first|updates were rejected/.test(text)) {
+    return { code: "NON_FAST_FORWARD", hint: "The remote has commits you don't have. Fetch and review the incoming diff, then integrate before pushing." };
+  }
+  if (push && /has no upstream branch/.test(text)) {
+    return { code: "NO_UPSTREAM", hint: "The current branch has no upstream. Push with 'set upstream' to publish it." };
+  }
+  if (!push && /not possible to fast-forward|divergent branches|need to specify how to reconcile/.test(text)) {
+    return { code: "DIVERGED", hint: "Local and remote branches have diverged. Fetch, review the incoming diff, then merge or rebase explicitly — or integrate in a worktree." };
+  }
+  if (!push && /no tracking information/.test(text)) {
+    return { code: "NO_UPSTREAM", hint: "The current branch has no upstream to pull from. Set one or pull with an explicit remote/branch." };
+  }
+  if (/would be overwritten/.test(text)) {
+    return { code: "DIRTY_WORKTREE", hint: "Local changes would be overwritten. Stash or commit them first." };
+  }
+  if (/conflict/.test(text)) {
+    return { code: "CONFLICTS", hint: "Conflicts were created. Resolve them in the conflicts panel, then continue or abort the operation." };
+  }
+  return null;
+}
+
+function applyGitSyncFailure(payload, { push = false } = {}) {
+  if (payload.ok || payload.code) return payload;
+  const classified = classifyGitSyncFailure(payload.data, { push });
+  if (classified) {
+    payload.code = classified.code;
+    payload.hint = classified.hint;
+  }
+  return payload;
+}
+
+async function fetchGitChanges(cwd) {
+  const root = await getGitRoot(cwd);
+  const payload = await runGuardedGitMutation(
+    ["-c", "credential.interactive=false", "fetch", "--prune"],
+    { cwd: root, timeoutMs: GIT_FETCH_TIMEOUT_MS, label: "git fetch --prune" },
+  );
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) {
+    // git fetch reports ref updates on stderr.
+    payload.data.summary = `${payload.data.stderr || ""}\n${payload.data.stdout || ""}`.trim();
+    payload.data.changes = await readGitChanges(root);
+  } else {
+    applyGitSyncFailure(payload);
+  }
+  return payload;
+}
+
+async function integrateGitUpstream(cwd, body = {}) {
+  const mode = String(body.mode || "").trim();
+  if (!["merge", "rebase"].includes(mode)) throw makeHttpError(400, "mode must be 'merge' or 'rebase'");
+  requireConfirmed(body, `Running git ${mode} against the upstream`);
+  const root = await getGitRoot(cwd);
+  const upstream = await gitUpstreamRef(root);
+  if (!upstream) throw makeHttpError(409, "No upstream is configured for the current branch");
+  const args = mode === "merge" ? ["merge", "--no-edit", "@{upstream}"] : ["-c", "core.editor=true", "rebase", "@{upstream}"];
+  const payload = await runGuardedGitMutation(args, { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS, label: `git ${mode} ${upstream}` });
+  if (payload.data) {
+    payload.data.root = root;
+    payload.data.upstream = upstream;
+    payload.data.mode = mode;
+  }
+  if (payload.ok) payload.data.changes = await readGitChanges(root);
+  else applyGitSyncFailure(payload);
+  return payload;
+}
+
+// ---- Git operation (merge/rebase/cherry-pick/revert/bisect) lifecycle ----
+
+async function pathEntryExists(target) {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function gitDirPath(root) {
+  const out = await runGitReadCommand(root, ["rev-parse", "--git-dir"], { maxOutputLength: 10_000 });
+  const dir = out.trim();
+  return path.isAbsolute(dir) ? dir : path.resolve(root, dir);
+}
+
+async function detectGitOperationKind(root) {
+  const gitDir = await gitDirPath(root);
+  if ((await pathEntryExists(path.join(gitDir, "rebase-merge"))) || (await pathEntryExists(path.join(gitDir, "rebase-apply")))) return "rebase";
+  if (await pathEntryExists(path.join(gitDir, "MERGE_HEAD"))) return "merge";
+  if (await pathEntryExists(path.join(gitDir, "CHERRY_PICK_HEAD"))) return "cherry-pick";
+  if (await pathEntryExists(path.join(gitDir, "REVERT_HEAD"))) return "revert";
+  if (await pathEntryExists(path.join(gitDir, "BISECT_LOG"))) return "bisect";
+  return null;
+}
+
+function gitOperationCommands(kind) {
+  switch (kind) {
+    case "merge":
+      return { continue: ["commit", "--no-edit"], abort: ["merge", "--abort"], skip: null };
+    case "rebase":
+      return { continue: ["-c", "core.editor=true", "rebase", "--continue"], abort: ["rebase", "--abort"], skip: ["-c", "core.editor=true", "rebase", "--skip"] };
+    case "cherry-pick":
+      return { continue: ["-c", "core.editor=true", "cherry-pick", "--continue"], abort: ["cherry-pick", "--abort"], skip: ["-c", "core.editor=true", "cherry-pick", "--skip"] };
+    case "revert":
+      return { continue: ["-c", "core.editor=true", "revert", "--continue"], abort: ["revert", "--abort"], skip: ["-c", "core.editor=true", "revert", "--skip"] };
+    default:
+      return null;
+  }
+}
+
+function parseGitConflictEntries(porcelainText) {
+  const entries = [];
+  for (const line of String(porcelainText || "").split(/\r?\n/)) {
+    if (!line.startsWith("u ")) continue;
+    // u XY sub m1 m2 m3 mW h1 h2 h3 path — 10 space-separated fields, then path.
+    const fields = [];
+    let start = 0;
+    for (let index = 0; index < 10; index++) {
+      const next = line.indexOf(" ", start);
+      if (next === -1) break;
+      fields.push(line.slice(start, next));
+      start = next + 1;
+    }
+    fields.push(line.slice(start));
+    const entryPath = fields[10] || "";
+    if (entryPath) entries.push({ path: entryPath, status: fields[1] || "UU" });
+  }
+  return entries;
+}
+
+function extractConflictMarkerHunks(content, { contextLines = 2, maxHunks = 8, maxLinesPerHunk = 80 } = {}) {
+  const lines = content.split(/\r?\n/);
+  const hunks = [];
+  for (let index = 0; index < lines.length && hunks.length < maxHunks; index++) {
+    if (!lines[index].startsWith("<<<<<<<")) continue;
+    let end = index;
+    while (end < lines.length - 1 && !lines[end].startsWith(">>>>>>>")) end++;
+    const start = Math.max(0, index - contextLines);
+    const stop = Math.min(lines.length - 1, end + contextLines);
+    hunks.push({
+      startLine: start + 1,
+      truncated: stop - start + 1 > maxLinesPerHunk,
+      lines: lines.slice(start, Math.min(stop + 1, start + maxLinesPerHunk)),
+    });
+    index = end;
+  }
+  return hunks;
+}
+
+async function readGitConflictPreview(root, relPath) {
+  try {
+    const filePath = resolveGitRelativePath(root, relPath);
+    const info = await stat(filePath).catch(() => null);
+    if (!info) return { kind: "missing" };
+    if (!info.isFile()) return { kind: "unsupported", size: info.size };
+    if (info.size > GIT_CONFLICT_PREVIEW_MAX_BYTES) return { kind: "large", size: info.size };
+    const buffer = await readFile(filePath);
+    if (isLikelyBinaryBuffer(buffer)) return { kind: "binary", size: info.size };
+    const content = buffer.toString("utf8");
+    return {
+      kind: "text",
+      size: info.size,
+      hasMarkers: /^<{7}(?: |$)/m.test(content),
+      hunks: extractConflictMarkerHunks(content),
+    };
+  } catch (error) {
+    return { kind: "error", error: sanitizeError(error) };
+  }
+}
+
+async function readGitOperationSnapshot(cwd) {
+  const root = await getGitRoot(cwd);
+  const porcelainText = await runGitReadCommand(root, ["status", "--porcelain=2", "--branch", "--untracked-files=all"], { maxOutputLength: 120_000 });
+  const summary = summarizeGitPorcelainStatus(porcelainText);
+  const kind = await detectGitOperationKind(root);
+  const conflictEntries = parseGitConflictEntries(porcelainText);
+  const conflicts = [];
+  for (const entry of conflictEntries) {
+    conflicts.push({ ...entry, preview: await readGitConflictPreview(root, entry.path) });
+  }
+  const commands = gitOperationCommands(kind);
+  let bisect = null;
+  if (kind === "bisect") {
+    const log = await runGitReadCommand(root, ["bisect", "log"], { maxOutputLength: 60_000 }).catch(() => "");
+    bisect = { log: log.trimEnd().split(/\r?\n/).slice(-20).join("\n") };
+  }
+  return {
+    root,
+    branch: gitBranchFromPorcelainStatus(porcelainText),
+    operation: kind,
+    summary,
+    conflicts,
+    canContinue: Boolean(kind) && kind !== "bisect" && conflictEntries.length === 0,
+    canSkip: Boolean(commands?.skip),
+    commands: commands
+      ? {
+          continue: formatGitCommand(commands.continue.filter((arg) => arg !== "-c" && arg !== "core.editor=true")),
+          abort: formatGitCommand(commands.abort),
+          ...(commands.skip ? { skip: formatGitCommand(commands.skip.filter((arg) => arg !== "-c" && arg !== "core.editor=true")) } : {}),
+        }
+      : null,
+    bisect,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+async function gitOperationStageFile(cwd, body = {}) {
+  const root = await getGitRoot(cwd);
+  const kind = await detectGitOperationKind(root);
+  if (!kind) throw makeHttpError(409, "No git operation is in progress");
+  const rel = normalizeGitRelativePath(root, body.path);
+  const payload = await runGuardedGitMutation(["add", "--", rel], { cwd: root, label: `git add -- ${rel}` });
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.operation = await readGitOperationSnapshot(root);
+  return payload;
+}
+
+async function gitOperationAction(cwd, action, body = {}) {
+  const root = await getGitRoot(cwd);
+  const kind = await detectGitOperationKind(root);
+  if (!kind) throw makeHttpError(409, "No git operation is in progress");
+  if (kind === "bisect") throw makeHttpError(409, "Bisect is controlled through /api/git-operation/bisect");
+  const commands = gitOperationCommands(kind);
+
+  let args;
+  if (action === "continue") {
+    const porcelainText = await runGitReadCommand(root, ["status", "--porcelain=2"], { maxOutputLength: 120_000 });
+    if (parseGitConflictEntries(porcelainText).length > 0) {
+      return { ok: false, code: "UNMERGED_PATHS", error: "Unmerged paths remain. Resolve and stage every conflicted file before continuing." };
+    }
+    args = commands.continue;
+  } else if (action === "skip") {
+    if (!commands.skip) throw makeHttpError(409, `git ${kind} does not support skip`);
+    args = commands.skip;
+  } else if (action === "abort") {
+    requireConfirmed(body, `Aborting the ${kind} operation discards its in-progress state and`);
+    args = commands.abort;
+  } else {
+    throw makeHttpError(400, "Unknown git operation action");
+  }
+
+  const payload = await runGuardedGitMutation(args, { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
+  if (payload.data) {
+    payload.data.root = root;
+    payload.data.kind = kind;
+  }
+  if (payload.ok) payload.data.operation = await readGitOperationSnapshot(root);
+  else applyGitSyncFailure(payload);
+  return payload;
+}
+
+const GIT_BISECT_VERDICTS = new Set(["good", "bad", "old", "new", "skip", "reset"]);
+
+async function gitBisectAction(cwd, body = {}) {
+  const verdict = String(body.verdict || "").trim().toLowerCase();
+  if (!GIT_BISECT_VERDICTS.has(verdict)) throw makeHttpError(400, "verdict must be one of good, bad, old, new, skip, reset");
+  const root = await getGitRoot(cwd);
+  const kind = await detectGitOperationKind(root);
+  if (kind !== "bisect") throw makeHttpError(409, "No git bisect is in progress");
+  if (verdict === "reset") requireConfirmed(body, "Resetting the bisect session");
+  const payload = await runGuardedGitMutation(["bisect", verdict], { cwd: root });
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.operation = await readGitOperationSnapshot(root);
+  return payload;
+}
+
+// ---- Stash ----
+
+function cleanGitStashRef(value) {
+  const ref = String(value || "").trim();
+  if (!/^stash@\{\d{1,4}\}$/.test(ref)) throw makeHttpError(400, "stash ref must look like stash@{0}");
+  return ref;
+}
+
+async function readGitStashes(cwd) {
+  const root = await getGitRoot(cwd);
+  const out = await runGitReadCommand(root, ["stash", "list", "--format=%gd%x09%at%x09%gs"], { maxOutputLength: 120_000 });
+  const stashes = out
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const [ref, epoch, ...subject] = line.split("\t");
+      return { ref: ref || "", epochSeconds: Number.parseInt(epoch || "0", 10) || 0, subject: subject.join("\t") };
+    })
+    .filter((entry) => entry.ref);
+  return { root, stashes, generatedAt: new Date().toISOString() };
+}
+
+async function readGitStashPreview(cwd, requestedRef) {
+  const root = await getGitRoot(cwd);
+  const ref = cleanGitStashRef(requestedRef);
+  const [statText, patchText] = await Promise.all([
+    runGitReadCommand(root, ["stash", "show", "--include-untracked", "--stat", ref], { maxOutputLength: 120_000 }).catch((error) => `(${sanitizeError(error)})`),
+    runGitReadCommand(root, ["stash", "show", "--include-untracked", "-p", ref], { maxOutputLength: GIT_STASH_PATCH_MAX_OUTPUT }).catch(() => ""),
+  ]);
+  return { root, ref, stat: statText.trimEnd(), patch: patchText.trimEnd() };
+}
+
+async function saveGitStash(cwd, body = {}) {
+  const root = await getGitRoot(cwd);
+  const args = ["stash", "push"];
+  if (body.includeUntracked === true) args.push("--include-untracked");
+  if (body.message) args.push("-m", cleanGitCommitMessageInput(body.message));
+  const payload = await runGuardedGitMutation(args, { cwd: root });
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.stashes = (await readGitStashes(root)).stashes;
+  return payload;
+}
+
+async function applyGitStash(cwd, body = {}, { pop = false } = {}) {
+  const root = await getGitRoot(cwd);
+  const ref = cleanGitStashRef(body.ref);
+  const payload = await runGuardedGitMutation(["stash", pop ? "pop" : "apply", ref], { cwd: root });
+  if (payload.data) {
+    payload.data.root = root;
+    payload.data.ref = ref;
+  }
+  if (payload.ok) payload.data.stashes = (await readGitStashes(root)).stashes;
+  else if (!payload.code && /conflict/i.test(payload.error || "")) {
+    payload.code = "CONFLICTS";
+    payload.hint = pop
+      ? "The stash conflicts with the working tree; git kept the stash entry. Resolve the conflicts, then drop the stash manually."
+      : "The stash conflicts with the working tree. Resolve the conflicts or reset the working tree.";
+  }
+  return payload;
+}
+
+async function dropGitStash(cwd, body = {}) {
+  requireConfirmed(body, "Dropping a stash permanently deletes it and");
+  const root = await getGitRoot(cwd);
+  const ref = cleanGitStashRef(body.ref);
+  const payload = await runGuardedGitMutation(["stash", "drop", ref], { cwd: root });
+  if (payload.data) {
+    payload.data.root = root;
+    payload.data.ref = ref;
+  }
+  if (payload.ok) payload.data.stashes = (await readGitStashes(root)).stashes;
+  return payload;
+}
+
+// ---- File-level staging ----
+
+async function stageGitFile(cwd, body = {}) {
+  const root = await getGitRoot(cwd);
+  const rel = normalizeGitRelativePath(root, body.path);
+  const payload = await runGuardedGitMutation(["add", "--", rel], { cwd: root, label: `git add -- ${rel}` });
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.changes = await readGitChanges(root);
+  return payload;
+}
+
+async function unstageGitFile(cwd, body = {}) {
+  const root = await getGitRoot(cwd);
+  const rel = normalizeGitRelativePath(root, body.path);
+  let payload = await runGuardedGitMutation(["restore", "--staged", "--", rel], { cwd: root, label: `git restore --staged -- ${rel}` });
+  if (!payload.ok && /HEAD/.test(payload.error || "")) {
+    // Unborn branch (no commit yet): restore --staged has no HEAD to restore from.
+    payload = await runGuardedGitMutation(["rm", "--cached", "-r", "--", rel], { cwd: root, label: `git rm --cached -- ${rel}` });
+  }
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.changes = await readGitChanges(root);
+  return payload;
+}
+
+async function discardGitFile(cwd, body = {}) {
+  requireConfirmed(body, "Discarding file changes is destructive and");
+  const root = await getGitRoot(cwd);
+  const rel = normalizeGitRelativePath(root, body.path);
+  const payload = await runGuardedGitMutation(["restore", "--", rel], { cwd: root, label: `git restore -- ${rel}` });
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.changes = await readGitChanges(root);
+  return payload;
+}
+
+async function deleteGitUntrackedFile(cwd, body = {}) {
+  requireConfirmed(body, "Deleting an untracked file is destructive and");
+  const root = await getGitRoot(cwd);
+  const rel = normalizeGitRelativePath(root, body.path);
+  const listed = await runGitReadCommand(root, ["ls-files", "--others", "--exclude-standard", "--", rel], { maxOutputLength: 120_000 });
+  const files = listed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!files.includes(rel)) throw makeHttpError(409, `Not an untracked file: ${rel}`);
+  await rm(resolveGitRelativePath(root, rel));
+  return { ok: true, data: { root, path: rel, deleted: true, changes: await readGitChanges(root) } };
+}
+
+// ---- Undo / recovery ----
+
+async function readGitUndoState(cwd) {
+  const root = await getGitRoot(cwd);
+  const [parentProbe, porcelainText, upstream, operation, lastLog] = await Promise.all([
+    runCommand("git", ["rev-parse", "--verify", "--quiet", "HEAD~1"], { cwd: root, timeoutMs: 2000 }),
+    runGitReadCommand(root, ["status", "--porcelain=2", "--branch"], { maxOutputLength: 120_000 }),
+    gitUpstreamRef(root),
+    detectGitOperationKind(root),
+    runGitReadCommand(root, ["log", "-1", "--format=%h%x09%s"], { maxOutputLength: 10_000 }).catch(() => ""),
+  ]);
+  const summary = summarizeGitPorcelainStatus(porcelainText);
+  const hasParent = parentProbe.exitCode === 0;
+  const [lastHash = "", ...subjectParts] = lastLog.trim().split("\t");
+  const lastSubject = subjectParts.join("\t");
+  // With an upstream, "unpushed" means ahead > 0; without one nothing has been
+  // published through this branch's tracking ref.
+  const unpushed = upstream ? summary.ahead > 0 : true;
+  return {
+    root,
+    hasParent,
+    upstream,
+    operation,
+    summary,
+    lastCommit: lastHash ? { hash: lastHash, subject: lastSubject } : null,
+    canUndoLastCommit: hasParent && unpushed && !operation,
+    canAmendMessage: Boolean(lastHash) && unpushed && !operation && summary.staged === 0,
+  };
+}
+
+async function undoLastGitCommit(cwd, body = {}) {
+  requireConfirmed(body, "Undoing the last commit rewrites HEAD and");
+  const state = await readGitUndoState(cwd);
+  if (!state.hasParent) throw makeHttpError(409, "HEAD has no parent commit to undo to");
+  if (state.operation) throw makeHttpError(409, `Cannot undo during a ${state.operation} operation`);
+  if (!state.canUndoLastCommit) throw makeHttpError(409, "The last commit is already pushed to the upstream; undoing it would rewrite published history");
+  const payload = await runGuardedGitMutation(["reset", "--soft", "HEAD~1"], { cwd: state.root });
+  if (payload.data) {
+    payload.data.root = state.root;
+    payload.data.undoneCommit = state.lastCommit;
+    payload.data.restoreCommand = "git reset --soft ORIG_HEAD";
+  }
+  if (payload.ok) payload.data.changes = await readGitChanges(state.root);
+  return payload;
+}
+
+async function amendLastGitCommitMessage(cwd, body = {}) {
+  requireConfirmed(body, "Amending the last commit rewrites HEAD and");
+  const message = cleanGitCommitMessageInput(body.message);
+  const state = await readGitUndoState(cwd);
+  if (!state.lastCommit) throw makeHttpError(409, "There is no commit to amend");
+  if (state.operation) throw makeHttpError(409, `Cannot amend during a ${state.operation} operation`);
+  if (state.summary.staged > 0) throw makeHttpError(409, "Staged changes present; amending now would silently add them to the last commit. Unstage or commit them first.");
+  if (!state.canAmendMessage) throw makeHttpError(409, "The last commit is already pushed to the upstream; amending it would rewrite published history");
+  const payload = await runGuardedGitMutation(["commit", "--amend", "-m", message], { cwd: state.root, label: "git commit --amend -m <message>" });
+  if (payload.data) {
+    payload.data.root = state.root;
+    payload.data.previousCommit = state.lastCommit;
+    payload.data.restoreCommand = "git reset --soft ORIG_HEAD";
+  }
+  return payload;
+}
+
+async function readGitReflog(cwd) {
+  const root = await getGitRoot(cwd);
+  const out = await runGitReadCommand(root, ["reflog", "-n", "20", "--format=%h%x09%gd%x09%cI%x09%gs"], { maxOutputLength: 120_000 });
+  const entries = out
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, selector, date, ...subject] = line.split("\t");
+      return { hash: hash || "", selector: selector || "", date: date || "", subject: subject.join("\t") };
+    });
+  return { root, entries, generatedAt: new Date().toISOString() };
+}
+
+// ---- Submodules ----
+
+async function readGitSubmodules(cwd) {
+  const root = await getGitRoot(cwd);
+  if (!(await regularFileExists(path.join(root, ".gitmodules")))) {
+    return { root, hasSubmodules: false, submodules: [], dirty: 0 };
+  }
+  const out = await runGitReadCommand(root, ["submodule", "status", "--recursive"], { timeoutMs: 30_000, maxOutputLength: 200_000 });
+  const submodules = out
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const flag = line[0] || " ";
+      const rest = line.slice(1).trim();
+      const firstSpace = rest.indexOf(" ");
+      const sha = firstSpace === -1 ? rest : rest.slice(0, firstSpace);
+      const remainder = firstSpace === -1 ? "" : rest.slice(firstSpace + 1);
+      const describeMatch = remainder.match(/^(.*?)( \([^)]*\))?$/);
+      return {
+        sha,
+        path: (describeMatch?.[1] ?? remainder).trim(),
+        describe: describeMatch?.[2] ? describeMatch[2].trim().replace(/^\(|\)$/g, "") : "",
+        state: flag === "-" ? "uninitialized" : flag === "+" ? "out-of-sync" : flag === "U" ? "conflicts" : "clean",
+      };
+    });
+  return { root, hasSubmodules: true, submodules, dirty: submodules.filter((item) => item.state !== "clean").length };
+}
+
+async function updateGitSubmodules(cwd, body = {}) {
+  requireConfirmed(body, "Recursively updating submodules can check out new commits and");
+  const root = await getGitRoot(cwd);
+  const payload = await runGuardedGitMutation(["submodule", "update", "--init", "--recursive"], { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
+  if (payload.data) payload.data.root = root;
+  if (payload.ok) payload.data.submodules = (await readGitSubmodules(root)).submodules;
+  return payload;
+}
+
+// ---- Tags ----
+
+function cleanGitTagName(value) {
+  const name = String(value || "").trim();
+  if (!name || name.includes("\0") || name.includes("@{") || name.startsWith("-") || name.startsWith("/") || /\s/.test(name)) {
+    throw makeHttpError(400, "Invalid tag name");
+  }
+  return name;
+}
+
+async function validateGitTagName(root, name) {
+  const result = await runCommand("git", ["check-ref-format", `refs/tags/${name}`], { cwd: root, timeoutMs: 5000 });
+  if (result.exitCode !== 0) throw makeHttpError(400, `Invalid tag name: ${name}`);
+}
+
+async function readGitTags(cwd) {
+  const root = await getGitRoot(cwd);
+  const [headOut, recentOut] = await Promise.all([
+    runGitReadCommand(root, ["tag", "--points-at", "HEAD", "--sort=-creatordate"], { maxOutputLength: 60_000 }).catch(() => ""),
+    runGitReadCommand(
+      root,
+      ["for-each-ref", "refs/tags", "--sort=-creatordate", "--count=30", "--format=%(refname:short)%09%(objecttype)%09%(objectname:short)%09%(*objectname:short)%09%(creatordate:iso8601)%09%(subject)"],
+      { maxOutputLength: 120_000 },
+    ).catch(() => ""),
+  ]);
+  const headTags = headOut.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const tags = recentOut
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const [name, objectType, objectName, target, date, ...subject] = line.split("\t");
+      return {
+        name: name || "",
+        annotated: objectType === "tag",
+        target: (objectType === "tag" ? target : objectName) || "",
+        date: date || "",
+        subject: subject.join("\t"),
+        atHead: headTags.includes(name || ""),
+      };
+    });
+  return { root, headTags, tags, generatedAt: new Date().toISOString() };
+}
+
+async function createGitTag(cwd, body = {}) {
+  requireConfirmed(body, "Creating a tag");
+  const root = await getGitRoot(cwd);
+  const name = cleanGitTagName(body.name);
+  await validateGitTagName(root, name);
+  const message = cleanGitCommitMessageInput(body.message || name);
+  const payload = await runGuardedGitMutation(["tag", "-a", name, "-m", message], { cwd: root, label: `git tag -a ${name} -m <message>` });
+  if (payload.data) {
+    payload.data.root = root;
+    payload.data.tag = name;
+    // Tags never leave the machine implicitly; pushing stays a separate,
+    // explicit action.
+    payload.data.pushCommand = `git push ${"origin"} ${name}`;
+  }
+  if (payload.ok) payload.data.tags = (await readGitTags(root)).tags;
+  return payload;
+}
+
+// ---- Signing diagnostics ----
+
+async function readGitSigningDiagnostics(cwd) {
+  const root = await getGitRoot(cwd);
+  const readConfig = async (args) => {
+    const result = await runCommand("git", ["config", ...args], { cwd: root, timeoutMs: 2000 });
+    return result.exitCode === 0 ? result.stdout.trim() : "";
+  };
+  const [gpgSign, gpgFormat, signingKey, lastLog] = await Promise.all([
+    readConfig(["--bool", "--get", "commit.gpgsign"]),
+    readConfig(["--get", "gpg.format"]),
+    readConfig(["--get", "user.signingkey"]),
+    runGitReadCommand(root, ["log", "-1", "--format=%h%x09%G?%x09%GS"], { maxOutputLength: 10_000 }).catch(() => ""),
+  ]);
+  const [lastHash = "", signState = "", signer = ""] = lastLog.trim().split("\t");
+  const commitSignRequired = gpgSign.toLowerCase() === "true";
+  const normalizedState = signState.trim().toUpperCase();
+  const mismatch = commitSignRequired && (!normalizedState || normalizedState === "N" || normalizedState === "E");
+  const suggestions = [];
+  if (mismatch) {
+    if (!signingKey) suggestions.push({ label: "Set your signing key (repo only)", command: "git config user.signingkey <KEY-ID>" });
+    suggestions.push({ label: "Re-sign the last commit", command: "git commit --amend --no-edit -S" });
+    suggestions.push({ label: "Disable signing for this repository", command: "git config commit.gpgsign false" });
+  }
+  return {
+    root,
+    commitSignRequired,
+    gpgFormat: gpgFormat || "(default: gpg)",
+    signingKey: signingKey || "(not set)",
+    lastCommit: lastHash ? { hash: lastHash, signState: normalizedState || "N", signer } : null,
+    mismatch,
+    suggestions,
   };
 }
 
@@ -4404,7 +5087,7 @@ async function prepareInitialRepositoryFiles(cwd, { repoName: repoNameInput, sta
     await writeFile(before.gitignorePath, gitignoreLinesForStack(stack, before.detectedStack), "utf8");
     gitignoreCreated = true;
   }
-  const payload = gitWorkflowCommandPayload(await runGitWorkflowCommand(["add", "--", "README.md", ".gitignore"], { cwd: before.root, label: "git add README.md .gitignore" }));
+  const payload = gitMutationPayload(await runGitMutationCommand(["add", "--", "README.md", ".gitignore"], { cwd: before.root, label: "git add README.md .gitignore" }));
   if (payload.data) {
     payload.data.root = before.root;
     payload.data.readme = { path: before.readmePath, exists: true, created: !before.readmeExists };
@@ -4508,7 +5191,7 @@ async function switchGitBranch(cwd, branch, { create = false } = {}) {
     return { ok: true, data: { command: `git switch ${targetBranch}`, stdout: "", stderr: "", exitCode: 0, branch: targetBranch, root, switched: false, created: false } };
   }
   const args = create ? ["switch", "-c", targetBranch] : ["switch", targetBranch];
-  const payload = gitWorkflowCommandPayload(await runGitWorkflowCommand(args, { cwd: root, timeoutMs: 10 * 60 * 1000 }));
+  const payload = gitMutationPayload(await runGitMutationCommand(args, { cwd: root, timeoutMs: 10 * 60 * 1000 }));
   if (payload.ok) {
     payload.data.branch = targetBranch;
     payload.data.root = root;
@@ -4835,7 +5518,9 @@ function runWorkflowCommand(command, args, { cwd, label = formatWorkflowCommand(
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT || "0", GH_PROMPT_DISABLED: process.env.GH_PROMPT_DISABLED || "1" },
+      // LC_ALL=C keeps git/gh output in English so failure classification
+      // (classifyGitSyncFailure, isGitLockFailure) works regardless of locale.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT || "0", GH_PROMPT_DISABLED: process.env.GH_PROMPT_DISABLED || "1", LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -4899,6 +5584,33 @@ function gitWorkflowCommandPayload(result) {
   };
 }
 
+// Read-only workflow lookups are safe over GET; everything else mutates the
+// repository (or process state, for cancel) and must be POST. Method + access
+// guard are enforced at the router before dispatch — never dispatch on path
+// alone, or cross-origin GETs (image/script tags) could drive git mutations.
+const GIT_WORKFLOW_READONLY_PATHS = new Set([
+  "/api/git-workflow/message",
+  "/api/git-workflow/default-commit-message",
+  "/api/git-workflow/branch-name",
+  "/api/git-workflow/pr-description",
+  "/api/git-workflow/init-files-status",
+]);
+
+const GIT_WORKFLOW_MUTATING_PATHS = new Set([
+  "/api/git-workflow/init",
+  "/api/git-workflow/readme",
+  "/api/git-workflow/initial-commit",
+  "/api/git-workflow/main-branch",
+  "/api/git-workflow/remote",
+  "/api/git-workflow/init-push",
+  "/api/git-workflow/add",
+  "/api/git-workflow/branch",
+  "/api/git-workflow/commit",
+  "/api/git-workflow/push",
+  "/api/git-workflow/create-pr",
+  "/api/git-workflow/cancel",
+]);
+
 async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.cwd) {
   const tab = tabOrCwd && typeof tabOrCwd === "object" ? tabOrCwd : null;
   const cwd = tab?.cwd || tabOrCwd || options.cwd;
@@ -4914,25 +5626,25 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
         return { ok: true, data: await readGitWorkflowPrDescription(cwd) };
       case "/api/git-workflow/init":
         await ensureOutsideGitRepository(cwd);
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["init"], { cwd }));
+        return gitMutationPayload(await runGitMutationCommand(["init"], { cwd }));
       case "/api/git-workflow/init-files-status":
         return { ok: true, data: await initialRepositoryFilesStatus(cwd) };
       case "/api/git-workflow/readme":
         return prepareInitialRepositoryFiles(cwd, { repoName: body.repoName, stack: body.stack });
       case "/api/git-workflow/initial-commit": {
         const root = await getGitRoot(cwd);
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["commit", "-m", "Initial commit"], { cwd: root, label: "git commit -m \"Initial commit\"" }));
+        return gitMutationPayload(await runGitMutationCommand(["commit", "-m", "Initial commit"], { cwd: root, label: "git commit -m \"Initial commit\"" }));
       }
       case "/api/git-workflow/main-branch": {
         const root = await getGitRoot(cwd);
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["branch", "-M", "main"], { cwd: root }));
+        return gitMutationPayload(await runGitMutationCommand(["branch", "-M", "main"], { cwd: root }));
       }
       case "/api/git-workflow/remote": {
         const root = await getGitRoot(cwd);
         const username = cleanGitHubUsername(body.username);
         const repoName = cleanGitHubRepoName(body.repoName);
         const remoteUrl = gitHubOriginUrl(username, repoName);
-        const payload = gitWorkflowCommandPayload(await runGitWorkflowCommand(["remote", "add", "origin", remoteUrl], { cwd: root }));
+        const payload = gitMutationPayload(await runGitMutationCommand(["remote", "add", "origin", remoteUrl], { cwd: root }));
         if (payload.data) {
           payload.data.root = root;
           payload.data.remote = "origin";
@@ -4944,11 +5656,11 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
       }
       case "/api/git-workflow/init-push": {
         const root = await getGitRoot(cwd);
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["push", "-u", "origin", "main"], { cwd: root, timeoutMs: 15 * 60 * 1000 }));
+        return applyGitSyncFailure(gitMutationPayload(await runGitMutationCommand(["push", "-u", "origin", "main"], { cwd: root, timeoutMs: 15 * 60 * 1000 })), { push: true });
       }
       case "/api/git-workflow/add":
         await getGitRoot(cwd);
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["add", "."], { cwd }));
+        return gitMutationPayload(await runGitMutationCommand(["add", "."], { cwd }));
       case "/api/git-workflow/branch": {
         if (!tab) throw new Error("Git workflow branch worktree requires a Web UI tab");
         return { ok: true, data: await createGitWorkflowBranchWorktree(tab, body) };
@@ -4959,32 +5671,45 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
         if (variant === "input") {
           const root = await getGitRoot(cwd);
           const message = cleanGitCommitMessageInput(body.message);
-          return gitWorkflowCommandPayload(await runGitWorkflowCommand(["commit", "-m", message], { cwd: root, label: "git commit -m <input message>" }));
+          return gitMutationPayload(await runGitMutationCommand(["commit", "-m", message], { cwd: root, label: "git commit -m <input message>" }));
         }
         const messages = await readGitWorkflowMessages(cwd);
         if (variant === "short") {
           const message = messages.short.trim();
           if (!message) throw new Error(`${messages.shortPath} is empty`);
-          return gitWorkflowCommandPayload(await runGitWorkflowCommand(["commit", "-m", message], { cwd: messages.root, label: "git commit -m <dev/COMMIT/staged-commit-short.txt>" }));
+          return gitMutationPayload(await runGitMutationCommand(["commit", "-m", message], { cwd: messages.root, label: "git commit -m <dev/COMMIT/staged-commit-short.txt>" }));
         }
         if (!messages.long.trim()) throw new Error(`${messages.longPath} is empty`);
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["commit", "-F", messages.longPath], { cwd: messages.root, label: "git commit -F dev/COMMIT/staged-commit-long.txt" }));
+        return gitMutationPayload(await runGitMutationCommand(["commit", "-F", messages.longPath], { cwd: messages.root, label: "git commit -F dev/COMMIT/staged-commit-long.txt" }));
       }
       case "/api/git-workflow/push": {
         const root = await getGitRoot(cwd);
+        const currentBranch = await currentGitBranch(root);
+        const protectedBranch = PROTECTED_GIT_BRANCHES.has(currentBranch);
         if (body.setUpstream) {
-          const currentBranch = await currentGitBranch(root);
           const requestedBranch = body.branch ? cleanGitBranchName(body.branch) : currentBranch;
           if (requestedBranch !== currentBranch) throw new Error(`Current branch is ${currentBranch}, not ${requestedBranch}`);
           const remote = await defaultGitRemote(root);
-          const payload = gitWorkflowCommandPayload(await runGitWorkflowCommand(["push", "-u", remote, currentBranch], { cwd: root, label: `git push -u ${remote} ${currentBranch}`, timeoutMs: 15 * 60 * 1000 }));
-          if (payload.ok) {
+          const payload = await runGuardedGitMutation(["push", "-u", remote, currentBranch], { cwd: root, label: `git push -u ${remote} ${currentBranch}`, timeoutMs: 15 * 60 * 1000 });
+          if (payload.data) {
             payload.data.branch = currentBranch;
-            payload.data.remote = remote;
+            payload.data.protectedBranch = protectedBranch;
+            if (payload.ok) payload.data.remote = remote;
           }
-          return payload;
+          return applyGitSyncFailure(payload, { push: true });
         }
-        return gitWorkflowCommandPayload(await runGitWorkflowCommand(["push"], { cwd: root, timeoutMs: 15 * 60 * 1000 }));
+        // Plain --force is never offered; --force-with-lease still refuses to
+        // clobber remote commits we have not seen, and requires confirmation.
+        const forceWithLease = body.forceWithLease === true;
+        if (forceWithLease) requireConfirmed(body, `Force-pushing ${currentBranch} (--force-with-lease) rewrites the remote branch and`);
+        const args = forceWithLease ? ["push", "--force-with-lease"] : ["push"];
+        const payload = await runGuardedGitMutation(args, { cwd: root, timeoutMs: 15 * 60 * 1000 });
+        if (payload.data) {
+          payload.data.branch = currentBranch;
+          payload.data.protectedBranch = protectedBranch;
+          payload.data.forceWithLease = forceWithLease;
+        }
+        return applyGitSyncFailure(payload, { push: true });
       }
       case "/api/git-workflow/create-pr": {
         const root = await getGitRoot(cwd);
@@ -10292,14 +11017,88 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname.startsWith("/api/git-workflow/")) {
-      const body = req.method === "POST" ? await readJsonBody(req) : {};
-      const tab = getRequestedTab(req, url, body);
-      if (req.method !== "GET") ensureNaturalConversationRouteAllowed(tab, "git workflow actions are blocked");
-      const response = await handleGitWorkflowRequest(url.pathname, body, tab);
-      if (response) {
-        sendJson(res, 200, response);
+    {
+      const gitActionError = (error) => {
+        sendJson(res, error?.statusCode || 200, { ok: false, ...(error?.code ? { code: error.code } : {}), error: sanitizeError(error) });
+      };
+      const GIT_READ_ROUTES = {
+        "/api/git-operation": (cwd) => readGitOperationSnapshot(cwd),
+        "/api/git-stash": (cwd) => readGitStashes(cwd),
+        "/api/git-stash/show": (cwd) => readGitStashPreview(cwd, url.searchParams.get("ref") || ""),
+        "/api/git-undo": (cwd) => readGitUndoState(cwd),
+        "/api/git-reflog": (cwd) => readGitReflog(cwd),
+        "/api/git-submodules": (cwd) => readGitSubmodules(cwd),
+        "/api/git-tags": (cwd) => readGitTags(cwd),
+        "/api/git-signing": (cwd) => readGitSigningDiagnostics(cwd),
+        "/api/git-worktrees/prune": (cwd) => pruneGitWorktrees(cwd, { dryRun: true }),
+      };
+      if (req.method === "GET" && GIT_READ_ROUTES[url.pathname]) {
+        const tab = getRequestedTab(req, url);
+        try {
+          sendJson(res, 200, { ok: true, data: await GIT_READ_ROUTES[url.pathname](tab.cwd) });
+        } catch (error) {
+          gitActionError(error);
+        }
         return;
+      }
+
+      const GIT_MUTATION_ROUTES = {
+        "/api/git-fetch": (cwd) => fetchGitChanges(cwd),
+        "/api/git-changes/integrate": (cwd, body) => integrateGitUpstream(cwd, body),
+        "/api/git-changes/stage-file": (cwd, body) => stageGitFile(cwd, body),
+        "/api/git-changes/unstage-file": (cwd, body) => unstageGitFile(cwd, body),
+        "/api/git-changes/discard-file": (cwd, body) => discardGitFile(cwd, body),
+        "/api/git-changes/delete-untracked": (cwd, body) => deleteGitUntrackedFile(cwd, body),
+        "/api/git-operation/continue": (cwd, body) => gitOperationAction(cwd, "continue", body),
+        "/api/git-operation/skip": (cwd, body) => gitOperationAction(cwd, "skip", body),
+        "/api/git-operation/abort": (cwd, body) => gitOperationAction(cwd, "abort", body),
+        "/api/git-operation/stage-file": (cwd, body) => gitOperationStageFile(cwd, body),
+        "/api/git-operation/bisect": (cwd, body) => gitBisectAction(cwd, body),
+        "/api/git-stash/save": (cwd, body) => saveGitStash(cwd, body),
+        "/api/git-stash/apply": (cwd, body) => applyGitStash(cwd, body),
+        "/api/git-stash/pop": (cwd, body) => applyGitStash(cwd, body, { pop: true }),
+        "/api/git-stash/drop": (cwd, body) => dropGitStash(cwd, body),
+        "/api/git-undo/last-commit": (cwd, body) => undoLastGitCommit(cwd, body),
+        "/api/git-undo/amend-message": (cwd, body) => amendLastGitCommitMessage(cwd, body),
+        "/api/git-submodules/update": (cwd, body) => updateGitSubmodules(cwd, body),
+        "/api/git-tags/create": (cwd, body) => createGitTag(cwd, body),
+        "/api/git-worktrees/prune": (cwd, body) => {
+          requireConfirmed(body, "Pruning stale worktree records");
+          return pruneGitWorktrees(cwd, { dryRun: false });
+        },
+      };
+      if (req.method === "POST" && GIT_MUTATION_ROUTES[url.pathname]) {
+        const body = await readJsonBody(req);
+        const tab = getRequestedTab(req, url, body);
+        ensureNaturalConversationRouteAllowed(tab, "git actions are blocked");
+        try {
+          const payload = await GIT_MUTATION_ROUTES[url.pathname](tab.cwd, body);
+          sendJson(res, 200, payload && typeof payload === "object" && "ok" in payload ? payload : { ok: true, data: payload });
+        } catch (error) {
+          gitActionError(error);
+        }
+        return;
+      }
+    }
+
+    if (url.pathname.startsWith("/api/git-workflow/")) {
+      const readOnlyWorkflow = GIT_WORKFLOW_READONLY_PATHS.has(url.pathname);
+      const mutatingWorkflow = GIT_WORKFLOW_MUTATING_PATHS.has(url.pathname);
+      if (readOnlyWorkflow || mutatingWorkflow) {
+        const requiredMethod = mutatingWorkflow ? "POST" : "GET";
+        if (req.method !== requiredMethod) {
+          res.setHeader("Allow", requiredMethod);
+          sendJson(res, 405, { ok: false, error: `${url.pathname} requires ${requiredMethod}` });
+          return;
+        }
+        const body = mutatingWorkflow ? await readJsonBody(req) : {};
+        const tab = getRequestedTab(req, url, body);
+        if (mutatingWorkflow) ensureNaturalConversationRouteAllowed(tab, "git workflow actions are blocked");
+        const response = await handleGitWorkflowRequest(url.pathname, body, tab);
+        if (response) {
+          sendJson(res, 200, response);
+          return;
+        }
       }
     }
 

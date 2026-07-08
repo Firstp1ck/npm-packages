@@ -214,7 +214,7 @@
                   aria-haspopup="menu"
                   aria-expanded="false"
                   aria-controls="optionsMenu"
-                  data-tooltip="Options: command palette, natural conversation, resume, reload, remote, name, clone, settings, export, fork, or tree."
+                  data-tooltip="Options: command palette, Git-footer Visibility, natural conversation, resume, reload, remote, name, clone, settings, export, fork, or tree."
                 ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="8" cy="7" r="1.6" fill="currentColor"/><circle cx="16" cy="12" r="1.6" fill="currentColor"/><circle cx="11" cy="17" r="1.6" fill="currentColor"/></svg></button>
                 <div id="optionsMenu" class="composer-publish-menu-panel composer-options-menu-panel" role="menu" aria-label="Common Pi options">
                   <button id="optionsCommandPaletteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem">
@@ -228,6 +228,9 @@
                   </button>
                   <button id="optionsStatsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/stats-webui" hidden>
                     <span>Stats Dashboard</span>
+                  </button>
+                  <button id="optionsFooterVisibilityButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" hidden>
+                    <span>Git-footer Visibility</span>
                   </button>
                   <button id="optionsForkButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/fork">
                     <span>Fork</span>
@@ -665,6 +668,7 @@
           </div>
           <div class="git-changes-actions">
             <button id="gitChangesRefreshButton" type="button">Refresh</button>
+            <button id="gitChangesFetchButton" type="button">Fetch</button>
             <button id="gitChangesPullButton" class="primary" type="button" disabled>Pull</button>
           </div>
         </div>
@@ -800,6 +804,24 @@
         <div id="appRunnerInfoBody" class="app-runner-info-body"></div>
         <menu>
           <button id="appRunnerInfoCloseButton" type="submit" value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="gitFooterVisibilityDialog" class="extension-dialog git-footer-visibility-dialog">
+      <form method="dialog">
+        <h2>Git-footer Visibility</h2>
+        <p class="muted">Select which Git footer cards, buttons, popovers, and modal affordances are visible in the Web UI. Changes use <code>/git-footer-visibility</code> runtime overrides.</p>
+        <div class="git-footer-visibility-toolbar" aria-label="Git-footer Visibility quick actions">
+          <button id="gitFooterVisibilitySelectAllButton" type="button">Select all</button>
+          <button id="gitFooterVisibilitySelectNoneButton" type="button">Select none</button>
+        </div>
+        <div id="gitFooterVisibilityBody" class="git-footer-visibility-body"></div>
+        <p id="gitFooterVisibilityStatus" class="git-footer-visibility-status muted" role="status" aria-live="polite"></p>
+        <menu>
+          <button id="gitFooterVisibilityCloseButton" type="button">Cancel</button>
+          <button id="gitFooterVisibilityResetButton" type="button">Reset WebUI</button>
+          <button id="gitFooterVisibilityApplyButton" class="primary" type="button">Apply</button>
         </menu>
       </form>
     </dialog>

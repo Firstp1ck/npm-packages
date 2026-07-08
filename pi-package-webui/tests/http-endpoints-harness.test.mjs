@@ -280,6 +280,21 @@ try {
     assert.equal(gitReadmeAgain.body?.data?.readme?.created, false);
     assert.equal(gitReadmeAgain.body?.data?.gitignore?.created, false);
 
+    const bypassCommit = await request("127.0.0.1", `/api/git-workflow/initial-commit?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(bypassCommit.status, 405, "GET on a mutating git workflow path should be refused with 405");
+    assert.equal(bypassCommit.body?.ok, false, "GET bypass refusal should carry ok: false");
+    const headAfterBypass = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" });
+    assert.notEqual(headAfterBypass.status, 0, "GET bypass attempt must not create a commit");
+
+    const bypassPush = await request("127.0.0.1", `/api/git-workflow/push?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(bypassPush.status, 405, "GET /api/git-workflow/push should be refused with 405");
+
+    const bypassAdd = await request("127.0.0.1", `/api/git-workflow/add?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(bypassAdd.status, 405, "GET /api/git-workflow/add should be refused with 405");
+
+    const postReadonly = await request("127.0.0.1", "/api/git-workflow/default-commit-message", { method: "POST", body: { tab: tabId } });
+    assert.equal(postReadonly.status, 405, "POST on a read-only git workflow path should be refused with 405");
+
     const gitCommit = await request("127.0.0.1", "/api/git-workflow/initial-commit", { method: "POST", body: { tab: tabId } });
     assert.equal(gitCommit.status, 200);
     assert.equal(gitCommit.body?.ok, true, "initial commit endpoint should commit the staged README.md");
@@ -500,6 +515,305 @@ try {
     assert.equal(multipleDefault.status, 200);
     assert.equal(multipleDefault.body?.ok, true, "default commit message endpoint should still return ok when no default is available");
     assert.equal(multipleDefault.body?.data?.message, "", "multiple staged files should not get a default commit message");
+
+    // ---- Git action endpoints: staging, operations, stash, fetch/divergence, undo, tags, prune ----
+
+    const gitFixturesRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-git-actions-"));
+    const makeFixtureRepo = async (name) => {
+      const dir = path.join(gitFixturesRoot, name);
+      await mkdir(dir, { recursive: true });
+      runGitFixture(["init", "-b", "main", dir], gitFixturesRoot, `${name} fixture should initialize`);
+      runGitFixture(["config", "user.name", "Pi WebUI Test"], dir, `${name} fixture should set user name`);
+      runGitFixture(["config", "user.email", "pi-webui-test@example.invalid"], dir, `${name} fixture should set user email`);
+      await writeFile(path.join(dir, "file.txt"), "base\n");
+      runGitFixture(["add", "file.txt"], dir, `${name} fixture should stage base`);
+      runGitFixture(["commit", "-m", "base"], dir, `${name} fixture should commit base`);
+      return dir;
+    };
+    const openFixtureTab = async (dir, title) => {
+      const created = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: dir, title } });
+      assert.equal(created.status, 201, `${title} tab should open`);
+      const id = created.body?.data?.tab?.id;
+      assert.ok(id, `${title} tab should have an id`);
+      return id;
+    };
+
+    // Staging endpoints
+    const stagingRepo = await makeFixtureRepo("staging");
+    const stagingTab = await openFixtureTab(stagingRepo, "staging-fixture");
+    await writeFile(path.join(stagingRepo, "file.txt"), "modified\n");
+    await writeFile(path.join(stagingRepo, "loose.txt"), "loose\n");
+
+    const stageFile = await request("127.0.0.1", "/api/git-changes/stage-file", { method: "POST", body: { tab: stagingTab, path: "file.txt" } });
+    assert.equal(stageFile.status, 200);
+    assert.equal(stageFile.body?.ok, true, "stage-file endpoint should stage a modified file");
+    assert.equal(stageFile.body?.data?.changes?.summary?.staged, 1, "stage-file should report one staged file afterwards");
+
+    const unstageFile = await request("127.0.0.1", "/api/git-changes/unstage-file", { method: "POST", body: { tab: stagingTab, path: "file.txt" } });
+    assert.equal(unstageFile.status, 200);
+    assert.equal(unstageFile.body?.ok, true, "unstage-file endpoint should unstage the file");
+    assert.equal(unstageFile.body?.data?.changes?.summary?.staged, 0, "unstage-file should report zero staged files afterwards");
+
+    const discardUnconfirmed = await request("127.0.0.1", "/api/git-changes/discard-file", { method: "POST", body: { tab: stagingTab, path: "file.txt" } });
+    assert.equal(discardUnconfirmed.status, 409, "discard-file without confirmed: true should be refused");
+    const discardConfirmed = await request("127.0.0.1", "/api/git-changes/discard-file", { method: "POST", body: { tab: stagingTab, path: "file.txt", confirmed: true } });
+    assert.equal(discardConfirmed.status, 200);
+    assert.equal(discardConfirmed.body?.ok, true, "confirmed discard-file should restore the file");
+    assert.equal(await readFile(path.join(stagingRepo, "file.txt"), "utf8"), "base\n", "discard-file should restore committed content");
+
+    const escapeStage = await request("127.0.0.1", "/api/git-changes/stage-file", { method: "POST", body: { tab: stagingTab, path: "../outside.txt" } });
+    assert.equal(escapeStage.body?.ok, false, "stage-file must reject paths escaping the repository root");
+
+    const deleteTracked = await request("127.0.0.1", "/api/git-changes/delete-untracked", { method: "POST", body: { tab: stagingTab, path: "file.txt", confirmed: true } });
+    assert.equal(deleteTracked.status, 409, "delete-untracked must refuse tracked files");
+    const deleteUnconfirmed = await request("127.0.0.1", "/api/git-changes/delete-untracked", { method: "POST", body: { tab: stagingTab, path: "loose.txt" } });
+    assert.equal(deleteUnconfirmed.status, 409, "delete-untracked without confirmed: true should be refused");
+    const deleteConfirmed = await request("127.0.0.1", "/api/git-changes/delete-untracked", { method: "POST", body: { tab: stagingTab, path: "loose.txt", confirmed: true } });
+    assert.equal(deleteConfirmed.status, 200);
+    assert.equal(deleteConfirmed.body?.ok, true, "confirmed delete-untracked should delete the file");
+    assert.equal(await readFile(path.join(stagingRepo, "loose.txt"), "utf8").then(() => true, () => false), false, "delete-untracked should remove the file from disk");
+
+    // Diff truncation transparency: a diff larger than the 500KB cap must be flagged.
+    const truncationRepo = await makeFixtureRepo("diff-truncation");
+    const truncationTab = await openFixtureTab(truncationRepo, "diff-truncation-fixture");
+    const bigLines = Array.from({ length: 24_000 }, (_, index) => `line ${index} ${"x".repeat(24)}`).join("\n");
+    await writeFile(path.join(truncationRepo, "big.txt"), `${bigLines}\n`);
+    runGitFixture(["add", "big.txt"], truncationRepo, "truncation fixture should stage the big file");
+    runGitFixture(["commit", "-m", "big base"], truncationRepo, "truncation fixture should commit the big file");
+    const flipped = Array.from({ length: 24_000 }, (_, index) => `LINE ${index} ${"y".repeat(24)}`).join("\n");
+    await writeFile(path.join(truncationRepo, "big.txt"), `${flipped}\n`);
+    const truncatedChanges = await request("127.0.0.1", `/api/git-changes?tab=${encodeURIComponent(truncationTab)}`, { timeoutMs: 20_000 });
+    assert.equal(truncatedChanges.body?.ok, true, "git changes should load the oversized diff repo");
+    const unstagedSection = (truncatedChanges.body?.data?.sections || []).find((section) => section.key === "unstaged");
+    assert.ok(unstagedSection, "unstaged section should exist for the oversized diff");
+    assert.equal(unstagedSection.truncated, true, "oversized diffs must carry a structured truncated flag");
+    assert.ok(Number(unstagedSection.capBytes) > 0, "truncated sections must report the cap size");
+    const stagedSection = (truncatedChanges.body?.data?.sections || []).find((section) => section.key === "staged");
+    assert.equal(stagedSection?.truncated, false, "small diffs must not be flagged as truncated");
+
+    // Merge conflict lifecycle
+    const makeConflictRepo = async (name) => {
+      const dir = await makeFixtureRepo(name);
+      runGitFixture(["checkout", "-b", "side"], dir, `${name} fixture should branch`);
+      await writeFile(path.join(dir, "file.txt"), "side\n");
+      runGitFixture(["commit", "-am", "side"], dir, `${name} fixture should commit side`);
+      runGitFixture(["checkout", "main"], dir, `${name} fixture should return to main`);
+      await writeFile(path.join(dir, "file.txt"), "main\n");
+      runGitFixture(["commit", "-am", "main"], dir, `${name} fixture should commit main`);
+      const merge = spawnSync("git", ["merge", "side"], { cwd: dir, encoding: "utf8" });
+      assert.notEqual(merge.status, 0, `${name} fixture merge should conflict`);
+      return dir;
+    };
+
+    const mergeRepo = await makeConflictRepo("merge-conflict");
+    const mergeTab = await openFixtureTab(mergeRepo, "merge-conflict-fixture");
+    const operationSnapshot = await request("127.0.0.1", `/api/git-operation?tab=${encodeURIComponent(mergeTab)}`);
+    assert.equal(operationSnapshot.status, 200);
+    assert.equal(operationSnapshot.body?.ok, true, "operation endpoint should read a merging repo");
+    assert.equal(operationSnapshot.body?.data?.operation, "merge");
+    assert.equal(operationSnapshot.body?.data?.canContinue, false, "merge with conflicts must not be continuable");
+    assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.path, "file.txt");
+    assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.status, "UU");
+    assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.preview?.hasMarkers, true, "conflict preview should detect conflict markers");
+
+    const continueBlocked = await request("127.0.0.1", "/api/git-operation/continue", { method: "POST", body: { tab: mergeTab } });
+    assert.equal(continueBlocked.status, 200);
+    assert.equal(continueBlocked.body?.ok, false, "continue with unmerged paths must fail");
+    assert.equal(continueBlocked.body?.code, "UNMERGED_PATHS");
+
+    await writeFile(path.join(mergeRepo, "file.txt"), "resolved\n");
+    const markResolved = await request("127.0.0.1", "/api/git-operation/stage-file", { method: "POST", body: { tab: mergeTab, path: "file.txt" } });
+    assert.equal(markResolved.status, 200);
+    assert.equal(markResolved.body?.ok, true, "operation stage-file should mark the conflict as resolved");
+    assert.equal(markResolved.body?.data?.operation?.canContinue, true, "after staging the only conflict, continue should be possible");
+
+    const continueMerge = await request("127.0.0.1", "/api/git-operation/continue", { method: "POST", body: { tab: mergeTab }, timeoutMs: 20_000 });
+    assert.equal(continueMerge.status, 200);
+    assert.equal(continueMerge.body?.ok, true, `continue should commit the resolved merge: ${continueMerge.body?.error || ""}`);
+    assert.equal(continueMerge.body?.data?.operation?.operation, null, "after continuing, no operation should remain");
+
+    const abortRepo = await makeConflictRepo("merge-abort");
+    const abortTab = await openFixtureTab(abortRepo, "merge-abort-fixture");
+    const abortUnconfirmed = await request("127.0.0.1", "/api/git-operation/abort", { method: "POST", body: { tab: abortTab } });
+    assert.equal(abortUnconfirmed.status, 409, "abort without confirmed: true should be refused");
+    const abortConfirmed = await request("127.0.0.1", "/api/git-operation/abort", { method: "POST", body: { tab: abortTab, confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(abortConfirmed.status, 200);
+    assert.equal(abortConfirmed.body?.ok, true, "confirmed abort should stop the merge");
+    assert.equal(abortConfirmed.body?.data?.operation?.operation, null, "after aborting, no operation should remain");
+    assert.equal(await readFile(path.join(abortRepo, "file.txt"), "utf8"), "main\n", "abort should restore the pre-merge content");
+
+    // Rebase lifecycle: skip support + abort
+    const rebaseRepo = await makeFixtureRepo("rebase-conflict");
+    runGitFixture(["checkout", "-b", "side"], rebaseRepo, "rebase fixture should branch");
+    await writeFile(path.join(rebaseRepo, "file.txt"), "side\n");
+    runGitFixture(["commit", "-am", "side"], rebaseRepo, "rebase fixture should commit side");
+    runGitFixture(["checkout", "main"], rebaseRepo, "rebase fixture should return to main");
+    await writeFile(path.join(rebaseRepo, "file.txt"), "main\n");
+    runGitFixture(["commit", "-am", "main"], rebaseRepo, "rebase fixture should commit main");
+    runGitFixture(["checkout", "side"], rebaseRepo, "rebase fixture should return to side");
+    const rebaseStart = spawnSync("git", ["rebase", "main"], { cwd: rebaseRepo, encoding: "utf8" });
+    assert.notEqual(rebaseStart.status, 0, "rebase fixture should conflict");
+    const rebaseTab = await openFixtureTab(rebaseRepo, "rebase-conflict-fixture");
+    const rebaseSnapshot = await request("127.0.0.1", `/api/git-operation?tab=${encodeURIComponent(rebaseTab)}`);
+    assert.equal(rebaseSnapshot.body?.data?.operation, "rebase");
+    assert.equal(rebaseSnapshot.body?.data?.canSkip, true, "rebase should support skip");
+    const rebaseAbort = await request("127.0.0.1", "/api/git-operation/abort", { method: "POST", body: { tab: rebaseTab, confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(rebaseAbort.body?.ok, true, "confirmed rebase abort should succeed");
+
+    // Bisect lifecycle
+    const bisectRepo = await makeFixtureRepo("bisect");
+    runGitFixture(["bisect", "start"], bisectRepo, "bisect fixture should start");
+    const bisectTab = await openFixtureTab(bisectRepo, "bisect-fixture");
+    const bisectSnapshot = await request("127.0.0.1", `/api/git-operation?tab=${encodeURIComponent(bisectTab)}`);
+    assert.equal(bisectSnapshot.body?.data?.operation, "bisect");
+    const bisectInvalid = await request("127.0.0.1", "/api/git-operation/bisect", { method: "POST", body: { tab: bisectTab, verdict: "evil" } });
+    assert.equal(bisectInvalid.status, 400, "invalid bisect verdicts must be rejected");
+    const bisectResetUnconfirmed = await request("127.0.0.1", "/api/git-operation/bisect", { method: "POST", body: { tab: bisectTab, verdict: "reset" } });
+    assert.equal(bisectResetUnconfirmed.status, 409, "bisect reset without confirmed: true should be refused");
+    const bisectReset = await request("127.0.0.1", "/api/git-operation/bisect", { method: "POST", body: { tab: bisectTab, verdict: "reset", confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(bisectReset.body?.ok, true, "confirmed bisect reset should succeed");
+    assert.equal(bisectReset.body?.data?.operation?.operation, null, "after reset, no bisect should remain");
+
+    // Stash lifecycle
+    const stashRepo = await makeFixtureRepo("stash");
+    const stashTab = await openFixtureTab(stashRepo, "stash-fixture");
+    await writeFile(path.join(stashRepo, "file.txt"), "stash me\n");
+    await writeFile(path.join(stashRepo, "new-file.txt"), "untracked\n");
+    const stashSave = await request("127.0.0.1", "/api/git-stash/save", { method: "POST", body: { tab: stashTab, includeUntracked: true, message: "harness stash" } });
+    assert.equal(stashSave.status, 200);
+    assert.equal(stashSave.body?.ok, true, `stash save should succeed: ${stashSave.body?.error || ""}`);
+    assert.equal(stashSave.body?.data?.stashes?.length, 1, "stash save should leave one stash entry");
+
+    const stashList = await request("127.0.0.1", `/api/git-stash?tab=${encodeURIComponent(stashTab)}`);
+    assert.equal(stashList.body?.ok, true);
+    assert.equal(stashList.body?.data?.stashes?.[0]?.ref, "stash@{0}");
+    assert.match(stashList.body?.data?.stashes?.[0]?.subject || "", /harness stash/);
+
+    const stashShow = await request("127.0.0.1", `/api/git-stash/show?ref=${encodeURIComponent("stash@{0}")}&tab=${encodeURIComponent(stashTab)}`);
+    assert.equal(stashShow.body?.ok, true, "stash show should return a preview");
+    assert.match(stashShow.body?.data?.stat || "", /file\.txt/, "stash preview should mention the stashed file");
+
+    const stashBadRef = await request("127.0.0.1", `/api/git-stash/show?ref=${encodeURIComponent("stash@{0}; rm -rf /")}&tab=${encodeURIComponent(stashTab)}`);
+    assert.equal(stashBadRef.status, 400, "malformed stash refs must be rejected");
+
+    const stashApply = await request("127.0.0.1", "/api/git-stash/apply", { method: "POST", body: { tab: stashTab, ref: "stash@{0}" } });
+    assert.equal(stashApply.body?.ok, true, `stash apply should succeed: ${stashApply.body?.error || ""}`);
+    assert.equal(await readFile(path.join(stashRepo, "file.txt"), "utf8"), "stash me\n", "stash apply should restore the stashed content");
+
+    const stashDropUnconfirmed = await request("127.0.0.1", "/api/git-stash/drop", { method: "POST", body: { tab: stashTab, ref: "stash@{0}" } });
+    assert.equal(stashDropUnconfirmed.status, 409, "stash drop without confirmed: true should be refused");
+    const stashDrop = await request("127.0.0.1", "/api/git-stash/drop", { method: "POST", body: { tab: stashTab, ref: "stash@{0}", confirmed: true } });
+    assert.equal(stashDrop.body?.ok, true, "confirmed stash drop should succeed");
+    assert.equal(stashDrop.body?.data?.stashes?.length, 0, "dropping the only stash should empty the list");
+
+    // Fetch, divergence classification, integrate, push classification
+    await writeFile(path.join(remoteWork, "incoming.txt"), "base\nremote one\nremote two\nremote three\n");
+    runGitFixture(["commit", "-am", "remote three"], remoteWork, "remote worktree should commit third incoming change");
+    runGitFixture(["push", "origin", "main"], remoteWork, "remote worktree should push the third commit");
+    await writeFile(path.join(localRepo, "local-only.txt"), "local\n");
+    runGitFixture(["add", "local-only.txt"], localRepo, "local repo should stage local divergence");
+    runGitFixture(["commit", "-m", "local divergence"], localRepo, "local repo should commit local divergence");
+
+    const fetchResult = await request("127.0.0.1", "/api/git-fetch", { method: "POST", body: { tab: remoteTabId }, timeoutMs: 30_000 });
+    assert.equal(fetchResult.status, 200);
+    assert.equal(fetchResult.body?.ok, true, `fetch endpoint should fetch from the bare origin: ${fetchResult.body?.error || ""}`);
+    assert.equal(fetchResult.body?.data?.changes?.summary?.behind, 1, "fetch should reveal the remote commit");
+    assert.equal(fetchResult.body?.data?.changes?.remote?.diverged, true, "fetch should reveal divergence");
+    assert.equal(fetchResult.body?.data?.changes?.remote?.canPull, false, "diverged branches must not offer one-click pull");
+
+    const divergedPull = await request("127.0.0.1", "/api/git-changes/pull", { method: "POST", body: { tab: remoteTabId }, timeoutMs: 30_000 });
+    assert.equal(divergedPull.body?.ok, false, "ff-only pull must fail on diverged branches");
+    assert.equal(divergedPull.body?.code, "DIVERGED", "diverged pull failures should be classified");
+    assert.ok(divergedPull.body?.hint, "diverged pull failures should carry a hint");
+
+    const integrateUnconfirmed = await request("127.0.0.1", "/api/git-changes/integrate", { method: "POST", body: { tab: remoteTabId, mode: "merge" } });
+    assert.equal(integrateUnconfirmed.status, 409, "integrate without confirmed: true should be refused");
+    const integrateMerge = await request("127.0.0.1", "/api/git-changes/integrate", { method: "POST", body: { tab: remoteTabId, mode: "merge", confirmed: true }, timeoutMs: 30_000 });
+    assert.equal(integrateMerge.body?.ok, true, `confirmed merge integrate should succeed: ${integrateMerge.body?.error || ""}`);
+    assert.equal(integrateMerge.body?.data?.changes?.summary?.behind, 0, "after integrating, nothing should remain behind");
+
+    const pushDiverged = await request("127.0.0.1", "/api/git-workflow/push", { method: "POST", body: { tab: remoteTabId }, timeoutMs: 30_000 });
+    assert.equal(pushDiverged.body?.ok, true, `push should succeed after integration: ${pushDiverged.body?.error || ""}`);
+    assert.equal(pushDiverged.body?.data?.branch, "main");
+    assert.equal(pushDiverged.body?.data?.protectedBranch, true, "pushing main should be flagged as a protected branch");
+
+    // Undo guards: pushed commits must not be undoable
+    const undoPushedState = await request("127.0.0.1", `/api/git-undo?tab=${encodeURIComponent(remoteTabId)}`);
+    assert.equal(undoPushedState.body?.ok, true);
+    assert.equal(undoPushedState.body?.data?.canUndoLastCommit, false, "a pushed HEAD must not be undoable");
+    const undoPushed = await request("127.0.0.1", "/api/git-undo/last-commit", { method: "POST", body: { tab: remoteTabId, confirmed: true } });
+    assert.equal(undoPushed.status, 409, "undoing a pushed commit must be refused");
+
+    // Undo/amend on an unpushed repo
+    const undoRepo = await makeFixtureRepo("undo");
+    const undoTab = await openFixtureTab(undoRepo, "undo-fixture");
+    await writeFile(path.join(undoRepo, "file.txt"), "second\n");
+    runGitFixture(["commit", "-am", "second"], undoRepo, "undo fixture should commit a second change");
+
+    const undoState = await request("127.0.0.1", `/api/git-undo?tab=${encodeURIComponent(undoTab)}`);
+    assert.equal(undoState.body?.ok, true);
+    assert.equal(undoState.body?.data?.canUndoLastCommit, true, "an unpushed commit with a parent should be undoable");
+    assert.equal(undoState.body?.data?.lastCommit?.subject, "second");
+
+    const undoUnconfirmed = await request("127.0.0.1", "/api/git-undo/last-commit", { method: "POST", body: { tab: undoTab } });
+    assert.equal(undoUnconfirmed.status, 409, "undo without confirmed: true should be refused");
+    const undoConfirmed = await request("127.0.0.1", "/api/git-undo/last-commit", { method: "POST", body: { tab: undoTab, confirmed: true } });
+    assert.equal(undoConfirmed.body?.ok, true, `confirmed undo should soft-reset: ${undoConfirmed.body?.error || ""}`);
+    assert.equal(undoConfirmed.body?.data?.restoreCommand, "git reset --soft ORIG_HEAD");
+    assert.equal(undoConfirmed.body?.data?.changes?.summary?.staged, 1, "soft reset should keep the change staged");
+    assert.equal(runGitFixture(["log", "-1", "--format=%s"], undoRepo, "undo fixture should read HEAD subject"), "base", "undo should move HEAD back to the base commit");
+
+    const undoNoParent = await request("127.0.0.1", "/api/git-undo/last-commit", { method: "POST", body: { tab: undoTab, confirmed: true } });
+    assert.equal(undoNoParent.status, 409, "undoing the root commit must be refused");
+
+    const amendWithStaged = await request("127.0.0.1", "/api/git-undo/amend-message", { method: "POST", body: { tab: undoTab, confirmed: true, message: "nope" } });
+    assert.equal(amendWithStaged.status, 409, "amending with staged changes must be refused");
+    runGitFixture(["commit", "-m", "second again"], undoRepo, "undo fixture should re-commit the staged change");
+    const amendUnconfirmed = await request("127.0.0.1", "/api/git-undo/amend-message", { method: "POST", body: { tab: undoTab, message: "amended subject" } });
+    assert.equal(amendUnconfirmed.status, 409, "amend without confirmed: true should be refused");
+    const amendConfirmed = await request("127.0.0.1", "/api/git-undo/amend-message", { method: "POST", body: { tab: undoTab, confirmed: true, message: "amended subject" } });
+    assert.equal(amendConfirmed.body?.ok, true, `confirmed amend should rewrite the message: ${amendConfirmed.body?.error || ""}`);
+    assert.equal(runGitFixture(["log", "-1", "--format=%s"], undoRepo, "undo fixture should read amended subject"), "amended subject");
+
+    const reflog = await request("127.0.0.1", `/api/git-reflog?tab=${encodeURIComponent(undoTab)}`);
+    assert.equal(reflog.body?.ok, true, "reflog endpoint should return entries");
+    assert.ok((reflog.body?.data?.entries || []).length >= 3, "reflog should include the undo/amend history");
+    assert.match(reflog.body?.data?.entries?.[0]?.selector || "", /^HEAD@\{0\}$/);
+
+    // Tags
+    const tagInvalid = await request("127.0.0.1", "/api/git-tags/create", { method: "POST", body: { tab: undoTab, confirmed: true, name: "bad tag" } });
+    assert.equal(tagInvalid.status, 400, "invalid tag names must be rejected");
+    const tagUnconfirmed = await request("127.0.0.1", "/api/git-tags/create", { method: "POST", body: { tab: undoTab, name: "v0.0.1-harness", message: "harness tag" } });
+    assert.equal(tagUnconfirmed.status, 409, "tag creation without confirmed: true should be refused");
+    const tagCreate = await request("127.0.0.1", "/api/git-tags/create", { method: "POST", body: { tab: undoTab, confirmed: true, name: "v0.0.1-harness", message: "harness tag" } });
+    assert.equal(tagCreate.body?.ok, true, `confirmed tag creation should succeed: ${tagCreate.body?.error || ""}`);
+    const tagList = await request("127.0.0.1", `/api/git-tags?tab=${encodeURIComponent(undoTab)}`);
+    assert.equal(tagList.body?.ok, true);
+    const createdTag = (tagList.body?.data?.tags || []).find((tag) => tag.name === "v0.0.1-harness");
+    assert.ok(createdTag, "created tag should appear in the tag list");
+    assert.equal(createdTag.annotated, true, "created tag should be annotated");
+    assert.equal(createdTag.atHead, true, "created tag should point at HEAD");
+
+    // Signing diagnostics + submodule status (read-only)
+    const signing = await request("127.0.0.1", `/api/git-signing?tab=${encodeURIComponent(undoTab)}`);
+    assert.equal(signing.body?.ok, true, "signing diagnostics should load");
+    assert.equal(signing.body?.data?.mismatch, false, "fixture repo should not report a signing mismatch");
+    const submodules = await request("127.0.0.1", `/api/git-submodules?tab=${encodeURIComponent(undoTab)}`);
+    assert.equal(submodules.body?.ok, true, "submodule status should load");
+    assert.equal(submodules.body?.data?.hasSubmodules, false, "fixture repo has no submodules");
+
+    // Worktree prune (dry run + confirmed)
+    const pruneDryRun = await request("127.0.0.1", `/api/git-worktrees/prune?tab=${encodeURIComponent(undoTab)}`);
+    assert.equal(pruneDryRun.body?.ok, true, "prune dry run should load");
+    assert.equal(pruneDryRun.body?.data?.dryRun, true);
+    const pruneUnconfirmed = await request("127.0.0.1", "/api/git-worktrees/prune", { method: "POST", body: { tab: undoTab } });
+    assert.equal(pruneUnconfirmed.status, 409, "prune without confirmed: true should be refused");
+    const pruneConfirmed = await request("127.0.0.1", "/api/git-worktrees/prune", { method: "POST", body: { tab: undoTab, confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(pruneConfirmed.body?.ok, true, `confirmed prune should succeed: ${pruneConfirmed.body?.error || ""}`);
+
+    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [stagingTab, truncationTab, mergeTab, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
+    assert.equal(closeGitActionTabs.status, 200, "git action fixture tabs should close");
+    await rmWithRetry(gitFixturesRoot);
   } else {
     console.log("http-endpoints-harness: git not available; skipping git init workflow endpoint checks");
   }

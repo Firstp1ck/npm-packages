@@ -36,11 +36,24 @@ Performance-related environment toggles:
 - `PI_GIT_FOOTER_AUTO_REFRESH_MS=10000` — git status auto-refresh interval. Set `0` to disable.
 - `PI_GIT_FOOTER_DISABLE_PROMPT_ESTIMATE=1` — disable the background `PI: X tok` prompt estimate.
 
+Visibility controls:
+
+- `PI_GIT_FOOTER_HIDE=cost,context` — hide keys everywhere.
+- `PI_GIT_FOOTER_NATIVE_HIDE=model,thinking` — hide keys only in the native TUI footer.
+- `PI_GIT_FOOTER_WEBUI_HIDE=webui-refresh-button,webui-details-button` — hide keys only in Web UI.
+- `PI_GIT_FOOTER_<KEY>=0|1`, `PI_GIT_FOOTER_NATIVE_<KEY>=0|1`, or `PI_GIT_FOOTER_WEBUI_<KEY>=0|1` — explicit per-key overrides, with dashes written as underscores, e.g. `PI_GIT_FOOTER_WEBUI_CHANGES_MODAL=0`.
+
+Useful keys include metric cards (`tokens`, `cache`, `pi`, `speed`, `cost`, `context`), metadata cards (`cwd`, `git`, `git-state`, `sync`, `changes`, `git-extra`, `worktree`, `model`, `thinking`), git subitems (`git-branch-indicator`, `git-ahead`, `git-behind`, `git-staged`, `git-unstaged`, `git-untracked`, `git-conflicted`, `git-clean`, `git-stash`, `git-submodules`, `git-worktrees`, `git-tag`, `git-last-commit-age`, `git-signing-mismatch`), native footer areas (`cwd-branch`, `git-status`, `extension-statuses`), and Web UI affordances (`webui-fetch-state`, `webui-refresh-button`, `webui-details-button`, `webui-cwd-picker`, `webui-pi-calibration`, `webui-context-auto-compaction`, `webui-branch-picker`, `webui-git-init`, `webui-sync-push`, `webui-changes-modal`, `webui-git-tools-modal`, `webui-model-picker`, `webui-thinking-picker`, `webui-changed-files-popover`).
+
 The initial prompt estimate and session-usage recompute run lazily after the TUI is ready, so the footer should not block startup.
 
 ## Commands
 
 - `/git-footer-refresh` — refresh git/footer information immediately.
+- `/git-footer-visibility` — in native TUI mode, open an interactive searchable visibility selector. Use Enter/Space to toggle items, Ctrl+S to apply, and Esc/q to cancel.
+- `/git-footer-visibility select [all|native|webui]` — open the native TUI selector for both targets or a specific target.
+- `/git-footer-visibility [status|keys]` — inspect available visibility keys and their native/Web UI state.
+- `/git-footer-visibility show|hide|toggle|reset [all|native|webui] <key> [key...]` — adjust visibility at runtime until the Pi session restarts, e.g. `/git-footer-visibility hide webui cost context webui-changes-modal`.
 
 ## Tools
 

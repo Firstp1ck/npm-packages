@@ -46,6 +46,9 @@ function runCommand(command, args, { cwd, timeoutMs = GIT_DEFAULT_TIMEOUT_MS, ma
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
+      // LC_ALL=C keeps git output in English so lock-failure classification
+      // works regardless of locale.
+      env: { ...process.env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -512,5 +515,44 @@ export async function removeGitWorktree(cwd, worktreePath, { force = false } = {
     await runGitMutationWithRetry(args, { cwd: data.repoRoot });
     const refreshed = await readWorktreeData(data.repoRoot).catch(() => data);
     return { ok: true, removed: true, path: fresh.path, branch: fresh.branch, ...responseBase(refreshed, fresh) };
+  });
+}
+
+// Shared with bin/pi-webui.mjs so every mutating git endpoint can classify
+// index.lock contention the same way instead of surfacing raw stderr.
+export function isGitLockFailure(result) {
+  return isLockFailure(result);
+}
+
+export async function pruneGitWorktrees(cwd, { dryRun = true } = {}) {
+  const data = await readWorktreeData(cwd);
+  const prunable = data.worktrees
+    .filter((item) => item.prunable)
+    .map((item) => ({ path: item.path, branch: item.branch, ...(item.prunableReason ? { reason: item.prunableReason } : {}) }));
+  if (dryRun) {
+    const args = ["worktree", "prune", "--dry-run", "--verbose"];
+    const result = await runGitResult(args, { cwd: data.repoRoot, timeoutMs: 30_000 });
+    if (result.exitCode !== 0 || result.timedOut || result.error) {
+      throw makeGitWorktreeError(WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED, gitFailureMessage(args, result), { cwd: data.repoRoot });
+    }
+    return {
+      ok: true,
+      dryRun: true,
+      repoRoot: data.repoRoot,
+      output: `${result.stdout || ""}\n${result.stderr || ""}`.trim(),
+      prunable,
+    };
+  }
+  return withMutationLock(data.commonGitDir, async () => {
+    const result = await runGitMutationWithRetry(["worktree", "prune", "--verbose"], { cwd: data.repoRoot });
+    const refreshed = await readWorktreeData(data.repoRoot).catch(() => data);
+    return {
+      ok: true,
+      dryRun: false,
+      repoRoot: data.repoRoot,
+      output: `${result.stdout || ""}\n${result.stderr || ""}`.trim(),
+      pruned: prunable,
+      worktrees: refreshed.worktrees,
+    };
   });
 }

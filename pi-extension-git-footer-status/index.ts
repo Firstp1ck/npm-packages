@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   collectInitialPromptCalibration,
   createInitialPromptEstimateService,
@@ -13,7 +13,7 @@ import {
   type InitialPromptEstimateSnapshot,
   type InitialPromptInputEstimate,
 } from "@firstpick/pi-utils";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Key, matchesKey, type SettingItem, SettingsList, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 type GitChangeKind = "staged" | "modified" | "untracked" | "conflicted";
 
@@ -27,6 +27,9 @@ type GitChangedFile = {
 type GitSnapshot = {
   branch: string;
   isDetached: boolean;
+  upstream?: string;
+  upstreamGone: boolean;
+  hasRemotes: boolean;
   ahead: number;
   behind: number;
   staged: number;
@@ -34,6 +37,8 @@ type GitSnapshot = {
   untracked: number;
   conflicted: number;
   changedFiles: GitChangedFile[];
+  changedFilesTotal: number;
+  changedFilesTruncated: boolean;
   operation?: string;
   stashCount: number;
   submoduleDirty: number;
@@ -41,6 +46,21 @@ type GitSnapshot = {
   worktreeCount: number;
   headTag?: string;
   signingMismatch: boolean;
+};
+
+/** Fields parsed purely from `git status --porcelain=2 --branch` output. */
+export type GitPorcelainStatus = {
+  branch: string;
+  isDetached: boolean;
+  upstream?: string;
+  upstreamGone: boolean;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  changedFiles: GitChangedFile[];
 };
 
 type SigningDiagnostics = {
@@ -62,28 +82,461 @@ const GIT_FOOTER_STATUS_KEY = "git-footer";
 const WEBUI_FOOTER_PAYLOAD_TYPE = "firstpick.git-footer-status.footer";
 const WEBUI_FOOTER_PAYLOAD_VERSION = 1;
 
-// Toggle footer items on/off here.
-const FOOTER_FLAGS = {
-  branch: false,
-  detachedIndicator: true,
-  operationState: true,
+type FooterVisibilityTarget = "native" | "webui";
+type FooterVisibilityScope = FooterVisibilityTarget | "all";
 
-  ahead: true,
-  behind: true,
+const FOOTER_VISIBILITY_KEYS = [
+  "tokens",
+  "cache",
+  "pi",
+  "speed",
+  "cost",
+  "context",
+  "model",
+  "thinking",
+  "cwd",
+  "cwd-branch",
+  "git-status",
+  "extension-statuses",
+  "git",
+  "git-state",
+  "sync",
+  "changes",
+  "git-extra",
+  "worktree",
+  "context-meta",
+  "git-branch-indicator",
+  "git-detached",
+  "git-operation",
+  "git-ahead",
+  "git-behind",
+  "git-upstream",
+  "git-staged",
+  "git-unstaged",
+  "git-untracked",
+  "git-conflicted",
+  "git-clean",
+  "git-stash",
+  "git-submodules",
+  "git-worktrees",
+  "git-tag",
+  "git-last-commit-age",
+  "git-signing-mismatch",
+  "webui-fetch-state",
+  "webui-refresh-button",
+  "webui-details-button",
+  "webui-cwd-picker",
+  "webui-pi-calibration",
+  "webui-context-auto-compaction",
+  "webui-branch-picker",
+  "webui-git-init",
+  "webui-sync-push",
+  "webui-changes-modal",
+  "webui-git-tools-modal",
+  "webui-model-picker",
+  "webui-thinking-picker",
+  "webui-changed-files-popover",
+] as const;
 
-  staged: true,
-  unstaged: true,
-  untracked: true,
-  conflicted: true,
-  clean: true,
+type FooterVisibilityKey = (typeof FOOTER_VISIBILITY_KEYS)[number];
 
-  stash: true,
-  submodules: true,
-  worktrees: true,
-  tag: true,
-  lastCommitAge: true,
-  signingMismatch: true,
-} as const;
+const FOOTER_VISIBILITY_DEFAULTS: Record<FooterVisibilityKey, boolean> = {
+  tokens: true,
+  cache: true,
+  pi: true,
+  speed: true,
+  cost: true,
+  context: true,
+  model: true,
+  thinking: true,
+  cwd: true,
+  "cwd-branch": true,
+  "git-status": true,
+  "extension-statuses": true,
+  git: true,
+  "git-state": true,
+  sync: true,
+  changes: true,
+  "git-extra": true,
+  worktree: true,
+  "context-meta": true,
+  "git-branch-indicator": false,
+  "git-detached": true,
+  "git-operation": true,
+  "git-ahead": true,
+  "git-behind": true,
+  "git-upstream": true,
+  "git-staged": true,
+  "git-unstaged": true,
+  "git-untracked": true,
+  "git-conflicted": true,
+  "git-clean": true,
+  "git-stash": true,
+  "git-submodules": true,
+  "git-worktrees": true,
+  "git-tag": true,
+  "git-last-commit-age": true,
+  "git-signing-mismatch": true,
+  "webui-fetch-state": true,
+  "webui-refresh-button": true,
+  "webui-details-button": true,
+  "webui-cwd-picker": true,
+  "webui-pi-calibration": true,
+  "webui-context-auto-compaction": true,
+  "webui-branch-picker": true,
+  "webui-git-init": true,
+  "webui-sync-push": true,
+  "webui-changes-modal": true,
+  "webui-git-tools-modal": true,
+  "webui-model-picker": true,
+  "webui-thinking-picker": true,
+  "webui-changed-files-popover": true,
+};
+
+const FOOTER_VISIBILITY_ALIASES: Record<string, FooterVisibilityKey> = {
+  branch: "git",
+  "branch-card": "git",
+  "branch-indicator": "git-branch-indicator",
+  "git-branch": "git",
+  "git-branch-card": "git",
+  detached: "git-detached",
+  operation: "git-operation",
+  ahead: "git-ahead",
+  behind: "git-behind",
+  upstream: "git-upstream",
+  staged: "git-staged",
+  unstaged: "git-unstaged",
+  modified: "git-unstaged",
+  untracked: "git-untracked",
+  conflicted: "git-conflicted",
+  clean: "git-clean",
+  stash: "git-stash",
+  submodule: "git-submodules",
+  submodules: "git-submodules",
+  worktrees: "git-worktrees",
+  tag: "git-tag",
+  age: "git-last-commit-age",
+  "last-commit": "git-last-commit-age",
+  signing: "git-signing-mismatch",
+  "signing-mismatch": "git-signing-mismatch",
+  fetch: "webui-fetch-state",
+  refresh: "webui-refresh-button",
+  "refresh-button": "webui-refresh-button",
+  details: "webui-details-button",
+  "details-button": "webui-details-button",
+  "cwd-picker": "webui-cwd-picker",
+  calibration: "webui-pi-calibration",
+  "pi-calibration": "webui-pi-calibration",
+  "auto-compaction": "webui-context-auto-compaction",
+  "context-toggle": "webui-context-auto-compaction",
+  "branch-picker": "webui-branch-picker",
+  "git-init": "webui-git-init",
+  push: "webui-sync-push",
+  "sync-push": "webui-sync-push",
+  modal: "webui-changes-modal",
+  "changes-modal": "webui-changes-modal",
+  "git-modal": "webui-changes-modal",
+  "git-tools": "webui-git-tools-modal",
+  "git-tools-modal": "webui-git-tools-modal",
+  "model-picker": "webui-model-picker",
+  "thinking-picker": "webui-thinking-picker",
+  "changed-files": "webui-changed-files-popover",
+  "changed-files-popover": "webui-changed-files-popover",
+};
+
+const FOOTER_VISIBILITY_KEY_SET = new Set<string>(FOOTER_VISIBILITY_KEYS);
+const FOOTER_VISIBILITY_SCOPES: FooterVisibilityScope[] = ["all", "native", "webui"];
+const runtimeFooterVisibilityOverrides = new Map<string, boolean>();
+
+function normalizeFooterVisibilityToken(value: string): string {
+  return value.trim().toLowerCase().replace(/^--?/, "").replace(/[_\s]+/g, "-");
+}
+
+function normalizeFooterVisibilityKey(value: string): FooterVisibilityKey | null {
+  const token = normalizeFooterVisibilityToken(value);
+  if (FOOTER_VISIBILITY_KEY_SET.has(token)) return token as FooterVisibilityKey;
+  return FOOTER_VISIBILITY_ALIASES[token] ?? null;
+}
+
+function parseFooterVisibilityList(raw: string | undefined): Set<FooterVisibilityKey> {
+  const keys = new Set<FooterVisibilityKey>();
+  for (const part of (raw || "").split(/[\s,]+/)) {
+    const key = normalizeFooterVisibilityKey(part);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+function envBool(name: string): boolean | undefined {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return undefined;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return undefined;
+}
+
+function visibilityEnvSuffix(key: FooterVisibilityKey): string {
+  return key.replace(/-/g, "_").toUpperCase();
+}
+
+function visibilityOverrideKey(scope: FooterVisibilityScope, key: FooterVisibilityKey): string {
+  return `${scope}:${key}`;
+}
+
+function visibilityEnvName(scope: FooterVisibilityScope, key: FooterVisibilityKey): string {
+  const suffix = visibilityEnvSuffix(key);
+  return scope === "all" ? `PI_GIT_FOOTER_${suffix}` : `PI_GIT_FOOTER_${scope.toUpperCase()}_${suffix}`;
+}
+
+const envFooterVisibilityHidden = {
+  all: parseFooterVisibilityList(process.env.PI_GIT_FOOTER_HIDE),
+  native: parseFooterVisibilityList(process.env.PI_GIT_FOOTER_NATIVE_HIDE),
+  webui: parseFooterVisibilityList(process.env.PI_GIT_FOOTER_WEBUI_HIDE),
+} satisfies Record<FooterVisibilityScope, Set<FooterVisibilityKey>>;
+
+const envFooterVisibilityOverrides = new Map<string, boolean>();
+for (const scope of FOOTER_VISIBILITY_SCOPES) {
+  for (const key of FOOTER_VISIBILITY_KEYS) {
+    const value = envBool(visibilityEnvName(scope, key));
+    if (value !== undefined) envFooterVisibilityOverrides.set(visibilityOverrideKey(scope, key), value);
+  }
+}
+
+function footerItemVisible(key: FooterVisibilityKey, target: FooterVisibilityTarget): boolean {
+  let visible = FOOTER_VISIBILITY_DEFAULTS[key] ?? true;
+  if (envFooterVisibilityHidden.all.has(key) || envFooterVisibilityHidden[target].has(key)) visible = false;
+  const envAll = envFooterVisibilityOverrides.get(visibilityOverrideKey("all", key));
+  if (envAll !== undefined) visible = envAll;
+  const envTarget = envFooterVisibilityOverrides.get(visibilityOverrideKey(target, key));
+  if (envTarget !== undefined) visible = envTarget;
+  const runtimeAll = runtimeFooterVisibilityOverrides.get(visibilityOverrideKey("all", key));
+  if (runtimeAll !== undefined) visible = runtimeAll;
+  const runtimeTarget = runtimeFooterVisibilityOverrides.get(visibilityOverrideKey(target, key));
+  if (runtimeTarget !== undefined) visible = runtimeTarget;
+  return visible;
+}
+
+function nativeFooterItemVisible(key: FooterVisibilityKey): boolean {
+  return footerItemVisible(key, "native");
+}
+
+function webuiFooterItemVisible(key: FooterVisibilityKey): boolean {
+  return footerItemVisible(key, "webui");
+}
+
+function normalizeFooterVisibilityScope(value: string | undefined): FooterVisibilityScope | null {
+  const token = normalizeFooterVisibilityToken(value || "");
+  return token === "all" || token === "native" || token === "webui" ? token : null;
+}
+
+function clearRuntimeFooterVisibility(scope: FooterVisibilityScope, key?: FooterVisibilityKey): void {
+  if (key) {
+    runtimeFooterVisibilityOverrides.delete(visibilityOverrideKey(scope, key));
+    return;
+  }
+  for (const currentKey of Array.from(runtimeFooterVisibilityOverrides.keys())) {
+    if (currentKey.startsWith(`${scope}:`)) runtimeFooterVisibilityOverrides.delete(currentKey);
+  }
+}
+
+function setRuntimeFooterVisibility(scope: FooterVisibilityScope, key: FooterVisibilityKey, visible: boolean): void {
+  runtimeFooterVisibilityOverrides.set(visibilityOverrideKey(scope, key), visible);
+}
+
+function formatFooterVisibilityState(key: FooterVisibilityKey): string {
+  const native = nativeFooterItemVisible(key) ? "on" : "off";
+  const webui = webuiFooterItemVisible(key) ? "on" : "off";
+  const changed = (FOOTER_VISIBILITY_DEFAULTS[key] ?? true) !== nativeFooterItemVisible(key) || (FOOTER_VISIBILITY_DEFAULTS[key] ?? true) !== webuiFooterItemVisible(key);
+  return `${key}: native=${native}, webui=${webui}${changed ? " *" : ""}`;
+}
+
+function footerVisibilityUsage(): string {
+  return [
+    "Usage: /git-footer-visibility [select [all|native|webui]|status|keys]",
+    "       /git-footer-visibility show|hide|toggle|reset [all|native|webui] <key> [key...]",
+    "Native TUI: /git-footer-visibility opens an interactive selector; Ctrl+S applies changes.",
+    "Examples: /git-footer-visibility select webui",
+    "          /git-footer-visibility hide webui cost context model",
+    "          /git-footer-visibility toggle native speed",
+    "Env: PI_GIT_FOOTER_HIDE=cost,context or PI_GIT_FOOTER_WEBUI_COST=0",
+  ].join("\n");
+}
+
+type FooterVisibilitySelectorValue = "enabled" | "disabled" | "mixed";
+
+function footerVisibilityScopeLabel(scope: FooterVisibilityScope): string {
+  if (scope === "native") return "Native TUI";
+  if (scope === "webui") return "WebUI";
+  return "Native TUI + WebUI";
+}
+
+function footerVisibilityKeyLabel(key: FooterVisibilityKey): string {
+  return key
+    .split("-")
+    .map((part) => part ? `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}` : part)
+    .join(" ");
+}
+
+function footerVisibilitySelectorValue(scope: FooterVisibilityScope, key: FooterVisibilityKey): FooterVisibilitySelectorValue {
+  if (scope !== "all") return footerItemVisible(key, scope) ? "enabled" : "disabled";
+  const native = nativeFooterItemVisible(key);
+  const webui = webuiFooterItemVisible(key);
+  if (native === webui) return native ? "enabled" : "disabled";
+  return "mixed";
+}
+
+function footerVisibilitySelectorDescription(scope: FooterVisibilityScope, key: FooterVisibilityKey): string {
+  const defaultState = FOOTER_VISIBILITY_DEFAULTS[key] ?? true ? "default on" : "default off";
+  const native = nativeFooterItemVisible(key) ? "on" : "off";
+  const webui = webuiFooterItemVisible(key) ? "on" : "off";
+  return `${key} · ${defaultState} · native=${native}, webui=${webui}${scope === "all" ? "" : ` · editing ${scope}`}`;
+}
+
+function footerVisibilitySelectorInitialValues(scope: FooterVisibilityScope): Record<FooterVisibilityKey, FooterVisibilitySelectorValue> {
+  return Object.fromEntries(FOOTER_VISIBILITY_KEYS.map((key) => [key, footerVisibilitySelectorValue(scope, key)])) as Record<FooterVisibilityKey, FooterVisibilitySelectorValue>;
+}
+
+function footerVisibilitySelectorCounts(values: Record<FooterVisibilityKey, FooterVisibilitySelectorValue>): string {
+  const enabled = FOOTER_VISIBILITY_KEYS.filter((key) => values[key] === "enabled").length;
+  const mixed = FOOTER_VISIBILITY_KEYS.filter((key) => values[key] === "mixed").length;
+  return `${enabled}/${FOOTER_VISIBILITY_KEYS.length} enabled${mixed ? ` · ${mixed} mixed` : ""}`;
+}
+
+function footerVisibilityApplyScopes(scope: FooterVisibilityScope): FooterVisibilityTarget[] {
+  return scope === "all" ? ["native", "webui"] : [scope];
+}
+
+function applyFooterVisibilitySelection(scope: FooterVisibilityScope, selected: Record<FooterVisibilityKey, FooterVisibilitySelectorValue>): number {
+  let changed = 0;
+  for (const key of FOOTER_VISIBILITY_KEYS) {
+    const nextValue = selected[key];
+    if (nextValue === "mixed") continue;
+    const nextVisible = nextValue === "enabled";
+    if (footerVisibilitySelectorValue(scope, key) === nextValue) continue;
+    for (const updateScope of footerVisibilityApplyScopes(scope)) setRuntimeFooterVisibility(updateScope, key, nextVisible);
+    changed += 1;
+  }
+  return changed;
+}
+
+function footerVisibilitySettingsListTheme(theme: ExtensionCommandContext["ui"]["theme"]) {
+  return {
+    label: (text: string, selected: boolean) => selected ? theme.fg("accent", text) : text,
+    value: (text: string, selected: boolean) => selected ? theme.fg("accent", text) : theme.fg("muted", text),
+    description: (text: string) => theme.fg("muted", text),
+    cursor: theme.fg("accent", "› "),
+    hint: (text: string) => theme.fg("dim", text),
+  };
+}
+
+function footerVisibilityBorder(theme: ExtensionCommandContext["ui"]["theme"]) {
+  return new (class {
+    render(width: number) {
+      return [theme.fg("accent", "─".repeat(Math.max(0, width)))];
+    }
+    invalidate() {}
+  })();
+}
+
+function renderFooterVisibilitySettingsList(settingsList: SettingsList, width: number): string[] {
+  const lines = settingsList.render(width);
+  const hintIndex = lines.findIndex((line) => line.includes("Type to search") && line.includes("Enter/Space") && line.includes("Esc"));
+  if (hintIndex < 0) return lines;
+  const filtered = [...lines];
+  filtered.splice(hintIndex, 1);
+  if (hintIndex > 0 && visibleWidth(filtered[hintIndex - 1] ?? "") === 0) filtered.splice(hintIndex - 1, 1);
+  return filtered;
+}
+
+async function openFooterVisibilitySelector(
+  ctx: ExtensionCommandContext,
+  scope: FooterVisibilityScope,
+): Promise<Record<FooterVisibilityKey, FooterVisibilitySelectorValue> | undefined> {
+  if (!ctx.hasUI || ctx.mode !== "tui") {
+    ctx.ui.notify("/git-footer-visibility select requires the native Pi TUI. Use explicit show/hide/toggle commands in WebUI/RPC mode.", "warning");
+    return undefined;
+  }
+
+  const initial = footerVisibilitySelectorInitialValues(scope);
+  const selected: Record<FooterVisibilityKey, FooterVisibilitySelectorValue> = { ...initial };
+
+  return await ctx.ui.custom<Record<FooterVisibilityKey, FooterVisibilitySelectorValue> | undefined>((tui, theme, _kb, done) => {
+    const items: SettingItem[] = FOOTER_VISIBILITY_KEYS.map((key) => ({
+      id: key,
+      label: footerVisibilityKeyLabel(key),
+      description: footerVisibilitySelectorDescription(scope, key),
+      currentValue: selected[key],
+      values: ["enabled", "disabled"],
+    }));
+
+    const container = new Container();
+    container.addChild(footerVisibilityBorder(theme));
+    container.addChild(
+      new (class {
+        render(width: number) {
+          const title = `Git footer visibility — ${footerVisibilityScopeLabel(scope)} (${footerVisibilitySelectorCounts(selected)})`;
+          return [truncateToWidth(theme.fg("accent", theme.bold(title)), width), ""];
+        }
+        invalidate() {}
+      })(),
+    );
+
+    const settingsList = new SettingsList(
+      items,
+      14,
+      footerVisibilitySettingsListTheme(theme),
+      (id, newValue) => {
+        const key = normalizeFooterVisibilityKey(id);
+        if (!key) return;
+        selected[key] = newValue === "enabled" ? "enabled" : "disabled";
+      },
+      () => done(undefined),
+      { enableSearch: true },
+    );
+
+    container.addChild(
+      new (class {
+        render(width: number) {
+          return renderFooterVisibilitySettingsList(settingsList, width);
+        }
+        invalidate() {
+          settingsList.invalidate();
+        }
+      })(),
+    );
+    container.addChild(
+      new (class {
+        render(width: number) {
+          const help = "Ctrl+S apply • Enter/Space toggle • type to search • Esc/q cancel";
+          return ["", truncateToWidth(theme.fg("dim", help), width)];
+        }
+        invalidate() {}
+      })(),
+    );
+    container.addChild(footerVisibilityBorder(theme));
+
+    return {
+      render(width: number) {
+        return container.render(width);
+      },
+      invalidate() {
+        container.invalidate();
+      },
+      handleInput(data: string) {
+        if (matchesKey(data, Key.ctrl("s")) || data === "\x13") {
+          done(selected);
+          return;
+        }
+        if (data === "q") {
+          done(undefined);
+          return;
+        }
+        settingsList.handleInput(data);
+        tui.requestRender();
+      },
+    };
+  });
+}
 
 type GitStatusTone = "accent" | "warning" | "muted" | "success" | "error" | "dim";
 
@@ -136,6 +589,8 @@ type WebuiFooterChip = {
   title?: string;
   action?: "calibrate-current" | "calibrate-probe";
   files?: WebuiFooterChangedFile[];
+  filesTotal?: number;
+  filesTruncated?: boolean;
   contextUsage?: {
     percent: number | null;
     contextWindow: number;
@@ -148,6 +603,7 @@ type WebuiFooterPayload = {
   generatedAt: number;
   main: WebuiFooterChip[];
   meta: WebuiFooterChip[];
+  visibility: Record<FooterVisibilityKey, boolean>;
 };
 
 type GitRefreshOptions = {
@@ -263,7 +719,7 @@ function toAgeLabel(epochSeconds: number): string | undefined {
   return `${days}d`;
 }
 
-async function detectGitOperation(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+export async function detectGitOperation(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
   const gitDirRaw = await runGit(pi, cwd, ["rev-parse", "--git-dir"]);
   if (!gitDirRaw) return undefined;
 
@@ -311,17 +767,11 @@ function addTrackedChangedFiles(files: GitChangedFile[], xy: string, path: strin
   if (y !== ".") addChangedFile(files, "modified", path, xy, oldPath);
 }
 
-async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapshot | null> {
-  const result = await pi
-    .exec("git", ["status", "--porcelain=2", "--branch"], { cwd, timeout: 3000 })
-    .catch(() => undefined);
-
-  if (!result || result.code !== 0) {
-    return null;
-  }
-
+export function parseGitPorcelainStatus(stdout: string): GitPorcelainStatus {
   let branch = "";
   let detachedOid: string | undefined;
+  let upstream: string | undefined;
+  let hasAbLine = false;
   let ahead = 0;
   let behind = 0;
   let staged = 0;
@@ -330,7 +780,7 @@ async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapsh
   let conflicted = 0;
   const changedFiles: GitChangedFile[] = [];
 
-  for (const line of result.stdout.split(/\r?\n/)) {
+  for (const line of stdout.split(/\r?\n/)) {
     if (!line) continue;
 
     if (line.startsWith("# branch.head ")) {
@@ -344,7 +794,14 @@ async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapsh
       continue;
     }
 
+    if (line.startsWith("# branch.upstream ")) {
+      const value = line.slice("# branch.upstream ".length).trim();
+      if (value) upstream = value;
+      continue;
+    }
+
     if (line.startsWith("# branch.ab ")) {
+      hasAbLine = true;
       const match = line.match(/\+(\d+)\s+-(\d+)/);
       if (match) {
         ahead = Number.parseInt(match[1] ?? "0", 10) || 0;
@@ -401,17 +858,60 @@ async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapsh
         ? `detached@${detachedOid.slice(0, 7)}`
         : "detached";
 
-  const [operation, stashList, submoduleStatus, lastCommitTs, worktreeList, headTags, commitSignRequiredRaw, headSignState] =
+  // Upstream configured but unresolvable (deleted remote branch): porcelain=2
+  // emits branch.upstream without a branch.ab line.
+  const upstreamGone = Boolean(upstream) && !hasAbLine;
+
+  return {
+    branch: resolvedBranch,
+    isDetached,
+    upstream,
+    upstreamGone,
+    ahead,
+    behind,
+    staged,
+    unstaged,
+    untracked,
+    conflicted,
+    changedFiles,
+  };
+}
+
+type GitAuxInfo = {
+  stashCount: number;
+  submoduleDirty: number;
+  lastCommitEpoch?: number;
+  worktreeCount: number;
+  headTag?: string;
+  signingMismatch: boolean;
+  hasRemotes: boolean;
+};
+
+// Stash/submodule/worktree/tag/signing state rarely changes between refresh
+// ticks; re-running those probes every 10s dominates auto-refresh cost in
+// large repos. Reuse them while `git status` output (which includes the HEAD
+// oid) is unchanged, bounded by a TTL so out-of-band changes (stash drop, tag
+// creation) still surface within a minute.
+const GIT_AUX_CACHE_TTL_MS = 60_000;
+let gitAuxCache: { key: string; at: number; aux: GitAuxInfo } | null = null;
+
+async function readGitAuxInfo(pi: ExtensionAPI, cwd: string): Promise<GitAuxInfo> {
+  const [stashList, lastCommitTs, worktreeList, headTags, commitSignRequiredRaw, headSignState, remotes, toplevel] =
     await Promise.all([
-      detectGitOperation(pi, cwd),
       runGit(pi, cwd, ["stash", "list", "--format=%gd"]),
-      runGit(pi, cwd, ["submodule", "status", "--recursive"]),
       runGit(pi, cwd, ["log", "-1", "--format=%ct"]),
       runGit(pi, cwd, ["worktree", "list", "--porcelain"]),
       runGit(pi, cwd, ["tag", "--points-at", "HEAD", "--sort=-creatordate"]),
       runGit(pi, cwd, ["config", "--bool", "--get", "commit.gpgsign"]),
       runGit(pi, cwd, ["log", "-1", "--format=%G?"]),
+      runGit(pi, cwd, ["remote"]),
+      runGit(pi, cwd, ["rev-parse", "--show-toplevel"]),
     ]);
+
+  // `submodule status --recursive` spawns per submodule and is by far the most
+  // expensive probe; skip it entirely for the common no-submodule repo.
+  const hasGitmodules = toplevel ? await pathExists(resolve(toplevel, ".gitmodules")) : false;
+  const submoduleStatus = hasGitmodules ? await runGit(pi, cwd, ["submodule", "status", "--recursive"]) : undefined;
 
   const stashCount = stashList ? stashList.split(/\r?\n/).filter(Boolean).length : 0;
 
@@ -433,7 +933,7 @@ async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapsh
 
   const headTag = headTags?.split(/\r?\n/).find(Boolean);
 
-  const lastCommitAge = lastCommitTs ? toAgeLabel(Number.parseInt(lastCommitTs, 10)) : undefined;
+  const lastCommitEpoch = lastCommitTs ? Number.parseInt(lastCommitTs, 10) : undefined;
 
   const commitSignRequired = commitSignRequiredRaw?.toLowerCase() === "true";
   const signState = headSignState?.trim().toUpperCase();
@@ -442,22 +942,66 @@ async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapsh
     (!signState || signState === "N" || signState === "E");
 
   return {
-    branch: resolvedBranch,
-    isDetached,
-    ahead,
-    behind,
-    staged,
-    unstaged,
-    untracked,
-    conflicted,
-    changedFiles: changedFiles.slice(0, GIT_CHANGED_FILES_LIMIT),
-    operation,
     stashCount,
     submoduleDirty,
-    lastCommitAge,
+    lastCommitEpoch,
     worktreeCount,
     headTag,
     signingMismatch,
+    hasRemotes: Boolean(remotes),
+  };
+}
+
+export async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapshot | null> {
+  const result = await pi
+    .exec("git", ["status", "--porcelain=2", "--branch"], { cwd, timeout: 3000 })
+    .catch(() => undefined);
+
+  if (!result || result.code !== 0) {
+    return null;
+  }
+
+  const status = parseGitPorcelainStatus(result.stdout);
+
+  // Operation state must stay fresh (conflict UX depends on it); it is cheap
+  // (one rev-parse + a few stat calls) compared to the cached aux probes.
+  const operation = await detectGitOperation(pi, cwd);
+
+  const auxKey = `${cwd} ${result.stdout}`;
+  const now = Date.now();
+  let aux: GitAuxInfo;
+  if (gitAuxCache && gitAuxCache.key === auxKey && now - gitAuxCache.at < GIT_AUX_CACHE_TTL_MS) {
+    aux = gitAuxCache.aux;
+  } else {
+    aux = await readGitAuxInfo(pi, cwd);
+    gitAuxCache = { key: auxKey, at: now, aux };
+  }
+
+  const changedFilesTotal = status.changedFiles.length;
+  const changedFiles = status.changedFiles.slice(0, GIT_CHANGED_FILES_LIMIT);
+
+  return {
+    branch: status.branch,
+    isDetached: status.isDetached,
+    upstream: status.upstream,
+    upstreamGone: status.upstreamGone,
+    hasRemotes: aux.hasRemotes,
+    ahead: status.ahead,
+    behind: status.behind,
+    staged: status.staged,
+    unstaged: status.unstaged,
+    untracked: status.untracked,
+    conflicted: status.conflicted,
+    changedFiles,
+    changedFilesTotal,
+    changedFilesTruncated: changedFilesTotal > changedFiles.length,
+    operation,
+    stashCount: aux.stashCount,
+    submoduleDirty: aux.submoduleDirty,
+    lastCommitAge: aux.lastCommitEpoch ? toAgeLabel(aux.lastCommitEpoch) : undefined,
+    worktreeCount: aux.worktreeCount,
+    headTag: aux.headTag,
+    signingMismatch: aux.signingMismatch,
   };
 }
 
@@ -493,6 +1037,11 @@ function gitSnapshotFingerprint(snapshot: GitSnapshot | null): string {
   return [
     snapshot.branch,
     snapshot.isDetached ? "1" : "0",
+    snapshot.upstream ?? "",
+    snapshot.upstreamGone ? "1" : "0",
+    snapshot.hasRemotes ? "1" : "0",
+    snapshot.changedFilesTotal,
+    snapshot.changedFilesTruncated ? "1" : "0",
     snapshot.ahead,
     snapshot.behind,
     snapshot.staged,
@@ -510,33 +1059,37 @@ function gitSnapshotFingerprint(snapshot: GitSnapshot | null): string {
   ].join("\u001f");
 }
 
-function buildGitStatusSections(snapshot: GitSnapshot): GitStatusSection[] {
-  const f = FOOTER_FLAGS;
+function buildGitStatusSections(snapshot: GitSnapshot, target: FooterVisibilityTarget = "native"): GitStatusSection[] {
+  const visible = (key: FooterVisibilityKey) => footerItemVisible(key, target);
   const branchSection: GitStatusItem[] = [];
-  if (f.branch) {
+  if (visible("git-branch-indicator")) {
     branchSection.push({ text: "", tone: "accent" }, { text: snapshot.branch, tone: "accent" });
   }
-  if (f.detachedIndicator && snapshot.isDetached) branchSection.push({ text: "⎇", tone: "warning" });
-  if (f.operationState && snapshot.operation) branchSection.push({ text: snapshot.operation, tone: "warning" });
+  if (visible("git-detached") && snapshot.isDetached) branchSection.push({ text: "⎇", tone: "warning" });
+  if (visible("git-operation") && snapshot.operation) branchSection.push({ text: snapshot.operation, tone: "warning" });
 
   const syncSection: GitStatusItem[] = [];
-  if (f.ahead && snapshot.ahead > 0) syncSection.push({ text: `⇡${snapshot.ahead}`, tone: "muted" });
-  if (f.behind && snapshot.behind > 0) syncSection.push({ text: `⇣${snapshot.behind}`, tone: "muted" });
+  if (visible("git-ahead") && snapshot.ahead > 0) syncSection.push({ text: `⇡${snapshot.ahead}`, tone: "muted" });
+  if (visible("git-behind") && snapshot.behind > 0) syncSection.push({ text: `⇣${snapshot.behind}`, tone: "muted" });
+  if (visible("git-upstream") && !snapshot.isDetached) {
+    if (snapshot.upstreamGone) syncSection.push({ text: "upstream gone", tone: "warning" });
+    else if (!snapshot.upstream && snapshot.hasRemotes) syncSection.push({ text: "no upstream", tone: "muted" });
+  }
 
   const changesSection: GitStatusItem[] = [];
-  if (f.staged && snapshot.staged > 0) changesSection.push({ text: `+${snapshot.staged}`, tone: "success" });
-  if (f.unstaged && snapshot.unstaged > 0) changesSection.push({ text: `✎${snapshot.unstaged}`, tone: "warning" });
-  if (f.untracked && snapshot.untracked > 0) changesSection.push({ text: `◌${snapshot.untracked}`, tone: "muted" });
-  if (f.conflicted && snapshot.conflicted > 0) changesSection.push({ text: `!${snapshot.conflicted}`, tone: "error" });
-  if (f.clean && isWorkingTreeClean(snapshot)) changesSection.push({ text: "✅", tone: "dim" });
+  if (visible("git-staged") && snapshot.staged > 0) changesSection.push({ text: `+${snapshot.staged}`, tone: "success" });
+  if (visible("git-unstaged") && snapshot.unstaged > 0) changesSection.push({ text: `✎${snapshot.unstaged}`, tone: "warning" });
+  if (visible("git-untracked") && snapshot.untracked > 0) changesSection.push({ text: `◌${snapshot.untracked}`, tone: "muted" });
+  if (visible("git-conflicted") && snapshot.conflicted > 0) changesSection.push({ text: `!${snapshot.conflicted}`, tone: "error" });
+  if (visible("git-clean") && isWorkingTreeClean(snapshot)) changesSection.push({ text: "✅", tone: "dim" });
 
   const extraSection: GitStatusItem[] = [];
-  if (f.stash && snapshot.stashCount > 0) extraSection.push({ text: `⚑${snapshot.stashCount}`, tone: "muted" });
-  if (f.submodules && snapshot.submoduleDirty > 0) extraSection.push({ text: `✖${snapshot.submoduleDirty}`, tone: "warning" });
-  if (f.worktrees && snapshot.worktreeCount > 1) extraSection.push({ text: `📦${snapshot.worktreeCount}`, tone: "muted" });
-  if (f.tag && snapshot.headTag) extraSection.push({ text: `🏷${snapshot.headTag}`, tone: "accent" });
-  if (f.lastCommitAge && snapshot.lastCommitAge) extraSection.push({ text: `⏱${snapshot.lastCommitAge}`, tone: "dim" });
-  if (f.signingMismatch && snapshot.signingMismatch) extraSection.push({ text: "⚠️!", tone: "warning" });
+  if (visible("git-stash") && snapshot.stashCount > 0) extraSection.push({ text: `⚑${snapshot.stashCount}`, tone: "muted" });
+  if (visible("git-submodules") && snapshot.submoduleDirty > 0) extraSection.push({ text: `✖${snapshot.submoduleDirty}`, tone: "warning" });
+  if (visible("git-worktrees") && snapshot.worktreeCount > 1) extraSection.push({ text: `📦${snapshot.worktreeCount}`, tone: "muted" });
+  if (visible("git-tag") && snapshot.headTag) extraSection.push({ text: `🏷${snapshot.headTag}`, tone: "accent" });
+  if (visible("git-last-commit-age") && snapshot.lastCommitAge) extraSection.push({ text: `⏱${snapshot.lastCommitAge}`, tone: "dim" });
+  if (visible("git-signing-mismatch") && snapshot.signingMismatch) extraSection.push({ text: "⚠️!", tone: "warning" });
 
   const sections: GitStatusSection[] = [
     { key: "branch", items: branchSection },
@@ -566,10 +1119,11 @@ function sectionValue(section: GitStatusSection | undefined): string | undefined
 }
 
 function webuiRemoteChangeValue(snapshot: GitSnapshot, fetchState: GitFetchState): string | undefined {
-  if (fetchState.status === "fetching") return "🔄 fetch";
-  if (snapshot.behind > 0) return `⬇️ ${snapshot.behind}`;
-  if (fetchState.status === "error") return "⚠️ fetch";
-  if (fetchState.status === "ok") return "✓ fetch";
+  const showFetchState = webuiFooterItemVisible("webui-fetch-state");
+  if (showFetchState && fetchState.status === "fetching") return "🔄 fetch";
+  if (webuiFooterItemVisible("git-behind") && snapshot.behind > 0) return `⬇️ ${snapshot.behind}`;
+  if (showFetchState && fetchState.status === "error") return "⚠️ fetch";
+  if (showFetchState && fetchState.status === "ok") return "✓ fetch";
   return undefined;
 }
 
@@ -586,24 +1140,24 @@ function gitFetchTitle(fetchState: GitFetchState, snapshot: GitSnapshot): string
 
 function webuiChangesValue(snapshot: GitSnapshot, fetchState: GitFetchState): string | undefined {
   const parts: string[] = [];
-  if (snapshot.staged > 0) parts.push(`🟢 ${snapshot.staged}`);
-  if (snapshot.unstaged > 0) parts.push(`✏️ ${snapshot.unstaged}`);
-  if (snapshot.untracked > 0) parts.push(`➕ ${snapshot.untracked}`);
-  if (snapshot.conflicted > 0) parts.push(`⚠️ ${snapshot.conflicted}`);
+  if (webuiFooterItemVisible("git-staged") && snapshot.staged > 0) parts.push(`🟢 ${snapshot.staged}`);
+  if (webuiFooterItemVisible("git-unstaged") && snapshot.unstaged > 0) parts.push(`✏️ ${snapshot.unstaged}`);
+  if (webuiFooterItemVisible("git-untracked") && snapshot.untracked > 0) parts.push(`➕ ${snapshot.untracked}`);
+  if (webuiFooterItemVisible("git-conflicted") && snapshot.conflicted > 0) parts.push(`⚠️ ${snapshot.conflicted}`);
   const remoteChange = webuiRemoteChangeValue(snapshot, fetchState);
   if (remoteChange) parts.push(remoteChange);
-  if (parts.length === 0 && isWorkingTreeClean(snapshot)) parts.push("✅");
+  if (webuiFooterItemVisible("git-clean") && parts.length === 0 && isWorkingTreeClean(snapshot)) parts.push("✅");
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 function webuiExtraValue(snapshot: GitSnapshot): string | undefined {
   const parts: string[] = [];
-  if (snapshot.stashCount > 0) parts.push(`📦 ${snapshot.stashCount}`);
-  if (snapshot.submoduleDirty > 0) parts.push(`🧩 ${snapshot.submoduleDirty}`);
-  if (snapshot.worktreeCount > 1) parts.push(`🌳 ${snapshot.worktreeCount}`);
-  if (snapshot.headTag) parts.push(`🏷️ ${snapshot.headTag}`);
-  if (snapshot.lastCommitAge) parts.push(`🕒 ${snapshot.lastCommitAge}`);
-  if (snapshot.signingMismatch) parts.push("🔓");
+  if (webuiFooterItemVisible("git-stash") && snapshot.stashCount > 0) parts.push(`📦 ${snapshot.stashCount}`);
+  if (webuiFooterItemVisible("git-submodules") && snapshot.submoduleDirty > 0) parts.push(`🧩 ${snapshot.submoduleDirty}`);
+  if (webuiFooterItemVisible("git-worktrees") && snapshot.worktreeCount > 1) parts.push(`🌳 ${snapshot.worktreeCount}`);
+  if (webuiFooterItemVisible("git-tag") && snapshot.headTag) parts.push(`🏷️ ${snapshot.headTag}`);
+  if (webuiFooterItemVisible("git-last-commit-age") && snapshot.lastCommitAge) parts.push(`🕒 ${snapshot.lastCommitAge}`);
+  if (webuiFooterItemVisible("git-signing-mismatch") && snapshot.signingMismatch) parts.push("🔓");
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
@@ -624,9 +1178,11 @@ function footerTone(tone: GitStatusTone): WebuiFooterChip["tone"] {
 }
 
 function buildWebuiGitMeta(snapshot: GitSnapshot | null, fetchState: GitFetchState): WebuiFooterChip[] {
-  if (!snapshot) return [{ key: "git", label: "git", value: "no repo", title: "git: no repo" }];
+  if (!snapshot) {
+    return webuiFooterItemVisible("git") ? [{ key: "git", label: "git", value: "no repo", title: "git: no repo" }] : [];
+  }
 
-  const sections = buildGitStatusSections(snapshot);
+  const sections = buildGitStatusSections(snapshot, "webui");
   const state = sectionValue(sections.find((section) => section.key === "branch"));
   const sync = sectionValue(sections.find((section) => section.key === "sync"));
   const changes = webuiChangesValue(snapshot, fetchState);
@@ -634,26 +1190,32 @@ function buildWebuiGitMeta(snapshot: GitSnapshot | null, fetchState: GitFetchSta
   const extraSection = sections.find((section) => section.key === "extra");
   const extra = webuiExtraValue(snapshot);
 
-  const chips: WebuiFooterChip[] = [
-    {
+  const chips: WebuiFooterChip[] = [];
+  if (webuiFooterItemVisible("git")) {
+    chips.push({
       key: "git",
       label: "git",
       value: snapshot.branch || "detached",
       title: `git branch: ${snapshot.branch || "detached"}`,
-    },
-  ];
-  if (state) chips.push({ key: "git-state", label: "state", value: state, title: `git state: ${state}`, tone: "yellow" });
-  if (sync) chips.push({ key: "sync", label: "sync", value: sync, title: `git sync: ${sync}`, tone: "blue" });
-  if (changes) {
-    chips.push({
+    });
+  }
+  if (webuiFooterItemVisible("git-state") && state) chips.push({ key: "git-state", label: "state", value: state, title: `git state: ${state}`, tone: "yellow" });
+  if (webuiFooterItemVisible("sync") && sync) chips.push({ key: "sync", label: "sync", value: sync, title: `git sync: ${sync}`, tone: "blue" });
+  if (webuiFooterItemVisible("changes") && changes) {
+    const chip: WebuiFooterChip = {
       key: "changes",
       label: "changes",
       value: changes,
       title: [`git changes: ${changes}`, changesFetchTitle].filter(Boolean).join("\n"),
-      files: snapshot.changedFiles.slice(0, GIT_CHANGED_FILES_LIMIT),
-    });
+    };
+    if (webuiFooterItemVisible("webui-changed-files-popover")) {
+      chip.files = snapshot.changedFiles.slice(0, GIT_CHANGED_FILES_LIMIT);
+      chip.filesTotal = snapshot.changedFilesTotal;
+      chip.filesTruncated = snapshot.changedFilesTruncated;
+    }
+    chips.push(chip);
   }
-  if (extra) {
+  if (webuiFooterItemVisible("git-extra") && extra) {
     chips.push({
       key: "git-extra",
       label: "git+",
@@ -725,6 +1287,10 @@ function canCalibrateCurrentPromptEstimate(ctx: ExtensionContext): boolean {
   return false;
 }
 
+function buildWebuiVisibilityRecord(): Record<FooterVisibilityKey, boolean> {
+  return Object.fromEntries(FOOTER_VISIBILITY_KEYS.map((key) => [key, webuiFooterItemVisible(key)])) as Record<FooterVisibilityKey, boolean>;
+}
+
 function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | null, telemetry: FooterTelemetry, fetchState: GitFetchState): WebuiFooterPayload {
   const speed = telemetry.latestTokenSpeed;
   const speedPrefix = telemetry.liveOutputTokens > 0 ? `${footerMetricValue(telemetry.liveOutputTokens)} tok @ ` : "";
@@ -736,7 +1302,7 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
     : "";
   const piIsUncalibrated = telemetry.promptInjectionTokens !== null && telemetry.promptInjectionCalibrationSamples <= 0;
   const piCanCalibrateCurrent = piIsUncalibrated && telemetry.promptInjectionCanCalibrateCurrent;
-  const piAction: WebuiFooterChip["action"] | undefined = piIsUncalibrated
+  const piAction: WebuiFooterChip["action"] | undefined = webuiFooterItemVisible("webui-pi-calibration") && piIsUncalibrated
     ? piCanCalibrateCurrent
       ? "calibrate-current"
       : "calibrate-probe"
@@ -750,7 +1316,7 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
         : `PI initial prompt estimate calibrated from ${telemetry.promptInjectionCalibrationSamples} sample${telemetry.promptInjectionCalibrationSamples === 1 ? "" : "s"}.`;
 
   const main: WebuiFooterChip[] = [];
-  if (telemetry.totalInput || telemetry.totalOutput) {
+  if (webuiFooterItemVisible("tokens") && (telemetry.totalInput || telemetry.totalOutput)) {
     main.push({
       key: "tokens",
       icon: "🪙",
@@ -759,7 +1325,7 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       tone: "pink",
     });
   }
-  if (telemetry.totalCacheRead || telemetry.totalCacheWrite) {
+  if (webuiFooterItemVisible("cache") && (telemetry.totalCacheRead || telemetry.totalCacheWrite)) {
     main.push({
       key: "cache",
       icon: "💾",
@@ -768,16 +1334,18 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       tone: "blue",
     });
   }
-  main.push({
-    key: "pi",
-    icon: "π",
-    label: "pi",
-    value: footerPromptInjectionValue(telemetry.promptInjectionTokens),
-    title: piTitle,
-    action: piAction,
-    tone: "mauve",
-  });
-  if (speed !== null) {
+  if (webuiFooterItemVisible("pi")) {
+    main.push({
+      key: "pi",
+      icon: "π",
+      label: "pi",
+      value: footerPromptInjectionValue(telemetry.promptInjectionTokens),
+      title: piTitle,
+      action: piAction,
+      tone: "mauve",
+    });
+  }
+  if (webuiFooterItemVisible("speed") && speed !== null) {
     main.push({
       key: "speed",
       icon: "⚡",
@@ -786,33 +1354,40 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       tone: "yellow",
     });
   }
-  main.push({
-    key: "cost",
-    icon: "💸",
-    label: telemetry.usingSubscription ? "sub" : "api",
-    value: `$${telemetry.totalCost.toFixed(3)}`,
-    tone: "green",
-  });
-  main.push({
-    key: "context",
-    icon: "🧠",
-    label: "context",
-    value: telemetry.contextDisplay,
-    tone: "teal",
-    contextUsage: {
-      percent: telemetry.contextPercent,
-      contextWindow: telemetry.contextWindow,
-    },
-  });
+  if (webuiFooterItemVisible("cost")) {
+    main.push({
+      key: "cost",
+      icon: "💸",
+      label: telemetry.usingSubscription ? "sub" : "api",
+      value: `$${telemetry.totalCost.toFixed(3)}`,
+      tone: "green",
+    });
+  }
+  if (webuiFooterItemVisible("context")) {
+    main.push({
+      key: "context",
+      icon: "🧠",
+      label: "context",
+      value: telemetry.contextDisplay,
+      tone: "teal",
+      contextUsage: {
+        percent: telemetry.contextPercent,
+        contextWindow: telemetry.contextWindow,
+      },
+    });
+  }
 
-  const meta: WebuiFooterChip[] = [
-    {
+  const meta: WebuiFooterChip[] = [];
+  if (webuiFooterItemVisible("cwd")) {
+    meta.push({
       key: "cwd",
       label: "cwd",
       value: formatCwd(ctx.cwd),
       title: `cwd: ${ctx.cwd}`,
-    },
-    {
+    });
+  }
+  if (webuiFooterItemVisible("context-meta")) {
+    meta.push({
       key: "context",
       label: "context",
       value: telemetry.contextDisplay,
@@ -821,15 +1396,17 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
         percent: telemetry.contextPercent,
         contextWindow: telemetry.contextWindow,
       },
-    },
-    ...buildWebuiGitMeta(snapshot, fetchState),
-    {
+    });
+  }
+  meta.push(...buildWebuiGitMeta(snapshot, fetchState));
+  if (webuiFooterItemVisible("model")) {
+    meta.push({
       key: "model",
       label: "model",
       value: `${providerPrefix}${telemetry.modelName}${thinkingSuffix}`,
       title: `model: ${providerPrefix}${telemetry.modelName}${thinkingSuffix}`,
-    },
-  ];
+    });
+  }
 
   return {
     type: WEBUI_FOOTER_PAYLOAD_TYPE,
@@ -837,6 +1414,7 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
     generatedAt: Date.now(),
     main,
     meta,
+    visibility: buildWebuiVisibilityRecord(),
   };
 }
 
@@ -1292,7 +1870,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     requestFooterRender?.();
 
     gitInitialFetchPromise = pi
-      .exec("git", ["-c", "credential.interactive=false", "fetch"], { cwd: ctx.cwd, timeout: GIT_INITIAL_FETCH_TIMEOUT_MS })
+      .exec("git", ["-c", "credential.interactive=false", "fetch", "--prune"], { cwd: ctx.cwd, timeout: GIT_INITIAL_FETCH_TIMEOUT_MS })
       .then((result) => {
         if (sessionSerial !== activeSessionSerial) return;
         latestGitFetchState = {
@@ -1376,28 +1954,30 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           const itemSep = theme.fg("dim", "·");
 
           const ioItems: string[] = [];
-          if (telemetry.totalInput) ioItems.push(`↑${formatTokens(telemetry.totalInput)}`);
-          if (telemetry.totalOutput) ioItems.push(`↓${formatTokens(telemetry.totalOutput)}`);
+          if (nativeFooterItemVisible("tokens")) {
+            if (telemetry.totalInput) ioItems.push(`↑${formatTokens(telemetry.totalInput)}`);
+            if (telemetry.totalOutput) ioItems.push(`↓${formatTokens(telemetry.totalOutput)}`);
+          }
 
           const cacheItems: string[] = [];
-          if (telemetry.totalCacheRead || telemetry.totalCacheWrite) {
+          if (nativeFooterItemVisible("cache") && (telemetry.totalCacheRead || telemetry.totalCacheWrite)) {
             cacheItems.push(`R${formatTokens(telemetry.totalCacheRead)}`, `W${formatTokens(telemetry.totalCacheWrite)}`);
           }
 
           const segments: string[] = [];
           if (ioItems.length > 0) segments.push(`${theme.fg("muted", "🪙")} ${ioItems.join(` ${itemSep} `)}`);
           if (cacheItems.length > 0) segments.push(`${theme.fg("muted", "💾")} ${cacheItems.join(` ${itemSep} `)}`);
-          segments.push(telemetry.promptInjectionTokens === null ? "PI: …" : `PI: ${formatTokens(telemetry.promptInjectionTokens)} tok`);
-          if (telemetry.latestTokenSpeed !== null) {
+          if (nativeFooterItemVisible("pi")) segments.push(telemetry.promptInjectionTokens === null ? "PI: …" : `PI: ${formatTokens(telemetry.promptInjectionTokens)} tok`);
+          if (nativeFooterItemVisible("speed") && telemetry.latestTokenSpeed !== null) {
             const livePrefix = telemetry.liveOutputTokens > 0 ? `${formatTokens(telemetry.liveOutputTokens)} tok @ ` : "";
             segments.push(`⚡ ${livePrefix}${formatTokenSpeed(telemetry.latestTokenSpeed)} tok/s`);
           }
 
-          if (telemetry.totalCost || telemetry.usingSubscription) {
+          if (nativeFooterItemVisible("cost") && (telemetry.totalCost || telemetry.usingSubscription)) {
             segments.push(`${theme.fg("muted", "💸")} $${telemetry.totalCost.toFixed(3)}${telemetry.usingSubscription ? " (sub)" : ""}`);
           }
 
-          segments.push(`${theme.fg("muted", "🧠")} ${contextPercentStr}`);
+          if (nativeFooterItemVisible("context")) segments.push(`${theme.fg("muted", "🧠")} ${contextPercentStr}`);
 
           let statsLeft = segments.join(` ${sectionSep} `);
           let statsLeftWidth = visibleWidth(statsLeft);
@@ -1406,15 +1986,17 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
             statsLeftWidth = visibleWidth(statsLeft);
           }
 
-          const rightSideWithoutProvider =
-            footerCtx.model?.reasoning
-              ? telemetry.thinkingLevel === "off"
-                ? `${telemetry.modelName} • thinking off`
-                : `${telemetry.modelName} • ${telemetry.thinkingLevel}`
-              : telemetry.modelName;
+          const thinkingText = footerCtx.model?.reasoning && nativeFooterItemVisible("thinking")
+            ? telemetry.thinkingLevel === "off"
+              ? "thinking off"
+              : telemetry.thinkingLevel
+            : "";
+          const rightSideWithoutProvider = nativeFooterItemVisible("model")
+            ? [telemetry.modelName, thinkingText].filter(Boolean).join(" • ")
+            : thinkingText;
 
           let rightSide = rightSideWithoutProvider;
-          if (footerData.getAvailableProviderCount() > 1 && telemetry.modelProvider) {
+          if (rightSide && footerData.getAvailableProviderCount() > 1 && telemetry.modelProvider && nativeFooterItemVisible("model")) {
             const withProvider = `(${telemetry.modelProvider}) ${rightSideWithoutProvider}`;
             if (statsLeftWidth + 2 + visibleWidth(withProvider) <= width) {
               rightSide = withProvider;
@@ -1422,14 +2004,15 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           }
 
           const rightSideWidth = visibleWidth(rightSide);
-          const totalNeeded = statsLeftWidth + 2 + rightSideWidth;
+          const gapWidth = statsLeftWidth > 0 && rightSideWidth > 0 ? 2 : 0;
+          const totalNeeded = statsLeftWidth + gapWidth + rightSideWidth;
           let tokenLine: string;
 
           if (totalNeeded <= width) {
-            const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
+            const padding = " ".repeat(Math.max(0, width - statsLeftWidth - rightSideWidth));
             tokenLine = statsLeft + padding + rightSide;
           } else {
-            const availableForRight = width - statsLeftWidth - 2;
+            const availableForRight = width - statsLeftWidth - gapWidth;
             if (availableForRight > 0) {
               const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
               const truncatedRightWidth = visibleWidth(truncatedRight);
@@ -1440,20 +2023,22 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
             }
           }
 
-          const branch = footerData.getGitBranch();
+          const branch = nativeFooterItemVisible("cwd-branch") ? footerData.getGitBranch() : null;
           const cwdWithBranch = `${formatCwd(footerCtx.cwd)}${branch ? ` (${branch})` : ""}`;
-          const cwdText = theme.fg("muted", cwdWithBranch);
+          const cwdText = nativeFooterItemVisible("cwd") ? theme.fg("muted", cwdWithBranch) : "";
 
           const statuses = footerData.getExtensionStatuses();
-          const gitStatus = statuses.get(GIT_FOOTER_STATUS_KEY);
-          const otherStatuses = Array.from(statuses.entries())
-            .filter(([key, value]) => key !== GIT_FOOTER_STATUS_KEY && key !== WEBUI_FOOTER_STATUS_KEY && Boolean(value))
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([, value]) => value as string);
+          const gitStatus = nativeFooterItemVisible("git-status") ? statuses.get(GIT_FOOTER_STATUS_KEY) : undefined;
+          const otherStatuses = nativeFooterItemVisible("extension-statuses")
+            ? Array.from(statuses.entries())
+                .filter(([key, value]) => key !== GIT_FOOTER_STATUS_KEY && key !== WEBUI_FOOTER_STATUS_KEY && Boolean(value))
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([, value]) => value as string)
+            : [];
 
           const combinedStatusParts = [gitStatus, ...otherStatuses].filter(Boolean) as string[];
           const combinedStatus = combinedStatusParts.join(` ${theme.fg("dim", "·")} `);
-          const pathGitLine = combinedStatus ? `${cwdText}${theme.fg("dim", " │ ")}${combinedStatus}` : cwdText;
+          const pathGitLine = cwdText && combinedStatus ? `${cwdText}${theme.fg("dim", " │ ")}${combinedStatus}` : cwdText || combinedStatus;
 
           // Keep default subtle-grey look even when parts contain their own ANSI colors.
           // Wrapping the whole line once is not enough because inner color resets cancel outer dim.
@@ -1606,6 +2191,113 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       await refreshPromptInjectionEstimate(ctx);
       await refresh(ctx);
       if (!silent) ctx.ui.notify("Git footer refreshed", "info");
+    },
+  });
+
+  pi.registerCommand("git-footer-visibility", {
+    description: "Show/hide individual git footer cards, buttons, and modal affordances for native TUI and WebUI",
+    handler: async (args, ctx) => {
+      rememberFooterContext(ctx);
+      const tokens = (args || "").trim().split(/\s+/).filter(Boolean);
+      const firstToken = tokens.shift();
+      const command = normalizeFooterVisibilityToken(firstToken || "");
+
+      const openSelector = async (scope: FooterVisibilityScope) => {
+        const selected = await openFooterVisibilitySelector(ctx, scope);
+        if (!selected) {
+          ctx.ui.notify("Git footer visibility selector cancelled.", "info");
+          return;
+        }
+        const changedCount = applyFooterVisibilitySelection(scope, selected);
+        requestFooterRender?.();
+        publishWebuiFooter(ctx);
+        await refresh(ctx);
+        ctx.ui.notify(
+          `Git footer visibility selector applied for ${footerVisibilityScopeLabel(scope)} (${changedCount} changed).`,
+          changedCount > 0 ? "success" : "info",
+        );
+      };
+
+      if (!firstToken && ctx.mode === "tui") {
+        await openSelector("all");
+        return;
+      }
+
+      if (command === "select" || command === "selector" || command === "tui" || command === "ui") {
+        if (tokens.length > 1 || (tokens.length === 1 && !normalizeFooterVisibilityScope(tokens[0]))) {
+          ctx.ui.notify(footerVisibilityUsage(), "warning");
+          return;
+        }
+        await openSelector(normalizeFooterVisibilityScope(tokens[0]) ?? "all");
+        return;
+      }
+
+      const scopeOnlyCommand = normalizeFooterVisibilityScope(command);
+      if (scopeOnlyCommand && tokens.length === 0 && ctx.mode === "tui") {
+        await openSelector(scopeOnlyCommand);
+        return;
+      }
+
+      if (command === "help" || command === "--help" || command === "-h") {
+        ctx.ui.notify(footerVisibilityUsage(), "info");
+        return;
+      }
+
+      if (command === "keys" || command === "list") {
+        ctx.ui.notify(`Git footer visibility keys:\n${FOOTER_VISIBILITY_KEYS.join("\n")}`, "info");
+        return;
+      }
+
+      if (command === "status" || command === "") {
+        ctx.ui.notify(`Git footer visibility (* differs from default):\n${FOOTER_VISIBILITY_KEYS.map(formatFooterVisibilityState).join("\n")}`, "info");
+        return;
+      }
+
+      if (!["show", "hide", "toggle", "reset"].includes(command)) {
+        ctx.ui.notify(footerVisibilityUsage(), "warning");
+        return;
+      }
+
+      let scope = normalizeFooterVisibilityScope(tokens[0]) ?? "all";
+      if (normalizeFooterVisibilityScope(tokens[0])) tokens.shift();
+
+      const keys = tokens.map(normalizeFooterVisibilityKey);
+      const invalidKeys = tokens.filter((token, index) => !keys[index]);
+      const validKeys = keys.filter((key): key is FooterVisibilityKey => Boolean(key));
+      if (invalidKeys.length > 0) {
+        ctx.ui.notify(`Unknown git footer visibility key(s): ${invalidKeys.join(", ")}\n\n${footerVisibilityUsage()}`, "warning");
+        return;
+      }
+
+      if (command === "reset") {
+        const resetScopes = scope === "all" ? FOOTER_VISIBILITY_SCOPES : [scope];
+        for (const resetScope of resetScopes) {
+          if (validKeys.length === 0) clearRuntimeFooterVisibility(resetScope);
+          else for (const key of validKeys) clearRuntimeFooterVisibility(resetScope, key);
+        }
+      } else {
+        if (validKeys.length === 0) {
+          ctx.ui.notify(footerVisibilityUsage(), "warning");
+          return;
+        }
+        for (const key of validKeys) {
+          const nextVisible = command === "show"
+            ? true
+            : command === "hide"
+              ? false
+              : scope === "all"
+                ? !(nativeFooterItemVisible(key) && webuiFooterItemVisible(key))
+                : !footerItemVisible(key, scope);
+          const updateScopes = scope === "all" ? FOOTER_VISIBILITY_SCOPES : [scope];
+          for (const updateScope of updateScopes) setRuntimeFooterVisibility(updateScope, key, nextVisible);
+        }
+      }
+
+      requestFooterRender?.();
+      publishWebuiFooter(ctx);
+      await refresh(ctx);
+      const changed = validKeys.length > 0 ? validKeys.map(formatFooterVisibilityState).join("\n") : `${scope}: reset`;
+      ctx.ui.notify(`Git footer visibility updated:\n${changed}`, "success");
     },
   });
 
