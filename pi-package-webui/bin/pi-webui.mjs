@@ -448,16 +448,44 @@ function formatUrlHost(host) {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
+function makeUserFacingError(message, props = {}) {
+  const text = String(message || "Unknown error").trim() || "Unknown error";
+  const error = new Error(text);
+  error.userMessage = text;
+  Object.assign(error, props);
+  return error;
+}
+
 function sanitizeError(error) {
   if (!error) return "Unknown error";
   if (typeof error === "string") return error;
+  if (error.userMessage) return error.userMessage;
   return error.stack || error.message || String(error);
 }
 
 function formatCliError(error) {
   if (!error) return "Unknown error";
   if (typeof error === "string") return error;
-  return error.message || String(error);
+  return error.userMessage || error.message || String(error);
+}
+
+function formatCommandSpawnError(command, error) {
+  const commandText = String(command || "command");
+  const executable = commandText.split(/[\\/]/).pop() || commandText;
+  const isGit = /^git(?:\.exe)?$/i.test(executable);
+  if (error?.code === "ENOENT") {
+    if (isGit) {
+      const windowsHint = process.platform === "win32"
+        ? " On Windows, install Git for Windows and choose 'Git from the command line and also from 3rd-party software', or add Git's cmd/bin directory to PATH."
+        : "";
+      return `Git executable not found on PATH (spawn ${executable} ENOENT). Install Git and ensure the 'git' command is available to the Pi Web UI process, then restart Pi Web UI.${windowsHint}`;
+    }
+    return `${executable} executable not found on PATH (spawn ${executable} ENOENT). Install it or add it to PATH, then restart Pi Web UI.`;
+  }
+  if (error?.code === "EACCES" || error?.code === "EPERM") {
+    return `Cannot start ${executable}: permission denied. Check executable permissions and PATH.`;
+  }
+  return formatCliError(error);
 }
 
 function delay(ms) {
@@ -1149,7 +1177,10 @@ function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20
       stderr += String(chunk);
       if (stderr.length > maxOutputLength) stderr = stderr.slice(-maxOutputLength);
     });
-    child.on("error", (error) => finish({ exitCode: undefined, stdout, stderr: sanitizeError(error), error: sanitizeError(error) }));
+    child.on("error", (error) => {
+      const message = formatCommandSpawnError(command, error);
+      finish({ exitCode: undefined, stdout, stderr: message, error: message, errorCode: error?.code });
+    });
     // "close", not "exit": exit can fire before the stdio pipes flush, which
     // intermittently truncates stdout (empty `git rev-parse --show-toplevel`
     // output resolves to process.cwd() and reads the wrong repository).
@@ -3957,7 +3988,7 @@ const GIT_STATUS_KIND_RANK = Object.freeze({ changed: 0, untracked: 1, modified:
 async function getGitRoot(cwd) {
   const result = await runCommand("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 2000 });
   if (result.exitCode !== 0) {
-    throw new Error((result.stderr || result.stdout || "Not inside a git repository").trim());
+    throw makeUserFacingError((result.stderr || result.stdout || "Not inside a git repository").trim());
   }
   return path.resolve(result.stdout.trim());
 }
@@ -3971,7 +4002,7 @@ async function runGitReadCommandDetailed(root, args, { timeoutMs = GIT_CHANGES_C
   const message = result.timedOut
     ? `${command} timed out`
     : (result.stderr || result.stdout || result.error || `${command} failed with exit code ${result.exitCode ?? "unknown"}`);
-  throw new Error(String(message).trim());
+  throw makeUserFacingError(String(message).trim());
 }
 
 async function runGitReadCommand(root, args, options = {}) {
@@ -5673,7 +5704,10 @@ function runWorkflowCommand(command, args, { cwd, label = formatWorkflowCommand(
       stderr += String(chunk);
       if (stderr.length > 100000) stderr = stderr.slice(-100000);
     });
-    child.on("error", (error) => finish({ exitCode: undefined, stderr: stderr || sanitizeError(error), error: sanitizeError(error) }));
+    child.on("error", (error) => {
+      const message = formatCommandSpawnError(command, error);
+      finish({ exitCode: undefined, stderr: stderr || message, error: message, errorCode: error?.code });
+    });
     // "close", not "exit": exit can fire before the stdio pipes flush,
     // intermittently truncating collected stdout/stderr.
     child.on("close", (exitCode, signal) => finish({ exitCode, signal }));
