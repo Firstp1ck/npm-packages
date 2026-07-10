@@ -18124,12 +18124,99 @@ function appendText(parent, text, className = "text-block") {
   return block;
 }
 
+function markdownFilePathFromHref(url) {
+  const href = String(url || "").trim();
+  if (!href || href.startsWith("#") || /[\u0000-\u001f\u007f]/.test(href)) return "";
+  if (/^(?:https?:|mailto:)/i.test(href)) return "";
+  if (/^file:/i.test(href)) {
+    try {
+      const parsed = new URL(href);
+      if (parsed.protocol !== "file:" || (parsed.hostname && parsed.hostname.toLowerCase() !== "localhost")) return "";
+      let pathname = decodeURIComponent(parsed.pathname || "");
+      if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1);
+      return pathname.replace(/\\/g, "/");
+    } catch {
+      return "";
+    }
+  }
+  if (/^[A-Za-z][A-Za-z\d+.-]*:/.test(href) && !/^[A-Za-z]:[\\/]/.test(href)) return "";
+  if (/^(?:\/\/|\\\\)/.test(href)) return "";
+  const pathText = href.replace(/[?#].*$/, "");
+  try {
+    return decodeURIComponent(pathText).replace(/\\/g, "/");
+  } catch {
+    return pathText.replace(/\\/g, "/");
+  }
+}
+
 function safeMarkdownLinkHref(url) {
   const href = String(url || "").trim();
   if (!href || /[\u0000-\u001f\u007f]/.test(href)) return "";
   if (/^(?:https?:|mailto:)/i.test(href)) return href;
-  if (/^(?:#|\/(?!\/)|\.\/|\.\.\/)/.test(href)) return href;
+  if (href.startsWith("#") || markdownFilePathFromHref(href)) return href;
   return "";
+}
+
+function normalizeMarkdownWorkspacePath(value) {
+  const parts = [];
+  for (const part of String(value || "").replace(/\\/g, "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!parts.length) return "";
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.join("/");
+}
+
+function markdownWorkspaceFilePath(url, cwd = "", basePath = "") {
+  let target = markdownFilePathFromHref(url);
+  if (!target) return "";
+  const absoluteTarget = target.startsWith("/") || /^[A-Za-z]:\//.test(target);
+  if (absoluteTarget) {
+    const normalizedCwd = String(cwd || "").trim().replace(/\\/g, "/");
+    const workspaceRoot = normalizedCwd.replace(/\/+$/, "") || (normalizedCwd.startsWith("/") ? "/" : "");
+    if (!workspaceRoot) return "";
+    const windowsPath = /^[A-Za-z]:\//.test(target) && /^[A-Za-z]:(?:\/|$)/.test(workspaceRoot);
+    const comparableTarget = windowsPath ? target.toLowerCase() : target;
+    const comparableRoot = windowsPath ? workspaceRoot.toLowerCase() : workspaceRoot;
+    const prefix = comparableRoot === "/" ? "/" : `${comparableRoot}/`;
+    if (!comparableTarget.startsWith(prefix)) return "";
+    target = target.slice(prefix.length);
+  } else if (basePath) {
+    target = `${basePath}/${target}`;
+  }
+  return normalizeMarkdownWorkspacePath(target);
+}
+
+function configureMarkdownLink(link, href) {
+  const filePath = markdownFilePathFromHref(href);
+  if (!filePath) {
+    link.href = href;
+    if (/^https?:/i.test(href)) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    return;
+  }
+  link.href = "#";
+  link.classList.add("markdown-file-link");
+  link.dataset.markdownFileHref = href;
+  link.title = `Open ${filePath} in the WebUI file viewer`;
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    const cwd = latestWorkspace?.cwd || activeTab()?.cwd || "";
+    const basePath = link.closest?.(".file-viewer-preview") && activeFileViewer ? fileParentPath(activeFileViewer.path) : "";
+    const workspacePath = markdownWorkspaceFilePath(href, cwd, basePath);
+    if (!workspacePath) {
+      addEvent(`Cannot open Markdown link outside this tab's working directory: ${filePath}`, "error");
+      return;
+    }
+    setSidePanelCollapsed(false);
+    openFileInViewer(workspacePath).catch((error) => addEvent(error.message || String(error), "error"));
+  });
 }
 
 function appendInlineMarkdown(parent, text, depth = 0) {
@@ -18162,11 +18249,7 @@ function appendInlineMarkdown(parent, text, depth = 0) {
         const href = safeMarkdownLinkHref(value.slice(labelEnd + 2, linkEnd));
         if (href) {
           const link = make("a");
-          link.href = href;
-          if (/^https?:/i.test(href)) {
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-          }
+          configureMarkdownLink(link, href);
           appendInlineMarkdown(link, label, depth + 1);
           parent.append(link);
         } else {
