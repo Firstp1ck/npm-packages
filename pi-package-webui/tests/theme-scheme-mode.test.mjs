@@ -73,18 +73,18 @@ assert.match(
 
 // Persistence lives inside applyTheme's validated persist branch (matching light/dark
 // scheme slot + legacy key), reached only after setThemeByName found and classified
-// the theme. chooseTheme is the single persist:true entry point; applySchemeTheme
-// (init, mode switches, OS changes) never persists, so a degraded bundle load cannot
-// clobber stored picks.
+// the theme. chooseTheme is the single theme persist:true entry point; unrelated
+// browser preferences may use the same option name. applySchemeTheme (init, mode
+// switches, OS changes) never persists, so a degraded bundle load cannot clobber picks.
 assert.match(
   app,
   /if \(persist\) \{\s*storeSchemeTheme\(isLight \? "light" : "dark", theme\.name\);\s*storeThemeName\(theme\.name\);\s*\}/,
   "applyTheme's persist branch must write the theme's matching scheme slot and the legacy key",
 );
 assert.equal(
-  (app.match(/persist: true/g) || []).length,
+  (app.match(/setThemeByName\([^;]*persist: true/g) || []).length,
   1,
-  "chooseTheme must be the only persist:true call site",
+  "chooseTheme must be the only theme persist:true call site",
 );
 assert.match(
   app,

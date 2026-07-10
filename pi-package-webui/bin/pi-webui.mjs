@@ -22,6 +22,23 @@ import {
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
 import {
+  GIT_WORKFLOW_DEFAULT_VARIANTS,
+  GIT_WORKFLOW_DELIVERY_MODES,
+  GIT_WORKFLOW_LANGUAGES,
+  GIT_WORKFLOW_SCOPE_POLICIES,
+  GIT_WORKFLOW_STAGING_POLICIES,
+  GIT_WORKFLOW_THINKING_LEVELS,
+  GIT_WORKFLOW_VERIFICATION_POLICIES,
+  isGitWorkflowSetupComplete,
+  mergeGitWorkflowPreferences,
+  readGitWorkflowPreferences,
+  readWebuiSettings,
+  supportedGitWorkflowThinkingLevels,
+  webuiSettingsFile,
+  writeGitWorkflowPreferences,
+  writeWebuiSettings,
+} from "../lib/git-workflow-preferences.mjs";
+import {
   evaluateDispatchTrustGuards,
   guardsForNativeCommand,
   isLocalRequest,
@@ -55,7 +72,6 @@ const publicDir = path.join(packageRoot, "public");
 const webuiHelperExtensionPath = path.join(packageRoot, "webui-rpc-helper.mjs");
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
 const OPTIONAL_FEATURE_INSTALL_ROOT_ENV = "PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT";
-const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
 const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 let piPackageJson = {};
 try {
@@ -1581,39 +1597,6 @@ async function writePathFastPicks(picks) {
   return normalized;
 }
 
-function webuiSettingsFile() {
-  if (process.env[WEBUI_SETTINGS_FILE_ENV]) return path.resolve(expandUserPath(process.env[WEBUI_SETTINGS_FILE_ENV]));
-  const configRoot = process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
-  return path.join(configRoot, "pi-webui", "settings.json");
-}
-
-function normalizeWebuiSettings(value) {
-  return {
-    version: 1,
-    remoteAuthEnabled: value?.remoteAuthEnabled === true,
-  };
-}
-
-let webuiSettingsCache = null;
-
-async function readWebuiSettings() {
-  if (webuiSettingsCache) return webuiSettingsCache;
-  webuiSettingsCache = normalizeWebuiSettings(await readJsonFileIfExists(webuiSettingsFile()));
-  return webuiSettingsCache;
-}
-
-async function writeWebuiSettings(patch) {
-  const current = await readWebuiSettings();
-  const next = normalizeWebuiSettings({ ...current, ...(patch || {}) });
-  const storageFile = webuiSettingsFile();
-  await mkdir(path.dirname(storageFile), { recursive: true });
-  const tmpFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmpFile, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  await rename(tmpFile, storageFile);
-  webuiSettingsCache = next;
-  return next;
-}
-
 async function readPersistedRemoteAuthEnabled() {
   return (await readWebuiSettings()).remoteAuthEnabled === true;
 }
@@ -1623,6 +1606,159 @@ async function saveRemoteAuthPreference(enabled) {
   await writeWebuiSettings({ remoteAuthEnabled: nextEnabled });
   persistedRemoteAuthEnabled = nextEnabled;
   return persistedRemoteAuthEnabled;
+}
+
+function gitWorkflowModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function availableGitWorkflowModels(tab) {
+  const response = await safeRpcData(tab, { type: "get_available_models" });
+  if (!response.ok) throw makeHttpError(400, response.error || "Failed to load available models");
+  return (Array.isArray(response.data?.models) ? response.data.models : [])
+    .filter((model) => model?.provider && model?.id)
+    .sort((left, right) => gitWorkflowModelKey(left).localeCompare(gitWorkflowModelKey(right)));
+}
+
+function gitWorkflowPreferenceOptions() {
+  return {
+    thinkingLevels: GIT_WORKFLOW_THINKING_LEVELS,
+    languages: GIT_WORKFLOW_LANGUAGES,
+    defaultVariants: GIT_WORKFLOW_DEFAULT_VARIANTS,
+    scopePolicies: GIT_WORKFLOW_SCOPE_POLICIES,
+    stagingPolicies: GIT_WORKFLOW_STAGING_POLICIES,
+    deliveryModes: GIT_WORKFLOW_DELIVERY_MODES,
+    verificationPolicies: GIT_WORKFLOW_VERIFICATION_POLICIES,
+  };
+}
+
+async function gitWorkflowPreferencesData(tab) {
+  const [preferences, models] = await Promise.all([
+    readGitWorkflowPreferences(),
+    availableGitWorkflowModels(tab),
+  ]);
+  return {
+    preferences,
+    configured: isGitWorkflowSetupComplete(preferences),
+    models,
+    modelThinkingLevels: Object.fromEntries(models.map((model) => [gitWorkflowModelKey(model), supportedGitWorkflowThinkingLevels(model)])),
+    options: gitWorkflowPreferenceOptions(),
+    path: webuiSettingsFile(),
+  };
+}
+
+function requireGitWorkflowChoice(value, key, choices) {
+  const text = String(value ?? "").trim();
+  if (!choices.includes(text)) throw makeHttpError(400, `${key} must be one of: ${choices.join(", ")}`);
+  return text;
+}
+
+async function saveGitWorkflowPreferencesData(tab, body = {}) {
+  const submitted = body.preferences && typeof body.preferences === "object" ? body.preferences : body;
+  if (submitted.generation?.thinkingLevel !== undefined) requireGitWorkflowChoice(submitted.generation.thinkingLevel, "generation.thinkingLevel", GIT_WORKFLOW_THINKING_LEVELS);
+  if (submitted.commit?.language !== undefined) requireGitWorkflowChoice(submitted.commit.language, "commit.language", GIT_WORKFLOW_LANGUAGES);
+  if (submitted.commit?.defaultVariant !== undefined) requireGitWorkflowChoice(submitted.commit.defaultVariant, "commit.defaultVariant", GIT_WORKFLOW_DEFAULT_VARIANTS);
+  if (submitted.commit?.scope !== undefined) requireGitWorkflowChoice(submitted.commit.scope, "commit.scope", GIT_WORKFLOW_SCOPE_POLICIES);
+  if (submitted.stagingPolicy !== undefined) requireGitWorkflowChoice(submitted.stagingPolicy, "stagingPolicy", GIT_WORKFLOW_STAGING_POLICIES);
+  if (submitted.deliveryMode !== undefined) requireGitWorkflowChoice(submitted.deliveryMode, "deliveryMode", GIT_WORKFLOW_DELIVERY_MODES);
+  if (submitted.verificationPolicy !== undefined) requireGitWorkflowChoice(submitted.verificationPolicy, "verificationPolicy", GIT_WORKFLOW_VERIFICATION_POLICIES);
+
+  const current = await readGitWorkflowPreferences();
+  const next = mergeGitWorkflowPreferences(current, submitted);
+  const provider = String(next.generation.provider || "").trim();
+  const modelId = String(next.generation.modelId || "").trim();
+  if (!provider || !modelId) throw makeHttpError(400, "Select a Git-writing model before saving setup");
+
+  const models = await availableGitWorkflowModels(tab);
+  const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId);
+  if (!model) throw makeHttpError(400, `Selected model is not currently available: ${provider}/${modelId}`);
+  const supportedLevels = supportedGitWorkflowThinkingLevels(model);
+  if (!supportedLevels.includes(next.generation.thinkingLevel)) {
+    throw makeHttpError(400, `${provider}/${modelId} does not support thinking level ${next.generation.thinkingLevel}`);
+  }
+
+  await writeGitWorkflowPreferences(next);
+  return gitWorkflowPreferencesData(tab);
+}
+
+function gitWorkflowGenerationPrompt(kind, preferences) {
+  switch (kind) {
+    case "commit":
+      return `/git-staged-msg ${preferences.commit.language} ${preferences.commit.scope}`;
+    case "branch":
+      return "/git-branch-name";
+    case "pr":
+      return `/pr ${preferences.commit.language}`;
+    default:
+      throw makeHttpError(400, "generation kind must be commit, branch, or pr");
+  }
+}
+
+async function restoreGitWorkflowGenerationProfile(tab) {
+  const restore = tab?.gitWorkflowGenerationRestore;
+  if (!restore) return;
+  tab.gitWorkflowGenerationRestore = null;
+  try {
+    if (!tab.rpc?.isRunning?.()) return;
+    if (restore.model?.provider && restore.model?.id) {
+      const modelResponse = await tab.rpc.send({ type: "set_model", provider: restore.model.provider, modelId: restore.model.id });
+      if (modelResponse.success === false) throw new Error(modelResponse.error || "Failed to restore model");
+    }
+    if (restore.thinkingLevel) {
+      const thinkingResponse = await setThinkingLevelForTab(tab, restore.thinkingLevel, { allowPending: false });
+      if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || "Failed to restore thinking level");
+    }
+    recordEvent({ type: "git_workflow_generation_profile_restored", tabId: tab.id, tabTitle: tab.title });
+  } catch (error) {
+    recordEvent({ type: "git_workflow_generation_profile_restore_failed", tabId: tab.id, tabTitle: tab.title, error: sanitizeError(error) });
+  }
+}
+
+async function startGitWorkflowGeneration(tab, body = {}) {
+  if (tab.gitWorkflowGenerationRestore) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
+  const preferences = await readGitWorkflowPreferences();
+  if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
+
+  const state = await currentSessionState(tab);
+  if (stateIsBusyForSettings(state)) throw makeHttpError(409, "Wait for the current agent run to finish before generating Git text");
+  const models = await availableGitWorkflowModels(tab);
+  const selectedModel = models.find((model) => model.provider === preferences.generation.provider && model.id === preferences.generation.modelId);
+  if (!selectedModel) throw makeHttpError(409, `Configured Git-writing model is unavailable: ${preferences.generation.provider}/${preferences.generation.modelId}. Open Guided Git Setup to choose another model.`);
+  const supportedLevels = supportedGitWorkflowThinkingLevels(selectedModel);
+  if (!supportedLevels.includes(preferences.generation.thinkingLevel)) {
+    throw makeHttpError(409, `Configured thinking level ${preferences.generation.thinkingLevel} is unavailable for ${gitWorkflowModelKey(selectedModel)}. Open Guided Git Setup to update it.`);
+  }
+
+  const restore = { model: state.model || null, thinkingLevel: state.thinkingLevel || "off" };
+  tab.gitWorkflowGenerationRestore = restore;
+  try {
+    if (gitWorkflowModelKey(state.model) !== gitWorkflowModelKey(selectedModel)) {
+      const modelResponse = await tab.rpc.send({ type: "set_model", provider: selectedModel.provider, modelId: selectedModel.id });
+      if (modelResponse.success === false) throw new Error(modelResponse.error || `Failed to select ${gitWorkflowModelKey(selectedModel)}`);
+    }
+    const thinkingResponse = await setThinkingLevelForTab(tab, preferences.generation.thinkingLevel, { allowPending: false });
+    if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || `Failed to select thinking level ${preferences.generation.thinkingLevel}`);
+
+    const kind = String(body.kind || "").trim();
+    const message = gitWorkflowGenerationPrompt(kind, preferences);
+    markTabWorking(tab);
+    const response = await tab.rpc.send({ type: "prompt", message });
+    if (response.success === false) throw new Error(response.error || "Guided Git generation prompt was rejected");
+    return {
+      accepted: true,
+      kind,
+      message,
+      generation: {
+        provider: selectedModel.provider,
+        modelId: selectedModel.id,
+        thinkingLevel: preferences.generation.thinkingLevel,
+      },
+    };
+  } catch (error) {
+    markTabIdle(tab);
+    await restoreGitWorkflowGenerationProfile(tab);
+    throw error;
+  }
 }
 
 function parseCliScopedModelPatterns() {
@@ -7245,6 +7381,7 @@ function attachRpcToTab(tab, rpc) {
     updateTabActivityFromEvent(tab, event);
     let scopedEvent = eventForTabClients(tab, event);
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
+      tab.gitWorkflowGenerationRestore = null;
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
       clearExtensionWidgets(tab);
@@ -7259,6 +7396,7 @@ function attachRpcToTab(tab, rpc) {
     recordEvent(scopedEvent);
     for (const client of tab.sseClients) sendSse(client, scopedEvent);
     if (event?.type === "compaction_end" && event.aborted !== true) void flushCompactionQueue(tab, event);
+    if (event?.type === "agent_settled") void restoreGitWorkflowGenerationProfile(tab);
   });
 }
 
@@ -7288,6 +7426,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     gitWorkspace: gitWorkspace || null,
     lastState: null,
     pendingThinkingLevel: undefined,
+    gitWorkflowGenerationRestore: null,
     activity: createTabActivity(createdAt),
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
@@ -11101,6 +11240,28 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "skill file edits are blocked");
       sendJson(res, 200, { ok: true, data: await saveSkillFileData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/git-workflow/preferences" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await gitWorkflowPreferencesData(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/git-workflow/preferences" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "guided Git setup changes are blocked");
+      sendJson(res, 200, { ok: true, data: await saveGitWorkflowPreferencesData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/git-workflow/generate" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "guided Git generation is blocked");
+      sendJson(res, 200, { ok: true, data: await startGitWorkflowGeneration(tab, body) });
       return;
     }
 

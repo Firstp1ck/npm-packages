@@ -157,7 +157,7 @@ Optional Natural Conversation server-side voice fallback variables:
 - Side-panel theme picker backed by optional `@firstpick/pi-themes-bundle` themes when loaded.
 - Per-tab cwd changes, a clickable footer cwd picker, directory creation/search in the picker, saved path fast picks, server-persisted fast picks, and restart-safe restoration of open tabs.
 - Detected app runner dropdown for the active tab cwd, including Cargo, Bun, npm/npx/pnpm, Python/uv, Go/Golang, Zig, C/C++, Docker Compose, root/dev/scripts shell scripts, and other common project runners with live output pinned at the top of the terminal. Running app runners expose line-oriented stdin in the widget for interactive scripts. Projects can add browseable custom runners in `.pi-webui-runners.json` with a command (default `./`) plus a relative path to the file to run.
-- Guided Git workflow for existing repos and new repos: initialize, create README/.gitignore, initial commit, rename to `main`, add a GitHub remote, pull fetched incoming changes, stage, generate or type commit messages, push, and optionally create a PR.
+- Guided Git workflow for existing repos and new repos with persistent model/reasoning preferences, review-first staging, generated or typed commit messages, explicit push/PR confirmation, and optional PR worktrees.
 - Browser support for Pi extension UI prompts, widgets, status updates, `/btw` side-question output widgets with optional context transfer/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications.
 - Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update` for Pi-only updates, while **Update Pi + Packages & Restart** runs `pi update --all` plus detected Web UI/Optional Feature package-root updates for Pi plus configured, local agent, project, global npm, and global Bun package roots.
 - Feedback reactions (`👍`, `👎`, `?`) on final assistant output plus tool/bash action cards, which can ask Pi to create or update a LEARNING.
@@ -374,7 +374,9 @@ Optional companions:
 
 ## Guided Git workflow
 
-The Git workflow button runs local git commands in the active Pi working directory. It now covers both empty/new projects and existing repositories.
+The Git workflow button runs local git commands in the active Pi working directory. It covers both empty/new projects and existing repositories.
+
+Before first use, run `/git-workflow-setup` in Pi or choose **Common Pi Options → Guided Git Setup** in the browser. Select an exact authenticated `provider/modelId`, a supported reasoning effort, and the workflow defaults described below. The browser preselects the active tab model when possible, but saving is always explicit. Preferences are stored globally in the Pi Web UI settings file (normally `~/.config/pi-webui/settings.json` or `$XDG_CONFIG_HOME/pi-webui/settings.json`), not in browser storage.
 
 For a new project, the browser flow can:
 
@@ -390,16 +392,26 @@ For an existing repository, the workflow can:
 
 1. Show staged, unstaged, untracked, and fetched incoming changes.
 2. Fast-forward pull fetched incoming commits when the repository is safely behind.
-3. Run `git add .`.
-4. Send `/git-staged-msg` to Pi and read generated commit message files from `dev/COMMIT/`.
-5. Use a generated short/long message, a generated single-file default such as `updated file.txt`, or a manual **Commit input** message.
-6. Run `git push`.
+3. Review/select files, preserve a non-empty staged set, or explicitly opt into `git add .`.
+4. Generate `/git-staged-msg` with the configured model, supported reasoning effort, language, and scope policy, then restore the tab's prior model/effort.
+5. Use the preferred generated short/long message, a generated single-file default such as `updated file.txt`, or a manual **Commit input** message.
+6. Show an optional pre-commit verification reminder, then require explicit confirmation before push and PR delivery actions.
+
+The saved setup includes:
+
+- one generation profile reused for commit messages, branch names, and PR descriptions;
+- English or German output, short or long default commit choice, and automatic/never/required Conventional Commit scope;
+- review/select (recommended), preserve-staged, or explicit stage-all behavior;
+- ask/current-branch/PR-worktree delivery highlighting; and
+- optional pre-commit verification reminders.
+
+If the configured model or effort is unavailable, generation stops and asks you to update setup; it never silently substitutes another model. Guided Git never force-pushes automatically. Git hooks and signing configuration continue to run normally.
 
 After the message is generated, **Create PR** asks Pi to generate `dev/COMMIT/staged-branch-name.txt`, lets you confirm or edit the `type/feature-name` branch, then switches with `git switch -c` before committing. In PR mode, choose **Commit short**, **Commit long**, or type a message and use **Commit input**, then **Push and Create PR** pushes the branch, sends `/pr`, shows the generated `dev/PR/<branch>.md` description for editing/confirmation, and creates the pull request with `gh pr create`. Use **Manual branch** to skip agent branch-name generation and type the branch directly.
 
 Use the workflow process buttons to jump directly to **Initialize**, **Stage**, **Message**, **Commit**, **Push**, or PR steps when earlier work was already completed manually. Selecting **Message** lets you either run `/git-staged-msg` or type a commit message and use **Commit input** directly. Selecting **Commit** loads the current generated files from `dev/COMMIT/` before enabling the commit choices. A yellow dot means that process was selected or is available but its action has not completed in this workflow; green means the process action completed.
 
-This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; branch-name generation uses `/git-branch-name` when available and otherwise sends an equivalent inline prompt. Creating the PR also requires an authenticated GitHub CLI (`gh`). Review the generated commit message, branch name, remote URL, and PR description before committing, pushing, or creating a PR.
+This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; branch-name generation uses `/git-branch-name`. Creating the PR also requires an authenticated GitHub CLI (`gh`). Review the generated commit message, branch name, remote URL, and PR description before committing, pushing, or creating a PR.
 
 ## Mobile and PWA notes
 

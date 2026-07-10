@@ -28,6 +28,20 @@ pi install ./pi-package-prompts-git-pr
 
 No required configuration. After installation, type `/` in Pi to autocomplete the prompt templates.
 
+`/git-staged-msg` accepts optional output preferences:
+
+```text
+/git-staged-msg [language: en|de] [scope: auto|never|required]
+```
+
+`/pr` accepts an optional output language:
+
+```text
+/pr [language: en|de]
+```
+
+Defaults remain English with automatic scope selection, so existing invocations without arguments continue to work.
+
 ## Dependencies
 
 No repository-local Pi extensions, tools, skills, or other prompt packages are required. This bundle only contributes prompt templates through `pi.prompts`.

@@ -18,6 +18,19 @@
       "targetBehavior": "Keep native TUI setting coverage current; project/global source editing can be added as an advanced enhancement."
     },
     {
+      "id": "/git-workflow-setup",
+      "kind": "slash-command",
+      "category": "native-command",
+      "title": "Guided Git workflow setup",
+      "command": { "name": "git-workflow-setup", "description": "Configure Guided Git model, effort, staging, and delivery preferences" },
+      "webStatus": "implemented",
+      "priority": "P1",
+      "sensitive": false,
+      "guards": ["confirmation"],
+      "currentBehavior": "Browser-native dialog and Pi TUI wizard edit one persisted global Guided Git profile, including generation model/effort and safety-oriented workflow defaults.",
+      "targetBehavior": "Keep the Pi TUI and browser-native setup surfaces aligned with the shared persisted preference schema."
+    },
+    {
       "id": "/model",
       "kind": "slash-command",
       "category": "native-command",

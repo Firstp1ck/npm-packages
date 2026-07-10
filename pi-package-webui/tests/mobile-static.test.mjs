@@ -28,8 +28,8 @@ const helper = await readFile(join(root, "webui-rpc-helper.mjs"), "utf8");
 const companionDependencies = {
   "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
   "@firstpick/pi-extension-btw": "^0.1.2",
-  "@firstpick/pi-extension-fish-user-bash": "^0.2.0",
-  "@firstpick/pi-extension-git-footer-status": "^0.3.6",
+  "@firstpick/pi-extension-fish-user-bash": "^0.2.1",
+  "@firstpick/pi-extension-git-footer-status": "^0.3.8",
   "@firstpick/pi-extension-release-aur": "^0.1.7",
   "@firstpick/pi-extension-release-npm": "^0.4.0",
   "@firstpick/pi-extension-safety-guard": "^0.2.3",
@@ -78,6 +78,7 @@ assert.match(server, /const THINKING_LEVELS = \["off", "minimal", "low", "medium
 assert.match(html, /id="terminalTabsLayoutSelect"[\s\S]*<option value="left">Left sidebar<\/option>/, "side panel controls should expose a terminal-tabs layout selector");
 assert.match(html, /id="terminalTabsLayoutStatus"/, "terminal-tabs layout selector should expose status text");
 assert.match(html, /id="nativeCommandDialog"/, "native slash selector UI should have a dedicated dialog");
+assert.match(html, /id="optionsGitWorkflowSetupButton"[\s\S]*data-command="\/git-workflow-setup"[\s\S]*Guided Git Setup/, "Common Pi options should expose native Guided Git Setup");
 assert.match(html, /id="nativeCommandSearch"[^>]*type="search"/, "native slash selector dialog should expose a filter box");
 assert.match(html, /id="remoteQrDialog"[\s\S]*id="remoteQrBody"[\s\S]*id="remoteQrCopyButton"/, "remote WebUI should expose a dedicated QR popup dialog");
 assert.match(html, /id="commandPaletteCloseButton"[^>]*aria-label="Close command palette"[^>]*>Close<\/button>/, "command palette should expose a visible accessible close button");
@@ -496,7 +497,7 @@ assert.match(app, /const hadNetworkStatus = networkStatusLoaded;[\s\S]*if \(!had
 assert.match(app, /remoteAuthToggle: \$\("#remoteAuthToggle"\)/, "Remote WebUI controls should bind the remote PIN auth toggle");
 assert.match(html, /id="networkControlField"[^>]*hidden/, "Remote WebUI browser controls should be hidden until the optional package is loaded and enabled");
 assert.match(app, /remoteWebuiCommand\(enable \? "authOn" : "authOff"/, "remote PIN auth toggle should dispatch through the Remote WebUI package command");
-assert.match(server, /function webuiSettingsFile\(\)[\s\S]*pi-webui[\s\S]*settings\.json/, "server should persist Web UI settings under a pi-webui settings file");
+assert.match(server, /webuiSettingsFile,[\s\S]*from "\.\.\/lib\/git-workflow-preferences\.mjs"/, "server should use the shared Pi Web UI settings persistence module");
 assert.match(server, /let persistedRemoteAuthEnabled = await readPersistedRemoteAuthEnabled\(\)/, "server should load the saved Remote PIN auth preference before startup");
 assert.match(server, /if \(remoteAuthStartupEnabled\(\)\) enableRemoteAuth\(remoteAuthStartupReason\(\)\)/, "saved Remote PIN auth preference should enable auth on startup");
 assert.match(server, /await saveRemoteAuthPreference\(true\)/, "enabling Remote PIN auth should persist the on preference");
@@ -550,7 +551,7 @@ assert.match(app, /function setOptionsMenuOpen\(open\)[\s\S]*scheduleMobileDropd
 assert.match(app, /function focusPromptInput\(\{ defer = false \} = \{\}\)/, "frontend should focus the prompt composer programmatically after tab/app startup");
 assert.match(app, /async function switchTab\(tabId\)[\s\S]*?restoreActiveDraft\(\);\n\s+focusPromptInput\(\{ defer: true \}\);/, "switching to a newly opened tab should focus the prompt input immediately");
 assert.match(app, /async function initializeTabs\(\)[\s\S]*?restoreActiveDraft\(\);[\s\S]*if \(!loadedTabs\.length\)[\s\S]*focusPromptInput\(\{ defer: true \}\);/, "starting the Web UI should prompt for cwd when needed and focus active tabs");
-assert.match(app, /resizePromptInput\(\);\nfocusPromptInput\(\{ defer: true \}\);\nrestoreStoredSkillUsage\(\);\nrestoreBusyPromptBehaviorSetting\(\);\nupdateComposerModeButtons\(\);/, "startup should request prompt focus and restore skill tags before waiting for tab state refreshes");
+assert.match(app, /resizePromptInput\(\);\nrestoreFileViewerWidthPreference\(\);\nfocusPromptInput\(\{ defer: true \}\);\nrestoreStoredSkillUsage\(\);\nrestoreBusyPromptBehaviorSetting\(\);\nupdateComposerModeButtons\(\);/, "startup should restore browser preferences, request prompt focus, and restore skill tags before waiting for tab state refreshes");
 assert.match(app, /elements\.promptInput\.addEventListener\("focus", \(\) => \{\n\s+syncMobileChatToBottomForInput\(\);/, "focusing mobile input should scroll output to bottom");
 assert.match(app, /navigator\.serviceWorker\.register\("\/service-worker\.js"\)/, "PWA service worker should be registered by the app");
 assert.match(app, /function serverStartCommandText\(\)[\s\S]*return `pi-webui\$\{currentPortArg\(\)\}`/, "PWA/offline shell should build a pathless pi-webui recovery command");
@@ -640,7 +641,7 @@ assert.match(app, /function footerPayloadWithLiveModel\(payload\)[\s\S]*?shortMo
 assert.match(app, /function footerContextDisplayWithAuto\(value, state = currentState\)[\s\S]*footerAutoCompactionEnabled\(state\)[\s\S]*`\$\{withoutAuto\} \(auto\)`/, "context displays should append the auto-compaction indicator when enabled");
 assert.match(app, /function footerPayloadWithLiveModel\(payload\)[\s\S]*const contextChip = \(chip\)[\s\S]*footerContextDisplayWithAuto\(chip\?\.value\)[\s\S]*if \(chip\?\.key === "context"\) return \[contextChip\(chip\)\]/, "git footer context chips should use live Web UI auto-compaction state");
 assert.match(app, /async function toggleFooterAutoCompaction\(tabContext = activeTabContext\(\)\)[\s\S]*currentState = \{ \.\.\.currentState, autoCompactionEnabled: enabled \}[\s\S]*api\("\/api\/auto-compaction", \{ method: "POST", body: \{ enabled \}, tabId: tabContext\.tabId \}\)/, "git footer context box should optimistically toggle auto-compaction through the Web UI API");
-assert.match(app, /function renderGitFooterPayload\(payload\)[\s\S]*classList\.remove\("statusbar-tui-footer"\)[\s\S]*classList\.add\("statusbar-git-footer"\)[\s\S]*payload\.main\.map\(renderGitFooterPayloadMetric\)[\s\S]*payload\.meta\.map/, "enabled git footer payload should use the styled extension chip renderer, not the default TUI line");
+assert.match(app, /function renderGitFooterPayload\(payload\)[\s\S]*classList\.remove\("statusbar-tui-footer"\)[\s\S]*classList\.add\("statusbar-git-footer"\)[\s\S]*payload\.main\.map\(\(chip\) => renderGitFooterPayloadMetric\(chip, payload\)\)[\s\S]*payload\.meta\.map\(\(chip\) => renderGitFooterPayloadMeta\(chip, tab, payload\)\)/, "enabled git footer payload should use the styled extension chip renderer, not the default TUI line");
 assert.match(app, /function ensureFooterTooltipNode\(\)[\s\S]*footer-floating-tooltip[\s\S]*document\.body\.append\(footerTooltipNode\)/, "git footer tooltips should render into a single floating viewport-level node");
 const footerTooltipSource = app.match(/function applyFooterTooltip\(node, tooltip, options = \{\}\)[\s\S]*?\n}\n\nfunction footerMetric/)?.[0] || "";
 assert.ok(footerTooltipSource, "git footer tooltip application source should be inspectable");
@@ -649,10 +650,10 @@ assert.match(app, /const GIT_FOOTER_TOOLTIP_COPY = \{[\s\S]*tokens:[\s\S]*cache:
 assert.match(app, /function gitFooterPayloadTooltip\(chip, options = \{\}\)[\s\S]*GIT_FOOTER_TOOLTIP_COPY\[key\][\s\S]*`Current: \$\{value\}`/, "git footer tooltips should combine explanations with the current chip value");
 assert.match(app, /function isRedundantFooterTooltipTitle\(sourceTitle, chip, value\)[\s\S]*labels\.map\(\(label\) => `\$\{label\}: \$\{value\}`\)/, "git footer tooltips should suppress duplicate label/current title lines");
 assert.match(app, /function gitFooterTooltipAlign\(chip\)[\s\S]*\["tokens", "cwd"\][\s\S]*return "start";[\s\S]*\["model", "thinking"\][\s\S]*return "end";/, "git footer tooltip alignment should keep edge boxes readable");
-assert.match(app, /function renderGitFooterPayloadMetric\(chip\)[\s\S]*applyGitFooterContextToggleOptions\(chip, options\)[\s\S]*gitFooterPayloadTooltip\(chip, \{ action \}\)[\s\S]*footerMetric\(chip\.icon/, "git footer main payload chips should render as styled metrics with explanatory tooltips and context action support");
-assert.match(app, /function applyFooterChangedFilesDropdown\(node, chip\)[\s\S]*chip\?\.key !== "changes"[\s\S]*footer-changes-with-files[\s\S]*footer-changed-files-popover/, "git footer changes chip should render a changed-files hover popover when files are present");
+assert.match(app, /function renderGitFooterPayloadMetric\(chip, payload\)[\s\S]*applyGitFooterContextToggleOptions\(chip, options\)[\s\S]*gitFooterPayloadTooltip\(chip, \{ action \}\)[\s\S]*footerMetric\(chip\.icon/, "git footer main payload chips should render as styled metrics with explanatory tooltips and context action support");
+assert.match(app, /function applyFooterChangedFilesDropdown\(node, chip, payload\)[\s\S]*gitFooterPayloadVisible\(payload, "webui-changed-files-popover"\)[\s\S]*chip\?\.key !== "changes"[\s\S]*footer-changes-with-files[\s\S]*footer-changed-files-popover/, "git footer changes chip should render a changed-files hover popover when files are present");
 assert.match(app, /function insertChangedFilePathReference\(path\)[\s\S]*formatPathReference\(path\)[\s\S]*input\.focus\(\)/, "clicking changed files should insert an @path reference and focus the composer");
-assert.match(app, /function renderGitFooterPayloadMeta\(chip, tab\)[\s\S]*options\.title = gitFooterPayloadTooltip\(chip, \{ action \}\)[\s\S]*footerMeta\(chip\.label, chip\.value, footerMetaClassForPayload\(chip\), options\)[\s\S]*applyFooterChangedFilesDropdown\(node, chip\)/, "git footer meta payload chips should render as styled metadata with explanatory tooltips and changes popovers");
+assert.match(app, /function renderGitFooterPayloadMeta\(chip, tab, payload\)[\s\S]*options\.title = gitFooterPayloadTooltip\(chip, \{ action \}\)[\s\S]*footerMeta\(chip\.label, chip\.value, footerMetaClassForPayload\(chip\), options\)[\s\S]*applyFooterChangedFilesDropdown\(node, chip, payload\)/, "git footer meta payload chips should render as styled metadata with explanatory tooltips and changes popovers");
 assert.match(app, /chip\.key === "git"[\s\S]*setFooterBranchPickerOpen\(!footerBranchPickerOpen\)[\s\S]*Worktree actions are the safe default for parallel work/, "git branch footer chip should open the worktree-aware branch picker");
 assert.match(app, /chip\.key === "worktree"[\s\S]*setFooterBranchPickerOpen\(!footerBranchPickerOpen\)[\s\S]*Click to manage branch worktrees/, "worktree footer chip should open the branch worktree picker");
 assert.match(app, /function footerPayloadWithLiveModel\(payload\)[\s\S]*const worktreeLabel = gitWorkspaceBadgeLabel\(workspace\)[\s\S]*key: "worktree"/, "git footer payload should inject a live worktree chip from tab metadata");
@@ -802,7 +803,7 @@ assert.match(app, /const gitWorkflowsByTab = new Map\(\)/, "guided git workflow 
 assert.match(app, /function bindGitWorkflowToActiveTab\(\) \{\n\s+gitWorkflow = gitWorkflowForTab\(activeTabId\) \|\| createGitWorkflowState\(\);/, "guided git workflow should render only the active terminal tab's workflow state");
 assert.match(app, /function setGitWorkflow\(patch, \{ tabId = activeTabId \} = \{\}\)[\s\S]*if \(tabId === activeTabId\) \{[\s\S]*renderGitWorkflow\(\);/, "guided git workflow should not render inactive terminal workflows globally");
 assert.match(html, /id="gitPrDialog"[\s\S]*id="gitPrTitleInput"[\s\S]*id="gitPrBodyEditor"[\s\S]*id="gitPrCreateButton"/, "guided git workflow should expose a PR review dialog with title and body editing");
-assert.match(app, /addGitWorkflowAction\("Create PR worktree", \(\) => createGitPrBranch\(\), "primary", false, GIT_WORKFLOW_CREATE_PR_TOOLTIP\)/, "guided git workflow should offer a Create PR worktree action after message generation");
+assert.match(app, /addGitWorkflowAction\("Create PR worktree", \(\) => createGitPrBranch\(\), deliveryMode === "pr-worktree" \? "primary" : "", false, GIT_WORKFLOW_CREATE_PR_TOOLTIP\)/, "guided git workflow should offer and preference-highlight a Create PR worktree action after message generation");
 assert.match(app, /const GIT_WORKFLOW_CREATE_PR_TOOLTIP = \[[\s\S]*"Create PR worktree:"[\s\S]*"1\. Ask Pi to generate a type\/feature-name branch from staged changes\."[\s\S]*"4\. Create or open a Git worktree for that branch instead of switching this checkout\."[\s\S]*"7\. Push and Create PR will push upstream, run \/pr, let you review, then run gh pr create\."/, "Create PR worktree should have an up-to-date step-by-step tooltip");
 assert.match(app, /const GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP = \[[\s\S]*"Manual PR worktree:"[\s\S]*"1\. Skip agent branch-name generation\."[\s\S]*"4\. Create or open a Git worktree for that branch instead of switching this checkout\."[\s\S]*"7\. Push and Create PR will push upstream, run \/pr, let you review, then run gh pr create\."/, "Manual worktree should have an up-to-date step-by-step tooltip");
 assert.match(app, /addGitWorkflowAction\("Manual worktree", \(\) => createGitPrBranchManually\(\), "", false, GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP\)/, "Manual worktree should render with its tooltip");
@@ -820,7 +821,13 @@ assert.match(app, /async function createGitPrBranchWithSuggestion\([\s\S]*prompt
 assert.match(app, /function syncGitWorkflowWorktreeTabs\(result\)[\s\S]*Array\.isArray\(result\?\.tabs\)[\s\S]*applyTabMetadata\(result\.tab\)/, "guided git workflow should merge worktree tab metadata returned by the branch endpoint");
 assert.match(app, /const targetTabId = result\.tab\?\.id[\s\S]*setGitWorkflow\(nextState, \{ tabId: targetTabId \}\)[\s\S]*switchTab\(targetTabId\)/, "guided git workflow should transfer PR state to the opened worktree tab");
 assert.match(app, /addGitWorkflowAction\("Push and Create PR", \(\) => pushAndCreatePrGitWorkflow\(\), "primary", false\)/, "guided git workflow should replace push with Push and Create PR in PR mode");
-assert.match(app, /async function runGitPrPrompt\(tabId = gitWorkflowActionTabId\(\), \{ prefixOutput = "" \} = \{\}\)[\s\S]*body: \{ message: "\/pr" \}/, "guided git workflow should generate PR descriptions with /pr");
+assert.match(app, /async function runGitPrPrompt\(tabId = gitWorkflowActionTabId\(\), \{ prefixOutput = "" \} = \{\}\)[\s\S]*\/api\/git-workflow\/generate"[\s\S]*kind: "pr"/, "guided git workflow should generate PR descriptions with the configured generation profile");
+assert.match(app, /async function runGitMessagePrompt\([\s\S]*\/api\/git-workflow\/generate"[\s\S]*kind: "commit"/, "guided git workflow should generate commit messages with the configured model and effort");
+assert.match(app, /async function runGitBranchNamePrompt\([\s\S]*\/api\/git-workflow\/generate"[\s\S]*kind: "branch"/, "guided git workflow should generate branch names with the configured model and effort");
+assert.match(app, /async function acceptCurrentGitStaging\([\s\S]*summary\?\.staged[\s\S]*No staged files are available/, "review staging should require a non-empty current staged set");
+assert.match(app, /Pre-commit verification reminder[\s\S]*Continue with this commit/, "configured verification reminders should run before committing");
+assert.match(server, /async function startGitWorkflowGeneration\([\s\S]*set_model[\s\S]*setThinkingLevelForTab[\s\S]*type: "prompt"/, "server should apply the configured generation profile before prompting Pi");
+assert.match(server, /event\?\.type === "agent_settled"[\s\S]*restoreGitWorkflowGenerationProfile\(tab\)/, "server should restore the active tab model and effort after generation settles");
 assert.match(server, /case "\/api\/git-workflow\/branch-name":[\s\S]*readGitWorkflowBranchName\(cwd\)/, "server should expose generated branch-name file loading for the guided PR workflow");
 assert.match(server, /case "\/api\/git-workflow\/branch":[\s\S]*createGitWorkflowBranchWorktree\(tab, body\)/, "server should route guided PR branch creation through worktree tabs");
 assert.match(server, /async function createGitWorkflowBranchWorktree\(tab, body = \{\}\)[\s\S]*snapshotGitWorkflowBranchState\(root, tab\.cwd\)[\s\S]*applyGitWorkflowBranchStateToWorktree\(snapshot, worktreePath\)[\s\S]*openWorktreeResultForTab\(tab, createdResult/, "guided PR worktree creation should copy staged state before opening the worktree tab");
@@ -903,8 +910,8 @@ assert.match(app, /function thinkingFormatOpenMatch\(text\)[\s\S]*?CHANNEL_THINK
 assert.match(app, /function splitThinkingFormatText\(text, \{ streaming = false \} = \{\}\)[\s\S]*?thinkingFormatOpenMatch\(rest\)[\s\S]*?finalText: stripThinkingFormatOutputSeparator\(rest\)/, "tagged thinking output should split thinking text from final response text");
 assert.match(app, /function visibleThinkingText\(text\)[\s\S]*?trimmed === UNEXPOSED_THINKING_TEXT[\s\S]*?return "";/, "provider no-thinking placeholders should normalize to empty thinking output");
 assert.match(app, /if \(isThinkingPart\) \{[\s\S]*?visibleThinkingText\(assistantThinkingText\(part\)\)[\s\S]*?if \(thinking\) displayMessages\.push/, "assistant transcript splitting should skip empty or unexposed thinking parts");
-assert.match(app, /message\.role === "thinking"[\s\S]*?visibleThinkingText\(message\.thinking \|\| textFromContent\(message\.content\)\)[\s\S]*?if \(thinkingOutputVisible && thinkingText\) appendText\(body, thinkingText, "thinking-text"\);/, "thinking cards should suppress empty and provider no-thinking placeholder output");
-assert.match(app, /function showStreamingThinking\(initialText = ""\)[\s\S]*?if \(initialText && !streamThinking\.textContent\) streamThinking\.textContent = initialText;/, "live thinking should not create a visible placeholder card before content arrives");
+assert.match(app, /message\.role === "thinking"[\s\S]*?visibleThinkingText\(message\.thinking \|\| textFromContent\(message\.content\)\)[\s\S]*?if \(thinkingOutputVisible && thinkingText\) appendThinkingMarkdown\(body, thinkingText\);/, "thinking cards should suppress empty and provider no-thinking placeholder output while rendering visible reasoning as markdown");
+assert.match(app, /function showStreamingThinking\(initialText = ""\)[\s\S]*?if \(initialText && !streamThinking\.textContent\) renderThinkingMarkdown\(streamThinking, initialText\);/, "live thinking should not create a visible placeholder card before content arrives");
 assert.match(app, /function setStreamingThinkingText\(text\)[\s\S]*?const thinking = visibleThinkingText\(text\);[\s\S]*?if \(!thinkingOutputVisible \|\| !thinking\) return false;[\s\S]*?return true;/, "live thinking text setters should ignore empty text instead of clearing or flashing the card");
 assert.match(app, /function syncStreamingThinkingFromUpdate\(event, update, \{ placeholder = "" \} = \{\}\)[\s\S]*?return setStreamingThinkingText\(streamThinkingRawText \|\| placeholder\);/, "incremental thinking sync should only report success after setting visible thinking text");
 assert.doesNotMatch(app, /text \|\| placeholder \|\| streamThinkingBubble/, "partial-message thinking sync should not clear an existing thinking card when a partial carries no visible thinking text");
@@ -1069,11 +1076,14 @@ for (const command of ["resume", "reload", "remote", "name", "clone", "settings"
   const id = command.replace(/^./, (letter) => letter.toUpperCase());
   assert.match(app, new RegExp(`options${id}Button\\.addEventListener\\("click", \\(\\) => runNativeCommandMenu\\("\\/${command}"\\)\\)`), `Options menu should launch /${command}`);
 }
+assert.match(app, /optionsGitWorkflowSetupButton\?\.addEventListener\("click", \(\) => runNativeCommandMenu\("\/git-workflow-setup"\)\)/, "Options menu should launch native Guided Git Setup");
+assert.match(extension, /registerCommand\("git-workflow-setup"[\s\S]*runGitWorkflowSetup/, "Pi extension should register the reusable /git-workflow-setup command");
+assert.match(app, /async function openNativeGitWorkflowSetupDialog\([\s\S]*\/api\/git-workflow\/preferences/, "Web UI should implement Guided Git Setup with the persisted preferences API");
 assert.match(app, /async function sendPrompt\(kind = "prompt", explicitMessage, \{ targetTabId = activeTabId, throwOnError = false, streamingBehavior \} = \{\}\)/, "prompt sending should accept direct messages that bypass the input field and optional target tab");
 assert.match(app, /const rawMessage = usesPromptInput \? elements\.promptInput\.value : explicitMessage/, "direct prompt sends should not read the input textarea");
 assert.match(app, /if \(usesPromptInput\) \{[\s\S]*?if \(targetStillActive\) \{[\s\S]*?elements\.promptInput\.value = "";/, "direct prompt sends should preserve the input textarea draft");
 assert.match(app, /make\("button", "command-item"\)[\s\S]*?sendPrompt\("prompt", `\/\$\{command\.name\}`\)/, "side-panel command clicks should send the slash command directly");
-assert.match(app, /const NATIVE_SELECTOR_COMMANDS = new Set\(\["model", "settings", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"\]\)/, "frontend should route native slash commands into selector UIs");
+assert.match(app, /const NATIVE_SELECTOR_COMMANDS = new Set\(\["model", "settings", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"\]\)/, "frontend should route native slash commands, including Guided Git Setup, into selector UIs");
 assert.match(app, /async function handleNativeSlashSelectorCommand\(message/, "frontend should intercept exact native slash commands before prompt forwarding");
 assert.match(app, /kind === "prompt" && attachments\.length === 0 && await handleNativeSlashSelectorCommand/, "prompt sending should open native selector dialogs before marking a run active");
 assert.match(app, /function openNativeModelSelector\(\)[\s\S]*?nativeCommandApi\("\/api\/models"\)/, "native /model selector should load models through the active tab API");

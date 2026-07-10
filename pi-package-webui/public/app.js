@@ -108,6 +108,7 @@ const elements = {
   optionsNameButton: $("#optionsNameButton"),
   optionsCloneButton: $("#optionsCloneButton"),
   optionsSettingsButton: $("#optionsSettingsButton"),
+  optionsGitWorkflowSetupButton: $("#optionsGitWorkflowSetupButton"),
   optionsExportButton: $("#optionsExportButton"),
   optionsForkButton: $("#optionsForkButton"),
   optionsTreeButton: $("#optionsTreeButton"),
@@ -925,7 +926,7 @@ const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
 HIDDEN_COMMAND_NAMES.add("stats-webui");
 HIDDEN_COMMAND_NAMES.add("btw-status");
 HIDDEN_COMMAND_NAMES.add("btw-transfer");
-const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
+const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
 const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_OPTIONS = ["sse", "websocket", "websocket-cached", "auto"];
 const SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS = [
@@ -1023,11 +1024,14 @@ function createGitWorkflowState() {
     prBranch: "",
     pr: null,
     prRequestedAt: 0,
+    preferences: null,
+    verificationConfirmed: false,
   };
 }
 
 const gitWorkflowsByTab = new Map();
 let gitWorkflow = createGitWorkflowState();
+let gitWorkflowPreferences = null;
 
 function gitWorkflowForTab(tabId = activeTabId, { create = true } = {}) {
   if (!tabId) return null;
@@ -16541,7 +16545,7 @@ function gitWorkflowTitle() {
     case "remoteAdding": return "Adding origin remote";
     case "initialPush": return "Push main upstream";
     case "initialPushing": return "Pushing main";
-    case "add": return "Stage all changes";
+    case "add": return (gitWorkflow.preferences || gitWorkflowPreferences)?.stagingPolicy === "all" ? "Stage all changes" : "Review staged changes";
     case "generate": return "Generate staged commit message";
     case "generating": return "Waiting for /git-staged-msg";
     case "message": return gitWorkflow.prMode ? "Choose PR branch commit message" : "Choose commit message";
@@ -16578,7 +16582,9 @@ function gitWorkflowHint() {
     case "remoteAdding": return "Adding the GitHub origin remote.";
     case "initialPush": return "Step 7: run git push -u origin main.";
     case "initialPushing": return "Pushing main upstream. Authentication must already be available to git.";
-    case "add": return "Step 1: run git add . in the current Pi working directory.";
+    case "add": return (gitWorkflow.preferences || gitWorkflowPreferences)?.stagingPolicy === "all"
+      ? "Step 1: explicitly stage all changes with git add ."
+      : "Step 1: review changes, stage only intended files, then accept the current staged set.";
     case "generate": return "Step 2: run /git-staged-msg, or type a commit message and use Commit input.";
     case "generating": return "Pi is generating dev/COMMIT/staged-commit-short.txt and staged-commit-long.txt.";
     case "message": return gitWorkflow.prMode ? `Worktree branch ${gitWorkflow.prBranch || "created"}: choose short, long, or typed input before opening a PR.` : "Step 3/4: preview the native g-msg output, type a commit message if needed, commit here, or create a PR branch worktree first.";
@@ -16692,8 +16698,17 @@ function renderGitWorkflow() {
     return;
   }
 
+  const preferences = gitWorkflow.preferences || gitWorkflowPreferences || {};
   if (gitWorkflow.step === "add") {
-    addGitWorkflowAction("Run git add .", () => runGitAdd(), "primary", false);
+    if (preferences.stagingPolicy === "all") {
+      addGitWorkflowAction("Run git add .", () => runGitAdd(), "primary", false);
+    } else if (preferences.stagingPolicy === "preserve") {
+      addGitWorkflowAction("Use current staged set", () => acceptCurrentGitStaging(), "primary", false);
+      addGitWorkflowAction("Review/select changes", () => openGitChangesDialog(), "", false);
+    } else {
+      addGitWorkflowAction("Review/select changes", () => openGitChangesDialog(), "primary", false);
+      addGitWorkflowAction("Use current staged set", () => acceptCurrentGitStaging(), "", false);
+    }
   } else if (gitWorkflow.step === "generate") {
     const commitInputButton = renderGitWorkflowManualCommitInput({ appendCommitButton: false });
     addGitWorkflowAction("Run /git-staged-msg", () => runGitMessagePrompt(), "primary", false);
@@ -16702,13 +16717,16 @@ function renderGitWorkflow() {
   } else if (gitWorkflow.step === "generating") {
     addGitWorkflowAction("Refresh message preview", () => loadGitWorkflowMessage({ requireFresh: true }), "", false);
   } else if (gitWorkflow.step === "message") {
+    const deliveryMode = preferences.deliveryMode || "ask";
+    const preferredVariant = preferences.commit?.defaultVariant || "short";
     if (!gitWorkflow.prMode) {
-      addGitWorkflowAction("Create PR worktree", () => createGitPrBranch(), "primary", false, GIT_WORKFLOW_CREATE_PR_TOOLTIP);
+      addGitWorkflowAction("Create PR worktree", () => createGitPrBranch(), deliveryMode === "pr-worktree" ? "primary" : "", false, GIT_WORKFLOW_CREATE_PR_TOOLTIP);
       addGitWorkflowAction("Manual worktree", () => createGitPrBranchManually(), "", false, GIT_WORKFLOW_MANUAL_BRANCH_TOOLTIP);
     }
     const commitInputButton = renderGitWorkflowManualCommitInput({ appendCommitButton: false });
-    addGitWorkflowAction("Commit short", () => commitGitWorkflow("short"), gitWorkflow.prMode ? "primary" : "", false);
-    addGitWorkflowAction("Commit long", () => commitGitWorkflow("long"), gitWorkflow.prMode ? "primary" : "", false);
+    const highlightCommit = gitWorkflow.prMode || deliveryMode !== "pr-worktree";
+    addGitWorkflowAction(`Commit short${preferredVariant === "short" ? " (default)" : ""}`, () => commitGitWorkflow("short"), highlightCommit && preferredVariant === "short" ? "primary" : "", false);
+    addGitWorkflowAction(`Commit long${preferredVariant === "long" ? " (default)" : ""}`, () => commitGitWorkflow("long"), highlightCommit && preferredVariant === "long" ? "primary" : "", false);
     addGitWorkflowAction("Regenerate", () => runGitMessagePrompt(), "", false);
     elements.gitWorkflowActions.append(commitInputButton);
   } else if (gitWorkflow.step === "branchNaming") {
@@ -16767,7 +16785,18 @@ function failGitWorkflow(error, step, { tabId = activeTabId } = {}) {
   }, { tabId });
 }
 
-function startGitWorkflow(tabId = activeTabId) {
+function gitWorkflowStagingReadyMessage(preferences) {
+  switch (preferences?.stagingPolicy) {
+    case "preserve":
+      return "Using the repository's current staged set. Review it before generating a message.";
+    case "all":
+      return "Ready to stage all working-tree changes with git add .";
+    default:
+      return "Review changes and stage only the files intended for this commit, then continue with the current staged set.";
+  }
+}
+
+async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {}) {
   if (!tabId) return;
   if (!isOptionalFeatureEnabled("gitWorkflow")) {
     const tabContext = activeTabContext(tabId);
@@ -16777,8 +16806,29 @@ function startGitWorkflow(tabId = activeTabId) {
     });
     return;
   }
+
+  let setupData;
+  try {
+    const response = await api("/api/git-workflow/preferences", { tabId });
+    setupData = response.data || {};
+    gitWorkflowPreferences = setupData.preferences || null;
+  } catch (error) {
+    addEvent(`guided Git setup could not be loaded: ${error.message || String(error)}`, "error");
+    return;
+  }
+  if (!setupData.configured) {
+    if (skipSetup) {
+      addEvent("Guided Git setup is incomplete.", "warn");
+      return;
+    }
+    addEvent("Complete Guided Git Setup before starting the workflow.", "info");
+    await openNativeGitWorkflowSetupDialog({ onSaved: () => startGitWorkflow(tabId, { skipSetup: true }) });
+    return;
+  }
+
   const workflow = gitWorkflowForTab(tabId);
   if (workflow.active && !["done", "cancelled", "error"].includes(workflow.step) && !confirm("Restart the active git workflow?")) return;
+  const preferences = setupData.preferences;
   workflow.runId += 1;
   setGitWorkflow({
     active: true,
@@ -16786,7 +16836,7 @@ function startGitWorkflow(tabId = activeTabId) {
     step: "add",
     process: "stage",
     busy: false,
-    output: "Ready to stage all changes with git add .\n\nNative mode is used for g-msg/g-short/g-long: dev/COMMIT message files are read directly and git commit is run without fish. In the Message stage you can also type a commit message and use Commit input. After the message is generated, use Create PR worktree to open a branch worktree before committing.",
+    output: `${gitWorkflowStagingReadyMessage(preferences)}\n\nGit text will use ${preferences.generation.provider}/${preferences.generation.modelId} at ${preferences.generation.thinkingLevel} effort. The active tab model is restored after generation.`,
     error: "",
     githubUsername: "",
     repoName: "",
@@ -16806,6 +16856,8 @@ function startGitWorkflow(tabId = activeTabId) {
     prBranch: "",
     pr: null,
     prRequestedAt: 0,
+    preferences,
+    verificationConfirmed: false,
   }, { tabId });
 }
 
@@ -17139,6 +17191,31 @@ async function runGitAdd(tabId = gitWorkflowActionTabId()) {
   }
 }
 
+async function acceptCurrentGitStaging(tabId = gitWorkflowActionTabId()) {
+  const tabContext = activeTabContext(tabId);
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (!workflow) return;
+  const runId = workflow.runId;
+  setGitWorkflow({ step: "add", busy: true, error: "", output: "Checking the current staged set…" }, { tabId });
+  try {
+    const response = await api("/api/git-changes", { tabId });
+    const staged = Number(response.data?.summary?.staged || 0);
+    if (staged <= 0) throw new Error("No staged files are available. Use Review/select changes to stage the intended files first.");
+    setGitWorkflow({
+      step: "generate",
+      process: "message",
+      busy: false,
+      ...resetGitWorkflowManualCommitDefaultPatch(),
+      ...gitWorkflowActionDonePatch(workflow, "stage"),
+      output: `Using the current staged set (${staged} file${staged === 1 ? "" : "s"}). Review the staged diff, then generate or type a commit message.`,
+    }, { tabId });
+    loadGitWorkflowDefaultCommitMessage({ runId, tabId });
+    if (isCurrentTabContext(tabContext)) scheduleRefreshFooter();
+  } catch (error) {
+    if (isCurrentGitWorkflowRun(runId, tabId)) failGitWorkflow(error, "add", { tabId });
+  }
+}
+
 async function loadGitWorkflowDefaultCommitMessage({ runId, tabId = activeTabId } = {}) {
   const workflow = gitWorkflowForTab(tabId, { create: false });
   const expectedRunId = runId ?? workflow?.runId;
@@ -17190,9 +17267,9 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending /git-staged-msg to Pi…");
   try {
-    await api("/api/prompt", { method: "POST", body: { message: "/git-staged-msg" }, tabId });
-    if (!isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput("/git-staged-msg accepted. Waiting for agent_end, then the message files will be loaded.", { tabId });
+    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "commit" }, runId, tabId });
+    if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
+    appendGitWorkflowOutput(`/git-staged-msg accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the message files will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -17286,9 +17363,9 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending branch-name request to Pi…");
   try {
-    await api("/api/prompt", { method: "POST", body: { message: gitBranchNamePromptMessage() }, tabId });
-    if (!isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput("Branch-name request accepted. Waiting for agent_end, then the branch name will be loaded.", { tabId });
+    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "branch" }, runId, tabId });
+    if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
+    appendGitWorkflowOutput(`Branch-name request accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the branch name will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -17412,6 +17489,8 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
       prBranch: prBranch || branch,
       pr: null,
       prRequestedAt: 0,
+      preferences: sourceWorkflow.preferences || gitWorkflowPreferences,
+      verificationConfirmed: false,
     };
     if (targetTabId !== tabId) {
       setGitWorkflow({ step: "message", prMode: false, prBranch: "", branchName: prBranch || branch, busy: false, output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nOpened PR branch worktree ${prBranch || branch} in ${result.tab?.title || "a new tab"}. Continue the commit and PR flow there; this checkout stayed on its current branch.` }, { tabId });
@@ -17434,6 +17513,18 @@ async function commitGitWorkflow(variant, tabId = gitWorkflowActionTabId()) {
   const runId = workflow.runId;
   const failureStep = variant === "input" && workflow.step === "generate" ? "generate" : "message";
   const inputMessage = variant === "input" ? gitWorkflowManualCommitInputMessage(workflow) : "";
+  if (workflow.preferences?.verificationPolicy === "ask" && !workflow.verificationConfirmed) {
+    const proceed = window.confirm([
+      "Pre-commit verification reminder",
+      "",
+      "Review the staged diff and any relevant test, lint, or build results before committing.",
+      "Git hooks and signing configuration will still run normally.",
+      "",
+      "Continue with this commit?",
+    ].join("\n"));
+    if (!proceed) return;
+    workflow.verificationConfirmed = true;
+  }
   if (variant === "input" && !inputMessage) {
     failGitWorkflow(new Error("Type a commit message, or stage exactly one created/updated/deleted file to use the default."), failureStep, { tabId });
     return;
@@ -17459,6 +17550,7 @@ async function pushGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
+  if (!window.confirm("Push the committed changes to the configured upstream?\n\nGuided Git never force-pushes automatically.")) return;
   const runId = workflow.runId;
   setGitWorkflow({ step: "pushing", busy: true, error: "", output: "Running git push…" }, { tabId });
   try {
@@ -17496,9 +17588,9 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending /pr to Pi…");
   try {
-    await api("/api/prompt", { method: "POST", body: { message: "/pr" }, tabId });
-    if (!isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput("/pr accepted. Waiting for agent_end, then the PR description will be loaded.", { tabId });
+    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "pr" }, runId, tabId });
+    if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
+    appendGitWorkflowOutput(`/pr accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the PR description will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -17549,8 +17641,9 @@ async function pushAndCreatePrGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
-  const runId = workflow.runId;
   const branch = workflow.prBranch || "current branch";
+  if (!window.confirm(`Push ${branch} and continue to generated PR review?\n\nThe pull request is still created only after a second explicit review/confirmation.`)) return;
+  const runId = workflow.runId;
   setGitWorkflow({ step: "pushing", busy: true, error: "", output: `Pushing PR branch ${branch}…` }, { tabId });
   try {
     const result = await gitWorkflowRequest("/api/git-workflow/push", { body: { setUpstream: true, branch: workflow.prBranch }, runId, tabId });
@@ -22134,6 +22227,159 @@ async function openNativeSettingsDialog() {
   const save = addNativeCommandAction("Apply", () => applySettings(false, save), "primary");
 }
 
+function replaceNativeSettingSelectOptions(select, options, preferredValue) {
+  const normalized = normalizedSettingOptions(options);
+  select.replaceChildren();
+  for (const option of normalized) {
+    const element = make("option", undefined, option.label);
+    element.value = option.value;
+    select.append(element);
+  }
+  const values = normalized.map((option) => option.value);
+  select.value = values.includes(String(preferredValue)) ? String(preferredValue) : values[0] || "";
+}
+
+function gitWorkflowSetupModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
+  openNativeCommandDialog({
+    title: "/git-workflow-setup",
+    message: "Configure the dedicated model and safe defaults used by Guided Git. The selected generation profile is applied only while commit, branch, or PR text is generated.",
+  });
+  renderNativeLoading("Loading guided Git preferences and available models…");
+
+  let data;
+  try {
+    const response = await nativeCommandApi("/api/git-workflow/preferences");
+    data = response.data || {};
+  } catch (error) {
+    setNativeCommandError(error.message || String(error));
+    elements.nativeCommandBody.replaceChildren();
+    return;
+  }
+
+  const preferences = data.preferences || {};
+  const models = Array.isArray(data.models) ? data.models : [];
+  if (!models.length) {
+    setNativeCommandError("No authenticated Pi models are available. Run /login or configure a provider first.");
+    elements.nativeCommandBody.replaceChildren();
+    return;
+  }
+
+  const configuredModelKey = `${preferences.generation?.provider || ""}/${preferences.generation?.modelId || ""}`;
+  const activeModelKey = gitWorkflowSetupModelKey(currentState?.model);
+  const modelKeys = new Set(models.map(gitWorkflowSetupModelKey));
+  const initialModelKey = modelKeys.has(configuredModelKey)
+    ? configuredModelKey
+    : modelKeys.has(activeModelKey)
+      ? activeModelKey
+      : gitWorkflowSetupModelKey(models[0]);
+  const modelOptions = models.map((model) => ({
+    value: gitWorkflowSetupModelKey(model),
+    label: `${gitWorkflowSetupModelKey(model)}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}`,
+  }));
+
+  const controls = {
+    model: nativeSettingSelect("Git-writing model", initialModelKey, modelOptions, "Exact authenticated provider/model used for commit messages, branch names, and PR descriptions.", { label: "required", tone: "safety" }),
+    thinking: nativeSettingSelect("Reasoning effort", preferences.generation?.thinkingLevel || "low", SETTINGS_THINKING_OPTIONS, "Only levels supported by the selected model are shown. Low is recommended for routine commit messages.", { label: "required", tone: "safety" }),
+    language: nativeSettingSelect("Generated language", preferences.commit?.language || "en", [
+      { value: "en", label: "English" },
+      { value: "de", label: "German" },
+    ], "Language for generated commit and PR text.", { label: "saved", tone: "browser" }),
+    defaultVariant: nativeSettingSelect("Default message", preferences.commit?.defaultVariant || "short", [
+      { value: "short", label: "Short subject" },
+      { value: "long", label: "Long subject + body" },
+    ], "Highlights the preferred commit choice; committing always remains explicit.", { label: "saved", tone: "browser" }),
+    scope: nativeSettingSelect("Conventional scope", preferences.commit?.scope || "auto", [
+      { value: "auto", label: "Auto-detect when clear" },
+      { value: "never", label: "Never include a scope" },
+      { value: "required", label: "Always include a scope" },
+    ], "Controls type(scope): subject generation.", { label: "saved", tone: "browser" }),
+    staging: nativeSettingSelect("Staging behavior", preferences.stagingPolicy || "review", [
+      { value: "review", label: "Review/select files" },
+      { value: "preserve", label: "Use current staged set" },
+      { value: "all", label: "Stage all with git add ." },
+    ], "Review/select is the safe default and opens Git Changes for per-file staging.", { label: "safety", tone: "safety" }),
+    delivery: nativeSettingSelect("Delivery path", preferences.deliveryMode || "ask", [
+      { value: "ask", label: "Ask each workflow" },
+      { value: "current", label: "Prefer current branch" },
+      { value: "pr-worktree", label: "Prefer PR worktree" },
+    ], "Controls which explicit commit/PR action is highlighted.", { label: "saved", tone: "browser" }),
+    verification: nativeSettingSelect("Pre-commit verification", preferences.verificationPolicy || "ask", [
+      { value: "ask", label: "Show verification reminder" },
+      { value: "none", label: "No reminder" },
+    ], "The reminder never claims tests were run and does not bypass Git hooks.", { label: "safety", tone: "safety" }),
+  };
+
+  const thinkingLevelsForModel = (modelKey) => {
+    const levels = data.modelThinkingLevels?.[modelKey];
+    return Array.isArray(levels) && levels.length ? levels : ["off"];
+  };
+  const syncThinkingLevels = () => {
+    const current = controls.thinking.select.value || preferences.generation?.thinkingLevel || "low";
+    const levels = thinkingLevelsForModel(controls.model.select.value);
+    replaceNativeSettingSelectOptions(controls.thinking.select, levels, current);
+  };
+  controls.model.select.addEventListener("change", syncThinkingLevels);
+  syncThinkingLevels();
+
+  const body = make("div", "native-settings-panel");
+  body.append(
+    nativeSettingsNote("Persistence", `Saved globally in ${data.path || "the Pi Web UI settings file"}. Credentials are never stored here.`),
+    nativeSettingsSection("Generation profile", "Required model and effort for generated Git text.", [controls.model, controls.thinking], { open: true }),
+    nativeSettingsSection("Commit style", "Conventional Commit output preferences.", [controls.language, controls.defaultVariant, controls.scope], { open: true }),
+    nativeSettingsSection("Workflow safety", "Staging, delivery, and verification defaults; push and PR confirmation remain mandatory.", [controls.staging, controls.delivery, controls.verification], { open: true }),
+  );
+  elements.nativeCommandBody.replaceChildren(body);
+  elements.nativeCommandActions.replaceChildren();
+  addNativeCommandAction("Cancel", closeNativeCommandDialog);
+
+  const save = addNativeCommandAction("Save setup", async () => {
+    setNativeActionBusy(save, true, "Saving…");
+    setNativeCommandError("");
+    try {
+      const selectedModel = models.find((model) => gitWorkflowSetupModelKey(model) === controls.model.select.value);
+      if (!selectedModel) throw new Error("Select an available Git-writing model.");
+      const response = await nativeCommandApi("/api/git-workflow/preferences", {
+        method: "POST",
+        body: {
+          preferences: {
+            generation: {
+              provider: selectedModel.provider,
+              modelId: selectedModel.id,
+              thinkingLevel: controls.thinking.select.value,
+              unavailablePolicy: "ask",
+            },
+            commit: {
+              language: controls.language.select.value,
+              defaultVariant: controls.defaultVariant.select.value,
+              scope: controls.scope.select.value,
+            },
+            stagingPolicy: controls.staging.select.value,
+            deliveryMode: controls.delivery.select.value,
+            verificationPolicy: controls.verification.select.value,
+          },
+        },
+      });
+      gitWorkflowPreferences = response.data?.preferences || null;
+      addTransientMessage({
+        role: "native",
+        title: "/git-workflow-setup",
+        content: `Guided Git setup saved for ${gitWorkflowSetupModelKey(selectedModel)} at ${controls.thinking.select.value} effort.`,
+        level: "info",
+      });
+      closeNativeCommandDialog();
+      if (typeof onSaved === "function") await onSaved(gitWorkflowPreferences);
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+    } finally {
+      setNativeActionBusy(save, false);
+    }
+  }, "primary");
+}
+
 async function openNativeForkSelector() {
   openNativeCommandDialog({ title: "/fork", message: "Choose a previous user message to fork before.", searchPlaceholder: "Filter fork points…" });
   renderNativeLoading("Loading fork points…");
@@ -22645,6 +22891,9 @@ async function handleNativeSlashSelectorCommand(message, { usesPromptInput = fal
       return true;
     case "settings":
       await openNativeSettingsDialog();
+      return true;
+    case "git-workflow-setup":
+      await openNativeGitWorkflowSetupDialog();
       return true;
     case "theme":
       openNativeThemeSelector();
@@ -25686,6 +25935,7 @@ elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsNameButton.addEventListener("click", () => runNativeCommandMenu("/name"));
 elements.optionsCloneButton.addEventListener("click", () => runNativeCommandMenu("/clone"));
 elements.optionsSettingsButton.addEventListener("click", () => runNativeCommandMenu("/settings"));
+elements.optionsGitWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/git-workflow-setup"));
 elements.optionsExportButton.addEventListener("click", () => runNativeCommandMenu("/export"));
 elements.optionsForkButton.addEventListener("click", () => runNativeCommandMenu("/fork"));
 elements.optionsTreeButton.addEventListener("click", () => runNativeCommandMenu("/tree"));

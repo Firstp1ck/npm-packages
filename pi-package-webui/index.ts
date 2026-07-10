@@ -3,6 +3,12 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  gitWorkflowPreferencesSummary,
+  readGitWorkflowPreferences,
+  supportedGitWorkflowThinkingLevels,
+  writeGitWorkflowPreferences,
+} from "./lib/git-workflow-preferences.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = __dirname;
@@ -813,6 +819,119 @@ function parseWebuiTreeNavigateArgs(args: string): WebuiTreeNavigateArgs {
   };
 }
 
+function availableGitWorkflowModels(ctx: ExtensionCommandContext): any[] {
+  return ctx.modelRegistry.getAvailable()
+    .filter((model: any) => model?.provider && model?.id)
+    .sort((left: any, right: any) => `${left.provider}/${left.id}`.localeCompare(`${right.provider}/${right.id}`));
+}
+
+function gitWorkflowModelLabel(model: any): string {
+  return `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` — ${model.name}` : ""}`;
+}
+
+async function selectGitWorkflowSetupValue(
+  ctx: ExtensionCommandContext,
+  title: string,
+  options: Array<{ value: string; label: string }>,
+  current?: string,
+): Promise<string | undefined> {
+  const labels = options.map((option) => option.value === current ? `${option.label} (current)` : option.label);
+  const selected = await ctx.ui.select(title, labels);
+  if (!selected) return undefined;
+  const index = labels.indexOf(selected);
+  return index >= 0 ? options[index].value : undefined;
+}
+
+async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> {
+  try {
+    const current = await readGitWorkflowPreferences();
+    const models = availableGitWorkflowModels(ctx);
+    if (!models.length) {
+      ctx.ui.notify("No authenticated Pi models are available. Run /login or configure a provider before guided Git setup.", "warning");
+      return;
+    }
+
+    const configuredModelKey = `${current.generation.provider}/${current.generation.modelId}`;
+    const activeModelKey = ctx.model?.provider && ctx.model?.id ? `${ctx.model.provider}/${ctx.model.id}` : "";
+    const availableModelKeys = new Set(models.map((model: any) => `${model.provider}/${model.id}`));
+    const currentModelKey = availableModelKeys.has(configuredModelKey) ? configuredModelKey : activeModelKey;
+    const modelOptions = models
+      .map((model: any) => ({ value: `${model.provider}/${model.id}`, label: gitWorkflowModelLabel(model) }))
+      .sort((left, right) => Number(right.value === currentModelKey) - Number(left.value === currentModelKey));
+    const selectedModelKey = await selectGitWorkflowSetupValue(ctx, `Guided Git model\n\n${gitWorkflowPreferencesSummary(current)}`, modelOptions, currentModelKey);
+    if (!selectedModelKey) return;
+    const selectedModel = models.find((model: any) => `${model.provider}/${model.id}` === selectedModelKey);
+    if (!selectedModel) return;
+
+    const thinkingLevels = supportedGitWorkflowThinkingLevels(selectedModel);
+    const thinkingLevel = await selectGitWorkflowSetupValue(
+      ctx,
+      "Reasoning effort for commit, branch, and PR text",
+      thinkingLevels.map((value) => ({ value, label: value })),
+      thinkingLevels.includes(current.generation.thinkingLevel) ? current.generation.thinkingLevel : "low",
+    );
+    if (!thinkingLevel) return;
+
+    const language = await selectGitWorkflowSetupValue(ctx, "Generated Git text language", [
+      { value: "en", label: "English" },
+      { value: "de", label: "German" },
+    ], current.commit.language);
+    if (!language) return;
+
+    const defaultVariant = await selectGitWorkflowSetupValue(ctx, "Default commit message", [
+      { value: "short", label: "Short subject" },
+      { value: "long", label: "Long subject + body" },
+    ], current.commit.defaultVariant);
+    if (!defaultVariant) return;
+
+    const scope = await selectGitWorkflowSetupValue(ctx, "Conventional Commit scope", [
+      { value: "auto", label: "Auto-detect when clear" },
+      { value: "never", label: "Never include a scope" },
+      { value: "required", label: "Always include a scope" },
+    ], current.commit.scope);
+    if (!scope) return;
+
+    const stagingPolicy = await selectGitWorkflowSetupValue(ctx, "Default staging behavior", [
+      { value: "review", label: "Review/select files in Git Changes" },
+      { value: "preserve", label: "Use the current staged set" },
+      { value: "all", label: "Stage all with git add ." },
+    ], current.stagingPolicy);
+    if (!stagingPolicy) return;
+
+    const deliveryMode = await selectGitWorkflowSetupValue(ctx, "Default delivery path", [
+      { value: "ask", label: "Ask each workflow" },
+      { value: "current", label: "Prefer the current branch" },
+      { value: "pr-worktree", label: "Prefer a PR branch worktree" },
+    ], current.deliveryMode);
+    if (!deliveryMode) return;
+
+    const verificationPolicy = await selectGitWorkflowSetupValue(ctx, "Pre-commit verification", [
+      { value: "ask", label: "Confirm checks were reviewed before commit" },
+      { value: "none", label: "Do not show a verification reminder" },
+    ], current.verificationPolicy);
+    if (!verificationPolicy) return;
+
+    const next = {
+      generation: {
+        provider: selectedModel.provider,
+        modelId: selectedModel.id,
+        thinkingLevel,
+        unavailablePolicy: "ask",
+      },
+      commit: { language, defaultVariant, scope },
+      stagingPolicy,
+      deliveryMode,
+      verificationPolicy,
+    };
+    const confirmed = await ctx.ui.confirm("Save guided Git setup?", gitWorkflowPreferencesSummary(next));
+    if (!confirmed) return;
+    const saved = await writeGitWorkflowPreferences(next);
+    ctx.ui.notify(`Guided Git workflow setup saved.\n\n${gitWorkflowPreferencesSummary(saved)}`, "info");
+  } catch (error) {
+    ctx.ui.notify(`Guided Git workflow setup failed:\n${error instanceof Error ? error.message : String(error)}`, "error");
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   const startWebuiHandler = async (args: string, ctx: ExtensionCommandContext) => {
     let options: StartWebuiOptions;
@@ -846,6 +965,11 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`Failed to start Pi Web UI:\n${error instanceof Error ? error.message : String(error)}\n${usage()}`, "error");
     }
   };
+
+  pi.registerCommand("git-workflow-setup", {
+    description: "Configure the model, reasoning effort, staging, and commit defaults for guided Git",
+    handler: async (_args, ctx) => runGitWorkflowSetup(ctx),
+  });
 
   pi.registerCommand("webui-start", {
     description: "Start the local Pi browser Web UI and open it",

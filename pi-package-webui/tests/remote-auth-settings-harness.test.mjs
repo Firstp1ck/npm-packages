@@ -62,10 +62,51 @@ try {
   assert.equal(startupAuth.body?.data?.auth?.enabled, true, "saved Remote PIN auth setting should enable auth at next startup");
   assert.match(startupAuth.body?.data?.auth?.pin, /^\d{4}$/, "startup auth should generate a fresh PIN, not persist one");
 
+  const initialGitSetup = await request("/api/git-workflow/preferences");
+  assert.equal(initialGitSetup.status, 200);
+  assert.equal(initialGitSetup.body?.data?.configured, false, "guided Git should require first-time model setup");
+  assert.equal(initialGitSetup.body?.data?.preferences?.stagingPolicy, "review", "review/select should be the safe staging default");
+  assert.equal(initialGitSetup.body?.data?.models?.[0]?.id, "fake-model");
+
+  const unsupportedEffort = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "low" } } },
+  });
+  assert.equal(unsupportedEffort.status, 400, "setup should reject effort levels unsupported by the selected model");
+
+  const invalidStagingPolicy = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" }, stagingPolicy: "everything" } },
+  });
+  assert.equal(invalidStagingPolicy.status, 400, "setup should reject invalid preference choices instead of silently normalizing them");
+
+  const savedGitSetup = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: {
+      preferences: {
+        generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", unavailablePolicy: "ask" },
+        commit: { language: "de", defaultVariant: "long", scope: "required" },
+        stagingPolicy: "review",
+        deliveryMode: "ask",
+        verificationPolicy: "ask",
+      },
+    },
+  });
+  assert.equal(savedGitSetup.status, 200);
+  assert.equal(savedGitSetup.body?.data?.configured, true);
+  assert.equal(savedGitSetup.body?.data?.preferences?.commit?.language, "de");
+
+  const generation = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
+  assert.equal(generation.status, 200);
+  assert.equal(generation.body?.data?.message, "/git-staged-msg de required");
+  assert.deepEqual(generation.body?.data?.generation, { provider: "fake", modelId: "fake-model", thinkingLevel: "off" });
+
   const disableAuth = await request("/api/remote-auth/settings", { method: "POST", body: { enabled: false } });
   assert.equal(disableAuth.status, 200);
   const savedAfterDisable = JSON.parse(await readFile(settingsFile, "utf8"));
+  assert.equal(savedAfterDisable.version, 2, "Web UI settings should migrate to the guided Git schema version");
   assert.equal(savedAfterDisable.remoteAuthEnabled, false, "disabling Remote PIN auth should persist the off preference");
+  assert.equal(savedAfterDisable.gitWorkflow?.generation?.modelId, "fake-model", "Remote PIN updates should preserve guided Git preferences");
 
   const enableAuth = await request("/api/remote-auth/settings", { method: "POST", body: { enabled: true } });
   assert.equal(enableAuth.status, 200);

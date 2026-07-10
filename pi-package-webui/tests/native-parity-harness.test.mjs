@@ -129,7 +129,7 @@ for (const target of ["state", "tabs", "commands", "themes", "workspace"]) {
 }
 
 const slashCommands = nativeSlashCommandEntries(parity);
-assert.equal(slashCommands.length, 24);
+assert.equal(slashCommands.length, 25);
 assert.equal(slashCommands[0].name, "settings");
 assert.equal(slashCommands.at(-1).name, "quit");
 
