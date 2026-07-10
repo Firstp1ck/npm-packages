@@ -209,6 +209,9 @@ const elements = {
   sidePanelBackdrop: $("#sidePanelBackdrop"),
   sidePanel: $("#sidePanel"),
   stateDetails: $("#stateDetails"),
+  subagentsStatus: $("#subagentsStatus"),
+  subagentsBox: $("#subagentsBox"),
+  subagentCountBadge: $("#subagentCountBadge"),
   queueBox: $("#queueBox"),
   queueCountBadge: $("#queueCountBadge"),
   createPromptListButton: $("#createPromptListButton"),
@@ -427,6 +430,16 @@ let claudeUsageError = null;
 let claudeUsageLoading = false;
 let refreshClaudeUsageTimer = null;
 let claudeUsageRenderTimer = null;
+let latestSubagents = null;
+let subagentsError = null;
+let subagentsLoading = false;
+let refreshSubagentsTimer = null;
+let subagentOverlaySelection = null;
+let subagentOverlayData = null;
+let subagentOverlayError = "";
+let subagentOverlayLoading = false;
+let subagentOverlayRefreshTimer = null;
+let subagentOverlayRequestSerial = 0;
 let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
@@ -677,6 +690,10 @@ const CODEX_USAGE_REFRESH_MS = 5 * 60 * 1000;
 const CODEX_USAGE_RENDER_TICK_MS = 30 * 1000;
 const CLAUDE_USAGE_REFRESH_MS = 5 * 60 * 1000;
 const CLAUDE_USAGE_RENDER_TICK_MS = 30 * 1000;
+const SUBAGENTS_ACTIVE_REFRESH_MS = 1500;
+const SUBAGENTS_IDLE_REFRESH_MS = 4000;
+const SUBAGENTS_HIDDEN_REFRESH_MS = 10_000;
+const SUBAGENT_OVERLAY_REFRESH_MS = 1000;
 const UPDATE_STATUS_REFRESH_MS = 6 * 60 * 60 * 1000;
 const UPDATE_STATUS_INITIAL_DELAY_MS = 1800;
 const RUN_INDICATOR_TICK_MS = 1000;
@@ -7005,7 +7022,7 @@ function restoreActiveDraft() {
 
 function focusPromptInput({ defer = false } = {}) {
   const focus = () => {
-    if (!elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
+    if (!elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.statsOverlayDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
     try {
       elements.promptInput.focus({ preventScroll: true });
     } catch {
@@ -13488,6 +13505,320 @@ function initializeClaudeUsage() {
   claudeUsageRenderTimer = setInterval(renderClaudeUsage, CLAUDE_USAGE_RENDER_TICK_MS);
 }
 
+function subagentTabsWithRunningAgents() {
+  return (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [])
+    .filter((tab) => Number(tab?.agentCount || 0) > 0)
+    .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
+}
+
+function subagentSessionFileName(value) {
+  return String(value || "").split(/[\\/]/).filter(Boolean).pop() || "";
+}
+
+function subagentTabMeta(tab) {
+  const sessionName = String(tab?.sessionName || "").trim();
+  const title = String(tab?.tabTitle || "").trim();
+  if (sessionName && sessionName !== title) return sessionName;
+  return subagentSessionFileName(tab?.sessionFile) || normalizeDisplayPath(tab?.cwd || "") || "session";
+}
+
+function subagentRunElapsed(run) {
+  const startedAt = Number(run?.startedAt);
+  return Number.isFinite(startedAt) ? formatDuration(Math.max(0, Date.now() - startedAt)) : "";
+}
+
+function subagentOverlayOutputLines(data = subagentOverlayData) {
+  const agent = data?.agent || subagentOverlaySelection?.agent || {};
+  const output = (Array.isArray(agent.recentOutput) ? agent.recentOutput : [])
+    .flatMap((line) => stripAnsi(String(line ?? "")).replace(/\r/g, "").split("\n"));
+  if (output.length) return output;
+  const tools = (Array.isArray(agent.recentTools) ? agent.recentTools : [])
+    .map((entry) => `✓ ${entry.tool || "tool"}${entry.args ? ` ${entry.args}` : ""}`);
+  if (agent.currentTool) tools.push(`▶ ${agent.currentTool}${agent.currentToolArgs ? ` ${agent.currentToolArgs}` : ""}`);
+  return tools;
+}
+
+function appendSubagentOutputWaitingIndicator(parent) {
+  const row = make("div", "release-npm-line subagent-output-waiting");
+  row.setAttribute("role", "status");
+  row.setAttribute("aria-label", "Waiting for agent output");
+  row.append(
+    make("span", "subagent-output-waiting-dot", "."),
+    make("span", "subagent-output-waiting-dot", "."),
+    make("span", "subagent-output-waiting-dot", "."),
+  );
+  parent.append(row);
+}
+
+function subagentOverlayStateFacts(data = subagentOverlayData) {
+  const agent = data?.agent || subagentOverlaySelection?.agent || {};
+  return [
+    agent.status || "running",
+    data?.mode || subagentOverlaySelection?.run?.mode,
+    data?.source || subagentOverlaySelection?.run?.source,
+    agent.nested ? "nested" : "",
+    agent.currentTool ? `tool ${agent.currentTool}` : "",
+    Number.isFinite(agent.turnCount) ? `${agent.turnCount} turns` : "",
+    Number.isFinite(agent.toolCount) ? `${agent.toolCount} tools` : "",
+    Number.isFinite(agent.tokens) ? `${Number(agent.tokens).toLocaleString()} tokens` : "",
+  ].filter(Boolean);
+}
+
+function subagentOverlayMeaningfulSignature() {
+  return JSON.stringify({
+    selection: subagentOverlaySelection ? {
+      tabId: subagentOverlaySelection.tabId,
+      runId: subagentOverlaySelection.runId,
+      agentId: subagentOverlaySelection.agentId,
+      finished: subagentOverlaySelection.finished === true,
+    } : null,
+    data: subagentOverlayData ? { ...subagentOverlayData, updatedAt: undefined } : null,
+    error: subagentOverlayError,
+  });
+}
+
+function renderSubagentOverlayWidget() {
+  const selection = subagentOverlaySelection;
+  if (!selection || selection.tabId !== activeTabId) return null;
+  const data = subagentOverlayData;
+  const agent = data?.agent || selection.agent || {};
+  const tab = tabs.find((item) => item.id === selection.tabId) || selection.tab;
+  const running = !selection.finished && (agent.status === "running" || agent.status === "queued" || agent.status === "pending" || !agent.status);
+  const lines = subagentOverlayOutputLines(data);
+  const shownLines = lines.length ? lines : running && agent.currentTool ? [] : [running ? "Waiting for the first agent activity…" : "No recent output was captured."];
+  const widget = make("section", `widget release-npm-widget app-runner-widget subagent-overlay-widget${running ? " app-runner-live-widget" : " app-runner-log-widget"}`);
+  widget.setAttribute("aria-label", `Live output for subagent ${agent.name || "subagent"}`);
+
+  const header = make("div", "release-npm-header");
+  const titleWrap = make("div", "release-npm-title-wrap");
+  titleWrap.append(make("span", "release-npm-kicker", "subagent"), make("strong", "release-npm-title", agent.name || "subagent"));
+  const meta = make("div", "release-npm-meta");
+  for (const fact of subagentOverlayStateFacts(data)) meta.append(make("span", "release-npm-pill", fact));
+  header.append(titleWrap, meta);
+
+  const streamHeader = releaseNpmStreamHeader(running ? "Live agent output" : "Agent output", shownLines.length, { live: running });
+  const terminal = make("div", "release-npm-terminal subagent-overlay-terminal");
+  terminal.setAttribute("role", "log");
+  terminal.setAttribute("aria-live", running ? "polite" : "off");
+  for (const line of shownLines) appendReleaseNpmTerminalLine(terminal, line);
+  if (running && agent.currentTool) appendSubagentOutputWaitingIndicator(terminal);
+
+  const controls = make("div", "release-npm-controls subagent-overlay-output-controls");
+  const actions = make("div", "app-runner-output-actions");
+  const copyButton = appRunnerActionButton("Copy output", copySubagentOverlayOutput, "subagent-overlay-copy-action");
+  copyButton.disabled = subagentOverlayOutputLines(data).length === 0;
+  const refreshButton = appRunnerActionButton(subagentOverlayLoading ? "Refreshing…" : "Refresh", () => {
+    refreshSubagentOverlay().finally(() => scheduleSubagentOverlayRefresh());
+  }, "subagent-overlay-refresh-action");
+  refreshButton.disabled = subagentOverlayLoading || selection.finished;
+  actions.append(copyButton, refreshButton, appRunnerActionButton("Close", closeSubagentOverlay, "subagent-overlay-close-action"));
+  const details = [
+    `${tab?.title || `Terminal ${selection.tabIndex || "?"}`} · run ${selection.runId}`,
+    agent.currentPath ? `path: ${agent.currentPath}` : "",
+    agent.activityState ? `activity: ${agent.activityState}` : "",
+    agent.error ? `status warning: ${agent.error}` : "",
+    subagentOverlayError,
+  ].filter(Boolean);
+  controls.append(actions, make("span", `app-runner-output-meta${subagentOverlayError ? " warning" : ""}`, details.join(" · ")));
+  const outputDetails = renderReleaseNpmOutputDetails(`subagent:${selection.tabId}:${selection.agentId}`, streamHeader, terminal, controls);
+  widget.append(header, outputDetails);
+  requestAnimationFrame(() => { if (outputDetails.open) terminal.scrollTop = terminal.scrollHeight; });
+  return widget;
+}
+
+function scheduleSubagentOverlayRefresh(delay = SUBAGENT_OVERLAY_REFRESH_MS) {
+  clearTimeout(subagentOverlayRefreshTimer);
+  if (!subagentOverlaySelection || subagentOverlaySelection.finished) return;
+  subagentOverlayRefreshTimer = setTimeout(() => {
+    refreshSubagentOverlay().finally(() => scheduleSubagentOverlayRefresh());
+  }, delay);
+}
+
+async function refreshSubagentOverlay() {
+  const selection = subagentOverlaySelection;
+  if (!selection || subagentOverlayLoading) return;
+  const requestSerial = ++subagentOverlayRequestSerial;
+  const previousSignature = subagentOverlayMeaningfulSignature();
+  subagentOverlayLoading = true;
+  try {
+    const query = new URLSearchParams({ tab: selection.tabId, run: selection.runId, agent: selection.agentId });
+    const response = await api(`/api/subagents/output?${query}`, { scoped: false });
+    if (requestSerial !== subagentOverlayRequestSerial || subagentOverlaySelection !== selection) return;
+    subagentOverlayData = response.data || null;
+    subagentOverlayError = "";
+  } catch (error) {
+    if (requestSerial !== subagentOverlayRequestSerial || subagentOverlaySelection !== selection) return;
+    if (error?.statusCode === 404) selection.finished = true;
+    subagentOverlayError = error?.statusCode === 404
+      ? "This subagent has finished or is no longer tracked. Showing the last captured output."
+      : `Subagent output refresh failed: ${error.message || String(error)}`;
+  } finally {
+    if (requestSerial === subagentOverlayRequestSerial && subagentOverlaySelection === selection) {
+      subagentOverlayLoading = false;
+      if (selection.tabId === activeTabId && previousSignature !== subagentOverlayMeaningfulSignature()) renderWidgets();
+    }
+  }
+}
+
+async function openSubagentOverlay(tab, run, agent) {
+  if (!tab?.tabId || !run?.id || !agent?.id) return;
+  try {
+    if (activeTabId !== tab.tabId) await switchTab(tab.tabId);
+    subagentOverlaySelection = {
+      tabId: tab.tabId,
+      tabIndex: tab.tabIndex,
+      tab,
+      run,
+      agent,
+      runId: run.id,
+      agentId: agent.id,
+      finished: false,
+    };
+    subagentOverlayData = null;
+    subagentOverlayError = "";
+    subagentOverlayRequestSerial += 1;
+    renderWidgets();
+    await refreshSubagentOverlay();
+    scheduleSubagentOverlayRefresh();
+  } catch (error) {
+    addEvent(`could not open subagent output: ${error.message || String(error)}`, "error");
+  }
+}
+
+function closeSubagentOverlay() {
+  clearTimeout(subagentOverlayRefreshTimer);
+  subagentOverlayRefreshTimer = null;
+  subagentOverlayRequestSerial += 1;
+  subagentOverlaySelection = null;
+  subagentOverlayData = null;
+  subagentOverlayError = "";
+  subagentOverlayLoading = false;
+  renderWidgets();
+}
+
+async function copySubagentOverlayOutput() {
+  const text = subagentOverlayOutputLines().join("\n").trimEnd();
+  if (!text) {
+    addEvent("subagent output is empty", "warn");
+    return;
+  }
+  try {
+    await copyText(text);
+    addEvent("copied subagent output", "info");
+  } catch (error) {
+    addEvent(`subagent output copy failed: ${error.message || String(error)}`, "warn");
+  }
+}
+
+function renderSubagentAgent(tab, run, agent) {
+  const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}`);
+  row.type = "button";
+  const dot = make("span", "subagent-running-dot");
+  dot.setAttribute("aria-hidden", "true");
+  const content = make("div", "subagent-agent-content");
+  content.append(make("strong", "subagent-agent-name", agent?.name || "subagent"));
+  const elapsed = subagentRunElapsed(run);
+  const facts = [
+    agent?.nested ? "nested" : "",
+    run?.mode && run.mode !== "single" ? run.mode : "",
+    run?.source === "foreground" ? "foreground" : "async",
+    agent?.currentTool ? `tool: ${agent.currentTool}` : "",
+    elapsed ? `running ${elapsed}` : "",
+  ].filter(Boolean);
+  content.append(make("span", "subagent-agent-meta", facts.join(" · ")));
+  row.append(dot, content);
+  row.title = `${agent?.name || "subagent"} · ${facts.join(" · ")} · run ${run?.id || "unknown"} · open live output`;
+  row.setAttribute("aria-label", `Open live output for ${agent?.name || "subagent"} in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
+  row.addEventListener("click", () => openSubagentOverlay(tab, run, agent));
+  return row;
+}
+
+function renderSubagentTabGroup(tab) {
+  const group = make("section", `subagent-tab-group${tab.tabId === activeTabId ? " active" : ""}`);
+  const header = make("button", "subagent-tab-header");
+  header.type = "button";
+  header.setAttribute("aria-label", `Open ${tab.tabTitle || `Terminal ${tab.tabIndex || ""}`}`);
+  const title = make("span", "subagent-tab-title");
+  title.append(
+    make("strong", undefined, tab.tabTitle || `Terminal ${tab.tabIndex || "?"}`),
+    make("span", "subagent-tab-session", `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
+  );
+  header.append(title, make("span", "subagent-tab-count", String(tab.agentCount || 0)));
+  header.addEventListener("click", () => switchTab(tab.tabId));
+  group.append(header);
+
+  const list = make("div", "subagent-agent-list");
+  const runs = (Array.isArray(tab.runs) ? tab.runs : [])
+    .slice()
+    .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
+  for (const run of runs) {
+    const agents = (Array.isArray(run.agents) ? run.agents : [])
+      .filter((agent) => agent?.status === "running")
+      .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || String(a.name || "").localeCompare(String(b.name || "")));
+    for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
+  }
+  group.append(list);
+  return group;
+}
+
+function renderSubagents() {
+  const box = elements.subagentsBox;
+  if (!box) return;
+  const activeTabs = subagentTabsWithRunningAgents();
+  const totalAgents = activeTabs.reduce((count, tab) => count + Number(tab.agentCount || 0), 0);
+  if (elements.subagentCountBadge) {
+    elements.subagentCountBadge.textContent = String(totalAgents);
+    elements.subagentCountBadge.hidden = totalAgents === 0;
+  }
+  if (elements.subagentsStatus) {
+    elements.subagentsStatus.textContent = totalAgents > 0
+      ? `${totalAgents} running across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`
+      : subagentsLoading && !latestSubagents
+        ? "Checking running subagents…"
+        : "No running subagents.";
+  }
+
+  box.replaceChildren();
+  box.classList.toggle("muted", totalAgents === 0);
+  box.classList.toggle("has-items", totalAgents > 0);
+  if (totalAgents === 0) {
+    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running subagents will appear here, grouped by terminal and session."));
+    return;
+  }
+  for (const tab of activeTabs) box.append(renderSubagentTabGroup(tab));
+  if (subagentsError) box.append(make("div", "subagents-stale muted", `Latest refresh failed: ${subagentsError.message || subagentsError}`));
+}
+
+async function refreshSubagents() {
+  if (subagentsLoading) return;
+  subagentsLoading = true;
+  renderSubagents();
+  try {
+    const response = await api("/api/subagents", { scoped: false });
+    latestSubagents = response.data || null;
+    subagentsError = null;
+  } catch (error) {
+    subagentsError = error;
+  } finally {
+    subagentsLoading = false;
+    renderSubagents();
+  }
+}
+
+function scheduleRefreshSubagents(delay) {
+  clearTimeout(refreshSubagentsTimer);
+  const totalAgents = Number(latestSubagents?.totalAgents || 0);
+  const nextDelay = delay ?? (document.visibilityState === "hidden" ? SUBAGENTS_HIDDEN_REFRESH_MS : totalAgents > 0 ? SUBAGENTS_ACTIVE_REFRESH_MS : SUBAGENTS_IDLE_REFRESH_MS);
+  refreshSubagentsTimer = setTimeout(() => {
+    refreshSubagents().finally(() => scheduleRefreshSubagents());
+  }, nextDelay);
+}
+
+function initializeSubagents() {
+  renderSubagents();
+  refreshSubagents().finally(() => scheduleRefreshSubagents());
+}
+
 function renderStatus() {
   if (deferUiRenderDuringPointerActivation("status", renderStatus)) return;
   const state = currentState;
@@ -15993,6 +16324,8 @@ function renderWidgets() {
   if (workflowSubprocessWidget) elements.widgetArea.append(workflowSubprocessWidget);
   const appRunnerWidget = renderAppRunnerWidget();
   if (appRunnerWidget) elements.widgetArea.append(appRunnerWidget);
+  const subagentWidget = renderSubagentOverlayWidget();
+  if (subagentWidget) elements.widgetArea.append(subagentWidget);
   const btwWidget = renderBtwOutputWidget();
   if (btwWidget) elements.widgetArea.append(btwWidget);
 
@@ -26647,8 +26980,13 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("keydown", handleNativeAppShortcut, { capture: true });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") scheduleForegroundReconcile("visibility resume", 0);
-  else resetAbortLongPressAffordance();
+  if (document.visibilityState === "visible") {
+    scheduleForegroundReconcile("visibility resume", 0);
+    refreshSubagents().finally(() => scheduleRefreshSubagents());
+  } else {
+    resetAbortLongPressAffordance();
+    scheduleRefreshSubagents();
+  }
 });
 window.addEventListener("pageshow", () => scheduleForegroundReconcile("page show", 0));
 window.addEventListener("focus", () => scheduleForegroundReconcile("window focus"));
@@ -26986,6 +27324,7 @@ bindSidePanelSectionToggles();
 restoreSidePanelState();
 initializeCodexUsage();
 initializeClaudeUsage();
+initializeSubagents();
 initializeUpdateNotifications();
 bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();

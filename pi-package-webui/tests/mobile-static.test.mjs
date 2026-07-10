@@ -91,6 +91,9 @@ assert.match(html, /class="optional-features-description[\s\S]*href="https:\/\/g
 assert.doesNotMatch(html, /id="btwOverlayDialog"/, "/btw should not use a blocking modal overlay");
 assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscription usage status");
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
+assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*id="subagentsBox"/, "side panel should expose grouped running subagents with a live count");
+assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
+assert.match(html, /data-side-panel-section="session"[\s\S]*data-side-panel-section="subagents"[\s\S]*data-side-panel-section="queue"/, "Subagents should appear between Session and Queue in the side panel");
 assert.match(html, /data-side-panel-section="queue"[\s\S]*id="createPromptListButton"[\s\S]*>Create prompt list<\/button>/, "Queue section should expose prompt-list creation");
 assert.match(html, /id="loadPromptListButton"[\s\S]*>Load List<\/button>[\s\S]*id="runLoadedPromptListButton"[^>]*disabled[^>]*>Run<\/button>/, "Queue section should expose load and run controls for saved prompt lists");
 assert.match(html, /id="promptListDialog"[\s\S]*id="promptListAddPromptButton"[\s\S]*\+ Add follow-up prompt/, "prompt-list dialog should add follow-up prompt rows");
@@ -282,6 +285,12 @@ assert.match(css, /\.webui-version-badge,\n\.webui-dev-badge \{[\s\S]*?border-ra
 assert.match(css, /\.webui-dev-badge \{[\s\S]*?color:\s*var\(--ctp-yellow\)/, "Web UI dev indicator should have distinct warning styling");
 assert.match(css, /\.side-panel-section\.collapsed \.side-panel-section-content,\n\.side-panel-section-content\[hidden\] \{\n\s+display:\s*none;/, "collapsed side panel section content should be hidden");
 assert.match(css, /\.side-panel-section:not\(\.collapsed\) \.side-panel-section-chevron/, "expanded side panel sections should rotate the chevron");
+assert.match(css, /\.subagents-box\.has-items[\s\S]*\.subagent-tab-group[\s\S]*\.subagent-agent-row/, "running subagents should render as grouped terminal/session cards");
+assert.match(css, /\.subagent-agent-row:hover,[\s\S]*\.subagent-agent-row:focus-visible/, "subagent rows should expose clickable hover and keyboard focus states");
+assert.match(css, /\.subagent-overlay-widget[\s\S]*\.subagent-overlay-terminal[\s\S]*\.subagent-overlay-close-action/, "subagent output should reuse the non-blocking App Runner widget visual language");
+assert.match(css, /\.subagent-output-waiting-dot[\s\S]*@keyframes subagent-output-waiting-pulse/, "subagent output should animate one transient ellipsis while waiting");
+assert.doesNotMatch(css, /\.extension-dialog\.subagent-overlay-dialog/, "subagent output should not retain blocking dialog styles");
+assert.match(css, /@keyframes subagent-running-pulse/, "running subagents should expose a live activity indicator");
 assert.match(css, /\.optional-feature-pill\.enabled/, "optional features should visually distinguish enabled state");
 assert.match(css, /\.todo-widget \{[\s\S]*?display:\s*grid/, "todo-progress widget should render as a styled checklist card");
 assert.match(css, /\.todo-widget-summary \{[\s\S]*?cursor:\s*pointer/, "todo-progress widget should expose a compact expandable summary");
@@ -624,6 +633,23 @@ assert.match(
   "side-panel section toggles should expand at most one section at a time",
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
+assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents by terminal and session");
+assert.match(app, /function openSubagentOverlay\(tab, run, agent\)[\s\S]*activeTabId !== tab\.tabId[\s\S]*await switchTab\(tab\.tabId\)[\s\S]*renderWidgets\(\)/, "clicking an agent should switch to its owning tab before rendering the live widget");
+assert.match(app, /function renderWidgets\(\)[\s\S]*renderAppRunnerWidget\(\)[\s\S]*renderSubagentOverlayWidget\(\)/, "subagent output should render in the shared non-blocking top widget area after App Runner");
+assert.doesNotMatch(app, /subagentOverlayDialog\.showModal|elements\.subagentOverlayDialog/, "subagent output should not open or depend on a modal dialog");
+assert.match(app, /api\(`\/api\/subagents\/output\?\$\{query\}`, \{ scoped: false \}\)/, "subagent overlay should fetch selected live output from the owning tab");
+assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
+assert.match(app, /function appendSubagentOutputWaitingIndicator\(parent\)[\s\S]*subagent-output-waiting-dot[\s\S]*if \(running && agent\.currentTool\) appendSubagentOutputWaitingIndicator\(terminal\)/, "subagent widget should render one replaceable waiting animation instead of transcript spam");
+assert.match(app, /api\("\/api\/subagents", \{ scoped: false \}\)/, "frontend should refresh the cross-tab subagent overview");
+assert.match(app, /SUBAGENTS_ACTIVE_REFRESH_MS = 1500/, "running subagents should receive a fast live refresh cadence");
+assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*webuiSubagentsData\(\)/, "server should expose a cross-tab running-subagent endpoint");
+assert.match(server, /url\.pathname === "\/api\/subagents\/output" && req\.method === "GET"[\s\S]*webuiSubagentOutputData\(tab, runId, agentId\)/, "server should expose selected running subagent output only through its owning tab");
+assert.match(server, /rememberWebuiSubagentsStatusEvent\(tab, event\)/, "server should ingest the helper's structured subagent status without forwarding internal JSON to the browser footer");
+assert.match(helper, /SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request"/, "Web UI helper should use pi-subagents' stable status RPC");
+assert.match(helper, /case "subagent-output":[\s\S]*subagentOutputSnapshot\(payload\)/, "Web UI helper should return bounded live state and recent output for the selected child agent");
+assert.match(helper, /line\.trim\(\)\.toLowerCase\(\) === "\(no output\)"/, "subagent transcript extraction should suppress empty tool-result markers");
+assert.match(helper, /SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started"[\s\S]*SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete"/, "Web UI helper should track async subagent lifecycle events");
+assert.match(helper, /pi\.on\("tool_execution_start"[\s\S]*event\.toolName !== "subagent"[\s\S]*pi\.on\("tool_execution_end"/, "Web UI helper should track foreground subagent executions");
 assert.match(app, /if \(normalized === "prolite"\) return "Usage";/, "Codex Prolite plan labels should display as Usage in the side panel");
 assert.match(app, /api\(`\/api\/codex-usage\$\{suffix\}`, \{ scoped: false \}\)/, "Codex usage should load through a server endpoint without browser credentials");
 assert.match(app, /restoreSidePanelSectionState\(\);\nbindSidePanelSectionToggles\(\);/, "side panel section state should restore before toggles are bound");

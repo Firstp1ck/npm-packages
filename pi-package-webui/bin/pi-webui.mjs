@@ -91,6 +91,12 @@ const PROMPT_REQUEST_TIMEOUT_MS = Math.max(REQUEST_TIMEOUT_MS, Number.parseInt(p
 const WEBUI_HELPER_TIMEOUT_MS = 8 * 1000;
 const WEBUI_HELPER_COMMAND = "webui-helper";
 const WEBUI_HELPER_RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
+const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
+const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
+const WEBUI_SUBAGENT_RUN_LIMIT = 128;
+const WEBUI_SUBAGENT_AGENT_LIMIT = 256;
+const WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT = 120;
+const WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const WEBUI_PACKAGE = packageJson.name || "@firstpick/pi-package-webui";
 const PI_LATEST_VERSION_URL = process.env.PI_WEBUI_PI_LATEST_VERSION_URL || "https://pi.dev/api/latest-version";
@@ -6797,6 +6803,71 @@ function clearExtensionWidgets(tab) {
   tab?.extensionWidgets?.clear();
 }
 
+function clearWebuiSubagents(tab) {
+  if (tab) tab.webuiSubagents = null;
+}
+
+function normalizeWebuiSubagentText(value, maxLength = 240) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, maxLength) : "";
+}
+
+function normalizeWebuiSubagentPayload(value) {
+  if (!value || typeof value !== "object" || value.version !== 1) return null;
+  const runs = [];
+  for (const rawRun of Array.isArray(value.runs) ? value.runs.slice(0, WEBUI_SUBAGENT_RUN_LIMIT) : []) {
+    if (!rawRun || typeof rawRun !== "object") continue;
+    const id = normalizeWebuiSubagentText(rawRun.id, 160);
+    if (!id) continue;
+    const agents = [];
+    for (const rawAgent of Array.isArray(rawRun.agents) ? rawRun.agents.slice(0, WEBUI_SUBAGENT_AGENT_LIMIT) : []) {
+      const name = normalizeWebuiSubagentText(rawAgent?.name, 160);
+      if (!name || rawAgent?.status !== "running") continue;
+      agents.push({
+        id: normalizeWebuiSubagentText(rawAgent.id || `${id}:${agents.length}`, 240),
+        name,
+        status: "running",
+        index: Number.isInteger(rawAgent.index) ? rawAgent.index : agents.length,
+        currentTool: normalizeWebuiSubagentText(rawAgent.currentTool, 120) || undefined,
+        activityState: normalizeWebuiSubagentText(rawAgent.activityState, 80) || undefined,
+        nested: rawAgent.nested === true,
+      });
+    }
+    if (!agents.length) continue;
+    runs.push({
+      id,
+      source: rawRun.source === "foreground" ? "foreground" : "async",
+      mode: ["single", "parallel", "chain"].includes(rawRun.mode) ? rawRun.mode : "single",
+      status: "running",
+      startedAt: Number.isFinite(rawRun.startedAt) ? rawRun.startedAt : Date.now(),
+      agents: agents.sort((a, b) => a.index - b.index || a.name.localeCompare(b.name)),
+    });
+  }
+  return {
+    version: 1,
+    available: value.available === true,
+    updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
+    receivedAt: Date.now(),
+    runs: runs.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
+  };
+}
+
+function rememberWebuiSubagentsStatusEvent(tab, event) {
+  if (event?.type !== "extension_ui_request" || event.method !== "setStatus" || event.statusKey !== WEBUI_SUBAGENTS_STATUS_KEY) return false;
+  const statusText = String(event.statusText || "");
+  if (!statusText) {
+    clearWebuiSubagents(tab);
+    return true;
+  }
+  if (!statusText.startsWith(WEBUI_SUBAGENTS_PAYLOAD_PREFIX)) return true;
+  try {
+    tab.webuiSubagents = normalizeWebuiSubagentPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_PAYLOAD_PREFIX.length)));
+  } catch {
+    tab.webuiSubagents = null;
+  }
+  return true;
+}
+
 function naturalConversationStatusState(statusText) {
   const text = stripAnsi(statusText).replace(/\s+/g, " ").trim();
   if (!text) return { enabled: false, uiState: "off", statusText: "" };
@@ -7377,7 +7448,7 @@ function attachRpcToTab(tab, rpc) {
   tab.rpcUnsubscribe?.();
   tab.rpc = rpc;
   tab.rpcUnsubscribe = rpc.onEvent((event) => {
-    if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event)) return;
+    if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event)) return;
     updateTabActivityFromEvent(tab, event);
     let scopedEvent = eventForTabClients(tab, event);
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
@@ -7385,6 +7456,7 @@ function attachRpcToTab(tab, rpc) {
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
       clearExtensionWidgets(tab);
+      clearWebuiSubagents(tab);
       resetNaturalConversationMode(tab);
     } else {
       rememberExtensionStatusEvent(tab, scopedEvent);
@@ -7431,6 +7503,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
     extensionWidgets: new Map(),
+    webuiSubagents: null,
     webuiHelperRequests: new Map(),
     webuiHelperResponseIds: new Set(),
     bashQueue: [],
@@ -7491,6 +7564,84 @@ function tabMeta(tab) {
 
 function listTabs() {
   return [...tabs.values()].map(tabMeta);
+}
+
+function webuiSubagentsData() {
+  const sortedTabs = [...tabs.values()].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title));
+  const tabSummaries = sortedTabs.map((tab) => {
+    const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [] };
+    const runs = Array.isArray(status.runs) ? status.runs : [];
+    return {
+      tabId: tab.id,
+      tabIndex: tab.index,
+      tabTitle: tab.title,
+      cwd: tab.cwd,
+      sessionName: normalizeWebuiSubagentText(tab.lastState?.sessionName || tab.title, 160),
+      sessionFile: tabRestorableSessionFile(tab) || null,
+      running: tab.rpc.isRunning(),
+      available: status.available === true,
+      updatedAt: status.updatedAt || null,
+      receivedAt: status.receivedAt || null,
+      runs,
+      agentCount: runs.reduce((count, run) => count + run.agents.length, 0),
+    };
+  });
+  return {
+    version: 1,
+    updatedAt: Date.now(),
+    available: tabSummaries.some((tab) => tab.available),
+    totalRuns: tabSummaries.reduce((count, tab) => count + tab.runs.length, 0),
+    totalAgents: tabSummaries.reduce((count, tab) => count + tab.agentCount, 0),
+    tabs: tabSummaries,
+  };
+}
+
+function normalizeWebuiSubagentOutput(value, selection) {
+  if (!value || typeof value !== "object" || value.version !== 1) throw makeHttpError(502, "Invalid subagent output response from Web UI helper");
+  const rawAgent = value.agent && typeof value.agent === "object" ? value.agent : {};
+  const recentOutput = (Array.isArray(rawAgent.recentOutput) ? rawAgent.recentOutput : [])
+    .slice(-WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT)
+    .map((line) => String(line ?? "").replace(/\r/g, "").slice(0, WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH));
+  const recentTools = (Array.isArray(rawAgent.recentTools) ? rawAgent.recentTools : []).slice(-20).map((entry) => ({
+    tool: normalizeWebuiSubagentText(entry?.tool, 120),
+    args: normalizeWebuiSubagentText(entry?.args, 500),
+    endMs: Number.isFinite(entry?.endMs) ? entry.endMs : undefined,
+  })).filter((entry) => entry.tool);
+  return {
+    version: 1,
+    runId: normalizeWebuiSubagentText(value.runId, 160) || selection.run.id,
+    source: value.source === "foreground" ? "foreground" : "async",
+    mode: ["single", "parallel", "chain"].includes(value.mode) ? value.mode : selection.run.mode,
+    startedAt: Number.isFinite(value.startedAt) ? value.startedAt : selection.run.startedAt,
+    updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
+    agent: {
+      id: selection.agent.id,
+      name: normalizeWebuiSubagentText(rawAgent.name, 160) || selection.agent.name,
+      index: Number.isInteger(rawAgent.index) ? rawAgent.index : selection.agent.index,
+      nested: rawAgent.nested === true,
+      status: normalizeWebuiSubagentText(rawAgent.status, 40) || "running",
+      activityState: normalizeWebuiSubagentText(rawAgent.activityState, 80) || undefined,
+      currentTool: normalizeWebuiSubagentText(rawAgent.currentTool, 120) || undefined,
+      currentToolArgs: normalizeWebuiSubagentText(rawAgent.currentToolArgs, 500) || undefined,
+      currentPath: normalizeWebuiSubagentText(rawAgent.currentPath, 1000) || undefined,
+      turnCount: Number.isFinite(rawAgent.turnCount) ? rawAgent.turnCount : undefined,
+      toolCount: Number.isFinite(rawAgent.toolCount) ? rawAgent.toolCount : undefined,
+      tokens: Number.isFinite(rawAgent.tokens) ? rawAgent.tokens : undefined,
+      recentTools,
+      recentOutput,
+      error: normalizeWebuiSubagentText(rawAgent.error, 1000) || undefined,
+    },
+  };
+}
+
+async function webuiSubagentOutputData(tab, runId, agentId) {
+  const runs = Array.isArray(tab.webuiSubagents?.runs) ? tab.webuiSubagents.runs : [];
+  const run = runs.find((candidate) => candidate.id === runId);
+  if (!run) throw makeHttpError(404, `Running subagent run not found: ${runId}`);
+  const agent = (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate.id === agentId);
+  if (!agent) throw makeHttpError(404, `Running subagent not found: ${agentId}`);
+  const data = await sendWebuiHelperCommand(tab, "subagent-output", { runId, agentId });
+  return normalizeWebuiSubagentOutput(data, { run, agent });
 }
 
 function restorableTabDescriptor(tab, state = null) {
@@ -8082,6 +8233,7 @@ async function updateTabCwd(id, cwd) {
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
   clearExtensionWidgets(tab);
+  clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
   const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
   attachRpcToTab(tab, rpc);
@@ -8121,6 +8273,7 @@ async function restartTabRpc(tab, reason = "reload") {
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
   clearExtensionWidgets(tab);
+  clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
   const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
   attachRpcToTab(tab, rpc);
@@ -10050,6 +10203,7 @@ async function handleNativeSlashCommand(tab, body, req) {
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
       clearExtensionWidgets(tab);
+      clearWebuiSubagents(tab);
       resetNaturalConversationMode(tab);
       return respondNative("new", {
         status: "succeeded",
@@ -10641,6 +10795,20 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/tabs" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: { tabs: await listTabsWithReconciledActivity() } });
+      return;
+    }
+
+    if (url.pathname === "/api/subagents" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, data: webuiSubagentsData() });
+      return;
+    }
+
+    if (url.pathname === "/api/subagents/output" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      const runId = normalizeWebuiSubagentText(url.searchParams.get("run"), 160);
+      const agentId = normalizeWebuiSubagentText(url.searchParams.get("agent"), 240);
+      if (!runId || !agentId) throw makeHttpError(400, "run and agent query parameters are required");
+      sendJson(res, 200, { ok: true, data: await webuiSubagentOutputData(tab, runId, agentId) });
       return;
     }
 
@@ -11601,6 +11769,7 @@ const server = createServer(async (req, res) => {
           clearPendingExtensionUiRequests(tab);
           clearExtensionStatuses(tab);
           clearExtensionWidgets(tab);
+          clearWebuiSubagents(tab);
           resetNaturalConversationMode(tab);
         }
         sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));

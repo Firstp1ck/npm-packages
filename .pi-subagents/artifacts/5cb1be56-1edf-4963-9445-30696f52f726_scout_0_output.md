@@ -1,0 +1,1 @@
+Live overlay test completed successfully. The command emitted all 300 expected output lines and finished. No files were modified.

@@ -217,6 +217,34 @@ try {
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
 
+  const subagentFixtureStart = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents running" } });
+  assert.equal(subagentFixtureStart.status, 200, "subagent fixture status should be accepted");
+  let subagentsResponse;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    subagentsResponse = await request("127.0.0.1", "/api/subagents");
+    if (subagentsResponse.body?.data?.totalAgents === 2) break;
+    await delay(50);
+  }
+  assert.equal(subagentsResponse?.status, 200, "subagent overview endpoint should respond");
+  assert.equal(subagentsResponse.body?.data?.totalAgents, 2, "subagent overview should count all running agents");
+  assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.tabId, tabId, "subagent overview should group agents under their terminal tab");
+  assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => agent.name), ["reviewer", "scout"], "subagent overview should preserve agent order within the session run");
+  const subagentOutputResponse = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=${encodeURIComponent("fixture-run")}&agent=${encodeURIComponent("fixture-run:0")}`);
+  assert.equal(subagentOutputResponse.status, 200, "running subagent output endpoint should respond");
+  assert.equal(subagentOutputResponse.body?.data?.agent?.name, "reviewer", "subagent output should target the selected child agent");
+  assert.deepEqual(subagentOutputResponse.body?.data?.agent?.recentOutput, ["Inspecting current implementation", "Waiting for the next tool result"], "subagent output should preserve bounded live output lines");
+  assert.equal(subagentOutputResponse.body?.data?.agent?.currentToolArgs, "README.md", "subagent output should include current tool state");
+  const unknownSubagentOutput = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=missing&agent=missing`);
+  assert.equal(unknownSubagentOutput.status, 404, "subagent output endpoint should reject untracked selections");
+  const subagentFixtureClear = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents clear" } });
+  assert.equal(subagentFixtureClear.status, 200, "subagent fixture clear should be accepted");
+  for (let attempt = 0; attempt < 20; attempt++) {
+    subagentsResponse = await request("127.0.0.1", "/api/subagents");
+    if (subagentsResponse.body?.data?.totalAgents === 0) break;
+    await delay(50);
+  }
+  assert.equal(subagentsResponse.body?.data?.totalAgents, 0, "completed subagents should disappear from the running overview");
+
   const state = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);
   assert.equal(state.status, 200);
   assert.equal(state.body?.data?.model?.provider, "fake", "state should come from the fake pi RPC");

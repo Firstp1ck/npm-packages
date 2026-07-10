@@ -1,0 +1,28 @@
+{
+  "runId": "e186c185-612e-4f9c-9974-d4229fd71386",
+  "agent": "scout",
+  "task": "\"Output-streaming UI test only. Do not modify files. Complete 30 cycles. At the START of every cycle emit a normal visible assistant text line exactly like STREAM UPDATE N OF 30, replacing N. Then make one bash tool call running sleep 4. Never use a loop, script, background job, or combined calls. Continue one cycle at a time, always emitting assistant text before each tool call. After cycle 30 report completion.\"\n\n---\n**Output:**\nWrite your findings to exactly this path: /home/firstpick/npm-packages/.pi-subagents/artifacts/outputs/e186c185-612e-4f9c-9974-d4229fd71386/context.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.\n\n## Acceptance Contract\nAcceptance level: reviewed\nCompletion is not accepted from prose alone. End with a structured acceptance report.\n\nCriteria:\n- criterion-1: Implement the requested change without widening scope\n- criterion-2: Return evidence sufficient for an independent acceptance review\n\nRequired evidence: changed-files, tests-added, commands-run, validation-output, residual-risks, no-staged-files\n\nReview gate: required by reviewer.\n\nFinish with a fenced JSON block tagged `acceptance-report` in this shape:\nUse empty arrays when no items apply; array fields contain strings unless object entries are shown.\n```acceptance-report\n{\n  \"criteriaSatisfied\": [\n    {\n      \"id\": \"criterion-1\",\n      \"status\": \"satisfied\",\n      \"evidence\": \"specific proof\"\n    }\n  ],\n  \"changedFiles\": [\n    \"src/file.ts\"\n  ],\n  \"testsAddedOrUpdated\": [\n    \"test/file.test.ts\"\n  ],\n  \"commandsRun\": [\n    {\n      \"command\": \"command\",\n      \"result\": \"passed\",\n      \"summary\": \"short result\"\n    }\n  ],\n  \"validationOutput\": [\n    \"validation output or concise summary\"\n  ],\n  \"residualRisks\": [\n    \"none\"\n  ],\n  \"noStagedFiles\": true,\n  \"diffSummary\": \"short description of the diff\",\n  \"reviewFindings\": [\n    \"blocker: file.ts:12 - issue found, or no blockers\"\n  ],\n  \"manualNotes\": \"anything else the parent should know\"\n}\n```",
+  "exitCode": 0,
+  "model": "openai-codex/gpt-5.6-sol:low",
+  "attemptedModels": [
+    "openai-codex/gpt-5.6-sol:low"
+  ],
+  "modelAttempts": [
+    {
+      "model": "openai-codex/gpt-5.6-sol:low",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 31732,
+        "output": 1593,
+        "cacheRead": 131584,
+        "cacheWrite": 0,
+        "cost": 0.272242,
+        "turns": 31
+      }
+    }
+  ],
+  "transcriptPath": "/home/firstpick/npm-packages/.pi-subagents/artifacts/e186c185-612e-4f9c-9974-d4229fd71386_scout_transcript.jsonl",
+  "skills": [],
+  "timestamp": 1783713765652
+}

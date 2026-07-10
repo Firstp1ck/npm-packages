@@ -207,10 +207,62 @@ function handleWebuiHelperPrompt(command, base) {
     case "skills-state":
       respondHelper({ requestId, ok: true, data: { skills: [] } });
       return true;
+    case "subagent-output":
+      respondHelper({
+        requestId,
+        ok: true,
+        data: {
+          version: 1,
+          runId: request.payload?.runId || "fixture-run",
+          source: "async",
+          mode: "parallel",
+          startedAt: Date.now() - 3000,
+          updatedAt: Date.now(),
+          agent: {
+            id: request.payload?.agentId || "fixture-run:0",
+            name: String(request.payload?.agentId || "").endsWith(":1") ? "scout" : "reviewer",
+            index: String(request.payload?.agentId || "").endsWith(":1") ? 1 : 0,
+            status: "running",
+            currentTool: "read",
+            currentToolArgs: "README.md",
+            recentTools: [{ tool: "grep", args: "Subagents", endMs: Date.now() - 200 }],
+            recentOutput: ["Inspecting current implementation", "Waiting for the next tool result"],
+            turnCount: 2,
+            toolCount: 3,
+            tokens: 420,
+          },
+        },
+      });
+      return true;
     default:
       respondHelper({ requestId, ok: false, error: `Unknown webui-helper action: ${String(request.action || "")}` });
       return true;
   }
+}
+
+function handleSubagentFixturePrompt(command, base) {
+  const message = String(command.message || "").trim();
+  if (message !== "fixture subagents running" && message !== "fixture subagents clear") return false;
+  const runs = message.endsWith("clear") ? [] : [{
+    id: "fixture-run",
+    source: "async",
+    mode: "parallel",
+    status: "running",
+    startedAt: Date.now() - 2500,
+    agents: [
+      { id: "fixture-run:0", name: "reviewer", status: "running", index: 0, currentTool: "read", nested: false },
+      { id: "fixture-run:1", name: "scout", status: "running", index: 1, nested: false },
+    ],
+  }];
+  respond({ ...base, data: { output: "fake subagent status emitted" } });
+  emitEvent({
+    type: "extension_ui_request",
+    id: randomUUID(),
+    method: "setStatus",
+    statusKey: "webui-subagents",
+    statusText: `PI_WEBUI_SUBAGENTS_V1 ${JSON.stringify({ version: 1, available: true, updatedAt: Date.now(), runs })}`,
+  });
+  return true;
 }
 
 function handleTalkPrompt(command, base) {
@@ -315,6 +367,7 @@ rl.on("line", (line) => {
     }
     case "prompt":
       if (handleWebuiHelperPrompt(command, base)) return;
+      if (handleSubagentFixturePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });

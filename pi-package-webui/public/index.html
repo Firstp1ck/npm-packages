@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=66" />
+    <link rel="stylesheet" href="/styles.css?v=69" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -579,6 +579,21 @@
               <dl id="stateDetails" class="details"></dl>
             </div>
           </section>
+          <section class="side-panel-section collapsed" data-side-panel-section="subagents">
+            <h2>
+              <button id="sidePanelSectionToggleSubagents" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionSubagents" aria-label="Expand Subagents section" title="Expand Subagents section" data-side-panel-section-toggle="subagents">
+                <span class="side-panel-section-label">Subagents</span>
+                <span class="side-panel-section-trailing">
+                  <span id="subagentCountBadge" class="side-panel-section-badge subagent-count-badge" hidden>0</span>
+                  <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+                </span>
+              </button>
+            </h2>
+            <div id="sidePanelSectionSubagents" class="side-panel-section-content" hidden>
+              <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
+              <div id="subagentsBox" class="subagents-box muted">Checking running subagents…</div>
+            </div>
+          </section>
           <section class="side-panel-section collapsed" data-side-panel-section="queue">
             <h2>
               <button id="sidePanelSectionToggleQueue" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionQueue" aria-label="Expand Queue section" title="Expand Queue section" data-side-panel-section-toggle="queue">
@@ -886,6 +901,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=66"></script>
+    <script type="module" src="/app.js?v=69"></script>
   </body>
 </html>
