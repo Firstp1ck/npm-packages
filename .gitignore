@@ -11,3 +11,4 @@ __pycache__/
 .pytest_cache/
 pi-skill-repo-explorer/skills/repo-explorer/repo-explorer-effectiveness-*.md
 pi-extension-cursor-composer/benchmark-output/
+.pi-subagents
