@@ -6577,8 +6577,13 @@ button.composer-skill-tag:focus-visible {
 .composer-publish-menu.open .composer-publish-menu-panel {
   display: flex;
 }
-.composer-options-menu-panel {
-  max-height: min(calc(var(--visual-viewport-height, 100dvh) - 2rem), 48rem);
+.composer-auto-height-menu-panel {
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  overflow-y: visible;
+  overscroll-behavior: auto;
+  -webkit-overflow-scrolling: auto;
 }
 .composer-publish-menu.open .composer-publish-button {
   border-color: rgba(250, 179, 135, 0.58);
@@ -9358,6 +9363,14 @@ button.composer-skill-tag:focus-visible {
   .composer-actions-panel > .composer-options-menu .composer-publish-menu-panel,
   .composer-actions-panel > .composer-app-runner-menu .composer-publish-menu-panel {
     inset-inline: auto 0;
+  }
+  .composer-actions-panel > .composer-publish-menu .composer-auto-height-menu-panel {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    overflow-y: visible;
+    overscroll-behavior: auto;
+    -webkit-overflow-scrolling: auto;
   }
   .composer-actions-panel > .composer-publish-menu .composer-publish-menu-item {
     width: 100%;

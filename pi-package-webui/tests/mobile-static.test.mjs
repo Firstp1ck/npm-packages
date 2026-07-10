@@ -155,6 +155,9 @@ assert.match(html, /id="nativeSkillsButton"[^>]*data-command="\/skills"[\s\S]*?<
 assert.match(html, /id="nativeToolsButton"[^>]*data-command="\/tools"[\s\S]*?<span>Tools Setup<\/span>/, "skills/tools command menu should include Tools Setup");
 assert.match(html, /id="appRunnerInfoButton"[\s\S]*?aria-controls="appRunnerInfoDialog"/, "detected app-runner controls should expose an explanation popup button");
 assert.match(html, /id="appRunnerMenuButton"[\s\S]*?aria-controls="appRunnerMenuPanel"/, "composer should expose a detected app-runner dropdown button");
+for (const menuId of ["publishMenu", "nativeCommandMenu", "optionsMenu", "appRunnerMenuPanel"]) {
+  assert.match(html, new RegExp(`id="${menuId}"[^>]*class="[^"]*composer-auto-height-menu-panel`), `${menuId} should opt into content-height sizing without internal scrolling`);
+}
 assert.ok(html.indexOf('id="optionsMenuButton"') < html.indexOf('id="appRunnerMenuButton"'), "app-runner dropdown should render to the right of the settings/options button");
 assert.match(html, /id="optionsRemoteButton"[^>]*data-command="\/remote"[^>]*hidden[\s\S]*?<span>Open Remote<\/span>/, "Options menu should include the Remote WebUI launcher by label");
 const optionsRemoteIndex = html.indexOf('id="optionsRemoteButton"');
@@ -324,10 +327,11 @@ assert.match(css, /\.composer-publish-menu:hover > \.composer-publish-button\[da
 assert.match(css, /\.composer-publish-menu-panel \{[\s\S]*?display:\s*none;[\s\S]*?flex-direction:\s*column/, "Publish workflow menu should hide when closed and expand like grouped tabs");
 assert.match(css, /\.composer-publish-menu:hover \.composer-publish-menu-panel,[\s\S]*?\.composer-publish-menu:focus-within \.composer-publish-menu-panel,[\s\S]*?\.composer-publish-menu\.open \.composer-publish-menu-panel \{\n\s+display:\s*flex;/, "Publish workflow menu should open on hover, focus, or explicit open state");
 assert.match(css, /\.composer-native-command-button \{[\s\S]*?color:\s*var\(--ctp-mauve\)/, "skills/tools command menu should have a distinct slash-command button style");
-assert.match(css, /\.composer-options-menu-panel \{[\s\S]*?max-height:\s*min\(calc\(var\(--visual-viewport-height, 100dvh\) - 2rem\), 48rem\)/, "Options menu should be tall enough for common commands without scrolling on normal viewports");
-assert.match(css, /\.composer-publish-menu-panel \{[\s\S]*?overscroll-behavior:\s*contain;[\s\S]*?-webkit-overflow-scrolling:\s*touch/, "dropdown panels should use contained momentum scrolling when their options overflow");
-assert.match(css, /\.composer-actions-panel > \.composer-publish-menu \.composer-publish-menu-panel \{[\s\S]*?max-height:\s*min\(var\(--mobile-dropdown-max-height, 34dvh\), calc\(var\(--visual-viewport-height, 100dvh\) - 2rem\)\)/, "mobile composer dropdowns should clamp to an in-viewport scroll height");
-assert.match(css, /\.composer-actions-panel > \.composer-options-menu \.composer-publish-menu-panel,\n\s+\.composer-actions-panel > \.composer-app-runner-menu \.composer-publish-menu-panel \{\n\s+inset-inline:\s*auto 0;/, "mobile Options and app-runner dropdowns should share the clamped scrollable popover placement");
+assert.match(css, /\.composer-auto-height-menu-panel \{[\s\S]*?height:\s*auto;[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*visible;[\s\S]*?overflow-y:\s*visible;/, "content-height composer menus should grow with their active commands without an internal scrollbar");
+assert.match(css, /\.composer-publish-menu-panel \{[\s\S]*?overscroll-behavior:\s*contain;[\s\S]*?-webkit-overflow-scrolling:\s*touch/, "dropdown panels should default to contained momentum scrolling when their options overflow");
+assert.match(css, /\.composer-actions-panel > \.composer-publish-menu \.composer-publish-menu-panel \{[\s\S]*?max-height:\s*min\(var\(--mobile-dropdown-max-height, 34dvh\), calc\(var\(--visual-viewport-height, 100dvh\) - 2rem\)\)/, "mobile composer dropdowns should default to an in-viewport scroll height");
+assert.match(css, /\.composer-actions-panel > \.composer-options-menu \.composer-publish-menu-panel,\n\s+\.composer-actions-panel > \.composer-app-runner-menu \.composer-publish-menu-panel \{\n\s+inset-inline:\s*auto 0;/, "mobile Options and app-runner dropdowns should share right-aligned popover placement");
+assert.match(css, /\.composer-actions-panel > \.composer-publish-menu \.composer-auto-height-menu-panel \{[\s\S]*?height:\s*auto;[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*visible;[\s\S]*?overflow-y:\s*visible;/, "mobile content-height menus should grow with their active commands without an internal scrollbar");
 assert.match(css, /\.composer-native-command-menu-item \{[\s\S]*?color:\s*var\(--ctp-mauve\)/, "skills/tools command menu items should be styled separately from publish actions");
 assert.match(css, /\.composer-actions-panel > \.composer-publish-menu[\s\S]*?grid-column: span 1/, "Publish and command menu buttons should fit beside Git workflow in mobile actions");
 assert.match(css, /\.composer-actions-panel[\s\S]*?bottom:\s*calc\(100% \+ 0\.42rem\)/, "mobile composer actions should open as an above-composer sheet");
