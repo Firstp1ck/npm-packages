@@ -71,6 +71,10 @@ assert.match(html, /id="agentDoneNotificationsToggle"/, "side panel should expos
 assert.match(html, /id="agentDoneNotificationsStatus"/, "agent-done notifications toggle should expose status text");
 assert.match(html, /id="thinkingVisibilityToggle"/, "side panel should expose a thinking-output visibility toggle");
 assert.match(html, /id="thinkingVisibilityStatus"/, "thinking-output visibility toggle should expose status text");
+assert.match(html, /<option value="xhigh">xhigh<\/option>\s*<option value="max">max<\/option>/, "side panel should expose Pi's max thinking effort after xhigh");
+assert.match(app, /const SETTINGS_THINKING_OPTIONS = \["off", "minimal", "low", "medium", "high", "xhigh", "max"\]/, "native settings should expose every Pi thinking effort");
+assert.match(app, /return levels\.length \? levels : \["off", "minimal", "low", "medium", "high", "xhigh", "max"\]/, "footer thinking picker fallback should include max effort");
+assert.match(server, /const THINKING_LEVELS = \["off", "minimal", "low", "medium", "high", "xhigh", "max"\]/, "server should accept Pi's max thinking effort");
 assert.match(html, /id="terminalTabsLayoutSelect"[\s\S]*<option value="left">Left sidebar<\/option>/, "side panel controls should expose a terminal-tabs layout selector");
 assert.match(html, /id="terminalTabsLayoutStatus"/, "terminal-tabs layout selector should expose status text");
 assert.match(html, /id="nativeCommandDialog"/, "native slash selector UI should have a dedicated dialog");

@@ -242,7 +242,7 @@ These screenshots show the v0.4.8 Web UI surfaces. Current implementations inclu
 ![Pi Web UI thinking effort picker showing off, minimal, low, medium, high, and xhigh choices](https://raw.githubusercontent.com/Firstp1ck/npm-packages/main/pi-package-webui/images/Webui_Effort_v0.4.8.png)
 
 - **What it is:** A browser picker for Pi's model thinking/reasoning effort setting.
-- **What you can do:** Switch between `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`, confirm the effective effort in the footer, and tune speed/cost/quality before sending a prompt.
+- **What you can do:** Switch between `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, confirm the effective effort in the footer, and tune speed/cost/quality before sending a prompt.
 
 ### Scoped models
 

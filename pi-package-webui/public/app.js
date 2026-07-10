@@ -926,7 +926,7 @@ HIDDEN_COMMAND_NAMES.add("stats-webui");
 HIDDEN_COMMAND_NAMES.add("btw-status");
 HIDDEN_COMMAND_NAMES.add("btw-transfer");
 const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
-const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_OPTIONS = ["sse", "websocket", "websocket-cached", "auto"];
 const SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS = [
   { value: "30000", label: "30 sec" },
@@ -8386,7 +8386,7 @@ function applyOptimisticThinkingSelection(data, tabContext = activeTabContext())
 
 function footerThinkingLevels() {
   const levels = Array.from(elements.thinkingSelect?.options || []).map((option) => option.value).filter(Boolean);
-  return levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh"];
+  return levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 }
 
 function formatFooterTokenCount(value) {
