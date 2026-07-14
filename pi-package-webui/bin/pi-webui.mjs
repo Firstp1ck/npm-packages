@@ -21,6 +21,7 @@ import {
   validateSessionDelete,
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
+import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
   GIT_WORKFLOW_DELIVERY_MODES,
@@ -7812,35 +7813,59 @@ async function getUpdateStatus({ force = false } = {}) {
     checkedAt: new Date(now).toISOString(),
     updateAvailable,
     restartRequired: true,
-    command: "pi update",
-    allCommand: "pi update --all",
+    command: piUpdateCommandText(),
+    allCommand: piUpdateCommandText({ all: true, supportsAll: true }),
+    allFallbackCommand: piUpdateCommandText({ all: true }),
     webuiDev: webuiDevServer,
     pi: piStatus,
     webui: webuiStatus,
     packages: {
       checked: false,
-      note: "Default update runs pi update for Pi only. Use update all to run pi update --all for Pi and configured packages."
+      note: "Update all checks whether the selected Pi executable supports pi update --all. If not, it falls back to pi update --self followed by pi update --extensions."
     },
   };
   updateStatusCacheAt = now;
   return updateStatusCache;
 }
 
-async function resolvePiUpdateCommand({ all = false } = {}) {
-  const updateArgs = all ? ["update", "--all"] : ["update"];
-  const label = all ? "Pi CLI and configured packages" : "Pi CLI";
+async function piUpdateCommandSupportsAll(command) {
+  const result = await runCommand(command.command, command.args || [], {
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    maxOutputLength: 20_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut || result.error) return false;
+  return piUpdateHelpSupportsAll(`${result.stdout}\n${result.stderr}`);
+}
+
+async function resolvePiUpdateCommands({ all = false } = {}) {
+  let resolveCommand;
+  let labelPrefix = "";
+
   if (options.piBinExplicit) {
-    const command = await resolvePiCommand(updateArgs);
-    return { ...command, label, timeoutMs: PI_UPDATE_TIMEOUT_MS, maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS };
+    resolveCommand = (args) => resolvePiCommand(args);
+  } else {
+    const pathPi = await runCommand(options.piBin, ["--version"], { timeoutMs: 3000, maxOutputLength: 4000 });
+    if (pathPi.exitCode === 0 && !pathPi.timedOut && !pathPi.error) {
+      resolveCommand = async (args) => ({
+        command: options.piBin,
+        args,
+        displayCommand: formatCommandForDisplay(options.piBin, args),
+      });
+    } else {
+      resolveCommand = (args) => resolvePiCommand(args);
+      labelPrefix = "bundled ";
+    }
   }
 
-  const pathPi = await runCommand(options.piBin, ["--version"], { timeoutMs: 3000, maxOutputLength: 4000 });
-  if (pathPi.exitCode === 0 && !pathPi.timedOut && !pathPi.error) {
-    return { label, command: options.piBin, args: updateArgs, displayCommand: formatCommandForDisplay(options.piBin, updateArgs), timeoutMs: PI_UPDATE_TIMEOUT_MS, maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS };
-  }
-
-  const fallback = await resolvePiCommand(updateArgs);
-  return { ...fallback, label: `bundled ${label}`, timeoutMs: PI_UPDATE_TIMEOUT_MS, maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS };
+  const supportsAll = all && await piUpdateCommandSupportsAll(await resolveCommand(["update", "--help"]));
+  const steps = piUpdateCommandSteps({ all, supportsAll });
+  return Promise.all(steps.map(async (step) => ({
+    ...(await resolveCommand(step.args)),
+    label: `${labelPrefix}${step.label}`,
+    timeoutMs: PI_UPDATE_TIMEOUT_MS,
+    maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS,
+  })));
 }
 
 function packageNodeModulesPath(nodeModulesRoot, packageName) {
@@ -8046,8 +8071,8 @@ function uniqueUpdateTasks(tasks) {
 }
 
 async function resolveUpdateTasks({ all = false } = {}) {
-  const piTask = await resolvePiUpdateCommand({ all });
-  if (!all) return uniqueUpdateTasks([piTask]);
+  const piTasks = await resolvePiUpdateCommands({ all });
+  if (!all) return uniqueUpdateTasks(piTasks);
 
   const [
     currentWebuiTask,
@@ -8066,7 +8091,7 @@ async function resolveUpdateTasks({ all = false } = {}) {
   ]);
 
   return uniqueUpdateTasks([
-    piTask,
+    ...piTasks,
     currentWebuiTask,
     agentTask,
     optionalFeatureTask,

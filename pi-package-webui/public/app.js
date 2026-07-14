@@ -3296,9 +3296,9 @@ function renderUpdateNotification(status = latestUpdateStatus, { force = false }
   if (elements.updateNotificationMessage) {
     let message = "Updates are available. Direct Web UI updates are only enabled from localhost on the host machine.";
     if (canRunUpdate) {
-      if (hasPiUpdate && hasPackageUpdate) message = "Run pi update for Pi only, or update all to include Web UI, Optional Features, configured Pi packages, and detected Pi package roots, then restart this Web UI server automatically.";
-      else if (hasPackageUpdate) message = "Update all to refresh Web UI/package entries, Optional Features, configured Pi packages, and detected Pi package roots, then restart this Web UI server automatically.";
-      else message = "Run pi update for Pi only, then restart this Web UI server automatically.";
+      if (hasPiUpdate && hasPackageUpdate) message = "Run pi update --self for Pi only, or update all to use pi update --all when supported and include Web UI, Optional Features, configured Pi packages, and detected Pi package roots, then restart this Web UI server automatically.";
+      else if (hasPackageUpdate) message = "Update all checks for pi update --all support, then refreshes Web UI/package entries, Optional Features, configured Pi packages, and detected Pi package roots before restarting this Web UI server automatically.";
+      else message = "Run pi update --self for Pi only, then restart this Web UI server automatically.";
     }
     elements.updateNotificationMessage.textContent = message;
   }
@@ -3352,10 +3352,10 @@ function piUpdateConfirmationText({ all = false } = {}) {
   const items = updateNotificationItems();
   const workingWarning = hasWorkingTab() ? "\n\nOne or more Pi tabs look busy or blocked. Finish or abort in-flight work before updating if you need to preserve it." : "";
   const versionText = items.length ? `\n\nDetected update: ${items.join(" · ")}.` : "";
-  const command = all ? "pi update --all" : "pi update";
+  const commandText = all ? '"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"' : '"pi update --self"';
   const scope = all ? "Pi, configured packages, Optional Features, and detected Pi package roots" : "Pi only";
   const extra = all ? " It will also run npm/bun package updates for detected Web UI, Optional Feature, agent, project, and global Pi package roots." : "";
-  return `Run ${scope} now?${versionText}\n\nThis will run \"${command}\" on the Web UI host.${extra} After it finishes, Pi Web UI will restart itself. Browser clients will briefly disconnect, and managed Pi tabs/RPC processes will be restarted from saved session state when possible.${workingWarning}`;
+  return `Run ${scope} now?${versionText}\n\nThis will run ${commandText} on the Web UI host.${extra} After it finishes, Pi Web UI will restart itself. Browser clients will briefly disconnect, and managed Pi tabs/RPC processes will be restarted from saved session state when possible.${workingWarning}`;
 }
 
 async function runPiUpdateAndRestart({ all = false } = {}) {
@@ -25027,8 +25027,8 @@ function updateServerActionButton() {
   button.textContent = action === "restart" ? "Restart" : action === "update" || action === "update-all" ? "Update" : action === "stop" ? "Stop" : "Run";
   button.classList.toggle("danger", action === "stop");
   if (action === "restart") setServerActionStatus("Ready to restart the Web UI server.", "info");
-  else if (action === "update") setServerActionStatus("Ready to run pi update for Pi only, then restart the Web UI server.", "info");
-  else if (action === "update-all") setServerActionStatus("Ready to run pi update --all plus detected Web UI/Optional Feature Pi package root updates, then restart the Web UI server.", "info");
+  else if (action === "update") setServerActionStatus("Ready to run pi update --self for Pi only, then restart the Web UI server.", "info");
+  else if (action === "update-all") setServerActionStatus("Ready to check pi update --all support, use the compatible fallback when needed, update detected Web UI/Optional Feature Pi package roots, then restart the Web UI server.", "info");
   else if (action === "stop") setServerActionStatus("Ready to stop the Web UI server.", "info");
   else setServerActionStatus();
 }
