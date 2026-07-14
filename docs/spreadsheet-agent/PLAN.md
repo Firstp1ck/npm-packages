@@ -1,7 +1,7 @@
 # Pi Agent XLSX/XLSM Workbook Editor — Implementation Plan
 
 Date: 2026-07-14
-Status: Planning complete; implementation not started
+Status: P0 hardening and native feasibility bakeoff complete; external corpus, repair-dialog, and Pi-mode gates remain open
 Target package: `pi-extension-workbook` / `@firstpick/pi-extension-workbook`
 
 ## Progress tracker
@@ -282,34 +282,34 @@ Default output naming should be non-destructive, for example `report.pi-edited.x
 
 ### P0 — Fidelity, package, and safety foundation
 
-- [ ] Scaffold `pi-extension-workbook` with package metadata, extension entry point, skill directory, tests, and `check`/`test`/`pack:dry` scripts.
-- [ ] Define the versioned `WorkbookEngine`, capability, workbook-operation, tool-result, and error contracts.
-- [ ] Reuse `@firstpick/pi-utils` for user-path handling, atomic-write primitives, and process lifecycle; add and test the missing `fsync`, binary replacement, abort, and owned-process-tree guarantees.
-- [ ] Implement temporary artifact handling, output truncation, cancellation, and safe error redaction.
-- [ ] Implement bounded OOXML package intake: traversal rejection, encryption handling, compressed/uncompressed size and ratio limits, entry-count limits, and XML/shared-string/style limits.
+- [x] Scaffold `pi-extension-workbook` with package metadata, extension entry point, skill directory, tests, and `check`/`test`/`pack:dry` scripts.
+- [x] Define the versioned `WorkbookEngine`, capability, workbook-operation, tool-result, and error contracts.
+- [x] Reuse `@firstpick/pi-utils` for user-path handling, atomic-write primitives, and process lifecycle; add and test the missing `fsync`, binary replacement, abort, and owned-process-tree guarantees.
+- [x] Implement temporary artifact handling, output truncation, cancellation, and safe error redaction.
+- [x] Implement bounded OOXML package intake: traversal rejection, encryption handling, compressed/uncompressed size and ratio limits, entry-count limits, and XML/shared-string/style limits.
 - [ ] Build a legal test corpus covering `.xlsx` and `.xlsm`: styles, themes, merges, formulas, charts, tables, pivots, conditional formats, validations, images, links, protection, hidden sheets, VBA, signed VBA, ActiveX, embeddings, custom ribbons, non-canonical active-part names, and harmless macro/connection sentinels.
-- [ ] Implement OOXML ZIP inventory, content-type/relationship-driven protected-part classification, SHA-256 manifests, and macro-integrity comparison.
-- [ ] Run bounded feasibility spikes for native Excel, Aspose.Cells, and OOXML-surgical editing; select one primary mutation backend and defer optional alternatives to P3.
-- [ ] If native Excel is selected, implement the isolated worker safeguards in section 6 and prove that macros, events, links, and connections do not execute or refresh.
+- [x] Implement OOXML ZIP inventory, content-type/relationship-driven protected-part classification, SHA-256 manifests, and macro-integrity comparison.
+- [x] Run bounded OOXML and native Excel feasibility spikes; retain OOXML-surgical editing as the primary backend after native no-op fidelity failures, and explicitly defer Aspose.Cells licensing/runtime work.
+- [x] Implement and test an isolated native Excel candidate worker with forced macro security, disabled events/link updates, manual calculation, source-hash checks, exact process ownership, abort/timeout handling, and owned-process cleanup; keep it unselected after fidelity failures.
 - [ ] Run and document the selected backend's full corpus bakeoff, including Excel repair prompts, visual diffs, macro hashes, signatures, unsupported-part loss, runtime requirements, performance, and licensing.
-- [ ] Record the production backend decision in an ADR and define fail-closed, per-file backend capability rules.
-- [ ] Implement explicit literal-value versus formula operations and test leading `=`, `+`, `-`, and `@` input without backend-dependent coercion.
-- [ ] Implement transaction staging, mandatory `expectedSha256` for commits, per-destination `withFileMutationQueue()`, durable atomic commit, explicit overwrite, and recovery copies.
+- [x] Record the production backend decision in an ADR and define fail-closed, per-file backend capability rules.
+- [x] Implement explicit literal-value versus formula operations and test leading `=`, `+`, `-`, and `@` input without backend-dependent coercion.
+- [x] Implement transaction staging, mandatory `expectedSha256` for commits, per-destination `withFileMutationQueue()`, durable atomic commit, explicit overwrite, and recovery copies.
 - [ ] If native Excel is selected, provision a controlled interactive Windows validation host and repair-dialog/macro-nonexecution harness without presenting it as unattended server support.
-- [ ] Add `/workbook-doctor` and a non-mutating capability probe for engines, licenses, renderers, and host dependencies.
+- [x] Add `/workbook-doctor` and a non-mutating capability probe for engines, licenses, renderers, and host dependencies.
 
 P0 exit gate: the bounded OOXML read/integrity pipeline passes the corpus, and one selected primary mutation backend passes the no-op round trip without source overwrite, Excel repair prompts, protected-part changes, macro execution, or external-data refresh. Any additional backend remains disabled for mutation until it independently passes the same gate.
 
 ### P1 — Agent-viewable and safely editable MVP
 
-- [ ] Implement `workbook_inspect` with bounded workbook, sheet, feature, engine, package, link, and macro metadata.
-- [ ] Implement `workbook_read` for targeted ranges with values, formulas, cached results, style IDs, merges, dimensions, and hidden-state metadata.
-- [ ] Implement `workbook_render` for focused ranges/sheets with PNG image blocks and explicit renderer/fidelity metadata.
-- [ ] Implement `workbook_edit` dry-run planning and core operations: values, formulas, clear, copy/fill, font, fill, border, alignment, number format, merge, row height, and column width.
-- [ ] Implement non-destructive save, explicit in-place overwrite, strict `.xlsx`/`.xlsm` extension handling, and macro-preservation gates.
-- [ ] Implement `workbook_validate` and `workbook_diff` for values, formulas, styles, dimensions, structure, OOXML parts, and macros.
-- [ ] Add compact tool renderers and progress updates without relying on TUI-only APIs.
-- [ ] Write `skills/workbook-editor/SKILL.md` with inspect-before-edit, render-when-visual, dry-run-first, validate-after-edit, and macro-safety routing.
+- [x] Implement `workbook_inspect` with bounded workbook, sheet, feature, engine, package, link, and macro metadata.
+- [x] Implement `workbook_read` for targeted ranges with values, formulas, cached results, style IDs, merges, dimensions, and hidden-state metadata.
+- [x] Implement `workbook_render` for focused ranges/sheets with PNG image blocks and explicit renderer/fidelity metadata.
+- [x] Implement `workbook_edit` dry-run planning and core operations: values, formulas, clear, copy/fill, font, fill, border, alignment, number format, merge, row height, and column width.
+- [x] Implement non-destructive save, explicit in-place overwrite, strict `.xlsx`/`.xlsm` extension handling, and macro-preservation gates.
+- [x] Implement `workbook_validate` and `workbook_diff` for values, formulas, styles, dimensions, structure, OOXML parts, and macros.
+- [x] Add compact tool renderers and progress updates without relying on TUI-only APIs.
+- [x] Write `skills/workbook-editor/SKILL.md` with inspect-before-edit, render-when-visual, dry-run-first, validate-after-edit, and macro-safety routing.
 - [ ] Verify all tools in TUI, print/JSON, and RPC/WebUI modes.
 
 P1 exit gate: an agent can inspect, render, edit, and verify representative `.xlsx` and `.xlsm` files while VBA remains byte-identical and outputs open cleanly in Excel.
@@ -343,7 +343,7 @@ P3 exit gate: capability reports accurately predict supported edits across platf
 
 - [ ] Add read-only VBA metadata inspection only if the selected backend can expose module names, references, signatures, and project protection without executing code.
 - [ ] Produce a separate threat model and design proposal before exposing VBA source extraction or replacement.
-- [ ] Keep VBA execution out of the default package; any future executor must be a separately installed, disabled-by-default tool with explicit per-run confirmation and isolation.
+- [x] Keep VBA execution out of the default package; any future executor must be a separately installed, disabled-by-default tool with explicit per-run confirmation and isolation.
 
 P4 exit gate: no VBA mutation or execution ships merely because `.xlsm` preservation is supported.
 
@@ -378,6 +378,8 @@ P4 exit gate: no VBA mutation or execution ships merely because `.xlsm` preserva
 ```bash
 npm --prefix pi-extension-workbook run check
 npm --prefix pi-extension-workbook test
+npm --prefix pi-extension-workbook run test:excel  # controlled interactive Windows/Excel host only
+npm --prefix pi-extension-workbook run test:native # controlled native feasibility bakeoff; public adapter stays disabled
 npm --prefix pi-extension-workbook run pack:dry
 git diff --check
 ```
@@ -412,6 +414,6 @@ Do not publish until P0 and P1 exit gates pass and the package tarball contains 
 - Microsoft Excel automation security: <https://learn.microsoft.com/en-us/office/vba/api/excel.application.automationsecurity>
 - Microsoft unattended Office automation considerations: <https://support.microsoft.com/en-us/visio/considerations-for-server-side-automation-of-office>
 
-## First implementation action
+## Next implementation gate
 
-Start P0 by scaffolding `pi-extension-workbook`, defining the backend-neutral contracts, and creating the fidelity corpus plus OOXML manifest before writing any production workbook mutation path.
+Do not widen or publish mutation capability until the remaining P0 corpus covers legally sourced signed VBA, ActiveX, embeddings, custom ribbons, charts/tables/pivots, and external-connection sentinels, a UI-aware repair-dialog harness passes, and actual Pi TUI, print/JSON, and RPC sessions pass. The native Excel candidate remains disabled because its no-op `.xlsx` round trip changed merged-cell styles and its no-op `.xlsm` round trip changed `xl/vbaProject.bin`. Current evidence and explicit deferrals are recorded in `pi-extension-workbook/docs/IMPLEMENTATION-STATUS.md`.

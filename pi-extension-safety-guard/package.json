@@ -21,11 +21,15 @@
       "./index.ts"
     ]
   },
+  "scripts": {
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mjs"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
   "files": [
     "index.ts",
+    "src",
     "images",
     "README.md",
     "LICENSE"

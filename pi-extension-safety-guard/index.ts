@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { matchingCommandExcerpt } from "./src/excerpt.ts";
 
 const STATUS_KEY = "safety-guard";
 const PROMPT_WIDGET_KEY = "safety-guard-prompt";
@@ -267,71 +268,6 @@ function stripHeredocBodies(command: string): string {
   }
 
   return kept.join("\n");
-}
-
-function previewCommand(command: string, maxChars = 800): string {
-  if (command.length <= maxChars) return command;
-  return `${command.slice(0, maxChars)}\n… [truncated ${command.length - maxChars} chars for prompt display]`;
-}
-
-function highlightMatchedPattern(
-  rule: CommandRule,
-  line: string,
-  highlight: (value: string) => string,
-): string {
-  rule.pattern.lastIndex = 0;
-  const match = rule.pattern.exec(line);
-  rule.pattern.lastIndex = 0;
-  if (!match || match.index === undefined || match[0].length === 0) return line;
-
-  const start = match.index;
-  const end = start + match[0].length;
-  return `${line.slice(0, start)}${highlight(`>>> ${match[0]} <<<`)}${line.slice(end)}`;
-}
-
-function matchingCommandExcerpt(
-  rule: CommandRule,
-  commandForMatching: string,
-  highlight: (value: string) => string = (value) => value,
-): string {
-  const lines = commandForMatching.split(/\r?\n/);
-  const matchedIndexes = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => {
-      rule.pattern.lastIndex = 0;
-      const matched = rule.pattern.test(line);
-      rule.pattern.lastIndex = 0;
-      return matched;
-    })
-    .map(({ index }) => index);
-
-  if (matchedIndexes.length === 0) {
-    return previewCommand(commandForMatching.trim() || commandForMatching, 800);
-  }
-
-  const matchedSet = new Set(matchedIndexes);
-  const included = new Set<number>();
-  for (const index of matchedIndexes.slice(0, 3)) {
-    for (let offset = -1; offset <= 1; offset += 1) {
-      const lineIndex = index + offset;
-      if (lineIndex < 0 || lineIndex >= lines.length) continue;
-      included.add(lineIndex);
-    }
-  }
-
-  const lineNumberWidth = String(lines.length).length;
-  const excerptLines = [...included]
-    .sort((a, b) => a - b)
-    .map((lineIndex) => {
-      const isMatchedLine = matchedSet.has(lineIndex);
-      const marker = isMatchedLine ? highlight("!!!") : "   ";
-      const lineNumber = String(lineIndex + 1).padStart(lineNumberWidth, " ");
-      const line = isMatchedLine ? highlightMatchedPattern(rule, lines[lineIndex], highlight) : lines[lineIndex];
-      return `${marker} ${lineNumber} | ${line}`;
-    });
-
-  if (matchedIndexes.length > 3) excerptLines.push(`… ${matchedIndexes.length - 3} more matching lines omitted`);
-  return previewCommand(excerptLines.join("\n"), 1000);
 }
 
 function formatRuleMessage(

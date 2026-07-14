@@ -46,6 +46,11 @@ Path variables:
 - `PI_WEBUI=${HOME}/npm-packages/pi-package-webui/node_modules/@earendil-works`
 - `PI_WEBUI_PKG=${HOME}/npm-packages/pi-package-webui`
 - `PI_AGENT=${HOME}/.pi/agent`
+- `PI_GLOBAL_WIN=C:/Users/hdlea/AppData/Local/Programs/node-v24.12.0-win-x64/node_modules/@earendil-works/pi-coding-agent`
+- `PI_WEBUI_APPDATA=C:/Users/hdlea/AppData/Local/Programs/node-v24.12.0-win-x64/node_modules/@firstpick/pi-package-webui`
+- `PI_WEBUI_REPO=C:/Users/hdlea/Documents/GitHub/npm-packages/pi-package-webui`
+- `PI_WEBUI_AGENT_NPM=C:/Users/hdlea/.pi/agent/npm/node_modules/@firstpick/pi-package-webui`
+- `PI_AGENT_WIN=C:/Users/hdlea/.pi/agent`
 
 Files:
 
@@ -55,22 +60,61 @@ Files:
 4. `${PI_GLOBAL}/docs/providers.md`
 5. `${PI_GLOBAL}/docs/settings.md`
 6. `${PI_WEBUI}/pi-ai/dist/api/anthropic-messages.js`
-7. `${PI_WEBUI}/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`
-8. `${PI_WEBUI}/pi-coding-agent/dist/modes/interactive/interactive-mode.js`
-9. `${PI_WEBUI}/pi-coding-agent/dist/modes/interactive/components/settings-selector.js`
-10. `${PI_WEBUI}/pi-coding-agent/docs/providers.md`
-11. `${PI_WEBUI}/pi-coding-agent/docs/settings.md`
-12. `${PI_WEBUI_PKG}/public/app.js`
-13. `${PI_AGENT}/extensions/anthropic-subscription-auth-recovery.ts`
+7. `${PI_WEBUI}/pi-ai/dist/providers/anthropic.js`
+8. `${PI_WEBUI}/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`
+9. `${PI_WEBUI}/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js`
+10. `${PI_WEBUI}/pi-coding-agent/dist/modes/interactive/interactive-mode.js`
+11. `${PI_WEBUI}/pi-coding-agent/dist/modes/interactive/components/settings-selector.js`
+12. `${PI_WEBUI}/pi-coding-agent/docs/providers.md`
+13. `${PI_WEBUI}/pi-coding-agent/docs/settings.md`
+14. `${PI_WEBUI_PKG}/public/app.js`
+15. `${PI_AGENT}/extensions/anthropic-subscription-auth-recovery.ts`
+16. `${PI_GLOBAL_WIN}/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`
+17. `${PI_GLOBAL_WIN}/dist/modes/interactive/interactive-mode.js`
+18. `${PI_GLOBAL_WIN}/dist/modes/interactive/components/settings-selector.js`
+19. `${PI_GLOBAL_WIN}/docs/providers.md`
+20. `${PI_GLOBAL_WIN}/docs/settings.md`
+21. `${PI_WEBUI_APPDATA}/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`
+22. `${PI_WEBUI_APPDATA}/node_modules/@firstpick/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js`
+23. `${PI_WEBUI_APPDATA}/node_modules/@firstpick/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js`
+24. `${PI_WEBUI_APPDATA}/node_modules/@firstpick/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/settings-selector.js`
+25. `${PI_WEBUI_APPDATA}/node_modules/@firstpick/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/docs/providers.md`
+26. `${PI_WEBUI_APPDATA}/node_modules/@firstpick/pi-package-webui/node_modules/@earendil-works/pi-coding-agent/docs/settings.md`
+27. `${PI_WEBUI_APPDATA}/public/app.js`
+28. `${PI_WEBUI_APPDATA}/node_modules/@firstpick/pi-package-webui/public/app.js`
+29. `${PI_WEBUI_REPO}/node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js`
+30. `${PI_WEBUI_REPO}/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js`
+31. `${PI_WEBUI_REPO}/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js`
+32. `${PI_WEBUI_REPO}/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/settings-selector.js`
+33. `${PI_WEBUI_REPO}/node_modules/@earendil-works/pi-coding-agent/docs/providers.md`
+34. `${PI_WEBUI_REPO}/node_modules/@earendil-works/pi-coding-agent/docs/settings.md`
+35. `${PI_WEBUI_REPO}/public/app.js`
+36. `${PI_WEBUI_AGENT_NPM}/public/app.js`
+37. `${PI_AGENT_WIN}/extensions/anthropic-subscription-auth-recovery.ts`
+
+Fast path-discovery rule:
+
+- Patch every existing equivalent listed above; do not create missing package trees.
+- For `@earendil-works/pi-ai` 0.80.x, the mutation implementation is usually `dist/api/anthropic-messages.js` and exports `stream`.
+- For older WebUI-local `@earendil-works/pi-ai` 0.78.x/0.79.x, the mutation implementation is usually `dist/providers/anthropic.js` and exports `streamAnthropic`.
+- In 0.80.x, `dist/providers/anthropic.js` is only a provider-registration wrapper that imports `../api/anthropic-messages.lazy.js`; do not patch that wrapper unless it actually contains `const claudeCodeVersion`, the OAuth branch, and the old Claude Code system prompt.
+- The Windows/local files numbered 16-37 were patched or already equivalent on 2026-07-14 and are listed so the next recovery can skip path hunting.
 
 ## Change 1 — Update Anthropic OAuth request identity to Agent SDK shape
 
 **File:** `${PI_GLOBAL}/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`
 
-Also applied to:
+Also applied to every existing WebUI-local `pi-ai` mutation implementation:
 
-- `${PI_WEBUI}/pi-ai/dist/api/anthropic-messages.js`
-- `${PI_WEBUI}/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js`
+- `${PI_WEBUI}/pi-ai/dist/api/anthropic-messages.js` when present.
+- `${PI_WEBUI}/pi-ai/dist/providers/anthropic.js` when `dist/api/anthropic-messages.js` is absent and this file contains the OAuth request implementation.
+- `${PI_WEBUI}/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js` when present.
+- `${PI_WEBUI}/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/anthropic.js` when `dist/api/anthropic-messages.js` is absent and this file contains the OAuth request implementation.
+
+Fast implementation detail: the same semantic patch applies to both file layouts, but the exact OAuth condition and cache-control call may differ by version:
+
+- Newer API file: `if (apiKey && isOAuthToken(apiKey))` and `getCacheControl(model, ..., options?.env)`.
+- Older provider file: `if (isOAuthToken(apiKey))` and sometimes `getCacheControl(model, ...)` without `options?.env`.
 
 ### What was changed
 
