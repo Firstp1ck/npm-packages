@@ -10,9 +10,19 @@ export const DOCX_ERROR_CODES = [
 export type DocxErrorCode = typeof DOCX_ERROR_CODES[number];
 
 const SENSITIVE_RE = /(password|passwd|pwd|secret|token)(\s*[=:]\s*)([^\s,;]+)/gi;
+const SENSITIVE_KEY_RE = /password|passwd|pwd|secret|token|authorization|cookie/i;
 export function redact(value: string): string {
   return value.replace(SENSITIVE_RE, "$1$2[REDACTED]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
 }
+function redactUnknown(value: unknown, seen: WeakSet<object>, depth: number): unknown {
+  if (typeof value === "string") return redact(value);
+  if (!value || typeof value !== "object") return value;
+  if (depth > 20 || seen.has(value)) return "[REDACTED_CYCLE]";
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactUnknown(item, seen, depth + 1));
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, SENSITIVE_KEY_RE.test(key) ? "[REDACTED]" : redactUnknown(item, seen, depth + 1)]));
+}
+export function redactDetails(details: Record<string, unknown>): Record<string, unknown> { return redactUnknown(details, new WeakSet<object>(), 0) as Record<string, unknown>; }
 
 export class DocxError extends Error {
   readonly code: DocxErrorCode;
@@ -21,7 +31,7 @@ export class DocxError extends Error {
     super(`${code}: ${redact(message)}`);
     this.name = "DocxError";
     this.code = code;
-    this.details = details;
+    this.details = details ? redactDetails(details) : undefined;
   }
   override toString(): string {
     return JSON.stringify({ code: this.code, message: this.message.replace(`${this.code}: `, ""), details: this.details });

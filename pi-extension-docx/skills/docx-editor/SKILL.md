@@ -2,7 +2,7 @@
 name: docx-editor
 description: Safely inspect, search, render, edit, diff, validate, and commit Microsoft Word DOCX files with the dedicated docx_* tools. Use for DOCX/DOTX/DOCM/DOTM document work; enforces dry-run-first edits, active-content refusal, preservation checks, and save-as by default.
 license: MIT
-compatibility: Requires @firstpick/pi-extension-docx. Mutation requires its Open XML .NET sidecar; rendering requires LibreOffice and LiteParse.
+compatibility: Requires @firstpick/pi-extension-docx. Mutation requires its Open XML .NET sidecar; rendering requires ONLYOFFICE Desktop Editors or LibreOffice plus LiteParse.
 ---
 
 # DOCX editor

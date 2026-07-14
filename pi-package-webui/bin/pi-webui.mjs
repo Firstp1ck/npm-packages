@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { access, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -260,6 +260,11 @@ const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".svg", "image/svg+xml"],
   [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".pdf", "application/pdf"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".json", "application/json; charset=utf-8"],
   [".webp", "image/webp"],
   [".webmanifest", "application/manifest+json; charset=utf-8"],
 ]);
@@ -1009,6 +1014,163 @@ async function sendNativeDownload(res, token, { inline = false } = {}) {
     stream.on("end", resolve);
     stream.pipe(res);
   });
+}
+
+const documentArtifactTokens = new Map();
+const DEFAULT_DOCUMENT_ARTIFACT_ROOT = path.join(tmpdir(), "pi-extension-docx");
+const DOCUMENT_ARTIFACT_MANIFEST_LIMIT_BYTES = 2 * 1024 * 1024;
+const DOCUMENT_ARTIFACT_PAGE_LIMIT = 10_000;
+
+function documentArtifactRoots() {
+  return [...new Set([DEFAULT_DOCUMENT_ARTIFACT_ROOT, ...String(process.env.PI_WEBUI_ARTIFACT_ROOTS || "").split(path.delimiter).map((item) => item.trim()).filter(Boolean)].map((item) => path.resolve(item)))];
+}
+
+function documentArtifactPath(filePath) {
+  if (typeof filePath !== "string" || !path.isAbsolute(filePath)) throw new Error("artifact path is unavailable");
+  const info = statSync(filePath, { throwIfNoEntry: false });
+  if (!info?.isFile()) throw new Error("artifact file is unavailable");
+  const real = realpathSync(filePath);
+  const root = documentArtifactRoots().map((candidate) => { try { return realpathSync(candidate); } catch { return null; } }).find((candidate) => candidate && (candidate === real || pathInside(candidate, real)));
+  if (!root) throw new Error("artifact path is outside configured roots");
+  return { path: real, root, size: info.size };
+}
+
+function pruneDocumentArtifactTokens(now = Date.now()) {
+  for (const [token, item] of documentArtifactTokens) if (!item || item.expiresAt <= now) documentArtifactTokens.delete(token);
+}
+
+const PRIVATE_ARTIFACT_KEYS = new Set(["manifestPath", "downloadPath", "outputPath", "sourcePath", "stagedPath", "pdfPath", "workspace", "recoveryPath", "artifactPath", "fullOutputPath"]);
+function sanitizeArtifactMetadata(value, depth = 0) {
+  if (depth > 20) return "[depth limit]";
+  if (Array.isArray(value)) return value.map((item) => sanitizeArtifactMetadata(item, depth + 1));
+  if (!value || typeof value !== "object") return typeof value === "string" && value.length > 100_000 ? `${value.slice(0, 100_000)}…` : value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !PRIVATE_ARTIFACT_KEYS.has(key)).map(([key, item]) => [key, sanitizeArtifactMetadata(item, depth + 1)]));
+}
+
+function artifactSessionIdentity(tab) {
+  return normalizedRestoreString(tab?.lastState?.sessionId || tabRestorableSessionFile(tab), 4096) || null;
+}
+
+function publicDocumentArtifact(record) {
+  const tabQuery = `tab=${encodeURIComponent(record.tabId)}`;
+  const base = `/api/artifacts/${encodeURIComponent(record.token)}`;
+  return {
+    schema: "pi.artifact/v1",
+    kind: "document",
+    id: record.id,
+    revisionId: record.revisionId,
+    title: record.title,
+    mimeType: record.mimeType,
+    pageCount: record.pageCount,
+    expiresAt: new Date(record.expiresAt).toISOString(),
+    manifestUrl: `${base}/manifest?${tabQuery}`,
+    downloadUrl: record.downloadPath ? `${base}/download?${tabQuery}` : undefined,
+  };
+}
+
+function registerDocumentArtifact(tab, artifact) {
+  if (!artifact || artifact.schema !== "pi.artifact/v1" || artifact.kind !== "document" || typeof artifact.id !== "string" || !artifact.id.trim()) throw new Error("invalid pi.artifact/v1 document envelope");
+  pruneDocumentArtifactTokens();
+  const sessionIdentity = artifactSessionIdentity(tab), existing = [...documentArtifactTokens.values()].find((item) => item.tabId === tab.id && item.sessionIdentity === sessionIdentity && item.id === artifact.id && item.revisionId === (artifact.revisionId || undefined));
+  if (existing) return publicDocumentArtifact(existing);
+  const manifestFile = documentArtifactPath(artifact.manifestPath);
+  if (manifestFile.size > DOCUMENT_ARTIFACT_MANIFEST_LIMIT_BYTES) throw new Error("artifact manifest is too large");
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(manifestFile.path, "utf8")); } catch { throw new Error("artifact manifest is malformed"); }
+  const declared = manifest?.artifact;
+  if (declared?.schema !== "pi.artifact/v1" || declared?.kind !== "document" || declared?.id !== artifact.id || (declared?.revisionId || undefined) !== (artifact.revisionId || undefined)) throw new Error("artifact manifest identity mismatch");
+  const downloadPath = artifact.downloadPath ? documentArtifactPath(artifact.downloadPath).path : undefined;
+  const rawPages = Array.isArray(manifest.pages) ? manifest.pages : [];
+  if (rawPages.length > DOCUMENT_ARTIFACT_PAGE_LIMIT) throw new Error("artifact page count exceeds the registry limit");
+  const pages = rawPages.map((page, index) => {
+    const pageNum = Number(page?.pageNum);
+    if (!Number.isInteger(pageNum) || pageNum < 1) throw new Error(`artifact page ${index + 1} is invalid`);
+    const image = documentArtifactPath(page.outputPath);
+    if (MIME_TYPES.get(path.extname(image.path).toLowerCase()) !== "image/png") throw new Error(`artifact page ${pageNum} is not PNG`);
+    return { pageNum, width: Number(page.width) || undefined, height: Number(page.height) || undefined, bytes: image.size, path: image.path };
+  });
+  const declaredExpiry = Date.parse(String(artifact.expiresAt || declared?.expiresAt || "")), now = Date.now();
+  if (!Number.isFinite(declaredExpiry) || declaredExpiry <= now) throw new Error("artifact is expired");
+  const token = randomUUID(), expiresAt = Math.min(declaredExpiry, now + NATIVE_DOWNLOAD_TOKEN_TTL_MS);
+  const record = {
+    token,
+    tabId: tab.id,
+    sessionIdentity,
+    id: artifact.id,
+    revisionId: artifact.revisionId || undefined,
+    title: safeDownloadFileName(artifact.title || declared?.title || "document.docx", "document.docx"),
+    mimeType: String(artifact.mimeType || declared?.mimeType || "application/octet-stream"),
+    pageCount: Number(artifact.pageCount ?? declared?.pageCount ?? pages.length) || pages.length,
+    manifest: {
+      sourceSha256: typeof manifest.sourceSha256 === "string" ? manifest.sourceSha256 : undefined,
+      renderer: manifest.renderer && typeof manifest.renderer === "object" ? sanitizeArtifactMetadata(manifest.renderer) : undefined,
+      warnings: Array.isArray(manifest.warnings) ? sanitizeArtifactMetadata(manifest.warnings.slice(0, 100)) : [],
+      outline: Array.isArray(manifest.outline) ? sanitizeArtifactMetadata(manifest.outline.slice(0, 10_000)) : [],
+      comments: Array.isArray(manifest.comments) ? sanitizeArtifactMetadata(manifest.comments.slice(0, 10_000)) : [],
+      revisions: Array.isArray(manifest.revisions) ? sanitizeArtifactMetadata(manifest.revisions.slice(0, 10_000)) : [],
+      diff: manifest.diff && typeof manifest.diff === "object" ? sanitizeArtifactMetadata(manifest.diff) : undefined,
+    },
+    manifestPath: manifestFile.path,
+    downloadPath,
+    pages,
+    expiresAt,
+  };
+  documentArtifactTokens.set(token, record);
+  return publicDocumentArtifact(record);
+}
+
+function rewriteArtifactInResult(tab, result) {
+  if (!result || typeof result !== "object") return result;
+  const details = result.details;
+  if (!details || typeof details !== "object" || details.artifact?.schema !== "pi.artifact/v1") return result;
+  let artifact;
+  try { artifact = registerDocumentArtifact(tab, details.artifact); }
+  catch { artifact = { schema: "pi.artifact/v1", kind: "document", id: String(details.artifact?.id || "unavailable"), title: safeDownloadFileName(details.artifact?.title || "Document"), unavailable: true }; }
+  return { ...result, details: { ...details, artifact } };
+}
+
+function rewriteArtifactsForTab(tab, payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  let next = payload;
+  if (payload.result) next = { ...next, result: rewriteArtifactInResult(tab, payload.result) };
+  if (payload.partialResult) next = { ...next, partialResult: rewriteArtifactInResult(tab, payload.partialResult) };
+  if (payload.message?.role === "toolResult") next = { ...next, message: rewriteArtifactInResult(tab, payload.message) };
+  if (Array.isArray(payload.data?.messages)) next = { ...next, data: { ...payload.data, messages: payload.data.messages.map((message) => message?.role === "toolResult" ? rewriteArtifactInResult(tab, message) : message) } };
+  return next;
+}
+
+function documentArtifactRecord(req, url, token) {
+  pruneDocumentArtifactTokens();
+  const record = documentArtifactTokens.get(token);
+  if (!record) throw makeHttpError(404, "Artifact token expired or not found");
+  const tab = getRequestedTab(req, url);
+  if (tab.id !== record.tabId || (record.sessionIdentity && artifactSessionIdentity(tab) !== record.sessionIdentity)) throw makeHttpError(404, "Artifact token expired or not found");
+  return record;
+}
+
+async function sendDocumentArtifactFile(req, res, filePath, { contentType, fileName, inline = false } = {}) {
+  const resolved = documentArtifactPath(filePath), range = String(req.headers.range || "").trim();
+  let start = 0, end = resolved.size - 1, status = 200;
+  if (range) {
+    const match = range.match(/^bytes=(\d*)-(\d*)$/);
+    if (!match) throw makeHttpError(416, "Unsupported artifact byte range");
+    if (match[1]) start = Number(match[1]);
+    if (match[2]) end = Number(match[2]);
+    if (!match[1] && match[2]) { const suffix = Number(match[2]); start = Math.max(0, resolved.size - suffix); end = resolved.size - 1; }
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= resolved.size) throw makeHttpError(416, "Artifact byte range is unsatisfiable");
+    end = Math.min(end, resolved.size - 1); status = 206;
+  }
+  const headers = {
+    "content-type": contentType || MIME_TYPES.get(path.extname(resolved.path).toLowerCase()) || "application/octet-stream",
+    "content-length": String(Math.max(0, end - start + 1)),
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+    "accept-ranges": "bytes",
+  };
+  if (status === 206) headers["content-range"] = `bytes ${start}-${end}/${resolved.size}`;
+  if (fileName) headers["content-disposition"] = inline ? contentDispositionInline(fileName) : contentDispositionAttachment(fileName);
+  res.writeHead(status, headers);
+  await new Promise((resolve, reject) => { const stream = createReadStream(resolved.path, { start, end }); stream.on("error", reject); res.on("error", reject); res.on("close", resolve); stream.on("end", resolve); stream.pipe(res); });
 }
 
 const ACTION_FEEDBACK_REACTIONS = new Set(["up", "down", "question"]);
@@ -6720,7 +6882,7 @@ function responseWithPendingThinking(tab, response) {
 
 function eventForTabClients(tab, event) {
   return {
-    ...responseWithPendingThinking(tab, event),
+    ...rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, event)),
     tabId: tab.id,
     tabTitle: tab.title,
     tabActivity: tabActivitySnapshot(tab),
@@ -8353,7 +8515,7 @@ function fallbackRpcResponse(tab, command, error) {
 
 async function safeRpcResponse(tab, command, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
-    return responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs));
+    return rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs)));
   } catch (error) {
     const message = sanitizeError(error);
     if (/Pi RPC process is not running/i.test(message)) return responseWithPendingThinking(tab, fallbackRpcResponse(tab, command, error));
@@ -10936,6 +11098,24 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/native-parity" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: nativeParityMatrix });
+      return;
+    }
+
+    const artifactRoute = url.pathname.match(/^\/api\/artifacts\/([^/]+)\/(manifest|download|page\/(\d+))$/);
+    if (artifactRoute && req.method === "GET") {
+      const token = decodeURIComponent(artifactRoute[1]), record = documentArtifactRecord(req, url, token), tabQuery = `tab=${encodeURIComponent(record.tabId)}`;
+      if (artifactRoute[2] === "manifest") {
+        sendJson(res, 200, { ok: true, data: { artifact: publicDocumentArtifact(record), ...record.manifest, pages: record.pages.map(({ path: _path, ...page }) => ({ ...page, imageUrl: `/api/artifacts/${encodeURIComponent(token)}/page/${page.pageNum}?${tabQuery}` })) } }, { "cache-control": "private, no-store" });
+        return;
+      }
+      if (artifactRoute[2] === "download") {
+        if (!record.downloadPath) throw makeHttpError(404, "Artifact download is unavailable");
+        await sendDocumentArtifactFile(req, res, record.downloadPath, { contentType: record.mimeType, fileName: record.title });
+        return;
+      }
+      const pageNum = Number(artifactRoute[3]), page = record.pages.find((item) => item.pageNum === pageNum);
+      if (!page) throw makeHttpError(404, "Artifact page is unavailable");
+      await sendDocumentArtifactFile(req, res, page.path, { contentType: "image/png", fileName: `page-${pageNum}.png`, inline: true });
       return;
     }
 

@@ -10,20 +10,19 @@ import { validateWithExcelUi } from "./excel-ui-monitor.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const reportPath = path.join(here, "LAST-SIGNED-VBA-REPORT.json");
-const fixtureArgument = process.argv[2] || process.env.PI_WORKBOOK_SIGNED_XLSM_FIXTURE;
-
-if (!fixtureArgument) {
-  const report = {
-    status: "SKIP",
-    generatedAt: new Date().toISOString(),
-    blocker: "Provide a legally sourced signed XLSM path as argv[2] or PI_WORKBOOK_SIGNED_XLSM_FIXTURE. The harness never creates certificates or changes Trust Center settings.",
-  };
-  await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  console.log(JSON.stringify({ ...report, reportPath }, null, 2));
-  process.exit(0);
-}
-
-const sourcePath = path.resolve(fixtureArgument);
+const vendoredFixturePath = path.join(here, "fixtures", "signed-vba", "xlsxwriter-macro04.xlsm");
+const suppliedFixtureArgument = process.argv[2] || process.env.PI_WORKBOOK_SIGNED_XLSM_FIXTURE;
+const sourcePath = suppliedFixtureArgument ? path.resolve(suppliedFixtureArgument) : vendoredFixturePath;
+const fixtureProvenance = suppliedFixtureArgument
+  ? { kind: "user-supplied", redistributed: false }
+  : {
+      kind: "vendored-open-source-test-fixture",
+      repository: "https://github.com/jmcnamara/XlsxWriter",
+      commit: "cf3fe78d3eab5e4c7d825d4451af3a60e2a04011",
+      upstreamPath: "xlsxwriter/test/comparison/xlsx_files/macro04.xlsm",
+      license: "BSD-2-Clause",
+      expectedSha256: "d49e30414b59e66446689d77119fa5b9f4f99fa86dbcade003f4d3fe1b8e225d",
+    };
 assert.equal(path.extname(sourcePath).toLowerCase(), ".xlsm", "Signed VBA fixture must use the .xlsm extension.");
 assert.equal((await fs.stat(sourcePath)).isFile(), true, `Signed VBA fixture is not a file: ${sourcePath}`);
 
@@ -31,6 +30,9 @@ const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbook-signed-vb
 try {
   const engine = new OoxmlSafeEngine(temporary);
   const sourceSha256 = await sha256File(sourcePath);
+  if ("expectedSha256" in fixtureProvenance) {
+    assert.equal(sourceSha256, fixtureProvenance.expectedSha256, "Vendored signed-VBA fixture hash does not match its pinned provenance.");
+  }
   const inspection = await engine.inspect({ path: sourcePath });
   assert.equal(inspection.validation.ok, true, inspection.validation.errors?.join("; "));
   assert.equal(inspection.vba.present, true, "Fixture does not contain a VBA project.");
@@ -69,7 +71,7 @@ try {
   const report = {
     status: uiValidation.status === "PASS" ? "PASS" : "PASS_PACKAGE_ONLY",
     generatedAt: new Date().toISOString(),
-    fixture: { sourcePath, sourceSha256, legalProvenance: "user-supplied; not redistributed" },
+    fixture: { sourcePath, sourceSha256, legalProvenance: fixtureProvenance },
     policy: { certificateStoreModified: false, trustCenterModified: false, macrosExecuted: false, sourceModified: false },
     signatures: inspection.vba.signatures,
     protectedParts: inspection.protectedParts,

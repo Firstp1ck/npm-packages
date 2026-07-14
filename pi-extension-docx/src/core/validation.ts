@@ -11,7 +11,7 @@ export async function validateDocument(input: { path: string; baselinePath?: str
   let preservation: Record<string, unknown> | undefined;
   if (input.baselinePath) { const baseline = OoxmlPackage.fromBytes(await fs.readFile(input.baselinePath), input.limits); preservation = baseline.compareIntegrity(pkg, new Set(input.expectedChangedParts ?? [])); }
   const sidecar = input.sidecar ?? new OpenXmlSidecar(), capabilities = await sidecar.probe(input.signal); let schema: Record<string, unknown>;
-  if (capabilities.available) { const response = await sidecar.request("validate", { sourcePath: input.path }, input.signal, input.timeoutMs); schema = { available: true, valid: true, engineVersion: response.engineVersion, ...(response.result ?? {}) }; }
+  if (capabilities.available) { const response = await sidecar.request("validate", { sourcePath: input.path }, input.signal, input.timeoutMs), result = response.result ?? {}; schema = { available: true, engineVersion: response.engineVersion, ...result, valid: result.valid === true && result.reopen === true }; }
   else schema = { available: false, valid: false, reason: "Open XML sidecar unavailable; package-only validation is not a production commit gate." };
   const preservationOk = !preservation || preservation.ok === true, ok = preservationOk && schema.valid === true;
   return { ok, sourcePath: input.path, sourceSha256, packageChecks, schema, preservation, inventory: snapshot.inventory, manifest: pkg.manifest(sourceSha256), warnings: ok ? snapshot.warnings : [...snapshot.warnings, { code: "VALIDATION_INCOMPLETE", message: "Full Open XML validation did not pass; commit must remain blocked.", severity: "error" }] };

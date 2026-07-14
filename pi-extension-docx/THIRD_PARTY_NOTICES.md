@@ -3,6 +3,7 @@
 - `DocumentFormat.OpenXml` — MIT License, Microsoft Corporation.
 - `fflate` — MIT License, 101arrowz.
 - `@xmldom/xmldom` — MIT License, xmldom maintainers.
+- ONLYOFFICE Desktop Editors / `x2t`, when separately installed by the operator, is distributed under GNU AGPL-3.0 terms and is not bundled.
 - LibreOffice, when separately installed by the operator, is distributed under MPL-2.0/LGPLv3+ terms and is not bundled.
 - LiteParse/pi-docparser, when separately installed, is not bundled by this package.
 

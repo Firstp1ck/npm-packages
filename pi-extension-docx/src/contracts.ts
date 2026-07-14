@@ -29,15 +29,15 @@ export type DocxOperation =
 
 export type DocumentArtifact = { schema: typeof ARTIFACT_SCHEMA; kind: "document"; id: string; revisionId?: string; title: string; mimeType: string; pageCount?: number; manifestPath: string; downloadPath?: string; expiresAt: string };
 export type Capability = { operation: string; supported: boolean; fidelity: "native" | "bounded" | "preservation-only" | "conversion-only" | "unsupported"; reason?: string };
-export type EngineCapabilities = { engine: "openxml-sidecar" | "typescript-reader" | "libreoffice-renderer" | "liteparse-reader"; available: boolean; version?: string; formats: string[]; operations: Capability[]; constraints: string[] };
+export type EngineCapabilities = { engine: "openxml-sidecar" | "typescript-reader" | "libreoffice-renderer" | "onlyoffice-renderer" | "liteparse-reader"; available: boolean; version?: string; formats: string[]; operations: Capability[]; constraints: string[] };
 export type Warning = { code: string; message: string; severity: "info" | "warning" | "error"; part?: string };
 
 export type PathRequest = { path: string; limits?: Partial<DocxLimits> };
 export type DocxInspectRequest = PathRequest & { includeHiddenData?: boolean };
 export type DocxReadRequest = PathRequest & { stories?: StoryKind[]; selector?: Selector; query?: string; exact?: boolean; maxBlocks?: number; includeHiddenData?: boolean };
-export type DocxRenderRequest = PathRequest & { pages?: string; dpi?: number; outputDir?: string; timeoutMs?: number };
+export type DocxRenderRequest = PathRequest & { pages?: string; dpi?: number; timeoutMs?: number };
 export type DocxEditRequest = PathRequest & { schemaVersion?: typeof DOCX_CONTRACT_VERSION; expectedSourceSha256?: string; dryRun?: boolean; operations: DocxOperation[]; timeoutMs?: number };
-export type DocxDiffRequest = { beforePath: string; afterPath: string; includeFormatting?: boolean; includePackageParts?: boolean; maxChanges?: number; limits?: Partial<DocxLimits> };
+export type DocxDiffRequest = { beforePath: string; afterPath: string; includeFormatting?: boolean; includePackageParts?: boolean; renderPages?: string; timeoutMs?: number; maxChanges?: number; limits?: Partial<DocxLimits> };
 export type DocxValidateRequest = PathRequest & { baselinePath?: string; expectedChangedParts?: string[]; renderPages?: string; timeoutMs?: number };
 export type DocxCommitRequest = { revisionId: string; destinationPath?: string; overwrite?: boolean; inPlace?: boolean; expectedSourceSha256: string; expectedDestinationSha256?: string };
 

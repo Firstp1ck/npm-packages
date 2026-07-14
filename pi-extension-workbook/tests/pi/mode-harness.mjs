@@ -11,7 +11,7 @@ const extensionPath = path.join(root, "index.ts");
 const providerPath = path.join(root, "tests/pi/mock-provider.ts");
 const reportPath = path.join(root, "tests/corpus/LAST-PI-MODES.json");
 const piCommand = process.execPath;
-const piCliPath = process.env.PI_CLI_PATH ?? path.join(path.dirname(process.execPath), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+const piCliPath = process.env.PI_CLI_PATH ?? path.join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
 
 function baseArgs() {
   return [

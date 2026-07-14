@@ -1,7 +1,7 @@
 # Pi Agent DOCX Editor and WebUI Viewer — Implementation Plan
 
 Date: 2026-07-14  
-Status: Planned; implementation not started  
+Status: Implementation in progress; local P0/P1 code and ONLYOFFICE rendering verified, .NET/Word host gates remain
 Primary target: `pi-extension-docx` / `@firstpick/pi-extension-docx`  
 WebUI target: `pi-package-webui`
 
@@ -34,7 +34,7 @@ The production design must prioritize document integrity and explicit capability
 |---|---|---|
 | `.docx` | Native inspect, render, edit, diff, validate, and save-as target. | Full supported operation matrix with explicit preservation-only areas. |
 | `.dotx` | Read-only or convert to a new `.docx` in P1. | Native template-aware support after DOCX gates pass. |
-| `.docm` / `.dotm` | Inventory and render only; never execute VBA. | Preserve macro/signature-related parts byte-identically where possible; mutation remains capability-gated. |
+| `.docm` / `.dotm` | Inventory only; P1 rendering and mutation are blocked as active content. | Preserve macro/signature-related parts byte-identically where possible; mutation/rendering remain capability-gated. |
 | `.doc`, `.rtf`, `.odt` | Convert to a new `.docx`; never edit the source in place. | Optional export back with a prominent fidelity report. |
 | Encrypted documents | Detect and refuse without an explicit user-supplied password. | Isolated, ephemeral decryption with password redaction and capability checks. |
 
@@ -67,7 +67,7 @@ A production release is acceptable only when all of these are true:
 10. Tools work in TUI, print/JSON, and RPC/WebUI modes without depending on TUI-only custom components.
 11. WebUI never receives unrestricted host paths for previews or downloads; it receives validated, expiring artifact URLs.
 12. Large semantic output and reports are truncated to Pi limits with complete artifacts written to temporary files.
-13. A representative corpus opens without a Word or LibreOffice repair prompt after every supported edit.
+13. A representative corpus opens without a Microsoft Word repair prompt and without a repair prompt in every renderer/interoperability suite claimed by the package.
 14. Capability reports accurately distinguish native edits, preservation-only features, conversion-only formats, and unsupported operations.
 
 ## Current baseline
@@ -77,7 +77,7 @@ A production release is acceptable only when all of these are true:
 - Pi WebUI already uploads `.doc` and `.docx` files to a local temporary directory and includes their paths in the prompt.
 - Pi WebUI already renders image content blocks returned by generic custom tools, so a basic `docx_render` tool needs no WebUI change.
 - `pi-docparser` 3.0.1 with LiteParse 2.0.1 provides read-oriented parsing, search, bounding boxes, and screenshots for office files.
-- LibreOffice is currently absent on this development machine, so current DOCX conversion/rendering fails its host-dependency preflight.
+- ONLYOFFICE Desktop Editors 9.4.0 is installed and its `x2t` converter passes controlled DOCX-to-PDF, text/font extraction, and LiteParse PNG integration tests. LibreOffice is absent and is no longer a local rendering dependency.
 - Pi RPC `ctx.ui.custom()` is unavailable; rich browser document UI must be implemented in WebUI rather than only in a TUI extension.
 
 ## Architecture decisions
@@ -122,6 +122,8 @@ pi-extension-docx/
 │   └── backends/
 │       ├── interface.ts
 │       ├── openxml-sidecar.ts
+│       ├── document-renderer.ts
+│       ├── onlyoffice-renderer.ts
 │       ├── libreoffice-renderer.ts
 │       └── liteparse-reader.ts
 ├── engine/
@@ -164,15 +166,15 @@ The sidecar should use a versioned JSON protocol over stdin/stdout. The TypeScri
 
 Start as a one-shot process for reliability. Consider a session-scoped persistent process only after profiling proves startup overhead material and shutdown behavior is fully tested.
 
-### 3. Use LibreOffice only for rendering and conversion
+### 3. Use ONLYOFFICE preferentially and LibreOffice optionally for rendering/conversion
 
-LibreOffice is not the canonical writer for native DOCX edits because an office-suite round trip may alter unrelated OOXML. Use it for:
+Neither office suite is the canonical writer for native DOCX edits because an office-suite round trip may alter unrelated OOXML. Automatic selection prefers the locally installed ONLYOFFICE Desktop Editors `x2t` converter and falls back to LibreOffice; `PI_DOCX_RENDERER` can pin either backend. Use the selected backend for:
 
 - DOCX-to-PDF export for page-faithful previews.
-- Import of `.doc`, `.rtf`, and `.odt` into a new DOCX.
 - Optional independent open/render verification.
+- Future explicit import of `.doc`, `.rtf`, and `.odt` into a new DOCX after native gates pass.
 
-Every invocation must use a unique temporary user profile, forced macro security, disabled link updates, hard timeouts, abort propagation, and worker-owned cleanup. Record LibreOffice version, export filter, fonts, and substitution warnings in render metadata.
+ONLYOFFICE receives generated XML, a private source copy, private HOME/temp directories, and a private snapshot of its generated font metadata. LibreOffice receives a unique temporary profile, forced macro security, and disabled link updates. Both use hard timeouts, abort propagation, process-tree ownership, output limits, and worker-owned cleanup. Active-content packages and non-hyperlink external relationships are blocked before either renderer starts. Record the selected engine, fonts, DPI, isolation settings, and substitution/fidelity warnings in render metadata.
 
 Use LiteParse/PDFium to turn the exported PDF into selected PNG page images and to provide page-based text/bounding-box search where useful.
 
@@ -374,13 +376,13 @@ Target at least Windows x64, Linux x64, Linux arm64, macOS arm64, and macOS x64 
 - Disable DTD and external entity resolution in every XML parser.
 - Never execute macros, OLE objects, external templates, fields, links, or embedded scripts during inspect, render, validate, edit, or commit.
 - Inventory `file:`, UNC, HTTP(S), attached-template, DDE, and other external relationships without dereferencing them.
-- Run LibreOffice with a private profile, macro security, no first-run UI, no link refresh, hard timeout, and owned-process cleanup.
+- Run ONLYOFFICE `x2t` with generated task XML, a private source/HOME/temp workspace, and a private font-metadata snapshot; run LibreOffice fallback with a private profile, macro security, no first-run UI, and no link refresh. Apply hard timeouts and owned-process cleanup to both.
 - Treat passwords as sensitive inputs; never place them in logs, details, session entries, artifacts, or error messages.
 - Detect package and VBA signatures. P1 refuses signed-document mutation; a later policy may permit an explicitly unsigned copy with a clear warning.
 - Detect `.docm`/`.dotm` active content and fail closed unless the backend has independently passed macro-preservation gates.
 - Bound model-visible content and redact hidden document data unless the user asked to inspect it.
 - Store workspaces and renders under a package-owned temp/cache root with restrictive permissions and TTL cleanup.
-- Honor `AbortSignal` and hard timeouts in the TypeScript extension, .NET sidecar, LibreOffice process, and rendering pipeline.
+- Honor `AbortSignal` and hard timeouts in the TypeScript extension, .NET sidecar, ONLYOFFICE/LibreOffice processes, and rendering pipeline.
 
 ## Priority model
 
@@ -406,51 +408,51 @@ Target at least Windows x64, Linux x64, Linux arm64, macOS arm64, and macOS x64 
 
 ### P0 — Fidelity, engine, package, and safety foundation
 
-- [ ] Scaffold `pi-extension-docx` with package metadata, extension entry point, source layout, skill directory, .NET engine project, fixtures, and `check`/`test`/`pack:dry` scripts.
-- [ ] Write an ADR recording Open XML SDK as canonical mutation engine, LibreOffice as render/conversion engine, LiteParse as read/render helper, and fail-closed backend selection.
-- [ ] Define versioned `DocxEngine`, capability, selector, patch-operation, artifact, tool-result, warning, and structured-error contracts.
-- [ ] Define stable machine-readable error codes, including `SOURCE_CHANGED`, `DESTINATION_EXISTS`, `UNSUPPORTED_FEATURE`, `LOSSY_OPERATION`, `SIGNED_DOCUMENT`, `ACTIVE_CONTENT_BLOCKED`, `INVALID_PACKAGE`, `VALIDATION_FAILED`, `RENDER_FAILED`, and `DEPENDENCY_MISSING`.
+- [x] Scaffold `pi-extension-docx` with package metadata, extension entry point, source layout, skill directory, .NET engine project, fixtures, and `check`/`test`/`pack:dry` scripts.
+- [x] Write an ADR recording Open XML SDK as canonical mutation engine, ONLYOFFICE-preferred/LibreOffice-fallback rendering, LiteParse as read/render helper, and fail-closed backend selection.
+- [x] Define versioned `DocxEngine`, capability, selector, patch-operation, artifact, tool-result, warning, and structured-error contracts.
+- [x] Define stable machine-readable error codes, including `SOURCE_CHANGED`, `DESTINATION_EXISTS`, `UNSUPPORTED_FEATURE`, `LOSSY_OPERATION`, `SIGNED_DOCUMENT`, `ACTIVE_CONTENT_BLOCKED`, `INVALID_PACKAGE`, `VALIDATION_FAILED`, `RENDER_FAILED`, and `DEPENDENCY_MISSING`.
 - [ ] Reuse `@firstpick/pi-utils` for path/process/atomic-write primitives and add missing binary durability, child-process ownership, abort, and Windows replacement guarantees.
-- [ ] Implement bounded OOXML intake: ZIP traversal and duplicate rejection, entry/count/size/ratio limits, XML entity safety, encrypted-package detection, and redacted errors.
-- [ ] Implement OOXML content-type and relationship graph inventory, SHA-256 manifests, external-target inventory, and protected-part classification.
-- [ ] Build a legally redistributable corpus covering styles, themes, lists, nested/merged tables, sections, columns, headers/footers, footnotes/endnotes, comments, revisions, content controls, fields, bookmarks, links, images, charts, SmartArt, text boxes, custom XML, embeddings, external relationships, signatures, `.docm`, encryption, and malformed packages.
+- [x] Implement bounded OOXML intake: ZIP traversal and duplicate rejection, entry/count/size/ratio limits, XML entity safety, encrypted-package detection, and redacted errors.
+- [x] Implement OOXML content-type and relationship graph inventory, SHA-256 manifests, external-target inventory, and protected-part classification.
+- [x] Build a legally redistributable synthetic corpus covering styles, themes, lists, nested/merged tables, sections, columns, headers/footers, footnotes/endnotes, comments, revisions, content controls, fields, bookmarks, links, images, charts, SmartArt, text boxes, custom XML, embeddings, external relationships, signatures, `.docm`, encryption, and malformed packages.
 - [ ] Implement the .NET JSON sidecar protocol, cancellation, timeout, protocol-version negotiation, version reporting, and stderr redaction.
 - [ ] Run a no-op Open XML SDK round-trip spike and prove that unchanged parts are preserved; design surgical changed-part transplantation for any rewritten-part gaps.
-- [ ] Implement semantic snapshots and stable selector generation without mutating documents during inspection.
+- [x] Implement semantic snapshots and stable selector generation without mutating documents during inspection.
 - [ ] Implement `OpenXmlValidator` integration, independent reopen checks, and package-manifest comparison.
-- [ ] Implement a LibreOffice render spike using isolated profiles, safe flags, PDF export, selected-page PNG output, font reporting, hard timeout, and cleanup.
-- [ ] Add `/docx-doctor` for Open XML sidecar, .NET runtime, LibreOffice, LiteParse, fonts, platform support, and workspace diagnostics.
-- [ ] Define transaction workspace layout, TTL cleanup, source/staged revision hashes, recovery metadata, and artifact ownership.
-- [ ] Implement staged transactions, mandatory source-hash preconditions, destination `withFileMutationQueue()`, durable atomic commit, overwrite guards, and recovery copies.
-- [ ] Define and document the P1 preservation matrix for unsupported parts, signed documents, active content, fields, and legacy imports.
-- [ ] Define `pi.artifact/v1` with WebUI maintainers before tool details become a compatibility contract.
-- [ ] Run threat-model review for DOCX ZIP/XML intake, LibreOffice rendering, external relationships, passwords, active content, and browser artifact serving.
+- [x] Implement and verify an ONLYOFFICE `x2t` render spike using generated task XML, isolated workspaces, private font metadata, PDF export, selected-page PNG output, font reporting, hard timeout, and cleanup; retain LibreOffice as an optional fallback.
+- [x] Add `/docx-doctor` for Open XML sidecar, .NET runtime, ONLYOFFICE/LibreOffice, LiteParse, fonts, platform support, and workspace diagnostics.
+- [x] Define transaction workspace layout, TTL cleanup, source/staged revision hashes, recovery metadata, and artifact ownership.
+- [x] Implement staged transactions, mandatory source-hash preconditions, destination `withFileMutationQueue()`, durable atomic commit, overwrite guards, and recovery copies.
+- [x] Define and document the P1 preservation matrix for unsupported parts, signed documents, active content, fields, and legacy imports.
+- [x] Define and integrate `pi.artifact/v1` in the DOCX extension and WebUI before tool details become a compatibility contract.
+- [x] Run threat-model review for DOCX ZIP/XML intake, office-suite rendering, external relationships, passwords, active content, and browser artifact serving; record residual process-sandbox/network-sentinel risks.
 
-P0 exit gate: a no-op DOCX passes package and semantic comparison without source overwrite or repair prompts; the selected engine can safely modify a staged fixture; LibreOffice can render a controlled document without macro/link execution; invalid, signed, active-content, and oversized fixtures fail according to policy; transaction rollback leaves source and destination unchanged.
+P0 exit gate: a no-op DOCX passes package and semantic comparison without source overwrite or repair prompts; the selected engine can safely modify a staged fixture; the configured office renderer can render a controlled document without macro/link execution; invalid, signed, active-content, and oversized fixtures fail according to policy; transaction rollback leaves source and destination unchanged. ONLYOFFICE rendering is proven locally; Open XML sidecar and renderer network-sentinel evidence remain open.
 
 ### P1 — Safe agent-facing DOCX MVP
 
-- [ ] Implement `docx_inspect` with bounded properties, stories, outline, feature inventory, security warnings, package summary, engine versions, and operation capabilities.
-- [ ] Implement `docx_read` for selected stories, paragraphs, table cells, bookmarks, content controls, comments, and exact cross-run search with stable selectors.
-- [ ] Implement `docx_render` for selected pages with PNG image blocks, PDF/page artifacts, page count, renderer/version, fonts, and fidelity warnings.
+- [x] Implement `docx_inspect` with bounded properties, stories, outline, feature inventory, security warnings, package summary, engine versions, and operation capabilities.
+- [x] Implement `docx_read` for selected stories, paragraphs, table cells, bookmarks, content controls, comments, and exact cross-run search with stable selectors.
+- [x] Implement `docx_render` for selected pages with PNG image blocks, PDF/page artifacts, page count, renderer metadata, fonts, and fidelity warnings; verify the ONLYOFFICE path on a controlled fixture.
 - [ ] Implement `docx_edit` dry-run planning with exact selector/precondition resolution and declared changed-part estimates.
 - [ ] Implement P1 text operations: cross-run exact replacement, insert paragraph, delete paragraph, and replacement-count enforcement without flattening unrelated run formatting.
 - [ ] Implement P1 table operations: set cell text and guarded row insertion/deletion while preserving merges outside the mutation.
 - [ ] Implement P1 formatting operations: bold/italic/underline, font family/size/color, paragraph style, alignment, spacing, and indentation.
 - [ ] Implement P1 hyperlink and core-property operations.
-- [ ] Implement staged revision creation; `docx_edit` must never overwrite source or destination paths.
-- [ ] Implement `docx_diff` for semantic text, run/paragraph formatting, tables, relationships, changed OOXML parts, protected parts, and optional page renders.
+- [x] Implement staged revision creation; `docx_edit` must never overwrite source or destination paths.
+- [x] Implement `docx_diff` for semantic text, run/paragraph formatting, tables, relationships, changed OOXML parts, protected parts, and optional page renders.
 - [ ] Implement `docx_validate` with ZIP, content type, relationships, Open XML schema, reopen, preservation, semantic, and configured render gates.
-- [ ] Implement `docx_commit` with new-path default, explicit overwrite, source/destination hash checks, real UI confirmation for source overwrite, atomic replacement, and recovery copy.
-- [ ] Add progress updates and compact tool renderers while keeping all functionality available without TUI-only APIs.
-- [ ] Add guards that block built-in text `edit`/`write` against `.docx`/`.docm` and direct the agent to DOCX tools.
-- [ ] Write `skills/docx-editor/SKILL.md` with inspect-before-edit, focused-read, render-when-visual, dry-run-first, validate/diff-before-commit, save-as-default, and active-content rules.
-- [ ] Document supported selectors, operations, preservation guarantees, errors, examples, and known layout differences in README.
+- [x] Implement `docx_commit` with new-path default, explicit overwrite, source/destination hash checks, real UI confirmation for source overwrite, atomic replacement, and recovery copy.
+- [x] Add progress updates and compact tool renderers while keeping all functionality available without TUI-only APIs.
+- [x] Add guards that block built-in text `edit`/`write` against `.docx`/`.docm` and direct the agent to DOCX tools.
+- [x] Write `skills/docx-editor/SKILL.md` with inspect-before-edit, focused-read, render-when-visual, dry-run-first, validate/diff-before-commit, save-as-default, and active-content rules.
+- [x] Document supported selectors, operations, preservation guarantees, errors, examples, and known layout differences in README.
 - [ ] Verify every tool in TUI, print, JSON, and RPC/WebUI sessions.
-- [ ] Verify WebUI generic tool cards show selected-page images and before/after renders without custom viewer code.
-- [ ] Run the representative P1 corpus through Microsoft Word on a controlled interactive Windows validation host and LibreOffice on CI without repair prompts.
+- [x] Verify WebUI generic tool-card image handling and DOCX image-result privacy through package/static harnesses; real browser visual review remains part of the all-modes gate.
+- [ ] Run the representative P1 corpus through Microsoft Word on a controlled interactive Windows validation host and through each claimed interoperability renderer without repair prompts.
 
-P1 exit gate: an agent can inspect, read, render, safely edit, diff, validate, and save-as representative DOCX files from every Pi mode. Unsupported constructs are preserved or rejected, no original file is changed without confirmation, and output opens cleanly in Word and LibreOffice.
+P1 exit gate: an agent can inspect, read, render, safely edit, diff, validate, and save-as representative DOCX files from every Pi mode. Unsupported constructs are preserved or rejected, no original file is changed without confirmation, and output opens cleanly in Microsoft Word and every renderer/interoperability suite claimed by the package.
 
 ### P2 — Rich DOCX semantics and first-class WebUI viewer
 
@@ -463,10 +465,10 @@ P1 exit gate: an agent can inspect, read, render, safely edit, diff, validate, a
 - [ ] Add tracked changes: tracked insert/delete, list revisions, accept/reject selected revisions, author/date metadata, and cross-run boundary tests.
 - [ ] Add footnotes/endnotes, bookmarks, content-control updates, and field inspection/update policies without implicit field execution.
 - [ ] Add document creation from a blank/template DOCX by reusing the patch schema.
-- [ ] Implement `pi.artifact/v1` recognition in the WebUI backend and enrich tool events with safe, expiring artifact URLs.
+- [x] Implement `pi.artifact/v1` recognition in the WebUI backend and enrich tool events with safe, expiring artifact URLs.
 - [ ] Generalize native-download token handling into a root-confined artifact registry with MIME, TTL, tab, session, and revision checks.
-- [ ] Add WebUI artifact endpoints for manifest, page image, semantic outline, diff data, and download; prohibit arbitrary path parameters.
-- [ ] Add a browser document modal with thumbnails, page navigation, zoom/fit, text search, outline, comments/revisions summary, and staged-output download.
+- [x] Add WebUI artifact endpoints for manifest, page image, semantic outline/diff metadata, and download; prohibit arbitrary path parameters.
+- [x] Add a browser document modal with thumbnails, page navigation, zoom/fit, text search, outline, comments/revisions summary, and staged-output download.
 - [ ] Add semantic and visual before/after diff views with clear renderer/fidelity metadata.
 - [ ] Add “send selection/page/block to composer” while keeping actual mutation routed through Pi tools.
 - [ ] Add stale artifact/revision handling, cleanup, inactive-tab behavior, remote-auth/trust-boundary coverage, and mobile layout.
@@ -523,9 +525,9 @@ P4 exit gate: optional WYSIWYG editing cannot bypass transaction, validation, pa
 - Run each supported operation against simple and complex formatting boundaries, tables, lists, sections, headers/footers, comments, and revisions.
 - Verify untouched/protected part hashes and relationship graphs after every operation.
 - Verify malformed, signed, macro-enabled, encrypted, oversized, and externally linked files fail or degrade exactly as documented.
-- Reopen with the Open XML engine and LibreOffice; use a controlled interactive Word host for release gates.
+- Reopen with the Open XML engine and each claimed renderer/interoperability suite; use a controlled interactive Microsoft Word host for release gates.
 - Compare normalized semantic snapshots and reviewed PNG/PDF goldens with renderer-specific tolerances.
-- Prove render and validation do not execute a harmless macro sentinel, dereference external links, update attached templates, or contact a network sentinel.
+- Prove ONLYOFFICE/LibreOffice render and validation do not execute a harmless macro sentinel, dereference external links, update attached templates, or contact a network sentinel.
 - Verify font substitution and pagination differences are reported rather than hidden.
 
 ### Pi integration tests
@@ -573,8 +575,8 @@ Do not publish mutation capability until P0 and P1 exit gates pass and the packe
 |---|---|
 | A writer silently drops unsupported DOCX parts | Pre/post package manifests, surgical changed-part commit, capability checks, independent reopen, fail-closed save. |
 | A text replacement destroys run formatting | Cross-run range mapping, exact preconditions, minimal run splitting, semantic/format diff, focused render checks. |
-| LibreOffice changes the file during rendering | Render from a private copy and export to PDF only; never use its saved DOCX as the native edit result. |
-| Word and LibreOffice paginate differently | Record renderer/fonts, report substitutions, use semantic selectors, and avoid page-number-only edits. |
+| An office renderer changes the file during rendering | Render from a private copy and export to PDF only; never use renderer-produced DOCX bytes as the native edit result. |
+| Microsoft Word, ONLYOFFICE, and LibreOffice paginate differently | Record renderer/fonts, report substitutions, use semantic selectors, and avoid page-number-only edits. |
 | Macros, links, fields, or OLE execute | Inventory and block active content, isolated renderer profile, no refresh, network sentinel tests, never use execution APIs. |
 | Digital signatures become invalid | Detect signatures and refuse P1 mutation; later allow only an explicitly unsigned copy with clear consent. |
 | Parallel agent calls lose edits | Destination mutation queue, mandatory hashes, staged revisions, and atomic commit. |
@@ -583,7 +585,7 @@ Do not publish mutation capability until P0 and P1 exit gates pass and the packe
 | Sidecar packaging becomes too large | Platform optional packages or framework-dependent mode; measure before choosing and avoid postinstall downloads. |
 | Legacy conversion loses features | New DOCX output only, conversion report, source preserved, explicit capability/fidelity warnings. |
 | Large documents exhaust memory/context | Bounded parsing, focused selectors, temp artifacts, caches, progress/cancellation, configurable hard limits. |
-| A commercial/browser editor causes license lock-in | Optional adapter boundary, base package remains Open XML/LibreOffice based, explicit license review. |
+| An office-suite/browser editor causes license lock-in | Keep rendering behind an adapter, do not bundle ONLYOFFICE/LibreOffice, keep Open XML authoritative for mutation, and require a separate license review for WYSIWYG services. |
 
 ## Definition of done
 
@@ -591,7 +593,7 @@ The project is complete for its declared production scope when:
 
 - P0 and P1 are fully checked and their exit gates have saved verification evidence.
 - The public capability matrix is generated from passing corpus tests.
-- No supported edit produces a repair prompt in controlled Word/LibreOffice validation.
+- No supported edit produces a repair prompt in controlled Microsoft Word or any claimed renderer/interoperability validation.
 - Unsupported documents or operations refuse before commit with actionable errors.
 - Source overwrite is impossible without explicit intent, hash agreement, validation, atomic replacement, and recovery data.
 - Pi TUI, print/JSON, RPC, and WebUI workflows pass end-to-end.
@@ -610,6 +612,9 @@ The project is complete for its declared production scope when:
 - Open XML SDK documentation: <https://learn.microsoft.com/en-us/office/open-xml/open-xml-sdk>
 - Open XML SDK design limitations: <https://learn.microsoft.com/en-us/office/open-xml/open-xml-sdk-design-considerations>
 - `DocumentFormat.OpenXml` package: <https://www.nuget.org/packages/DocumentFormat.OpenXml>
+- ONLYOFFICE `x2t` converter configuration: <https://github.com/ONLYOFFICE/core/blob/master/X2tConverter/README.md>
+- ONLYOFFICE Document Builder conversion/rendering overview: <https://api.onlyoffice.com/docs/document-builder/get-started/overview/>
+- ONLYOFFICE Desktop Editors/Core license: GNU AGPL-3.0 (installed `LICENSE.txt` and <https://github.com/ONLYOFFICE/core>)
 - LibreOffice SDK: <https://api.libreoffice.org/>
 - LibreOffice command-line conversion filters: <https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html>
 - `python-docx`: <https://python-docx.readthedocs.io/en/latest/>
@@ -619,4 +624,4 @@ The project is complete for its declared production scope when:
 
 ## Next implementation gate
 
-Start with the P0 scaffold, engine protocol, legal corpus, OOXML manifest, and no-op fidelity spike. Do not implement broad mutation operations or WebUI artifact endpoints until the sidecar can prove minimal changed-part output, source-preserving transactions, and fail-closed behavior on signed, macro-enabled, malformed, encrypted, and externally linked fixtures.
+Install or provide a .NET 8+ SDK, then compile/test the Open XML sidecar and run the no-op/changed-part/schema-validation gates. After that, run real TUI/print/JSON/RPC sessions, controlled renderer network-sentinel tests, and interactive Microsoft Word repair-prompt validation. P2 semantic operations and the remaining rich-viewer checks stay dependency-blocked until the P1 exit gate passes.

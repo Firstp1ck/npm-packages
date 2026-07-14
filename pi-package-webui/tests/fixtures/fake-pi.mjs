@@ -240,6 +240,17 @@ function handleWebuiHelperPrompt(command, base) {
   }
 }
 
+function handleDocumentArtifactFixturePrompt(command, base) {
+  const message = String(command.message || "").trim();
+  if (message === "fixture document artifact clear") { for (let index = dynamicMessages.length - 1; index >= 0; index--) if (dynamicMessages[index]?.toolName === "docx_render") { dynamicMessages.splice(index, 1); dynamicEntries.splice(index, 1); } dynamicLeafId = dynamicEntries.at(-1)?.id || "u0000002"; respond({ ...base, data: { output: "fake document artifacts cleared" } }); return true; }
+  if (message !== "fixture document artifact" || !process.env.FAKE_PI_ARTIFACT_MANIFEST) return false;
+  const toolCallId = `artifact-${randomUUID()}`, artifact = { schema: "pi.artifact/v1", kind: "document", id: "fixture-document-artifact", revisionId: "fixture-revision", title: "fixture.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pageCount: 1, manifestPath: process.env.FAKE_PI_ARTIFACT_MANIFEST, downloadPath: process.env.FAKE_PI_ARTIFACT_DOWNLOAD, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() }, result = { content: [{ type: "text", text: "Rendered fixture document" }], details: { artifact } };
+  appendDynamicMessage({ role: "toolResult", toolCallId, toolName: "docx_render", content: result.content, details: result.details, isError: false, timestamp: Date.now() });
+  respond({ ...base, data: { output: "fake document artifact emitted" } });
+  emitEvent({ type: "tool_execution_end", toolCallId, toolName: "docx_render", isError: false, result });
+  return true;
+}
+
 function handleSubagentFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
   if (message !== "fixture subagents running" && message !== "fixture subagents clear") return false;
@@ -368,6 +379,7 @@ rl.on("line", (line) => {
     case "prompt":
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleSubagentFixturePrompt(command, base)) return;
+      if (handleDocumentArtifactFixturePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });

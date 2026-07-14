@@ -12,11 +12,18 @@ export const NS = Object.freeze({
   dcterms: "http://purl.org/dc/terms/",
   extended: "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties",
 });
-const decoder = new TextDecoder("utf-8", { fatal: true }), encoder = new TextEncoder();
+const encoder = new TextEncoder();
 export function decodeXml(bytes: Uint8Array, partPath: string, maxBytes: number): string {
   if (bytes.length > maxBytes) fail("LIMIT_EXCEEDED", `XML part ${partPath} exceeds ${maxBytes} bytes.`);
-  try { const text = decoder.decode(bytes); if (/<!DOCTYPE|<!ENTITY/i.test(text)) fail("INVALID_PACKAGE", `DTD/entity declarations are forbidden in ${partPath}.`); return text; }
-  catch (error) { if (error && typeof error === "object" && "code" in error) throw error; fail("INVALID_PACKAGE", `${partPath} is not valid UTF-8 XML.`); }
+  try {
+    const utf16le = bytes[0] === 0xff && bytes[1] === 0xfe || bytes[0] === 0x3c && bytes[1] === 0x00, utf16be = bytes[0] === 0xfe && bytes[1] === 0xff || bytes[0] === 0x00 && bytes[1] === 0x3c;
+    const encoding = utf16le ? "utf-16le" : utf16be ? "utf-16be" : "utf-8", text = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+    const declaration = text.match(/^\s*<\?xml[^>]*\bencoding\s*=\s*["']([^"']+)["']/i)?.[1]?.toLowerCase();
+    if (declaration && !new Set(["utf-8", "utf8", "utf-16", "utf-16le", "utf-16be", "us-ascii"]).has(declaration)) fail("UNSUPPORTED_FEATURE", `Unsupported XML encoding ${declaration} in ${partPath}.`);
+    if (/<!DOCTYPE|<!ENTITY/i.test(text)) fail("INVALID_PACKAGE", `DTD/entity declarations are forbidden in ${partPath}.`);
+    return text;
+  }
+  catch (error) { if (error && typeof error === "object" && "code" in error) throw error; fail("INVALID_PACKAGE", `${partPath} is not valid UTF-8/UTF-16 XML.`); }
 }
 export function parseXml(bytes: Uint8Array, partPath: string, maxBytes: number): Document {
   const problems: string[] = []; const document = new DOMParser({ onError: (level: string, message: string) => { if (level === "error" || level === "fatalError") problems.push(message); } } as never).parseFromString(decodeXml(bytes, partPath, maxBytes), "application/xml");

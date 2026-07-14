@@ -2,18 +2,42 @@ import type { SemanticSnapshot } from "../ooxml/semantic.ts";
 import type { OoxmlPackage } from "../ooxml/package.ts";
 import { sha256Bytes } from "./hash.ts";
 
-export function diffDocuments(beforePackage: OoxmlPackage, afterPackage: OoxmlPackage, before: SemanticSnapshot, after: SemanticSnapshot, maxChanges = 1000): Record<string, unknown> {
-  const beforeParagraphs = before.stories.flatMap((s) => s.paragraphs.map((p) => ({ story: s.kind, path: p.path, text: p.text, hash: p.hash, style: p.style, alignment: p.alignment, runs: p.runs })));
-  const afterParagraphs = after.stories.flatMap((s) => s.paragraphs.map((p) => ({ story: s.kind, path: p.path, text: p.text, hash: p.hash, style: p.style, alignment: p.alignment, runs: p.runs })));
-  const changes: Array<Record<string, unknown>> = [], total = Math.max(beforeParagraphs.length, afterParagraphs.length);
-  for (let index = 0; index < total && changes.length < maxChanges; index++) { const left = beforeParagraphs[index], right = afterParagraphs[index]; if (!left) changes.push({ kind: "paragraph-added", index, after: right }); else if (!right) changes.push({ kind: "paragraph-removed", index, before: left }); else if (left.text !== right.text || JSON.stringify(left.runs) !== JSON.stringify(right.runs) || left.style !== right.style || left.alignment !== right.alignment) changes.push({ kind: "paragraph-changed", index, before: left, after: right }); }
-  const beforeParts = new Map([...beforePackage.archive.entries].map(([p, e]) => [p, sha256Bytes(e.data)])), afterParts = new Map([...afterPackage.archive.entries].map(([p, e]) => [p, sha256Bytes(e.data)]));
-  const changedParts = [...new Set([...beforeParts.keys(), ...afterParts.keys()])].filter((p) => beforeParts.get(p) !== afterParts.get(p)).sort();
-  const protectedChanged = changedParts.filter((p) => { const kind = beforePackage.classifications.get(p) ?? afterPackage.classifications.get(p); return kind !== "editable" && kind !== "preserved"; });
+export type DocumentDiffOptions = { maxChanges?: number; includeFormatting?: boolean; includePackageParts?: boolean };
+
+export function diffDocuments(beforePackage: OoxmlPackage, afterPackage: OoxmlPackage, before: SemanticSnapshot, after: SemanticSnapshot, options: DocumentDiffOptions = {}): Record<string, unknown> {
+  const maxChanges = options.maxChanges ?? 1000, includeFormatting = options.includeFormatting !== false, includePackageParts = options.includePackageParts !== false;
+  const paragraphs = (snapshot: SemanticSnapshot) => snapshot.stories.flatMap((story) => story.paragraphs.map((paragraph) => ({ key: paragraph.selector.kind === "paragraphId" ? `${story.kind}:id:${String(paragraph.selector.paragraphId)}` : `${story.kind}:path:${paragraph.path}`, story: story.kind, path: paragraph.path, selector: paragraph.selector, text: paragraph.text, hash: paragraph.hash, style: paragraph.style, alignment: paragraph.alignment, runs: paragraph.runs })));
+  const beforeParagraphs = new Map(paragraphs(before).map((paragraph) => [paragraph.key, paragraph])), afterParagraphs = new Map(paragraphs(after).map((paragraph) => [paragraph.key, paragraph]));
+  const semanticChanges: Array<Record<string, unknown>> = [];
+  for (const key of [...new Set([...beforeParagraphs.keys(), ...afterParagraphs.keys()])]) {
+    const left = beforeParagraphs.get(key), right = afterParagraphs.get(key);
+    if (!left) semanticChanges.push({ kind: "paragraph-added", key, after: right });
+    else if (!right) semanticChanges.push({ kind: "paragraph-removed", key, before: left });
+    else {
+      const formattingChanged = includeFormatting && (JSON.stringify(left.runs) !== JSON.stringify(right.runs) || left.style !== right.style || left.alignment !== right.alignment);
+      if (left.text !== right.text || formattingChanged) semanticChanges.push({ kind: "paragraph-changed", key, textChanged: left.text !== right.text, formattingChanged, before: left, after: right });
+    }
+  }
+  const beforeParts = new Map([...beforePackage.archive.entries].map(([part, entry]) => [part, sha256Bytes(entry.data)])), afterParts = new Map([...afterPackage.archive.entries].map(([part, entry]) => [part, sha256Bytes(entry.data)]));
+  const changedParts = [...new Set([...beforeParts.keys(), ...afterParts.keys()])].filter((part) => beforeParts.get(part) !== afterParts.get(part)).sort();
+  const protectedChanged = changedParts.filter((part) => { const kind = beforePackage.classifications.get(part) ?? afterPackage.classifications.get(part); return kind !== "editable" && kind !== "preserved"; });
   const relationshipKey = (relationship: { sourcePart: string; id: string; type: string; target: string; targetMode?: string }) => JSON.stringify([relationship.sourcePart, relationship.id, relationship.type, relationship.target, relationship.targetMode ?? ""]);
   const beforeRelationships = new Map(beforePackage.relationships.map((relationship) => [relationshipKey(relationship), relationship])), afterRelationships = new Map(afterPackage.relationships.map((relationship) => [relationshipKey(relationship), relationship]));
   const relationshipChanges = { added: [...afterRelationships].filter(([key]) => !beforeRelationships.has(key)).map(([, relationship]) => relationship), removed: [...beforeRelationships].filter(([key]) => !afterRelationships.has(key)).map(([, relationship]) => relationship) };
   const beforeTables = new Map(before.stories.flatMap((story) => story.tables.map((table) => [`${story.kind}:${table.path}`, table] as const))), afterTables = new Map(after.stories.flatMap((story) => story.tables.map((table) => [`${story.kind}:${table.path}`, table] as const)));
-  const tableChanges = [...new Set([...beforeTables.keys(), ...afterTables.keys()])].filter((key) => beforeTables.get(key)?.hash !== afterTables.get(key)?.hash).slice(0, maxChanges).map((key) => ({ key, before: beforeTables.get(key), after: afterTables.get(key) }));
-  return { equal: changes.length === 0 && changedParts.length === 0, semanticChanges: changes, semanticChangesTruncated: changes.length >= maxChanges && total > maxChanges, tableChanges, relationshipChanges, changedParts, protectedPartsChanged: protectedChanged, beforeInventory: before.inventory, afterInventory: after.inventory };
+  const allTableChanges = [...new Set([...beforeTables.keys(), ...afterTables.keys()])].filter((key) => beforeTables.get(key)?.hash !== afterTables.get(key)?.hash).map((key) => ({ key, before: beforeTables.get(key), after: afterTables.get(key) }));
+  const equal = semanticChanges.length === 0 && changedParts.length === 0;
+  return {
+    equal,
+    semanticChanges: semanticChanges.slice(0, maxChanges),
+    semanticChangeCount: semanticChanges.length,
+    semanticChangesTruncated: semanticChanges.length > maxChanges,
+    tableChanges: allTableChanges.slice(0, maxChanges),
+    tableChangeCount: allTableChanges.length,
+    tableChangesTruncated: allTableChanges.length > maxChanges,
+    relationshipChanges,
+    ...(includePackageParts ? { changedParts, protectedPartsChanged: protectedChanged } : { changedPartCount: changedParts.length, protectedPartChangeCount: protectedChanged.length }),
+    beforeInventory: before.inventory,
+    afterInventory: after.inventory,
+  };
 }

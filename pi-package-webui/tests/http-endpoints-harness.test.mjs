@@ -79,6 +79,11 @@ const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
 const openCommandScript = path.join(harnessSideEffectsRoot, "fake-open-default.mjs");
 const fakeOpenBinDir = path.join(harnessSideEffectsRoot, "bin");
+const artifactRoot = path.join(harnessSideEffectsRoot, "artifacts"), artifactDir = path.join(artifactRoot, "fixture-document-artifact"), artifactManifest = path.join(artifactDir, "manifest.json"), artifactDownload = path.join(artifactDir, "document.docx"), artifactPage = path.join(artifactDir, "page-1.png"), artifactExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+await mkdir(artifactDir, { recursive: true });
+await writeFile(artifactDownload, Buffer.from("fixture docx download bytes"));
+await writeFile(artifactPage, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+await writeFile(artifactManifest, JSON.stringify({ artifact: { schema: "pi.artifact/v1", kind: "document", id: "fixture-document-artifact", revisionId: "fixture-revision", title: "fixture.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pageCount: 1, manifestPath: artifactManifest, downloadPath: artifactDownload, expiresAt: artifactExpiresAt }, sourcePath: "/private/source.docx", sourceSha256: "a".repeat(64), renderer: { engine: "fixture" }, pages: [{ pageNum: 1, width: 10, height: 20, outputPath: artifactPage }], warnings: [] }));
 await chmod(fakePi, 0o755);
 await mkdir(fakeOpenBinDir, { recursive: true });
 await writeFile(openCommandScript, `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "custom-open\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
@@ -123,6 +128,9 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     PI_WEBUI_SETTINGS_FILE: settingsFile,
     ...(process.platform === "linux" ? {} : { PI_WEBUI_OPEN_COMMAND: openCommandScript }),
     PI_WEBUI_OPEN_LOG: openCommandLog,
+    PI_WEBUI_ARTIFACT_ROOTS: artifactRoot,
+    FAKE_PI_ARTIFACT_MANIFEST: artifactManifest,
+    FAKE_PI_ARTIFACT_DOWNLOAD: artifactDownload,
     FAKE_PI_VOICE_SCRIPTS: "1",
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
@@ -216,6 +224,32 @@ try {
   assert.equal(tabList.length, 1, "startup should create one tab for --cwd");
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
+
+  const artifactFixture = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture document artifact" } });
+  assert.equal(artifactFixture.status, 200, "document artifact fixture should be accepted");
+  const artifactMessages = await request("127.0.0.1", `/api/messages?tab=${encodeURIComponent(tabId)}`);
+  const artifactToolResult = artifactMessages.body?.data?.messages?.findLast?.((message) => message?.role === "toolResult" && message?.toolName === "docx_render");
+  const publicArtifact = artifactToolResult?.details?.artifact;
+  assert.equal(publicArtifact?.schema, "pi.artifact/v1", "document artifact should survive transcript sanitization");
+  assert.ok(publicArtifact?.manifestUrl, "document artifact should receive a manifest URL");
+  assert.ok(publicArtifact?.downloadUrl, "document artifact should receive a download URL");
+  assert.equal(JSON.stringify(artifactToolResult).includes(harnessSideEffectsRoot), false, "browser transcript must not expose artifact host paths");
+  const artifactManifestResponse = await fetch(`http://127.0.0.1:${port}${publicArtifact.manifestUrl}`, { signal: AbortSignal.timeout(5_000) });
+  assert.equal(artifactManifestResponse.status, 200, "artifact manifest token should resolve for its tab");
+  const artifactManifestPayload = await artifactManifestResponse.json();
+  assert.equal(artifactManifestPayload.data.pages[0].pageNum, 1);
+  assert.equal(JSON.stringify(artifactManifestPayload).includes(harnessSideEffectsRoot), false, "artifact manifest response must not expose host paths");
+  const artifactPageResponse = await fetch(`http://127.0.0.1:${port}${artifactManifestPayload.data.pages[0].imageUrl}`, { signal: AbortSignal.timeout(5_000) });
+  assert.equal(artifactPageResponse.status, 200, "artifact page token should resolve");
+  assert.equal(artifactPageResponse.headers.get("content-type"), "image/png");
+  const artifactRangeResponse = await fetch(`http://127.0.0.1:${port}${publicArtifact.downloadUrl}`, { headers: { range: "bytes=0-6" }, signal: AbortSignal.timeout(5_000) });
+  assert.equal(artifactRangeResponse.status, 206, "artifact downloads should support bounded byte ranges");
+  assert.equal(artifactRangeResponse.headers.get("content-range"), `bytes 0-6/${(await stat(artifactDownload)).size}`);
+  const otherArtifactTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "artifact-isolation" } });
+  const wrongTabManifestUrl = new URL(publicArtifact.manifestUrl, `http://127.0.0.1:${port}`); wrongTabManifestUrl.searchParams.set("tab", otherArtifactTab.body?.data?.tab?.id);
+  assert.equal((await fetch(wrongTabManifestUrl, { signal: AbortSignal.timeout(5_000) })).status, 404, "artifact tokens must be tab-bound");
+  await request("127.0.0.1", `/api/tabs/${encodeURIComponent(otherArtifactTab.body?.data?.tab?.id)}`, { method: "DELETE" });
+  await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture document artifact clear" } });
 
   const subagentFixtureStart = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents running" } });
   assert.equal(subagentFixtureStart.status, 200, "subagent fixture status should be accepted");

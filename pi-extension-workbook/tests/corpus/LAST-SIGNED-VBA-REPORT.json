@@ -1,5 +1,58 @@
 {
-  "status": "SKIP",
-  "generatedAt": "2026-07-14T15:02:58.359Z",
-  "blocker": "Provide a legally sourced signed XLSM path as argv[2] or PI_WORKBOOK_SIGNED_XLSM_FIXTURE. The harness never creates certificates or changes Trust Center settings."
+  "status": "PASS_PACKAGE_ONLY",
+  "generatedAt": "2026-07-14T16:56:36.280Z",
+  "fixture": {
+    "sourcePath": "/home/firstpick/npm-packages/pi-extension-workbook/tests/corpus/fixtures/signed-vba/xlsxwriter-macro04.xlsm",
+    "sourceSha256": "d49e30414b59e66446689d77119fa5b9f4f99fa86dbcade003f4d3fe1b8e225d",
+    "legalProvenance": {
+      "kind": "vendored-open-source-test-fixture",
+      "repository": "https://github.com/jmcnamara/XlsxWriter",
+      "commit": "cf3fe78d3eab5e4c7d825d4451af3a60e2a04011",
+      "upstreamPath": "xlsxwriter/test/comparison/xlsx_files/macro04.xlsm",
+      "license": "BSD-2-Clause",
+      "expectedSha256": "d49e30414b59e66446689d77119fa5b9f4f99fa86dbcade003f4d3fe1b8e225d"
+    }
+  },
+  "policy": {
+    "certificateStoreModified": false,
+    "trustCenterModified": false,
+    "macrosExecuted": false,
+    "sourceModified": false
+  },
+  "signatures": [
+    {
+      "path": "xl/vbaProjectSignature.bin",
+      "sha256": "0642cd3ba4fd27531d44d9cba120c29cdf0b10c84682fc2de31e1262ef063b73",
+      "bytes": 2256
+    }
+  ],
+  "protectedParts": [
+    "[Content_Types].xml",
+    "xl/_rels/vbaProject.bin.rels",
+    "xl/_rels/workbook.xml.rels",
+    "xl/vbaProject.bin",
+    "xl/vbaProjectSignature.bin"
+  ],
+  "noOp": {
+    "outputSha256": "fe1267f3bd2a66d92428d1ca41e11dd882a7b754433f579d10b4563cc5f59f23",
+    "integrity": {
+      "ok": true,
+      "errors": [],
+      "changedParts": [],
+      "addedParts": [],
+      "removedParts": []
+    }
+  },
+  "edit": {
+    "outputSha256": "bf8a7fa4d35e1295f411c2dbbb243bd5ab53afa00e124c1d7283171676860053",
+    "changedParts": [
+      "xl/worksheets/sheet1.xml"
+    ],
+    "protectedPartChanges": [],
+    "validationOk": true
+  },
+  "uiValidation": {
+    "status": "SKIP",
+    "reason": "Excel repair-dialog validation requires controlled interactive Windows."
+  }
 }

@@ -20385,10 +20385,83 @@ function renderLsToolExecution(parent, tool) {
   appendToolWarnings(parent, tool.details);
 }
 
+let documentArtifactDialog = null;
+
+function addDocumentArtifactPageToComposer(artifact, pageNum) {
+  const reference = `[Document artifact ${artifact.id}${artifact.revisionId ? ` revision ${artifact.revisionId}` : ""}, page ${pageNum}]`;
+  const current = elements.promptInput.value.trim();
+  elements.promptInput.value = [current, reference].filter(Boolean).join("\n\n");
+  resizePromptInput();
+  renderCommandSuggestions();
+  focusPromptInput({ defer: true });
+}
+
+function ensureDocumentArtifactDialog() {
+  if (documentArtifactDialog?.isConnected) return documentArtifactDialog;
+  const dialog = make("dialog", "document-artifact-dialog");
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+  document.body.append(dialog);
+  documentArtifactDialog = dialog;
+  return dialog;
+}
+
+async function openDocumentArtifact(artifact) {
+  const dialog = ensureDocumentArtifactDialog();
+  dialog.replaceChildren(make("div", "document-artifact-loading", "Loading document artifact…"));
+  if (!dialog.open) dialog.showModal();
+  try {
+    const response = await api(artifact.manifestUrl);
+    const manifest = response.data || {}, pages = Array.isArray(manifest.pages) ? manifest.pages : [];
+    let pageIndex = 0, zoom = 1, rotation = 0;
+    const shell = make("section", "document-artifact-shell"), header = make("header", "document-artifact-header"), title = make("div", "document-artifact-title"), actions = make("div", "document-artifact-actions"), body = make("div", "document-artifact-body"), sidebar = make("aside", "document-artifact-sidebar"), stage = make("main", "document-artifact-stage"), image = make("img", "document-artifact-page"), toolbar = make("div", "document-artifact-toolbar"), meta = make("span", "document-artifact-meta"), search = make("input", "document-artifact-search"), semantic = make("details", "document-artifact-semantic");
+    title.append(make("strong", undefined, artifact.title || "Document"), make("span", "muted", `${artifact.pageCount || pages.length || 0} page${Number(artifact.pageCount || pages.length) === 1 ? "" : "s"} · ${manifest.renderer?.engine || "document artifact"}`));
+    const close = make("button", undefined, "Close"); close.type = "button"; close.addEventListener("click", () => dialog.close());
+    if (artifact.downloadUrl) { const download = make("a", "button-like", "Download"); download.href = artifact.downloadUrl; download.download = artifact.title || "document"; actions.append(download); }
+    actions.append(close); header.append(title, actions);
+    search.type = "search"; search.placeholder = "Search outline, comments, revisions, or metadata";
+    const previous = make("button", undefined, "Previous"), next = make("button", undefined, "Next"), zoomOut = make("button", undefined, "−"), zoomIn = make("button", undefined, "+"), fit = make("button", undefined, "Fit"), rotate = make("button", undefined, "Rotate"), send = make("button", undefined, "Send page to composer");
+    for (const button of [previous, next, zoomOut, zoomIn, fit, rotate, send]) button.type = "button";
+    const renderPage = () => {
+      const page = pages[pageIndex];
+      image.hidden = !page;
+      if (page) { image.src = page.imageUrl; image.alt = `Rendered page ${page.pageNum} of ${artifact.title || "document"}`; image.style.transform = `scale(${zoom}) rotate(${rotation}deg)`; meta.textContent = `Page ${page.pageNum} of ${artifact.pageCount || pages.length} · ${Math.round(zoom * 100)}% · ${rotation}°`; }
+      else meta.textContent = "No rendered pages are available";
+      previous.disabled = pageIndex <= 0; next.disabled = pageIndex >= pages.length - 1; send.disabled = !page;
+      for (const [index, button] of [...sidebar.querySelectorAll("button")].entries()) button.classList.toggle("active", index === pageIndex);
+    };
+    previous.addEventListener("click", () => { pageIndex = Math.max(0, pageIndex - 1); renderPage(); });
+    next.addEventListener("click", () => { pageIndex = Math.min(pages.length - 1, pageIndex + 1); renderPage(); });
+    zoomOut.addEventListener("click", () => { zoom = Math.max(0.25, zoom - 0.25); renderPage(); });
+    zoomIn.addEventListener("click", () => { zoom = Math.min(3, zoom + 0.25); renderPage(); });
+    fit.addEventListener("click", () => { zoom = 1; renderPage(); });
+    rotate.addEventListener("click", () => { rotation = (rotation + 90) % 360; renderPage(); });
+    send.addEventListener("click", () => { const page = pages[pageIndex]; if (page) { addDocumentArtifactPageToComposer(artifact, page.pageNum); dialog.close(); } });
+    toolbar.append(previous, next, zoomOut, zoomIn, fit, rotate, send, meta);
+    for (const [index, page] of pages.entries()) { const button = make("button", "document-artifact-thumbnail"); button.type = "button"; const thumb = make("img"); thumb.src = page.imageUrl; thumb.alt = ""; button.append(thumb, make("span", undefined, `Page ${page.pageNum}`)); button.addEventListener("click", () => { pageIndex = index; renderPage(); }); sidebar.append(button); }
+    const semanticData = { outline: manifest.outline || [], comments: manifest.comments || [], revisions: manifest.revisions || [], warnings: manifest.warnings || [], diff: manifest.diff || undefined, renderer: manifest.renderer || undefined };
+    semantic.append(make("summary", undefined, "Semantic structure, revisions, warnings, and diff"), make("pre", undefined, JSON.stringify(semanticData, null, 2)));
+    search.addEventListener("input", () => { const query = search.value.trim().toLocaleLowerCase(); semantic.hidden = !!query && !JSON.stringify(semanticData).toLocaleLowerCase().includes(query); if (query && semantic.hidden) search.setCustomValidity("No semantic match"); else search.setCustomValidity(""); });
+    stage.append(toolbar, search, image, semantic); body.append(sidebar, stage); shell.append(header, body); dialog.replaceChildren(shell); renderPage();
+  } catch (error) {
+    const close = make("button", undefined, "Close"); close.type = "button"; close.addEventListener("click", () => dialog.close());
+    dialog.replaceChildren(make("div", "document-artifact-error", `Document artifact is stale or unavailable: ${error.message || error}`), close);
+  }
+}
+
+function appendDocumentArtifact(parent, artifact) {
+  if (artifact?.schema !== "pi.artifact/v1" || artifact?.kind !== "document") return;
+  const card = make("div", `document-artifact-card${artifact.unavailable ? " unavailable" : ""}`), text = make("div"), actions = make("div", "document-artifact-card-actions");
+  text.append(make("strong", undefined, artifact.title || "Document artifact"), make("span", "muted", artifact.unavailable ? "Preview unavailable" : `${artifact.pageCount || 0} page${Number(artifact.pageCount) === 1 ? "" : "s"}`));
+  if (!artifact.unavailable && artifact.manifestUrl) { const open = make("button", undefined, "Open viewer"); open.type = "button"; open.addEventListener("click", () => openDocumentArtifact(artifact)); actions.append(open); }
+  if (!artifact.unavailable && artifact.downloadUrl) { const download = make("a", "button-like", "Download"); download.href = artifact.downloadUrl; download.download = artifact.title || "document"; actions.append(download); }
+  card.append(text, actions); parent.append(card);
+}
+
 function renderGenericToolExecution(parent, tool) {
   appendToolTitle(parent, tool.name, "", toolStateMeta(tool));
   appendToolOutput(parent, JSON.stringify(tool.args ?? {}, null, 2), { label: "arguments", previewLines: 12 });
   appendToolImages(parent, tool.result);
+  appendDocumentArtifact(parent, tool.details?.artifact);
   appendToolOutput(parent, tool.text, { label: "result", previewLines: 10, open: tool.isError });
   appendToolWarnings(parent, tool.details);
 }

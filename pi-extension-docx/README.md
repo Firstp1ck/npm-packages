@@ -1,18 +1,18 @@
 # @firstpick/pi-extension-docx
 
-Fail-closed DOCX tools for Pi agents. The package separates semantic/package inspection, Open XML SDK mutation, LibreOffice rendering, and durable commit so unsupported content cannot be silently lost.
+Fail-closed DOCX tools for Pi agents. The package separates semantic/package inspection, Open XML SDK mutation, isolated office-suite rendering, and durable commit so unsupported content cannot be silently lost.
 
 ## Tools
 
 - `docx_inspect` — properties, stories, outline, features, package manifest, security, engines, capabilities.
 - `docx_read` — bounded story/selector/search reads; text search spans OOXML run boundaries.
-- `docx_render` — isolated LibreOffice PDF export and selected LiteParse PNG pages.
+- `docx_render` — isolated ONLYOFFICE (preferred) or LibreOffice PDF export and selected LiteParse PNG pages.
 - `docx_edit` — dry-run or create a private staged revision; never writes a destination.
 - `docx_diff` — semantic formatting and OOXML-part comparison.
 - `docx_validate` — package, schema, reopen, preservation, and optional render gates.
 - `docx_commit` — queued hash-checked save-as or explicitly confirmed source overwrite.
 
-Run `/docx-doctor` to inspect sidecar, .NET, LibreOffice, LiteParse, platform, and workspace status.
+Run `/docx-doctor` to inspect sidecar, .NET, ONLYOFFICE/LibreOffice, LiteParse, platform, and workspace status.
 
 ## Setup
 
@@ -22,7 +22,7 @@ Node 24+ is required. Build the source sidecar with a .NET 8 SDK:
 dotnet build engine/DocxEngine.sln -c Release
 ```
 
-At runtime the extension checks `PI_DOCX_ENGINE_PATH`, `engine/publish`, then the local Release DLL. LibreOffice may be configured with `LIBREOFFICE_PATH`. No install script downloads executables.
+At runtime the extension checks `PI_DOCX_ENGINE_PATH`, `engine/publish`, then the local Release DLL. Rendering defaults to `PI_DOCX_RENDERER=auto`, preferring a local ONLYOFFICE Desktop Editors `x2t` converter and falling back to LibreOffice. Set `PI_DOCX_RENDERER=onlyoffice|libreoffice`, `ONLYOFFICE_X2T_PATH`, `ONLYOFFICE_ALL_FONTS_PATH`, or `LIBREOFFICE_PATH` to override discovery. Launch ONLYOFFICE Desktop Editors once if its per-user font cache has not yet been generated. No install script downloads executables.
 
 ## Safe workflow
 
@@ -49,7 +49,7 @@ Stable codes include `SOURCE_CHANGED`, `DESTINATION_CHANGED`, `DESTINATION_EXIST
 
 ## Rendering fidelity
 
-LibreOffice previews are not claimed pixel-identical to Word. Renderer version, export filter, DPI, isolation settings, and fidelity warnings are returned. The renderer receives only a private copy and never supplies edited DOCX bytes.
+ONLYOFFICE and LibreOffice previews are not claimed pixel-identical to Word. The selected engine, export settings, DPI, isolation settings, discovered PDF fonts, and fidelity warnings are returned. ONLYOFFICE runs `x2t` from its installation directory with generated task XML, a private input copy, private HOME/temp directories, and a private snapshot of its font metadata. Macro/active-content packages and non-hyperlink external relationships are rejected before either renderer starts. Rendering never supplies edited DOCX bytes.
 
 ## Development
 
