@@ -36,7 +36,7 @@ Anthropic's current support article says Claude Agent SDK usage, `claude -p`, an
 
 ### Expected outcome
 
-Anthropic OAuth requests from Pi keep using OAuth bearer auth, but send the current Agent SDK attribution/identity shape. The stale subscription-auth warning is suppressed. If Anthropic returns the exact extra-usage third-party-app error again, Pi asks whether to apply this saved `PATCH.md`; on confirmation it switches the current agent to `openai-codex/gpt-5.5` and queues a recovery turn that implements this patch.
+Anthropic OAuth requests from Pi keep using OAuth bearer auth, but send the current Agent SDK attribution/identity shape. The stale subscription-auth warning is suppressed. If Anthropic returns the exact extra-usage third-party-app error again, Pi asks whether to apply this saved `PATCH.md`; on confirmation it opens patch application outside the failing/current tab: first as a new Pi Web UI tab when available, otherwise as a new OS terminal/window running `openai-codex/gpt-5.5` with the recovery prompt.
 
 ## Scope (exact files changed)
 
@@ -270,7 +270,7 @@ Changed the warning setting description to:
 
 Keeps local settings documentation consistent with the updated warning copy.
 
-## Change 6 — Add recovery popup that queues PATCH.md application on OpenAI Codex
+## Change 6 — Add recovery popup that opens PATCH.md application in a new tab/terminal
 
 **File:** `${PI_AGENT}/extensions/anthropic-subscription-auth-recovery.ts`
 
@@ -282,23 +282,31 @@ Added a global Pi extension that watches `agent_end` messages for the exact Anth
 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.
 ```
 
-When that error appears, the extension shows a confirmation dialog. If confirmed, it switches the current agent to `openai-codex/gpt-5.5` and queues a follow-up user message instructing the agent to implement this patch via the `patch-md` skill:
+When that error appears, the extension shows a confirmation dialog. If confirmed, it does **not** switch or reuse the failing/current Anthropic tab. Instead, it opens a separate patch-application session using `openai-codex/gpt-5.5`:
+
+- In Pi Web UI, it creates a new tab with `POST /api/tabs`, sets that tab to `openai-codex/gpt-5.5` with `POST /api/model?tab=<new-tab-id>`, then sends the recovery prompt to that new tab with `POST /api/prompt?tab=<new-tab-id>`.
+- Outside Pi Web UI, it writes the recovery prompt to a temporary Markdown file and launches a new OS terminal/window running `pi --provider openai-codex --model gpt-5.5 --approve @<prompt-file>`.
+
+Representative flow:
 
 ```ts
-const PATCH_PATH = "/home/firstpick/npm-packages/patches/pi-anthropic-agent-sdk-subscription-auth/PATCH.md";
+const PATCH_PATH = "C:/Users/hdlea/Documents/GitHub/npm-packages/patches/pi-anthropic-agent-sdk-subscription-auth/PATCH.md";
 const RECOVERY_PROVIDER = "openai-codex";
 const RECOVERY_MODEL = "gpt-5.5";
+const RECOVERY_TITLE = "Pi Anthropic patch recovery";
 
-const recoveryModel = ctx.modelRegistry.find(RECOVERY_PROVIDER, RECOVERY_MODEL);
-const switched = await pi.setModel(recoveryModel);
-pi.sendUserMessage(buildPatchPrompt(previousModel), { deliverAs: "followUp" });
+const prompt = buildPatchPrompt(previousModel);
+const webuiResult = await tryOpenWebuiRecoveryTab(prompt, ctx.cwd);
+if (!webuiResult.ok) {
+    await openRecoveryInNewTerminal(prompt, ctx.cwd);
+}
 ```
 
-The queued prompt explicitly says to use `patch-md`, apply the `PATCH.md` exactly, avoid live Anthropic verification unless approved, and report modified files plus verification results.
+The recovery prompt explicitly says to use `patch-md`, apply the `PATCH.md` exactly, avoid live Anthropic verification unless approved, report modified files plus verification results, and note that patch application was opened outside the failing/current tab.
 
 ### Why
 
-If the request-shape patch is overwritten by a Pi update or Anthropic changes classification again, the user gets an immediate recovery path without manually finding this patch document or switching away from the failing Anthropic model.
+If the request-shape patch is overwritten by a Pi update or Anthropic changes classification again, the user gets an immediate recovery path without manually finding this patch document and without replacing, steering, or polluting the failing Anthropic tab.
 
 ## Verification steps
 
