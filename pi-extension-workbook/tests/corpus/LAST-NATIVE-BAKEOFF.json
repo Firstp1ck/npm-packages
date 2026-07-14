@@ -1,0 +1,729 @@
+{
+  "status": "PASS",
+  "timestamp": "2026-07-14T15:04:45.392Z",
+  "policy": {
+    "certificateStoreModified": false,
+    "trustCenterModified": false,
+    "aspose": "deferred",
+    "publicNativeMutationEnabled": false
+  },
+  "probe": {
+    "ok": true,
+    "action": "probe",
+    "excelVersion": "16.0",
+    "excelBuild": "20131",
+    "excelPid": 7424,
+    "ownedExcelProcess": true,
+    "automationSecurity": "ForceDisable",
+    "enableEvents": false,
+    "updateLinks": 0,
+    "calculation": "Manual",
+    "sourceHashBefore": null,
+    "sourceHashAfter": null,
+    "outputHash": null,
+    "sentinelExecuted": false,
+    "worksheetCount": null,
+    "externalLinkCount": 0,
+    "connectionCount": 0,
+    "operations": []
+  },
+  "qualification": {
+    "xlsxNoOp": false,
+    "xlsxCandidateEdit": true,
+    "xlsmNoOp": false,
+    "xlsmCandidateEdit": false,
+    "decision": "Candidate failed one or more fidelity gates and remains disabled for the affected format."
+  },
+  "workers": {
+    "xlsxRoundtripWorker": {
+      "ok": true,
+      "action": "roundtrip",
+      "excelVersion": "16.0",
+      "excelBuild": "20131",
+      "excelPid": 34204,
+      "ownedExcelProcess": true,
+      "automationSecurity": "ForceDisable",
+      "enableEvents": false,
+      "updateLinks": 0,
+      "calculation": "Manual",
+      "sourceHashBefore": "6e427ee4ea30d1f59f559f04096b0f55242a80e91c48e7135ed7f4192aa9c293",
+      "sourceHashAfter": "6e427ee4ea30d1f59f559f04096b0f55242a80e91c48e7135ed7f4192aa9c293",
+      "outputHash": "8e17a857d72d83c328d5018e4d4a7438aecea6da7403797af48726a70add3a3e",
+      "sentinelExecuted": false,
+      "worksheetCount": 1,
+      "externalLinkCount": 0,
+      "connectionCount": 0,
+      "operations": []
+    },
+    "xlsxEditWorker": {
+      "ok": true,
+      "action": "edit",
+      "excelVersion": "16.0",
+      "excelBuild": "20131",
+      "excelPid": 26876,
+      "ownedExcelProcess": true,
+      "automationSecurity": "ForceDisable",
+      "enableEvents": false,
+      "updateLinks": 0,
+      "calculation": "Manual",
+      "sourceHashBefore": "6e427ee4ea30d1f59f559f04096b0f55242a80e91c48e7135ed7f4192aa9c293",
+      "sourceHashAfter": "6e427ee4ea30d1f59f559f04096b0f55242a80e91c48e7135ed7f4192aa9c293",
+      "outputHash": "94cb0a1aadab605e7f461eac00e133bc0c09befb58281081707d66a742890db5",
+      "sentinelExecuted": false,
+      "worksheetCount": 1,
+      "externalLinkCount": 0,
+      "connectionCount": 0,
+      "operations": [
+        {
+          "type": "setValue",
+          "sheet": "Sheet1",
+          "target": "A3"
+        },
+        {
+          "type": "setFormula",
+          "sheet": "Sheet1",
+          "target": "C3"
+        },
+        {
+          "type": "setStyle",
+          "sheet": "Sheet1",
+          "target": "A1:C1"
+        },
+        {
+          "type": "setRowHeight",
+          "sheet": "Sheet1",
+          "target": "1:1"
+        },
+        {
+          "type": "setColumnWidth",
+          "sheet": "Sheet1",
+          "target": "A:C"
+        },
+        {
+          "type": "unmerge",
+          "sheet": "Sheet1",
+          "target": "B2:C2"
+        },
+        {
+          "type": "merge",
+          "sheet": "Sheet1",
+          "target": "A3:B3"
+        }
+      ]
+    },
+    "xlsmRoundtripWorker": {
+      "ok": true,
+      "action": "roundtrip",
+      "excelVersion": "16.0",
+      "excelBuild": "20131",
+      "excelPid": 36124,
+      "ownedExcelProcess": true,
+      "automationSecurity": "ForceDisable",
+      "enableEvents": false,
+      "updateLinks": 0,
+      "calculation": "Manual",
+      "sourceHashBefore": "44ce8d50fb1472370f44182d0322222d2f593c149debc025987fdaff948ce7b5",
+      "sourceHashAfter": "44ce8d50fb1472370f44182d0322222d2f593c149debc025987fdaff948ce7b5",
+      "outputHash": "56eccf077cc2b9387c3fbd0becaf49d180bb1579b255307cba3fbd29e0aac06d",
+      "sentinelExecuted": false,
+      "worksheetCount": 1,
+      "externalLinkCount": 0,
+      "connectionCount": 0,
+      "operations": []
+    },
+    "xlsmEditWorker": {
+      "ok": true,
+      "action": "edit",
+      "excelVersion": "16.0",
+      "excelBuild": "20131",
+      "excelPid": 23496,
+      "ownedExcelProcess": true,
+      "automationSecurity": "ForceDisable",
+      "enableEvents": false,
+      "updateLinks": 0,
+      "calculation": "Manual",
+      "sourceHashBefore": "44ce8d50fb1472370f44182d0322222d2f593c149debc025987fdaff948ce7b5",
+      "sourceHashAfter": "44ce8d50fb1472370f44182d0322222d2f593c149debc025987fdaff948ce7b5",
+      "outputHash": "2e82b4d62a1a0572f4c34e9bf0038274ccafa8faafab3bd002741f86c701fd24",
+      "sentinelExecuted": false,
+      "worksheetCount": 1,
+      "externalLinkCount": 0,
+      "connectionCount": 0,
+      "operations": [
+        {
+          "type": "setValue",
+          "sheet": "Sentinel",
+          "target": "B2"
+        },
+        {
+          "type": "setFormula",
+          "sheet": "Sentinel",
+          "target": "C2"
+        },
+        {
+          "type": "setStyle",
+          "sheet": "Sentinel",
+          "target": "A1:C2"
+        }
+      ]
+    }
+  },
+  "evidence": {
+    "xlsxRoundtripEvidence": {
+      "validation": {
+        "ok": true,
+        "format": "xlsx",
+        "workbookPart": "xl/workbook.xml",
+        "workbookContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+        "macroEnabled": false,
+        "hasVbaProject": false,
+        "protectedParts": [],
+        "externalRelationships": 0,
+        "errors": [],
+        "warnings": []
+      },
+      "integrity": {
+        "ok": false,
+        "errors": [
+          "Unexpected part added: xl/theme/theme1.xml",
+          "Unexpected part added: xl/sharedStrings.xml",
+          "Unexpected part added: xl/calcChain.xml",
+          "Unexpected part added: docProps/core.xml",
+          "Unexpected part added: docProps/app.xml"
+        ],
+        "changedParts": [
+          "[Content_Types].xml",
+          "_rels/.rels",
+          "xl/_rels/workbook.xml.rels",
+          "xl/styles.xml",
+          "xl/workbook.xml",
+          "xl/worksheets/sheet1.xml"
+        ],
+        "addedParts": [
+          "docProps/app.xml",
+          "docProps/core.xml",
+          "xl/calcChain.xml",
+          "xl/sharedStrings.xml",
+          "xl/theme/theme1.xml"
+        ],
+        "removedParts": []
+      },
+      "semantic": {
+        "addedSheets": [],
+        "removedSheets": [],
+        "changedCells": [
+          {
+            "sheet": "Sheet1",
+            "reference": "B2",
+            "after": {
+              "value": null,
+              "styleId": 2
+            }
+          },
+          {
+            "sheet": "Sheet1",
+            "reference": "C2",
+            "after": {
+              "value": null,
+              "styleId": 2
+            }
+          }
+        ],
+        "protectedPartChanges": []
+      },
+      "packageChanges": {
+        "changedParts": [
+          "[Content_Types].xml",
+          "_rels/.rels",
+          "xl/_rels/workbook.xml.rels",
+          "xl/styles.xml",
+          "xl/workbook.xml",
+          "xl/worksheets/sheet1.xml"
+        ],
+        "addedParts": [
+          "docProps/app.xml",
+          "docProps/core.xml",
+          "xl/calcChain.xml",
+          "xl/sharedStrings.xml",
+          "xl/theme/theme1.xml"
+        ],
+        "removedParts": []
+      },
+      "protectedHashes": {}
+    },
+    "xlsxEditEvidence": {
+      "validation": {
+        "ok": true,
+        "format": "xlsx",
+        "workbookPart": "xl/workbook.xml",
+        "workbookContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+        "macroEnabled": false,
+        "hasVbaProject": false,
+        "protectedParts": [],
+        "externalRelationships": 0,
+        "errors": [],
+        "warnings": []
+      },
+      "integrity": {
+        "ok": false,
+        "errors": [
+          "Unexpected part added: xl/theme/theme1.xml",
+          "Unexpected part added: xl/sharedStrings.xml",
+          "Unexpected part added: xl/calcChain.xml",
+          "Unexpected part added: docProps/core.xml",
+          "Unexpected part added: docProps/app.xml"
+        ],
+        "changedParts": [
+          "[Content_Types].xml",
+          "_rels/.rels",
+          "xl/_rels/workbook.xml.rels",
+          "xl/styles.xml",
+          "xl/workbook.xml",
+          "xl/worksheets/sheet1.xml"
+        ],
+        "addedParts": [
+          "docProps/app.xml",
+          "docProps/core.xml",
+          "xl/calcChain.xml",
+          "xl/sharedStrings.xml",
+          "xl/theme/theme1.xml"
+        ],
+        "removedParts": []
+      },
+      "semantic": {
+        "addedSheets": [],
+        "removedSheets": [],
+        "changedCells": [
+          {
+            "sheet": "Sheet1",
+            "reference": "A1",
+            "before": {
+              "value": "Hello",
+              "styleId": 0
+            },
+            "after": {
+              "value": "Hello",
+              "styleId": 2
+            }
+          },
+          {
+            "sheet": "Sheet1",
+            "reference": "A3",
+            "after": {
+              "value": "=native-literal",
+              "styleId": 3
+            }
+          },
+          {
+            "sheet": "Sheet1",
+            "reference": "B1",
+            "before": {
+              "value": 42,
+              "styleId": 0
+            },
+            "after": {
+              "value": 42,
+              "styleId": 2
+            }
+          },
+          {
+            "sheet": "Sheet1",
+            "reference": "B3",
+            "after": {
+              "value": null,
+              "styleId": 3
+            }
+          },
+          {
+            "sheet": "Sheet1",
+            "reference": "C1",
+            "before": {
+              "value": 50,
+              "formula": "SUM(B1,8)",
+              "styleId": 0
+            },
+            "after": {
+              "value": 50,
+              "formula": "SUM(B1,8)",
+              "styleId": 2
+            }
+          },
+          {
+            "sheet": "Sheet1",
+            "reference": "C3",
+            "after": {
+              "value": 126,
+              "formula": "B1*3",
+              "styleId": 0
+            }
+          }
+        ],
+        "protectedPartChanges": []
+      },
+      "packageChanges": {
+        "changedParts": [
+          "[Content_Types].xml",
+          "_rels/.rels",
+          "xl/_rels/workbook.xml.rels",
+          "xl/styles.xml",
+          "xl/workbook.xml",
+          "xl/worksheets/sheet1.xml"
+        ],
+        "addedParts": [
+          "docProps/app.xml",
+          "docProps/core.xml",
+          "xl/calcChain.xml",
+          "xl/sharedStrings.xml",
+          "xl/theme/theme1.xml"
+        ],
+        "removedParts": []
+      },
+      "protectedHashes": {}
+    },
+    "xlsmRoundtripEvidence": {
+      "validation": {
+        "ok": true,
+        "format": "xlsm",
+        "workbookPart": "xl/workbook.xml",
+        "workbookContentType": "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+        "macroEnabled": true,
+        "hasVbaProject": true,
+        "protectedParts": [
+          "[Content_Types].xml",
+          "xl/_rels/workbook.xml.rels",
+          "xl/vbaProject.bin"
+        ],
+        "externalRelationships": 0,
+        "errors": [],
+        "warnings": []
+      },
+      "integrity": {
+        "ok": false,
+        "errors": [
+          "Protected part changed: xl/vbaProject.bin"
+        ],
+        "changedParts": [
+          "docProps/core.xml",
+          "xl/vbaProject.bin",
+          "xl/workbook.xml"
+        ],
+        "addedParts": [],
+        "removedParts": []
+      },
+      "semantic": {
+        "addedSheets": [],
+        "removedSheets": [],
+        "changedCells": [],
+        "protectedPartChanges": [
+          "xl/vbaProject.bin"
+        ]
+      },
+      "packageChanges": {
+        "changedParts": [
+          "docProps/core.xml",
+          "xl/vbaProject.bin",
+          "xl/workbook.xml"
+        ],
+        "addedParts": [],
+        "removedParts": []
+      },
+      "protectedHashes": {
+        "[Content_Types].xml": {
+          "before": "29b01d3ed70a06aee69dd2754d531c9feb660238a90647ebf9afec296f0c5f40",
+          "after": "29b01d3ed70a06aee69dd2754d531c9feb660238a90647ebf9afec296f0c5f40"
+        },
+        "xl/_rels/workbook.xml.rels": {
+          "before": "152a228d6da956fa315b3415bc61ec9ec62f4aae1e1fabf0fdefc635b72e7579",
+          "after": "152a228d6da956fa315b3415bc61ec9ec62f4aae1e1fabf0fdefc635b72e7579"
+        },
+        "xl/vbaProject.bin": {
+          "before": "1fe7ef235de0dcfc48bba56fe0de764f59166afb1b1ee16937df4da6ef8e37a4",
+          "after": "bbe5261e903040dd147daac2b9b71b2d3afdfe61a35a24e48fe2b95326ee18de"
+        }
+      }
+    },
+    "xlsmEditEvidence": {
+      "validation": {
+        "ok": true,
+        "format": "xlsm",
+        "workbookPart": "xl/workbook.xml",
+        "workbookContentType": "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+        "macroEnabled": true,
+        "hasVbaProject": true,
+        "protectedParts": [
+          "[Content_Types].xml",
+          "xl/_rels/workbook.xml.rels",
+          "xl/vbaProject.bin"
+        ],
+        "externalRelationships": 0,
+        "errors": [],
+        "warnings": []
+      },
+      "integrity": {
+        "ok": false,
+        "errors": [
+          "Protected part changed: [Content_Types].xml",
+          "Protected part changed: xl/_rels/workbook.xml.rels",
+          "Protected part changed: xl/vbaProject.bin",
+          "Unexpected part added: xl/calcChain.xml"
+        ],
+        "changedParts": [
+          "[Content_Types].xml",
+          "docProps/core.xml",
+          "xl/_rels/workbook.xml.rels",
+          "xl/sharedStrings.xml",
+          "xl/styles.xml",
+          "xl/vbaProject.bin",
+          "xl/workbook.xml",
+          "xl/worksheets/sheet1.xml"
+        ],
+        "addedParts": [
+          "xl/calcChain.xml"
+        ],
+        "removedParts": []
+      },
+      "semantic": {
+        "addedSheets": [],
+        "removedSheets": [],
+        "changedCells": [
+          {
+            "sheet": "Sentinel",
+            "reference": "A1",
+            "before": {
+              "value": "Pi macro non-execution sentinel fixture",
+              "styleId": 0
+            },
+            "after": {
+              "value": "Pi macro non-execution sentinel fixture",
+              "styleId": 1
+            }
+          },
+          {
+            "sheet": "Sentinel",
+            "reference": "A2",
+            "before": {
+              "value": 42,
+              "styleId": 0
+            },
+            "after": {
+              "value": 42,
+              "styleId": 1
+            }
+          },
+          {
+            "sheet": "Sentinel",
+            "reference": "B1",
+            "after": {
+              "value": null,
+              "styleId": 1
+            }
+          },
+          {
+            "sheet": "Sentinel",
+            "reference": "B2",
+            "after": {
+              "value": "=native-literal",
+              "styleId": 2
+            }
+          },
+          {
+            "sheet": "Sentinel",
+            "reference": "C1",
+            "after": {
+              "value": null,
+              "styleId": 1
+            }
+          },
+          {
+            "sheet": "Sentinel",
+            "reference": "C2",
+            "after": {
+              "value": 84,
+              "formula": "A2*2",
+              "styleId": 1
+            }
+          }
+        ],
+        "protectedPartChanges": [
+          "[Content_Types].xml",
+          "xl/_rels/workbook.xml.rels",
+          "xl/vbaProject.bin"
+        ]
+      },
+      "packageChanges": {
+        "changedParts": [
+          "[Content_Types].xml",
+          "docProps/core.xml",
+          "xl/_rels/workbook.xml.rels",
+          "xl/sharedStrings.xml",
+          "xl/styles.xml",
+          "xl/vbaProject.bin",
+          "xl/workbook.xml",
+          "xl/worksheets/sheet1.xml"
+        ],
+        "addedParts": [
+          "xl/calcChain.xml"
+        ],
+        "removedParts": []
+      },
+      "protectedHashes": {
+        "[Content_Types].xml": {
+          "before": "29b01d3ed70a06aee69dd2754d531c9feb660238a90647ebf9afec296f0c5f40",
+          "after": "f5671c0b6e15871bd23b559c827881226390d7781b4d7892f9c3799a0f9887a8"
+        },
+        "xl/_rels/workbook.xml.rels": {
+          "before": "152a228d6da956fa315b3415bc61ec9ec62f4aae1e1fabf0fdefc635b72e7579",
+          "after": "ed4ff8d07a23bc51f26feb5f3b78d2552cc7ebd56dd078b2261fa4a9a45e3566"
+        },
+        "xl/vbaProject.bin": {
+          "before": "1fe7ef235de0dcfc48bba56fe0de764f59166afb1b1ee16937df4da6ef8e37a4",
+          "after": "cf7300cfb052a5296f252efdcca832f339761bf8a411fc4e3d8bef348a463bdd"
+        }
+      }
+    },
+    "validationResults": [
+      {
+        "path": "source.xlsx",
+        "ok": true,
+        "action": "validate",
+        "excelVersion": "16.0",
+        "excelBuild": "20131",
+        "excelPid": 37528,
+        "ownedExcelProcess": true,
+        "automationSecurity": "ForceDisable",
+        "enableEvents": false,
+        "updateLinks": 0,
+        "calculation": "Manual",
+        "sourceHashBefore": "6e427ee4ea30d1f59f559f04096b0f55242a80e91c48e7135ed7f4192aa9c293",
+        "sourceHashAfter": "6e427ee4ea30d1f59f559f04096b0f55242a80e91c48e7135ed7f4192aa9c293",
+        "outputHash": null,
+        "sentinelExecuted": false,
+        "worksheetCount": 1,
+        "externalLinkCount": 0,
+        "connectionCount": 0,
+        "operations": []
+      },
+      {
+        "path": "native-roundtrip.xlsx",
+        "ok": true,
+        "action": "validate",
+        "excelVersion": "16.0",
+        "excelBuild": "20131",
+        "excelPid": 37144,
+        "ownedExcelProcess": true,
+        "automationSecurity": "ForceDisable",
+        "enableEvents": false,
+        "updateLinks": 0,
+        "calculation": "Manual",
+        "sourceHashBefore": "8e17a857d72d83c328d5018e4d4a7438aecea6da7403797af48726a70add3a3e",
+        "sourceHashAfter": "8e17a857d72d83c328d5018e4d4a7438aecea6da7403797af48726a70add3a3e",
+        "outputHash": null,
+        "sentinelExecuted": false,
+        "worksheetCount": 1,
+        "externalLinkCount": 0,
+        "connectionCount": 0,
+        "operations": []
+      },
+      {
+        "path": "native-edited.xlsx",
+        "ok": true,
+        "action": "validate",
+        "excelVersion": "16.0",
+        "excelBuild": "20131",
+        "excelPid": 35648,
+        "ownedExcelProcess": true,
+        "automationSecurity": "ForceDisable",
+        "enableEvents": false,
+        "updateLinks": 0,
+        "calculation": "Manual",
+        "sourceHashBefore": "94cb0a1aadab605e7f461eac00e133bc0c09befb58281081707d66a742890db5",
+        "sourceHashAfter": "94cb0a1aadab605e7f461eac00e133bc0c09befb58281081707d66a742890db5",
+        "outputHash": null,
+        "sentinelExecuted": false,
+        "worksheetCount": 1,
+        "externalLinkCount": 0,
+        "connectionCount": 0,
+        "operations": []
+      },
+      {
+        "path": "macro-sentinel.xlsm",
+        "ok": true,
+        "action": "validate",
+        "excelVersion": "16.0",
+        "excelBuild": "20131",
+        "excelPid": 31836,
+        "ownedExcelProcess": true,
+        "automationSecurity": "ForceDisable",
+        "enableEvents": false,
+        "updateLinks": 0,
+        "calculation": "Manual",
+        "sourceHashBefore": "44ce8d50fb1472370f44182d0322222d2f593c149debc025987fdaff948ce7b5",
+        "sourceHashAfter": "44ce8d50fb1472370f44182d0322222d2f593c149debc025987fdaff948ce7b5",
+        "outputHash": null,
+        "sentinelExecuted": false,
+        "worksheetCount": 1,
+        "externalLinkCount": 0,
+        "connectionCount": 0,
+        "operations": []
+      },
+      {
+        "path": "native-roundtrip.xlsm",
+        "ok": true,
+        "action": "validate",
+        "excelVersion": "16.0",
+        "excelBuild": "20131",
+        "excelPid": 9100,
+        "ownedExcelProcess": true,
+        "automationSecurity": "ForceDisable",
+        "enableEvents": false,
+        "updateLinks": 0,
+        "calculation": "Manual",
+        "sourceHashBefore": "56eccf077cc2b9387c3fbd0becaf49d180bb1579b255307cba3fbd29e0aac06d",
+        "sourceHashAfter": "56eccf077cc2b9387c3fbd0becaf49d180bb1579b255307cba3fbd29e0aac06d",
+        "outputHash": null,
+        "sentinelExecuted": false,
+        "worksheetCount": 1,
+        "externalLinkCount": 0,
+        "connectionCount": 0,
+        "operations": []
+      },
+      {
+        "path": "native-edited.xlsm",
+        "ok": true,
+        "action": "validate",
+        "excelVersion": "16.0",
+        "excelBuild": "20131",
+        "excelPid": 31948,
+        "ownedExcelProcess": true,
+        "automationSecurity": "ForceDisable",
+        "enableEvents": false,
+        "updateLinks": 0,
+        "calculation": "Manual",
+        "sourceHashBefore": "2e82b4d62a1a0572f4c34e9bf0038274ccafa8faafab3bd002741f86c701fd24",
+        "sourceHashAfter": "2e82b4d62a1a0572f4c34e9bf0038274ccafa8faafab3bd002741f86c701fd24",
+        "outputHash": null,
+        "sentinelExecuted": false,
+        "worksheetCount": 1,
+        "externalLinkCount": 0,
+        "connectionCount": 0,
+        "operations": []
+      }
+    ],
+    "timeoutEvidence": {
+      "error": "Native Excel worker timed out after 2500 ms.",
+      "cleanup": {
+        "workerTreeKillAttempted": true,
+        "excelKillAttempted": true,
+        "excelKilled": true,
+        "control": {
+          "workerPid": 31708,
+          "excelPid": 30844,
+          "excelStartTimeUtc": "2026-07-14T15:04:41.8254829Z",
+          "owned": true
+        },
+        "warnings": []
+      },
+      "excelProcessStillRunning": false
+    }
+  }
+}

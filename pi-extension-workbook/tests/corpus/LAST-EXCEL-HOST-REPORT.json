@@ -1,0 +1,56 @@
+{
+  "status": "PASS",
+  "temporary": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-excel-host-d7or1X",
+  "xlsx": "PASS",
+  "macro": {
+    "status": "PASS",
+    "sourceSha256": "d8e8fc6191a63c6a208cf21e8a4331a2b11acc8fa9080e28591353a0e3fb1189",
+    "outputSha256": "3f71fe729731beaac87e0c2840c3e5b620e95d5837d3dcf6b98646ec468499b4",
+    "protectedParts": [
+      "[Content_Types].xml",
+      "xl/_rels/workbook.xml.rels",
+      "xl/vbaProject.bin"
+    ]
+  },
+  "excelValidation": {
+    "ok": true,
+    "automationSecurity": "ForceDisable",
+    "enableEvents": false,
+    "updateLinks": 0,
+    "calculation": "Manual",
+    "results": [
+      {
+        "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-excel-host-d7or1X\\source.xlsx",
+        "opened": true,
+        "readOnly": true,
+        "worksheetCount": 1,
+        "sentinelExecuted": false,
+        "hashUnchanged": true
+      },
+      {
+        "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-excel-host-d7or1X\\edited.xlsx",
+        "opened": true,
+        "readOnly": true,
+        "worksheetCount": 1,
+        "sentinelExecuted": false,
+        "hashUnchanged": true
+      },
+      {
+        "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-excel-host-d7or1X\\macro-sentinel.xlsm",
+        "opened": true,
+        "readOnly": true,
+        "worksheetCount": 1,
+        "sentinelExecuted": false,
+        "hashUnchanged": true
+      },
+      {
+        "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-excel-host-d7or1X\\macro-sentinel-edited.xlsm",
+        "opened": true,
+        "readOnly": true,
+        "worksheetCount": 1,
+        "sentinelExecuted": false,
+        "hashUnchanged": true
+      }
+    ]
+  }
+}

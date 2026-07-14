@@ -1,0 +1,5 @@
+{
+  "status": "SKIP",
+  "generatedAt": "2026-07-14T15:02:58.359Z",
+  "blocker": "Provide a legally sourced signed XLSM path as argv[2] or PI_WORKBOOK_SIGNED_XLSM_FIXTURE. The harness never creates certificates or changes Trust Center settings."
+}

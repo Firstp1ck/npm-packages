@@ -1,0 +1,38 @@
+{
+  "status": "PASS",
+  "startedAt": "2026-07-14T15:08:52.306Z",
+  "completedAt": "2026-07-14T15:08:59.455Z",
+  "policy": {
+    "externalModelNetworkUsed": false,
+    "mockProvider": true,
+    "tuiOnlyDialogsRequired": false
+  },
+  "modes": {
+    "tui": {
+      "status": "PASS",
+      "exitCode": 0,
+      "toolObserved": true,
+      "sentinelObserved": true
+    },
+    "print": {
+      "status": "PASS",
+      "exitCode": 0,
+      "sentinelObserved": true
+    },
+    "json": {
+      "status": "PASS",
+      "exitCode": 0,
+      "records": 25,
+      "toolObserved": true,
+      "sentinelObserved": true
+    },
+    "rpc": {
+      "status": "PASS",
+      "commands": 1,
+      "records": 28,
+      "doctorObserved": true,
+      "toolObserved": true,
+      "sentinelObserved": true
+    }
+  }
+}

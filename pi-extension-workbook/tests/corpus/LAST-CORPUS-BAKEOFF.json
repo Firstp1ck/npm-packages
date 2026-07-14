@@ -1,0 +1,415 @@
+{
+  "status": "PASS_WITH_SIGNED_VBA_BLOCKER",
+  "generatedAt": "2026-07-14T15:05:11.447Z",
+  "temporary": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz",
+  "policy": {
+    "legallyGeneratedLocally": true,
+    "certificateStoreModified": false,
+    "trustCenterModified": false,
+    "macrosExecuted": false,
+    "externalConnectionsRefreshed": false,
+    "publicNativeMutationEnabled": false,
+    "aspose": "deferred"
+  },
+  "creation": {
+    "ok": true,
+    "automationSecurity": "ForceDisable",
+    "enableEvents": false,
+    "updateLinks": 0,
+    "calculation": "Manual",
+    "certificateStoreModified": false,
+    "trustCenterModified": false,
+    "reports": [
+      {
+        "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-source.xlsx",
+        "macroEnabled": false,
+        "table": true,
+        "chart": true,
+        "pivot": true,
+        "image": true,
+        "shape": true,
+        "formControl": true,
+        "activeX": true,
+        "activeXError": null,
+        "embedding": true,
+        "embeddingError": null,
+        "connectionSentinel": true,
+        "workbookConnection": false,
+        "externalLink": true,
+        "protection": true,
+        "hiddenSheets": true,
+        "connectionAddError": "Der Wert liegt au�erhalb des erwarteten Bereichs."
+      },
+      {
+        "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-source.xlsm",
+        "macroEnabled": true,
+        "table": true,
+        "chart": true,
+        "pivot": true,
+        "image": true,
+        "shape": true,
+        "formControl": true,
+        "activeX": true,
+        "activeXError": null,
+        "embedding": true,
+        "embeddingError": null,
+        "connectionSentinel": true,
+        "workbookConnection": false,
+        "externalLink": true,
+        "protection": true,
+        "hiddenSheets": true,
+        "connectionAddError": "Der Wert liegt au�erhalb des erwarteten Bereichs."
+      }
+    ]
+  },
+  "featureInventory": {
+    "xlsx": {
+      "styles": [
+        "xl/styles.xml"
+      ],
+      "themes": [
+        "xl/theme/theme1.xml"
+      ],
+      "charts": [
+        "xl/charts/chart1.xml"
+      ],
+      "tables": [
+        "xl/tables/table1.xml"
+      ],
+      "pivots": [
+        "xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels",
+        "xl/pivotCache/pivotCacheDefinition1.xml",
+        "xl/pivotCache/pivotCacheRecords1.xml",
+        "xl/pivotTables/_rels/pivotTable1.xml.rels",
+        "xl/pivotTables/pivotTable1.xml"
+      ],
+      "images": [
+        "xl/media/image1.emf",
+        "xl/media/image2.emf",
+        "xl/media/image3.png"
+      ],
+      "externalLinks": [
+        "xl/externalLinks/_rels/externalLink1.xml.rels",
+        "xl/externalLinks/externalLink1.xml"
+      ],
+      "connections": [
+        "xl/connections.xml"
+      ],
+      "vba": [],
+      "signedVba": [],
+      "activeX": [
+        "xl/activeX/_rels/activeX1.xml.rels",
+        "xl/activeX/activeX1.bin",
+        "xl/activeX/activeX1.xml"
+      ],
+      "formControls": [
+        "xl/ctrlProps/ctrlProp1.xml",
+        "xl/drawings/vmlDrawing1.vml"
+      ],
+      "embeddings": [
+        "xl/embeddings/oleObject1.bin"
+      ],
+      "customRibbon": [
+        "customUI/customUI.xml"
+      ]
+    },
+    "xlsm": {
+      "styles": [
+        "xl/styles.xml"
+      ],
+      "themes": [
+        "xl/theme/theme1.xml"
+      ],
+      "charts": [
+        "xl/charts/chart1.xml"
+      ],
+      "tables": [
+        "xl/tables/table1.xml"
+      ],
+      "pivots": [
+        "xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels",
+        "xl/pivotCache/pivotCacheDefinition1.xml",
+        "xl/pivotCache/pivotCacheRecords1.xml",
+        "xl/pivotTables/_rels/pivotTable1.xml.rels",
+        "xl/pivotTables/pivotTable1.xml"
+      ],
+      "images": [
+        "xl/media/image1.emf",
+        "xl/media/image2.emf",
+        "xl/media/image3.png"
+      ],
+      "externalLinks": [
+        "xl/externalLinks/_rels/externalLink1.xml.rels",
+        "xl/externalLinks/externalLink1.xml"
+      ],
+      "connections": [
+        "xl/connections.xml"
+      ],
+      "vba": [
+        "xl/vbaProject.bin"
+      ],
+      "signedVba": [],
+      "activeX": [
+        "xl/activeX/_rels/activeX1.xml.rels",
+        "xl/activeX/activeX1.bin",
+        "xl/activeX/activeX1.xml"
+      ],
+      "formControls": [
+        "xl/ctrlProps/ctrlProp1.xml",
+        "xl/drawings/vmlDrawing1.vml"
+      ],
+      "embeddings": [
+        "xl/embeddings/oleObject1.bin"
+      ],
+      "customRibbon": [
+        "customUI/customUI.xml"
+      ]
+    }
+  },
+  "signedVba": {
+    "present": false,
+    "blocker": "Creating and signing a test VBA project requires explicit approval for certificate-store and Office signing interaction. No store or Trust Center setting was changed."
+  },
+  "noOp": {
+    "xlsx": {
+      "elapsedMs": 16.132799999999406,
+      "sourceSha256": "79bf7374267b867967799ec7079ce9b44536bf7c17b7941db968f93b732399b2",
+      "outputSha256": "7009e31f1047a27764f98e14192cf73427bc63ae48f62f62a527688856b67f16",
+      "integrity": {
+        "ok": true,
+        "errors": [],
+        "changedParts": [],
+        "addedParts": [],
+        "removedParts": []
+      }
+    },
+    "xlsm": {
+      "elapsedMs": 11.144100000001345,
+      "sourceSha256": "6322c04cee4e40074dec09fc5f3c98e57ff9cb6263bdc96e07bd5406ccd399f8",
+      "outputSha256": "1e1a06748b733b6b0fb65cb435391b15f6fbf452880a1a832a722250283dd939",
+      "integrity": {
+        "ok": true,
+        "errors": [],
+        "changedParts": [],
+        "addedParts": [],
+        "removedParts": []
+      }
+    }
+  },
+  "edits": {
+    "xlsx": {
+      "dryRunMs": 51.20299999999952,
+      "commitMs": 41.675499999999374,
+      "changedParts": [
+        "xl/comments1.xml",
+        "xl/drawings/vmlDrawing1.vml",
+        "xl/styles.xml",
+        "xl/workbook.xml",
+        "xl/worksheets/sheet4.xml"
+      ],
+      "protectedParts": [
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "customUI/customUI.xml",
+        "xl/activeX/_rels/activeX1.xml.rels",
+        "xl/activeX/activeX1.bin",
+        "xl/activeX/activeX1.xml",
+        "xl/ctrlProps/ctrlProp1.xml",
+        "xl/embeddings/oleObject1.bin",
+        "xl/worksheets/_rels/sheet4.xml.rels"
+      ],
+      "protectedPartChanges": [],
+      "changedCells": 1,
+      "validationOk": true
+    },
+    "xlsm": {
+      "dryRunMs": 32.28909999999996,
+      "commitMs": 37.66469999999936,
+      "changedParts": [
+        "xl/comments1.xml",
+        "xl/drawings/vmlDrawing1.vml",
+        "xl/styles.xml",
+        "xl/workbook.xml",
+        "xl/worksheets/sheet4.xml"
+      ],
+      "protectedParts": [
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "customUI/customUI.xml",
+        "xl/_rels/workbook.xml.rels",
+        "xl/activeX/_rels/activeX1.xml.rels",
+        "xl/activeX/activeX1.bin",
+        "xl/activeX/activeX1.xml",
+        "xl/ctrlProps/ctrlProp1.xml",
+        "xl/embeddings/oleObject1.bin",
+        "xl/vbaProject.bin",
+        "xl/worksheets/_rels/sheet4.xml.rels"
+      ],
+      "protectedPartChanges": [],
+      "changedCells": 1,
+      "validationOk": true
+    }
+  },
+  "internalRenders": {
+    "sourceXlsx": {
+      "sha256": "deb3030ed8867400c1e0d35f56b0d304339ee075d4d17ac162f680b953e8e2d0",
+      "width": 923,
+      "height": 503,
+      "cacheHit": false
+    },
+    "noOpXlsx": {
+      "sha256": "deb3030ed8867400c1e0d35f56b0d304339ee075d4d17ac162f680b953e8e2d0",
+      "width": 923,
+      "height": 503,
+      "cacheHit": false
+    },
+    "editedXlsx": {
+      "sha256": "4456f4563fad200ba53059290813ca8f9f5849a5a439e3a525a800978ace2d6f",
+      "width": 923,
+      "height": 503,
+      "cacheHit": false
+    },
+    "sourceXlsm": {
+      "sha256": "deb3030ed8867400c1e0d35f56b0d304339ee075d4d17ac162f680b953e8e2d0",
+      "width": 923,
+      "height": 503,
+      "cacheHit": false
+    },
+    "noOpXlsm": {
+      "sha256": "deb3030ed8867400c1e0d35f56b0d304339ee075d4d17ac162f680b953e8e2d0",
+      "width": 923,
+      "height": 503,
+      "cacheHit": false
+    },
+    "editedXlsm": {
+      "sha256": "4456f4563fad200ba53059290813ca8f9f5849a5a439e3a525a800978ace2d6f",
+      "width": 923,
+      "height": 503,
+      "cacheHit": false
+    }
+  },
+  "excelChartRenders": {
+    "rich-source.xlsx": {
+      "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-source-chart.png",
+      "sha256": "75b3856d40f20f4706cbf42cfd9caa99d555412bfa25898be13ba0a1b065f490",
+      "bytes": 7605
+    },
+    "rich-noop.xlsx": {
+      "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-noop-chart.png",
+      "sha256": "75b3856d40f20f4706cbf42cfd9caa99d555412bfa25898be13ba0a1b065f490",
+      "bytes": 7605
+    },
+    "rich-edited.xlsx": {
+      "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-edited-chart.png",
+      "sha256": "3a17646f79a3ce2217113e990d8f5cf7525ab8ff2c520cd92469b5d66a3830b6",
+      "bytes": 4969
+    },
+    "rich-source.xlsm": {
+      "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-source-chart.png",
+      "sha256": "75b3856d40f20f4706cbf42cfd9caa99d555412bfa25898be13ba0a1b065f490",
+      "bytes": 7605
+    },
+    "rich-noop.xlsm": {
+      "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-noop-chart.png",
+      "sha256": "75b3856d40f20f4706cbf42cfd9caa99d555412bfa25898be13ba0a1b065f490",
+      "bytes": 7605
+    },
+    "rich-edited.xlsm": {
+      "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-edited-chart.png",
+      "sha256": "3a17646f79a3ce2217113e990d8f5cf7525ab8ff2c520cd92469b5d66a3830b6",
+      "bytes": 4969
+    }
+  },
+  "uiValidation": {
+    "status": "PASS",
+    "modalWindowsDetected": 0,
+    "timedOut": false,
+    "owner": {
+      "pid": 36892,
+      "startTime": "2026-07-14T15:05:04.5490518Z",
+      "hwnd": 3542052,
+      "workerPid": 36740
+    },
+    "processStillRunning": false,
+    "displayAlerts": true,
+    "payload": {
+      "ok": true,
+      "ownerPid": 36892,
+      "automationSecurity": "ForceDisable",
+      "enableEvents": false,
+      "updateLinks": 0,
+      "calculation": "Manual",
+      "displayAlerts": true,
+      "results": [
+        {
+          "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-source.xlsx",
+          "opened": true,
+          "readOnly": true,
+          "worksheetCount": 4,
+          "sentinelExecuted": false,
+          "hashUnchanged": true,
+          "chartPath": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-source-chart.png"
+        },
+        {
+          "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-noop.xlsx",
+          "opened": true,
+          "readOnly": true,
+          "worksheetCount": 4,
+          "sentinelExecuted": false,
+          "hashUnchanged": true,
+          "chartPath": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-noop-chart.png"
+        },
+        {
+          "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-edited.xlsx",
+          "opened": true,
+          "readOnly": true,
+          "worksheetCount": 4,
+          "sentinelExecuted": false,
+          "hashUnchanged": true,
+          "chartPath": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-edited-chart.png"
+        },
+        {
+          "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-source.xlsm",
+          "opened": true,
+          "readOnly": true,
+          "worksheetCount": 4,
+          "sentinelExecuted": false,
+          "hashUnchanged": true,
+          "chartPath": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-source-chart.png"
+        },
+        {
+          "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-noop.xlsm",
+          "opened": true,
+          "readOnly": true,
+          "worksheetCount": 4,
+          "sentinelExecuted": false,
+          "hashUnchanged": true,
+          "chartPath": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-noop-chart.png"
+        },
+        {
+          "path": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\rich-edited.xlsm",
+          "opened": true,
+          "readOnly": true,
+          "worksheetCount": 4,
+          "sentinelExecuted": false,
+          "hashUnchanged": true,
+          "chartPath": "C:\\Users\\hdlea\\AppData\\Local\\Temp\\pi-workbook-corpus-7ZHeVz\\renders\\rich-edited-chart.png"
+        }
+      ]
+    }
+  },
+  "externalConnectionSentinel": {
+    "url": "http://127.0.0.1:54577/pi-no-refresh",
+    "requestsAfterGeneration": [],
+    "contactedDuringBakeoff": false
+  },
+  "runtime": {
+    "node": "24.12.0",
+    "platform": "win32",
+    "architecture": "x64",
+    "backend": "ooxml-safe",
+    "licensing": "MIT package; no commercial workbook engine",
+    "nativeExcel": "validation-only controlled interactive host",
+    "aspose": "deferred"
+  }
+}
