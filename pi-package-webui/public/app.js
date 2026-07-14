@@ -409,7 +409,7 @@ let statsOverlayCalibrationMessage = "";
 let statsOverlayCalibrationBusy = "";
 let latestStatsOverlayPayload = null;
 let latestBtwWidgetPayload = null;
-let btwWidgetDismissedId = "";
+const btwWidgetDismissedIdsByTab = new Map();
 let btwWidgetComposerOpen = false;
 let btwWidgetInputDraft = "";
 let btwWidgetFocusAfterRender = false;
@@ -5005,7 +5005,7 @@ function setOptionalFeatureDisabled(featureId, disabled) {
     widgets.delete(BTW_OUTPUT_WIDGET_KEY);
     widgets.delete(BTW_FOOTER_WIDGET_KEY);
     latestBtwWidgetPayload = null;
-    btwWidgetDismissedId = "";
+    btwWidgetDismissedIdsByTab.delete(activeTabId);
     btwWidgetComposerOpen = false;
     btwWidgetInputDraft = "";
   }
@@ -7161,7 +7161,6 @@ function resetActiveTabUi() {
   latestStats = null;
   latestStatsOverlayPayload = null;
   latestBtwWidgetPayload = null;
-  btwWidgetDismissedId = "";
   btwWidgetComposerOpen = false;
   btwWidgetInputDraft = "";
   latestWorkspace = null;
@@ -7856,6 +7855,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
       clearGitWorkflowForTab(id);
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
+      btwWidgetDismissedIdsByTab.delete(id);
     }
     syncTerminalCustomGroupsWithTabs(tabs);
     clearOpenTerminalTabGroup(null, { force: true });
@@ -15712,7 +15712,7 @@ function currentBtwWidgetPayload() {
   if (isOptionalFeatureDisabled("btwCommand")) return null;
   const outputLines = widgets.get(BTW_OUTPUT_WIDGET_KEY)?.widgetLines || [];
   const payload = parseBtwWidgetPayload(outputLines) || parseBtwWebuiPayloadRaw(statusEntries.get(BTW_WEBUI_STATUS_KEY)) || latestBtwWidgetPayload;
-  if (payload?.id && payload.id === btwWidgetDismissedId) return null;
+  if (payload?.id && payload.id === btwWidgetDismissedIdsByTab.get(activeTabId)) return null;
   return payload;
 }
 
@@ -15743,7 +15743,7 @@ function focusBtwWidgetInput() {
 
 function openBtwComposerWidget() {
   btwWidgetComposerOpen = true;
-  btwWidgetDismissedId = "";
+  btwWidgetDismissedIdsByTab.delete(activeTabId);
   btwWidgetFocusAfterRender = true;
   setComposerActionsOpen(false);
   setPublishMenuOpen(false);
@@ -15755,7 +15755,7 @@ function openBtwComposerWidget() {
 
 function closeBtwOutputWidget() {
   const payload = currentBtwWidgetPayload();
-  if (payload?.id) btwWidgetDismissedId = payload.id;
+  if (payload?.id && activeTabId) btwWidgetDismissedIdsByTab.set(activeTabId, payload.id);
   widgets.delete(BTW_OUTPUT_WIDGET_KEY);
   widgets.delete(BTW_FOOTER_WIDGET_KEY);
   statusEntries.delete(BTW_WEBUI_STATUS_KEY);
@@ -21393,7 +21393,7 @@ async function sendBtwQuestion(question, { clearComposerDraft = false } = {}) {
   const message = /^\/btw(?:\s|$)/.test(cleanQuestion) ? cleanQuestion : `/btw ${cleanQuestion}`;
   const targetTabId = activeTabId;
   btwWidgetComposerOpen = true;
-  btwWidgetDismissedId = "";
+  btwWidgetDismissedIdsByTab.delete(targetTabId);
   try {
     await sendPrompt("prompt", message, { targetTabId, throwOnError: true });
   } catch {
@@ -25677,7 +25677,7 @@ function handleEvent(event) {
       statusEntries.clear();
       clearWidgetsForTab(event.tabId || activeTabId);
       latestBtwWidgetPayload = null;
-      btwWidgetDismissedId = "";
+      btwWidgetDismissedIdsByTab.delete(event.tabId || activeTabId);
       btwWidgetComposerOpen = false;
       btwWidgetInputDraft = "";
       resetOptionalFeatureAvailability();

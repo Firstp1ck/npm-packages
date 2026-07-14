@@ -1078,6 +1078,11 @@ assert.match(app, /setBusyPromptBehavior\(controls\.busyBehavior\.select\.value\
 assert.match(app, /sendPromptFromModeButton\("steer", elements\.steerButton\)/, "Steer should show tooltip instead of silently doing nothing when input is empty");
 assert.match(app, /sendPromptFromModeButton\("follow-up", elements\.followUpButton\)/, "Follow-up should show tooltip instead of silently doing nothing when input is empty");
 assert.match(app, /async function sendBtwQuestion\(question,[\s\S]*?`\/btw \$\{cleanQuestion\}`[\s\S]*?await sendPrompt\("prompt", message, \{ targetTabId, throwOnError: true \}\)/, "/btw helper should send text as an ephemeral slash command");
+assert.match(app, /const btwWidgetDismissedIdsByTab = new Map\(\)/, "/btw dismissals should be scoped to terminal tabs");
+assert.match(app, /function currentBtwWidgetPayload\(\)[\s\S]*?payload\.id === btwWidgetDismissedIdsByTab\.get\(activeTabId\)/, "/btw rendering should honor the active tab's dismissed payload ID");
+assert.match(app, /function closeBtwOutputWidget\(\)[\s\S]*?btwWidgetDismissedIdsByTab\.set\(activeTabId, payload\.id\)/, "closing /btw should remember the dismissed payload ID for its tab");
+const resetActiveTabUiSource = app.slice(app.indexOf("function resetActiveTabUi()"), app.indexOf("function tabGroupStatusRank"));
+assert.doesNotMatch(resetActiveTabUiSource, /btwWidgetDismissedIdsByTab/, "switching tabs should not clear remembered /btw dismissals");
 assert.match(app, /async function sendBtwPromptFromButton\(\)[\s\S]*?if \(!question\) \{\n\s+openBtwComposerWidget\(\);/, "empty /btw button should open the side-question widget input");
 assert.match(app, /function renderBtwComposerForm\(\)[\s\S]*?form\.requestSubmit\(\)[\s\S]*?sendBtwQuestion\(question\)/, "/btw widget input should submit each message as a /btw trigger");
 assert.match(app, /function makeBtwTransferIcon\(\)[\s\S]*?class", "btw-transfer-icon"[\s\S]*?function transferBtwContextToMain\(button, \{ transferMode = "full" \} = \{\}\)[\s\S]*?`\/btw-transfer \$\{encoded\}`[\s\S]*?streamingBehavior: "steer"[\s\S]*?Summarize & Steer/, "/btw widget should expose full-context and summary transfer actions that send steering context during active runs");
