@@ -1,0 +1,2 @@
+import type { DocxEditRequest, EngineCapabilities, EngineResponse } from "../contracts.ts";
+export type SidecarBackend = { probe(signal?: AbortSignal): Promise<EngineCapabilities>; request(command: "version" | "inspect" | "plan" | "edit" | "validate", input: { sourcePath?: string; outputPath?: string; operations?: DocxEditRequest["operations"] }, signal?: AbortSignal, timeoutMs?: number): Promise<EngineResponse> };

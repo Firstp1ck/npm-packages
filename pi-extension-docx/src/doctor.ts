@@ -1,0 +1,10 @@
+import os from "node:os";
+import { OpenXmlSidecar } from "./backends/openxml-sidecar.ts";
+import { probeRenderer } from "./backends/libreoffice-renderer.ts";
+import { TYPESCRIPT_READER_CAPABILITIES } from "./capabilities.ts";
+import { WORKSPACE_ROOT, cleanupExpiredWorkspaces } from "./core/workspace.ts";
+import { runCommand } from "./pi-utils.ts";
+
+export async function docxDoctorReport(): Promise<Record<string, unknown>> { const [mutation, renderer, cleaned, dotnetInfo, dotnetSdks, fontConfig] = await Promise.all([new OpenXmlSidecar().probe(), probeRenderer(), cleanupExpiredWorkspaces(), runCommand("dotnet", ["--info"], { timeoutMs: 5000, maxStdoutChars: 20_000 }), runCommand("dotnet", ["--list-sdks"], { timeoutMs: 5000, maxStdoutChars: 20_000 }), runCommand("fc-list", [":", "family"], { timeoutMs: 10_000, maxStdoutChars: 200_000 })]); const fonts = fontConfig.ok ? [...new Set(fontConfig.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))].slice(0, 500) : []; return { ok: mutation.available && renderer.available === true, platform: { os: os.platform(), release: os.release(), arch: os.arch(), node: process.version }, dotnet: { runtimeAvailable: dotnetInfo.ok, sdkAvailable: dotnetSdks.ok && Boolean(dotnetSdks.stdout.trim()), sdks: dotnetSdks.stdout.trim().split(/\r?\n/).filter(Boolean) }, fonts: { probeAvailable: fontConfig.ok, count: fonts.length, sample: fonts.slice(0, 25) }, reader: TYPESCRIPT_READER_CAPABILITIES, mutation, renderer, workspace: { root: WORKSPACE_ROOT, expiredRemoved: cleaned }, support: { nativeMutation: mutation.available, rendering: renderer.available === true, inspectReadDiff: true, broadPlatformClaim: false }, recommendations: [!mutation.available ? "Build engine/DocxEngine with a .NET 8 SDK or configure PI_DOCX_ENGINE_PATH." : undefined, renderer.available !== true ? "Install LibreOffice and ensure LiteParse native support is available." : undefined].filter(Boolean) };
+}
+export function formatDoctorReport(report: Record<string, unknown>): string { return JSON.stringify(report, null, 2); }

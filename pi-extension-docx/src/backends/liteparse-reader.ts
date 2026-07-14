@@ -1,0 +1,7 @@
+import type { Buffer } from "node:buffer";
+import { fail } from "../errors.ts";
+
+export type RenderedPage = { pageNum: number; width: number; height: number; imageBuffer: Buffer };
+export function parsePageSelection(input: string | undefined): number[] | undefined { if (!input || input === "all") return undefined; const pages = new Set<number>(); for (const token of input.split(",")) { const range = token.split("-").map(Number); if (range.some((value) => !Number.isInteger(value) || value < 1) || range.length > 2) fail("INVALID_ARGUMENT", `Invalid page selection: ${input}.`); const [start, end = start] = range; if (end < start || end - start > 1000) fail("INVALID_ARGUMENT", `Invalid page range: ${token}.`); for (let page = start; page <= end; page++) pages.add(page); } return [...pages].sort((a, b) => a - b); }
+export async function screenshotPdf(pdfPath: string, pages: number[] | undefined, dpi: number): Promise<RenderedPage[]> { try { const { LiteParse } = await import("@llamaindex/liteparse"); const parser = new LiteParse({ dpi, quiet: true }); return await parser.screenshot(pdfPath, pages) as RenderedPage[]; } catch (error) { fail("RENDER_FAILED", `LiteParse/PDFium screenshot failed: ${error instanceof Error ? error.message : String(error)}`); } }
+export async function probeLiteParse(): Promise<{ available: boolean; version: string }> { try { await import("@llamaindex/liteparse"); return { available: true, version: "2.0.1" }; } catch { return { available: false, version: "2.0.1" }; } }
