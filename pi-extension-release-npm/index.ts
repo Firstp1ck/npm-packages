@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendDisplayChunk, appendRunLog, createRunLog, formatElapsed, isCtrlC, isCtrlO, listRunLogs, outputLinesFromDisplay, saveRunLog, shellQuote, stripAnsi, type RunLog, type RunLogEntry } from "@firstpick/pi-utils";
+import { terminateProcessTree } from "./process-tree.ts";
 
 const RELEASE_STATUS_KEY = "release-npm";
 const RELEASE_LOG_WIDGET_KEY = "release-npm:logs";
@@ -200,23 +201,11 @@ async function runScriptLive(
       output += chunk;
       onChunk(chunk);
     };
-    const signalChild = (signal: NodeJS.Signals) => {
-      if (process.platform !== "win32" && child.pid) {
-        try {
-          process.kill(-child.pid, signal);
-          return;
-        } catch {
-          // Fall back to signalling the direct child process below.
-        }
-      }
-      child.kill(signal);
-    };
-
     child.abortReleaseStep = () => {
       aborted = true;
-      signalChild("SIGINT");
+      terminateProcessTree(child, "SIGINT");
       setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) signalChild("SIGTERM");
+        if (child.exitCode === null && child.signalCode === null) terminateProcessTree(child, "SIGTERM");
       }, 1500).unref();
     };
 

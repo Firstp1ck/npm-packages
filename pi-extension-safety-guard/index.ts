@@ -2,14 +2,28 @@ import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { getSettingsListTheme, isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { Container, Key, matchesKey, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import {
+  SAFETY_GUARD_CATEGORIES,
+  SAFETY_GUARD_CONTEXT_LINES_MAX,
+  SAFETY_GUARD_CONTEXT_LINES_MIN,
+  assertSafetyGuardConfigPatch,
+  defaultSafetyGuardConfig,
+  normalizeSafetyGuardConfig,
+  readSafetyGuardConfig,
+  safetyGuardConfigFile,
+  safetyGuardConfigSummary,
+  writeSafetyGuardConfig,
+} from "./src/config.mjs";
+import type { SafetyGuardCategory, SafetyGuardConfig, SafetyGuardConfigPatch } from "./src/config.mjs";
 import { matchingCommandExcerpt } from "./src/excerpt.ts";
 
 const STATUS_KEY = "safety-guard";
 const PROMPT_WIDGET_KEY = "safety-guard-prompt";
 
 type RiskLevel = "prompt" | "strong-confirm" | "block-noninteractive";
-type RuleCategory = "git" | "filesystem" | "docker" | "package" | "system" | "database" | "secrets";
+type RuleCategory = SafetyGuardCategory;
 
 type CommandRule = {
   pattern: RegExp;
@@ -32,6 +46,19 @@ type AllowEntry = {
 type AllowStore = { version: 1; entries: AllowEntry[] };
 
 const ALLOW_STORE_PATH = path.join(homedir(), ".pi", "agent", "safety-guard-allow.json");
+const CATEGORY_LABELS: Record<RuleCategory, string> = {
+  git: "Git history and destructive operations",
+  filesystem: "Filesystem deletion and overwrite",
+  docker: "Docker and Podman destruction",
+  package: "Package removal",
+  system: "System state and permissions",
+  database: "Dangerous SQL",
+  secrets: "Secret file access",
+};
+const CONTEXT_LINE_VALUES = Array.from(
+  { length: SAFETY_GUARD_CONTEXT_LINES_MAX - SAFETY_GUARD_CONTEXT_LINES_MIN + 1 },
+  (_, index) => String(index + SAFETY_GUARD_CONTEXT_LINES_MIN),
+);
 
 const GIT_RULES: CommandRule[] = [
   { pattern: /\bgit\s+reset\s+--hard\b/i, label: "git reset --hard", category: "git", level: "block-noninteractive" },
@@ -273,13 +300,17 @@ function stripHeredocBodies(command: string): string {
 function formatRuleMessage(
   rule: CommandRule,
   commandForMatching: string,
+  config: SafetyGuardConfig,
   highlight: (value: string) => string = (value) => value,
 ): { title: string; message: string; nonInteractiveReason: string } {
   const title = rule.level === "strong-confirm" ? "High-risk bash command" : "Dangerous bash command";
   const impact = rule.level === "strong-confirm"
     ? "This can be difficult to undo. Verify the target, branch, and scope before allowing."
     : "Verify the target and scope before allowing.";
-  const excerpt = matchingCommandExcerpt(rule, commandForMatching, highlight);
+  const excerpt = matchingCommandExcerpt(rule, commandForMatching, highlight, {
+    linesBefore: config.contextLines.before,
+    linesAfter: config.contextLines.after,
+  });
 
   return {
     title,
@@ -299,9 +330,98 @@ function formatRuleMessage(
   };
 }
 
-function updateStatus(ctx: ExtensionContext, enabled: boolean): void {
+function onOff(value: boolean): "on" | "off" {
+  return value ? "on" : "off";
+}
+
+async function configureSafetyGuardSetup(
+  ctx: ExtensionContext,
+  initial: SafetyGuardConfig,
+): Promise<SafetyGuardConfig | undefined> {
+  const values = normalizeSafetyGuardConfig(initial);
+  if (!ctx.hasUI) return undefined;
+
+  if (ctx.mode !== "tui") {
+    const edited = await ctx.ui.editor(
+      "Safety guard setup (JSON)",
+      JSON.stringify(values, null, 2),
+    );
+    if (edited === undefined) return undefined;
+    try {
+      const parsed = JSON.parse(edited) as unknown;
+      assertSafetyGuardConfigPatch(parsed);
+      return normalizeSafetyGuardConfig(parsed);
+    } catch (error) {
+      ctx.ui.notify(`Invalid safety guard setup: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return undefined;
+    }
+  }
+
+  const result = await ctx.ui.custom<"save" | undefined>((tui, theme, _keybindings, done) => {
+    const items: SettingItem[] = [
+      { id: "enabled", label: "General · Guard enabled", currentValue: onOff(values.enabled), values: ["on", "off"] },
+      { id: "context.before", label: "Preview · Lines before a match", currentValue: String(values.contextLines.before), values: CONTEXT_LINE_VALUES },
+      { id: "context.after", label: "Preview · Lines after a match", currentValue: String(values.contextLines.after), values: CONTEXT_LINE_VALUES },
+      ...SAFETY_GUARD_CATEGORIES.map((category): SettingItem => ({
+        id: `category.${category}`,
+        label: `Commands · ${CATEGORY_LABELS[category]}`,
+        currentValue: onOff(values.categories[category]),
+        values: ["on", "off"],
+      })),
+      { id: "protected.write", label: "Protected paths · Guard writes", currentValue: onOff(values.protectedPaths.write), values: ["on", "off"] },
+      { id: "protected.edit", label: "Protected paths · Guard edits", currentValue: onOff(values.protectedPaths.edit), values: ["on", "off"] },
+    ];
+
+    const container = new Container();
+    container.addChild(new Text(
+      `${theme.fg("accent", theme.bold("Safety guard setup"))}\n${theme.fg("dim", `Saved globally in ${safetyGuardConfigFile()}`)}`,
+      1,
+      0,
+    ));
+    const settingsList = new SettingsList(
+      items,
+      Math.min(items.length + 2, 18),
+      getSettingsListTheme(),
+      (id, newValue) => {
+        if (id === "enabled") values.enabled = newValue === "on";
+        else if (id === "context.before") values.contextLines.before = Number.parseInt(newValue, 10);
+        else if (id === "context.after") values.contextLines.after = Number.parseInt(newValue, 10);
+        else if (id === "protected.write") values.protectedPaths.write = newValue === "on";
+        else if (id === "protected.edit") values.protectedPaths.edit = newValue === "on";
+        else if (id.startsWith("category.")) {
+          const category = id.slice("category.".length) as RuleCategory;
+          if (SAFETY_GUARD_CATEGORIES.includes(category)) values.categories[category] = newValue === "on";
+        }
+      },
+      () => done(undefined),
+      { enableSearch: true },
+    );
+    container.addChild(settingsList);
+    container.addChild(new Text(theme.fg("dim", "  ↑/↓ move · Enter/Space change · Ctrl+S save · Esc cancel"), 1, 0));
+
+    return {
+      render(width: number) {
+        return container.render(width);
+      },
+      invalidate() {
+        container.invalidate();
+      },
+      handleInput(data: string) {
+        if (matchesKey(data, Key.ctrl("s"))) done("save");
+        else if (data === "j") settingsList.handleInput?.("\u001b[B");
+        else if (data === "k") settingsList.handleInput?.("\u001b[A");
+        else settingsList.handleInput?.(data);
+        tui.requestRender();
+      },
+    };
+  });
+
+  return result === "save" ? normalizeSafetyGuardConfig(values) : undefined;
+}
+
+function updateStatus(ctx: ExtensionContext, config: SafetyGuardConfig): void {
   if (!ctx.hasUI) return;
-  if (enabled) {
+  if (config.enabled) {
     ctx.ui.setStatus(STATUS_KEY, "");
     return;
   }
@@ -309,9 +429,41 @@ function updateStatus(ctx: ExtensionContext, enabled: boolean): void {
 }
 
 export default function safetyGuard(pi: ExtensionAPI) {
-  let enabled = true;
+  let config = defaultSafetyGuardConfig();
+  let lastConfigError = "";
   const sessionAllow = new Map<string, AllowEntry>();
   let permanentAllow = readAllowStore();
+
+  const refreshConfig = (ctx?: ExtensionContext): SafetyGuardConfig => {
+    const wasEnabled = config.enabled;
+    try {
+      config = readSafetyGuardConfig();
+      lastConfigError = "";
+    } catch (error) {
+      config = defaultSafetyGuardConfig();
+      const message = error instanceof Error ? error.message : String(error);
+      if (ctx?.hasUI && message !== lastConfigError) {
+        ctx.ui.notify(`${message}\nUsing fail-safe defaults with every guard enabled.`, "error");
+      }
+      lastConfigError = message;
+    }
+    if (ctx && config.enabled !== wasEnabled) updateStatus(ctx, config);
+    return config;
+  };
+
+  const persistConfig = (patch: SafetyGuardConfigPatch, ctx: ExtensionContext): SafetyGuardConfig | undefined => {
+    try {
+      config = writeSafetyGuardConfig(patch);
+      lastConfigError = "";
+      updateStatus(ctx, config);
+      return config;
+    } catch (error) {
+      if (ctx.hasUI) ctx.ui.notify(`Could not save safety guard setup: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return undefined;
+    }
+  };
+
+  refreshConfig();
 
   const isAllowed = (key: string): boolean => sessionAllow.has(key) || permanentAllow.entries.some((entry) => entry.key === key);
 
@@ -333,21 +485,20 @@ export default function safetyGuard(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const cmd = args?.trim().toLowerCase();
       if (!cmd || cmd === "status") {
+        refreshConfig(ctx);
         permanentAllow = readAllowStore();
-        if (ctx.hasUI) ctx.ui.notify(`Safety guard: ${enabled ? "ON" : "OFF"}. Allows: ${sessionAllow.size} session, ${permanentAllow.entries.length} permanent.`, "info");
-        updateStatus(ctx, enabled);
+        if (ctx.hasUI) {
+          ctx.ui.notify(`${safetyGuardConfigSummary(config)}\nAllows: ${sessionAllow.size} session, ${permanentAllow.entries.length} permanent.`, "info");
+        }
+        updateStatus(ctx, config);
         return;
       }
       if (cmd === "on") {
-        enabled = true;
-        updateStatus(ctx, enabled);
-        if (ctx.hasUI) ctx.ui.notify("Safety guard enabled", "info");
+        if (persistConfig({ enabled: true }, ctx) && ctx.hasUI) ctx.ui.notify("Safety guard enabled globally", "info");
         return;
       }
       if (cmd === "off") {
-        enabled = false;
-        updateStatus(ctx, enabled);
-        if (ctx.hasUI) ctx.ui.notify("Safety guard disabled", "warning");
+        if (persistConfig({ enabled: false }, ctx) && ctx.hasUI) ctx.ui.notify("Safety guard disabled globally", "warning");
         return;
       }
       if (cmd === "allow-list") {
@@ -377,17 +528,38 @@ export default function safetyGuard(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("safety-guard-setup", {
+    description: "Configure guard categories, protected-path checks, and command preview context",
+    handler: async (args, ctx) => {
+      if (args?.trim()) {
+        if (ctx.hasUI) ctx.ui.notify("Usage: /safety-guard-setup", "warning");
+        return;
+      }
+      refreshConfig(ctx);
+      const next = await configureSafetyGuardSetup(ctx, config);
+      if (!next) return;
+      const saved = persistConfig(next, ctx);
+      if (saved && ctx.hasUI) {
+        ctx.ui.notify(`Safety guard setup saved to ${safetyGuardConfigFile()}\n\n${safetyGuardConfigSummary(saved)}`, "info");
+      }
+    },
+  });
+
   pi.on("session_start", async (_event, ctx) => {
-    updateStatus(ctx, enabled);
+    refreshConfig(ctx);
+    updateStatus(ctx, config);
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (!enabled) return;
+    refreshConfig(ctx);
+    if (!config.enabled) return;
     if (isToolCallEventType("bash", event)) {
       const command = event.input.command ?? "";
       const commandForMatching = stripHeredocBodies(command);
-      const shellMatch = DANGEROUS_BASH_RULES.find((entry) => entry.pattern.test(commandForMatching));
-      const databaseMatch = DATABASE_RULES.find((entry) => entry.pattern.test(command));
+      const shellMatch = DANGEROUS_BASH_RULES.find((entry) => config.categories[entry.category] && entry.pattern.test(commandForMatching));
+      const databaseMatch = config.categories.database
+        ? DATABASE_RULES.find((entry) => entry.pattern.test(command))
+        : undefined;
       const match = shellMatch ?? databaseMatch;
       const matchedCommandText = databaseMatch && !shellMatch ? command : commandForMatching;
       if (!match) return;
@@ -402,7 +574,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
       };
       if (isAllowed(entry.key)) return;
 
-      const prompt = formatRuleMessage(match, matchedCommandText, (value) => ctx.ui.theme.fg("warning", value));
+      const prompt = formatRuleMessage(match, matchedCommandText, config, (value) => ctx.ui.theme.fg("warning", value));
       const decision = await confirmOrBlock(ctx, prompt.title, prompt.message, prompt.nonInteractiveReason);
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);
@@ -411,7 +583,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
     }
 
     if (isToolCallEventType("write", event)) {
-      if (!isProtectedPath(event.input.path, ctx.cwd)) return;
+      if (!config.protectedPaths.write || !isProtectedPath(event.input.path, ctx.cwd)) return;
 
       const resolvedPath = path.resolve(ctx.cwd, event.input.path);
       const entry = {
@@ -436,7 +608,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
     }
 
     if (isToolCallEventType("edit", event)) {
-      if (!isProtectedPath(event.input.path, ctx.cwd)) return;
+      if (!config.protectedPaths.edit || !isProtectedPath(event.input.path, ctx.cwd)) return;
 
       const resolvedPath = path.resolve(ctx.cwd, event.input.path);
       const entry = {

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-safety-guard",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "description": "Interactive guardrails for dangerous bash commands and protected file edits in Pi.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-safety-guard#readme",
@@ -25,7 +25,8 @@
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "files": [
     "index.ts",

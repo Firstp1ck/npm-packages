@@ -4,26 +4,48 @@ import { matchingCommandExcerpt } from "../src/excerpt.ts";
 
 const rmRule = { pattern: /rm\s+-rf\b/i };
 
-test("matched dangerous command and up to five following lines are preserved", () => {
+test("matched dangerous command and up to three surrounding lines are preserved", () => {
   const command = [
-    "echo before",
+    "echo before 4",
+    "echo before 3",
+    "echo before 2",
+    "echo before 1",
     "rm -rf build/output",
     "echo after 1",
     "echo after 2",
     "echo after 3",
     "echo after 4",
-    "echo after 5",
-    "echo after 6",
   ].join("\n");
 
   const excerpt = matchingCommandExcerpt(rmRule, command);
 
-  assert.match(excerpt, /!!! 2 \| >>> rm -rf <<< build\/output/);
-  for (let line = 1; line <= 5; line += 1) {
+  assert.match(excerpt, /!!! 5 \| >>> rm -rf <<< build\/output/);
+  for (let line = 1; line <= 3; line += 1) {
+    assert.match(excerpt, new RegExp(`echo before ${line}`));
     assert.match(excerpt, new RegExp(`echo after ${line}`));
   }
-  assert.doesNotMatch(excerpt, /echo before/);
-  assert.doesNotMatch(excerpt, /echo after 6/);
+  assert.doesNotMatch(excerpt, /echo before 4/);
+  assert.doesNotMatch(excerpt, /echo after 4/);
+});
+
+test("before and after context limits can be configured independently", () => {
+  const command = [
+    "line 1",
+    "line 2",
+    "line 3",
+    "rm -rf ./target",
+    "line 5",
+    "line 6",
+    "line 7",
+  ].join("\n");
+
+  const excerpt = matchingCommandExcerpt(rmRule, command, undefined, { linesBefore: 1, linesAfter: 2 });
+
+  assert.doesNotMatch(excerpt, /line 2/);
+  assert.match(excerpt, /line 3/);
+  assert.match(excerpt, /line 5/);
+  assert.match(excerpt, /line 6/);
+  assert.doesNotMatch(excerpt, /line 7/);
 });
 
 test("long commands before the dangerous token are truncated without hiding the match", () => {

@@ -9,7 +9,8 @@ Interactive safety prompts for high-risk operations in Pi.
 - Intercepts risky `bash` commands and requires confirmation.
 - Intercepts `write`/`edit` on protected paths and requires confirmation.
 - In non-interactive mode, blocks risky operations with explicit reasons.
-- Can be toggled per session with `/safety-guard on|off|status`.
+- Has persistent setup through `/safety-guard-setup`, including per-category toggles and independent preview lines before/after matches.
+- Can be toggled globally with `/safety-guard on|off|status`.
 - Supports exact allow entries for the current session or permanently per cwd.
 
 ## Guarded command categories
@@ -133,9 +134,22 @@ pi install npm:@firstpick/pi-extension-safety-guard
 
 ## Configuration
 
-No required configuration.
+No configuration is required. Run `/safety-guard-setup` to edit all persistent guard settings:
 
-Permanent allows are stored in:
+- master enabled state
+- Git, filesystem, Docker/Podman, package, system, database, and secret-access command categories
+- protected-path `write` and `edit` guards
+- command-preview lines before and after each matched line (`0`-`20`, default `3` each)
+
+Settings are stored globally in:
+
+```text
+~/.pi/agent/safety-guard.json
+```
+
+Set `PI_SAFETY_GUARD_CONFIG_FILE` to override that path. Invalid configuration fails safe: every guard is enabled with default context limits.
+
+Permanent allows are stored separately in:
 
 ```text
 ~/.pi/agent/safety-guard-allow.json
@@ -156,6 +170,7 @@ When a guard prompt appears, choose one of:
 ## Commands
 
 ```text
+/safety-guard-setup
 /safety-guard status
 /safety-guard on
 /safety-guard off
@@ -164,7 +179,9 @@ When a guard prompt appears, choose one of:
 /safety-guard allow-clear-permanent
 ```
 
-When disabled, the status bar shows `🔓!`.
+`/safety-guard-setup` opens a settings list in Pi's TUI. In Pi Web UI it opens a browser-native setup dialog with the same persisted settings.
+
+When disabled, the status bar shows `🔓!`. The `on` and `off` commands update the global setup file.
 
 `allow-list` shows both session and permanent entries. `allow-clear-session` clears only the in-memory list. `allow-clear-permanent` empties the persisted allow file.
 

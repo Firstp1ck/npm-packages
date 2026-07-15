@@ -21,6 +21,7 @@ import {
   validateSessionDelete,
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
+import { terminateProcessTree } from "../lib/process-tree.mjs";
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
 import { resolveNpmCommandInvocation } from "../lib/npm-command.mjs";
 import {
@@ -1777,6 +1778,65 @@ async function saveRemoteAuthPreference(enabled) {
   return persistedRemoteAuthEnabled;
 }
 
+let safetyGuardConfigModulePromise;
+
+async function safetyGuardConfigModule() {
+  if (!safetyGuardConfigModulePromise) {
+    safetyGuardConfigModulePromise = (async () => {
+      const specifiers = [
+        "@firstpick/pi-extension-safety-guard/src/config.mjs",
+        new URL("../../pi-extension-safety-guard/src/config.mjs", import.meta.url).href,
+      ];
+      const failures = [];
+      for (const specifier of specifiers) {
+        try {
+          return await import(specifier);
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      throw makeHttpError(503, `Safety guard setup support is unavailable. Update @firstpick/pi-extension-safety-guard and restart Web UI. ${failures.at(-1) || ""}`.trim());
+    })().catch((error) => {
+      safetyGuardConfigModulePromise = undefined;
+      throw error;
+    });
+  }
+  return safetyGuardConfigModulePromise;
+}
+
+async function safetyGuardConfigData() {
+  const settingsModule = await safetyGuardConfigModule();
+  const config = settingsModule.readSafetyGuardConfig();
+  return {
+    config,
+    defaults: settingsModule.defaultSafetyGuardConfig(),
+    categories: [...settingsModule.SAFETY_GUARD_CATEGORIES],
+    contextLines: {
+      min: settingsModule.SAFETY_GUARD_CONTEXT_LINES_MIN,
+      max: settingsModule.SAFETY_GUARD_CONTEXT_LINES_MAX,
+    },
+    version: settingsModule.SAFETY_GUARD_CONFIG_VERSION,
+    path: settingsModule.safetyGuardConfigFile(),
+  };
+}
+
+async function saveSafetyGuardConfigData(body = {}) {
+  const settingsModule = await safetyGuardConfigModule();
+  const submitted = body.config && typeof body.config === "object" ? body.config : body;
+  try {
+    settingsModule.assertSafetyGuardConfigPatch(submitted);
+  } catch (error) {
+    throw makeHttpError(400, error instanceof Error ? error.message : String(error));
+  }
+
+  try {
+    const config = settingsModule.writeSafetyGuardConfig(submitted);
+    return { ...(await safetyGuardConfigData()), config };
+  } catch (error) {
+    throw makeHttpError(500, error instanceof Error ? error.message : String(error));
+  }
+}
+
 function gitWorkflowModelKey(model) {
   return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
 }
@@ -2970,18 +3030,7 @@ function scheduleAppRunnerBroadcast(tab) {
 
 function terminateAppRunnerChild(run, signal = "SIGTERM") {
   if (!run?.child || run.child.exitCode !== null || run.child.signalCode !== null) return false;
-  try {
-    if (process.platform !== "win32" && run.pid) process.kill(-run.pid, signal);
-    else run.child.kill(signal);
-    return true;
-  } catch {
-    try {
-      run.child.kill(signal);
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  return terminateProcessTree(run.child, signal);
 }
 
 function appRunnerStdinWritable(run) {
@@ -2991,7 +3040,10 @@ function appRunnerStdinWritable(run) {
 
 function interruptAppRunnerChild(run) {
   if (!run?.child || run.child.exitCode !== null || run.child.signalCode !== null) return false;
-  if (appRunnerStdinWritable(run) && (run.executionMode === "pty" || process.platform === "win32")) {
+  // Writing ETX to a Windows pipe is data, not a console Ctrl+C event. Kill the
+  // complete tree there so npm/bash wrappers cannot leave orphaned servers.
+  if (process.platform === "win32") return terminateAppRunnerChild(run, "SIGKILL");
+  if (appRunnerStdinWritable(run) && run.executionMode === "pty") {
     try {
       run.child.stdin.write("\x03", "utf8");
       return true;
@@ -3117,14 +3169,15 @@ function stopAppRunnerForTab(tab, reason = "stop requested", { force = false } =
   const run = tab?.appRunner;
   if (!run || run.status !== "running") return false;
   run.stopping = true;
-  appendAppRunnerLine(run, `# ${reason}; sending ${force ? "SIGKILL" : "Ctrl+C"}`);
+  const action = process.platform === "win32" ? "terminating Windows process tree" : `sending ${force ? "SIGKILL" : "Ctrl+C"}`;
+  appendAppRunnerLine(run, `# ${reason}; ${action}`);
   if (force) terminateAppRunnerChild(run, "SIGKILL");
   else interruptAppRunnerChild(run);
   if (!force) {
     clearTimeout(run.stopTimer);
     run.stopTimer = setTimeout(() => {
       if (run.status === "running") {
-        appendAppRunnerLine(run, "# app runner did not stop after Ctrl+C; sending SIGKILL");
+        appendAppRunnerLine(run, "# app runner did not stop within the grace period; forcing process-tree termination");
         terminateAppRunnerChild(run, "SIGKILL");
         scheduleAppRunnerBroadcast(tab);
       }
@@ -11620,6 +11673,20 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "skill file edits are blocked");
       sendJson(res, 200, { ok: true, data: await saveSkillFileData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/safety-guard/config" && req.method === "GET") {
+      getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await safetyGuardConfigData() });
+      return;
+    }
+
+    if (url.pathname === "/api/safety-guard/config" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "safety guard setup changes are blocked");
+      sendJson(res, 200, { ok: true, data: await saveSafetyGuardConfigData(body) });
       return;
     }
 

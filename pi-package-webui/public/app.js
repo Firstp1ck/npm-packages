@@ -108,6 +108,7 @@ const elements = {
   optionsNameButton: $("#optionsNameButton"),
   optionsCloneButton: $("#optionsCloneButton"),
   optionsSettingsButton: $("#optionsSettingsButton"),
+  optionsSafetyGuardSetupButton: $("#optionsSafetyGuardSetupButton"),
   optionsGitWorkflowSetupButton: $("#optionsGitWorkflowSetupButton"),
   optionsExportButton: $("#optionsExportButton"),
   optionsForkButton: $("#optionsForkButton"),
@@ -820,8 +821,8 @@ const OPTIONAL_FEATURES = [
     id: "safetyGuard",
     label: "Safety guard",
     packageName: "@firstpick/pi-extension-safety-guard",
-    capabilityLabel: "/safety-guard command or safety-guard status event",
-    description: "Interactive guardrails for dangerous bash commands and protected file edits.",
+    capabilityLabel: "/safety-guard or /safety-guard-setup command",
+    description: "Configurable guardrails for dangerous bash commands and protected file edits.",
   },
   {
     id: "tuiSkillsCommand",
@@ -928,6 +929,7 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["workflow", "workflows"],
   ["workflow-clear", "workflows"],
   ["safety-guard", "safetyGuard"],
+  ["safety-guard-setup", "safetyGuard"],
   ["skills", "tuiSkillsCommand"],
   ["tools", "tuiToolsCommand"],
   ["remote", "remoteWebui"],
@@ -943,7 +945,7 @@ const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
 HIDDEN_COMMAND_NAMES.add("stats-webui");
 HIDDEN_COMMAND_NAMES.add("btw-status");
 HIDDEN_COMMAND_NAMES.add("btw-transfer");
-const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
+const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
 const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_OPTIONS = ["sse", "websocket", "websocket-cached", "auto"];
 const SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS = [
@@ -21772,7 +21774,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.releaseNpm = hasAvailableCommand("release-npm");
   optionalFeatureAvailability.releaseAur = hasAvailableCommand("release-aur");
   optionalFeatureAvailability.workflows = hasAvailableCommand("workflow") || hasAvailableCommand("workflow-clear") || optionalFeatureAvailability.workflows || widgets.has("workflow") || widgets.has("workflow:subprocess");
-  optionalFeatureAvailability.safetyGuard = hasAvailableCommand("safety-guard") || optionalFeatureAvailability.safetyGuard || statusEntries.has("safety-guard");
+  optionalFeatureAvailability.safetyGuard = hasAvailableCommand("safety-guard") || hasAvailableCommand("safety-guard-setup") || optionalFeatureAvailability.safetyGuard || statusEntries.has("safety-guard");
   optionalFeatureAvailability.statsCommand = hasAvailableCommand("stats");
   optionalFeatureAvailability.gitFooterStatus = hasAvailableCommand("git-footer-refresh") || hasAvailableCommand("git-footer-visibility") || optionalFeatureAvailability.gitFooterStatus || statusEntries.has("git-footer") || statusEntries.has(GIT_FOOTER_WEBUI_STATUS_KEY);
   optionalFeatureAvailability.tuiSkillsCommand = hasLoadedRpcCommand("skills");
@@ -22026,6 +22028,16 @@ function renderOptionalFeatureControls() {
     "Slash command menu unavailable: enable/install TUI Skills command and/or TUI Tools command in Optional features.",
   );
   if (!hasNativeCommandMenu && nativeCommandMenuOpen) setNativeCommandMenuOpen(false);
+
+  const hasSafetyGuardSetup = isOptionalFeatureEnabled("safetyGuard") && hasAvailableCommand("safety-guard-setup");
+  if (elements.optionsSafetyGuardSetupButton) {
+    elements.optionsSafetyGuardSetupButton.hidden = !hasSafetyGuardSetup;
+    setOptionalControlState(
+      elements.optionsSafetyGuardSetupButton,
+      hasSafetyGuardSetup,
+      commandUnavailableMessage("safety-guard-setup"),
+    );
+  }
 
   const hasStatsCommand = isOptionalFeatureEnabled("statsCommand");
   if (elements.optionsStatsButton) {
@@ -22643,6 +22655,124 @@ function replaceNativeSettingSelectOptions(select, options, preferredValue) {
   }
   const values = normalized.map((option) => option.value);
   select.value = values.includes(String(preferredValue)) ? String(preferredValue) : values[0] || "";
+}
+
+const SAFETY_GUARD_CATEGORY_LABELS = Object.freeze({
+  git: "Git history and destructive operations",
+  filesystem: "Filesystem deletion and overwrite",
+  docker: "Docker and Podman destruction",
+  package: "Package removal",
+  system: "System state and permissions",
+  database: "Dangerous SQL",
+  secrets: "Secret file access",
+});
+
+async function openNativeSafetyGuardSetupDialog() {
+  openNativeCommandDialog({
+    title: "/safety-guard-setup",
+    message: "Configure persistent command categories, protected-path checks, and the context shown around dangerous matches.",
+  });
+  renderNativeLoading("Loading safety guard setup…");
+
+  let data;
+  try {
+    const response = await nativeCommandApi("/api/safety-guard/config");
+    data = response.data || {};
+  } catch (error) {
+    setNativeCommandError(error.message || String(error));
+    elements.nativeCommandBody.replaceChildren();
+    return;
+  }
+
+  const config = data.config || {};
+  const defaults = data.defaults || {};
+  const categories = Array.isArray(data.categories) && data.categories.length
+    ? data.categories
+    : Object.keys(SAFETY_GUARD_CATEGORY_LABELS);
+  const minimumContext = Number.isInteger(data.contextLines?.min) ? data.contextLines.min : 0;
+  const maximumContext = Number.isInteger(data.contextLines?.max) ? data.contextLines.max : 20;
+  const contextOptions = Array.from(
+    { length: Math.max(1, maximumContext - minimumContext + 1) },
+    (_, index) => String(index + minimumContext),
+  );
+  const categoryControls = Object.fromEntries(categories.map((category) => [
+    category,
+    nativeSettingToggle(
+      SAFETY_GUARD_CATEGORY_LABELS[category] || category,
+      config.categories?.[category] !== false,
+      `Prompt when a command matches the ${category} guard category.`,
+      { label: category, tone: "safety" },
+    ),
+  ]));
+  const controls = {
+    enabled: nativeSettingToggle("Safety guard enabled", config.enabled !== false, "Master switch for command and protected-path guards.", { label: "global", tone: "safety" }),
+    before: nativeSettingSelect("Lines before a match", config.contextLines?.before ?? 3, contextOptions, "Number of command lines shown before each matched line.", { label: "preview", tone: "browser" }),
+    after: nativeSettingSelect("Lines after a match", config.contextLines?.after ?? 3, contextOptions, "Number of command lines shown after each matched line.", { label: "preview", tone: "browser" }),
+    protectedWrite: nativeSettingToggle("Guard protected-path writes", config.protectedPaths?.write !== false, "Prompt before write calls target credentials, private keys, or environment files.", { label: "write", tone: "safety" }),
+    protectedEdit: nativeSettingToggle("Guard protected-path edits", config.protectedPaths?.edit !== false, "Prompt before edit calls target credentials, private keys, or environment files.", { label: "edit", tone: "safety" }),
+  };
+
+  const collectConfig = () => ({
+    version: data.version || 1,
+    enabled: controls.enabled.input.checked,
+    categories: Object.fromEntries(categories.map((category) => [category, categoryControls[category].input.checked])),
+    protectedPaths: {
+      write: controls.protectedWrite.input.checked,
+      edit: controls.protectedEdit.input.checked,
+    },
+    contextLines: {
+      before: Number.parseInt(controls.before.select.value, 10),
+      after: Number.parseInt(controls.after.select.value, 10),
+    },
+  });
+  const applyConfig = (value) => {
+    controls.enabled.input.checked = value?.enabled !== false;
+    controls.before.select.value = String(value?.contextLines?.before ?? 3);
+    controls.after.select.value = String(value?.contextLines?.after ?? 3);
+    controls.protectedWrite.input.checked = value?.protectedPaths?.write !== false;
+    controls.protectedEdit.input.checked = value?.protectedPaths?.edit !== false;
+    for (const category of categories) categoryControls[category].input.checked = value?.categories?.[category] !== false;
+  };
+
+  const body = make("div", "native-settings-panel");
+  body.append(
+    nativeSettingsNote("Persistence", `Saved globally in ${data.path || "~/.pi/agent/safety-guard.json"}. Changes are reloaded before guard checks.`),
+    nativeSettingsSection("General", "Enable or disable all guard behavior.", [controls.enabled], { open: true }),
+    nativeSettingsSection("Command preview", "Choose independent context limits before and after each dangerous matched line.", [controls.before, controls.after], { open: true }),
+    nativeSettingsSection("Command categories", "Disable only categories you intentionally do not want guarded.", categories.map((category) => categoryControls[category]), { open: true }),
+    nativeSettingsSection("Protected paths", "Control write/edit prompts for secret-bearing files and credential paths.", [controls.protectedWrite, controls.protectedEdit], { open: true }),
+  );
+  elements.nativeCommandBody.replaceChildren(body);
+  elements.nativeCommandActions.replaceChildren();
+  addNativeCommandAction("Cancel", closeNativeCommandDialog);
+  addNativeCommandAction("Reset defaults", () => {
+    applyConfig(defaults);
+    setNativeCommandError("");
+  });
+
+  const save = addNativeCommandAction("Save setup", async () => {
+    setNativeActionBusy(save, true, "Saving…");
+    setNativeCommandError("");
+    try {
+      const response = await nativeCommandApi("/api/safety-guard/config", {
+        method: "POST",
+        body: { config: collectConfig() },
+      });
+      const saved = response.data?.config || collectConfig();
+      const activeCategories = categories.filter((category) => saved.categories?.[category]).length;
+      addTransientMessage({
+        role: "native",
+        title: "/safety-guard-setup",
+        content: `Safety guard ${saved.enabled ? "enabled" : "disabled"}; ${activeCategories}/${categories.length} command categories active; preview ${saved.contextLines?.before ?? 3} before and ${saved.contextLines?.after ?? 3} after.`,
+        level: saved.enabled ? "info" : "warn",
+      });
+      closeNativeCommandDialog();
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+    } finally {
+      setNativeActionBusy(save, false);
+    }
+  }, "primary");
 }
 
 function gitWorkflowSetupModelKey(model) {
@@ -23297,6 +23427,9 @@ async function handleNativeSlashSelectorCommand(message, { usesPromptInput = fal
       return true;
     case "settings":
       await openNativeSettingsDialog();
+      return true;
+    case "safety-guard-setup":
+      await openNativeSafetyGuardSetupDialog();
       return true;
     case "git-workflow-setup":
       await openNativeGitWorkflowSetupDialog();
@@ -26341,6 +26474,7 @@ elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsNameButton.addEventListener("click", () => runNativeCommandMenu("/name"));
 elements.optionsCloneButton.addEventListener("click", () => runNativeCommandMenu("/clone"));
 elements.optionsSettingsButton.addEventListener("click", () => runNativeCommandMenu("/settings"));
+elements.optionsSafetyGuardSetupButton?.addEventListener("click", () => runNativeCommandMenu("/safety-guard-setup"));
 elements.optionsGitWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/git-workflow-setup"));
 elements.optionsExportButton.addEventListener("click", () => runNativeCommandMenu("/export"));
 elements.optionsForkButton.addEventListener("click", () => runNativeCommandMenu("/fork"));

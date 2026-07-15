@@ -2,8 +2,14 @@ export type CommandRuleLike = {
   pattern: RegExp;
 };
 
+export type MatchingCommandExcerptOptions = {
+  linesBefore?: number;
+  linesAfter?: number;
+};
+
 const MATCHES_TO_RENDER = 3;
-const FOLLOWING_CONTEXT_LINES = 5;
+const DEFAULT_CONTEXT_LINES = 3;
+const MAX_CONTEXT_LINES = 20;
 const MATCHED_LINE_PREFIX_CHARS = 180;
 const MATCHED_LINE_SUFFIX_CHARS = 420;
 const CONTEXT_LINE_MAX_CHARS = 240;
@@ -23,6 +29,11 @@ function testLine(rule: CommandRuleLike, line: string): boolean {
 function truncateContextLine(line: string): string {
   if (line.length <= CONTEXT_LINE_MAX_CHARS) return line;
   return `${line.slice(0, CONTEXT_LINE_MAX_CHARS)} … [truncated ${line.length - CONTEXT_LINE_MAX_CHARS} chars]`;
+}
+
+function normalizeContextLineCount(value: number | undefined): number {
+  if (!Number.isInteger(value)) return DEFAULT_CONTEXT_LINES;
+  return Math.max(0, Math.min(MAX_CONTEXT_LINES, value!));
 }
 
 export function highlightMatchedPattern(
@@ -53,6 +64,7 @@ export function matchingCommandExcerpt(
   rule: CommandRuleLike,
   commandForMatching: string,
   highlight: (value: string) => string = (value) => value,
+  options: MatchingCommandExcerptOptions = {},
 ): string {
   const lines = commandForMatching.split(/\r?\n/);
   const matchedIndexes = lines
@@ -66,8 +78,10 @@ export function matchingCommandExcerpt(
 
   const matchedSet = new Set(matchedIndexes);
   const included = new Set<number>();
+  const linesBefore = normalizeContextLineCount(options.linesBefore);
+  const linesAfter = normalizeContextLineCount(options.linesAfter);
   for (const index of matchedIndexes.slice(0, MATCHES_TO_RENDER)) {
-    for (let offset = 0; offset <= FOLLOWING_CONTEXT_LINES; offset += 1) {
+    for (let offset = -linesBefore; offset <= linesAfter; offset += 1) {
       const lineIndex = index + offset;
       if (lineIndex < 0 || lineIndex >= lines.length) continue;
       included.add(lineIndex);
