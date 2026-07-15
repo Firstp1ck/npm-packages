@@ -46,6 +46,27 @@ Recommended posture: fix the REAL items and the two structural FUTURE-RISK items
 
 # Tier 1 — [REAL] Fix these first
 
+## Implementation progress (updated 2026-07-15)
+
+| Item | Status | Implemented / remaining |
+|---|---|---|
+| 1. Typography and minimum text size | **Implemented** | Root restored to `100%`; `--text-xs` through `--text-xl` tokens added; sub-floor declarations replaced; Comfortable/Compact browser setting added. Automated floor checks pass. **Remaining:** manual review at 100% and 200% zoom. |
+| 2. Accessible file operations | **Implemented** | Files open with one click/Enter; each directory has one clickable expand arrow, a `DIR` marker, nested indentation/guides, visible selection, keyboard tree navigation, and a keyboard/touch overflow menu. The old double-click/right-click instructions were removed. |
+| 3. Modal and drawer keyboard behavior | **Implemented** | Dialogs/drawers keep keyboard focus inside, close with Escape, and return focus to their trigger. Command palette and composer suggestions expose the highlighted option to assistive technology. **Remaining:** manual keyboard and screen-reader flow review. |
+| 4. Settings apply and scope | **Implemented** | One Apply action changes to **Apply and reload** only when necessary; dirty-state tracking, explicit scope labels, density setting, remote-access section, and unsaved-change warning are present. |
+| 5. Destructive-action confirmations | **Implemented** | Application confirmation UI explains consequences, affected state, undoability, and safer alternatives; native `confirm()` remains only as degraded fallback. Reversible actions now show a non-blocking, 10-second Undo notification with visible expiry and accessible status updates. Undo is wired to optional-feature toggles, prompt-list deletion, custom app-runner deletion, file moves/renames, and opening remote access. Irreversible actions retain confirmation. Per user review, **Close all Tabs** stays directly visible instead of living in a one-item overflow menu. |
+| 6. Empty start state / Home | **Mostly implemented** | Empty transcripts render in-canvas start actions for conversation, workspace, resume, and branch worktree, plus recent workspaces and a compact context line. **Remaining:** manual first-run review and richer recent-session presentation if needed. |
+| 7. Remote-access visibility | **Implemented** | Wording changed to **Open for remote access**; opening requires an exposure confirmation; open state has a persistent header indicator; detailed configuration is available under Settings → Remote access. |
+
+### Verification status
+
+- `npm run check`: **passed** (19/19 test files).
+- Typography-floor grep: **passed**.
+- File double-click/right-click instructional checks: **passed**.
+- Native confirmation check: **passed** except the intentional degraded fallback.
+- Undo structure/integration checks: **passed** for expiry, async reversal, optional features, prompt lists, custom app runners, file moves, and remote access.
+- Browser-level zoom, touch, focus-trap, Undo timing, and screen-reader checks: **still manual / pending**.
+
 ## 1. Typography and minimum text size (accessibility failure)
 
 **Why real:** `font-size: 80%` root plus 138 sub-`0.72rem` declarations means metadata, badges, and hints render at ~7–9 px. That fails WCAG readability expectations, breaks at 200% zoom, and directly hurts every user on every screen. This is the single highest-leverage fix.

@@ -87,6 +87,8 @@ assert.match(html, /id="pathPickerCreateNameInput"[^>]*placeholder="New director
 assert.match(html, /id="pathPickerCreateButton"[^>]*>Create directory<\/button>/, "cwd picker should expose a create-directory action");
 assert.match(html, /id="pathPickerSearchInput"[^>]*type="search"[^>]*placeholder="Search current directory…"/, "cwd picker should expose a current-directory search box");
 assert.match(html, /id="pathPickerClearSearchButton"[^>]*hidden[^>]*>Clear<\/button>/, "cwd picker should expose a clear-search action");
+assert.match(app, /function fileTreeGitStatusForEntry\(entry = \{\}\) \{\s+return fileTreeState\.gitStatusByPath\.get\(normalizeFileTreePath\(entry\.path \|\| ""\)\) \|\| null;\s+\}/, "file tree rendering should use the refreshed Git-status snapshot instead of stale status embedded in cached entries");
+assert.match(app, /alternative: activeAgentTabs\.length[\s\S]*?count === 1[\s\S]*?"Cancel and keep this tab open\."[\s\S]*?confirmLabel: activeAgentTabs\.length \? "Close and stop work" : count === 1 \? "Close tab" : "Close tabs"/, "single-tab confirmation should use singular, non-contradictory close wording");
 assert.match(html, /id="optionalFeaturesBox"/, "side panel should expose optional feature status and controls");
 assert.match(html, /class="optional-features-description[\s\S]*href="https:\/\/github\.com\/Firstp1ck\/npm-packages\/issues\/new"[\s\S]*open a GitHub issue/, "optional features should link users to GitHub issues for additional feature requests");
 assert.doesNotMatch(html, /id="btwOverlayDialog"/, "/btw should not use a blocking modal overlay");
@@ -216,7 +218,25 @@ assert.ok(
 
 assert.match(css, /--visual-viewport-height:\s*100dvh/, "CSS should define a visual viewport height fallback");
 assert.match(css, /color-scheme:\s*var\(--theme-color-scheme\)/, "CSS should allow JS-selected themes to update browser color-scheme");
-assert.match(css, /font-size:\s*80%/, "Web UI should render at 80% base scale for denser layout");
+assert.match(css, /font-size:\s*100%/, "Web UI should preserve the browser base scale for accessible typography");
+assert.match(css, /--text-xs:\s*0\.75rem/, "typography tokens should define a 12 px absolute floor");
+assert.doesNotMatch(css, /font-size:\s*0\.(?:[0-6]\d*|7[0-4])rem/, "interface font declarations should not fall below the 0.75rem floor");
+assert.match(html, /id="undoToast"[^>]*aria-live="polite"[^>]*aria-atomic="true"[^>]*hidden/, "reversible actions should expose a non-blocking live Undo notification");
+assert.match(html, /id="undoToastButton"[^>]*>Undo<\/button>/, "Undo notification should expose an explicit Undo button");
+assert.match(app, /function offerUndo\([\s\S]*?timeoutMs = 10000[\s\S]*?setTimeout\(dismissUndoToast, timeoutMs\)/, "Undo offers should expire after a clear bounded interval");
+assert.match(app, /async function runOfferedUndo\(\)[\s\S]*?await pending\.undo\(\)[\s\S]*?settleUndoToast/, "Undo notification should execute asynchronous reversal callbacks and report the result");
+assert.match(css, /\.undo-toast\.expiring \.undo-toast-progress \{ animation: undo-toast-expire var\(--undo-timeout\) linear forwards; \}/, "Undo notification should show its remaining lifetime visually");
+assert.match(app, /message: `\$\{feature\.label\} was \$\{disabled \? "disabled" : "enabled"\}\.`,[\s\S]*?undo: \(\) => setOptionalFeatureDisabled/, "optional feature toggles should offer Undo");
+assert.match(app, /message: `Deleted prompt list[\s\S]*?upsertStoredPromptList\(deleted\)/, "prompt-list deletion should offer restoration instead of only confirmation");
+assert.match(app, /message: `Deleted custom app runner[\s\S]*?method: "POST", body: \{ runner: restoreRunner \}/, "custom runner deletion should offer restoration");
+assert.match(app, /message: `Moved \$\{sourcePath\} to \$\{nextPath\}\.`,[\s\S]*?offerMoveUndo: false/, "file moves should offer a non-recursive move-back action");
+assert.match(app, /message: "Remote access is open\."[\s\S]*?remoteWebuiCommand\("close", "\/remote close"\)/, "opening remote access should offer a quick return to local-only mode");
+assert.doesNotMatch(app, /dashboardAction\("Start a conversation"/, "empty starter should not duplicate the already-focused conversation composer");
+assert.match(app, /function emptyStartRecentWorkspaces\(\)[\s\S]*?typeof item\?\.cwd === "string"[\s\S]*?\^\\\[object Object\\\]\$[\s\S]*?filter\(Boolean\)\.slice\(0, 4\)/, "empty starter should normalize and reject invalid recent-workspace entries");
+assert.match(app, /const recent = recentWorkspaces\.length \? make\("section", "empty-start-recent"\) : null/, "empty starter should omit the recent-workspaces section when no valid entries exist");
+assert.match(app, /title: "Open workspace"[\s\S]*?title: "Resume session"[\s\S]*?title: "Branch worktree"/, "empty starter should prioritize the three useful workspace and session actions");
+assert.match(css, /\.empty-start-actions \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/, "empty starter should present primary actions as a balanced desktop grid");
+assert.match(css, /\.empty-start-action-copy span \{[\s\S]*?font-size: var\(--text-xs\)/, "empty starter actions should explain their outcome in readable supporting text");
 assert.match(css, /--background-glow-pink/, "CSS should expose theme-controlled page glow colors");
 assert.match(css, /--theme-background-image:\s*none/, "CSS should expose a theme-controlled page background image variable");
 assert.match(css, /var\(--theme-background-image\)/, "body background should include the selected theme background image layer");
@@ -250,7 +270,7 @@ assert.match(css, /\.skill-editor-dialog form \{[\s\S]*?height:\s*100%;[\s\S]*?m
 assert.match(css, /\.skill-editor-text \{[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?white-space:\s*pre-wrap/, "skill editor text should wrap long lines instead of horizontal scrolling");
 assert.match(css, /\.composer-busy-mode-menu \{[\s\S]*?bottom:\s*calc\(100% \+ 0\.22rem\);[\s\S]*?background:\s*var\(--ctp-crust\)/, "busy prompt behavior dropdown should expand above the tag with an opaque background");
 assert.match(css, /\.sticky-user-prompt-button \{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto/, "last-user-prompt jump control should render as a fixed transcript header");
-assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?\.sticky-user-prompt-button \{\n\s+grid-template-columns:\s*minmax\(0, 1fr\) auto;\n\s+min-height:\s*36px;[\s\S]*?\.sticky-user-prompt-text \{[\s\S]*?font-size:\s*0\.72rem/, "mobile last-user-prompt card should use compact height and text");
+assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?\.sticky-user-prompt-button \{\n\s+grid-template-columns:\s*minmax\(0, 1fr\) auto;\n\s+min-height:\s*36px;[\s\S]*?\.sticky-user-prompt-text \{[\s\S]*?font-size:\s*var\(--text-xs\)/, "mobile last-user-prompt card should preserve compact height while respecting the text floor");
 assert.match(css, /\.message\.extension,[\s\S]*?\.message\.native/, "extension and native command output should have visible transcript styling");
 assert.match(app, /function remoteWebuiQrSvg\(qrLines = \[\]\)[\s\S]*?viewBox[\s\S]*?shape-rendering[\s\S]*?crispEdges/, "remote WebUI QR popup should render terminal QR output as square SVG modules");
 assert.match(app, /function showRemoteWebuiQrLoadingPopup\(message = "Opening Remote WebUI QR…"\)[\s\S]*?remote-qr-loading[\s\S]*?showModal\(\)/, "remote WebUI QR popup should show a loading state while QR generation is pending");
@@ -286,6 +306,11 @@ assert.match(css, /\.prompt-list-dialog \{[\s\S]*?width:\s*min\(58rem/, "prompt-
 assert.match(css, /\.prompt-list-editor-rows \{[\s\S]*?max-height:/, "prompt-list dialog should scroll long follow-up lists inside the editor");
 assert.match(css, /\.prompt-list-load-row \{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto auto/, "prompt-list load row should fit load and delete actions beside saved-list selection");
 assert.match(css, /\.side-panel-section-toggle \{[\s\S]*?justify-content:\s*space-between/, "side panel section toggles should align labels and chevrons");
+assert.match(html, /id="stateDetails" class="session-details"[^>]*aria-label="Current session details"/, "session panel should expose a dedicated accessible details container");
+assert.match(app, /function sessionCopyButton\([\s\S]*?await copyText\(value\)/, "session identifiers and files should be copyable");
+assert.match(app, /function splitSessionFilePath\([\s\S]*?replace\(\/\^\\\/home/, "session file display should abbreviate home directories");
+assert.match(css, /\.session-overview \{[\s\S]*?grid-template-columns:/, "session status and counts should have a scannable overview");
+assert.match(css, /\.session-detail-value\.truncate[\s\S]*?text-overflow:\s*ellipsis/, "long session values should not overwhelm the side panel");
 assert.match(css, /\.server-restart-panel \{[\s\S]*?z-index:\s*62/, "server restart overlay should render above the offline shell");
 assert.match(css, /@keyframes server-restart-spin/, "server restart overlay should show a loading spinner");
 assert.match(css, /\.webui-version-badge,\n\.webui-dev-badge \{[\s\S]*?border-radius:\s*999px/, "Web UI version and dev indicators should render as compact title badges");
@@ -357,7 +382,7 @@ assert.match(css, /\.terminal-tabs-toggle-button \{ display: none; \}/, "termina
 assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.terminal-command-palette-button,\n\s+\.terminal-dashboard-button \{[\s\S]*?display:\s*inline-grid;/, "mobile header should keep the command palette button visible beside the dashboard button");
 assert.match(css, /\.command-palette-close-button \{[\s\S]*?min-width:\s*44px;[\s\S]*?min-height:\s*44px/, "command palette close button should meet touch-target sizing by default");
 assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.command-palette-dialog \{[\s\S]*?width:\s*min\(100vw - 0\.5rem, 42rem\)[\s\S]*?\.command-palette-list \{[\s\S]*?scrollbar-gutter:\s*auto;[\s\S]*?\.command-palette-item \{[\s\S]*?grid-template-columns:\s*minmax\(3\.4rem, 0\.26fr\) minmax\(0, 1fr\);[\s\S]*?min-height:\s*2\.72rem;/, "mobile command palette results should use compact two-column cards instead of tall one-column cards");
-assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.command-palette-item-kind \{[\s\S]*?font-size:\s*0\.56rem;[\s\S]*?\.command-palette-item-label \{ font-size:\s*0\.82rem; \}[\s\S]*?\.command-palette-item-description \{ font-size:\s*0\.6rem; \}/, "mobile command palette result text should be scaled down to fit compact cards");
+assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.command-palette-item-kind \{[\s\S]*?font-size:\s*var\(--text-xs\);[\s\S]*?\.command-palette-item-label \{ font-size:\s*0\.82rem; \}[\s\S]*?\.command-palette-item-description \{ font-size:\s*var\(--text-xs\); \}/, "mobile command palette result text should respect the typography floor");
 assert.match(css, /body\.terminal-tabs-left \.chat-panel \{[\s\S]*?grid-template-columns:\s*clamp\(13rem, 18vw, 19rem\) minmax\(0, 1fr\)/, "terminal tabs left layout should split the chat panel into a sidebar and transcript area");
 assert.match(css, /body\.terminal-tabs-left \.terminal-tabs-shell \{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1 \/ -1;[\s\S]*?flex-direction:\s*column/, "terminal tabs left layout should turn the top tab strip into a vertical sidebar");
 assert.match(css, /body\.terminal-tabs-left \.terminal-tabs \{[\s\S]*?flex-direction:\s*column/, "terminal tabs left layout should stack tabs vertically");
@@ -443,7 +468,7 @@ assert.match(app, /async function createPathPickerDirectory\(\)/, "cwd picker sh
 assert.match(app, /function renderPathPickerDirectoryList\(\)[\s\S]*pathPickerDirectoryMatchesSearch/, "cwd picker should filter current-directory entries in the browser");
 assert.match(app, /elements\.pathPickerSearchInput\.addEventListener\("input", renderPathPickerDirectoryList\)/, "cwd picker should update directory matches as the user types");
 assert.match(app, /function shouldOpenCwdChangeInNewTab\(tab\) \{[\s\S]*!!tab\?\.conversationStarted[\s\S]*activeTabHasConversationMessages\(tab\)[\s\S]*stateHasVisibleWork\(currentState\)[\s\S]*tabHasActiveAgent\(tab\)/, "cwd changes for started conversations should be routed to a new tab");
-assert.match(app, /if \(shouldOpenCwdChangeInNewTab\(tab\)\) \{[\s\S]*await createTerminalTab\(cwd, \{ triggerButton: null \}\);[\s\S]*return;[\s\S]*window\.confirm\(`Restart/, "footer cwd changes should open a new tab before destructive cwd restarts once a session is active");
+assert.match(app, /if \(shouldOpenCwdChangeInNewTab\(tab\)\) \{[\s\S]*await createTerminalTab\(cwd, \{ triggerButton: null \}\);[\s\S]*return;[\s\S]*await appConfirmText\(`Restart/, "footer cwd changes should open a new tab before app-confirmed cwd restarts once a session is active");
 assert.match(server, /async function createDirectoryPickerDirectory\(parentPath, nameValue, activeCwd\)/, "server should implement cwd picker directory creation");
 assert.match(server, /function directoryPickerActiveCwd\(req, url, body = \{\}\)/, "server should let the cwd picker run before any Pi tabs exist");
 assert.match(server, /url\.pathname === "\/api\/directories" && req\.method === "POST"/, "server should expose POST /api/directories for cwd picker directory creation");
@@ -510,7 +535,7 @@ assert.match(app, /backgroundClearButton\.addEventListener\("click"/, "side-pane
 assert.match(app, /initializeCustomBackground\(\)\.catch/, "startup should restore the saved custom background when theme loading fails");
 assert.match(app, /Restart Web UI to load themes/, "frontend should explain when a stale server cannot serve the themes endpoint");
 assert.match(app, /themeSelect\.addEventListener\("change"/, "side-panel theme selector should switch themes immediately");
-assert.match(app, /open \? "Close for network" : "Open to network"/, "network button should toggle from open to close action");
+assert.match(app, /open \? "Close remote access" : "Open for remote access"/, "network button should use explicit remote-access labels for open and close actions");
 assert.match(app, /let networkStatusLoaded = false;/, "Remote WebUI QR auto-popup state should track the first loaded network status");
 assert.match(app, /const hadNetworkStatus = networkStatusLoaded;[\s\S]*if \(!hadNetworkStatus\) \{\n\s+remoteQrAutoPopupShown = true;\n\s+return;\n\s+\}[\s\S]*if \(!wasOpen && !remoteQrAutoPopupShown && isLocalWebuiBrowserOrigin\(\)\)/, "Remote WebUI QR should auto-open only after network access transitions open, not on initial refresh");
 assert.match(app, /remoteAuthToggle: \$\("#remoteAuthToggle"\)/, "Remote WebUI controls should bind the remote PIN auth toggle");
@@ -1160,7 +1185,7 @@ assert.match(app, /const PROMPT_LIST_STORAGE_KEY = "pi-webui-prompt-lists"/, "fr
 assert.match(app, /async function runPromptList\(prompts,[\s\S]*sendPrompt\("prompt", listPrompts\[0\]/, "prompt-list runner should send the first item as the start prompt");
 assert.match(app, /for \(const prompt of listPrompts\.slice\(1\)\)[\s\S]*sendPrompt\("follow-up", prompt/, "prompt-list runner should send remaining items as follow-ups");
 assert.match(app, /async function runDisplayedPromptList\(\)[\s\S]*const saved = saveDisplayedPromptList\(\)[\s\S]*runPromptList\(saved\.prompts/, "Run List should persist the displayed prompt list before running it");
-assert.match(app, /function deleteSelectedPromptList\(\)[\s\S]*window\.confirm[\s\S]*deleteStoredPromptList/, "prompt-list deletion should confirm before deleting saved browser storage");
+assert.match(app, /async function deleteSelectedPromptList\(\)[\s\S]*deleteStoredPromptList[\s\S]*offerUndo\(\{[\s\S]*upsertStoredPromptList\(deleted\)/, "prompt-list deletion should be immediately reversible through Undo");
 assert.match(app, /function loadSelectedPromptListIntoEditor\(\)[\s\S]*loadPromptListIntoEditor\(list, \{ updateLoaded: true \}\)[\s\S]*elements\.promptListDialog\?\.close\(\)/, "loading a saved prompt list from the popup should close the dialog");
 assert.match(app, /event\.altKey && key === "ArrowUp"[\s\S]*?restoreQueuedMessagesToComposerFromShortcut\(\)/, "Alt+Up should be handled by native shortcut routing");
 assert.match(app, /clearPromptFromShortcut\(\)/, "Ctrl+C should clear only through a guarded prompt helper");

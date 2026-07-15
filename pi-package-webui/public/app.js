@@ -21,6 +21,7 @@ const elements = {
   commandPaletteButton: $("#commandPaletteButton"),
   workspaceDashboardToggleButton: $("#workspaceDashboardToggleButton"),
   workspaceDashboard: $("#workspaceDashboard"),
+  remoteAccessIndicator: $("#remoteAccessIndicator"),
   statusBar: $("#statusBar"),
   contextMeterBar: $("#contextMeterBar"),
   serverOfflinePanel: $("#serverOfflinePanel"),
@@ -243,6 +244,19 @@ const elements = {
   commandSearchInput: $("#commandSearchInput"),
   commandsBox: $("#commandsBox"),
   eventLog: $("#eventLog"),
+  undoToast: $("#undoToast"),
+  undoToastMessage: $("#undoToastMessage"),
+  undoToastTime: $("#undoToastTime"),
+  undoToastButton: $("#undoToastButton"),
+  undoToastDismissButton: $("#undoToastDismissButton"),
+  confirmationDialog: $("#confirmationDialog"),
+  confirmationTitle: $("#confirmationTitle"),
+  confirmationSummary: $("#confirmationSummary"),
+  confirmationAffected: $("#confirmationAffected"),
+  confirmationUndo: $("#confirmationUndo"),
+  confirmationAlternative: $("#confirmationAlternative"),
+  confirmationCancelButton: $("#confirmationCancelButton"),
+  confirmationConfirmButton: $("#confirmationConfirmButton"),
   dialog: $("#extensionDialog"),
   dialogTitle: $("#dialogTitle"),
   dialogMessage: $("#dialogMessage"),
@@ -361,12 +375,19 @@ let tabsRenderFrame = null;
 let foregroundReconcileTimer = null;
 let eventSource = null;
 let activeDialog = null;
+let activeConfirmationResolve = null;
+let activeUndoAction = null;
+let undoToastTimer = null;
+let undoToastFocusReturn = null;
+const modalSurfaceState = new WeakMap();
+let activeDrawerModal = null;
 let activeGitPrDialogResolve = null;
 let gitChangesState = { loading: false, pulling: false, fetching: false, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, data: null, operation: null, lastFetch: null, tabId: null };
 let gitToolsState = { tabId: null, openSections: new Set(), cache: {}, busy: new Set(), notice: {} };
 let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
+let nativeSettingsDirty = false;
 let pathPickerState = null;
 let firstTerminalCwdPromptShown = false;
 let pathFastPicks = [];
@@ -520,6 +541,7 @@ let latestQueuedMessagesByTab = new Map();
 let loadedPromptList = null;
 let promptListRunning = false;
 let workspaceDashboardCollapsed = false;
+let interfaceDensity = "comfortable";
 let commandPaletteIndex = 0;
 let commandPaletteItems = [];
 let activeEditRetry = null;
@@ -539,6 +561,7 @@ let escapeAbortHoldSuppressesDoubleEscape = false;
 let suppressEmptyPromptEscapeUntil = 0;
 const dialogQueue = [];
 const SIDE_PANEL_STORAGE_KEY = "pi-webui-side-panel-collapsed";
+const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
@@ -2546,11 +2569,192 @@ function setMobileTabsExpanded(expanded) {
   elements.terminalTabsToggleButton.setAttribute("aria-expanded", mobileTabsExpanded ? "true" : "false");
 }
 
+function modalFocusableElements(surface) {
+  if (!surface) return [];
+  return [...surface.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((node) => !node.hidden && node.getAttribute("aria-hidden") !== "true" && node.getClientRects().length > 0);
+}
+
+function installDialogModalPrimitive(dialog) {
+  if (!dialog || dialog.dataset.modalPrimitive === "true") return;
+  dialog.dataset.modalPrimitive = "true";
+  const showModal = dialog.showModal.bind(dialog);
+  dialog.showModal = () => {
+    modalSurfaceState.set(dialog, { trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null });
+    showModal();
+  };
+  dialog.addEventListener("close", () => {
+    const trigger = modalSurfaceState.get(dialog)?.trigger;
+    modalSurfaceState.delete(dialog);
+    const openModal = document.querySelector("dialog:modal");
+    if (trigger?.isConnected && (!openModal || trigger.closest("dialog:modal"))) queueMicrotask(() => trigger.focus({ preventScroll: true }));
+  });
+}
+
+function installModalPrimitives() {
+  document.querySelectorAll("dialog").forEach(installDialogModalPrimitive);
+}
+
+function dismissUndoToast() {
+  clearTimeout(undoToastTimer);
+  undoToastTimer = null;
+  activeUndoAction = null;
+  if (!elements.undoToast) return;
+  const returnFocus = elements.undoToast.contains(document.activeElement) ? undoToastFocusReturn : null;
+  undoToastFocusReturn = null;
+  elements.undoToast.hidden = true;
+  elements.undoToast.classList.remove("expiring", "undoing", "error");
+  elements.undoToastButton.disabled = false;
+  if (returnFocus?.isConnected) queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
+}
+
+function settleUndoToast(message, { error = false, timeoutMs = 3500 } = {}) {
+  if (!elements.undoToast) return;
+  clearTimeout(undoToastTimer);
+  undoToastTimer = null;
+  activeUndoAction = null;
+  elements.undoToast.hidden = false;
+  elements.undoToast.classList.remove("undoing");
+  elements.undoToast.classList.toggle("error", error);
+  const hadFocus = elements.undoToast.contains(document.activeElement);
+  elements.undoToastMessage.textContent = message;
+  elements.undoToastTime.hidden = true;
+  elements.undoToastButton.hidden = true;
+  if (hadFocus) elements.undoToastDismissButton.focus({ preventScroll: true });
+  undoToastTimer = setTimeout(dismissUndoToast, timeoutMs);
+}
+
+function offerUndo({ message, undo, successMessage = "Action undone.", timeoutMs = 10000 } = {}) {
+  if (!message || typeof undo !== "function" || !elements.undoToast) return;
+  dismissUndoToast();
+  undoToastFocusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  activeUndoAction = { undo, successMessage };
+  elements.undoToastMessage.textContent = message;
+  elements.undoToastTime.textContent = `Undo available for ${Math.round(timeoutMs / 1000)} seconds`;
+  elements.undoToastTime.hidden = false;
+  elements.undoToastButton.hidden = false;
+  elements.undoToastButton.disabled = false;
+  elements.undoToast.hidden = false;
+  elements.undoToast.style.setProperty("--undo-timeout", `${timeoutMs}ms`);
+  elements.undoToast.classList.remove("expiring", "error", "undoing");
+  void elements.undoToast.offsetWidth;
+  elements.undoToast.classList.add("expiring");
+  undoToastTimer = setTimeout(dismissUndoToast, timeoutMs);
+}
+
+async function runOfferedUndo() {
+  const pending = activeUndoAction;
+  if (!pending || !elements.undoToast) return;
+  clearTimeout(undoToastTimer);
+  undoToastTimer = null;
+  activeUndoAction = null;
+  elements.undoToast.classList.remove("expiring");
+  elements.undoToast.classList.add("undoing");
+  elements.undoToastMessage.textContent = "Undoing…";
+  elements.undoToastTime.hidden = true;
+  elements.undoToastButton.disabled = true;
+  try {
+    await pending.undo();
+    settleUndoToast(pending.successMessage);
+    addEvent(pending.successMessage, "success");
+  } catch (error) {
+    const message = `Could not undo: ${error.message || String(error)}`;
+    settleUndoToast(message, { error: true, timeoutMs: 7000 });
+    addEvent(message, "error");
+  }
+}
+
+function finishApplicationConfirmation(confirmed) {
+  const resolve = activeConfirmationResolve;
+  activeConfirmationResolve = null;
+  if (elements.confirmationDialog?.open) elements.confirmationDialog.close();
+  resolve?.(!!confirmed);
+}
+
+function appConfirm({ title = "Confirm action", summary = "Continue?", affected = "The selected item", undoable = false, alternative = "Cancel and review the action first.", confirmLabel = "Continue", danger = true } = {}) {
+  if (!elements.confirmationDialog?.showModal) {
+    return Promise.resolve(window.confirm([title, summary, affected, undoable ? "This can be undone." : "This cannot be undone.", alternative].filter(Boolean).join("\n\n")));
+  }
+  if (activeConfirmationResolve) finishApplicationConfirmation(false);
+  elements.confirmationTitle.textContent = title;
+  elements.confirmationSummary.textContent = summary;
+  elements.confirmationAffected.textContent = affected;
+  elements.confirmationUndo.textContent = undoable ? "This action can be undone." : "This action cannot be undone.";
+  elements.confirmationAlternative.textContent = alternative;
+  elements.confirmationConfirmButton.textContent = confirmLabel;
+  elements.confirmationConfirmButton.classList.toggle("danger", danger);
+  elements.confirmationConfirmButton.classList.toggle("primary", !danger);
+  return new Promise((resolve) => {
+    activeConfirmationResolve = resolve;
+    elements.confirmationDialog.showModal();
+    queueMicrotask(() => elements.confirmationCancelButton?.focus());
+  });
+}
+
+function appConfirmText(message, options = {}) {
+  const text = String(message || "Continue?").trim();
+  const [firstLine, ...rest] = text.split("\n");
+  return appConfirm({
+    title: options.title || firstLine || "Confirm action",
+    summary: options.summary || rest.join("\n").trim() || firstLine || "Continue?",
+    affected: options.affected || "The current workspace, session, or server state described above",
+    undoable: options.undoable === true,
+    alternative: options.alternative || "Cancel and review the affected state before continuing.",
+    confirmLabel: options.confirmLabel || "Continue",
+    danger: options.danger !== false,
+  });
+}
+
+function handleDrawerModalKeydown(event) {
+  if (!activeDrawerModal || event.defaultPrevented) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setSidePanelCollapsed(true, { persist: false });
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = modalFocusableElements(activeDrawerModal.surface);
+  if (!focusable.length) {
+    event.preventDefault();
+    activeDrawerModal.surface.focus({ preventScroll: true });
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus({ preventScroll: true });
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+  }
+}
+
+function activateDrawerModal(surface, trigger) {
+  if (activeDrawerModal?.surface === surface) return;
+  activeDrawerModal = { surface, trigger };
+  surface.setAttribute("aria-modal", "true");
+  surface.setAttribute("tabindex", "-1");
+  document.addEventListener("keydown", handleDrawerModalKeydown, true);
+}
+
+function deactivateDrawerModal(surface) {
+  if (activeDrawerModal?.surface !== surface) {
+    surface?.removeAttribute("aria-modal");
+    return;
+  }
+  const trigger = activeDrawerModal.trigger;
+  activeDrawerModal = null;
+  surface.removeAttribute("aria-modal");
+  document.removeEventListener("keydown", handleDrawerModalKeydown, true);
+  if (trigger?.isConnected) queueMicrotask(() => trigger.focus({ preventScroll: true }));
+}
+
 function syncMobileSidePanelState(collapsed) {
   const showBackdrop = !collapsed && isSidePanelOverlayView();
   elements.sidePanelBackdrop.hidden = !showBackdrop;
-  if (showBackdrop) elements.sidePanel.setAttribute("aria-modal", "true");
-  else elements.sidePanel.removeAttribute("aria-modal");
+  if (showBackdrop) activateDrawerModal(elements.sidePanel, elements.sidePanelExpandButton);
+  else deactivateDrawerModal(elements.sidePanel);
 }
 
 function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false } = {}) {
@@ -2615,6 +2819,32 @@ function setWorkspaceDashboardCollapsed(collapsed, { persist = true } = {}) {
 
 function restoreWorkspaceDashboardState() {
   setWorkspaceDashboardCollapsed(readStoredWorkspaceDashboardCollapsed(), { persist: false });
+}
+
+function normalizeInterfaceDensity(value) {
+  return value === "compact" ? "compact" : "comfortable";
+}
+
+function setInterfaceDensity(value, { persist = true } = {}) {
+  interfaceDensity = normalizeInterfaceDensity(value);
+  document.documentElement.dataset.density = interfaceDensity;
+  if (persist) {
+    try {
+      localStorage.setItem(INTERFACE_DENSITY_STORAGE_KEY, interfaceDensity);
+    } catch {
+      // Browser storage is optional; density still applies to this page.
+    }
+  }
+}
+
+function restoreInterfaceDensity() {
+  let stored = "comfortable";
+  try {
+    stored = localStorage.getItem(INTERFACE_DENSITY_STORAGE_KEY) || stored;
+  } catch {
+    // Use the accessible default.
+  }
+  setInterfaceDensity(stored, { persist: false });
 }
 
 function bindMobileViewChanges() {
@@ -3367,7 +3597,7 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
     renderUpdateNotification(latestUpdateStatus, { force: true });
     return;
   }
-  if (!confirm(piUpdateConfirmationText({ all }))) return;
+  if (!(await appConfirmText(piUpdateConfirmationText({ all }), { affected: "The Pi Web UI server and all managed Pi tabs", confirmLabel: all ? "Update all and restart" : "Update Pi and restart" }))) return;
 
   const updateLabel = all ? "Pi and package updates" : "Pi update";
   updateRequestInProgress = true;
@@ -5506,7 +5736,7 @@ function fileDisplayName(path = "") {
 }
 
 function fileEntryIcon(entry = {}) {
-  if (entry.type === "directory") return "▸";
+  if (entry.type === "directory") return "DIR";
   if (entry.type === "file") return entry.extension === ".md" || entry.extension === ".markdown" ? "Md" : "TXT";
   if (entry.type === "error") return "!";
   return "·";
@@ -5525,8 +5755,6 @@ function normalizeFileTreeGitStatus(status = {}) {
 }
 
 function fileTreeGitStatusForEntry(entry = {}) {
-  const own = normalizeFileTreeGitStatus(entry.gitStatus);
-  if (own) return own;
   return fileTreeState.gitStatusByPath.get(normalizeFileTreePath(entry.path || "")) || null;
 }
 
@@ -5657,6 +5885,7 @@ function renderFileTree() {
     list.setAttribute("role", "group");
     for (const entry of fileTreeState.searchEntries) appendFileSearchEntry(list, entry);
     root.append(list);
+    syncFileTreeRovingTabindex();
     return;
   }
   const entries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
@@ -5668,6 +5897,51 @@ function renderFileTree() {
   list.setAttribute("role", "group");
   for (const entry of entries) appendFileTreeEntry(list, entry, 0);
   root.append(list);
+  syncFileTreeRovingTabindex();
+}
+
+function visibleFileTreeItems() {
+  return [...elements.fileTreeRoot?.querySelectorAll('[role="treeitem"]') || []];
+}
+
+function syncFileTreeRovingTabindex(preferredPath = fileTreeState.selectedPath) {
+  const items = visibleFileTreeItems();
+  const active = items.find((item) => normalizeFileTreePath(item.dataset.path) === normalizeFileTreePath(preferredPath)) || items[0];
+  for (const item of items) item.tabIndex = item === active ? 0 : -1;
+}
+
+function selectFileTreePath(path, { focus = false } = {}) {
+  fileTreeState.selectedPath = normalizeFileTreePath(path);
+  renderFileTree();
+  if (focus) {
+    const selected = visibleFileTreeItems().find((item) => normalizeFileTreePath(item.dataset.path) === fileTreeState.selectedPath);
+    selected?.focus({ preventScroll: true });
+  }
+}
+
+function fileTreeOverflowButton(entry) {
+  const button = make("button", "file-tree-overflow-button", "⋯");
+  button.type = "button";
+  button.setAttribute("aria-label", `Actions for ${entry.name || fileDisplayName(entry.path)}`);
+  button.setAttribute("aria-haspopup", "menu");
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showFileContextMenuForElement(button, entry);
+  });
+  return button;
+}
+
+function fileTreeExpander(entry, expanded = false, { search = false } = {}) {
+  const button = make("button", "file-tree-expander", expanded ? "▾" : "▸");
+  button.type = "button";
+  button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${entry.name || fileDisplayName(entry.path)}`);
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (search) revealFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
+    else toggleFileTreeDirectory(entry.path).catch((error) => addEvent(error.message || String(error), "error"));
+  });
+  return button;
 }
 
 function appendFileSearchEntry(parent, entry) {
@@ -5683,6 +5957,7 @@ function appendFileSearchEntry(parent, entry) {
   button.dataset.type = entry.type || "file";
   button.style.setProperty("--file-tree-depth", "0");
   button.setAttribute("role", "treeitem");
+  button.setAttribute("aria-selected", fileTreeState.selectedPath === path ? "true" : "false");
   button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   const label = make("span", "file-tree-search-label");
   label.append(
@@ -5700,16 +5975,12 @@ function appendFileSearchEntry(parent, entry) {
   if (entry.error) button.append(make("span", "file-tree-error", entry.error));
   button.addEventListener("click", () => {
     fileTreeState.selectedPath = path;
-    renderFileTree();
-  });
-  button.addEventListener("dblclick", (event) => {
-    event.preventDefault();
-    if (isDirectory) revealFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
-    else if (entry.type === "file") openFileInViewer(path);
+    if (entry.type === "file") openFileInViewer(path);
+    else renderFileTree();
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
   bindFileTreeDragAndDrop(button, item, entry);
-  item.append(button);
+  item.append(isDirectory ? fileTreeExpander(entry, false, { search: true }) : make("span", "file-tree-expander-spacer"), button, fileTreeOverflowButton(entry));
   parent.append(item);
 }
 
@@ -5751,6 +6022,7 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   button.dataset.type = entry.type || "file";
   button.style.setProperty("--file-tree-depth", String(depth));
   button.setAttribute("role", "treeitem");
+  button.setAttribute("aria-selected", fileTreeState.selectedPath === path ? "true" : "false");
   if (isDirectory) button.setAttribute("aria-expanded", expanded ? "true" : "false");
   button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   button.append(
@@ -5763,17 +6035,12 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   if (entry.error) button.append(make("span", "file-tree-error", entry.error));
   button.addEventListener("click", () => {
     fileTreeState.selectedPath = path;
-    if (isDirectory) toggleFileTreeDirectory(path);
+    if (entry.type === "file") openFileInViewer(path);
     else renderFileTree();
-  });
-  button.addEventListener("dblclick", (event) => {
-    event.preventDefault();
-    if (isDirectory) toggleFileTreeDirectory(path, { force: true });
-    else openFileInViewer(path);
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
   bindFileTreeDragAndDrop(button, item, entry);
-  item.append(button);
+  item.append(isDirectory ? fileTreeExpander(entry, expanded) : make("span", "file-tree-expander-spacer"), button, fileTreeOverflowButton(entry));
   if (isDirectory && expanded) {
     const children = fileTreeState.entriesByPath.get(path) || [];
     const childList = make("ul", "file-tree-list");
@@ -5923,9 +6190,11 @@ async function toggleFileTreeDirectory(path = "", { force = false } = {}) {
   await loadFileTreeDirectory(normalized);
 }
 
-function closeFileContextMenu() {
+function closeFileContextMenu({ returnFocus = true } = {}) {
+  const trigger = fileContextMenuState?.trigger;
   fileContextMenuState = null;
   if (elements.fileContextMenu) elements.fileContextMenu.hidden = true;
+  if (returnFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus({ preventScroll: true }));
 }
 
 function showFileContextMenu(event, entry) {
@@ -5933,7 +6202,7 @@ function showFileContextMenu(event, entry) {
   event.preventDefault();
   event.stopPropagation();
   const path = normalizeFileTreePath(entry?.path || "");
-  fileContextMenuState = { entry: { ...entry, path } };
+  fileContextMenuState = { entry: { ...entry, path }, trigger: event.currentTarget || document.activeElement };
   const menu = elements.fileContextMenu;
   const webui = menu.querySelector('[data-file-menu-action="open-webui"]');
   if (webui) webui.textContent = entry?.type === "directory" ? "Open in WebUI" : "Open in WebUI";
@@ -5943,6 +6212,47 @@ function showFileContextMenu(event, entry) {
   const top = Math.min(event.clientY, Math.max(0, window.innerHeight - rect.height - 8));
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
+  menu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
+}
+
+function showFileContextMenuForElement(element, entry) {
+  const rect = element.getBoundingClientRect();
+  showFileContextMenu({
+    preventDefault() {},
+    stopPropagation() {},
+    clientX: rect.right,
+    clientY: rect.bottom,
+    currentTarget: element,
+  }, entry);
+}
+
+function handleFileTreeKeydown(event) {
+  const current = event.target?.closest?.('[role="treeitem"]');
+  if (!current || !elements.fileTreeRoot?.contains(current)) return;
+  const items = visibleFileTreeItems();
+  const index = items.indexOf(current);
+  if (index < 0) return;
+  const focusAt = (nextIndex) => {
+    const next = items[Math.max(0, Math.min(items.length - 1, nextIndex))];
+    if (!next) return;
+    event.preventDefault();
+    selectFileTreePath(next.dataset.path, { focus: true });
+  };
+  if (event.key === "ArrowDown") focusAt(index + 1);
+  else if (event.key === "ArrowUp") focusAt(index - 1);
+  else if (event.key === "Home") focusAt(0);
+  else if (event.key === "End") focusAt(items.length - 1);
+  else if (event.key === "ArrowRight" && current.dataset.type === "directory") {
+    event.preventDefault();
+    if (current.getAttribute("aria-expanded") !== "true") toggleFileTreeDirectory(current.dataset.path);
+    else focusAt(index + 1);
+  } else if (event.key === "ArrowLeft" && current.dataset.type === "directory" && current.getAttribute("aria-expanded") === "true") {
+    event.preventDefault();
+    toggleFileTreeDirectory(current.dataset.path);
+  } else if (event.key === "Enter" && current.dataset.type === "directory") {
+    event.preventDefault();
+    toggleFileTreeDirectory(current.dataset.path);
+  }
 }
 
 function currentFileViewerPath() {
@@ -6221,7 +6531,14 @@ async function deleteFileTreeEntry(entry = fileContextMenuState?.entry) {
     ? "\n\nThe currently open file has unsaved edits that will be discarded from the viewer."
     : "";
   const recursiveWarning = typeLabel === "directory" ? "\n\nThis permanently deletes the directory and all of its contents." : "";
-  if (!window.confirm(`Delete ${typeLabel} ${sourcePath}?${recursiveWarning}${dirtyWarning}\n\nThis cannot be undone.`)) return;
+  if (!(await appConfirm({
+    title: `Delete ${typeLabel}?`,
+    summary: `${sourcePath}${recursiveWarning}${dirtyWarning}`,
+    affected: typeLabel === "directory" ? "The directory and all files beneath it" : sourcePath,
+    undoable: false,
+    alternative: "Cancel and move or rename it instead.",
+    confirmLabel: `Delete ${typeLabel}`,
+  }))) return;
   const tabContext = activeTabContext();
   setFileTreeStatus(`Deleting ${sourcePath}…`);
   try {
@@ -6242,27 +6559,26 @@ async function deleteFileTreeEntry(entry = fileContextMenuState?.entry) {
   }
 }
 
-async function moveFileTreeEntryToDestination(entry = {}, destinationPath = "", { viaDragDrop = false, confirmMove = false } = {}) {
+async function moveFileTreeEntryToDestination(entry = {}, destinationPath = "", { viaDragDrop = false, confirmMove = false, offerMoveUndo = true, tabContext = activeTabContext() } = {}) {
   const sourcePath = normalizeFileTreePath(entry.path || "");
   const normalizedDestination = normalizeFileTreePath(destinationPath);
   if (!sourcePath) {
     addEvent("Workspace root cannot be moved from the Files panel.", "warn");
-    return;
+    return false;
   }
   if (!normalizedDestination && normalizedDestination !== FILE_TREE_ROOT_PATH) {
     addEvent("Destination path is required.", "warn");
-    return;
+    return false;
   }
   const typeLabel = fileOperationTypeLabel(entry);
-  if (confirmMove && !window.confirm(`Move ${typeLabel}?\n\nFrom: ${sourcePath}\nTo: ${normalizedDestination || "."}\n\nExisting destination paths are refused.`)) return;
-  const tabContext = activeTabContext();
+  if (confirmMove && !(await appConfirmText(`Move ${typeLabel}?\n\nFrom: ${sourcePath}\nTo: ${normalizedDestination || "."}\n\nExisting destination paths are refused.`, { affected: sourcePath, undoable: true, confirmLabel: `Move ${typeLabel}` }))) return false;
   const isDirectory = fileTreeEntryIsDirectory(entry);
   const restoreSourceExpanded = isDirectory && fileTreeState.expanded.has(sourcePath) && !fileTreeSearchQueryText();
   const expandDestinationDirectory = viaDragDrop && !fileTreeSearchQueryText();
   setFileTreeStatus(`Moving ${sourcePath}…`);
   try {
     const response = await api("/api/files/move", { method: "POST", body: { path: sourcePath, toPath: normalizedDestination || ".", confirmed: true }, tabId: tabContext.tabId });
-    if (!isCurrentTabContext(tabContext)) return;
+    if (!isCurrentTabContext(tabContext)) return true;
     const data = response.data || {};
     const nextPath = normalizeFileTreePath(data.destination || normalizedDestination);
     const sourceParent = data.parentPath ?? fileParentPath(sourcePath);
@@ -6279,11 +6595,27 @@ async function moveFileTreeEntryToDestination(entry = {}, destinationPath = "", 
     renderFileTree();
     setFileTreeStatus(`Moved ${sourcePath} to ${nextPath}.`, "success");
     addEvent(`${viaDragDrop ? "drag-moved" : "moved"} ${sourcePath} to ${nextPath}`, "info");
+    if (offerMoveUndo && nextPath && nextPath !== sourcePath) {
+      offerUndo({
+        message: `Moved ${sourcePath} to ${nextPath}.`,
+        undo: async () => {
+          const restored = await moveFileTreeEntryToDestination(
+            { ...entry, path: nextPath },
+            sourcePath,
+            { offerMoveUndo: false, tabContext },
+          );
+          if (!restored) throw new Error(`Could not move ${nextPath} back to ${sourcePath}.`);
+        },
+        successMessage: `Moved ${nextPath} back to ${sourcePath}.`,
+      });
+    }
+    return true;
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
       setFileTreeStatus(error.message || String(error), "error");
       addEvent(`file move failed: ${error.message || String(error)}`, "error");
     }
+    return false;
   }
 }
 
@@ -7812,7 +8144,7 @@ function shouldOpenCwdChangeInNewTab(tab) {
     || tabHasActiveAgent(tab);
 }
 
-function confirmCloseTerminalTabs(targetTabs, label) {
+async function confirmCloseTerminalTabs(targetTabs, label) {
   const count = targetTabs.length;
   const noun = count === 1 ? "tab" : "tabs";
   const activeAgentTabs = targetTabs.filter(tabHasActiveAgent);
@@ -7825,23 +8157,27 @@ function confirmCloseTerminalTabs(targetTabs, label) {
     count > 1 ? `\nTabs to close:\n${tabList}` : "",
   ].filter(Boolean).join("\n");
   const warning = activeAgentTabs.length
-    ? [
-        `WARNING: ${activeAgentTabs.length} ${activeAgentTabs.length === 1 ? "tab has an agent" : "tabs have agents"} still running or waiting for input:`,
-        activeList,
-        "",
-        base,
-        "",
-        "Close anyway?",
-      ].join("\n")
-    : base;
-  return confirm(warning);
+    ? `WARNING: ${activeAgentTabs.length} ${activeAgentTabs.length === 1 ? "tab has an agent" : "tabs have agents"} still running or waiting for input:\n${activeList}`
+    : "No agent work is currently running in these tabs.";
+  return appConfirm({
+    title: `Close ${count === 1 ? "tab" : `${count} tabs`}?`,
+    summary: `${base}\n\n${warning}`,
+    affected: tabList || label || `${count} terminal ${noun}`,
+    undoable: false,
+    alternative: activeAgentTabs.length
+      ? "Cancel and wait for or abort the running work first."
+      : count === 1
+        ? "Cancel and keep this tab open."
+        : "Cancel and close individual tabs instead.",
+    confirmLabel: activeAgentTabs.length ? "Close and stop work" : count === 1 ? "Close tab" : "Close tabs",
+  });
 }
 
 async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = {}) {
   const targetIds = [...new Set(tabIds.filter(Boolean))];
   const targetTabs = targetIds.map((id) => tabs.find((item) => item.id === id)).filter(Boolean);
   if (!targetTabs.length) return;
-  if (!confirmCloseTerminalTabs(targetTabs, label)) return;
+  if (!(await confirmCloseTerminalTabs(targetTabs, label))) return;
 
   const closedActiveTab = targetTabs.some((tab) => tab.id === activeTabId);
   const fallbackTabId = tabs.find((item) => !targetIds.includes(item.id))?.id || null;
@@ -8614,7 +8950,7 @@ async function runGitFooterPiCalibration(mode = "current", tabContext = activeTa
     addEvent("PI calibration unavailable: /calibrate is not loaded in this Pi tab.", "warn");
     return;
   }
-  if (mode === "probe" && !confirm("Start an isolated PI calibration probe? This sends one tiny model request and may incur provider token usage.")) return;
+  if (mode === "probe" && !(await appConfirmText("Start an isolated PI calibration probe? This sends one tiny model request and may incur provider token usage.", { affected: "Provider token allowance and this tab's calibration result", confirmLabel: "Start probe", danger: false }))) return;
 
   const command = mode === "probe" ? `/${commandName}` : `/${commandName} current`;
   gitFooterPiCalibrationInFlightByTab.add(tabContext.tabId);
@@ -9625,7 +9961,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
   const protectedWarning = ["main", "master"].includes(branch)
     ? `\n\nWarning: ${branch} is usually a protected/shared branch. Consider pushing a feature branch and opening a PR instead.`
     : "";
-  if (!window.confirm(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?${protectedWarning}`)) return;
+  if (!(await appConfirmText(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?${protectedWarning}`, { affected: `Remote Git branch ${branch || "current branch"}`, confirmLabel: "Push commits" }))) return;
 
   gitFooterSyncPushInFlightByTab.add(tabId);
   if (isCurrentTabContext(tabContext)) renderFooter();
@@ -9633,7 +9969,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
     const response = await api("/api/git-workflow/push", { method: "POST", body: {}, tabId });
     if (!response.ok) {
       if (response.code === "NO_UPSTREAM") {
-        const publish = window.confirm(`${response.error}\n\n${response.hint || ""}\n\nRun git push -u to publish ${branch || "the current branch"} and set its upstream?`);
+        const publish = await appConfirmText(`${response.error}\n\n${response.hint || ""}\n\nRun git push -u to publish ${branch || "the current branch"} and set its upstream?`, { affected: `Remote Git branch ${branch || "current branch"}`, confirmLabel: "Publish branch" });
         if (publish) {
           const upstreamResponse = await api("/api/git-workflow/push", { method: "POST", body: { setUpstream: true }, tabId });
           if (!upstreamResponse.ok) throw new Error([upstreamResponse.error, upstreamResponse.hint].filter(Boolean).join("\n"));
@@ -9644,7 +9980,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
         throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
       }
       if (response.code === "NON_FAST_FORWARD") {
-        const forcePush = window.confirm([
+        const forcePush = await appConfirmText([
           response.error,
           "",
           response.hint || "",
@@ -10658,7 +10994,7 @@ async function pullGitChangesDialog() {
   if (behind <= 0 || gitChangesState.pulling || gitChangesState.loading || gitChangesState.fetching) return;
   if (gitChangesState.data?.remote?.diverged === true) return;
   const root = gitChangesState.data?.root || "the current repository";
-  if (!window.confirm(`Run git pull --ff-only in ${root}?`)) return;
+  if (!(await appConfirmText(`Run git pull --ff-only in ${root}?`, { affected: root, confirmLabel: "Pull changes" }))) return;
 
   const requestSerial = ++gitChangesRequestSerial;
   gitChangesState = { ...gitChangesState, pulling: true, loading: false, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId };
@@ -10751,13 +11087,13 @@ async function integrateGitChangesDialog(mode) {
   const data = gitChangesState.data;
   const upstream = data?.remote?.upstream || "@{upstream}";
   const command = mode === "merge" ? `git merge --no-edit ${upstream}` : `git rebase ${upstream}`;
-  if (!window.confirm([
+  if (!(await appConfirmText([
     `${mode === "merge" ? "Merge" : "Rebase onto"} ${upstream} in ${data?.root || "the current repository"}?`,
     "",
     `Command: ${command}`,
     mode === "rebase" ? "Rebase rewrites local commits. Conflicts open the conflicts panel." : "Conflicts open the conflicts panel.",
     "For risky integration, prefer a separate worktree instead.",
-  ].join("\n"))) return;
+  ].join("\n"), { affected: data?.root || "the current repository", confirmLabel: mode === "merge" ? "Merge" : "Rebase" }))) return;
   gitChangesState = { ...gitChangesState, pulling: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null };
   renderGitChangesDialog();
   try {
@@ -10800,7 +11136,7 @@ async function runGitFileAction(action, path) {
     },
   }[action];
   if (!config) return;
-  if (config.confirm && !window.confirm(config.confirm)) return;
+  if (config.confirm && !(await appConfirmText(config.confirm, { affected: path, confirmLabel: action }))) return;
   try {
     const response = await api(config.url, { method: "POST", body: config.body, tabId });
     if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || `git ${action} failed`);
@@ -10885,8 +11221,8 @@ function renderGitOperationPanel(operation) {
     reset.type = "button";
     reset.disabled = busy;
     reset.title = "git bisect reset";
-    reset.addEventListener("click", () => {
-      if (!window.confirm(`Reset the bisect session in ${operation.root}?\n\nCommand: git bisect reset\nThis returns to the pre-bisect checkout.`)) return;
+    reset.addEventListener("click", async () => {
+      if (!(await appConfirmText(`Reset the bisect session in ${operation.root}?\n\nCommand: git bisect reset\nThis returns to the pre-bisect checkout.`, { affected: operation.root, confirmLabel: "Reset bisect" }))) return;
       runGitOperationRequest("/api/git-operation/bisect", { verdict: "reset", confirmed: true }, "Reset the bisect session");
     });
     row.append(reset);
@@ -10967,8 +11303,8 @@ function renderGitOperationPanel(operation) {
     skip.type = "button";
     skip.disabled = busy;
     skip.title = operation.commands?.skip || "";
-    skip.addEventListener("click", () => {
-      if (!window.confirm(`Skip the current ${kind} step?\n\nCommand: ${operation.commands?.skip || `git ${kind} --skip`}\nThe skipped commit is left out of the result.`)) return;
+    skip.addEventListener("click", async () => {
+      if (!(await appConfirmText(`Skip the current ${kind} step?\n\nCommand: ${operation.commands?.skip || `git ${kind} --skip`}\nThe skipped commit is left out of the result.`, { affected: operation.root, confirmLabel: `Skip ${kind} step` }))) return;
       runGitOperationRequest("/api/git-operation/skip", {}, `Skipped the current ${kind} step`);
     });
     row.append(skip);
@@ -10978,16 +11314,16 @@ function renderGitOperationPanel(operation) {
   abort.type = "button";
   abort.disabled = busy;
   abort.title = operation.commands?.abort || "";
-  abort.addEventListener("click", () => {
+  abort.addEventListener("click", async () => {
     const summary = operation.summary || {};
-    if (!window.confirm([
+    if (!(await appConfirmText([
       `Abort the ${kind} in ${operation.root}?`,
       "",
       `Command: ${operation.commands?.abort || `git ${kind} --abort`}`,
       `Working tree: ${summary.staged || 0} staged · ${summary.unstaged || 0} unstaged · ${conflicts.length} conflicted`,
       "",
       "This discards the in-progress operation state and returns to the pre-operation HEAD.",
-    ].join("\n"))) return;
+    ].join("\n"), { affected: operation.root, confirmLabel: `Abort ${kind}` }))) return;
     runGitOperationRequest("/api/git-operation/abort", { confirmed: true }, `Aborted the ${kind}`);
   });
   row.append(abort);
@@ -11068,7 +11404,7 @@ async function loadGitToolsSection(key, { force = false } = {}) {
 
 async function runGitToolAction(sectionKey, { url, method = "POST", body, confirm, success, successMessage, refreshChanges = false }) {
   const tabId = gitChangesState.tabId || activeTabId;
-  if (confirm && !window.confirm(confirm)) return;
+  if (confirm && !(await appConfirmText(confirm, { affected: gitChangesState.data?.root || "the current repository", confirmLabel: success || "Continue" }))) return;
   gitToolsState.busy.add(sectionKey);
   renderGitChangesDialog();
   try {
@@ -11110,13 +11446,13 @@ async function confirmGitStashActionWithPreview(stash, question) {
   } catch {
     // Preview is best-effort; the confirmation still shows the stash subject.
   }
-  return window.confirm([
+  return appConfirmText([
     question,
     "",
     stash.subject || stash.ref,
     "",
     statText ? `Preview (git stash show --stat):\n${statText.slice(0, 2000)}` : "Preview unavailable.",
-  ].join("\n"));
+  ].join("\n"), { affected: stash.subject || stash.ref, confirmLabel: "Continue" });
 }
 
 function renderGitStashTools(body, data, busy) {
@@ -12036,7 +12372,7 @@ function footerBranchDirtySummaryLines() {
   ];
 }
 
-function confirmFooterGitBranchAction(branch, { create = false, requireConfirm = false, tabContext = activeTabContext() } = {}) {
+async function confirmFooterGitBranchAction(branch, { create = false, requireConfirm = false, tabContext = activeTabContext() } = {}) {
   const branchName = cleanStatusText(branch);
   const warningLines = footerBranchAgentWarningLines(tabContext);
   const dirtyLines = footerBranchDirtySummaryLines();
@@ -12051,10 +12387,10 @@ function confirmFooterGitBranchAction(branch, { create = false, requireConfirm =
     "",
     "Continue?",
   ].join("\n");
-  return window.confirm(message);
+  return appConfirmText(message, { affected: branchName || "the current branch", confirmLabel: create ? "Create branch" : "Switch branch" });
 }
 
-function confirmFooterGitWorktreeAction(branch, { path = "", create = false, requireConfirm = false } = {}) {
+async function confirmFooterGitWorktreeAction(branch, { path = "", create = false, requireConfirm = false } = {}) {
   const branchName = cleanStatusText(branch);
   if (!requireConfirm) return true;
   const targetPath = cleanFooterPayloadText(path, "", 4000);
@@ -12069,7 +12405,7 @@ function confirmFooterGitWorktreeAction(branch, { path = "", create = false, req
     "",
     "Continue?",
   ].join("\n");
-  return window.confirm(message);
+  return appConfirmText(message, { affected: targetPath || branchName, confirmLabel: create ? "Create worktree" : "Open worktree", danger: false });
 }
 
 function footerBranchCreateType(value = footerBranchCreateDraft.type) {
@@ -12160,7 +12496,7 @@ async function createFooterGitBranch(branch = footerBranchCreateName()) {
     return;
   }
   const tabContext = activeTabContext();
-  if (!confirmFooterGitBranchAction(branchName, { create: true, requireConfirm: true, tabContext })) return;
+  if (!(await confirmFooterGitBranchAction(branchName, { create: true, requireConfirm: true, tabContext }))) return;
   await applyFooterGitBranch(branchName, { create: true, tabContext, skipConfirm: true });
 }
 
@@ -12193,7 +12529,7 @@ async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), 
     addEvent("Enter a branch name before creating a branch worktree.", "warn");
     return;
   }
-  if (!skipConfirm && !confirmFooterGitWorktreeAction(branchName, { create: true, requireConfirm: true })) return;
+  if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { create: true, requireConfirm: true }))) return;
   const tabId = tabContext.tabId || activeTabId;
   try {
     footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName, tabId };
@@ -12213,7 +12549,7 @@ async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), 
 async function openFooterGitWorktree(path, { branchName = "", tabContext = activeTabContext(), skipConfirm = false } = {}) {
   const worktreePath = cleanFooterPayloadText(path, "", 4000);
   if (!worktreePath) return;
-  if (!skipConfirm && !confirmFooterGitWorktreeAction(branchName, { path: worktreePath, requireConfirm: false })) return;
+  if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { path: worktreePath, requireConfirm: false }))) return;
   const tabId = tabContext.tabId || activeTabId;
   try {
     footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName || worktreePath, tabId };
@@ -12234,7 +12570,7 @@ async function applyFooterGitBranch(branch, { create = false, tabContext = activ
   const branchName = cleanStatusText(branch);
   if (!branchName) return;
   const tabId = tabContext.tabId || activeTabId;
-  if (!skipConfirm && !confirmFooterGitBranchAction(branchName, { create, tabContext })) return;
+  if (!skipConfirm && !(await confirmFooterGitBranchAction(branchName, { create, tabContext }))) return;
   try {
     footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName, tabId };
     renderFooter();
@@ -12435,13 +12771,13 @@ function renderFooterBranchOption(branch, state = footerBranchPickerState) {
 
 async function removeFooterGitWorktree(worktree, tabContext = activeTabContext()) {
   const tabId = tabContext.tabId || activeTabId;
-  if (!window.confirm([
+  if (!(await appConfirmText([
     `Remove worktree ${worktree.path}?`,
     "",
     `Branch: ${worktree.branch || "detached"}`,
     "Command: git worktree remove",
     "This deletes the checkout directory. Dirty worktrees and worktrees with open tabs are refused.",
-  ].join("\n"))) return;
+  ].join("\n"), { affected: worktree.path, confirmLabel: "Remove worktree" }))) return;
   footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "" };
   renderFooter();
   try {
@@ -12466,7 +12802,7 @@ async function pruneFooterGitWorktrees(tabContext = activeTabContext()) {
       return;
     }
     const lines = prunable.map((item) => `${item.path}${item.reason ? ` (${item.reason})` : ""}`).join("\n");
-    if (!window.confirm(`Prune stale worktree records?\n\nDry run:\n${output || lines || "(no output)"}\n\nThis removes administrative records for worktree directories that no longer exist.`)) return;
+    if (!(await appConfirmText(`Prune stale worktree records?\n\nDry run:\n${output || lines || "(no output)"}\n\nThis removes administrative records for worktree directories that no longer exist.`, { affected: "Stale Git worktree administration records", confirmLabel: "Prune records" }))) return;
     const response = await api("/api/git-worktrees/prune", { method: "POST", body: { confirmed: true }, tabId });
     if (!response.ok) throw new Error(response.error || "Failed to prune worktrees");
     addEvent("Pruned stale worktree records.", "success");
@@ -13200,7 +13536,7 @@ async function changeActiveTabCwd() {
     return;
   }
 
-  if (!window.confirm(`Restart ${tab.title} in:\n${cwd}\n\nCurrent in-flight work in this tab will be stopped. The conversation continues in the new directory.`)) return;
+  if (!(await appConfirmText(`Restart ${tab.title} in:\n${cwd}\n\nCurrent in-flight work in this tab will be stopped. The conversation continues in the new directory.`, { affected: tab.title, confirmLabel: "Change working folder" }))) return;
 
   saveActiveDraft();
   try {
@@ -13904,12 +14240,62 @@ function initializeSubagents() {
   refreshSubagents().finally(() => scheduleRefreshSubagents());
 }
 
+function sessionCopyButton(label, value) {
+  const button = make("button", "session-copy-button", "Copy");
+  button.type = "button";
+  button.title = `Copy ${label.toLowerCase()}`;
+  button.setAttribute("aria-label", button.title);
+  button.addEventListener("click", async () => {
+    const original = button.textContent;
+    try {
+      await copyText(value);
+      button.textContent = "Copied";
+      button.classList.add("copied");
+    } catch {
+      button.textContent = "Failed";
+    }
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = original;
+      button.classList.remove("copied");
+    }, 1400);
+  });
+  return button;
+}
+
+function sessionDetailField(label, value, { secondary = "", copyValue = "", mono = false, truncate = false, wide = false } = {}) {
+  const field = make("div", `session-detail-field${wide ? " wide" : ""}`);
+  const labelNode = make("span", "session-detail-label", label);
+  const valueRow = make("div", "session-detail-value-row");
+  const valueCopy = make("div", `session-detail-value${mono ? " mono" : ""}${truncate ? " truncate" : ""}`);
+  const primary = make("span", "session-detail-primary", value);
+  primary.title = copyValue || value;
+  valueCopy.append(primary);
+  if (secondary) {
+    const secondaryNode = make("span", "session-detail-secondary", secondary);
+    secondaryNode.title = copyValue || secondary;
+    valueCopy.append(secondaryNode);
+  }
+  valueRow.append(valueCopy);
+  if (copyValue) valueRow.append(sessionCopyButton(label, copyValue));
+  field.append(labelNode, valueRow);
+  return field;
+}
+
+function splitSessionFilePath(sessionFile) {
+  const value = String(sessionFile || "");
+  const separator = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  if (separator < 0) return { name: value || "in-memory", directory: "" };
+  const directory = value.slice(0, separator).replace(/^\/home\/[^/]+(?=\/|$)/, "~");
+  return { name: value.slice(separator + 1) || value, directory };
+}
+
 function renderStatus() {
   if (deferUiRenderDuringPointerActivation("status", renderStatus)) return;
   const state = currentState;
   updateComposerModeButtons();
-  const running = state?.isStreaming ? "running" : "idle";
-  const compacting = state?.isCompacting ? " · compacting" : "";
+  const statusKey = state?.isCompacting ? "compacting" : state?.isStreaming ? "running" : "idle";
+  const statusLabel = statusKey[0].toUpperCase() + statusKey.slice(1);
 
   elements.stateDetails.replaceChildren();
   const pendingThinkingLevel = state?.pendingThinkingLevel || null;
@@ -13917,19 +14303,43 @@ function renderStatus() {
   const thinkingDetail = pendingThinkingLevel && pendingThinkingLevel !== state?.thinkingLevel
     ? `${state?.thinkingLevel || "unknown"} → ${pendingThinkingLevel} next prompt`
     : state?.thinkingLevel || "unknown";
-  const details = {
-    Status: `${running}${compacting}`,
-    Model: modelLabel(state?.model),
-    Thinking: thinkingDetail,
-    Session: state?.sessionName || state?.sessionId || "unknown",
-    File: state?.sessionFile || "in-memory",
-    Messages: String(state?.messageCount ?? "?"),
-    Queue: String(state?.pendingMessageCount ?? 0),
-    "Auto compact": footerAutoCompactionEnabled(state) ? "on" : "off",
-  };
-  for (const [key, value] of Object.entries(details)) {
-    elements.stateDetails.append(make("dt", undefined, key), make("dd", undefined, value));
-  }
+  const overview = make("div", "session-overview");
+  const statusCard = make("div", `session-status-card ${statusKey}`);
+  const statusDot = make("span", "session-status-dot");
+  statusDot.setAttribute("aria-hidden", "true");
+  const statusCopy = make("span", "session-overview-copy");
+  statusCopy.append(make("span", "session-overview-label", "Status"), make("strong", undefined, statusLabel));
+  statusCard.append(statusDot, statusCopy);
+  const messagesCard = make("div", "session-metric-card");
+  messagesCard.append(make("span", "session-overview-label", "Messages"), make("strong", undefined, String(state?.messageCount ?? "?")));
+  const queueCard = make("div", "session-metric-card");
+  queueCard.append(make("span", "session-overview-label", "Queue"), make("strong", undefined, String(state?.pendingMessageCount ?? 0)));
+  overview.append(statusCard, messagesCard, queueCard);
+
+  const sessionId = state?.sessionId || "unknown";
+  const sessionName = state?.sessionName && state.sessionName !== sessionId ? state.sessionName : "";
+  const sessionFile = state?.sessionFile || "";
+  const fileParts = splitSessionFilePath(sessionFile);
+  const infoGrid = make("div", "session-info-grid");
+  infoGrid.append(
+    sessionDetailField("Model", modelLabel(state?.model), { wide: true, truncate: true }),
+    sessionDetailField("Thinking", thinkingDetail, { truncate: true }),
+    sessionDetailField("Auto compact", footerAutoCompactionEnabled(state) ? "On" : "Off"),
+    sessionDetailField("Session ID", sessionName || sessionId, {
+      secondary: sessionName ? sessionId : "",
+      copyValue: sessionId !== "unknown" ? sessionId : "",
+      mono: !sessionName,
+      wide: true,
+    }),
+    sessionDetailField("Session file", fileParts.name, {
+      secondary: fileParts.directory,
+      copyValue: sessionFile,
+      mono: true,
+      truncate: true,
+      wide: true,
+    }),
+  );
+  elements.stateDetails.append(overview, infoGrid);
 
   if (shownThinkingLevel) elements.thinkingSelect.value = shownThinkingLevel;
   elements.compactButton.disabled = !!state?.isCompacting;
@@ -14956,7 +15366,16 @@ async function saveAppRunnerCustomRunner(form) {
   }
 }
 
-async function deleteAppRunnerCustomRunner(id) {
+async function deleteAppRunnerCustomRunner(runner = {}) {
+  const id = String(runner.id || "");
+  if (!id) return;
+  const restoreRunner = {
+    id,
+    label: runner.label || "",
+    command: runner.command || "./",
+    path: runner.path || "",
+    args: appRunnerCustomArgsText(runner.args),
+  };
   const tabContext = activeTabContext();
   try {
     const response = await api("/api/app-runner-config", { method: "DELETE", body: { id }, tabId: tabContext.tabId });
@@ -14968,6 +15387,20 @@ async function deleteAppRunnerCustomRunner(id) {
     renderWidgets();
     renderAppRunnerInfoDialog();
     addEvent("deleted custom app runner", "warn");
+    offerUndo({
+      message: `Deleted custom app runner “${runner.label || runner.path || id}”.`,
+      undo: async () => {
+        const restored = await api("/api/app-runner-config", { method: "POST", body: { runner: restoreRunner }, tabId: tabContext.tabId });
+        if (isCurrentTabContext(tabContext)) {
+          setAppRunnerData(tabContext.tabId, restored.data || {});
+          setAppRunnerCustomFeedback("success", "Restored custom app runner.");
+          renderAppRunnerControls();
+          renderWidgets();
+          renderAppRunnerInfoDialog();
+        }
+      },
+      successMessage: `Restored custom app runner “${runner.label || runner.path || id}”.`,
+    });
   } catch (error) {
     if (!isCurrentTabContext(tabContext)) return;
     const message = error.message || String(error);
@@ -15072,10 +15505,7 @@ function renderAppRunnerCustomSection() {
       });
       const remove = make("button", "danger", "Delete");
       remove.type = "button";
-      remove.addEventListener("click", () => {
-        if (!confirm(`Delete custom app runner “${runner.label || runner.path || runner.id}”?`)) return;
-        deleteAppRunnerCustomRunner(runner.id);
-      });
+      remove.addEventListener("click", () => deleteAppRunnerCustomRunner(runner));
       actions.append(edit, remove);
       row.append(details, actions);
       existing.append(row);
@@ -15681,7 +16111,7 @@ async function runStatsCalibration(mode) {
     renderStatsOverlay();
     return;
   }
-  if (mode === "probe" && !confirm("Start an isolated calibration probe? This sends one tiny model request and may incur provider token usage.")) return;
+  if (mode === "probe" && !(await appConfirmText("Start an isolated calibration probe? This sends one tiny model request and may incur provider token usage.", { affected: "Provider token allowance and calibration results", confirmLabel: "Start probe", danger: false }))) return;
 
   const command = mode === "current" ? `/${commandName} current` : `/${commandName}`;
   statsOverlayCalibrationBusy = mode;
@@ -17245,7 +17675,7 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
   }
 
   const workflow = gitWorkflowForTab(tabId);
-  if (workflow.active && !["done", "cancelled", "error"].includes(workflow.step) && !confirm("Restart the active git workflow?")) return;
+  if (workflow.active && !["done", "cancelled", "error"].includes(workflow.step) && !(await appConfirmText("Restart the active git workflow?", { affected: "The active guided Git workflow", confirmLabel: "Restart workflow" }))) return;
   const preferences = setupData.preferences;
   workflow.runId += 1;
   setGitWorkflow({
@@ -17279,10 +17709,10 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
   }, { tabId });
 }
 
-function startGitInitWorkflow(tabId = activeTabId) {
+async function startGitInitWorkflow(tabId = activeTabId) {
   if (!tabId) return;
   const workflow = gitWorkflowForTab(tabId);
-  if (workflow.active && !["done", "cancelled", "error"].includes(workflow.step) && !confirm("Restart the active git repository setup workflow?")) return;
+  if (workflow.active && !["done", "cancelled", "error"].includes(workflow.step) && !(await appConfirmText("Restart the active git repository setup workflow?", { affected: "The active Git repository setup workflow", confirmLabel: "Restart setup" }))) return;
   const setup = readGitFooterStatusSetup().githubUsername ? readGitFooterStatusSetup() : configureGitFooterStatusSetup({ force: true });
   const githubUsername = setup?.githubUsername || "";
   const repoName = defaultGitInitRepoName(tabs.find((tab) => tab.id === tabId) || activeTab());
@@ -17932,14 +18362,14 @@ async function commitGitWorkflow(variant, tabId = gitWorkflowActionTabId()) {
   const failureStep = variant === "input" && workflow.step === "generate" ? "generate" : "message";
   const inputMessage = variant === "input" ? gitWorkflowManualCommitInputMessage(workflow) : "";
   if (workflow.preferences?.verificationPolicy === "ask" && !workflow.verificationConfirmed) {
-    const proceed = window.confirm([
+    const proceed = await appConfirmText([
       "Pre-commit verification reminder",
       "",
       "Review the staged diff and any relevant test, lint, or build results before committing.",
       "Git hooks and signing configuration will still run normally.",
       "",
       "Continue with this commit?",
-    ].join("\n"));
+    ].join("\n"), { affected: "The staged Git changes", confirmLabel: "Continue to commit" });
     if (!proceed) return;
     workflow.verificationConfirmed = true;
   }
@@ -17968,7 +18398,7 @@ async function pushGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
-  if (!window.confirm("Push the committed changes to the configured upstream?\n\nGuided Git never force-pushes automatically.")) return;
+  if (!(await appConfirmText("Push the committed changes to the configured upstream?\n\nGuided Git never force-pushes automatically.", { affected: "The configured remote Git branch", confirmLabel: "Push commits" }))) return;
   const runId = workflow.runId;
   setGitWorkflow({ step: "pushing", busy: true, error: "", output: "Running git push…" }, { tabId });
   try {
@@ -18060,7 +18490,7 @@ async function pushAndCreatePrGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
   const branch = workflow.prBranch || "current branch";
-  if (!window.confirm(`Push ${branch} and continue to generated PR review?\n\nThe pull request is still created only after a second explicit review/confirmation.`)) return;
+  if (!(await appConfirmText(`Push ${branch} and continue to generated PR review?\n\nThe pull request is still created only after a second explicit review/confirmation.`, { affected: `Remote Git branch ${branch}`, confirmLabel: "Push and review PR" }))) return;
   const runId = workflow.runId;
   setGitWorkflow({ step: "pushing", busy: true, error: "", output: `Pushing PR branch ${branch}…` }, { tabId });
   try {
@@ -18463,13 +18893,12 @@ function loadSelectedPromptListIntoEditor() {
   if (loadPromptListIntoEditor(list, { updateLoaded: true })) elements.promptListDialog?.close();
 }
 
-function deleteSelectedPromptList() {
+async function deleteSelectedPromptList() {
   const list = savedPromptListById(elements.promptListSelect?.value);
   if (!list) {
     setPromptListStatus("No saved prompt list selected to delete.", "warn");
     return;
   }
-  if (!window.confirm(`Delete prompt list “${list.name}”? This cannot be undone.`)) return;
   const deleted = deleteStoredPromptList(list.id);
   if (!deleted) {
     setPromptListStatus("Prompt list was already deleted.", "warn");
@@ -18485,6 +18914,15 @@ function deleteSelectedPromptList() {
   populatePromptListSelect();
   setPromptListStatus(`Deleted “${deleted.name}”.`, "success");
   addEvent(`deleted prompt list “${deleted.name}”`);
+  offerUndo({
+    message: `Deleted prompt list “${deleted.name}”.`,
+    undo: () => {
+      upsertStoredPromptList(deleted);
+      populatePromptListSelect(deleted.id);
+      setPromptListStatus(`Restored “${deleted.name}”.`, "success");
+    },
+    successMessage: `Restored prompt list “${deleted.name}”.`,
+  });
 }
 
 function openPromptListDialog({ mode = "create", list = null } = {}) {
@@ -20053,6 +20491,115 @@ function appendChatMessageBubble(bubble) {
   }
 }
 
+function emptyStartRecentWorkspaces() {
+  const seen = new Set();
+  return pathFastPicks.map((item) => {
+    const cwd = typeof item === "string" ? item.trim() : typeof item?.cwd === "string" ? item.cwd.trim() : "";
+    const rawLabel = typeof item === "string" ? item : typeof item?.displayCwd === "string" ? item.displayCwd : cwd;
+    const label = String(rawLabel || "").trim();
+    if (!cwd || !label || /^\[object Object\]$/i.test(label) || seen.has(cwd)) return null;
+    seen.add(cwd);
+    return { cwd, label: normalizeDisplayPath(label) };
+  }).filter(Boolean).slice(0, 4);
+}
+
+function emptyStartAction({ title, description, symbol, className = "", onClick }) {
+  const button = make("button", `empty-start-action ${className}`.trim());
+  button.type = "button";
+  const icon = make("span", "empty-start-action-icon", symbol);
+  icon.setAttribute("aria-hidden", "true");
+  const copy = make("span", "empty-start-action-copy");
+  copy.append(make("strong", undefined, title), make("span", undefined, description));
+  const arrow = make("span", "empty-start-action-arrow", "→");
+  arrow.setAttribute("aria-hidden", "true");
+  button.append(icon, copy, arrow);
+  button.addEventListener("click", () => onClick(button));
+  return button;
+}
+
+function renderEmptyStartState() {
+  if (elements.chat.querySelector(".empty-start-state")) return;
+  const tab = activeTab();
+  const workspace = latestWorkspace?.displayCwd || (tab?.cwd ? normalizeDisplayPath(tab.cwd) : "");
+  const workspaceInfo = normalizeGitWorkspaceInfo(tab?.gitWorkspace);
+  const branch = workspaceInfo?.branch || "";
+  const model = currentState?.model ? shortModelLabel(currentState.model) : "";
+  const usage = contextUsageDisplay();
+  const card = make("section", "empty-start-state");
+  card.setAttribute("aria-labelledby", "emptyStartTitle");
+
+  const intro = make("header", "empty-start-intro");
+  const mark = make("span", "empty-start-mark", "π");
+  mark.setAttribute("aria-hidden", "true");
+  const heading = make("div", "empty-start-heading");
+  const title = make("h1", undefined, "Choose where to work");
+  title.id = "emptyStartTitle";
+  heading.append(title, make("p", undefined, "Open a workspace, return to a session, or isolate branch work. To start here, just type below."));
+  intro.append(mark, heading);
+
+  const actions = make("div", "empty-start-actions");
+  actions.append(
+    emptyStartAction({
+      title: "Open workspace",
+      description: "Choose a folder for a new Pi tab",
+      symbol: "+",
+      className: "primary",
+      onClick: (button) => createTerminalTabFromChosenDirectory({ triggerButton: button }),
+    }),
+    emptyStartAction({
+      title: "Resume session",
+      description: "Continue previous work and context",
+      symbol: "↶",
+      onClick: () => runNativeCommandMenu("/resume"),
+    }),
+    emptyStartAction({
+      title: "Branch worktree",
+      description: "Work on a branch in an isolated checkout",
+      symbol: "⑂",
+      className: "worktree",
+      onClick: () => openBranchWorktreePicker(),
+    }),
+  );
+
+  const recentWorkspaces = emptyStartRecentWorkspaces();
+  const recent = recentWorkspaces.length ? make("section", "empty-start-recent") : null;
+  if (recent) {
+    const recentHeading = make("div", "empty-start-section-heading");
+    recentHeading.append(make("strong", undefined, "Recent workspaces"), make("span", undefined, `${recentWorkspaces.length} available`));
+    const recentList = make("div", "empty-start-recent-list");
+    for (const item of recentWorkspaces) {
+      const button = make("button", "empty-start-recent-item");
+      button.type = "button";
+      button.title = `Open ${item.cwd}`;
+      button.append(make("span", "empty-start-recent-icon", "▰"), make("span", "empty-start-recent-path", item.label), make("span", "empty-start-recent-arrow", "→"));
+      button.addEventListener("click", () => createTerminalTab(item.cwd, { triggerButton: button }));
+      recentList.append(button);
+    }
+    recent.append(recentHeading, recentList);
+  }
+
+  const contextItems = [];
+  if (workspace) contextItems.push(["Workspace", workspace]);
+  if (branch) contextItems.push(["Branch", branch]);
+  if (model) contextItems.push(["Model", model]);
+  if (usage && !/^0(?:\.0+)?%/.test(usage)) contextItems.push(["Context", usage]);
+  const context = contextItems.length ? make("footer", "empty-start-context") : null;
+  if (context) {
+    context.append(make("span", "empty-start-context-label", "Current"));
+    for (const [label, value] of contextItems) {
+      const item = make("span", "empty-start-context-item");
+      item.append(make("span", undefined, label), make("strong", undefined, value));
+      context.append(item);
+    }
+  }
+
+  card.append(intro, actions);
+  if (recent) card.append(recent);
+  if (context) card.append(context);
+  appendChatMessageBubble(card);
+  if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = true;
+}
+
 function userPromptTargets() {
   return [...elements.chat.querySelectorAll('.message[data-user-prompt="true"][data-message-index]')]
     .map((node) => {
@@ -21357,6 +21904,8 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
     });
   }
   pruneDisconnectedLiveToolCards();
+  if (nextEntries.length === 0 && !runIndicatorIsActive()) renderEmptyStartState();
+  else if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = workspaceDashboardCollapsed;
   renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
   rememberActionEntries(transcriptItems);
   applyToolOutputExpansionToDom();
@@ -22054,7 +22603,15 @@ function renderOptionalFeatureRow(feature) {
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
   } else if (detected) {
     action.textContent = enabled ? "Disable" : "Enable";
-    action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, enabled));
+    action.addEventListener("click", () => {
+      const disabled = enabled;
+      setOptionalFeatureDisabled(feature.id, disabled);
+      offerUndo({
+        message: `${feature.label} was ${disabled ? "disabled" : "enabled"}.`,
+        undo: () => setOptionalFeatureDisabled(feature.id, !disabled),
+        successMessage: `${feature.label} was ${disabled ? "re-enabled" : "disabled again"}.`,
+      });
+    });
   } else if (packageStatus?.installed) {
     action.textContent = "Reload";
     action.addEventListener("click", () => sendPrompt("prompt", "/reload"));
@@ -22203,7 +22760,7 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
     "",
     "Continue?",
   ].join("\n");
-  if (!confirm(warning)) return;
+  if (!(await appConfirmText(warning, { affected: feature.packageName, confirmLabel: update ? "Update feature" : "Install feature" }))) return;
 
   const startedAt = Date.now();
   optionalFeatureInstallInProgress.add(featureId);
@@ -22259,7 +22816,7 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
       hint: "Use Reload if this row still says Installed instead of Enabled.",
       command,
     });
-    if (confirm(`${feature.label} ${actionLabel.toLowerCase()} finished. Reload the active Pi tab now to enable newly loaded resources?`)) {
+    if (await appConfirmText(`${feature.label} ${actionLabel.toLowerCase()} finished. Reload the active Pi tab now to enable newly loaded resources?`, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
       sendPrompt("prompt", "/reload");
     } else {
       const tabContext = activeTabContext();
@@ -22352,9 +22909,25 @@ function openNativeCommandDialog({ title, message = "", searchPlaceholder = "" }
   if (searchPlaceholder) queueMicrotask(() => elements.nativeCommandSearch.focus());
 }
 
-function closeNativeCommandDialog() {
+function closeNativeCommandDialog({ force = false } = {}) {
+  if (nativeSettingsDirty && !force) {
+    appConfirm({
+      title: "Discard unsaved settings?",
+      summary: "Your changes have not been applied.",
+      affected: "All changed fields in this settings window",
+      undoable: false,
+      alternative: "Cancel and choose Apply to keep the changes.",
+      confirmLabel: "Discard changes",
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      nativeSettingsDirty = false;
+      closeNativeCommandDialog({ force: true });
+    });
+    return;
+  }
   if (elements.nativeCommandDialog.open) elements.nativeCommandDialog.close();
   elements.nativeCommandSearch.oninput = null;
+  nativeSettingsDirty = false;
   nativeCommandTabId = null;
 }
 
@@ -22522,8 +23095,18 @@ function nativeSettingsBadge(label, tone = "") {
 
 function normalizedSettingsBadge(badge) {
   if (!badge) return null;
-  if (typeof badge === "string") return { label: badge, tone: "" };
-  return badge;
+  const normalized = typeof badge === "string" ? { label: badge, tone: "" } : { ...badge };
+  const scopeLabels = {
+    now: "This tab",
+    browser: "This browser",
+    reload: "Global · reload",
+    TUI: "Native TUI",
+    tui: "Native TUI",
+    startup: "Global · next start",
+    safety: "Global",
+  };
+  normalized.label = scopeLabels[normalized.label] || normalized.label;
+  return normalized;
 }
 
 function nativeSettingsLabelRow(label, badge) {
@@ -22636,7 +23219,7 @@ function nativeSettingsChangedMessage(response, reloadRequested) {
 }
 
 async function openNativeSettingsDialog() {
-  openNativeCommandDialog({ title: "/settings", message: "Pi settings for this Web UI tab. Badges show whether changes apply now, in the browser, or after reloading the tab." });
+  openNativeCommandDialog({ title: "/settings", message: "Settings show their scope in plain language. Apply reloads the active tab only when a changed global field requires it." });
   renderNativeLoading("Loading settings…");
   let settingsData;
   try {
@@ -22669,6 +23252,10 @@ async function openNativeSettingsDialog() {
       { value: "followUp", label: "follow-up" },
       { value: "steer", label: "steer" },
     ], "When you submit a normal prompt while a tab is already busy.", { label: "browser", tone: "browser" }),
+    density: nativeSettingSelect("Interface density", interfaceDensity, [
+      { value: "comfortable", label: "Comfortable" },
+      { value: "compact", label: "Compact" },
+    ], "Compact reduces spacing while preserving the 12 px text floor.", { label: "browser", tone: "browser" }),
     thinkingOutput: nativeSettingToggle("Show thinking output", settings.hideThinkingBlock !== true, "Browser transcript visibility; also writes Pi's hide-thinking setting.", { label: "browser", tone: "browser" }),
     doneNotifications: nativeSettingToggle("Agent done notifications", agentDoneNotificationsEnabled, "Browser notification after background tab work completes.", { label: "browser", tone: "browser" }),
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
@@ -22689,11 +23276,47 @@ async function openNativeSettingsDialog() {
     terminalProgress: nativeSettingToggle("Terminal progress", settings.showTerminalProgress === true, "Native TUI OSC 9;4 terminal progress indicators.", { label: "TUI", tone: "tui" }),
   };
 
+  const remoteAccessSection = make("details", "native-settings-section native-settings-remote-access");
+  remoteAccessSection.open = false;
+  remoteAccessSection.append(make("summary", "native-settings-section-summary", "Remote access"));
+  const remoteAccessBody = make("div", "native-settings-grid");
+  const renderRemoteAccessSettings = () => {
+    const open = !!latestNetwork?.open;
+    const auth = latestNetwork?.auth || {};
+    const status = make("div", `native-settings-note ${open ? "warning" : ""}`.trim());
+    status.append(
+      make("strong", undefined, open ? "Open to the network" : "Closed · local only"),
+      make("span", undefined, `${open ? "Listener is reachable from the network." : "Only this machine can connect."} ${auth.enabled ? "Remote PIN authentication is enabled." : "Remote PIN authentication is disabled."}`),
+    );
+    const actions = make("div", "native-settings-remote-actions");
+    const listenerButton = make("button", open ? "danger" : "", open ? "Close remote access" : "Open for remote access");
+    listenerButton.type = "button";
+    listenerButton.addEventListener("click", async () => {
+      await openToNetwork();
+      renderRemoteAccessSettings();
+    });
+    const authButton = make("button", undefined, auth.enabled ? "Disable remote PIN auth" : "Enable remote PIN auth");
+    authButton.type = "button";
+    authButton.addEventListener("click", async () => {
+      await toggleRemoteAuth();
+      renderRemoteAccessSettings();
+    });
+    const qrButton = make("button", undefined, "Show QR code");
+    qrButton.type = "button";
+    qrButton.hidden = !open;
+    qrButton.addEventListener("click", () => showRemoteWebuiQrPopupFromNetwork().catch((error) => addEvent(error.message || String(error), "error")));
+    actions.append(listenerButton, authButton, qrButton);
+    remoteAccessBody.replaceChildren(status, actions);
+  };
+  renderRemoteAccessSettings();
+  remoteAccessSection.append(remoteAccessBody);
+
   const body = make("div", "native-settings-panel");
   body.append(
-    nativeSettingsNote("Scopes", "Runtime settings apply to the active tab. Reload-badged settings are saved globally and need a tab reload for the running Pi process."),
+    nativeSettingsNote("Scopes", "Each field says whether it affects this tab, this browser, global Pi settings, or the native TUI."),
+    remoteAccessSection,
     nativeSettingsSection("Runtime", "Model behavior and request transport.", [controls.thinking, controls.autoCompact, controls.steering, controls.followUp, controls.transport, controls.httpIdleTimeout], { open: true }),
-    nativeSettingsSection("Browser workflow", "Local Web UI behavior plus shared composer defaults.", [controls.busyBehavior, controls.thinkingOutput, controls.doneNotifications, controls.autocompleteMax, controls.doubleEscape, controls.treeFilter], { open: true }),
+    nativeSettingsSection("Browser workflow", "Local Web UI behavior plus shared composer defaults.", [controls.busyBehavior, controls.density, controls.thinkingOutput, controls.doneNotifications, controls.autocompleteMax, controls.doubleEscape, controls.treeFilter], { open: true }),
     nativeSettingsSection("Images", "Provider image policy and native terminal image display.", [controls.autoResizeImages, controls.blockImages, controls.showImages, controls.imageWidth], { open: true }),
     nativeSettingsSection("Startup & safety", "Command registration, warnings, update/startup behavior.", [controls.skillCommands, controls.anthropicWarning, controls.collapseChangelog, controls.quietStartup, controls.installTelemetry], { open: false }),
     nativeSettingsSection("Native TUI advanced", "Saved for the terminal UI; mostly informational in the browser.", [controls.hardwareCursor, controls.editorPadding, controls.clearOnShrink, controls.terminalProgress], { open: false })
@@ -22702,10 +23325,46 @@ async function openNativeSettingsDialog() {
   elements.nativeCommandActions.replaceChildren();
   addNativeCommandAction("Model…", () => openNativeModelSelector());
   addNativeCommandAction("Theme…", () => openNativeThemeSelector());
-  addNativeCommandAction("Cancel", closeNativeCommandDialog);
+  addNativeCommandAction("Cancel", () => closeNativeCommandDialog());
 
-  const applySettings = async (reload, button) => {
-    setNativeActionBusy(button, true, reload ? "Applying & reloading…" : "Applying…");
+  const initialPayload = collectNativeSettingsPayload(controls);
+  const initialRuntime = JSON.stringify({
+    thinking: state.thinkingLevel || "off",
+    autoCompact: state.autoCompactionEnabled !== false,
+    steering: state.steeringMode || "one-at-a-time",
+    followUp: state.followUpMode || "one-at-a-time",
+    busyBehavior,
+    density: interfaceDensity,
+    doneNotifications: agentDoneNotificationsEnabled,
+  });
+  const reloadKeys = new Set(["transport", "httpIdleTimeoutMs", "autoResizeImages", "blockImages", "enableSkillCommands"]);
+  const reloadNeeded = () => {
+    const payload = collectNativeSettingsPayload(controls);
+    return [...reloadKeys].some((key) => JSON.stringify(payload[key]) !== JSON.stringify(initialPayload[key]));
+  };
+  const currentRuntime = () => JSON.stringify({
+    thinking: controls.thinking.select.value,
+    autoCompact: controls.autoCompact.input.checked,
+    steering: controls.steering.select.value,
+    followUp: controls.followUp.select.value,
+    busyBehavior: controls.busyBehavior.select.value,
+    density: controls.density.select.value,
+    doneNotifications: controls.doneNotifications.input.checked,
+  });
+  let applyButton;
+  const updateDirtyState = () => {
+    nativeSettingsDirty = currentRuntime() !== initialRuntime || JSON.stringify(collectNativeSettingsPayload(controls)) !== JSON.stringify(initialPayload);
+    if (applyButton) {
+      applyButton.disabled = !nativeSettingsDirty;
+      applyButton.textContent = reloadNeeded() ? "Apply and reload" : "Apply";
+    }
+  };
+  body.addEventListener("input", updateDirtyState);
+  body.addEventListener("change", updateDirtyState);
+
+  const applySettings = async (button) => {
+    const reload = reloadNeeded();
+    setNativeActionBusy(button, true, reload ? "Applying and reloading…" : "Applying…");
     setNativeCommandError("");
     try {
       const requests = [];
@@ -22715,15 +23374,18 @@ async function openNativeSettingsDialog() {
       if (controls.followUp.select.value !== (state.followUpMode || "one-at-a-time")) requests.push(nativeCommandApi("/api/follow-up-mode", { method: "POST", body: { mode: controls.followUp.select.value } }));
       if (controls.autoCompact.input.checked !== (state.autoCompactionEnabled !== false)) requests.push(nativeCommandApi("/api/auto-compaction", { method: "POST", body: { enabled: controls.autoCompact.input.checked } }));
       setBusyPromptBehavior(controls.busyBehavior.select.value);
+      setInterfaceDensity(controls.density.select.value);
       if (controls.thinkingOutput.input.checked !== thinkingOutputVisible) setThinkingOutputVisible(controls.thinkingOutput.input.checked);
       if (controls.doneNotifications.input.checked !== agentDoneNotificationsEnabled) await setAgentDoneNotificationsEnabled(controls.doneNotifications.input.checked);
       await Promise.all(requests);
-      const response = await nativeCommandApi("/api/settings", { method: "POST", body: { settings: collectNativeSettingsPayload(controls), reload } });
+      const payload = collectNativeSettingsPayload(controls);
+      const response = await nativeCommandApi("/api/settings", { method: "POST", body: { settings: payload, reload } });
       applyResponseTab(response);
-      applyNativeSettingsForBrowser(response.data?.settings || collectNativeSettingsPayload(controls));
+      applyNativeSettingsForBrowser(response.data?.settings || payload);
       if (thinkingLevelChanged) requestGitFooterWebuiPayload(activeTabContext(), { force: true });
       addTransientMessage({ role: "native", title: "/settings", content: nativeSettingsChangedMessage(response, reload), level: response.data?.reloadRecommended?.length && !response.data?.reloaded ? "warn" : "info" });
-      closeNativeCommandDialog();
+      nativeSettingsDirty = false;
+      closeNativeCommandDialog({ force: true });
       await refreshAll();
     } catch (error) {
       setNativeCommandError(error.message || String(error));
@@ -22732,8 +23394,8 @@ async function openNativeSettingsDialog() {
     }
   };
 
-  const reloadButton = addNativeCommandAction("Apply & reload tab", () => applySettings(true, reloadButton));
-  const save = addNativeCommandAction("Apply", () => applySettings(false, save), "primary");
+  applyButton = addNativeCommandAction("Apply", () => applySettings(applyButton), "primary");
+  updateDirtyState();
 }
 
 function replaceNativeSettingSelectOptions(select, options, preferredValue) {
@@ -23471,7 +24133,7 @@ async function openNativeAuthSelector(mode) {
           setNativeCommandError(`Run /login in the Pi TUI for ${item.label}. Browser login is not implemented yet.`);
           return;
         }
-        if (!window.confirm(`Remove stored credentials for ${item.label}?`)) return;
+        if (!(await appConfirmText(`Remove stored credentials for ${item.label}?`, { affected: `${item.label} stored credentials`, confirmLabel: "Remove credentials" }))) return;
         setNativeCommandError("");
         try {
           const result = await nativeCommandApi("/api/auth-logout", {
@@ -24149,7 +24811,15 @@ function renderNetworkStatus() {
       : "On"
     : "Off";
   elements.openNetworkButton.disabled = rebinding;
-  elements.openNetworkButton.textContent = opening ? "Opening…" : closing ? "Closing…" : open ? "Close for network" : "Open to network";
+  elements.openNetworkButton.textContent = opening ? "Opening…" : closing ? "Closing…" : open ? "Close remote access" : "Open for remote access";
+  if (elements.remoteAccessIndicator) {
+    elements.remoteAccessIndicator.hidden = !open;
+    elements.remoteAccessIndicator.textContent = open ? "Remote access open" : "";
+    elements.remoteAccessIndicator.title = open
+      ? `Network listener exposed${networkUrls.length ? ` at ${networkUrls.join(", ")}` : ""} · ${auth.enabled ? "PIN auth on" : "PIN auth off"}`
+      : "";
+  }
+  document.body.classList.toggle("remote-access-open", open);
   if (elements.showRemoteQrButton) {
     elements.showRemoteQrButton.hidden = !open;
     elements.showRemoteQrButton.disabled = rebinding || !open;
@@ -24674,10 +25344,17 @@ function cancelBangSuggestionRequest() {
   abortBangSuggestionRequest();
 }
 
+function showCommandSuggestionList() {
+  elements.commandSuggest.hidden = false;
+  elements.promptInput?.setAttribute("aria-expanded", "true");
+}
+
 function hideCommandSuggestions() {
   cancelPathSuggestionRequest();
   cancelBangSuggestionRequest();
   elements.commandSuggest.hidden = true;
+  elements.promptInput?.setAttribute("aria-expanded", "false");
+  elements.promptInput?.removeAttribute("aria-activedescendant");
   elements.commandSuggest.removeAttribute("aria-busy");
   elements.commandSuggest.replaceChildren();
   commandSuggestions = [];
@@ -24697,7 +25374,10 @@ function setActiveCommandSuggestion(index) {
     const active = itemIndex === commandSuggestIndex;
     item.classList.toggle("active", active);
     item.setAttribute("aria-selected", active ? "true" : "false");
-    if (active) item.scrollIntoView({ block: "nearest" });
+    if (active) {
+      elements.promptInput?.setAttribute("aria-activedescendant", item.id);
+      item.scrollIntoView({ block: "nearest" });
+    }
   }
 }
 
@@ -24737,13 +25417,14 @@ function renderCommandSuggestionItems(trigger, { keepIndex = false } = {}) {
 
   if (commandSuggestions.length === 0) {
     elements.commandSuggest.append(make("div", "command-suggest-empty", `No command matches /${trigger.query}`));
-    elements.commandSuggest.hidden = false;
+    showCommandSuggestionList();
     return;
   }
 
   for (const [index, command] of commandSuggestions.entries()) {
     const item = make("button", "command-suggest-item");
     item.type = "button";
+    item.id = `composer-suggestion-command-${encodeURIComponent(command.name).replace(/%/g, "-")}`;
     item.setAttribute("role", "option");
     item.addEventListener("mousedown", (event) => event.preventDefault());
     item.addEventListener("pointermove", (event) => setActiveCommandSuggestionFromPointerMove(index, event));
@@ -24757,7 +25438,8 @@ function renderCommandSuggestionItems(trigger, { keepIndex = false } = {}) {
     elements.commandSuggest.append(item);
   }
 
-  elements.commandSuggest.hidden = false;
+  showCommandSuggestionList();
+  elements.promptInput?.setAttribute("aria-expanded", "true");
   setActiveCommandSuggestion(keepIndex ? commandSuggestIndex : 0);
 }
 
@@ -24779,7 +25461,7 @@ function renderPathSuggestionItems(trigger, { keepIndex = false } = {}) {
 
   if (pathSuggestions.length === 0) {
     elements.commandSuggest.append(make("div", "command-suggest-empty", `No path matches @${trigger.query}`));
-    elements.commandSuggest.hidden = false;
+    showCommandSuggestionList();
     return;
   }
 
@@ -24787,6 +25469,7 @@ function renderPathSuggestionItems(trigger, { keepIndex = false } = {}) {
     const isDirectory = pathSuggestionIsDirectory(suggestion);
     const item = make("button", `command-suggest-item path-suggest-item ${isDirectory ? "directory" : "file"}`);
     item.type = "button";
+    item.id = `composer-suggestion-path-${index}-${encodeURIComponent(suggestion.path).replace(/%/g, "-")}`;
     item.setAttribute("role", "option");
     item.addEventListener("mousedown", (event) => event.preventDefault());
     item.addEventListener("pointermove", (event) => setActiveCommandSuggestionFromPointerMove(index, event));
@@ -24800,7 +25483,7 @@ function renderPathSuggestionItems(trigger, { keepIndex = false } = {}) {
     elements.commandSuggest.append(item);
   }
 
-  elements.commandSuggest.hidden = false;
+  showCommandSuggestionList();
   setActiveCommandSuggestion(keepIndex ? commandSuggestIndex : 0);
 }
 
@@ -24823,7 +25506,7 @@ async function renderPathSuggestions(trigger, { keepIndex = false } = {}) {
     pathSuggestions = [];
     elements.commandSuggest.replaceChildren(make("div", "command-suggest-empty", "Finding paths…"));
   }
-  elements.commandSuggest.hidden = false;
+  showCommandSuggestionList();
   elements.commandSuggest.setAttribute("aria-busy", "true");
 
   try {
@@ -24835,7 +25518,7 @@ async function renderPathSuggestions(trigger, { keepIndex = false } = {}) {
     if (error?.name === "AbortError" || requestSerial !== pathSuggestRequestSerial) return;
     pathSuggestions = [];
     elements.commandSuggest.replaceChildren(make("div", "command-suggest-empty", `Path suggestions unavailable: ${error.message}`));
-    elements.commandSuggest.hidden = false;
+    showCommandSuggestionList();
   } finally {
     if (requestSerial === pathSuggestRequestSerial) {
       pathSuggestAbortController = null;
@@ -24852,13 +25535,14 @@ function renderBangSuggestionItems(trigger, { keepIndex = false } = {}) {
 
   if (bangSuggestions.length === 0) {
     elements.commandSuggest.append(make("div", "command-suggest-empty", `No shell command matches !${trigger.query}`));
-    elements.commandSuggest.hidden = false;
+    showCommandSuggestionList();
     return;
   }
 
   for (const [index, suggestion] of bangSuggestions.entries()) {
     const item = make("button", "command-suggest-item bang-suggest-item");
     item.type = "button";
+    item.id = `composer-suggestion-bang-${index}-${encodeURIComponent(suggestion.insertText).replace(/%/g, "-")}`;
     item.setAttribute("role", "option");
     item.addEventListener("mousedown", (event) => event.preventDefault());
     item.addEventListener("pointermove", (event) => setActiveCommandSuggestionFromPointerMove(index, event));
@@ -24872,7 +25556,7 @@ function renderBangSuggestionItems(trigger, { keepIndex = false } = {}) {
     elements.commandSuggest.append(item);
   }
 
-  elements.commandSuggest.hidden = false;
+  showCommandSuggestionList();
   setActiveCommandSuggestion(keepIndex ? commandSuggestIndex : 0);
 }
 
@@ -24897,7 +25581,7 @@ async function renderBangSuggestions(trigger, { keepIndex = false } = {}) {
     bangSuggestions = [];
     elements.commandSuggest.replaceChildren(make("div", "command-suggest-empty", "Finding shell commands…"));
   }
-  elements.commandSuggest.hidden = false;
+  showCommandSuggestionList();
   elements.commandSuggest.setAttribute("aria-busy", "true");
 
   try {
@@ -24909,7 +25593,7 @@ async function renderBangSuggestions(trigger, { keepIndex = false } = {}) {
     if (error?.name === "AbortError" || requestSerial !== bangSuggestRequestSerial) return;
     bangSuggestions = [];
     elements.commandSuggest.replaceChildren(make("div", "command-suggest-empty", `Shell command suggestions unavailable: ${error.message}`));
-    elements.commandSuggest.hidden = false;
+    showCommandSuggestionList();
   } finally {
     if (requestSerial === bangSuggestRequestSerial) {
       bangSuggestAbortController = null;
@@ -25176,12 +25860,14 @@ function renderCommandPaletteList({ preserveScroll = false } = {}) {
   list.replaceChildren();
   if (!commandPaletteItems.length) {
     list.append(make("div", "command-palette-empty muted", "No matching actions."));
+    elements.commandPaletteInput?.removeAttribute("aria-activedescendant");
     if (preserveScroll) list.scrollTop = scrollTop;
     return;
   }
   commandPaletteItems.forEach((item, index) => {
     const button = make("button", `command-palette-item${index === commandPaletteIndex ? " active" : ""}`);
     button.type = "button";
+    button.id = `command-palette-option-${encodeURIComponent(`${item.kind}-${item.label}`).replace(/%/g, "-")}`;
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", index === commandPaletteIndex ? "true" : "false");
     button.addEventListener("click", () => executeCommandPaletteItem(item));
@@ -25192,11 +25878,12 @@ function renderCommandPaletteList({ preserveScroll = false } = {}) {
     );
     list.append(button);
   });
+  const active = list.children[commandPaletteIndex];
+  if (active?.id) elements.commandPaletteInput?.setAttribute("aria-activedescendant", active.id);
   if (preserveScroll) {
     list.scrollTop = scrollTop;
     return;
   }
-  const active = list.children[commandPaletteIndex];
   active?.scrollIntoView({ block: "nearest" });
 }
 
@@ -25290,12 +25977,44 @@ function scheduleForegroundReconcile(reason = "resume", delay = FOREGROUND_RECON
 
 async function openToNetwork() {
   const open = !!latestNetwork?.open;
+  if (!open) {
+    const localUrl = latestNetwork?.localUrl || `${window.location.origin}/`;
+    let interfaceName = "all network interfaces";
+    let port = DEFAULT_WEBUI_PORT;
+    try {
+      const parsed = new URL(localUrl);
+      port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    } catch {
+      // Keep explicit fallback values in the confirmation.
+    }
+    const confirmed = await appConfirm({
+      title: "Open for remote access?",
+      summary: "This changes Pi Web UI from local-only to reachable by devices on your network.",
+      affected: `${interfaceName}, port ${port}, ${latestNetwork?.auth?.enabled ? "PIN authentication enabled" : "PIN authentication disabled"}`,
+      undoable: true,
+      alternative: "Keep local-only access and use this browser on the host machine.",
+      confirmLabel: "Open remote access",
+    });
+    if (!confirmed) return;
+  }
   elements.openNetworkButton.disabled = true;
   elements.openNetworkButton.textContent = open ? "Closing…" : "Opening…";
   try {
     await runRemoteWebuiCommand(remoteWebuiCommand(open ? "close" : "open", open ? "/remote close" : "/remote"));
     await delay(350);
     await refreshNetworkStatus();
+    if (!open && latestNetwork?.open) {
+      offerUndo({
+        message: "Remote access is open.",
+        undo: async () => {
+          await runRemoteWebuiCommand(remoteWebuiCommand("close", "/remote close"));
+          await delay(350);
+          await refreshNetworkStatus();
+          renderNetworkStatus();
+        },
+        successMessage: "Remote access closed; Pi Web UI is local-only again.",
+      });
+    }
   } catch (error) {
     addEvent(error.message || String(error), "error");
   } finally {
@@ -25368,7 +26087,14 @@ async function waitForServerRestart() {
 }
 
 async function restartServer() {
-  if (!confirm("Restart the Pi Web UI server?\n\nThis briefly disconnects browser clients and restarts the Pi tabs managed by this Web UI.")) return;
+  if (!(await appConfirm({
+    title: "Restart Pi Web UI server?",
+    summary: "Browser clients disconnect briefly while the server restarts.",
+    affected: "All connected browser clients and Pi tabs managed by this Web UI",
+    undoable: false,
+    alternative: "Cancel and continue using the current server process.",
+    confirmLabel: "Restart server",
+  }))) return;
 
   setServerActionBusy("Restarting…");
   setServerActionStatus("Restart requested. Waiting for the server to come back…", "warn");
@@ -25409,7 +26135,14 @@ async function restartServer() {
 }
 
 async function stopServer() {
-  if (!confirm("Stop the Pi Web UI server?\n\nThis disconnects all browser clients and stops the Pi tabs managed by this Web UI.")) return;
+  if (!(await appConfirm({
+    title: "Stop Pi Web UI server?",
+    summary: "The Web UI becomes unavailable until the server is started again.",
+    affected: "All connected browser clients and Pi tabs managed by this Web UI",
+    undoable: false,
+    alternative: "Cancel, or restart instead if you only need to reload the server.",
+    confirmLabel: "Stop server",
+  }))) return;
 
   setServerActionBusy("Stopping…");
   setServerActionStatus("Stop requested. The Web UI will disconnect.", "warn");
@@ -26626,9 +27359,26 @@ elements.gitPrCreateButton?.addEventListener("click", () => {
 elements.gitPrDialog?.addEventListener("close", () => {
   if (activeGitPrDialogResolve) resolveGitPrDialog(null);
 });
+elements.nativeCommandDialog.addEventListener("cancel", (event) => {
+  if (!nativeSettingsDirty) return;
+  event.preventDefault();
+  closeNativeCommandDialog();
+});
 elements.nativeCommandDialog.addEventListener("close", () => {
   elements.nativeCommandSearch.oninput = null;
+  nativeSettingsDirty = false;
   nativeCommandTabId = null;
+});
+elements.undoToastButton?.addEventListener("click", () => runOfferedUndo());
+elements.undoToastDismissButton?.addEventListener("click", dismissUndoToast);
+elements.confirmationCancelButton?.addEventListener("click", () => finishApplicationConfirmation(false));
+elements.confirmationConfirmButton?.addEventListener("click", () => finishApplicationConfirmation(true));
+elements.confirmationDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishApplicationConfirmation(false);
+});
+elements.confirmationDialog?.addEventListener("close", () => {
+  if (activeConfirmationResolve) finishApplicationConfirmation(false);
 });
 elements.commandPaletteDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
 elements.commandPaletteDialog?.addEventListener("cancel", (event) => {
@@ -26861,7 +27611,14 @@ elements.abortButton.addEventListener("click", (event) => {
 elements.newSessionButton.addEventListener("click", async () => {
   setComposerActionsOpen(false);
   const tabContext = activeTabContext();
-  if (!confirm("Start a new Pi session?")) return;
+  if (!(await appConfirm({
+    title: "Start a new Pi session?",
+    summary: "The active tab switches to a fresh conversation.",
+    affected: "The active tab; the previous session remains resumable.",
+    undoable: false,
+    alternative: "Cancel and open a separate tab to keep both sessions visible.",
+    confirmLabel: "Start new session",
+  }))) return;
   try {
     const response = await api("/api/new-session", { method: "POST", body: {}, tabId: tabContext.tabId });
     applyResponseTab(response);
@@ -27425,6 +28182,7 @@ elements.refreshClaudeUsageButton?.addEventListener("click", () => {
   refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
 });
 elements.fileTreeRefreshButton?.addEventListener("click", () => refreshFileTreeRoot().catch((error) => addEvent(error.message || String(error), "error")));
+elements.fileTreeRoot?.addEventListener("keydown", handleFileTreeKeydown);
 elements.fileTreeRoot?.addEventListener("dragover", handleFileTreeRootDragOver);
 elements.fileTreeRoot?.addEventListener("dragleave", handleFileTreeRootDragLeave);
 elements.fileTreeRoot?.addEventListener("drop", (event) => handleFileTreeRootDrop(event).catch((error) => addEvent(error.message || String(error), "error")));
@@ -27439,6 +28197,21 @@ elements.fileTreeSearchInput?.addEventListener("keydown", (event) => {
   }
 });
 elements.fileTreeSearchClearButton?.addEventListener("click", () => clearFileTreeSearch({ focus: true }));
+elements.fileContextMenu?.addEventListener("keydown", (event) => {
+  const items = [...elements.fileContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeFileContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
 elements.fileContextMenu?.addEventListener("click", (event) => {
   const button = event.target?.closest?.("[data-file-menu-action]");
   if (!button) return;
@@ -27590,6 +28363,7 @@ elements.promptInput.addEventListener("blur", () => {
   }, 120);
 });
 
+installModalPrimitives();
 resizePromptInput();
 restoreFileViewerWidthPreference();
 focusPromptInput({ defer: true });
@@ -27616,6 +28390,7 @@ restoreTerminalTabsLayoutSetting();
 restoreTerminalCustomGroups();
 restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
+restoreInterfaceDensity();
 initializeTerminalHeaderTooltips();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
