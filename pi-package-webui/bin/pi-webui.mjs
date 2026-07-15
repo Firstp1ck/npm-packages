@@ -4928,6 +4928,72 @@ async function readGitOperationSnapshot(cwd) {
   };
 }
 
+function gitConflictResolutionAgentPrompt(operation) {
+  const conflicts = (operation.conflicts || []).map((conflict) => `- ${conflict.status || "UU"} ${JSON.stringify(String(conflict.path || ""))}`);
+  const summary = operation.summary || {};
+  return [
+    `Resolve the current Git ${operation.operation} conflicts in this working tree.`,
+    "",
+    `Repository root: ${JSON.stringify(String(operation.root || ""))}`,
+    `Branch: ${operation.branch || "detached or unknown"}`,
+    `Working tree: ${summary.staged || 0} staged, ${summary.unstaged || 0} unstaged, ${conflicts.length} conflicted`,
+    "Conflicted files:",
+    ...conflicts,
+    "",
+    "Requirements:",
+    "- Inspect git status plus the staged, unstaged, and unmerged diffs before editing.",
+    "- Resolve only the currently unmerged files and preserve the intended changes from both sides.",
+    "- Stage each resolved file with git add.",
+    `- Do not continue, skip, abort, commit, reset, or push the ${operation.operation}.`,
+    "- Verify git diff --name-only --diff-filter=U is empty, then report what you resolved and any uncertainty.",
+  ].join("\n");
+}
+
+async function openGitConflictResolutionAgentTab(sourceTab) {
+  const operation = await readGitOperationSnapshot(sourceTab.cwd);
+  if (!operation.operation || operation.operation === "bisect") throw makeHttpError(409, "No conflict-resolution Git operation is in progress");
+  if (!operation.conflicts?.length) throw makeHttpError(409, "No unmerged files remain to send to an agent");
+
+  const targetTab = await createTab({
+    title: `Resolve ${operation.operation} conflicts`,
+    titleSource: "explicit",
+    conversationStarted: true,
+    cwd: operation.root,
+  });
+  const command = { type: "prompt", message: gitConflictResolutionAgentPrompt(operation) };
+  markTabWorking(targetTab);
+  let response;
+  try {
+    response = await targetTab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
+  } catch (error) {
+    markTabIdle(targetTab);
+    throw error;
+  }
+  if (response.success === false) {
+    markTabIdle(targetTab);
+    throw makeHttpError(502, response.error || "The conflict-resolution agent rejected the handoff prompt");
+  }
+  recordEvent({
+    type: "webui_git_conflict_agent_started",
+    sourceTabId: sourceTab.id,
+    tabId: targetTab.id,
+    cwd: operation.root,
+    operation: operation.operation,
+    conflicts: operation.conflicts.length,
+  });
+  return {
+    sourceTabId: sourceTab.id,
+    tab: tabMeta(targetTab),
+    tabs: listTabs(),
+    operation: {
+      operation: operation.operation,
+      root: operation.root,
+      branch: operation.branch,
+      conflicts: operation.conflicts.map(({ path: conflictPath, status }) => ({ path: conflictPath, status })),
+    },
+  };
+}
+
 async function gitOperationStageFile(cwd, body = {}) {
   const root = await getGitRoot(cwd);
   const kind = await detectGitOperationKind(root);
@@ -11930,6 +11996,7 @@ const server = createServer(async (req, res) => {
         "/api/git-operation/abort": (cwd, body) => gitOperationAction(cwd, "abort", body),
         "/api/git-operation/stage-file": (cwd, body) => gitOperationStageFile(cwd, body),
         "/api/git-operation/bisect": (cwd, body) => gitBisectAction(cwd, body),
+        "/api/git-operation/resolve-with-agent": (_cwd, _body, tab) => openGitConflictResolutionAgentTab(tab),
         "/api/git-stash/save": (cwd, body) => saveGitStash(cwd, body),
         "/api/git-stash/apply": (cwd, body) => applyGitStash(cwd, body),
         "/api/git-stash/pop": (cwd, body) => applyGitStash(cwd, body, { pop: true }),
@@ -11948,7 +12015,7 @@ const server = createServer(async (req, res) => {
         const tab = getRequestedTab(req, url, body);
         ensureNaturalConversationRouteAllowed(tab, "git actions are blocked");
         try {
-          const payload = await GIT_MUTATION_ROUTES[url.pathname](tab.cwd, body);
+          const payload = await GIT_MUTATION_ROUTES[url.pathname](tab.cwd, body, tab);
           sendJson(res, 200, payload && typeof payload === "object" && "ok" in payload ? payload : { ok: true, data: payload });
         } catch (error) {
           gitActionError(error);

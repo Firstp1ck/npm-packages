@@ -407,6 +407,9 @@ assert.match(css, /\.git-diff-grid \{[\s\S]*?grid-template-columns:\s*3\.8rem mi
 assert.match(html, /id="gitChangesDialog"[\s\S]*id="gitChangesRefreshButton"[\s\S]*id="gitChangesPullButton"[\s\S]*id="gitChangesBody"/, "git changes modal should expose refresh, pull controls, and a diff body");
 assert.match(app, /chip\.key === "changes"[\s\S]*?options\.onClick = openGitChangesDialog/, "footer CHANGES chip should open the git changes modal");
 assert.match(app, /async function loadGitChangesDialog[\s\S]*api\("\/api\/git-changes"/, "git changes modal should load diff data from the server endpoint");
+assert.match(app, /"Resolve with agent"[\s\S]*api\("\/api\/git-operation\/resolve-with-agent", \{ method: "POST"[\s\S]*switchToResponseTab\(response\)/, "conflict panel should open the resolution agent in the new tab returned by the server");
+assert.match(server, /function gitConflictResolutionAgentPrompt\(operation\)[\s\S]*Conflicted files:[\s\S]*Do not continue, skip, abort, commit, reset, or push[\s\S]*diff-filter=U is empty/, "server should build a bounded conflict handoff with operation safety and verification instructions");
+assert.match(server, /"\/api\/git-operation\/resolve-with-agent"[\s\S]*openGitConflictResolutionAgentTab\(tab\)/, "server should expose conflict-resolution agent tab creation through the git operation routes");
 assert.match(app, /async function pullGitChangesDialog\(\)[\s\S]*api\("\/api\/git-changes\/pull", \{ method: "POST"/, "git changes modal should post to the pull endpoint from the Pull button");
 assert.match(app, /function gitDiffDisplayLine\(row, side\)[\s\S]*`-\$\{text\}`[\s\S]*`\+\$\{text\}`/, "git changes modal should render changed lines with +/- prefixes");
 assert.match(app, /function gitUntrackedEntryToDiffFile\(entry\)[\s\S]*?renderRowLimit:\s*Number\.POSITIVE_INFINITY[\s\S]*?type: "added"/, "untracked files should render as complete added-file diffs without the row preview cap");

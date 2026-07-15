@@ -10803,7 +10803,7 @@ async function runGitOperationRequest(url, body, successLabel) {
 function renderGitOperationPanel(operation) {
   const kind = operation?.operation;
   if (!kind) return null;
-  const busy = gitToolsState.busy.has("operation") || gitChangesState.loading || gitChangesState.pulling || gitChangesState.fetching;
+  const busy = gitToolsState.busy.has("operation") || gitToolsState.busy.has("conflict-agent") || gitChangesState.loading || gitChangesState.pulling || gitChangesState.fetching;
   const conflicts = operation.conflicts || [];
   const panel = make("section", "git-operation-panel");
   const header = make("div", "git-operation-header");
@@ -10871,6 +10871,32 @@ function renderGitOperationPanel(operation) {
   refresh.disabled = busy;
   refresh.addEventListener("click", refreshGitChangesDialog);
   row.append(refresh);
+
+  if (conflicts.length) {
+    const resolveWithAgent = make("button", "git-operation-button primary", "Resolve with agent");
+    resolveWithAgent.type = "button";
+    resolveWithAgent.disabled = busy;
+    resolveWithAgent.title = `Open a new Pi tab in ${operation.root} and send it the ${kind} conflict context`;
+    resolveWithAgent.addEventListener("click", async () => {
+      const sourceTabId = gitChangesState.tabId || activeTabId;
+      gitToolsState.busy.add("conflict-agent");
+      renderGitChangesDialog();
+      try {
+        const response = await api("/api/git-operation/resolve-with-agent", { method: "POST", body: {}, tabId: sourceTabId });
+        if (!response.ok) throw new Error(response.error || "Failed to open a conflict-resolution agent");
+        closeGitChangesDialog();
+        const targetTab = await switchToResponseTab(response);
+        addEvent(`Opened ${targetTab?.title || "a new Pi tab"} and sent the ${kind} conflict context.`, "success");
+      } catch (error) {
+        gitChangesState = { ...gitChangesState, error: error.message || String(error) };
+        renderGitChangesDialog();
+      } finally {
+        gitToolsState.busy.delete("conflict-agent");
+        if (elements.gitChangesDialog?.open) renderGitChangesDialog();
+      }
+    });
+    row.append(resolveWithAgent);
+  }
 
   const cont = make("button", "git-operation-button primary", kind === "merge" ? "Continue (commit merge)" : "Continue");
   cont.type = "button";

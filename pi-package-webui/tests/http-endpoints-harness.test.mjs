@@ -77,6 +77,7 @@ const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
 const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-side-effects-"));
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
+const fakePiCommandLog = path.join(harnessSideEffectsRoot, "fake-pi-commands.jsonl");
 const openCommandScript = path.join(harnessSideEffectsRoot, "fake-open-default.mjs");
 const fakeOpenBinDir = path.join(harnessSideEffectsRoot, "bin");
 const artifactRoot = path.join(harnessSideEffectsRoot, "artifacts"), artifactDir = path.join(artifactRoot, "fixture-document-artifact"), artifactManifest = path.join(artifactDir, "manifest.json"), artifactDownload = path.join(artifactDir, "document.docx"), artifactPage = path.join(artifactDir, "page-1.png"), artifactExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -131,6 +132,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     PI_WEBUI_ARTIFACT_ROOTS: artifactRoot,
     FAKE_PI_ARTIFACT_MANIFEST: artifactManifest,
     FAKE_PI_ARTIFACT_DOWNLOAD: artifactDownload,
+    FAKE_PI_LOG_FILE: fakePiCommandLog,
     FAKE_PI_VOICE_SCRIPTS: "1",
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
@@ -681,6 +683,20 @@ try {
     assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.path, "file.txt");
     assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.status, "UU");
     assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.preview?.hasMarkers, true, "conflict preview should detect conflict markers");
+
+    const conflictAgent = await request("127.0.0.1", "/api/git-operation/resolve-with-agent", { method: "POST", body: { tab: mergeTab }, timeoutMs: 20_000 });
+    assert.equal(conflictAgent.status, 200);
+    assert.equal(conflictAgent.body?.ok, true, `conflict handoff should open an agent tab: ${conflictAgent.body?.error || ""}`);
+    assert.notEqual(conflictAgent.body?.data?.tab?.id, mergeTab, "conflict handoff should create a separate tab");
+    assert.equal(conflictAgent.body?.data?.tab?.cwd, mergeRepo, "conflict agent should use the conflicted repository root");
+    assert.equal(conflictAgent.body?.data?.tab?.title, "Resolve merge conflicts");
+    assert.deepEqual(conflictAgent.body?.data?.operation?.conflicts, [{ path: "file.txt", status: "UU" }]);
+    const loggedCommands = (await readFile(fakePiCommandLog, "utf8")).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const handoffPrompt = loggedCommands.findLast((entry) => entry.direction === "command" && entry.type === "prompt" && /Resolve the current Git merge conflicts/.test(entry.message || ""));
+    assert.ok(handoffPrompt, "conflict agent should receive a resolution prompt");
+    assert.match(handoffPrompt.message, /Conflicted files:\n- UU "file\.txt"/, "handoff prompt should identify each conflicted path and status");
+    assert.match(handoffPrompt.message, /Do not continue, skip, abort, commit, reset, or push the merge/, "handoff prompt should keep operation completion under user control");
+    assert.match(handoffPrompt.message, /git diff --name-only --diff-filter=U is empty/, "handoff prompt should require unmerged-path verification");
 
     const continueBlocked = await request("127.0.0.1", "/api/git-operation/continue", { method: "POST", body: { tab: mergeTab } });
     assert.equal(continueBlocked.status, 200);
