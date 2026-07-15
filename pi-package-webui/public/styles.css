@@ -7401,9 +7401,39 @@ button.composer-skill-tag:focus-visible {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 0.82rem;
 }
-.event { padding: 0.3rem 0; border-bottom: 1px solid rgba(180, 190, 254, 0.06); }
+.event {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.2rem;
+  padding: 0.38rem 0.42rem;
+  border: 0;
+  border-bottom: 1px solid rgba(180, 190, 254, 0.06);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.event:hover,
+.event:focus-visible {
+  transform: none;
+  border-color: rgba(148, 226, 213, 0.34);
+  background: linear-gradient(90deg, rgba(148, 226, 213, 0.12), rgba(137, 180, 250, 0.07));
+  box-shadow: inset 2px 0 0 rgba(148, 226, 213, 0.72);
+}
 .event.warn { color: var(--warning); }
 .event.error { color: var(--danger); }
+.message.chat-event-target {
+  outline: 2px solid rgba(148, 226, 213, 0.92);
+  outline-offset: 2px;
+  animation: chat-event-target-pulse 1.6s ease-out;
+}
+@keyframes chat-event-target-pulse {
+  0%, 100% { box-shadow: inherit; }
+  20%, 55% { box-shadow: 0 0 0 4px rgba(148, 226, 213, 0.18), 0 0 2rem rgba(137, 180, 250, 0.46); }
+}
 .muted { color: rgba(var(--ctp-subtext-rgb), 0.68); }
 
 .extension-dialog {

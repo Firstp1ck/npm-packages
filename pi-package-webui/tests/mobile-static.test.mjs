@@ -108,6 +108,12 @@ assert.match(html, /data-side-panel-section="controls"/, "side panel controls sh
 assert.match(html, /data-side-panel-section="commands"/, "side panel commands should live in a collapsible section");
 assert.match(html, /class="side-panel-section-toggle"[^>]*aria-controls="sidePanelSectionControls"/, "side panel section toggles should target their content panels");
 assert.match(html, /class="side-panel-section-label">Events<\/span>/, "side panel events should expose a section toggle label");
+assert.match(app, /function addEvent\(message, level = "info", \{ toolCallId = "" \} = \{\}\)[\s\S]*?make\("button", `event \$\{level\}`[\s\S]*?chatEventTimestamp[\s\S]*?jumpToChatEvent\(line\)/, "event log entries should be keyboard-accessible controls that navigate into the chat");
+assert.match(app, /function chatEventTargetForLine\(line\)[\s\S]*?chatToolCallId[\s\S]*?data-tool-call-id[\s\S]*?\.message\[data-chat-timestamp\]/, "event navigation should prefer exact tool cards and otherwise match the closest chat timestamp");
+assert.match(app, /function jumpToChatEvent\(line\)[\s\S]*?setChatScrollTopInstant[\s\S]*?highlightChatEventTarget[\s\S]*?setSidePanelCollapsed\(true, \{ persist: false \}\)/, "event navigation should dismiss overlay sidebars, scroll the chat, and highlight its target");
+assert.match(app, /function applyChatEventMetadata\(bubble, message\)[\s\S]*?bubble\.dataset\.chatTimestamp/, "rendered chat events should expose timestamps for sidebar navigation");
+assert.match(app, /addEvent\(`tool \$\{event\.toolName\} started`, "info", \{ toolCallId: event\.toolCallId \}\)/, "tool start events should navigate to their exact tool card");
+assert.match(css, /\.event:hover,[\s\S]*?\.message\.chat-event-target[\s\S]*?@keyframes chat-event-target-pulse/, "clickable events and highlighted chat targets should have visible interaction states");
 const sidePanelToggleStates = Array.from(
   html.matchAll(/class="side-panel-section-toggle"[^>]*aria-expanded="([^"]+)"/g),
   (match) => match[1],

@@ -7918,10 +7918,67 @@ async function initializeTabs() {
   }
 }
 
-function addEvent(message, level = "info") {
-  const line = make("div", `event ${level}`.trim());
-  const time = new Date().toLocaleTimeString();
-  line.textContent = `[${time}] ${message}`;
+function chatEventTargetForLine(line) {
+  const toolCallId = line?.dataset.chatToolCallId || "";
+  if (toolCallId) {
+    const toolTarget = elements.chat.querySelector(`.message[data-tool-call-id="${CSS.escape(toolCallId)}"]`);
+    if (toolTarget) return toolTarget;
+  }
+
+  const eventTimestamp = Number(line?.dataset.chatEventTimestamp);
+  let closestTarget = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of elements.chat.querySelectorAll(".message[data-chat-timestamp]")) {
+    const candidateTimestamp = Number(candidate.dataset.chatTimestamp);
+    if (!Number.isFinite(eventTimestamp) || !Number.isFinite(candidateTimestamp)) continue;
+    const distance = Math.abs(candidateTimestamp - eventTimestamp);
+    if (distance <= closestDistance) {
+      closestTarget = candidate;
+      closestDistance = distance;
+    }
+  }
+  return closestTarget || Array.from(elements.chat.querySelectorAll(".message:not(.runIndicator)")).at(-1) || null;
+}
+
+function highlightChatEventTarget(target) {
+  clearTimeout(target._chatEventHighlightTimer);
+  target.classList.remove("chat-event-target");
+  void target.offsetWidth;
+  target.classList.add("chat-event-target");
+  target._chatEventHighlightTimer = setTimeout(() => target.classList.remove("chat-event-target"), 1600);
+}
+
+function jumpToChatEvent(line) {
+  const revealTarget = () => {
+    const target = chatEventTargetForLine(line);
+    if (!target) return;
+    autoFollowChat = false;
+    lastChatProgrammaticScrollAt = performance.now();
+    const centeredTop = chatScrollTopForNode(target) - Math.max(stickyUserPromptViewportGap(), (elements.chat.clientHeight - target.offsetHeight) / 2);
+    setChatScrollTopInstant(Math.max(0, centeredTop));
+    highlightChatEventTarget(target);
+    updateJumpToLatestButton();
+    updateStickyUserPromptButton();
+  };
+
+  if (isSidePanelOverlayView() && !document.body.classList.contains("side-panel-collapsed")) {
+    setSidePanelCollapsed(true, { persist: false });
+    requestAnimationFrame(revealTarget);
+  } else {
+    revealTarget();
+  }
+}
+
+function addEvent(message, level = "info", { toolCallId = "" } = {}) {
+  const occurredAt = Date.now();
+  const line = make("button", `event ${level}`.trim());
+  line.type = "button";
+  line.dataset.chatEventTimestamp = String(occurredAt);
+  if (toolCallId) line.dataset.chatToolCallId = String(toolCallId);
+  line.textContent = `[${new Date(occurredAt).toLocaleTimeString()}] ${message}`;
+  line.title = "Jump to this event in the chat";
+  line.setAttribute("aria-label", `${line.textContent}. Jump to this event in the chat.`);
+  line.addEventListener("click", () => jumpToChatEvent(line));
   elements.eventLog.prepend(line);
   while (elements.eventLog.children.length > 120) elements.eventLog.lastElementChild?.remove();
 }
@@ -20528,7 +20585,14 @@ function liveToolRunMessage(run) {
   };
 }
 
+function applyChatEventMetadata(bubble, message) {
+  const timestamp = messageTimestampMs(message);
+  if (timestamp > 0) bubble.dataset.chatTimestamp = String(timestamp);
+  else bubble.removeAttribute("data-chat-timestamp");
+}
+
 function applyToolExecutionBubbleState(bubble, message) {
+  applyChatEventMetadata(bubble, message);
   const status = toolExecutionStatus(message);
   const nextClass = `tool-${status}`;
   if (bubble.dataset.toolStatus !== status || !bubble.classList.contains(nextClass)) {
@@ -20749,6 +20813,7 @@ function appendMessage(message, { streaming = false, messageIndex = -1, transien
   const role = String(message.role || "message");
   const safeRole = role.replace(/[^a-z0-9_-]/gi, "");
   const bubble = make("article", `message ${safeRole}${message.level ? ` ${message.level}` : ""}${streaming ? " streaming" : ""}${animateEntry ? " action-enter" : ""}`);
+  applyChatEventMetadata(bubble, message);
   if (message.role === "toolExecution") applyToolExecutionBubbleState(bubble, message);
   if (!transient && messageIndex >= 0) {
     bubble.dataset.messageIndex = String(messageIndex);
@@ -26070,7 +26135,7 @@ function handleEvent(event) {
       removeStreamingToolCallCard();
       handleToolExecutionStart(event);
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
-      addEvent(`tool ${event.toolName} started`);
+      addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
       break;
     case "tool_execution_update":
       handleToolExecutionUpdate(event);
@@ -26080,7 +26145,7 @@ function handleEvent(event) {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
       handleToolExecutionEnd(event);
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
-      addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info");
+      addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
       // No transcript refresh here: the live tool card already shows the
       // result via renderLiveToolRun, and message_end/agent_end reconcile the
       // transcript. This avoids one fetch+render per tool call.
