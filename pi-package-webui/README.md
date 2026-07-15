@@ -125,7 +125,7 @@ Environment variables:
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as the Remote PIN auth preference.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
-- `PI_WEBUI_NPM_BIN=/path/to/npm` selects the npm executable used by optional feature install/update actions.
+- `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves `npm-cli.js` beside the active Node executable (and on `PATH`) and runs it through Node, avoiding Windows `npm.cmd` spawn failures.
 - `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
 - `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
 
@@ -436,5 +436,6 @@ This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; b
 - **`/webui-start` is missing:** restart Pi after installing the package.
 - **Wrong port or existing server:** use `/webui-status detailed`, or start on another port with `/webui-start --port 31500`.
 - **Optional feature is disabled or missing:** check the side panel, install the companion package if needed, then run `/reload` in the active Pi tab.
+- **`spawn npm ENOENT` on Windows during install/update:** use a Web UI release with bundled npm CLI resolution, or run the displayed `npm install` command manually and restart Web UI. Adding Node to `PATH` alone may not help because Windows `spawn()` does not execute the `npm.cmd` shim directly.
 - **Remote browser asks for a PIN:** read it from the optional **Remote WebUI** side-panel controls, `/webui-status`, `/remote status`, or the local Web UI server log. Disable the toggle from localhost to remove the PIN gate.
 - **PWA install or notifications are unavailable:** use `localhost` or HTTPS; browser support varies on LAN HTTP URLs.

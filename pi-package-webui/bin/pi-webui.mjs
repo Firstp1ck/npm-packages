@@ -22,6 +22,7 @@ import {
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
+import { resolveNpmCommandInvocation } from "../lib/npm-command.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
   GIT_WORKFLOW_DELIVERY_MODES,
@@ -1610,10 +1611,9 @@ async function installOptionalFeaturePackage(featureId) {
     });
   }
 
-  const npmCommand = process.env.PI_WEBUI_NPM_BIN || "npm";
-  const args = ["install", "--prefix", installRoot, packageName];
-  const command = formatCommandForDisplay(npmCommand, args);
-  const result = await runCommand(npmCommand, args, {
+  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, packageName]);
+  const command = npmCommand.displayCommand;
+  const result = await runCommand(npmCommand.command, npmCommand.args, {
     cwd: installRoot,
     timeoutMs: 5 * 60 * 1000,
     maxOutputLength: 80000,
@@ -8105,17 +8105,23 @@ function packageInstallSpecs(packageNames) {
   return packageNames.map((packageName) => `${packageName}@latest`);
 }
 
-function npmCommandName() {
-  return process.env.PI_WEBUI_NPM_BIN || "npm";
+function resolvedNpmCommand(args) {
+  const invocation = resolveNpmCommandInvocation(args);
+  return {
+    command: invocation.command,
+    args: invocation.args,
+    displayCommand: formatCommandForDisplay(invocation.displayCommand, invocation.displayArgs),
+  };
 }
 
 function npmPrefixUpdateTask(label, installRoot, packageNames) {
   if (!packageNames.length) return null;
-  const npmCommand = npmCommandName();
+  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packageNames)]);
   return {
     label,
-    command: npmCommand,
-    args: ["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packageNames)],
+    command: npmCommand.command,
+    args: npmCommand.args,
+    displayCommand: npmCommand.displayCommand,
     cwd: installRoot,
   };
 }
@@ -8170,8 +8176,8 @@ async function projectPackageRootUpdateTasks() {
 }
 
 async function npmGlobalNodeModulesRoot() {
-  const npmCommand = npmCommandName();
-  const result = await runCommand(npmCommand, ["root", "-g"], { timeoutMs: 5000, maxOutputLength: 8000 });
+  const npmCommand = resolvedNpmCommand(["root", "-g"]);
+  const result = await runCommand(npmCommand.command, npmCommand.args, { timeoutMs: 5000, maxOutputLength: 8000 });
   if (result.exitCode !== 0 || result.timedOut || result.error) return null;
   return result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || null;
 }
@@ -8180,11 +8186,12 @@ async function npmGlobalPackageRootUpdateTask() {
   const nodeModulesRoot = await npmGlobalNodeModulesRoot();
   const packages = await packagesPresentInNodeModulesRoot(nodeModulesRoot);
   if (!packages.length) return null;
-  const npmCommand = npmCommandName();
+  const npmCommand = resolvedNpmCommand(["install", "-g", "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packages)]);
   return {
     label: "global npm package root",
-    command: npmCommand,
-    args: ["install", "-g", "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packages)],
+    command: npmCommand.command,
+    args: npmCommand.args,
+    displayCommand: npmCommand.displayCommand,
     cwd: nodeModulesRoot ? path.dirname(nodeModulesRoot) : process.cwd(),
   };
 }
