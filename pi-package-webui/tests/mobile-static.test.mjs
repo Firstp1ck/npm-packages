@@ -78,6 +78,7 @@ assert.match(server, /const THINKING_LEVELS = \["off", "minimal", "low", "medium
 assert.match(html, /id="terminalTabsLayoutSelect"[\s\S]*<option value="left">Left sidebar<\/option>/, "side panel controls should expose a terminal-tabs layout selector");
 assert.match(html, /id="terminalTabsLayoutStatus"/, "terminal-tabs layout selector should expose status text");
 assert.match(html, /id="nativeCommandDialog"/, "native slash selector UI should have a dedicated dialog");
+assert.match(html, /id="optionsSafetyGuardSetupButton"[\s\S]*data-command="\/safety-guard-setup"[\s\S]*Safety Guard Setup/, "Common Pi options should expose native Safety Guard Setup");
 assert.match(html, /id="optionsGitWorkflowSetupButton"[\s\S]*data-command="\/git-workflow-setup"[\s\S]*Guided Git Setup/, "Common Pi options should expose native Guided Git Setup");
 assert.match(html, /id="nativeCommandSearch"[^>]*type="search"/, "native slash selector dialog should expose a filter box");
 assert.match(html, /id="remoteQrDialog"[\s\S]*id="remoteQrBody"[\s\S]*id="remoteQrCopyButton"/, "remote WebUI should expose a dedicated QR popup dialog");
@@ -1108,14 +1109,17 @@ for (const command of ["resume", "reload", "remote", "name", "clone", "settings"
   const id = command.replace(/^./, (letter) => letter.toUpperCase());
   assert.match(app, new RegExp(`options${id}Button\\.addEventListener\\("click", \\(\\) => runNativeCommandMenu\\("\\/${command}"\\)\\)`), `Options menu should launch /${command}`);
 }
+assert.match(app, /optionsSafetyGuardSetupButton\?\.addEventListener\("click", \(\) => runNativeCommandMenu\("\/safety-guard-setup"\)\)/, "Options menu should launch native Safety Guard Setup");
 assert.match(app, /optionsGitWorkflowSetupButton\?\.addEventListener\("click", \(\) => runNativeCommandMenu\("\/git-workflow-setup"\)\)/, "Options menu should launch native Guided Git Setup");
 assert.match(extension, /registerCommand\("git-workflow-setup"[\s\S]*runGitWorkflowSetup/, "Pi extension should register the reusable /git-workflow-setup command");
+assert.match(app, /async function openNativeSafetyGuardSetupDialog\([\s\S]*\/api\/safety-guard\/config/, "Web UI should implement Safety Guard Setup with the canonical persisted config API");
+assert.match(server, /url\.pathname === "\/api\/safety-guard\/config" && req\.method === "GET"[\s\S]*url\.pathname === "\/api\/safety-guard\/config" && req\.method === "POST"/, "server should expose native safety guard config read and save endpoints");
 assert.match(app, /async function openNativeGitWorkflowSetupDialog\([\s\S]*\/api\/git-workflow\/preferences/, "Web UI should implement Guided Git Setup with the persisted preferences API");
 assert.match(app, /async function sendPrompt\(kind = "prompt", explicitMessage, \{ targetTabId = activeTabId, throwOnError = false, streamingBehavior \} = \{\}\)/, "prompt sending should accept direct messages that bypass the input field and optional target tab");
 assert.match(app, /const rawMessage = usesPromptInput \? elements\.promptInput\.value : explicitMessage/, "direct prompt sends should not read the input textarea");
 assert.match(app, /if \(usesPromptInput\) \{[\s\S]*?if \(targetStillActive\) \{[\s\S]*?elements\.promptInput\.value = "";/, "direct prompt sends should preserve the input textarea draft");
 assert.match(app, /make\("button", "command-item"\)[\s\S]*?sendPrompt\("prompt", `\/\$\{command\.name\}`\)/, "side-panel command clicks should send the slash command directly");
-assert.match(app, /const NATIVE_SELECTOR_COMMANDS = new Set\(\["model", "settings", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"\]\)/, "frontend should route native slash commands, including Guided Git Setup, into selector UIs");
+assert.match(app, /const NATIVE_SELECTOR_COMMANDS = new Set\(\["model", "settings", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"\]\)/, "frontend should route native slash commands, including safety and Guided Git setup, into selector UIs");
 assert.match(app, /async function handleNativeSlashSelectorCommand\(message/, "frontend should intercept exact native slash commands before prompt forwarding");
 assert.match(app, /kind === "prompt" && attachments\.length === 0 && await handleNativeSlashSelectorCommand/, "prompt sending should open native selector dialogs before marking a run active");
 assert.match(app, /function openNativeModelSelector\(\)[\s\S]*?nativeCommandApi\("\/api\/models"\)/, "native /model selector should load models through the active tab API");

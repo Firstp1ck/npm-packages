@@ -21,6 +21,10 @@
       "./index.ts"
     ]
   },
+  "scripts": {
+    "check": "npm test",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/process-tree.test.mjs"
+  },
   "dependencies": {
     "@firstpick/pi-utils": "^0.1.9"
   },
@@ -34,6 +38,7 @@
   },
   "files": [
     "index.ts",
+    "process-tree.ts",
     "*.sh",
     "README.md",
     "LICENSE"

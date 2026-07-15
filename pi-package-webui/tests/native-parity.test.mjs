@@ -53,6 +53,7 @@ const slashSurfaces = parity.surfaces.filter((surface) => surface.kind === "slas
 const slashCommandNames = slashSurfaces.map((surface) => surface.command?.name).filter(Boolean);
 const requiredNativeCommands = [
   "settings",
+  "safety-guard-setup",
   "git-workflow-setup",
   "model",
   "theme",

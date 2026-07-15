@@ -18,6 +18,19 @@
       "targetBehavior": "Keep native TUI setting coverage current; project/global source editing can be added as an advanced enhancement."
     },
     {
+      "id": "/safety-guard-setup",
+      "kind": "slash-command",
+      "category": "native-command",
+      "title": "Safety guard setup",
+      "command": { "name": "safety-guard-setup", "description": "Configure command categories, protected-path checks, and preview context" },
+      "webStatus": "implemented",
+      "priority": "P1",
+      "sensitive": false,
+      "guards": ["confirmation"],
+      "currentBehavior": "Browser-native dialog and Pi TUI settings list edit the same persisted global guard schema, including independent context lines before and after matches.",
+      "targetBehavior": "Keep browser and TUI setup controls aligned with the canonical safety-guard config module and fail-safe defaults."
+    },
+    {
       "id": "/git-workflow-setup",
       "kind": "slash-command",
       "category": "native-command",

@@ -13,6 +13,7 @@ const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const port = 30000 + Math.floor(Math.random() * 20000);
 const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-remote-auth-settings-"));
 const settingsFile = path.join(cwd, "webui-settings.json");
+const safetyGuardSettingsFile = path.join(cwd, "safety-guard.json");
 
 async function request(pathname, { method = "GET", body, timeoutMs = 5_000 } = {}) {
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
@@ -33,6 +34,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "12
   env: {
     ...process.env,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
+    PI_SAFETY_GUARD_CONFIG_FILE: safetyGuardSettingsFile,
   },
 });
 let serverOutput = "";
@@ -61,6 +63,36 @@ try {
   assert.equal(startupAuth.status, 200);
   assert.equal(startupAuth.body?.data?.auth?.enabled, true, "saved Remote PIN auth setting should enable auth at next startup");
   assert.match(startupAuth.body?.data?.auth?.pin, /^\d{4}$/, "startup auth should generate a fresh PIN, not persist one");
+
+  const initialSafetyGuardSetup = await request("/api/safety-guard/config");
+  assert.equal(initialSafetyGuardSetup.status, 200);
+  assert.equal(initialSafetyGuardSetup.body?.data?.config?.enabled, true, "safety guard should default to enabled");
+  assert.deepEqual(initialSafetyGuardSetup.body?.data?.config?.contextLines, { before: 3, after: 3 });
+  assert.ok(initialSafetyGuardSetup.body?.data?.categories?.includes("database"));
+
+  const invalidSafetyGuardSetup = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { contextLines: { before: 21 } } },
+  });
+  assert.equal(invalidSafetyGuardSetup.status, 400, "setup should reject context limits outside the canonical range");
+
+  const savedSafetyGuardSetup = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: {
+      config: {
+        enabled: false,
+        categories: { docker: false },
+        protectedPaths: { edit: false },
+        contextLines: { before: 2, after: 4 },
+      },
+    },
+  });
+  assert.equal(savedSafetyGuardSetup.status, 200);
+  assert.equal(savedSafetyGuardSetup.body?.data?.config?.enabled, false);
+  assert.equal(savedSafetyGuardSetup.body?.data?.config?.categories?.docker, false);
+  assert.deepEqual(savedSafetyGuardSetup.body?.data?.config?.contextLines, { before: 2, after: 4 });
+  const persistedSafetyGuardSetup = JSON.parse(await readFile(safetyGuardSettingsFile, "utf8"));
+  assert.equal(persistedSafetyGuardSetup.protectedPaths?.edit, false);
 
   const initialGitSetup = await request("/api/git-workflow/preferences");
   assert.equal(initialGitSetup.status, 200);

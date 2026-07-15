@@ -125,7 +125,7 @@ Environment variables:
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as the Remote PIN auth preference.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
-- `PI_WEBUI_NPM_BIN=/path/to/npm` selects the npm executable used by optional feature install/update actions.
+- `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves `npm-cli.js` beside the active Node executable (and on `PATH`) and runs it through Node, avoiding Windows `npm.cmd` spawn failures.
 - `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
 - `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
 
@@ -149,7 +149,7 @@ Optional Natural Conversation server-side voice fallback variables:
 - Leading `!` and `!!` user-bash commands from the composer, serialized per tab; `!` keeps output in the next model context and `!!` excludes it. When the optional `@firstpick/pi-extension-bang-command-autocomplete` companion is loaded, the browser composer also suggests `!`/`!!` shell commands through `GET /api/bang-suggestions?tab=<tabId>&query=<command>`. When the optional `@firstpick/pi-extension-fish-user-bash` companion is loaded, Web UI user-bash execution emits the Pi `user_bash` event so the companion can provide the selected shell backend.
 - Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions.
 - Browser voice loop for Natural Conversation Mode (`public/voice-conversation.mjs`): while the mode is active in a tab, the browser's Web Speech APIs listen for speech, send final transcripts as normal prompts, and speak Pi's final answers. The microphone pauses while answers are spoken (echo prevention), speech during final-output streaming becomes a steering interruption, speech during tool execution is queued until the tool phase ends, and silence after a spoken question sends a single structured silence event. Remote (non-localhost) sessions keep the microphone off until the per-tab `Allow remote microphone streaming` consent is granted; only text transcripts ever reach the Pi host on the browser-default path. Opt-in server-side fallback routes are available for local/Groq/OpenAI STT and local/OpenAI TTS when configured with server-side env vars; remote/LAN raw-audio STT fallback uploads require explicit per-request consent.
-- Browser-native Pi dialogs for `/model`, `/settings`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`.
+- Browser-native Pi dialogs for `/model`, `/settings`, `/safety-guard-setup`, `/git-workflow-setup`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`.
 - Runtime `/tools` and `/skills` selectors backed by the hidden Web UI RPC helper; skill toggles persist on the session branch, disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags.
 - Session resume/switch, metadata rename, and localhost-only safe delete with active/open-tab/session-directory guards.
 - Model, thinking, session, workspace, theme, optional-feature, Codex usage, optional Remote WebUI, update/restart/stop, event, notification, thinking-visibility, terminal-tab-layout, and custom-background controls in collapsible side-panel sections.
@@ -169,7 +169,7 @@ Web UI keeps a packaged parity matrix at `lib/WEBUI_TUI_NATIVE_PARITY.json` and 
 
 | Status | Commands and behavior |
 | --- | --- |
-| Implemented | `/model`, `/settings`, `/tools`, `/skills`, `/copy`, `/name`, `/session`, `/clone`, `/logout`, `/new`, `/compact`, and `/reload` use browser-native dialogs or structured native-command cards. |
+| Implemented | `/model`, `/settings`, `/safety-guard-setup`, `/git-workflow-setup`, `/tools`, `/skills`, `/copy`, `/name`, `/session`, `/clone`, `/logout`, `/new`, `/compact`, and `/reload` use browser-native dialogs or structured native-command cards. |
 | Degraded / browser-specific | `/theme` changes the browser Web UI theme only; `/scoped-models` points to the footer scoped-model picker; `/export` supports no-path HTML downloads plus explicit new `.html`/`.jsonl` server paths; `/hotkeys` lists Web UI shortcuts; `/fork`, `/tree`, `/login`, and `/resume` have browser flows with documented gaps. |
 | Unsupported in Web UI | `/import`, `/share`, `/changelog`, and `/quit` return structured unavailable output instead of raw HTTP errors. |
 
@@ -326,6 +326,7 @@ Useful browser endpoints exposed by the local server include:
 - `GET /api/path-fast-picks` and `POST /api/path-fast-picks` for server-persisted cwd fast picks.
 - `GET /api/native-parity` for the packaged native TUI/Web UI parity matrix.
 - `GET /api/settings`, `POST /api/settings`, `GET /api/tools`, `POST /api/tools`, `GET /api/skills`, and `POST /api/skills` for browser-native Pi settings/tool/skill selectors.
+- `GET /api/safety-guard/config` and `POST /api/safety-guard/config` for browser-native persisted Safety Guard Setup.
 - `GET /api/skill-file` and localhost-only `POST /api/skill-file` for guarded `SKILL.md` editing from tracked skill tags.
 - `GET /api/sessions`, `GET /api/session-tree`, `POST /api/switch-session`, `POST /api/session-rename`, and localhost-only `POST /api/session-delete` for resume/tree/session metadata flows.
 - `GET /api/auth-providers` and localhost-only `POST /api/auth-logout` for provider-auth status and stored-credential removal.
@@ -363,7 +364,7 @@ Optional companions:
 - `@firstpick/pi-extension-release-npm` — NPM publish menu and release widgets.
 - `@firstpick/pi-extension-release-aur` — AUR publish menu and release widgets.
 - `@firstpick/pi-extension-workflows` — `/workflow` runtime with non-blocking Web UI subprocess-output widgets.
-- `@firstpick/pi-extension-safety-guard` — interactive guardrails for dangerous bash commands and protected file edits.
+- `@firstpick/pi-extension-safety-guard` — configurable guardrails for dangerous bash commands and protected file edits, with native `/safety-guard-setup` controls.
 - `@firstpick/pi-extension-setup-skills` — TUI `/skills` setup command alongside WebUI-native skill toggles.
 - `@firstpick/pi-extension-todo-progress` — todo-progress rendering.
 - `@firstpick/pi-extension-tools` — TUI `/tools` active-tool manager alongside WebUI-native tool toggles.
@@ -436,5 +437,6 @@ This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; b
 - **`/webui-start` is missing:** restart Pi after installing the package.
 - **Wrong port or existing server:** use `/webui-status detailed`, or start on another port with `/webui-start --port 31500`.
 - **Optional feature is disabled or missing:** check the side panel, install the companion package if needed, then run `/reload` in the active Pi tab.
+- **`spawn npm ENOENT` on Windows during install/update:** use a Web UI release with bundled npm CLI resolution, or run the displayed `npm install` command manually and restart Web UI. Adding Node to `PATH` alone may not help because Windows `spawn()` does not execute the `npm.cmd` shim directly.
 - **Remote browser asks for a PIN:** read it from the optional **Remote WebUI** side-panel controls, `/webui-status`, `/remote status`, or the local Web UI server log. Disable the toggle from localhost to remove the PIN gate.
 - **PWA install or notifications are unavailable:** use `localhost` or HTTPS; browser support varies on LAN HTTP URLs.
