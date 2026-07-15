@@ -13,8 +13,11 @@ type AppendEntry = (customType: string, data?: unknown) => void;
 
 export type WorkflowStateStore = {
   getActiveRun(): WorkflowRun | undefined;
+  getActiveRuns(): WorkflowRun[];
+  getRun(runId: string): WorkflowRun | undefined;
   getLastRun(): WorkflowRun | undefined;
   setActiveRun(run: WorkflowRun | undefined): void;
+  removeActiveRun(runId: string): void;
   setLastRun(run: WorkflowRun | undefined): void;
   persistRun(run: WorkflowRun): void;
   restoreFromEntries(entries: EntryLike[]): WorkflowRun | undefined;
@@ -63,19 +66,30 @@ export function latestWorkflowRunFromEntries(entries: EntryLike[]): WorkflowRun 
 }
 
 export function createWorkflowStateStore(pi?: { appendEntry?: AppendEntry }): WorkflowStateStore {
-  let activeRun: WorkflowRun | undefined;
+  const activeRuns = new Map<string, WorkflowRun>();
   let lastRun: WorkflowRun | undefined;
 
   return {
     getActiveRun() {
-      return activeRun;
+      return [...activeRuns.values()].at(-1);
+    },
+    getActiveRuns() {
+      return [...activeRuns.values()];
+    },
+    getRun(runId) {
+      return activeRuns.get(runId) ?? (lastRun?.runId === runId ? lastRun : undefined);
     },
     getLastRun() {
       return lastRun;
     },
     setActiveRun(run) {
-      activeRun = run;
-      if (run) lastRun = run;
+      if (run) {
+        activeRuns.set(run.runId, run);
+        lastRun = run;
+      } else activeRuns.clear();
+    },
+    removeActiveRun(runId) {
+      activeRuns.delete(runId);
     },
     setLastRun(run) {
       lastRun = run;

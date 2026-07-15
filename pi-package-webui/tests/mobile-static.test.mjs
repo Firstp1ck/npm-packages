@@ -182,6 +182,8 @@ assert.ok(
 );
 assert.match(html, /id="optionsConversationModeButton"[^>]*data-command="\/talk"[^>]*hidden[\s\S]*?<span>Start Conversation<\/span>/, "Options menu should include the feature-gated Natural Conversation toggle");
 assert.match(html, /id="conversationModeChip" class="composer-conversation-mode-chip"[\s\S]*hidden>Voice: off<\/button>/, "composer should expose a hidden-until-active conversation status chip");
+assert.match(html, /id="workflowModeButton"[\s\S]*class="composer-workflow-mode-button"[\s\S]*aria-pressed="false"[\s\S]*hidden[\s\S]*<span>Workflow<\/span>/, "composer actions should expose a capability-gated Workflow Mode toggle");
+assert.match(html, /id="workflowModeChip" class="composer-workflow-mode-chip"[\s\S]*hidden>Workflow: on<\/button>/, "composer should expose a hidden-until-active Workflow Mode chip");
 assert.match(html, /id="conversationModeEndButton" class="composer-conversation-end-button"[\s\S]*hidden>End conversation<\/button>/, "composer should expose a persistent End conversation button while active");
 assert.match(html, /id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" hidden>[\s\S]*id="conversationVoiceButton"[\s\S]*id="conversationVoiceMenuPanel" class="composer-publish-menu-panel[\s\S]*id="conversationModeEndButton"/, "composer should expose the conversation voice menu (publish-menu pattern) next to the End conversation button");
 assert.match(app, /conversationVoiceMenuPanel: \$\("#conversationVoiceMenuPanel"\)/, "frontend should register the conversation voice menu panel");
@@ -804,6 +806,16 @@ assert.match(app, /const conversationModeByTab = new Map\(\)/, "frontend should 
 assert.match(app, /function defaultConversationModeState[\s\S]*allowedTools: \["read", "grep", "find", "ls"\]/, "frontend Natural Conversation defaults should mirror the read-only tool allowlist");
 assert.match(app, /function renderConversationModeControls\(\)[\s\S]*document\.body\.classList\.toggle\("conversation-mode-active", active\)[\s\S]*optionsConversationModeButton[\s\S]*conversationModeChip[\s\S]*conversationModeEndButton/, "frontend should render active Natural Conversation controls and page\/composer state");
 assert.match(app, /async function setNaturalConversationModeEnabled\(enabled\)[\s\S]*api\("\/api\/conversation-mode", \{ method: "POST"/, "frontend Natural Conversation toggle should use the WebUI shell endpoint");
+assert.match(app, /const WORKFLOW_MODE_STATUS_KEY = "workflow-mode"/, "frontend should consume extension-owned Workflow Mode status");
+assert.match(app, /const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc"[\s\S]*WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD "[\s\S]*WORKFLOW_MODE_RPC_PAYLOAD_VERSION = 1/, "frontend should recognize the versioned replayable Workflow Mode RPC payload");
+assert.match(app, /function workflowModeStateFromRpcPayload\(lines\)[\s\S]*payload\?\.type !== WORKFLOW_MODE_RPC_PAYLOAD_TYPE[\s\S]*normalizeWorkflowModeState/, "frontend should strictly validate structured Workflow Mode payloads");
+assert.match(app, /const workflowModeByTab = new Map\(\)/, "frontend should track Workflow Mode independently for each Pi tab");
+assert.match(app, /function renderWorkflowModeControls\(\)[\s\S]*workflow-mode-active[\s\S]*workflowModeButton[\s\S]*workflowModeChip/, "frontend should render toggle, active chip, and composer state from extension status");
+assert.match(app, /async function setWorkflowModeEnabled\(enabled\)[\s\S]*`\/\$\{commandName\} mode \$\{enabled \? "on" : "off"\}`/, "Workflow Mode toggle should send canonical extension commands rather than rewrite prompts locally");
+assert.match(app, /if \(statusKey === WORKFLOW_MODE_STATUS_KEY\) handleWorkflowModeStatus/, "Workflow Mode should synchronize from replayable extension setStatus events");
+assert.match(app, /if \(widgetKey === WORKFLOW_MODE_RPC_WIDGET_KEY\)[\s\S]*workflowModeStateFromRpcPayload\(request\.widgetLines\)[\s\S]*updateWorkflowModeForTab/, "Workflow Mode should consume structured replay state without rendering an opaque widget");
+assert.match(css, /\.composer-workflow-mode-button\.active,[\s\S]*aria-pressed="true"/, "active Workflow Mode toggle should have persistent pressed styling");
+assert.match(css, /\.composer\.workflow-mode-active[\s\S]*body\.workflow-mode-active \.composer::before/, "active Workflow Mode should visibly accent the composer");
 // Phase 3: browser voice loop (Web Speech STT/TTS) wiring.
 const voiceModule = await readFile(join(root, "public", "voice-conversation.mjs"), "utf8");
 assert.match(voiceModule, /export function createVoiceConversationController\(options = \{\}\)/, "voice loop should live in a dependency-injected module for Node tests");

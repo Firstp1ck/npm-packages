@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { isPathInside } from "@firstpick/pi-utils/paths";
 import { DEFAULT_ALLOWED_TOOLS } from "./schema.ts";
 import type { TaskContext, TaskResult, TaskRunner, WorkflowSubprocessEvent, WorkflowTask, WorkflowUsage } from "./types.ts";
 import { truncateText } from "./utils.ts";
@@ -26,6 +27,8 @@ type GenericMessage = {
 type SubprocessTaskRunnerOptions = {
   defaultTools?: string[];
   outputCapBytes?: number;
+  terminationGraceMs?: number;
+  invocation?: { command: string; argsPrefix?: string[] };
 };
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -145,6 +148,8 @@ function eventSummaryLines(event: any): string[] {
 export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions = {}): TaskRunner {
   const defaultTools = options.defaultTools ?? [...DEFAULT_ALLOWED_TOOLS];
   const outputCapBytes = options.outputCapBytes ?? DEFAULT_OUTPUT_CAP_BYTES;
+  const terminationGraceMs = options.terminationGraceMs ?? 5000;
+  if (!Number.isInteger(terminationGraceMs) || terminationGraceMs < 0) throw new RangeError("terminationGraceMs must be a non-negative integer.");
 
   return {
     async runTask(task: WorkflowTask, context: TaskContext): Promise<TaskResult> {
@@ -158,8 +163,13 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
       if (tools.length > 0) args.push("--tools", tools.join(","));
       args.push(task.prompt);
 
-      const invocation = getPiInvocation(args);
+      const invocation = options.invocation
+        ? { command: options.invocation.command, args: [...(options.invocation.argsPrefix ?? []), ...args] }
+        : getPiInvocation(args);
       const cwd = task.cwd ? path.resolve(context.cwd, task.cwd) : context.cwd;
+      if (!isPathInside(context.cwd, cwd)) {
+        return { ok: false, output: "", error: `Task cwd escapes the workflow root: ${task.cwd}` };
+      }
       const outputs: string[] = [];
       const rawEvents: unknown[] = [];
       const usage: WorkflowUsage = {};
@@ -176,11 +186,15 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
       });
 
       const exitCode = await new Promise<number>((resolve) => {
+        const useProcessGroup = process.platform !== "win32";
         const proc = spawn(invocation.command, invocation.args, {
           cwd,
           shell: false,
+          detached: useProcessGroup,
           stdio: ["ignore", "pipe", "pipe"],
         });
+        let abortListener: (() => void) | undefined;
+        let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
         const processLine = (line: string) => {
           const trimmed = line.trim();
@@ -232,6 +246,9 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
         });
 
         proc.on("close", (code) => {
+          if (abortListener && context.signal) context.signal.removeEventListener("abort", abortListener);
+          if (aborted) signalProcessTree("SIGKILL");
+          if (forceKillTimer) clearTimeout(forceKillTimer);
           const finalCode = code ?? 0;
           if (stdoutBuffer.trim()) processLine(stdoutBuffer);
           if (stderrBuffer.trim()) processStderrLine(stderrBuffer);
@@ -248,17 +265,28 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
           resolve(1);
         });
 
+        const signalProcessTree = (signal: NodeJS.Signals) => {
+          try {
+            if (useProcessGroup && proc.pid) process.kill(-proc.pid, signal);
+            else proc.kill(signal);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ESRCH") {
+              emitSubprocessEvent(context, task, "stderr", { line: `failed to send ${signal}: ${(error as Error).message}` });
+            }
+          }
+        };
+
         const killProc = () => {
+          if (aborted) return;
           aborted = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
-          }, 5000).unref?.();
+          signalProcessTree("SIGTERM");
+          forceKillTimer = setTimeout(() => signalProcessTree("SIGKILL"), terminationGraceMs);
         };
 
         if (context.signal) {
+          abortListener = killProc;
           if (context.signal.aborted) killProc();
-          else context.signal.addEventListener("abort", killProc, { once: true });
+          else context.signal.addEventListener("abort", abortListener, { once: true });
         }
       });
 

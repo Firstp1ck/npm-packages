@@ -1,7 +1,10 @@
 import { WorkflowCancelledError, WorkflowPhaseError, errorMessage, isCancellation } from "./errors.ts";
 import { effectiveMaxConcurrency } from "./schema.ts";
+import { sha256 } from "./persistence-schema.ts";
+import { transitionWorkflowRun } from "./run-status.ts";
+import { globalWorkflowAgentScheduler, type WorkflowAgentScheduler } from "./scheduler.ts";
 import { createWorkflowRun, type WorkflowStateStore } from "./state.ts";
-import type { TaskContext, TaskRunner, WorkflowDefinition, WorkflowInput, WorkflowPhase, WorkflowRun, WorkflowSource, WorkflowTask, TaskRun, PhaseRun } from "./types.ts";
+import type { TaskContext, TaskRunner, WorkflowDefinition, WorkflowInput, WorkflowJsonSource, WorkflowPhase, WorkflowRun, WorkflowTask, TaskRun, PhaseRun } from "./types.ts";
 import { renderWorkflowRun, renderWorkflowSubprocessEvent, renderWorkflowSubprocessWidget, type WorkflowUIContext } from "./ui.ts";
 import { formatDuration, interpolateTemplate, mapWithConcurrencyLimit } from "./utils.ts";
 
@@ -9,6 +12,9 @@ export type WorkflowRunnerOptions = {
   cwd: string;
   taskRunner: TaskRunner;
   state: WorkflowStateStore;
+  scheduler?: WorkflowAgentScheduler;
+  run?: WorkflowRun;
+  onRunUpdate?: (run: WorkflowRun) => void;
   signal?: AbortSignal;
 };
 
@@ -32,6 +38,7 @@ function taskRunAt(phaseRun: PhaseRun, index: number, task: WorkflowTask): TaskR
 
 function persistAndRender(run: WorkflowRun, ctx: WorkflowUIContext, options: WorkflowRunnerOptions): void {
   options.state.persistRun(run);
+  options.onRunUpdate?.(run);
   renderWorkflowRun(ctx, run);
   renderWorkflowSubprocessWidget(ctx, run);
 }
@@ -83,12 +90,18 @@ async function runOneTask(
   const taskRun = taskRunAt(phaseRun, index, task);
   taskRun.status = "running";
   taskRun.startedAt = new Date().toISOString();
-  persistAndRender(run, ctx, options);
 
   const taskForRunner = {
     ...task,
     prompt: buildTaskPrompt(task, run.input, priorOutputs),
   };
+  taskRun.promptHash = sha256(taskForRunner.prompt);
+  taskRun.options = {
+    ...(taskForRunner.model ? { model: taskForRunner.model } : {}),
+    ...(taskForRunner.tools ? { tools: [...taskForRunner.tools] } : {}),
+    ...(taskForRunner.cwd ? { cwd: taskForRunner.cwd } : {}),
+  };
+  persistAndRender(run, ctx, options);
 
   const taskContext: TaskContext = {
     cwd: options.cwd,
@@ -101,7 +114,10 @@ async function runOneTask(
   };
 
   try {
-    const result = await options.taskRunner.runTask(taskForRunner, taskContext);
+    const scheduler = options.scheduler ?? globalWorkflowAgentScheduler;
+    const result = await scheduler.schedule({ signal: options.signal, runId: run.runId, callId: task.id }, async (scheduledSignal) => {
+      return await options.taskRunner.runTask(taskForRunner, { ...taskContext, signal: scheduledSignal });
+    });
     taskRun.output = result.output;
     taskRun.usage = result.usage;
     if (result.ok) {
@@ -211,25 +227,25 @@ export function summarizeRun(run: WorkflowRun): string {
 }
 
 export async function runWorkflow(
-  source: WorkflowSource,
+  source: WorkflowJsonSource,
   input: WorkflowInput,
   ctx: WorkflowUIContext,
   options: WorkflowRunnerOptions,
 ): Promise<WorkflowRun> {
   const definition = source.definition;
-  const run = createWorkflowRun(definition, input, source.path);
+  const run = options.run ?? createWorkflowRun(definition, input, source.path);
   options.state.setActiveRun(run);
-  run.status = "running";
+  transitionWorkflowRun(run, "running");
   persistAndRender(run, ctx, options);
 
   try {
     for (const phase of definition.phases) {
       await runPhase(definition, run, phase, ctx, options);
     }
-    run.status = "completed";
+    transitionWorkflowRun(run, "completed");
   } catch (error) {
     if (isCancellation(error) || options.signal?.aborted) {
-      run.status = "cancelled";
+      transitionWorkflowRun(run, "cancelled");
       run.error = errorMessage(error);
       for (const phase of run.phases) {
         if (phase.status === "queued" || phase.status === "running") {
@@ -240,7 +256,7 @@ export async function runWorkflow(
         }
       }
     } else {
-      run.status = "failed";
+      transitionWorkflowRun(run, "failed");
       run.error = errorMessage(error);
       for (const phase of run.phases) {
         if (phase.status === "queued") {
@@ -255,7 +271,7 @@ export async function runWorkflow(
     run.finishedAt = new Date().toISOString();
     run.summary = summarizeRun(run);
     options.state.setLastRun(run);
-    options.state.setActiveRun(undefined);
+    options.state.removeActiveRun(run.runId);
     persistAndRender(run, ctx, options);
   }
 

@@ -6176,6 +6176,7 @@ summary { cursor: pointer; color: var(--warning); }
   white-space: nowrap;
 }
 .composer-conversation-mode-chip[hidden],
+.composer-workflow-mode-chip[hidden],
 .composer-conversation-end-button[hidden],
 .composer-conversation-voice-menu[hidden] {
   display: none !important;
@@ -6248,6 +6249,41 @@ summary { cursor: pointer; color: var(--warning); }
   border-color: rgba(148, 226, 213, 0.78);
   box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1.25rem rgba(148, 226, 213, 0.34);
   transform: translateY(-1px);
+}
+.composer-workflow-mode-chip {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-width: min(14rem, 100%);
+  margin: 0;
+  padding: 0.14rem 0.56rem;
+  border: 1px solid rgba(203, 166, 247, 0.56);
+  border-radius: 999px;
+  color: var(--ctp-mauve);
+  background:
+    linear-gradient(120deg, rgba(203, 166, 247, 0.28), rgba(137, 180, 250, 0.12)),
+    var(--ctp-crust);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1rem rgba(203, 166, 247, 0.24);
+  font-size: var(--text-xs);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.composer-workflow-mode-chip:hover,
+.composer-workflow-mode-chip:focus-visible {
+  border-color: rgba(203, 166, 247, 0.82);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1.25rem rgba(203, 166, 247, 0.38);
+  transform: translateY(-1px);
+}
+.composer.workflow-mode-active {
+  border-color: rgba(203, 166, 247, 0.58);
+  box-shadow: 0 0 1.35rem rgba(203, 166, 247, 0.24), 0 1.2rem 2.6rem rgba(var(--ctp-crust-rgb), 0.34);
+}
+body.workflow-mode-active .composer::before {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent, var(--ctp-mauve), var(--ctp-blue), var(--ctp-mauve), transparent);
 }
 .composer.conversation-mode-active {
   border-color: rgba(148, 226, 213, 0.54);
@@ -6602,9 +6638,34 @@ button.composer-skill-tag:focus-visible {
 .spacer { flex: 1; }
 .composer-new-button,
 .composer-compact-button,
+.composer-workflow-mode-button,
 .composer-git-button,
 .composer-publish-menu {
   margin-right: 0.45rem;
+}
+.composer-workflow-mode-button {
+  min-width: 6.8rem;
+  color: var(--ctp-mauve);
+  border-color: rgba(203, 166, 247, 0.42);
+  background:
+    linear-gradient(120deg, rgba(203, 166, 247, 0.14), rgba(137, 180, 250, 0.10)),
+    linear-gradient(180deg, rgba(var(--ctp-surface-rgb), 0.88), rgba(var(--ctp-crust-rgb), 0.88));
+}
+.composer-workflow-mode-button.active,
+.composer-workflow-mode-button[aria-pressed="true"] {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-mauve), var(--ctp-blue));
+  box-shadow: 0 0 1rem rgba(203, 166, 247, 0.34), inset 0 1px 0 rgba(255,255,255,0.18);
+}
+.composer-workflow-mode-button:hover,
+.composer-workflow-mode-button:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-mauve), var(--ctp-blue), var(--ctp-teal));
+}
+.composer-workflow-mode-button[hidden] {
+  display: none !important;
 }
 .composer-publish-menu {
   position: relative;

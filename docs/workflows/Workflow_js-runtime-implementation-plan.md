@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Draft — implementation not started |
+| Status | In progress — P0 contracts, parser, sandbox, and initial runner implemented |
 | Created | 2026-07-15 |
 | Scope | `pi-extension-workflows`, native Pi TUI, and `pi-package-webui` |
 | Current implementation | JSON workflow IR, synchronous run entrypoint, one active run |
@@ -83,18 +83,18 @@ A task may be marked `DONE` only when its acceptance criteria are met and verifi
 
 | Milestone | Priority | Status | Progress | Blocking dependency |
 | --- | --- | --- | --- | --- |
-| M0 — Contracts and security boundary | P0 | NOT STARTED | 0/8 | None |
-| M1 — JS discovery, parser, and sandbox | P0 | NOT STARTED | 0/10 | M0 |
-| M2 — Agent primitives and scheduler | P0 | NOT STARTED | 0/10 | M1 |
-| M3 — Background run manager and result delivery | P0 | NOT STARTED | 0/10 | M2 |
-| M4 — `workflow_run` tool and Workflow Mode | P0 | NOT STARTED | 0/10 | M3 |
-| M5 — Save, reuse, and migration | P1 | NOT STARTED | 0/9 | M4 |
-| M6 — Native TUI and WebUI inspectors | P1 | NOT STARTED | 0/10 | M3, M4 |
+| M0 — Contracts and security boundary | P0 | DONE | 8/8 | None |
+| M1 — JS discovery, parser, and sandbox | P0 | DONE | 10/10 | M0 |
+| M2 — Agent primitives and scheduler | P0 | DONE | 10/10 | M1 |
+| M3 — Background run manager and result delivery | P0 | DONE | 10/10 | M2 |
+| M4 — `workflow_run` tool and Workflow Mode | P0 | IN PROGRESS | 8/10 | M3 |
+| M5 — Save, reuse, and migration | P1 | DONE | 9/9 | M4 |
+| M6 — Native TUI and WebUI inspectors | P1 | IN PROGRESS | 1/10 | M3, M4 |
 | M7 — Replay-based pause/resume | P1 | NOT STARTED | 0/9 | M3, M5 |
 | M8 — Write-capable isolated workflows | P2 | NOT STARTED | 0/10 | M7 |
 | M9 — Compatibility and ecosystem polish | P2/P3 | NOT STARTED | 0/8 | M5, M6 |
 
-Overall progress: **0/94 tasks complete**.
+Overall progress: **56/94 tasks complete**.
 
 ## 6. Key architecture decisions
 
@@ -344,78 +344,78 @@ Rules:
 
 ### M0 — Contracts and security boundary
 
-- [ ] **WFJS-P0-001** — Freeze the v1 workflow script contract documented in section 7. **Priority:** P0. **Depends on:** none. **Acceptance:** exported TypeScript types and JSON schemas represent every public field.
-- [ ] **WFJS-P0-002** — Write a threat model covering generated code, trusted project code, prompt injection, environment leakage, filesystem escape, network escape, subprocess inheritance, and denial of service. **Priority:** P0. **Depends on:** none. **Acceptance:** threat model names mitigations and residual risks.
-- [ ] **WFJS-P0-003** — Select the production JavaScript isolation backend through a short proof of concept. **Priority:** P0. **Depends on:** WFJS-P0-002. **Acceptance:** capability injection, async promises, interruption, memory limits, and package portability are demonstrated.
-- [ ] **WFJS-P0-004** — Define global hard limits for runtime duration, JS memory, concurrent agents, total agents, output bytes, and nested pipeline depth. **Priority:** P0. **Depends on:** WFJS-P0-002. **Acceptance:** defaults and hard caps are documented and testable.
-- [ ] **WFJS-P0-005** — Define the frozen effective policy calculation. **Priority:** P0. **Depends on:** WFJS-P0-002. **Acceptance:** tests prove scripts cannot widen global/user/project policy.
-- [ ] **WFJS-P0-006** — Define script approval and remembered-consent records keyed by project identity, script hash, and policy hash. **Priority:** P0. **Depends on:** WFJS-P0-005. **Acceptance:** script or policy changes invalidate consent.
-- [ ] **WFJS-P0-007** — Define versioned run, call-ledger, event, usage, and result schemas. **Priority:** P0. **Depends on:** WFJS-P0-001. **Acceptance:** schemas support migration and reject invalid state.
-- [ ] **WFJS-P0-008** — Add architecture decision records for AD-001 through AD-008. **Priority:** P0. **Depends on:** WFJS-P0-001 through WFJS-P0-007. **Acceptance:** decisions are linked from this plan.
+- [x] **WFJS-P0-001** — Freeze the v1 workflow script contract documented in section 7. **Priority:** P0. **Depends on:** none. **Acceptance:** exported TypeScript types and JSON schemas represent every public field.
+- [x] **WFJS-P0-002** — Write a threat model covering generated code, trusted project code, prompt injection, environment leakage, filesystem escape, network escape, subprocess inheritance, and denial of service. **Priority:** P0. **Depends on:** none. **Acceptance:** threat model names mitigations and residual risks.
+- [x] **WFJS-P0-003** — Select the production JavaScript isolation backend through a short proof of concept. **Priority:** P0. **Depends on:** WFJS-P0-002. **Acceptance:** capability injection, async promises, interruption, memory limits, and package portability are demonstrated.
+- [x] **WFJS-P0-004** — Define global hard limits for runtime duration, JS memory, concurrent agents, total agents, output bytes, and nested pipeline depth. **Priority:** P0. **Depends on:** WFJS-P0-002. **Acceptance:** defaults and hard caps are documented and testable.
+- [x] **WFJS-P0-005** — Define the frozen effective policy calculation. **Priority:** P0. **Depends on:** WFJS-P0-002. **Acceptance:** tests prove scripts cannot widen global/user/project policy.
+- [x] **WFJS-P0-006** — Define script approval and remembered-consent records keyed by project identity, script hash, and policy hash. **Priority:** P0. **Depends on:** WFJS-P0-005. **Acceptance:** script or policy changes invalidate consent.
+- [x] **WFJS-P0-007** — Define versioned run, call-ledger, event, usage, and result schemas. **Priority:** P0. **Depends on:** WFJS-P0-001. **Acceptance:** schemas support migration and reject invalid state.
+- [x] **WFJS-P0-008** — Add architecture decision records for AD-001 through AD-008. **Priority:** P0. **Depends on:** WFJS-P0-001 through WFJS-P0-007. **Acceptance:** decisions are linked from this plan.
 
 ### M1 — JS discovery, parser, and sandbox
 
-- [ ] **WFJS-P0-009** — Add `.js` discovery for bundled, user, and trusted project workflows. **Priority:** P0. **Depends on:** M0. **Acceptance:** deterministic precedence and duplicate-name errors are tested.
-- [ ] **WFJS-P0-010** — Parse `export const meta` without executing source code. **Priority:** P0. **Depends on:** WFJS-P0-001. **Acceptance:** dynamic/computed metadata is rejected.
-- [ ] **WFJS-P0-011** — Validate workflow name, filename, phases, Pi policy fields, and requested limits. **Priority:** P0. **Depends on:** WFJS-P0-010. **Acceptance:** actionable file/line diagnostics are returned.
-- [ ] **WFJS-P0-012** — Reject imports, `require`, host globals, `eval`, `Function`, WebAssembly, and unsupported syntax. **Priority:** P0. **Depends on:** WFJS-P0-003. **Acceptance:** escape-attempt fixtures fail before execution.
-- [ ] **WFJS-P0-013** — Implement async body wrapping for top-level `await` and top-level `return`. **Priority:** P0. **Depends on:** WFJS-P0-010. **Acceptance:** representative scripts execute and return structured values.
-- [ ] **WFJS-P0-014** — Implement structured `args` injection without string re-parsing. **Priority:** P0. **Depends on:** WFJS-P0-013. **Acceptance:** nested objects, arrays, primitives, and `undefined` are tested.
-- [ ] **WFJS-P0-015** — Enforce JS runtime wall-clock, instruction, and memory limits. **Priority:** P0. **Depends on:** WFJS-P0-003. **Acceptance:** infinite loops and allocation bombs terminate predictably.
-- [ ] **WFJS-P0-016** — Strip environment variables and inherited handles from any runtime subprocess. **Priority:** P0. **Depends on:** WFJS-P0-003. **Acceptance:** security test confirms secrets and unrelated descriptors are unavailable.
-- [ ] **WFJS-P0-017** — Add source hashing and immutable run-script snapshots. **Priority:** P0. **Depends on:** WFJS-P0-010. **Acceptance:** each run references a byte-exact script and SHA-256 hash.
-- [ ] **WFJS-P0-018** — Add parser/sandbox unit tests and adversarial fixtures. **Priority:** P0. **Depends on:** WFJS-P0-009 through WFJS-P0-017. **Acceptance:** all fixtures pass offline.
+- [x] **WFJS-P0-009** — Add `.js` discovery for bundled, user, and trusted project workflows. **Priority:** P0. **Depends on:** M0. **Acceptance:** deterministic precedence and duplicate-name errors are tested.
+- [x] **WFJS-P0-010** — Parse `export const meta` without executing source code. **Priority:** P0. **Depends on:** WFJS-P0-001. **Acceptance:** dynamic/computed metadata is rejected.
+- [x] **WFJS-P0-011** — Validate workflow name, filename, phases, Pi policy fields, and requested limits. **Priority:** P0. **Depends on:** WFJS-P0-010. **Acceptance:** actionable file/line diagnostics are returned.
+- [x] **WFJS-P0-012** — Reject imports, `require`, host globals, `eval`, `Function`, WebAssembly, and unsupported syntax. **Priority:** P0. **Depends on:** WFJS-P0-003. **Acceptance:** escape-attempt fixtures fail before execution.
+- [x] **WFJS-P0-013** — Implement async body wrapping for top-level `await` and top-level `return`. **Priority:** P0. **Depends on:** WFJS-P0-010. **Acceptance:** representative scripts execute and return structured values.
+- [x] **WFJS-P0-014** — Implement structured `args` injection without string re-parsing. **Priority:** P0. **Depends on:** WFJS-P0-013. **Acceptance:** nested objects, arrays, primitives, and `undefined` are tested.
+- [x] **WFJS-P0-015** — Enforce JS runtime wall-clock, instruction, and memory limits. **Priority:** P0. **Depends on:** WFJS-P0-003. **Acceptance:** infinite loops and allocation bombs terminate predictably.
+- [x] **WFJS-P0-016** — Strip environment variables and inherited handles from any runtime subprocess. **Priority:** P0. **Depends on:** WFJS-P0-003. **Acceptance:** security test confirms secrets and unrelated descriptors are unavailable.
+- [x] **WFJS-P0-017** — Add source hashing and immutable run-script snapshots. **Priority:** P0. **Depends on:** WFJS-P0-010. **Acceptance:** each run references a byte-exact script and SHA-256 hash.
+- [x] **WFJS-P0-018** — Add parser/sandbox unit tests and adversarial fixtures. **Priority:** P0. **Depends on:** WFJS-P0-009 through WFJS-P0-017. **Acceptance:** all fixtures pass offline.
 
 ### M2 — Agent primitives and scheduler
 
-- [ ] **WFJS-P0-019** — Refactor `src/task-runner.ts` into a reusable `agent()` backend. **Priority:** P0. **Depends on:** M1. **Acceptance:** existing subprocess execution and usage parsing remain covered.
-- [ ] **WFJS-P0-020** — Implement `agent(prompt, options)` with labels, model, tools, cwd, timeout, and schema fields. **Priority:** P0. **Depends on:** WFJS-P0-019. **Acceptance:** text and structured outputs are validated.
-- [ ] **WFJS-P0-021** — Implement `phase(name, callback)` and phase-scoped event emission. **Priority:** P0. **Depends on:** WFJS-P0-020. **Acceptance:** nested phase misuse and duplicate phase state are handled predictably.
-- [ ] **WFJS-P0-022** — Implement `parallel(tasks, options)` with stable output ordering. **Priority:** P0. **Depends on:** WFJS-P0-020. **Acceptance:** configured concurrency is never exceeded.
-- [ ] **WFJS-P0-023** — Implement `pipeline(items, worker, options)` with stable item keys. **Priority:** P0. **Depends on:** WFJS-P0-020. **Acceptance:** results preserve input order and keys are persisted.
-- [ ] **WFJS-P0-024** — Add one global scheduler shared by all runs. **Priority:** P0. **Depends on:** WFJS-P0-022, WFJS-P0-023. **Acceptance:** total concurrent subprocesses remain under the global cap.
-- [ ] **WFJS-P0-025** — Enforce per-run concurrency, total-agent, timeout, and output limits. **Priority:** P0. **Depends on:** WFJS-P0-024. **Acceptance:** runaway scripts terminate with categorized errors.
-- [ ] **WFJS-P0-026** — Freeze the effective agent tool policy at run start. **Priority:** P0. **Depends on:** WFJS-P0-005, WFJS-P0-020. **Acceptance:** script-requested tools cannot bypass the frozen policy.
-- [ ] **WFJS-P0-027** — Implement cancellation propagation from run to scheduler to active subprocesses. **Priority:** P0. **Depends on:** WFJS-P0-019, WFJS-P0-024. **Acceptance:** no child process remains after the bounded termination deadline.
-- [ ] **WFJS-P0-028** — Add primitive/scheduler integration tests with fake and real-offline task runners. **Priority:** P0. **Depends on:** WFJS-P0-019 through WFJS-P0-027. **Acceptance:** ordering, limits, errors, and cancellation pass.
+- [x] **WFJS-P0-019** — Refactor `src/task-runner.ts` into a reusable `agent()` backend. **Priority:** P0. **Depends on:** M1. **Acceptance:** existing subprocess execution and usage parsing remain covered.
+- [x] **WFJS-P0-020** — Implement `agent(prompt, options)` with labels, model, tools, cwd, timeout, and schema fields. **Priority:** P0. **Depends on:** WFJS-P0-019. **Acceptance:** text and structured outputs are validated.
+- [x] **WFJS-P0-021** — Implement `phase(name, callback)` and phase-scoped event emission. **Priority:** P0. **Depends on:** WFJS-P0-020. **Acceptance:** nested phase misuse and duplicate phase state are handled predictably.
+- [x] **WFJS-P0-022** — Implement `parallel(tasks, options)` with stable output ordering. **Priority:** P0. **Depends on:** WFJS-P0-020. **Acceptance:** configured concurrency is never exceeded.
+- [x] **WFJS-P0-023** — Implement `pipeline(items, worker, options)` with stable item keys. **Priority:** P0. **Depends on:** WFJS-P0-020. **Acceptance:** results preserve input order and keys are persisted.
+- [x] **WFJS-P0-024** — Add one global scheduler shared by all runs. **Priority:** P0. **Depends on:** WFJS-P0-022, WFJS-P0-023. **Acceptance:** total concurrent subprocesses remain under the global cap.
+- [x] **WFJS-P0-025** — Enforce per-run concurrency, total-agent, timeout, and output limits. **Priority:** P0. **Depends on:** WFJS-P0-024. **Acceptance:** runaway scripts terminate with categorized errors.
+- [x] **WFJS-P0-026** — Freeze the effective agent tool policy at run start. **Priority:** P0. **Depends on:** WFJS-P0-005, WFJS-P0-020. **Acceptance:** script-requested tools cannot bypass the frozen policy.
+- [x] **WFJS-P0-027** — Implement cancellation propagation from run to scheduler to active subprocesses. **Priority:** P0. **Depends on:** WFJS-P0-019, WFJS-P0-024. **Acceptance:** no child process remains after the bounded termination deadline.
+- [x] **WFJS-P0-028** — Add primitive/scheduler integration tests with fake and real-offline task runners. **Priority:** P0. **Depends on:** WFJS-P0-019 through WFJS-P0-027. **Acceptance:** ordering, limits, errors, and cancellation pass.
 
 ### M3 — Background run manager and result delivery
 
-- [ ] **WFJS-P0-029** — Replace the single `activeRun` assumption with `WorkflowRunManager`. **Priority:** P0. **Depends on:** M2. **Acceptance:** run controllers are keyed by run ID.
-- [ ] **WFJS-P0-030** — Define run statuses: `queued`, `validating`, `awaiting_approval`, `running`, `paused`, `completed`, `failed`, and `cancelled`. **Priority:** P0. **Depends on:** WFJS-P0-007. **Acceptance:** every transition is validated.
-- [ ] **WFJS-P0-031** — Persist run metadata, script, policy, calls, events, usage, and result artifacts. **Priority:** P0. **Depends on:** WFJS-P0-017, WFJS-P0-029. **Acceptance:** abrupt process termination leaves inspectable state.
-- [ ] **WFJS-P0-032** — Make background launch return after acceptance rather than after workflow completion. **Priority:** P0. **Depends on:** WFJS-P0-029. **Acceptance:** RPC response completes while the workflow continues.
-- [ ] **WFJS-P0-033** — Aggregate usage and cost per agent, phase, and run. **Priority:** P0. **Depends on:** WFJS-P0-020, WFJS-P0-031. **Acceptance:** totals reconcile with task records.
-- [ ] **WFJS-P0-034** — Produce a consolidated result from the script's top-level return value. **Priority:** P0. **Depends on:** WFJS-P0-013, WFJS-P0-031. **Acceptance:** text, Markdown, JSON, and failure results render consistently.
-- [ ] **WFJS-P0-035** — Insert visible `workflow-request` and `workflow-result` session messages. **Priority:** P0. **Depends on:** WFJS-P0-034. **Acceptance:** TUI and WebUI transcripts show request and final result without all intermediate agent outputs.
-- [ ] **WFJS-P0-036** — Add commands to list, inspect, and abort runs by ID. **Priority:** P0. **Depends on:** WFJS-P0-029. **Acceptance:** `/workflows`, `/workflow status <id>`, and `/workflow abort <id>` work.
-- [ ] **WFJS-P0-037** — Define shutdown behavior for running workflows. **Priority:** P0. **Depends on:** WFJS-P0-027, WFJS-P0-031. **Acceptance:** shutdown cancels or safely marks runs according to policy.
-- [ ] **WFJS-P0-038** — Add run-manager lifecycle and persistence tests. **Priority:** P0. **Depends on:** WFJS-P0-029 through WFJS-P0-037. **Acceptance:** multi-run, cancellation, failure, and restart fixtures pass.
+- [x] **WFJS-P0-029** — Replace the single `activeRun` assumption with `WorkflowRunManager`. **Priority:** P0. **Depends on:** M2. **Acceptance:** run controllers are keyed by run ID.
+- [x] **WFJS-P0-030** — Define run statuses: `queued`, `validating`, `awaiting_approval`, `running`, `paused`, `completed`, `failed`, and `cancelled`. **Priority:** P0. **Depends on:** WFJS-P0-007. **Acceptance:** every transition is validated.
+- [x] **WFJS-P0-031** — Persist run metadata, script, policy, calls, events, usage, and result artifacts. **Priority:** P0. **Depends on:** WFJS-P0-017, WFJS-P0-029. **Acceptance:** abrupt process termination leaves inspectable state.
+- [x] **WFJS-P0-032** — Make background launch return after acceptance rather than after workflow completion. **Priority:** P0. **Depends on:** WFJS-P0-029. **Acceptance:** RPC response completes while the workflow continues.
+- [x] **WFJS-P0-033** — Aggregate usage and cost per agent, phase, and run. **Priority:** P0. **Depends on:** WFJS-P0-020, WFJS-P0-031. **Acceptance:** totals reconcile with task records.
+- [x] **WFJS-P0-034** — Produce a consolidated result from the script's top-level return value. **Priority:** P0. **Depends on:** WFJS-P0-013, WFJS-P0-031. **Acceptance:** text, Markdown, JSON, and failure results render consistently.
+- [x] **WFJS-P0-035** — Insert visible `workflow-request` and `workflow-result` session messages. **Priority:** P0. **Depends on:** WFJS-P0-034. **Acceptance:** TUI and WebUI transcripts show request and final result without all intermediate agent outputs.
+- [x] **WFJS-P0-036** — Add commands to list, inspect, and abort runs by ID. **Priority:** P0. **Depends on:** WFJS-P0-029. **Acceptance:** `/workflows`, `/workflow status <id>`, and `/workflow abort <id>` work.
+- [x] **WFJS-P0-037** — Define shutdown behavior for running workflows. **Priority:** P0. **Depends on:** WFJS-P0-027, WFJS-P0-031. **Acceptance:** shutdown cancels or safely marks runs according to policy.
+- [x] **WFJS-P0-038** — Add run-manager lifecycle and persistence tests. **Priority:** P0. **Depends on:** WFJS-P0-029 through WFJS-P0-037. **Acceptance:** multi-run, cancellation, failure, and restart fixtures pass.
 
 ### M4 — `workflow_run` tool and Workflow Mode
 
 - [ ] **WFJS-P0-039** — Evolve `workflow_run` to accept `script`, `name`, `scriptPath`, `args`, and `resumeFromRunId`. **Priority:** P0. **Depends on:** M3. **Acceptance:** legacy key-based calls have a documented migration path.
-- [ ] **WFJS-P0-040** — Return `async_launched`, task ID, run ID, summary, and persisted script path. **Priority:** P0. **Depends on:** WFJS-P0-032, WFJS-P0-039. **Acceptance:** result shape is schema-tested.
-- [ ] **WFJS-P0-041** — Return `terminate: true` after a successful launch. **Priority:** P0. **Depends on:** WFJS-P0-040. **Acceptance:** the planning model does not continue pretending to execute the workflow.
-- [ ] **WFJS-P0-042** — Implement launch approval with Run once, remembered exact-script approval, raw script view, and Cancel. **Priority:** P0. **Depends on:** WFJS-P0-006, WFJS-P0-039. **Acceptance:** TUI and RPC dialog paths are tested.
-- [ ] **WFJS-P0-043** — Add `/workflow mode once`, `on`, `off`, and `status`. **Priority:** P0. **Depends on:** WFJS-P0-039. **Acceptance:** mode state persists within the session and remains visibly indicated.
-- [ ] **WFJS-P0-044** — Inject Workflow Mode planner instructions in `before_agent_start`. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** the main model is instructed to design a script and call `workflow_run`, not execute the task directly.
-- [ ] **WFJS-P0-045** — Add tool prompt metadata for explicit requests such as "use a workflow". **Priority:** P0. **Depends on:** WFJS-P0-039. **Acceptance:** the tool is not recommended for routine one-agent tasks.
-- [ ] **WFJS-P0-046** — Publish structured mode/run status for RPC clients while keeping native TUI status human-readable. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** payload is versioned and replayable.
-- [ ] **WFJS-P0-047** — Reject or arbitrate conflicting exclusive modes. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** Natural Conversation and other exclusive modes cannot silently trigger workflow fanout.
+- [x] **WFJS-P0-040** — Return `async_launched`, task ID, run ID, summary, and persisted script path. **Priority:** P0. **Depends on:** WFJS-P0-032, WFJS-P0-039. **Acceptance:** result shape is schema-tested.
+- [x] **WFJS-P0-041** — Return `terminate: true` after a successful launch. **Priority:** P0. **Depends on:** WFJS-P0-040. **Acceptance:** the planning model does not continue pretending to execute the workflow.
+- [x] **WFJS-P0-042** — Implement launch approval with Run once, remembered exact-script approval, raw script view, and Cancel. **Priority:** P0. **Depends on:** WFJS-P0-006, WFJS-P0-039. **Acceptance:** TUI and RPC dialog paths are tested.
+- [x] **WFJS-P0-043** — Add `/workflow mode once`, `on`, `off`, and `status`. **Priority:** P0. **Depends on:** WFJS-P0-039. **Acceptance:** mode state persists within the session and remains visibly indicated.
+- [x] **WFJS-P0-044** — Inject Workflow Mode planner instructions in `before_agent_start`. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** the main model is instructed to design a script and call `workflow_run`, not execute the task directly.
+- [x] **WFJS-P0-045** — Add tool prompt metadata for explicit requests such as "use a workflow". **Priority:** P0. **Depends on:** WFJS-P0-039. **Acceptance:** the tool is not recommended for routine one-agent tasks.
+- [x] **WFJS-P0-046** — Publish structured mode/run status for RPC clients while keeping native TUI status human-readable. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** payload is versioned and replayable.
+- [x] **WFJS-P0-047** — Reject or arbitrate conflicting exclusive modes. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** Natural Conversation and other exclusive modes cannot silently trigger workflow fanout.
 - [ ] **WFJS-P0-048** — Add tool, approval, and mode integration tests. **Priority:** P0. **Depends on:** WFJS-P0-039 through WFJS-P0-047. **Acceptance:** direct, one-shot, persistent, cancelled, and policy-denied paths pass.
 
 ### M5 — Save, reuse, and migration
 
-- [ ] **WFJS-P1-001** — Implement `/workflow save <run-id> --project|--user`. **Priority:** P1. **Depends on:** M4. **Acceptance:** save is explicit and never overwrites without confirmation.
-- [ ] **WFJS-P1-002** — Validate and normalize saved workflow filenames and metadata names. **Priority:** P1. **Depends on:** WFJS-P1-001. **Acceptance:** traversal and collision attempts are rejected.
-- [ ] **WFJS-P1-003** — Load global workflows from `~/.pi/agent/workflows/*.js`. **Priority:** P1. **Depends on:** M1. **Acceptance:** global scripts are available across projects.
-- [ ] **WFJS-P1-004** — Load trusted project workflows from `.pi/workflows/*.js`. **Priority:** P1. **Depends on:** M1. **Acceptance:** untrusted project scripts are never parsed beyond safe discovery metadata or executed.
-- [ ] **WFJS-P1-005** — Implement `/workflow run <name> [json-args]`. **Priority:** P1. **Depends on:** WFJS-P1-003, WFJS-P1-004. **Acceptance:** arrays and objects reach `args` as structured values.
-- [ ] **WFJS-P1-006** — Add command argument completion for workflow names and run IDs. **Priority:** P1. **Depends on:** WFJS-P1-005. **Acceptance:** native TUI suggestions are current after reload.
-- [ ] **WFJS-P1-007** — Decide and implement direct saved-workflow aliases such as `/<name>` with collision handling. **Priority:** P1. **Depends on:** WFJS-P1-005. **Acceptance:** canonical `/workflow run` remains available for every workflow.
-- [ ] **WFJS-P1-008** — Convert `deep-research-minimal.json` into the first bundled JS workflow. **Priority:** P1. **Depends on:** M4. **Acceptance:** behavior and test markers remain equivalent or improve.
-- [ ] **WFJS-P1-009** — Keep a temporary JSON adapter and document its removal criteria. **Priority:** P1. **Depends on:** WFJS-P1-008. **Acceptance:** existing JSON users receive warnings and a migration command or guide.
+- [x] **WFJS-P1-001** — Implement `/workflow save <run-id> --project|--user`. **Priority:** P1. **Depends on:** M4. **Acceptance:** save is explicit and never overwrites without confirmation.
+- [x] **WFJS-P1-002** — Validate and normalize saved workflow filenames and metadata names. **Priority:** P1. **Depends on:** WFJS-P1-001. **Acceptance:** traversal and collision attempts are rejected.
+- [x] **WFJS-P1-003** — Load global workflows from `~/.pi/agent/workflows/*.js`. **Priority:** P1. **Depends on:** M1. **Acceptance:** global scripts are available across projects.
+- [x] **WFJS-P1-004** — Load trusted project workflows from `.pi/workflows/*.js`. **Priority:** P1. **Depends on:** M1. **Acceptance:** untrusted project scripts are never parsed beyond safe discovery metadata or executed.
+- [x] **WFJS-P1-005** — Implement `/workflow run <name> [json-args]`. **Priority:** P1. **Depends on:** WFJS-P1-003, WFJS-P1-004. **Acceptance:** arrays and objects reach `args` as structured values.
+- [x] **WFJS-P1-006** — Add command argument completion for workflow names and run IDs. **Priority:** P1. **Depends on:** WFJS-P1-005. **Acceptance:** native TUI suggestions are current after reload.
+- [x] **WFJS-P1-007** — Decide and implement direct saved-workflow aliases such as `/<name>` with collision handling. **Priority:** P1. **Depends on:** WFJS-P1-005. **Acceptance:** canonical `/workflow run` remains available for every workflow.
+- [x] **WFJS-P1-008** — Convert `deep-research-minimal.json` into the first bundled JS workflow. **Priority:** P1. **Depends on:** M4. **Acceptance:** behavior and test markers remain equivalent or improve.
+- [x] **WFJS-P1-009** — Keep a temporary JSON adapter and document its removal criteria. **Priority:** P1. **Depends on:** WFJS-P1-008. **Acceptance:** existing JSON users receive warnings and a migration command or guide.
 
 ### M6 — Native TUI and WebUI inspectors
 
@@ -423,7 +423,7 @@ Rules:
 - [ ] **WFJS-P1-011** — Add native run → phase → agent drilldown. **Priority:** P1. **Depends on:** WFJS-P1-010. **Acceptance:** prompt, recent tool activity, result, usage, and error are inspectable.
 - [ ] **WFJS-P1-012** — Add native controls for pause/resume, abort, retry agent, and save. **Priority:** P1. **Depends on:** M7, WFJS-P1-010. **Acceptance:** keyboard actions display confirmation where required.
 - [ ] **WFJS-P1-013** — Extend the RPC workflow payload to represent multiple runs, phases, agents, usage, and mode state. **Priority:** P1. **Depends on:** WFJS-P0-046. **Acceptance:** payload has schema/version tests.
-- [ ] **WFJS-P1-014** — Add WebUI Workflow Mode controls and active composer chip. **Priority:** P1. **Depends on:** WFJS-P0-043, WFJS-P1-013. **Acceptance:** controls are per tab and use canonical extension commands.
+- [x] **WFJS-P1-014** — Add WebUI Workflow Mode controls and active composer chip. **Priority:** P1. **Depends on:** WFJS-P0-043, WFJS-P1-013. **Acceptance:** controls are per tab and use canonical extension commands.
 - [ ] **WFJS-P1-015** — Add WebUI run list and run detail panel. **Priority:** P1. **Depends on:** WFJS-P1-013. **Acceptance:** active and historical runs render without blocking the transcript.
 - [ ] **WFJS-P1-016** — Add WebUI phase and agent drilldown. **Priority:** P1. **Depends on:** WFJS-P1-015. **Acceptance:** agent status, prompt, recent events, result, and usage render.
 - [ ] **WFJS-P1-017** — Add WebUI pause/resume, abort, retry, raw-script, and save actions. **Priority:** P1. **Depends on:** M7, WFJS-P1-015. **Acceptance:** destructive actions require confirmation.
@@ -576,13 +576,27 @@ Do not renumber task IDs after implementation starts. New work receives a new ID
 
 | Date | Task IDs | Evidence | Result |
 | --- | --- | --- | --- |
-| — | — | No implementation evidence yet | — |
+| 2026-07-15 | WFJS-P0-001–005, 008–014, 016, 019, 021–022, 025–026 | `npm test --prefix pi-extension-workflows`; Node 22.23.1 and Bun 1.3.14 runtime tests; `npm audit --omit=dev`; `git diff --check` | PASS — 0 audit vulnerabilities |
+| 2026-07-15 | WFJS-P0-044, WFJS-P1-014 | Extension mode/unit tests; inline `workflow_run` integration test; WebUI 19-file suite; mobile static checks; Bun mode/runtime tests | PASS |
+| 2026-07-15 | WFJS-P0-006–007, WFJS-P0-017 | Approval exact-match/invalidation tests; strict versioned record validation; immutable snapshot, tamper, traversal, Node/Bun tests; full extension and WebUI suites; `npm audit --omit=dev`; secret-pattern and diff checks | PASS — 0 audit vulnerabilities |
+| 2026-07-15 | WFJS-P0-015, 018, 020, 023–024, 027–028 | Deterministic instruction/memory/wall-clock fixtures; agent-option and per-call timeout tests; persisted pipeline keys; shared two-run FIFO scheduler tests; queued/active cancellation; real process-group orphan test; full Node/Bun and WebUI suites | PASS |
+| 2026-07-15 | WFJS-P0-029–038 | Multi-run manager, transition rejection, async-return timing, atomic run/policy/call/event/usage/result artifacts, agent/phase/run usage reconciliation, request/result messages, abort/shutdown/restart/failure tests; full Node/Bun and WebUI suites | PASS — 0 audit vulnerabilities |
+| 2026-07-15 | WFJS-P0-040–047 except P0-044 previously logged | Async receipt and termination contract; TUI/RPC approval branches; exact-hash consent invalidation; mode once/persistent tests; versioned replayable RPC payload; exclusive-mode arbitration; scriptPath precedence and policy-denied fixtures; full Node/Bun and WebUI suites | PASS — 0 audit vulnerabilities |
+| 2026-07-15 | WFJS-P1-001–009 | Explicit user/project save and overwrite-confirmation tests; name/path/hash/symlink validation; global/trusted-project discovery; name/run-ID completions; canonical no-direct-alias decision; bundled JS parity test; legacy JSON warning/removal guide; full Node/Bun and WebUI suites | PASS — 0 audit vulnerabilities |
+
 
 ## 18. Change log
 
 | Date | Change |
 | --- | --- |
 | 2026-07-15 | Created trackable implementation plan for Claude-shaped reusable JavaScript workflows. |
+| 2026-07-15 | Implemented and verified the first P0 slice: contracts, threat model, ADRs, JS discovery/parser, QuickJS capability sandbox, primitives, policy limits, and Pi task-runner integration. |
+| 2026-07-15 | Added extension-owned persistent Workflow Mode, inline generated-script tool execution, and a synchronized per-tab WebUI toggle with active composer chip. |
+| 2026-07-15 | Added exact-script/policy approval records, strict v1 run/call/event/usage/result schemas, canonical policy/project hashes, and immutable per-session run-script snapshots. |
+| 2026-07-15 | Completed the JS sandbox and scheduler milestones with deterministic interrupt budgets, stable persisted pipeline keys, complete agent options, a global FIFO scheduler, per-agent timeouts, and process-group cancellation. |
+| 2026-07-15 | Completed the background run-manager milestone with multi-run controllers, validated transitions, durable artifacts, asynchronous launch, consolidated session messages, run commands, usage aggregation, and restart/shutdown handling. |
+| 2026-07-15 | Added async `workflow_run` receipts, terminating tool results, launch approval, one-shot mode, versioned RPC mode state, trusted script-path precedence, read-only policy denial, and exclusive-mode arbitration. |
+| 2026-07-15 | Completed save/reuse/migration: explicit scoped saves, overwrite confirmation, completion, canonical command policy, bundled JavaScript deep research, and legacy JSON warnings/removal criteria. |
 
 ## 19. References
 
@@ -595,6 +609,8 @@ Local design and implementation references:
 
 - `docs/workflows/Workflow_deep-report.md`
 - `docs/workflows/Workflow_extension-implementation-plan.md`
+- `docs/workflows/Workflow_js-runtime-threat-model.md`
+- `docs/workflows/Workflow_js-runtime-architecture-decisions.md`
 - `pi-extension-workflows/index.ts`
 - `pi-extension-workflows/src/types.ts`
 - `pi-extension-workflows/src/schema.ts`

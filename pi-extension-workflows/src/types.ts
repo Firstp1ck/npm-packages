@@ -1,4 +1,42 @@
 export type WorkflowInput = Record<string, unknown>;
+export type WorkflowArgs = unknown;
+
+export type WorkflowModeState = {
+  schemaVersion: 1;
+  enabled: boolean;
+  behavior: "persistent" | "once";
+  phase: "off" | "armed" | "running";
+  updatedAt: string;
+};
+
+export type WorkflowScriptPermissions = {
+  write: boolean;
+  shell: boolean;
+  network: boolean;
+};
+
+export type WorkflowScriptPolicy = {
+  version: 1;
+  inputSchema?: unknown;
+  maxConcurrency: number;
+  maxAgents: number;
+  timeoutMs: number;
+  permissions: WorkflowScriptPermissions;
+};
+
+export type WorkflowScriptMeta = {
+  name: string;
+  description: string;
+  phases?: string[];
+  pi: WorkflowScriptPolicy;
+};
+
+export type WorkflowScriptDefinition = {
+  meta: WorkflowScriptMeta;
+  source: string;
+  body: string;
+  sourceHash: string;
+};
 
 export type WorkflowDefinition = {
   schemaVersion: 1;
@@ -30,10 +68,11 @@ export type WorkflowTask = {
   tools?: string[];
   model?: string;
   cwd?: string;
+  timeoutMs?: number;
 };
 
-export type WorkflowRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
-export type PhaseRunStatus = WorkflowRunStatus;
+export type WorkflowRunStatus = "queued" | "validating" | "awaiting_approval" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type PhaseRunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 export type TaskRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type WorkflowUsage = {
@@ -70,9 +109,30 @@ export type WorkflowRun = {
   status: WorkflowRunStatus;
   input: WorkflowInput;
   phases: PhaseRun[];
+  pipelineItems?: PipelineItemRun[];
   startedAt: string;
   finishedAt?: string;
   summary?: string;
+  error?: string;
+  sourceType?: "json" | "javascript";
+  scriptHash?: string;
+  policyHash?: string;
+  projectId?: string;
+  snapshotPath?: string;
+  resumedFromRunId?: string;
+  resumeWarnings?: string[];
+  result?: unknown;
+  usage?: WorkflowUsage;
+  updatedAt?: string;
+};
+
+export type PipelineItemRun = {
+  pipelineId: string;
+  index: number;
+  key: string;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  finishedAt?: string;
   error?: string;
 };
 
@@ -89,21 +149,38 @@ export type PhaseRun = {
 export type TaskRun = {
   taskId: string;
   name: string;
+  callIndex?: number;
   status: TaskRunStatus;
   output?: string;
   error?: string;
   usage?: WorkflowUsage;
+  prompt?: string;
+  promptHash?: string;
+  fingerprint?: string;
+  pipelineKey?: string;
+  options?: Record<string, unknown>;
+  result?: unknown;
   startedAt?: string;
   finishedAt?: string;
 };
 
-export type WorkflowSourceScope = "bundled" | "project";
+export type WorkflowSourceScope = "bundled" | "user" | "project" | "inline";
 
-export type WorkflowSource = {
+export type WorkflowJsonSource = {
   path: string;
   scope: WorkflowSourceScope;
+  sourceType: "json";
   definition: WorkflowDefinition;
 };
+
+export type WorkflowJavaScriptSource = {
+  path: string;
+  scope: WorkflowSourceScope;
+  sourceType: "javascript";
+  script: WorkflowScriptDefinition;
+};
+
+export type WorkflowSource = WorkflowJsonSource | WorkflowJavaScriptSource;
 
 export type TaskResult = {
   ok: boolean;

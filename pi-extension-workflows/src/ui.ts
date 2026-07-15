@@ -20,11 +20,13 @@ type UILike = {
   setStatus?: (key: string, value: string) => void;
   setWidget?: (key: string, value: string[] | undefined, options?: unknown) => void;
   notify?: (message: string, level?: "info" | "warning" | "error" | "success") => void;
+  select?: (title: string, options: string[]) => Promise<string | undefined>;
   theme?: ThemeLike;
 };
 
 export type WorkflowUIContext = {
   hasUI?: boolean;
+  mode?: "tui" | "rpc" | "json" | "print";
   ui?: UILike;
 };
 
@@ -148,7 +150,7 @@ function payloadLine(payload: WorkflowSubprocessPayload): string {
 }
 
 function publishSubprocessPayload(ctx: WorkflowUIContext, payload: WorkflowSubprocessPayload): void {
-  if (ctx.hasUI === false || !ctx.ui) return;
+  if (ctx.hasUI === false || !ctx.ui || (ctx.mode !== undefined && ctx.mode !== "rpc")) return;
   ctx.ui.setWidget?.(SUBPROCESS_WIDGET_KEY, [payloadLine(payload)]);
 }
 

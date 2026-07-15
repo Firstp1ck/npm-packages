@@ -60,6 +60,7 @@ const elements = {
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
   conversationModeChip: $("#conversationModeChip"),
+  workflowModeChip: $("#workflowModeChip"),
   skillEditorDialog: $("#skillEditorDialog"),
   skillEditorTitle: $("#skillEditorTitle"),
   skillEditorMeta: $("#skillEditorMeta"),
@@ -86,6 +87,7 @@ const elements = {
   remoteMicStreamingConsentButton: $("#remoteMicStreamingConsentButton"),
   newSessionButton: $("#newSessionButton"),
   compactButton: $("#compactButton"),
+  workflowModeButton: $("#workflowModeButton"),
   gitWorkflowButton: $("#gitWorkflowButton"),
   publishButton: $("#publishButton"),
   publishMenu: $("#publishMenu"),
@@ -660,6 +662,11 @@ const BTW_WEBUI_PAYLOAD_TYPES = new Set(["firstpick.pi-extension-btw.overlay", "
 const WORKFLOW_WIDGET_PAYLOAD_PREFIX = "WORKFLOW_WEBUI_PAYLOAD ";
 const WORKFLOW_SUBPROCESS_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.subprocess";
 const WORKFLOW_SUBPROCESS_PAYLOAD_VERSION = 1;
+const WORKFLOW_MODE_STATUS_KEY = "workflow-mode";
+const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
+const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
+const WORKFLOW_MODE_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.mode";
+const WORKFLOW_MODE_RPC_PAYLOAD_VERSION = 1;
 const GIT_CHANGES_RENDER_ROW_LIMIT = 4000;
 const GIT_PULL_RESULT_FILE_LIMIT = 48;
 const LAST_USER_PROMPT_STORAGE_KEY = "pi-webui-last-user-prompts";
@@ -761,6 +768,8 @@ const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
 const appRunnerDataByTab = new Map();
 const conversationModeByTab = new Map();
+const workflowModeByTab = new Map();
+const workflowModeTogglePendingByTab = new Set();
 const appRunnerInputDraftByRun = new Map();
 const appRunnerContextLineDraftByRun = new Map();
 const liveToolRuns = new Map();
@@ -4544,6 +4553,155 @@ function isOptionalFeatureEnabled(featureId) {
   return isOptionalFeatureDetected(featureId) && !isOptionalFeatureDisabled(featureId);
 }
 
+function defaultWorkflowModeState(patch = {}) {
+  return {
+    available: false,
+    enabled: false,
+    phase: "off",
+    behavior: "persistent",
+    statusText: "",
+    updatedAt: "",
+    ...patch,
+  };
+}
+
+function normalizeWorkflowModeState(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const enabled = source.enabled === true;
+  const phase = enabled && source.phase === "running" ? "running" : enabled ? "armed" : "off";
+  const behavior = source.behavior === "once" ? "once" : "persistent";
+  return defaultWorkflowModeState({
+    ...source,
+    available: source.available === true,
+    enabled,
+    phase,
+    behavior,
+    statusText: cleanStatusText(source.statusText || ""),
+  });
+}
+
+function workflowModeStateFromStatus(statusText = "") {
+  const text = cleanStatusText(statusText || "");
+  const match = text.match(/^workflow\s*:\s*(on|once|running)$/i);
+  return normalizeWorkflowModeState({
+    available: true,
+    enabled: !!match,
+    behavior: match?.[1]?.toLowerCase() === "once" ? "once" : "persistent",
+    phase: match?.[1]?.toLowerCase() === "running" ? "running" : match ? "armed" : "off",
+    statusText: text,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function workflowModeStateFromRpcPayload(lines) {
+  const raw = String(lines?.[0] || "").trim();
+  if (!raw.startsWith(WORKFLOW_MODE_RPC_PAYLOAD_PREFIX)) return null;
+  try {
+    const payload = JSON.parse(raw.slice(WORKFLOW_MODE_RPC_PAYLOAD_PREFIX.length));
+    if (payload?.type !== WORKFLOW_MODE_RPC_PAYLOAD_TYPE || payload.version !== WORKFLOW_MODE_RPC_PAYLOAD_VERSION) return null;
+    if (typeof payload.enabled !== "boolean" || !["persistent", "once"].includes(payload.behavior) || !["off", "armed", "running"].includes(payload.phase)) return null;
+    return normalizeWorkflowModeState({
+      available: true,
+      enabled: payload.enabled,
+      behavior: payload.behavior,
+      phase: payload.phase,
+      statusText: payload.enabled ? `Workflow: ${payload.phase === "running" ? "running" : payload.behavior === "once" ? "once" : "on"}` : "",
+      updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : new Date().toISOString(),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function updateWorkflowModeForTab(tabId = activeTabId, mode = {}, { render = true } = {}) {
+  if (!tabId) return normalizeWorkflowModeState(mode);
+  const previous = workflowModeByTab.get(tabId) || {};
+  const next = normalizeWorkflowModeState({ ...previous, ...mode });
+  workflowModeByTab.set(tabId, next);
+  if (tabId === activeTabId && render) renderWorkflowModeControls();
+  return next;
+}
+
+function activeWorkflowMode() {
+  return normalizeWorkflowModeState(workflowModeByTab.get(activeTabId) || {});
+}
+
+function workflowModeCommandName() {
+  return resolveAvailableCommandName("workflow", { rpcOnly: true }) || "";
+}
+
+function renderWorkflowModeControls() {
+  const mode = activeWorkflowMode();
+  const commandName = workflowModeCommandName();
+  const commandAvailable = !!commandName && isOptionalFeatureEnabled("workflows");
+  const active = mode.enabled === true;
+  const pending = !!activeTabId && workflowModeTogglePendingByTab.has(activeTabId);
+  document.body.classList.toggle("workflow-mode-active", active);
+  elements.composer?.classList.toggle("workflow-mode-active", active);
+
+  if (elements.workflowModeButton) {
+    elements.workflowModeButton.hidden = !commandAvailable && !active;
+    elements.workflowModeButton.disabled = !commandName || pending;
+    elements.workflowModeButton.classList.toggle("active", active);
+    elements.workflowModeButton.setAttribute("aria-pressed", active ? "true" : "false");
+    const label = elements.workflowModeButton.querySelector("span");
+    if (label) label.textContent = pending ? "Workflow…" : active ? "Workflow On" : "Workflow";
+    const tooltip = commandName
+      ? `${active ? "Disable" : "Enable"} JavaScript Workflow Mode for this Pi tab via /${commandName} mode ${active ? "off" : "on"}.`
+      : "Workflow Mode is unavailable because the /workflow command is not loaded.";
+    applyStyledTooltip(elements.workflowModeButton, tooltip, { ariaLabel: true, align: "start" });
+  }
+
+  if (elements.workflowModeChip) {
+    elements.workflowModeChip.hidden = !active;
+    elements.workflowModeChip.disabled = !commandName || pending;
+    elements.workflowModeChip.textContent = mode.phase === "running" ? "Workflow: running" : mode.behavior === "once" ? "Workflow: once" : "Workflow: on";
+    elements.workflowModeChip.setAttribute("aria-pressed", "true");
+    elements.workflowModeChip.title = "Workflow Mode is active. Click to return this tab to normal Pi prompting.";
+    elements.workflowModeChip.setAttribute("aria-label", `${elements.workflowModeChip.textContent}. Click to disable Workflow Mode.`);
+  }
+}
+
+function handleWorkflowModeStatus(statusText, tabId = activeTabId) {
+  updateWorkflowModeForTab(tabId, workflowModeStateFromStatus(statusText), { render: tabId === activeTabId });
+}
+
+async function setWorkflowModeEnabled(enabled) {
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId) return;
+  const commandName = workflowModeCommandName();
+  if (!commandName) {
+    addEvent("Workflow Mode is unavailable because the /workflow command is not loaded.", "warn");
+    await refreshCommands(tabContext);
+    return;
+  }
+
+  workflowModeTogglePendingByTab.add(tabContext.tabId);
+  renderWorkflowModeControls();
+  setComposerActionsOpen(false);
+  try {
+    await sendPrompt("prompt", `/${commandName} mode ${enabled ? "on" : "off"}`, { targetTabId: tabContext.tabId, throwOnError: true });
+    if (!isCurrentTabContext(tabContext)) return;
+    updateWorkflowModeForTab(tabContext.tabId, {
+      available: true,
+      enabled: enabled === true,
+      phase: enabled ? "armed" : "off",
+      statusText: enabled ? "Workflow: on" : "",
+      updatedAt: new Date().toISOString(),
+    });
+    addEvent(enabled ? "Workflow Mode enabled for this tab." : "Workflow Mode disabled for this tab.", "info");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+  } finally {
+    workflowModeTogglePendingByTab.delete(tabContext.tabId);
+    if (isCurrentTabContext(tabContext)) renderWorkflowModeControls();
+  }
+}
+
+function toggleWorkflowMode() {
+  return setWorkflowModeEnabled(!activeWorkflowMode().enabled);
+}
+
 function defaultConversationModeState(patch = {}) {
   return {
     featureId: "naturalConversation",
@@ -7102,6 +7260,8 @@ function syncTabMetadata(nextTabs = []) {
       widgetsByTab.delete(tabId);
       appRunnerDataByTab.delete(tabId);
       conversationModeByTab.delete(tabId);
+      workflowModeByTab.delete(tabId);
+      workflowModeTogglePendingByTab.delete(tabId);
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
@@ -7121,6 +7281,7 @@ function applyTabMetadata(tab) {
   if (tab.activity) setTabActivity(tab.id, tab.activity);
   if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
   renderConversationModeControls();
+  renderWorkflowModeControls();
   renderTabs();
   return true;
 }
@@ -22712,6 +22873,7 @@ function renderOptionalFeatureControls() {
     elements.optionsConversationModeButton.hidden = !hasNaturalConversation;
   }
   renderConversationModeControls();
+  renderWorkflowModeControls();
 
   const hasRemoteWebuiCommand = isOptionalFeatureEnabled("remoteWebui") && hasAvailableCommand("remote");
   if (elements.optionsRemoteButton) {
@@ -26502,6 +26664,7 @@ function handleExtensionUiRequest(request) {
       if (statusKey === STATS_WEBUI_STATUS_KEY) handleStatsWebuiStatus(request.statusText);
       if (statusKey === BTW_WEBUI_STATUS_KEY) handleBtwWebuiStatus(request.statusText);
       if (statusKey === NATURAL_CONVERSATION_STATUS_KEY) handleNaturalConversationStatus(request.statusText, request.tabId || activeTabId);
+      if (statusKey === WORKFLOW_MODE_STATUS_KEY) handleWorkflowModeStatus(request.statusText, request.tabId || activeTabId);
       if (statusKey === "pi-remote-webui") handleRemoteWebuiStatus(request.statusText);
       updateOptionalFeatureAvailability();
       if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) {
@@ -26519,6 +26682,12 @@ function handleExtensionUiRequest(request) {
     case "setWidget": {
       const widgetKey = request.widgetKey || request.id;
       const requestTabId = request.tabId || activeTabId;
+      if (widgetKey === WORKFLOW_MODE_RPC_WIDGET_KEY) {
+        const modeState = workflowModeStateFromRpcPayload(request.widgetLines);
+        if (modeState) updateWorkflowModeForTab(requestTabId, modeState, { render: requestTabId === activeTabId });
+        updateOptionalFeatureAvailability();
+        return;
+      }
       if (widgetKey === "pi-remote-webui") {
         setWidgetForTab(requestTabId, widgetKey, { ...request, widgetLines: undefined });
         if (Array.isArray(request.widgetLines)) {
@@ -26658,6 +26827,13 @@ function showNextDialog() {
 function handleInactiveTabEvent(event) {
   if (event.type === "extension_ui_request" && EXTENSION_UI_BLOCKING_METHODS.has(event.method)) {
     if (!event.replayed) notifyBlockedTab(event.tabId, { request: event, count: event.pendingExtensionUiRequestCount });
+    renderTabs();
+  } else if (event.type === "extension_ui_request" && event.method === "setStatus" && event.statusKey === WORKFLOW_MODE_STATUS_KEY) {
+    handleWorkflowModeStatus(event.statusText, event.tabId);
+    renderTabs();
+  } else if (event.type === "extension_ui_request" && event.method === "setWidget" && (event.widgetKey || event.id) === WORKFLOW_MODE_RPC_WIDGET_KEY) {
+    const modeState = workflowModeStateFromRpcPayload(event.widgetLines);
+    if (modeState) updateWorkflowModeForTab(event.tabId, modeState, { render: false });
     renderTabs();
   } else if (event.type === "agent_end") {
     notifyAgentDone(event.tabId, { activity: event.tabActivity, tabTitle: event.tabTitle });
@@ -27270,6 +27446,8 @@ elements.releaseAurButton.addEventListener("click", () => runPublishWorkflow("/r
 elements.nativeSkillsButton.addEventListener("click", () => runNativeCommandMenu("/skills"));
 elements.nativeToolsButton.addEventListener("click", () => runNativeCommandMenu("/tools"));
 elements.optionsCommandPaletteButton.addEventListener("click", () => openCommandPalette());
+elements.workflowModeButton?.addEventListener("click", () => toggleWorkflowMode());
+elements.workflowModeChip?.addEventListener("click", () => setWorkflowModeEnabled(false));
 elements.optionsConversationModeButton?.addEventListener("click", () => toggleNaturalConversationMode());
 elements.conversationModeChip?.addEventListener("click", () => toggleVoiceConversationPaused());
 elements.conversationModeEndButton?.addEventListener("click", () => setNaturalConversationModeEnabled(false));
