@@ -327,7 +327,7 @@ delete globalThis.console;
         const previousPipelineKey = __currentPipelineKey;
         let pending;
         try {
-          __currentPipelineKey = pipelineId + ":" + key;
+          __currentPipelineKey = pipelineId + ":" + (typeof options.key === "function" ? "key:" : "index:") + key;
           pending = worker(item, index);
         } finally {
           __currentPipelineKey = previousPipelineKey;

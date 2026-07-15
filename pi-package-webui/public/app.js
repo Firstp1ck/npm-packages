@@ -662,6 +662,10 @@ const BTW_WEBUI_PAYLOAD_TYPES = new Set(["firstpick.pi-extension-btw.overlay", "
 const WORKFLOW_WIDGET_PAYLOAD_PREFIX = "WORKFLOW_WEBUI_PAYLOAD ";
 const WORKFLOW_SUBPROCESS_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.subprocess";
 const WORKFLOW_SUBPROCESS_PAYLOAD_VERSION = 1;
+const WORKFLOW_INSPECTOR_WIDGET_KEY = "workflow:rpc";
+const WORKFLOW_INSPECTOR_PAYLOAD_PREFIX = "WORKFLOW_RPC_PAYLOAD ";
+const WORKFLOW_INSPECTOR_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.inspector";
+const WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1;
 const WORKFLOW_MODE_STATUS_KEY = "workflow-mode";
 const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
 const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
@@ -770,6 +774,8 @@ const appRunnerDataByTab = new Map();
 const conversationModeByTab = new Map();
 const workflowModeByTab = new Map();
 const workflowModeTogglePendingByTab = new Set();
+const workflowInspectorByTab = new Map();
+const workflowInspectorSelectionByTab = new Map();
 const appRunnerInputDraftByRun = new Map();
 const appRunnerContextLineDraftByRun = new Map();
 const liveToolRuns = new Map();
@@ -7262,6 +7268,8 @@ function syncTabMetadata(nextTabs = []) {
       conversationModeByTab.delete(tabId);
       workflowModeByTab.delete(tabId);
       workflowModeTogglePendingByTab.delete(tabId);
+      workflowInspectorByTab.delete(tabId);
+      workflowInspectorSelectionByTab.delete(tabId);
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
@@ -7825,20 +7833,33 @@ function terminalConversationModeTooltip(tab) {
   return mode.enabled ? ` · natural conversation: ${mode.uiState || "listening"}` : "";
 }
 
+function tabWorkflowModeActive(tab) {
+  return normalizeWorkflowModeState(workflowModeByTab.get(tab?.id) || {}).enabled === true;
+}
+
+function terminalWorkflowTooltip(tab) {
+  const count = workflowRunningCountForTab(tab?.id);
+  return `${tabWorkflowModeActive(tab) ? " · workflow mode active" : ""}${count ? ` · ${count} workflow run${count === 1 ? "" : "s"} active` : ""}`;
+}
+
 function terminalTabMeta(tab, indicator) {
   const parts = [tab.running ? `${indicator.meta} · pid ${tab.pid || "…"}` : "stopped"];
   if (tabAppRunnerRunningRun(tab)) parts.push("app runner");
   if (tabConversationModeActive(tab)) parts.push("voice");
+  if (tabWorkflowModeActive(tab)) parts.push("workflow mode");
+  const workflowCount = workflowRunningCountForTab(tab.id);
+  if (workflowCount) parts.push(`${workflowCount} workflow${workflowCount === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
 
-function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false }) {
+function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0 }) {
   const titleRow = make("span", "terminal-tab-title-row");
   const indicatorDot = make("span", "terminal-tab-activity-indicator");
   indicatorDot.setAttribute("aria-hidden", "true");
   titleRow.append(indicatorDot, make("span", "terminal-tab-title", title));
   if (appRunnerIsRunning(appRunnerRun)) titleRow.append(make("span", "terminal-tab-app-runner-indicator", "app"));
   if (conversationModeActive) titleRow.append(make("span", "terminal-tab-conversation-indicator", "voice"));
+  if (workflowModeActive || workflowCount) titleRow.append(make("span", "terminal-tab-workflow-indicator", workflowCount ? `wf ${workflowCount}` : "wf"));
   if (count !== null) titleRow.append(make("span", "terminal-tab-group-count", String(count)));
   button.append(titleRow, make("span", "terminal-tab-meta", meta));
 }
@@ -7850,7 +7871,9 @@ function renderTerminalTab(tab) {
   const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
   const conversationModeActive = tabConversationModeActive(tab);
   const conversationLabel = conversationModeActive ? `, natural conversation ${tabConversationMode(tab).uiState || "listening"}` : "";
-  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}`);
+  const workflowModeActive = tabWorkflowModeActive(tab);
+  const workflowCount = workflowRunningCountForTab(tab.id);
+  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}${workflowModeActive ? " workflow-mode-running" : ""}${workflowCount ? " workflow-run-running" : ""}`);
   wrapper.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: tab.id, target: { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button");
@@ -7858,10 +7881,10 @@ function renderTerminalTab(tab) {
   button.draggable = false;
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
-  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}`);
-  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)} · drag onto another tab or group to group`;
+  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
+  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)}${terminalWorkflowTooltip(tab)} · drag onto another tab or group to group`;
   applyStyledTooltip(button, tooltip, { ariaLabel: false });
-  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive });
+  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button);
 
@@ -7888,7 +7911,9 @@ function renderTerminalTabGroupItem(tab, group) {
   const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
   const conversationModeActive = tabConversationModeActive(tab);
   const conversationLabel = conversationModeActive ? `, natural conversation ${tabConversationMode(tab).uiState || "listening"}` : "";
-  const item = make("div", `terminal-tab-group-item activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}`);
+  const workflowModeActive = tabWorkflowModeActive(tab);
+  const workflowCount = workflowRunningCountForTab(tab.id);
+  const item = make("div", `terminal-tab-group-item activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}${workflowModeActive ? " workflow-mode-running" : ""}${workflowCount ? " workflow-run-running" : ""}`);
   item.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(item, { sourceTabId: tab.id, target: group?.custom ? { type: "group", group } : { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button terminal-tab-group-item-button");
@@ -7896,10 +7921,10 @@ function renderTerminalTabGroupItem(tab, group) {
   button.draggable = false;
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
-  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}`);
-  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)} · drag onto another tab or group to group`;
+  button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
+  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)}${terminalWorkflowTooltip(tab)} · drag onto another tab or group to group`;
   applyStyledTooltip(button, tooltip, { ariaLabel: false });
-  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive });
+  appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     switchTab(tab.id);
@@ -7937,10 +7962,12 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   const appRunnerCount = groupTabs.filter(tabAppRunnerRunningRun).length;
   const appRunnerSummary = appRunnerCount > 1 ? `${appRunnerCount} app runners running` : appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
   const groupAppRunnerMeta = appRunnerCount > 1 ? `${appRunnerCount} app runners` : appRunnerRun ? "app runner" : "";
+  const workflowCount = groupTabs.reduce((total, tab) => total + workflowRunningCountForTab(tab.id), 0);
+  const workflowModeActive = groupTabs.some(tabWorkflowModeActive);
   const groupTitle = terminalDisplayGroupTitle(group, activeGroupTab?.title || "group");
   const activeTitle = activeGroupTab?.title || groupTitle;
   const groupDetail = terminalDisplayGroupDetail(group, groupTitle);
-  const wrapper = make("div", `terminal-tab terminal-tab-group${group.custom ? " terminal-tab-custom-group" : ""} activity-${indicator.state}${isActive ? " active" : ""}${isStopped ? " stopped" : ""}${appRunnerRun ? " app-runner-running" : ""}`);
+  const wrapper = make("div", `terminal-tab terminal-tab-group${group.custom ? " terminal-tab-custom-group" : ""} activity-${indicator.state}${isActive ? " active" : ""}${isStopped ? " stopped" : ""}${appRunnerRun ? " app-runner-running" : ""}${workflowModeActive ? " workflow-mode-running" : ""}${workflowCount ? " workflow-run-running" : ""}`);
   wrapper.dataset.groupKey = group.key;
   if (group.customGroupId) wrapper.dataset.customGroupId = group.customGroupId;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: activeGroupTab?.id || "", target: { type: "group", group } });
@@ -7959,10 +7986,10 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
-  button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}. Active ${activeTitle}`);
-  const tooltip = `${activeTitle} · ${groupTitle} · ${groupDetail} · ${groupTabs.length} tabs · ${indicator.label}${appRunnerSummary ? ` · ${appRunnerSummary}` : ""} · drop tabs here to add to group`;
+  button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}`);
+  const tooltip = `${activeTitle} · ${groupTitle} · ${groupDetail} · ${groupTabs.length} tabs · ${indicator.label}${appRunnerSummary ? ` · ${appRunnerSummary}` : ""}${workflowModeActive ? " · workflow mode active" : ""}${workflowCount ? ` · ${workflowCount} workflow runs active` : ""} · drop tabs here to add to group`;
   applyStyledTooltip(button, tooltip, { ariaLabel: false });
-  appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}`, appRunnerRun, count: groupTabs.length });
+  appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(activeGroupTab.id));
   wrapper.append(button);
 
@@ -15057,6 +15084,191 @@ function renderReleaseAurLogWidget() {
   return node;
 }
 
+function parseWorkflowInspectorPayload(lines) {
+  const raw = String(lines?.[0] || "").trim();
+  if (!raw.startsWith(WORKFLOW_INSPECTOR_PAYLOAD_PREFIX)) return null;
+  try {
+    const payload = JSON.parse(raw.slice(WORKFLOW_INSPECTOR_PAYLOAD_PREFIX.length));
+    if (payload?.type !== WORKFLOW_INSPECTOR_PAYLOAD_TYPE || payload.version !== WORKFLOW_INSPECTOR_PAYLOAD_VERSION || !Array.isArray(payload.runs)) return null;
+    if (!payload.runs.every((run) => run && typeof run.runId === "string" && Array.isArray(run.phases) && run.controls && typeof run.controls === "object")) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function updateWorkflowInspectorForTab(tabId, payload) {
+  if (!tabId || !payload) return;
+  workflowInspectorByTab.set(tabId, payload);
+  if (payload.mode) updateWorkflowModeForTab(tabId, { ...payload.mode, available: true, updatedAt: payload.updatedAt }, { render: tabId === activeTabId });
+  const selection = workflowInspectorSelectionByTab.get(tabId) || {};
+  if (selection.runId && !payload.runs.some((run) => run.runId === selection.runId)) workflowInspectorSelectionByTab.delete(tabId);
+}
+
+function activeWorkflowInspectorPayload() {
+  const cached = workflowInspectorByTab.get(activeTabId);
+  if (cached) return cached;
+  const parsed = parseWorkflowInspectorPayload(getWidgetLines(WORKFLOW_INSPECTOR_WIDGET_KEY));
+  if (parsed && activeTabId) updateWorkflowInspectorForTab(activeTabId, parsed);
+  return parsed;
+}
+
+function workflowRunIsLive(run) {
+  return ["queued", "validating", "awaiting_approval", "running", "paused"].includes(run?.status);
+}
+
+function workflowRunningCountForTab(tabId) {
+  const payload = workflowInspectorByTab.get(tabId);
+  return Array.isArray(payload?.runs) ? payload.runs.filter(workflowRunIsLive).length : 0;
+}
+
+function workflowInspectorSelection(payload) {
+  const existing = workflowInspectorSelectionByTab.get(activeTabId) || {};
+  const run = payload.runs.find((candidate) => candidate.runId === existing.runId)
+    || payload.runs.find(workflowRunIsLive)
+    || payload.runs[0];
+  const phase = run?.phases?.find((candidate) => candidate.phaseId === existing.phaseId) || run?.phases?.[0];
+  const agent = phase?.agents?.find((candidate) => candidate.callId === existing.callId) || phase?.agents?.[0];
+  const next = { runId: run?.runId || "", phaseId: phase?.phaseId || "", callId: agent?.callId || "" };
+  if (activeTabId) workflowInspectorSelectionByTab.set(activeTabId, next);
+  return { run, phase, agent, selection: next };
+}
+
+function workflowInspectorSetSelection(patch) {
+  if (!activeTabId) return;
+  workflowInspectorSelectionByTab.set(activeTabId, { ...(workflowInspectorSelectionByTab.get(activeTabId) || {}), ...patch });
+  renderWidgets();
+}
+
+function workflowInspectorJson(value) {
+  if (value === undefined) return "—";
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+async function sendWorkflowInspectorCommand(command, { confirmMessage = "" } = {}) {
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId || !command) return;
+  if (confirmMessage && !window.confirm(confirmMessage)) return;
+  try {
+    await sendPrompt("prompt", command, { targetTabId: tabContext.tabId, throwOnError: true });
+    if (isCurrentTabContext(tabContext)) addEvent(`workflow action sent: ${command}`, "info");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+  }
+}
+
+function workflowInspectorActionButton(label, command, { danger = false, confirmMessage = "" } = {}) {
+  const button = make("button", `release-npm-action${danger ? " danger" : ""}`, label);
+  button.type = "button";
+  button.addEventListener("click", () => void sendWorkflowInspectorCommand(command, { confirmMessage }));
+  return button;
+}
+
+function renderWorkflowInspectorAgent(agent, run) {
+  const details = make("details", "workflow-inspector-agent");
+  const summary = make("summary", "workflow-inspector-agent-summary");
+  summary.append(
+    make("span", `workflow-inspector-status status-${agent.status || "unknown"}`, agent.status || "unknown"),
+    make("strong", undefined, agent.name || agent.label || agent.taskId || agent.callId),
+  );
+  details.append(summary);
+  const body = make("div", "workflow-inspector-agent-body");
+  const prompt = make("details", "workflow-inspector-block");
+  prompt.append(make("summary", undefined, "Prompt"), make("pre", undefined, agent.prompt || "—"));
+  body.append(prompt);
+  if (Array.isArray(agent.recentEvents) && agent.recentEvents.length) {
+    const activity = make("details", "workflow-inspector-block");
+    activity.append(make("summary", undefined, `Recent activity (${agent.recentEvents.length})`));
+    activity.append(make("pre", undefined, agent.recentEvents.slice(-12).map((event) => `${event.timestamp || ""} ${event.line || event.command || event.eventType || event.type || "event"}`.trim()).join("\n")));
+    body.append(activity);
+  }
+  const result = make("details", "workflow-inspector-block");
+  result.append(make("summary", undefined, "Result and usage"), make("pre", undefined, `${workflowInspectorJson(agent.result)}\n\nUsage: ${workflowInspectorJson(agent.usage)}${agent.worktree ? `\n\nIsolated worktree: ${workflowInspectorJson(agent.worktree)}` : ""}${agent.error ? `\n\nError: ${agent.error}` : ""}`));
+  body.append(result);
+  if (run.controls?.canRetry) {
+    const controls = make("div", "workflow-inspector-inline-actions");
+    controls.append(workflowInspectorActionButton("Retry agent", `/workflow retry ${run.runId} ${agent.callId}`, {
+      confirmMessage: `Retry ${agent.name || agent.callId}? Unrelated completed calls will remain cached.`,
+    }));
+    body.append(controls);
+  }
+  details.append(body);
+  return details;
+}
+
+function renderWorkflowInspectorWidget() {
+  if (!isOptionalFeatureEnabled("workflows")) return null;
+  const payload = activeWorkflowInspectorPayload();
+  if (!payload?.runs?.length) return null;
+  const { run, phase } = workflowInspectorSelection(payload);
+  if (!run) return null;
+
+  const node = make("section", "widget release-npm-widget workflow-widget workflow-inspector-widget");
+  node.setAttribute("aria-label", "workflow run inspector");
+  const header = make("div", "release-npm-header");
+  const titleWrap = make("div", "release-npm-title-wrap");
+  titleWrap.append(make("span", "release-npm-kicker", "workflows"), make("strong", "release-npm-title", `${payload.runs.length} run${payload.runs.length === 1 ? "" : "s"}`));
+  const meta = make("div", "release-npm-meta");
+  meta.append(make("span", "release-npm-pill", payload.mode?.enabled ? `mode ${payload.mode.phase}` : "mode off"));
+  const liveCount = payload.runs.filter(workflowRunIsLive).length;
+  if (liveCount) meta.append(make("span", "release-npm-pill workflow-status running", `${liveCount} active`));
+  header.append(titleWrap, meta);
+
+  const layout = make("div", "workflow-inspector-layout");
+  const runList = make("nav", "workflow-inspector-run-list");
+  runList.setAttribute("aria-label", "Workflow runs");
+  for (const candidate of payload.runs) {
+    const button = make("button", `workflow-inspector-run${candidate.runId === run.runId ? " active" : ""}`);
+    button.type = "button";
+    button.append(make("span", `workflow-inspector-status status-${candidate.status}`, candidate.status), make("strong", undefined, candidate.workflowName || candidate.workflowKey), make("small", undefined, candidate.runId));
+    button.addEventListener("click", () => workflowInspectorSetSelection({ runId: candidate.runId, phaseId: "", callId: "" }));
+    runList.append(button);
+  }
+
+  const detail = make("div", "workflow-inspector-detail");
+  const runHeader = make("div", "workflow-inspector-run-header");
+  runHeader.append(make("div", undefined, `${run.workflowName || run.workflowKey}\n${run.runId}`));
+  const actions = make("div", "release-npm-actions workflow-inspector-actions");
+  if (run.controls?.canPause) actions.append(workflowInspectorActionButton("Pause", `/workflow pause ${run.runId}`));
+  if (run.status === "paused") actions.append(workflowInspectorActionButton("Resume", `/workflow resume ${run.runId}`));
+  else if (run.controls?.canResume) actions.append(workflowInspectorActionButton("Replay", `/workflow resume ${run.runId}`, { confirmMessage: `Replay ${run.workflowName || run.runId}?` }));
+  if (run.controls?.canAbort) actions.append(workflowInspectorActionButton("Abort", `/workflow abort ${run.runId}`, { danger: true, confirmMessage: `Abort ${run.workflowName || run.runId} and active subprocesses?` }));
+  if (run.controls?.canSave) {
+    actions.append(workflowInspectorActionButton("Save user", `/workflow save ${run.runId} --user`));
+    actions.append(workflowInspectorActionButton("Save project", `/workflow save ${run.runId} --project`));
+  }
+  runHeader.append(actions);
+  detail.append(runHeader);
+  const summary = make("pre", "workflow-inspector-run-summary", `Status: ${run.status}\nStarted: ${run.startedAt}\nUsage: ${workflowInspectorJson(run.usage)}\nResult: ${workflowInspectorJson(run.result)}${run.error ? `\nError: ${run.error}` : ""}`);
+  detail.append(summary);
+
+  if (run.phases?.length) {
+    const phaseTabs = make("div", "workflow-inspector-phase-tabs");
+    for (const candidate of run.phases) {
+      const button = make("button", `workflow-inspector-phase-tab${candidate.phaseId === phase?.phaseId ? " active" : ""}`, `${candidate.name} · ${candidate.status}`);
+      button.type = "button";
+      button.addEventListener("click", () => workflowInspectorSetSelection({ phaseId: candidate.phaseId, callId: "" }));
+      phaseTabs.append(button);
+    }
+    detail.append(phaseTabs);
+    if (phase) {
+      const agents = make("div", "workflow-inspector-agent-list");
+      for (const agent of phase.agents || []) agents.append(renderWorkflowInspectorAgent(agent, run));
+      if (!phase.agents?.length) agents.append(make("p", "muted", "This phase has no agent calls."));
+      detail.append(agents);
+    }
+  }
+  if (run.script) {
+    const raw = make("details", "workflow-inspector-raw-script");
+    raw.append(make("summary", undefined, "Raw workflow script"), make("pre", undefined, run.script));
+    detail.append(raw);
+  }
+  layout.append(runList, detail);
+  node.append(header, layout);
+  return node;
+}
+
 function parseWorkflowSubprocessPayload(lines) {
   const raw = String(lines?.[0] || "").trim();
   if (!raw) return null;
@@ -16996,6 +17208,8 @@ function renderWidgets() {
   if (releaseAurOutput) elements.widgetArea.append(releaseAurOutput);
   const releaseAurLog = renderReleaseAurLogWidget();
   if (releaseAurLog) elements.widgetArea.append(releaseAurLog);
+  const workflowInspectorWidget = renderWorkflowInspectorWidget();
+  if (workflowInspectorWidget) elements.widgetArea.append(workflowInspectorWidget);
   const workflowSubprocessWidget = renderWorkflowSubprocessWidget();
   if (workflowSubprocessWidget) elements.widgetArea.append(workflowSubprocessWidget);
   const appRunnerWidget = renderAppRunnerWidget();
@@ -22649,7 +22863,7 @@ function optionalFeatureWidgetFeatureId(key) {
 }
 
 function optionalFeatureWidgetHasSpecializedRenderer(key) {
-  return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === "workflow:subprocess";
+  return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === "workflow:subprocess" || key === WORKFLOW_INSPECTOR_WIDGET_KEY;
 }
 
 function renderOptionalFeaturePanel() {
@@ -26688,6 +26902,15 @@ function handleExtensionUiRequest(request) {
         updateOptionalFeatureAvailability();
         return;
       }
+      if (widgetKey === WORKFLOW_INSPECTOR_WIDGET_KEY) {
+        const inspector = parseWorkflowInspectorPayload(request.widgetLines);
+        if (inspector) updateWorkflowInspectorForTab(requestTabId, inspector);
+        if (!setWidgetForTab(requestTabId, widgetKey, request)) return;
+        updateOptionalFeatureAvailability();
+        renderTabs();
+        renderWidgets();
+        return;
+      }
       if (widgetKey === "pi-remote-webui") {
         setWidgetForTab(requestTabId, widgetKey, { ...request, widgetLines: undefined });
         if (Array.isArray(request.widgetLines)) {
@@ -26834,6 +27057,11 @@ function handleInactiveTabEvent(event) {
   } else if (event.type === "extension_ui_request" && event.method === "setWidget" && (event.widgetKey || event.id) === WORKFLOW_MODE_RPC_WIDGET_KEY) {
     const modeState = workflowModeStateFromRpcPayload(event.widgetLines);
     if (modeState) updateWorkflowModeForTab(event.tabId, modeState, { render: false });
+    renderTabs();
+  } else if (event.type === "extension_ui_request" && event.method === "setWidget" && (event.widgetKey || event.id) === WORKFLOW_INSPECTOR_WIDGET_KEY) {
+    const inspector = parseWorkflowInspectorPayload(event.widgetLines);
+    if (inspector) updateWorkflowInspectorForTab(event.tabId, inspector);
+    setWidgetForTab(event.tabId, WORKFLOW_INSPECTOR_WIDGET_KEY, event);
     renderTabs();
   } else if (event.type === "agent_end") {
     notifyAgentDone(event.tabId, { activity: event.tabActivity, tabTitle: event.tabTitle });

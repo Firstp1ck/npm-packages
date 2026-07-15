@@ -2742,6 +2742,21 @@ body.embedded-split .side-panel-backdrop {
   text-transform: uppercase;
   animation: terminal-tab-app-runner-pulse 1.5s ease-in-out infinite;
 }
+.terminal-tab-workflow-indicator {
+  flex: 0 0 auto;
+  padding: 0.04rem 0.36rem;
+  border: 1px solid rgba(203, 166, 247, 0.48);
+  border-radius: 999px;
+  color: var(--ctp-mauve);
+  background: rgba(203, 166, 247, 0.14);
+  box-shadow: 0 0 0.7rem rgba(203, 166, 247, 0.3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: var(--text-xs);
+  font-weight: 900;
+  line-height: 1.12;
+  text-transform: uppercase;
+  animation: terminal-tab-app-runner-pulse 1.45s ease-in-out infinite;
+}
 .terminal-tab.activity-working > .terminal-tab-button .terminal-tab-activity-indicator {
   background: var(--ctp-yellow);
   box-shadow: 0 0 0 1px rgba(249, 226, 175, 0.34), 0 0 0.8rem rgba(249, 226, 175, 0.52);
@@ -4664,6 +4679,107 @@ button.git-workflow-step:hover:not(:disabled) {
 .workflow-widget .release-npm-pill.workflow-status.running,
 .workflow-widget .release-npm-pill.workflow-status.queued { color: var(--ctp-blue); }
 .workflow-widget .release-npm-pill.workflow-truncated { color: var(--ctp-peach); }
+.workflow-inspector-layout {
+  display: grid;
+  grid-template-columns: minmax(11rem, 0.36fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+.workflow-inspector-run-list,
+.workflow-inspector-detail,
+.workflow-inspector-agent-list {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+.workflow-inspector-run-list {
+  align-content: start;
+  max-height: min(30rem, 54dvh);
+  overflow: auto;
+}
+.workflow-inspector-run {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.25rem 0.45rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  border-color: rgba(137, 180, 250, 0.24);
+  background: rgba(var(--ctp-crust-rgb), 0.55);
+}
+.workflow-inspector-run.active {
+  border-color: rgba(203, 166, 247, 0.64);
+  box-shadow: 0 0 0 1px rgba(203, 166, 247, 0.14), 0 0 1rem rgba(203, 166, 247, 0.14);
+}
+.workflow-inspector-run strong,
+.workflow-inspector-run small { min-width: 0; overflow-wrap: anywhere; }
+.workflow-inspector-run small { grid-column: 1 / -1; color: var(--ctp-subtext0); }
+.workflow-inspector-status {
+  align-self: start;
+  color: var(--ctp-blue);
+  font-size: var(--text-xs);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.workflow-inspector-status.status-completed { color: var(--ctp-green); }
+.workflow-inspector-status.status-failed { color: var(--ctp-red); }
+.workflow-inspector-status.status-cancelled,
+.workflow-inspector-status.status-paused { color: var(--ctp-yellow); }
+.workflow-inspector-run-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.workflow-inspector-actions { justify-content: flex-end; }
+.workflow-inspector-run-summary,
+.workflow-inspector-block pre,
+.workflow-inspector-raw-script pre {
+  max-height: min(19rem, 42dvh);
+  margin: 0;
+  padding: 0.6rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(var(--ctp-surface-rgb), 0.8);
+  border-radius: 0.6rem;
+  background: rgba(var(--ctp-crust-rgb), 0.68);
+  color: var(--ctp-text);
+  font-size: var(--text-xs);
+}
+.workflow-inspector-phase-tabs,
+.workflow-inspector-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.workflow-inspector-phase-tab { min-height: 2.1rem; padding: 0.36rem 0.58rem; }
+.workflow-inspector-phase-tab.active { border-color: var(--ctp-blue); color: var(--ctp-blue); }
+.workflow-inspector-agent,
+.workflow-inspector-block,
+.workflow-inspector-raw-script {
+  border: 1px solid rgba(137, 180, 250, 0.2);
+  border-radius: 0.62rem;
+  background: rgba(var(--ctp-crust-rgb), 0.38);
+}
+.workflow-inspector-agent-summary,
+.workflow-inspector-block > summary,
+.workflow-inspector-raw-script > summary {
+  cursor: pointer;
+  padding: 0.48rem 0.6rem;
+  overflow-wrap: anywhere;
+}
+.workflow-inspector-agent-summary { display: flex; gap: 0.55rem; align-items: center; }
+.workflow-inspector-agent-body { display: grid; gap: 0.5rem; padding: 0 0.55rem 0.55rem; }
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .workflow-inspector-layout { grid-template-columns: 1fr; }
+  .workflow-inspector-run-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 13rem; }
+  .workflow-inspector-actions { justify-content: stretch; }
+  .workflow-inspector-actions button { flex: 1 1 7rem; min-height: 44px; }
+}
 .btw-widget {
   border-color: rgba(148, 226, 213, 0.62);
   border-left-color: rgba(148, 226, 213, 0.88);

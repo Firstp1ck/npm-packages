@@ -4,10 +4,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | In progress — P0 contracts, parser, sandbox, and initial runner implemented |
+| Status | Complete — all 94 tracked tasks and acceptance gates implemented |
 | Created | 2026-07-15 |
 | Scope | `pi-extension-workflows`, native Pi TUI, and `pi-package-webui` |
-| Current implementation | JSON workflow IR, synchronous run entrypoint, one active run |
+| Current implementation | Capability-only JavaScript runtime, legacy JSON adapter, asynchronous multi-run manager, replay, inspectors, isolated writers, and ecosystem tooling |
 | Target implementation | Claude-shaped reusable JavaScript workflows with capability-only execution |
 | Primary package | `pi-extension-workflows/` |
 | WebUI package | `pi-package-webui/` |
@@ -87,14 +87,14 @@ A task may be marked `DONE` only when its acceptance criteria are met and verifi
 | M1 — JS discovery, parser, and sandbox | P0 | DONE | 10/10 | M0 |
 | M2 — Agent primitives and scheduler | P0 | DONE | 10/10 | M1 |
 | M3 — Background run manager and result delivery | P0 | DONE | 10/10 | M2 |
-| M4 — `workflow_run` tool and Workflow Mode | P0 | IN PROGRESS | 8/10 | M3 |
+| M4 — `workflow_run` tool and Workflow Mode | P0 | DONE | 10/10 | M3 |
 | M5 — Save, reuse, and migration | P1 | DONE | 9/9 | M4 |
-| M6 — Native TUI and WebUI inspectors | P1 | IN PROGRESS | 1/10 | M3, M4 |
-| M7 — Replay-based pause/resume | P1 | NOT STARTED | 0/9 | M3, M5 |
-| M8 — Write-capable isolated workflows | P2 | NOT STARTED | 0/10 | M7 |
-| M9 — Compatibility and ecosystem polish | P2/P3 | NOT STARTED | 0/8 | M5, M6 |
+| M6 — Native TUI and WebUI inspectors | P1 | DONE | 10/10 | M3, M4 |
+| M7 — Replay-based pause/resume | P1 | DONE | 9/9 | M3, M5 |
+| M8 — Write-capable isolated workflows | P2 | DONE | 10/10 | M7 |
+| M9 — Compatibility and ecosystem polish | P2/P3 | DONE | 8/8 | M5, M6 |
 
-Overall progress: **56/94 tasks complete**.
+Overall progress: **94/94 tasks complete**.
 
 ## 6. Key architecture decisions
 
@@ -394,7 +394,7 @@ Rules:
 
 ### M4 — `workflow_run` tool and Workflow Mode
 
-- [ ] **WFJS-P0-039** — Evolve `workflow_run` to accept `script`, `name`, `scriptPath`, `args`, and `resumeFromRunId`. **Priority:** P0. **Depends on:** M3. **Acceptance:** legacy key-based calls have a documented migration path.
+- [x] **WFJS-P0-039** — Evolve `workflow_run` to accept `script`, `name`, `scriptPath`, `args`, and `resumeFromRunId`. **Priority:** P0. **Depends on:** M3. **Acceptance:** legacy key-based calls have a documented migration path.
 - [x] **WFJS-P0-040** — Return `async_launched`, task ID, run ID, summary, and persisted script path. **Priority:** P0. **Depends on:** WFJS-P0-032, WFJS-P0-039. **Acceptance:** result shape is schema-tested.
 - [x] **WFJS-P0-041** — Return `terminate: true` after a successful launch. **Priority:** P0. **Depends on:** WFJS-P0-040. **Acceptance:** the planning model does not continue pretending to execute the workflow.
 - [x] **WFJS-P0-042** — Implement launch approval with Run once, remembered exact-script approval, raw script view, and Cancel. **Priority:** P0. **Depends on:** WFJS-P0-006, WFJS-P0-039. **Acceptance:** TUI and RPC dialog paths are tested.
@@ -403,7 +403,7 @@ Rules:
 - [x] **WFJS-P0-045** — Add tool prompt metadata for explicit requests such as "use a workflow". **Priority:** P0. **Depends on:** WFJS-P0-039. **Acceptance:** the tool is not recommended for routine one-agent tasks.
 - [x] **WFJS-P0-046** — Publish structured mode/run status for RPC clients while keeping native TUI status human-readable. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** payload is versioned and replayable.
 - [x] **WFJS-P0-047** — Reject or arbitrate conflicting exclusive modes. **Priority:** P0. **Depends on:** WFJS-P0-043. **Acceptance:** Natural Conversation and other exclusive modes cannot silently trigger workflow fanout.
-- [ ] **WFJS-P0-048** — Add tool, approval, and mode integration tests. **Priority:** P0. **Depends on:** WFJS-P0-039 through WFJS-P0-047. **Acceptance:** direct, one-shot, persistent, cancelled, and policy-denied paths pass.
+- [x] **WFJS-P0-048** — Add tool, approval, and mode integration tests. **Priority:** P0. **Depends on:** WFJS-P0-039 through WFJS-P0-047. **Acceptance:** direct, one-shot, persistent, cancelled, and policy-denied paths pass.
 
 ### M5 — Save, reuse, and migration
 
@@ -419,52 +419,52 @@ Rules:
 
 ### M6 — Native TUI and WebUI inspectors
 
-- [ ] **WFJS-P1-010** — Implement native `/workflows` run selector. **Priority:** P1. **Depends on:** M3. **Acceptance:** running and completed workflows can be selected.
-- [ ] **WFJS-P1-011** — Add native run → phase → agent drilldown. **Priority:** P1. **Depends on:** WFJS-P1-010. **Acceptance:** prompt, recent tool activity, result, usage, and error are inspectable.
-- [ ] **WFJS-P1-012** — Add native controls for pause/resume, abort, retry agent, and save. **Priority:** P1. **Depends on:** M7, WFJS-P1-010. **Acceptance:** keyboard actions display confirmation where required.
-- [ ] **WFJS-P1-013** — Extend the RPC workflow payload to represent multiple runs, phases, agents, usage, and mode state. **Priority:** P1. **Depends on:** WFJS-P0-046. **Acceptance:** payload has schema/version tests.
+- [x] **WFJS-P1-010** — Implement native `/workflows` run selector. **Priority:** P1. **Depends on:** M3. **Acceptance:** running and completed workflows can be selected.
+- [x] **WFJS-P1-011** — Add native run → phase → agent drilldown. **Priority:** P1. **Depends on:** WFJS-P1-010. **Acceptance:** prompt, recent tool activity, result, usage, and error are inspectable.
+- [x] **WFJS-P1-012** — Add native controls for pause/resume, abort, retry agent, and save. **Priority:** P1. **Depends on:** M7, WFJS-P1-010. **Acceptance:** keyboard actions display confirmation where required.
+- [x] **WFJS-P1-013** — Extend the RPC workflow payload to represent multiple runs, phases, agents, usage, and mode state. **Priority:** P1. **Depends on:** WFJS-P0-046. **Acceptance:** payload has schema/version tests.
 - [x] **WFJS-P1-014** — Add WebUI Workflow Mode controls and active composer chip. **Priority:** P1. **Depends on:** WFJS-P0-043, WFJS-P1-013. **Acceptance:** controls are per tab and use canonical extension commands.
-- [ ] **WFJS-P1-015** — Add WebUI run list and run detail panel. **Priority:** P1. **Depends on:** WFJS-P1-013. **Acceptance:** active and historical runs render without blocking the transcript.
-- [ ] **WFJS-P1-016** — Add WebUI phase and agent drilldown. **Priority:** P1. **Depends on:** WFJS-P1-015. **Acceptance:** agent status, prompt, recent events, result, and usage render.
-- [ ] **WFJS-P1-017** — Add WebUI pause/resume, abort, retry, raw-script, and save actions. **Priority:** P1. **Depends on:** M7, WFJS-P1-015. **Acceptance:** destructive actions require confirmation.
-- [ ] **WFJS-P1-018** — Add inactive-tab workflow mode and running-run badges. **Priority:** P1. **Depends on:** WFJS-P1-013. **Acceptance:** server replay restores badges after browser reconnect.
-- [ ] **WFJS-P1-019** — Add WebUI static, HTTP harness, and real-RPC validation. **Priority:** P1. **Depends on:** WFJS-P1-014 through WFJS-P1-018. **Acceptance:** mode and run lifecycle pass in browser and RPC tests.
+- [x] **WFJS-P1-015** — Add WebUI run list and run detail panel. **Priority:** P1. **Depends on:** WFJS-P1-013. **Acceptance:** active and historical runs render without blocking the transcript.
+- [x] **WFJS-P1-016** — Add WebUI phase and agent drilldown. **Priority:** P1. **Depends on:** WFJS-P1-015. **Acceptance:** agent status, prompt, recent events, result, and usage render.
+- [x] **WFJS-P1-017** — Add WebUI pause/resume, abort, retry, raw-script, and save actions. **Priority:** P1. **Depends on:** M7, WFJS-P1-015. **Acceptance:** destructive actions require confirmation.
+- [x] **WFJS-P1-018** — Add inactive-tab workflow mode and running-run badges. **Priority:** P1. **Depends on:** WFJS-P1-013. **Acceptance:** server replay restores badges after browser reconnect.
+- [x] **WFJS-P1-019** — Add WebUI static, HTTP harness, and real-RPC validation. **Priority:** P1. **Depends on:** WFJS-P1-014 through WFJS-P1-018. **Acceptance:** mode and run lifecycle pass in browser and RPC tests.
 
 ### M7 — Replay-based pause/resume
 
-- [ ] **WFJS-P1-020** — Define stable call fingerprints from phase path, label, prompt, normalized options, and pipeline item key. **Priority:** P1. **Depends on:** M2. **Acceptance:** semantically unchanged calls produce the same fingerprint.
-- [ ] **WFJS-P1-021** — Persist completed agent results and fingerprints in the call ledger. **Priority:** P1. **Depends on:** WFJS-P1-020, WFJS-P0-031. **Acceptance:** result data survives session reload.
-- [ ] **WFJS-P1-022** — Replay scripts from the beginning and return cached completed results. **Priority:** P1. **Depends on:** WFJS-P1-021. **Acceptance:** completed calls do not spawn subprocesses on resume.
-- [ ] **WFJS-P1-023** — Rerun changed, new, failed, or previously running calls. **Priority:** P1. **Depends on:** WFJS-P1-022. **Acceptance:** edited scripts reuse only valid unchanged results.
-- [ ] **WFJS-P1-024** — Implement scheduler pause without launching new work. **Priority:** P1. **Depends on:** WFJS-P0-024. **Acceptance:** active-task behavior is explicitly defined and tested.
-- [ ] **WFJS-P1-025** — Implement `/workflow pause <run-id>` and `/workflow resume <run-id>`. **Priority:** P1. **Depends on:** WFJS-P1-022, WFJS-P1-024. **Acceptance:** same-session resume works from TUI and RPC.
-- [ ] **WFJS-P1-026** — Implement individual agent retry using its persisted call specification. **Priority:** P1. **Depends on:** WFJS-P1-021. **Acceptance:** retry does not rerun unrelated calls.
-- [ ] **WFJS-P1-027** — Detect unstable unlabeled calls and emit actionable resume warnings. **Priority:** P1. **Depends on:** WFJS-P1-020. **Acceptance:** pipeline and loop scripts receive deterministic diagnostics.
-- [ ] **WFJS-P1-028** — Add replay, edit-and-resume, pause, and retry tests. **Priority:** P1. **Depends on:** WFJS-P1-020 through WFJS-P1-027. **Acceptance:** subprocess spawn counts prove cache reuse.
+- [x] **WFJS-P1-020** — Define stable call fingerprints from phase path, label, prompt, normalized options, and pipeline item key. **Priority:** P1. **Depends on:** M2. **Acceptance:** semantically unchanged calls produce the same fingerprint.
+- [x] **WFJS-P1-021** — Persist completed agent results and fingerprints in the call ledger. **Priority:** P1. **Depends on:** WFJS-P1-020, WFJS-P0-031. **Acceptance:** result data survives session reload.
+- [x] **WFJS-P1-022** — Replay scripts from the beginning and return cached completed results. **Priority:** P1. **Depends on:** WFJS-P1-021. **Acceptance:** completed calls do not spawn subprocesses on resume.
+- [x] **WFJS-P1-023** — Rerun changed, new, failed, or previously running calls. **Priority:** P1. **Depends on:** WFJS-P1-022. **Acceptance:** edited scripts reuse only valid unchanged results.
+- [x] **WFJS-P1-024** — Implement scheduler pause without launching new work. **Priority:** P1. **Depends on:** WFJS-P0-024. **Acceptance:** active-task behavior is explicitly defined and tested.
+- [x] **WFJS-P1-025** — Implement `/workflow pause <run-id>` and `/workflow resume <run-id>`. **Priority:** P1. **Depends on:** WFJS-P1-022, WFJS-P1-024. **Acceptance:** same-session resume works from TUI and RPC.
+- [x] **WFJS-P1-026** — Implement individual agent retry using its persisted call specification. **Priority:** P1. **Depends on:** WFJS-P1-021. **Acceptance:** retry does not rerun unrelated calls.
+- [x] **WFJS-P1-027** — Detect unstable unlabeled calls and emit actionable resume warnings. **Priority:** P1. **Depends on:** WFJS-P1-020. **Acceptance:** pipeline and loop scripts receive deterministic diagnostics.
+- [x] **WFJS-P1-028** — Add replay, edit-and-resume, pause, and retry tests. **Priority:** P1. **Depends on:** WFJS-P1-020 through WFJS-P1-027. **Acceptance:** subprocess spawn counts prove cache reuse.
 
 ### M8 — Write-capable isolated workflows
 
-- [ ] **WFJS-P2-001** — Define explicit write, shell, and network policy schema. **Priority:** P2. **Depends on:** M0. **Acceptance:** default remains deny and policy cannot be widened by scripts.
-- [ ] **WFJS-P2-002** — Add launch-plan display of requested write/shell/network capabilities. **Priority:** P2. **Depends on:** WFJS-P2-001, WFJS-P0-042. **Acceptance:** approval names affected repository and isolation mode.
-- [ ] **WFJS-P2-003** — Implement isolated git worktree creation per parallel write unit. **Priority:** P2. **Depends on:** M7. **Acceptance:** concurrent agents never write to the same worktree.
-- [ ] **WFJS-P2-004** — Track worktree branch, base commit, dirty state, and changed files per agent call. **Priority:** P2. **Depends on:** WFJS-P2-003. **Acceptance:** every write result has an auditable diff.
-- [ ] **WFJS-P2-005** — Add patch/result artifacts for write agents. **Priority:** P2. **Depends on:** WFJS-P2-004. **Acceptance:** changes can be reviewed without applying them.
-- [ ] **WFJS-P2-006** — Implement serial merge/apply phase with explicit user confirmation. **Priority:** P2. **Depends on:** WFJS-P2-005. **Acceptance:** conflicts stop safely and preserve worktrees.
-- [ ] **WFJS-P2-007** — Add verification policy before merge/apply. **Priority:** P2. **Depends on:** WFJS-P2-006. **Acceptance:** configured checks must pass or be explicitly waived.
-- [ ] **WFJS-P2-008** — Add cleanup and recovery for worktrees after cancellation or crash. **Priority:** P2. **Depends on:** WFJS-P2-003. **Acceptance:** no work is deleted automatically when unmerged changes exist.
-- [ ] **WFJS-P2-009** — Add network and shell allowlist enforcement to agent subprocesses. **Priority:** P2. **Depends on:** WFJS-P2-001. **Acceptance:** denied operations fail closed.
-- [ ] **WFJS-P2-010** — Add parallel-write, conflict, cancellation, and recovery integration tests. **Priority:** P2. **Depends on:** WFJS-P2-003 through WFJS-P2-009. **Acceptance:** all safety scenarios pass in disposable repositories.
+- [x] **WFJS-P2-001** — Define explicit write, shell, and network policy schema. **Priority:** P2. **Depends on:** M0. **Acceptance:** default remains deny and policy cannot be widened by scripts.
+- [x] **WFJS-P2-002** — Add launch-plan display of requested write/shell/network capabilities. **Priority:** P2. **Depends on:** WFJS-P2-001, WFJS-P0-042. **Acceptance:** approval names affected repository and isolation mode.
+- [x] **WFJS-P2-003** — Implement isolated git worktree creation per parallel write unit. **Priority:** P2. **Depends on:** M7. **Acceptance:** concurrent agents never write to the same worktree.
+- [x] **WFJS-P2-004** — Track worktree branch, base commit, dirty state, and changed files per agent call. **Priority:** P2. **Depends on:** WFJS-P2-003. **Acceptance:** every write result has an auditable diff.
+- [x] **WFJS-P2-005** — Add patch/result artifacts for write agents. **Priority:** P2. **Depends on:** WFJS-P2-004. **Acceptance:** changes can be reviewed without applying them.
+- [x] **WFJS-P2-006** — Implement serial merge/apply phase with explicit user confirmation. **Priority:** P2. **Depends on:** WFJS-P2-005. **Acceptance:** conflicts stop safely and preserve worktrees.
+- [x] **WFJS-P2-007** — Add verification policy before merge/apply. **Priority:** P2. **Depends on:** WFJS-P2-006. **Acceptance:** configured checks must pass or be explicitly waived.
+- [x] **WFJS-P2-008** — Add cleanup and recovery for worktrees after cancellation or crash. **Priority:** P2. **Depends on:** WFJS-P2-003. **Acceptance:** no work is deleted automatically when unmerged changes exist.
+- [x] **WFJS-P2-009** — Add network and shell allowlist enforcement to agent subprocesses. **Priority:** P2. **Depends on:** WFJS-P2-001. **Acceptance:** denied operations fail closed.
+- [x] **WFJS-P2-010** — Add parallel-write, conflict, cancellation, and recovery integration tests. **Priority:** P2. **Depends on:** WFJS-P2-003 through WFJS-P2-009. **Acceptance:** all safety scenarios pass in disposable repositories.
 
 ### M9 — Compatibility and ecosystem polish
 
-- [ ] **WFJS-P2-011** — Add token, cost, time, and agent-count budgets at run and phase scope. **Priority:** P2. **Depends on:** M3. **Acceptance:** budget exhaustion produces a categorized result.
-- [ ] **WFJS-P2-012** — Add transient model/tool retry policy with exponential backoff and jitter. **Priority:** P2. **Depends on:** M3. **Acceptance:** retries are bounded and never duplicate non-idempotent write actions.
-- [ ] **WFJS-P2-013** — Add large-workflow warnings based on configurable projected agent/token thresholds. **Priority:** P2. **Depends on:** WFJS-P2-011. **Acceptance:** warning is visible before and during large runs.
-- [ ] **WFJS-P3-001** — Investigate best-effort import of Claude-shaped saved workflow scripts. **Priority:** P3. **Depends on:** M5. **Acceptance:** unsupported syntax is reported rather than silently changed.
-- [ ] **WFJS-P3-002** — Add script formatter and generated TypeScript declaration file for runtime globals. **Priority:** P3. **Depends on:** M1. **Acceptance:** editors provide useful completion and diagnostics.
-- [ ] **WFJS-P3-003** — Add workflow templates and starter examples. **Priority:** P3. **Depends on:** M5. **Acceptance:** audit, research, migration, and verify-loop examples are tested.
-- [ ] **WFJS-P3-004** — Add workflow export/import bundles containing source, metadata, policy requirements, and tests. **Priority:** P3. **Depends on:** M5. **Acceptance:** imports require trust and conflict review.
-- [ ] **WFJS-P3-005** — Add optional scheduling integration outside the workflow script contract. **Priority:** P3. **Depends on:** M3. **Acceptance:** scheduling metadata does not affect deterministic workflow semantics.
+- [x] **WFJS-P2-011** — Add token, cost, time, and agent-count budgets at run and phase scope. **Priority:** P2. **Depends on:** M3. **Acceptance:** budget exhaustion produces a categorized result.
+- [x] **WFJS-P2-012** — Add transient model/tool retry policy with exponential backoff and jitter. **Priority:** P2. **Depends on:** M3. **Acceptance:** retries are bounded and never duplicate non-idempotent write actions.
+- [x] **WFJS-P2-013** — Add large-workflow warnings based on configurable projected agent/token thresholds. **Priority:** P2. **Depends on:** WFJS-P2-011. **Acceptance:** warning is visible before and during large runs.
+- [x] **WFJS-P3-001** — Investigate best-effort import of Claude-shaped saved workflow scripts. **Priority:** P3. **Depends on:** M5. **Acceptance:** unsupported syntax is reported rather than silently changed.
+- [x] **WFJS-P3-002** — Add script formatter and generated TypeScript declaration file for runtime globals. **Priority:** P3. **Depends on:** M1. **Acceptance:** editors provide useful completion and diagnostics.
+- [x] **WFJS-P3-003** — Add workflow templates and starter examples. **Priority:** P3. **Depends on:** M5. **Acceptance:** audit, research, migration, and verify-loop examples are tested.
+- [x] **WFJS-P3-004** — Add workflow export/import bundles containing source, metadata, policy requirements, and tests. **Priority:** P3. **Depends on:** M5. **Acceptance:** imports require trust and conflict review.
+- [x] **WFJS-P3-005** — Add optional scheduling integration outside the workflow script contract. **Priority:** P3. **Depends on:** M3. **Acceptance:** scheduling metadata does not affect deterministic workflow semantics.
 
 ## 11. Dependency path
 
@@ -550,14 +550,14 @@ Remove only when:
 
 ## 15. Open decisions
 
-- [ ] **DEC-001** — Select QuickJS/WASM, another isolated interpreter, or a staged trusted-subprocess implementation.
-- [ ] **DEC-002** — Finalize initial hard limits; retain current `8 concurrent / 100 total` unless evidence supports lower limits.
-- [ ] **DEC-003** — Decide whether `phase()` may be nested in v1.
-- [ ] **DEC-004** — Decide structured-output repair behavior after schema validation failure.
-- [ ] **DEC-005** — Define the exact same-session boundary for replay-based resume.
-- [ ] **DEC-006** — Decide whether saved workflows become direct slash commands in the first P1 release.
-- [ ] **DEC-007** — Define active-task behavior when a run is paused: finish, terminate, or configurable.
-- [ ] **DEC-008** — Define mode arbitration protocol shared by Firstpick extensions.
+- [x] **DEC-001** — Selected QuickJS/WASM as the capability-only interpreter boundary; Node subprocesses are used only for separately policy-guarded Pi agents.
+- [x] **DEC-002** — Retained hard limits of `8 concurrent / 100 total`, with 3/50 defaults, bounded interpreter resources, and optional stricter run/phase budgets.
+- [x] **DEC-003** — Nested `phase()` is allowed; phase paths are stacked deterministically and remain bounded by runtime stack, agent, and time limits.
+- [x] **DEC-004** — Structured-output validation fails closed without hidden model repair; workflows may encode an explicit bounded repair call if desired.
+- [x] **DEC-005** — Replay is limited to the current Pi session storage namespace; cross-session artifacts remain inspectable but are not implicitly executable.
+- [x] **DEC-006** — Direct aliases are not registered because of command collisions; `/workflow run <name>` and `/workflow <name>` remain canonical.
+- [x] **DEC-007** — Pause lets active agent calls finish while preventing queued/new calls from starting; abort remains the explicit termination action.
+- [x] **DEC-008** — Extensions arbitrate through the versioned `firstpick:exclusive-mode:v1` event; conflicts fail visibly instead of silently combining modes.
 
 ## 16. Progress update procedure
 
@@ -583,7 +583,11 @@ Do not renumber task IDs after implementation starts. New work receives a new ID
 | 2026-07-15 | WFJS-P0-029–038 | Multi-run manager, transition rejection, async-return timing, atomic run/policy/call/event/usage/result artifacts, agent/phase/run usage reconciliation, request/result messages, abort/shutdown/restart/failure tests; full Node/Bun and WebUI suites | PASS — 0 audit vulnerabilities |
 | 2026-07-15 | WFJS-P0-040–047 except P0-044 previously logged | Async receipt and termination contract; TUI/RPC approval branches; exact-hash consent invalidation; mode once/persistent tests; versioned replayable RPC payload; exclusive-mode arbitration; scriptPath precedence and policy-denied fixtures; full Node/Bun and WebUI suites | PASS — 0 audit vulnerabilities |
 | 2026-07-15 | WFJS-P1-001–009 | Explicit user/project save and overwrite-confirmation tests; name/path/hash/symlink validation; global/trusted-project discovery; name/run-ID completions; canonical no-direct-alias decision; bundled JS parity test; legacy JSON warning/removal guide; full Node/Bun and WebUI suites | PASS — 0 audit vulnerabilities |
-
+| 2026-07-15 | WFJS-P0-039, P0-048, P1-020–028 | Full `resumeFromRunId` contract; normalized fingerprints with pipeline keys; persisted prompts/results/call order; unchanged-call replay; edit/failure invalidation; scheduler/manager pause semantics; targeted retry; unstable-call diagnostics; Node/Bun spawn-count and extension integration tests | PASS |
+| 2026-07-15 | WFJS-P1-010–019 | Native run selector/drilldown/action tests; versioned multi-run RPC schema; WebUI run/phase/agent rendering; confirmed lifecycle controls and raw scripts; per-tab reconnect badges; static, HTTP SSE replay, real fake-Pi RPC, Node/Bun, and full 19-file WebUI suites | PASS |
+| 2026-07-15 | WFJS-P2-001–010 | Strict user/project permission ceilings; approval capability/isolation plan; child `tool_call` path/shell/network guard; per-writer disposable git worktrees; base/branch/dirty/file/patch artifacts; verified confirmed atomic apply; conflict/cancellation/cleanup recovery fixtures | PASS |
+| 2026-07-15 | WFJS-P2-011–013, WFJS-P3-001–005 | Categorized run/phase budget fixtures; bounded jittered retries and no write retry; pre/during large-run warnings; conservative Claude import report; formatter and packaged declarations; four executable templates; trusted conflict-reviewed bundles; external schedule metadata tests | PASS |
+| 2026-07-15 | All 94 tasks | Full Node extension suite; Bun advanced/worktree/inspector/replay/scheduler/runtime/extension suites; full 19-file WebUI suite including HTTP SSE reconnect and fake-Pi RPC; both production `npm audit --omit=dev`; package manifest check; syntax, secret-pattern, and `git diff --check` gates | PASS — 0 audit vulnerabilities |
 
 ## 18. Change log
 
@@ -597,6 +601,11 @@ Do not renumber task IDs after implementation starts. New work receives a new ID
 | 2026-07-15 | Completed the background run-manager milestone with multi-run controllers, validated transitions, durable artifacts, asynchronous launch, consolidated session messages, run commands, usage aggregation, and restart/shutdown handling. |
 | 2026-07-15 | Added async `workflow_run` receipts, terminating tool results, launch approval, one-shot mode, versioned RPC mode state, trusted script-path precedence, read-only policy denial, and exclusive-mode arbitration. |
 | 2026-07-15 | Completed save/reuse/migration: explicit scoped saves, overwrite confirmation, completion, canonical command policy, bundled JavaScript deep research, and legacy JSON warnings/removal criteria. |
+| 2026-07-15 | Completed replay/resume: persisted call specifications/results, stable fingerprints, cached re-execution, edit invalidation, scheduler pause, same-session resume, individual retry, and deterministic warnings. |
+| 2026-07-15 | Completed native/WebUI inspectors with multi-run RPC state, run/phase/agent drilldown, lifecycle controls, per-tab badges, reconnect replay, and static/HTTP/real-RPC tests. |
+| 2026-07-15 | Completed isolated write workflows with intersected permission ceilings, policy-guarded child agents, per-call worktrees, patch artifacts, verified confirmed apply, and non-destructive recovery. |
+| 2026-07-15 | Completed advanced polish with categorized budgets, bounded retries, large-run warnings, conservative import/format tooling, packaged declarations, templates, bundles, and external schedule metadata. |
+| 2026-07-15 | Closed all architecture decisions and verified 94/94 tracked tasks across Node, Bun, WebUI HTTP/RPC, dependency audit, packaging, secret, syntax, and diff gates. |
 
 ## 19. References
 

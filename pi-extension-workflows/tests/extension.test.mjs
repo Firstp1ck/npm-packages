@@ -39,6 +39,16 @@ workflowExtension({
     emit(name, payload) { busEvents.push({ name, payload }); busHandlers.get(name)?.(payload); },
   },
   sendMessage(message, options) { sessionMessages.push({ message, options }); },
+}, {
+  taskRunner: {
+    async runTask(task, context) {
+      context.onSubprocessEvent?.({
+        type: "stdout", timestamp: new Date().toISOString(), phaseId: context.phase.id, phaseName: context.phase.name,
+        taskId: task.id, taskName: task.name, line: `read activity for ${task.id}`,
+      });
+      return { ok: true, output: `result for ${task.prompt}`, usage: { input: 7, output: 3, cost: 0.001 } };
+    },
+  },
 });
 
 assert.deepEqual(commands, ["workflow", "workflows", "workflow-clear"]);
@@ -88,8 +98,10 @@ assert.equal(statuses.at(-1).value, "Workflow: on");
 await commandHandlers.get("workflow")("mode off", modeCtx);
 assert.equal(statuses.at(-1).value, "");
 assert.ok(busEvents.some((entry) => entry.name === "firstpick:exclusive-mode:v1" && entry.payload.mode === "workflow" && entry.payload.enabled === false));
-assert.equal(widgets.at(-1).key, "workflow-mode:rpc");
-assert.match(widgets.at(-1).value[0], /^WORKFLOW_MODE_RPC_PAYLOAD /);
+const modeWidget = widgets.findLast((widget) => widget.key === "workflow-mode:rpc");
+assert.match(modeWidget.value[0], /^WORKFLOW_MODE_RPC_PAYLOAD /);
+const inspectorWidget = widgets.findLast((widget) => widget.key === "workflow:rpc");
+assert.match(inspectorWidget.value[0], /^WORKFLOW_RPC_PAYLOAD /);
 
 busHandlers.get("firstpick:exclusive-mode:v1")({ version: 1, mode: "natural-conversation", enabled: true, updatedAt: new Date().toISOString() });
 await commandHandlers.get("workflow")("mode on", modeCtx);
@@ -144,6 +156,50 @@ const inlineMessage = sessionMessages.find((entry) => entry.message.customType =
 assert.equal(inlineMessage.message.details.status, "completed");
 assert.match(inlineMessage.message.content, /inline-ok/);
 
+const inspectedResult = await toolDefinitions.get("workflow_run").execute("tool-call-inspected", {
+  script: `export const meta = { name: "inspected-run", description: "Inspected run" }\nreturn await phase("audit", () => agent("Inspect workflow files", { label: "inspector", tools: ["read"] }))`,
+  confirmRun: true,
+}, undefined, undefined, modeCtx);
+for (let attempt = 0; attempt < 100 && !sessionMessages.some((entry) => entry.message.customType === "workflow-result" && entry.message.details?.runId === inspectedResult.details.runId); attempt++) {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+const nativeSelections = [];
+await commandHandlers.get("workflows")("", {
+  cwd: temp,
+  hasUI: true,
+  mode: "tui",
+  isProjectTrusted: () => true,
+  ui: {
+    notify(message, level) { notifications.push({ message, level }); },
+    async select(title, options) {
+      nativeSelections.push({ title, options });
+      if (title === "Select workflow run") return options.find((option) => option.includes(inspectedResult.details.runId));
+      if (title.startsWith("Inspected run")) return "Inspect phases and agents";
+      if (title === "Select workflow phase") return options[0];
+      if (title === "Select workflow agent") return options[0];
+      return "Close";
+    },
+  },
+});
+assert.deepEqual(nativeSelections.map((selection) => selection.title).slice(0, 4), ["Select workflow run", "Inspected run (completed)", "Select workflow phase", "Select workflow agent"]);
+assert.match(notifications.at(-1).message, /Prompt:[\s\S]*Inspect workflow files[\s\S]*Recent activity:[\s\S]*read activity for inspector[\s\S]*Result:[\s\S]*result for Inspect workflow files[\s\S]*Usage:/);
+let replayConfirmation = "";
+await commandHandlers.get("workflows")("", {
+  cwd: temp,
+  hasUI: true,
+  mode: "tui",
+  isProjectTrusted: () => true,
+  ui: {
+    notify(message, level) { notifications.push({ message, level }); },
+    async select(title, options) {
+      if (title === "Select workflow run") return options.find((option) => option.includes(inspectedResult.details.runId));
+      return "Replay";
+    },
+    async confirm(title, message) { replayConfirmation = `${title}\n${message}`; return false; },
+  },
+});
+assert.match(replayConfirmation, /Replay workflow\?[\s\S]*Launch a replay/);
+
 await commandHandlers.get("workflow")(`save ${inlineResult.details.runId} --user`, modeCtx);
 assert.equal(notifications.at(-1).level, "success");
 assert.match(notifications.at(-1).message, /Saved workflow 'inline-test'/);
@@ -172,14 +228,18 @@ const pathMessage = sessionMessages.find((entry) => entry.message.customType ===
 assert.equal(pathMessage.message.details.workflowKey, "project-js");
 assert.match(pathMessage.message.content, /path-ok/);
 
-await assert.rejects(
-  () => toolDefinitions.get("workflow_run").execute("tool-call-resume", {
-    name: "project-js",
-    resumeFromRunId: inlineResult.details.runId,
-    confirmRun: true,
-  }, undefined, undefined, modeCtx),
-  /requires replay support from milestone M7/,
-);
+const resumeResult = await toolDefinitions.get("workflow_run").execute("tool-call-resume", {
+  resumeFromRunId: inlineResult.details.runId,
+  confirmRun: true,
+}, undefined, undefined, modeCtx);
+assert.equal(resumeResult.details.status, "async_launched");
+assert.notEqual(resumeResult.details.runId, inlineResult.details.runId);
+for (let attempt = 0; attempt < 100 && !sessionMessages.some((entry) => entry.message.customType === "workflow-result" && entry.message.details?.runId === resumeResult.details.runId); attempt++) {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+const resumeMessage = sessionMessages.find((entry) => entry.message.customType === "workflow-result" && entry.message.details?.runId === resumeResult.details.runId);
+assert.equal(resumeMessage.message.details.status, "completed");
+assert.match(resumeMessage.message.content, /inline-ok/, "resume without explicit args must reuse persisted input");
 await assert.rejects(
   () => toolDefinitions.get("workflow_run").execute("tool-call-policy-denied", {
     script: `export const meta = { name: "write-denied", description: "Write denied", pi: { permissions: { write: true } } }\nreturn 1`,

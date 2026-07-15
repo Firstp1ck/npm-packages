@@ -44,7 +44,7 @@
 
 **Reason:** A script must not widen capabilities during execution, and approval must describe the exact authority granted.
 
-**Consequence:** Policy changes invalidate remembered approval. The v1 ceiling denies write, shell, and network.
+**Consequence:** Policy changes invalidate remembered approval. Defaults deny write, shell, and network; explicit user/project ceilings may grant bounded authority and project policy can only narrow it.
 
 ## ADR-006 — Resume through deterministic replay
 
@@ -62,13 +62,13 @@
 
 **Consequence:** WebUI remains a thin client sending canonical commands and rendering versioned extension state.
 
-## ADR-008 — Ship read-only before write workflows
+## ADR-008 — Read-only defaults with isolated optional writers
 
-**Decision:** The first enabled release limits agent tools to `read`, `grep`, `find`, and `ls`.
+**Decision:** Default tools remain `read`, `grep`, `find`, and `ls`. Explicitly authorized write agents execute in one git worktree per call; shell and network tools pass through a frozen child-process policy guard.
 
-**Reason:** Parallel write agents need repository isolation, patch review, merge policy, and crash recovery.
+**Reason:** Parallel writers require repository isolation, auditable patches, verification, confirmed serial apply, allowlists, and crash recovery.
 
-**Consequence:** Write/shell/network support is deferred until isolated git worktrees and serial apply are implemented and tested.
+**Consequence:** The target checkout is never modified by agent execution itself. Apply requires a clean target and confirmation; cleanup preserves unmerged worktrees; write retries are disabled.
 
 ## ADR-009 — Preserve existing JSON behavior during migration
 
@@ -84,4 +84,4 @@
 
 **Reason:** Existing limits are already understood by the package and are safer than immediately mirroring larger external limits.
 
-**Consequence:** Raising limits requires usage/cost budget controls and evidence from stress tests.
+**Consequence:** Raising limits requires usage/cost budget controls and evidence from stress tests. Run/phase token, cost, time, and agent budgets plus bounded read-only retries are now part of the policy snapshot.

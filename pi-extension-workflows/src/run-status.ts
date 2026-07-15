@@ -6,7 +6,7 @@ const TRANSITIONS: Readonly<Record<WorkflowRunStatus, ReadonlySet<WorkflowRunSta
   validating: new Set(["awaiting_approval", "running", "cancelled", "failed"]),
   awaiting_approval: new Set(["queued", "running", "cancelled", "failed"]),
   running: new Set(["paused", "completed", "failed", "cancelled"]),
-  paused: new Set(["queued", "running", "cancelled", "failed"]),
+  paused: new Set(["queued", "running", "completed", "cancelled", "failed"]),
   completed: new Set(),
   failed: new Set(["queued"]),
   cancelled: new Set(["queued"]),

@@ -18,6 +18,7 @@ export async function requestWorkflowLaunchApproval(options: {
   key: WorkflowApprovalKey;
   workflowName: string;
   source: string;
+  plan?: string;
   ctx: WorkflowUIContext;
 }): Promise<WorkflowLaunchApprovalResult> {
   if (options.approvals.consume(options.key)) return { approved: true, source: "remembered" };
@@ -27,7 +28,7 @@ export async function requestWorkflowLaunchApproval(options: {
 
   while (true) {
     const choice = await options.ctx.ui.select(
-      `Approve workflow '${options.workflowName}'?`,
+      [`Approve workflow '${options.workflowName}'?`, options.plan].filter(Boolean).join("\n"),
       [RUN_ONCE, REMEMBER, VIEW_SOURCE, CANCEL],
     );
     if (choice === RUN_ONCE) {

@@ -73,8 +73,9 @@ const validRecords = [
     status: "running", scriptHash: hashA, policyHash: hashB, snapshotPath: "/tmp/workflow.js", startedAt: now, updatedAt: now,
   },
   {
-    schemaVersion: 1, kind: "call", runId: "run-1", callId: "call-1", phasePath: ["audit"], label: "audit", promptHash: hashA,
-    status: "completed", options: { tools: ["read"] }, startedAt: now, finishedAt: now, resultPath: "calls/call-1.json",
+    schemaVersion: 1, kind: "call", runId: "run-1", callId: "call-1", callIndex: 1, phasePath: ["audit"], label: "audit",
+    prompt: "Audit files", promptHash: hashA, fingerprint: hashB, status: "completed", options: { tools: ["read"] }, result: "done",
+    startedAt: now, finishedAt: now, resultPath: "calls/call-1.json",
   },
   { schemaVersion: 1, kind: "event", runId: "run-1", sequence: 0, timestamp: now, eventType: "run.started", data: {} },
   { schemaVersion: 1, kind: "usage", runId: "run-1", scope: "run", scopeId: "run-1", usage: { input: 1, output: 2, cost: 0 }, recordedAt: now },

@@ -35,7 +35,12 @@ export type WorkflowRunStorage = {
   appendUsage(record: WorkflowUsageRecordV1): Promise<string>;
   writeResult(record: WorkflowResultRecordV1, markdown: string): Promise<{ jsonPath: string; markdownPath: string }>;
   readRun(runId: string): Promise<WorkflowRunRecordV1>;
+  readPolicy(runId: string): Promise<unknown>;
   readCalls(runId: string): Promise<WorkflowCallRecordV1[]>;
+  readEvents(runId: string): Promise<WorkflowEventRecordV1[]>;
+  readUsage(runId: string): Promise<WorkflowUsageRecordV1[]>;
+  readResult(runId: string): Promise<WorkflowResultRecordV1 | undefined>;
+  readScript(runId: string): Promise<string | undefined>;
   listRuns(): Promise<WorkflowRunRecordV1[]>;
 };
 
@@ -174,6 +179,9 @@ export function createWorkflowRunStorage(options: WorkflowRunStorageOptions): Wo
       if (record.kind !== "run") throw new WorkflowValidationError([`run.json for '${runId}' is not a run record.`]);
       return record;
     },
+    async readPolicy(runId) {
+      return JSON.parse(await readFile(path.join(await runDirectory(runId), "policy.json"), "utf8")) as unknown;
+    },
     async readCalls(runId) {
       const callsDir = path.join(await runDirectory(runId), "calls");
       const entries = await readdir(callsDir, { withFileTypes: true });
@@ -186,6 +194,55 @@ export function createWorkflowRunStorage(options: WorkflowRunStorageOptions): Wo
         } catch { /* invalid or future call records fail closed */ }
       }
       return calls;
+    },
+    async readEvents(runId) {
+      const filePath = path.join(await runDirectory(runId), "events.jsonl");
+      try {
+        const records: WorkflowEventRecordV1[] = [];
+        for (const line of (await readFile(filePath, "utf8")).split("\n").filter(Boolean)) {
+          try {
+            const record = migrateWorkflowPersistenceRecord(JSON.parse(line));
+            if (record.kind === "event") records.push(record);
+          } catch { /* invalid or future event records fail closed */ }
+        }
+        return records.sort((a, b) => a.sequence - b.sequence);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+        throw error;
+      }
+    },
+    async readUsage(runId) {
+      const filePath = path.join(await runDirectory(runId), "usage.jsonl");
+      try {
+        const records: WorkflowUsageRecordV1[] = [];
+        for (const line of (await readFile(filePath, "utf8")).split("\n").filter(Boolean)) {
+          try {
+            const record = migrateWorkflowPersistenceRecord(JSON.parse(line));
+            if (record.kind === "usage") records.push(record);
+          } catch { /* invalid or future usage records fail closed */ }
+        }
+        return records;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+        throw error;
+      }
+    },
+    async readResult(runId) {
+      const filePath = path.join(await runDirectory(runId), "result.json");
+      try {
+        const record = migrateWorkflowPersistenceRecord(JSON.parse(await readFile(filePath, "utf8")));
+        return record.kind === "result" ? record : undefined;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+        throw error;
+      }
+    },
+    async readScript(runId) {
+      try { return await readFile(path.join(await runDirectory(runId), "workflow.js"), "utf8"); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+        throw error;
+      }
     },
     async listRuns() {
       await ensurePrivateDirectory(rootDir);

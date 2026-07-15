@@ -5,6 +5,7 @@ export type WorkflowSchedulerSnapshot = {
   maxConcurrency: number;
   active: number;
   queued: number;
+  pausedRuns: string[];
 };
 
 export type WorkflowScheduleOptions = {
@@ -18,6 +19,7 @@ type Waiter = {
   resolve: (release: () => void) => void;
   reject: (error: unknown) => void;
   signal?: AbortSignal;
+  runId?: string;
   onAbort?: () => void;
 };
 
@@ -25,6 +27,7 @@ export class WorkflowAgentScheduler {
   readonly maxConcurrency: number;
   #active = 0;
   #waiters: Waiter[] = [];
+  #pausedRuns = new Set<string>();
 
   constructor(maxConcurrency = HARD_MAX_CONCURRENCY) {
     if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > HARD_MAX_CONCURRENCY) {
@@ -34,15 +37,32 @@ export class WorkflowAgentScheduler {
   }
 
   snapshot(): WorkflowSchedulerSnapshot {
-    return { maxConcurrency: this.maxConcurrency, active: this.#active, queued: this.#waiters.length };
+    return { maxConcurrency: this.maxConcurrency, active: this.#active, queued: this.#waiters.length, pausedRuns: [...this.#pausedRuns].sort() };
   }
 
-  async #acquire(signal?: AbortSignal): Promise<() => void> {
+  pauseRun(runId: string): boolean {
+    if (!runId.trim()) throw new RangeError("runId must be non-empty.");
+    const changed = !this.#pausedRuns.has(runId);
+    this.#pausedRuns.add(runId);
+    return changed;
+  }
+
+  resumeRun(runId: string): boolean {
+    const changed = this.#pausedRuns.delete(runId);
+    if (changed) this.#drain();
+    return changed;
+  }
+
+  isRunPaused(runId: string): boolean {
+    return this.#pausedRuns.has(runId);
+  }
+
+  async #acquire(signal?: AbortSignal, runId?: string): Promise<() => void> {
     if (signal?.aborted) throw signal.reason ?? new WorkflowCancelledError();
-    if (this.#active < this.maxConcurrency) return this.#grant();
+    if (this.#active < this.maxConcurrency && !(runId && this.#pausedRuns.has(runId))) return this.#grant();
 
     return await new Promise<() => void>((resolve, reject) => {
-      const waiter: Waiter = { resolve, reject, signal };
+      const waiter: Waiter = { resolve, reject, signal, runId };
       waiter.onAbort = () => {
         const index = this.#waiters.indexOf(waiter);
         if (index >= 0) this.#waiters.splice(index, 1);
@@ -66,7 +86,9 @@ export class WorkflowAgentScheduler {
 
   #drain(): void {
     while (this.#active < this.maxConcurrency && this.#waiters.length > 0) {
-      const waiter = this.#waiters.shift() as Waiter;
+      const index = this.#waiters.findIndex((candidate) => !(candidate.runId && this.#pausedRuns.has(candidate.runId)));
+      if (index < 0) return;
+      const [waiter] = this.#waiters.splice(index, 1);
       waiter.signal?.removeEventListener("abort", waiter.onAbort as EventListener);
       if (waiter.signal?.aborted) {
         waiter.reject(waiter.signal.reason ?? new WorkflowCancelledError());
@@ -93,7 +115,7 @@ export class WorkflowAgentScheduler {
 
     let release: (() => void) | undefined;
     try {
-      release = await this.#acquire(controller.signal);
+      release = await this.#acquire(controller.signal, options.runId);
       if (controller.signal.aborted) throw controller.signal.reason ?? new WorkflowCancelledError();
       const result = await work(controller.signal);
       if (controller.signal.aborted) throw controller.signal.reason ?? new WorkflowCancelledError();

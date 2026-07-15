@@ -10,6 +10,7 @@ import {
 } from "./persistence-schema.ts";
 import type { WorkflowRunStorage } from "./run-storage.ts";
 import { canTransitionWorkflowRun, transitionWorkflowRun } from "./run-status.ts";
+import { globalWorkflowAgentScheduler, type WorkflowAgentScheduler } from "./scheduler.ts";
 import type { TaskRun, WorkflowRun, WorkflowRunStatus, WorkflowUsage } from "./types.ts";
 
 export const WORKFLOW_REQUEST_MESSAGE_TYPE = "workflow-request";
@@ -21,6 +22,7 @@ export type WorkflowRunLaunch = {
   projectId: string;
   scriptSnapshot?: { source: string; hash: string };
   policySnapshot: unknown;
+  scheduler?: WorkflowAgentScheduler;
   execute(signal: AbortSignal, onRunUpdate: (run: WorkflowRun) => void): Promise<WorkflowRun>;
 };
 
@@ -44,6 +46,7 @@ type ManagedRun = {
   run: WorkflowRun;
   storage: WorkflowRunStorage;
   controller: AbortController;
+  scheduler: WorkflowAgentScheduler;
   completion: Promise<WorkflowRun>;
   resolveCompletion: (run: WorkflowRun) => void;
   sequence: number;
@@ -66,31 +69,43 @@ function runRecord(run: WorkflowRun, storage: WorkflowRunStorage): WorkflowRunRe
     ...(run.scriptHash ? { scriptHash: run.scriptHash } : {}),
     ...(run.policyHash ? { policyHash: run.policyHash } : {}),
     ...(run.snapshotPath ? { snapshotPath: run.snapshotPath } : {}),
+    ...(run.resumedFromRunId ? { resumedFromRunId: run.resumedFromRunId } : {}),
+    input: structuredClone(run.input),
     startedAt: run.startedAt,
     updatedAt: run.updatedAt ?? run.startedAt,
     ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
   };
 }
 
-function callId(phaseId: string, task: TaskRun): string {
-  return `call-${sha256(`${phaseId}\0${task.taskId}`).slice(0, 32)}`;
+export function workflowCallId(phaseId: string, task: TaskRun): string {
+  return `call-${sha256(`${phaseId}\0${task.callIndex ?? 0}\0${task.fingerprint ?? task.taskId}`).slice(0, 32)}`;
 }
 
 function callRecord(run: WorkflowRun, phaseId: string, task: TaskRun): WorkflowCallRecordV1 | undefined {
-  if (!task.promptHash) return undefined;
+  if (!task.callIndex || !task.prompt || !task.promptHash || !task.fingerprint) return undefined;
+  const label = task.label?.trim();
   return {
     schemaVersion: 1,
     kind: "call",
     runId: run.runId,
-    callId: callId(phaseId, task),
+    callId: workflowCallId(phaseId, task),
+    callIndex: task.callIndex,
     phasePath: phaseId.split("/").filter(Boolean),
-    label: task.taskId,
+    ...(label ? { label } : {}),
+    prompt: task.prompt,
     promptHash: task.promptHash,
+    fingerprint: task.fingerprint,
+    ...(task.pipelineKey ? { pipelineKey: task.pipelineKey } : {}),
     status: task.status,
     options: structuredClone(task.options ?? {}),
+    ...("result" in task ? { result: structuredClone(task.result) } : {}),
+    ...(task.usage ? { usage: structuredClone(task.usage) } : {}),
+    ...(task.recentEvents?.length ? { recentEvents: structuredClone(task.recentEvents) as Array<Record<string, unknown>> } : {}),
+    ...(task.worktree ? { worktree: structuredClone(task.worktree) } : {}),
     ...(task.startedAt ? { startedAt: task.startedAt } : {}),
     ...(task.finishedAt ? { finishedAt: task.finishedAt } : {}),
     ...(task.error ? { error: task.error } : {}),
+    ...(task.errorKind ? { errorKind: task.errorKind } : {}),
   };
 }
 
@@ -241,6 +256,7 @@ export class WorkflowRunManager {
       run,
       storage: launch.storage,
       controller,
+      scheduler: launch.scheduler ?? globalWorkflowAgentScheduler,
       completion,
       resolveCompletion,
       sequence: 0,
@@ -281,6 +297,7 @@ export class WorkflowRunManager {
           run.error ??= errorMessage(error);
           run.finishedAt ??= new Date().toISOString();
         } finally {
+          managed.scheduler.resumeRun(run.runId);
           run.usage = aggregateUsage(run);
           this.#persistUpdate(managed, "run.finished");
           this.#enqueue(managed, async () => {
@@ -303,6 +320,7 @@ export class WorkflowRunManager {
               ...(run.summary ? { summary: run.summary } : {}),
               ...(run.result !== undefined ? { result: run.result } : {}),
               ...(run.error ? { error: run.error } : {}),
+              ...(run.errorKind ? { errorKind: run.errorKind } : {}),
             };
             await managed.storage.writeResult(result, resultMarkdown(run));
           });
@@ -323,9 +341,28 @@ export class WorkflowRunManager {
     };
   }
 
+  pause(runId: string): boolean {
+    const managed = this.#runs.get(runId);
+    if (!managed || managed.run.status !== "running") return false;
+    managed.scheduler.pauseRun(runId);
+    transitionWorkflowRun(managed.run, "paused");
+    this.#persistUpdate(managed, "run.paused");
+    return true;
+  }
+
+  resume(runId: string): boolean {
+    const managed = this.#runs.get(runId);
+    if (!managed || managed.run.status !== "paused") return false;
+    transitionWorkflowRun(managed.run, "running");
+    managed.scheduler.resumeRun(runId);
+    this.#persistUpdate(managed, "run.resumed");
+    return true;
+  }
+
   abort(runId: string, reason = "Workflow abort requested."): boolean {
     const managed = this.#runs.get(runId);
     if (!managed || isTerminal(managed.run.status)) return false;
+    managed.scheduler.resumeRun(runId);
     managed.controller.abort(new WorkflowCancelledError(reason));
     return true;
   }

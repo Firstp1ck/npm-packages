@@ -69,7 +69,7 @@ assert.equal(taskCalls[0].task.model, "test-model");
 assert.deepEqual(taskCalls[0].task.tools, ["read"]);
 assert.equal(taskCalls[0].task.cwd, ".");
 assert.equal(taskCalls[0].task.timeoutMs, 1000);
-assert.equal(taskCalls[1].task.prompt, "verify:a.ts,b.ts");
+assert.match(taskCalls[1].task.prompt, /^verify:a\.ts,b\.ts[\s\S]*Workflow agent policy:/);
 assert.ok(persisted.length >= 4, "script runner should persist lifecycle transitions");
 assert.equal(state.getActiveRun(), undefined);
 assert.equal(state.getLastRun().status, "completed");

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { WorkflowValidationError } from "./errors.ts";
-import type { WorkflowRunStatus, WorkflowScriptPolicy, WorkflowUsage } from "./types.ts";
+import type { WorkflowRunStatus, WorkflowScriptPolicy, WorkflowUsage, WorkflowWorktreeRecord } from "./types.ts";
 
 export const WORKFLOW_PERSISTENCE_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_APPROVAL_ENTRY_TYPE = "workflow-approval-v1";
@@ -34,6 +34,7 @@ export type WorkflowRunRecordV1 = {
   policyHash?: string;
   snapshotPath?: string;
   resumedFromRunId?: string;
+  input?: Record<string, unknown>;
   startedAt: string;
   updatedAt: string;
   finishedAt?: string;
@@ -54,10 +55,14 @@ export type WorkflowCallRecordV1 = {
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   options: Record<string, unknown>;
   result?: unknown;
+  usage?: WorkflowUsage;
+  recentEvents?: Array<Record<string, unknown>>;
+  worktree?: WorkflowWorktreeRecord;
   startedAt?: string;
   finishedAt?: string;
   resultPath?: string;
   error?: string;
+  errorKind?: string;
 };
 
 export type WorkflowEventRecordV1 = {
@@ -89,6 +94,7 @@ export type WorkflowResultRecordV1 = {
   summary?: string;
   result?: unknown;
   error?: string;
+  errorKind?: string;
 };
 
 export type WorkflowPersistenceRecordV1 =
@@ -124,7 +130,7 @@ export const WORKFLOW_PERSISTENCE_JSON_SCHEMAS = {
       projectId: { type: "string" }, workflowName: { type: "string" }, sourceType: { enum: ["json", "javascript"] },
       status: { enum: ["queued", "validating", "awaiting_approval", "running", "paused", "completed", "failed", "cancelled"] },
       scriptHash: { type: "string", pattern: HASH_PATTERN.source }, policyHash: { type: "string", pattern: HASH_PATTERN.source },
-      snapshotPath: { type: "string" }, resumedFromRunId: { type: "string" }, startedAt: { type: "string", format: "date-time" }, updatedAt: { type: "string", format: "date-time" },
+      snapshotPath: { type: "string" }, resumedFromRunId: { type: "string" }, input: { type: "object" }, startedAt: { type: "string", format: "date-time" }, updatedAt: { type: "string", format: "date-time" },
       finishedAt: { type: "string", format: "date-time" },
     },
   },
@@ -135,9 +141,9 @@ export const WORKFLOW_PERSISTENCE_JSON_SCHEMAS = {
       schemaVersion: { const: 1 }, kind: { const: "call" }, runId: { type: "string" }, callId: { type: "string" }, callIndex: { type: "integer", minimum: 1 },
       phasePath: { type: "array", items: { type: "string" } }, label: { type: "string" }, prompt: { type: "string" },
       promptHash: { type: "string", pattern: HASH_PATTERN.source }, fingerprint: { type: "string", pattern: HASH_PATTERN.source }, pipelineKey: { type: "string" },
-      status: { enum: ["queued", "running", "completed", "failed", "cancelled"] }, options: { type: "object" }, result: {},
-      startedAt: { type: "string", format: "date-time" }, finishedAt: { type: "string", format: "date-time" },
-      resultPath: { type: "string" }, error: { type: "string" },
+      status: { enum: ["queued", "running", "completed", "failed", "cancelled"] }, options: { type: "object" }, result: {}, usage: { type: "object" },
+      recentEvents: { type: "array", items: { type: "object" } }, worktree: { type: "object" }, startedAt: { type: "string", format: "date-time" }, finishedAt: { type: "string", format: "date-time" },
+      resultPath: { type: "string" }, error: { type: "string" }, errorKind: { type: "string" },
     },
   },
   event: {
@@ -168,7 +174,7 @@ export const WORKFLOW_PERSISTENCE_JSON_SCHEMAS = {
     required: ["schemaVersion", "kind", "runId", "status", "finishedAt"],
     properties: {
       schemaVersion: { const: 1 }, kind: { const: "result" }, runId: { type: "string" }, status: { enum: ["completed", "failed", "cancelled"] },
-      finishedAt: { type: "string", format: "date-time" }, summary: { type: "string" }, result: {}, error: { type: "string" },
+      finishedAt: { type: "string", format: "date-time" }, summary: { type: "string" }, result: {}, error: { type: "string" }, errorKind: { type: "string" },
     },
   },
 } as const;
@@ -225,7 +231,7 @@ export function validateWorkflowPersistenceRecord(value: unknown): WorkflowPersi
     if (!isIsoDate(value.approvedAt)) issues.push("approvedAt must be an ISO date-time.");
   } else if (kind === "run") {
     validateCommon(value, "run", issues);
-    rejectUnknown(value, ["schemaVersion", "kind", "runId", "sessionId", "projectId", "workflowName", "sourceType", "status", "scriptHash", "policyHash", "snapshotPath", "resumedFromRunId", "startedAt", "updatedAt", "finishedAt"], issues);
+    rejectUnknown(value, ["schemaVersion", "kind", "runId", "sessionId", "projectId", "workflowName", "sourceType", "status", "scriptHash", "policyHash", "snapshotPath", "resumedFromRunId", "input", "startedAt", "updatedAt", "finishedAt"], issues);
     for (const key of ["runId", "sessionId", "projectId", "workflowName"]) requireString(value, key, issues);
     if (value.sourceType !== "json" && value.sourceType !== "javascript") issues.push("sourceType must be 'json' or 'javascript'.");
     if (!RUN_STATUSES.has(value.status as WorkflowRunStatus)) issues.push("status is invalid.");
@@ -233,12 +239,13 @@ export function validateWorkflowPersistenceRecord(value: unknown): WorkflowPersi
     if (value.policyHash !== undefined) requireString(value, "policyHash", issues, HASH_PATTERN);
     if (value.snapshotPath !== undefined) requireString(value, "snapshotPath", issues);
     if (value.resumedFromRunId !== undefined) requireString(value, "resumedFromRunId", issues);
+    if (value.input !== undefined && !isRecord(value.input)) issues.push("input must be an object.");
     if (!isIsoDate(value.startedAt)) issues.push("startedAt must be an ISO date-time.");
     if (!isIsoDate(value.updatedAt)) issues.push("updatedAt must be an ISO date-time.");
     if (value.finishedAt !== undefined && !isIsoDate(value.finishedAt)) issues.push("finishedAt must be an ISO date-time.");
   } else if (kind === "call") {
     validateCommon(value, "call", issues);
-    rejectUnknown(value, ["schemaVersion", "kind", "runId", "callId", "callIndex", "phasePath", "label", "prompt", "promptHash", "fingerprint", "pipelineKey", "status", "options", "result", "startedAt", "finishedAt", "resultPath", "error"], issues);
+    rejectUnknown(value, ["schemaVersion", "kind", "runId", "callId", "callIndex", "phasePath", "label", "prompt", "promptHash", "fingerprint", "pipelineKey", "status", "options", "result", "usage", "recentEvents", "worktree", "startedAt", "finishedAt", "resultPath", "error", "errorKind"], issues);
     requireString(value, "runId", issues);
     requireString(value, "callId", issues);
     if (!Number.isSafeInteger(value.callIndex) || Number(value.callIndex) < 1) issues.push("callIndex must be a positive safe integer.");
@@ -249,8 +256,11 @@ export function validateWorkflowPersistenceRecord(value: unknown): WorkflowPersi
     if (!Array.isArray(value.phasePath) || value.phasePath.some((part) => typeof part !== "string" || !part)) issues.push("phasePath must be an array of non-empty strings.");
     if (!CALL_STATUSES.has(String(value.status))) issues.push("status is invalid.");
     if (!isRecord(value.options)) issues.push("options must be an object.");
+    if (value.usage !== undefined && !isRecord(value.usage)) issues.push("usage must be an object.");
+    if (value.recentEvents !== undefined && (!Array.isArray(value.recentEvents) || value.recentEvents.some((event) => !isRecord(event)))) issues.push("recentEvents must be an array of objects.");
+    if (value.worktree !== undefined && !isRecord(value.worktree)) issues.push("worktree must be an object.");
     for (const key of ["startedAt", "finishedAt"]) if (value[key] !== undefined && !isIsoDate(value[key])) issues.push(`${key} must be an ISO date-time.`);
-    for (const key of ["label", "resultPath", "error"]) if (value[key] !== undefined && (typeof value[key] !== "string" || !value[key])) issues.push(`${key} must be a non-empty string.`);
+    for (const key of ["label", "resultPath", "error", "errorKind"]) if (value[key] !== undefined && (typeof value[key] !== "string" || !value[key])) issues.push(`${key} must be a non-empty string.`);
   } else if (kind === "event") {
     validateCommon(value, "event", issues);
     rejectUnknown(value, ["schemaVersion", "kind", "runId", "sequence", "timestamp", "eventType", "data"], issues);
@@ -270,11 +280,11 @@ export function validateWorkflowPersistenceRecord(value: unknown): WorkflowPersi
     if (!isIsoDate(value.recordedAt)) issues.push("recordedAt must be an ISO date-time.");
   } else {
     validateCommon(value, "result", issues);
-    rejectUnknown(value, ["schemaVersion", "kind", "runId", "status", "finishedAt", "summary", "result", "error"], issues);
+    rejectUnknown(value, ["schemaVersion", "kind", "runId", "status", "finishedAt", "summary", "result", "error", "errorKind"], issues);
     requireString(value, "runId", issues);
     if (!RESULT_STATUSES.has(String(value.status))) issues.push("status is invalid.");
     if (!isIsoDate(value.finishedAt)) issues.push("finishedAt must be an ISO date-time.");
-    for (const key of ["summary", "error"]) if (value[key] !== undefined && typeof value[key] !== "string") issues.push(`${key} must be a string.`);
+    for (const key of ["summary", "error", "errorKind"]) if (value[key] !== undefined && typeof value[key] !== "string") issues.push(`${key} must be a string.`);
   }
 
   if (issues.length > 0) throw new WorkflowValidationError(issues);

@@ -1,13 +1,18 @@
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createWorkflowApprovalStore } from "./src/approval.ts";
+import { createWorkflowBundle, importWorkflowBundle, writeWorkflowBundle } from "./src/bundles.ts";
 import { WorkflowLoadError, errorMessage } from "./src/errors.ts";
 import { EXCLUSIVE_MODE_EVENT, WORKFLOW_EXCLUSIVE_MODE_ID, exclusiveModeEvent, isExclusiveModeEvent } from "./src/exclusive-mode.ts";
 import { requestWorkflowLaunchApproval } from "./src/launch-approval.ts";
+import { buildWorkflowInspectorPayload, WORKFLOW_INSPECTOR_WIDGET_KEY, workflowInspectorPayloadLine, type WorkflowInspectorAgent } from "./src/inspector.ts";
 import { findWorkflowSource, formatWorkflowList, loadWorkflowRegistry, loadWorkflowScriptPath, workflowSourceKey } from "./src/loader.ts";
 import { hashWorkflowPolicy, workflowProjectIdentity, type WorkflowRunRecordV1 } from "./src/persistence-schema.ts";
+import { deniedRequestedPermissions, loadWorkflowPolicyCeiling, policyCeilingForScript } from "./src/policy.ts";
+import { loadWorkflowReplayCache, type WorkflowReplayCache } from "./src/replay.ts";
 import { runWorkflow } from "./src/runner.ts";
 import { WorkflowRunManager, type WorkflowRunLaunchReceipt } from "./src/run-manager.ts";
 import { createWorkflowRunStorage } from "./src/run-storage.ts";
@@ -15,11 +20,14 @@ import { createWorkflowModeController, workflowModeDescription } from "./src/mod
 import { parseWorkflowScript } from "./src/script-parser.ts";
 import { createJavaScriptRun, effectiveScript, runJavaScriptWorkflow } from "./src/script-runner.ts";
 import { saveWorkflowSnapshot } from "./src/saved-workflows.ts";
+import { WorkflowScheduleStore } from "./src/schedules.ts";
 import { createWorkflowRun, createWorkflowStateStore } from "./src/state.ts";
 import { createSubprocessTaskRunner } from "./src/task-runner.ts";
-import type { WorkflowInput, WorkflowJavaScriptSource, WorkflowRun, WorkflowSource } from "./src/types.ts";
+import { formatWorkflowScript, importClaudeWorkflowScript } from "./src/tooling.ts";
+import type { TaskRunner, WorkflowInput, WorkflowJavaScriptSource, WorkflowRun, WorkflowScriptPolicy, WorkflowSource } from "./src/types.ts";
 import { clearWorkflowUI, notifyWorkflow, renderWorkflowRun, type WorkflowUIContext } from "./src/ui.ts";
 import { parseJsonObject, splitFirstToken } from "./src/utils.ts";
+import { applyWorkflowWorktrees, cleanupWorkflowWorktrees, listWorkflowWorktrees } from "./src/worktree.ts";
 
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -81,8 +89,19 @@ function helpText(): string {
     "  /workflow mode [once|on|off|toggle|status]",
     "  /workflow run <workflow-key> [json-input]",
     "  /workflow <workflow-key> [json-input]",
+    "  /workflow pause <run-id>",
+    "  /workflow resume <run-id>",
     "  /workflow abort [run-id]",
+    "  /workflow retry <run-id> <call-id>",
+    "  /workflow worktrees <run-id>",
+    "  /workflow apply <run-id>",
+    "  /workflow cleanup <run-id>",
     "  /workflow save <run-id> --project|--user",
+    "  /workflow format <trusted-workflow-path>",
+    "  /workflow import-claude <path>",
+    "  /workflow bundle export <run-id> <bundle-path>",
+    "  /workflow bundle import <bundle-path> --project|--user",
+    "  /workflow schedule list|add|remove|run-due",
     "  /workflows",
     "",
     "Example:",
@@ -98,11 +117,51 @@ function normalizeInput(value: unknown): WorkflowInput {
   return value as WorkflowInput;
 }
 
-export default function workflowExtension(pi: ExtensionAPI) {
+function inspectValue(value: unknown): string {
+  if (value === undefined) return "—";
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function largeWorkflowWarnings(policy: WorkflowScriptPolicy): string[] {
+  const agentThreshold = Math.max(1, Number(process.env.PI_WORKFLOW_WARN_AGENTS) || 20);
+  const tokenThreshold = Math.max(1, Number(process.env.PI_WORKFLOW_WARN_TOKENS) || 100_000);
+  const warnings: string[] = [];
+  if (policy.maxAgents > agentThreshold) warnings.push(`Large workflow: policy allows ${policy.maxAgents} agents (warning threshold ${agentThreshold}).`);
+  const projectedTokens = policy.budgets?.run?.maxTokens;
+  if (projectedTokens && projectedTokens > tokenThreshold) warnings.push(`Large workflow: token budget ${projectedTokens} exceeds warning threshold ${tokenThreshold}.`);
+  return warnings;
+}
+
+function formatAgentInspection(agent: WorkflowInspectorAgent): string {
+  const activity = agent.recentEvents.slice(-8).map((event) => {
+    const timestamp = typeof event.timestamp === "string" ? event.timestamp : "";
+    const detail = event.line ?? event.command ?? event.eventType ?? event.type ?? "event";
+    return `- ${timestamp} ${String(detail)}`.trimEnd();
+  }).join("\n") || "—";
+  return [
+    `Agent: ${agent.name}`,
+    `Call: ${agent.callId}`,
+    `Status: ${agent.status}`,
+    `Prompt:\n${agent.prompt || "—"}`,
+    `Recent activity:\n${activity}`,
+    `Result:\n${inspectValue(agent.result)}`,
+    `Usage:\n${inspectValue(agent.usage)}`,
+    agent.error ? `Error:\n${agent.error}` : undefined,
+  ].filter(Boolean).join("\n\n");
+}
+
+export default function workflowExtension(pi: ExtensionAPI, dependencies: { taskRunner?: TaskRunner } = {}) {
   const state = createWorkflowStateStore(pi);
   const approvals = createWorkflowApprovalStore(pi);
   const mode = createWorkflowModeController(pi);
-  const taskRunner = createSubprocessTaskRunner();
+  const taskRunner = dependencies.taskRunner ?? createSubprocessTaskRunner();
+  const schedules = new WorkflowScheduleStore();
+  let schedulesLoaded = false;
+  const ensureSchedules = async () => {
+    if (!schedulesLoaded) { await schedules.load(); schedulesLoaded = true; }
+    return schedules;
+  };
   const knownWorkflowNames = new Set<string>(["deep-research-minimal"]);
   const rememberSources = (sources: WorkflowSource[]) => {
     for (const source of sources) knownWorkflowNames.add(workflowSourceKey(source));
@@ -142,27 +201,53 @@ export default function workflowExtension(pi: ExtensionAPI) {
       }, { triggerTurn: true, deliverAs: "followUp" });
     },
   });
+  let inspectorPublishSequence = 0;
+  const publishInspector = async (ctx: { cwd: string } & WorkflowUIContext, storage?: ReturnType<typeof createWorkflowRunStorage>) => {
+    if (ctx.hasUI === false || ctx.mode !== "rpc" || !ctx.ui) return;
+    const sequence = ++inspectorPublishSequence;
+    const sessionId = (ctx as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "ephemeral";
+    const payload = await buildWorkflowInspectorPayload({ manager, storage: storage ?? createWorkflowRunStorage({ sessionId }), mode: mode.getState() });
+    if (sequence !== inspectorPublishSequence) return;
+    ctx.ui.setWidget?.(WORKFLOW_INSPECTOR_WIDGET_KEY, [workflowInspectorPayloadLine(payload)]);
+  };
 
   const startSource = async (
     source: WorkflowSource,
     input: unknown,
     ctx: { cwd: string } & WorkflowUIContext,
+    replayOptions?: { sourceRunId: string; excludeCallIds?: string[] },
   ): Promise<WorkflowRunLaunchReceipt> => {
     const sessionId = (ctx as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "ephemeral";
     const storage = createWorkflowRunStorage({ sessionId });
+    let replay: WorkflowReplayCache | undefined;
+    let effectiveInput = input;
+    if (replayOptions) {
+      const sourceRecord = manager.getRecord(replayOptions.sourceRunId);
+      if (!sourceRecord) throw new Error(`Unknown workflow run '${replayOptions.sourceRunId}'.`);
+      if (sourceRecord.sessionId !== sessionId) throw new Error("Replay is limited to runs in the current session.");
+      if (sourceRecord.sourceType !== "javascript") throw new Error("Only JavaScript workflow runs can be resumed.");
+      replay = await loadWorkflowReplayCache(storage, sourceRecord.runId, { excludeCallIds: replayOptions.excludeCallIds });
+      effectiveInput ??= sourceRecord.input ?? {};
+    }
     if (source.sourceType === "json") {
       notifyWorkflow(ctx, `Legacy JSON workflow '${source.definition.key}' is deprecated. Save or rewrite it as a .js workflow before JSON execution is removed.`, "warning");
     }
     const projectId = await workflowProjectIdentity(ctx.cwd);
     const run = source.sourceType === "javascript"
-      ? createJavaScriptRun(source, input)
-      : createWorkflowRun(source.definition, normalizeInput(input), source.path);
+      ? createJavaScriptRun(source, effectiveInput)
+      : createWorkflowRun(source.definition, normalizeInput(effectiveInput), source.path);
+    if (replay) run.resumedFromRunId = replay.sourceRunId;
     run.projectId = projectId;
-    if (source.sourceType === "javascript" && Object.entries(source.script.meta.pi.permissions).some(([, enabled]) => enabled)) {
-      throw new Error("Workflow policy denied: write, shell, and network permissions are unavailable in the read-only release.");
+    let javaScriptPolicy;
+    if (source.sourceType === "javascript") {
+      const ceiling = await loadWorkflowPolicyCeiling({ cwd: ctx.cwd, projectTrusted: projectTrusted(ctx) });
+      const denied = deniedRequestedPermissions(source.script.meta.pi.permissions, ceiling);
+      if (denied.length) throw new Error(`Workflow policy denied requested capabilities: ${denied.join(", ")}. Configure explicit user${projectTrusted(ctx) ? "/project" : ""} workflow-policy.json ceilings.`);
+      javaScriptPolicy = effectiveScript(source.script, policyCeilingForScript(ceiling)).meta.pi;
+      run.warnings = largeWorkflowWarnings(javaScriptPolicy);
     }
     const policySnapshot = source.sourceType === "javascript"
-      ? effectiveScript(source.script).meta.pi
+      ? javaScriptPolicy!
       : {
           version: 1,
           legacyJson: true,
@@ -177,6 +262,14 @@ export default function workflowExtension(pi: ExtensionAPI) {
         key: { projectId, scriptHash: source.script.sourceHash, policyHash: run.policyHash },
         workflowName: source.script.meta.name,
         source: source.script.source,
+        plan: [
+          `Repository: ${ctx.cwd}`,
+          `Isolation: ${policySnapshot.permissions.write ? "one git worktree per write agent; serial confirmed apply" : "read-only working directory"}`,
+          `Capabilities: write=${policySnapshot.permissions.write}, shell=${policySnapshot.permissions.shell}, network=${policySnapshot.permissions.network}`,
+          policySnapshot.shellAllowlist?.length ? `Shell allowlist: ${policySnapshot.shellAllowlist.join(", ")}` : undefined,
+          policySnapshot.networkAllowlist?.length ? `Network allowlist: ${policySnapshot.networkAllowlist.join(", ")}` : undefined,
+          ...(run.warnings ?? []),
+        ].filter(Boolean).join("\n"),
         ctx,
       });
     }
@@ -188,12 +281,24 @@ export default function workflowExtension(pi: ExtensionAPI) {
       policySnapshot,
       ...(source.sourceType === "javascript" ? { scriptSnapshot: { source: source.script.source, hash: source.script.sourceHash } } : {}),
       execute: async (signal, onRunUpdate) => {
-        const commonOptions = { cwd: ctx.cwd, taskRunner, state, storage, run, signal, onRunUpdate };
+        const commonOptions = {
+          cwd: ctx.cwd,
+          taskRunner,
+          state,
+          storage,
+          run,
+          signal,
+          onRunUpdate: (updated: WorkflowRun) => {
+            onRunUpdate(updated);
+            void publishInspector(ctx, storage);
+          },
+        };
         return source.sourceType === "javascript"
-          ? await runJavaScriptWorkflow(source, input, ctx, commonOptions)
-          : await runWorkflow(source, normalizeInput(input), ctx, commonOptions);
+          ? await runJavaScriptWorkflow(source, effectiveInput, ctx, { ...commonOptions, replay, policy: javaScriptPolicy })
+          : await runWorkflow(source, normalizeInput(effectiveInput), ctx, commonOptions);
       },
     });
+    void publishInspector(ctx, storage);
     notifyWorkflow(ctx, `Workflow launched: ${workflowSourceKey(source)} (${receipt.runId})`, "info");
     return receipt;
   };
@@ -202,6 +307,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
     key: string,
     input: unknown,
     ctx: { cwd: string } & WorkflowUIContext,
+    replayOptions?: { sourceRunId: string; excludeCallIds?: string[] },
   ): Promise<WorkflowRunLaunchReceipt> => {
     const sources = rememberSources(await loadSources(ctx));
     const source = findWorkflowSource(sources, key);
@@ -209,13 +315,14 @@ export default function workflowExtension(pi: ExtensionAPI) {
       const available = sources.map(workflowSourceKey).join(", ") || "none";
       throw new Error(`Unknown workflow '${key}'. Available workflows: ${available}.`);
     }
-    return await startSource(source, input, ctx);
+    return await startSource(source, input, ctx, replayOptions);
   };
 
   const startInlineScript = async (
     sourceCode: string,
     input: unknown,
     ctx: { cwd: string } & WorkflowUIContext,
+    replayOptions?: { sourceRunId: string; excludeCallIds?: string[] },
   ): Promise<WorkflowRunLaunchReceipt> => {
     const script = parseWorkflowScript(sourceCode, { sourcePath: "inline-workflow.js" });
     const source: WorkflowJavaScriptSource = {
@@ -224,13 +331,14 @@ export default function workflowExtension(pi: ExtensionAPI) {
       sourceType: "javascript",
       script,
     };
-    return await startSource(source, input, ctx);
+    return await startSource(source, input, ctx, replayOptions);
   };
 
   const startScriptPath = async (
     reference: string,
     input: unknown,
     ctx: { cwd: string } & WorkflowUIContext,
+    replayOptions?: { sourceRunId: string; excludeCallIds?: string[] },
   ): Promise<WorkflowRunLaunchReceipt> => {
     const source = await loadWorkflowScriptPath(reference, {
       cwd: ctx.cwd,
@@ -239,7 +347,112 @@ export default function workflowExtension(pi: ExtensionAPI) {
       includeProject: true,
       projectTrusted: projectTrusted(ctx),
     });
-    return await startSource(source, input, ctx);
+    return await startSource(source, input, ctx, replayOptions);
+  };
+
+  const startResume = async (
+    sourceRunId: string,
+    input: unknown,
+    ctx: { cwd: string } & WorkflowUIContext,
+    excludeCallIds: string[] = [],
+  ): Promise<WorkflowRunLaunchReceipt> => {
+    const record = manager.getRecord(sourceRunId);
+    if (!record) throw new Error(`Unknown workflow run '${sourceRunId}'.`);
+    if (record.sourceType !== "javascript" || !record.snapshotPath) throw new Error("Only JavaScript runs with immutable snapshots can be resumed.");
+    const sourceCode = await readFile(record.snapshotPath, "utf8");
+    const script = parseWorkflowScript(sourceCode, { sourcePath: record.snapshotPath });
+    const source: WorkflowJavaScriptSource = { path: record.snapshotPath, scope: "inline", sourceType: "javascript", script };
+    return await startSource(source, input, ctx, { sourceRunId, excludeCallIds });
+  };
+
+  const saveRun = async (runId: string, scope: "project" | "user", ctx: { cwd: string } & WorkflowUIContext) => {
+    const record = manager.getRecord(runId);
+    if (!record) throw new Error(`Unknown workflow run '${runId}'.`);
+    const saved = await saveWorkflowSnapshot({
+      record,
+      scope,
+      cwd: ctx.cwd,
+      projectTrusted: projectTrusted(ctx),
+      confirmOverwrite: ctx.ui?.confirm ? async (targetPath) => await ctx.ui!.confirm!("Overwrite saved workflow?", targetPath) : undefined,
+    });
+    ctx.ui?.notify?.(`${saved.changed ? "Saved" : "Already saved"} workflow '${saved.name}' at ${saved.path}.`, "success");
+    return saved;
+  };
+
+  const openNativeInspector = async (ctx: { cwd: string } & WorkflowUIContext) => {
+    const sessionId = (ctx as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "ephemeral";
+    const payload = await buildWorkflowInspectorPayload({ manager, storage: createWorkflowRunStorage({ sessionId }), mode: mode.getState() });
+    if (payload.runs.length === 0) {
+      ctx.ui?.notify?.("No workflow runs have been recorded in this session.", "info");
+      return;
+    }
+    if (!ctx.ui?.select) {
+      ctx.ui?.notify?.(formatRunList(manager.list()), "info");
+      return;
+    }
+    const runOptions = payload.runs.map((run) => `[${run.status}] ${run.workflowName} — ${run.runId}`);
+    const selectedRunLabel = await ctx.ui.select("Select workflow run", runOptions);
+    const selectedRun = payload.runs[runOptions.indexOf(selectedRunLabel ?? "")];
+    if (!selectedRun) return;
+    const actions = [
+      ...(selectedRun.phases.length ? ["Inspect phases and agents"] : []),
+      ...(selectedRun.controls.canPause ? ["Pause"] : []),
+      ...(selectedRun.controls.canResume ? [selectedRun.status === "paused" ? "Resume" : "Replay"] : []),
+      ...(selectedRun.controls.canAbort ? ["Abort"] : []),
+      ...(selectedRun.controls.canSave ? ["Save"] : []),
+      ...(selectedRun.script ? ["View raw script"] : []),
+      "Show run summary",
+    ];
+    const action = await ctx.ui.select(`${selectedRun.workflowName} (${selectedRun.status})`, actions);
+    if (!action) return;
+    if (action === "Pause") {
+      if (!manager.pause(selectedRun.runId)) throw new Error("Run is no longer pausable.");
+      ctx.ui.notify?.("Run paused. Active agent calls may finish; no new calls will start.", "warning");
+    } else if (action === "Resume") {
+      if (!manager.resume(selectedRun.runId)) throw new Error("Run is no longer paused.");
+      ctx.ui.notify?.("Run resumed.", "success");
+    } else if (action === "Replay") {
+      if (!ctx.ui.confirm || !(await ctx.ui.confirm("Replay workflow?", `Launch a replay of ${selectedRun.runId}?`))) return;
+      await startResume(selectedRun.runId, undefined, ctx);
+    } else if (action === "Abort") {
+      if (!ctx.ui.confirm || !(await ctx.ui.confirm("Abort workflow?", `Abort ${selectedRun.runId} and its active subprocesses?`))) return;
+      if (!manager.abort(selectedRun.runId)) throw new Error("Run is no longer abortable.");
+    } else if (action === "Save") {
+      const scopeLabel = await ctx.ui.select("Save workflow", ["User workflow", "Project workflow"]);
+      if (scopeLabel) await saveRun(selectedRun.runId, scopeLabel === "Project workflow" ? "project" : "user", ctx);
+    } else if (action === "View raw script") {
+      ctx.ui.notify?.(selectedRun.script ?? "No script snapshot is available.", "info");
+    } else if (action === "Inspect phases and agents") {
+      const phaseOptions = selectedRun.phases.map((phase) => `[${phase.status}] ${phase.name} — ${phase.phaseId}`);
+      const phaseLabel = await ctx.ui.select("Select workflow phase", phaseOptions);
+      const phase = selectedRun.phases[phaseOptions.indexOf(phaseLabel ?? "")];
+      if (!phase) return;
+      if (phase.agents.length === 0) {
+        ctx.ui.notify?.(`Phase ${phase.name}\nStatus: ${phase.status}\nUsage: ${inspectValue(phase.usage)}\n${phase.error ? `Error: ${phase.error}` : ""}`, "info");
+        return;
+      }
+      const agentOptions = phase.agents.map((agent) => `[${agent.status}] ${agent.name} — ${agent.callId}`);
+      const agentLabel = await ctx.ui.select("Select workflow agent", agentOptions);
+      const agent = phase.agents[agentOptions.indexOf(agentLabel ?? "")];
+      if (!agent) return;
+      ctx.ui.notify?.(formatAgentInspection(agent), agent.error ? "error" : "info");
+      if (selectedRun.controls.canRetry) {
+        const retry = await ctx.ui.select("Agent action", ["Close", "Retry agent"]);
+        if (retry === "Retry agent" && ctx.ui.confirm && await ctx.ui.confirm("Retry workflow agent?", `Retry ${agent.callId}; unrelated calls remain cached?`)) {
+          await startResume(selectedRun.runId, undefined, ctx, [agent.callId]);
+        }
+      }
+    } else {
+      ctx.ui.notify?.([
+        `Workflow: ${selectedRun.workflowName}`,
+        `Run: ${selectedRun.runId}`,
+        `Status: ${selectedRun.status}`,
+        `Usage: ${inspectValue(selectedRun.usage)}`,
+        `Result: ${inspectValue(selectedRun.result)}`,
+        selectedRun.error ? `Error: ${selectedRun.error}` : undefined,
+      ].filter(Boolean).join("\n"), selectedRun.error ? "error" : "info");
+    }
+    void publishInspector(ctx);
   };
 
   pi.registerCommand("workflow", {
@@ -256,7 +469,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
         return items.length > 0 ? items : null;
       };
       if (action === "run") return complete([...knownWorkflowNames].sort(), "run");
-      if (action === "status" || action === "abort") return complete(manager.list().map((record) => record.runId), action);
+      if (["status", "pause", "resume", "abort", "retry", "worktrees", "apply", "cleanup"].includes(action)) return complete(manager.list().map((record) => record.runId), action);
       if (action === "save") {
         if (tailParts.length <= 1) return complete(manager.list().map((record) => record.runId), "save");
         const runId = tailParts[0];
@@ -265,7 +478,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
         return flags.map((flag) => ({ value: `save ${runId} ${flag}`, label: flag }));
       }
       if (action === "mode") return complete(["once", "on", "off", "toggle", "status"], "mode");
-      return complete(["list", "status", "mode", "run", "abort", "save", ...knownWorkflowNames].sort());
+      return complete(["list", "status", "mode", "run", "pause", "resume", "abort", "retry", "worktrees", "apply", "cleanup", "save", "format", "import-claude", "bundle", "schedule", ...knownWorkflowNames].sort());
     },
     handler: async (args, ctx) => {
       const { token: actionOrKey, rest } = splitFirstToken(args);
@@ -281,6 +494,90 @@ export default function workflowExtension(pi: ExtensionAPI) {
           const sources = rememberSources(await loadSources(ctx));
           ctx.ui.notify(formatWorkflowList(sources), "info");
           return;
+        }
+
+        if (action === "format") {
+          const { token: reference } = splitFirstToken(rest);
+          if (!reference) throw new Error("Usage: /workflow format <trusted-workflow-path>");
+          const source = await loadWorkflowScriptPath(reference, { cwd: ctx.cwd, extensionDir: EXTENSION_DIR, includeUser: true, includeProject: true, projectTrusted: projectTrusted(ctx) });
+          if (source.scope === "bundled") throw new Error("Bundled workflows are immutable; copy one to user or project scope before formatting.");
+          const formatted = formatWorkflowScript(source.script.source, source.path);
+          if (formatted === source.script.source) { ctx.ui.notify("Workflow is already formatted.", "info"); return; }
+          if (!ctx.ui.confirm || !(await ctx.ui.confirm("Format workflow source?", `Rewrite ${source.path} using deterministic whitespace formatting?`))) return;
+          await writeFile(source.path, formatted, { mode: 0o600 });
+          ctx.ui.notify(`Formatted ${source.path}.`, "success");
+          return;
+        }
+
+        if (action === "import-claude") {
+          const { token: reference } = splitFirstToken(rest);
+          if (!reference) throw new Error("Usage: /workflow import-claude <path>");
+          const report = importClaudeWorkflowScript(await readFile(reference, "utf8"), reference);
+          if (!report.supported) throw new Error(`Claude-shaped workflow is unsupported without silent rewriting:\n- ${report.unsupported.join("\n- ")}`);
+          ctx.ui.notify(`${report.warnings.join("\n")}${report.warnings.length ? "\n\n" : ""}${report.source}`, "info");
+          return;
+        }
+
+        if (action === "bundle") {
+          const { token: bundleAction, rest: bundleRest } = splitFirstToken(rest);
+          const { token: first, rest: secondRest } = splitFirstToken(bundleRest);
+          if (bundleAction === "export") {
+            const { token: targetPath } = splitFirstToken(secondRest);
+            if (!first || !targetPath) throw new Error("Usage: /workflow bundle export <run-id> <bundle-path>");
+            const record = manager.getRecord(first);
+            if (!record) throw new Error(`Unknown workflow run '${first}'.`);
+            const storage = createWorkflowRunStorage({ sessionId: record.sessionId });
+            const bundle = await createWorkflowBundle(record, storage);
+            const saved = await writeWorkflowBundle(bundle, targetPath, ctx.ui.confirm ? async (filePath) => await ctx.ui!.confirm!("Overwrite workflow bundle?", filePath) : undefined);
+            ctx.ui.notify(`Exported workflow bundle to ${saved}.`, "success");
+            return;
+          }
+          if (bundleAction === "import") {
+            const flags = secondRest.split(/\s+/).filter(Boolean);
+            const scope = flags.includes("--project") ? "project" : flags.includes("--user") ? "user" : undefined;
+            if (!first || !scope || (flags.includes("--project") && flags.includes("--user"))) throw new Error("Usage: /workflow bundle import <bundle-path> --project|--user");
+            const imported = await importWorkflowBundle({ bundlePath: first, scope, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), confirmConflict: ctx.ui.confirm ? async (filePath) => await ctx.ui!.confirm!("Replace conflicting workflow?", filePath) : undefined });
+            ctx.ui.notify(`Imported workflow bundle to ${imported}.`, "success");
+            return;
+          }
+          throw new Error("Usage: /workflow bundle export|import ...");
+        }
+
+        if (action === "schedule") {
+          const store = await ensureSchedules();
+          const { token: scheduleAction, rest: scheduleRest } = splitFirstToken(rest);
+          if (!scheduleAction || scheduleAction === "list") {
+            const records = store.list();
+            ctx.ui.notify(records.length ? records.map((item) => `${item.scheduleId} [${item.enabled ? "enabled" : "disabled"}] ${item.workflowName} @ ${item.nextRunAt}`).join("\n") : "No workflow schedules.", "info");
+            return;
+          }
+          if (scheduleAction === "add") {
+            const idPart = splitFirstToken(scheduleRest);
+            const namePart = splitFirstToken(idPart.rest);
+            const timePart = splitFirstToken(namePart.rest);
+            if (!idPart.token || !namePart.token || !timePart.token) throw new Error("Usage: /workflow schedule add <id> <workflow-name> <ISO-time> [json-args]");
+            await store.upsert({ schemaVersion: 1, scheduleId: idPart.token, workflowName: namePart.token, args: parseJsonObject(timePart.rest), nextRunAt: new Date(timePart.token).toISOString(), enabled: true });
+            ctx.ui.notify(`Scheduled '${namePart.token}' as ${idPart.token}.`, "success");
+            return;
+          }
+          if (scheduleAction === "remove") {
+            const { token: scheduleId } = splitFirstToken(scheduleRest);
+            if (!scheduleId || !(await store.remove(scheduleId))) throw new Error(`Unknown schedule '${scheduleId}'.`);
+            ctx.ui.notify(`Removed schedule ${scheduleId}.`, "success");
+            return;
+          }
+          if (scheduleAction === "run-due") {
+            const due = store.due();
+            if (!due.length) { ctx.ui.notify("No workflow schedules are due.", "info"); return; }
+            if (!ctx.ui.confirm || !(await ctx.ui.confirm("Launch due workflows?", due.map((item) => `${item.scheduleId}: ${item.workflowName}`).join("\n")))) return;
+            for (const item of due) {
+              await startRun(item.workflowName, item.args, ctx);
+              await store.markLaunched(item.scheduleId);
+            }
+            ctx.ui.notify(`Launched ${due.length} due workflow schedule${due.length === 1 ? "" : "s"}.`, "success");
+            return;
+          }
+          throw new Error("Usage: /workflow schedule list|add|remove|run-due");
         }
 
         if (action === "mode") {
@@ -303,6 +600,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
             publishWorkflowMode();
           } else if (modeAction !== "status") throw new Error("Usage: /workflow mode [once|on|off|toggle|status]");
           ctx.ui.notify(workflowModeDescription(mode.getState()), "info");
+          void publishInspector(ctx);
           return;
         }
 
@@ -312,6 +610,25 @@ export default function workflowExtension(pi: ExtensionAPI) {
           const record = requestedRunId ? manager.getRecord(requestedRunId) : manager.list().at(0);
           renderWorkflowRun(ctx, run);
           ctx.ui.notify(run ? formatRunStatus(run) : formatRunRecord(record), "info");
+          return;
+        }
+
+        if (action === "pause") {
+          const { token: runId } = splitFirstToken(rest);
+          if (!runId || !manager.pause(runId)) throw new Error("Usage: /workflow pause <running-run-id>");
+          ctx.ui.notify(`Workflow run ${runId} paused. Active agent calls may finish; no new calls will start.`, "warning");
+          return;
+        }
+
+        if (action === "resume") {
+          const { token: runId, rest: resumeArgs } = splitFirstToken(rest);
+          if (!runId) throw new Error("Usage: /workflow resume <run-id> [json-args]");
+          if (manager.resume(runId)) {
+            ctx.ui.notify(`Workflow run ${runId} resumed.`, "success");
+            return;
+          }
+          const receipt = await startResume(runId, resumeArgs.trim() ? parseJsonObject(resumeArgs) : undefined, ctx);
+          ctx.ui.notify(`Workflow replay launched as ${receipt.runId}.`, "success");
           return;
         }
 
@@ -326,6 +643,53 @@ export default function workflowExtension(pi: ExtensionAPI) {
           return;
         }
 
+        if (action === "retry") {
+          const { token: runId, rest: callRest } = splitFirstToken(rest);
+          const { token: callId } = splitFirstToken(callRest);
+          if (!runId || !callId) throw new Error("Usage: /workflow retry <run-id> <call-id>");
+          const confirm = (ctx.ui as { confirm?: (title: string, message: string) => Promise<boolean> }).confirm;
+          if (!confirm || !(await confirm("Retry workflow agent?", `Retry ${callId} from ${runId}; unchanged calls will be replayed from cache.`))) {
+            throw new Error("Agent retry cancelled.");
+          }
+          const receipt = await startResume(runId, undefined, ctx, [callId]);
+          ctx.ui.notify(`Agent retry replay launched as ${receipt.runId}.`, "success");
+          return;
+        }
+
+        if (action === "worktrees" || action === "apply" || action === "cleanup") {
+          const { token: runId } = splitFirstToken(rest);
+          if (!runId) throw new Error(`Usage: /workflow ${action} <run-id>`);
+          const record = manager.getRecord(runId);
+          if (!record) throw new Error(`Unknown workflow run '${runId}'.`);
+          const sessionId = (ctx as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.() ?? "ephemeral";
+          if (record.sessionId !== sessionId) throw new Error("Worktree controls are limited to the current session.");
+          const storage = createWorkflowRunStorage({ sessionId });
+          const runDir = await storage.runDirectory(runId);
+          const worktrees = await listWorkflowWorktrees(runDir);
+          if (action === "worktrees") {
+            ctx.ui.notify(worktrees.length ? worktrees.map((unit) => `${unit.callId} [${unit.status}] ${unit.worktreePath}\n  ${unit.changedFiles.join(", ") || "no changed files"}`).join("\n") : "No isolated write worktrees were recorded.", "info");
+            return;
+          }
+          if (!ctx.ui.confirm) throw new Error(`${action} requires interactive confirmation.`);
+          if (action === "apply") {
+            const changed = worktrees.filter((unit) => unit.status === "changed");
+            if (!changed.length) throw new Error("No unapplied worktree patches are available.");
+            const files = [...new Set(changed.flatMap((unit) => unit.changedFiles))].sort();
+            const policy = await storage.readPolicy(runId) as { verificationCommands?: string[][] };
+            const verification = policy.verificationCommands?.length
+              ? policy.verificationCommands.map((command) => command.join(" ")).join("; ")
+              : "WAIVED — no verificationCommands were configured in the approved policy";
+            if (!(await ctx.ui.confirm("Apply workflow patches?", `Repository: ${ctx.cwd}\nFiles: ${files.join(", ")}\nVerification: ${verification}\nPatches are applied serially after verification; confirming explicitly accepts any displayed waiver.`))) return;
+            const applied = await applyWorkflowWorktrees(runDir, policy.verificationCommands ?? []);
+            ctx.ui.notify(`Applied ${applied.length} isolated workflow patch${applied.length === 1 ? "" : "es"}.`, "success");
+          } else {
+            if (!(await ctx.ui.confirm("Clean workflow worktrees?", "Only clean or already-applied worktrees are removed. Unmerged changes are always preserved."))) return;
+            const result = await cleanupWorkflowWorktrees(runDir);
+            ctx.ui.notify(`Removed ${result.removed.length}; preserved ${result.preserved.length} worktree${result.preserved.length === 1 ? "" : "s"} with changes.`, result.preserved.length ? "warning" : "success");
+          }
+          return;
+        }
+
         if (action === "save") {
           const parts = rest.trim().split(/\s+/).filter(Boolean);
           const runId = parts.find((part) => !part.startsWith("--"));
@@ -333,17 +697,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
           if (!runId || !scope || (parts.includes("--project") && parts.includes("--user"))) {
             throw new Error("Usage: /workflow save <run-id> --project|--user");
           }
-          const record = manager.getRecord(runId);
-          if (!record) throw new Error(`Unknown workflow run '${runId}'.`);
-          const confirm = (ctx.ui as { confirm?: (title: string, message: string) => Promise<boolean> }).confirm;
-          const saved = await saveWorkflowSnapshot({
-            record,
-            scope,
-            cwd: ctx.cwd,
-            projectTrusted: projectTrusted(ctx),
-            confirmOverwrite: confirm ? async (targetPath) => await confirm("Overwrite saved workflow?", targetPath) : undefined,
-          });
-          ctx.ui.notify(`${saved.changed ? "Saved" : "Already saved"} workflow '${saved.name}' at ${saved.path}.`, "success");
+          await saveRun(runId, scope, ctx);
           return;
         }
 
@@ -363,9 +717,10 @@ export default function workflowExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("workflows", {
-    description: "List active and historical workflow runs",
+    description: "Select and inspect active or historical workflow runs",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(formatRunList(manager.list()), "info");
+      try { await openNativeInspector(ctx); }
+      catch (error) { ctx.ui.notify(errorMessage(error), "error"); }
     },
   });
 
@@ -378,7 +733,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
       name: Type.Optional(Type.String({ description: "Saved workflow name, for example deep-research-minimal." })),
       script: Type.Optional(Type.String({ description: "Generated JavaScript workflow source beginning with export const meta." })),
       scriptPath: Type.Optional(Type.String({ description: "Path to a .js workflow under bundled, user, or trusted-project workflow directories. Takes precedence over script and name." })),
-      resumeFromRunId: Type.Optional(Type.String({ description: "Existing run ID to resume through replay once replay support is available." })),
+      resumeFromRunId: Type.Optional(Type.String({ description: "Existing JavaScript run ID whose completed unchanged calls should be replayed from the persisted call ledger." })),
       input: Type.Optional(Type.Any({ description: "Legacy alias for structured workflow arguments." })),
       args: Type.Optional(Type.Any({ description: "Structured workflow arguments exposed through the script's args global." })),
       confirmRun: Type.Boolean({ description: "Must be true only when the user explicitly requested workflow execution or enabled Workflow Mode. Launch approval may still be required." }),
@@ -389,13 +744,17 @@ export default function workflowExtension(pi: ExtensionAPI) {
       }
       const input = params.args ?? params.input;
       const name = params.name ?? params.key;
-      if (params.resumeFromRunId) throw new Error("resumeFromRunId requires replay support from milestone M7 and is not available yet.");
-      if (!params.scriptPath && !params.script && !name) throw new Error("workflow_run requires scriptPath, script, name, or legacy key.");
+      if (!params.scriptPath && !params.script && !name && !params.resumeFromRunId) {
+        throw new Error("workflow_run requires scriptPath, script, name, resumeFromRunId, or legacy key.");
+      }
+      const replayOptions = params.resumeFromRunId ? { sourceRunId: params.resumeFromRunId } : undefined;
       const receipt = params.scriptPath
-        ? await startScriptPath(params.scriptPath, input, ctx)
+        ? await startScriptPath(params.scriptPath, input, ctx, replayOptions)
         : params.script
-          ? await startInlineScript(params.script, input, ctx)
-          : await startRun(name as string, input, ctx);
+          ? await startInlineScript(params.script, input, ctx, replayOptions)
+          : name
+            ? await startRun(name as string, input, ctx, replayOptions)
+            : await startResume(params.resumeFromRunId as string, input, ctx);
       return {
         content: [{ type: "text", text: `Workflow launched asynchronously.\nRun: ${receipt.runId}\nTask: ${receipt.taskId}` }],
         details: {
@@ -434,11 +793,13 @@ export default function workflowExtension(pi: ExtensionAPI) {
     publishWorkflowMode();
     const sessionId = ctx.sessionManager?.getSessionId?.() ?? "ephemeral";
     try { rememberSources(await loadSources(ctx)); } catch { /* command execution reports loader errors when requested */ }
-    const diskRuns = await manager.restore(createWorkflowRunStorage({ sessionId }));
+    const sessionStorage = createWorkflowRunStorage({ sessionId });
+    const diskRuns = await manager.restore(sessionStorage);
     if (diskRuns.some((record) => record.status === "failed" && record.finishedAt)) {
       notifyWorkflow(ctx, "Recovered inspectable workflow state from a previous host lifecycle.", "warning");
     }
     renderWorkflowRun(ctx, manager.active().at(-1) ?? restored);
+    await publishInspector(ctx, sessionStorage);
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -455,6 +816,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => {
     mode.finishTurn(ctx);
     publishWorkflowMode();
+    void publishInspector(ctx);
   });
 
   pi.on("session_shutdown", async () => {

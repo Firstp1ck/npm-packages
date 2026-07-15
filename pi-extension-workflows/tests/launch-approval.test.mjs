@@ -17,20 +17,23 @@ await assert.rejects(
 const onceStore = createWorkflowApprovalStore();
 const choices = ["View raw workflow script", "Run once"];
 const previews = [];
+let approvalTitle = "";
 const once = await requestWorkflowLaunchApproval({
   approvals: onceStore,
   key,
   workflowName: "test",
   source: "export const meta = {};\nreturn 1",
+  plan: "Repository: /repo\nIsolation: one git worktree per write agent\nCapabilities: write=true, shell=false, network=false\nLarge workflow: policy allows 30 agents",
   ctx: {
     hasUI: true,
     ui: {
-      async select() { return choices.shift(); },
+      async select(title) { approvalTitle = title; return choices.shift(); },
       notify(message) { previews.push(message); },
     },
   },
 });
 assert.equal(once.source, "once");
+assert.match(approvalTitle, /Repository: \/repo[\s\S]*one git worktree per write agent[\s\S]*write=true[\s\S]*Large workflow/);
 assert.match(previews[0], /export const meta/);
 assert.equal(onceStore.isApproved(key), false, "one-shot approval must be consumed before launch");
 

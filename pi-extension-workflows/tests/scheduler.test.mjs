@@ -26,7 +26,7 @@ const results = await Promise.all(Array.from({ length: 6 }, (_, index) => schedu
 assert.deepEqual(results, [0, 1, 2, 3, 4, 5]);
 assert.deepEqual(started, [0, 1, 2, 3, 4, 5], "global scheduler queue must be FIFO");
 assert.equal(maxActive, 2);
-assert.deepEqual(scheduler.snapshot(), { maxConcurrency: 2, active: 0, queued: 0 });
+assert.deepEqual(scheduler.snapshot(), { maxConcurrency: 2, active: 0, queued: 0, pausedRuns: [] });
 
 const single = new WorkflowAgentScheduler(1);
 let releaseFirst;
@@ -38,7 +38,30 @@ queuedAbort.abort();
 await assert.rejects(() => queued, /cancel|abort/i);
 releaseFirst("done");
 assert.equal(await first, "done");
-assert.deepEqual(single.snapshot(), { maxConcurrency: 1, active: 0, queued: 0 });
+assert.deepEqual(single.snapshot(), { maxConcurrency: 1, active: 0, queued: 0, pausedRuns: [] });
+
+const pausable = new WorkflowAgentScheduler(1);
+pausable.pauseRun("run-paused");
+let pausedStarted = false;
+const pausedWork = pausable.schedule({ runId: "run-paused" }, async () => { pausedStarted = true; return "paused-done"; });
+assert.equal(await pausable.schedule({ runId: "run-other" }, async () => "other-done"), "other-done", "a paused run must not block another run");
+assert.equal(pausedStarted, false);
+assert.deepEqual(pausable.snapshot(), { maxConcurrency: 1, active: 0, queued: 1, pausedRuns: ["run-paused"] });
+assert.equal(pausable.resumeRun("run-paused"), true);
+assert.equal(await pausedWork, "paused-done");
+
+let releaseActive;
+let secondStarted = false;
+const activeBeforePause = pausable.schedule({ runId: "run-active" }, async () => await new Promise((resolve) => { releaseActive = resolve; }));
+while (!releaseActive) await delay(1);
+pausable.pauseRun("run-active");
+const queuedAfterPause = pausable.schedule({ runId: "run-active" }, async () => { secondStarted = true; return "second"; });
+releaseActive("first");
+assert.equal(await activeBeforePause, "first", "pausing lets already-active work finish");
+await delay(10);
+assert.equal(secondStarted, false, "pausing must prevent new work from starting");
+pausable.resumeRun("run-active");
+assert.equal(await queuedAfterPause, "second");
 
 await assert.rejects(
   () => single.schedule({ timeoutMs: 20, callId: "slow" }, async (signal) => {

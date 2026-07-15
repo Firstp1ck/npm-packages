@@ -15,6 +15,25 @@ export type WorkflowScriptPermissions = {
   network: boolean;
 };
 
+export type WorkflowBudgetLimits = {
+  maxTokens?: number;
+  maxCostUsd?: number;
+  maxTimeMs?: number;
+  maxAgents?: number;
+};
+
+export type WorkflowBudgetPolicy = {
+  run?: WorkflowBudgetLimits;
+  phase?: WorkflowBudgetLimits;
+};
+
+export type WorkflowRetryPolicy = {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  jitter: number;
+};
+
 export type WorkflowScriptPolicy = {
   version: 1;
   inputSchema?: unknown;
@@ -22,6 +41,33 @@ export type WorkflowScriptPolicy = {
   maxAgents: number;
   timeoutMs: number;
   permissions: WorkflowScriptPermissions;
+  shellAllowlist?: string[];
+  networkAllowlist?: string[];
+  verificationCommands?: string[][];
+  budgets?: WorkflowBudgetPolicy;
+  retry?: WorkflowRetryPolicy;
+};
+
+export type WorkflowAgentPolicy = {
+  root: string;
+  permissions: WorkflowScriptPermissions;
+  allowedTools: string[];
+  shellAllowlist: string[];
+  networkAllowlist: string[];
+};
+
+export type WorkflowWorktreeRecord = {
+  schemaVersion: 1;
+  runId: string;
+  callId: string;
+  repoRoot: string;
+  worktreePath: string;
+  baseCommit: string;
+  branch: string;
+  initialDirty: boolean;
+  changedFiles: string[];
+  patchPath?: string;
+  status: "active" | "clean" | "changed" | "applied" | "preserved";
 };
 
 export type WorkflowScriptMeta = {
@@ -114,6 +160,7 @@ export type WorkflowRun = {
   finishedAt?: string;
   summary?: string;
   error?: string;
+  errorKind?: string;
   sourceType?: "json" | "javascript";
   scriptHash?: string;
   policyHash?: string;
@@ -121,6 +168,7 @@ export type WorkflowRun = {
   snapshotPath?: string;
   resumedFromRunId?: string;
   resumeWarnings?: string[];
+  warnings?: string[];
   result?: unknown;
   usage?: WorkflowUsage;
   updatedAt?: string;
@@ -149,10 +197,12 @@ export type PhaseRun = {
 export type TaskRun = {
   taskId: string;
   name: string;
+  label?: string;
   callIndex?: number;
   status: TaskRunStatus;
   output?: string;
   error?: string;
+  errorKind?: string;
   usage?: WorkflowUsage;
   prompt?: string;
   promptHash?: string;
@@ -160,6 +210,8 @@ export type TaskRun = {
   pipelineKey?: string;
   options?: Record<string, unknown>;
   result?: unknown;
+  recentEvents?: WorkflowSubprocessEvent[];
+  worktree?: WorkflowWorktreeRecord;
   startedAt?: string;
   finishedAt?: string;
 };
@@ -197,6 +249,7 @@ export type TaskContext = {
   phase: WorkflowPhase;
   priorOutputs: string;
   signal?: AbortSignal;
+  agentPolicy?: WorkflowAgentPolicy;
   onSubprocessEvent?: (event: WorkflowSubprocessEvent) => void;
 };
 

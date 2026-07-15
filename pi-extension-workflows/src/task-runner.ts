@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { isPathInside } from "@firstpick/pi-utils/paths";
 import { DEFAULT_ALLOWED_TOOLS } from "./schema.ts";
 import type { TaskContext, TaskResult, TaskRunner, WorkflowSubprocessEvent, WorkflowTask, WorkflowUsage } from "./types.ts";
 import { truncateText } from "./utils.ts";
 
 const DEFAULT_OUTPUT_CAP_BYTES = 50 * 1024;
+const POLICY_GUARD_PATH = fileURLToPath(new URL("./subprocess-policy-guard.ts", import.meta.url));
 
 type GenericMessage = {
   role?: string;
@@ -69,9 +71,11 @@ function addUsage(target: WorkflowUsage, message: GenericMessage): void {
   target.turns = (target.turns ?? 0) + 1;
 }
 
-function safeTools(task: WorkflowTask, defaults: string[]): string[] {
+function safeTools(task: WorkflowTask, defaults: string[], context: TaskContext): string[] {
+  const policyTools = context.agentPolicy?.allowedTools ?? [...DEFAULT_ALLOWED_TOOLS];
+  const allowed = new Set(policyTools);
   const requested = task.tools && task.tools.length > 0 ? task.tools : defaults;
-  return requested.filter((tool) => DEFAULT_ALLOWED_TOOLS.has(tool));
+  return [...new Set(requested)].filter((tool) => allowed.has(tool));
 }
 
 function shellDisplayPart(part: string): string {
@@ -158,8 +162,9 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
       }
 
       const args = ["--mode", "json", "-p", "--no-session"];
+      if (context.agentPolicy) args.unshift("-e", POLICY_GUARD_PATH);
       if (task.model) args.push("--model", task.model);
-      const tools = safeTools(task, defaultTools);
+      const tools = safeTools(task, defaultTools, context);
       if (tools.length > 0) args.push("--tools", tools.join(","));
       args.push(task.prompt);
 
@@ -192,6 +197,7 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
           shell: false,
           detached: useProcessGroup,
           stdio: ["ignore", "pipe", "pipe"],
+          env: context.agentPolicy ? { ...process.env, PI_WORKFLOW_AGENT_POLICY: JSON.stringify(context.agentPolicy) } : process.env,
         });
         let abortListener: (() => void) | undefined;
         let forceKillTimer: ReturnType<typeof setTimeout> | undefined;

@@ -21,6 +21,7 @@ type UILike = {
   setWidget?: (key: string, value: string[] | undefined, options?: unknown) => void;
   notify?: (message: string, level?: "info" | "warning" | "error" | "success") => void;
   select?: (title: string, options: string[]) => Promise<string | undefined>;
+  confirm?: (title: string, message: string) => Promise<boolean>;
   theme?: ThemeLike;
 };
 
@@ -212,6 +213,7 @@ export function renderWorkflowRun(ctx: WorkflowUIContext, run: WorkflowRun | und
   ];
 
   if (run.finishedAt) lines.push(`Duration: ${formatDuration(run.startedAt, run.finishedAt)}`);
+  for (const warning of run.warnings ?? []) lines.push(`Warning: ${warning}`);
   if (run.error) lines.push(`Error: ${run.error}`);
   ctx.ui.setWidget?.(WIDGET_KEY, lines);
 }

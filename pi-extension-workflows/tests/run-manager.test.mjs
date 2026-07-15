@@ -6,6 +6,7 @@ import { sha256 } from "../src/persistence-schema.ts";
 import { WorkflowRunManager } from "../src/run-manager.ts";
 import { createWorkflowRunStorage } from "../src/run-storage.ts";
 import { transitionWorkflowRun } from "../src/run-status.ts";
+import { WorkflowAgentScheduler } from "../src/scheduler.ts";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const temp = await mkdtemp(path.join(os.tmpdir(), "workflow-run-manager-test-"));
@@ -57,8 +58,12 @@ try {
         tasks: [{
           taskId: "inspect",
           name: "Inspect",
+          label: "inspect",
+          callIndex: 1,
           status: "running",
+          prompt: "inspect prompt",
           promptHash: sha256("inspect prompt"),
+          fingerprint: sha256("inspect fingerprint"),
           options: { tools: ["read"] },
           startedAt: new Date().toISOString(),
         }],
@@ -68,6 +73,7 @@ try {
       const task = managedRun.phases[0].tasks[0];
       task.status = "completed";
       task.output = "done";
+      task.result = "done";
       task.usage = { input: 10, output: 4, cost: 0.01, turns: 1 };
       task.finishedAt = new Date().toISOString();
       managedRun.phases[0].status = "completed";
@@ -147,6 +153,39 @@ try {
   releaseParallelA();
   releaseParallelB();
   assert.deepEqual((await Promise.all([parallelReceiptA.completion, parallelReceiptB.completion])).map((value) => value.status), ["completed", "completed"]);
+
+  const pauseScheduler = new WorkflowAgentScheduler(1);
+  const pauseRun = run("run-pause", "pause");
+  let releasePauseActive;
+  let pauseQueuedStarted = false;
+  const pauseReceipt = await manager.launch({
+    run: pauseRun,
+    storage,
+    projectId: "project-test",
+    scheduler: pauseScheduler,
+    policySnapshot: { version: 1, permissions: { write: false, shell: false, network: false } },
+    async execute(_signal, onUpdate) {
+      transitionWorkflowRun(pauseRun, "running");
+      onUpdate(pauseRun);
+      const first = pauseScheduler.schedule({ runId: pauseRun.runId }, async () => await new Promise((resolve) => { releasePauseActive = resolve; }));
+      while (!releasePauseActive) await delay(1);
+      const second = pauseScheduler.schedule({ runId: pauseRun.runId }, async () => { pauseQueuedStarted = true; return "second"; });
+      await first;
+      await second;
+      transitionWorkflowRun(pauseRun, "completed");
+      onUpdate(pauseRun);
+      return pauseRun;
+    },
+  });
+  while (!releasePauseActive) await delay(1);
+  assert.equal(manager.pause(pauseRun.runId), true);
+  assert.equal(pauseRun.status, "paused");
+  releasePauseActive("first");
+  await delay(10);
+  assert.equal(pauseQueuedStarted, false, "manager pause must let active calls finish without starting queued calls");
+  assert.equal(manager.resume(pauseRun.runId), true);
+  assert.equal((await pauseReceipt.completion).status, "completed");
+  assert.equal(pauseQueuedStarted, true);
 
   const failedRun = run("run-failed", "failed");
   const failedReceipt = await manager.launch({

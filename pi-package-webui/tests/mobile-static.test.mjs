@@ -814,6 +814,17 @@ assert.match(app, /function renderWorkflowModeControls\(\)[\s\S]*workflow-mode-a
 assert.match(app, /async function setWorkflowModeEnabled\(enabled\)[\s\S]*`\/\$\{commandName\} mode \$\{enabled \? "on" : "off"\}`/, "Workflow Mode toggle should send canonical extension commands rather than rewrite prompts locally");
 assert.match(app, /if \(statusKey === WORKFLOW_MODE_STATUS_KEY\) handleWorkflowModeStatus/, "Workflow Mode should synchronize from replayable extension setStatus events");
 assert.match(app, /if \(widgetKey === WORKFLOW_MODE_RPC_WIDGET_KEY\)[\s\S]*workflowModeStateFromRpcPayload\(request\.widgetLines\)[\s\S]*updateWorkflowModeForTab/, "Workflow Mode should consume structured replay state without rendering an opaque widget");
+assert.match(app, /const WORKFLOW_INSPECTOR_WIDGET_KEY = "workflow:rpc"[\s\S]*WORKFLOW_INSPECTOR_PAYLOAD_PREFIX = "WORKFLOW_RPC_PAYLOAD "[\s\S]*WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1/, "frontend should recognize the versioned multi-run Workflow inspector payload");
+assert.match(app, /function parseWorkflowInspectorPayload\(lines\)[\s\S]*payload\?\.type !== WORKFLOW_INSPECTOR_PAYLOAD_TYPE[\s\S]*Array\.isArray\(payload\.runs\)/, "frontend should validate Workflow inspector type, version, and run shape");
+assert.match(app, /function renderWorkflowInspectorWidget\(\)[\s\S]*workflow-inspector-run-list[\s\S]*workflow-inspector-phase-tabs[\s\S]*renderWorkflowInspectorAgent/, "WebUI should render non-blocking active and historical run, phase, and agent drilldown");
+assert.match(app, /function renderWorkflowInspectorAgent\(agent, run\)[\s\S]*Prompt[\s\S]*Recent activity[\s\S]*Result and usage[\s\S]*Retry agent/, "agent drilldown should expose prompt, activity, result, usage, and retry");
+assert.match(app, /canPause[\s\S]*`\/workflow pause \$\{run\.runId\}`[\s\S]*canAbort[\s\S]*`\/workflow abort \$\{run\.runId\}`[\s\S]*Save user[\s\S]*Save project[\s\S]*Raw workflow script/, "WebUI Workflow controls should send canonical extension commands and expose raw scripts");
+assert.match(app, /confirmMessage && !window\.confirm\(confirmMessage\)/, "destructive WebUI Workflow actions should require browser confirmation");
+assert.match(app, /const workflowInspectorByTab = new Map\(\)[\s\S]*workflowInspectorSelectionByTab = new Map\(\)/, "Workflow inspector state and drilldown selection should be per tab");
+assert.match(app, /handleInactiveTabEvent\(event\)[\s\S]*WORKFLOW_INSPECTOR_WIDGET_KEY[\s\S]*updateWorkflowInspectorForTab\(event\.tabId, inspector\)[\s\S]*renderTabs\(\)/, "inactive tabs should consume replayed Workflow inspector payloads for badges");
+assert.match(app, /terminal-tab-workflow-indicator[\s\S]*workflowRunningCountForTab/, "terminal tabs should display Workflow Mode or active-run badges");
+assert.match(css, /\.workflow-inspector-layout \{[\s\S]*grid-template-columns:[\s\S]*\.workflow-inspector-run-list[\s\S]*\.workflow-inspector-agent/, "Workflow inspector should have responsive run and agent layout styling");
+assert.match(css, /\.terminal-tab-workflow-indicator \{[\s\S]*color: var\(--ctp-mauve\)/, "inactive-tab Workflow badges should have a distinct accessible style");
 assert.match(css, /\.composer-workflow-mode-button\.active,[\s\S]*aria-pressed="true"/, "active Workflow Mode toggle should have persistent pressed styling");
 assert.match(css, /\.composer\.workflow-mode-active[\s\S]*body\.workflow-mode-active \.composer::before/, "active Workflow Mode should visibly accent the composer");
 // Phase 3: browser voice loop (Web Speech STT/TTS) wiring.
@@ -911,7 +922,7 @@ assert.match(app, /function renderReleaseNpmOutputWidget\(\)/, "release-npm live
 assert.match(app, /async function refreshAppRunners\(tabContext = activeTabContext\(\)\)/, "frontend should load detected app runners for the active tab cwd");
 assert.match(app, /function renderAppRunnerWidget\(\)/, "frontend should render app runner output in the shared top widget area");
 assert.match(app, /function tabAppRunnerRunningRun\(tab\)[\s\S]*appRunnerIsRunning\(run\)/, "frontend should derive running app-runner state for terminal tab indicators");
-assert.match(app, /function appendTerminalTabContent\(button, \{ title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false \}\)[\s\S]*terminal-tab-app-runner-indicator/, "terminal tab content should render a visible app-runner badge");
+assert.match(app, /function appendTerminalTabContent\(button, \{ title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false,[^}]*\}\)[\s\S]*terminal-tab-app-runner-indicator/, "terminal tab content should render a visible app-runner badge");
 assert.match(app, /function appendTerminalTabContent\(button,[\s\S]*terminal-tab-conversation-indicator/, "terminal tab content should render a visible Natural Conversation badge");
 assert.match(app, /function renderTerminalTab\(tab\)[\s\S]*conversation-mode-running/, "terminal tabs should indicate active Natural Conversation mode per tab");
 assert.match(css, /\.composer-conversation-mode-chip[\s\S]*\.composer-conversation-end-button/, "Natural Conversation composer controls should have dedicated styles");
@@ -1234,7 +1245,7 @@ assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(p
 assert.match(app, /let openTerminalTabGroupKey = null/, "frontend should track the open terminal tab group across tab bar rerenders");
 assert.match(app, /function updateTerminalTabGroupOpenState\(\)/, "frontend should be able to reapply open terminal tab group state after rerenders");
 assert.match(app, /classList\.toggle\("terminal-tabs-dense", tabs\.length >= 10\)/, "frontend should enable dense tab layout before tab names become unreadable");
-assert.match(app, /appendTerminalTabContent\(button, \{ title: activeTitle,[\s\S]*?count: groupTabs\.length \}\)/, "group buttons should show the active terminal name instead of only the cwd label");
+assert.match(app, /appendTerminalTabContent\(button, \{ title: activeTitle,[\s\S]*?count: groupTabs\.length,[^}]*\}\)/, "group buttons should show the active terminal name instead of only the cwd label");
 assert.match(app, /wrapper\.addEventListener\("pointerenter", \(\) => setOpenTerminalTabGroup\(group\.key\)\)/, "terminal tab groups should mark themselves open while hovered");
 assert.match(app, /if \(openTerminalTabGroupKey\) \{\n\s+scheduleRefreshTabs\(600\);/, "tab polling should defer full tab refreshes while a group menu is open");
 assert.match(app, /function shouldRenderTerminalTabGroup\(group, groupCount\) \{\n\s+if \(group\.custom\) return group\.tabs\.length > 1;\n\s+return groupCount > 1 && group\.tabs\.length > 1 && Boolean\(group\.cwd\);\n\}/, "terminal tabs should always render custom groups while only collapsing cwd groups when multiple groups are available");

@@ -276,6 +276,34 @@ function handleSubagentFixturePrompt(command, base) {
   return true;
 }
 
+function handleWorkflowFixturePrompt(command, base) {
+  const message = String(command.message || "").trim();
+  if (!/^fixture workflow inspector (running|completed|clear)$/.test(message)) return false;
+  const status = message.split(" ").at(-1);
+  const now = new Date().toISOString();
+  const runs = status === "clear" ? [] : [{
+    runId: "fixture-workflow-run",
+    workflowKey: "fixture-workflow",
+    workflowName: "Fixture Workflow",
+    status,
+    sourceType: "javascript",
+    input: { topic: "rpc" },
+    script: "export const meta = { name: 'fixture-workflow', description: 'Fixture Workflow' }\nreturn 1",
+    startedAt: now,
+    updatedAt: now,
+    ...(status === "completed" ? { finishedAt: now, result: "fixture complete" } : {}),
+    phases: [{
+      phaseId: "audit", name: "Audit", status,
+      agents: [{ callId: "fixture-call", callIndex: 1, taskId: "inspect", label: "inspect", name: "Inspect", status, prompt: "Inspect fixture", options: { tools: ["read"] }, recentEvents: [{ type: "stdout", timestamp: now, line: "read fixture" }], ...(status === "completed" ? { result: "inspected", usage: { input: 2, output: 1 } } : {}) }],
+    }],
+    controls: { canPause: status === "running", canResume: status === "completed", canAbort: status === "running", canRetry: status === "completed", canSave: status === "completed" },
+  }];
+  const payload = { type: "firstpick.pi-extension-workflows.inspector", version: 1, updatedAt: now, mode: { enabled: true, behavior: "persistent", phase: "armed" }, runs };
+  respond({ ...base, data: { output: `fake workflow inspector ${status} emitted` } });
+  emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setWidget", widgetKey: "workflow:rpc", widgetLines: [`WORKFLOW_RPC_PAYLOAD ${JSON.stringify(payload)}`] });
+  return true;
+}
+
 function handleTalkPrompt(command, base) {
   const message = String(command.message || "").trim();
   const match = message.match(/^\/(talk|voice|conversation)(?:\s+(\S+))?/i);
@@ -355,6 +383,7 @@ rl.on("line", (line) => {
             { name: "talk", source: "extension", description: "Toggle Natural Conversation Mode" },
             { name: "voice", source: "extension", description: "Natural Conversation Mode alias" },
             { name: "conversation", source: "extension", description: "Natural Conversation Mode alias" },
+            { name: "workflow", source: "extension", description: "Run and inspect JavaScript workflows" },
           ],
         },
       });
@@ -380,6 +409,7 @@ rl.on("line", (line) => {
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleSubagentFixturePrompt(command, base)) return;
       if (handleDocumentArtifactFixturePrompt(command, base)) return;
+      if (handleWorkflowFixturePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });

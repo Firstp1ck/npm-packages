@@ -38,6 +38,42 @@ async function request(host, pathname, { method = "GET", body, timeoutMs = 5_000
   return { status: response.status, body: payload };
 }
 
+async function waitForSseEvent(tabId, predicate, trigger) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("timed out waiting for SSE event")), 8_000);
+  let triggerResult;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/events?tab=${encodeURIComponent(tabId)}`, { signal: controller.signal });
+    assert.equal(response.status, 200, "SSE connection should open");
+    const triggerPromise = trigger ? Promise.resolve().then(trigger) : Promise.resolve(undefined);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+        if (!data) continue;
+        const event = JSON.parse(data);
+        if (predicate(event)) {
+          triggerResult = await triggerPromise;
+          controller.abort();
+          return { event, triggerResult };
+        }
+      }
+    }
+    throw new Error("SSE stream ended before the expected event");
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+  }
+}
+
 async function rmWithRetry(target) {
   let lastError;
   for (let attempt = 0; attempt < 8; attempt++) {
@@ -226,6 +262,33 @@ try {
   assert.equal(tabList.length, 1, "startup should create one tab for --cwd");
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
+
+  const workflowRpc = await waitForSseEvent(
+    tabId,
+    (event) => event.type === "extension_ui_request" && event.method === "setWidget" && event.widgetKey === "workflow:rpc",
+    () => request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture workflow inspector running" } }),
+  );
+  assert.equal(workflowRpc.triggerResult.status, 200, "workflow RPC fixture prompt should be accepted");
+  assert.equal(workflowRpc.event.widgetLines?.[0]?.startsWith("WORKFLOW_RPC_PAYLOAD "), true, "real Pi RPC events should transport the versioned Workflow inspector payload");
+  const workflowPayload = JSON.parse(workflowRpc.event.widgetLines[0].slice("WORKFLOW_RPC_PAYLOAD ".length));
+  assert.equal(workflowPayload.version, 1);
+  assert.equal(workflowPayload.runs[0].status, "running");
+  assert.equal(workflowPayload.runs[0].phases[0].agents[0].prompt, "Inspect fixture");
+
+  const workflowReplay = await waitForSseEvent(
+    tabId,
+    (event) => event.type === "extension_ui_request" && event.method === "setWidget" && event.widgetKey === "workflow:rpc",
+  );
+  assert.equal(workflowReplay.event.replayed, true, "server reconnect should replay the latest Workflow inspector widget");
+  assert.equal(JSON.parse(workflowReplay.event.widgetLines[0].slice("WORKFLOW_RPC_PAYLOAD ".length)).runs[0].runId, "fixture-workflow-run");
+
+  const workflowCompleted = await waitForSseEvent(
+    tabId,
+    (event) => event.type === "extension_ui_request" && event.method === "setWidget" && event.widgetKey === "workflow:rpc" && event.widgetLines?.[0]?.includes('"status":"completed"'),
+    () => request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture workflow inspector completed" } }),
+  );
+  assert.equal(workflowCompleted.triggerResult.status, 200);
+  assert.equal(JSON.parse(workflowCompleted.event.widgetLines[0].slice("WORKFLOW_RPC_PAYLOAD ".length)).runs[0].controls.canRetry, true);
 
   const artifactFixture = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture document artifact" } });
   assert.equal(artifactFixture.status, 200, "document artifact fixture should be accepted");

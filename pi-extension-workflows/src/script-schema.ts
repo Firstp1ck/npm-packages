@@ -5,7 +5,7 @@ import {
   HARD_MAX_CONCURRENCY,
   HARD_MAX_TASKS,
 } from "./schema.ts";
-import type { WorkflowScriptMeta, WorkflowScriptPermissions, WorkflowScriptPolicy } from "./types.ts";
+import type { WorkflowBudgetLimits, WorkflowScriptMeta, WorkflowScriptPermissions, WorkflowScriptPolicy } from "./types.ts";
 
 export const DEFAULT_WORKFLOW_TIMEOUT_MS = 30 * 60 * 1000;
 export const HARD_MAX_WORKFLOW_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -39,6 +39,14 @@ export const WORKFLOW_SCRIPT_META_JSON_SCHEMA = {
         maxConcurrency: { type: "integer", minimum: 1, maximum: HARD_MAX_CONCURRENCY },
         maxAgents: { type: "integer", minimum: 1, maximum: HARD_MAX_TASKS },
         timeoutMs: { type: "integer", minimum: 1, maximum: HARD_MAX_WORKFLOW_TIMEOUT_MS },
+        budgets: {
+          type: "object", additionalProperties: false,
+          properties: {
+            run: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "number", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, maxTimeMs: { type: "integer", minimum: 1 }, maxAgents: { type: "integer", minimum: 1 } } },
+            phase: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "number", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, maxTimeMs: { type: "integer", minimum: 1 }, maxAgents: { type: "integer", minimum: 1 } } },
+          },
+        },
+        retry: { type: "object", additionalProperties: false, properties: { maxAttempts: { type: "integer", minimum: 1, maximum: 5 }, baseDelayMs: { type: "integer", minimum: 0 }, maxDelayMs: { type: "integer", minimum: 0 }, jitter: { type: "number", minimum: 0, maximum: 1 } } },
         permissions: {
           type: "object",
           additionalProperties: false,
@@ -54,7 +62,7 @@ export const WORKFLOW_SCRIPT_META_JSON_SCHEMA = {
 } as const;
 
 const META_KEYS = new Set(["name", "description", "phases", "pi"]);
-const POLICY_KEYS = new Set(["version", "inputSchema", "maxConcurrency", "maxAgents", "timeoutMs", "permissions"]);
+const POLICY_KEYS = new Set(["version", "inputSchema", "maxConcurrency", "maxAgents", "timeoutMs", "permissions", "budgets", "retry"]);
 const PERMISSION_KEYS = new Set(["write", "shell", "network"]);
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 
@@ -92,6 +100,20 @@ function normalizePermissions(value: unknown, issues: string[]): WorkflowScriptP
     else permissions[key as keyof WorkflowScriptPermissions] = requested;
   }
   return permissions;
+}
+
+function normalizeBudgetLimits(value: unknown, path: string, issues: string[]): WorkflowBudgetLimits | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) { issues.push(`${path} must be an object.`); return undefined; }
+  rejectUnknownKeys(value, new Set(["maxTokens", "maxCostUsd", "maxTimeMs", "maxAgents"]), path, issues);
+  const limits: WorkflowBudgetLimits = {};
+  for (const key of ["maxTokens", "maxTimeMs", "maxAgents"] as const) {
+    if (value[key] !== undefined && (!positiveInteger(value[key]))) issues.push(`${path}.${key} must be a positive integer.`);
+    else if (value[key] !== undefined) limits[key] = Number(value[key]);
+  }
+  if (value.maxCostUsd !== undefined && (typeof value.maxCostUsd !== "number" || !Number.isFinite(value.maxCostUsd) || value.maxCostUsd < 0)) issues.push(`${path}.maxCostUsd must be a finite non-negative number.`);
+  else if (value.maxCostUsd !== undefined) limits.maxCostUsd = value.maxCostUsd;
+  return limits;
 }
 
 function normalizePolicy(value: unknown, issues: string[]): WorkflowScriptPolicy {
@@ -133,6 +155,30 @@ function normalizePolicy(value: unknown, issues: string[]): WorkflowScriptPolicy
   }
 
   policy.permissions = normalizePermissions(value.permissions, issues);
+  if (value.budgets !== undefined) {
+    if (!isRecord(value.budgets)) issues.push("meta.pi.budgets must be an object.");
+    else {
+      rejectUnknownKeys(value.budgets, new Set(["run", "phase"]), "meta.pi.budgets", issues);
+      const runBudget = normalizeBudgetLimits(value.budgets.run, "meta.pi.budgets.run", issues);
+      const phaseBudget = normalizeBudgetLimits(value.budgets.phase, "meta.pi.budgets.phase", issues);
+      policy.budgets = { ...(runBudget ? { run: runBudget } : {}), ...(phaseBudget ? { phase: phaseBudget } : {}) };
+    }
+  }
+  if (value.retry !== undefined) {
+    if (!isRecord(value.retry)) issues.push("meta.pi.retry must be an object.");
+    else {
+      rejectUnknownKeys(value.retry, new Set(["maxAttempts", "baseDelayMs", "maxDelayMs", "jitter"]), "meta.pi.retry", issues);
+      const maxAttempts = value.retry.maxAttempts ?? 1;
+      const baseDelayMs = value.retry.baseDelayMs ?? 250;
+      const maxDelayMs = value.retry.maxDelayMs ?? 5000;
+      const jitter = value.retry.jitter ?? 0.2;
+      if (!Number.isInteger(maxAttempts) || Number(maxAttempts) < 1 || Number(maxAttempts) > 5) issues.push("meta.pi.retry.maxAttempts must be an integer from 1 to 5.");
+      if (!Number.isInteger(baseDelayMs) || Number(baseDelayMs) < 0) issues.push("meta.pi.retry.baseDelayMs must be a non-negative integer.");
+      if (!Number.isInteger(maxDelayMs) || Number(maxDelayMs) < Number(baseDelayMs)) issues.push("meta.pi.retry.maxDelayMs must be an integer >= baseDelayMs.");
+      if (typeof jitter !== "number" || !Number.isFinite(jitter) || jitter < 0 || jitter > 1) issues.push("meta.pi.retry.jitter must be between 0 and 1.");
+      policy.retry = { maxAttempts: Number(maxAttempts), baseDelayMs: Number(baseDelayMs), maxDelayMs: Number(maxDelayMs), jitter: Number(jitter) };
+    }
+  }
   return policy;
 }
 
@@ -197,5 +243,13 @@ export function effectiveWorkflowPolicy(
       shell: requested.permissions.shell && Boolean(ceilingPermissions.shell),
       network: requested.permissions.network && Boolean(ceilingPermissions.network),
     },
+    shellAllowlist: requested.permissions.shell && Boolean(ceilingPermissions.shell) ? [...new Set(ceiling.shellAllowlist ?? [])].sort() : [],
+    networkAllowlist: requested.permissions.network && Boolean(ceilingPermissions.network) ? [...new Set(ceiling.networkAllowlist ?? [])].sort() : [],
+    verificationCommands: requested.permissions.write && Boolean(ceilingPermissions.write) ? structuredClone(ceiling.verificationCommands ?? []) : [],
+    ...(requested.budgets ? { budgets: {
+      ...(requested.budgets.run ? { run: { ...requested.budgets.run, maxAgents: Math.min(requested.budgets.run.maxAgents ?? requested.maxAgents, requested.maxAgents), maxTimeMs: Math.min(requested.budgets.run.maxTimeMs ?? requested.timeoutMs, requested.timeoutMs) } } : {}),
+      ...(requested.budgets.phase ? { phase: { ...requested.budgets.phase, maxAgents: Math.min(requested.budgets.phase.maxAgents ?? requested.maxAgents, requested.maxAgents), maxTimeMs: Math.min(requested.budgets.phase.maxTimeMs ?? requested.timeoutMs, requested.timeoutMs) } } : {}),
+    } } : {}),
+    ...(requested.retry ? { retry: structuredClone(requested.retry) } : {}),
   };
 }

@@ -28,14 +28,14 @@ Project trust permits discovery and an approval prompt; it does not make generat
 | T-002 | Obfuscated access to `eval`, `Function`, or WebAssembly bypasses static checks | Critical | Remove dangerous globals in the isolated context in addition to AST rejection; never treat Node `vm` as a security boundary | Unknown interpreter features require review on upgrades |
 | T-003 | Prompt injection causes excessive or privileged agent fanout | Critical | Effective policy is the intersection of script request and hard/user/project ceilings; read-only defaults; approval displays scale and permissions | Read-only agents may still expose project data in model prompts |
 | T-004 | Infinite loop, recursion, or allocation bomb denies service | High | Runtime memory/stack limits, interrupt handler, wall-clock deadline, output cap, nesting cap | WASM initialization and GC can still consume bounded host resources |
-| T-005 | Workflow spawns too many agents or spends excessive tokens | High | Global and per-run concurrency limits, maximum agents, timeout, later token/cost budgets | v1 count/time limits do not precisely cap provider cost |
+| T-005 | Workflow spawns too many agents or spends excessive tokens | High | Global/per-run concurrency plus run/phase agent, token, cost, and time budgets; bounded retries; large-run warnings | Provider usage can arrive only after a call completes, so a single call may overshoot a remaining budget |
 | T-006 | Cancellation leaves Pi subprocesses running | High | Abort propagation, process-group termination, bounded SIGTERM→SIGKILL escalation, lifecycle tests | Platform-specific process behavior may vary |
 | T-007 | Script or policy changes reuse stale remembered consent | High | Approval key includes canonical project identity, SHA-256 script hash, and effective policy hash | Moving/copying an identical script intentionally reuses only same-project consent |
 | T-008 | Resume returns stale or mismatched agent results | High | Call fingerprints include phase path, label, normalized prompt/options, and pipeline key; changed calls rerun | Nondeterministic external data can become stale even with identical inputs |
 | T-009 | Project workflow filename escapes configured directory | High | Loader enumerates files directly; save path uses slug validation and safe path containment | Symlink policy must be tested before save support ships |
 | T-010 | Structured output or UI payload injects control data | Medium | Treat outputs as data; schema validation; bounded text; versioned JSON payloads; no HTML injection | Terminal escape handling depends on Pi renderer |
 | T-011 | Runtime subprocess inherits secrets or open descriptors | Critical | Preferred interpreter runs in-process as WASM with no host handles; any transitional subprocess uses an allowlisted environment and explicit stdio | Host process still owns credentials used by approved agent subprocesses |
-| T-012 | Parallel writers corrupt the working tree | High | v1 is read-only; later writers use isolated git worktrees and serial review/apply | Merge conflicts require user resolution |
+| T-012 | Parallel writers corrupt the working tree | High | Every write agent uses a separate git worktree; patches and metadata are persisted; verification and explicit serial apply occur only against a clean target | Merge conflicts require user resolution; unmerged worktrees are preserved |
 | T-013 | Malicious dependency or compromised WASM runtime | High | Exact dependency versions, package-lock, npm audit, source/release review, dependency upgrade tests | Supply-chain risk cannot be eliminated completely |
 | T-014 | WebUI independently rewrites prompts or widens policy | High | Extension owns mode and run state; WebUI sends canonical commands and renders versioned status only | RPC transport compromise is outside this extension's boundary |
 
@@ -48,7 +48,7 @@ effective limits      = min(script request, user/project ceiling, global hard ca
 effective permissions = script request ∩ user/project ceiling ∩ global permission policy
 ```
 
-The script can narrow policy but cannot widen it. The v1 global permission policy denies write, shell, and network capabilities.
+The script can narrow policy but cannot widen it. Permission defaults deny write, shell, and network. A user `workflow-policy.json` may grant bounded authority; an optional trusted-project policy can only narrow that authority. The effective policy, allowlists, verification commands, and isolation mode are frozen and approval-hashed before launch.
 
 ## Approval record
 
@@ -73,7 +73,7 @@ Inline generated scripts are persisted before approval. A script or policy chang
 - Runtime and handles are disposed in `finally` blocks.
 - Failure is closed: parser, policy, approval, persistence, or sandbox failure prevents launch.
 
-## Read-only v1 tool policy
+## Agent tool policy
 
 Allowed by default:
 
@@ -90,6 +90,16 @@ Denied by default:
 - package installation
 - external side effects
 
+When explicitly enabled by intersecting policy ceilings:
+
+- writes/edits run only inside one isolated git worktree per agent call;
+- shell calls pass through a child-process `tool_call` guard, reject shell operators, and allow only configured executables;
+- network tools require explicit URLs and allowlisted hosts; query-only network tools fail closed;
+- every tool path must remain inside the assigned worktree/root;
+- write actions are never automatically retried;
+- patch apply requires a clean target, configured verification, and user confirmation;
+- cleanup never deletes worktrees containing unmerged changes.
+
 ## Verification gates
 
 Before JS workflows are enabled by default:
@@ -100,7 +110,10 @@ Before JS workflows are enabled by default:
 4. Policy-intersection tests prove requested tools cannot widen policy.
 5. Cancellation tests prove no child process remains after the termination deadline.
 6. Dependency audit reports no known high/critical runtime dependency vulnerabilities.
-7. TUI and WebUI approval paths display the same script hash and effective policy.
+7. TUI and WebUI approval paths display the same script hash, repository, isolation mode, capabilities, and effective policy.
+8. Disposable-repository tests prove parallel writers use distinct worktrees, conflicts leave the target unchanged, and dirty worktrees survive cleanup.
+9. Child policy-guard tests prove path, tool, shell, and network denials fail closed.
+10. Budget/retry tests prove categorized exhaustion, bounded backoff, and no duplicate write attempts.
 
 ## Explicitly rejected alternatives
 
