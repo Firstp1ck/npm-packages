@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-release-npm",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Pi command to run npm package release workflow with publish confirmation.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-release-npm#readme",
