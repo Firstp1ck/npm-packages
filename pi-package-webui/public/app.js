@@ -17990,8 +17990,9 @@ async function gitWorkflowRequest(path, { method = "POST", body = {}, runId, tab
   }
   if (expectedRunId !== undefined && !isCurrentGitWorkflowRun(expectedRunId, tabId)) return null;
   if (!response.ok) {
+    const hint = response.hint ? `\n\nHint: ${response.hint}` : "";
     const detail = response.data ? `\n\n${formatGitCommandResult(response.data)}` : "";
-    throw new Error(`${response.error || "Git workflow request failed"}${detail}`);
+    throw new Error(`${response.error || "Git workflow request failed"}${hint}${detail}`);
   }
   return response.data;
 }

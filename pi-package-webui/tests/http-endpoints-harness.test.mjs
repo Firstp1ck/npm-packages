@@ -606,6 +606,25 @@ try {
     assert.equal(gitRemote.body?.ok, true, "remote endpoint should add origin without pushing");
     assert.equal(gitRemote.body?.data?.remoteUrl, "https://github.com/Firstp1ck/pi-webui-http-harness.git");
 
+    if (process.platform === "win32") {
+      const ordinaryPath = path.join(cwd, "preflight-should-not-stage.txt");
+      const reservedPath = path.toNamespacedPath(path.join(cwd, "NUL"));
+      await writeFile(ordinaryPath, "ordinary untracked file\n");
+      await writeFile(reservedPath, "accidental device-name file\n");
+      try {
+        const reservedAdd = await request("127.0.0.1", "/api/git-workflow/add", { method: "POST", body: { tab: tabId } });
+        assert.equal(reservedAdd.status, 200);
+        assert.equal(reservedAdd.body?.ok, false, "git add endpoint should reject Windows-reserved paths before staging");
+        assert.equal(reservedAdd.body?.code, "INVALID_WORKTREE_PATH");
+        assert.match(String(reservedAdd.body?.error || ""), /Windows-reserved path "NUL"/);
+        assert.match(String(reservedAdd.body?.hint || ""), /Delete or rename "NUL"/);
+        assert.equal(runGitFixture(["diff", "--cached", "--name-only"], cwd, "reserved-path preflight should leave the index untouched"), "");
+      } finally {
+        await rm(reservedPath, { force: true });
+        await rm(ordinaryPath, { force: true });
+      }
+    }
+
     await writeFile(path.join(cwd, "single.txt"), "created\n");
     const gitAddCreated = await request("127.0.0.1", "/api/git-workflow/add", { method: "POST", body: { tab: tabId } });
     assert.equal(gitAddCreated.status, 200);
@@ -654,6 +673,7 @@ try {
       const dir = path.join(gitFixturesRoot, name);
       await mkdir(dir, { recursive: true });
       runGitFixture(["init", "-b", "main", dir], gitFixturesRoot, `${name} fixture should initialize`);
+      runGitFixture(["config", "core.autocrlf", "false"], dir, `${name} fixture should keep line endings deterministic`);
       runGitFixture(["config", "user.name", "Pi WebUI Test"], dir, `${name} fixture should set user name`);
       runGitFixture(["config", "user.email", "pi-webui-test@example.invalid"], dir, `${name} fixture should set user email`);
       await writeFile(path.join(dir, "file.txt"), "base\n");

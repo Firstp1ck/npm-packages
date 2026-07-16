@@ -22,6 +22,11 @@ import {
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
+import {
+  classifyGitPathFailure,
+  findWindowsReservedGitPath,
+  windowsReservedGitPathFailure,
+} from "../lib/git-command-errors.mjs";
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
 import { resolveNpmCommandInvocation } from "../lib/npm-command.mjs";
 import {
@@ -4688,13 +4693,28 @@ async function runGitMutationCommand(args, options = {}) {
 function gitMutationPayload(result) {
   const payload = gitWorkflowCommandPayload(result);
   if (!payload.ok) {
+    let pathFailure = null;
     if (isGitLockFailure(result)) {
       payload.code = "REPO_BUSY";
       payload.hint = "Another git process is using this repository. Retry once it finishes.";
+    } else {
+      pathFailure = classifyGitPathFailure(result);
+      if (pathFailure) Object.assign(payload, pathFailure);
     }
-    payload.error = String(result?.stderr || result?.stdout || payload.error || "git command failed").trim();
+    payload.error = pathFailure?.error || String(result?.stderr || result?.stdout || payload.error || "git command failed").trim();
   }
   return payload;
+}
+
+async function gitAddAllPayload(cwd) {
+  await getGitRoot(cwd);
+  if (platform() === "win32") {
+    const untrackedText = await runGitReadCommand(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]);
+    const invalidPath = findWindowsReservedGitPath(untrackedText);
+    const pathFailure = windowsReservedGitPathFailure(invalidPath);
+    if (pathFailure) return { ok: false, ...pathFailure };
+  }
+  return gitMutationPayload(await runGitMutationCommand(["add", "."], { cwd }));
 }
 
 async function runGuardedGitMutation(args, options = {}) {
@@ -6230,8 +6250,7 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
         return applyGitSyncFailure(gitMutationPayload(await runGitMutationCommand(["push", "-u", "origin", "main"], { cwd: root, timeoutMs: 15 * 60 * 1000 })), { push: true });
       }
       case "/api/git-workflow/add":
-        await getGitRoot(cwd);
-        return gitMutationPayload(await runGitMutationCommand(["add", "."], { cwd }));
+        return gitAddAllPayload(cwd);
       case "/api/git-workflow/branch": {
         if (!tab) throw new Error("Git workflow branch worktree requires a Web UI tab");
         return { ok: true, data: await createGitWorkflowBranchWorktree(tab, body) };

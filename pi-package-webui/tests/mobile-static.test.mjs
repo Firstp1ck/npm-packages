@@ -910,6 +910,8 @@ assert.match(app, /async function runGitPrPrompt\(tabId = gitWorkflowActionTabId
 assert.match(app, /async function runGitMessagePrompt\([\s\S]*\/api\/git-workflow\/generate"[\s\S]*kind: "commit"/, "guided git workflow should generate commit messages with the configured model and effort");
 assert.match(app, /async function runGitBranchNamePrompt\([\s\S]*\/api\/git-workflow\/generate"[\s\S]*kind: "branch"/, "guided git workflow should generate branch names with the configured model and effort");
 assert.match(app, /async function acceptCurrentGitStaging\([\s\S]*summary\?\.staged[\s\S]*No staged files are available/, "review staging should require a non-empty current staged set");
+assert.match(app, /function gitWorkflowRequest\([\s\S]*response\.hint \? `\\n\\nHint:/, "guided git failures should show actionable backend hints");
+assert.match(server, /async function gitAddAllPayload\([\s\S]*platform\(\) === "win32"[\s\S]*findWindowsReservedGitPath\([\s\S]*windowsReservedGitPathFailure\(/, "guided git add should preflight Windows-reserved untracked paths before staging");
 assert.match(app, /Pre-commit verification reminder[\s\S]*Continue with this commit/, "configured verification reminders should run before committing");
 assert.match(server, /async function startGitWorkflowGeneration\([\s\S]*set_model[\s\S]*setThinkingLevelForTab[\s\S]*type: "prompt"/, "server should apply the configured generation profile before prompting Pi");
 assert.match(server, /event\?\.type === "agent_settled"[\s\S]*restoreGitWorkflowGenerationProfile\(tab\)/, "server should restore the active tab model and effort after generation settles");
