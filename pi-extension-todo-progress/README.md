@@ -14,6 +14,7 @@ Auto todo/progress tracking for multi-step Pi agent work.
 - Also accepts bare markers like `[ ] item` as a fallback for robustness.
 - Strips matched checklist lines from assistant messages after mirroring them into the widget, keeping the widget as the canonical todo view.
 - Injects the current goal/list back into model context before follow-up steps, so stripped lists are still available to the agent.
+- Resets goal/list state when a user message is actually delivered, so queued follow-ups cannot leak into the active run as steering context.
 - Keeps a completed list visible long enough for the agent to check whether the goal is reached.
 - If the goal is reached, the agent should produce final output; if not, it should create a new short checklist before continuing.
 - Supports multiple todo lists during one agent run; each new list replaces the previous widget list.
@@ -65,4 +66,4 @@ Todo 3/3 done · check goal
 
 At that point the agent should either produce the final answer or create the next short checklist if the goal is not yet reached.
 
-Active widget state is persisted in the Pi session, so interrupted/failed/tool-use runs can survive terminal redraws, tab switches, reloads, and resumes until a normal final assistant response, a new non-command prompt, or `Ctrl+Alt+X` clears it.
+Active widget state is persisted in the Pi session, so interrupted/failed/tool-use runs can survive terminal redraws, tab switches, reloads, and resumes until a normal final assistant response, a newly delivered user prompt, or `Ctrl+Alt+X` clears it.

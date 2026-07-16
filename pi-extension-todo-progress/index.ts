@@ -61,6 +61,16 @@ function assistantText(message: any): string {
     .trim();
 }
 
+function userText(message: any): string {
+  if (typeof message?.content === "string") return message.content.trim();
+  if (!Array.isArray(message?.content)) return "";
+  return message.content
+    .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+    .map((part: any) => part.text)
+    .join("\n")
+    .trim();
+}
+
 function assistantHasToolCalls(message: any): boolean {
   return Array.isArray(message?.content) && message.content.some((part: any) => part?.type === "toolCall");
 }
@@ -353,10 +363,7 @@ export default function todoProgress(pi: ExtensionAPI) {
     render(ctx, state);
   }
 
-  pi.on("before_agent_start", async (event, ctx) => {
-    clear(ctx, state);
-    state.goal = fallbackGoalFromPrompt(event.prompt);
-    persistState();
+  pi.on("before_agent_start", async (event) => {
     return { systemPrompt: event.systemPrompt + TODO_POLICY };
   });
 
@@ -380,13 +387,16 @@ export default function todoProgress(pi: ExtensionAPI) {
     };
   });
 
-  pi.on("input", async (event, ctx) => {
-    if (!event.text.startsWith("/")) {
-      clear(ctx, state);
-      state.goal = fallbackGoalFromPrompt(event.text);
-      persistState();
-    }
-    return { action: "continue" as const };
+  pi.on("message_start", async (event, ctx) => {
+    if (event.message.role !== "user") return;
+    const prompt = userText(event.message);
+
+    // The input event fires when a follow-up is queued, not when it is delivered.
+    // Updating state there exposes the queued prompt through the context hook to
+    // the still-active run, effectively turning a follow-up into steering context.
+    clear(ctx, state);
+    state.goal = fallbackGoalFromPrompt(prompt);
+    persistState();
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -436,7 +446,7 @@ export default function todoProgress(pi: ExtensionAPI) {
 
   pi.on("session_compact", async (_event, ctx) => {
     // Auto-compaction can resume the same agent run without a fresh
-    // before_agent_start/input cycle. The next assistant message may restate a
+    // before_agent_start/message_start cycle. The next assistant message may restate a
     // compacted plan with low overlap against the pre-compaction checklist; let
     // one complete checklist replace the active list instead of being ignored as
     // an unrelated status block.
