@@ -76,7 +76,10 @@ assert.equal(state.getLastRun().status, "completed");
 
 const pipelineScript = parseWorkflowScript(`
 export const meta = { name: "pipeline-runner", description: "Pipeline runner", pi: { timeoutMs: 5000 } }
-return await pipeline(args.items, item => agent("item:" + item, { label: "item:" + item }), { concurrency: 2, key: item => "key:" + item })
+return await pipeline(args.items, async item => {
+  await Promise.resolve()
+  return agent("item:" + item, { label: "item:" + item })
+}, { concurrency: 2, key: item => "key:" + item })
 `);
 const pipelinePersisted = [];
 const pipelineRun = await runJavaScriptWorkflow(source(pipelineScript), { items: ["a", "b"] }, { hasUI: false }, {
@@ -89,6 +92,11 @@ assert.deepEqual(pipelineRun.pipelineItems.map((item) => ({ index: item.index, k
   { index: 0, key: "key:a", status: "completed" },
   { index: 1, key: "key:b", status: "completed" },
 ]);
+assert.deepEqual(
+  pipelineRun.phases.flatMap((phase) => phase.tasks).map((task) => task.pipelineKey),
+  ["pipeline-1:key:key:a", "pipeline-1:key:key:b"],
+  "async pipeline calls must persist their stable pipeline identity on agent tasks",
+);
 assert.ok(pipelinePersisted.some((snapshot) => snapshot.pipelineItems?.every((item) => item.status === "completed")), "pipeline keys must be persisted in run state");
 
 const invalidStructured = parseWorkflowScript(`
@@ -102,6 +110,28 @@ const failed = await runJavaScriptWorkflow(source(invalidStructured), {}, { hasU
 });
 assert.equal(failed.status, "failed");
 assert.match(failed.error, /invalid JSON/);
+
+const detachedSource = source(parseWorkflowScript(`
+export const meta = { name: "detached-runner", description: "Detached runner", pi: { timeoutMs: 40 } }
+agent("late", { label: "late" })
+return "done"
+`));
+const snapshots = [];
+const detachedRun = await runJavaScriptWorkflow(detachedSource, {}, { hasUI: false }, {
+  cwd: process.cwd(), state: createWorkflowStateStore({ appendEntry(_type, data) { snapshots.push(data); } }),
+  taskRunner: { async runTask() { await new Promise(resolve => setTimeout(resolve, 90)); return { ok: true, output: "late output", usage: { input: 1, output: 1 } }; } },
+});
+assert.equal(detachedRun.status, "failed");
+assert.equal(detachedRun.phases.flatMap(phase => phase.tasks)[0].status, "failed");
+const finalSnapshot = structuredClone(snapshots.at(-1));
+await new Promise(resolve => setTimeout(resolve, 120));
+assert.deepEqual(detachedRun, finalSnapshot, "late abort-ignoring task settlement must not mutate the finalized run or persistence snapshot");
+const neverSettlingRun = await runJavaScriptWorkflow(source(parseWorkflowScript(`export const meta = { name: "never-settling-runner", description: "Never", pi: { timeoutMs: 40 } }
+return await agent("never", { label: "never" })`)), {}, { hasUI: false }, {
+  cwd: process.cwd(), state: createWorkflowStateStore(), taskRunner: { async runTask() { return await new Promise(() => {}); } },
+});
+assert.equal(neverSettlingRun.status, "failed");
+assert.equal(neverSettlingRun.phases.flatMap(phase => phase.tasks)[0].status, "failed");
 
 await rm(temp, { recursive: true, force: true });
 console.log("script runner tests passed");

@@ -55,6 +55,9 @@ assert.deepEqual(commands, ["workflow", "workflows", "workflow-clear"]);
 assert.equal(commands.includes("workflow-test"), false, "production extension must not publish/register /workflow-test");
 assert.deepEqual(tools, ["workflow_run", "workflow_status"]);
 assert.match(toolDefinitions.get("workflow_run").description, /Do not use for routine one-agent work/);
+assert.match(toolDefinitions.get("workflow_run").promptSnippet, /approved reusable JavaScript workflow/);
+assert.ok(toolDefinitions.get("workflow_run").promptGuidelines.every((guideline) => guideline.includes("workflow_run")));
+assert.match(toolDefinitions.get("workflow_status").promptSnippet, /workflow run by ID/);
 assert.deepEqual(events, ["session_start", "before_agent_start", "agent_end", "session_shutdown"]);
 
 const notifications = [];

@@ -26,6 +26,16 @@ let activeBash = 0;
 let peakBash = 0;
 let thinkingLevel = "off";
 let conversationEnabled = false;
+const fakeTools = [
+  { name: "read", description: "Read files", sourceInfo: { source: "builtin", scope: "temporary", origin: "top-level" } },
+  { name: "bash", description: "Run shell commands", sourceInfo: { source: "builtin", scope: "temporary", origin: "top-level" } },
+];
+const fakeSkills = [
+  { name: "repo-explorer", description: "Explore repositories" },
+  { name: "code-security", description: "Review code security" },
+];
+let enabledToolNames = new Set(fakeTools.map((tool) => tool.name));
+let enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name));
 
 const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
@@ -202,11 +212,29 @@ function handleWebuiHelperPrompt(command, base) {
   respond({ ...base, data: { output: "webui-helper handled" } });
   switch (request.action) {
     case "tools-state":
-      respondHelper({ requestId, ok: true, data: { tools: [], activeTools: [] } });
+      respondHelper({ requestId, ok: true, data: { tools: fakeTools.map((tool) => ({ ...tool, enabled: enabledToolNames.has(tool.name) })) } });
       return true;
+    case "tools-set": {
+      if (Array.isArray(request.payload?.enabledTools)) enabledToolNames = new Set(request.payload.enabledTools.map(String));
+      else if (Array.isArray(request.payload?.disabledTools)) {
+        const disabled = new Set(request.payload.disabledTools.map(String));
+        enabledToolNames = new Set(fakeTools.map((tool) => tool.name).filter((name) => !disabled.has(name)));
+      }
+      respondHelper({ requestId, ok: true, data: { tools: fakeTools.map((tool) => ({ ...tool, enabled: enabledToolNames.has(tool.name) })) } });
+      return true;
+    }
     case "skills-state":
-      respondHelper({ requestId, ok: true, data: { skills: [] } });
+      respondHelper({ requestId, ok: true, data: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) } });
       return true;
+    case "skills-set": {
+      if (Array.isArray(request.payload?.enabledSkills)) enabledSkillNames = new Set(request.payload.enabledSkills.map(String));
+      else if (Array.isArray(request.payload?.disabledSkills)) {
+        const disabled = new Set(request.payload.disabledSkills.map(String));
+        enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name).filter((name) => !disabled.has(name)));
+      }
+      respondHelper({ requestId, ok: true, data: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) } });
+      return true;
+    }
     case "subagent-output":
       respondHelper({
         requestId,

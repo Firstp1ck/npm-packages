@@ -25,6 +25,8 @@ const pkg = JSON.parse(pkgRaw);
 const manifest = JSON.parse(manifestRaw);
 const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
 const helper = await readFile(join(root, "webui-rpc-helper.mjs"), "utf8");
+const codexAuth = await readFile(join(root, "lib", "codex-usage-auth.mjs"), "utf8");
+const nativeExportPayload = await readFile(join(root, "lib", "native-export-payload.mjs"), "utf8");
 const companionDependencies = {
   "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
   "@firstpick/pi-extension-btw": "^0.1.2",
@@ -1153,6 +1155,13 @@ assert.match(app, /async function runNativeCommandMenu\(command\)[\s\S]*?sendPro
 assert.match(app, /function setOptionsMenuOpen\(open\)/, "Options menu should have explicit open state");
 assert.match(app, /function nativeToolOriginTag\(resource\)[\s\S]*?sourceInfo\?\.source === "builtin"[\s\S]*?label: "Pi Native"[\s\S]*?label: "External"/, "Tools Setup should classify built-in Pi tools separately from external tools");
 assert.match(app, /renderNativeResourceToggles\(tools, \{[\s\S]*?getResourceTag: nativeToolOriginTag/, "Tools Setup should render Pi Native\/External tags");
+assert.match(app, /function nativeResourceScopeControl\(scope,[\s\S]*Session only[\s\S]*Global default/, "Tools and Skills Setup should expose a visible session/global scope control");
+assert.match(app, /\/api\/tools\?scope=\$\{encodeURIComponent\(scope\)\}[\s\S]*enabledTools: \[\.\.\.enabledTools\], scope/, "Tools Setup should load and save the selected scope");
+assert.match(app, /\/api\/skills\?scope=\$\{encodeURIComponent\(scope\)\}[\s\S]*enabledSkills: \[\.\.\.enabledSkills\], scope/, "Skills Setup should load and save the selected scope");
+assert.match(server, /writeWebuiSettings\(\{ resourceDefaults: \{ tools: \{ enabledTools \} \} \}\)[\s\S]*writeWebuiSettings\(\{ resourceDefaults: \{ skills: \{ enabledSkills \} \} \}\)/, "server should persist global tool and skill defaults in the shared Web UI settings file");
+assert.match(helper, /const saved = lastBranchConfig\(ctx, TOOLS_CONFIG_TYPE\)\?\.enabledTools;[\s\S]*const selected = Array\.isArray\(saved\) \? saved : inherited/, "session tool entries should take precedence over global defaults");
+assert.match(helper, /const saved = lastBranchConfig\(ctx, SKILLS_CONFIG_TYPE\)\?\.disabledSkills;[\s\S]*if \(Array\.isArray\(saved\)\)/, "session skill entries should take precedence over global defaults");
+assert.match(readme, /Session only[\s\S]*Global default/, "README should document resource selector scopes");
 assert.match(app, /const tags = Array\.isArray\(item\.tags\)[\s\S]*?item\.badge, \.\.\.tags/, "native selector filtering should include extra resource tags");
 assert.match(app, /publishMenuContainer\?\.addEventListener\("pointerenter", \(\) => \{[\s\S]*?setPublishMenuOpen\(true\);[\s\S]*?\}\)/, "Publish menu should expand on hover");
 assert.match(app, /publishMenuContainer\?\.addEventListener\("pointerleave", \(\) => setPublishMenuOpen\(false\)\)/, "Publish menu should collapse after hover leaves");
@@ -1336,14 +1345,15 @@ assert.ok(icon512.length > icon192.length, "PWA 512px icon should be present and
 assert.ok(matrixBackground.length > 100000, "Matrix background image should be present as an optimized WebP asset");
 assert.ok(mochaBackground.length > 8000, "Catppuccin Mocha background image should be present as a compact PNG asset");
 
-assert.match(server, /AuthStorage, SessionManager/, "server should import AuthStorage for safe OAuth token refresh");
+assert.match(server, /resolveCodexUsageAuth/, "server should use the lock-safe Codex OAuth compatibility adapter");
 assert.match(server, /DefaultPackageManager/, "server should use Pi's package resolver when controlling Web UI tab extension loading");
 assert.match(server, /WEBUI_CONTROLLED_PACKAGES = new Set\(\[[\s\S]*WEBUI_PACKAGE[\s\S]*filter\(\(\[featureId\]\) => featureId !== NATURAL_CONVERSATION_FEATURE_ID\)/, "server should identify Web UI-controlled packages for de-duplicated feature loading while leaving Natural Conversation independently owned");
 assert.match(server, /const args = \["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"\]/, "Web UI tabs should disable implicit resource loading before adding curated resource paths");
 assert.match(server, /normalPiResourcePathsForTab[\s\S]*WEBUI_CONTROLLED_PACKAGES\.has\(packageName\)[\s\S]*continue/, "Web UI tab resource resolution should exclude separately installed Web UI feature packages");
 assert.match(server, /startedWebuiResourcePaths\(resourceType\)/, "Web UI tabs should load feature resources from the started Web UI package");
 assert.match(server, /resolveInstalledPackageSubpath\(nodeModulesRef\.packageName, nodeModulesRef\.subpath\)/, "Web UI should prefer workspace/global/package-root installed packages for node_modules manifest entries");
-assert.match(server, /const CODEX_TOKEN_REFRESH_SKEW_MS = 5 \* 60 \* 1000/, "server should refresh Codex OAuth tokens before they expire");
+assert.match(codexAuth, /CODEX_TOKEN_REFRESH_SKEW_MS = 5 \* 60 \* 1000/, "Codex OAuth credentials should refresh five minutes before expiry");
+assert.match(server, /catch \{[\s\S]*OpenAI Codex OAuth token refresh failed/, "Codex auth failures should be redacted before reaching clients");
 assert.match(server, /url\.pathname === "\/api\/codex-usage" && req\.method === "GET"/, "server should expose a sanitized Codex usage endpoint");
 assert.match(server, /OPENAI_CODEX_USAGE_ENDPOINT/, "server should query Codex usage from the backend, not the browser");
 assert.match(server, /const NATIVE_SLASH_COMMANDS = nativeSlashCommandEntries\(nativeParityMatrix\)/, "server should define Pi native slash commands for autocomplete from the parity matrix");
@@ -1416,9 +1426,11 @@ assert.match(server, /function formatSessionOutput\(tab, state, stats\)/, "nativ
 assert.match(server, /case "session": \{[\s\S]*?formatSessionOutput\(tab, state\.data \|\| \{\}, stats\.success === false \? null : stats\.data\)/, "native /session should render state and stats through Web UI");
 assert.match(server, /case "copy": \{[\s\S]*?get_last_assistant_text[\s\S]*?copyText: text/, "native /copy should return text for browser clipboard handling");
 assert.match(server, /case "export": \{[\s\S]*?handleNativeExportCommand\(tab, parsed\.args, req\)/, "native /export should run through the Web UI export helper");
+assert.match(server, /nativeExportDownloadPayload\(\{[\s\S]*localRequest: isLocalRequest\(req\)/, "native /export should condition filesystem disclosure on localhost");
+assert.match(nativeExportPayload, /\.\.\.\(localRequest \? \{ serverPath: exportedPath, result: responseData \} : \{\}\)/, "remote no-path exports should omit server paths and raw RPC path data");
 assert.match(server, /url\.pathname\.startsWith\("\/api\/native-download\/"\) && req\.method === "GET"/, "native /export should expose short-lived opaque download URLs");
 assert.match(app, /function triggerNativeDownload\(download\)/, "frontend should be able to start native command downloads");
-assert.match(app, /function openNativeExportDownloadPrompt\(download\)/, "frontend should prompt before opening /export HTML in the browser");
+assert.match(app, /function openNativeExportDownloadPrompt\(download, serverPath = ""\)[\s\S]*Copy path[\s\S]*copyText\(savedPath\)/, "frontend should show and copy the saved /export HTML path");
 assert.match(app, /function alternateLoopbackBrowserUrl\(value\)/, "frontend should avoid reopening exports inside the installed PWA when possible");
 assert.match(app, /function safeHttpUrl\(value/, "frontend should validate server-provided URLs through a shared helper");
 assert.match(app, /const url = safeHttpUrl\(download\?\.url\)/, "native downloads must reject non-http(s) URL schemes");

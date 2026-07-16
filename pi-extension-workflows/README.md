@@ -92,7 +92,7 @@ export const meta = {
   name: "audit-routes",
   description: "Audit route handlers",
   phases: ["discover", "verify"],
-  pi: { maxConcurrency: 2, maxAgents: 20 }
+  pi: { maxConcurrency: 2, maxAgents: 20, maxNestingDepth: 16 }
 }
 
 const files = await phase("discover", () =>
@@ -117,7 +117,7 @@ return phase("verify", () =>
 
 Runtime globals are `args`, `agent()`, `phase()`, `parallel()`, and `pipeline()`. Editor declarations are shipped in `workflow-runtime.d.ts`; deterministic whitespace formatting is available through `/workflow format`. Tested starter scripts live under `workflows/templates/` for audit, research, migration planning, and bounded verify loops.
 
-Policies can declare run/phase token, cost, time, and agent budgets plus bounded transient retry:
+Policies can declare concurrency, total agents, nesting depth, run/phase token/cost/time budgets, and bounded transient retry:
 
 ```js
 pi: {
@@ -154,7 +154,7 @@ The WebUI exposes the same extension-owned mode through its **Workflow** toggle.
 - Read-only tools (`read`, `grep`, `find`, and `ls`) remain the default.
 - Write, shell, and network permissions default to deny. Explicit user/project ceilings are loaded from `workflow-policy.json`; project ceilings can only narrow user authority.
 - Every write agent receives a separate git worktree. Binary patches, base commit, branch, dirty state, and changed files are persisted; the target checkout changes only after `/workflow apply` confirmation and configured verification.
-- A subprocess policy-guard extension blocks tools outside the frozen allowlist, filesystem paths outside the assigned root, shell operators/unlisted executables, and network hosts outside the allowlist.
+- A subprocess policy-guard extension blocks tools outside the frozen allowlist and lexical or symlink filesystem escapes. Shell (`bash`) is intentionally unavailable until enforceable OS sandboxing and an argv-level policy exist; network hosts remain allowlisted.
 - The LLM-callable `workflow_run` tool requires explicit `confirmRun: true` and separate launch approval when no exact remembered consent exists.
 - Every accepted run persists immutable source and policy snapshots plus versioned run, event, call, usage, and result artifacts under `~/.pi/agent/workflow-runs/<session-id>/<run-id>/`.
 - Runs execute asynchronously through a global scheduler; cancellation terminates subprocess process groups.

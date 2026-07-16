@@ -119,8 +119,8 @@ try {
   assert.equal(deleted.method, "unlink");
   assert.equal(existsSync(deletablePath), false);
 
-  const auth = createAuthContext();
-  const payload = authProvidersPayload(auth.modelRegistry);
+  const auth = await createAuthContext();
+  const payload = await authProvidersPayload(auth.modelRuntime);
   assert.ok(Array.isArray(payload.loginProviders));
   assert.ok(Array.isArray(payload.logoutProviders));
   assert.equal(payload.browserLoginSupported, false);

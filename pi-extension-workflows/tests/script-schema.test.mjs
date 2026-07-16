@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { WorkflowValidationError } from "../src/errors.ts";
 import {
+  DEFAULT_WORKFLOW_NESTING_DEPTH,
   DEFAULT_WORKFLOW_TIMEOUT_MS,
+  HARD_MAX_WORKFLOW_NESTING_DEPTH,
   HARD_MAX_WORKFLOW_TIMEOUT_MS,
   WORKFLOW_SCRIPT_META_JSON_SCHEMA,
   effectiveWorkflowPolicy,
@@ -18,9 +20,11 @@ assert.equal(normalized.name, "audit-routes");
 assert.equal(normalized.pi.version, 1);
 assert.equal(normalized.pi.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
 assert.equal(normalized.pi.maxAgents, DEFAULT_MAX_TASKS);
+assert.equal(normalized.pi.maxNestingDepth, DEFAULT_WORKFLOW_NESTING_DEPTH);
 assert.equal(normalized.pi.timeoutMs, DEFAULT_WORKFLOW_TIMEOUT_MS);
 assert.deepEqual(normalized.pi.permissions, { write: false, shell: false, network: false });
 assert.equal(WORKFLOW_SCRIPT_META_JSON_SCHEMA.properties.pi.properties.maxConcurrency.maximum, HARD_MAX_CONCURRENCY);
+assert.equal(WORKFLOW_SCRIPT_META_JSON_SCHEMA.properties.pi.properties.maxNestingDepth.maximum, HARD_MAX_WORKFLOW_NESTING_DEPTH);
 
 assert.throws(
   () => validateWorkflowScriptMeta({ name: "bad name", description: "Bad" }),
@@ -37,6 +41,10 @@ assert.throws(
 assert.throws(
   () => validateWorkflowScriptMeta({ name: "bad", description: "Bad", pi: { timeoutMs: HARD_MAX_WORKFLOW_TIMEOUT_MS + 1 } }),
   (error) => error instanceof WorkflowValidationError && error.issues.some((issue) => issue.includes("timeoutMs")),
+);
+assert.throws(
+  () => validateWorkflowScriptMeta({ name: "bad", description: "Bad", pi: { maxNestingDepth: HARD_MAX_WORKFLOW_NESTING_DEPTH + 1 } }),
+  (error) => error instanceof WorkflowValidationError && error.issues.some((issue) => issue.includes("maxNestingDepth")),
 );
 assert.throws(
   () => validateWorkflowScriptMeta({ name: "bad", description: "Bad", pi: { unexpected: true } }),
@@ -57,12 +65,14 @@ const effective = effectiveWorkflowPolicy(
   {
     maxConcurrency: 2,
     maxAgents: 10,
+    maxNestingDepth: 4,
     timeoutMs: 30_000,
     permissions: { write: false, shell: true, network: false },
   },
 );
 assert.equal(effective.maxConcurrency, 2);
 assert.equal(effective.maxAgents, 10);
+assert.equal(effective.maxNestingDepth, 4);
 assert.equal(effective.timeoutMs, 30_000);
 assert.deepEqual(effective.permissions, { write: false, shell: true, network: false });
 

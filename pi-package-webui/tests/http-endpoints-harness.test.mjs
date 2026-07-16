@@ -263,6 +263,55 @@ try {
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
 
+  const sessionToolsBefore = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=session`);
+  assert.equal(sessionToolsBefore.status, 200);
+  assert.equal(sessionToolsBefore.body?.data?.scope, "session");
+  assert.deepEqual(sessionToolsBefore.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", true], ["bash", true]]);
+
+  const globalToolsBefore = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=global`);
+  assert.equal(globalToolsBefore.status, 200);
+  assert.equal(globalToolsBefore.body?.data?.configured, false, "global tools should initially inherit the current runtime defaults");
+
+  const saveGlobalTools = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "global", enabledTools: ["read"] },
+  });
+  assert.equal(saveGlobalTools.status, 200);
+  assert.equal(saveGlobalTools.body?.data?.configured, true);
+  assert.deepEqual(saveGlobalTools.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", true], ["bash", false]]);
+
+  const settingsWithUnavailableResources = JSON.parse(await readFile(settingsFile, "utf8"));
+  settingsWithUnavailableResources.resourceDefaults.tools.enabledTools.push("future-tool");
+  settingsWithUnavailableResources.resourceDefaults.skills.enabledSkills = ["future-skill"];
+  await writeFile(settingsFile, `${JSON.stringify(settingsWithUnavailableResources, null, 2)}\n`, "utf8");
+
+  const sessionToolsAfterGlobal = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=session`);
+  assert.deepEqual(sessionToolsAfterGlobal.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", true], ["bash", true]], "saving a global tool default must not rewrite the current session");
+
+  const saveSessionTools = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "session", enabledTools: ["bash"] },
+  });
+  assert.equal(saveSessionTools.status, 200);
+  assert.deepEqual(saveSessionTools.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", false], ["bash", true]]);
+  const globalToolsAfterSession = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=global`);
+  assert.deepEqual(globalToolsAfterSession.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", true], ["bash", false]], "session tool changes must not rewrite the global default");
+
+  const saveGlobalSkills = await request("127.0.0.1", "/api/skills", {
+    method: "POST",
+    body: { tab: tabId, scope: "global", enabledSkills: ["repo-explorer"] },
+  });
+  assert.equal(saveGlobalSkills.status, 200);
+  assert.deepEqual(saveGlobalSkills.body?.data?.skills?.map((skill) => [skill.name, skill.enabled]), [["repo-explorer", true], ["code-security", false]]);
+  const sessionSkillsAfterGlobal = await request("127.0.0.1", `/api/skills?tab=${encodeURIComponent(tabId)}&scope=session`);
+  assert.deepEqual(sessionSkillsAfterGlobal.body?.data?.skills?.map((skill) => [skill.name, skill.enabled]), [["repo-explorer", true], ["code-security", true]], "saving a global skill default must not rewrite the current session");
+
+  const persistedResourceDefaults = JSON.parse(await readFile(settingsFile, "utf8"));
+  assert.deepEqual(persistedResourceDefaults.resourceDefaults?.tools?.enabledTools, ["read", "future-tool"], "saving visible tool choices should preserve defaults for tools unavailable in the active tab");
+  assert.deepEqual(persistedResourceDefaults.resourceDefaults?.skills?.enabledSkills, ["repo-explorer", "future-skill"], "saving visible skill choices should preserve defaults for skills unavailable in the active tab");
+  const invalidResourceScope = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=project`);
+  assert.equal(invalidResourceScope.status, 400, "resource selectors should reject unsupported scope values");
+
   const workflowRpc = await waitForSseEvent(
     tabId,
     (event) => event.type === "extension_ui_request" && event.method === "setWidget" && event.widgetKey === "workflow:rpc",

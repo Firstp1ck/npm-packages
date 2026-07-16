@@ -1,55 +1,36 @@
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-export function createAuthContext() {
-  const authStorage = AuthStorage.create();
-  const modelRegistry = ModelRegistry.create(authStorage);
-  return { authStorage, modelRegistry };
+export async function createAuthContext() {
+  const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+  return { modelRuntime };
 }
 
-export function listLoginProviderOptions(modelRegistry) {
-  const authStorage = modelRegistry.authStorage;
-  const byId = new Map();
-  for (const provider of authStorage.getOAuthProviders()) {
-    byId.set(provider.id, {
-      id: provider.id,
-      name: provider.name,
-      authType: "oauth",
-      removable: authStorage.has(provider.id),
-      status: modelRegistry.getProviderAuthStatus(provider.id),
-    });
-  }
-  for (const model of modelRegistry.getAll()) {
-    if (byId.has(model.provider)) continue;
-    byId.set(model.provider, {
-      id: model.provider,
-      name: modelRegistry.getProviderDisplayName(model.provider),
-      authType: "api_key",
-      removable: authStorage.has(model.provider),
-      status: modelRegistry.getProviderAuthStatus(model.provider),
-    });
-  }
-  return [...byId.values()].sort((left, right) => left.name.localeCompare(right.name));
+export async function listLoginProviderOptions(modelRuntime) {
+  const storedProviderIds = new Set((await modelRuntime.listCredentials()).map((credential) => credential.providerId));
+  return modelRuntime.getProviders().map((provider) => ({
+    id: provider.id,
+    name: provider.name || provider.id,
+    authType: provider.auth?.oauth ? "oauth" : "api_key",
+    removable: storedProviderIds.has(provider.id),
+    status: modelRuntime.getProviderAuthStatus(provider.id),
+  })).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function listLogoutProviderOptions(modelRegistry) {
-  const authStorage = modelRegistry.authStorage;
-  const options = [];
-  for (const providerId of authStorage.list()) {
-    const credential = authStorage.get(providerId);
-    if (!credential) continue;
-    options.push({
-      id: providerId,
-      name: modelRegistry.getProviderDisplayName(providerId),
-      authType: credential.type,
-      status: modelRegistry.getProviderAuthStatus(providerId),
-    });
-  }
+export async function listLogoutProviderOptions(modelRuntime) {
+  const options = (await modelRuntime.listCredentials()).map((credential) => ({
+    id: credential.providerId,
+    name: modelRuntime.getProvider(credential.providerId)?.name || credential.providerId,
+    authType: credential.type,
+    status: modelRuntime.getProviderAuthStatus(credential.providerId),
+  }));
   return options.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function authProvidersPayload(modelRegistry) {
-  const loginProviders = listLoginProviderOptions(modelRegistry);
-  const logoutProviders = listLogoutProviderOptions(modelRegistry);
+export async function authProvidersPayload(modelRuntime) {
+  const [loginProviders, logoutProviders] = await Promise.all([
+    listLoginProviderOptions(modelRuntime),
+    listLogoutProviderOptions(modelRuntime),
+  ]);
   return {
     loginProviders,
     logoutProviders,
@@ -63,17 +44,15 @@ export function authProvidersPayload(modelRegistry) {
   };
 }
 
-export function logoutStoredProvider(modelRegistry, providerId) {
+export async function logoutStoredProvider(modelRuntime, providerId) {
   const id = String(providerId || "").trim();
   if (!id) throw new Error("provider is required");
-  const authStorage = modelRegistry.authStorage;
-  if (!authStorage.has(id)) {
+  const credential = (await modelRuntime.listCredentials()).find((item) => item.providerId === id);
+  if (!credential) {
     throw new Error(`No stored credentials found for provider: ${id}`);
   }
-  const credential = authStorage.get(id);
-  authStorage.logout(id);
-  modelRegistry.refresh();
-  const name = modelRegistry.getProviderDisplayName(id);
+  const name = modelRuntime.getProvider(id)?.name || id;
+  await modelRuntime.logout(id);
   const message = credential?.type === "oauth"
     ? `Logged out of ${name}.`
     : `Removed stored API key for ${name}. Environment variables and models.json config are unchanged.`;

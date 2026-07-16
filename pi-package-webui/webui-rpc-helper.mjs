@@ -1,6 +1,7 @@
 import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
 
 const HELPER_COMMAND = "webui-helper";
 const RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
@@ -424,6 +425,7 @@ function parseSubagentStatusText(text, previousRuns = new Map()) {
 export default function webuiRpcHelper(pi) {
   let enabledTools = new Set();
   let disabledSkills = new Set();
+  let inheritedEnabledSkills = null;
   let subagentContext = null;
   let subagentBridgeAvailable = false;
   let subagentPollTimer = null;
@@ -655,6 +657,15 @@ export default function webuiRpcHelper(pi) {
     return pi.getAllTools().map((tool) => tool.name);
   }
 
+  async function readGlobalResourceDefaults() {
+    try {
+      return (await readWebuiSettings()).resourceDefaults;
+    } catch (error) {
+      console.warn(`Web UI resource defaults could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      return { tools: { enabledTools: null }, skills: { enabledSkills: null } };
+    }
+  }
+
   function persistToolsState() {
     pi.appendEntry(TOOLS_CONFIG_TYPE, { enabledTools: [...enabledTools] });
   }
@@ -664,11 +675,13 @@ export default function webuiRpcHelper(pi) {
     pi.setActiveTools([...enabledTools].filter((name) => existing.has(name)));
   }
 
-  function restoreToolsFromBranch(ctx) {
+  function restoreToolsFromBranch(ctx, globalDefaults) {
     const saved = lastBranchConfig(ctx, TOOLS_CONFIG_TYPE)?.enabledTools;
-    if (Array.isArray(saved)) {
+    const inherited = globalDefaults?.tools?.enabledTools;
+    const selected = Array.isArray(saved) ? saved : inherited;
+    if (Array.isArray(selected)) {
       const existing = new Set(allToolNames());
-      enabledTools = new Set(normalizeNameList(saved).filter((name) => existing.has(name)));
+      enabledTools = new Set(normalizeNameList(selected).filter((name) => existing.has(name)));
       applyTools();
       return;
     }
@@ -707,9 +720,20 @@ export default function webuiRpcHelper(pi) {
     pi.appendEntry(SKILLS_CONFIG_TYPE, { disabledSkills: [...disabledSkills] });
   }
 
-  function restoreSkillsFromBranch(ctx) {
+  function isSkillEnabled(name) {
+    return inheritedEnabledSkills instanceof Set ? inheritedEnabledSkills.has(name) : !disabledSkills.has(name);
+  }
+
+  function restoreSkillsFromBranch(ctx, globalDefaults) {
     const saved = lastBranchConfig(ctx, SKILLS_CONFIG_TYPE)?.disabledSkills;
-    disabledSkills = new Set(normalizeNameList(saved));
+    if (Array.isArray(saved)) {
+      inheritedEnabledSkills = null;
+      disabledSkills = new Set(normalizeNameList(saved));
+      return;
+    }
+    const inherited = globalDefaults?.skills?.enabledSkills;
+    inheritedEnabledSkills = Array.isArray(inherited) ? new Set(normalizeNameList(inherited)) : null;
+    disabledSkills = new Set();
   }
 
   function skillsFromContext(ctx) {
@@ -718,7 +742,7 @@ export default function webuiRpcHelper(pi) {
     return skills.map((skill) => ({
       name: skill.name,
       description: skill.description || "",
-      enabled: !disabledSkills.has(skill.name),
+      enabled: isSkillEnabled(skill.name),
       disableModelInvocation: skill.disableModelInvocation === true,
       filePath: skill.filePath,
       sourceInfo: safeSourceInfo(skill.sourceInfo),
@@ -726,13 +750,16 @@ export default function webuiRpcHelper(pi) {
   }
 
   function skillState(ctx) {
-    const known = new Set(skillsFromContext(ctx).map((skill) => skill.name));
-    disabledSkills = new Set([...disabledSkills].filter((name) => known.has(name)));
+    if (inheritedEnabledSkills === null) {
+      const known = new Set(skillsFromContext(ctx).map((skill) => skill.name));
+      disabledSkills = new Set([...disabledSkills].filter((name) => known.has(name)));
+    }
     return { skills: skillsFromContext(ctx) };
   }
 
   function setSkillState(ctx, payload) {
     const allNames = new Set(skillsFromContext(ctx).map((skill) => skill.name));
+    inheritedEnabledSkills = null;
     if (Array.isArray(payload.enabledSkills)) {
       const enabled = new Set(normalizeNameList(payload.enabledSkills));
       disabledSkills = new Set([...allNames].filter((name) => !enabled.has(name)));
@@ -800,8 +827,9 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    restoreToolsFromBranch(ctx);
-    restoreSkillsFromBranch(ctx);
+    const globalDefaults = await readGlobalResourceDefaults();
+    restoreToolsFromBranch(ctx, globalDefaults);
+    restoreSkillsFromBranch(ctx, globalDefaults);
     subagentContext = ctx;
     subagentPollGeneration += 1;
     foregroundSubagentRuns.clear();
@@ -812,8 +840,9 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("session_tree", async (_event, ctx) => {
-    restoreToolsFromBranch(ctx);
-    restoreSkillsFromBranch(ctx);
+    const globalDefaults = await readGlobalResourceDefaults();
+    restoreToolsFromBranch(ctx, globalDefaults);
+    restoreSkillsFromBranch(ctx, globalDefaults);
     subagentContext = ctx;
   });
 
@@ -875,18 +904,20 @@ export default function webuiRpcHelper(pi) {
     const match = String(event.text || "").trim().match(/^\/skill:([^\s]+)/i);
     if (!match) return { action: "continue" };
     const skillName = match[1];
-    if (!disabledSkills.has(skillName)) return { action: "continue" };
+    if (isSkillEnabled(skillName)) return { action: "continue" };
     ctx.ui.notify(`Skill /skill:${skillName} is disabled in the Web UI /skills selector.`, "warning");
     return { action: "handled" };
   });
 
   pi.on("before_agent_start", async (event) => {
-    if (disabledSkills.size === 0) return;
+    if (disabledSkills.size === 0 && inheritedEnabledSkills === null) return;
     const allSkills = Array.isArray(event.systemPromptOptions?.skills) ? event.systemPromptOptions.skills : [];
     if (allSkills.length === 0) return;
-    const filteredSkills = allSkills.filter((skill) => !disabledSkills.has(skill.name));
+    const disabledNames = allSkills.filter((skill) => !isSkillEnabled(skill.name)).map((skill) => skill.name);
+    if (disabledNames.length === 0) return;
+    const filteredSkills = allSkills.filter((skill) => isSkillEnabled(skill.name));
     let nextPrompt = replaceAvailableSkillsSection(event.systemPrompt, filteredSkills);
-    for (const name of disabledSkills) nextPrompt = nextPrompt.replace(skillBlockPattern(name), "");
+    for (const name of disabledNames) nextPrompt = nextPrompt.replace(skillBlockPattern(name), "");
     return { systemPrompt: nextPrompt };
   });
 }

@@ -22,7 +22,7 @@ export function supportedGitWorkflowThinkingLevels(model) {
   });
 }
 
-const WEBUI_SETTINGS_VERSION = 2;
+const WEBUI_SETTINGS_VERSION = 3;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
 
 function cleanBoundedString(value, maxLength = 512) {
@@ -111,11 +111,36 @@ export function webuiSettingsFile(env = process.env) {
   return path.join(configRoot, "pi-webui", "settings.json");
 }
 
+function normalizeNameList(value) {
+  if (!Array.isArray(value)) return null;
+  const names = [];
+  const seen = new Set();
+  for (const item of value) {
+    const name = cleanBoundedString(item, 256);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+export function normalizeResourceDefaults(value) {
+  return {
+    tools: {
+      enabledTools: normalizeNameList(value?.tools?.enabledTools),
+    },
+    skills: {
+      enabledSkills: normalizeNameList(value?.skills?.enabledSkills),
+    },
+  };
+}
+
 export function normalizeWebuiSettings(value) {
   return {
     version: WEBUI_SETTINGS_VERSION,
     remoteAuthEnabled: value?.remoteAuthEnabled === true,
     gitWorkflow: normalizeGitWorkflowPreferences(value?.gitWorkflow),
+    resourceDefaults: normalizeResourceDefaults(value?.resourceDefaults),
   };
 }
 
@@ -136,6 +161,14 @@ export async function writeWebuiSettings(patch, storageFile = webuiSettingsFile(
     gitWorkflow: patch?.gitWorkflow
       ? mergeGitWorkflowPreferences(current.gitWorkflow, patch.gitWorkflow)
       : current.gitWorkflow,
+    resourceDefaults: patch?.resourceDefaults
+      ? {
+          ...current.resourceDefaults,
+          ...patch.resourceDefaults,
+          tools: { ...current.resourceDefaults.tools, ...(patch.resourceDefaults.tools || {}) },
+          skills: { ...current.resourceDefaults.skills, ...(patch.resourceDefaults.skills || {}) },
+        }
+      : current.resourceDefaults,
   });
   await mkdir(path.dirname(storageFile), { recursive: true });
   const temporaryFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`;

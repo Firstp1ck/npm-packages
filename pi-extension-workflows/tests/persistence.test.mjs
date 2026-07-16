@@ -27,15 +27,32 @@ assert.equal(hashWorkflowPolicy({
   version: 1,
   maxConcurrency: 3,
   maxAgents: 50,
+  maxNestingDepth: 16,
   timeoutMs: 1000,
   permissions: { write: false, shell: false, network: false },
 }), hashWorkflowPolicy({
   permissions: { network: false, shell: false, write: false },
   timeoutMs: 1000,
+  maxNestingDepth: 16,
   maxAgents: 50,
   maxConcurrency: 3,
   version: 1,
 }));
+assert.notEqual(hashWorkflowPolicy({
+  version: 1,
+  maxConcurrency: 3,
+  maxAgents: 50,
+  maxNestingDepth: 16,
+  timeoutMs: 1000,
+  permissions: { write: false, shell: false, network: false },
+}), hashWorkflowPolicy({
+  version: 1,
+  maxConcurrency: 3,
+  maxAgents: 50,
+  maxNestingDepth: 17,
+  timeoutMs: 1000,
+  permissions: { write: false, shell: false, network: false },
+}), "maxNestingDepth must participate in policy identity and approval hashing");
 
 const approval = createWorkflowApprovalRecord({ projectId, scriptHash: hashA, policyHash: hashB, scope: "remembered", approvedAt: now });
 assert.equal(approvalMatches(approval, { projectId, scriptHash: hashA, policyHash: hashB }), true);

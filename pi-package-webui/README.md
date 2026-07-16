@@ -122,7 +122,7 @@ Environment variables:
 - `PI_WEBUI_HOST` and `PI_WEBUI_PORT` set the default bind address.
 - `PI_WEBUI_PI_BIN=/path/to/pi` selects the Pi executable when `--pi` is not passed.
 - `PI_WEBUI_REMOTE_AUTH=1` starts with Remote PIN authentication enabled.
-- `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as the Remote PIN auth preference.
+- `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as Remote PIN auth, guided Git preferences, and global Tools/Skills defaults.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
 - `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves `npm-cli.js` beside the active Node executable (and on `PATH`) and runs it through Node, avoiding Windows `npm.cmd` spawn failures.
@@ -150,7 +150,7 @@ Optional Natural Conversation server-side voice fallback variables:
 - Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions.
 - Browser voice loop for Natural Conversation Mode (`public/voice-conversation.mjs`): while the mode is active in a tab, the browser's Web Speech APIs listen for speech, send final transcripts as normal prompts, and speak Pi's final answers. The microphone pauses while answers are spoken (echo prevention), speech during final-output streaming becomes a steering interruption, speech during tool execution is queued until the tool phase ends, and silence after a spoken question sends a single structured silence event. Remote (non-localhost) sessions keep the microphone off until the per-tab `Allow remote microphone streaming` consent is granted; only text transcripts ever reach the Pi host on the browser-default path. Opt-in server-side fallback routes are available for local/Groq/OpenAI STT and local/OpenAI TTS when configured with server-side env vars; remote/LAN raw-audio STT fallback uploads require explicit per-request consent.
 - Browser-native Pi dialogs for `/model`, `/settings`, `/safety-guard-setup`, `/git-workflow-setup`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`.
-- Runtime `/tools` and `/skills` selectors backed by the hidden Web UI RPC helper; skill toggles persist on the session branch, disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags.
+- Runtime `/tools` and `/skills` selectors backed by the hidden Web UI RPC helper, with explicit **Session only** and **Global default** scopes. Session choices persist on the current branch and take precedence; global defaults are inherited by future sessions without rewriting existing branches. Disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags.
 - Session resume/switch, metadata rename, and localhost-only safe delete with active/open-tab/session-directory guards.
 - Model, thinking, session, workspace, theme, optional-feature, Codex usage, optional Remote WebUI, update/restart/stop, event, notification, thinking-visibility, terminal-tab-layout, and custom-background controls in collapsible side-panel sections.
 - Persistent context-window meter with manual compact and auto-compaction controls near the composer; side-panel thinking changes made while a tab is busy are queued for the next prompt.
@@ -256,14 +256,16 @@ These screenshots show the v0.4.8 Web UI surfaces. Current implementations inclu
 ![Pi Web UI tools setup dialog listing available tools with enable and disable controls](https://raw.githubusercontent.com/Firstp1ck/npm-packages/main/pi-package-webui/images/Webui_ToolsSetup_v0.4.8.png)
 
 - **What it is:** A browser-native `/tools` setup dialog for active and available Pi tools.
-- **What you can do:** Search tools, inspect descriptions and availability, enable or disable tool access for the active session, and adjust capability exposure without leaving the browser.
+- **What you can do:** Search tools, inspect descriptions and availability, then use **Session only** to change the current branch immediately or **Global default** to save the tool allowlist inherited by future sessions.
 
 ### Skills setup
 
 ![Pi Web UI skills setup dialog listing installed skills and activation controls](https://raw.githubusercontent.com/Firstp1ck/npm-packages/main/pi-package-webui/images/Webui_SkillSetup_v0.4.8.png)
 
-- **What it is:** A browser-native `/skills` setup dialog for installed Pi skills.
-- **What you can do:** Find skills by name or description, review what each skill is for, enable or disable skills for the active session, and make skill activation more transparent before asking Pi to work.
+- **What it is:** A browser-native `/skills` setup dialog for skills available in the active Pi tab.
+- **What you can do:** Find skills by name or description, then use **Session only** to change automatic invocation on the current branch or **Global default** to save the skill allowlist inherited by future sessions.
+
+Session-specific choices always win when their branch is resumed or selected in `/tree`. Saving a global default does not mutate currently open sessions. Global defaults are stored in the Pi Web UI settings file (normally `~/.config/pi-webui/settings.json` or `$XDG_CONFIG_HOME/pi-webui/settings.json`).
 
 ### Optional features
 

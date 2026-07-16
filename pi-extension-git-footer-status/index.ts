@@ -2186,11 +2186,20 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   pi.registerCommand("git-footer-refresh", {
     description: "Refresh git footer information",
     handler: async (args, ctx) => {
-      const silent = /(?:^|\s)--webui-silent(?:\s|$)/.test(args || "");
-      rememberFooterContext(ctx);
-      await refreshPromptInjectionEstimate(ctx);
-      await refresh(ctx);
-      if (!silent) ctx.ui.notify("Git footer refreshed", "info");
+      try {
+        const silent = /(?:^|\s)--webui-silent(?:\s|$)/.test(args || "");
+        rememberFooterContext(ctx);
+        await refreshPromptInjectionEstimate(ctx);
+        await refresh(ctx);
+        if (!silent) ctx.ui.notify("Git footer refreshed", "info");
+      } catch (error) {
+        // The WebUI can already have this command in flight when /new replaces
+        // the session. There is no replacement ctx in this old command frame,
+        // so stop its background polling and let the fresh session_start
+        // publish the new footer instead of surfacing an extension error.
+        if (handleStaleExtensionContext(error)) return;
+        throw error;
+      }
     },
   });
 

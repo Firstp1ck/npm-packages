@@ -243,6 +243,7 @@ export function effectiveScript(script: WorkflowScriptDefinition, ceiling: Parti
       pi: effectiveWorkflowPolicy(script.meta.pi, {
         maxConcurrency: 8,
         maxAgents: 100,
+        maxNestingDepth: ceiling.maxNestingDepth,
         timeoutMs: script.meta.pi.timeoutMs,
         permissions: ceiling.permissions ?? { write: false, shell: false, network: false },
         shellAllowlist: ceiling.shellAllowlist,
@@ -260,13 +261,19 @@ export async function runJavaScriptWorkflow(
   options: JavaScriptWorkflowRunnerOptions,
 ): Promise<WorkflowRun> {
   const run = options.run ?? createJavaScriptRun(source, args);
+  // Host task promises may ignore cancellation and settle after the runtime
+  // returns. No late callback may mutate this returned/persisted snapshot.
+  let finalized = false;
+  const updateRun = () => {
+    if (!finalized) persistAndRender(run, ctx, options);
+  };
   const script = options.policy
     ? { ...source.script, meta: { ...source.script.meta, pi: structuredClone(options.policy) } }
     : effectiveScript(source.script);
   if (options.replay) run.resumedFromRunId = options.replay.sourceRunId;
   options.state.setActiveRun(run);
   transitionWorkflowRun(run, "validating");
-  persistAndRender(run, ctx, options);
+  updateRun();
 
   try {
     run.projectId = await workflowProjectIdentity(options.cwd);
@@ -277,14 +284,16 @@ export async function runJavaScriptWorkflow(
       run.scriptHash = snapshot.scriptHash;
     }
     transitionWorkflowRun(run, "running");
-    persistAndRender(run, ctx, options);
+    updateRun();
 
     const execution = await executeWorkflowScript(script, args, {
       onPhaseEvent(event) {
+        if (finalized) return;
         applyPhaseEvent(run, event);
-        persistAndRender(run, ctx, options);
+        updateRun();
       },
       onPipelineEvent(event) {
+        if (finalized) return;
         run.pipelineItems ??= [];
         let item = run.pipelineItems.find((candidate) => candidate.pipelineId === event.pipelineId && candidate.index === event.index);
         if (!item) {
@@ -296,9 +305,10 @@ export async function runJavaScriptWorkflow(
         item.status = event.type === "start" ? "running" : event.type === "complete" ? "completed" : "failed";
         if (event.type !== "start") item.finishedAt = event.timestamp;
         if (event.error) item.error = event.error;
-        persistAndRender(run, ctx, options);
+        updateRun();
       },
       async agent(request, signal) {
+        if (finalized) throw new WorkflowCancelledError("Workflow run has already finalized.");
         const phasePath = request.phasePath.length > 0 ? request.phasePath : ["root"];
         const phaseRun = ensurePhaseRun(run, phasePath);
         if (phaseRun.status === "queued") {
@@ -340,16 +350,17 @@ export async function runJavaScriptWorkflow(
           }
         }
         phaseRun.tasks.push(taskRun);
-        persistAndRender(run, ctx, options);
+        updateRun();
 
         const requestedTools = request.options.tools?.length ? request.options.tools : [...DEFAULT_ALLOWED_TOOLS];
         const allowedTools = new Set<string>(DEFAULT_ALLOWED_TOOLS);
         if (script.meta.pi.permissions.write) for (const tool of ["write", "edit", "apply_patch"]) allowedTools.add(tool);
-        if (script.meta.pi.permissions.shell) allowedTools.add("bash");
+        // Shell is intentionally unavailable until commands have enforceable
+        // OS sandboxing and an argv-level policy.
         if (script.meta.pi.permissions.network) for (const tool of ["fetch_content", "web_search", "brave_search"]) allowedTools.add(tool);
         const deniedTool = requestedTools.find((tool) => !allowedTools.has(tool));
         const needsWriteIsolation = requestedTools.some((tool) => ["write", "edit", "apply_patch"].includes(tool));
-        const policyDescription = `\n\nWorkflow agent policy: root all filesystem operations inside the assigned cwd. Write=${script.meta.pi.permissions.write}; shell=${script.meta.pi.permissions.shell}; network=${script.meta.pi.permissions.network}.`;
+        const policyDescription = `\n\nWorkflow agent policy: root all filesystem operations inside the assigned cwd. Write=${script.meta.pi.permissions.write}; shell=false (unavailable until secure shell sandboxing and argv policy exist); network=${script.meta.pi.permissions.network}.`;
         const task: WorkflowTask = {
           id: identity.taskId,
           name: identity.name,
@@ -378,8 +389,9 @@ export async function runJavaScriptWorkflow(
             if (!options.storage) throw new WorkflowTaskError(identity.taskId, "Write agents require durable run storage for isolated worktrees.");
             const runDir = await options.storage.runDirectory(run.runId);
             taskRun.worktree = await createWorkflowWorktree({ repoCwd: options.cwd, runDir, runId: run.runId, callId: `${identity.taskId}-${request.callIndex}` });
+            if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task setup.");
             taskRoot = taskRun.worktree.worktreePath;
-            persistAndRender(run, ctx, options);
+            updateRun();
           }
           const taskContext: TaskContext = {
             cwd: taskRoot,
@@ -396,10 +408,11 @@ export async function runJavaScriptWorkflow(
               networkAllowlist: script.meta.pi.networkAllowlist ?? [],
             },
             onSubprocessEvent: (event) => {
+              if (finalized) return;
               taskRun.recentEvents ??= [];
               taskRun.recentEvents.push(structuredClone(event));
               if (taskRun.recentEvents.length > 20) taskRun.recentEvents.splice(0, taskRun.recentEvents.length - 20);
-              persistAndRender(run, ctx, options);
+              updateRun();
               renderWorkflowSubprocessEvent(ctx, run, event);
             },
           };
@@ -417,6 +430,7 @@ export async function runJavaScriptWorkflow(
               runId: run.runId,
               callId: identity.taskId,
             }, async (scheduledSignal) => await options.taskRunner.runTask(task, { ...taskContext, signal: scheduledSignal }));
+            if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task execution.");
             if (result.ok) break;
             const failure = result.error || "Agent task failed.";
             if (attempt >= attempts || !transientTaskFailure(failure)) throw new WorkflowTaskError(identity.taskId, failure);
@@ -425,30 +439,37 @@ export async function runJavaScriptWorkflow(
             const delayMs = Math.max(0, Math.round(exponential + jitter));
             taskRun.recentEvents ??= [];
             taskRun.recentEvents.push({ type: "event", timestamp: new Date().toISOString(), phaseId: phase.id, phaseName: phase.name, taskId: task.id, taskName: task.name, eventType: "workflow_retry", line: `transient failure; retry ${attempt + 1}/${attempts} in ${delayMs}ms: ${failure}` });
-            persistAndRender(run, ctx, options);
+            updateRun();
             await retryDelay(delayMs, signal);
           }
           if (!result) throw new WorkflowTaskError(identity.taskId, "Agent task produced no result.");
+          if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task execution.");
           taskRun.output = result.output;
           taskRun.usage = result.usage;
           if (!result.ok) throw new WorkflowTaskError(identity.taskId, result.error || "Agent task failed.");
           const value = structuredOutput(result.output, request.options.schema);
           if (taskRun.worktree) taskRun.worktree = await captureWorkflowWorktree(taskRun.worktree);
+          if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task capture.");
           taskRun.status = "completed";
           taskRun.result = structuredClone(value);
           enforceBudgets(run, phaseRun, script.meta.pi);
           return value;
         } catch (error) {
+          if (finalized) throw error;
           if (taskRun.worktree) {
             try { taskRun.worktree = await captureWorkflowWorktree(taskRun.worktree); } catch (captureError) { taskRun.error = `Worktree capture failed: ${errorMessage(captureError)}`; }
           }
-          taskRun.status = isCancellation(error) || signal.aborted ? "cancelled" : "failed";
-          taskRun.error ??= errorMessage(error);
-          if (error instanceof WorkflowError) taskRun.errorKind = error.kind;
+          if (!finalized) {
+            taskRun.status = isCancellation(error) || signal.aborted ? "cancelled" : "failed";
+            taskRun.error ??= errorMessage(error);
+            if (error instanceof WorkflowError) taskRun.errorKind = error.kind;
+          }
           throw error;
         } finally {
-          taskRun.finishedAt = new Date().toISOString();
-          persistAndRender(run, ctx, options);
+          if (!finalized) {
+            taskRun.finishedAt = new Date().toISOString();
+            updateRun();
+          }
         }
       },
     }, {
@@ -476,12 +497,31 @@ export async function runJavaScriptWorkflow(
       }
     }
   } finally {
-    run.finishedAt = new Date().toISOString();
-    run.updatedAt = run.finishedAt;
+    const terminalTaskStatus = run.status === "cancelled" ? "cancelled" : "failed";
+    const finishedAt = new Date().toISOString();
+    for (const phase of run.phases) {
+      for (const task of phase.tasks) {
+        if (task.status === "queued" || task.status === "running") {
+          task.status = terminalTaskStatus;
+          task.finishedAt = finishedAt;
+          task.error ??= run.error ?? "Workflow finalized before the task settled.";
+        }
+      }
+    }
+    for (const item of run.pipelineItems ?? []) {
+      if (item.status === "running") {
+        item.status = terminalTaskStatus;
+        item.finishedAt = finishedAt;
+        item.error ??= run.error ?? "Workflow finalized before the pipeline item settled.";
+      }
+    }
+    run.finishedAt = finishedAt;
+    run.updatedAt = finishedAt;
     run.summary = resultSummary(run);
     options.state.setLastRun(run);
     options.state.removeActiveRun(run.runId);
     persistAndRender(run, ctx, options);
+    finalized = true;
   }
 
   return run;

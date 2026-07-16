@@ -8767,6 +8767,12 @@ button.composer-skill-tag:focus-visible {
   background: rgba(var(--ctp-crust-rgb), 0.46);
   white-space: pre-wrap;
 }
+.native-export-path {
+  overflow-wrap: anywhere;
+  color: var(--ctp-teal);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  user-select: all;
+}
 .native-selector-list {
   display: grid;
   gap: 0.45rem;

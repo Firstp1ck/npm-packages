@@ -39,6 +39,7 @@ export type WorkflowScriptPolicy = {
   inputSchema?: unknown;
   maxConcurrency: number;
   maxAgents: number;
+  maxNestingDepth: number;
   timeoutMs: number;
   permissions: WorkflowScriptPermissions;
   shellAllowlist?: string[];

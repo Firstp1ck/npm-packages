@@ -11,8 +11,10 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
-import { AuthStorage, SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
+import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
+import { nativeExportDownloadPayload } from "../lib/native-export-payload.mjs";
 import {
   collectOpenSessionFiles,
   deleteSessionFile,
@@ -117,7 +119,6 @@ const CORE_UPDATE_PACKAGE_NAMES = [PI_CODING_AGENT_PACKAGE, WEBUI_PACKAGE];
 const PACKAGE_UPDATE_TIMEOUT_MS = 15 * 60 * 1000;
 const PACKAGE_UPDATE_OUTPUT_MAX_CHARS = 120_000;
 const CODEX_USAGE_TIMEOUT_MS = 15 * 1000;
-const CODEX_TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
 const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
 const OPENAI_CODEX_USAGE_ENDPOINT = process.env.PI_WEBUI_CODEX_USAGE_URL || "https://chatgpt.com/backend-api/wham/usage";
 const CLAUDE_USAGE_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PI_WEBUI_CLAUDE_USAGE_TIMEOUT_MS || "30000", 10) || 30000);
@@ -3440,38 +3441,24 @@ function normalizeCodexUsagePayload(rawPayload) {
 }
 
 async function getOpenAICodexUsageCredentials({ forceRefresh = false } = {}) {
-  const authStorage = AuthStorage.create();
-  const stored = authStorage.get(OPENAI_CODEX_PROVIDER_ID);
-  const storedExpires = numericValue(stored?.expires);
-  const shouldRefresh = stored?.type === "oauth" && (forceRefresh || storedExpires === undefined || Date.now() + CODEX_TOKEN_REFRESH_SKEW_MS >= storedExpires);
-  let accessToken;
-  let refreshed = false;
-
-  if (shouldRefresh) {
-    try {
-      const refreshResult = await authStorage.refreshOAuthTokenWithLock(OPENAI_CODEX_PROVIDER_ID);
-      if (refreshResult?.apiKey) {
-        accessToken = refreshResult.apiKey;
-        refreshed = forceRefresh || refreshResult.newCredentials?.access !== stored?.access;
-      }
-    } catch (error) {
-      if (forceRefresh || !storedExpires || Date.now() >= storedExpires) {
-        throw makeHttpError(401, "OpenAI Codex OAuth token refresh failed. Run /login and choose ChatGPT Plus/Pro (Codex Subscription) to re-authenticate.");
-      }
-      console.warn(`OpenAI Codex token refresh warning: ${sanitizeError(error)}`);
-    }
+  const { modelRuntime } = await authContext();
+  let resolved;
+  try {
+    resolved = await resolveCodexUsageAuth(modelRuntime, OPENAI_CODEX_PROVIDER_ID, { forceRefresh });
+  } catch {
+    // Client-facing auth failures must not include provider stack traces,
+    // refresh tokens, or raw upstream error details.
+    throw makeHttpError(401, "OpenAI Codex OAuth token refresh failed. Run /login and choose ChatGPT Plus/Pro (Codex Subscription) to re-authenticate.");
   }
 
+  const accessToken = resolved.accessToken;
   if (!accessToken) {
-    accessToken = await authStorage.getApiKey(OPENAI_CODEX_PROVIDER_ID, { includeFallback: false });
-  }
-  if (!accessToken) {
-    const status = authStorage.getAuthStatus(OPENAI_CODEX_PROVIDER_ID);
+    const status = modelRuntime.getProviderAuthStatus(OPENAI_CODEX_PROVIDER_ID);
     if (status.configured) throw makeHttpError(401, "OpenAI Codex OAuth token is expired or unavailable. Run /login to refresh credentials.");
     throw makeHttpError(401, "OpenAI Codex OAuth is not configured. Run /login and choose ChatGPT Plus/Pro (Codex Subscription).");
   }
 
-  const latest = authStorage.get(OPENAI_CODEX_PROVIDER_ID) || stored || {};
+  const latest = resolved.credential || {};
   const accountId = latest.accountId || codexAccountIdFromAccessToken(accessToken);
   if (!accountId) {
     throw makeHttpError(401, "OpenAI Codex account id is unavailable. Run /login and choose ChatGPT Plus/Pro (Codex Subscription) again.");
@@ -3480,7 +3467,7 @@ async function getOpenAICodexUsageCredentials({ forceRefresh = false } = {}) {
   return {
     accessToken,
     accountId,
-    refreshed,
+    refreshed: resolved.refreshed,
     source: latest.type === "oauth" ? "stored-oauth" : "api-key",
     expiresAt: numericValue(latest.expires) ? new Date(numericValue(latest.expires)).toISOString() : undefined,
   };
@@ -3526,7 +3513,7 @@ async function getOpenAICodexUsageStatus({ forceRefresh = false } = {}) {
   try {
     rawPayload = await fetchOpenAICodexUsagePayload(credentials);
   } catch (error) {
-    if (error?.openaiStatus === 401 && !credentials.refreshed) {
+    if (error?.openaiStatus === 401) {
       credentials = await getOpenAICodexUsageCredentials({ forceRefresh: true });
       rawPayload = await fetchOpenAICodexUsagePayload(credentials);
     } else {
@@ -8735,8 +8722,46 @@ async function sendWebuiHelperCommand(tab, action, payload = {}, timeoutMs = WEB
   }
 }
 
-async function getToolConfigData(tab) {
-  return sendWebuiHelperCommand(tab, "tools-state");
+function requireResourceScope(value) {
+  const scope = String(value || "session").trim().toLowerCase();
+  if (scope !== "session" && scope !== "global") throw makeHttpError(400, "Resource scope must be session or global");
+  return scope;
+}
+
+function selectedResourceNames(body, enabledKey, disabledKey, resources, label) {
+  const allNames = new Set((resources || []).map((resource) => String(resource.name || "").trim()).filter(Boolean));
+  if (Array.isArray(body?.[enabledKey])) {
+    return [...new Set(body[enabledKey].map((name) => String(name || "").trim()).filter((name) => allNames.has(name)))];
+  }
+  if (Array.isArray(body?.[disabledKey])) {
+    const disabled = new Set(body[disabledKey].map((name) => String(name || "").trim()));
+    return [...allNames].filter((name) => !disabled.has(name));
+  }
+  throw makeHttpError(400, `${label} update requires ${enabledKey} or ${disabledKey}`);
+}
+
+function preserveUnavailableGlobalNames(selectedNames, resources, previousNames) {
+  if (!Array.isArray(previousNames)) return selectedNames;
+  const available = new Set((resources || []).map((resource) => resource.name));
+  return [...new Set([...selectedNames, ...previousNames.filter((name) => !available.has(name))])];
+}
+
+function globalResourcePayload(key, resources, configuredNames) {
+  const configured = Array.isArray(configuredNames);
+  const enabled = new Set(configured ? configuredNames : resources.filter((resource) => resource.enabled !== false).map((resource) => resource.name));
+  return {
+    scope: "global",
+    configured,
+    [key]: resources.map((resource) => ({ ...resource, enabled: enabled.has(resource.name) })),
+  };
+}
+
+async function getToolConfigData(tab, requestedScope = "session") {
+  const scope = requireResourceScope(requestedScope);
+  const runtime = await sendWebuiHelperCommand(tab, "tools-state");
+  if (scope === "session") return { ...runtime, scope };
+  const defaults = (await readWebuiSettings()).resourceDefaults.tools.enabledTools;
+  return globalResourcePayload("tools", runtime.tools || [], defaults);
 }
 
 let packageManagerModulePromise;
@@ -8929,88 +8954,56 @@ async function saveSkillFileData(tab, body = {}) {
   };
 }
 
-function getResourcePatternForSkill(tab, skill) {
-  const info = skill.sourceInfo || {};
-  const baseDir = info.baseDir || (info.scope === "project" ? path.join(tab?.cwd || options.cwd, ".pi") : agentDir);
-  return path.relative(baseDir, skill.filePath);
+async function setToolConfigData(tab, body) {
+  const scope = requireResourceScope(body?.scope);
+  if (scope === "session") {
+    return {
+      ...(await sendWebuiHelperCommand(tab, "tools-set", {
+        enabledTools: Array.isArray(body.enabledTools) ? body.enabledTools : undefined,
+        disabledTools: Array.isArray(body.disabledTools) ? body.disabledTools : undefined,
+      })),
+      scope,
+    };
+  }
+
+  const runtime = await sendWebuiHelperCommand(tab, "tools-state");
+  const currentSettings = await readWebuiSettings();
+  const selectedTools = selectedResourceNames(body, "enabledTools", "disabledTools", runtime.tools, "Tool");
+  const enabledTools = preserveUnavailableGlobalNames(selectedTools, runtime.tools, currentSettings.resourceDefaults.tools.enabledTools);
+  await writeWebuiSettings({ resourceDefaults: { tools: { enabledTools } } });
+  return globalResourcePayload("tools", runtime.tools || [], enabledTools);
 }
 
-async function setToolConfigData(tab, body) {
-  return sendWebuiHelperCommand(tab, "tools-set", {
-    enabledTools: Array.isArray(body.enabledTools) ? body.enabledTools : undefined,
-    disabledTools: Array.isArray(body.disabledTools) ? body.disabledTools : undefined,
-  });
+async function getSkillConfigData(tab, requestedScope = "session") {
+  const scope = requireResourceScope(requestedScope);
+  const runtime = await getSkillConfigDataFromRuntime(tab);
+  if (scope === "session") return { ...runtime, scope };
+  const defaults = (await readWebuiSettings()).resourceDefaults.skills.enabledSkills;
+  return globalResourcePayload("skills", runtime.skills || [], defaults);
 }
 
 async function getSkillConfigDataFromRuntime(tab) {
   return sendWebuiHelperCommand(tab, "skills-state");
 }
 
-function desiredSkillEnabledFromBody(skillName, body) {
-  if (Array.isArray(body.enabledSkills)) return body.enabledSkills.map(String).includes(skillName);
-  if (Array.isArray(body.disabledSkills)) return !body.disabledSkills.map(String).includes(skillName);
-  throw makeHttpError(400, "Skill update requires enabledSkills or disabledSkills");
-}
-
-function updatePatternListForResource(current, pattern, enabled) {
-  const updated = (current || []).filter((item) => {
-    const text = String(item || "");
-    const stripped = text.startsWith("!") || text.startsWith("+") || text.startsWith("-") ? text.slice(1) : text;
-    return stripped !== pattern;
-  });
-  updated.push(`${enabled ? "+" : "-"}${pattern}`);
-  return updated;
-}
-
-function setSkillPathsForScope(settingsManager, scope, updated) {
-  if (scope === "project") settingsManager.setProjectSkillPaths(updated);
-  else settingsManager.setSkillPaths(updated);
-}
-
-function toggleConfiguredSkill(tab, settingsManager, skill, enabled) {
-  const info = skill.sourceInfo || {};
-  const scope = info.scope === "project" ? "project" : "user";
-  if (info.origin === "package") {
-    const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
-    const packages = [...(settings.packages || [])];
-    const packageIndex = packages.findIndex((item) => (typeof item === "string" ? item : item?.source) === info.source);
-    if (packageIndex < 0) return false;
-    let packageEntry = packages[packageIndex];
-    if (typeof packageEntry === "string") {
-      packageEntry = { source: packageEntry };
-      packages[packageIndex] = packageEntry;
-    }
-    const pattern = path.relative(info.baseDir || path.dirname(skill.filePath), skill.filePath);
-    packageEntry.skills = updatePatternListForResource(packageEntry.skills || [], pattern, enabled);
-    if (scope === "project") settingsManager.setProjectPackages(packages);
-    else settingsManager.setPackages(packages);
-    return true;
-  }
-
-  const settings = scope === "project" ? settingsManager.getProjectSettings() : settingsManager.getGlobalSettings();
-  const pattern = getResourcePatternForSkill(tab, skill);
-  setSkillPathsForScope(settingsManager, scope, updatePatternListForResource(settings.skills || [], pattern, enabled));
-  return true;
-}
-
 async function setSkillConfigData(tab, body) {
-  const { skills, settingsManager } = await resolveSkillResources(tab);
-  let configChanged = false;
-  for (const skill of skills) {
-    const desiredEnabled = desiredSkillEnabledFromBody(skill.name, body);
-    if (skill.configEnabled !== desiredEnabled && toggleConfiguredSkill(tab, settingsManager, skill, desiredEnabled)) configChanged = true;
+  const scope = requireResourceScope(body?.scope);
+  if (scope === "session") {
+    return {
+      ...(await sendWebuiHelperCommand(tab, "skills-set", {
+        enabledSkills: Array.isArray(body.enabledSkills) ? body.enabledSkills : undefined,
+        disabledSkills: Array.isArray(body.disabledSkills) ? body.disabledSkills : undefined,
+      })),
+      scope,
+    };
   }
 
-  const runtimeOnly = skills.length === 0;
-  if (runtimeOnly) {
-    await sendWebuiHelperCommand(tab, "skills-set", {
-      enabledSkills: Array.isArray(body.enabledSkills) ? body.enabledSkills : undefined,
-      disabledSkills: Array.isArray(body.disabledSkills) ? body.disabledSkills : undefined,
-    });
-  }
-
-  const activeTab = configChanged ? await restartTabRpc(tab, "skills-config") : tab;
-  return getMergedSkillConfigData(activeTab);
+  const runtime = await getSkillConfigDataFromRuntime(tab);
+  const currentSettings = await readWebuiSettings();
+  const selectedSkills = selectedResourceNames(body, "enabledSkills", "disabledSkills", runtime.skills, "Skill");
+  const enabledSkills = preserveUnavailableGlobalNames(selectedSkills, runtime.skills, currentSettings.resourceDefaults.skills.enabledSkills);
+  await writeWebuiSettings({ resourceDefaults: { skills: { enabledSkills } } });
+  return globalResourcePayload("skills", runtime.skills || [], enabledSkills);
 }
 
 function settingsManagerForTab(tab) {
@@ -10304,7 +10297,12 @@ async function switchTabSession(tab, sessionPath) {
 let authContextCache;
 
 function authContext() {
-  if (!authContextCache) authContextCache = createAuthContext();
+  if (!authContextCache) {
+    authContextCache = createAuthContext().catch((error) => {
+      authContextCache = undefined;
+      throw error;
+    });
+  }
   return authContextCache;
 }
 
@@ -10337,13 +10335,13 @@ async function deleteSessionData(tab, body) {
   };
 }
 
-function getAuthProvidersData() {
-  return authProvidersPayload(authContext().modelRegistry);
+async function getAuthProvidersData() {
+  return authProvidersPayload((await authContext()).modelRuntime);
 }
 
-function logoutAuthProviderData(body) {
+async function logoutAuthProviderData(body) {
   if (body.confirmed !== true) throw makeHttpError(409, "Logout requires explicit confirmation (confirmed: true).");
-  return logoutStoredProvider(authContext().modelRegistry, body.provider || body.providerId);
+  return logoutStoredProvider((await authContext()).modelRuntime, body.provider || body.providerId);
 }
 
 async function navigateSessionTree(tab, body) {
@@ -10419,14 +10417,12 @@ async function handleNativeExportCommand(tab, args, req) {
       fileName: `${nativeExportBaseName(tab, state)}.html`,
       contentType: MIME_TYPES.get(".html"),
     });
-    return respondNative("export", {
-      status: "succeeded",
-      level: "info",
-      message: `Exported current session to HTML.\nDownload: ${download.fileName}\nOpen it in your browser when prompted.\nOpen URL: ${download.openUrl || download.url}\nDownload URL: ${download.url}\nLink expires: ${download.expiresAt}`,
+    return respondNative("export", nativeExportDownloadPayload({
+      localRequest: isLocalRequest(req),
+      exportedPath,
       download,
-      result: response.data,
-      refresh: ["state"],
-    });
+      responseData: response.data,
+    }));
   }
 
   if (!isLocalRequest(req)) {
@@ -11627,14 +11623,14 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/auth-providers" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: getAuthProvidersData() });
+      sendJson(res, 200, { ok: true, data: await getAuthProvidersData() });
       return;
     }
 
     if (url.pathname === "/api/auth-logout" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
-      sendJson(res, 200, { ok: true, data: logoutAuthProviderData(body) });
+      sendJson(res, 200, { ok: true, data: await logoutAuthProviderData(body) });
       return;
     }
 
@@ -11720,7 +11716,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/tools" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await getToolConfigData(tab) });
+      sendJson(res, 200, { ok: true, data: await getToolConfigData(tab, url.searchParams.get("scope")) });
       return;
     }
 
@@ -11734,7 +11730,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/skills" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await getMergedSkillConfigData(tab) });
+      sendJson(res, 200, { ok: true, data: await getSkillConfigData(tab, url.searchParams.get("scope")) });
       return;
     }
 

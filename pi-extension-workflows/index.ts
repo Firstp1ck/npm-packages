@@ -728,6 +728,11 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
     name: "workflow_run",
     label: "Run Workflow",
     description: "Launch a reusable capability-only JavaScript workflow for an explicit workflow request or substantive multi-agent task. Do not use for routine one-agent work.",
+    promptSnippet: "Launch an approved reusable JavaScript workflow with isolated Pi agents",
+    promptGuidelines: [
+      "Use workflow_run when the user explicitly requests a workflow, Workflow Mode is active, or a substantive task benefits from multiple isolated agents; do not use workflow_run for routine one-agent work.",
+      "When using workflow_run, provide a generated or saved workflow plus structured args and set confirmRun=true only when the user requested execution or enabled Workflow Mode.",
+    ],
     parameters: Type.Object({
       key: Type.Optional(Type.String({ description: "Legacy saved-workflow key. Prefer name for new calls." })),
       name: Type.Optional(Type.String({ description: "Saved workflow name, for example deep-research-minimal." })),
@@ -773,6 +778,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
     name: "workflow_status",
     label: "Workflow Status",
     description: "Inspect the active or latest Pi workflow run in this session.",
+    promptSnippet: "Inspect an active or historical Pi workflow run by ID",
     parameters: Type.Object({ runId: Type.Optional(Type.String({ description: "Optional workflow run ID." })) }),
     async execute(_toolCallId, params) {
       const run = params.runId ? manager.get(params.runId) : manager.active().at(-1) ?? state.getLastRun();

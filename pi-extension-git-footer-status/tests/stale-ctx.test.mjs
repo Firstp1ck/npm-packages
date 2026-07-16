@@ -44,7 +44,14 @@ registerHooks({
         source: `
           export const collectInitialPromptCalibration = () => null;
           export const createInitialPromptEstimateService = () => ({
-            refresh: async () => ({ status: "ok" }),
+            refresh: async (_ctx) => {
+              const control = globalThis.__gitFooterPromptRefreshControl;
+              control?.started?.();
+              if (control?.wait) await control.wait;
+              if (control?.error) throw control.error;
+              void _ctx.cwd;
+              return { status: "ok" };
+            },
             getSnapshot: () => null,
             getFallbackSnapshot: () => null,
             clear: () => {},
@@ -101,13 +108,16 @@ const newState = () => ({
 
 const createFakePi = (state) => {
   const handlers = new Map();
+  const commands = new Map();
   const pi = {
     on(event, handler) {
       const list = handlers.get(event) ?? [];
       list.push(handler);
       handlers.set(event, list);
     },
-    registerCommand() {},
+    registerCommand(name, command) {
+      commands.set(name, command);
+    },
     registerShortcut() {},
     exec(_cmd, _args, _opts) {
       if (state.stale) {
@@ -122,7 +132,12 @@ const createFakePi = (state) => {
   const emit = async (event, evt, ctx) => {
     for (const handler of handlers.get(event) ?? []) await handler(evt, ctx);
   };
-  return { pi, emit };
+  const runCommand = async (name, args, ctx) => {
+    const command = commands.get(name);
+    assert.ok(command, `expected command to be registered: ${name}`);
+    return command.handler(args, ctx);
+  };
+  return { pi, emit, runCommand };
 };
 
 const createFakeCtx = (state, { hasUI }) => {
@@ -203,6 +218,58 @@ test("stale ctx hit by the auto-refresh timer neither rejects unhandled nor keep
     await emit("session_shutdown", {}, ctx);
     process.off("unhandledRejection", onRejection);
     process.off("uncaughtException", onException);
+  }
+});
+
+test("git-footer-refresh exits quietly when /new invalidates its in-flight command ctx", async () => {
+  const state = newState();
+  const { pi, runCommand } = createFakePi(state);
+  gitFooterStatus(pi);
+
+  let markRefreshStarted;
+  let releaseRefresh;
+  const refreshStarted = new Promise((resolve) => { markRefreshStarted = resolve; });
+  const waitForReplacement = new Promise((resolve) => { releaseRefresh = resolve; });
+  globalThis.__gitFooterPromptRefreshControl = {
+    started: markRefreshStarted,
+    wait: waitForReplacement,
+  };
+
+  const ctx = createFakeCtx(state, { hasUI: true });
+  const commandPromise = runCommand("git-footer-refresh", "--webui-silent", ctx);
+  await refreshStarted;
+  state.stale = true;
+  releaseRefresh();
+
+  try {
+    await assert.doesNotReject(
+      commandPromise,
+      "a refresh already in flight during session replacement must not emit a command error",
+    );
+    assert.ok(state.staleCtxAccesses > 0, "expected the old command ctx to be rejected as stale");
+    assert.equal(state.execCallsWhileStale, 0, "the stale command must stop before executing git");
+    assert.equal(state.setStatusCalls.length, 0, "the stale command must not publish old-session status");
+  } finally {
+    delete globalThis.__gitFooterPromptRefreshControl;
+  }
+});
+
+test("git-footer-refresh still reports non-stale command failures", async () => {
+  const state = newState();
+  const { pi, runCommand } = createFakePi(state);
+  gitFooterStatus(pi);
+
+  globalThis.__gitFooterPromptRefreshControl = { error: new Error("prompt estimate failed") };
+  const ctx = createFakeCtx(state, { hasUI: true });
+
+  try {
+    await assert.rejects(
+      runCommand("git-footer-refresh", "--webui-silent", ctx),
+      /prompt estimate failed/,
+      "only stale-context failures should be suppressed",
+    );
+  } finally {
+    delete globalThis.__gitFooterPromptRefreshControl;
   }
 });
 

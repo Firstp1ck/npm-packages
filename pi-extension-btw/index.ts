@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { stream, type Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
+import { stream } from "@earendil-works/pi-ai/compat";
 import {
   buildSessionContext,
   convertToLlm,
@@ -9,6 +10,14 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { truncate as truncatePlain } from "@firstpick/pi-utils";
+import {
+  buildSideQuestionMessages,
+  commitSideQuestion,
+  cancelSideThread,
+  createSideThread,
+  enqueueSideThreadRun,
+  type SideThread,
+} from "./side-thread.ts";
 
 const WEBUI_STATUS_KEY = "btw-webui";
 const WEBUI_OUTPUT_WIDGET_KEY = "btw:output";
@@ -16,7 +25,7 @@ const WEBUI_FOOTER_WIDGET_KEY = "btw:footer";
 const WEBUI_WIDGET_PAYLOAD_PREFIX = "BTW_WEBUI_PAYLOAD ";
 const WEBUI_PAYLOAD_TYPE = "firstpick.pi-extension-btw.output";
 const WEBUI_PAYLOAD_VERSION = 2;
-const SIDE_SYSTEM_PROMPT = `\n\n[/btw SIDE QUESTION MODE]\nAnswer the user's /btw side question using only the session transcript included in the request.\nDo not call tools, ask to inspect files, run commands, or search. You have no tool access in this side request.\nKeep the answer concise unless the question explicitly asks for detail.\nThis question and answer are ephemeral and must not assume they will be remembered in the main conversation.`;
+const SIDE_SYSTEM_PROMPT = `\n\n[/btw SIDE QUESTION MODE]\nAnswer the user's /btw side question using the main-session transcript and prior /btw turns included in the request.\nDo not call tools, ask to inspect files, run commands, or search. You have no tool access in this side request.\nKeep the answer concise unless the question explicitly asks for detail.\nThis side thread is separate from the main conversation, but earlier /btw questions and answers in the request are normal conversation context and must be remembered.`;
 const TRANSFER_SUMMARY_SYSTEM_PROMPT = `\n\n[/btw TRANSFER SUMMARY MODE]\nSummarize a /btw side question and side answer for transfer back into the main agent conversation as steering context.\nReturn only a concise steering summary. Preserve actionable facts, decisions, constraints, caveats, and requested behavior relevant to the main task.\nDo not add new facts, do not call tools, and do not re-answer the original side question.`;
 const MAX_TOOL_ARGS_CHARS = 2000;
 const WEBUI_UPDATE_INTERVAL_MS = 90;
@@ -94,22 +103,6 @@ function buildTranscript(ctx: ExtensionCommandContext): string {
   const sessionContext = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
   const messages = convertToLlm(sessionContext.messages).map(transcriptLineForMessage).filter((line) => line.trim());
   return messages.length > 0 ? messages.join("\n\n---\n\n") : "No prior session transcript is available.";
-}
-
-function buildSideQuestionMessages(ctx: ExtensionCommandContext, question: string): Message[] {
-  const transcript = buildTranscript(ctx);
-  return [
-    {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: `Current session transcript:\n\n${transcript}\n\n---\n\n/btw side question:\n${question}`,
-        },
-      ],
-      timestamp: Date.now(),
-    },
-  ];
 }
 
 function buildTransferSummaryMessages(payload: BtwTransferPayload): Message[] {
@@ -235,7 +228,7 @@ function createWebuiPublisher(ctx: ExtensionCommandContext, id: string, question
     ], { placement: "aboveEditor" });
     ctx.ui.setWidget(WEBUI_FOOTER_WIDGET_KEY, [
       `btw: ${webuiStatusLabel(status)} · ${truncatePlain(question, 90)}${modelLabel(ctx) ? ` · ${modelLabel(ctx)}` : ""}`,
-      "Ephemeral side answer · not appended to main transcript · continue chatting while it streams",
+      "Continuous side thread · not appended to main transcript · continue chatting while it streams",
     ], { placement: "belowEditor" });
   };
 
@@ -437,6 +430,7 @@ async function summarizeTransferPayload(ctx: ExtensionCommandContext, payload: B
 
 async function runSideQuestion(
   ctx: ExtensionCommandContext,
+  sideThread: SideThread,
   question: string,
   signal: AbortSignal,
   onUpdate: (status: BtwStatus, answer: string, error?: string, force?: boolean) => void,
@@ -445,11 +439,16 @@ async function runSideQuestion(
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
   if (!auth.ok) throw new Error(auth.error);
 
+  const requestMessages = buildSideQuestionMessages(
+    sideThread.messages.length === 0 ? buildTranscript(ctx) : "",
+    question,
+    sideThread.messages,
+  );
   const responseStream = stream(
     ctx.model,
     {
       systemPrompt: `${ctx.getSystemPrompt()}${SIDE_SYSTEM_PROMPT}`,
-      messages: buildSideQuestionMessages(ctx, question),
+      messages: requestMessages,
     },
     {
       apiKey: auth.apiKey,
@@ -462,12 +461,14 @@ async function runSideQuestion(
   );
 
   let answer = "";
+  let completedMessage: Message | undefined;
   onUpdate("streaming", answer, undefined, true);
   for await (const event of responseStream) {
     if (event.type === "text_delta") {
       answer += event.delta;
       onUpdate("streaming", answer);
     } else if (event.type === "done") {
+      completedMessage = event.message;
       answer = assistantText(event.message) || answer;
     } else if (event.type === "error") {
       throw new Error(event.error.errorMessage || (event.reason === "aborted" ? "Side question aborted." : "Side question failed."));
@@ -475,11 +476,17 @@ async function runSideQuestion(
   }
 
   const final = await responseStream.result().catch(() => undefined);
-  answer = assistantText(final) || answer;
+  const assistantMessage = final || completedMessage;
+  if (!assistantMessage || assistantMessage.role !== "assistant") {
+    throw new Error("Side question completed without an assistant response.");
+  }
+  answer = assistantText(assistantMessage) || answer;
+  if (signal.aborted) throw new Error("Side question aborted.");
+  commitSideQuestion(sideThread, requestMessages, assistantMessage);
   return answer.trim();
 }
 
-async function handleBtw(args: string, ctx: ExtensionCommandContext) {
+async function handleBtw(args: string, ctx: ExtensionCommandContext, sideThread: SideThread) {
   const question = args.trim();
   if (!question) {
     ctx.ui.notify("Usage: /btw <side question>", "warning");
@@ -494,7 +501,7 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext) {
   const controller = new AbortController();
   const webuiPublisher = createWebuiPublisher(ctx, id, question);
   const publish = (status: BtwStatus, answer: string, error = "", force = false) => {
-    webuiPublisher.update(status, answer, error, force);
+    if (!sideThread.cancelled) webuiPublisher.update(status, answer, error, force);
   };
 
   if (ctx.mode === "tui") {
@@ -512,10 +519,11 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext) {
       updateComponent("loading", "");
       publish("loading", "", "", true);
 
-      sidePromise = runSideQuestion(ctx, question, controller.signal, (status, answer, error, force) => {
+      sidePromise = enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
+        if (threadSignal.aborted) return;
         updateComponent(status, answer, error || "");
         publish(status, answer, error || "", force);
-      })
+      }), controller.signal)
         .then((answer) => {
           finished = true;
           updateComponent("done", answer || "(no text answer)");
@@ -523,6 +531,7 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext) {
         })
         .catch((error) => {
           finished = true;
+          if (sideThread.cancelled) return;
           const aborted = controller.signal.aborted;
           const message = aborted ? "Side question aborted." : error instanceof Error ? error.message : String(error);
           updateComponent(aborted ? "aborted" : "error", "", message);
@@ -550,9 +559,12 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext) {
 
   if (ctx.mode === "rpc") {
     publish("loading", "", "", true);
-    void runSideQuestion(ctx, question, controller.signal, publish)
+    void enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
+      if (!threadSignal.aborted) publish(status, answer, error, force);
+    }), controller.signal)
       .then((answer) => publish("done", answer || "(no text answer)", "", true))
       .catch((error) => {
+        if (sideThread.cancelled) return;
         const message = error instanceof Error ? error.message : String(error);
         publish("error", "", message, true);
       })
@@ -562,22 +574,30 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext) {
 
   publish("loading", "", "", true);
   try {
-    const answer = await runSideQuestion(ctx, question, controller.signal, publish);
+    const answer = await enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
+      if (!threadSignal.aborted) publish(status, answer, error, force);
+    }), controller.signal);
     publish("done", answer || "(no text answer)", "", true);
     ctx.ui.notify(answer || "(no text answer)", "info");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    publish("error", "", message, true);
-    ctx.ui.notify(`/btw failed: ${message}`, "error");
+    if (!sideThread.cancelled) {
+      const message = error instanceof Error ? error.message : String(error);
+      publish("error", "", message, true);
+      ctx.ui.notify(`/btw failed: ${message}`, "error");
+    }
   } finally {
     webuiPublisher.dispose();
   }
 }
 
 export default function btwExtension(pi: ExtensionAPI) {
+  const sideThread = createSideThread();
+
+  pi.on("session_shutdown", () => cancelSideThread(sideThread));
+
   pi.registerCommand("btw", {
-    description: "Ask an ephemeral side question without adding it to the main conversation. Usage: /btw <question>",
-    handler: handleBtw,
+    description: "Ask in a continuous side thread without adding it to the main conversation. Usage: /btw <question>",
+    handler: (args, ctx) => handleBtw(args, ctx, sideThread),
   });
 
   pi.registerCommand("btw-transfer", {

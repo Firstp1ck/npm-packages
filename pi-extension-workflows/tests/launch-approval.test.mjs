@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createWorkflowApprovalStore } from "../src/approval.ts";
 import { requestWorkflowLaunchApproval } from "../src/launch-approval.ts";
-import { sha256 } from "../src/persistence-schema.ts";
+import { hashWorkflowPolicy, sha256 } from "../src/persistence-schema.ts";
 
 const key = {
   projectId: "project-test",
@@ -79,6 +79,47 @@ await assert.rejects(
   }),
   /interactive approval/,
   "policy changes must invalidate remembered launch consent",
+);
+
+const nestingPolicyKey = {
+  ...key,
+  policyHash: hashWorkflowPolicy({
+    version: 1,
+    maxConcurrency: 3,
+    maxAgents: 50,
+    maxNestingDepth: 16,
+    timeoutMs: 1000,
+    permissions: { write: false, shell: false, network: false },
+  }),
+};
+const nestingApprovalStore = createWorkflowApprovalStore();
+await requestWorkflowLaunchApproval({
+  approvals: nestingApprovalStore,
+  key: nestingPolicyKey,
+  workflowName: "nesting-policy",
+  source: "return 1",
+  ctx: { hasUI: true, ui: { async select() { return "Remember approval for this exact script and policy"; } } },
+});
+await assert.rejects(
+  () => requestWorkflowLaunchApproval({
+    approvals: nestingApprovalStore,
+    key: {
+      ...nestingPolicyKey,
+      policyHash: hashWorkflowPolicy({
+        version: 1,
+        maxConcurrency: 3,
+        maxAgents: 50,
+        maxNestingDepth: 17,
+        timeoutMs: 1000,
+        permissions: { write: false, shell: false, network: false },
+      }),
+    },
+    workflowName: "nesting-policy-changed",
+    source: "return 1",
+    ctx: { hasUI: false },
+  }),
+  /interactive approval/,
+  "maxNestingDepth-only policy changes must invalidate remembered launch consent",
 );
 
 await assert.rejects(

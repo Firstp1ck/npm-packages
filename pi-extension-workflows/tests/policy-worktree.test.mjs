@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadWorkflowPolicyCeiling, validateWorkflowPolicyCeiling } from "../src/policy.ts";
@@ -48,21 +48,26 @@ try {
   assert.deepEqual((await loadWorkflowPolicyCeiling({ cwd: project, projectTrusted: false, agentDir })).permissions, userPolicy.permissions);
 
   const guardRoot = path.join(temp, "guard-root");
+  const outsideGuardRoot = path.join(temp, "outside-guard-root");
   await mkdir(guardRoot);
+  await mkdir(outsideGuardRoot);
+  await writeFile(path.join(outsideGuardRoot, "secret.txt"), "outside\n");
+  await symlink(outsideGuardRoot, path.join(guardRoot, "escape-link"));
   process.env.PI_WORKFLOW_AGENT_POLICY = JSON.stringify({
     root: guardRoot,
     permissions: { write: true, shell: true, network: true },
     allowedTools: ["read", "write", "bash", "fetch_content"],
-    shellAllowlist: ["git"],
+    shellAllowlist: ["git", "curl"],
     networkAllowlist: ["example.com"],
   });
   let toolCall;
   workflowGuard({ on(name, handler) { if (name === "tool_call") toolCall = handler; } });
   assert.equal(await toolCall({ toolName: "write", input: { path: "inside.txt" } }), undefined);
   assert.match((await toolCall({ toolName: "write", input: { path: "../escape.txt" } })).reason, /outside isolated root/);
-  assert.equal(await toolCall({ toolName: "bash", input: { command: "git status" } }), undefined);
-  assert.match((await toolCall({ toolName: "bash", input: { command: "npm test" } })).reason, /allowlist denied/);
-  assert.match((await toolCall({ toolName: "bash", input: { command: "git status && rm x" } })).reason, /without shell operators/);
+  assert.match((await toolCall({ toolName: "read", input: { path: "escape-link/secret.txt" } })).reason, /outside isolated root/);
+  for (const command of ["git status", "git -c core.sshCommand=x fetch", "git -C . fetch", "git submodule update", "git archive --remote=x HEAD"]) {
+    assert.match((await toolCall({ toolName: "bash", input: { command } })).reason, /shell access is unavailable/i, command);
+  }
   assert.equal(await toolCall({ toolName: "fetch_content", input: { url: "https://docs.example.com/page" } }), undefined);
   assert.match((await toolCall({ toolName: "fetch_content", input: { url: "https://evil.invalid" } })).reason, /allowlist denied/);
   assert.match((await toolCall({ toolName: "web_search", input: { query: "anything" } })).reason, /denied tool/);
@@ -109,6 +114,14 @@ return await parallel([
   const cleanup = await cleanupWorkflowWorktrees(await storage.runDirectory(run.runId));
   assert.equal(cleanup.removed.length, 2);
   assert.equal(cleanup.preserved.length, 0);
+
+  const shellScript = parseWorkflowScript(`export const meta = { name: "shell-unavailable", description: "Shell unavailable", pi: { permissions: { write: true, shell: true } } }\nreturn await agent("inspect safely", { label: "shell-agent", tools: ["bash"] })`);
+  const shellRun = await runJavaScriptWorkflow(
+    { path: "/tmp/shell-unavailable.js", scope: "inline", sourceType: "javascript", script: shellScript }, {}, { hasUI: false },
+    { cwd: repo, state: createWorkflowStateStore(), storage, policy: { ...shellScript.meta.pi, permissions: { write: true, shell: true, network: false }, shellAllowlist: ["git"], networkAllowlist: [], verificationCommands: [] }, taskRunner: { async runTask() { throw new Error("bash must be denied before task launch"); } } },
+  );
+  assert.equal(shellRun.status, "failed");
+  assert.match(shellRun.error, /denied requested tool 'bash'/);
 
   const noRetryScript = parseWorkflowScript(`export const meta = { name: "write-no-retry", description: "Write no retry", pi: { permissions: { write: true }, retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2, jitter: 0 } } }\nreturn await agent("write once", { label: "writer", tools: ["write"] })`);
   let writeAttempts = 0;

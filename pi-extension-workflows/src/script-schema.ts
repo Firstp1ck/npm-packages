@@ -12,6 +12,8 @@ export const HARD_MAX_WORKFLOW_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_WORKFLOW_MEMORY_BYTES = 64 * 1024 * 1024;
 export const HARD_MAX_WORKFLOW_MEMORY_BYTES = 128 * 1024 * 1024;
 export const DEFAULT_WORKFLOW_STACK_BYTES = 512 * 1024;
+export const DEFAULT_WORKFLOW_NESTING_DEPTH = 16;
+export const HARD_MAX_WORKFLOW_NESTING_DEPTH = 64;
 // QuickJS invokes the interrupt hook at deterministic bytecode intervals. This
 // bound limits those checks rather than promising a one-to-one source instruction count.
 export const DEFAULT_WORKFLOW_INSTRUCTION_LIMIT = 5_000_000;
@@ -38,6 +40,7 @@ export const WORKFLOW_SCRIPT_META_JSON_SCHEMA = {
         inputSchema: {},
         maxConcurrency: { type: "integer", minimum: 1, maximum: HARD_MAX_CONCURRENCY },
         maxAgents: { type: "integer", minimum: 1, maximum: HARD_MAX_TASKS },
+        maxNestingDepth: { type: "integer", minimum: 1, maximum: HARD_MAX_WORKFLOW_NESTING_DEPTH },
         timeoutMs: { type: "integer", minimum: 1, maximum: HARD_MAX_WORKFLOW_TIMEOUT_MS },
         budgets: {
           type: "object", additionalProperties: false,
@@ -62,7 +65,7 @@ export const WORKFLOW_SCRIPT_META_JSON_SCHEMA = {
 } as const;
 
 const META_KEYS = new Set(["name", "description", "phases", "pi"]);
-const POLICY_KEYS = new Set(["version", "inputSchema", "maxConcurrency", "maxAgents", "timeoutMs", "permissions", "budgets", "retry"]);
+const POLICY_KEYS = new Set(["version", "inputSchema", "maxConcurrency", "maxAgents", "maxNestingDepth", "timeoutMs", "permissions", "budgets", "retry"]);
 const PERMISSION_KEYS = new Set(["write", "shell", "network"]);
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 
@@ -121,6 +124,7 @@ function normalizePolicy(value: unknown, issues: string[]): WorkflowScriptPolicy
     version: 1,
     maxConcurrency: DEFAULT_MAX_CONCURRENCY,
     maxAgents: DEFAULT_MAX_TASKS,
+    maxNestingDepth: DEFAULT_WORKFLOW_NESTING_DEPTH,
     timeoutMs: DEFAULT_WORKFLOW_TIMEOUT_MS,
     permissions: { write: false, shell: false, network: false },
   };
@@ -145,6 +149,12 @@ function normalizePolicy(value: unknown, issues: string[]): WorkflowScriptPolicy
     if (!positiveInteger(value.maxAgents)) issues.push("meta.pi.maxAgents must be a positive integer.");
     else if (value.maxAgents > HARD_MAX_TASKS) issues.push(`meta.pi.maxAgents must be <= ${HARD_MAX_TASKS}.`);
     else policy.maxAgents = value.maxAgents;
+  }
+
+  if (value.maxNestingDepth !== undefined) {
+    if (!positiveInteger(value.maxNestingDepth)) issues.push("meta.pi.maxNestingDepth must be a positive integer.");
+    else if (value.maxNestingDepth > HARD_MAX_WORKFLOW_NESTING_DEPTH) issues.push(`meta.pi.maxNestingDepth must be <= ${HARD_MAX_WORKFLOW_NESTING_DEPTH}.`);
+    else policy.maxNestingDepth = value.maxNestingDepth;
   }
 
   if (value.timeoutMs !== undefined) {
@@ -237,6 +247,7 @@ export function effectiveWorkflowPolicy(
     ...(requested.inputSchema === undefined ? {} : { inputSchema: requested.inputSchema }),
     maxConcurrency: Math.max(1, Math.min(requested.maxConcurrency, ceiling.maxConcurrency ?? HARD_MAX_CONCURRENCY)),
     maxAgents: Math.max(1, Math.min(requested.maxAgents, ceiling.maxAgents ?? HARD_MAX_TASKS)),
+    maxNestingDepth: Math.max(1, Math.min(requested.maxNestingDepth ?? DEFAULT_WORKFLOW_NESTING_DEPTH, ceiling.maxNestingDepth ?? HARD_MAX_WORKFLOW_NESTING_DEPTH)),
     timeoutMs: Math.max(1, Math.min(requested.timeoutMs, ceiling.timeoutMs ?? HARD_MAX_WORKFLOW_TIMEOUT_MS)),
     permissions: {
       write: requested.permissions.write && Boolean(ceilingPermissions.write),

@@ -3323,17 +3323,28 @@ function openNativeDownloadInBrowser(download) {
   return true;
 }
 
-function openNativeExportDownloadPrompt(download) {
+function openNativeExportDownloadPrompt(download, serverPath = "") {
   const url = nativeDownloadOpenUrl(download, { externalBrowser: true });
   if (!url) return false;
   const fileName = String(download?.fileName || "session export");
+  const savedPath = String(serverPath || "").trim();
   openNativeCommandDialog({ title: "/export", message: "Session export is ready." });
-  elements.nativeCommandBody.append(
-    make("p", "native-command-note", `File: ${fileName}`),
-    make("p", "native-command-note muted", "Open it in your browser, or cancel and use the transcript download URL later."),
-  );
+  const details = [make("p", "native-command-note", `File: ${fileName}`)];
+  if (savedPath) details.push(make("p", "native-command-note native-export-path", `Saved to:\n${savedPath}`));
+  details.push(make("p", "native-command-note muted", "Open it in your browser, or cancel and use the transcript download URL later."));
+  elements.nativeCommandBody.append(...details);
   elements.nativeCommandActions.replaceChildren();
   addNativeCommandAction("Cancel", closeNativeCommandDialog);
+  if (savedPath) {
+    addNativeCommandAction("Copy path", async () => {
+      try {
+        await copyText(savedPath);
+        addEvent("copied export file path", "info");
+      } catch (error) {
+        addEvent(`copy export path failed: ${error.message || String(error)}`, "error");
+      }
+    });
+  }
   addNativeCommandAction("Copy URL", async () => {
     try {
       await copyText(url);
@@ -3350,8 +3361,8 @@ function openNativeExportDownloadPrompt(download) {
   return true;
 }
 
-function handleNativeDownloadResponse(download, command) {
-  if (String(command || "").toLowerCase() === "export") return openNativeExportDownloadPrompt(download);
+function handleNativeDownloadResponse(download, command, serverPath = "") {
+  if (String(command || "").toLowerCase() === "export") return openNativeExportDownloadPrompt(download, serverPath);
   return triggerNativeDownload(download);
 }
 
@@ -22318,7 +22329,7 @@ function applyNativeSlashCommandEffects(response, message, tabContext = activeTa
     });
   }
 
-  if (data.download && handleNativeDownloadResponse(data.download, data.command)) {
+  if (data.download && handleNativeDownloadResponse(data.download, data.command, data.serverPath)) {
     addEvent(data.command === "export" ? `export ready: ${data.download.fileName || data.download.url}` : `download started: ${data.download.fileName || data.download.url}`, "info");
   }
 
@@ -24386,12 +24397,44 @@ function renderNativeResourceFilterActions(filter, setFilter, render) {
   addNativeCommandAction("Cancel", closeNativeCommandDialog);
 }
 
+function nativeResourceScopeControl(scope, { configured = false, saving = false, onChange } = {}) {
+  const global = scope === "global";
+  const hint = global
+    ? configured
+      ? "Saved as the default for future sessions. Existing session-specific choices are unchanged."
+      : "No global default is saved yet. The current session is shown as the starting point."
+    : "Applies immediately and persists only on the current session branch.";
+  const control = nativeSettingSelect("Apply changes to", scope, [
+    { value: "session", label: "Session only" },
+    { value: "global", label: "Global default" },
+  ], hint, global ? { label: "Global", tone: "startup" } : { label: "This session", tone: "now" });
+  control.field.classList.add("native-resource-scope");
+  control.select.disabled = !!saving;
+  control.select.addEventListener("change", () => onChange?.(control.select.value));
+  return control.field;
+}
+
 async function openNativeToolsSelector() {
-  openNativeCommandDialog({ title: "Tools Setup", message: "Enable or disable tools for the active Pi tab. Changes apply to the next model turn and persist on this session branch.", searchPlaceholder: "Filter tools…" });
-  renderNativeLoading("Loading tools…");
+  openNativeCommandDialog({ title: "Tools Setup", message: "Enable or disable tool access for this session or save a default for future sessions.", searchPlaceholder: "Filter tools…" });
   let tools = [];
   let savingName = "";
   let filter = "all";
+  let scope = "session";
+  let configured = false;
+
+  const load = async () => {
+    renderNativeLoading(`Loading ${scope === "global" ? "global tool defaults" : "session tools"}…`);
+    try {
+      const response = await nativeCommandApi(`/api/tools?scope=${encodeURIComponent(scope)}`);
+      tools = Array.isArray(response.data?.tools) ? response.data.tools : [];
+      configured = response.data?.configured === true;
+      render();
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+      elements.nativeCommandBody.replaceChildren();
+    }
+  };
+
   const render = () => {
     renderNativeResourceToggles(tools, {
       savingName,
@@ -24406,9 +24449,14 @@ async function openNativeToolsSelector() {
         setNativeCommandError("");
         render();
         try {
-          const response = await nativeCommandApi("/api/tools", { method: "POST", body: { enabledTools: [...enabledTools] } });
+          const response = await nativeCommandApi("/api/tools", { method: "POST", body: { enabledTools: [...enabledTools], scope } });
           tools = Array.isArray(response.data?.tools) ? response.data.tools : [];
-          addTransientMessage({ role: "native", title: "/tools", content: `Tool ${tool.name} ${enabledTools.has(tool.name) ? "enabled" : "disabled"}.`, level: "info" });
+          configured = response.data?.configured === true;
+          const enabled = enabledTools.has(tool.name);
+          const content = scope === "global"
+            ? `Global default for tool ${tool.name} ${enabled ? "enabled" : "disabled"}. Future sessions inherit it; this session is unchanged.`
+            : `Tool ${tool.name} ${enabled ? "enabled" : "disabled"} for this session.`;
+          addTransientMessage({ role: "native", title: "/tools", content, level: "info" });
         } catch (error) {
           setNativeCommandError(error.message || String(error));
         } finally {
@@ -24417,25 +24465,43 @@ async function openNativeToolsSelector() {
         }
       },
     });
+    elements.nativeCommandBody.prepend(nativeResourceScopeControl(scope, {
+      configured,
+      saving: !!savingName,
+      onChange: async (nextScope) => {
+        if (nextScope === scope || savingName) return;
+        scope = nextScope;
+        await load();
+      },
+    }));
     renderNativeResourceFilterActions(filter, (value) => { filter = value; }, render);
   };
-  try {
-    const response = await nativeCommandApi("/api/tools");
-    tools = Array.isArray(response.data?.tools) ? response.data.tools : [];
-    elements.nativeCommandSearch.oninput = render;
-    render();
-  } catch (error) {
-    setNativeCommandError(error.message || String(error));
-    elements.nativeCommandBody.replaceChildren();
-  }
+
+  elements.nativeCommandSearch.oninput = render;
+  await load();
 }
 
 async function openNativeSkillsSelector() {
-  openNativeCommandDialog({ title: "Skills Setup", message: "Enable or disable skills for automatic model invocation in the active Pi tab. Disabled skills are removed from the system prompt and their /skill:name commands are blocked by Web UI.", searchPlaceholder: "Filter skills…" });
-  renderNativeLoading("Loading skills…");
+  openNativeCommandDialog({ title: "Skills Setup", message: "Enable or disable skill invocation for this session or save a default for future sessions.", searchPlaceholder: "Filter skills…" });
   let skills = [];
   let savingName = "";
   let filter = "all";
+  let scope = "session";
+  let configured = false;
+
+  const load = async () => {
+    renderNativeLoading(`Loading ${scope === "global" ? "global skill defaults" : "session skills"}…`);
+    try {
+      const response = await nativeCommandApi(`/api/skills?scope=${encodeURIComponent(scope)}`);
+      skills = Array.isArray(response.data?.skills) ? response.data.skills : [];
+      configured = response.data?.configured === true;
+      render();
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+      elements.nativeCommandBody.replaceChildren();
+    }
+  };
+
   const render = () => {
     renderNativeResourceToggles(skills, {
       savingName,
@@ -24449,10 +24515,15 @@ async function openNativeSkillsSelector() {
         setNativeCommandError("");
         render();
         try {
-          const response = await nativeCommandApi("/api/skills", { method: "POST", body: { enabledSkills: [...enabledSkills] } });
+          const response = await nativeCommandApi("/api/skills", { method: "POST", body: { enabledSkills: [...enabledSkills], scope } });
           skills = Array.isArray(response.data?.skills) ? response.data.skills : [];
-          addTransientMessage({ role: "native", title: "/skills", content: `Skill ${skill.name} ${enabledSkills.has(skill.name) ? "enabled" : "disabled"}.`, level: "info" });
-          refreshCommands(activeTabContext()).catch((error) => addEvent(error.message || String(error), "error"));
+          configured = response.data?.configured === true;
+          const enabled = enabledSkills.has(skill.name);
+          const content = scope === "global"
+            ? `Global default for skill ${skill.name} ${enabled ? "enabled" : "disabled"}. Future sessions inherit it; this session is unchanged.`
+            : `Skill ${skill.name} ${enabled ? "enabled" : "disabled"} for this session.`;
+          addTransientMessage({ role: "native", title: "/skills", content, level: "info" });
+          if (scope === "session") refreshCommands(activeTabContext()).catch((error) => addEvent(error.message || String(error), "error"));
         } catch (error) {
           setNativeCommandError(error.message || String(error));
         } finally {
@@ -24461,17 +24532,20 @@ async function openNativeSkillsSelector() {
         }
       },
     });
+    elements.nativeCommandBody.prepend(nativeResourceScopeControl(scope, {
+      configured,
+      saving: !!savingName,
+      onChange: async (nextScope) => {
+        if (nextScope === scope || savingName) return;
+        scope = nextScope;
+        await load();
+      },
+    }));
     renderNativeResourceFilterActions(filter, (value) => { filter = value; }, render);
   };
-  try {
-    const response = await nativeCommandApi("/api/skills");
-    skills = Array.isArray(response.data?.skills) ? response.data.skills : [];
-    elements.nativeCommandSearch.oninput = render;
-    render();
-  } catch (error) {
-    setNativeCommandError(error.message || String(error));
-    elements.nativeCommandBody.replaceChildren();
-  }
+
+  elements.nativeCommandSearch.oninput = render;
+  await load();
 }
 
 async function openNativeAuthSelector(mode) {

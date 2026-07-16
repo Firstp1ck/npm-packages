@@ -10,6 +10,7 @@ import {
   readWebuiSettings,
   supportedGitWorkflowThinkingLevels,
   writeGitWorkflowPreferences,
+  writeWebuiSettings,
 } from "../lib/git-workflow-preferences.mjs";
 
 assert.deepEqual(supportedGitWorkflowThinkingLevels({ reasoning: false }), ["off"]);
@@ -30,9 +31,11 @@ const settingsFile = path.join(root, "settings.json");
 try {
   await writeFile(settingsFile, `${JSON.stringify({ version: 1, remoteAuthEnabled: true }, null, 2)}\n`, "utf8");
   const migrated = await readWebuiSettings(settingsFile);
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, 3);
   assert.equal(migrated.remoteAuthEnabled, true, "legacy Remote PIN state should survive schema migration");
   assert.equal(isGitWorkflowSetupComplete(migrated.gitWorkflow), false);
+  assert.equal(migrated.resourceDefaults.tools.enabledTools, null, "legacy settings should inherit Pi's normal tool defaults");
+  assert.equal(migrated.resourceDefaults.skills.enabledSkills, null, "legacy settings should inherit Pi's normal skill defaults");
   assert.equal(migrated.gitWorkflow.stagingPolicy, "review");
   assert.equal(migrated.gitWorkflow.generation.thinkingLevel, "low");
 
@@ -49,15 +52,24 @@ try {
   assert.equal(saved.commit.defaultVariant, "long");
   assert.equal(saved.stagingPolicy, "preserve");
 
+  await writeWebuiSettings({
+    resourceDefaults: {
+      tools: { enabledTools: ["read", " write ", "read", ""] },
+      skills: { enabledSkills: ["repo-explorer", "code-security"] },
+    },
+  }, settingsFile);
+
   const partiallyUpdated = await writeGitWorkflowPreferences({ deliveryMode: "current" }, settingsFile);
   assert.equal(partiallyUpdated.generation.modelId, "fake-model", "partial updates should preserve the selected model");
   assert.equal(partiallyUpdated.commit.language, "de", "partial updates should preserve nested commit preferences");
   assert.equal(partiallyUpdated.deliveryMode, "current");
 
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persisted.version, 2);
+  assert.equal(persisted.version, 3);
   assert.equal(persisted.remoteAuthEnabled, true);
   assert.equal(persisted.gitWorkflow.generation.provider, "fake");
+  assert.deepEqual(persisted.resourceDefaults.tools.enabledTools, ["read", "write"], "global tool defaults should be normalized and deduplicated");
+  assert.deepEqual(persisted.resourceDefaults.skills.enabledSkills, ["repo-explorer", "code-security"], "global skill defaults should persist beside other Web UI settings");
   assert.match(gitWorkflowPreferencesSummary(await readGitWorkflowPreferences(settingsFile)), /fake\/fake-model/);
   if (process.platform !== "win32") assert.equal((await stat(settingsFile)).mode & 0o777, 0o600);
 
