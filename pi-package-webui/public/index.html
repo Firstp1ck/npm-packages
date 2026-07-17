@@ -160,7 +160,6 @@
                 class="composer-workflow-mode-button"
                 type="button"
                 aria-pressed="false"
-                title="Toggle JavaScript Workflow Mode"
                 data-tooltip="Workflow Mode: generate and run reusable JavaScript orchestration for substantive prompts."
                 hidden
               ><span>Workflow</span></button>
@@ -603,6 +602,7 @@
               </button>
             </h2>
             <div id="sidePanelSectionSubagents" class="side-panel-section-content" hidden>
+              <p class="subagents-help"><strong>How to use:</strong> Ask Pi to call the <code>subagent</code> tool in foreground or async mode—for example, “Use a subagent to review this change.” Only active runs launched through that tool appear here.</p>
               <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
               <div id="subagentsBox" class="subagents-box muted">Checking running subagents…</div>
             </div>

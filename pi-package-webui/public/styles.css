@@ -1838,6 +1838,20 @@ body.embedded-split .side-panel-backdrop {
   background: linear-gradient(135deg, var(--ctp-teal), var(--ctp-green));
   box-shadow: 0 0 0.8rem rgba(148, 226, 213, 0.24);
 }
+.subagents-help {
+  margin: 0 0 0.55rem;
+  padding: 0.48rem 0.56rem;
+  border-left: 2px solid rgba(148, 226, 213, 0.58);
+  border-radius: 0.4rem;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  background: rgba(148, 226, 213, 0.07);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+.subagents-help strong,
+.subagents-help code {
+  color: var(--ctp-teal);
+}
 .subagents-status {
   margin: 0 0 0.48rem;
   font-size: var(--text-xs);
@@ -7130,6 +7144,9 @@ button.composer-skill-tag:focus-visible {
   letter-spacing: 0;
   transform: translateY(0.24rem);
 }
+.composer-row .composer-workflow-mode-button[data-tooltip]::after {
+  max-width: min(18rem, calc(100vw - 2rem));
+}
 .composer-row button[data-tooltip]:hover::before,
 .composer-row button[data-tooltip]:hover::after,
 .composer-input-row button[data-tooltip]:hover::before,
@@ -7148,6 +7165,14 @@ button.composer-skill-tag:focus-visible {
 .composer-input-row button[data-tooltip].tooltip-open::after {
   opacity: 1;
   transform: translateY(0);
+}
+.composer-row button[data-tooltip]:hover,
+.composer-row button[data-tooltip]:focus-visible,
+.composer-row button[data-tooltip].tooltip-open,
+.composer-input-row button[data-tooltip]:hover,
+.composer-input-row button[data-tooltip]:focus-visible,
+.composer-input-row button[data-tooltip].tooltip-open {
+  z-index: 40;
 }
 .composer-row button[data-tooltip]:hover::before,
 .composer-row button[data-tooltip]:focus-visible::before,
@@ -8191,18 +8216,36 @@ button.composer-skill-tag:focus-visible {
 .subagent-overlay-widget .release-npm-output-details {
   min-height: 0;
 }
-.subagent-overlay-terminal {
+.subagent-overlay-transcript {
   min-height: min(12rem, 30dvh);
   max-height: min(24rem, 46dvh);
+  overflow: auto;
+  padding: 0.78rem;
+  border: 1px solid rgba(137, 180, 250, 0.32);
+  border-radius: 0.72rem;
+  background:
+    radial-gradient(circle at 0 0, rgba(148, 226, 213, 0.08), transparent 18rem),
+    rgba(var(--ctp-crust-rgb), 0.58);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.subagent-overlay-message {
+  margin: 0;
+}
+.subagent-overlay-message + .subagent-output-waiting {
+  margin-top: 0.55rem;
 }
 .subagent-output-waiting {
-  display: inline-flex;
   width: fit-content;
   min-width: 2.1rem;
-  gap: 0.12rem;
+  margin-bottom: 0;
+  padding: 0.42rem 0.58rem;
   color: var(--ctp-green);
   font-weight: 900;
   letter-spacing: 0.08em;
+}
+.subagent-output-waiting .run-indicator-row {
+  gap: 0.12rem;
 }
 .subagent-output-waiting-dot {
   animation: subagent-output-waiting-pulse 1.15s ease-in-out infinite;
@@ -10947,6 +10990,8 @@ button.workspace-dashboard-chip {
     font-size: 0.92rem;
   }
   .command-palette-list {
+    align-content: start;
+    grid-auto-rows: max-content;
     gap: 0.3rem;
     padding: 0 0.46rem 0.52rem;
     scrollbar-gutter: auto;
