@@ -85,7 +85,8 @@ const OPTIONAL_FEATURE_INSTALL_ROOT_ENV = "PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROO
 const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 let piPackageJson = {};
 try {
-  const piPackageJsonPath = require.resolve("@earendil-works/pi-coding-agent/package.json", { paths: [packageRoot] });
+  const piPackageEntryPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const piPackageJsonPath = path.resolve(path.dirname(piPackageEntryPath), "..", "package.json");
   piPackageJson = JSON.parse(await readFile(piPackageJsonPath, "utf8"));
 } catch {
   piPackageJson = {};
@@ -110,9 +111,12 @@ const WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const WEBUI_PACKAGE = packageJson.name || "@firstpick/pi-package-webui";
 const PI_LATEST_VERSION_URL = process.env.PI_WEBUI_PI_LATEST_VERSION_URL || "https://pi.dev/api/latest-version";
+const PI_RELEASES_API_BASE_URL = (process.env.PI_WEBUI_PI_RELEASES_API_BASE_URL || "https://api.github.com/repos/earendil-works/pi/releases/tags").replace(/\/+$/, "");
+const PI_RELEASES_PAGE_BASE_URL = "https://github.com/earendil-works/pi/releases/tag";
 const NPM_REGISTRY_URL = (process.env.PI_WEBUI_NPM_REGISTRY_URL || "https://registry.npmjs.org").replace(/\/+$/, "");
 const UPDATE_STATUS_CACHE_MS = 10 * 60 * 1000;
 const UPDATE_STATUS_TIMEOUT_MS = 10 * 1000;
+const PI_RELEASE_NOTES_MAX_CHARS = 250_000;
 const PI_UPDATE_TIMEOUT_MS = 15 * 60 * 1000;
 const PI_UPDATE_OUTPUT_MAX_CHARS = 120_000;
 const CORE_UPDATE_PACKAGE_NAMES = [PI_CODING_AGENT_PACKAGE, WEBUI_PACKAGE];
@@ -575,6 +579,55 @@ async function fetchJsonWithTimeout(url, { timeoutMs = UPDATE_STATUS_TIMEOUT_MS,
   });
   if (!response.ok) throw new Error(`${response.status}${response.statusText ? ` ${response.statusText}` : ""}`);
   return response.json();
+}
+
+function installedPiRelease() {
+  const version = String(piPackageJson.version || "").trim().replace(/^v/i, "");
+  if (!parsePackageVersion(version)) throw makeHttpError(503, "The installed Pi version could not be determined");
+  const tagName = `v${version}`;
+  return {
+    version,
+    tagName,
+    apiUrl: `${PI_RELEASES_API_BASE_URL}/${encodeURIComponent(tagName)}`,
+    pageUrl: `${PI_RELEASES_PAGE_BASE_URL}/${encodeURIComponent(tagName)}`,
+  };
+}
+
+let piReleaseNotesCache = null;
+
+async function installedPiReleaseNotes() {
+  const release = installedPiRelease();
+  if (piReleaseNotesCache?.tagName === release.tagName) return piReleaseNotesCache;
+  if (process.env.PI_OFFLINE) throw makeHttpError(503, "Pi release notes are unavailable while PI_OFFLINE is set");
+
+  let data;
+  try {
+    data = await fetchJsonWithTimeout(release.apiUrl, {
+      headers: {
+        "User-Agent": `pi-webui/${packageJson.version} pi/${release.version}`,
+        accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+  } catch (error) {
+    throw makeHttpError(502, `Could not fetch Pi ${release.tagName} release notes from GitHub: ${sanitizeError(error)}`);
+  }
+
+  const responseTag = typeof data?.tag_name === "string" ? data.tag_name.trim() : "";
+  if (responseTag && responseTag !== release.tagName) {
+    throw makeHttpError(502, `GitHub returned release ${responseTag} instead of ${release.tagName}`);
+  }
+  const fullBody = typeof data?.body === "string" ? data.body.trim() : "";
+  piReleaseNotesCache = {
+    version: release.version,
+    tagName: release.tagName,
+    title: truncateLongText(typeof data?.name === "string" ? data.name.trim() : "", 240) || `Pi ${release.tagName}`,
+    body: truncateLongText(fullBody, PI_RELEASE_NOTES_MAX_CHARS),
+    truncated: fullBody.length > PI_RELEASE_NOTES_MAX_CHARS,
+    publishedAt: typeof data?.published_at === "string" ? data.published_at : "",
+    url: release.pageUrl,
+  };
+  return piReleaseNotesCache;
 }
 
 class PiRpcProcess {
@@ -11050,6 +11103,7 @@ async function webuiStatus({ detailed = false, eventLimit = 40, includeAuthPin =
   const data = {
     online: true,
     webuiVersion: packageJson.version,
+    piVersion: String(piPackageJson.version || ""),
     webuiDev: webuiDevServer,
     webuiMode: webuiDevServer ? "dev" : "production",
     webuiPid: process.pid,
@@ -11182,6 +11236,7 @@ const server = createServer(async (req, res) => {
       sendSse(res, {
         type: "webui_connected",
         version: packageJson.version,
+        piVersion: String(piPackageJson.version || ""),
         webuiDev: webuiDevServer,
         webuiMode: webuiDevServer ? "dev" : "production",
         tabId: tab.id,
@@ -11209,6 +11264,7 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         webuiVersion: status.webuiVersion,
+        piVersion: status.piVersion,
         webuiDev: status.webuiDev,
         webuiMode: status.webuiMode,
         webuiPid: status.webuiPid,
@@ -11219,6 +11275,11 @@ const server = createServer(async (req, res) => {
         tabs: status.tabs,
         restorableTabs: status.restorableTabs,
       });
+      return;
+    }
+
+    if (url.pathname === "/api/pi-release-notes" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, data: await installedPiReleaseNotes() }, { "cache-control": "private, no-store" });
       return;
     }
 

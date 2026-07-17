@@ -38,6 +38,8 @@ Performance-related environment toggles:
 
 Visibility controls:
 
+Changes made with `/git-footer-visibility` or the WebUI Git-footer Visibility dialog are saved globally in `~/.pi/agent/git-footer-visibility.json` and reloaded by every Pi session. `PI_CODING_AGENT_DIR` relocates the agent directory; `PI_GIT_FOOTER_SETTINGS_FILE` can override this settings file directly.
+
 - `PI_GIT_FOOTER_HIDE=cost,context` — hide keys everywhere.
 - `PI_GIT_FOOTER_NATIVE_HIDE=model,thinking` — hide keys only in the native TUI footer.
 - `PI_GIT_FOOTER_WEBUI_HIDE=webui-refresh-button,webui-details-button` — hide keys only in Web UI.
@@ -53,7 +55,7 @@ The initial prompt estimate and session-usage recompute run lazily after the TUI
 - `/git-footer-visibility` — in native TUI mode, open an interactive searchable visibility selector. Use Enter/Space to toggle items, Ctrl+S to apply, and Esc/q to cancel.
 - `/git-footer-visibility select [all|native|webui]` — open the native TUI selector for both targets or a specific target.
 - `/git-footer-visibility [status|keys]` — inspect available visibility keys and their native/Web UI state.
-- `/git-footer-visibility show|hide|toggle|reset [all|native|webui] <key> [key...]` — adjust visibility at runtime until the Pi session restarts, e.g. `/git-footer-visibility hide webui cost context webui-changes-modal`.
+- `/git-footer-visibility show|hide|toggle|reset [all|native|webui] <key> [key...]` — save global visibility overrides for future Pi sessions, e.g. `/git-footer-visibility hide webui cost context webui-changes-modal`. `reset` removes saved overrides and restores environment/default behavior.
 
 ## Tools
 

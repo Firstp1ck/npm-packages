@@ -1,7 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 
 const elements = {
-  webuiVersionBadge: $("#webuiVersionBadge"),
+  piVersionButton: $("#piVersionButton"),
+  webuiVersionButton: $("#webuiVersionButton"),
   webuiDevBadge: $("#webuiDevBadge"),
   tabBar: $("#tabBar"),
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
@@ -259,6 +260,12 @@ const elements = {
   confirmationAlternative: $("#confirmationAlternative"),
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
+  piReleaseNotesDialog: $("#piReleaseNotesDialog"),
+  piReleaseNotesTitle: $("#piReleaseNotesTitle"),
+  piReleaseNotesStatus: $("#piReleaseNotesStatus"),
+  piReleaseNotesBody: $("#piReleaseNotesBody"),
+  piReleaseNotesGithubLink: $("#piReleaseNotesGithubLink"),
+  piReleaseNotesCloseButton: $("#piReleaseNotesCloseButton"),
   dialog: $("#extensionDialog"),
   dialogTitle: $("#dialogTitle"),
   dialogMessage: $("#dialogMessage"),
@@ -319,6 +326,8 @@ const elements = {
   statsOverlayBody: $("#statsOverlayBody"),
   statsOverlayCloseButton: $("#statsOverlayCloseButton"),
 };
+
+const PI_WEBUI_NPM_URL = "https://www.npmjs.com/package/@firstpick/pi-package-webui";
 
 let currentState = null;
 let tabs = [];
@@ -443,6 +452,7 @@ let latestRemoteWebuiQrUrl = "";
 let remoteQrAutoPopupShown = false;
 let networkStatusLoaded = false;
 let webuiVersion = "";
+let piVersion = "";
 let webuiDevServer = false;
 let latestCodexUsage = null;
 let codexUsageError = null;
@@ -3449,27 +3459,51 @@ function isWebuiDevMetadata(data) {
   return data?.webuiDev === true || String(data?.webuiMode || "").toLowerCase() === "dev";
 }
 
-function renderWebuiVersion() {
-  const badge = elements.webuiVersionBadge;
-  if (!badge) return;
+function renderPiVersionButton() {
+  const button = elements.piVersionButton;
+  if (!button) return;
+  const label = formatWebuiVersion(piVersion);
+  button.hidden = !label;
+  button.textContent = label ? `Pi ${label}` : "";
+  if (label) {
+    button.title = `View Pi ${label} release notes`;
+    button.setAttribute("aria-label", `View Pi ${label} release notes`);
+  }
+}
+
+function renderWebuiVersionButton() {
+  const button = elements.webuiVersionButton;
+  if (!button) return;
   const label = formatWebuiVersion(webuiVersion);
-  badge.hidden = !label;
-  badge.textContent = label;
-  if (label) badge.title = `Pi Web UI ${label}`;
+  button.hidden = !label;
+  button.textContent = label ? `Web UI ${label}` : "";
+  if (label) {
+    button.title = `Open Pi Web UI ${label} on npm`;
+    button.setAttribute("aria-label", `Open Pi Web UI ${label} package page`);
+  }
 }
 
 function renderWebuiDevBadge() {
   const badge = elements.webuiDevBadge;
   if (!badge) return;
   badge.hidden = !webuiDevServer;
-  badge.title = "Pi Web UI dev server";
+  const version = formatWebuiVersion(webuiVersion);
+  badge.title = `Pi Web UI${version ? ` ${version}` : ""} dev server`;
 }
 
 function setWebuiVersion(version) {
   const text = String(version || "").trim();
   if (text === webuiVersion) return;
   webuiVersion = text;
-  renderWebuiVersion();
+  renderWebuiVersionButton();
+  renderWebuiDevBadge();
+}
+
+function setPiVersion(version) {
+  const text = String(version || "").trim().replace(/^v/i, "");
+  if (text === piVersion) return;
+  piVersion = text;
+  renderPiVersionButton();
 }
 
 function setWebuiDevServer(dev) {
@@ -3479,9 +3513,91 @@ function setWebuiDevServer(dev) {
   renderWebuiDevBadge();
 }
 
+function piReleasePageUrl(version = piVersion) {
+  const cleanVersion = String(version || "").trim().replace(/^v/i, "");
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(cleanVersion)) return "";
+  return `https://github.com/earendil-works/pi/releases/tag/v${encodeURIComponent(cleanVersion)}`;
+}
+
+function formatPiReleaseDate(value) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+function setPiReleaseNotesLink(value) {
+  const link = elements.piReleaseNotesGithubLink;
+  if (!link) return;
+  const href = safeHttpUrl(value);
+  link.hidden = !href;
+  if (href) link.href = href;
+  else link.removeAttribute("href");
+}
+
+function openWebuiNpmPageInNewTab() {
+  const href = safeHttpUrl(PI_WEBUI_NPM_URL);
+  if (!href) return false;
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.target = "_blank";
+  anchor.rel = "noopener noreferrer";
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  return true;
+}
+
+async function confirmOpenWebuiNpmPage() {
+  const confirmed = await appConfirm({
+    title: "Open npm package page?",
+    summary: "Open @firstpick/pi-package-webui on npm in a new browser tab?",
+    affected: "A new tab will open to the public Pi Web UI package page.",
+    undoable: true,
+    alternative: "Cancel to stay in Pi Web UI.",
+    confirmLabel: "Open npm",
+    danger: false,
+  });
+  if (!confirmed) return;
+  if (!openWebuiNpmPageInNewTab()) addEvent("Pi Web UI npm package URL is unavailable", "error");
+}
+
+async function openPiReleaseNotes() {
+  const dialog = elements.piReleaseNotesDialog;
+  if (!dialog) return;
+  const requestedVersion = piVersion;
+  const label = formatWebuiVersion(requestedVersion);
+  elements.piReleaseNotesTitle.textContent = label ? `Pi ${label} release notes` : "Pi release notes";
+  elements.piReleaseNotesStatus.textContent = "Loading release notes from GitHub…";
+  elements.piReleaseNotesBody.setAttribute("aria-busy", "true");
+  elements.piReleaseNotesBody.replaceChildren(make("p", "muted", "Loading…"));
+  setPiReleaseNotesLink(piReleasePageUrl(requestedVersion));
+  if (!dialog.open) dialog.showModal();
+
+  try {
+    const response = await api("/api/pi-release-notes", { scoped: false });
+    if (requestedVersion !== piVersion) return;
+    const release = response.data || {};
+    const releaseVersion = String(release.version || "").trim().replace(/^v/i, "");
+    if (requestedVersion && releaseVersion !== requestedVersion) throw new Error(`Expected Pi ${formatWebuiVersion(requestedVersion)} release notes but received ${formatWebuiVersion(releaseVersion) || "an unknown version"}`);
+    const releaseLabel = formatWebuiVersion(releaseVersion || requestedVersion);
+    elements.piReleaseNotesTitle.textContent = releaseLabel ? `Pi ${releaseLabel} release notes` : (release.title || "Pi release notes");
+    renderMarkdown(elements.piReleaseNotesBody, release.body || "No release notes were provided for this release.");
+    const published = formatPiReleaseDate(release.publishedAt);
+    elements.piReleaseNotesStatus.textContent = `${published ? `Published ${published}` : "Loaded from GitHub"}${release.truncated ? " · Long notes were truncated" : ""}`;
+    setPiReleaseNotesLink(release.url || piReleasePageUrl(release.version));
+  } catch (error) {
+    elements.piReleaseNotesStatus.textContent = "Release notes could not be loaded.";
+    elements.piReleaseNotesBody.replaceChildren(make("p", "pi-release-notes-error", error.message || String(error)));
+  } finally {
+    elements.piReleaseNotesBody.removeAttribute("aria-busy");
+  }
+}
+
 async function refreshWebuiVersion() {
   const health = await api("/api/health", { scoped: false });
   setWebuiVersion(health.webuiVersion);
+  setPiVersion(health.piVersion);
   setWebuiDevServer(isWebuiDevMetadata(health));
 }
 
@@ -9659,7 +9775,7 @@ function renderGitFooterVisibilityDialog() {
   if (!gitFooterVisibilityDirty) {
     setGitFooterVisibilityStatus(
       gitFooterVisibilityCommandAvailable()
-        ? "Runtime changes last until Pi/package restart. Use PI_GIT_FOOTER_WEBUI_HIDE or per-key env vars for persistence."
+        ? "Changes are saved globally and reused by every Pi session. Reset WebUI removes the saved WebUI overrides."
         : commandUnavailableMessage("git-footer-visibility"),
       gitFooterVisibilityCommandAvailable() ? "muted" : "warn",
     );
@@ -9706,7 +9822,7 @@ async function applyGitFooterVisibilityDialog() {
     if (hide.length) await runGitFooterVisibilityCommand("hide", hide);
     if (show.length) await runGitFooterVisibilityCommand("show", show);
     gitFooterVisibilityDirty = false;
-    setGitFooterVisibilityStatus(`Applied ${hide.length + show.length} WebUI footer visibility change${hide.length + show.length === 1 ? "" : "s"}.`, "success");
+    setGitFooterVisibilityStatus(`Saved ${hide.length + show.length} global WebUI footer visibility change${hide.length + show.length === 1 ? "" : "s"}.`, "success");
     requestGitFooterWebuiPayload(activeTabContext(), { force: true, allowDuringRun: true });
     renderFooter();
   } catch (error) {
@@ -9723,7 +9839,7 @@ async function resetGitFooterVisibilityDialog() {
   try {
     await runGitFooterVisibilityCommand("reset");
     gitFooterVisibilityDirty = false;
-    setGitFooterVisibilityStatus("Reset WebUI footer visibility overrides.", "success");
+    setGitFooterVisibilityStatus("Removed the saved global WebUI footer visibility overrides.", "success");
     requestGitFooterWebuiPayload(activeTabContext(), { force: true, allowDuringRun: true });
   } catch (error) {
     setGitFooterVisibilityStatus(error.message || String(error), "error");
@@ -27185,6 +27301,7 @@ function handleEvent(event) {
   switch (event.type) {
     case "webui_connected":
       setWebuiVersion(event.version);
+      setPiVersion(event.piVersion);
       setWebuiDevServer(isWebuiDevMetadata(event));
       if (Object.prototype.hasOwnProperty.call(event, "activeRun")) {
         setAppRunnerData(event.tabId || activeTabId, { cwd: event.cwd, activeRun: event.activeRun });
@@ -28296,6 +28413,13 @@ if (elements.terminalTabsLayoutSelect) {
     setTerminalTabsLayout(elements.terminalTabsLayoutSelect.value, { announce: true });
   });
 }
+elements.piVersionButton?.addEventListener("click", () => {
+  openPiReleaseNotes().catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.webuiVersionButton?.addEventListener("click", () => {
+  confirmOpenWebuiNpmPage().catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.piReleaseNotesCloseButton?.addEventListener("click", () => elements.piReleaseNotesDialog?.close());
 elements.toggleSidePanelButton.addEventListener("click", () => {
   setSidePanelCollapsed(true);
 });

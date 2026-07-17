@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=73" />
+    <link rel="stylesheet" href="/styles.css?v=76" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -386,13 +386,14 @@
       <button id="sidePanelBackdrop" class="side-panel-backdrop" type="button" aria-label="Close side panel" hidden></button>
       <aside id="sidePanel" class="side-panel" role="dialog" aria-label="Control Deck">
         <div class="side-panel-header">
-          <div>
+          <div class="side-panel-heading">
             <span class="side-panel-kicker">Pi Web UI</span>
-            <strong class="side-panel-title">
-              <span>Control Deck</span>
-              <span id="webuiVersionBadge" class="webui-version-badge" aria-label="Pi Web UI version" hidden></span>
+            <strong class="side-panel-title">Control Deck</strong>
+            <div class="side-panel-version-row" aria-label="Version and build information">
+              <button id="piVersionButton" class="pi-version-button" type="button" aria-label="View Pi release notes" aria-haspopup="dialog" aria-controls="piReleaseNotesDialog" hidden></button>
+              <button id="webuiVersionButton" class="webui-version-button" type="button" aria-label="Open Pi Web UI package page" aria-haspopup="dialog" aria-controls="confirmationDialog" hidden></button>
               <span id="webuiDevBadge" class="webui-dev-badge" aria-label="Pi Web UI dev server" hidden>DEV</span>
-            </strong>
+            </div>
           </div>
           <button id="toggleSidePanelButton" class="side-panel-toggle-button" type="button" aria-controls="sidePanel" aria-expanded="true" aria-label="Collapse side panel" title="Collapse side panel">
             <span class="side-panel-button-icon" aria-hidden="true">
@@ -671,6 +672,24 @@
       <span class="undo-toast-progress" aria-hidden="true"></span>
     </aside>
 
+    <dialog id="piReleaseNotesDialog" class="extension-dialog pi-release-notes-dialog" aria-labelledby="piReleaseNotesTitle">
+      <form method="dialog">
+        <div class="pi-release-notes-header">
+          <div>
+            <span class="pi-release-notes-kicker">Pi release</span>
+            <h2 id="piReleaseNotesTitle">Release notes</h2>
+          </div>
+          <button id="piReleaseNotesCloseButton" type="button" aria-label="Close Pi release notes">Close</button>
+        </div>
+        <p id="piReleaseNotesStatus" class="pi-release-notes-status muted" role="status" aria-live="polite"></p>
+        <div id="piReleaseNotesBody" class="pi-release-notes-body markdown-body"></div>
+        <menu>
+          <a id="piReleaseNotesGithubLink" class="pi-release-notes-link" target="_blank" rel="noopener noreferrer" hidden>View on GitHub</a>
+          <button value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="confirmationDialog" class="extension-dialog confirmation-dialog">
       <form method="dialog">
         <h2 id="confirmationTitle">Confirm action</h2>
@@ -869,7 +888,7 @@
     <dialog id="gitFooterVisibilityDialog" class="extension-dialog git-footer-visibility-dialog">
       <form method="dialog">
         <h2>Git-footer Visibility</h2>
-        <p class="muted">Select which Git footer cards, buttons, popovers, and modal affordances are visible in the Web UI. Changes use <code>/git-footer-visibility</code> runtime overrides.</p>
+        <p class="muted">Select which Git footer cards, buttons, popovers, and modal affordances are visible in the Web UI. Changes are saved globally through <code>/git-footer-visibility</code> and reused by every Pi session.</p>
         <div class="git-footer-visibility-toolbar" aria-label="Git-footer Visibility quick actions">
           <button id="gitFooterVisibilitySelectAllButton" type="button">Select all</button>
           <button id="gitFooterVisibilitySelectNoneButton" type="button">Select none</button>
@@ -879,7 +898,7 @@
         <menu>
           <button id="gitFooterVisibilityCloseButton" type="button">Cancel</button>
           <button id="gitFooterVisibilityResetButton" type="button">Reset WebUI</button>
-          <button id="gitFooterVisibilityApplyButton" class="primary" type="button">Apply</button>
+          <button id="gitFooterVisibilityApplyButton" class="primary" type="button">Save globally</button>
         </menu>
       </form>
     </dialog>
@@ -938,6 +957,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=73"></script>
+    <script type="module" src="/app.js?v=76"></script>
   </body>
 </html>

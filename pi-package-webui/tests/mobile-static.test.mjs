@@ -29,17 +29,17 @@ const codexAuth = await readFile(join(root, "lib", "codex-usage-auth.mjs"), "utf
 const nativeExportPayload = await readFile(join(root, "lib", "native-export-payload.mjs"), "utf8");
 const companionDependencies = {
   "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
-  "@firstpick/pi-extension-btw": "^0.1.2",
+  "@firstpick/pi-extension-btw": "^0.1.3",
   "@firstpick/pi-extension-fish-user-bash": "^0.2.1",
-  "@firstpick/pi-extension-git-footer-status": "^0.3.8",
+  "@firstpick/pi-extension-git-footer-status": "^0.4.0",
   "@firstpick/pi-extension-release-aur": "^0.1.7",
-  "@firstpick/pi-extension-release-npm": "^0.4.0",
-  "@firstpick/pi-extension-safety-guard": "^0.2.3",
+  "@firstpick/pi-extension-release-npm": "^0.4.1",
+  "@firstpick/pi-extension-safety-guard": "^0.2.5",
   "@firstpick/pi-extension-setup-skills": "^0.1.8",
   "@firstpick/pi-extension-stats": "^0.2.8",
-  "@firstpick/pi-extension-todo-progress": "^0.2.7",
+  "@firstpick/pi-extension-todo-progress": "^0.2.8",
   "@firstpick/pi-extension-tools": "^0.1.6",
-  "@firstpick/pi-extension-workflows": "^0.1.2",
+  "@firstpick/pi-extension-workflows": "^0.1.3",
   "@firstpick/pi-package-remote-webui": "^0.1.5",
   "@firstpick/pi-prompts-git-pr": "^0.1.3",
   "@firstpick/pi-themes-bundle": "^0.1.4",
@@ -59,7 +59,8 @@ assert.match(html, /id="newTabChooseDirectoryButton" class="terminal-new-tab-men
 assert.match(html, /id="newTabWorktreeButton" class="terminal-new-tab-menu-item composer-publish-menu-item"[\s\S]*<span>Branch Worktree…<\/span>/, "new-tab menu should offer branch worktree tabs");
 assert.match(html, /id="closeAllTabsButton"[\s\S]*?>Close all Tabs<\/button>/, "tab header should expose a top-right close-all tabs action");
 assert.match(html, /id="sidePanelBackdrop"/, "mobile side panel needs an overlay/backdrop close target");
-assert.match(html, /<strong class="side-panel-title">[\s\S]*Control Deck[\s\S]*id="webuiVersionBadge"[\s\S]*id="webuiDevBadge"/, "Control Deck title should expose Web UI version and dev badges");
+assert.match(html, /<div class="side-panel-heading">[\s\S]*<strong class="side-panel-title">Control Deck<\/strong>[\s\S]*<div class="side-panel-version-row"[\s\S]*<button id="piVersionButton"[\s\S]*aria-controls="piReleaseNotesDialog"[\s\S]*<button id="webuiVersionButton"[\s\S]*aria-controls="confirmationDialog"[\s\S]*id="webuiDevBadge"/, "Control Deck header should keep its title separate from an aligned version and build row");
+assert.match(html, /<dialog id="piReleaseNotesDialog"[\s\S]*id="piReleaseNotesTitle"[\s\S]*id="piReleaseNotesStatus"[\s\S]*id="piReleaseNotesBody"[\s\S]*id="piReleaseNotesGithubLink"/, "Pi release notes should use a dedicated accessible dialog");
 assert.doesNotMatch(html, /id="sessionLine"/, "Control Deck title should not show verbose session status metadata");
 assert.match(html, /id="themeSelect"/, "side panel should expose a theme selector");
 assert.match(html, /<label for="themeSelect"[^>]*id="themeControlLabel"[^>]*>Theme<\/label>/, "theme selector should be labeled in side-panel controls");
@@ -320,7 +321,11 @@ assert.match(css, /\.session-overview \{[\s\S]*?grid-template-columns:/, "sessio
 assert.match(css, /\.session-detail-value\.truncate[\s\S]*?text-overflow:\s*ellipsis/, "long session values should not overwhelm the side panel");
 assert.match(css, /\.server-restart-panel \{[\s\S]*?z-index:\s*62/, "server restart overlay should render above the offline shell");
 assert.match(css, /@keyframes server-restart-spin/, "server restart overlay should show a loading spinner");
-assert.match(css, /\.webui-version-badge,\n\.webui-dev-badge \{[\s\S]*?border-radius:\s*999px/, "Web UI version and dev indicators should render as compact title badges");
+assert.match(css, /\.side-panel-version-row \{[\s\S]*?display:\s*flex[\s\S]*?align-items:\s*center[\s\S]*?flex-wrap:\s*wrap/, "Control Deck versions and build status should use a dedicated responsive row");
+assert.match(css, /\.pi-version-button,\n\.webui-version-button,\n\.webui-dev-badge \{[\s\S]*?border-radius:\s*999px/, "Pi and Web UI version buttons plus the dev indicator should render as compact title controls");
+assert.match(css, /\.webui-version-button:hover,[\s\S]*?\.webui-version-button:focus-visible/, "Web UI version button should expose visible hover and keyboard focus states");
+assert.match(css, /\.pi-version-button:hover,[\s\S]*?\.pi-version-button:focus-visible/, "Pi version button should expose visible hover and keyboard focus states");
+assert.match(css, /\.extension-dialog\.pi-release-notes-dialog \{[\s\S]*?\.pi-release-notes-body \{[\s\S]*?overflow:\s*auto/, "Pi release notes popup should keep long notes scrollable");
 assert.match(css, /\.webui-dev-badge \{[\s\S]*?color:\s*var\(--ctp-yellow\)/, "Web UI dev indicator should have distinct warning styling");
 assert.match(css, /\.side-panel-section\.collapsed \.side-panel-section-content,\n\.side-panel-section-content\[hidden\] \{\n\s+display:\s*none;/, "collapsed side panel section content should be hidden");
 assert.match(css, /\.side-panel-section:not\(\.collapsed\) \.side-panel-section-chevron/, "expanded side panel sections should rotate the chevron");
@@ -559,10 +564,16 @@ assert.match(server, /await saveRemoteAuthPreference\(false\)/, "disabling Remot
 assert.match(server, /function pinFromHash\(\)[\s\S]*new URLSearchParams\(String\(window\.location\.hash \|\| ""\)\.replace\(\/\^#\/, ""\)\)/, "remote auth page should read QR-provided PINs from the URL fragment");
 assert.match(server, /window\.history\.replaceState\(null, "", window\.location\.pathname \+ \(window\.location\.search \|\| ""\)\)/, "remote auth page should scrub fragment PINs from the address bar before authenticating");
 assert.match(app, /remoteWebuiCommand\(open \? "close" : "open"/, "network open\/close button should dispatch through the Remote WebUI package command");
-assert.match(app, /webuiVersionBadge: \$\("#webuiVersionBadge"\)/, "frontend should bind the Control Deck version badge");
+assert.match(app, /piVersionButton: \$\("#piVersionButton"\)/, "frontend should bind the Control Deck Pi version button");
+assert.match(app, /webuiVersionButton: \$\("#webuiVersionButton"\)/, "frontend should bind the Control Deck Web UI version button");
 assert.match(app, /webuiDevBadge: \$\("#webuiDevBadge"\)/, "frontend should bind the Control Deck dev badge");
-assert.match(app, /function refreshWebuiVersion\(\)[\s\S]*api\("\/api\/health", \{ scoped: false \}\)[\s\S]*setWebuiVersion\(health\.webuiVersion\)[\s\S]*setWebuiDevServer\(isWebuiDevMetadata\(health\)\)/, "frontend should load Web UI version and dev mode from health metadata");
-assert.match(app, /case "webui_connected":[\s\S]*setWebuiVersion\(event\.version\)[\s\S]*setWebuiDevServer\(isWebuiDevMetadata\(event\)\)/, "frontend should refresh Web UI version and dev mode from reconnect events");
+assert.match(app, /function openPiReleaseNotes\(\)[\s\S]*api\("\/api\/pi-release-notes", \{ scoped: false \}\)[\s\S]*renderMarkdown\(elements\.piReleaseNotesBody/, "Pi version button should load and render release notes in the popup");
+assert.match(app, /const PI_WEBUI_NPM_URL = "https:\/\/www\.npmjs\.com\/package\/@firstpick\/pi-package-webui"/, "Web UI version button should target the package's public npm page");
+assert.match(app, /async function confirmOpenWebuiNpmPage\(\)[\s\S]*appConfirm\([\s\S]*confirmLabel: "Open npm"[\s\S]*openWebuiNpmPageInNewTab\(\)/, "Web UI version button should ask before opening npm in a new tab");
+assert.match(app, /function refreshWebuiVersion\(\)[\s\S]*api\("\/api\/health", \{ scoped: false \}\)[\s\S]*setWebuiVersion\(health\.webuiVersion\)[\s\S]*setPiVersion\(health\.piVersion\)[\s\S]*setWebuiDevServer\(isWebuiDevMetadata\(health\)\)/, "frontend should load Pi version, Web UI version, and dev mode from health metadata");
+assert.match(app, /case "webui_connected":[\s\S]*setWebuiVersion\(event\.version\)[\s\S]*setPiVersion\(event\.piVersion\)[\s\S]*setWebuiDevServer\(isWebuiDevMetadata\(event\)\)/, "frontend should refresh Pi version, Web UI version, and dev mode from reconnect events");
+assert.match(server, /url\.pathname === "\/api\/pi-release-notes"[\s\S]*installedPiReleaseNotes\(\)/, "server should expose the installed Pi release notes endpoint");
+assert.match(server, /PI_RELEASES_PAGE_BASE_URL = "https:\/\/github\.com\/earendil-works\/pi\/releases\/tag"/, "release-note links should target the official Pi GitHub release page");
 assert.match(server, /const webuiDevServer = isTruthyEnv\(process\.env\.PI_WEBUI_DEV\) \|\| isSourceCheckout\(packageRoot\)/, "server should derive dev mode from PI_WEBUI_DEV or a source checkout");
 assert.match(server, /webuiDev: webuiDevServer,[\s\S]*webuiMode: webuiDevServer \? "dev" : "production"/, "server status should expose Web UI dev mode");
 assert.match(server, /type: "webui_connected",[\s\S]*webuiDev: webuiDevServer,[\s\S]*webuiMode: webuiDevServer \? "dev" : "production"/, "SSE connect event should expose Web UI dev mode");
@@ -703,6 +714,9 @@ assert.match(app, /api\(`\/api\/codex-usage\$\{suffix\}`, \{ scoped: false \}\)/
 assert.match(app, /restoreSidePanelSectionState\(\);\nbindSidePanelSectionToggles\(\);/, "side panel section state should restore before toggles are bound");
 assert.match(app, /OPTIONAL_FEATURES_STORAGE_KEY/, "optional feature disable toggles should persist in browser storage");
 assert.match(app, /GIT_FOOTER_WEBUI_STATUS_KEY = "git-footer-webui"/, "git footer Web UI data should be received as an extension-owned status payload");
+assert.match(html, /gitFooterVisibilityApplyButton[^>]*>Save globally</, "git footer visibility should state that applied choices persist globally");
+assert.match(app, /Changes are saved globally and reused by every Pi session\./, "git footer visibility dialog should explain its global persistence scope");
+assert.match(app, /Saved.*global WebUI footer visibility change/, "git footer visibility apply feedback should confirm global persistence");
 assert.match(app, /function parseGitFooterWebuiPayloadRaw\(raw\)[\s\S]*GIT_FOOTER_WEBUI_PAYLOAD_TYPE[\s\S]*GIT_FOOTER_WEBUI_PAYLOAD_VERSION/, "Web UI footer should parse the structured payload emitted by git-footer-status");
 assert.match(app, /function normalizeFooterPayloadChangedFile\(value\)[\s\S]*FOOTER_CHANGED_FILE_KINDS\.has\(value\.kind\)[\s\S]*oldPath/, "git footer payload parsing should preserve changed-file details for changes popovers");
 assert.match(app, /const files = value\.files\.map\(normalizeFooterPayloadChangedFile\)\.filter\(Boolean\)\.slice\(0, 80\);[\s\S]*chip\.files = files;/, "git footer payload chips should retain bounded changed-file lists");

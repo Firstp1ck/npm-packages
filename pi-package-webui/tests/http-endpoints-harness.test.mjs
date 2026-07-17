@@ -35,7 +35,7 @@ async function request(host, pathname, { method = "GET", body, timeoutMs = 5_000
   } catch {
     payload = undefined;
   }
-  return { status: response.status, body: payload };
+  return { status: response.status, body: payload, headers: response.headers };
 }
 
 async function waitForSseEvent(tabId, predicate, trigger) {
@@ -146,6 +146,17 @@ const voiceProvider = createServer(async (req, res) => {
     res.end(Buffer.from("fake mp3 bytes"));
     return;
   }
+  if (req.url?.startsWith("/pi-releases/")) {
+    const tagName = decodeURIComponent(req.url.slice("/pi-releases/".length));
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      tag_name: tagName,
+      name: `Pi ${tagName} test release`,
+      body: "## Highlights\n\n- Release notes from the test GitHub endpoint.",
+      published_at: "2026-07-16T12:00:00Z",
+    }));
+    return;
+  }
   res.writeHead(404, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: "not found" }));
 });
@@ -172,6 +183,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     FAKE_PI_VOICE_SCRIPTS: "1",
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
+    PI_WEBUI_PI_RELEASES_API_BASE_URL: `http://127.0.0.1:${voiceProviderPort}/pi-releases`,
   },
 });
 let serverOutput = "";
@@ -198,6 +210,19 @@ try {
   assert.equal(health?.status, 200, `server should become healthy, output:\n${serverOutput}`);
   assert.equal(health.body.ok, true);
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
+  assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
+
+  const releaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
+  assert.equal(releaseNotes.status, 200, `Pi release notes should load through the server: ${releaseNotes.body?.error || ""}`);
+  assert.equal(releaseNotes.body?.data?.version, health.body.piVersion);
+  assert.equal(releaseNotes.body?.data?.tagName, `v${health.body.piVersion}`);
+  assert.equal(releaseNotes.body?.data?.title, `Pi v${health.body.piVersion} test release`);
+  assert.match(releaseNotes.body?.data?.body || "", /Release notes from the test GitHub endpoint/);
+  assert.equal(releaseNotes.body?.data?.url, `https://github.com/earendil-works/pi/releases/tag/v${health.body.piVersion}`);
+  assert.equal(releaseNotes.headers.get("cache-control"), "private, no-store", "browser caches should not retain notes across Pi upgrades");
+  const cachedReleaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
+  assert.equal(cachedReleaseNotes.body?.data?.tagName, `v${health.body.piVersion}`);
+  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${health.body.piVersion}`).length, 1, "the server should fetch each installed Pi release only once");
 
   // Static assets: brotli/gzip compression plus ETag revalidation (P0-2).
   const brotliResponse = await fetch(`http://127.0.0.1:${port}/app.js`, {

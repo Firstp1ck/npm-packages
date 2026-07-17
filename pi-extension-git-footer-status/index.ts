@@ -1,4 +1,6 @@
-import { isAbsolute, resolve } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -81,6 +83,8 @@ const WEBUI_FOOTER_STATUS_KEY = "git-footer-webui";
 const GIT_FOOTER_STATUS_KEY = "git-footer";
 const WEBUI_FOOTER_PAYLOAD_TYPE = "firstpick.git-footer-status.footer";
 const WEBUI_FOOTER_PAYLOAD_VERSION = 1;
+const FOOTER_VISIBILITY_SETTINGS_VERSION = 1;
+const FOOTER_VISIBILITY_SETTINGS_FILE_ENV = "PI_GIT_FOOTER_SETTINGS_FILE";
 
 type FooterVisibilityTarget = "native" | "webui";
 type FooterVisibilityScope = FooterVisibilityTarget | "all";
@@ -247,6 +251,34 @@ const FOOTER_VISIBILITY_ALIASES: Record<string, FooterVisibilityKey> = {
 const FOOTER_VISIBILITY_KEY_SET = new Set<string>(FOOTER_VISIBILITY_KEYS);
 const FOOTER_VISIBILITY_SCOPES: FooterVisibilityScope[] = ["all", "native", "webui"];
 const runtimeFooterVisibilityOverrides = new Map<string, boolean>();
+const warnedInvalidFooterVisibilityFiles = new Set<string>();
+
+type PersistedFooterVisibilitySettings = {
+  version: typeof FOOTER_VISIBILITY_SETTINGS_VERSION;
+  overrides: Record<FooterVisibilityScope, Partial<Record<FooterVisibilityKey, boolean>>>;
+};
+
+function emptyFooterVisibilitySettings(): PersistedFooterVisibilitySettings {
+  return {
+    version: FOOTER_VISIBILITY_SETTINGS_VERSION,
+    overrides: { all: {}, native: {}, webui: {} },
+  };
+}
+
+function expandHomePath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) return resolve(homedir(), trimmed.slice(2));
+  return trimmed;
+}
+
+export function footerVisibilitySettingsFile(env: Record<string, string | undefined> = process.env): string {
+  const configuredFile = env[FOOTER_VISIBILITY_SETTINGS_FILE_ENV]?.trim();
+  if (configuredFile) return resolve(expandHomePath(configuredFile));
+  const configuredAgentDir = env.PI_CODING_AGENT_DIR?.trim();
+  const agentDir = configuredAgentDir ? resolve(expandHomePath(configuredAgentDir)) : resolve(homedir(), ".pi", "agent");
+  return resolve(agentDir, "git-footer-visibility.json");
+}
 
 function normalizeFooterVisibilityToken(value: string): string {
   return value.trim().toLowerCase().replace(/^--?/, "").replace(/[_\s]+/g, "-");
@@ -329,6 +361,81 @@ function normalizeFooterVisibilityScope(value: string | undefined): FooterVisibi
   return token === "all" || token === "native" || token === "webui" ? token : null;
 }
 
+function normalizeFooterVisibilitySettings(value: unknown): PersistedFooterVisibilitySettings {
+  const normalized = emptyFooterVisibilitySettings();
+  if (!value || typeof value !== "object") return normalized;
+  const overrides = (value as { overrides?: unknown }).overrides;
+  if (!overrides || typeof overrides !== "object") return normalized;
+  for (const scope of FOOTER_VISIBILITY_SCOPES) {
+    const scopeOverrides = (overrides as Record<string, unknown>)[scope];
+    if (!scopeOverrides || typeof scopeOverrides !== "object") continue;
+    for (const [rawKey, rawVisible] of Object.entries(scopeOverrides)) {
+      const key = normalizeFooterVisibilityKey(rawKey);
+      if (key && typeof rawVisible === "boolean") normalized.overrides[scope][key] = rawVisible;
+    }
+  }
+  return normalized;
+}
+
+export async function readFooterVisibilitySettings(storageFile = footerVisibilitySettingsFile()): Promise<PersistedFooterVisibilitySettings> {
+  try {
+    const settings = normalizeFooterVisibilitySettings(JSON.parse(await readFile(storageFile, "utf8")));
+    warnedInvalidFooterVisibilityFiles.delete(storageFile);
+    return settings;
+  } catch (error) {
+    if ((error as { code?: string })?.code === "ENOENT") return emptyFooterVisibilitySettings();
+    if (error instanceof SyntaxError) {
+      if (!warnedInvalidFooterVisibilityFiles.has(storageFile)) {
+        warnedInvalidFooterVisibilityFiles.add(storageFile);
+        console.warn(`[git-footer-status] Ignoring malformed visibility settings at ${storageFile}: ${error.message}`);
+      }
+      return emptyFooterVisibilitySettings();
+    }
+    throw new Error(`Cannot read git footer visibility settings at ${storageFile}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export async function writeFooterVisibilitySettings(
+  value: PersistedFooterVisibilitySettings,
+  storageFile = footerVisibilitySettingsFile(),
+): Promise<PersistedFooterVisibilitySettings> {
+  const normalized = normalizeFooterVisibilitySettings(value);
+  await mkdir(dirname(storageFile), { recursive: true, mode: 0o700 });
+  const temporaryFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(temporaryFile, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporaryFile, storageFile);
+  } catch (error) {
+    await rm(temporaryFile, { force: true }).catch(() => {});
+    throw new Error(`Cannot write git footer visibility settings at ${storageFile}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return normalized;
+}
+
+function replaceRuntimeFooterVisibility(settings: PersistedFooterVisibilitySettings): void {
+  runtimeFooterVisibilityOverrides.clear();
+  for (const scope of FOOTER_VISIBILITY_SCOPES) {
+    for (const [key, visible] of Object.entries(settings.overrides[scope])) {
+      if (typeof visible === "boolean") runtimeFooterVisibilityOverrides.set(visibilityOverrideKey(scope, key as FooterVisibilityKey), visible);
+    }
+  }
+}
+
+async function reloadPersistedFooterVisibility(): Promise<void> {
+  replaceRuntimeFooterVisibility(await readFooterVisibilitySettings());
+}
+
+async function persistFooterVisibility(): Promise<void> {
+  const settings = emptyFooterVisibilitySettings();
+  for (const scope of FOOTER_VISIBILITY_SCOPES) {
+    for (const key of FOOTER_VISIBILITY_KEYS) {
+      const visible = runtimeFooterVisibilityOverrides.get(visibilityOverrideKey(scope, key));
+      if (visible !== undefined) settings.overrides[scope][key] = visible;
+    }
+  }
+  await writeFooterVisibilitySettings(settings);
+}
+
 function clearRuntimeFooterVisibility(scope: FooterVisibilityScope, key?: FooterVisibilityKey): void {
   if (key) {
     runtimeFooterVisibilityOverrides.delete(visibilityOverrideKey(scope, key));
@@ -358,6 +465,7 @@ function footerVisibilityUsage(): string {
     "Examples: /git-footer-visibility select webui",
     "          /git-footer-visibility hide webui cost context model",
     "          /git-footer-visibility toggle native speed",
+    `Saved globally: ${footerVisibilitySettingsFile()}`,
     "Env: PI_GIT_FOOTER_HIDE=cost,context or PI_GIT_FOOTER_WEBUI_COST=0",
   ].join("\n");
 }
@@ -1785,6 +1893,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   };
 
   const refreshOnce = async (ctx: ExtensionContext, options: GitRefreshOptions = {}) => {
+    await reloadPersistedFooterVisibility();
     const footerCtx = rememberFooterContext(ctx);
     const refreshCwd = footerCtx.cwd || "";
     const snapshot = await readGitSnapshot(pi, refreshCwd);
@@ -1900,6 +2009,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    await reloadPersistedFooterVisibility();
     backgroundWorkEnabled = ctx.hasUI;
     if (!backgroundWorkEnabled) return;
     const sessionSerial = ++activeSessionSerial;
@@ -2207,6 +2317,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     description: "Show/hide individual git footer cards, buttons, and modal affordances for native TUI and WebUI",
     handler: async (args, ctx) => {
       rememberFooterContext(ctx);
+      await reloadPersistedFooterVisibility();
       const tokens = (args || "").trim().split(/\s+/).filter(Boolean);
       const firstToken = tokens.shift();
       const command = normalizeFooterVisibilityToken(firstToken || "");
@@ -2218,11 +2329,12 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           return;
         }
         const changedCount = applyFooterVisibilitySelection(scope, selected);
+        await persistFooterVisibility();
         requestFooterRender?.();
         publishWebuiFooter(ctx);
         await refresh(ctx);
         ctx.ui.notify(
-          `Git footer visibility selector applied for ${footerVisibilityScopeLabel(scope)} (${changedCount} changed).`,
+          `Git footer visibility selector saved globally for ${footerVisibilityScopeLabel(scope)} (${changedCount} changed).`,
           changedCount > 0 ? "success" : "info",
         );
       };
@@ -2302,11 +2414,12 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
         }
       }
 
+      await persistFooterVisibility();
       requestFooterRender?.();
       publishWebuiFooter(ctx);
       await refresh(ctx);
       const changed = validKeys.length > 0 ? validKeys.map(formatFooterVisibilityState).join("\n") : `${scope}: reset`;
-      ctx.ui.notify(`Git footer visibility updated:\n${changed}`, "success");
+      ctx.ui.notify(`Git footer visibility saved globally:\n${changed}`, "success");
     },
   });
 
