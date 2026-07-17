@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "2.0",
+  "id": "pi.anthropic-auth-recovery",
+  "version": "2.0.0",
+  "title": "Hardened Pi Anthropic compatibility recovery",
+  "description": "Installs a global recovery extension that detects classified Anthropic compatibility errors and opens a read-only status/plan recovery flow.",
+  "risk": {
+    "level": "medium",
+    "mutatesInstalledPackages": false,
+    "network": "optional",
+    "billing": "none",
+    "notes": [
+      "Automatic recovery performs status and plan only; apply requires a separate reviewed plan hash.",
+      "RPC/WebUI auto-open requires an explicitly configured authenticated endpoint and never probes localhost implicitly."
+    ]
+  },
+  "lifecycle": { "handler": "./scripts/lifecycle.mjs", "minimumPatchctlVersion": "2.0.0" },
+  "support": {
+    "platforms": ["linux", "darwin", "win32"],
+    "packages": [{ "name": "@earendil-works/pi-coding-agent", "range": ">=0.80.0 <0.81.0", "layouts": ["global extension API"] }]
+  },
+  "install": {
+    "source": "./src/anthropic-subscription-auth-recovery.ts",
+    "target": "extensions/anthropic-subscription-auth-recovery.ts"
+  },
+  "targets": [{
+    "id": "global-recovery-extension",
+    "role": "native-tui-and-rpc",
+    "required": true,
+    "discover": { "kind": "pi-agent-dir", "environment": "PI_AGENT_DIR" },
+    "package": "@earendil-works/pi-coding-agent",
+    "fileCandidates": ["extensions/anthropic-subscription-auth-recovery.ts"],
+    "fingerprints": ["source-sha256", "plan-only-recovery-v2"]
+  }],
+  "verification": [
+    { "id": "typescript-syntax", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "source-hash", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "recovery-unit-tests", "phase": "pre-apply", "runner": "argv", "argv": ["node", "--experimental-strip-types", "--test", "tests/*.test.mjs"], "network": false, "billing": false }
+  ],
+  "rollback": { "supported": true, "strategy": "receipt-backup" }
+}

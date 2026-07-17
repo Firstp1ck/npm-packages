@@ -1,148 +1,92 @@
-# PATCH.md Tool Call Specification
+# PATCH.md v2 Tool and Lifecycle Specification
 
-This document defines a precise tool-call contract for consuming `PATCH.md` files so an agent has all required implementation data.
+## Files
 
-## Tool name
+- Human document: `PATCH.md`
+- Machine manifest: `patch.manifest.json`
+- Manifest schema: `patch-manifest-v2.schema.json`
+- Extractor: `scripts/patch_md_extract.mjs`
+- Lifecycle runner: `scripts/patchctl.mjs`
 
-`patch_md_extract`
+The manifest and lifecycle handler are the executable source of truth. Prose is never executed directly.
 
-## Preferred implementation
-
-Use the bundled script parser:
-
-`./scripts/patch_md_extract.mjs`
-
-Example:
+## Extract
 
 ```bash
-node ./skills/patch-md/scripts/patch_md_extract.mjs --patch /path/to/PATCH.md --strict
+node scripts/patch_md_extract.mjs --patch /path/to/PATCH.md --strict
 ```
 
-Fallback (unstrict mode):
+Strict mode requires schema v2. `--no-strict` is migration/read-only mode for legacy documents and must not authorize apply.
+
+### Required v2 heading order
+
+1. `# PATCH.md — ...`
+2. `## Purpose`
+3. `### Root cause`
+4. `### Expected outcome`
+5. `## Lifecycle`
+6. `## Scope (exact files changed)`
+7. One or more contiguous `## Change N — ...` sections
+8. `## Verification steps`
+9. `## Rollback`
+10. `## Operational notes`
+
+Each fixed heading must exist exactly once. Each change declares either `**File:**` or `**Files:**`, and every scope target must map exactly to at least one change.
+
+### Safety rules
+
+- All `${VAR}` values are recursively expanded with cycle detection.
+- Unresolved variables are errors.
+- Every bash/sh fence is preserved as one complete shell program; lines are never treated as independent commands.
+- Manifest and handler paths must remain inside the patch directory.
+- Strict output is valid only when `ok=true` and the v2 manifest passes structural validation.
+
+## Lifecycle
 
 ```bash
-node ./skills/patch-md/scripts/patch_md_extract.mjs --patch /path/to/PATCH.md --no-strict
+PATCHCTL=/path/to/scripts/patchctl.mjs
+node "$PATCHCTL" status   --patch /path/to/PATCH.md
+node "$PATCHCTL" plan     --patch /path/to/PATCH.md
+node "$PATCHCTL" apply    --patch /path/to/PATCH.md --plan-hash <reviewed-sha256>
+node "$PATCHCTL" verify   --patch /path/to/PATCH.md
+node "$PATCHCTL" rollback --patch /path/to/PATCH.md --confirm
 ```
 
-## Purpose
+### Handler contract
 
-Parse a standardized `PATCH.md` file and return structured implementation instructions.
+`manifest.lifecycle.handler` is invoked with:
 
-## Input
-
-```json
-{
-  "patchPath": "string (required) — path to PATCH.md",
-  "workspaceRoot": "string (optional) — base path used to resolve relative file paths",
-  "strict": "boolean (optional, default true) — require exact section structure and fail on deviations"
-}
+```text
+node <handler> <action> --manifest <manifest> --patch <PATCH.md> --state-dir <dir>
 ```
 
-CLI mapping:
+Apply additionally receives `--plan-file`; rollback receives `--receipt-file`.
 
-- `patchPath` -> `--patch`
-- `workspaceRoot` -> `--workspace`
-- `strict=true` -> `--strict` (default)
-- `strict=false` -> `--no-strict` or `--unstrict`
+Handlers must print exactly one JSON object to stdout and send diagnostics to stderr.
 
-## Output
+- `status`: read-only target classifications.
+- `plan`: read-only deterministic plan. It must report blocked/unsupported required targets.
+- `apply`: consume the reviewed plan, revalidate preconditions, prepare all outputs, then commit atomically or roll back.
+- `verify`: offline by default and test the actual discovered runtime entrypoints.
+- `rollback`: verify after-hashes against the receipt before restoring backups.
 
-```json
-{
-  "ok": "boolean",
-  "patch": {
-    "title": "string",
-    "purpose": "string",
-    "rootCause": "string",
-    "expectedOutcome": "string",
-    "pathVariables": {
-      "VAR_NAME": "string value"
-    },
-    "scopeFiles": ["string"],
-    "changes": [
-      {
-        "index": "number",
-        "title": "string",
-        "file": "string",
-        "whatChanged": "string",
-        "why": "string"
-      }
-    ],
-    "verification": {
-      "runFrom": "string",
-      "commands": ["string"],
-      "expected": ["string"]
-    },
-    "operationalNotes": ["string"]
-  },
-  "errors": [
-    {
-      "code": "string",
-      "message": "string",
-      "section": "string | null"
-    }
-  ],
-  "warnings": ["string"]
-}
-```
+`patchctl` binds apply to a SHA-256 plan hash, serializes apply/rollback with a lock, and stores a mode-0600 receipt under the patch state directory.
 
-## Validation rules
+## Manifest minimum contract
 
-When `strict=true`, all rules below are mandatory.
+Required fields:
 
-1. Required headings exist exactly once and in order:
-   - `# PATCH.md — ...`
-   - `## Purpose`
-   - `### Root cause`
-   - `### Expected outcome`
-   - `## Scope (exact files changed)`
-   - `## Change N — ...` (>= 1)
-   - `## Verification steps`
-   - `## Operational notes`
-2. Every `Change N` block must include:
-   - `**File:** ...`
-   - `### What was changed`
-   - `### Why`
-3. `Scope` file list must be present and non-empty.
-4. `Verification steps` must contain at least one command.
-5. `runFrom` path must be extracted from `Run from` line when present.
-6. Extract path variables from a `Path variables:` block under Scope when present.
+- `schemaVersion: "2.0"`
+- `id`, `version`, `title`, `description`
+- `risk`
+- `lifecycle.handler`
+- `support.platforms` and `support.packages`
+- `targets[]` with discovery, package, file candidates, and fingerprints
+- `verification[]` with network/billing metadata
+- `rollback.supported: true`
 
-When `strict=false`:
+See `patch-manifest-v2.schema.json` for the full schema.
 
-- Missing `### Expected outcome` is allowed; set `expectedOutcome` to empty string and emit a warning.
-- Legacy `Assume:` blocks under `Scope` may be parsed as path variables.
-- Legacy `### Path variables` subheadings under `Scope` may be parsed as path variables.
-- Structural violations still return `ok=false` when they prevent safe implementation.
+## Error behavior
 
-## Error codes
-
-- `FILE_NOT_FOUND` — patchPath does not exist
-- `INVALID_MARKDOWN` — file content cannot be parsed safely
-- `MISSING_SECTION` — required heading missing
-- `OUT_OF_ORDER_SECTION` — required headings not in canonical order
-- `INVALID_CHANGE_BLOCK` — a change block misses required fields
-- `EMPTY_SCOPE` — no files listed in scope
-- `EMPTY_VERIFICATION` — no verification commands listed
-- `UNRESOLVED_PATH_VARIABLE` — file path contains `${VAR}` that is not defined by path variables or runtime context
-
-## Normalization rules
-
-- Trim leading/trailing whitespace in extracted text fields.
-- Exclude section separators (`---`) from extracted field bodies.
-- Preserve fenced code blocks and bullet lists inside `whatChanged` and `why`.
-
-## Tool consumer behavior (agent)
-
-After calling `patch_md_extract`:
-
-1. If `ok=false`, stop and request clarification or patch correction.
-2. If `ok=true`, generate execution plan from `patch.changes` in ascending `index` order.
-3. Apply changes only to files in `patch.scopeFiles` unless user explicitly approves scope expansion.
-4. Resolve `${VAR}` placeholders in paths using `patch.pathVariables` first, then runtime environment.
-5. Run `patch.verification.commands` from `patch.verification.runFrom` when provided.
-6. Report results mapped to each `Change N` block.
-
-## Portability note
-
-Use POSIX-style paths (`/`) in `PATCH.md` so extracted paths are portable across Linux/macOS.
+Any ambiguity, unknown required target, version mismatch, semantic fingerprint mismatch, path escape, changed plan hash, drifted rollback target, or failed postcondition must stop without partial mutation.

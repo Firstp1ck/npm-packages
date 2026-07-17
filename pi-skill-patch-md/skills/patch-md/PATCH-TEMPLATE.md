@@ -6,73 +6,67 @@
 
 ### Root cause
 
-<why the issue exists today; concrete mechanism>
+<concrete mechanism causing the issue>
 
 ### Expected outcome
 
-<what behavior should change after patch>
+<observable behavior after the patch>
 
----
+## Lifecycle
+
+**Manifest:** `./patch.manifest.json`
+
+The v2 manifest is the machine-readable execution source of truth. This document explains intent and evidence; `patchctl` performs status, plan, apply, verify, and rollback.
 
 ## Scope (exact files changed)
 
-> Use POSIX-style paths for portability on Linux/macOS.
-
 Path variables:
 
-- `<VAR_NAME>=<value or expression>` (example: `PI_HOME=${HOME}/.pi`)
+- `<VAR_NAME>=<value or expression>`
 
-Files:
-1. `<relative/or/absolute/path/file1>`
-2. `<relative/or/absolute/path/file2>`
-
----
+Files or logical targets:
+1. `target:<stable-target-id>`
+2. `<relative/path/when-static>`
 
 ## Change 1 — <short change title>
 
-**File:** `<path>`
+**Files:**
+- `target:<stable-target-id>`
+- `<relative/path/when-static>`
 
 ### What was changed
 
-<exact code/data change; include minimal before/after snippets>
+<semantic transformation and pre/postconditions; do not rely only on prose snippets>
 
 ### Why
 
 <reason this change is needed>
-
----
-
-## Change 2 — <short change title>
-
-**File:** `<path>`
-
-### What was changed
-
-<exact code/data change; include minimal before/after snippets>
-
-### Why
-
-<reason this change is needed>
-
----
 
 ## Verification steps
 
-Run from `<working directory>`:
+Run from `<patch directory>`:
 
 ```bash
-<command 1>
-<command 2>
+node /path/to/patchctl.mjs status --patch ./PATCH.md
+node /path/to/patchctl.mjs plan --patch ./PATCH.md
+node /path/to/patchctl.mjs verify --patch ./PATCH.md
 ```
 
 Expected:
-- <observable proof 1>
-- <observable proof 2>
+- Every required runtime is classified.
+- Unknown versions/layouts fail closed.
+- Verification is offline unless separately approved.
 
----
+## Rollback
+
+```bash
+node /path/to/patchctl.mjs rollback --patch ./PATCH.md --confirm
+```
+
+- Rollback uses the apply receipt and refuses to overwrite drifted files.
 
 ## Operational notes
 
-- <restart/reload requirements>
-- <known limitations>
-- <persistence note, e.g., generated/dist file may be overwritten>
+- Review the plan hash before apply.
+- Apply with `patchctl apply --plan-hash <hash>`.
+- Never silently reapply after a package update.

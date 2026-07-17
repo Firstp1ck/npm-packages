@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "2.0",
+  "id": "pi.anthropic-warning-policy",
+  "version": "2.0.0",
+  "title": "Pi Anthropic warning ownership policy",
+  "description": "Retires installed documentation and warning-copy mutations from the Anthropic compatibility patch.",
+  "risk": { "level": "low", "mutatesInstalledPackages": false, "network": "none", "billing": "none", "notes": ["This component intentionally performs no writes."] },
+  "lifecycle": { "handler": "./scripts/lifecycle.mjs", "minimumPatchctlVersion": "2.0.0" },
+  "support": { "platforms": ["linux", "darwin", "win32"], "packages": [{ "name": "@earendil-works/pi-coding-agent", "range": ">=0.78.0" }] },
+  "targets": [{ "id": "upstream-warning-copy", "role": "policy", "required": true, "discover": { "kind": "policy" }, "package": "@earendil-works/pi-coding-agent", "fileCandidates": ["docs/providers.md", "docs/settings.md", "dist/modes/interactive/components/settings-selector.js"], "fingerprints": ["upstream-owned"] }],
+  "verification": [{ "id": "no-mutation", "phase": "post-apply", "runner": "handler", "network": false, "billing": false }],
+  "rollback": { "supported": true, "strategy": "custom" },
+  "policy": "Leave upstream warnings and installed documentation unchanged. Expose compatibility state through patchctl status and the recovery extension instead."
+}

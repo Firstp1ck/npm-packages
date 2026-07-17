@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "2.0",
+  "id": "pi.anthropic-agent-sdk-subscription-auth",
+  "version": "2.0.0",
+  "title": "Pi Anthropic compatibility component index",
+  "description": "Migration index for the former monolithic Anthropic patch, now split into independently versioned provider, recovery, and warning-policy components.",
+  "risk": { "level": "low", "mutatesInstalledPackages": false, "network": "none", "billing": "none", "notes": ["This index performs no writes; apply components independently."] },
+  "lifecycle": { "handler": "./scripts/lifecycle.mjs", "minimumPatchctlVersion": "2.0.0" },
+  "support": { "platforms": ["linux", "darwin", "win32"], "packages": [{ "name": "@earendil-works/pi-coding-agent", "range": ">=0.78.0" }] },
+  "targets": [
+    { "id": "provider-dist-compat", "role": "component", "required": true, "discover": { "kind": "relative-component" }, "package": "@earendil-works/pi-ai", "fileCandidates": ["../pi-anthropic-provider-dist-compat/PATCH.md"], "fingerprints": ["v2-component"] },
+    { "id": "auth-recovery", "role": "component", "required": true, "discover": { "kind": "relative-component" }, "package": "@earendil-works/pi-coding-agent", "fileCandidates": ["../pi-anthropic-auth-recovery/PATCH.md"], "fingerprints": ["v2-component"] },
+    { "id": "warning-policy", "role": "component", "required": true, "discover": { "kind": "relative-component" }, "package": "@earendil-works/pi-coding-agent", "fileCandidates": ["../pi-anthropic-warning-policy/PATCH.md"], "fingerprints": ["v2-component"] }
+  ],
+  "verification": [{ "id": "components-exist", "phase": "post-apply", "runner": "handler", "network": false, "billing": false }],
+  "rollback": { "supported": true, "strategy": "custom" },
+  "components": ["../pi-anthropic-provider-dist-compat", "../pi-anthropic-auth-recovery", "../pi-anthropic-warning-policy"]
+}

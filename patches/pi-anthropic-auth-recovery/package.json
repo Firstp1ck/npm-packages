@@ -1,0 +1,9 @@
+{
+  "name": "pi-anthropic-auth-recovery-patch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "check": "node --experimental-strip-types --check src/anthropic-subscription-auth-recovery.ts && node --check scripts/lifecycle.mjs && npm test"
+  }
+}

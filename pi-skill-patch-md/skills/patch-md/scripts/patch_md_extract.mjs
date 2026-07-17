@@ -2,31 +2,31 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const V2_SCHEMA_VERSION = "2.0";
+const FIXED_V2_HEADINGS = [
+  [1, /^PATCH\.md\s+—\s+.+$/u, "title"],
+  [2, /^Purpose$/u, "purpose"],
+  [3, /^Root cause$/u, "rootCause"],
+  [3, /^Expected outcome$/u, "expectedOutcome"],
+  [2, /^Lifecycle$/u, "lifecycle"],
+  [2, /^Scope \(exact files changed\)$/u, "scope"],
+  [2, /^Verification steps$/u, "verification"],
+  [2, /^Rollback$/u, "rollback"],
+  [2, /^Operational notes$/u, "operationalNotes"],
+];
 
 function parseArgs(argv) {
-  const out = {
-    patchPath: "",
-    workspaceRoot: "",
-    strict: true,
-  };
-
+  const out = { patchPath: "", workspaceRoot: "", strict: true };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--patch" || arg === "--patchPath") {
-      out.patchPath = argv[++i] ?? "";
-    } else if (arg === "--workspace" || arg === "--workspaceRoot") {
-      out.workspaceRoot = argv[++i] ?? "";
-    } else if (arg === "--strict") {
-      out.strict = true;
-    } else if (arg === "--no-strict" || arg === "--unstrict") {
-      out.strict = false;
-    }
+    if (arg === "--patch" || arg === "--patchPath") out.patchPath = argv[++i] ?? "";
+    else if (arg === "--workspace" || arg === "--workspaceRoot") out.workspaceRoot = argv[++i] ?? "";
+    else if (arg === "--strict") out.strict = true;
+    else if (arg === "--no-strict" || arg === "--unstrict") out.strict = false;
   }
-
-  if (!out.patchPath) {
-    throw new Error("Missing --patch <path-to-PATCH.md>");
-  }
-
+  if (!out.patchPath) throw new Error("Missing --patch <path-to-PATCH.md>");
   return out;
 }
 
@@ -39,227 +39,355 @@ function addWarning(result, message) {
 }
 
 function normalizeBody(text) {
-  const trimmed = text.trim();
-  const withoutSeparators = trimmed
-    .split("\n")
+  return text
+    .trim()
+    .split(/\r?\n/u)
     .filter((line) => line.trim() !== "---")
     .join("\n")
     .trim();
-  return withoutSeparators;
 }
 
-function escapeRegex(source) {
-  return source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function findAllHeadingMatches(markdown) {
-  const matches = [];
-  const rx = /^(#{1,6})\s+([^\n]+)$/gm;
-  let m;
-  while ((m = rx.exec(markdown)) !== null) {
-    matches.push({
-      start: m.index,
-      end: rx.lastIndex,
-      level: m[1].length,
-      text: m[2].trim(),
-      raw: m[0],
+function scanHeadings(markdown) {
+  const headings = [];
+  const lineRx = /[^\n]*(?:\n|$)/gu;
+  let fence = null;
+  let match;
+  while ((match = lineRx.exec(markdown)) !== null) {
+    if (!match[0]) break;
+    const start = match.index;
+    const rawLine = match[0].replace(/\r?\n$/u, "");
+    const fenceMatch = rawLine.match(/^\s*(`{3,}|~{3,})/u);
+    if (fenceMatch) {
+      const token = fenceMatch[1];
+      if (!fence) fence = { char: token[0], length: token.length };
+      else if (token[0] === fence.char && token.length >= fence.length) fence = null;
+      continue;
+    }
+    if (fence) continue;
+    const headingMatch = rawLine.match(/^(#{1,6})\s+(.+?)\s*$/u);
+    if (!headingMatch) continue;
+    headings.push({
+      start,
+      end: start + match[0].length,
+      level: headingMatch[1].length,
+      text: headingMatch[2].trim(),
+      raw: rawLine,
     });
   }
-  return matches;
+  return headings;
 }
 
-function getSectionBody(markdown, headings, headingMatcher) {
-  const current = headings.find(headingMatcher);
-  if (!current) return "";
-  const next = headings.find((h) => h.start > current.start && h.level <= current.level);
-  const end = next ? next.start : markdown.length;
-  return normalizeBody(markdown.slice(current.end, end));
+function headingMatches(headings, level, rx) {
+  return headings.filter((heading) => heading.level === level && rx.test(heading.text));
 }
 
-function getBodyBetweenHeadings(markdown, headings, startRaw, endRaw) {
-  const start = headings.find((h) => h.raw === startRaw);
+function sectionBody(markdown, headings, heading) {
+  if (!heading) return "";
+  const next = headings.find((candidate) => candidate.start > heading.start && candidate.level <= heading.level);
+  return normalizeBody(markdown.slice(heading.end, next?.start ?? markdown.length));
+}
+
+function bodyBetween(markdown, start, end) {
   if (!start) return "";
-  const end = headings.find((h) => h.start > start.start && h.raw === endRaw);
-  const sliceEnd = end ? end.start : markdown.length;
-  return normalizeBody(markdown.slice(start.end, sliceEnd));
+  return normalizeBody(markdown.slice(start.end, end?.start ?? markdown.length));
+}
+
+function validateStructure(markdown, headings, strict, result) {
+  const titleMatches = headingMatches(headings, 1, /^PATCH\.md\s+—\s+.+$/u);
+  if (titleMatches.length !== 1) {
+    addError(result, titleMatches.length === 0 ? "MISSING_SECTION" : "DUPLICATE_SECTION", "PATCH.md title must exist exactly once", "title");
+  }
+
+  const required = strict
+    ? FIXED_V2_HEADINGS.slice(1)
+    : FIXED_V2_HEADINGS.slice(1).filter(([, , label]) => !["expectedOutcome", "lifecycle", "rollback"].includes(label));
+  const ordered = titleMatches.length === 1 ? [titleMatches[0]] : [];
+  for (const [level, rx, label] of required) {
+    const matches = headingMatches(headings, level, rx);
+    if (matches.length !== 1) {
+      addError(result, matches.length === 0 ? "MISSING_SECTION" : "DUPLICATE_SECTION", `Required section ${label} must exist exactly once`, label);
+    } else {
+      ordered.push(matches[0]);
+    }
+  }
+
+  const allFixedLabels = new Map(FIXED_V2_HEADINGS.slice(1).map(([level, rx, label]) => [label, headingMatches(headings, level, rx)]));
+  if (!strict) {
+    if ((allFixedLabels.get("expectedOutcome") ?? []).length === 0) addWarning(result, "Legacy v1 patch: missing ### Expected outcome");
+    if ((allFixedLabels.get("lifecycle") ?? []).length === 0) addWarning(result, "Legacy v1 patch: no machine-readable lifecycle manifest; apply is not trusted");
+    if ((allFixedLabels.get("rollback") ?? []).length === 0) addWarning(result, "Legacy v1 patch: no rollback section");
+  }
+
+  const changes = headingMatches(headings, 2, /^Change\s+\d+\s+—\s+.+$/u);
+  if (changes.length === 0) addError(result, "MISSING_SECTION", "At least one Change N section is required", "change");
+
+  if (result.errors.length > 0) return;
+  const expectedOrder = [
+    titleMatches[0],
+    allFixedLabels.get("purpose")?.[0],
+    allFixedLabels.get("rootCause")?.[0],
+    allFixedLabels.get("expectedOutcome")?.[0],
+    allFixedLabels.get("lifecycle")?.[0],
+    allFixedLabels.get("scope")?.[0],
+    changes[0],
+    allFixedLabels.get("verification")?.[0],
+    allFixedLabels.get("rollback")?.[0],
+    allFixedLabels.get("operationalNotes")?.[0],
+  ].filter(Boolean);
+  for (let i = 1; i < expectedOrder.length; i++) {
+    if (expectedOrder[i].start <= expectedOrder[i - 1].start) {
+      addError(result, "OUT_OF_ORDER_SECTION", "Required sections are not in canonical order", null);
+      break;
+    }
+  }
+
+  const verification = allFixedLabels.get("verification")?.[0];
+  const rollback = allFixedLabels.get("rollback")?.[0];
+  const operational = allFixedLabels.get("operationalNotes")?.[0];
+  if (verification && changes.some((change) => change.start >= verification.start)) {
+    addError(result, "OUT_OF_ORDER_SECTION", "All Change N sections must precede Verification steps", "change");
+  }
+  if (strict && rollback && operational && !(verification.start < rollback.start && rollback.start < operational.start)) {
+    addError(result, "OUT_OF_ORDER_SECTION", "Verification, Rollback, and Operational notes are out of order", null);
+  }
 }
 
 function parsePathVariables(scopeBody) {
   const vars = {};
-
-  // Preferred format: Path variables:
-  const preferredMatch = scopeBody.match(/(?:^|\n)Path variables:\s*\n([\s\S]*?)(?:\n\n|$)/i);
-  if (preferredMatch) {
-    const block = preferredMatch[1];
-    const rx = /`([A-Z0-9_]+)=([^`]+)`/g;
-    let m;
-    while ((m = rx.exec(block)) !== null) {
-      vars[m[1]] = m[2].trim();
-    }
+  const blockMatches = [
+    scopeBody.match(/(?:^|\n)Path variables:\s*\n([\s\S]*?)(?:\n\n|$)/iu),
+    scopeBody.match(/(?:^|\n)Assume:\s*\n([\s\S]*?)(?:\n\n|$)/iu),
+    scopeBody.match(/(?:^|\n)###\s+Path variables\s*\n([\s\S]*?)(?:\n\n|$)/iu),
+  ].filter(Boolean);
+  for (const blockMatch of blockMatches) {
+    const rx = /`([A-Z0-9_]+)=([^`]+)`/gu;
+    let match;
+    while ((match = rx.exec(blockMatch[1])) !== null) vars[match[1]] = match[2].trim();
   }
-
-  // Legacy fallback: Assume:
-  const assumeMatch = scopeBody.match(/(?:^|\n)Assume:\s*\n([\s\S]*?)(?:\n\n|$)/i);
-  if (assumeMatch) {
-    const rx = /`([A-Z0-9_]+)=([^`]+)`/g;
-    let m;
-    while ((m = rx.exec(assumeMatch[1])) !== null) {
-      vars[m[1]] = m[2].trim();
-    }
-  }
-
-  // Legacy fallback: ### Path variables
-  const h3Match = scopeBody.match(/(?:^|\n)###\s+Path variables\s*\n([\s\S]*?)(?:\n\n|$)/i);
-  if (h3Match) {
-    const rx = /`([A-Z0-9_]+)=([^`]+)`/g;
-    let m;
-    while ((m = rx.exec(h3Match[1])) !== null) {
-      vars[m[1]] = m[2].trim();
-    }
-  }
-
   return vars;
 }
 
 function parseScopeFiles(scopeBody) {
-  const files = [];
-  const rx = /^\d+\.\s+`([^`]+)`\s*$/gm;
-  let m;
-  while ((m = rx.exec(scopeBody)) !== null) {
-    files.push(m[1].trim());
-  }
-  return files;
+  return [...scopeBody.matchAll(/^\d+\.\s+`([^`]+)`\s*$/gmu)].map((match) => match[1].trim());
 }
 
-function resolveVarValue(name, pathVariables) {
-  if (Object.prototype.hasOwnProperty.call(pathVariables, name)) {
-    return pathVariables[name];
-  }
-  return process.env[name] ?? "";
-}
-
-function resolvePathVars(input, pathVariables) {
-  let unresolved = [];
-  const output = input.replace(/\$\{([A-Z0-9_]+)\}/g, (_, varName) => {
-    const value = resolveVarValue(varName, pathVariables);
-    if (!value) {
-      unresolved.push(varName);
-      return `\${${varName}}`;
+function expandVariables(input, pathVariables, stack = [], depth = 0) {
+  if (depth > 32) return { output: input, unresolved: [], cycles: [stack.join(" -> ") || "maximum expansion depth"] };
+  const unresolved = [];
+  const cycles = [];
+  const output = input.replace(/\$\{([A-Z0-9_]+)\}/gu, (whole, name) => {
+    if (stack.includes(name)) {
+      cycles.push([...stack, name].join(" -> "));
+      return whole;
     }
-    return value;
+    const raw = Object.prototype.hasOwnProperty.call(pathVariables, name) ? pathVariables[name] : process.env[name];
+    if (raw === undefined || raw === "") {
+      unresolved.push(name);
+      return whole;
+    }
+    const nested = expandVariables(String(raw), pathVariables, [...stack, name], depth + 1);
+    unresolved.push(...nested.unresolved);
+    cycles.push(...nested.cycles);
+    return nested.output;
   });
-  return { output, unresolved };
+  return { output, unresolved: [...new Set(unresolved)], cycles: [...new Set(cycles)] };
+}
+
+function isLogicalTarget(value) {
+  return /^[a-z][a-z0-9+.-]*:/iu.test(value) && !/^[A-Za-z]:[\\/]/u.test(value);
+}
+
+function resolveDocumentPath(input, pathVariables, workspaceRoot, result, section) {
+  const expanded = expandVariables(input, pathVariables);
+  for (const name of expanded.unresolved) addError(result, "UNRESOLVED_PATH_VARIABLE", `Unresolved path variable: ${name}`, section);
+  for (const cycle of expanded.cycles) addError(result, "CYCLIC_PATH_VARIABLE", `Cyclic path variable expansion: ${cycle}`, section);
+  if (expanded.unresolved.length > 0 || expanded.cycles.length > 0 || isLogicalTarget(expanded.output)) return expanded.output;
+  const normalized = expanded.output.replace(/\\/gu, "/");
+  if (!workspaceRoot || path.posix.isAbsolute(normalized) || /^[A-Za-z]:[\\/]/u.test(expanded.output)) return normalized;
+  return path.posix.resolve(workspaceRoot.replace(/\\/gu, "/"), normalized);
+}
+
+function parseChangeFiles(body) {
+  const single = body.match(/\*\*File:\*\*\s+`([^`]+)`/u);
+  if (single) return [single[1].trim()];
+  const marker = body.match(/\*\*Files:\*\*\s*\n([\s\S]*?)(?=\n###\s+What was changed\b)/u);
+  if (!marker) return [];
+  return [...marker[1].matchAll(/^-\s+`([^`]+)`\s*$/gmu)].map((match) => match[1].trim());
 }
 
 function parseChanges(markdown, headings, verificationStart, result) {
-  const changeHeadings = headings.filter((h) => /^##\s+Change\s+\d+\s+—\s+.+$/u.test(h.raw));
+  const changeHeadings = headingMatches(headings, 2, /^Change\s+\d+\s+—\s+.+$/u).sort((a, b) => a.start - b.start);
   const changes = [];
-
+  const seenIndexes = new Set();
   for (let i = 0; i < changeHeadings.length; i++) {
     const current = changeHeadings[i];
-    const next = changeHeadings[i + 1];
-    const end = next ? next.start : verificationStart;
+    const end = changeHeadings[i + 1]?.start ?? verificationStart;
     const body = normalizeBody(markdown.slice(current.end, end));
-
-    const titleMatch = current.raw.match(/^##\s+Change\s+(\d+)\s+—\s+(.+)$/u);
-    const index = titleMatch ? Number(titleMatch[1]) : i + 1;
-    const title = titleMatch ? titleMatch[2].trim() : "";
-
-    const fileMatch = body.match(/\*\*File:\*\*\s+`([^`]+)`/u);
-    const whatMatch = body.match(/(?:^|\n)###\s+What was changed\s*\n([\s\S]*?)(?=(?:\n###\s+Why\b))/u);
+    const titleMatch = current.text.match(/^Change\s+(\d+)\s+—\s+(.+)$/u);
+    const index = Number(titleMatch?.[1]);
+    const title = titleMatch?.[2]?.trim() ?? "";
+    const files = parseChangeFiles(body);
+    const whatMatch = body.match(/(?:^|\n)###\s+What was changed\s*\n([\s\S]*?)(?=\n###\s+Why\b)/u);
     const whyMatch = body.match(/(?:^|\n)###\s+Why\s*\n([\s\S]*)$/u);
-
-    if (!fileMatch || !whatMatch || !whyMatch) {
-      addError(result, "INVALID_CHANGE_BLOCK", `Change ${index} is missing required fields`, `Change ${index}`);
+    if (!Number.isInteger(index) || !title || files.length === 0 || !whatMatch || !whyMatch) {
+      addError(result, "INVALID_CHANGE_BLOCK", `Change ${Number.isInteger(index) ? index : i + 1} is missing required fields`, `Change ${index || i + 1}`);
       continue;
     }
-
+    if (seenIndexes.has(index)) addError(result, "DUPLICATE_CHANGE_INDEX", `Duplicate Change index: ${index}`, `Change ${index}`);
+    seenIndexes.add(index);
     changes.push({
       index,
       title,
-      file: fileMatch[1].trim(),
+      file: files[0],
+      files,
       whatChanged: normalizeBody(whatMatch[1]),
       why: normalizeBody(whyMatch[1]),
     });
   }
-
-  return changes.sort((a, b) => a.index - b.index);
+  changes.sort((a, b) => a.index - b.index);
+  for (let i = 0; i < changes.length; i++) {
+    if (changes[i].index !== i + 1) addError(result, "NON_CONTIGUOUS_CHANGES", `Change indexes must be contiguous from 1; found ${changes[i].index} at position ${i + 1}`, "change");
+  }
+  return changes;
 }
 
-function parseVerification(verificationBody) {
-  const runFromMatch = verificationBody.match(/Run from\s+`([^`]+)`/u);
-  const runFrom = runFromMatch ? runFromMatch[1].trim() : "";
+function extractShellBlocks(body) {
+  const blocks = [];
+  const rx = /^(`{3,}|~{3,})(bash|sh)\s*\r?\n([\s\S]*?)^\1\s*$/gimu;
+  let match;
+  while ((match = rx.exec(body)) !== null) {
+    const script = match[3].replace(/\r\n/gu, "\n").trim();
+    if (script) blocks.push(script);
+  }
+  return blocks;
+}
 
-  const cmdBlockMatch = verificationBody.match(/```bash\n([\s\S]*?)```/u);
-  const commands = cmdBlockMatch
-    ? cmdBlockMatch[1]
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-    : [];
-
+function parseExpected(body) {
   const expected = [];
-  const expectedMatch = verificationBody.match(/(?:^|\n)Expected:\s*\n([\s\S]*)$/u);
-  if (expectedMatch) {
-    const bulletRx = /^-\s+(.+)$/gm;
-    let m;
-    while ((m = bulletRx.exec(expectedMatch[1])) !== null) {
-      expected.push(m[1].trim());
-    }
-  }
-
-  return { runFrom, commands, expected };
+  const expectedMatch = body.match(/(?:^|\n)Expected:\s*\n([\s\S]*)$/iu);
+  if (!expectedMatch) return expected;
+  for (const match of expectedMatch[1].matchAll(/^-\s+(.+)$/gmu)) expected.push(match[1].trim());
+  return expected;
 }
 
-function parseOperationalNotes(opsBody) {
-  const notes = [];
-  const rx = /^-\s+(.+)$/gm;
-  let m;
-  while ((m = rx.exec(opsBody)) !== null) {
-    notes.push(m[1].trim());
-  }
-  return notes;
+function parseVerification(body) {
+  const runFromMatch = body.match(/Run from\s+`([^`]+)`/iu);
+  const commands = extractShellBlocks(body);
+  return {
+    runFrom: runFromMatch?.[1]?.trim() ?? "",
+    commands,
+    shellBlocks: commands,
+    expected: parseExpected(body),
+  };
 }
 
-function validateHeadingOrder(markdown, strict, result) {
-  const requirements = [
-    { label: "title", rx: /^#\s+PATCH\.md\s+—\s+.+$/mu },
-    { label: "purpose", rx: /^##\s+Purpose\s*$/mu },
-    { label: "rootCause", rx: /^###\s+Root cause\s*$/mu },
-    { label: "expectedOutcome", rx: /^###\s+Expected outcome\s*$/mu, optionalWhenUnstrict: true },
-    { label: "scope", rx: /^##\s+Scope \(exact files changed\)\s*$/mu },
-    { label: "change", rx: /^##\s+Change\s+\d+\s+—\s+.+$/mu },
-    { label: "verification", rx: /^##\s+Verification steps\s*$/mu },
-    { label: "operationalNotes", rx: /^##\s+Operational notes\s*$/mu },
-  ];
+function parseBulletNotes(body) {
+  return [...body.matchAll(/^-\s+(.+)$/gmu)].map((match) => match[1].trim());
+}
 
-  const positions = [];
-  for (const req of requirements) {
-    const match = markdown.match(req.rx);
-    if (!match) {
-      if (!strict && req.optionalWhenUnstrict) {
-        addWarning(result, "Missing ### Expected outcome; expectedOutcome set to empty string");
-        positions.push(null);
-      } else {
-        addError(result, "MISSING_SECTION", `Missing required section: ${req.label}`, req.label);
-        positions.push(null);
-      }
-      continue;
-    }
-    positions.push(match.index ?? -1);
+function parseLifecycle(body) {
+  const manifestMatch = body.match(/\*\*Manifest:\*\*\s+`([^`]+)`/u);
+  return { manifestPath: manifestMatch?.[1]?.trim() ?? "", resolvedManifestPath: "", manifest: null };
+}
+
+function resolveContainedFile(baseDir, requestedPath) {
+  const candidate = path.resolve(baseDir, requestedPath);
+  const relative = path.relative(baseDir, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`Path escapes patch directory: ${requestedPath}`);
+  return candidate;
+}
+
+function validateManifest(manifest, manifestPath) {
+  const errors = [];
+  const nonEmpty = (value) => typeof value === "string" && value.trim().length > 0;
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return ["manifest must be an object"];
+  if (manifest.schemaVersion !== V2_SCHEMA_VERSION) errors.push(`schemaVersion must be ${V2_SCHEMA_VERSION}`);
+  for (const key of ["id", "version", "title", "description"]) if (!nonEmpty(manifest[key])) errors.push(`${key} must be a non-empty string`);
+  if (!/^[a-z0-9][a-z0-9._-]+$/u.test(String(manifest.id || ""))) errors.push("id must contain only lowercase letters, digits, dots, underscores, and hyphens");
+
+  const risk = manifest.risk;
+  if (!risk || typeof risk !== "object" || Array.isArray(risk)) errors.push("risk object is required");
+  else {
+    if (!["low", "medium", "high", "critical"].includes(risk.level)) errors.push("risk.level is invalid");
+    if (typeof risk.mutatesInstalledPackages !== "boolean") errors.push("risk.mutatesInstalledPackages must be boolean");
+    if (!["none", "optional", "required"].includes(risk.network)) errors.push("risk.network is invalid");
+    if (!["none", "optional", "possible"].includes(risk.billing)) errors.push("risk.billing is invalid");
   }
 
-  if (result.errors.length > 0) return;
-
-  let previous = -1;
-  for (const pos of positions) {
-    if (pos === null) continue;
-    if (pos < previous) {
-      addError(result, "OUT_OF_ORDER_SECTION", "Required sections are not in canonical order", null);
-      break;
-    }
-    previous = pos;
+  if (!manifest.lifecycle || typeof manifest.lifecycle !== "object" || !nonEmpty(manifest.lifecycle.handler)) errors.push("lifecycle.handler is required");
+  const support = manifest.support;
+  if (!support || typeof support !== "object") errors.push("support object is required");
+  else {
+    const validPlatforms = new Set(["linux", "darwin", "win32"]);
+    if (!Array.isArray(support.platforms) || support.platforms.length === 0 || support.platforms.some((item) => !validPlatforms.has(item))) errors.push("support.platforms must contain known platforms");
+    if (!Array.isArray(support.packages) || support.packages.length === 0) errors.push("support.packages must be non-empty");
+    else support.packages.forEach((entry, index) => {
+      if (!entry || !nonEmpty(entry.name) || !nonEmpty(entry.range)) errors.push(`support.packages[${index}] requires name and range`);
+    });
   }
+
+  if (!Array.isArray(manifest.targets) || manifest.targets.length === 0) errors.push("targets must be a non-empty array");
+  else {
+    const targetIds = new Set();
+    manifest.targets.forEach((target, index) => {
+      if (!target || typeof target !== "object") { errors.push(`targets[${index}] must be an object`); return; }
+      for (const key of ["id", "role", "package"]) if (!nonEmpty(target[key])) errors.push(`targets[${index}].${key} is required`);
+      if (targetIds.has(target.id)) errors.push(`duplicate target id: ${target.id}`);
+      targetIds.add(target.id);
+      if (typeof target.required !== "boolean") errors.push(`targets[${index}].required must be boolean`);
+      if (!target.discover || typeof target.discover !== "object") errors.push(`targets[${index}].discover is required`);
+      if (!Array.isArray(target.fileCandidates) || target.fileCandidates.length === 0 || target.fileCandidates.some((item) => !nonEmpty(item))) errors.push(`targets[${index}].fileCandidates must be non-empty`);
+      if (!Array.isArray(target.fingerprints) || target.fingerprints.length === 0 || target.fingerprints.some((item) => !nonEmpty(item))) errors.push(`targets[${index}].fingerprints must be non-empty`);
+    });
+  }
+
+  if (!Array.isArray(manifest.verification) || manifest.verification.length === 0) errors.push("verification must be a non-empty array");
+  else manifest.verification.forEach((step, index) => {
+    if (!step || !nonEmpty(step.id)) errors.push(`verification[${index}].id is required`);
+    if (!step || !["pre-apply", "post-apply", "manual"].includes(step.phase)) errors.push(`verification[${index}].phase is invalid`);
+    if (!step || !["handler", "argv"].includes(step.runner)) errors.push(`verification[${index}].runner is invalid`);
+    if (step?.runner === "argv" && (!Array.isArray(step.argv) || step.argv.length === 0 || step.argv.some((item) => typeof item !== "string"))) errors.push(`verification[${index}].argv is required for argv runner`);
+    if (typeof step?.network !== "boolean" || typeof step?.billing !== "boolean") errors.push(`verification[${index}] requires network and billing booleans`);
+  });
+  if (!manifest.rollback || manifest.rollback.supported !== true || !["receipt-backup", "package-reinstall", "custom"].includes(manifest.rollback.strategy)) errors.push("rollback must be supported with a valid strategy");
+
+  if (errors.length === 0) {
+    const baseDir = path.dirname(manifestPath);
+    try {
+      const handler = resolveContainedFile(baseDir, manifest.lifecycle.handler);
+      if (!fs.existsSync(handler)) errors.push(`lifecycle handler does not exist: ${manifest.lifecycle.handler}`);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return errors;
+}
+
+function loadLifecycleManifest(patchPath, lifecycle, result) {
+  if (!lifecycle.manifestPath) {
+    addError(result, "MISSING_MANIFEST", "Lifecycle section must declare **Manifest:** `./patch.manifest.json`", "lifecycle");
+    return lifecycle;
+  }
+  let manifestPath;
+  try {
+    manifestPath = resolveContainedFile(path.dirname(patchPath), lifecycle.manifestPath);
+  } catch (error) {
+    addError(result, "MANIFEST_PATH_ESCAPE", error instanceof Error ? error.message : String(error), "lifecycle");
+    return lifecycle;
+  }
+  lifecycle.resolvedManifestPath = manifestPath;
+  if (!fs.existsSync(manifestPath)) {
+    addError(result, "MANIFEST_NOT_FOUND", `Manifest not found: ${manifestPath}`, "lifecycle");
+    return lifecycle;
+  }
+  try {
+    lifecycle.manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch (error) {
+    addError(result, "INVALID_MANIFEST", `Could not parse manifest JSON: ${error instanceof Error ? error.message : String(error)}`, "lifecycle");
+    return lifecycle;
+  }
+  for (const message of validateManifest(lifecycle.manifest, manifestPath)) addError(result, "INVALID_MANIFEST", message, "lifecycle");
+  return lifecycle;
 }
 
 function buildEmptyPatch() {
@@ -271,147 +399,107 @@ function buildEmptyPatch() {
     pathVariables: {},
     scopeFiles: [],
     changes: [],
-    verification: {
-      runFrom: "",
-      commands: [],
-      expected: [],
-    },
+    lifecycle: { manifestPath: "", resolvedManifestPath: "", manifest: null },
+    verification: { runFrom: "", commands: [], shellBlocks: [], expected: [] },
+    rollback: { commands: [], shellBlocks: [], notes: [] },
     operationalNotes: [],
   };
 }
 
-function parsePatch(markdown, options) {
-  const result = {
-    ok: false,
-    patch: buildEmptyPatch(),
-    errors: [],
-    warnings: [],
-  };
+export function parsePatch(markdown, options = {}) {
+  const strict = options.strict !== false;
+  const patchPath = path.resolve(options.patchPath ?? "PATCH.md");
+  const result = { schemaVersion: strict ? V2_SCHEMA_VERSION : "1.0-legacy", ok: false, patch: buildEmptyPatch(), errors: [], warnings: [] };
+  const headings = scanHeadings(markdown);
+  validateStructure(markdown, headings, strict, result);
+  if (result.errors.length > 0) return result;
 
-  validateHeadingOrder(markdown, options.strict, result);
-  if (result.errors.length > 0) {
-    return result;
-  }
+  const first = (level, rx) => headingMatches(headings, level, rx)[0];
+  const titleHeading = first(1, /^PATCH\.md\s+—\s+.+$/u);
+  const purposeHeading = first(2, /^Purpose$/u);
+  const rootHeading = first(3, /^Root cause$/u);
+  const expectedHeading = first(3, /^Expected outcome$/u);
+  const lifecycleHeading = first(2, /^Lifecycle$/u);
+  const scopeHeading = first(2, /^Scope \(exact files changed\)$/u);
+  const firstChangeHeading = first(2, /^Change\s+\d+\s+—\s+.+$/u);
+  const verificationHeading = first(2, /^Verification steps$/u);
+  const rollbackHeading = first(2, /^Rollback$/u);
+  const operationalHeading = first(2, /^Operational notes$/u);
 
-  const headings = findAllHeadingMatches(markdown);
+  result.patch.title = titleHeading.text.replace(/^PATCH\.md\s+—\s+/u, "").trim();
+  result.patch.purpose = bodyBetween(markdown, purposeHeading, rootHeading);
+  result.patch.rootCause = bodyBetween(markdown, rootHeading, expectedHeading ?? lifecycleHeading ?? scopeHeading);
+  result.patch.expectedOutcome = expectedHeading ? bodyBetween(markdown, expectedHeading, lifecycleHeading ?? scopeHeading) : "";
 
-  const titleMatch = markdown.match(/^#\s+PATCH\.md\s+—\s+(.+)$/mu);
-  result.patch.title = titleMatch ? titleMatch[1].trim() : "";
-
-  result.patch.purpose = getBodyBetweenHeadings(markdown, headings, "## Purpose", "### Root cause");
-  result.patch.rootCause = getBodyBetweenHeadings(markdown, headings, "### Root cause", "### Expected outcome");
-
-  const hasExpectedHeading = headings.some((h) => h.raw === "### Expected outcome");
-  if (hasExpectedHeading) {
-    result.patch.expectedOutcome = getBodyBetweenHeadings(
-      markdown,
-      headings,
-      "### Expected outcome",
-      "## Scope (exact files changed)",
-    );
-  } else {
-    result.patch.expectedOutcome = "";
-  }
-
-  const scopeHeading = headings.find((h) => h.raw === "## Scope (exact files changed)");
-  const firstChangeHeading = headings.find((h) => /^##\s+Change\s+\d+\s+—\s+.+$/u.test(h.raw));
-  const verificationHeading = headings.find((h) => h.raw === "## Verification steps");
-  const opsHeading = headings.find((h) => h.raw === "## Operational notes");
-
-  if (!scopeHeading || !firstChangeHeading || !verificationHeading || !opsHeading) {
-    addError(result, "INVALID_MARKDOWN", "Could not determine major section boundaries", null);
-    return result;
+  if (lifecycleHeading) {
+    result.patch.lifecycle = parseLifecycle(sectionBody(markdown, headings, lifecycleHeading));
+    result.patch.lifecycle = loadLifecycleManifest(patchPath, result.patch.lifecycle, result);
+  } else if (strict) {
+    addError(result, "MISSING_MANIFEST", "Strict mode requires a Lifecycle manifest", "lifecycle");
   }
 
   const scopeBody = normalizeBody(markdown.slice(scopeHeading.end, firstChangeHeading.start));
   result.patch.pathVariables = parsePathVariables(scopeBody);
   result.patch.scopeFiles = parseScopeFiles(scopeBody);
-
-  if (result.patch.scopeFiles.length === 0) {
-    addError(result, "EMPTY_SCOPE", "No files listed in Scope", "scope");
-  }
+  if (result.patch.scopeFiles.length === 0) addError(result, "EMPTY_SCOPE", "No files or logical targets listed in Scope", "scope");
 
   result.patch.changes = parseChanges(markdown, headings, verificationHeading.start, result);
+  result.patch.verification = parseVerification(bodyBetween(markdown, verificationHeading, rollbackHeading ?? operationalHeading));
+  if (result.patch.verification.commands.length === 0) addError(result, "EMPTY_VERIFICATION", "No complete bash/sh verification block listed", "verification");
 
-  const verificationBody = normalizeBody(markdown.slice(verificationHeading.end, opsHeading.start));
-  result.patch.verification = parseVerification(verificationBody);
-  if (result.patch.verification.commands.length === 0) {
-    addError(result, "EMPTY_VERIFICATION", "No verification commands listed", "verification");
+  if (rollbackHeading) {
+    const rollbackBody = bodyBetween(markdown, rollbackHeading, operationalHeading);
+    const commands = extractShellBlocks(rollbackBody);
+    result.patch.rollback = { commands, shellBlocks: commands, notes: parseBulletNotes(rollbackBody) };
+    if (strict && commands.length === 0) addError(result, "EMPTY_ROLLBACK", "Strict v2 patches require a rollback command block", "rollback");
   }
+  result.patch.operationalNotes = parseBulletNotes(sectionBody(markdown, headings, operationalHeading));
 
-  const opsBody = normalizeBody(markdown.slice(opsHeading.end));
-  result.patch.operationalNotes = parseOperationalNotes(opsBody);
+  result.patch.scopeFiles = result.patch.scopeFiles.map((entry) => resolveDocumentPath(entry, result.patch.pathVariables, options.workspaceRoot ?? "", result, "scope"));
+  result.patch.changes = result.patch.changes.map((change) => {
+    const files = change.files.map((entry) => resolveDocumentPath(entry, result.patch.pathVariables, options.workspaceRoot ?? "", result, `Change ${change.index}`));
+    return { ...change, file: files[0], files };
+  });
 
-  // Detect unresolved variables in scope files and change files.
-  const checkPaths = [...result.patch.scopeFiles, ...result.patch.changes.map((c) => c.file)];
-  const unresolvedVars = new Set();
-  for (const p of checkPaths) {
-    const { unresolved } = resolvePathVars(p, result.patch.pathVariables);
-    for (const name of unresolved) unresolvedVars.add(name);
-  }
-  for (const name of unresolvedVars) {
-    addError(result, "UNRESOLVED_PATH_VARIABLE", `Unresolved path variable: ${name}`, "scope");
-  }
-
-  // Optionally resolve paths using workspace root.
-  if (options.workspaceRoot) {
-    result.patch.scopeFiles = result.patch.scopeFiles.map((p) => {
-      const { output } = resolvePathVars(p, result.patch.pathVariables);
-      if (output.startsWith("/") || output.match(/^[A-Za-z]:[\\/]/)) return output;
-      return path.posix.join(options.workspaceRoot.replace(/\\/g, "/"), output);
-    });
-    result.patch.changes = result.patch.changes.map((c) => {
-      const { output } = resolvePathVars(c.file, result.patch.pathVariables);
-      const resolved = output.startsWith("/") || output.match(/^[A-Za-z]:[\\/]/)
-        ? output
-        : path.posix.join(options.workspaceRoot.replace(/\\/g, "/"), output);
-      return { ...c, file: resolved };
-    });
+  if (strict) {
+    const scope = new Set(result.patch.scopeFiles);
+    const changed = new Set(result.patch.changes.flatMap((change) => change.files));
+    for (const file of scope) if (!changed.has(file)) addError(result, "UNMAPPED_SCOPE_FILE", `Scoped target has no Change mapping: ${file}`, "scope");
+    for (const file of changed) if (!scope.has(file)) addError(result, "CHANGE_OUTSIDE_SCOPE", `Change target is not listed in Scope: ${file}`, "change");
   }
 
   result.ok = result.errors.length === 0;
   return result;
 }
 
+export function parsePatchFile(patchPath, options = {}) {
+  const absolute = path.resolve(patchPath);
+  if (!fs.existsSync(absolute)) {
+    const result = { schemaVersion: options.strict === false ? "1.0-legacy" : V2_SCHEMA_VERSION, ok: false, patch: buildEmptyPatch(), errors: [], warnings: [] };
+    addError(result, "FILE_NOT_FOUND", `PATCH file not found: ${absolute}`, null);
+    return result;
+  }
+  try {
+    return parsePatch(fs.readFileSync(absolute, "utf8"), { ...options, patchPath: absolute });
+  } catch (error) {
+    const result = { schemaVersion: options.strict === false ? "1.0-legacy" : V2_SCHEMA_VERSION, ok: false, patch: buildEmptyPatch(), errors: [], warnings: [] };
+    addError(result, "INVALID_MARKDOWN", error instanceof Error ? error.message : String(error), null);
+    return result;
+  }
+}
+
 function main() {
   let options;
   try {
     options = parseArgs(process.argv.slice(2));
-  } catch (err) {
-    console.error(String(err.message || err));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
     process.exit(2);
   }
-
-  const patchPath = path.resolve(options.patchPath);
-  const initial = {
-    ok: false,
-    patch: buildEmptyPatch(),
-    errors: [],
-    warnings: [],
-  };
-
-  if (!fs.existsSync(patchPath)) {
-    addError(initial, "FILE_NOT_FOUND", `PATCH file not found: ${patchPath}`, null);
-    console.log(JSON.stringify(initial, null, 2));
-    process.exit(1);
-  }
-
-  let markdown = "";
-  try {
-    markdown = fs.readFileSync(patchPath, "utf8");
-  } catch (err) {
-    addError(initial, "INVALID_MARKDOWN", `Could not read PATCH file: ${String(err.message || err)}`, null);
-    console.log(JSON.stringify(initial, null, 2));
-    process.exit(1);
-  }
-
-  const result = parsePatch(markdown, {
-    strict: options.strict,
-    workspaceRoot: options.workspaceRoot,
-  });
-
+  const result = parsePatchFile(options.patchPath, options);
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.ok ? 0 : 1);
 }
 
-main();
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) main();

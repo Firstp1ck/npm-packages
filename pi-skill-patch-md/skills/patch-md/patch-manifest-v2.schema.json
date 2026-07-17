@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firstpick.dev/schemas/patch-manifest-v2.schema.json",
+  "title": "PATCH.md lifecycle manifest v2",
+  "type": "object",
+  "required": ["schemaVersion", "id", "version", "title", "description", "risk", "lifecycle", "support", "targets", "verification", "rollback"],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "version": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "risk": {
+      "type": "object",
+      "required": ["level", "mutatesInstalledPackages", "network", "billing"],
+      "properties": {
+        "level": { "enum": ["low", "medium", "high", "critical"] },
+        "mutatesInstalledPackages": { "type": "boolean" },
+        "network": { "enum": ["none", "optional", "required"] },
+        "billing": { "enum": ["none", "optional", "possible"] },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "lifecycle": {
+      "type": "object",
+      "required": ["handler"],
+      "properties": {
+        "handler": { "type": "string", "minLength": 1 },
+        "minimumPatchctlVersion": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "support": {
+      "type": "object",
+      "required": ["platforms", "packages"],
+      "properties": {
+        "platforms": { "type": "array", "minItems": 1, "items": { "enum": ["linux", "darwin", "win32"] } },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "range"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "range": { "type": "string", "minLength": 1 },
+              "layouts": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "role", "required", "discover", "package", "fileCandidates", "fingerprints"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "role": { "type": "string", "minLength": 1 },
+          "required": { "type": "boolean" },
+          "discover": { "type": "object" },
+          "package": { "type": "string", "minLength": 1 },
+          "fileCandidates": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "fingerprints": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "phase", "runner"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "phase": { "enum": ["pre-apply", "post-apply", "manual"] },
+          "runner": { "enum": ["handler", "argv"] },
+          "argv": { "type": "array", "items": { "type": "string" } },
+          "network": { "type": "boolean" },
+          "billing": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "required": ["supported", "strategy"],
+      "properties": {
+        "supported": { "const": true },
+        "strategy": { "enum": ["receipt-backup", "package-reinstall", "custom"] }
+      },
+      "additionalProperties": true
+    },
+    "components": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

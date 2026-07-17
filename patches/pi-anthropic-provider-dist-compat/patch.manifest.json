@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "2.0",
+  "id": "pi.anthropic-provider-dist-compat",
+  "version": "2.0.0",
+  "title": "Pi Anthropic Agent SDK dist compatibility",
+  "description": "Version-gated, semantic fallback patch for the Anthropic OAuth request implementation actually resolved by native Pi and Pi WebUI RPC runtimes.",
+  "risk": {
+    "level": "high",
+    "mutatesInstalledPackages": true,
+    "network": "optional",
+    "billing": "possible",
+    "notes": [
+      "The copied Agent SDK request identity is an undocumented compatibility shim, not a public Anthropic protocol contract.",
+      "Apply is offline and transactional; live Anthropic verification is excluded and requires separate approval.",
+      "Unknown package versions or layouts fail closed."
+    ]
+  },
+  "lifecycle": {
+    "handler": "./scripts/lifecycle.mjs",
+    "minimumPatchctlVersion": "2.0.0"
+  },
+  "support": {
+    "platforms": ["linux", "darwin", "win32"],
+    "packages": [
+      {
+        "name": "@earendil-works/pi-ai",
+        "range": ">=0.78.0 <0.81.0",
+        "layouts": ["dist/providers/anthropic.js", "dist/api/anthropic-messages.js"]
+      }
+    ]
+  },
+  "profile": {
+    "version": "2.1.201",
+    "build": "986",
+    "entrypoint": "sdk-cli",
+    "identityPrompt": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+    "betaFeatures": [
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "thinking-token-count-2026-05-13",
+      "context-management-2025-06-27",
+      "prompt-caching-scope-2026-01-05",
+      "claude-code-20250219",
+      "extended-cache-ttl-2025-04-11"
+    ]
+  },
+  "targets": [
+    {
+      "id": "native-pi-ai-anthropic",
+      "role": "native-tui",
+      "required": true,
+      "discover": { "kind": "node-resolution-from-executable", "executable": "pi" },
+      "package": "@earendil-works/pi-ai",
+      "fileCandidates": ["dist/api/anthropic-messages.js", "dist/providers/anthropic.js"],
+      "fingerprints": ["legacy-claude-code-oauth", "firstpick-dist-compat-v2", "upstream-agent-sdk"]
+    },
+    {
+      "id": "webui-pi-ai-anthropic",
+      "role": "webui-rpc",
+      "required": false,
+      "discover": { "kind": "node-resolution-from-webui-child-runtime", "package": "@firstpick/pi-package-webui" },
+      "package": "@earendil-works/pi-ai",
+      "fileCandidates": ["dist/api/anthropic-messages.js", "dist/providers/anthropic.js"],
+      "fingerprints": ["legacy-claude-code-oauth", "firstpick-dist-compat-v2", "upstream-agent-sdk"]
+    }
+  ],
+  "verification": [
+    { "id": "syntax", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "semantic-postconditions", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "local-http-capture", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "live-anthropic", "phase": "manual", "runner": "argv", "argv": ["pi", "--provider", "anthropic", "--model", "claude-haiku-4-5", "-p", "--tools", "", "Reply with exactly: ok"], "network": true, "billing": true }
+  ],
+  "rollback": {
+    "supported": true,
+    "strategy": "receipt-backup"
+  }
+}

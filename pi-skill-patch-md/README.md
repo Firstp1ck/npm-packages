@@ -1,16 +1,28 @@
 # @firstpick/pi-skill-patch-md
 
-A Pi skill for two patch workflows:
+A Pi skill and local runner for versioned patch lifecycle packages.
 
-1. **Create/Update PATCH.md** using a fixed, reproducible structure.
-2. **Implement PATCH.md** by applying the documented source changes exactly.
+## Lifecycle
 
-## What it does
+```bash
+PATCHCTL=skills/patch-md/scripts/patchctl.mjs
+node "$PATCHCTL" status   --patch /path/to/PATCH.md
+node "$PATCHCTL" plan     --patch /path/to/PATCH.md
+node "$PATCHCTL" apply    --patch /path/to/PATCH.md --plan-hash <reviewed-hash>
+node "$PATCHCTL" verify   --patch /path/to/PATCH.md
+node "$PATCHCTL" rollback --patch /path/to/PATCH.md --confirm
+```
 
-- Adds the `patch-md` skill to Pi's skill library.
-- Enforces one canonical PATCH.md structure.
-- Defines a precise tool-call contract (`patch_md_extract`) for parsing PATCH.md into machine-readable execution data.
-- Helps agents produce implementation-ready patch docs and execute them safely.
+Schema v2 adds:
+
+- a machine-readable `patch.manifest.json`;
+- deterministic plan hashes;
+- runtime/package discovery;
+- semantic fingerprints and fail-closed version handling;
+- idempotent, transactional application;
+- offline verification and receipt-based rollback.
+
+Legacy prose-only documents may be read with `patch_md_extract.mjs --no-strict` for migration, but cannot be trusted for apply.
 
 ## Install
 
@@ -18,30 +30,8 @@ A Pi skill for two patch workflows:
 pi install npm:@firstpick/pi-skill-patch-md
 ```
 
-## Configuration
+## Test
 
-No required configuration.
-
-## Commands
-
-None.
-
-## Tools
-
-Skill-defined contract for integration:
-
-- `patch_md_extract` (recommended tool name)
-  - Preferred parser script: `skills/patch-md/scripts/patch_md_extract.mjs`
-  - Spec: `skills/patch-md/TOOL-CALL-SPEC.md`
-  - Schema: `skills/patch-md/patch-md-tool.schema.json`
-
-Modes:
-- Script mode (`--strict`, default) — preferred
-- Unstrict mode (`--no-strict`) — fallback for legacy PATCH.md variants
-
-## Example
-
-```text
-User: Create PATCH.md for this bugfix and then implement it.
-Agent: Invokes patch-md skill, writes standardized PATCH.md, then applies the patch and reports verification.
+```bash
+npm test
 ```

@@ -1,137 +1,147 @@
 ---
 name: patch-md
-description: Agents should invoke this skill to create, update, and implement standardized PATCH.md files that document exact, reproducible source code patches and verification steps.
+description: Agents should invoke this skill to create, migrate, inspect, apply, verify, or roll back versioned PATCH.md v2 lifecycle packages with machine-readable manifests, deterministic plans, drift detection, and transactional safety.
 ---
 
 # Patch MD Skill
 
 ## When to Use
 
-Activate this skill when the task is to:
+Use this skill to:
 
-- Create a new `PATCH.md`
-- Update an existing `PATCH.md`
-- Implement changes described in a `PATCH.md`
-- Reapply a patch in another environment/repository
+- create or update a patch package;
+- migrate a legacy prose-only `PATCH.md` to schema v2;
+- inspect patch status after package updates;
+- plan, apply, verify, or roll back a patch;
+- reapply a patch across machines or package layouts.
 
-Use this skill whenever reproducibility and portability of patch instructions matter.
+## Required v2 Artifact
 
-## Required Standard Structure
+A trusted patch package contains:
 
-`PATCH.md` must always use the same section order and headings:
+```text
+PATCH.md
+patch.manifest.json
+scripts/<lifecycle-handler>.mjs
+```
 
-1. `# PATCH.md — <short patch title>`
-2. `## Purpose`
-3. `### Root cause`
-4. `### Expected outcome`
-5. `## Scope (exact files changed)`
-   - optional `Path variables:` block for `${VAR}` placeholders used in file paths
-6. One or more `## Change N — <short change title>` blocks
-   - `**File:** <path>`
-   - `### What was changed`
-   - `### Why`
-7. `## Verification steps`
-8. `## Operational notes`
+Tests and fixtures are required for package-version or layout-dependent patches.
 
-Use the template at `./PATCH-TEMPLATE.md`.
+- `PATCH.md` explains intent, scope, transformations, verification, rollback, and limitations.
+- `patch.manifest.json` is the machine-readable source of truth.
+- The lifecycle handler discovers actual runtimes and implements semantic, idempotent transformations.
 
-## Tool-Call Integration
+Use `PATCH-TEMPLATE.md`, `TOOL-CALL-SPEC.md`, and `patch-manifest-v2.schema.json`.
 
-This skill defines a tool-call contract for machine-readable extraction:
+## Lifecycle Commands
 
-- Spec: `./TOOL-CALL-SPEC.md`
-- JSON Schema: `./patch-md-tool.schema.json`
-- Script (preferred): `./scripts/patch_md_extract.mjs`
-- Recommended tool name: `patch_md_extract`
+Resolve paths relative to this skill directory:
 
-The skill supports two execution modes:
+```bash
+node ./scripts/patch_md_extract.mjs --patch /path/to/PATCH.md --strict
+node ./scripts/patchctl.mjs status --patch /path/to/PATCH.md
+node ./scripts/patchctl.mjs plan --patch /path/to/PATCH.md
+node ./scripts/patchctl.mjs apply --patch /path/to/PATCH.md --plan-hash <reviewed-hash>
+node ./scripts/patchctl.mjs verify --patch /path/to/PATCH.md
+node ./scripts/patchctl.mjs rollback --patch /path/to/PATCH.md --confirm
+```
 
-1. **Script mode (preferred)**
-   - Invoke `patch_md_extract.mjs` with `--strict` (default).
-   - Use structured JSON output as the execution source of truth.
-2. **Unstrict tool-call mode (fallback)**
-   - Use `strict=false` behavior when strict parsing fails on legacy PATCH.md variants.
-   - Continue only when parsed output is implementation-safe.
+## Workflow
 
-## Mode A — Create/Update PATCH.md
+Choose the lifecycle mode below from the user's request and current patch state. Always enter through strict extraction, use read-only status/plan before mutation, and finish with verification or an explicit blocker report.
 
-### Step A1: Discover actual patch facts
+## Mode A — Create or Migrate
 
-1. Read relevant source files.
-2. Identify exact paths and exact changes.
-3. Verify behavior/commands before writing claims.
+1. Discover actual runtime entrypoints and package dependency graphs.
+2. Define stable logical targets instead of user-specific absolute paths.
+3. Add package support ranges and semantic fingerprints.
+4. Implement three-way status: applicable, already-applied/upstreamed, or unsupported.
+5. Add idempotent transformation and postconditions.
+6. Add offline verification, receipt-based rollback, fixtures, and tests.
+7. Parse with strict mode and run the package test suite.
 
-Do not invent diffs, commands, or outcomes.
+Legacy `--no-strict` parsing is allowed only to extract facts for migration. Never apply from legacy parser output.
 
-### Step A2: Produce standardized PATCH.md
+## Mode B — Status and Plan
 
-- Follow required section order exactly.
-- Keep paths and commands copy/paste ready.
-- Use POSIX-style paths in the document for Linux/macOS portability.
-- For each change block, include concrete before/after snippets where helpful.
+1. Run strict extraction; stop if `ok=false`.
+2. Run `patchctl status`.
+3. Run `patchctl plan` and review every required target, package version, path, before-hash, transformation, and risk.
+4. Do not proceed when a required target is unsupported or the plan reports drift.
 
-### Step A3: Self-validate before finalizing
+Status and plan must be read-only.
 
-Confirm all checks pass:
+## Mode C — Apply
 
-- Section order matches standard structure exactly.
-- Every `Change N` block has file path, what changed, and why.
-- Verification commands are runnable and specific.
-- Scope file list includes every touched file and no unrelated files.
-- Wording is implementation-level, not high-level only.
+1. Obtain explicit user approval for installed/global package mutation when not already requested.
+2. Apply only with the exact fresh plan hash.
+3. The handler must prepare and verify all target outputs before committing.
+4. Use sibling temporary files, restrictive backups, atomic rename, and automatic rollback on commit failure.
+5. Write a non-secret receipt with package versions and before/after hashes.
+6. Run offline verification against the exact runtime entrypoints.
 
-If any check fails, revise the file before returning.
+Never silently reapply after an update.
 
-## Mode B — Implement PATCH.md
+## Mode D — Verify
 
-### Step B1: Parse PATCH.md into an execution plan
+Verification must include, where applicable:
 
-Preferred flow (script mode):
+- syntax/type checks;
+- semantic postconditions;
+- actual runtime/package resolution checks;
+- no-secret local protocol capture;
+- native TUI and RPC/WebUI variants;
+- a second apply producing zero writes.
 
-1. Run `./scripts/patch_md_extract.mjs --patch <PATCH.md path> --strict`.
-2. Validate output against `./patch-md-tool.schema.json`.
-3. If `ok=true`, use parsed JSON as execution input.
+Network, billing, credential, or live-provider checks must be separately identified and approved.
 
-Fallback flow (unstrict tool-call mode):
+## Mode E — Rollback
 
-1. Run parser/tool-call with `strict=false` (`--no-strict` in script mode).
-2. Accept output only if `ok=true` and required execution fields are present.
-3. If still `ok=false`, stop and request PATCH.md correction.
+1. Require `--confirm`.
+2. Load the apply receipt.
+3. Refuse rollback if a target no longer matches the recorded after-hash.
+4. Restore backups atomically.
+5. Verify restored before-hashes and archive the receipt.
 
-If PATCH.md is ambiguous or incomplete, stop and ask targeted clarification.
+## Verification
 
-### Step B2: Apply patch exactly
+After changing this skill or its runner, execute:
 
-- Apply changes file-by-file in listed order (`Change 1`, `Change 2`, ...).
-- Modify only files in PATCH scope unless user explicitly approves scope expansion.
-- Keep edits minimal and targeted.
-- Preserve unrelated code and formatting conventions.
+```bash
+npm run check --prefix <pi-skill-patch-md-package-root>
+```
 
-### Step B3: Verify and report
+Before depending on a created or migrated patch, also run strict extraction, its fixture/unit tests, `patchctl status`, and offline `patchctl verify`. Run the Pi skill evaluator when available. Record any intentionally deferred network, billing, platform, or live-provider checks.
 
-- Run verification commands from PATCH.md.
-- Report pass/fail with concrete output.
-- If a step fails, include: failure, attempted fix, remaining blocker.
+## Parser and Manifest Requirements
 
-## Output Contract
+Strict v2 validation requires:
 
-### For Create/Update requests
-
-- Output path of written/updated `PATCH.md`
-- Brief summary of what was documented
-- Verification status for claims
-
-### For Implement requests
-
-- List of modified files
-- Summary of applied changes by `Change N`
-- Verification results (commands + outcome)
-- Any remaining risks or manual follow-ups
+- every fixed heading exactly once and in canonical order;
+- contiguous unique Change indexes;
+- complete scope-to-change mapping;
+- recursive variable resolution with cycle detection;
+- complete shell fences preserved as blocks;
+- contained manifest and lifecycle handler paths;
+- valid v2 manifest fields, risk metadata, verification, and rollback.
 
 ## Guardrails
 
-- Never claim a patch is implemented without file evidence.
-- Never claim verification success without command/output evidence.
-- Never change behavior outside PATCH.md scope unless explicitly approved.
-- Never continue implementation if tool output reports structural errors.
-- If PATCH.md conflicts with code reality, report mismatch and propose corrected PATCH.md updates.
+- Prefer upstream fixes or public extension/provider APIs over installed `dist/` edits.
+- If `dist/` mutation is unavoidable, resolve from actual executable/runtime entrypoints and fail closed on unknown layouts.
+- Never patch every matching package directory blindly.
+- Never log credentials, authorization headers, request bodies containing user content, or secret environment values.
+- Never execute verification prose as shell commands; use manifest argv steps or reviewed handler code.
+- Never claim implementation or verification without file and command evidence.
+- Never modify paths outside the reviewed plan.
+
+## Output Contract
+
+Report:
+
+- patch ID/version and manifest path;
+- status or reviewed plan hash;
+- modified targets and before/after hashes;
+- verification results;
+- receipt or rollback archive path;
+- unsupported targets, deferred live checks, and restart requirements.
