@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=76" />
+    <link rel="stylesheet" href="/styles.css?v=80" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -73,9 +73,11 @@
               </div>
             </div>
           </div>
-          <button id="splitTabButton" class="terminal-split-button" type="button" aria-label="Split the active terminal to the right" aria-pressed="false"><svg class="terminal-split-icon terminal-split-icon-split" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M15 12h4m0 0-2-2m2 2-2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="terminal-split-icon terminal-split-icon-unsplit" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M19 12h-4m0 0 2-2m-2 2 2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button id="commandPaletteButton" class="terminal-command-palette-button" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="terminal-sidebar-actions" aria-label="Tab and workspace actions">
+            <button id="splitTabButton" class="terminal-split-button" type="button" aria-label="Split the active terminal to the right" aria-pressed="false"><svg class="terminal-split-icon terminal-split-icon-split" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M15 12h4m0 0-2-2m2 2-2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="terminal-split-icon terminal-split-icon-unsplit" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M19 12h-4m0 0 2-2m-2 2 2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label terminal-sidebar-action-label-split">Split</span><span class="terminal-sidebar-action-label terminal-sidebar-action-label-unsplit">Unsplit</span></button>
+            <button id="commandPaletteButton" class="terminal-command-palette-button" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label">Commands</span></button>
+            <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label">Overview</span></button>
+          </div>
           <div id="remoteAccessIndicator" class="remote-access-indicator" role="status" aria-live="polite" hidden>Remote access open</div>
           <button id="closeAllTabsButton" class="terminal-close-all-button" type="button" aria-label="Close all terminal tabs">Close all Tabs</button>
         </header>
@@ -412,66 +414,124 @@
             </h2>
             <div id="sidePanelSectionControls" class="side-panel-section-content" hidden>
               <div class="side-panel-controls">
-                <div class="control-field">
-                  <label id="modelControlLabel" for="modelSelect" title="Open or close model search" tabindex="0">Model</label>
-                  <input id="modelSearchInput" class="model-search-input" type="search" placeholder="Search models…" autocomplete="off" spellcheck="false" hidden />
-                  <select id="modelSelect" title="Model"></select>
-                  <div id="modelSearchResults" class="model-search-results" role="listbox" aria-label="Model search results" hidden></div>
-                  <button id="setModelButton" type="button">Set model</button>
-                </div>
-                <div class="control-field">
-                  <label for="thinkingSelect">Thinking</label>
-                  <select id="thinkingSelect" title="Thinking level">
-                    <option value="off">off</option>
-                    <option value="minimal">minimal</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="xhigh">xhigh</option>
-                    <option value="max">max</option>
-                  </select>
-                  <button id="setThinkingButton" type="button">Set thinking</button>
-                </div>
-                <div class="control-field thinking-visibility-control-field">
-                  <span class="control-label">Output</span>
-                  <label class="toggle-control" for="thinkingVisibilityToggle">
-                    <input id="thinkingVisibilityToggle" type="checkbox" checked />
-                    <span>
-                      <span class="toggle-control-label">Show thinking output</span>
-                      <span id="thinkingVisibilityStatus" class="toggle-control-hint">Visible</span>
-                    </span>
-                  </label>
-                </div>
-                <div class="control-field terminal-tabs-layout-control-field">
-                  <label for="terminalTabsLayoutSelect">Tabs layout</label>
-                  <select id="terminalTabsLayoutSelect" title="Terminal tabs layout" aria-describedby="terminalTabsLayoutStatus">
-                    <option value="top">Top bar</option>
-                    <option value="left">Left sidebar</option>
-                  </select>
-                  <div id="terminalTabsLayoutStatus" class="terminal-tabs-layout-status toggle-control-hint">Top bar</div>
-                </div>
-                <div class="control-field">
-                  <label for="themeSelect" id="themeControlLabel" title="Open or close theme search" tabindex="0">Theme</label>
-                  <div id="themeSchemeToggle" class="theme-scheme-toggle" role="group" aria-label="Theme mode">
-                    <button type="button" data-scheme-mode="light" aria-pressed="false" title="Always use your light theme">Light</button>
-                    <button type="button" data-scheme-mode="dark" aria-pressed="false" title="Always use your dark theme">Dark</button>
-                    <button type="button" data-scheme-mode="auto" aria-pressed="false" title="Follow your system light/dark setting">Auto</button>
+                <p class="controls-intro">Session controls affect the active Pi tab. Interface preferences are saved in this browser.</p>
+
+                <section class="control-group" aria-labelledby="sessionControlsTitle">
+                  <div class="control-group-header">
+                    <div class="control-group-heading">
+                      <h3 id="sessionControlsTitle">Active session</h3>
+                      <p>Choose how Pi responds in the current tab.</p>
+                    </div>
+                    <span class="control-scope-badge">This tab</span>
                   </div>
-                  <input id="themeSearchInput" class="model-search-input theme-search-input" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
-                  <select id="themeSelect" title="Theme"></select>
-                  <div id="themeSearchResults" class="model-search-results theme-search-results" role="listbox" aria-label="Theme search results" hidden></div>
-                </div>
-                <div class="control-field background-control-field">
-                  <label for="backgroundInput">Background</label>
-                  <input id="backgroundInput" class="background-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
-                  <div class="background-control-row">
-                    <button id="backgroundChooseButton" type="button">Change background</button>
-                    <button id="backgroundClearButton" class="background-clear-button" type="button" aria-label="Remove custom background" title="Remove custom background" hidden>×</button>
+
+                  <div class="control-field">
+                    <div class="control-field-header">
+                      <label id="modelControlLabel" for="modelSelect" title="Open or close model search" tabindex="0">Model</label>
+                      <span class="control-field-context">Provider and model</span>
+                    </div>
+                    <input id="modelSearchInput" class="model-search-input" type="search" placeholder="Search models…" autocomplete="off" spellcheck="false" hidden />
+                    <div class="control-action-row">
+                      <select id="modelSelect" title="Model"></select>
+                      <button id="setModelButton" class="control-apply-button" type="button" aria-label="Apply selected model">Apply</button>
+                    </div>
+                    <div id="modelSearchResults" class="model-search-results" role="listbox" aria-label="Model search results" hidden></div>
                   </div>
-                  <div id="backgroundStatus" class="background-status muted">Theme default</div>
-                </div>
-                <div id="networkControlField" class="control-field network-control-field" hidden>
-                  <label>Remote access</label>
+
+                  <div class="control-field">
+                    <div class="control-field-header">
+                      <label for="thinkingSelect">Thinking effort</label>
+                      <span class="control-field-context">Speed and depth</span>
+                    </div>
+                    <div class="control-action-row">
+                      <select id="thinkingSelect" title="Thinking effort">
+                        <option value="off">off</option>
+                        <option value="minimal">minimal</option>
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                        <option value="xhigh">xhigh</option>
+                        <option value="max">max</option>
+                      </select>
+                      <button id="setThinkingButton" class="control-apply-button" type="button" aria-label="Apply selected thinking effort">Apply</button>
+                    </div>
+                  </div>
+
+                  <div class="control-field thinking-visibility-control-field">
+                    <span class="control-label">Transcript</span>
+                    <label class="toggle-control" for="thinkingVisibilityToggle">
+                      <input id="thinkingVisibilityToggle" type="checkbox" checked />
+                      <span>
+                        <span class="toggle-control-label">Show thinking output</span>
+                        <span id="thinkingVisibilityStatus" class="toggle-control-hint">Visible</span>
+                      </span>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="control-group" aria-labelledby="interfaceControlsTitle">
+                  <div class="control-group-header">
+                    <div class="control-group-heading">
+                      <h3 id="interfaceControlsTitle">Interface</h3>
+                      <p>Personalise layout, appearance, and alerts.</p>
+                    </div>
+                    <span class="control-scope-badge">This browser</span>
+                  </div>
+
+                  <div class="control-field terminal-tabs-layout-control-field">
+                    <label for="terminalTabsLayoutSelect">Tab placement</label>
+                    <select id="terminalTabsLayoutSelect" title="Terminal tabs layout" aria-describedby="terminalTabsLayoutStatus">
+                      <option value="top">Top bar</option>
+                      <option value="left">Left sidebar</option>
+                    </select>
+                    <div id="terminalTabsLayoutStatus" class="terminal-tabs-layout-status toggle-control-hint">Top bar · saved in this browser</div>
+                  </div>
+
+                  <div class="control-field theme-control-field">
+                    <div class="control-field-header">
+                      <label for="themeSelect" id="themeControlLabel" title="Open or close theme search" tabindex="0">Theme</label>
+                      <span class="control-field-context">Colour scheme</span>
+                    </div>
+                    <div id="themeSchemeToggle" class="theme-scheme-toggle" role="group" aria-label="Theme mode">
+                      <button type="button" data-scheme-mode="light" aria-pressed="false" title="Always use your light theme">Light</button>
+                      <button type="button" data-scheme-mode="dark" aria-pressed="false" title="Always use your dark theme">Dark</button>
+                      <button type="button" data-scheme-mode="auto" aria-pressed="false" title="Follow your system light/dark setting">Auto</button>
+                    </div>
+                    <input id="themeSearchInput" class="model-search-input theme-search-input" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
+                    <select id="themeSelect" title="Theme"></select>
+                    <div id="themeSearchResults" class="model-search-results theme-search-results" role="listbox" aria-label="Theme search results" hidden></div>
+                  </div>
+
+                  <div class="control-field background-control-field">
+                    <label for="backgroundInput">Custom background</label>
+                    <input id="backgroundInput" class="background-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+                    <div class="background-control-row">
+                      <button id="backgroundChooseButton" type="button">Choose image</button>
+                      <button id="backgroundClearButton" class="background-clear-button" type="button" aria-label="Remove custom background" title="Remove custom background" hidden>×</button>
+                    </div>
+                    <div id="backgroundStatus" class="background-status muted">Theme default</div>
+                  </div>
+
+                  <div class="control-field notification-control-field">
+                    <span class="control-label">Notifications</span>
+                    <label class="toggle-control" for="agentDoneNotificationsToggle">
+                      <input id="agentDoneNotificationsToggle" type="checkbox" />
+                      <span>
+                        <span class="toggle-control-label">Agent done notifications</span>
+                        <span id="agentDoneNotificationsStatus" class="toggle-control-hint">Off</span>
+                      </span>
+                    </label>
+                  </div>
+                </section>
+
+                <section id="networkControlField" class="control-group network-control-field" aria-labelledby="remoteAccessControlsTitle" hidden>
+                  <div class="control-group-header">
+                    <div class="control-group-heading">
+                      <h3 id="remoteAccessControlsTitle">Remote access</h3>
+                      <p>Control trusted-LAN access and PIN protection.</p>
+                    </div>
+                    <span class="control-scope-badge warning">Network</span>
+                  </div>
                   <div id="networkStatus" class="network-status closed">Local only</div>
                   <label class="toggle-control remote-auth-toggle" for="remoteAuthToggle" hidden>
                     <input id="remoteAuthToggle" type="checkbox" />
@@ -484,31 +544,31 @@
                     <button id="openNetworkButton" type="button">Open for remote access</button>
                     <button id="showRemoteQrButton" type="button" hidden>Show QR code</button>
                   </div>
-                </div>
-                <div class="control-field server-control-field">
-                  <label for="serverActionSelect">Server</label>
-                  <div class="server-action-row">
-                    <select id="serverActionSelect" title="Server action" aria-label="Server action">
-                      <option value="" selected>Choose action…</option>
-                      <option value="restart">Restart Server</option>
-                      <option value="update">Update Pi &amp; Restart</option>
-                      <option value="update-all">Update Pi + Packages &amp; Restart</option>
-                      <option value="stop">Stop Server</option>
-                    </select>
-                    <button id="runServerActionButton" type="button" disabled>Run</button>
+                </section>
+
+                <section class="control-group server-control-group" aria-labelledby="serverControlsTitle">
+                  <div class="control-group-header">
+                    <div class="control-group-heading">
+                      <h3 id="serverControlsTitle">Server</h3>
+                      <p>Maintenance actions may interrupt every open tab.</p>
+                    </div>
+                    <span class="control-scope-badge danger">System</span>
                   </div>
-                  <div id="serverActionStatus" class="server-action-status muted" role="status" aria-live="polite"></div>
-                </div>
-                <div class="control-field notification-control-field">
-                  <span class="control-label">Notifications</span>
-                  <label class="toggle-control" for="agentDoneNotificationsToggle">
-                    <input id="agentDoneNotificationsToggle" type="checkbox" />
-                    <span>
-                      <span class="toggle-control-label">Agent done notifications</span>
-                      <span id="agentDoneNotificationsStatus" class="toggle-control-hint">Off</span>
-                    </span>
-                  </label>
-                </div>
+                  <div class="control-field server-control-field">
+                    <label for="serverActionSelect">Choose an action</label>
+                    <div class="server-action-row">
+                      <select id="serverActionSelect" title="Server action" aria-label="Server action">
+                        <option value="" selected>Choose action…</option>
+                        <option value="restart">Restart Server</option>
+                        <option value="update">Update Pi &amp; Restart</option>
+                        <option value="update-all">Update Pi + Packages &amp; Restart</option>
+                        <option value="stop">Stop Server</option>
+                      </select>
+                      <button id="runServerActionButton" type="button" disabled>Run</button>
+                    </div>
+                    <div id="serverActionStatus" class="server-action-status muted" role="status" aria-live="polite"></div>
+                  </div>
+                </section>
               </div>
             </div>
           </section>
@@ -697,7 +757,6 @@
         <dl class="confirmation-details">
           <div><dt>Affected</dt><dd id="confirmationAffected"></dd></div>
           <div><dt>Undo</dt><dd id="confirmationUndo"></dd></div>
-          <div><dt>Safer option</dt><dd id="confirmationAlternative"></dd></div>
         </dl>
         <menu>
           <button id="confirmationCancelButton" type="button">Cancel</button>
@@ -957,6 +1016,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=76"></script>
+    <script type="module" src="/app.js?v=80"></script>
   </body>
 </html>

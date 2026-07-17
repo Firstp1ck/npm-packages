@@ -257,7 +257,6 @@ const elements = {
   confirmationSummary: $("#confirmationSummary"),
   confirmationAffected: $("#confirmationAffected"),
   confirmationUndo: $("#confirmationUndo"),
-  confirmationAlternative: $("#confirmationAlternative"),
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
   piReleaseNotesDialog: $("#piReleaseNotesDialog"),
@@ -1631,7 +1630,7 @@ function terminalTabsLayoutStatusText(layout = terminalTabsLayout) {
 function renderTerminalTabsLayoutControl() {
   const layout = normalizeTerminalTabsLayout(terminalTabsLayout);
   if (elements.terminalTabsLayoutSelect) elements.terminalTabsLayoutSelect.value = layout;
-  if (elements.terminalTabsLayoutStatus) elements.terminalTabsLayoutStatus.textContent = terminalTabsLayoutStatusText(layout);
+  if (elements.terminalTabsLayoutStatus) elements.terminalTabsLayoutStatus.textContent = `${terminalTabsLayoutStatusText(layout)} · saved in this browser`;
 }
 
 function setTerminalTabsLayout(layout, { persist = true, announce = false } = {}) {
@@ -2696,16 +2695,15 @@ function finishApplicationConfirmation(confirmed) {
   resolve?.(!!confirmed);
 }
 
-function appConfirm({ title = "Confirm action", summary = "Continue?", affected = "The selected item", undoable = false, alternative = "Cancel and review the action first.", confirmLabel = "Continue", danger = true } = {}) {
+function appConfirm({ title = "Confirm action", summary = "Continue?", affected = "The selected item", undoable = false, confirmLabel = "Continue", danger = true } = {}) {
   if (!elements.confirmationDialog?.showModal) {
-    return Promise.resolve(window.confirm([title, summary, affected, undoable ? "This can be undone." : "This cannot be undone.", alternative].filter(Boolean).join("\n\n")));
+    return Promise.resolve(window.confirm([title, summary, affected, undoable ? "This can be undone." : "This cannot be undone."].filter(Boolean).join("\n\n")));
   }
   if (activeConfirmationResolve) finishApplicationConfirmation(false);
   elements.confirmationTitle.textContent = title;
   elements.confirmationSummary.textContent = summary;
   elements.confirmationAffected.textContent = affected;
   elements.confirmationUndo.textContent = undoable ? "This action can be undone." : "This action cannot be undone.";
-  elements.confirmationAlternative.textContent = alternative;
   elements.confirmationConfirmButton.textContent = confirmLabel;
   elements.confirmationConfirmButton.classList.toggle("danger", danger);
   elements.confirmationConfirmButton.classList.toggle("primary", !danger);
@@ -2724,7 +2722,6 @@ function appConfirmText(message, options = {}) {
     summary: options.summary || rest.join("\n").trim() || firstLine || "Continue?",
     affected: options.affected || "The current workspace, session, or server state described above",
     undoable: options.undoable === true,
-    alternative: options.alternative || "Cancel and review the affected state before continuing.",
     confirmLabel: options.confirmLabel || "Continue",
     danger: options.danger !== false,
   });
@@ -3554,7 +3551,6 @@ async function confirmOpenWebuiNpmPage() {
     summary: "Open @firstpick/pi-package-webui on npm in a new browser tab?",
     affected: "A new tab will open to the public Pi Web UI package page.",
     undoable: true,
-    alternative: "Cancel to stay in Pi Web UI.",
     confirmLabel: "Open npm",
     danger: false,
   });
@@ -4424,7 +4420,7 @@ function renderBackgroundControl() {
       : `${themeLabel}: theme default`;
   if (elements.backgroundChooseButton) {
     elements.backgroundChooseButton.disabled = customBackgroundLoading;
-    elements.backgroundChooseButton.textContent = active ? "Change background" : "Add background";
+    elements.backgroundChooseButton.textContent = active ? "Change image" : "Choose image";
   }
   if (elements.backgroundInput) elements.backgroundInput.disabled = customBackgroundLoading;
   if (elements.backgroundClearButton) {
@@ -6827,7 +6823,6 @@ async function deleteFileTreeEntry(entry = fileContextMenuState?.entry) {
     summary: `${sourcePath}${recursiveWarning}${dirtyWarning}`,
     affected: typeLabel === "directory" ? "The directory and all files beneath it" : sourcePath,
     undoable: false,
-    alternative: "Cancel and move or rename it instead.",
     confirmLabel: `Delete ${typeLabel}`,
   }))) return;
   const tabContext = activeTabContext();
@@ -8479,11 +8474,6 @@ async function confirmCloseTerminalTabs(targetTabs, label) {
     summary: `${base}\n\n${warning}`,
     affected: tabList || label || `${count} terminal ${noun}`,
     undoable: false,
-    alternative: activeAgentTabs.length
-      ? "Cancel and wait for or abort the running work first."
-      : count === 1
-        ? "Cancel and keep this tab open."
-        : "Cancel and close individual tabs instead.",
     confirmLabel: activeAgentTabs.length ? "Close and stop work" : count === 1 ? "Close tab" : "Close tabs",
   });
 }
@@ -23265,9 +23255,9 @@ function syncRemoteWebuiControlVisibility(hasRemoteWebuiCommand = isOptionalFeat
   if (!elements.networkControlField) return;
   elements.networkControlField.hidden = !hasRemoteWebuiCommand;
   elements.networkControlField.classList.toggle("feature-unavailable", !hasRemoteWebuiCommand);
-  const label = elements.networkControlField.querySelector("label");
+  const heading = elements.networkControlField.querySelector("#remoteAccessControlsTitle");
   const payload = remoteWebuiControlsPayload();
-  if (label) label.textContent = payload?.title || "Remote WebUI";
+  if (heading) heading.textContent = payload?.title || "Remote access";
   elements.networkControlField.title = hasRemoteWebuiCommand
     ? payload?.description || "Remote WebUI controls are provided by @firstpick/pi-package-remote-webui."
     : optionalFeatureUnavailableMessage("remoteWebui");
@@ -23450,7 +23440,6 @@ function closeNativeCommandDialog({ force = false } = {}) {
       summary: "Your changes have not been applied.",
       affected: "All changed fields in this settings window",
       undoable: false,
-      alternative: "Cancel and choose Apply to keep the changes.",
       confirmLabel: "Discard changes",
     }).then((confirmed) => {
       if (!confirmed) return;
@@ -26589,7 +26578,6 @@ async function openToNetwork() {
       summary: "This changes Pi Web UI from local-only to reachable by devices on your network.",
       affected: `${interfaceName}, port ${port}, ${latestNetwork?.auth?.enabled ? "PIN authentication enabled" : "PIN authentication disabled"}`,
       undoable: true,
-      alternative: "Keep local-only access and use this browser on the host machine.",
       confirmLabel: "Open remote access",
     });
     if (!confirmed) return;
@@ -26689,7 +26677,6 @@ async function restartServer() {
     summary: "Browser clients disconnect briefly while the server restarts.",
     affected: "All connected browser clients and Pi tabs managed by this Web UI",
     undoable: false,
-    alternative: "Cancel and continue using the current server process.",
     confirmLabel: "Restart server",
   }))) return;
 
@@ -26737,7 +26724,6 @@ async function stopServer() {
     summary: "The Web UI becomes unavailable until the server is started again.",
     affected: "All connected browser clients and Pi tabs managed by this Web UI",
     undoable: false,
-    alternative: "Cancel, or restart instead if you only need to reload the server.",
     confirmLabel: "Stop server",
   }))) return;
 
@@ -28244,7 +28230,6 @@ elements.newSessionButton.addEventListener("click", async () => {
     summary: "The active tab switches to a fresh conversation.",
     affected: "The active tab; the previous session remains resumable.",
     undoable: false,
-    alternative: "Cancel and open a separate tab to keep both sessions visible.",
     confirmLabel: "Start new session",
   }))) return;
   try {
