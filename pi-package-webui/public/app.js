@@ -14158,16 +14158,24 @@ function subagentOverlayOutputLines(data = subagentOverlayData) {
   return tools;
 }
 
+function subagentOverlayOutputText(data = subagentOverlayData) {
+  return subagentOverlayOutputLines(data).join("\n").trimEnd();
+}
+
 function appendSubagentOutputWaitingIndicator(parent) {
-  const row = make("div", "release-npm-line subagent-output-waiting");
-  row.setAttribute("role", "status");
-  row.setAttribute("aria-label", "Waiting for agent output");
+  const bubble = make("article", "message runIndicator run-indicator-message streaming subagent-output-waiting");
+  bubble.setAttribute("role", "status");
+  bubble.setAttribute("aria-label", "Waiting for agent output");
+  const body = make("div", "message-body");
+  const row = make("div", "run-indicator-row");
   row.append(
     make("span", "subagent-output-waiting-dot", "."),
     make("span", "subagent-output-waiting-dot", "."),
     make("span", "subagent-output-waiting-dot", "."),
   );
-  parent.append(row);
+  body.append(row);
+  bubble.append(body);
+  parent.append(bubble);
 }
 
 function subagentOverlayStateFacts(data = subagentOverlayData) {
@@ -14204,8 +14212,9 @@ function renderSubagentOverlayWidget() {
   const agent = data?.agent || selection.agent || {};
   const tab = tabs.find((item) => item.id === selection.tabId) || selection.tab;
   const running = !selection.finished && (agent.status === "running" || agent.status === "queued" || agent.status === "pending" || !agent.status);
-  const lines = subagentOverlayOutputLines(data);
-  const shownLines = lines.length ? lines : running && agent.currentTool ? [] : [running ? "Waiting for the first agent activity…" : "No recent output was captured."];
+  const outputText = subagentOverlayOutputText(data);
+  const shownText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
+  const shownLineCount = shownText ? shownText.split("\n").length : 0;
   const widget = make("section", `widget release-npm-widget app-runner-widget subagent-overlay-widget${running ? " app-runner-live-widget" : " app-runner-log-widget"}`);
   widget.setAttribute("aria-label", `Live output for subagent ${agent.name || "subagent"}`);
 
@@ -14216,17 +14225,26 @@ function renderSubagentOverlayWidget() {
   for (const fact of subagentOverlayStateFacts(data)) meta.append(make("span", "release-npm-pill", fact));
   header.append(titleWrap, meta);
 
-  const streamHeader = releaseNpmStreamHeader(running ? "Live agent output" : "Agent output", shownLines.length, { live: running });
-  const terminal = make("div", "release-npm-terminal subagent-overlay-terminal");
-  terminal.setAttribute("role", "log");
-  terminal.setAttribute("aria-live", running ? "polite" : "off");
-  for (const line of shownLines) appendReleaseNpmTerminalLine(terminal, line);
-  if (running && agent.currentTool) appendSubagentOutputWaitingIndicator(terminal);
+  const streamHeader = releaseNpmStreamHeader(running ? "Live agent output" : "Agent output", shownLineCount, { live: running });
+  const output = make("div", "subagent-overlay-transcript");
+  output.setAttribute("role", "log");
+  output.setAttribute("aria-live", running ? "polite" : "off");
+  if (shownText) {
+    const { bubble } = createMessageBubble({
+      role: "assistant",
+      title: "final output",
+      timestamp: data?.updatedAt || Date.now(),
+      content: shownText,
+    }, { streaming: running, transient: true });
+    bubble.classList.add("subagent-overlay-message");
+    output.append(bubble);
+  }
+  if (running && agent.currentTool) appendSubagentOutputWaitingIndicator(output);
 
   const controls = make("div", "release-npm-controls subagent-overlay-output-controls");
   const actions = make("div", "app-runner-output-actions");
   const copyButton = appRunnerActionButton("Copy output", copySubagentOverlayOutput, "subagent-overlay-copy-action");
-  copyButton.disabled = subagentOverlayOutputLines(data).length === 0;
+  copyButton.disabled = !outputText;
   const refreshButton = appRunnerActionButton(subagentOverlayLoading ? "Refreshing…" : "Refresh", () => {
     refreshSubagentOverlay().finally(() => scheduleSubagentOverlayRefresh());
   }, "subagent-overlay-refresh-action");
@@ -14240,9 +14258,9 @@ function renderSubagentOverlayWidget() {
     subagentOverlayError,
   ].filter(Boolean);
   controls.append(actions, make("span", `app-runner-output-meta${subagentOverlayError ? " warning" : ""}`, details.join(" · ")));
-  const outputDetails = renderReleaseNpmOutputDetails(`subagent:${selection.tabId}:${selection.agentId}`, streamHeader, terminal, controls);
+  const outputDetails = renderReleaseNpmOutputDetails(`subagent:${selection.tabId}:${selection.agentId}`, streamHeader, output, controls);
   widget.append(header, outputDetails);
-  requestAnimationFrame(() => { if (outputDetails.open) terminal.scrollTop = terminal.scrollHeight; });
+  requestAnimationFrame(() => { if (outputDetails.open) output.scrollTop = output.scrollHeight; });
   return widget;
 }
 
@@ -14317,7 +14335,7 @@ function closeSubagentOverlay() {
 }
 
 async function copySubagentOverlayOutput() {
-  const text = subagentOverlayOutputLines().join("\n").trimEnd();
+  const text = subagentOverlayOutputText();
   if (!text) {
     addEvent("subagent output is empty", "warn");
     return;
@@ -21738,12 +21756,7 @@ function jumpToStickyUserPrompt() {
   requestAnimationFrame(updateStickyUserPromptButton);
 }
 
-function appendMessage(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, reusableToolCards = null, itemKey = "" } = {}) {
-  const reused = reuseToolExecutionBubble(reusableToolCards, message, { streaming, messageIndex, transient });
-  if (reused) {
-    if (itemKey) reused.bubble.dataset.itemKey = itemKey;
-    return reused;
-  }
+function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "" } = {}) {
   const role = String(message.role || "message");
   const safeRole = role.replace(/[^a-z0-9_-]/gi, "");
   const bubble = make("article", `message ${safeRole}${message.level ? ` ${message.level}` : ""}${streaming ? " streaming" : ""}${animateEntry ? " action-enter" : ""}`);
@@ -21802,8 +21815,25 @@ function appendMessage(message, { streaming = false, messageIndex = -1, transien
   attachMessageCopyButton(bubble, message, body);
   attachMessageEditRetryButton(bubble, message, messageIndex, { streaming, transient });
   if (!streaming && !transient) renderActionFeedbackControls(bubble, message, messageIndex);
-  appendChatMessageBubble(bubble);
   return { bubble, body };
+}
+
+function appendMessage(message, options = {}) {
+  const {
+    streaming = false,
+    messageIndex = -1,
+    transient = false,
+    reusableToolCards = null,
+    itemKey = "",
+  } = options;
+  const reused = reuseToolExecutionBubble(reusableToolCards, message, { streaming, messageIndex, transient });
+  if (reused) {
+    if (itemKey) reused.bubble.dataset.itemKey = itemKey;
+    return reused;
+  }
+  const created = createMessageBubble(message, options);
+  appendChatMessageBubble(created.bubble);
+  return created;
 }
 
 function appendTranscriptMessage(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, reusableToolCards = null, itemKey = "" } = {}) {

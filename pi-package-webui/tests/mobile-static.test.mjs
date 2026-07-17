@@ -96,7 +96,7 @@ assert.match(html, /class="optional-features-description[\s\S]*href="https:\/\/g
 assert.doesNotMatch(html, /id="btwOverlayDialog"/, "/btw should not use a blocking modal overlay");
 assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscription usage status");
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
-assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*id="subagentsBox"/, "side panel should expose grouped running subagents with a live count");
+assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*foreground or async mode[\s\S]*id="subagentsBox"/, "side panel should explain how to launch tracked subagents and expose grouped running agents with a live count");
 assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
 assert.match(html, /data-side-panel-section="session"[\s\S]*data-side-panel-section="subagents"[\s\S]*data-side-panel-section="queue"/, "Subagents should appear between Session and Queue in the side panel");
 assert.match(html, /data-side-panel-section="queue"[\s\S]*id="createPromptListButton"[\s\S]*>Create prompt list<\/button>/, "Queue section should expose prompt-list creation");
@@ -184,7 +184,10 @@ assert.ok(
 );
 assert.match(html, /id="optionsConversationModeButton"[^>]*data-command="\/talk"[^>]*hidden[\s\S]*?<span>Start Conversation<\/span>/, "Options menu should include the feature-gated Natural Conversation toggle");
 assert.match(html, /id="conversationModeChip" class="composer-conversation-mode-chip"[\s\S]*hidden>Voice: off<\/button>/, "composer should expose a hidden-until-active conversation status chip");
-assert.match(html, /id="workflowModeButton"[\s\S]*class="composer-workflow-mode-button"[\s\S]*aria-pressed="false"[\s\S]*hidden[\s\S]*<span>Workflow<\/span>/, "composer actions should expose a capability-gated Workflow Mode toggle");
+const workflowModeButtonHtml = html.match(/<button\s+id="workflowModeButton"[\s\S]*?<\/button>/)?.[0] || "";
+assert.match(workflowModeButtonHtml, /class="composer-workflow-mode-button"[\s\S]*aria-pressed="false"[\s\S]*hidden[\s\S]*<span>Workflow<\/span>/, "composer actions should expose a capability-gated Workflow Mode toggle");
+assert.match(workflowModeButtonHtml, /data-tooltip="Workflow Mode:/, "Workflow Mode should retain its styled tooltip");
+assert.doesNotMatch(workflowModeButtonHtml, /\stitle=/, "Workflow Mode should not also expose a browser-native tooltip");
 assert.match(html, /id="workflowModeChip" class="composer-workflow-mode-chip"[\s\S]*hidden>Workflow: on<\/button>/, "composer should expose a hidden-until-active Workflow Mode chip");
 assert.match(html, /id="conversationModeEndButton" class="composer-conversation-end-button"[\s\S]*hidden>End conversation<\/button>/, "composer should expose a persistent End conversation button while active");
 assert.match(html, /id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" hidden>[\s\S]*id="conversationVoiceButton"[\s\S]*id="conversationVoiceMenuPanel" class="composer-publish-menu-panel[\s\S]*id="conversationModeEndButton"/, "composer should expose the conversation voice menu (publish-menu pattern) next to the End conversation button");
@@ -321,9 +324,10 @@ assert.match(css, /\.webui-version-badge,\n\.webui-dev-badge \{[\s\S]*?border-ra
 assert.match(css, /\.webui-dev-badge \{[\s\S]*?color:\s*var\(--ctp-yellow\)/, "Web UI dev indicator should have distinct warning styling");
 assert.match(css, /\.side-panel-section\.collapsed \.side-panel-section-content,\n\.side-panel-section-content\[hidden\] \{\n\s+display:\s*none;/, "collapsed side panel section content should be hidden");
 assert.match(css, /\.side-panel-section:not\(\.collapsed\) \.side-panel-section-chevron/, "expanded side panel sections should rotate the chevron");
+assert.match(css, /\.subagents-help \{[\s\S]*border-left:[\s\S]*font-size:\s*0\.7rem;[\s\S]*\.subagents-help code/, "subagent invocation guidance should render as a compact informational callout");
 assert.match(css, /\.subagents-box\.has-items[\s\S]*\.subagent-tab-group[\s\S]*\.subagent-agent-row/, "running subagents should render as grouped terminal/session cards");
 assert.match(css, /\.subagent-agent-row:hover,[\s\S]*\.subagent-agent-row:focus-visible/, "subagent rows should expose clickable hover and keyboard focus states");
-assert.match(css, /\.subagent-overlay-widget[\s\S]*\.subagent-overlay-terminal[\s\S]*\.subagent-overlay-close-action/, "subagent output should reuse the non-blocking App Runner widget visual language");
+assert.match(css, /\.subagent-overlay-widget[\s\S]*\.subagent-overlay-transcript[\s\S]*\.subagent-overlay-message[\s\S]*\.subagent-overlay-close-action/, "subagent output should combine the non-blocking widget shell with the main transcript message styling");
 assert.match(css, /\.subagent-output-waiting-dot[\s\S]*@keyframes subagent-output-waiting-pulse/, "subagent output should animate one transient ellipsis while waiting");
 assert.doesNotMatch(css, /\.extension-dialog\.subagent-overlay-dialog/, "subagent output should not retain blocking dialog styles");
 assert.match(css, /@keyframes subagent-running-pulse/, "running subagents should expose a live activity indicator");
@@ -364,8 +368,10 @@ assert.match(css, /\.action-feedback-controls:hover,[\s\S]*?\.action-feedback-co
 assert.match(css, /\.action-feedback-controls:not\(:hover\):not\(:focus-within\) \.action-feedback-button/, "hidden action reactions should not expose button hit targets until the hover area is reached");
 assert.match(css, /\.action-feedback-button\.feedback-question\.active/, "question-mark reaction should have selected styling");
 assert.match(css, /\.composer-row button\[data-tooltip\]::after/, "composer button tooltips should be shared across Git, Steer, and Follow-up buttons");
+assert.match(css, /\.composer-row \.composer-workflow-mode-button\[data-tooltip\]::after \{\n\s+max-width:\s*min\(18rem, calc\(100vw - 2rem\)\);/, "Workflow Mode tooltip should stay narrow enough to remain inside the outer chat frame");
 assert.match(css, /\.composer-row \.composer-git-button\[data-tooltip\]::after \{[\s\S]*?left:\s*0;[\s\S]*?right:\s*auto;/, "Git workflow tooltip should open rightward so it is not clipped off the left edge");
 assert.match(css, /\.composer-row button\[data-tooltip\]\.tooltip-open::after/, "composer button tooltips should be triggerable from JS for empty mobile taps");
+assert.match(css, /\.composer-row button\[data-tooltip\]:hover,[\s\S]*?\.composer-input-row button\[data-tooltip\]\.tooltip-open \{\n\s+z-index:\s*40;/, "active composer tooltip triggers should stack above context tags and adjacent controls");
 assert.match(css, /\.footer-floating-tooltip \{[\s\S]*?position:\s*fixed;[\s\S]*?z-index:\s*1000/, "git footer extension boxes should use one viewport-positioned styled tooltip");
 assert.match(css, /\.footer-floating-tooltip \{[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?white-space:\s*pre-wrap;/, "git footer tooltips should wrap long paths instead of clipping them");
 assert.doesNotMatch(css, /\.statusbar-git-footer \.footer-(?:metric|meta)\[data-tooltip\]::after/, "git footer chips should not also render a second pseudo-element tooltip");
@@ -385,7 +391,7 @@ assert.match(css, /body\.composer-actions-open \.composer-actions-panel \{ displ
 assert.match(css, /\.terminal-tabs-toggle-button \{ display: none; \}/, "terminal tab toggle should be hidden outside mobile CSS");
 assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.terminal-command-palette-button,\n\s+\.terminal-dashboard-button \{[\s\S]*?display:\s*inline-grid;/, "mobile header should keep the command palette button visible beside the dashboard button");
 assert.match(css, /\.command-palette-close-button \{[\s\S]*?min-width:\s*44px;[\s\S]*?min-height:\s*44px/, "command palette close button should meet touch-target sizing by default");
-assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.command-palette-dialog \{[\s\S]*?width:\s*min\(100vw - 0\.5rem, 42rem\)[\s\S]*?\.command-palette-list \{[\s\S]*?scrollbar-gutter:\s*auto;[\s\S]*?\.command-palette-item \{[\s\S]*?grid-template-columns:\s*minmax\(3\.4rem, 0\.26fr\) minmax\(0, 1fr\);[\s\S]*?min-height:\s*2\.72rem;/, "mobile command palette results should use compact two-column cards instead of tall one-column cards");
+assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.command-palette-dialog \{[\s\S]*?width:\s*min\(100vw - 0\.5rem, 42rem\)[\s\S]*?\.command-palette-list \{[\s\S]*?align-content:\s*start;[\s\S]*?grid-auto-rows:\s*max-content;[\s\S]*?scrollbar-gutter:\s*auto;[\s\S]*?\.command-palette-item \{[\s\S]*?grid-template-columns:\s*minmax\(3\.4rem, 0\.26fr\) minmax\(0, 1fr\);[\s\S]*?min-height:\s*2\.72rem;/, "mobile command palette results should keep text-height rows and use compact two-column cards");
 assert.match(css, /@media \(max-width: 720px\) \{[\s\S]*?\.command-palette-item-kind \{[\s\S]*?font-size:\s*var\(--text-xs\);[\s\S]*?\.command-palette-item-label \{ font-size:\s*0\.82rem; \}[\s\S]*?\.command-palette-item-description \{ font-size:\s*var\(--text-xs\); \}/, "mobile command palette result text should respect the typography floor");
 assert.match(css, /body\.terminal-tabs-left \.chat-panel \{[\s\S]*?grid-template-columns:\s*clamp\(13rem, 18vw, 19rem\) minmax\(0, 1fr\)/, "terminal tabs left layout should split the chat panel into a sidebar and transcript area");
 assert.match(css, /body\.terminal-tabs-left \.terminal-tabs-shell \{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1 \/ -1;[\s\S]*?flex-direction:\s*column/, "terminal tabs left layout should turn the top tab strip into a vertical sidebar");
@@ -679,7 +685,9 @@ assert.match(app, /function renderWidgets\(\)[\s\S]*renderAppRunnerWidget\(\)[\s
 assert.doesNotMatch(app, /subagentOverlayDialog\.showModal|elements\.subagentOverlayDialog/, "subagent output should not open or depend on a modal dialog");
 assert.match(app, /api\(`\/api\/subagents\/output\?\$\{query\}`, \{ scoped: false \}\)/, "subagent overlay should fetch selected live output from the owning tab");
 assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
-assert.match(app, /function appendSubagentOutputWaitingIndicator\(parent\)[\s\S]*subagent-output-waiting-dot[\s\S]*if \(running && agent\.currentTool\) appendSubagentOutputWaitingIndicator\(terminal\)/, "subagent widget should render one replaceable waiting animation instead of transcript spam");
+assert.match(app, /function createMessageBubble\(message,[\s\S]*renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \}\)[\s\S]*function appendMessage\(message, options = \{\}\)[\s\S]*createMessageBubble\(message, options\)/, "main transcript output should use the reusable message bubble renderer");
+assert.match(app, /function renderSubagentOverlayWidget\(\)[\s\S]*createMessageBubble\(\{[\s\S]*role: "assistant"[\s\S]*content: shownText[\s\S]*\}, \{ streaming: running, transient: true \}\)[\s\S]*subagent-overlay-message/, "subagent output should use the same assistant Markdown message renderer as the main transcript");
+assert.match(app, /function appendSubagentOutputWaitingIndicator\(parent\)[\s\S]*message runIndicator run-indicator-message streaming subagent-output-waiting[\s\S]*subagent-output-waiting-dot[\s\S]*if \(running && agent\.currentTool\) appendSubagentOutputWaitingIndicator\(output\)/, "subagent widget should render one main-transcript-style waiting indicator instead of transcript spam");
 assert.match(app, /api\("\/api\/subagents", \{ scoped: false \}\)/, "frontend should refresh the cross-tab subagent overview");
 assert.match(app, /SUBAGENTS_ACTIVE_REFRESH_MS = 1500/, "running subagents should receive a fast live refresh cadence");
 assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*webuiSubagentsData\(\)/, "server should expose a cross-tab running-subagent endpoint");
