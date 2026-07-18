@@ -325,7 +325,12 @@ process.stdin.on("data", c => chunks.push(c));
 process.stdin.on("end", () => {
   try {
     const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    const files = (Array.isArray(data) ? data[0]?.files : data?.files) ?? [];
+    const report = Array.isArray(data)
+      ? data[0]
+      : Array.isArray(data?.files)
+        ? data
+        : Object.values(data ?? {}).find(value => Array.isArray(value?.files));
+    const files = report?.files ?? [];
     for (const f of files) {
       if (f?.path) console.log(String(f.path));
     }
