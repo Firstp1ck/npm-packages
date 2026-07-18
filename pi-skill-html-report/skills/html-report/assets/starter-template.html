@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{{REPORT_TITLE}}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--blue) 72%, white);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      background: var(--blue);
+      color: #06111f;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; }
+    pre {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      overflow-x: auto;
+      color: #d9e6f7;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .lead { font-size: 1.1rem; max-width: 80ch; }
+    .report-tools, .detail-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 14px;
+    }
+    [data-enhanced-control] { display: none; }
+    .interactions-ready [data-enhanced-control] { display: flex; }
+    .action-button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 12px;
+      min-height: 42px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .action-button:hover:not(:disabled) { border-color: var(--blue); background: rgb(101 181 255 / 12%); }
+    .action-button:disabled { cursor: not-allowed; opacity: .55; }
+    pre.copyable { position: relative; padding-top: 52px; }
+    .copy-button { position: absolute; top: 8px; right: 8px; min-height: 34px; padding: 5px 10px; font-size: .86rem; }
+    .status-region {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .reading-progress {
+      position: fixed;
+      z-index: 30;
+      inset: 0 0 auto;
+      height: 4px;
+      background: rgb(101 181 255 / 12%);
+      pointer-events: none;
+    }
+    .reading-progress > span {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue), var(--green));
+      transform: scaleX(0);
+      transform-origin: left center;
+    }
+    .search-tools {
+      display: flex;
+      flex: 1 1 100%;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+      padding-top: 4px;
+    }
+    .search-label { color: var(--muted); font-weight: 700; }
+    .report-search {
+      flex: 1 1 220px;
+      min-width: 150px;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--code);
+      color: var(--text);
+      padding: 8px 11px;
+      font: inherit;
+    }
+    .report-search:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+    .search-count { min-width: 78px; color: var(--muted); font-size: .86rem; font-variant-numeric: tabular-nums; }
+    mark.report-match { background: rgb(247 198 92 / 48%); color: inherit; border-radius: 3px; padding: 0 .08em; }
+    mark.report-match.current { background: var(--yellow); color: #111; outline: 2px solid var(--yellow); outline-offset: 2px; }
+    .reader-nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 18px 0 6px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .reader-nav-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .reader-nav-status { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+    [role="tab"].is-complete::after { content: " ✓"; color: var(--green); }
+    .back-to-top {
+      position: fixed;
+      z-index: 15;
+      right: 18px;
+      bottom: 18px;
+      min-width: 44px;
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .back-to-top.is-visible { opacity: 1; transform: none; pointer-events: auto; }
+    .focus-reading main { width: min(780px, calc(100% - 28px)); max-width: 780px; margin-inline: auto; }
+    .focus-reading [role="tablist"] { position: static; width: auto; height: auto; flex-direction: row; }
+    .focus-reading .report-section, .focus-reading header { box-shadow: none; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .metric, .finding, .step, .visual-card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.bad { background: rgb(255 115 115 / 14%); border: 1px solid rgb(255 115 115 / 38%); }
+    .badge.info { background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout {
+      border-left: 5px solid var(--yellow);
+      background: rgb(247 198 92 / 8%);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 14px 0;
+    }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 620px; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    .tabs-shell { margin-top: 18px; }
+    [role="tablist"] {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 8px;
+      margin: 0 0 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgb(7 16 28 / 72%);
+      scrollbar-width: thin;
+    }
+    [role="tab"] {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 13px;
+      white-space: nowrap;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    [role="tab"][aria-selected="true"] {
+      color: var(--text);
+      border-color: rgb(101 181 255 / 45%);
+      background: rgb(101 181 255 / 14%);
+    }
+    [role="tabpanel"] { scroll-margin-top: 16px; }
+    .tabs-ready [role="tabpanel"][hidden] { display: none; }
+    ol.steps { list-style: none; padding: 0; counter-reset: steps; }
+    ol.steps > li { counter-increment: steps; margin: 14px 0; }
+    ol.steps > li::before {
+      content: counter(steps);
+      float: left;
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin: 1px 12px 0 0;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #06111f;
+      font-weight: 800;
+    }
+    .step { overflow: hidden; }
+    figure { margin: 18px 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    figcaption { color: var(--muted); margin-top: 8px; font-size: .92rem; }
+    .chart-grid { stroke: #26374f; stroke-width: 1; }
+    .chart-axis { fill: var(--muted); font: 13px system-ui, sans-serif; }
+    .chart-label { fill: var(--text); font: 600 14px system-ui, sans-serif; }
+    .bar-blue { fill: var(--blue); }
+    .bar-yellow { fill: var(--yellow); }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    .confidence { font-variant-numeric: tabular-nums; }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      .report-tools > .action-button { flex: 1 1 145px; }
+      .search-tools .action-button { flex: 1 1 100px; }
+      .reader-nav { align-items: stretch; }
+      .reader-nav-status { flex: 1 1 100%; text-align: center; }
+      .reader-nav-group { flex: 1 1 auto; }
+      .reader-nav-group .action-button { flex: 1 1 110px; }
+      [role="tablist"] { position: sticky; top: 0; z-index: 5; }
+      .chart-axis { font-size: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .finding, .step, .visual-card {
+        box-shadow: none;
+        background: white;
+        color: #111;
+        border-color: #bbb;
+        break-inside: avoid;
+      }
+      [role="tablist"], .skip-link, .report-tools, .detail-controls, .copy-button, .status-region, .reading-progress, .reader-nav, .back-to-top { display: none !important; }
+      [role="tabpanel"], [role="tabpanel"][hidden] { display: block !important; }
+      [role="tabpanel"] { break-before: auto; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<div class="reading-progress" aria-hidden="true"><span></span></div>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge info">{{REPORT_TYPE}}</span>
+    <h1>{{REPORT_TITLE}}</h1>
+    <p class="lead">{{SCOPE_AND_PROVENANCE}}</p>
+    <div class="callout">
+      <strong>Conclusion:</strong> {{EXECUTIVE_CONCLUSION}}
+    </div>
+    <p class="muted confidence"><strong>Confidence:</strong> {{CONFIDENCE_AND_LIMITATION}}</p>
+    <div class="report-tools" aria-label="Report actions" data-enhanced-control>
+      <button class="action-button" type="button" data-report-action="print">Print report</button>
+      <button class="action-button" type="button" data-report-action="copy-link">Copy current link</button>
+      <button class="action-button" type="button" data-report-action="focus-mode" aria-pressed="false">Focus reading</button>
+      <div class="search-tools" role="search" aria-label="Find in report">
+        <label class="search-label" for="report-search">Find</label>
+        <input class="report-search" id="report-search" type="search" placeholder="Search report (Alt+/)" autocomplete="off">
+        <button class="action-button" type="button" data-search-action="previous-match">Previous</button>
+        <button class="action-button" type="button" data-search-action="next-match">Next</button>
+        <button class="action-button" type="button" data-search-action="clear-search">Clear</button>
+        <span class="search-count" aria-live="polite">0 matches</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Keep all panels visible in source. JavaScript hides inactive panels only after enhancement. -->
+  <div class="tabs-shell">
+    <nav role="tablist" aria-label="Report sections">
+      <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button id="tab-analysis" role="tab" aria-selected="false" aria-controls="panel-analysis" tabindex="-1">Analysis</button>
+      <button id="tab-plan" role="tab" aria-selected="false" aria-controls="panel-plan" tabindex="-1">Action plan</button>
+      <button id="tab-evidence" role="tab" aria-selected="false" aria-controls="panel-evidence" tabindex="-1">Evidence</button>
+      <button id="tab-sources" role="tab" aria-selected="false" aria-controls="panel-sources" tabindex="-1">Sources</button>
+    </nav>
+
+    <section class="report-section" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <h2>Overview</h2>
+      <div class="grid" aria-label="Headline metrics">
+        <div class="metric"><span class="badge good">Verified</span><strong>{{METRIC_ONE}}</strong><span class="muted">{{METRIC_ONE_CONTEXT}}</span></div>
+        <div class="metric"><span class="badge warn">Attention</span><strong>{{METRIC_TWO}}</strong><span class="muted">{{METRIC_TWO_CONTEXT}}</span></div>
+        <div class="metric"><span class="badge info">Scope</span><strong>{{METRIC_THREE}}</strong><span class="muted">{{METRIC_THREE_CONTEXT}}</span></div>
+      </div>
+      <h3 style="margin-top:22px">Report map</h3>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>What it explains</th><th>Key status</th><th>Next action</th></tr></thead>
+          <tbody>
+            <tr><td>{{OVERVIEW_AREA_1}}</td><td>{{OVERVIEW_EXPLANATION_1}}</td><td>{{OVERVIEW_STATUS_1}}</td><td>{{OVERVIEW_ACTION_1}}</td></tr>
+            <tr><td>{{OVERVIEW_AREA_2}}</td><td>{{OVERVIEW_EXPLANATION_2}}</td><td>{{OVERVIEW_STATUS_2}}</td><td>{{OVERVIEW_ACTION_2}}</td></tr>
+            <tr><td>{{OVERVIEW_AREA_3}}</td><td>{{OVERVIEW_EXPLANATION_3}}</td><td>{{OVERVIEW_STATUS_3}}</td><td>{{OVERVIEW_ACTION_3}}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="report-section" id="panel-analysis" role="tabpanel" aria-labelledby="tab-analysis">
+      <h2>Analysis</h2>
+      <article class="finding">
+        <span class="badge bad">Priority 1</span>
+        <h3>{{PRIMARY_FINDING}}</h3>
+        <p>{{PRIMARY_FINDING_EXPLANATION}}</p>
+        <p class="confidence"><strong>Confidence:</strong> {{PRIMARY_FINDING_CONFIDENCE}}</p>
+      </article>
+
+      <div class="grid" style="margin-top:14px">
+        <figure class="visual-card" data-visual-kind="graph" data-purpose="{{GRAPH_PURPOSE}}" data-source="{{GRAPH_SOURCE}}">
+          <svg role="img" aria-labelledby="comparison-chart-title comparison-chart-desc" viewBox="0 0 720 330">
+            <title id="comparison-chart-title">{{GRAPH_TITLE}}</title>
+            <desc id="comparison-chart-desc">{{GRAPH_TEXT_EQUIVALENT}}</desc>
+            <line class="chart-grid" x1="170" y1="55" x2="680" y2="55" />
+            <line class="chart-grid" x1="170" y1="125" x2="680" y2="125" />
+            <line class="chart-grid" x1="170" y1="195" x2="680" y2="195" />
+            <line class="chart-grid" x1="170" y1="265" x2="680" y2="265" />
+            <text class="chart-axis" x="170" y="300">0</text>
+            <text class="chart-axis" x="668" y="300">{{GRAPH_MAX_AND_UNIT}}</text>
+            <text class="chart-label" x="22" y="92">{{CATEGORY_A}}</text>
+            <rect class="bar-blue" x="170" y="70" width="{{BAR_A_WIDTH}}" height="34" rx="6" />
+            <text class="chart-label" x="22" y="162">{{CATEGORY_B}}</text>
+            <rect class="bar-yellow" x="170" y="140" width="{{BAR_B_WIDTH}}" height="34" rx="6" />
+            <text class="chart-label" x="22" y="232">{{CATEGORY_C}}</text>
+            <rect class="bar-blue" x="170" y="210" width="{{BAR_C_WIDTH}}" height="34" rx="6" opacity=".72" />
+          </svg>
+          <figcaption>{{GRAPH_CAPTION_WITH_VALUES_AND_PROVENANCE}}</figcaption>
+        </figure>
+
+        <figure class="visual-card" data-visual-kind="diagram" data-purpose="{{DIAGRAM_PURPOSE}}">
+          <svg role="img" aria-labelledby="process-title process-desc" viewBox="0 0 720 330">
+            <title id="process-title">{{DIAGRAM_TITLE}}</title>
+            <desc id="process-desc">{{DIAGRAM_TEXT_EQUIVALENT}}</desc>
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                <path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb" />
+              </marker>
+            </defs>
+            <path class="edge" d="M205 105 H315" />
+            <path class="edge" d="M405 105 H515" />
+            <path class="edge" d="M560 145 C560 230 405 245 365 245" />
+            <rect class="node" x="45" y="68" width="160" height="74" rx="12" />
+            <text class="node-text" x="125" y="110">{{NODE_ONE}}</text>
+            <rect class="node" x="315" y="68" width="90" height="74" rx="12" />
+            <text class="node-text" x="360" y="110">{{NODE_TWO}}</text>
+            <rect class="node" x="515" y="68" width="160" height="74" rx="12" />
+            <text class="node-text" x="595" y="110">{{NODE_THREE}}</text>
+            <rect class="node" x="270" y="208" width="190" height="74" rx="12" />
+            <text class="node-text" x="365" y="250">{{NODE_FOUR}}</text>
+          </svg>
+          <figcaption>{{DIAGRAM_CAPTION}}</figcaption>
+        </figure>
+      </div>
+      <p class="muted">Remove either visual when the current evidence does not justify it. Never retain placeholder or invented data.</p>
+    </section>
+
+    <section class="report-section" id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
+      <h2>Recommended steps</h2>
+      <ol class="steps">
+        <li class="step"><h3>{{STEP_ONE_TITLE}}</h3><p>{{STEP_ONE_ACTION_AND_RATIONALE}}</p><pre data-copyable><code>{{STEP_ONE_COMMAND}}</code></pre><p class="muted"><strong>Done when:</strong> {{STEP_ONE_COMPLETION}}</p></li>
+        <li class="step"><h3>{{STEP_TWO_TITLE}}</h3><p>{{STEP_TWO_ACTION_AND_RATIONALE}}</p><p class="muted"><strong>Done when:</strong> {{STEP_TWO_COMPLETION}}</p></li>
+        <li class="step"><h3>{{STEP_THREE_TITLE}}</h3><p>{{STEP_THREE_ACTION_AND_RATIONALE}}</p><p class="muted"><strong>Done when:</strong> {{STEP_THREE_COMPLETION}}</p></li>
+      </ol>
+    </section>
+
+    <section class="report-section" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence">
+      <h2>Evidence and alternatives</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Evidence</th><th>Observation</th><th>Interpretation</th><th>Limits</th></tr></thead>
+          <tbody>
+            <tr><td>{{EVIDENCE_1}}</td><td>{{OBSERVATION_1}}</td><td>{{INTERPRETATION_1}}</td><td>{{LIMIT_1}}</td></tr>
+            <tr><td>{{EVIDENCE_2}}</td><td>{{OBSERVATION_2}}</td><td>{{INTERPRETATION_2}}</td><td>{{LIMIT_2}}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="detail-controls" aria-label="Evidence detail controls" data-enhanced-control data-details-scope="panel-evidence">
+        <button class="action-button" type="button" data-details-action="expand">Expand all details</button>
+        <button class="action-button" type="button" data-details-action="collapse">Collapse all details</button>
+      </div>
+      <details>
+        <summary>Detailed evidence or alternative hypotheses</summary>
+        <p>{{SECONDARY_EVIDENCE}}</p>
+      </details>
+      <details>
+        <summary>Method and verification detail</summary>
+        <p>{{METHODOLOGY_DETAIL}}</p>
+      </details>
+    </section>
+
+    <section class="report-section" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources">
+      <h2>Sources, limitations, and scope</h2>
+      <ul>
+        <li>{{SOURCE_ONE}}</li>
+        <li>{{SOURCE_TWO}}</li>
+      </ul>
+      <div class="callout info-callout"><strong>Limitation:</strong> {{FINAL_LIMITATION}}</div>
+    </section>
+  </div>
+
+  <footer>
+    <p><strong>Scope:</strong> {{FOOTER_SCOPE_AND_GENERATION_DATE}}</p>
+  </footer>
+  <div id="interaction-status" class="status-region" role="status" aria-live="polite" aria-atomic="true"></div>
+</main>
+<script>
+(() => {
+  document.documentElement.classList.add('interactions-ready');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const status = document.getElementById('interaction-status');
+  const announce = (message) => {
+    if (!status) return;
+    status.textContent = '';
+    window.setTimeout(() => { status.textContent = message; }, 20);
+  };
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('readonly', '');
+    helper.style.position = 'fixed';
+    helper.style.opacity = '0';
+    document.body.appendChild(helper);
+    helper.select();
+    const copied = document.execCommand('copy');
+    helper.remove();
+    if (!copied) throw new Error('Copy command was not accepted');
+  }
+
+  const progressFill = document.querySelector('.reading-progress > span');
+  const backToTop = document.createElement('button');
+  backToTop.type = 'button';
+  backToTop.className = 'action-button back-to-top';
+  backToTop.textContent = '↑ Top';
+  backToTop.setAttribute('aria-label', 'Back to top');
+  document.body.appendChild(backToTop);
+
+  const updateScrollTools = () => {
+    const available = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+    const progress = Math.min(1, Math.max(0, window.scrollY / available));
+    if (progressFill) progressFill.style.transform = `scaleX(${progress})`;
+    backToTop.classList.toggle('is-visible', window.scrollY > 560);
+  };
+  window.addEventListener('scroll', updateScrollTools, { passive: true });
+  window.addEventListener('resize', updateScrollTools);
+  backToTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' }));
+  updateScrollTools();
+
+  const focusButton = document.querySelector('[data-report-action="focus-mode"]');
+  focusButton?.addEventListener('click', () => {
+    const enabled = document.documentElement.classList.toggle('focus-reading');
+    focusButton.setAttribute('aria-pressed', String(enabled));
+    focusButton.textContent = enabled ? 'Exit focus' : 'Focus reading';
+    announce(enabled ? 'Focus reading enabled.' : 'Focus reading disabled.');
+  });
+
+  document.querySelector('[data-report-action="print"]')?.addEventListener('click', () => window.print());
+  document.querySelector('[data-report-action="copy-link"]')?.addEventListener('click', async () => {
+    try {
+      await copyText(window.location.href);
+      announce('Current report link copied.');
+    } catch {
+      announce('The report link could not be copied. Select it from the address bar instead.');
+    }
+  });
+
+  document.querySelectorAll('pre[data-copyable]').forEach((pre, index) => {
+    pre.classList.add('copyable');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'action-button copy-button';
+    button.textContent = 'Copy';
+    button.setAttribute('aria-label', `Copy code block ${index + 1}`);
+    button.addEventListener('click', async () => {
+      try {
+        await copyText(pre.querySelector('code')?.textContent || pre.textContent || '');
+        button.textContent = 'Copied';
+        announce(`Code block ${index + 1} copied.`);
+        window.setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+      } catch {
+        announce(`Code block ${index + 1} could not be copied. Select the text manually.`);
+      }
+    });
+    pre.appendChild(button);
+  });
+
+  document.querySelectorAll('[data-details-scope]').forEach((controls) => {
+    const scope = document.getElementById(controls.getAttribute('data-details-scope'));
+    if (!scope) {
+      controls.remove();
+      return;
+    }
+    const details = [...scope.querySelectorAll('details')];
+    if (details.length < 2) {
+      controls.remove();
+      return;
+    }
+    const expand = controls.querySelector('[data-details-action="expand"]');
+    const collapse = controls.querySelector('[data-details-action="collapse"]');
+    const sync = () => {
+      if (expand) expand.disabled = details.every((item) => item.open);
+      if (collapse) collapse.disabled = details.every((item) => !item.open);
+    };
+    expand?.addEventListener('click', () => {
+      details.forEach((item) => { item.open = true; });
+      sync();
+      announce('All evidence details expanded.');
+    });
+    collapse?.addEventListener('click', () => {
+      details.forEach((item) => { item.open = false; });
+      sync();
+      announce('All evidence details collapsed.');
+    });
+    details.forEach((item) => item.addEventListener('toggle', sync));
+    sync();
+  });
+
+  const tablist = document.querySelector('[role="tablist"]');
+  if (!tablist) return;
+
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls'))).filter(Boolean);
+  const completedPanels = new Set();
+  document.documentElement.classList.add('tabs-ready');
+
+  const readerNav = document.createElement('nav');
+  readerNav.className = 'reader-nav';
+  readerNav.setAttribute('aria-label', 'Sequential report navigation');
+  readerNav.innerHTML = `
+    <div class="reader-nav-group">
+      <button class="action-button" type="button" data-reading-action="previous-section">← Previous section</button>
+      <button class="action-button" type="button" data-reading-action="next-section">Next section →</button>
+    </div>
+    <span class="reader-nav-status" aria-live="polite"></span>
+    <div class="reader-nav-group">
+      <button class="action-button" type="button" data-reading-action="toggle-complete" aria-pressed="false">Mark section read</button>
+    </div>`;
+  tablist.closest('.tabs-shell')?.appendChild(readerNav);
+
+  const previousSection = readerNav.querySelector('[data-reading-action="previous-section"]');
+  const nextSection = readerNav.querySelector('[data-reading-action="next-section"]');
+  const completeSection = readerNav.querySelector('[data-reading-action="toggle-complete"]');
+  const readerStatus = readerNav.querySelector('.reader-nav-status');
+
+  const activeIndex = () => Math.max(0, tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true'));
+  const updateReaderNav = () => {
+    const index = activeIndex();
+    const currentPanel = panels[index];
+    const isComplete = completedPanels.has(currentPanel?.id);
+    if (previousSection) previousSection.disabled = index === 0;
+    if (nextSection) nextSection.disabled = index === tabs.length - 1;
+    if (completeSection) {
+      completeSection.setAttribute('aria-pressed', String(isComplete));
+      completeSection.textContent = isComplete ? 'Mark section unread' : 'Mark section read';
+    }
+    if (readerStatus) readerStatus.textContent = `${index + 1} of ${tabs.length} · ${completedPanels.size} read`;
+    tabs.forEach((tab, tabIndex) => tab.classList.toggle('is-complete', completedPanels.has(panels[tabIndex]?.id)));
+    window.requestAnimationFrame(updateScrollTools);
+  };
+
+  function activate(tab, options = {}) {
+    const { focus = false, updateHash = true, scroll = false } = options;
+    tabs.forEach((candidate) => {
+      const selected = candidate === tab;
+      candidate.setAttribute('aria-selected', String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) tab.focus();
+    if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+    updateReaderNav();
+    if (scroll) {
+      const panel = document.getElementById(tab.getAttribute('aria-controls'));
+      panel?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    }
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      let targetIndex = null;
+      if (event.key === 'ArrowRight') targetIndex = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') targetIndex = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') targetIndex = 0;
+      if (event.key === 'End') targetIndex = tabs.length - 1;
+      if (targetIndex === null) return;
+      event.preventDefault();
+      activate(tabs[targetIndex], { focus: true });
+    });
+  });
+
+  previousSection?.addEventListener('click', () => {
+    const index = activeIndex();
+    if (index > 0) activate(tabs[index - 1], { scroll: true });
+  });
+  nextSection?.addEventListener('click', () => {
+    const index = activeIndex();
+    if (index < tabs.length - 1) activate(tabs[index + 1], { scroll: true });
+  });
+  completeSection?.addEventListener('click', () => {
+    const index = activeIndex();
+    const panelId = panels[index]?.id;
+    if (!panelId) return;
+    if (completedPanels.has(panelId)) completedPanels.delete(panelId);
+    else completedPanels.add(panelId);
+    updateReaderNav();
+    if (completedPanels.size === panels.length) announce('Report complete — nicely done.');
+    else announce(completedPanels.has(panelId) ? 'Section marked as read.' : 'Section marked as unread.');
+  });
+
+  const searchInput = document.getElementById('report-search');
+  const searchCount = document.querySelector('.search-count');
+  let matches = [];
+  let currentMatch = -1;
+
+  const clearMatches = () => {
+    document.querySelectorAll('mark.report-match').forEach((mark) => mark.replaceWith(document.createTextNode(mark.textContent || '')));
+    document.getElementById('report-content')?.normalize();
+    matches = [];
+    currentMatch = -1;
+    if (searchCount) searchCount.textContent = '0 matches';
+  };
+
+  const showMatch = (index) => {
+    if (!matches.length) return;
+    matches.forEach((match) => match.classList.remove('current'));
+    currentMatch = (index + matches.length) % matches.length;
+    const match = matches[currentMatch];
+    match.classList.add('current');
+    const panel = match.closest('[role="tabpanel"]');
+    const tab = panel ? tabs.find((candidate) => candidate.getAttribute('aria-controls') === panel.id) : null;
+    if (tab) activate(tab, { updateHash: true });
+    const details = match.closest('details');
+    if (details) details.open = true;
+    match.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    if (searchCount) searchCount.textContent = `${currentMatch + 1} of ${matches.length}`;
+  };
+
+  const runSearch = () => {
+    clearMatches();
+    const query = searchInput?.value.trim() || '';
+    if (query.length < 2) return;
+    const root = document.getElementById('report-content');
+    if (!root) return;
+    const nodes = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || !node.nodeValue?.trim()) return NodeFilter.FILTER_REJECT;
+        if (parent.closest('script, style, button, input, textarea, svg, mark, .status-region, .search-tools')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const expression = new RegExp(escaped, 'gi');
+    nodes.forEach((node) => {
+      const text = node.nodeValue || '';
+      let match;
+      let last = 0;
+      let changed = false;
+      const fragment = document.createDocumentFragment();
+      while ((match = expression.exec(text)) !== null) {
+        changed = true;
+        fragment.append(text.slice(last, match.index));
+        const marker = document.createElement('mark');
+        marker.className = 'report-match';
+        marker.textContent = match[0];
+        fragment.append(marker);
+        last = match.index + match[0].length;
+      }
+      if (!changed) return;
+      fragment.append(text.slice(last));
+      node.replaceWith(fragment);
+    });
+    matches = [...document.querySelectorAll('mark.report-match')];
+    if (searchCount) searchCount.textContent = `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`;
+    if (matches.length) showMatch(0);
+    else announce(`No matches for ${query}.`);
+  };
+
+  searchInput?.addEventListener('input', runSearch);
+  document.querySelector('[data-search-action="previous-match"]')?.addEventListener('click', () => showMatch(currentMatch - 1));
+  document.querySelector('[data-search-action="next-match"]')?.addEventListener('click', () => showMatch(currentMatch + 1));
+  document.querySelector('[data-search-action="clear-search"]')?.addEventListener('click', () => {
+    if (searchInput) searchInput.value = '';
+    clearMatches();
+    searchInput?.focus();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.altKey && event.key === '/') {
+      event.preventDefault();
+      searchInput?.focus();
+      searchInput?.select();
+      return;
+    }
+    if (event.key === 'Escape' && document.activeElement === searchInput) {
+      if (searchInput) searchInput.value = '';
+      clearMatches();
+      return;
+    }
+    if (!event.altKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    if (document.activeElement?.matches('input, textarea, select')) return;
+    event.preventDefault();
+    const index = activeIndex();
+    const target = event.key === 'ArrowLeft' ? index - 1 : index + 1;
+    if (target >= 0 && target < tabs.length) activate(tabs[target], { scroll: true });
+  });
+
+  const hashPanel = panels.find((panel) => `#${panel.id}` === location.hash);
+  const initialTab = hashPanel
+    ? tabs.find((tab) => tab.getAttribute('aria-controls') === hashPanel.id)
+    : tabs.find((tab) => tab.getAttribute('aria-selected') === 'true') || tabs[0];
+  activate(initialTab, { updateHash: false });
+})();
+</script>
+</body>
+</html>

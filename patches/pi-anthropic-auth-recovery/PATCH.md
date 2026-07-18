@@ -87,6 +87,6 @@ node "$PATCHCTL" rollback --patch ./PATCH.md --confirm
 ## Operational notes
 
 - Set `PI_ANTHROPIC_RECOVERY_MODEL=provider/model` only to override dynamic model selection.
-- RPC auto-open requires both `PI_WEBUI_RECOVERY_URL` and `PI_WEBUI_RECOVERY_TOKEN`; missing values cause a safe manual fallback.
+- RPC auto-open requires both `PI_WEBUI_RECOVERY_URL` and `PI_WEBUI_RECOVERY_TOKEN`. Compatible Pi Web UI versions inject a loopback URL and private bearer token into each spawned RPC process; other RPC hosts must configure both values explicitly or recovery safely falls back to a manual command.
 - The automatic recovery prompt runs status and plan only.
 - Reload Pi after extension apply; provider dist changes still require full runtime restart.

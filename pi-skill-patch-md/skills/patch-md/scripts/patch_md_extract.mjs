@@ -2,7 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./main_module.mjs";
 
 const V2_SCHEMA_VERSION = "2.0";
 const FIXED_V2_HEADINGS = [
@@ -501,5 +501,4 @@ function main() {
   process.exit(result.ok ? 0 : 1);
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) main();
+if (isMainModule(import.meta.url)) main();

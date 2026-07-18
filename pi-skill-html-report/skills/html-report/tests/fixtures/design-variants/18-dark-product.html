@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Staged service migration — full-feature test report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--blue) 72%, white);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      background: var(--blue);
+      color: #06111f;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; }
+    pre {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      overflow-x: auto;
+      color: #d9e6f7;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .lead { font-size: 1.1rem; max-width: 80ch; }
+    .report-tools, .detail-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 14px;
+    }
+    [data-enhanced-control] { display: none; }
+    .interactions-ready [data-enhanced-control] { display: flex; }
+    .action-button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 12px;
+      min-height: 42px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .action-button:hover:not(:disabled) { border-color: var(--blue); background: rgb(101 181 255 / 12%); }
+    .action-button:disabled { cursor: not-allowed; opacity: .55; }
+    pre.copyable { position: relative; padding-top: 52px; }
+    .copy-button { position: absolute; top: 8px; right: 8px; min-height: 34px; padding: 5px 10px; font-size: .86rem; }
+    .status-region {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .reading-progress {
+      position: fixed;
+      z-index: 30;
+      inset: 0 0 auto;
+      height: 4px;
+      background: rgb(101 181 255 / 12%);
+      pointer-events: none;
+    }
+    .reading-progress > span {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue), var(--green));
+      transform: scaleX(0);
+      transform-origin: left center;
+    }
+    .search-tools {
+      display: flex;
+      flex: 1 1 100%;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+      padding-top: 4px;
+    }
+    .search-label { color: var(--muted); font-weight: 700; }
+    .report-search {
+      flex: 1 1 220px;
+      min-width: 150px;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--code);
+      color: var(--text);
+      padding: 8px 11px;
+      font: inherit;
+    }
+    .report-search:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+    .search-count { min-width: 78px; color: var(--muted); font-size: .86rem; font-variant-numeric: tabular-nums; }
+    mark.report-match { background: rgb(247 198 92 / 48%); color: inherit; border-radius: 3px; padding: 0 .08em; }
+    mark.report-match.current { background: var(--yellow); color: #111; outline: 2px solid var(--yellow); outline-offset: 2px; }
+    .reader-nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 18px 0 6px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .reader-nav-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .reader-nav-status { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+    [role="tab"].is-complete::after { content: " ✓"; color: var(--green); }
+    .back-to-top {
+      position: fixed;
+      z-index: 15;
+      right: 18px;
+      bottom: 18px;
+      min-width: 44px;
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .back-to-top.is-visible { opacity: 1; transform: none; pointer-events: auto; }
+    .focus-reading main { width: min(780px, calc(100% - 28px)); max-width: 780px; margin-inline: auto; }
+    .focus-reading [role="tablist"] { position: static; width: auto; height: auto; flex-direction: row; }
+    .focus-reading .report-section, .focus-reading header { box-shadow: none; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .metric, .finding, .step, .visual-card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.bad { background: rgb(255 115 115 / 14%); border: 1px solid rgb(255 115 115 / 38%); }
+    .badge.info { background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout {
+      border-left: 5px solid var(--yellow);
+      background: rgb(247 198 92 / 8%);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 14px 0;
+    }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 620px; }
+    caption { color: var(--muted); text-align: left; padding: 0 0 8px; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    .tabs-shell { margin-top: 18px; }
+    [role="tablist"] {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 8px;
+      margin: 0 0 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgb(7 16 28 / 72%);
+      scrollbar-width: thin;
+    }
+    [role="tab"] {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 13px;
+      white-space: nowrap;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    [role="tab"][aria-selected="true"] {
+      color: var(--text);
+      border-color: rgb(101 181 255 / 45%);
+      background: rgb(101 181 255 / 14%);
+    }
+    [role="tabpanel"] { scroll-margin-top: 16px; }
+    .tabs-ready [role="tabpanel"][hidden] { display: none; }
+    ol.steps { list-style: none; padding: 0; counter-reset: steps; }
+    ol.steps > li { counter-increment: steps; margin: 14px 0; }
+    ol.steps > li::before {
+      content: counter(steps);
+      float: left;
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin: 1px 12px 0 0;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #06111f;
+      font-weight: 800;
+    }
+    .step { overflow: hidden; }
+    figure { margin: 18px 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    figcaption { color: var(--muted); margin-top: 8px; font-size: .92rem; }
+    .chart-grid { stroke: #26374f; stroke-width: 1; }
+    .chart-axis { fill: var(--muted); font: 13px system-ui, sans-serif; }
+    .chart-label { fill: var(--text); font: 600 14px system-ui, sans-serif; }
+    .bar-blue { fill: var(--blue); }
+    .bar-yellow { fill: var(--yellow); }
+    .bar-green { fill: var(--green); }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .edge.rollback { stroke: var(--yellow); stroke-dasharray: 8 6; marker-end: url(#arrow-warning); }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    .confidence { font-variant-numeric: tabular-nums; }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      .report-tools > .action-button { flex: 1 1 145px; }
+      .search-tools .action-button { flex: 1 1 100px; }
+      .reader-nav { align-items: stretch; }
+      .reader-nav-status { flex: 1 1 100%; text-align: center; }
+      .reader-nav-group { flex: 1 1 auto; }
+      .reader-nav-group .action-button { flex: 1 1 110px; }
+      [role="tablist"] { position: sticky; top: 0; z-index: 5; }
+      .chart-axis { font-size: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .finding, .step, .visual-card {
+        box-shadow: none;
+        background: white;
+        color: #111;
+        border-color: #bbb;
+        break-inside: avoid;
+      }
+      [role="tablist"], .skip-link, .report-tools, .detail-controls, .copy-button, .status-region, .reading-progress, .reader-nav, .back-to-top { display: none !important; }
+      [role="tabpanel"], [role="tabpanel"][hidden] { display: block !important; }
+      [role="tabpanel"] { break-before: auto; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure, table, details { break-inside: avoid; }
+      details > * { display: block !important; }
+    }
+  </style>
+  <style data-design-variant="dark-product">
+/* Variant 18: Dark Product — dimmed product-interface styling. Dimmed dark product surface with box
+   components (header bands on every section), underline navigation with a warm indicator,
+   green primary actions, and a green→purple glow behind the hero. */
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #21262d;
+  --text: #e6edf3;
+  --muted: #8d96a0;
+  --line: #30363d;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --blue: #58a6ff;
+  --code: #0d1117;
+  --radius-lg: 8px;
+  --radius-md: 6px;
+  --shadow: 0 8px 24px rgb(1 4 9 / 45%);
+}
+body { background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { width: min(1080px, calc(100% - 32px)); margin: 30px auto 70px; }
+/* Glowing hero. */
+header { position: relative; overflow: hidden; background: #010409; border: 1px solid var(--line); box-shadow: var(--shadow); padding: 44px 40px; }
+header::before { content: ""; position: absolute; width: 480px; height: 300px; left: -120px; top: -140px; background: radial-gradient(ellipse, rgb(63 185 80 / 24%), transparent 70%); filter: blur(10px); }
+header::after { content: ""; position: absolute; width: 480px; height: 300px; right: -140px; bottom: -160px; background: radial-gradient(ellipse, rgb(163 113 247 / 22%), transparent 70%); filter: blur(10px); }
+header > * { position: relative; z-index: 1; }
+h1 { font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 800; letter-spacing: -.035em; }
+header .lead { color: #b1bac4; max-width: 62ch; }
+header .callout { background: rgb(63 185 80 / 10%); border-left-color: #3fb950; border-radius: 6px; }
+header .badge { border-radius: 999px; }
+/* Box components: each section gets a GitHub-style header band. */
+.report-section { background: var(--panel); border: 1px solid var(--line); box-shadow: none; padding: 0 18px 18px; overflow: hidden; }
+.report-section > h2 { margin: 0 -18px 18px; padding: 13px 18px; background: #21262d; border-bottom: 1px solid var(--line); font-size: .95rem; font-weight: 650; letter-spacing: 0; }
+h3 { font-size: 1rem; font-weight: 650; }
+a { color: #58a6ff; }
+.metric, .finding, .step, .visual-card { background: #0d1117; border-color: var(--line); border-radius: 6px; }
+.metric { border-left: 3px solid #3fb950; }
+.badge { border-radius: 999px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.badge.info { color: #a371f7; background: rgb(163 113 247 / 12%); border-color: rgb(163 113 247 / 38%); }
+.callout { border-radius: 6px; background: rgb(210 153 34 / 10%); border-left-width: 3px; }
+.callout.info-callout { background: rgb(88 166 255 / 9%); }
+/* Underline navigation with warm active indicator. */
+[role="tablist"] { background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 0; gap: 4px; margin-bottom: 16px; }
+[role="tab"] { border: 0; border-radius: 6px 6px 0 0; border-bottom: 2px solid transparent; padding: 10px 14px; color: #b1bac4; }
+[role="tab"]:hover { background: rgb(177 186 196 / 8%); }
+[role="tab"][aria-selected="true"] { background: transparent; color: #e6edf3; border-bottom-color: #f78166; font-weight: 650; }
+.action-button { border-radius: 6px; background: #238636; border-color: rgb(240 246 252 / 10%); color: #fff; font-weight: 600; min-height: 36px; }
+.action-button:hover:not(:disabled) { background: #2ea043; border-color: rgb(240 246 252 / 12%); }
+.detail-controls .action-button, .copy-button { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+.detail-controls .action-button:hover:not(:disabled), .copy-button:hover:not(:disabled) { background: #30363d; border-color: #8b949e; }
+th { color: #8d96a0; background: #161b22; text-transform: none; letter-spacing: 0; font-size: .82rem; }
+td { border-bottom-color: #21262d; }
+tbody tr:hover { background: #161b22; }
+pre { background: #010409; border-color: var(--line); border-radius: 6px; }
+code { background: rgb(110 118 129 / 22%); border-radius: 4px; color: #e6edf3; }
+pre code { background: transparent; }
+figure svg { background: #010409; border-color: var(--line); border-radius: 6px; }
+.chart-grid { stroke: #21262d; }
+.chart-axis { fill: #8d96a0; }
+.bar-blue { fill: #58a6ff; }
+.bar-yellow { fill: #d29922; }
+.bar-green { fill: #3fb950; }
+.node { fill: #161b22; stroke: #58a6ff; }
+.edge { stroke: #8d96a0; }
+ol.steps > li::before { background: #238636; color: #fff; }
+details { border-top-color: var(--line); }
+summary { color: #58a6ff; }
+footer { color: #8d96a0; font-size: .85rem; border-top: 1px solid var(--line); padding-top: 14px; }
+@media (max-width: 620px) { main { width: calc(100% - 16px); margin-top: 10px; } header { padding: 24px 18px; } }
+@media print {
+  body { background: #fff !important; color: #111 !important; }
+  main { margin: 0 !important; max-width: none !important; width: 100% !important; }
+  header, .report-section, .metric, .finding, .step, .visual-card { background: #fff !important; color: #111 !important; border-color: #bbb !important; box-shadow: none !important; min-height: 0 !important; }
+  h1, h2, h3, .lead { color: #111 !important; background: none !important; }
+  .muted, figcaption, footer { color: #444 !important; }
+  pre, code, figure svg { background: #f1f3f5 !important; color: #111 !important; border-color: #bbb !important; }
+  .node { fill: #fff !important; stroke: #333 !important; }
+  .node-text, .chart-label { fill: #111 !important; }
+  .chart-axis { fill: #444 !important; }
+  .chart-grid { stroke: #ccc !important; }
+  .edge { stroke: #555 !important; }
+  header::before, header::after, h2::before, h2::after, .report-section::before { display: none !important; content: none !important; }
+}
+  </style>
+</head>
+<body>
+<div class="reading-progress" aria-hidden="true"><span></span></div>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge info">Implementation guide · acceptance fixture</span>
+    <h1>Staged service migration with measured gates</h1>
+    <p class="lead">This self-contained test report demonstrates the complete report system using an explicitly synthetic migration scenario. Measurements, counts, and timestamps are fixture inputs—not production claims.</p>
+    <div class="callout">
+      <strong>Conclusion:</strong> Proceed only through the preparation and pilot stages; production cutover remains blocked until the reconciliation mismatch reaches zero and the rollback rehearsal passes.
+    </div>
+    <p class="muted confidence"><strong>Confidence:</strong> 96/100 for the recommendation relative to the fixture evidence. It does not predict a real migration because the data is synthetic.</p>
+    <div class="report-tools" aria-label="Report actions" data-enhanced-control>
+      <button class="action-button" type="button" data-report-action="print">Print report</button>
+      <button class="action-button" type="button" data-report-action="copy-link">Copy current link</button>
+      <button class="action-button" type="button" data-report-action="focus-mode" aria-pressed="false">Focus reading</button>
+      <div class="search-tools" role="search" aria-label="Find in report">
+        <label class="search-label" for="report-search">Find</label>
+        <input class="report-search" id="report-search" type="search" placeholder="Search report (Alt+/)" autocomplete="off">
+        <button class="action-button" type="button" data-search-action="previous-match">Previous</button>
+        <button class="action-button" type="button" data-search-action="next-match">Next</button>
+        <button class="action-button" type="button" data-search-action="clear-search">Clear</button>
+        <span class="search-count" aria-live="polite">0 matches</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="tabs-shell">
+    <nav role="tablist" aria-label="Report sections">
+      <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button id="tab-analysis" role="tab" aria-selected="false" aria-controls="panel-analysis" tabindex="-1">Analysis</button>
+      <button id="tab-plan" role="tab" aria-selected="false" aria-controls="panel-plan" tabindex="-1">Action plan</button>
+      <button id="tab-evidence" role="tab" aria-selected="false" aria-controls="panel-evidence" tabindex="-1">Evidence</button>
+      <button id="tab-sources" role="tab" aria-selected="false" aria-controls="panel-sources" tabindex="-1">Sources</button>
+    </nav>
+
+    <section class="report-section" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <h2>Overview</h2>
+      <p>This default panel keeps the executive decision, report map, and headline signals immediately available while the other tabs support independent technical, operational, and audit reading paths.</p>
+      <div class="grid" aria-label="Headline metrics">
+        <div class="metric"><span class="badge good">Verified</span><strong>9,999 / 10,000</strong><span class="muted">pilot records reconciled</span></div>
+        <div class="metric"><span class="badge bad">Blocker</span><strong>1 record</strong><span class="muted">unexplained mismatch remains</span></div>
+        <div class="metric"><span class="badge warn">Attention</span><strong>57 minutes</strong><span class="muted">measured gate time across three stages</span></div>
+        <div class="metric"><span class="badge info">Scope</span><strong>5%</strong><span class="muted">of records included in the bounded pilot</span></div>
+      </div>
+      <h3 style="margin-top:22px">Report map</h3>
+      <div class="table-wrap">
+        <table data-overview>
+          <caption>The full report in one-minute form.</caption>
+          <thead><tr><th>Stage</th><th>Objective</th><th>Evidence</th><th>Status</th><th>Next action</th></tr></thead>
+          <tbody>
+            <tr><td>Prepare</td><td>Establish a recoverable baseline</td><td>Backup restore and dependency inventory</td><td><span class="good">Verified</span></td><td>Freeze the pilot input set</td></tr>
+            <tr><td>Pilot migrate</td><td>Move one bounded workload</td><td>10,000 input records and migration log</td><td><span class="good">Completed</span></td><td>Retain artifacts for review</td></tr>
+            <tr><td>Reconcile</td><td>Prove source/target equivalence</td><td>9,999 matching records; one mismatch</td><td><span class="bad">Blocked</span></td><td>Explain or correct the mismatch</td></tr>
+            <tr><td>Rollback</td><td>Confirm reversibility</td><td>Runbook exists; rehearsal not executed</td><td><span class="warn">Pending</span></td><td>Run the rollback rehearsal</td></tr>
+            <tr><td>Cut over</td><td>Approve production migration</td><td>Requires all gates to pass</td><td><span class="info">Not started</span></td><td>Obtain explicit owner approval</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout info-callout"><strong>Reading guidance:</strong> Use Analysis for the evidence model, Action plan for execution, Evidence for exact fixture values, and Sources for provenance and limitations.</div>
+    </section>
+
+    <section class="report-section" id="panel-analysis" role="tabpanel" aria-labelledby="tab-analysis">
+      <h2>Analysis</h2>
+      <article class="finding">
+        <span class="badge bad">Priority 1 · blocker</span>
+        <h3>One unexplained record prevents a trustworthy cutover</h3>
+        <p>The pilot completion rate is 99.99%, but the acceptance rule is exact equivalence. Treating the remaining mismatch as negligible would contradict the declared gate and weaken confidence that migration behavior is understood.</p>
+        <p class="confidence"><strong>Confidence:</strong> 98/100. The conclusion follows directly from the fixture counts and zero-mismatch acceptance rule.</p>
+      </article>
+
+      <div class="grid" style="margin-top:14px">
+        <article class="finding">
+          <span class="badge good">Verified evidence</span>
+          <h3>Backup restoration completed</h3>
+          <p>The restore rehearsal returned the expected 10,000-record pilot snapshot before migration began.</p>
+        </article>
+        <article class="finding">
+          <span class="badge warn">Residual risk</span>
+          <h3>Rollback remains documentary</h3>
+          <p>A reviewed runbook is useful but does not prove timing, permissions, or recovery behavior under execution.</p>
+        </article>
+        <article class="finding">
+          <span class="badge info">Interpretation</span>
+          <h3>Timing is operational, not predictive</h3>
+          <p>The measured stage durations describe this fixture run only; they are not extrapolated to production volume.</p>
+        </article>
+      </div>
+
+      <figure class="visual-card" data-visual-kind="graph" data-purpose="Compare measured gate duration across the three completed migration stages" data-source="Synthetic acceptance-fixture measurements: prepare 12 min, migrate 27 min, verify 18 min">
+        <svg role="img" aria-labelledby="duration-chart-title duration-chart-desc" viewBox="0 0 760 340">
+          <title id="duration-chart-title">Measured gate duration by completed stage</title>
+          <desc id="duration-chart-desc">A zero-baseline horizontal bar chart. Prepare took 12 minutes, pilot migration took 27 minutes, and verification took 18 minutes. Pilot migration was the longest stage.</desc>
+          <line class="chart-grid" x1="190" y1="50" x2="700" y2="50" />
+          <line class="chart-grid" x1="190" y1="120" x2="700" y2="120" />
+          <line class="chart-grid" x1="190" y1="190" x2="700" y2="190" />
+          <line class="chart-grid" x1="190" y1="260" x2="700" y2="260" />
+          <line class="chart-grid" x1="190" y1="285" x2="700" y2="285" />
+          <text class="chart-axis" x="190" y="315">0 min</text>
+          <text class="chart-axis" x="350" y="315">10</text>
+          <text class="chart-axis" x="520" y="315">20</text>
+          <text class="chart-axis" x="680" y="315">30 min</text>
+          <text class="chart-label" x="24" y="99">Prepare</text>
+          <rect class="bar-blue" x="190" y="73" width="204" height="36" rx="6" />
+          <text class="chart-label" x="406" y="98">12 min</text>
+          <text class="chart-label" x="24" y="169">Pilot migration</text>
+          <rect class="bar-yellow" x="190" y="143" width="459" height="36" rx="6" />
+          <text class="chart-label" x="661" y="168">27 min</text>
+          <text class="chart-label" x="24" y="239">Verification</text>
+          <rect class="bar-green" x="190" y="213" width="306" height="36" rx="6" />
+          <text class="chart-label" x="508" y="238">18 min</text>
+        </svg>
+        <figcaption>Measured fixture values on a zero-to-30-minute scale. Source: synthetic acceptance-fixture run recorded below; values are not production estimates.</figcaption>
+      </figure>
+      <div class="table-wrap">
+        <table>
+          <caption>Exact values represented in the duration graph.</caption>
+          <thead><tr><th>Stage</th><th>Duration</th><th>Start</th><th>End</th></tr></thead>
+          <tbody>
+            <tr><td>Prepare</td><td>12 minutes</td><td>09:00</td><td>09:12</td></tr>
+            <tr><td>Pilot migration</td><td>27 minutes</td><td>09:15</td><td>09:42</td></tr>
+            <tr><td>Verification</td><td>18 minutes</td><td>09:45</td><td>10:03</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <figure class="visual-card" data-visual-kind="diagram" data-purpose="Show the gated forward path and explicit rollback route">
+        <svg role="img" aria-labelledby="migration-flow-title migration-flow-desc" viewBox="0 0 820 410">
+          <title id="migration-flow-title">Gated migration and rollback flow</title>
+          <desc id="migration-flow-desc">Verified backup leads to a bounded pilot, then reconciliation. A zero mismatch permits approval and cutover. Any failed gate follows a dashed rollback path back to the restored baseline.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb" /></marker>
+            <marker id="arrow-warning" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#f7c65c" /></marker>
+          </defs>
+          <path class="edge" d="M190 95 H265" />
+          <path class="edge" d="M415 95 H490" />
+          <path class="edge" d="M640 95 H705" />
+          <path class="edge" d="M750 135 V235 H640" />
+          <path class="edge rollback" d="M565 135 V330 H190" />
+          <path class="edge rollback" d="M315 135 V330 H190" />
+          <rect class="node" x="30" y="55" width="160" height="80" rx="12" />
+          <text class="node-text" x="110" y="89"><tspan x="110">Backup</tspan><tspan x="110" dy="21">verified</tspan></text>
+          <rect class="node" x="265" y="55" width="150" height="80" rx="12" />
+          <text class="node-text" x="340" y="89"><tspan x="340">Bounded</tspan><tspan x="340" dy="21">pilot</tspan></text>
+          <rect class="node" x="490" y="55" width="150" height="80" rx="12" />
+          <text class="node-text" x="565" y="89"><tspan x="565">Zero-mismatch</tspan><tspan x="565" dy="21">gate</tspan></text>
+          <rect class="node" x="705" y="55" width="90" height="80" rx="12" />
+          <text class="node-text" x="750" y="89"><tspan x="750">Owner</tspan><tspan x="750" dy="21">approval</tspan></text>
+          <rect class="node" x="490" y="235" width="150" height="80" rx="12" style="stroke:#50d890" />
+          <text class="node-text" x="565" y="269"><tspan x="565">Production</tspan><tspan x="565" dy="21">cutover</tspan></text>
+          <rect class="node" x="30" y="290" width="160" height="80" rx="12" style="stroke:#f7c65c" />
+          <text class="node-text" x="110" y="324"><tspan x="110">Rollback to</tspan><tspan x="110" dy="21">baseline</tspan></text>
+          <text class="chart-axis" x="646" y="81">pass</text>
+          <text class="chart-axis" x="494" y="351">failed gate · dashed path</text>
+        </svg>
+        <figcaption>Solid arrows are the approved forward sequence. Yellow dashed arrows are explicit failed-gate rollback routes, so meaning survives grayscale and does not depend on color alone.</figcaption>
+      </figure>
+    </section>
+
+    <section class="report-section" id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
+      <h2>Recommended steps</h2>
+      <ol class="steps">
+        <li class="step">
+          <h3>Classify the reconciliation mismatch</h3>
+          <p>Compare the source and target identifiers, transformation output, and migration log for the single non-matching record. Do not edit production data during diagnosis.</p>
+          <pre data-copyable><code>reconcile --source fixture-source.json --target fixture-target.json --format summary
+# Expected acceptance signal: mismatches=0</code></pre>
+          <p class="muted"><strong>Done when:</strong> the record is corrected or a documented rule proves that it should be excluded, and a repeat run reports zero unexplained mismatches.</p>
+        </li>
+        <li class="step">
+          <h3>Execute the rollback rehearsal</h3>
+          <p>Run the approved rollback procedure against the isolated fixture environment. Capture duration, permissions, restored count, and application health.</p>
+          <div class="callout"><strong>Approval boundary:</strong> a service owner must approve any rehearsal outside the isolated fixture environment because rollback is disruptive.</div>
+          <p class="muted"><strong>Done when:</strong> 10,000 records are restored, health checks pass, and the evidence bundle includes start/end timestamps.</p>
+        </li>
+        <li class="step">
+          <h3>Repeat the bounded pilot</h3>
+          <p>Use the same frozen input set after the mismatch resolution so the result is comparable. Record exact counts rather than qualitative success labels.</p>
+          <p class="muted"><strong>Done when:</strong> input, output, and reconciled counts are each 10,000 with no unexplained exclusions.</p>
+        </li>
+        <li class="step">
+          <h3>Request explicit cutover approval</h3>
+          <p>Present the gate table, rehearsal result, residual risks, rollback owner, and proposed window to the accountable service owner.</p>
+          <p class="muted"><strong>Done when:</strong> the owner records a signed approval tied to the reviewed evidence version; silence is not approval.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="report-section" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence">
+      <h2>Evidence and alternatives</h2>
+      <div class="table-wrap">
+        <table>
+          <caption>Separation of observation, interpretation, and limitation.</caption>
+          <thead><tr><th>Evidence</th><th>Observation</th><th>Interpretation</th><th>Limits</th></tr></thead>
+          <tbody>
+            <tr><td>Restore log</td><td><code>restored=10000 errors=0</code></td><td>The fixture backup is recoverable under the tested procedure.</td><td>One isolated rehearsal does not prove production recovery time.</td></tr>
+            <tr><td>Migration summary</td><td><code>read=10000 written=10000 rejected=0</code></td><td>The migration process reports no rejected records.</td><td>Process counts alone do not prove field-level equality.</td></tr>
+            <tr><td>Reconciliation summary</td><td><code>matched=9999 mismatches=1</code></td><td>Cutover acceptance is not met.</td><td>The summary does not identify the mismatch cause.</td></tr>
+            <tr><td>Rollback review</td><td>Runbook reviewed; execution field is blank.</td><td>Rollback readiness remains unverified.</td><td>Document review may miss runtime permissions or timing issues.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="detail-controls" aria-label="Evidence detail controls" data-enhanced-control data-details-scope="panel-evidence">
+        <button class="action-button" type="button" data-details-action="expand">Expand all details</button>
+        <button class="action-button" type="button" data-details-action="collapse">Collapse all details</button>
+      </div>
+      <details open>
+        <summary>Decisive fixture log excerpt</summary>
+        <pre data-copyable><code>09:00:00 restore-start snapshot=pilot-v3
+09:12:00 restore-complete restored=10000 errors=0
+09:15:00 migrate-start input=10000
+09:42:00 migrate-complete read=10000 written=10000 rejected=0
+09:45:00 reconcile-start policy=exact
+10:03:00 reconcile-complete matched=9999 mismatches=1</code></pre>
+      </details>
+      <details>
+        <summary>Alternative hypotheses for the mismatch</summary>
+        <ul>
+          <li><strong>Transformation defect:</strong> one field changed unexpectedly during conversion.</li>
+          <li><strong>Comparison defect:</strong> nondeterministic metadata was included in equality checks.</li>
+          <li><strong>Concurrent mutation:</strong> the source snapshot was not actually frozen.</li>
+        </ul>
+        <p>These are candidate explanations, not findings. The next diagnostic must distinguish them using the record identifier and field-level diff.</p>
+      </details>
+      <details>
+        <summary>Rejected shortcut</summary>
+        <p>Rounding 99.99% to 100% was rejected because the acceptance contract requires zero unexplained mismatches. A percentage display cannot override the exact count.</p>
+      </details>
+    </section>
+
+    <section class="report-section" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources">
+      <h2>Sources, limitations, and scope</h2>
+      <h3>Fixture sources</h3>
+      <ul>
+        <li><strong>Scenario notes:</strong> the bundled <code>source-notes.md</code> defines preparation, migration, verification, rollback, and evidence requirements.</li>
+        <li><strong>Synthetic measurement set:</strong> the counts, timestamps, and durations embedded in this file were deliberately authored as test inputs for component and validator coverage.</li>
+        <li><strong>Skill contract:</strong> <code>SKILL.md</code> and its design, content-architecture, and visual-decision references define the expected output behavior.</li>
+      </ul>
+      <h3>Limitations</h3>
+      <div class="callout info-callout"><strong>Primary limitation:</strong> this is a representative acceptance fixture, not evidence about any real service, dataset, migration tool, or operating environment.</div>
+      <ul>
+        <li>The graph supports only comparison of the three supplied fixture durations.</li>
+        <li>The diagram communicates required control flow; it does not establish that each gate has passed.</li>
+        <li>Browser rendering at mobile width and in print still requires visual inspection in addition to static validation.</li>
+        <li>No remote fonts, scripts, styles, images, or runtime packages are used.</li>
+      </ul>
+      <p class="confidence"><strong>Residual confidence:</strong> 96/100 that the recommended next action follows from the fixture evidence; 0/100 applicability to an unspecified production migration without new evidence.</p>
+    </section>
+  </div>
+
+  <footer>
+    <p><strong>Scope:</strong> Full-feature skill acceptance fixture · synthetic data · generated 2026-05-19.</p>
+  </footer>
+  <div id="interaction-status" class="status-region" role="status" aria-live="polite" aria-atomic="true"></div>
+</main>
+<script>
+(() => {
+  document.documentElement.classList.add('interactions-ready');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const status = document.getElementById('interaction-status');
+  const announce = (message) => {
+    if (!status) return;
+    status.textContent = '';
+    window.setTimeout(() => { status.textContent = message; }, 20);
+  };
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('readonly', '');
+    helper.style.position = 'fixed';
+    helper.style.opacity = '0';
+    document.body.appendChild(helper);
+    helper.select();
+    const copied = document.execCommand('copy');
+    helper.remove();
+    if (!copied) throw new Error('Copy command was not accepted');
+  }
+
+  const progressFill = document.querySelector('.reading-progress > span');
+  const backToTop = document.createElement('button');
+  backToTop.type = 'button';
+  backToTop.className = 'action-button back-to-top';
+  backToTop.textContent = '↑ Top';
+  backToTop.setAttribute('aria-label', 'Back to top');
+  document.body.appendChild(backToTop);
+
+  const updateScrollTools = () => {
+    const available = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+    const progress = Math.min(1, Math.max(0, window.scrollY / available));
+    if (progressFill) progressFill.style.transform = `scaleX(${progress})`;
+    backToTop.classList.toggle('is-visible', window.scrollY > 560);
+  };
+  window.addEventListener('scroll', updateScrollTools, { passive: true });
+  window.addEventListener('resize', updateScrollTools);
+  backToTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' }));
+  updateScrollTools();
+
+  const focusButton = document.querySelector('[data-report-action="focus-mode"]');
+  focusButton?.addEventListener('click', () => {
+    const enabled = document.documentElement.classList.toggle('focus-reading');
+    focusButton.setAttribute('aria-pressed', String(enabled));
+    focusButton.textContent = enabled ? 'Exit focus' : 'Focus reading';
+    announce(enabled ? 'Focus reading enabled.' : 'Focus reading disabled.');
+  });
+
+  document.querySelector('[data-report-action="print"]')?.addEventListener('click', () => window.print());
+  document.querySelector('[data-report-action="copy-link"]')?.addEventListener('click', async () => {
+    try {
+      await copyText(window.location.href);
+      announce('Current report link copied.');
+    } catch {
+      announce('The report link could not be copied. Select it from the address bar instead.');
+    }
+  });
+
+  document.querySelectorAll('pre[data-copyable]').forEach((pre, index) => {
+    pre.classList.add('copyable');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'action-button copy-button';
+    button.textContent = 'Copy';
+    button.setAttribute('aria-label', `Copy code block ${index + 1}`);
+    button.addEventListener('click', async () => {
+      try {
+        await copyText(pre.querySelector('code')?.textContent || pre.textContent || '');
+        button.textContent = 'Copied';
+        announce(`Code block ${index + 1} copied.`);
+        window.setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+      } catch {
+        announce(`Code block ${index + 1} could not be copied. Select the text manually.`);
+      }
+    });
+    pre.appendChild(button);
+  });
+
+  document.querySelectorAll('[data-details-scope]').forEach((controls) => {
+    const scope = document.getElementById(controls.getAttribute('data-details-scope'));
+    if (!scope) {
+      controls.remove();
+      return;
+    }
+    const details = [...scope.querySelectorAll('details')];
+    if (details.length < 2) {
+      controls.remove();
+      return;
+    }
+    const expand = controls.querySelector('[data-details-action="expand"]');
+    const collapse = controls.querySelector('[data-details-action="collapse"]');
+    const sync = () => {
+      if (expand) expand.disabled = details.every((item) => item.open);
+      if (collapse) collapse.disabled = details.every((item) => !item.open);
+    };
+    expand?.addEventListener('click', () => {
+      details.forEach((item) => { item.open = true; });
+      sync();
+      announce('All evidence details expanded.');
+    });
+    collapse?.addEventListener('click', () => {
+      details.forEach((item) => { item.open = false; });
+      sync();
+      announce('All evidence details collapsed.');
+    });
+    details.forEach((item) => item.addEventListener('toggle', sync));
+    sync();
+  });
+
+  const tablist = document.querySelector('[role="tablist"]');
+  if (!tablist) return;
+
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls'))).filter(Boolean);
+  const completedPanels = new Set();
+  document.documentElement.classList.add('tabs-ready');
+
+  const readerNav = document.createElement('nav');
+  readerNav.className = 'reader-nav';
+  readerNav.setAttribute('aria-label', 'Sequential report navigation');
+  readerNav.innerHTML = `
+    <div class="reader-nav-group">
+      <button class="action-button" type="button" data-reading-action="previous-section">← Previous section</button>
+      <button class="action-button" type="button" data-reading-action="next-section">Next section →</button>
+    </div>
+    <span class="reader-nav-status" aria-live="polite"></span>
+    <div class="reader-nav-group">
+      <button class="action-button" type="button" data-reading-action="toggle-complete" aria-pressed="false">Mark section read</button>
+    </div>`;
+  tablist.closest('.tabs-shell')?.appendChild(readerNav);
+
+  const previousSection = readerNav.querySelector('[data-reading-action="previous-section"]');
+  const nextSection = readerNav.querySelector('[data-reading-action="next-section"]');
+  const completeSection = readerNav.querySelector('[data-reading-action="toggle-complete"]');
+  const readerStatus = readerNav.querySelector('.reader-nav-status');
+
+  const activeIndex = () => Math.max(0, tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true'));
+  const updateReaderNav = () => {
+    const index = activeIndex();
+    const currentPanel = panels[index];
+    const isComplete = completedPanels.has(currentPanel?.id);
+    if (previousSection) previousSection.disabled = index === 0;
+    if (nextSection) nextSection.disabled = index === tabs.length - 1;
+    if (completeSection) {
+      completeSection.setAttribute('aria-pressed', String(isComplete));
+      completeSection.textContent = isComplete ? 'Mark section unread' : 'Mark section read';
+    }
+    if (readerStatus) readerStatus.textContent = `${index + 1} of ${tabs.length} · ${completedPanels.size} read`;
+    tabs.forEach((tab, tabIndex) => tab.classList.toggle('is-complete', completedPanels.has(panels[tabIndex]?.id)));
+    window.requestAnimationFrame(updateScrollTools);
+  };
+
+  function activate(tab, options = {}) {
+    const { focus = false, updateHash = true, scroll = false } = options;
+    tabs.forEach((candidate) => {
+      const selected = candidate === tab;
+      candidate.setAttribute('aria-selected', String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) tab.focus();
+    if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+    updateReaderNav();
+    if (scroll) {
+      const panel = document.getElementById(tab.getAttribute('aria-controls'));
+      panel?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    }
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      let targetIndex = null;
+      if (event.key === 'ArrowRight') targetIndex = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') targetIndex = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') targetIndex = 0;
+      if (event.key === 'End') targetIndex = tabs.length - 1;
+      if (targetIndex === null) return;
+      event.preventDefault();
+      activate(tabs[targetIndex], { focus: true });
+    });
+  });
+
+  previousSection?.addEventListener('click', () => {
+    const index = activeIndex();
+    if (index > 0) activate(tabs[index - 1], { scroll: true });
+  });
+  nextSection?.addEventListener('click', () => {
+    const index = activeIndex();
+    if (index < tabs.length - 1) activate(tabs[index + 1], { scroll: true });
+  });
+  completeSection?.addEventListener('click', () => {
+    const index = activeIndex();
+    const panelId = panels[index]?.id;
+    if (!panelId) return;
+    if (completedPanels.has(panelId)) completedPanels.delete(panelId);
+    else completedPanels.add(panelId);
+    updateReaderNav();
+    if (completedPanels.size === panels.length) announce('Report complete — nicely done.');
+    else announce(completedPanels.has(panelId) ? 'Section marked as read.' : 'Section marked as unread.');
+  });
+
+  const searchInput = document.getElementById('report-search');
+  const searchCount = document.querySelector('.search-count');
+  let matches = [];
+  let currentMatch = -1;
+
+  const clearMatches = () => {
+    document.querySelectorAll('mark.report-match').forEach((mark) => mark.replaceWith(document.createTextNode(mark.textContent || '')));
+    document.getElementById('report-content')?.normalize();
+    matches = [];
+    currentMatch = -1;
+    if (searchCount) searchCount.textContent = '0 matches';
+  };
+
+  const showMatch = (index) => {
+    if (!matches.length) return;
+    matches.forEach((match) => match.classList.remove('current'));
+    currentMatch = (index + matches.length) % matches.length;
+    const match = matches[currentMatch];
+    match.classList.add('current');
+    const panel = match.closest('[role="tabpanel"]');
+    const tab = panel ? tabs.find((candidate) => candidate.getAttribute('aria-controls') === panel.id) : null;
+    if (tab) activate(tab, { updateHash: true });
+    const details = match.closest('details');
+    if (details) details.open = true;
+    match.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    if (searchCount) searchCount.textContent = `${currentMatch + 1} of ${matches.length}`;
+  };
+
+  const runSearch = () => {
+    clearMatches();
+    const query = searchInput?.value.trim() || '';
+    if (query.length < 2) return;
+    const root = document.getElementById('report-content');
+    if (!root) return;
+    const nodes = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || !node.nodeValue?.trim()) return NodeFilter.FILTER_REJECT;
+        if (parent.closest('script, style, button, input, textarea, svg, mark, .status-region, .search-tools')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const expression = new RegExp(escaped, 'gi');
+    nodes.forEach((node) => {
+      const text = node.nodeValue || '';
+      let match;
+      let last = 0;
+      let changed = false;
+      const fragment = document.createDocumentFragment();
+      while ((match = expression.exec(text)) !== null) {
+        changed = true;
+        fragment.append(text.slice(last, match.index));
+        const marker = document.createElement('mark');
+        marker.className = 'report-match';
+        marker.textContent = match[0];
+        fragment.append(marker);
+        last = match.index + match[0].length;
+      }
+      if (!changed) return;
+      fragment.append(text.slice(last));
+      node.replaceWith(fragment);
+    });
+    matches = [...document.querySelectorAll('mark.report-match')];
+    if (searchCount) searchCount.textContent = `${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`;
+    if (matches.length) showMatch(0);
+    else announce(`No matches for ${query}.`);
+  };
+
+  searchInput?.addEventListener('input', runSearch);
+  document.querySelector('[data-search-action="previous-match"]')?.addEventListener('click', () => showMatch(currentMatch - 1));
+  document.querySelector('[data-search-action="next-match"]')?.addEventListener('click', () => showMatch(currentMatch + 1));
+  document.querySelector('[data-search-action="clear-search"]')?.addEventListener('click', () => {
+    if (searchInput) searchInput.value = '';
+    clearMatches();
+    searchInput?.focus();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.altKey && event.key === '/') {
+      event.preventDefault();
+      searchInput?.focus();
+      searchInput?.select();
+      return;
+    }
+    if (event.key === 'Escape' && document.activeElement === searchInput) {
+      if (searchInput) searchInput.value = '';
+      clearMatches();
+      return;
+    }
+    if (!event.altKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    if (document.activeElement?.matches('input, textarea, select')) return;
+    event.preventDefault();
+    const index = activeIndex();
+    const target = event.key === 'ArrowLeft' ? index - 1 : index + 1;
+    if (target >= 0 && target < tabs.length) activate(tabs[target], { scroll: true });
+  });
+
+  const hashPanel = panels.find((panel) => `#${panel.id}` === location.hash);
+  const initialTab = hashPanel
+    ? tabs.find((tab) => tab.getAttribute('aria-controls') === hashPanel.id)
+    : tabs.find((tab) => tab.getAttribute('aria-selected') === 'true') || tabs[0];
+  activate(initialTab, { updateHash: false });
+})();
+</script>
+</body>
+</html>

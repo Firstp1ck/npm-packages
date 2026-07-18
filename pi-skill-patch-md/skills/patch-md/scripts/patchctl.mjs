@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./main_module.mjs";
 import { parsePatchFile } from "./patch_md_extract.mjs";
 
 const ACTIONS = new Set(["status", "plan", "apply", "verify", "rollback"]);
@@ -250,7 +250,6 @@ function main() {
   }
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) main();
+if (isMainModule(import.meta.url)) main();
 
 export { canonicalize, execute, hashPlan };

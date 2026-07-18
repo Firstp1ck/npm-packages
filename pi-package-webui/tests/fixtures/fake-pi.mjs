@@ -89,6 +89,12 @@ function logJsonLine(entry) {
   }
 }
 
+logJsonLine({
+  direction: "startup",
+  recoveryUrl: String(process.env.PI_WEBUI_RECOVERY_URL || ""),
+  recoveryTokenConfigured: Boolean(process.env.PI_WEBUI_RECOVERY_TOKEN),
+});
+
 function respond(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
@@ -367,7 +373,13 @@ rl.on("line", (line) => {
   }
   const { id, type } = command || {};
   if (!id || !type) return;
-  logJsonLine({ direction: "command", type, ...(command.message !== undefined ? { message: String(command.message) } : {}) });
+  logJsonLine({
+    direction: "command",
+    type,
+    ...(command.message !== undefined ? { message: String(command.message) } : {}),
+    ...(command.provider !== undefined ? { provider: String(command.provider) } : {}),
+    ...(command.modelId !== undefined ? { modelId: String(command.modelId) } : {}),
+  });
   const base = { type: "response", id, command: type, success: true };
 
   switch (type) {
@@ -448,6 +460,10 @@ rl.on("line", (line) => {
     case "set_thinking_level":
       thinkingLevel = String(command.level || "off");
       respond({ ...base, data: { level: thinkingLevel } });
+      return;
+    case "set_model":
+      if (command.modelId === "missing-model") respond({ ...base, success: false, error: "Model not found: fake/missing-model" });
+      else respond({ ...base, data: { provider: command.provider, id: command.modelId } });
       return;
     case "get_available_models":
       respond({ ...base, data: { models: [{ provider: "fake", id: "fake-model", name: "Fake Model" }] } });

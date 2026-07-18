@@ -22,10 +22,10 @@ function lanAddress() {
   return undefined;
 }
 
-async function request(host, pathname, { method = "GET", body, timeoutMs = 5_000 } = {}) {
+async function request(host, pathname, { method = "GET", body, headers = {}, timeoutMs = 5_000 } = {}) {
   const response = await fetch(`http://${host}:${port}${pathname}`, {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: body === undefined ? headers : { "Content-Type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -114,6 +114,7 @@ const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
 const fakePiCommandLog = path.join(harnessSideEffectsRoot, "fake-pi-commands.jsonl");
+const recoveryEndpointToken = "test-recovery-token-6e1cc61d22d44c8dbf3c";
 const openCommandScript = path.join(harnessSideEffectsRoot, "fake-open-default.mjs");
 const fakeOpenBinDir = path.join(harnessSideEffectsRoot, "bin");
 const artifactRoot = path.join(harnessSideEffectsRoot, "artifacts"), artifactDir = path.join(artifactRoot, "fixture-document-artifact"), artifactManifest = path.join(artifactDir, "manifest.json"), artifactDownload = path.join(artifactDir, "document.docx"), artifactPage = path.join(artifactDir, "page-1.png"), artifactExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -181,6 +182,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     FAKE_PI_ARTIFACT_DOWNLOAD: artifactDownload,
     FAKE_PI_LOG_FILE: fakePiCommandLog,
     FAKE_PI_VOICE_SCRIPTS: "1",
+    PI_WEBUI_RECOVERY_TOKEN: recoveryEndpointToken,
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
     PI_WEBUI_PI_RELEASES_API_BASE_URL: `http://127.0.0.1:${voiceProviderPort}/pi-releases`,
@@ -1719,6 +1721,68 @@ try {
     assert.equal(disableAuth.status, 200, "localhost can disable remote PIN auth");
     console.log("http-endpoints-harness: no LAN address detected; skipping remote-client checks");
   }
+
+  const recoveryTabsBefore = await request("127.0.0.1", "/api/tabs");
+  const sourceTabId = recoveryTabsBefore.body?.data?.tabs?.[0]?.id;
+  assert.ok(sourceTabId, "recovery endpoint test needs an active source tab");
+  const recoveryBody = {
+    prompt: "Inspect the Anthropic compatibility patch and run status/plan only.",
+    cwd,
+    model: { provider: "fake", id: "fake-model" },
+    mode: "plan-only",
+  };
+  const unauthenticatedRecovery = await request("127.0.0.1", "/api/recovery/plan", { method: "POST", body: recoveryBody });
+  assert.equal(unauthenticatedRecovery.status, 401, "recovery endpoint must reject missing bearer credentials");
+  const wrongCredentialRecovery = await request("127.0.0.1", "/api/recovery/plan", {
+    method: "POST",
+    headers: { authorization: "Bearer wrong-recovery-token" },
+    body: recoveryBody,
+  });
+  assert.equal(wrongCredentialRecovery.status, 401, "recovery endpoint must reject an incorrect bearer credential");
+  const invalidModeRecovery = await request("127.0.0.1", "/api/recovery/plan", {
+    method: "POST",
+    headers: { authorization: `Bearer ${recoveryEndpointToken}` },
+    body: { ...recoveryBody, mode: "apply" },
+  });
+  assert.equal(invalidModeRecovery.status, 400, "recovery endpoint must accept plan-only mode exclusively");
+  if (lan) {
+    const remoteRecovery = await request(lan, "/api/recovery/plan", {
+      method: "POST",
+      headers: { authorization: `Bearer ${recoveryEndpointToken}` },
+      body: recoveryBody,
+    });
+    assert.equal(remoteRecovery.status, 403, "even a credentialed LAN client must not open recovery plans");
+  }
+  const rejectedRecovery = await request("127.0.0.1", "/api/recovery/plan", {
+    method: "POST",
+    headers: { authorization: `Bearer ${recoveryEndpointToken}` },
+    body: { ...recoveryBody, model: { provider: "fake", id: "missing-model" } },
+  });
+  assert.equal(rejectedRecovery.status, 409, "an unavailable recovery model should be rejected");
+  const recoveryTabsAfterRejection = await request("127.0.0.1", "/api/tabs");
+  assert.equal(recoveryTabsAfterRejection.body?.data?.tabs?.length, recoveryTabsBefore.body?.data?.tabs?.length, "failed recovery initialization must discard its temporary tab");
+  const recoveryOpened = await waitForSseEvent(
+    sourceTabId,
+    (event) => event.type === "webui_recovery_opened",
+    () => request("127.0.0.1", "/api/recovery/plan", {
+      method: "POST",
+      headers: { authorization: `Bearer ${recoveryEndpointToken}` },
+      body: recoveryBody,
+    }),
+  );
+  assert.equal(recoveryOpened.triggerResult.status, 201, `recovery endpoint should create a tab: ${recoveryOpened.triggerResult.body?.error || ""}`);
+  assert.equal(recoveryOpened.triggerResult.body?.requestId, recoveryOpened.event.recoveryTabId);
+  assert.equal(recoveryOpened.event.model?.provider, "fake");
+  const recoveryTabs = await request("127.0.0.1", "/api/tabs");
+  const recoveryTab = recoveryTabs.body?.data?.tabs?.find((tab) => tab.id === recoveryOpened.event.recoveryTabId);
+  assert.equal(recoveryTab?.title, "Anthropic compatibility recovery");
+  assert.equal(recoveryTab?.cwd, cwd);
+  assert.equal(recoveryTab?.activity?.isWorking, true);
+  const recoveryCommands = (await readFile(fakePiCommandLog, "utf8")).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  assert.ok(recoveryCommands.some((entry) => entry.direction === "startup" && entry.recoveryUrl === `http://127.0.0.1:${port}/api/recovery/plan` && entry.recoveryTokenConfigured), "Pi RPC children should receive the internal recovery URL and a credential");
+  const recoveryModelIndex = recoveryCommands.findIndex((entry) => entry.direction === "command" && entry.type === "set_model" && entry.provider === "fake" && entry.modelId === "fake-model");
+  const recoveryPromptIndex = recoveryCommands.findIndex((entry) => entry.direction === "command" && entry.type === "prompt" && entry.message === recoveryBody.prompt);
+  assert.ok(recoveryModelIndex >= 0 && recoveryPromptIndex > recoveryModelIndex, "recovery should select the requested model before sending the plan-only prompt");
 
   const localClose = await request("127.0.0.1", "/api/network/close", { method: "POST" });
   assert.equal(localClose.status, 202, "network close from localhost should be accepted");

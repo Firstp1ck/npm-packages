@@ -130,6 +130,10 @@ const CLAUDE_USAGE_OUTPUT_MAX_CHARS = 60_000;
 const CLAUDE_USAGE_COMMAND = process.env.PI_WEBUI_CLAUDE_BIN || "claude";
 const CLAUDE_USAGE_ARGS = ["--safe-mode", "--no-session-persistence", "-p", "/usage", "--output-format", "json"];
 const BODY_LIMIT_BYTES = 1024 * 1024;
+const RECOVERY_ENDPOINT_PATH = "/api/recovery/plan";
+const RECOVERY_BODY_LIMIT_BYTES = 256 * 1024;
+const RECOVERY_PROMPT_MAX_CHARS = 200_000;
+const RECOVERY_TITLE = "Anthropic compatibility recovery";
 const SKILL_FILE_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const FILE_VIEWER_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_VIEWER_BODY_LIMIT_BYTES = FILE_VIEWER_MAX_BYTES + 64 * 1024;
@@ -631,11 +635,12 @@ async function installedPiReleaseNotes() {
 }
 
 class PiRpcProcess {
-  constructor({ command, args, displayCommand, cwd }) {
+  constructor({ command, args, displayCommand, cwd, env = process.env }) {
     this.command = command;
     this.args = args;
     this.displayCommand = displayCommand;
     this.cwd = cwd;
+    this.env = env;
     this.child = undefined;
     this.pending = new Map();
     this.listeners = new Set();
@@ -645,7 +650,7 @@ class PiRpcProcess {
   start() {
     this.child = spawn(this.command, this.args, {
       cwd: this.cwd,
-      env: process.env,
+      env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -6767,6 +6772,26 @@ try {
 
 process.env.PI_WEBUI_HOST = options.host;
 process.env.PI_WEBUI_PORT = String(options.port);
+const recoveryEndpointToken = String(process.env.PI_WEBUI_RECOVERY_TOKEN || "").trim() || `${randomUUID()}${randomUUID()}`;
+
+function recoveryLoopbackUrl(bindHost = options.host) {
+  const normalized = String(bindHost || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "::" || normalized === "::1") return `http://[::1]:${options.port}${RECOVERY_ENDPOINT_PATH}`;
+  if (normalized === "localhost") return `http://localhost:${options.port}${RECOVERY_ENDPOINT_PATH}`;
+  if (normalized === "0.0.0.0" || normalized.startsWith("127.")) return `http://127.0.0.1:${options.port}${RECOVERY_ENDPOINT_PATH}`;
+  return "";
+}
+
+function piRpcEnvironment() {
+  const env = { ...process.env };
+  const recoveryUrl = recoveryLoopbackUrl();
+  if (recoveryUrl) {
+    env.PI_WEBUI_RECOVERY_URL = recoveryUrl;
+    env.PI_WEBUI_RECOVERY_TOKEN = recoveryEndpointToken;
+  }
+  return env;
+}
+
 await configureDevDependencyResolution();
 
 const startupDelayMs = Number.parseInt(process.env.PI_WEBUI_START_DELAY_MS || "", 10);
@@ -7825,7 +7850,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
   const piArgs = await buildPiArgsForTab(tabIndex, tabTitle, tabCwd);
   if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
-  const rpc = new PiRpcProcess({ ...piCommand, cwd: tabCwd });
+  const rpc = new PiRpcProcess({ ...piCommand, cwd: tabCwd, env: piRpcEnvironment() });
   const createdAt = new Date().toISOString();
   const tab = {
     id,
@@ -8534,6 +8559,15 @@ function broadcastTabEvent(tab, event) {
   for (const client of tab.sseClients) sendSse(client, event);
 }
 
+function broadcastServerEvent(event) {
+  recordEvent(event);
+  const clients = new Set();
+  for (const tab of tabs.values()) {
+    for (const client of tab.sseClients) clients.add(client);
+  }
+  for (const client of clients) sendSse(client, event);
+}
+
 function renameTab(tab, title, { source = "explicit", maxLength, unique = source === "auto" } = {}) {
   if (!tab) return false;
   const rawTitle = maxLength ? truncateTabTitle(title, maxLength) : String(title || "").replace(/\s+/g, " ").trim();
@@ -8607,7 +8641,7 @@ async function updateTabCwd(id, cwd) {
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
-  const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
+  const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
   attachRpcToTab(tab, rpc);
   rpc.start();
   // Non-fatal: a failed start surfaces through pi_process_error/exit events.
@@ -8647,7 +8681,7 @@ async function restartTabRpc(tab, reason = "reload") {
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
-  const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd });
+  const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
   attachRpcToTab(tab, rpc);
   rpc.start();
 
@@ -10692,6 +10726,68 @@ async function closeTab(id) {
   return tab;
 }
 
+async function discardTab(tab) {
+  if (!tab || !tabs.has(tab.id)) return;
+  tab.rpcUnsubscribe?.();
+  rejectTabBashQueue(tab, new Error("Pi recovery tab initialization failed"));
+  stopAppRunnerForTab(tab, "recovery initialization failed", { force: true });
+  tab.rpc.stop();
+  tabs.delete(tab.id);
+}
+
+function recoveryText(value, field, maxChars) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw makeHttpError(400, `${field} is required`);
+  if (text.length > maxChars) throw makeHttpError(413, `${field} is too large`);
+  if (/\0/u.test(text)) throw makeHttpError(400, `${field} contains invalid characters`);
+  return text;
+}
+
+function requireRecoveryEndpointAuthorization(req) {
+  requireLocalhostRoute(req, RECOVERY_ENDPOINT_PATH);
+  const match = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/iu);
+  if (!match || !safeTimingEqual(match[1].trim(), recoveryEndpointToken)) {
+    throw makeHttpError(401, "Invalid recovery endpoint credential");
+  }
+}
+
+async function openPlanRecovery(body = {}) {
+  if (body.mode !== "plan-only") throw makeHttpError(400, "Recovery mode must be plan-only");
+  if (!body.model || typeof body.model !== "object" || Array.isArray(body.model)) throw makeHttpError(400, "model is required");
+  const prompt = recoveryText(body.prompt, "prompt", RECOVERY_PROMPT_MAX_CHARS);
+  const cwd = recoveryText(body.cwd, "cwd", 4096);
+  const provider = recoveryText(body.model.provider, "model.provider", 160);
+  const modelId = recoveryText(body.model.id, "model.id", 320);
+  const tab = await createTab({
+    title: RECOVERY_TITLE,
+    titleSource: "explicit",
+    conversationStarted: true,
+    cwd,
+  });
+
+  try {
+    const modelResponse = await tab.rpc.send({ type: "set_model", provider, modelId });
+    if (modelResponse.success === false) throw makeHttpError(409, modelResponse.error || `Recovery model is unavailable: ${provider}/${modelId}`);
+    markTabWorking(tab);
+    const promptResponse = await tab.rpc.send({ type: "prompt", message: prompt }, PROMPT_REQUEST_TIMEOUT_MS);
+    if (promptResponse.success === false) throw makeHttpError(409, promptResponse.error || "Recovery prompt was rejected");
+    const event = {
+      type: "webui_recovery_opened",
+      requestId: tab.id,
+      recoveryTabId: tab.id,
+      recoveryTabTitle: tab.title,
+      cwd: tab.cwd,
+      model: { provider, id: modelId },
+    };
+    broadcastServerEvent(event);
+    return { requestId: tab.id, tab: tabMeta(tab), tabs: listTabs() };
+  } catch (error) {
+    markTabIdle(tab);
+    await discardTab(tab);
+    throw error;
+  }
+}
+
 async function closeTabs(ids) {
   const uniqueIds = [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || "").trim()).filter(Boolean))];
   const targetTabs = uniqueIds.map((id) => tabs.get(id)).filter(Boolean);
@@ -11151,6 +11247,13 @@ const server = createServer(async (req, res) => {
       if (!remoteAuth.pin) throw makeHttpError(400, "Remote PIN authentication is not enabled");
       if (!/^\d{4}$/.test(pin) || !safeTimingEqual(pin, remoteAuth.pin)) throw makeHttpError(403, "Incorrect remote PIN");
       sendJson(res, 200, { ok: true, data: { auth: remoteAuthStatus() } }, { "set-cookie": remoteAuthCookie() });
+      return;
+    }
+
+    if (url.pathname === RECOVERY_ENDPOINT_PATH && req.method === "POST") {
+      requireRecoveryEndpointAuthorization(req);
+      const result = await openPlanRecovery(await readJsonBody(req, { limitBytes: RECOVERY_BODY_LIMIT_BYTES }));
+      sendJson(res, 201, { ok: true, requestId: result.requestId, data: result });
       return;
     }
 

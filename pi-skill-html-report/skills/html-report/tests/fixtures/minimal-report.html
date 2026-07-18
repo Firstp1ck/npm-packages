@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Migration explanation report</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#121c2d; --text:#e8eef8; --line:#2b3b55; --blue:#65b5ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg); color:var(--text); font:16px/1.6 system-ui,sans-serif; }
+    main { width:min(900px,calc(100% - 32px)); margin:32px auto; }
+    header,.report-section { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:24px; margin:16px 0; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; padding:8px; border-bottom:1px solid var(--line); }
+    figure svg { width:100%; height:auto; border:1px solid var(--line); border-radius:12px; }
+    @media (max-width:620px) { main { width:calc(100% - 18px); } header,.report-section { padding:16px; } }
+    @media print { body,header,.report-section { color:#111; background:#fff; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><h1>Migration explanation report</h1><p>A concise, evidence-grounded implementation guide.</p></header>
+  <section class="report-section">
+    <h2>Overview</h2>
+    <table data-overview>
+      <thead><tr><th>Stage</th><th>Objective</th><th>Done when</th></tr></thead>
+      <tbody><tr><td>Prepare</td><td>Validate dependencies</td><td>Checks pass</td></tr><tr><td>Migrate</td><td>Move data safely</td><td>Records reconcile</td></tr></tbody>
+    </table>
+    <figure data-visual-kind="diagram" data-purpose="Show the validated migration sequence">
+      <svg role="img" aria-labelledby="migration-title migration-desc" viewBox="0 0 600 180">
+        <title id="migration-title">Migration sequence</title>
+        <desc id="migration-desc">Preparation leads to migration, which leads to verification.</desc>
+        <rect x="20" y="55" width="150" height="60" rx="10" fill="#18253a" stroke="#65b5ff" />
+        <rect x="225" y="55" width="150" height="60" rx="10" fill="#18253a" stroke="#65b5ff" />
+        <rect x="430" y="55" width="150" height="60" rx="10" fill="#18253a" stroke="#65b5ff" />
+        <path d="M170 85 H225 M375 85 H430" fill="none" stroke="#a9b7cb" stroke-width="3" />
+        <g fill="#e8eef8" font-family="system-ui" font-size="16" text-anchor="middle"><text x="95" y="91">Prepare</text><text x="300" y="91">Migrate</text><text x="505" y="91">Verify</text></g>
+      </svg>
+      <figcaption>Each phase advances only after its completion check passes.</figcaption>
+    </figure>
+  </section>
+</main>
+</body>
+</html>

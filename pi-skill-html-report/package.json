@@ -1,0 +1,42 @@
+{
+  "name": "@firstpick/pi-skill-html-report",
+  "version": "0.1.0",
+  "description": "Reusable Agent Skill for polished self-contained HTML reports that explain complex, multi-step diagnostics, guides, decisions, investigations, and research with adaptive visuals and accessible long-page navigation.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-skill-html-report#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-skill-html-report"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "skill",
+    "agent-skill",
+    "html-report",
+    "technical-explanation",
+    "data-visualization",
+    "accessible-tabs"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "python3 -B -m unittest discover -s skills/html-report/tests -p 'test_*.py'",
+    "validate:fixture": "python3 -B skills/html-report/scripts/validate_report.py skills/html-report/tests/fixtures/minimal-report.html --strict"
+  },
+  "files": [
+    "skills/html-report/SKILL.md",
+    "skills/html-report/assets",
+    "skills/html-report/references",
+    "skills/html-report/scripts/validate_report.py",
+    "skills/html-report/tests/fixtures",
+    "skills/html-report/tests/test_skill_contract.py",
+    "README.md",
+    "LICENSE"
+  ]
+}

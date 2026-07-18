@@ -1334,6 +1334,7 @@ assert.match(app, /function syncActiveTabActivityFromState\(state = currentState
 assert.match(app, /event\.command === "get_state" && event\.tabId === activeTabId[\s\S]*?syncActiveTabActivityFromState\(currentState\)/, "get_state response events should update stale active-tab activity");
 assert.match(app, /function applyResponseTab\(response\)/, "frontend should merge tab metadata returned by prompt responses");
 assert.match(app, /case "webui_tab_renamed":/, "frontend should update tab labels from backend rename events");
+assert.match(app, /case "webui_recovery_opened":[\s\S]*?refreshTabs\(\)[\s\S]*?switchTab\(event\.recoveryTabId\)/, "recovery events should refresh tabs and activate the new recovery session");
 assert.match(app, /terminalTabsToggleButton\.addEventListener\("click"/, "terminal tabs trigger should be wired in JS");
 assert.match(app, /composerActionsButton\.addEventListener\("click"/, "composer actions trigger should be wired in JS");
 assert.match(app, /function setMobileFooterExpanded\(/, "mobile footer should preserve expansion state for compatibility");

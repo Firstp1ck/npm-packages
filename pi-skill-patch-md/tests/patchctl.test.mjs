@@ -7,11 +7,17 @@ import test from "node:test";
 
 const patchctl = path.resolve("skills/patch-md/scripts/patchctl.mjs");
 
-function run(args, cwd) {
-  const child = spawnSync(process.execPath, [patchctl, ...args], { cwd, encoding: "utf8", timeout: 30_000 });
+function run(args, cwd, entrypoint = patchctl) {
+  const child = spawnSync(process.execPath, [entrypoint, ...args], { cwd, encoding: "utf8", timeout: 30_000 });
   let payload;
   try { payload = JSON.parse(child.stdout); } catch { payload = { stdout: child.stdout, stderr: child.stderr }; }
   return { status: child.status, payload, stderr: child.stderr };
+}
+
+function symlinkedEntrypoint(script, parent) {
+  const alias = path.join(parent, "scripts-alias");
+  fs.symlinkSync(path.dirname(script), alias, process.platform === "win32" ? "junction" : "dir");
+  return path.join(alias, path.basename(script));
 }
 
 function setup() {
@@ -156,6 +162,20 @@ test("patchctl binds apply to a plan hash, preserves idempotency, verifies, and 
   assert.equal(rollback.status, 0, JSON.stringify(rollback.payload));
   assert.equal(fs.readFileSync(fixture.target, "utf8"), "before\n");
   assert.ok(fs.existsSync(rollback.payload.archivedReceiptPath));
+});
+
+test("patchctl runs when its entrypoint parent is symlinked", () => {
+  const fixture = setup();
+  const entrypoint = symlinkedEntrypoint(patchctl, fixture.dir);
+  const result = run([
+    "status",
+    "--patch", path.join(fixture.dir, "PATCH.md"),
+    "--state-dir", fixture.stateDir,
+  ], fixture.dir, entrypoint);
+
+  assert.equal(result.status, 0, JSON.stringify(result.payload));
+  assert.equal(result.payload.action, "status");
+  assert.equal(result.payload.targets[0].status, "applicable");
 });
 
 test("handler output containing likely secrets is rejected without echoing the value", () => {

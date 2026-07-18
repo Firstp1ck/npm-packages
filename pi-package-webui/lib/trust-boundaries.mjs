@@ -13,6 +13,7 @@ export const LOCALHOST_ONLY_POST_ROUTES = new Map([
   ["/api/network/open", "Opening to the network is only allowed from localhost"],
   ["/api/network/close", "Closing network access is only allowed from localhost"],
   ["/api/remote-auth/settings", "Remote PIN authentication settings are only allowed from localhost"],
+  ["/api/recovery/plan", "Opening recovery plans is only allowed from localhost"],
   ["/api/restart", "Restart is only allowed from localhost"],
   ["/api/update", "Updating Pi from the Web UI is only allowed from localhost"],
   ["/api/shutdown", "Shutdown is only allowed from localhost"],

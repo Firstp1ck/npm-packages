@@ -15,19 +15,30 @@
     "pi-coding-agent",
     "skill",
     "agent-skill",
+    "extension",
     "patch",
     "patch-md"
   ],
   "pi": {
     "skills": [
       "./skills"
+    ],
+    "extensions": [
+      "./index.ts"
     ]
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check skills/patch-md/scripts/patch_md_extract.mjs && node --check skills/patch-md/scripts/patchctl.mjs && npm test"
+    "check": "node --check lib/patch-approval.mjs && node --check skills/patch-md/scripts/main_module.mjs && node --check skills/patch-md/scripts/patch_md_extract.mjs && node --check skills/patch-md/scripts/patchctl.mjs && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "files": [
+    "index.ts",
+    "extensions",
+    "lib",
     "skills",
     "README.md",
     "LICENSE"

@@ -27301,6 +27301,12 @@ function handleEvent(event) {
       applyTabMetadata(event.tab || { id: event.tabId, title: event.tabTitle, activity: event.tabActivity });
       addEvent(`${event.previousTabTitle || "terminal"} renamed to ${event.tabTitle || "terminal"}`);
       break;
+    case "webui_recovery_opened":
+      addEvent(`opened ${event.recoveryTabTitle || "recovery plan"}`);
+      refreshTabs()
+        .then(() => switchTab(event.recoveryTabId))
+        .catch((error) => addEvent(error.message, "error"));
+      break;
     case "pi_process_start":
       addEvent(`started pi rpc pid ${event.pid}`);
       refreshTabs().catch((error) => addEvent(error.message, "error"));

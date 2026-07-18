@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { parsePatch, parsePatchFile } from "../skills/patch-md/scripts/patch_md_extract.mjs";
+
+const parserCli = path.resolve("skills/patch-md/scripts/patch_md_extract.mjs");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "patch-md-parser-"));
@@ -117,6 +120,23 @@ test("strict v2 supports CRLF without changing command semantics", () => {
   assert.equal(result.ok, true, JSON.stringify(result.errors));
   assert.equal(result.patch.verification.shellBlocks.length, 2);
   assert.match(result.patch.verification.shellBlocks[1], /\n--second-line/u);
+});
+
+test("parser CLI runs when its entrypoint parent is symlinked", () => {
+  const dir = tempDir();
+  const patchPath = writeFixture(dir);
+  const alias = path.join(dir, "scripts-alias");
+  fs.symlinkSync(path.dirname(parserCli), alias, process.platform === "win32" ? "junction" : "dir");
+  const entrypoint = path.join(alias, path.basename(parserCli));
+  const child = spawnSync(process.execPath, [entrypoint, "--patch", patchPath, "--strict"], {
+    cwd: dir,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+  const payload = JSON.parse(child.stdout);
+  assert.equal(payload.ok, true, JSON.stringify(payload.errors));
 });
 
 test("duplicate fixed headings are rejected", () => {

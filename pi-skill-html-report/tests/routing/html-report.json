@@ -1,0 +1,37 @@
+{
+  "skill": "html-report",
+  "should_trigger": [
+    "Create a polished self-contained HTML report explaining this failed deployment, with an overview, evidence, a timeline diagram, and recovery steps.",
+    "Turn this multi-stage architecture analysis into a browser-readable HTML explanation with component diagrams and trade-off tables.",
+    "Research these database options and deliver a detailed HTML decision document with charts where the numbers support them.",
+    "Make an HTML implementation guide for this migration; it is long, so use accessible tabs and include an overview table."
+  ],
+  "should_not_trigger": [
+    "Explain this Python traceback in three concise bullets.",
+    "Create a 16:9 HTML slide presentation for our quarterly meeting.",
+    "Build a React analytics dashboard with live filters and authentication.",
+    "Compare React and Vue and recommend one in this chat."
+  ],
+  "ambiguous": [
+    {
+      "prompt": "Create a detailed HTML technical presentation about this architecture.",
+      "candidate_skills": [
+        "html-report",
+        "lab-qc-presentation-theme"
+      ],
+      "decision": "Use this skill only for a scrolling report/document; route to a presentation skill when slides or deck navigation are intended.",
+      "reason": "The word presentation is ambiguous between a document-style explanation and a slide deck.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "Compare these frameworks with charts and a recommendation.",
+      "candidate_skills": [
+        "html-report",
+        "tech-deep-dive"
+      ],
+      "decision": "Use tech-deep-dive for the evaluation itself; add this skill only when the user explicitly requests the result as an HTML report.",
+      "reason": "The evaluation workflow and the requested output format are separate routing concerns.",
+      "review_status": "reviewed"
+    }
+  ]
+}

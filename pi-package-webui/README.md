@@ -122,6 +122,7 @@ Environment variables:
 - `PI_WEBUI_HOST` and `PI_WEBUI_PORT` set the default bind address.
 - `PI_WEBUI_PI_BIN=/path/to/pi` selects the Pi executable when `--pi` is not passed.
 - `PI_WEBUI_REMOTE_AUTH=1` starts with Remote PIN authentication enabled.
+- Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as Remote PIN auth, guided Git preferences, and global Tools/Skills defaults.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
