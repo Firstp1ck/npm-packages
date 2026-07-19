@@ -261,6 +261,26 @@ function handleWebuiHelperPrompt(command, base) {
             currentToolArgs: "README.md",
             recentTools: [{ tool: "grep", args: "Subagents", endMs: Date.now() - 200 }],
             recentOutput: ["Inspecting current implementation", "Waiting for the next tool result"],
+            transcript: [
+              {
+                role: "assistant",
+                timestamp: "2026-07-19T12:00:00.000Z",
+                content: [
+                  { type: "thinking", thinking: "Checking the fixture transcript." },
+                  { type: "text", text: "Inspecting current implementation" },
+                  { type: "toolCall", id: "fixture-read", name: "read", arguments: { path: "README.md", offset: 1 } },
+                  { type: "text", text: "Waiting for the next tool result" },
+                ],
+              },
+              {
+                role: "toolResult",
+                timestamp: "2026-07-19T12:00:01.000Z",
+                toolCallId: "fixture-read",
+                toolName: "read",
+                isError: false,
+                content: [{ type: "text", text: "# Fixture README" }],
+              },
+            ],
             turnCount: 2,
             toolCount: 3,
             tokens: 420,

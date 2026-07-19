@@ -1,3 +1,7 @@
+import { aurReviewSafePath as parsedAurReviewSafePath, parseAurReviewPayload as parseValidatedAurReviewPayload } from "./aur-review-payload.mjs";
+import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
+import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
+
 const $ = (selector) => document.querySelector(selector);
 
 const elements = {
@@ -420,6 +424,7 @@ let appRunnerFileBrowserState = { open: false, loading: false, path: "", data: n
 let optionsMenuOpen = false;
 let availableCommands = [];
 let rawAvailableCommands = [];
+const commandCatalogsByTab = new Map();
 let commandSuggestions = [];
 let pathSuggestions = [];
 let bangSuggestions = [];
@@ -680,6 +685,10 @@ const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
 const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
 const WORKFLOW_MODE_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.mode";
 const WORKFLOW_MODE_RPC_PAYLOAD_VERSION = 1;
+const AUR_REVIEW_RPC_WIDGET_KEY = "aur-review:rpc";
+const AUR_REVIEW_RPC_PAYLOAD_PREFIX = "AUR_REVIEW_RPC_PAYLOAD ";
+const AUR_REVIEW_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-aur-review.review";
+const AUR_REVIEW_RPC_PAYLOAD_VERSION = 3;
 const GIT_CHANGES_RENDER_ROW_LIMIT = 4000;
 const GIT_PULL_RESULT_FILE_LIMIT = 48;
 const LAST_USER_PROMPT_STORAGE_KEY = "pi-webui-last-user-prompts";
@@ -801,6 +810,7 @@ const optionalFeatureAvailability = {
   gitWorkflow: false,
   releaseNpm: false,
   releaseAur: false,
+  aurReview: false,
   workflows: false,
   safetyGuard: false,
   statsCommand: false,
@@ -856,6 +866,13 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-extension-release-aur",
     capabilityLabel: "/release-aur",
     description: "Publish menu action, setup helpers, skills, and AUR release widgets.",
+  },
+  {
+    id: "aurReview",
+    label: "Manual repository review",
+    packageName: "@firstpick/pi-extension-aur-review",
+    capabilityLabel: "/aur-review or aur-review:rpc widget event",
+    description: "Manual repository/Git review bound to an exact working-tree or staged snapshot.",
   },
   {
     id: "workflows",
@@ -940,7 +957,7 @@ const OPTIONAL_FEATURE_SECTIONS = [
     id: "workflows-releases",
     label: "Workflows & releases",
     description: "Guided workflows, task runners, and publishing actions with visible execution state.",
-    featureIds: ["gitWorkflow", "workflows", "releaseNpm", "releaseAur"],
+    featureIds: ["gitWorkflow", "workflows", "releaseNpm", "releaseAur", "aurReview"],
   },
   {
     id: "safety-access",
@@ -973,6 +990,7 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["pr", "gitWorkflow"],
   ["release-npm", "releaseNpm"],
   ["release-aur", "releaseAur"],
+  ["aur-review", "aurReview"],
   ["workflow", "workflows"],
   ["workflow-clear", "workflows"],
   ["safety-guard", "safetyGuard"],
@@ -1058,6 +1076,17 @@ function resetGitWorkflowManualCommitDefaultPatch() {
   };
 }
 
+function resetGuidedGitReviewPatch({ retainDeclinedStagedContentHash = true } = {}) {
+  return {
+    guidedReviewStatus: "",
+    guidedReviewFingerprint: "",
+    guidedReviewRepoRoot: "",
+    guidedReviewStagedContentHash: "",
+    guidedReviewRequestedAt: 0,
+    ...(retainDeclinedStagedContentHash ? {} : { guidedReviewDeclinedStagedContentHash: "" }),
+  };
+}
+
 function gitWorkflowManualCommitInputMessage(workflow) {
   return String(workflow?.manualCommitMessage || "").trim() || String(workflow?.manualCommitMessageDefault || "").trim();
 }
@@ -1090,6 +1119,8 @@ function createGitWorkflowState() {
     prBranch: "",
     pr: null,
     prRequestedAt: 0,
+    ...resetGuidedGitReviewPatch({ retainDeclinedStagedContentHash: false }),
+    guidedReviewRequired: false,
     preferences: null,
     verificationConfirmed: false,
   };
@@ -1138,6 +1169,7 @@ function clearGitWorkflowForTab(tabId) {
 
 const GIT_WORKFLOW_PROCESSES = [
   { value: "stage", label: "Stage" },
+  { value: "review", label: "Review" },
   { value: "message", label: "Message" },
   { value: "commit", label: "Commit" },
   { value: "push", label: "Push" },
@@ -1161,18 +1193,20 @@ const ACTION_FEEDBACK_REACTIONS = {
 const ACTION_FEEDBACK_SNIPPET_LIMIT = 1200;
 const GIT_WORKFLOW_ACTIVE_INDEX = {
   add: 0,
-  generate: 1,
-  generating: 1,
-  message: 2,
-  branchNaming: 2,
-  branching: 2,
-  committing: 2,
-  push: 3,
-  pushing: 3,
-  prGenerating: 3,
-  prReview: 3,
-  prCreating: 3,
-  done: 4,
+  reviewRequesting: 1,
+  review: 1,
+  generate: 2,
+  generating: 2,
+  message: 3,
+  branchNaming: 3,
+  branching: 3,
+  committing: 3,
+  push: 4,
+  pushing: 4,
+  prGenerating: 4,
+  prReview: 4,
+  prCreating: 4,
+  done: 5,
 };
 const GIT_INIT_WORKFLOW_ACTIVE_INDEX = {
   initSetup: 0,
@@ -1906,6 +1940,7 @@ function setThinkingOutputVisible(visible, { announce = false } = {}) {
   renderThinkingVisibilityToggle();
   if (!thinkingOutputVisible) removeStreamingThinkingBubble();
   renderAllMessages({ preserveScroll: true });
+  if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();
   if (announce) addEvent(thinkingOutputVisible ? "thinking output shown" : "thinking output hidden", thinkingOutputVisible ? "info" : "warn");
 }
 
@@ -7076,7 +7111,7 @@ function setFileViewerMode(mode = "source") {
 }
 
 function setFileViewerDirty(dirty) {
-  if (!activeFileViewer) return;
+  if (!activeFileViewer || activeFileViewer.readOnly) return;
   activeFileViewer.dirty = !!dirty;
   if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = !activeFileViewer.dirty;
   if (activeFileViewer.dirty) setFileViewerStatus("Unsaved file edits.", "warn");
@@ -7110,17 +7145,18 @@ function updateFileViewerUi() {
   }
   if (elements.fileViewerEditor) {
     elements.fileViewerEditor.hidden = mode !== "source";
+    elements.fileViewerEditor.readOnly = viewer.readOnly === true;
     if (elements.fileViewerEditor.value !== viewer.content) elements.fileViewerEditor.value = viewer.content || "";
   }
   if (elements.fileViewerPreview) {
     elements.fileViewerPreview.hidden = mode !== "preview";
     if (mode === "preview") renderMarkdown(elements.fileViewerPreview, viewer.content || "");
   }
-  if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = !viewer.dirty;
+  if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = viewer.readOnly === true || !viewer.dirty;
   if (elements.fileViewerOpenDefaultButton) {
     const viewerPath = normalizeFileTreePath(viewer.path || "");
     elements.fileViewerOpenDefaultButton.dataset.path = viewerPath;
-    elements.fileViewerOpenDefaultButton.disabled = !viewerPath;
+    elements.fileViewerOpenDefaultButton.disabled = viewer.readOnly === true || !viewerPath;
   }
   renderFileViewerSelectionBar();
 }
@@ -7252,7 +7288,10 @@ function closeFileViewer() {
   updateFileViewerResizeHandle();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
   if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.dataset.path = "";
-  if (elements.fileViewerEditor) elements.fileViewerEditor.value = "";
+  if (elements.fileViewerEditor) {
+    elements.fileViewerEditor.value = "";
+    elements.fileViewerEditor.readOnly = false;
+  }
   if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
   setFileViewerStatus("");
 }
@@ -7278,6 +7317,7 @@ async function openFileInViewer(path = "") {
       language: data.language || "text",
       mode: data.language === "markdown" ? "preview" : "source",
       dirty: false,
+      readOnly: false,
     };
     if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
     clearFileViewerSelection();
@@ -7291,8 +7331,47 @@ async function openFileInViewer(path = "") {
   }
 }
 
+async function openAurReviewReportInViewer(path = "", repoRoot = "") {
+  const normalized = aurReviewSafePath(path);
+  const expectedRepoRoot = String(repoRoot || "");
+  if (!normalized || !expectedRepoRoot) return;
+  const tabContext = activeTabContext();
+  setFileViewerStatus(`Opening ${normalized}…`);
+  try {
+    const params = new URLSearchParams({ path: normalized, repoRoot: expectedRepoRoot });
+    const response = await api(`/api/aur-review/report-content?${params.toString()}`, { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const data = response.data || {};
+    activeFileViewer = {
+      path: normalizeFileTreePath(data.path || normalized),
+      name: data.name || fileDisplayName(normalized),
+      content: String(data.content || ""),
+      size: Number(data.size) || 0,
+      mtimeMs: Number(data.mtimeMs) || 0,
+      extension: data.extension || "",
+      language: data.language || "text",
+      mode: data.language === "markdown" ? "preview" : "source",
+      dirty: false,
+      readOnly: true,
+    };
+    if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
+    clearFileViewerSelection();
+    updateFileViewerUi();
+    setFileViewerStatus("Report opened in WebUI (read-only).", "success");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) {
+      setFileViewerStatus(error.message || String(error), "error");
+      addEvent(`review report open failed: ${error.message || String(error)}`, "error");
+    }
+  }
+}
+
 async function saveActiveFileViewer() {
   if (!activeFileViewer || !elements.fileViewerEditor) return;
+  if (activeFileViewer.readOnly) {
+    setFileViewerStatus("This report is read-only.", "info");
+    return;
+  }
   const tabContext = activeTabContext();
   const content = elements.fileViewerEditor.value || "";
   if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = true;
@@ -7395,6 +7474,7 @@ function syncTabMetadata(nextTabs = []) {
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
+      commandCatalogsByTab.delete(tabId);
     }
   }
   for (const tabId of tabMessagesCache.keys()) {
@@ -7799,8 +7879,9 @@ function resetActiveTabUi() {
   transientMessages = [];
   liveToolRuns.clear();
   liveToolCards.clear();
-  availableCommands = [];
-  rawAvailableCommands = [];
+  const commandCatalog = commandCatalogsByTab.get(activeTabId);
+  availableCommands = commandCatalog?.available || [];
+  rawAvailableCommands = commandCatalog?.raw || [];
   resetOptionalFeatureAvailability();
   commandSuggestions = [];
   pathSuggestions = [];
@@ -8496,6 +8577,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
       tabDrafts.delete(id);
       clearAttachments(id);
       clearGitWorkflowForTab(id);
+      commandCatalogsByTab.delete(id);
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
       btwWidgetDismissedIdsByTab.delete(id);
@@ -14253,8 +14335,62 @@ function subagentRunElapsed(run) {
   return Number.isFinite(startedAt) ? formatDuration(Math.max(0, Date.now() - startedAt)) : "";
 }
 
+function subagentOverlayTranscriptMessages(data = subagentOverlayData) {
+  const agent = data?.agent || subagentOverlaySelection?.agent || {};
+  return (Array.isArray(agent.transcript) ? agent.transcript : [])
+    .filter((message) => message && (message.role === "assistant" || message.role === "toolResult"));
+}
+
+function subagentOverlayToolArguments(value) {
+  if (typeof value !== "string") return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : value;
+  } catch {
+    return value;
+  }
+}
+
+function subagentOverlayTranscriptDisplayMessages(messages, { includeThinking = thinkingOutputVisible } = {}) {
+  const toolResults = buildToolResultMap(messages);
+  const pairedToolCallIds = buildAssistantToolCallIdSet(messages);
+  const displayMessages = [];
+  for (const message of messages) {
+    if (message.role === "toolResult") {
+      if (pairedToolCallIds.has(toolResultCallId(message))) continue;
+      displayMessages.push(message);
+      continue;
+    }
+    for (const displayMessage of assistantDisplayMessages(message)) {
+      if (displayMessage.role === "thinking" && !includeThinking) continue;
+      if (displayMessage.role === "toolCall" && displayMessage.toolCallId) {
+        const result = toolResults.get(displayMessage.toolCallId) || null;
+        displayMessages.push({
+          ...displayMessage,
+          role: "toolExecution",
+          title: `tool: ${displayMessage.toolName || "unknown"}`,
+          arguments: subagentOverlayToolArguments(displayMessage.arguments),
+          result,
+          isError: !!result?.isError,
+        });
+      } else {
+        displayMessages.push(displayMessage);
+      }
+    }
+  }
+  return displayMessages;
+}
+
+function subagentOverlayTranscriptOutputLines(data = subagentOverlayData) {
+  return subagentOverlayTranscriptDisplayMessages(subagentOverlayTranscriptMessages(data)).flatMap((message) => stripAnsi(
+    messageCopyText(message),
+  ).replace(/\r/g, "").split("\n"));
+}
+
 function subagentOverlayOutputLines(data = subagentOverlayData) {
   const agent = data?.agent || subagentOverlaySelection?.agent || {};
+  const transcriptMessages = subagentOverlayTranscriptMessages(data);
+  if (transcriptMessages.length) return subagentOverlayTranscriptOutputLines(data);
   const output = (Array.isArray(agent.recentOutput) ? agent.recentOutput : [])
     .flatMap((line) => stripAnsi(String(line ?? "")).replace(/\r/g, "").split("\n"));
   if (output.length) return output;
@@ -14266,6 +14402,14 @@ function subagentOverlayOutputLines(data = subagentOverlayData) {
 
 function subagentOverlayOutputText(data = subagentOverlayData) {
   return subagentOverlayOutputLines(data).join("\n").trimEnd();
+}
+
+function subagentOverlayEmptyTranscriptText(messages) {
+  const hasThinking = messages.some((message) => message.role === "assistant" && assistantDisplayMessages(message)
+    .some((displayMessage) => displayMessage.role === "thinking"));
+  return hasThinking && !thinkingOutputVisible
+    ? "Thinking output is hidden. Enable thinking output to view the captured transcript."
+    : "No visible output was captured.";
 }
 
 function appendSubagentOutputWaitingIndicator(parent) {
@@ -14282,6 +14426,17 @@ function appendSubagentOutputWaitingIndicator(parent) {
   body.append(row);
   bubble.append(body);
   parent.append(bubble);
+}
+
+function appendSubagentOverlayTranscript(parent, messages) {
+  let rendered = 0;
+  for (const displayMessage of subagentOverlayTranscriptDisplayMessages(messages)) {
+    const { bubble } = createMessageBubble(displayMessage, { transient: true });
+    bubble.classList.add("subagent-overlay-message");
+    parent.append(bubble);
+    rendered += 1;
+  }
+  return rendered;
 }
 
 function subagentOverlayStateFacts(data = subagentOverlayData) {
@@ -14318,9 +14473,11 @@ function renderSubagentOverlayWidget() {
   const agent = data?.agent || selection.agent || {};
   const tab = tabs.find((item) => item.id === selection.tabId) || selection.tab;
   const running = !selection.finished && (agent.status === "running" || agent.status === "queued" || agent.status === "pending" || !agent.status);
+  const transcriptMessages = subagentOverlayTranscriptMessages(data);
+  const hasStructuredTranscript = transcriptMessages.length > 0;
   const outputText = subagentOverlayOutputText(data);
-  const shownText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
-  const shownLineCount = shownText ? shownText.split("\n").length : 0;
+  const fallbackText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
+  const shownLineCount = outputText ? outputText.split("\n").length : fallbackText ? fallbackText.split("\n").length : 0;
   const widget = make("section", `widget release-npm-widget app-runner-widget subagent-overlay-widget${running ? " app-runner-live-widget" : " app-runner-log-widget"}`);
   widget.setAttribute("aria-label", `Live output for subagent ${agent.name || "subagent"}`);
 
@@ -14335,17 +14492,22 @@ function renderSubagentOverlayWidget() {
   const output = make("div", "subagent-overlay-transcript");
   output.setAttribute("role", "log");
   output.setAttribute("aria-live", running ? "polite" : "off");
-  if (shownText) {
+  const renderedTranscriptMessages = appendSubagentOverlayTranscript(output, transcriptMessages);
+  const emptyTranscriptFallback = hasStructuredTranscript && renderedTranscriptMessages === 0
+    ? subagentOverlayEmptyTranscriptText(transcriptMessages)
+    : "";
+  const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;
+  if (visibleFallbackText) {
     const { bubble } = createMessageBubble({
       role: "assistant",
       title: "final output",
       timestamp: data?.updatedAt || Date.now(),
-      content: shownText,
-    }, { streaming: running, transient: true });
-    bubble.classList.add("subagent-overlay-message");
+      content: visibleFallbackText,
+    }, { streaming: running && !hasStructuredTranscript, transient: true });
+    bubble.classList.add("subagent-overlay-message", "subagent-overlay-empty-fallback");
     output.append(bubble);
   }
-  if (running && agent.currentTool) appendSubagentOutputWaitingIndicator(output);
+  if (running && (agent.currentTool || (hasStructuredTranscript && renderedTranscriptMessages === 0))) appendSubagentOutputWaitingIndicator(output);
 
   const controls = make("div", "release-npm-controls subagent-overlay-output-controls");
   const actions = make("div", "app-runner-output-actions");
@@ -15216,6 +15378,100 @@ function renderReleaseAurLogWidget() {
   const outputDetails = renderReleaseNpmOutputDetails("release-aur:logs", streamHeader, terminal);
   node.append(header, outputDetails);
   requestAnimationFrame(() => { if (outputDetails.open) terminal.scrollTop = terminal.scrollHeight; });
+  return node;
+}
+
+function aurReviewSafePath(value) {
+  return parsedAurReviewSafePath(value);
+}
+
+function parseAurReviewPayload(lines) {
+  return parseValidatedAurReviewPayload(lines, {
+    prefix: AUR_REVIEW_RPC_PAYLOAD_PREFIX,
+    type: AUR_REVIEW_RPC_PAYLOAD_TYPE,
+    version: AUR_REVIEW_RPC_PAYLOAD_VERSION,
+  });
+}
+
+function aurReviewActionButton(label, action, className = "") {
+  const button = make("button", `aur-review-action ${className}`.trim(), label);
+  button.type = "button";
+  button.addEventListener("click", async () => {
+    if (action === "review") {
+      openGitChangesDialog();
+      return;
+    }
+    const command = `/aur-review ${action}`;
+    const tabContext = activeTabContext();
+    try {
+      await api("/api/prompt", { method: "POST", body: { message: resolveRpcSlashCommandMessage(command, { tabId: tabContext.tabId }) }, tabId: tabContext.tabId });
+      if (isCurrentTabContext(tabContext)) addEvent(`${command} sent`, "info");
+    } catch (error) {
+      if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+    }
+  });
+  return button;
+}
+
+function aurReviewFileLabel(file) {
+  const path = aurReviewSafePath(file?.path);
+  const oldPath = aurReviewSafePath(file?.oldPath);
+  const flags = [file?.staged && "staged", file?.unstaged && "unstaged", file?.untracked && "untracked", file?.deleted && "deleted", file?.renamed && "renamed"].filter(Boolean);
+  return `${oldPath ? `${oldPath} → ` : ""}${path}${flags.length ? ` · ${flags.join(", ")}` : ""}`;
+}
+
+function renderAurReviewWidget() {
+  if (!isOptionalFeatureEnabled("aurReview")) return null;
+  const payload = parseAurReviewPayload(getWidgetLines(AUR_REVIEW_RPC_WIDGET_KEY));
+  if (!payload || payload.decision.state === "closed") return null;
+
+  const node = make("section", "widget aur-review-widget");
+  node.setAttribute("aria-label", "Manual repository review");
+  const header = make("div", "aur-review-header");
+  const title = make("div", "aur-review-title-wrap");
+  title.append(
+    make("span", "aur-review-kicker", `manual ${payload.scope} repository review`),
+    make("strong", "aur-review-title", payload.decision.state === "pending" ? "Review required" : `Review ${payload.decision.state}`),
+  );
+  const actions = make("div", "aur-review-actions");
+  actions.append(
+    aurReviewActionButton("Review changes", "review"),
+    aurReviewActionButton("Refresh", "refresh"),
+    aurReviewActionButton("Approve", "approve", "primary"),
+    aurReviewActionButton("Decline", "decline", "danger"),
+    aurReviewActionButton("Close", "close"),
+  );
+  header.append(title, actions);
+
+  const fingerprint = make("code", "aur-review-fingerprint", payload.fingerprint);
+  const summary = make("div", "aur-review-summary");
+  summary.append(
+    make("span", "aur-review-status", `Status: ${payload.decision.state}`),
+    make("span", "aur-review-count", `${payload.changedFileTotal} ${payload.scope} changed file${payload.changedFileTotal === 1 ? "" : "s"}`),
+    make("span", "aur-review-root", `${payload.origin} · ${payload.repoRoot}`),
+    fingerprint,
+  );
+
+  const files = make("details", "aur-review-files");
+  files.open = true;
+  files.append(make("summary", undefined, payload.changedFilesTruncated ? `Changed files (showing ${payload.changedFiles.length} of ${payload.changedFileTotal})` : `Changed files (${payload.changedFiles.length})`));
+  const list = make("ul", "aur-review-file-list");
+  for (const file of payload.changedFiles) list.append(make("li", undefined, aurReviewFileLabel(file)));
+  files.append(list);
+
+  const reports = make("div", "aur-review-reports");
+  reports.append(make("strong", undefined, "Reports"));
+  if (payload.reports.length === 0) reports.append(make("span", "muted", "No safe report files were found."));
+  for (const report of payload.reports) {
+    const reportPath = aurReviewSafePath(report.path);
+    if (!reportPath) continue;
+    const button = make("button", "aur-review-report", `Open ${reportPath}`);
+    button.type = "button";
+    button.addEventListener("click", () => openAurReviewReportInViewer(reportPath, payload.repoRoot));
+    reports.append(button);
+  }
+
+  node.append(header, summary, files, reports);
   return node;
 }
 
@@ -17343,6 +17599,8 @@ function renderWidgets() {
   if (releaseAurOutput) elements.widgetArea.append(releaseAurOutput);
   const releaseAurLog = renderReleaseAurLogWidget();
   if (releaseAurLog) elements.widgetArea.append(releaseAurLog);
+  const aurReviewWidget = renderAurReviewWidget();
+  if (aurReviewWidget) elements.widgetArea.append(aurReviewWidget);
   const workflowInspectorWidget = renderWorkflowInspectorWidget();
   if (workflowInspectorWidget) elements.widgetArea.append(workflowInspectorWidget);
   const workflowSubprocessWidget = renderWorkflowSubprocessWidget();
@@ -17772,6 +18030,9 @@ function gitWorkflowProcessForStep(step = gitWorkflow.step, fallback = gitWorkfl
     case "initialPush":
     case "initialPushing":
       return "push";
+    case "reviewRequesting":
+    case "review":
+      return "review";
     case "generate":
     case "generating":
       return "message";
@@ -17828,6 +18089,7 @@ function selectGitInitWorkflowProcess(processValue, tabId, workflow) {
     prBranch: "",
     pr: null,
     prRequestedAt: 0,
+    ...resetGuidedGitReviewPatch(),
   };
 
   if (process === "init") {
@@ -17865,12 +18127,21 @@ function selectGitWorkflowProcess(processValue, tabId = gitWorkflowActionTabId()
     return;
   }
   const process = GIT_WORKFLOW_PROCESS_VALUES.has(processValue) ? processValue : "stage";
+  // This repeats the disabled-button rule at the transition boundary. Later
+  // processes retain a matching approval; Stage/Review deliberately clear it
+  // and re-arm the requirement for a new staged snapshot.
+  const guidedReviewPatch = guidedGitReviewProcessSelectionPatch(workflow, process);
+  if (!guidedReviewPatch) return;
   workflow.runId += 1;
   const runId = workflow.runId;
-  const base = { mode: "standard", active: true, process, busy: false, error: "", githubUsername: "", repoName: "", remoteUrl: "", stack: "", readmeRequestedAt: 0, gitignoreRequestedAt: 0, initFilesStatus: null, manualCommitMessage: "", ...resetGitWorkflowManualCommitDefaultPatch(), messageRequestedAt: 0, branchName: "", branchNameRequestedAt: 0, prMode: false, prBranch: "", pr: null, prRequestedAt: 0 };
+  const base = { mode: "standard", active: true, process, busy: false, error: "", githubUsername: "", repoName: "", remoteUrl: "", stack: "", readmeRequestedAt: 0, gitignoreRequestedAt: 0, initFilesStatus: null, manualCommitMessage: "", ...resetGitWorkflowManualCommitDefaultPatch(), messageRequestedAt: 0, branchName: "", branchNameRequestedAt: 0, prMode: false, prBranch: "", pr: null, prRequestedAt: 0, ...guidedReviewPatch };
 
   if (process === "stage") {
     setGitWorkflow({ ...base, step: "add", message: null, output: "Ready to stage all changes with git add ." }, { tabId });
+    return;
+  }
+  if (process === "review") {
+    setGitWorkflow({ ...base, step: "review", message: null, output: "Ready to request a staged manual repository review from Guided Git." }, { tabId });
     return;
   }
   if (process === "message") {
@@ -17904,6 +18175,8 @@ function gitWorkflowTitle() {
     case "initialPush": return "Push main upstream";
     case "initialPushing": return "Pushing main";
     case "add": return (gitWorkflow.preferences || gitWorkflowPreferences)?.stagingPolicy === "all" ? "Stage all changes" : "Review staged changes";
+    case "reviewRequesting": return "Requesting staged manual review";
+    case "review": return "Manual staged review";
     case "generate": return "Generate staged commit message";
     case "generating": return "Waiting for /git-staged-msg";
     case "message": return gitWorkflow.prMode ? "Choose PR branch commit message" : "Choose commit message";
@@ -17943,7 +18216,9 @@ function gitWorkflowHint() {
     case "add": return (gitWorkflow.preferences || gitWorkflowPreferences)?.stagingPolicy === "all"
       ? "Step 1: explicitly stage all changes with git add ."
       : "Step 1: review changes, stage only intended files, then accept the current staged set.";
-    case "generate": return "Step 2: run /git-staged-msg, or type a commit message and use Commit input.";
+    case "reviewRequesting": return "Step 2: requesting a staged manual repository review in this tab. Cancel will request Pi abort.";
+    case "review": return "Step 2: inspect the staged Git diff and use the manual review card to approve or decline. Approval alone advances to commit-message generation.";
+    case "generate": return "Step 3: run /git-staged-msg, or type a commit message and use Commit input.";
     case "generating": return "Pi is generating dev/COMMIT/staged-commit-short.txt and staged-commit-long.txt.";
     case "message": return gitWorkflow.prMode ? `Worktree branch ${gitWorkflow.prBranch || "created"}: choose short, long, or typed input before opening a PR.` : "Step 3/4: preview the native g-msg output, type a commit message if needed, commit here, or create a PR branch worktree first.";
     case "branchNaming": return "Pi is generating dev/COMMIT/staged-branch-name.txt for a PR branch worktree. Cancel will request Pi abort.";
@@ -18033,15 +18308,21 @@ function renderGitWorkflow() {
   elements.gitWorkflowSteps.replaceChildren();
   elements.gitWorkflowActions.replaceChildren();
 
-  const processes = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_PROCESSES : GIT_WORKFLOW_PROCESSES;
+  // Once a flow required manual review, keep its recovery step visible even
+  // if the extension was disabled or disappeared. Hiding it would suggest a
+  // legacy fallback that is no longer authorized for this flow.
+  const reviewStepAvailable = guidedGitReviewAvailable(activeTabId) || gitWorkflow.guidedReviewRequired === true;
+  const standardProcesses = reviewStepAvailable ? GIT_WORKFLOW_PROCESSES : GIT_WORKFLOW_PROCESSES.filter((process) => process.value !== "review");
+  const processes = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_PROCESSES : standardProcesses;
   const activeIndexMap = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_ACTIVE_INDEX : GIT_WORKFLOW_ACTIVE_INDEX;
-  const activeIndex = activeIndexMap[gitWorkflow.step] ?? 0;
+  const reviewOffset = gitWorkflow.mode === "standard" && !reviewStepAvailable && (activeIndexMap[gitWorkflow.step] ?? 0) >= 2 ? 1 : 0;
+  const activeIndex = Math.max(0, (activeIndexMap[gitWorkflow.step] ?? 0) - reviewOffset);
   const activeProcess = gitWorkflowProcessForStep(gitWorkflow.step, gitWorkflow.process);
   for (const [index, process] of processes.entries()) {
     const item = make("button", "git-workflow-step", process.label);
     item.type = "button";
     item.dataset.gitWorkflowProcess = process.value;
-    item.disabled = !!gitWorkflow.busy;
+    item.disabled = !!gitWorkflow.busy || !guidedGitReviewProcessNavigationAllowed(gitWorkflow, process.value);
     item.setAttribute("aria-pressed", String(process.value === activeProcess));
     if (gitWorkflowActionDone(gitWorkflow, process.value)) item.classList.add("done");
     if (index === activeIndex && !["done", "cancelled", "error"].includes(gitWorkflow.step)) item.classList.add("active");
@@ -18066,6 +18347,16 @@ function renderGitWorkflow() {
     } else {
       addGitWorkflowAction("Review/select changes", () => openGitChangesDialog(), "primary", false);
       addGitWorkflowAction("Use current staged set", () => acceptCurrentGitStaging(), "", false);
+    }
+  } else if (gitWorkflow.step === "reviewRequesting") {
+    addGitWorkflowAction("Requesting manual review…", () => {}, "primary", true);
+  } else if (gitWorkflow.step === "review") {
+    if (gitWorkflow.guidedReviewStatus === "pending") {
+      addGitWorkflowAction("Manual review pending", () => {}, "primary", true);
+      addGitWorkflowAction("Review staged changes", () => openGitChangesDialog(), "", false);
+    } else {
+      addGitWorkflowAction("Request staged manual review", () => requestGuidedGitReview(), "primary", false);
+      addGitWorkflowAction("Review/select changes", () => openGitChangesDialog(), "", false);
     }
   } else if (gitWorkflow.step === "generate") {
     const commitInputButton = renderGitWorkflowManualCommitInput({ appendCommitButton: false });
@@ -18155,6 +18446,208 @@ function gitWorkflowStagingReadyMessage(preferences) {
   }
 }
 
+function guidedGitReviewAvailable(tabId = activeTabId) {
+  return guidedGitReviewAvailableForTabCatalog(commandCatalogForTab(tabId)) && !isOptionalFeatureDisabled("aurReview");
+}
+
+function guidedGitReviewUnavailableMessage() {
+  return "Manual staged review is still required, but aur-review is unavailable or disabled. Re-enable/install @firstpick/pi-extension-aur-review and reload this Pi/WebUI tab, then request a new review. No message, commit, worktree, or push action was performed.";
+}
+
+function guidedGitReviewCommand() {
+  return "/aur-review start --scope staged --origin guided-git";
+}
+
+function validGuidedGitStagedContentHash(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+async function readGuidedGitStagedContent(tabId) {
+  const response = await api("/api/git-workflow/staged-content", { tabId, signal: AbortSignal.timeout(12_000) });
+  if (!response?.ok) throw new Error(response?.error || "Could not determine the current staged content. Reload Pi Web UI and try again.");
+  const staged = response.data || {};
+  if (typeof staged.hasStagedChanges !== "boolean") throw new Error("The staged-content check returned an invalid response. Reload Pi Web UI and try again.");
+  if (staged.hasStagedChanges && !validGuidedGitStagedContentHash(staged.stagedContentHash)) {
+    throw new Error("The staged-content check returned an invalid hash. Reload Pi Web UI and try again.");
+  }
+  if (!staged.hasStagedChanges && staged.stagedContentHash !== null) {
+    throw new Error("The staged-content check returned an invalid empty-state hash. Reload Pi Web UI and try again.");
+  }
+  return staged;
+}
+
+function resetGuidedGitReviewForRecovery(tabId, workflow, output, { declinedStagedContentHash } = {}) {
+  resetGuidedGitReviewToStaging(tabId, workflow, output);
+  if (declinedStagedContentHash !== undefined) {
+    setGitWorkflow({ guidedReviewDeclinedStagedContentHash: declinedStagedContentHash || "" }, { tabId });
+  }
+}
+
+async function assertGuidedGitStagedContentBinding(tabId, action) {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (!workflow) return "";
+  if (workflow.guidedReviewRequired === true || !guidedGitReviewHasApprovedBinding(workflow)) {
+    if (workflow.guidedReviewRequired === true || workflow.guidedReviewStatus === "approved") {
+      resetGuidedGitReviewForRecovery(tabId, workflow, `Manual staged review is required before ${action}. Request a new review from Stage.`, {});
+      throw new Error(`Manual staged review is required before ${action}.`);
+    }
+    return ""; // Legacy flow started without a required review gate.
+  }
+  const approvedHash = workflow.guidedReviewStagedContentHash;
+  try {
+    const staged = await readGuidedGitStagedContent(tabId);
+    if (!staged.hasStagedChanges || staged.stagedContentHash !== approvedHash) {
+      resetGuidedGitReviewForRecovery(tabId, workflow, `The staged content changed after manual approval. ${action} was blocked; review and approve the exact current staged content again.`, {});
+      throw new Error(`The staged content changed after manual approval. ${action} was blocked.`);
+    }
+    return approvedHash;
+  } catch (error) {
+    if (isCurrentGitWorkflowRun(workflow.runId, tabId) && gitWorkflowForTab(tabId, { create: false })?.guidedReviewStagedContentHash === approvedHash) {
+      resetGuidedGitReviewForRecovery(tabId, workflow, `Could not verify the approved staged content before ${action}. ${action} was blocked; reload Pi Web UI if this persists, then request a new review.`, {});
+    }
+    throw error;
+  }
+}
+
+async function requestGuidedGitReview(tabId = gitWorkflowActionTabId(), { output = "Staged changes are ready for manual review." } = {}) {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (!workflow) return false;
+  if (!guidedGitReviewAvailable(tabId)) {
+    if (workflow.guidedReviewRequired === true) resetGuidedGitReviewForRecovery(tabId, workflow, guidedGitReviewUnavailableMessage());
+    return false;
+  }
+
+  let staged;
+  try {
+    staged = await readGuidedGitStagedContent(tabId);
+  } catch (error) {
+    resetGuidedGitReviewForRecovery(tabId, workflow, `Could not verify staged content before requesting manual review. Reload Pi Web UI and try again. ${error?.message || String(error)}`);
+    return false;
+  }
+  if (!staged.hasStagedChanges) {
+    setGitWorkflow({
+      step: "add",
+      process: "stage",
+      busy: false,
+      error: "",
+      ...resetGuidedGitReviewPatch(),
+      guidedReviewRequired: workflow.guidedReviewRequired === true,
+      output: "git add . produced no substantive staged changes. Guided Git returned to Stage; select or edit changes before requesting manual review.",
+    }, { tabId });
+    return false;
+  }
+  if (!guidedGitReviewCanRequestStagedContent(workflow, staged.stagedContentHash)) {
+    resetGuidedGitReviewForRecovery(tabId, workflow, "The staged content is unchanged from the declined review. Make and restage the requested corrections before requesting another manual review.");
+    return false;
+  }
+
+  const runId = workflow.runId;
+  const requestedAt = Date.now();
+  setGitWorkflow({
+    step: "reviewRequesting",
+    process: "review",
+    busy: true,
+    error: "",
+    ...resetGitWorkflowManualCommitDefaultPatch(),
+    ...resetGuidedGitReviewPatch(),
+    guidedReviewRequired: true,
+    guidedReviewStatus: "requesting",
+    guidedReviewRequestedAt: requestedAt,
+    ...gitWorkflowActionDonePatch(workflow, "stage"),
+    output: `${output}\n\nRequesting a staged manual repository review in this tab…`,
+  }, { tabId });
+  try {
+    await api("/api/prompt", { method: "POST", body: { message: resolveRpcSlashCommandMessage(guidedGitReviewCommand(), { tabId }) }, tabId, signal: AbortSignal.timeout(12_000) });
+    const current = gitWorkflowForTab(tabId, { create: false });
+    if (!current || !isCurrentGitWorkflowRun(runId, tabId) || current.guidedReviewStatus !== "requesting") return true;
+    setGitWorkflow({
+      step: "review",
+      busy: false,
+      output: `${output}\n\nManual staged review requested. Waiting for the review card; approve or decline it there.`,
+    }, { tabId });
+    // The extension reports command failures through its own UI, so a prompt
+    // acknowledgement is not enough evidence that a card exists. Time out
+    // the request state instead of allowing an invisible gate to hang forever.
+    setTimeout(() => {
+      const waiting = gitWorkflowForTab(tabId, { create: false });
+      if (waiting && isCurrentGitWorkflowRun(runId, tabId) && waiting.guidedReviewStatus === "requesting") {
+        resetGuidedGitReviewForRecovery(tabId, waiting, "Manual review did not produce a review card in time. Reload or enable aur-review, then request a new review. No message or commit was performed.");
+      }
+    }, 15_000);
+    return true;
+  } catch (error) {
+    if (isCurrentGitWorkflowRun(runId, tabId)) {
+      resetGuidedGitReviewForRecovery(tabId, workflow, `Manual review request failed or timed out. Reload or enable aur-review, then request a new review. ${error?.message || String(error)}`);
+    }
+    return false;
+  }
+}
+
+function resetGuidedGitReviewToStaging(tabId, workflow, output) {
+  setGitWorkflow({
+    step: "add",
+    process: "stage",
+    busy: false,
+    error: "",
+    ...resetGuidedGitReviewPatch(),
+    guidedReviewRequired: true,
+    actionsDone: createGitWorkflowActionsDone({ ...workflow.actionsDone, stage: false }),
+    output,
+  }, { tabId });
+}
+
+function reconcileGuidedGitReviewPayload(tabId, payload) {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  const transition = guidedGitReviewTransition(workflow, payload);
+  if (transition === "ignore") return false;
+  if (transition === "pending") {
+    if (workflow.guidedReviewDeclinedStagedContentHash && payload.stagedContentHash === workflow.guidedReviewDeclinedStagedContentHash) {
+      resetGuidedGitReviewForRecovery(tabId, workflow, "The review extension reported the same staged content that was declined. Make and restage the requested corrections before requesting another manual review.");
+      return true;
+    }
+    setGitWorkflow({
+      step: "review",
+      process: "review",
+      busy: false,
+      error: "",
+      guidedReviewStatus: "pending",
+      guidedReviewRequired: true,
+      guidedReviewFingerprint: payload.fingerprint,
+      guidedReviewRepoRoot: payload.repoRoot,
+      guidedReviewStagedContentHash: payload.stagedContentHash,
+      output: `Staged manual repository review pending for ${payload.changedFileTotal} file${payload.changedFileTotal === 1 ? "" : "s"}. Inspect the staged Git diff, then approve or decline in the review card.`,
+    }, { tabId });
+    return true;
+  }
+  if (transition === "approved") {
+    setGitWorkflow({
+      step: "generate",
+      process: "message",
+      busy: false,
+      error: "",
+      guidedReviewStatus: "approved",
+      guidedReviewRequired: false,
+      guidedReviewDeclinedStagedContentHash: "",
+      output: "Manual staged repository review approved for the exact staged snapshot. Its exact staged content will be verified again before every message, worktree, and commit action.",
+    }, { tabId });
+    loadGitWorkflowDefaultCommitMessage({ runId: workflow.runId, tabId });
+    return true;
+  }
+  if (transition === "closed") {
+    resetGuidedGitReviewToStaging(tabId, workflow, "Manual staged repository review was closed. It did not approve the staged changes. Review/select and restage before requesting a new staged manual review.");
+    return true;
+  }
+  resetGuidedGitReviewForRecovery(tabId, workflow, "Manual staged repository review was declined. Make only the requested edits, then use Guided Git to review/select and restage the corrected files before requesting a new staged manual review. The unchanged declined staged content cannot be requested again. No commit or push was performed.", { declinedStagedContentHash: payload.stagedContentHash });
+  return true;
+}
+
+function reconcileGuidedGitReviewWidgetRemoval(tabId) {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (guidedGitReviewWidgetRemovalTransition(workflow) !== "closed") return false;
+  resetGuidedGitReviewToStaging(tabId, workflow, "Manual staged repository review card was cleared. It did not approve the staged changes. Review/select and restage before requesting a new staged manual review.");
+  return true;
+}
+
 async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {}) {
   if (!tabId) return;
   if (!isOptionalFeatureEnabled("gitWorkflow")) {
@@ -18215,6 +18708,11 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
     prBranch: "",
     pr: null,
     prRequestedAt: 0,
+    ...resetGuidedGitReviewPatch({ retainDeclinedStagedContentHash: false }),
+    // Availability at the moment this new standard flow begins determines
+    // whether it is a required-review flow; later extension loss cannot turn
+    // an already-required flow into the legacy path.
+    guidedReviewRequired: guidedGitReviewAvailable(tabId),
     preferences,
     verificationConfirmed: false,
   }, { tabId });
@@ -18257,6 +18755,7 @@ async function startGitInitWorkflow(tabId = activeTabId) {
     prBranch: "",
     pr: null,
     prRequestedAt: 0,
+    ...resetGuidedGitReviewPatch(),
   }, { tabId });
 }
 
@@ -18522,7 +19021,7 @@ async function cancelGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow?.active) return;
-  const shouldAbortPi = workflow.step === "generating" || workflow.step === "branchNaming" || workflow.step === "prGenerating" || workflow.step === "readmeGenerating" || workflow.step === "gitignoreGenerating";
+  const shouldAbortPi = workflow.step === "reviewRequesting" || workflow.step === "generating" || workflow.step === "branchNaming" || workflow.step === "prGenerating" || workflow.step === "readmeGenerating" || workflow.step === "gitignoreGenerating";
   if (activeGitPrDialogResolve) resolveGitPrDialog(null);
   workflow.runId += 1;
   setGitWorkflow({ step: "cancelled", busy: false, error: "", output: `${workflow.output || ""}${workflow.output ? "\n\n" : ""}Cancelled by user.` }, { tabId });
@@ -18543,7 +19042,14 @@ async function runGitAdd(tabId = gitWorkflowActionTabId()) {
   try {
     const result = await gitWorkflowRequest("/api/git-workflow/add", { runId, tabId });
     if (!result) return;
-    setGitWorkflow({ step: "generate", busy: false, ...resetGitWorkflowManualCommitDefaultPatch(), ...gitWorkflowActionDonePatch(workflow, "stage"), output: `${formatGitCommandResult(result)}\n\nStaged. Next: run /git-staged-msg.` }, { tabId });
+    const output = `${formatGitCommandResult(result)}\n\nStaged.`;
+    if (guidedGitReviewAvailable(tabId) || workflow.guidedReviewRequired === true) {
+      // A required gate never falls through to the legacy message flow just
+      // because its extension was disabled or disappeared after staging.
+      await requestGuidedGitReview(tabId, { output });
+    } else {
+      setGitWorkflow({ step: "generate", busy: false, ...resetGitWorkflowManualCommitDefaultPatch(), ...gitWorkflowActionDonePatch(workflow, "stage"), output: `${output} Next: run /git-staged-msg.` }, { tabId });
+    }
     if (isCurrentTabContext(tabContext)) scheduleRefreshFooter();
   } catch (error) {
     if (isCurrentGitWorkflowRun(runId, tabId)) failGitWorkflow(error, "add", { tabId });
@@ -18560,15 +19066,20 @@ async function acceptCurrentGitStaging(tabId = gitWorkflowActionTabId()) {
     const response = await api("/api/git-changes", { tabId });
     const staged = Number(response.data?.summary?.staged || 0);
     if (staged <= 0) throw new Error("No staged files are available. Use Review/select changes to stage the intended files first.");
-    setGitWorkflow({
-      step: "generate",
-      process: "message",
-      busy: false,
-      ...resetGitWorkflowManualCommitDefaultPatch(),
-      ...gitWorkflowActionDonePatch(workflow, "stage"),
-      output: `Using the current staged set (${staged} file${staged === 1 ? "" : "s"}). Review the staged diff, then generate or type a commit message.`,
-    }, { tabId });
-    loadGitWorkflowDefaultCommitMessage({ runId, tabId });
+    const output = `Using the current staged set (${staged} file${staged === 1 ? "" : "s"}).`;
+    if (guidedGitReviewAvailable(tabId) || workflow.guidedReviewRequired === true) {
+      await requestGuidedGitReview(tabId, { output });
+    } else {
+      setGitWorkflow({
+        step: "generate",
+        process: "message",
+        busy: false,
+        ...resetGitWorkflowManualCommitDefaultPatch(),
+        ...gitWorkflowActionDonePatch(workflow, "stage"),
+        output: `${output} Review the staged diff, then generate or type a commit message.`,
+      }, { tabId });
+      loadGitWorkflowDefaultCommitMessage({ runId, tabId });
+    }
     if (isCurrentTabContext(tabContext)) scheduleRefreshFooter();
   } catch (error) {
     if (isCurrentGitWorkflowRun(runId, tabId)) failGitWorkflow(error, "add", { tabId });
@@ -18615,6 +19126,13 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
   }
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
+  let expectedStagedContentHash;
+  try {
+    expectedStagedContentHash = await assertGuidedGitStagedContentBinding(tabId, "commit-message generation");
+  } catch (error) {
+    failGitWorkflow(error, "add", { tabId });
+    return;
+  }
   const runId = workflow.runId;
   const requestedAt = Date.now();
   setGitWorkflow({
@@ -18626,7 +19144,7 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending /git-staged-msg to Pi…");
   try {
-    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "commit" }, runId, tabId });
+    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "commit", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
     appendGitWorkflowOutput(`/git-staged-msg accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the message files will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
@@ -18711,6 +19229,13 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
   }
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
+  let expectedStagedContentHash;
+  try {
+    expectedStagedContentHash = await assertGuidedGitStagedContentBinding(tabId, "PR branch-name generation");
+  } catch (error) {
+    failGitWorkflow(error, "add", { tabId });
+    return;
+  }
   const runId = workflow.runId;
   const requestedAt = Date.now();
   setGitWorkflow({
@@ -18722,7 +19247,7 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending branch-name request to Pi…");
   try {
-    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "branch" }, runId, tabId });
+    const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "branch", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
     appendGitWorkflowOutput(`Branch-name request accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the branch name will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
@@ -18807,10 +19332,17 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
     failGitWorkflow(new Error("Branch name is required to create a PR branch worktree."), "message", { tabId });
     return;
   }
+  let expectedStagedContentHash;
+  try {
+    expectedStagedContentHash = await assertGuidedGitStagedContentBinding(tabId, "PR worktree creation");
+  } catch (error) {
+    failGitWorkflow(error, "add", { tabId });
+    return;
+  }
   const runId = workflow.runId;
   setGitWorkflow({ step: "branching", prMode: true, prBranch: branch, branchName: branch, busy: true, error: "", output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nCreating or opening branch worktree ${branch}…` }, { tabId });
   try {
-    const result = await gitWorkflowRequest("/api/git-workflow/branch", { body: { branch, sessionMode: "fork-current", openTab: true }, runId, tabId });
+    const result = await gitWorkflowRequest("/api/git-workflow/branch", { body: { branch, sessionMode: "fork-current", openTab: true, ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!result) return;
     syncGitWorkflowWorktreeTabs(result);
     const targetTabId = result.tab?.id && tabs.some((tab) => tab.id === result.tab.id) ? result.tab.id : tabId;
@@ -18848,6 +19380,17 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
       prBranch: prBranch || branch,
       pr: null,
       prRequestedAt: 0,
+      ...(expectedStagedContentHash
+        ? {
+          guidedReviewStatus: "approved",
+          guidedReviewFingerprint: sourceWorkflow.guidedReviewFingerprint,
+          guidedReviewRepoRoot: sourceWorkflow.guidedReviewRepoRoot,
+          guidedReviewStagedContentHash: expectedStagedContentHash,
+          guidedReviewDeclinedStagedContentHash: "",
+          guidedReviewRequestedAt: 0,
+          guidedReviewRequired: false,
+        }
+        : resetGuidedGitReviewPatch()),
       preferences: sourceWorkflow.preferences || gitWorkflowPreferences,
       verificationConfirmed: false,
     };
@@ -18869,8 +19412,15 @@ async function commitGitWorkflow(variant, tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
-  const runId = workflow.runId;
   const failureStep = variant === "input" && workflow.step === "generate" ? "generate" : "message";
+  let expectedStagedContentHash;
+  try {
+    expectedStagedContentHash = await assertGuidedGitStagedContentBinding(tabId, "commit");
+  } catch (error) {
+    failGitWorkflow(error, "add", { tabId });
+    return;
+  }
+  const runId = workflow.runId;
   const inputMessage = variant === "input" ? gitWorkflowManualCommitInputMessage(workflow) : "";
   if (workflow.preferences?.verificationPolicy === "ask" && !workflow.verificationConfirmed) {
     const proceed = await appConfirmText([
@@ -18891,7 +19441,9 @@ async function commitGitWorkflow(variant, tabId = gitWorkflowActionTabId()) {
   const preview = variant === "input" ? formatInputCommitMessagePreview(inputMessage) : formatCommitMessagePreview(workflow.message);
   setGitWorkflow({ step: "committing", busy: true, error: "", output: `${preview}\n\nRunning native ${variant} commit…` }, { tabId });
   try {
-    const body = variant === "input" ? { variant, message: inputMessage } : { variant };
+    const body = variant === "input"
+      ? { variant, message: inputMessage, ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }
+      : { variant, ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) };
     const result = await gitWorkflowRequest("/api/git-workflow/commit", { body, runId, tabId });
     if (!result) return;
     const nextAction = workflow.prMode ? "Push and Create PR." : "git push.";
@@ -22712,6 +23264,10 @@ function isCommandVisible(command) {
   return !featureId || isOptionalFeatureEnabled(featureId);
 }
 
+function commandCatalogForTab(tabId = activeTabId) {
+  return tabId ? commandCatalogsByTab.get(tabId) || { raw: [], available: [] } : { raw: [], available: [] };
+}
+
 function visibleCommands() {
   return availableCommands.filter(isCommandVisible);
 }
@@ -22733,34 +23289,24 @@ function canUseCommandBaseAlias(name) {
   return availableCommands.some((command) => commandBaseName(command.name) === name && command.invokeName && command.duplicateCount > 1);
 }
 
-function resolveAvailableCommand(name, { rpcOnly = false } = {}) {
-  const requested = String(name || "").trim();
-  if (!requested) return null;
-  const commands = (rpcOnly ? rawAvailableCommands : availableCommands).filter((command) => !rpcOnly || command.source !== "native");
-  const exact = commands.find((command) => command.name === requested || command.invokeName === requested || command.duplicateNames?.includes(requested));
-  if (exact) return exact;
-  if (!canUseCommandBaseAlias(requested)) return null;
-  return commands.find((command) => commandNameMatches(command?.name, requested)) || null;
+function resolveAvailableCommand(name, { rpcOnly = false, tabId = activeTabId } = {}) {
+  return resolveCommandForTabCatalog(commandCatalogForTab(tabId), name, { rpcOnly });
 }
 
 function resolveAvailableCommandName(name, options = {}) {
   return resolveAvailableCommand(name, options)?.name || "";
 }
 
-function resolveRpcSlashCommandMessage(message) {
-  const text = String(message || "");
-  const match = text.match(/^\/([^\s]+)([\s\S]*)$/);
-  if (!match) return text;
-  const resolvedName = resolveAvailableCommandName(match[1], { rpcOnly: true });
-  return resolvedName && resolvedName !== match[1] ? `/${resolvedName}${match[2]}` : text;
+function resolveRpcSlashCommandMessage(message, { tabId = activeTabId } = {}) {
+  return resolveRpcSlashCommandForTabCatalog(commandCatalogForTab(tabId), message);
 }
 
-function hasAvailableCommand(name) {
-  return !!resolveAvailableCommand(name);
+function hasAvailableCommand(name, options = {}) {
+  return !!resolveAvailableCommand(name, options);
 }
 
-function hasLoadedRpcCommand(name) {
-  return !!resolveAvailableCommand(name, { rpcOnly: true });
+function hasLoadedRpcCommand(name, options = {}) {
+  return !!resolveAvailableCommand(name, { ...options, rpcOnly: true });
 }
 
 function optionalFeatureUnavailableMessage(featureId) {
@@ -22936,6 +23482,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.gitWorkflow = hasAvailableCommand("git-staged-msg");
   optionalFeatureAvailability.releaseNpm = hasAvailableCommand("release-npm");
   optionalFeatureAvailability.releaseAur = hasAvailableCommand("release-aur");
+  optionalFeatureAvailability.aurReview = hasAvailableCommand("aur-review") || optionalFeatureAvailability.aurReview || widgets.has(AUR_REVIEW_RPC_WIDGET_KEY);
   optionalFeatureAvailability.workflows = hasAvailableCommand("workflow") || hasAvailableCommand("workflow-clear") || optionalFeatureAvailability.workflows || widgets.has("workflow") || widgets.has("workflow:subprocess");
   optionalFeatureAvailability.safetyGuard = hasAvailableCommand("safety-guard") || hasAvailableCommand("safety-guard-setup") || optionalFeatureAvailability.safetyGuard || statusEntries.has("safety-guard");
   optionalFeatureAvailability.statsCommand = hasAvailableCommand("stats");
@@ -23004,6 +23551,7 @@ function optionalFeatureWidgetFeatureId(key) {
   if (key.startsWith("btw:")) return "btwCommand";
   if (key.startsWith("release-npm:")) return "releaseNpm";
   if (key.startsWith("release-aur:")) return "releaseAur";
+  if (key === AUR_REVIEW_RPC_WIDGET_KEY) return "aurReview";
   if (key === "workflow" || key.startsWith("workflow:")) return "workflows";
   if (key === "todo-progress") return "todoProgressWidget";
   if (key === "pi-remote-webui") return "remoteWebui";
@@ -23011,7 +23559,7 @@ function optionalFeatureWidgetFeatureId(key) {
 }
 
 function optionalFeatureWidgetHasSpecializedRenderer(key) {
-  return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === "workflow:subprocess" || key === WORKFLOW_INSPECTOR_WIDGET_KEY;
+  return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === AUR_REVIEW_RPC_WIDGET_KEY || key === "workflow:subprocess" || key === WORKFLOW_INSPECTOR_WIDGET_KEY;
 }
 
 function renderOptionalFeaturePanel() {
@@ -26336,9 +26884,17 @@ function renderCommands() {
 async function refreshCommands(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return;
   const response = await api("/api/commands", { tabId: tabContext.tabId });
+  const catalog = {
+    raw: normalizeCommands(response.data?.commands || [], { dedupe: false }),
+    available: normalizeCommands(response.data?.commands || []),
+  };
+  // Keep results for their originating tab even when the active tab changed
+  // while this request was in flight. Guided Git must never borrow another
+  // tab's extension availability or duplicate-command alias.
+  commandCatalogsByTab.set(tabContext.tabId, catalog);
   if (!isCurrentTabContext(tabContext)) return;
-  rawAvailableCommands = normalizeCommands(response.data?.commands || [], { dedupe: false });
-  availableCommands = normalizeCommands(response.data?.commands || []);
+  rawAvailableCommands = catalog.raw;
+  availableCommands = catalog.available;
   updateOptionalFeatureAvailability();
   renderCommands();
   if (elements.commandPaletteDialog?.open) renderCommandPalette({ preserveScroll: true });
@@ -26979,7 +27535,9 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   try {
     const prepared = attachments.length ? await prepareAttachmentsForPrompt(attachments, targetTabId) : { images: [], uploadedFiles: [], inlineImageIds: new Set() };
     message = composeMessageWithAttachments(originalMessage, prepared.uploadedFiles, prepared.inlineImageIds);
-    if (kind === "prompt" && attachments.length === 0) message = resolveRpcSlashCommandMessage(message);
+    // Dispatch against the captured target tab, never the tab that happened
+    // to become active while attachments/requests were resolving.
+    if (kind === "prompt" && attachments.length === 0) message = resolveRpcSlashCommandMessage(message, { tabId: targetTabId });
     const bodyBase = { message };
     if (prepared.images.length) bodyBase.images = prepared.images;
     if (!message.startsWith("/")) {
@@ -27112,6 +27670,16 @@ function handleExtensionUiRequest(request) {
       if (widgetKey === WORKFLOW_INSPECTOR_WIDGET_KEY) {
         const inspector = parseWorkflowInspectorPayload(request.widgetLines);
         if (inspector) updateWorkflowInspectorForTab(requestTabId, inspector);
+        if (!setWidgetForTab(requestTabId, widgetKey, request)) return;
+        updateOptionalFeatureAvailability();
+        renderTabs();
+        renderWidgets();
+        return;
+      }
+      if (widgetKey === AUR_REVIEW_RPC_WIDGET_KEY) {
+        const payload = parseAurReviewPayload(request.widgetLines);
+        if (payload) reconcileGuidedGitReviewPayload(requestTabId, payload);
+        else if (!Array.isArray(request.widgetLines)) reconcileGuidedGitReviewWidgetRemoval(requestTabId);
         if (!setWidgetForTab(requestTabId, widgetKey, request)) return;
         updateOptionalFeatureAvailability();
         renderTabs();
@@ -27269,6 +27837,13 @@ function handleInactiveTabEvent(event) {
     const inspector = parseWorkflowInspectorPayload(event.widgetLines);
     if (inspector) updateWorkflowInspectorForTab(event.tabId, inspector);
     setWidgetForTab(event.tabId, WORKFLOW_INSPECTOR_WIDGET_KEY, event);
+    renderTabs();
+  } else if (event.type === "extension_ui_request" && event.method === "setWidget" && (event.widgetKey || event.id) === AUR_REVIEW_RPC_WIDGET_KEY) {
+    const payload = parseAurReviewPayload(event.widgetLines);
+    if (payload) reconcileGuidedGitReviewPayload(event.tabId, payload);
+    else if (!Array.isArray(event.widgetLines)) reconcileGuidedGitReviewWidgetRemoval(event.tabId);
+    setWidgetForTab(event.tabId, AUR_REVIEW_RPC_WIDGET_KEY, event);
+    updateOptionalFeatureAvailability();
     renderTabs();
   } else if (event.type === "agent_end") {
     notifyAgentDone(event.tabId, { activity: event.tabActivity, tabTitle: event.tabTitle });

@@ -269,6 +269,21 @@ try {
   const rawVoiceModuleSize = (await stat(join(root, "public", "voice-conversation.mjs"))).size;
   assert.equal(voiceModuleBody.byteLength, rawVoiceModuleSize, "served voice-conversation.mjs should match the raw file byte-for-byte in size");
 
+  // app.js imports this pure Guided Git review gate at startup. Fetch it over
+  // the real server so an omitted static allowlist entry cannot 404 the UI.
+  const guidedGitReviewStateResponse = await fetch(`http://127.0.0.1:${port}/guided-git-review-state.mjs`, {
+    signal: AbortSignal.timeout(5_000),
+  });
+  assert.equal(guidedGitReviewStateResponse.status, 200, "guided-git-review-state.mjs must be served for the Guided Git review gate");
+  assert.match(guidedGitReviewStateResponse.headers.get("content-type") || "", /text\/javascript/, "guided-git-review-state.mjs should use a JavaScript MIME type");
+  assert.equal(await guidedGitReviewStateResponse.text(), await readFile(join(root, "public", "guided-git-review-state.mjs"), "utf8"), "served Guided Git review state must match the source module");
+  for (const moduleName of ["aur-review-payload.mjs", "guided-git-command-state.mjs"]) {
+    const response = await fetch(`http://127.0.0.1:${port}/${moduleName}`, { signal: AbortSignal.timeout(5_000) });
+    assert.equal(response.status, 200, `${moduleName} must be served for the Guided Git review gate`);
+    assert.match(response.headers.get("content-type") || "", /text\/javascript/, `${moduleName} should use a JavaScript MIME type`);
+    assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served ${moduleName} must match the source module`);
+  }
+
   const mermaidModuleResponse = await fetch(`http://127.0.0.1:${port}/vendor/mermaid/mermaid.esm.min.mjs`, {
     signal: AbortSignal.timeout(5_000),
   });
@@ -289,6 +304,12 @@ try {
   assert.equal(tabList.length, 1, "startup should create one tab for --cwd");
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
+
+  const optionalFeatures = await request("127.0.0.1", "/api/optional-features");
+  assert.equal(optionalFeatures.status, 200, "optional feature status should load");
+  const aurReviewFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
+  assert.equal(aurReviewFeature?.installed, true, "workspace discovery should find the local pi-extension-aur-review sibling without an npm dependency");
+  assert.equal(path.basename(aurReviewFeature?.installedRoot || ""), "pi-extension-aur-review", "aur-review discovery must validate the exact sibling manifest/name");
 
   const sessionToolsBefore = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=session`);
   assert.equal(sessionToolsBefore.status, 200);
@@ -409,6 +430,25 @@ try {
   assert.equal(subagentOutputResponse.body?.data?.agent?.name, "reviewer", "subagent output should target the selected child agent");
   assert.deepEqual(subagentOutputResponse.body?.data?.agent?.recentOutput, ["Inspecting current implementation", "Waiting for the next tool result"], "subagent output should preserve bounded live output lines");
   assert.equal(subagentOutputResponse.body?.data?.agent?.currentToolArgs, "README.md", "subagent output should include current tool state");
+  assert.deepEqual(subagentOutputResponse.body?.data?.agent?.transcript, [
+    {
+      role: "assistant",
+      timestamp: "2026-07-19T12:00:00.000Z",
+      content: [
+        { type: "thinking", thinking: "Checking the fixture transcript." },
+        { type: "text", text: "Inspecting current implementation" },
+        { type: "toolCall", id: "fixture-read", name: "read", arguments: "{\"path\":\"README.md\",\"offset\":1}" },
+        { type: "text", text: "Waiting for the next tool result" },
+      ],
+    },
+    {
+      role: "toolResult",
+      timestamp: "2026-07-19T12:00:01.000Z",
+      toolCallId: "fixture-read",
+      toolName: "read",
+      content: [{ type: "text", text: "# Fixture README" }],
+    },
+  ], "subagent output endpoint should preserve normalized structured transcript roles, order, IDs, and tool metadata");
   const unknownSubagentOutput = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=missing&agent=missing`);
   assert.equal(unknownSubagentOutput.status, 404, "subagent output endpoint should reject untracked selections");
   const subagentFixtureClear = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents clear" } });
@@ -1055,6 +1095,58 @@ try {
     const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [stagingTab, truncationTab, mergeTab, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
     assert.equal(closeGitActionTabs.status, 200, "git action fixture tabs should close");
     await rmWithRetry(gitFixturesRoot);
+
+    // AUR-review paths are repo-root-relative even when a tab starts in a
+    // subdirectory. The dedicated read-only route must not reuse cwd-scoped
+    // workspace file access.
+    const reportRepo = await mkdtemp(path.join(tmpdir(), "pi-webui-aur-report-"));
+    let reportTabId = "";
+    try {
+      const reportSubdir = path.join(reportRepo, "subdir");
+      const reportPath = path.join(reportRepo, "reports", "audit.md");
+      const oversizedReportPath = path.join(reportRepo, "reports", "oversized.md");
+      await mkdir(reportSubdir, { recursive: true });
+      await mkdir(path.dirname(reportPath), { recursive: true });
+      runGitFixture(["init", "-b", "main"], reportRepo, "report fixture should initialize");
+      await writeFile(reportPath, "# Audit report\n\nCanonical repo-root report.\n", "utf8");
+      const reportTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: reportSubdir, title: "aur-report-subdir" } });
+      assert.equal(reportTab.status, 201, `subdirectory report tab should open: ${reportTab.body?.error || ""}`);
+      reportTabId = reportTab.body?.data?.tab?.id || "";
+      assert.ok(reportTabId, "subdirectory report tab should have an id");
+      const reportRequestPath = (reportFile, repoRoot = reportRepo) => `/api/aur-review/report-content?tab=${encodeURIComponent(reportTabId)}&path=${encodeURIComponent(reportFile)}&repoRoot=${encodeURIComponent(repoRoot)}`;
+
+      const cwdScopedMiss = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(reportTabId)}&path=${encodeURIComponent("reports/audit.md")}`);
+      assert.equal(cwdScopedMiss.status, 404, "generic workspace file access must remain scoped to the tab subdirectory");
+      const openedReport = await request("127.0.0.1", reportRequestPath("reports/audit.md"));
+      assert.equal(openedReport.status, 200, `repo-root report should open from a subdirectory tab: ${openedReport.body?.error || ""}`);
+      assert.equal(openedReport.body?.data?.root, reportRepo, "report endpoint should return the canonical Git root");
+      assert.equal(openedReport.body?.data?.path, "reports/audit.md", "report endpoint should retain the repo-relative report path");
+      assert.equal(openedReport.body?.data?.content, "# Audit report\n\nCanonical repo-root report.\n");
+      assert.equal(openedReport.body?.data?.language, "markdown", "repo-root reports should use the existing Markdown viewer metadata");
+
+      const wrongRoot = await request("127.0.0.1", reportRequestPath("reports/audit.md", reportSubdir));
+      assert.equal(wrongRoot.status, 403, "report endpoint must require the payload repoRoot to equal the canonical Git root");
+      const traversal = await request("127.0.0.1", reportRequestPath("../reports/audit.md"));
+      assert.equal(traversal.status, 400, "report endpoint must reject traversal paths");
+      const absolute = await request("127.0.0.1", reportRequestPath(reportPath));
+      assert.equal(absolute.status, 400, "report endpoint must reject absolute report paths");
+      const nonRegular = await request("127.0.0.1", reportRequestPath("reports"));
+      assert.equal(nonRegular.status, 400, "report endpoint must reject non-regular paths");
+      await writeFile(oversizedReportPath, Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
+      const oversized = await request("127.0.0.1", reportRequestPath("reports/oversized.md"));
+      assert.equal(oversized.status, 413, "report endpoint must reject oversized reports before returning content");
+      try {
+        await symlink(reportPath, path.join(reportRepo, "reports", "audit-link.md"));
+        const symlinked = await request("127.0.0.1", reportRequestPath("reports/audit-link.md"));
+        assert.equal(symlinked.status, 403, "report endpoint must reject symlinked reports even when their targets stay in the repository");
+      } catch (error) {
+        if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+        console.log(`http-endpoints-harness: symlink unavailable (${error.code}); skipping report symlink check`);
+      }
+    } finally {
+      if (reportTabId) await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [reportTabId] }, timeoutMs: 10_000 });
+      await rmWithRetry(reportRepo);
+    }
   } else {
     console.log("http-endpoints-harness: git not available; skipping git init workflow endpoint checks");
   }

@@ -12,10 +12,10 @@ const [server, app] = await Promise.all([
 assert.match(server, /function maybeQueueCommandDuringCompaction\(tab, command\)[\s\S]*tab\?\.lastState\?\.isCompacting[\s\S]*enqueueCommandUntilCompactionEnds/, "server should queue prompt-like commands while the tab is compacting");
 assert.match(server, /url\.pathname === "\/api\/prompt" && req\.method === "POST"[\s\S]*maybeQueueCommandDuringCompaction\(tab, command\)[\s\S]*sendJson\(res, 202/, "POST /api/prompt should return 202 when a prompt is queued for post-compaction resume");
 assert.match(server, /if \(command\) \{[\s\S]*maybeQueueCommandDuringCompaction\(tab, command\)[\s\S]*sendJson\(res, 202/, "generic prompt-like POST commands should share the compaction queue path");
-assert.match(server, /event\?\.type === "compaction_end" && event\.aborted !== true\)[\s\S]*flushCompactionQueue\(tab, event\)/, "non-aborted compaction_end should flush the queued resume prompt");
-assert.match(server, /async function flushCompactionQueue\(tab, event = \{\}\)[\s\S]*queuedRetryCommand\(item\)/, "compaction queue flush should resume queued commands into active auto-retry runs");
+assert.match(server, /event\?\.type === "compaction_end"\)[\s\S]*flushCompactionQueue\(tab, event\)/, "every compaction_end should flush queued prompts instead of stranding them after an abort");
+assert.match(server, /async function flushCompactionQueue\(tab, event = \{\}\)[\s\S]*queuedRetryCommand\(item\)/, "compaction queue flush should preserve steering, follow-up, and slash-command delivery when joining an active run");
 assert.match(server, /async function flushCompactionQueue\(tab, event = \{\}\)[\s\S]*queuedPromptCommand\(item\)/, "compaction queue flush should start a new prompt when no run resumes automatically");
-assert.match(server, /async function flushCompactionQueue\(tab, event = \{\}\)[\s\S]*queuedStreamingCommand\(item\)/, "compaction queue flush should send later queued items as steering or follow-up messages");
+assert.match(server, /function queuedRetryCommand\(item\)[\s\S]*queuedStreamingCommand\(item\)/, "post-compaction continuation should send later queued items as steering or follow-up messages");
 assert.match(server, /function stateWithPendingThinking\(tab, state\)[\s\S]*compactionQueueForTab\(tab\)\.length[\s\S]*pendingMessageCount/, "state responses should include Web UI compaction queue length while prompts wait to resume");
 
 assert.match(app, /function isRunActive\(\) \{\n\s+return !!currentState\?\.isStreaming \|\| !!currentState\?\.isCompacting/, "frontend should treat compaction as an active run for composer controls");

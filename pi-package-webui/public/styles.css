@@ -4864,6 +4864,66 @@ button.git-workflow-step:hover:not(:disabled) {
     linear-gradient(145deg, rgba(var(--ctp-crust-rgb), 0.98), rgba(var(--ctp-mantle-rgb), 0.92));
 }
 .release-aur-widget .release-npm-kicker { color: var(--ctp-peach); }
+.aur-review-widget {
+  display: grid;
+  gap: 0.68rem;
+  overflow: hidden;
+  white-space: normal;
+  border-color: rgba(250, 179, 135, 0.68);
+  border-left: 0.28rem solid rgba(250, 179, 135, 0.92);
+  background:
+    radial-gradient(circle at 4% 0%, rgba(250, 179, 135, 0.2), transparent 16rem),
+    radial-gradient(circle at 96% 12%, rgba(249, 226, 175, 0.14), transparent 18rem),
+    linear-gradient(145deg, rgba(var(--ctp-crust-rgb), 0.98), rgba(var(--ctp-mantle-rgb), 0.92));
+}
+.aur-review-header,
+.aur-review-title-wrap,
+.aur-review-actions,
+.aur-review-summary,
+.aur-review-reports {
+  display: flex;
+  gap: 0.48rem;
+  align-items: center;
+  min-width: 0;
+}
+.aur-review-header { justify-content: space-between; gap: 0.8rem; }
+.aur-review-title-wrap { display: grid; gap: 0.08rem; align-items: start; }
+.aur-review-kicker { color: var(--ctp-peach); font-size: var(--text-xs); font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+.aur-review-title { color: var(--ctp-text); }
+.aur-review-actions { flex-wrap: wrap; justify-content: flex-end; }
+.aur-review-action,
+.aur-review-report {
+  min-height: 2rem;
+  padding: 0.32rem 0.56rem;
+  border: 1px solid rgba(250, 179, 135, 0.34);
+  border-radius: 0.5rem;
+  color: var(--ctp-text);
+  background: rgba(var(--ctp-crust-rgb), 0.54);
+  font-size: var(--text-xs);
+}
+.aur-review-action:hover,
+.aur-review-report:hover { border-color: rgba(250, 179, 135, 0.8); color: var(--ctp-peach); }
+.aur-review-action.primary { border-color: rgba(166, 227, 161, 0.58); color: var(--ctp-green); }
+.aur-review-action.danger { border-color: rgba(243, 139, 168, 0.58); color: var(--ctp-red); }
+.aur-review-summary { flex-wrap: wrap; align-items: baseline; color: var(--ctp-subtext0); font-size: var(--text-xs); }
+.aur-review-status { color: var(--ctp-peach); font-weight: 720; }
+.aur-review-root,
+.aur-review-fingerprint { max-width: 100%; overflow-wrap: anywhere; }
+.aur-review-fingerprint { color: var(--ctp-yellow); font-size: var(--text-xs); }
+.aur-review-files {
+  border: 1px solid rgba(250, 179, 135, 0.2);
+  border-radius: 0.58rem;
+  background: rgba(var(--ctp-crust-rgb), 0.34);
+}
+.aur-review-files > summary { padding: 0.48rem 0.56rem; cursor: pointer; color: var(--ctp-subtext0); }
+.aur-review-file-list { display: grid; gap: 0.3rem; max-height: 12rem; margin: 0; padding: 0 0.8rem 0.65rem 1.7rem; overflow: auto; color: var(--ctp-text); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.aur-review-reports { flex-wrap: wrap; align-items: baseline; color: var(--ctp-subtext0); font-size: var(--text-xs); }
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .aur-review-header { align-items: stretch; flex-direction: column; }
+  .aur-review-actions { justify-content: stretch; }
+  .aur-review-action,
+  .aur-review-report { flex: 1 1 7.25rem; min-height: 44px; }
+}
 .app-runner-widget {
   border-color: rgba(166, 227, 161, 0.62);
   border-left-color: rgba(166, 227, 161, 0.88);
@@ -8488,10 +8548,13 @@ button.composer-skill-tag:focus-visible {
   scrollbar-gutter: stable;
 }
 .subagent-overlay-message {
-  margin: 0;
+  margin: 0 0 0.55rem;
+}
+.subagent-overlay-message:last-child {
+  margin-bottom: 0;
 }
 .subagent-overlay-message + .subagent-output-waiting {
-  margin-top: 0.55rem;
+  margin-top: 0;
 }
 .subagent-output-waiting {
   width: fit-content;

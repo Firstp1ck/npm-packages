@@ -63,11 +63,12 @@ const ctx = {
 const asyncRunDir = await mkdtemp(path.join(tmpdir(), "pi-webui-subagent-output-test-"));
 const asyncSessionFile = path.join(asyncRunDir, "reviewer-session.jsonl");
 await writeFile(asyncSessionFile, [
-  JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "REVIEWER STREAM 1 OF 18" }, { type: "toolCall", name: "bash", arguments: { command: "sleep 5" } }] } }),
-  JSON.stringify({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "(no output)\nreviewer tool output line" }] } }),
+  JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:00.000Z", message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking structured transcript extraction" }, { type: "text", text: "REVIEWER STREAM 1 OF 18" }, { type: "toolCall", id: "review-call", name: "bash", arguments: { command: "sleep 5" } }, { type: "text", text: "Review complete." }] } }),
+  JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:01.000Z", message: { role: "toolResult", toolCallId: "review-call", toolName: "bash", isError: false, content: [{ type: "text", text: "(no output)\nreviewer tool output line" }] } }),
   "",
 ].join("\n"));
-await writeFile(path.join(asyncRunDir, "status.json"), JSON.stringify({
+const asyncStatusFile = path.join(asyncRunDir, "status.json");
+await writeFile(asyncStatusFile, JSON.stringify({
   runId: "run-a",
   mode: "parallel",
   state: "running",
@@ -136,8 +137,85 @@ assert.equal(asyncOutputResponse.ok, true);
 assert.deepEqual(asyncOutputResponse.data.agent.recentOutput, [
   "REVIEWER STREAM 1 OF 18",
   "▶ bash {\"command\":\"sleep 5\"}",
+  "Review complete.",
   "reviewer tool output line",
-], "async output should be recovered from the child session transcript when status recentOutput is empty");
+], "async output should remain available as a bounded text fallback when status recentOutput is empty");
+assert.deepEqual(asyncOutputResponse.data.agent.transcript, [
+  {
+    role: "assistant",
+    timestamp: "2026-07-19T12:00:00.000Z",
+    content: [
+      { type: "thinking", thinking: "Checking structured transcript extraction" },
+      { type: "text", text: "REVIEWER STREAM 1 OF 18" },
+      { type: "toolCall", id: "review-call", name: "bash", arguments: "{\"command\":\"sleep 5\"}" },
+      { type: "text", text: "Review complete." },
+    ],
+  },
+  {
+    role: "toolResult",
+    timestamp: "2026-07-19T12:00:01.000Z",
+    toolCallId: "review-call",
+    toolName: "bash",
+    content: [{ type: "text", text: "reviewer tool output line" }],
+  },
+], "async output should preserve assistant thinking, tool calls, final text, and tool results for the main transcript renderer");
+
+const boundedSessionFile = path.join(asyncRunDir, "bounded-reviewer-session.jsonl");
+await writeFile(boundedSessionFile, Array.from({ length: 122 }, (_unused, index) => JSON.stringify({
+  type: "message",
+  timestamp: `2026-07-19T12:01:${String(index).padStart(2, "0")}.000Z`,
+  message: { role: "assistant", content: [{ type: "text", text: `bounded transcript line ${index}` }] },
+})).join("\n"));
+await writeFile(asyncStatusFile, JSON.stringify({
+  runId: "run-a",
+  mode: "parallel",
+  state: "running",
+  startedAt: Date.now() - 1000,
+  lastUpdate: Date.now(),
+  steps: [{ agent: "reviewer", status: "running", sessionFile: boundedSessionFile }],
+}));
+await helperCommand.handler(JSON.stringify({
+  requestId: "bounded-subagent-output-test",
+  action: "subagent-output",
+  payload: { runId: "run-a", agentId: "run-a:step:0:reviewer" },
+}), ctx);
+const boundedOutputNotice = notifications.find((entry) => entry.message.startsWith("__PI_WEBUI_HELPER_RESPONSE__:")
+  && JSON.parse(entry.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length)).requestId === "bounded-subagent-output-test");
+assert.ok(boundedOutputNotice, "bounded async output helper action should return a response notification");
+const boundedOutputResponse = JSON.parse(boundedOutputNotice.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length));
+assert.equal(boundedOutputResponse.data.agent.recentOutput.length, 120, "structured child extraction should retain the existing 120-line output bound");
+assert.equal(boundedOutputResponse.data.agent.recentOutput[0], "bounded transcript line 2");
+assert.equal(boundedOutputResponse.data.agent.recentOutput.at(-1), "bounded transcript line 121");
+assert.equal(boundedOutputResponse.data.agent.transcript.length, 120, "structured child extraction should apply the same tail bound to rendered entries");
+
+const incompleteToolSessionFile = path.join(asyncRunDir, "incomplete-tool-session.jsonl");
+await writeFile(incompleteToolSessionFile, JSON.stringify({
+  type: "message",
+  timestamp: "2026-07-19T12:02:00.000Z",
+  message: { role: "assistant", content: [{ type: "toolCall", id: "tail-call", name: "read", arguments: { path: "README.md" } }] },
+}));
+await writeFile(asyncStatusFile, JSON.stringify({
+  runId: "run-a",
+  mode: "parallel",
+  state: "running",
+  startedAt: Date.now() - 1000,
+  lastUpdate: Date.now(),
+  steps: [{ agent: "reviewer", status: "running", sessionFile: incompleteToolSessionFile }],
+}));
+await helperCommand.handler(JSON.stringify({
+  requestId: "incomplete-tool-subagent-output-test",
+  action: "subagent-output",
+  payload: { runId: "run-a", agentId: "run-a:step:0:reviewer" },
+}), ctx);
+const incompleteToolNotice = notifications.find((entry) => entry.message.startsWith("__PI_WEBUI_HELPER_RESPONSE__:")
+  && JSON.parse(entry.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length)).requestId === "incomplete-tool-subagent-output-test");
+assert.ok(incompleteToolNotice, "incomplete tool output helper action should return a response notification");
+const incompleteToolResponse = JSON.parse(incompleteToolNotice.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length));
+assert.deepEqual(incompleteToolResponse.data.agent.transcript, [{
+  role: "assistant",
+  timestamp: "2026-07-19T12:02:00.000Z",
+  content: [{ type: "toolCall", id: "tail-call", name: "read", arguments: "{\"path\":\"README.md\"}" }],
+}], "a live or truncated session tail should retain an unpaired tool call for a pending tool card");
 
 for (const handler of extensionHandlers.get("tool_execution_start") || []) {
   handler({
@@ -195,6 +273,7 @@ assert.equal(outputResponse.ok, true);
 assert.equal(outputResponse.data.agent.currentTool, "bash");
 assert.equal(outputResponse.data.agent.currentToolArgs, "npm test");
 assert.deepEqual(outputResponse.data.agent.recentOutput, ["Running focused tests", "12 assertions passed"]);
+assert.deepEqual(outputResponse.data.agent.transcript, [], "foreground snapshots without a child session transcript should retain the recentOutput-only fallback");
 assert.deepEqual(outputResponse.data.agent.recentTools, [{ tool: "read", args: "package.json", endMs: 1000 }]);
 
 for (const handler of extensionHandlers.get("tool_execution_end") || []) {

@@ -1,0 +1,45 @@
+{
+  "name": "@firstpick/pi-extension-aur-review",
+  "version": "0.1.0",
+  "description": "Deterministic manual AUR review gate bound to the exact Git working-tree snapshot.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-aur-review#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-extension-aur-review"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "aur",
+    "review",
+    "git"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check src/git.ts && node --experimental-strip-types --check src/storage.ts && node --experimental-strip-types --check src/review.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "tests",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

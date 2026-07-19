@@ -4,7 +4,7 @@ import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto"
 import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { access, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, networkInterfaces, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -310,6 +310,7 @@ const OPTIONAL_FEATURE_PACKAGES = new Map([
   ["gitWorkflow", "@firstpick/pi-prompts-git-pr"],
   ["releaseNpm", "@firstpick/pi-extension-release-npm"],
   ["releaseAur", "@firstpick/pi-extension-release-aur"],
+  ["aurReview", "@firstpick/pi-extension-aur-review"],
   ["workflows", "@firstpick/pi-extension-workflows"],
   ["safetyGuard", "@firstpick/pi-extension-safety-guard"],
   ["tuiSkillsCommand", "@firstpick/pi-extension-setup-skills"],
@@ -2009,6 +2010,9 @@ async function restoreGitWorkflowGenerationProfile(tab) {
 
 async function startGitWorkflowGeneration(tab, body = {}) {
   if (tab.gitWorkflowGenerationRestore) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
+  // Browser state is untrusted. When it claims an approved content token,
+  // verify the exact current index again at this server action boundary.
+  await assertExpectedStagedContentHash(tab, body);
   const preferences = await readGitWorkflowPreferences();
   if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
 
@@ -4391,6 +4395,15 @@ let activeGitWorkflowProcess = null;
 const GIT_CHANGES_COMMAND_TIMEOUT_MS = 5000;
 const GIT_CHANGES_DIFF_MAX_OUTPUT = 500_000;
 const GIT_PULL_TIMEOUT_MS = 15 * 60 * 1000;
+// Must remain byte-for-byte aligned with pi-extension-aur-review/src/git.ts.
+const STAGED_CONTENT_HASH_DOMAIN = "firstpick/aur-review/staged-content/v1\0";
+const STAGED_CONTENT_HASH_TIMEOUT_MS = 10_000;
+const STAGED_CONTENT_HASH_OUTPUT_LIMIT = 4 * 1024 * 1024;
+const STAGED_CONTENT_HASH_ARGS = [
+  "-c", "core.quotepath=false",
+  "-c", "diff.external=",
+  "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames", "--",
+];
 const GIT_STATUS_KIND_RANK = Object.freeze({ changed: 0, untracked: 1, modified: 2, staged: 3, conflicted: 4 });
 
 async function getGitRoot(cwd) {
@@ -4415,6 +4428,103 @@ async function runGitReadCommandDetailed(root, args, { timeoutMs = GIT_CHANGES_C
 
 async function runGitReadCommand(root, args, options = {}) {
   return (await runGitReadCommandDetailed(root, args, options)).output;
+}
+
+/**
+ * Read binary cached-diff bytes without decoding them. This is intentionally
+ * separate from runCommand(), whose string buffering is appropriate for UI
+ * output but would corrupt the staged-content approval token.
+ */
+function runGitStagedContentHashCommand(root) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", STAGED_CONTENT_HASH_ARGS, {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", LC_ALL: "C" },
+    });
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const stop = (message) => {
+      try { child.kill("SIGKILL"); } catch { /* process already exited */ }
+      finish(makeUserFacingError(message));
+    };
+    const timeout = setTimeout(() => stop(`git diff --cached timed out after ${STAGED_CONTENT_HASH_TIMEOUT_MS / 1000} seconds`), STAGED_CONTENT_HASH_TIMEOUT_MS);
+    child.stdout.on("data", (chunk) => {
+      const bytes = Buffer.from(chunk);
+      stdoutBytes += bytes.length;
+      if (stdoutBytes > STAGED_CONTENT_HASH_OUTPUT_LIMIT) {
+        stop(`git diff --cached output exceeded the ${STAGED_CONTENT_HASH_OUTPUT_LIMIT / 1024 / 1024} MiB staged-content safety limit`);
+        return;
+      }
+      stdout.push(bytes);
+    });
+    child.stderr.on("data", (chunk) => {
+      const bytes = Buffer.from(chunk);
+      stderrBytes += bytes.length;
+      if (stderrBytes <= 64 * 1024) stderr.push(bytes);
+    });
+    child.on("error", (error) => finish(makeUserFacingError(formatCommandSpawnError("git", error))));
+    child.on("close", (exitCode) => {
+      if (exitCode !== 0) {
+        const detail = Buffer.concat(stderr).toString("utf8").trim().slice(0, 1200);
+        finish(makeUserFacingError(detail ? `git diff --cached failed: ${detail}` : `git diff --cached failed with exit code ${exitCode ?? "unknown"}`));
+        return;
+      }
+      finish(null, Buffer.concat(stdout));
+    });
+  });
+}
+
+function stagedContentHashFromDiff(stagedDiff) {
+  return createHash("sha256").update(STAGED_CONTENT_HASH_DOMAIN).update(stagedDiff).digest("hex");
+}
+
+async function readStagedContentHash(root) {
+  // `git diff --cached` correctly compares the index to the empty tree when
+  // HEAD is unborn, so no HEAD lookup is needed (or allowed) here.
+  const stagedDiff = await runGitStagedContentHashCommand(root);
+  return {
+    stagedDiff,
+    hasStagedChanges: stagedDiff.length > 0,
+    stagedContentHash: stagedDiff.length > 0 ? stagedContentHashFromDiff(stagedDiff) : null,
+  };
+}
+
+/** Read-only same-tab digest of the exact staged content git can commit. */
+async function stagedContentHashForTab(tab) {
+  const root = await getGitRoot(tab.cwd);
+  const staged = await readStagedContentHash(root);
+  return { root, hasStagedChanges: staged.hasStagedChanges, stagedContentHash: staged.stagedContentHash };
+}
+
+function expectedStagedContentHashFromBody(body = {}) {
+  const expected = body?.expectedStagedContentHash;
+  if (expected === undefined) return ""; // Legacy Guided Git flow: no review was required.
+  if (typeof expected !== "string" || !/^[a-f0-9]{64}$/i.test(expected)) {
+    throw makeHttpError(400, "expectedStagedContentHash must be a SHA-256 hex digest");
+  }
+  return expected;
+}
+
+async function assertExpectedStagedContentHash(tab, body = {}) {
+  const expected = expectedStagedContentHashFromBody(body);
+  if (!expected) return "";
+  const current = await stagedContentHashForTab(tab);
+  if (!current.hasStagedChanges || current.stagedContentHash !== expected) {
+    throw makeHttpError(409, "Staged content changed after manual approval. Return to Stage and request a new manual review before continuing.");
+  }
+  return expected;
 }
 
 function gitBranchFromPorcelainStatus(statusText) {
@@ -5952,18 +6062,17 @@ async function readGitWorkflowMessageFilesForTransfer(root, messageCwd = root) {
   return files;
 }
 
-async function snapshotGitWorkflowBranchState(root, cwd = root) {
+async function snapshotGitWorkflowBranchState(root, cwd = root, expectedStagedContentHash = "") {
   const messageCwd = gitWorkflowMessageCwd(root, cwd);
-  const diffResult = await runGitWorkflowCommand(["diff", "--cached", "--binary", "--full-index"], {
-    cwd: root,
-    label: "git diff --cached --binary --full-index",
-    timeoutMs: 60 * 1000,
-  });
-  if (diffResult.exitCode !== 0 || diffResult.timedOut || diffResult.cancelled || diffResult.error) {
-    throw new Error((diffResult.stderr || diffResult.stdout || diffResult.error || "Unable to read staged changes for the PR worktree").trim());
+  // Preserve raw patch bytes: string decoding would corrupt binary staged
+  // changes before `git apply --index` can copy them to the PR worktree.
+  const staged = await readStagedContentHash(root);
+  if (expectedStagedContentHash && (!staged.hasStagedChanges || staged.stagedContentHash !== expectedStagedContentHash)) {
+    throw makeHttpError(409, "Staged content changed after manual approval. Return to Stage and request a new manual review before creating a PR worktree.");
   }
   return {
-    stagedPatch: diffResult.stdout || "",
+    stagedPatch: staged.stagedDiff,
+    stagedContentHash: staged.stagedContentHash,
     messageFiles: await readGitWorkflowMessageFilesForTransfer(root, messageCwd),
   };
 }
@@ -5971,10 +6080,10 @@ async function snapshotGitWorkflowBranchState(root, cwd = root) {
 async function applyGitWorkflowBranchStateToWorktree(snapshot, worktreePath) {
   const copiedMessageFiles = [];
   let appliedStagedPatch = false;
-  const patchText = String(snapshot?.stagedPatch || "");
-  if (patchText.trim()) {
+  const patchBytes = Buffer.isBuffer(snapshot?.stagedPatch) ? snapshot.stagedPatch : Buffer.alloc(0);
+  if (patchBytes.length > 0) {
     const patchPath = path.join(tmpdir(), `pi-webui-staged-worktree-${process.pid}-${Date.now()}-${randomUUID()}.patch`);
-    await writeFile(patchPath, patchText, "utf8");
+    await writeFile(patchPath, patchBytes);
     try {
       const applyResult = await runGitWorkflowCommand(["apply", "--index", "--whitespace=nowarn", patchPath], {
         cwd: worktreePath,
@@ -6020,7 +6129,8 @@ async function createGitWorkflowBranchWorktree(tab, body = {}) {
   const root = await getGitRoot(tab.cwd);
   const branch = cleanGitBranchName(body.branch || body.branchName);
   await validateGitBranchName(root, branch);
-  const snapshot = await snapshotGitWorkflowBranchState(root, tab.cwd);
+  const expectedStagedContentHash = expectedStagedContentHashFromBody(body);
+  const snapshot = await snapshotGitWorkflowBranchState(root, tab.cwd, expectedStagedContentHash);
   let createdResult = null;
   try {
     createdResult = await createGitWorktree(tab.cwd, { ...body, branchName: branch });
@@ -6225,6 +6335,7 @@ function gitWorkflowCommandPayload(result) {
 // guard are enforced at the router before dispatch — never dispatch on path
 // alone, or cross-origin GETs (image/script tags) could drive git mutations.
 const GIT_WORKFLOW_READONLY_PATHS = new Set([
+  "/api/git-workflow/staged-content",
   "/api/git-workflow/message",
   "/api/git-workflow/default-commit-message",
   "/api/git-workflow/branch-name",
@@ -6252,6 +6363,9 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
   const cwd = tab?.cwd || tabOrCwd || options.cwd;
   try {
     switch (pathname) {
+      case "/api/git-workflow/staged-content":
+        if (!tab) throw new Error("Staged-content lookup requires a Web UI tab");
+        return { ok: true, data: await stagedContentHashForTab(tab) };
       case "/api/git-workflow/message":
         return { ok: true, data: await readGitWorkflowMessages(cwd) };
       case "/api/git-workflow/default-commit-message":
@@ -6303,6 +6417,9 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
       case "/api/git-workflow/commit": {
         const variant = String(body.variant || "").trim();
         if (!["short", "long", "input"].includes(variant)) throw new Error("variant must be 'short', 'long', or 'input'");
+        // Recheck here as well as in the browser. A staged index can change
+        // between the browser's read-only check and this mutating request.
+        await assertExpectedStagedContentHash(tab || { cwd }, body);
         if (variant === "input") {
           const root = await getGitRoot(cwd);
           const message = cleanGitCommitMessageInput(body.message);
@@ -6455,7 +6572,7 @@ async function readBundledThemes() {
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "voice-conversation.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  if (!["index.html", "app.js", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
   return name;
 }
 
@@ -6892,9 +7009,11 @@ async function workspacePackageRootForName(packageName) {
     return null;
   }
   for (const entry of entries) {
+    // Workspace package directories use the pi-* convention. Confirm every
+    // eligible sibling by its manifest name, never the folder prefix alone.
     if (!entry.isDirectory() || !entry.name.startsWith("pi-")) continue;
     const candidate = path.join(root, entry.name);
-    if ((await packageNameForResourcePath(path.join(candidate, "index.ts"))) === packageName) return candidate;
+    if ((await packageNameForResourcePath(path.join(candidate, "package.json"))) === packageName) return candidate;
   }
   return null;
 }
@@ -7495,7 +7614,7 @@ async function flushCompactionQueue(tab, event = {}) {
       let startedPrompt = false;
       while (remaining.length) {
         const item = remaining[0];
-        const command = startedPrompt ? queuedStreamingCommand(item) : queuedPromptCommand(item);
+        const command = startedPrompt ? queuedRetryCommand(item) : queuedPromptCommand(item);
         if (!startedPrompt) {
           const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
           if (pendingThinkingResponse?.success === false) throw new Error(pendingThinkingResponse.error || "failed to apply queued thinking level");
@@ -7833,7 +7952,7 @@ function attachRpcToTab(tab, rpc) {
     scopedEvent = { ...scopedEvent, tabActivity: tabActivitySnapshot(tab), pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length };
     recordEvent(scopedEvent);
     for (const client of tab.sseClients) sendSse(client, scopedEvent);
-    if (event?.type === "compaction_end" && event.aborted !== true) void flushCompactionQueue(tab, event);
+    if (event?.type === "compaction_end") void flushCompactionQueue(tab, event);
     if (event?.type === "agent_settled") void restoreGitWorkflowGenerationProfile(tab);
   });
 }
@@ -7962,6 +8081,79 @@ function webuiSubagentsData() {
   };
 }
 
+function normalizeWebuiSubagentTranscriptValue(value, maxLength = WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH) {
+  return String(value ?? "").replace(/\r/g, "").slice(0, maxLength);
+}
+
+function normalizeWebuiSubagentTranscriptLines(value) {
+  return String(value ?? "").replace(/\r/g, "").split("\n").map((line) => line.slice(0, WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH));
+}
+
+function normalizeWebuiSubagentTranscript(value) {
+  const messages = [];
+  let remainingParts = WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT;
+  const rawMessages = Array.isArray(value) ? value : [];
+  for (let messageIndex = rawMessages.length - 1; messageIndex >= 0 && remainingParts > 0; messageIndex -= 1) {
+    const rawMessage = rawMessages[messageIndex];
+    const role = rawMessage?.role;
+    if (role !== "assistant" && role !== "toolResult") continue;
+    const rawContent = Array.isArray(rawMessage.content) ? rawMessage.content : [{ type: "text", text: rawMessage.content }];
+    const content = [];
+    for (let partIndex = rawContent.length - 1; partIndex >= 0 && remainingParts > 0; partIndex -= 1) {
+      const rawPart = rawContent[partIndex];
+      if (role === "assistant" && rawPart?.type === "toolCall") {
+        const name = normalizeWebuiSubagentText(rawPart.name || rawPart.toolName || rawPart.toolCall?.name, 120) || "tool";
+        let argumentsText = "{}";
+        try {
+          const argumentsValue = rawPart.arguments ?? rawPart.args ?? rawPart.input ?? rawPart.toolCall?.arguments ?? {};
+          argumentsText = normalizeWebuiSubagentTranscriptValue(typeof argumentsValue === "string" ? argumentsValue.replace(/\n/g, "\\n") : JSON.stringify(argumentsValue));
+        } catch {
+          // Keep the bounded placeholder when the helper received a cyclic value.
+        }
+        content.unshift({
+          type: "toolCall",
+          name,
+          arguments: argumentsText,
+          ...(normalizeWebuiSubagentText(rawPart.id || rawPart.toolCallId || rawPart.tool_call_id, 240) ? { id: normalizeWebuiSubagentText(rawPart.id || rawPart.toolCallId || rawPart.tool_call_id, 240) } : {}),
+        });
+        remainingParts -= 1;
+        continue;
+      }
+      const type = role === "assistant" && rawPart?.type === "thinking" ? "thinking" : "text";
+      if (rawPart?.type !== "text" && typeof rawPart !== "string" && type !== "thinking") continue;
+      const rawText = typeof rawPart === "string"
+        ? rawPart
+        : type === "thinking" ? rawPart.thinking ?? rawPart.text ?? rawPart.content : rawPart.text ?? rawPart.content;
+      if (typeof rawText !== "string") continue;
+      const property = type === "thinking" ? "thinking" : "text";
+      const lines = normalizeWebuiSubagentTranscriptLines(rawText);
+      for (let lineIndex = lines.length - 1; lineIndex >= 0 && remainingParts > 0; lineIndex -= 1) {
+        const line = lines[lineIndex];
+        if (line.trim().toLowerCase() === "(no output)") continue;
+        const previous = content[0];
+        if (previous?.type === type) previous[property] = `${line}\n${previous[property]}`;
+        else content.unshift({ type, [property]: line });
+        remainingParts -= 1;
+      }
+    }
+    if (!content.length) continue;
+    const timestamp = Number.isFinite(rawMessage.timestamp)
+      ? rawMessage.timestamp
+      : normalizeWebuiSubagentText(rawMessage.timestamp, 128) || undefined;
+    messages.unshift({
+      role,
+      ...(timestamp ? { timestamp } : {}),
+      ...(role === "toolResult" ? {
+        ...(normalizeWebuiSubagentText(rawMessage.toolCallId || rawMessage.tool_call_id, 240) ? { toolCallId: normalizeWebuiSubagentText(rawMessage.toolCallId || rawMessage.tool_call_id, 240) } : {}),
+        ...(normalizeWebuiSubagentText(rawMessage.toolName || rawMessage.name, 120) ? { toolName: normalizeWebuiSubagentText(rawMessage.toolName || rawMessage.name, 120) } : {}),
+        ...(rawMessage.isError === true ? { isError: true } : {}),
+      } : {}),
+      content,
+    });
+  }
+  return messages;
+}
+
 function normalizeWebuiSubagentOutput(value, selection) {
   if (!value || typeof value !== "object" || value.version !== 1) throw makeHttpError(502, "Invalid subagent output response from Web UI helper");
   const rawAgent = value.agent && typeof value.agent === "object" ? value.agent : {};
@@ -7973,6 +8165,7 @@ function normalizeWebuiSubagentOutput(value, selection) {
     args: normalizeWebuiSubagentText(entry?.args, 500),
     endMs: Number.isFinite(entry?.endMs) ? entry.endMs : undefined,
   })).filter((entry) => entry.tool);
+  const transcript = normalizeWebuiSubagentTranscript(rawAgent.transcript);
   return {
     version: 1,
     runId: normalizeWebuiSubagentText(value.runId, 160) || selection.run.id,
@@ -7995,6 +8188,7 @@ function normalizeWebuiSubagentOutput(value, selection) {
       tokens: Number.isFinite(rawAgent.tokens) ? rawAgent.tokens : undefined,
       recentTools,
       recentOutput,
+      transcript,
       error: normalizeWebuiSubagentText(rawAgent.error, 1000) || undefined,
     },
   };
@@ -9896,6 +10090,88 @@ async function getFileContentData(tab, requestedPath = "") {
   };
 }
 
+function aurReviewReportPathSegments(value = "") {
+  const requested = String(value || "").trim();
+  if (!requested || requested.length > 1024 || requested.includes("\0")) throw makeHttpError(400, "Report path must be a non-empty repo-root-relative path");
+  if (path.isAbsolute(requested) || path.win32.isAbsolute(requested) || requested.includes("\\")) {
+    throw makeHttpError(400, "Report path must be a repo-root-relative path");
+  }
+  const segments = requested.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw makeHttpError(400, "Report path cannot contain traversal segments");
+  }
+  return segments;
+}
+
+async function canonicalGitRootForTab(tab) {
+  const root = await getGitRoot(tab.cwd);
+  try {
+    return await realpath(root);
+  } catch {
+    throw makeHttpError(404, "Git repository root is no longer accessible");
+  }
+}
+
+async function readBoundedAurReviewReport(targetPath) {
+  const handle = await open(targetPath, "r");
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw makeHttpError(400, "Report path is not a regular file");
+    if (info.size > FILE_VIEWER_MAX_BYTES) throw makeHttpError(413, `Report is too large to open in WebUI (limit ${formatBytes(FILE_VIEWER_MAX_BYTES)})`);
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const remaining = FILE_VIEWER_MAX_BYTES + 1 - total;
+      if (remaining <= 0) throw makeHttpError(413, `Report is too large to open in WebUI (limit ${formatBytes(FILE_VIEWER_MAX_BYTES)})`);
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    return { buffer: Buffer.concat(chunks, total), info };
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+/** Read-only AUR-review report access rooted at the tab's canonical Git root. */
+async function getAurReviewReportContentData(tab, { path: requestedPath = "", repoRoot = "" } = {}) {
+  if (typeof repoRoot !== "string" || !repoRoot || repoRoot.includes("\0")) {
+    throw makeHttpError(400, "repoRoot is required for an AUR review report");
+  }
+  const root = await canonicalGitRootForTab(tab);
+  if (repoRoot !== root) throw makeHttpError(403, "Report repoRoot does not match this tab's canonical Git root");
+  const segments = aurReviewReportPathSegments(requestedPath);
+  let targetPath = root;
+  let info;
+  for (const [index, segment] of segments.entries()) {
+    targetPath = path.join(targetPath, segment);
+    try {
+      info = await lstat(targetPath);
+    } catch (error) {
+      throw makeHttpError(error?.code === "ENOENT" ? 404 : 400, `Report path not found: ${segments.join("/")}`);
+    }
+    if (info.isSymbolicLink()) throw makeHttpError(403, "Report path cannot contain symlinks");
+    if (index < segments.length - 1 && !info.isDirectory()) throw makeHttpError(400, "Report path contains a non-directory component");
+  }
+  if (!info?.isFile()) throw makeHttpError(400, "Report path is not a regular file");
+  const realTarget = await realpath(targetPath).catch(() => "");
+  if (!realTarget || !pathInside(root, realTarget)) throw makeHttpError(403, "Resolved report path escapes the canonical Git root");
+  const opened = await readBoundedAurReviewReport(targetPath);
+  assertTextFileBuffer(opened.buffer);
+  return {
+    root,
+    path: segments.join("/"),
+    name: path.basename(targetPath),
+    content: opened.buffer.toString("utf8"),
+    size: opened.buffer.length,
+    mtimeMs: opened.info.mtimeMs,
+    extension: path.extname(targetPath).toLowerCase(),
+    language: fileViewerLanguage(targetPath),
+  };
+}
+
 async function saveFileContentData(tab, body = {}) {
   if (typeof body.content !== "string") throw makeHttpError(400, "File content must be a string");
   if (body.content.includes("\0")) throw makeHttpError(400, "File content cannot contain null bytes");
@@ -11675,6 +11951,18 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/files/search" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await getFileSearchData(tab, url.searchParams.get("q") || url.searchParams.get("query") || "") });
+      return;
+    }
+
+    if (url.pathname === "/api/aur-review/report-content" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, {
+        ok: true,
+        data: await getAurReviewReportContentData(tab, {
+          path: url.searchParams.get("path") || "",
+          repoRoot: url.searchParams.get("repoRoot") || "",
+        }),
+      });
       return;
     }
 

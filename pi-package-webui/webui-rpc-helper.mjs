@@ -231,38 +231,120 @@ function subagentRecentTools(value) {
   })).filter((entry) => entry.tool);
 }
 
-function subagentTranscriptPartLines(part) {
-  if (!part || typeof part !== "object") return [];
-  if (part.type === "text" && typeof part.text === "string") return part.text.split(/\r?\n/);
-  if (part.type === "toolCall") {
-    const name = subagentText(part.name, 120) || "tool";
-    let args = "";
-    try {
-      args = typeof part.arguments === "string" ? part.arguments : JSON.stringify(part.arguments || {});
-    } catch {
-      args = "";
-    }
-    return [`▶ ${name}${args && args !== "{}" ? ` ${args}` : ""}`];
+function subagentTranscriptText(value) {
+  return String(value ?? "").replace(/\r/g, "").slice(0, SUBAGENT_OUTPUT_LINE_LENGTH);
+}
+
+function subagentTranscriptTextLines(value) {
+  return String(value ?? "").replace(/\r/g, "").split("\n").map((line) => line.slice(0, SUBAGENT_OUTPUT_LINE_LENGTH));
+}
+
+function subagentTranscriptToolArguments(part) {
+  const value = part?.arguments ?? part?.args ?? part?.input ?? part?.toolCall?.arguments ?? {};
+  try {
+    return subagentTranscriptText(typeof value === "string" ? value : JSON.stringify(value));
+  } catch {
+    return "{}";
   }
-  return [];
+}
+
+function subagentTranscriptMessageCandidates(message, timestamp, sourceId) {
+  const candidates = [];
+  const addText = (type, value, partIndex, output = type === "text") => {
+    if (typeof value !== "string") return;
+    for (const line of subagentTranscriptTextLines(value)) {
+      if (line.trim().toLowerCase() === "(no output)") continue;
+      candidates.push({
+        sourceId,
+        role: message.role,
+        timestamp,
+        toolCallId: subagentText(message.toolCallId || message.tool_call_id, 240),
+        toolName: subagentText(message.toolName || message.name, 120),
+        isError: message.isError === true,
+        partIndex,
+        part: type === "thinking" ? { type, thinking: line } : { type, text: line },
+        output: output ? line : null,
+      });
+    }
+  };
+  const content = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }];
+  for (let partIndex = 0; partIndex < content.length; partIndex += 1) {
+    const part = content[partIndex];
+    if (message.role === "assistant" && part?.type === "thinking") {
+      addText("thinking", part.thinking ?? part.text ?? part.content, partIndex, false);
+    } else if (message.role === "assistant" && part?.type === "toolCall") {
+      const name = subagentText(part.name || part.toolName || part.toolCall?.name, 120) || "tool";
+      const argumentsText = subagentTranscriptToolArguments(part);
+      candidates.push({
+        sourceId,
+        role: message.role,
+        timestamp,
+        partIndex,
+        part: {
+          type: "toolCall",
+          name,
+          arguments: argumentsText,
+          ...(subagentText(part.id || part.toolCallId || part.tool_call_id, 240) ? { id: subagentText(part.id || part.toolCallId || part.tool_call_id, 240) } : {}),
+        },
+        output: `▶ ${name}${argumentsText && argumentsText !== "{}" ? ` ${argumentsText}` : ""}`,
+      });
+    } else if (part?.type === "text" || typeof part === "string") {
+      addText("text", typeof part === "string" ? part : part.text ?? part.content, partIndex);
+    }
+  }
+  return candidates;
+}
+
+function subagentTranscriptMessages(candidates) {
+  const messages = [];
+  let current = null;
+  for (const candidate of candidates) {
+    if (!current || current.sourceId !== candidate.sourceId) {
+      current = {
+        sourceId: candidate.sourceId,
+        role: candidate.role,
+        ...(candidate.timestamp ? { timestamp: candidate.timestamp } : {}),
+        ...(candidate.role === "toolResult" ? {
+          ...(candidate.toolCallId ? { toolCallId: candidate.toolCallId } : {}),
+          ...(candidate.toolName ? { toolName: candidate.toolName } : {}),
+          ...(candidate.isError ? { isError: true } : {}),
+        } : {}),
+        content: [],
+      };
+      messages.push(current);
+    }
+    const previous = current.content.at(-1);
+    if (previous?._subagentPartIndex === candidate.partIndex && previous.type === candidate.part.type && (candidate.part.type === "text" || candidate.part.type === "thinking")) {
+      const property = candidate.part.type === "thinking" ? "thinking" : "text";
+      previous[property] += `\n${candidate.part[property]}`;
+      continue;
+    }
+    current.content.push({ ...candidate.part, _subagentPartIndex: candidate.partIndex });
+  }
+  return messages.map(({ sourceId: _sourceId, content, ...message }) => ({
+    ...message,
+    content: content.map(({ _subagentPartIndex, ...part }) => part),
+  }));
 }
 
 function subagentTranscriptOutput(sessionFile) {
+  const empty = { recentOutput: [], transcript: [] };
   const file = String(sessionFile || "");
-  if (!file || !path.isAbsolute(file) || path.extname(file) !== ".jsonl") return [];
+  if (!file || !path.isAbsolute(file) || path.extname(file) !== ".jsonl") return empty;
   let fd;
   try {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
-    if (size <= 0) return [];
+    if (size <= 0) return empty;
     const length = Math.min(size, SUBAGENT_TRANSCRIPT_TAIL_BYTES);
     const start = size - length;
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(fd, buffer, 0, length, start);
     const rawLines = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/);
     if (start > 0) rawLines.shift();
-    const output = [];
-    for (const rawLine of rawLines) {
+    const candidates = [];
+    for (let entryIndex = 0; entryIndex < rawLines.length; entryIndex += 1) {
+      const rawLine = rawLines[entryIndex];
       if (!rawLine.trim()) continue;
       let entry;
       try {
@@ -272,16 +354,15 @@ function subagentTranscriptOutput(sessionFile) {
       }
       const message = entry?.type === "message" ? entry.message : entry?.message?.role ? entry.message : null;
       if (!message || !["assistant", "toolResult"].includes(message.role)) continue;
-      for (const part of Array.isArray(message.content) ? message.content : []) {
-        for (const line of subagentTranscriptPartLines(part)) {
-          if (line.trim().toLowerCase() === "(no output)") continue;
-          output.push(line);
-        }
-      }
+      candidates.push(...subagentTranscriptMessageCandidates(message, entry.timestamp, entryIndex));
     }
-    return subagentOutputLines(output);
+    const boundedCandidates = candidates.slice(-SUBAGENT_OUTPUT_LINE_LIMIT);
+    return {
+      recentOutput: subagentOutputLines(boundedCandidates.flatMap((candidate) => candidate.output === null ? [] : [candidate.output])),
+      transcript: subagentTranscriptMessages(boundedCandidates),
+    };
   } catch {
-    return [];
+    return empty;
   } finally {
     if (fd !== undefined) {
       try { closeSync(fd); } catch { /* Best-effort close for live session tails. */ }
@@ -535,6 +616,7 @@ export default function webuiRpcHelper(pi) {
         tokens: Number.isFinite(patch.tokens) ? patch.tokens : Number.isFinite(agent.tokens) ? agent.tokens : undefined,
         recentTools: subagentRecentTools(patch.recentTools || agent.recentTools),
         recentOutput: subagentOutputLines(patch.recentOutput || agent.recentOutput),
+        transcript: Array.isArray(patch.transcript) ? patch.transcript : [],
         error: subagentText(patch.error, 1000) || undefined,
       },
     };
@@ -567,7 +649,8 @@ export default function webuiRpcHelper(pi) {
       const transcriptOutput = subagentTranscriptOutput(step.sessionFile || (steps.length === 1 ? status.sessionFile : undefined));
       return subagentOutputSnapshotFromAgent(run, agent, {
         ...step,
-        recentOutput: transcriptOutput.length ? transcriptOutput : step.recentOutput,
+        recentOutput: transcriptOutput.recentOutput.length ? transcriptOutput.recentOutput : step.recentOutput,
+        transcript: transcriptOutput.transcript,
         status: step.status || status.state,
         updatedAt: step.lastActivityAt || status.lastUpdate,
         tokens: Number.isFinite(step.tokens?.total) ? step.tokens.total : step.tokens,

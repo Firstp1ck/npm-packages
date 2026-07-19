@@ -4,9 +4,11 @@
 import { createInterface } from "node:readline";
 
 const COMPACTION_TRIGGER = "__pi_webui_test_start_compaction__";
+const ABORTED_COMPACTION_TRIGGER = "__pi_webui_test_start_aborted_compaction__";
 
 let isCompacting = false;
 let compactionTimer = null;
+let compactionWillAbort = false;
 const received = [];
 
 function respond(payload) {
@@ -37,18 +39,21 @@ function statePayload() {
 function finishCompaction() {
   compactionTimer = null;
   isCompacting = false;
+  const aborted = compactionWillAbort;
+  compactionWillAbort = false;
   emit({
     type: "compaction_end",
     reason: "test",
-    result: { summary: "fake compaction summary", tokensBefore: 1000, estimatedTokensAfter: 100 },
-    aborted: false,
+    result: aborted ? null : { summary: "fake compaction summary", tokensBefore: 1000, estimatedTokensAfter: 100 },
+    aborted,
     willRetry: false,
   });
 }
 
-function startCompaction() {
+function startCompaction({ aborted = false } = {}) {
   if (compactionTimer) clearTimeout(compactionTimer);
   isCompacting = true;
+  compactionWillAbort = aborted;
   emit({ type: "compaction_start", reason: "test" });
   compactionTimer = setTimeout(finishCompaction, 1500);
 }
@@ -91,8 +96,8 @@ rl.on("line", (line) => {
       return;
     case "prompt": {
       const message = String(command.message || "");
-      if (message === COMPACTION_TRIGGER) {
-        startCompaction();
+      if (message === COMPACTION_TRIGGER || message === ABORTED_COMPACTION_TRIGGER) {
+        startCompaction({ aborted: message === ABORTED_COMPACTION_TRIGGER });
         respond({ ...base, data: { compacting: true } });
         return;
       }

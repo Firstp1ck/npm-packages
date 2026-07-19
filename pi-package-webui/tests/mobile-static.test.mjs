@@ -26,6 +26,13 @@ const manifest = JSON.parse(manifestRaw);
 const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
 const helper = await readFile(join(root, "webui-rpc-helper.mjs"), "utf8");
 const codexAuth = await readFile(join(root, "lib", "codex-usage-auth.mjs"), "utf8");
+
+function appFunctionSource(name, nextName) {
+  const start = app.indexOf(`function ${name}(`);
+  const end = app.indexOf(`\nfunction ${nextName}(`, start);
+  assert.ok(start >= 0 && end > start, `${name} should remain a standalone frontend helper`);
+  return app.slice(start, end);
+}
 const nativeExportPayload = await readFile(join(root, "lib", "native-export-payload.mjs"), "utf8");
 const companionDependencies = {
   "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
@@ -709,8 +716,30 @@ assert.doesNotMatch(app, /subagentOverlayDialog\.showModal|elements\.subagentOve
 assert.match(app, /api\(`\/api\/subagents\/output\?\$\{query\}`, \{ scoped: false \}\)/, "subagent overlay should fetch selected live output from the owning tab");
 assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
 assert.match(app, /function createMessageBubble\(message,[\s\S]*renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \}\)[\s\S]*function appendMessage\(message, options = \{\}\)[\s\S]*createMessageBubble\(message, options\)/, "main transcript output should use the reusable message bubble renderer");
-assert.match(app, /function renderSubagentOverlayWidget\(\)[\s\S]*createMessageBubble\(\{[\s\S]*role: "assistant"[\s\S]*content: shownText[\s\S]*\}, \{ streaming: running, transient: true \}\)[\s\S]*subagent-overlay-message/, "subagent output should use the same assistant Markdown message renderer as the main transcript");
-assert.match(app, /function appendSubagentOutputWaitingIndicator\(parent\)[\s\S]*message runIndicator run-indicator-message streaming subagent-output-waiting[\s\S]*subagent-output-waiting-dot[\s\S]*if \(running && agent\.currentTool\) appendSubagentOutputWaitingIndicator\(output\)/, "subagent widget should render one main-transcript-style waiting indicator instead of transcript spam");
+const subagentTranscriptMessagesSource = appFunctionSource("subagentOverlayTranscriptMessages", "subagentOverlayToolArguments");
+assert.ok(subagentTranscriptMessagesSource.includes("message.role === \"assistant\" || message.role === \"toolResult\""), "subagent overlays should retain structured assistant and tool-result entries");
+const subagentToolArgumentsSource = appFunctionSource("subagentOverlayToolArguments", "subagentOverlayTranscriptDisplayMessages");
+assert.ok(subagentToolArgumentsSource.includes("JSON.parse(value)"), "structured tool arguments should be restored for specialized tool renderers");
+const subagentDisplaySource = appFunctionSource("subagentOverlayTranscriptDisplayMessages", "subagentOverlayTranscriptOutputLines");
+assert.ok(subagentDisplaySource.includes("const toolResults = buildToolResultMap(messages);"), "subagent rendering should pair calls with the shared result lookup");
+assert.ok(subagentDisplaySource.includes("role: \"toolExecution\""), "paired subagent calls should use main-transcript toolExecution cards");
+assert.ok(subagentDisplaySource.includes("const result = toolResults.get(displayMessage.toolCallId) || null;") && subagentDisplaySource.includes("          result,"), "incomplete subagent tool calls should remain pending tool cards");
+assert.ok(subagentDisplaySource.includes("if (pairedToolCallIds.has(toolResultCallId(message))) continue;"), "paired tool results should not render as duplicate generic cards");
+const subagentAppendSource = appFunctionSource("appendSubagentOverlayTranscript", "subagentOverlayStateFacts");
+assert.ok(subagentAppendSource.includes("subagentOverlayTranscriptDisplayMessages(messages)"), "subagent bubbles should use the paired structured display sequence");
+assert.ok(subagentAppendSource.includes("createMessageBubble(displayMessage, { transient: true })"), "subagent bubbles should reuse the main message renderer");
+const thinkingVisibilitySource = appFunctionSource("setThinkingOutputVisible", "applyToolOutputExpansionToDom");
+assert.ok(thinkingVisibilitySource.includes("if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();"), "changing thinking visibility should rerender an open subagent transcript, including finished agents");
+const subagentCopySource = appFunctionSource("subagentOverlayTranscriptOutputLines", "subagentOverlayOutputLines");
+assert.ok(subagentCopySource.includes("messageCopyText(message)"), "global subagent copy should derive from the same structured bubble messages");
+const subagentOutputSource = appFunctionSource("subagentOverlayOutputLines", "subagentOverlayOutputText");
+assert.ok(subagentOutputSource.includes("if (transcriptMessages.length) return subagentOverlayTranscriptOutputLines(data);"), "global subagent copy should prefer structured transcript content over flattened recent output");
+const subagentEmptySource = appFunctionSource("subagentOverlayEmptyTranscriptText", "appendSubagentOutputWaitingIndicator");
+assert.ok(subagentEmptySource.includes("No visible output was captured."), "hidden or non-renderable structured output should have explicit fallback text");
+const subagentWidgetSource = appFunctionSource("renderSubagentOverlayWidget", "scheduleSubagentOverlayRefresh");
+assert.ok(subagentWidgetSource.includes("const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;"), "the widget should render a fallback instead of leaving structured-but-hidden output blank");
+assert.ok(subagentWidgetSource.includes("if (visibleFallbackText) {"), "the widget should append the nonblank fallback bubble");
+assert.ok(subagentWidgetSource.includes("if (running && (agent.currentTool || (hasStructuredTranscript && renderedTranscriptMessages === 0))) appendSubagentOutputWaitingIndicator(output);"), "subagent widgets should retain one waiting indicator while structured output is hidden or a tool is running");
 assert.match(app, /api\("\/api\/subagents", \{ scoped: false \}\)/, "frontend should refresh the cross-tab subagent overview");
 assert.match(app, /SUBAGENTS_ACTIVE_REFRESH_MS = 1500/, "running subagents should receive a fast live refresh cadence");
 assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*webuiSubagentsData\(\)/, "server should expose a cross-tab running-subagent endpoint");
@@ -718,7 +747,9 @@ assert.match(server, /url\.pathname === "\/api\/subagents\/output" && req\.metho
 assert.match(server, /rememberWebuiSubagentsStatusEvent\(tab, event\)/, "server should ingest the helper's structured subagent status without forwarding internal JSON to the browser footer");
 assert.match(helper, /SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request"/, "Web UI helper should use pi-subagents' stable status RPC");
 assert.match(helper, /case "subagent-output":[\s\S]*subagentOutputSnapshot\(payload\)/, "Web UI helper should return bounded live state and recent output for the selected child agent");
+assert.match(helper, /function subagentTranscriptOutput\(sessionFile\)[\s\S]*const empty = \{ recentOutput: \[\], transcript: \[\] \}[\s\S]*transcript: subagentTranscriptMessages\(boundedCandidates\)/, "subagent transcript extraction should return bounded structured entries alongside recentOutput");
 assert.match(helper, /line\.trim\(\)\.toLowerCase\(\) === "\(no output\)"/, "subagent transcript extraction should suppress empty tool-result markers");
+assert.match(server, /function normalizeWebuiSubagentTranscript\(value\)[\s\S]*remainingParts = WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT[\s\S]*const transcript = normalizeWebuiSubagentTranscript\(rawAgent\.transcript\)/, "server output normalization should preserve the structured transcript under the existing line limit");
 assert.match(helper, /SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started"[\s\S]*SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete"/, "Web UI helper should track async subagent lifecycle events");
 assert.match(helper, /pi\.on\("tool_execution_start"[\s\S]*event\.toolName !== "subagent"[\s\S]*pi\.on\("tool_execution_end"/, "Web UI helper should track foreground subagent executions");
 assert.match(app, /if \(normalized === "prolite"\) return "Usage";/, "Codex Prolite plan labels should display as Usage in the side panel");
@@ -904,7 +935,7 @@ assert.match(app, /window\.addEventListener\("storage"[\s\S]*OPTIONAL_FEATURES_S
 assert.match(app, /if \(key === "pi-remote-webui"\) return "remoteWebui"/, "optional feature handling should recognize Remote WebUI widget events without rendering them as overlays");
 assert.match(app, /REMOTE_WEBUI_CONTROLS_PAYLOAD_TYPE = "firstpick\.pi-package-remote-webui\.controls"/, "Remote WebUI package should announce browser controls through a package-owned status payload");
 assert.match(app, /function combineIdenticalDuplicateCommands\(commands\)[\s\S]*duplicateGroups[\s\S]*duplicateCount: group\.length/, "identical duplicate RPC commands should be combined into one visible command entry");
-assert.match(app, /if \(kind === "prompt" && attachments\.length === 0\) message = resolveRpcSlashCommandMessage\(message\)/, "manual slash prompts should resolve combined duplicate command aliases before reaching Pi RPC");
+assert.match(app, /if \(kind === "prompt" && attachments\.length === 0\) message = resolveRpcSlashCommandMessage\(message, \{ tabId: targetTabId \}\)/, "manual targeted slash prompts should resolve combined duplicate command aliases from their captured target tab before reaching Pi RPC");
 assert.match(app, /if \(!isOptionalFeatureEnabled\("todoProgressWidget"\)\) return String\(text \|\| ""\)/, "todo progress line stripping should only run when the todo feature is detected and enabled");
 assert.match(app, /const releasePrompt = detectedReleasePrompt && isOptionalFeatureEnabled\(detectedReleasePrompt\.featureId\) \? detectedReleasePrompt : null/, "release confirmation dialogs should use specialized rendering only when their release optional feature is enabled");
 assert.match(app, /case "webui_tab_reloaded":[\s\S]*resetOptionalFeatureAvailability\(\)/, "optional feature state should reset when the RPC tab reloads resources");
@@ -939,7 +970,7 @@ assert.match(css, /\.git-workflow-message-input-row \{[\s\S]*flex:\s*1 1 100%/, 
 assert.match(css, /\.git-workflow-actions button\[data-tooltip\]::after \{[\s\S]*content:\s*attr\(data-tooltip\)[\s\S]*white-space:\s*pre-line/, "guided git workflow action tooltips should render multiline step lists");
 assert.match(app, /function gitBranchNamePromptMessage\(\)[\s\S]*hasAvailableCommand\("git-branch-name"\)[\s\S]*return "\/git-branch-name"/, "guided git workflow should ask the agent to generate PR branch names when the prompt is available");
 assert.match(app, /async function loadGitWorkflowBranchName\([\s\S]*gitWorkflowRequest\("\/api\/git-workflow\/branch-name"/, "guided git workflow should load generated agent branch names before branch creation");
-assert.match(app, /async function createGitPrBranchWithSuggestion\([\s\S]*prompt\("New PR branch worktree name[\s\S]*gitWorkflowRequest\("\/api\/git-workflow\/branch", \{ body: \{ branch, sessionMode: "fork-current", openTab: true \}/, "guided git workflow should confirm an agent-suggested branch before opening its worktree");
+assert.match(app, /async function createGitPrBranchWithSuggestion\([\s\S]*prompt\("New PR branch worktree name[\s\S]*assertGuidedGitStagedContentBinding\(tabId, "PR worktree creation"\)[\s\S]*gitWorkflowRequest\("\/api\/git-workflow\/branch", \{ body: \{ branch, sessionMode: "fork-current", openTab: true, [\s\S]*expectedStagedContentHash/, "guided git workflow should confirm an agent-suggested branch and verify approved staged content before opening its worktree");
 assert.match(app, /function syncGitWorkflowWorktreeTabs\(result\)[\s\S]*Array\.isArray\(result\?\.tabs\)[\s\S]*applyTabMetadata\(result\.tab\)/, "guided git workflow should merge worktree tab metadata returned by the branch endpoint");
 assert.match(app, /const targetTabId = result\.tab\?\.id[\s\S]*setGitWorkflow\(nextState, \{ tabId: targetTabId \}\)[\s\S]*switchTab\(targetTabId\)/, "guided git workflow should transfer PR state to the opened worktree tab");
 assert.match(app, /addGitWorkflowAction\("Push and Create PR", \(\) => pushAndCreatePrGitWorkflow\(\), "primary", false\)/, "guided git workflow should replace push with Push and Create PR in PR mode");
@@ -954,7 +985,7 @@ assert.match(server, /async function startGitWorkflowGeneration\([\s\S]*set_mode
 assert.match(server, /event\?\.type === "agent_settled"[\s\S]*restoreGitWorkflowGenerationProfile\(tab\)/, "server should restore the active tab model and effort after generation settles");
 assert.match(server, /case "\/api\/git-workflow\/branch-name":[\s\S]*readGitWorkflowBranchName\(cwd\)/, "server should expose generated branch-name file loading for the guided PR workflow");
 assert.match(server, /case "\/api\/git-workflow\/branch":[\s\S]*createGitWorkflowBranchWorktree\(tab, body\)/, "server should route guided PR branch creation through worktree tabs");
-assert.match(server, /async function createGitWorkflowBranchWorktree\(tab, body = \{\}\)[\s\S]*snapshotGitWorkflowBranchState\(root, tab\.cwd\)[\s\S]*applyGitWorkflowBranchStateToWorktree\(snapshot, worktreePath\)[\s\S]*openWorktreeResultForTab\(tab, createdResult/, "guided PR worktree creation should copy staged state before opening the worktree tab");
+assert.match(server, /async function createGitWorkflowBranchWorktree\(tab, body = \{\}\)[\s\S]*expectedStagedContentHashFromBody\(body\)[\s\S]*snapshotGitWorkflowBranchState\(root, tab\.cwd, expectedStagedContentHash\)[\s\S]*applyGitWorkflowBranchStateToWorktree\(snapshot, worktreePath\)[\s\S]*openWorktreeResultForTab\(tab, createdResult/, "guided PR worktree creation should verify and copy exact staged state before opening the worktree tab");
 assert.match(server, /case "\/api\/git-workflow\/create-pr":[\s\S]*runGitHubWorkflowCommand\(\["pr", "create"/, "server should create PRs with the GitHub CLI after confirmation");
 assert.doesNotMatch(app, /gitWorkflowVisibleTabId|Workflow belongs to/, "guided git workflow should not pin or show workflows outside their owning terminal tab");
 assert.match(app, /function renderReleaseNpmOutputWidget\(\)/, "release-npm live output should use a specialized Web UI renderer");
@@ -1601,6 +1632,9 @@ for (const [name, range] of Object.entries(companionDependencies)) {
 }
 assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
 assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-natural-conversation"], undefined, "webui package should not optionally depend on the standalone Natural Conversation package");
+assert.equal(pkg.optionalDependencies?.["@firstpick/pi-extension-aur-review"], undefined, "webui package should not reference the unpublished aur-review extension");
+assert.equal(lock.packages?.["node_modules/@firstpick/pi-extension-aur-review"], undefined, "package lock should not retain an unpublished aur-review tarball");
+assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-extension-aur-review")), "webui Pi manifest should not bundle the unpublished aur-review path");
 assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-package-natural-conversation")), "webui Pi manifest should not load Natural Conversation directly; /talk must come from the standalone package");
 assert.ok(pkg.pi?.extensions?.includes("./index.ts"), "webui Pi manifest should load its own extension");
 for (const extensionPath of [
