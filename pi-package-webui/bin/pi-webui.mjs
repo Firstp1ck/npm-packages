@@ -154,6 +154,9 @@ const ATTACHMENT_UPLOAD_MAX_FILE_BYTES = 64 * 1024 * 1024;
 const ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const INLINE_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const INLINE_IMAGE_TOTAL_MAX_BYTES = 16 * 1024 * 1024;
+// Keep enough headroom for base64-encoded inline images plus their RPC envelope.
+// Pi RPC output is JSONL, so this caps one physical line rather than a response.
+const PI_RPC_JSONL_LINE_MAX_BYTES = 32 * 1024 * 1024;
 const RPC_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_CHOICES = ["sse", "websocket", "websocket-cached", "auto"];
@@ -635,6 +638,47 @@ async function installedPiReleaseNotes() {
   return piReleaseNotesCache;
 }
 
+const stderrMirrorFailureListeners = new Set();
+const stderrMirrorErrorHandlers = new WeakSet();
+
+function ensureStderrMirrorErrorHandler(stream) {
+  if (stderrMirrorErrorHandlers.has(stream)) return;
+  stderrMirrorErrorHandlers.add(stream);
+  stream.on("error", (error) => {
+    // Do not log from this handler: stderr is the failing sink and recursive
+    // diagnostics can otherwise terminate the process. Active writers report
+    // the failure through their normal Web UI event path instead.
+    for (const reportFailure of [...stderrMirrorFailureListeners]) reportFailure(error);
+  });
+}
+
+function mirrorPiStderr(text, onFailure) {
+  const stream = process.stderr;
+  let reported = false;
+  const reportFailure = (error) => {
+    if (reported) return;
+    reported = true;
+    stderrMirrorFailureListeners.delete(reportFailure);
+    onFailure(error);
+  };
+
+  if (!stream?.writable || stream.destroyed || stream.writableEnded) {
+    reportFailure(new Error("Web UI stderr sink is not writable"));
+    return;
+  }
+
+  ensureStderrMirrorErrorHandler(stream);
+  stderrMirrorFailureListeners.add(reportFailure);
+  try {
+    stream.write(text, (error) => {
+      stderrMirrorFailureListeners.delete(reportFailure);
+      if (error) reportFailure(error);
+    });
+  } catch (error) {
+    reportFailure(error);
+  }
+}
+
 class PiRpcProcess {
   constructor({ command, args, displayCommand, cwd, env = process.env }) {
     this.command = command;
@@ -646,6 +690,16 @@ class PiRpcProcess {
     this.pending = new Map();
     this.listeners = new Set();
     this.startedAt = new Date().toISOString();
+    this.stderrMirrorFailureReported = false;
+  }
+
+  reportStderrMirrorFailure(error) {
+    if (this.stderrMirrorFailureReported) return;
+    this.stderrMirrorFailureReported = true;
+    this.emit({
+      type: "pi_stderr_sink_error",
+      error: `Pi RPC stderr could not be mirrored to the Web UI server log: ${sanitizeError(error)}`,
+    });
   }
 
   start() {
@@ -670,8 +724,10 @@ class PiRpcProcess {
     this.attachJsonlReader(this.child.stdout, (line) => this.handleStdoutLine(line));
     this.attachTextReader(this.child.stderr, (text) => {
       if (text.length > 0) {
-        process.stderr.write(text);
+        // Publish before attempting the optional terminal mirror so a closed
+        // stderr sink cannot hide Pi diagnostics from browser clients.
         this.emit({ type: "pi_stderr", text });
+        mirrorPiStderr(text, (error) => this.reportStderrMirrorFailure(error));
       }
     });
 
@@ -700,24 +756,56 @@ class PiRpcProcess {
   attachJsonlReader(stream, onLine) {
     const decoder = new StringDecoder("utf8");
     let buffer = "";
+    let bufferBytes = 0;
+    let discardingOversizedLine = false;
 
-    stream.on("data", (chunk) => {
-      buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
-      while (true) {
-        const newlineIndex = buffer.indexOf("\n");
-        if (newlineIndex === -1) break;
-        let line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
+    const emitOversizedLine = () => this.emit({
+      type: "pi_stdout_line_too_large",
+      error: `Discarded a Pi RPC JSONL line larger than ${PI_RPC_JSONL_LINE_MAX_BYTES} bytes`,
+      maxBytes: PI_RPC_JSONL_LINE_MAX_BYTES,
+    });
+    const consume = (chunk) => {
+      let input = chunk;
+      while (input.length > 0) {
+        if (discardingOversizedLine) {
+          const newlineIndex = input.indexOf("\n");
+          if (newlineIndex === -1) return;
+          discardingOversizedLine = false;
+          input = input.slice(newlineIndex + 1);
+          continue;
+        }
+
+        const newlineIndex = input.indexOf("\n");
+        const segment = newlineIndex === -1 ? input : input.slice(0, newlineIndex);
+        const segmentBytes = Buffer.byteLength(segment);
+        if (bufferBytes + segmentBytes > PI_RPC_JSONL_LINE_MAX_BYTES) {
+          buffer = "";
+          bufferBytes = 0;
+          emitOversizedLine();
+          if (newlineIndex === -1) {
+            discardingOversizedLine = true;
+            return;
+          }
+          input = input.slice(newlineIndex + 1);
+          continue;
+        }
+
+        buffer += segment;
+        bufferBytes += segmentBytes;
+        if (newlineIndex === -1) return;
+        let line = buffer;
+        buffer = "";
+        bufferBytes = 0;
         if (line.endsWith("\r")) line = line.slice(0, -1);
         onLine(line);
+        input = input.slice(newlineIndex + 1);
       }
-    });
+    };
 
+    stream.on("data", (chunk) => consume(typeof chunk === "string" ? chunk : decoder.write(chunk)));
     stream.on("end", () => {
-      buffer += decoder.end();
-      if (buffer.length > 0) {
-        onLine(buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer);
-      }
+      consume(decoder.end());
+      if (!discardingOversizedLine && buffer.length > 0) onLine(buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer);
     });
   }
 

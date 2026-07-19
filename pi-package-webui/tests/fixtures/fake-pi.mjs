@@ -305,6 +305,31 @@ function handleDocumentArtifactFixturePrompt(command, base) {
   return true;
 }
 
+function handleTransportFixturePrompt(command, base) {
+  const message = String(command.message || "").trim();
+  if (message === "fixture stderr diagnostic") {
+    process.stderr.write("fixture Pi RPC stderr diagnostic\n");
+    respond({ ...base, data: { output: "fake stderr diagnostic emitted" } });
+    return true;
+  }
+  if (message === "fixture oversized jsonl") {
+    const bytes = Math.max(0, Math.min(64 * 1024 * 1024, Number.parseInt(process.env.FAKE_PI_OVERSIZED_JSONL_BYTES || "0", 10) || 0));
+    if (bytes === 0) {
+      respond({ ...base, success: false, error: "FAKE_PI_OVERSIZED_JSONL_BYTES must be configured" });
+      return true;
+    }
+    // Intentionally leave this physical JSONL line unterminated long enough
+    // for the server to switch into discard mode before sending a valid reply.
+    process.stdout.write("x".repeat(bytes));
+    setTimeout(() => {
+      process.stdout.write("\n");
+      respond({ ...base, data: { output: "fake oversized JSONL line discarded" } });
+    }, 50);
+    return true;
+  }
+  return false;
+}
+
 function handleSubagentFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
   if (message !== "fixture subagents running" && message !== "fixture subagents clear") return false;
@@ -467,6 +492,7 @@ rl.on("line", (line) => {
     }
     case "prompt":
       if (handleWebuiHelperPrompt(command, base)) return;
+      if (handleTransportFixturePrompt(command, base)) return;
       if (handleSubagentFixturePrompt(command, base)) return;
       if (handleDocumentArtifactFixturePrompt(command, base)) return;
       if (handleWorkflowFixturePrompt(command, base)) return;

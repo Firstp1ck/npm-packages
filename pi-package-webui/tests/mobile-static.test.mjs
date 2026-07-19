@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -711,7 +712,7 @@ assert.match(
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents by terminal and session");
 assert.match(app, /function openSubagentOverlay\(tab, run, agent\)[\s\S]*activeTabId !== tab\.tabId[\s\S]*await switchTab\(tab\.tabId\)[\s\S]*renderWidgets\(\)/, "clicking an agent should switch to its owning tab before rendering the live widget");
-assert.match(app, /function renderWidgets\(\)[\s\S]*renderAppRunnerWidget\(\)[\s\S]*renderSubagentOverlayWidget\(\)/, "subagent output should render in the shared non-blocking top widget area after App Runner");
+assert.match(app, /function renderWidgets\(\)[\s\S]*renderAppRunnerWidget\(\)[\s\S]*renderSubagentOverlayWidgetSafely\(\)/, "subagent output should render in the shared non-blocking top widget area after App Runner");
 assert.doesNotMatch(app, /subagentOverlayDialog\.showModal|elements\.subagentOverlayDialog/, "subagent output should not open or depend on a modal dialog");
 assert.match(app, /api\(`\/api\/subagents\/output\?\$\{query\}`, \{ scoped: false \}\)/, "subagent overlay should fetch selected live output from the owning tab");
 assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
@@ -736,6 +737,18 @@ const subagentOutputSource = appFunctionSource("subagentOverlayOutputLines", "su
 assert.ok(subagentOutputSource.includes("if (transcriptMessages.length) return subagentOverlayTranscriptOutputLines(data);"), "global subagent copy should prefer structured transcript content over flattened recent output");
 const subagentEmptySource = appFunctionSource("subagentOverlayEmptyTranscriptText", "appendSubagentOutputWaitingIndicator");
 assert.ok(subagentEmptySource.includes("No visible output was captured."), "hidden or non-renderable structured output should have explicit fallback text");
+const subagentRenderErrorSource = appFunctionSource("renderSubagentOverlayErrorWidget", "renderSubagentOverlayWidgetSafely");
+assert.ok(subagentRenderErrorSource.includes("Subagent output unavailable"), "a failed subagent renderer should show a minimal recoverable widget");
+assert.ok(subagentRenderErrorSource.includes("appRunnerActionButton(\"Close\", closeSubagentOverlay"), "the recoverable subagent renderer error widget should provide a Close action");
+assert.doesNotMatch(subagentRenderErrorSource, /addEvent\(/, "renderer failures should not create repeated event-log entries while a refresh retries");
+const subagentSafeRenderSource = appFunctionSource("renderSubagentOverlayWidgetSafely", "renderSubagentOverlayWidget");
+assert.match(subagentSafeRenderSource, /try \{[\s\S]*renderSubagentOverlayWidget\(\)[\s\S]*\} catch \{[\s\S]*renderSubagentOverlayErrorWidget\(\)/, "subagent renderer exceptions should be isolated from the shared widget render pass");
+const rendererFallbackSentinel = {};
+const rendererContainmentResult = vm.runInNewContext(`${subagentSafeRenderSource}\nrenderSubagentOverlayWidgetSafely();`, {
+  renderSubagentOverlayWidget() { throw new Error("fixture renderer failure"); },
+  renderSubagentOverlayErrorWidget() { return rendererFallbackSentinel; },
+});
+assert.equal(rendererContainmentResult, rendererFallbackSentinel, "subagent renderer failures should return the recoverable fallback widget");
 const subagentWidgetSource = appFunctionSource("renderSubagentOverlayWidget", "scheduleSubagentOverlayRefresh");
 assert.ok(subagentWidgetSource.includes("const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;"), "the widget should render a fallback instead of leaving structured-but-hidden output blank");
 assert.ok(subagentWidgetSource.includes("if (visibleFallbackText) {"), "the widget should append the nonblank fallback bubble");
@@ -745,6 +758,9 @@ assert.match(app, /SUBAGENTS_ACTIVE_REFRESH_MS = 1500/, "running subagents shoul
 assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*webuiSubagentsData\(\)/, "server should expose a cross-tab running-subagent endpoint");
 assert.match(server, /url\.pathname === "\/api\/subagents\/output" && req\.method === "GET"[\s\S]*webuiSubagentOutputData\(tab, runId, agentId\)/, "server should expose selected running subagent output only through its owning tab");
 assert.match(server, /rememberWebuiSubagentsStatusEvent\(tab, event\)/, "server should ingest the helper's structured subagent status without forwarding internal JSON to the browser footer");
+assert.match(server, /PI_RPC_JSONL_LINE_MAX_BYTES = 32 \* 1024 \* 1024/, "Pi RPC JSONL parsing should use an explicit line-size limit with inline-image headroom");
+assert.match(server, /function ensureStderrMirrorErrorHandler\(stream\)[\s\S]*stream\.on\("error"/, "Pi stderr mirroring should contain asynchronous closed-sink failures");
+assert.match(server, /type: "pi_stdout_line_too_large"[\s\S]*discardingOversizedLine/, "oversized unterminated Pi RPC lines should be discarded until their newline");
 assert.match(helper, /SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request"/, "Web UI helper should use pi-subagents' stable status RPC");
 assert.match(helper, /case "subagent-output":[\s\S]*subagentOutputSnapshot\(payload\)/, "Web UI helper should return bounded live state and recent output for the selected child agent");
 assert.match(helper, /function subagentTranscriptOutput\(sessionFile\)[\s\S]*const empty = \{ recentOutput: \[\], transcript: \[\] \}[\s\S]*transcript: subagentTranscriptMessages\(boundedCandidates\)/, "subagent transcript extraction should return bounded structured entries alongside recentOutput");

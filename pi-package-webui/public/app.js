@@ -14466,6 +14466,33 @@ function subagentOverlayMeaningfulSignature() {
   });
 }
 
+function renderSubagentOverlayErrorWidget() {
+  const widget = make("section", "widget release-npm-widget app-runner-widget subagent-overlay-widget app-runner-log-widget");
+  widget.setAttribute("aria-label", "Subagent output rendering error");
+  const header = make("div", "release-npm-header");
+  const titleWrap = make("div", "release-npm-title-wrap");
+  titleWrap.append(make("strong", "release-npm-title", "Subagent output unavailable"));
+  header.append(titleWrap);
+  const body = make("div", "message-body");
+  appendText(body, "The live subagent output could not be rendered. Close this panel and reopen it to retry.");
+  const controls = make("div", "release-npm-controls subagent-overlay-output-controls");
+  const actions = make("div", "app-runner-output-actions");
+  actions.append(appRunnerActionButton("Close", closeSubagentOverlay, "subagent-overlay-close-action"));
+  controls.append(actions);
+  widget.append(header, body, controls);
+  return widget;
+}
+
+function renderSubagentOverlayWidgetSafely() {
+  try {
+    return renderSubagentOverlayWidget();
+  } catch {
+    // Keep a faulty child transcript from preventing all other widgets from
+    // rendering. The recoverable panel below replaces repeated event logging.
+    return renderSubagentOverlayErrorWidget();
+  }
+}
+
 function renderSubagentOverlayWidget() {
   const selection = subagentOverlaySelection;
   if (!selection || selection.tabId !== activeTabId) return null;
@@ -17607,7 +17634,7 @@ function renderWidgets() {
   if (workflowSubprocessWidget) elements.widgetArea.append(workflowSubprocessWidget);
   const appRunnerWidget = renderAppRunnerWidget();
   if (appRunnerWidget) elements.widgetArea.append(appRunnerWidget);
-  const subagentWidget = renderSubagentOverlayWidget();
+  const subagentWidget = renderSubagentOverlayWidgetSafely();
   if (subagentWidget) elements.widgetArea.append(subagentWidget);
   const btwWidget = renderBtwOutputWidget();
   if (btwWidget) elements.widgetArea.append(btwWidget);
@@ -27975,6 +28002,10 @@ function handleEvent(event) {
       break;
     case "pi_stderr":
       addEvent(event.text.trim(), "warn");
+      break;
+    case "pi_stderr_sink_error":
+    case "pi_stdout_line_too_large":
+      addEvent(event.error || "Pi RPC transport diagnostic", "error");
       break;
     case "queue_update":
       renderQueue(event);
