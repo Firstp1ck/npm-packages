@@ -2032,6 +2032,33 @@ body.embedded-split .side-panel-backdrop {
 .subagents-help code {
   color: var(--ctp-teal);
 }
+.subagent-open-mode-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.32rem 0.52rem;
+  align-items: center;
+  margin: 0 0 0.55rem;
+  padding: 0.5rem 0.56rem;
+  border: 1px solid rgba(137, 180, 250, 0.20);
+  border-radius: 0.68rem;
+  background: rgba(137, 180, 250, 0.06);
+}
+.subagent-open-mode-field label {
+  color: rgba(var(--ctp-text-rgb), 0.9);
+  font-size: var(--text-xs);
+  font-weight: 850;
+}
+.subagent-open-mode-field select {
+  min-width: 8.4rem;
+  min-height: 2.2rem;
+  padding-top: 0.32rem;
+  padding-bottom: 0.32rem;
+  font-size: var(--text-xs);
+}
+.subagent-open-mode-field span {
+  grid-column: 1 / -1;
+  font-size: var(--text-xs);
+}
 .subagents-status {
   margin: 0 0 0.48rem;
   font-size: var(--text-xs);
@@ -2938,6 +2965,30 @@ body.embedded-split .side-panel-backdrop {
   text-transform: uppercase;
   animation: terminal-tab-app-runner-pulse 1.5s ease-in-out infinite;
 }
+.terminal-tab-subagent-indicator {
+  flex: 0 0 auto;
+  padding: 0.04rem 0.36rem;
+  border: 1px solid rgba(166, 227, 161, 0.48);
+  border-radius: 999px;
+  color: var(--ctp-green);
+  background: rgba(166, 227, 161, 0.13);
+  box-shadow: 0 0 0.7rem rgba(166, 227, 161, 0.24);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: var(--text-xs);
+  font-weight: 900;
+  line-height: 1.12;
+  text-transform: uppercase;
+}
+.terminal-tab-subagent {
+  border-color: rgba(166, 227, 161, 0.42);
+  background:
+    linear-gradient(120deg, rgba(166, 227, 161, 0.10), rgba(137, 180, 250, 0.08)),
+    rgba(var(--ctp-crust-rgb), 0.58);
+}
+.terminal-tab-subagent.active {
+  border-color: rgba(166, 227, 161, 0.72);
+  box-shadow: 0 0 1.1rem rgba(166, 227, 161, 0.22), inset 0 1px 0 rgba(255,255,255,0.05);
+}
 .terminal-tab-workflow-indicator {
   flex: 0 0 auto;
   padding: 0.04rem 0.36rem;
@@ -3273,6 +3324,7 @@ body.embedded-split .side-panel-backdrop {
   }
   body.terminal-tabs-left .workspace-dashboard,
   body.terminal-tabs-left .widget-area,
+  body.terminal-tabs-left .subagent-terminal-view,
   body.terminal-tabs-left .chat,
   body.terminal-tabs-left .feedback-tray,
   body.terminal-tabs-left .jump-to-latest-button,
@@ -3284,6 +3336,7 @@ body.embedded-split .side-panel-backdrop {
   }
   body.terminal-tabs-left .workspace-dashboard { grid-row: 1; }
   body.terminal-tabs-left .widget-area { grid-row: 2; }
+  body.terminal-tabs-left .subagent-terminal-view { grid-row: 1 / -1; }
   body.terminal-tabs-left .chat { grid-row: 3; }
   body.terminal-tabs-left .feedback-tray { grid-row: 4; }
   body.terminal-tabs-left .jump-to-latest-button { grid-row: 5; }
@@ -8580,29 +8633,18 @@ button.composer-skill-tag:focus-visible {
 .subagent-overlay-message:last-child {
   margin-bottom: 0;
 }
-.subagent-overlay-message + .subagent-output-waiting {
+.subagent-overlay-message + .subagent-run-indicator {
   margin-top: 0;
 }
-.subagent-output-waiting {
-  width: fit-content;
-  min-width: 2.1rem;
+.subagent-run-indicator {
   margin-bottom: 0;
-  padding: 0.42rem 0.58rem;
-  color: var(--ctp-green);
-  font-weight: 900;
-  letter-spacing: 0.08em;
 }
-.subagent-output-waiting .run-indicator-row {
-  gap: 0.12rem;
+.subagent-run-indicator .run-indicator-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.subagent-output-waiting-dot {
-  animation: subagent-output-waiting-pulse 1.15s ease-in-out infinite;
-}
-.subagent-output-waiting-dot:nth-child(2) { animation-delay: 140ms; }
-.subagent-output-waiting-dot:nth-child(3) { animation-delay: 280ms; }
-@keyframes subagent-output-waiting-pulse {
-  0%, 70%, 100% { opacity: 0.22; transform: translateY(0); }
-  35% { opacity: 1; transform: translateY(-0.12rem); }
+.subagent-run-indicator-elapsed {
+  white-space: nowrap;
 }
 .subagent-overlay-output-controls {
   min-width: 0;
@@ -8616,6 +8658,137 @@ button.composer-skill-tag:focus-visible {
 .subagent-overlay-close-action {
   color: var(--ctp-yellow);
   border-color: rgba(249, 226, 175, 0.34);
+}
+.subagent-terminal-view {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background:
+    radial-gradient(circle at 8% 0, rgba(166, 227, 161, 0.10), transparent 24rem),
+    linear-gradient(180deg, rgba(var(--ctp-base-rgb), 0.54), rgba(var(--ctp-crust-rgb), 0.66));
+}
+.subagent-terminal-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.82rem 0.95rem;
+  border-bottom: 1px solid rgba(166, 227, 161, 0.24);
+  background: rgba(var(--ctp-crust-rgb), 0.40);
+}
+.subagent-terminal-heading {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+.subagent-terminal-kicker {
+  color: var(--ctp-green);
+  font-size: var(--text-xs);
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.subagent-terminal-heading strong {
+  overflow: hidden;
+  color: var(--ctp-text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-terminal-meta {
+  overflow-wrap: anywhere;
+  font-size: var(--text-xs);
+}
+.subagent-terminal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+.subagent-terminal-actions button {
+  min-height: 2.35rem;
+  padding: 0.38rem 0.68rem;
+  font-size: var(--text-xs);
+}
+.subagent-terminal-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem;
+  scroll-padding-bottom: 2rem;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.subagent-terminal-transcript > .message {
+  width: 100%;
+  max-width: none;
+}
+.subagent-terminal-status {
+  flex: 0 0 auto;
+  min-height: 2rem;
+  margin: 0;
+  padding: 0.46rem 0.95rem;
+  border-top: 1px solid rgba(137, 180, 250, 0.16);
+  font-size: var(--text-xs);
+}
+.subagent-terminal-status.warning { color: var(--ctp-yellow); }
+.subagent-terminal-composer {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.42rem 0.55rem;
+  padding: 0.58rem 0.72rem;
+  border-top: 1px solid rgba(166, 227, 161, 0.22);
+  background: rgba(var(--ctp-crust-rgb), 0.76);
+}
+.subagent-terminal-composer textarea {
+  min-height: calc(1.5em + 1.35rem);
+  max-height: calc(1.5em + 1.35rem);
+  padding: 0.62rem 0.72rem;
+  resize: none;
+  opacity: 0.72;
+}
+.subagent-terminal-composer textarea:disabled {
+  cursor: not-allowed;
+  border-color: rgba(166, 227, 161, 0.24);
+}
+.subagent-terminal-composer textarea:disabled::placeholder { color: rgba(var(--ctp-subtext-rgb), 0.82); }
+.subagent-terminal-composer button { min-height: 0; }
+.subagent-terminal-composer small {
+  grid-column: 1 / -1;
+  color: rgba(var(--ctp-subtext-rgb), 0.68);
+  font-size: var(--text-xs);
+}
+body.subagent-terminal-active .workspace-dashboard,
+body.subagent-terminal-active .widget-area,
+body.subagent-terminal-active .chat-search-bar,
+body.subagent-terminal-active .chat,
+body.subagent-terminal-active .feedback-tray,
+body.subagent-terminal-active .jump-to-latest-button,
+body.subagent-terminal-active .statusbar,
+body.subagent-terminal-active .context-meter-bar,
+body.subagent-terminal-active .git-workflow-panel,
+body.subagent-terminal-active .composer,
+body.subagent-terminal-active .composer-remote-mic-consent {
+  display: none !important;
+}
+@media (max-width: 720px) {
+  .subagent-terminal-header {
+    display: grid;
+    gap: 0.58rem;
+    padding: 0.65rem 0.7rem;
+  }
+  .subagent-terminal-actions { justify-content: stretch; }
+  .subagent-terminal-actions button { flex: 1 1 auto; }
+  .subagent-terminal-transcript { padding: 0.65rem 0.58rem; }
+  .subagent-terminal-composer {
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: calc(0.58rem + env(safe-area-inset-bottom));
+  }
+  .subagent-terminal-composer button { display: none; }
 }
 .extension-dialog.stats-overlay-dialog {
   width: min(92rem, calc(100vw - 1.5rem));

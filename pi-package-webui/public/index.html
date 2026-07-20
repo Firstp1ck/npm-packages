@@ -83,6 +83,26 @@
         </header>
         <section id="workspaceDashboard" class="workspace-dashboard" aria-label="Workspace dashboard"></section>
         <div id="widgetArea" class="widget-area"></div>
+        <section id="subagentTerminalView" class="subagent-terminal-view" aria-labelledby="subagentTerminalTitle" hidden>
+          <header class="subagent-terminal-header">
+            <div class="subagent-terminal-heading">
+              <span class="subagent-terminal-kicker">Subagent · view only</span>
+              <strong id="subagentTerminalTitle">Subagent</strong>
+              <span id="subagentTerminalMeta" class="subagent-terminal-meta muted"></span>
+            </div>
+            <div class="subagent-terminal-actions">
+              <button id="subagentTerminalCopyButton" type="button">Copy output</button>
+              <button id="subagentTerminalRefreshButton" type="button">Refresh</button>
+            </div>
+          </header>
+          <div id="subagentTerminalTranscript" class="subagent-terminal-transcript" role="log" aria-live="polite"></div>
+          <p id="subagentTerminalStatus" class="subagent-terminal-status muted" aria-live="off"></p>
+          <div class="subagent-terminal-composer" aria-label="Subagent input unavailable">
+            <textarea id="subagentTerminalInput" rows="1" placeholder="View only — send messages from the parent terminal" aria-describedby="subagentTerminalInputHint" disabled></textarea>
+            <button type="button" disabled>View only</button>
+            <small id="subagentTerminalInputHint">This tab mirrors the child session. Use its parent terminal to interact with the run.</small>
+          </div>
+        </section>
         <div id="chatSearchBar" class="chat-search-bar" role="search" hidden>
           <input id="chatSearchInput" class="chat-search-input" type="search" placeholder="Search transcript…" autocomplete="off" spellcheck="false" aria-label="Search transcript" />
           <span id="chatSearchCount" class="chat-search-count muted" aria-live="polite"></span>
@@ -667,6 +687,14 @@
             </h2>
             <div id="sidePanelSectionSubagents" class="side-panel-section-content" hidden>
               <p class="subagents-help"><strong>How to use:</strong> Ask Pi to call the <code>subagent</code> tool in foreground or async mode—for example, “Use a subagent to review this change.” Only active runs launched through that tool appear here.</p>
+              <div class="subagent-open-mode-field">
+                <label for="subagentOpenModeSelect">Open subagents in</label>
+                <select id="subagentOpenModeSelect" aria-describedby="subagentOpenModeStatus">
+                  <option value="overlay">Overlay</option>
+                  <option value="tab">Tab / terminal</option>
+                </select>
+                <span id="subagentOpenModeStatus" class="muted">Overlay · saved in this browser</span>
+              </div>
               <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
               <div id="subagentsBox" class="subagents-box muted">Checking running subagents…</div>
             </div>

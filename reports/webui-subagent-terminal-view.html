@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Pi WebUI — Subagent Terminal View Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      background: var(--blue);
+      color: #06111f;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; }
+    pre {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      overflow-x: auto;
+      color: #d9e6f7;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .lead { font-size: 1.1rem; max-width: 82ch; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .metric, .finding, .step, .visual-card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.bad { background: rgb(255 115 115 / 14%); border: 1px solid rgb(255 115 115 / 38%); }
+    .badge.info { background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout {
+      border-left: 5px solid var(--yellow);
+      background: rgb(247 198 92 / 8%);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 14px 0;
+    }
+    .callout.good-callout { border-left-color: var(--green); background: rgb(80 216 144 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 650px; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: .42rem; }
+    .tabs-shell { margin-top: 18px; }
+    [role="tablist"] {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 8px;
+      margin: 0 0 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgb(7 16 28 / 72%);
+      scrollbar-width: thin;
+    }
+    [role="tab"] {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 13px;
+      min-height: 42px;
+      white-space: nowrap;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    [role="tab"][aria-selected="true"] {
+      color: var(--text);
+      border-color: rgb(101 181 255 / 45%);
+      background: rgb(101 181 255 / 14%);
+    }
+    [role="tabpanel"] { scroll-margin-top: 16px; }
+    .tabs-ready [role="tabpanel"][hidden] { display: none; }
+    ol.steps { list-style: none; padding: 0; counter-reset: steps; }
+    ol.steps > li { counter-increment: steps; margin: 14px 0; }
+    ol.steps > li::before {
+      content: counter(steps);
+      float: left;
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin: 1px 12px 0 0;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #06111f;
+      font-weight: 800;
+    }
+    .step { overflow: hidden; }
+    figure { margin: 18px 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    figcaption { color: var(--muted); margin-top: 8px; font-size: .92rem; }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node.green { stroke: var(--green); }
+    .node.yellow { stroke: var(--yellow); }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .node-small { fill: var(--muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .edge-safe { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-dasharray: 7 5; marker-end: url(#arrow-green); }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    .confidence { font-variant-numeric: tabular-nums; }
+    .report-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .report-actions button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 12px;
+      min-height: 42px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .status-region {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      [role="tablist"] { position: sticky; top: 0; z-index: 5; }
+      .report-actions button { flex: 1 1 140px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .finding, .step, .visual-card {
+        box-shadow: none;
+        background: white;
+        color: #111;
+        border-color: #bbb;
+        break-inside: avoid;
+      }
+      [role="tablist"], .skip-link, .report-actions, .status-region { display: none !important; }
+      [role="tabpanel"], [role="tabpanel"][hidden] { display: block !important; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge good">Implementation report · reviewed</span>
+    <h1>Selectable subagent terminal views in Pi WebUI</h1>
+    <p class="lead">This report documents the implemented view-only subagent terminal-tab option in <code>pi-package-webui</code>, the design decisions behind it, verification evidence, independent cross-provider review, and remaining limitations.</p>
+    <div class="callout good-callout">
+      <strong>Conclusion:</strong> Users can retain the existing overlay behavior or open a running child in a clearly marked virtual <strong>Subagent</strong> tab. Dedicated tabs render full-width transcript cards and the main-style pulsing <strong>Agent is running:</strong> card with current child activity and visually current elapsed time. The view remains intentionally non-interactive, and closing it performs no stop, interrupt, abort, or backend terminal-close action.
+    </div>
+    <p class="muted confidence"><strong>Confidence: 97/100.</strong> Syntax, focused helper and HTTP harnesses, checked-in VM refresh behavior, source-level lifecycle assertions, and a final fresh Anthropic Opus 4.8 review support the result. Confidence is reduced by the absence of automated browser geometry and assistive-technology coverage and one unrelated pre-existing package-lock test failure.</p>
+    <div class="report-actions" aria-label="Report actions">
+      <button type="button" data-print>Print report</button>
+      <a href="../plans/webui-subagent-terminal-view.md">Open canonical plan</a>
+    </div>
+  </header>
+
+  <div class="tabs-shell">
+    <nav role="tablist" aria-label="Report sections">
+      <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button id="tab-architecture" role="tab" aria-selected="false" aria-controls="panel-architecture" tabindex="-1">Architecture</button>
+      <button id="tab-implementation" role="tab" aria-selected="false" aria-controls="panel-implementation" tabindex="-1">Implementation</button>
+      <button id="tab-verification" role="tab" aria-selected="false" aria-controls="panel-verification" tabindex="-1">Verification</button>
+      <button id="tab-usage" role="tab" aria-selected="false" aria-controls="panel-usage" tabindex="-1">Usage &amp; risks</button>
+    </nav>
+
+    <section class="report-section" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <h2>Executive overview</h2>
+      <div class="grid" aria-label="Headline implementation status">
+        <div class="metric"><span class="badge good">Delivered</span><strong>2 opening modes</strong><span class="muted">Overlay remains the default; Tab / terminal is browser-persisted.</span></div>
+        <div class="metric"><span class="badge good">Lifecycle safe</span><strong>0 close-side API calls</strong><span class="muted">Virtual close removes only client-side state.</span></div>
+        <div class="metric"><span class="badge info">Dependency scope</span><strong>No RPC changes</strong><span class="muted">The existing bounded output endpoint and helper remain authoritative.</span></div>
+        <div class="metric"><span class="badge good">Independent review</span><strong>PASS</strong><span class="muted">No blocker, high-, medium-, or low-severity implementation findings remain.</span></div>
+      </div>
+
+      <h3 style="margin-top:22px">Implementation map</h3>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Implemented behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Side-panel preference</td><td>“Open subagents in” selects Overlay or Tab / terminal and saves the value in browser storage.</td><td><code>public/index.html</code>, <code>public/app.js</code></td><td><span class="good">Complete</span></td></tr>
+            <tr><td>Virtual tab model</td><td>One browser view per parent-tab/run/child identity; reopening focuses the existing view.</td><td><code>subagentTerminalViewId</code>, <code>openSubagentTerminal</code></td><td><span class="good">Complete</span></td></tr>
+            <tr><td>View-only transcript</td><td>Reuses structured assistant/tool rendering and the existing bounded output endpoint, with full-width dedicated cards and a main-style live activity indicator.</td><td><code>renderSubagentTerminalView</code>, <code>appendSubagentRunIndicator</code>, <code>/api/subagents/output</code></td><td><span class="good">Complete</span></td></tr>
+            <tr><td>Close semantics</td><td>Deletes the client-side view record; never calls backend lifecycle APIs.</td><td><code>closeSubagentTerminalTab</code> plus static no-API assertion</td><td><span class="good">Verified</span></td></tr>
+            <tr><td>Review and tests</td><td>Focused checks pass; independent review passed; full suite retains one unrelated tracked baseline failure.</td><td>Verification record and reviewer artifact</td><td><span class="warn">Accepted baseline caveat</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout info-callout">
+        <strong>Approved scope:</strong> the child tab is a browser presentation of an already-running child, not a new Pi process and not an interaction channel. Messages continue to be sent from the owning parent terminal.
+      </div>
+    </section>
+
+    <section class="report-section" id="panel-architecture" role="tabpanel" aria-labelledby="tab-architecture">
+      <h2>Architecture and lifecycle</h2>
+      <p>The backend terminal remains selected through <code>activeTabId</code>. A separate <code>activeSubagentTerminalId</code> chooses whether the main WebUI surface presents the parent transcript or a virtual child transcript. This prevents the child view from acquiring backend tab lifecycle semantics.</p>
+
+      <figure data-visual-kind="diagram" data-purpose="Show how the side-panel choice routes output into an overlay or lifecycle-independent virtual tab">
+        <svg role="img" aria-labelledby="architecture-title architecture-desc" viewBox="0 0 980 470">
+          <title id="architecture-title">Subagent opening and close architecture</title>
+          <desc id="architecture-desc">The side-panel mode routes a selected running child either to the existing overlay or a virtual subagent tab. Both read the existing output endpoint. Closing the virtual tab deletes browser state only and leaves the child run unchanged.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker>
+            <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50d890"/></marker>
+          </defs>
+          <rect class="node" x="40" y="60" width="200" height="86" rx="12"/>
+          <text class="node-text" x="140" y="95">Subagents side panel</text>
+          <text class="node-small" x="140" y="120">Overlay | Tab / terminal</text>
+
+          <rect class="node" x="360" y="28" width="220" height="86" rx="12"/>
+          <text class="node-text" x="470" y="63">Existing overlay</text>
+          <text class="node-small" x="470" y="88">shared widget area</text>
+
+          <rect class="node green" x="360" y="158" width="220" height="102" rx="12"/>
+          <text class="node-text" x="470" y="193">Virtual Subagent tab</text>
+          <text class="node-small" x="470" y="217">activeSubagentTerminalId</text>
+          <text class="node-small" x="470" y="238">parent activeTabId retained</text>
+
+          <rect class="node" x="710" y="92" width="230" height="102" rx="12"/>
+          <text class="node-text" x="825" y="127">Existing output endpoint</text>
+          <text class="node-small" x="825" y="151">parent + run + child IDs</text>
+          <text class="node-small" x="825" y="173">bounded transcript snapshot</text>
+
+          <rect class="node yellow" x="360" y="340" width="220" height="82" rx="12"/>
+          <text class="node-text" x="470" y="375">Close virtual tab</text>
+          <text class="node-small" x="470" y="399">delete browser view record</text>
+
+          <rect class="node green" x="710" y="332" width="230" height="98" rx="12"/>
+          <text class="node-text" x="825" y="369">Child run unchanged</text>
+          <text class="node-small" x="825" y="393">no stop · interrupt · abort</text>
+          <text class="node-small" x="825" y="414">no backend tab-close call</text>
+
+          <path class="edge" d="M240 88 H360"/>
+          <path class="edge" d="M240 116 C285 116 300 205 360 205"/>
+          <path class="edge" d="M580 72 C640 72 650 125 710 125"/>
+          <path class="edge" d="M580 205 C650 205 650 162 710 162"/>
+          <path class="edge" d="M470 260 V340"/>
+          <path class="edge-safe" d="M580 381 H710"/>
+        </svg>
+        <figcaption>The only close path from a virtual child view terminates in client-side cleanup. The live child remains owned by the existing subagent runtime and parent terminal.</figcaption>
+      </figure>
+
+      <div class="grid">
+        <article class="finding"><span class="badge info">Identity</span><h3>Stable composite key</h3><p>The virtual view key serializes the parent tab ID, run ID, and agent ID. This prevents duplicate tabs for the same child while keeping identically named children distinct.</p></article>
+        <article class="finding"><span class="badge info">Polling</span><h3>Meaningful-update guard</h3><p>Each view increments a request serial and compares snapshots with transport-only timestamps removed. Unchanged polls preserve transcript/tab DOM and update only the existing visual elapsed-time node.</p></article>
+        <article class="finding"><span class="badge info">Completion</span><h3>Last snapshot retained</h3><p>A 404 marks the view finished, disables further refresh, and keeps the most recent transcript visible rather than deleting the tab.</p></article>
+      </div>
+    </section>
+
+    <section class="report-section" id="panel-implementation" role="tabpanel" aria-labelledby="tab-implementation">
+      <h2>Implementation details</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Responsibility</th><th>Notable behavior</th></tr></thead>
+          <tbody>
+            <tr><td><a href="../pi-package-webui/public/index.html"><code>public/index.html</code></a></td><td>Side-panel mode selector and dedicated child surface</td><td>Disabled textarea states “View only — send messages from the parent terminal.”</td></tr>
+            <tr><td><a href="../pi-package-webui/public/app.js"><code>public/app.js</code></a></td><td>Preference, virtual-tab state, focus/close, transcript rendering, polling</td><td>Keeps backend <code>activeTabId</code> on the parent; virtual close has no backend request.</td></tr>
+            <tr><td><a href="../pi-package-webui/public/styles.css"><code>public/styles.css</code></a></td><td>Marked tab, dedicated view, hidden parent surface, responsive rules</td><td>Subagent badge and green lifecycle-safe visual treatment; mobile layout stacks controls.</td></tr>
+            <tr><td><a href="../pi-package-webui/tests/mobile-static.test.mjs"><code>tests/mobile-static.test.mjs</code></a></td><td>Regression contract</td><td>Asserts dispatch, key identity, disabled input, dense tab count, and no close-side backend call.</td></tr>
+            <tr><td><a href="../pi-package-webui/README.md"><code>README.md</code></a></td><td>User-facing behavior</td><td>Documents selectable mode, view-only limitation, and non-aborting close semantics.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top:22px">Core state model</h3>
+      <pre><code>subagentOpenMode: "overlay" | "tab"
+subagentTerminalViews: Map&lt;parent/run/agent key, view record&gt;
+activeTabId: owning backend terminal
+activeSubagentTerminalId: optional virtual child surface
+
+background poll
+  → ignore transport-only updatedAt changes
+  → meaningful change: rebuild view once
+  → unchanged: preserve transcript DOM
+  → update only aria-hidden elapsed-time node
+
+closeSubagentTerminalTab(viewId)
+  → invalidate pending response serial
+  → delete client-side view record
+  → restore parent surface when active
+  → render tabs
+  → no backend lifecycle request</code></pre>
+
+      <h3>Review-driven corrections</h3>
+      <p>The original reviewer identified one low-impact mode-switch edge case. The final implementation deactivates any virtual child surface at the start of <code>openSubagentOverlay</code>, before deciding whether the parent backend tab must change.</p>
+      <p>The follow-up reviewer then found one-second background polls rebuilding and re-announcing unchanged transcript content. The corrected refresh path compares meaningful snapshots, keeps routine status non-live, mutates only an existing <code>aria-hidden</code> elapsed node for unchanged polls, and labels retained 404-completed views as finished. A VM behavior assertion protects zero transcript/tab rerenders during unchanged polling.</p>
+    </section>
+
+    <section class="report-section" id="panel-verification" role="tabpanel" aria-labelledby="tab-verification">
+      <h2>Testing and independent review</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Check</th><th>Result</th><th>Evidence / interpretation</th></tr></thead>
+          <tbody>
+            <tr><td><code>node --check public/app.js</code></td><td><span class="good">Passed</span></td><td>Frontend syntax is valid after the review fix.</td></tr>
+            <tr><td><code>node tests/subagents-helper.test.mjs</code></td><td><span class="good">Passed</span></td><td>Existing status/output helper contract remains intact.</td></tr>
+            <tr><td><code>node tests/http-endpoints-harness.test.mjs</code></td><td><span class="good">Passed</span></td><td>Existing cross-tab overview and selected-output endpoint behavior remains intact.</td></tr>
+            <tr><td>Subagent terminal static + VM assertions</td><td><span class="good">Passed before baseline failure</span></td><td>Markup, dispatch, identity, lifecycle, full-width, activity-indicator, and unchanged-poll behavior assertions all pass. The VM scenario proves zero transcript/tab renders and one targeted elapsed update.</td></tr>
+            <tr><td><code>git diff --check</code></td><td><span class="good">Passed</span></td><td>No whitespace errors in feature and plan changes.</td></tr>
+            <tr><td><code>npm run check</code></td><td><span class="warn">27/28 test files</span></td><td>Only <code>mobile-static.test.mjs</code> fails later on a tracked package-lock invariant reproduced at <code>HEAD</code>; this feature changes neither manifest nor lockfile.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <strong>Baseline limitation:</strong> the tracked lockfile lists optional companion packages under both root <code>dependencies</code> and <code>optionalDependencies</code>, while the tracked static test expects them absent from root <code>dependencies</code>. This mismatch predates and is outside the feature scope.
+      </div>
+
+      <h3>Independent cross-provider review</h3>
+      <p>Fresh, read-only <strong>Anthropic Claude Opus 4.8 (high thinking)</strong> reviews inspected the plan and actual diff, traced lifecycle/polling paths, and independently exercised refresh-control VM scenarios. Final verdict: <strong class="good">PASS</strong>, with no blocker, high-, medium-, or low-severity implementation findings.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Finding</th><th>Severity</th><th>Disposition</th></tr></thead>
+          <tbody>
+            <tr><td>Unchanged one-second polls rebuilt the full polite live transcript and routine status.</td><td>Medium</td><td><span class="good">Fixed.</span> Meaningful signatures suppress unchanged rebuilds; routine status is non-live.</td></tr>
+            <tr><td>Suppressing rebuilds initially froze elapsed runtime during a long unchanged activity.</td><td>Medium</td><td><span class="good">Fixed.</span> Polls update only the existing visual <code>aria-hidden</code> elapsed node.</td></tr>
+            <tr><td>A retained 404 snapshot could leave contradictory <code>running</code> header text.</td><td>Low</td><td><span class="good">Fixed.</span> Finished view state now takes precedence over stale snapshot status.</td></tr>
+            <tr><td>No real-browser geometry, assistive-technology, or open/focus/close/reopen automation.</td><td>Residual risk</td><td>Accepted with checked-in VM behavior coverage, source contracts, focused harnesses, and independent code trace.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">Final reviewer artifact: <code>.pi-subagents/artifacts/outputs/926cd05e-c0b3-45e1-bd8c-8d79cd637e5a/reviews/webui-subagent-terminal-follow-up-final.md</code>.</p>
+    </section>
+
+    <section class="report-section" id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
+      <h2>Usage, behavior, and residual risks</h2>
+      <ol class="steps">
+        <li class="step"><h3>Choose the opening mode</h3><p>Open the WebUI side panel, expand <strong>Subagents</strong>, and select <strong>Overlay</strong> or <strong>Tab / terminal</strong> under “Open subagents in.” The choice is saved in this browser. Overlay is the backward-compatible default.</p></li>
+        <li class="step"><h3>Open a running child</h3><p>Click a running child row. In Tab / terminal mode, the WebUI creates or focuses one marked <strong>Subagent</strong> tab for that parent/run/child identity.</p></li>
+        <li class="step"><h3>Observe output</h3><p>The child surface polls the existing bounded output endpoint, renders assistant/tool cards across the full dedicated-tab width, and shows the pulsing <strong>Agent is running:</strong> card with the current tool/activity and elapsed runtime. It retains the last snapshot and finished status if the child stops being tracked.</p></li>
+        <li class="step"><h3>Interact through the parent</h3><p>The child input is disabled and explicitly view-only. Return to the owning parent terminal to send any message or control the run.</p></li>
+        <li class="step"><h3>Close without stopping work</h3><p>Use the × on the marked subagent tab. This removes only the browser view and restores the parent surface; the child run remains unaffected.</p></li>
+      </ol>
+
+      <h3>Residual risks and non-goals</h3>
+      <div class="grid">
+        <article class="finding"><span class="badge warn">Accepted</span><h3>No browser interaction automation</h3><p>Open/focus/close/reopen and measured geometry remain source-contract tested. Unchanged polling has checked-in VM behavior coverage, but no real assistive-technology test.</p></article>
+        <article class="finding"><span class="badge info">Non-goal</span><h3>No child messaging</h3><p>The tab intentionally provides no steer, follow-up, resume, stop, interrupt, or abort controls.</p></article>
+        <article class="finding"><span class="badge info">Non-goal</span><h3>No reload persistence</h3><p>The opening preference persists, but currently open virtual child tabs do not survive a browser reload or server restart.</p></article>
+        <article class="finding"><span class="badge info">Non-goal</span><h3>No completed-child rediscovery</h3><p>An already-open tab retains its final snapshot, but a closed completed child cannot be reopened after it leaves active-run discovery.</p></article>
+      </div>
+
+      <details>
+        <summary>Auditable source and scope references</summary>
+        <ul>
+          <li><a href="../plans/webui-subagent-terminal-view.md">Canonical implementation plan and finding dispositions</a></li>
+          <li><a href="../pi-package-webui/public/app.js">Frontend state and lifecycle implementation</a></li>
+          <li><a href="../pi-package-webui/public/index.html">Mode selector and dedicated view-only surface</a></li>
+          <li><a href="../pi-package-webui/public/styles.css">Marked tab and responsive presentation</a></li>
+          <li><a href="../pi-package-webui/tests/mobile-static.test.mjs">Static acceptance contracts</a></li>
+        </ul>
+      </details>
+    </section>
+  </div>
+
+  <footer>
+    <p><strong>Scope:</strong> <code>pi-package-webui</code> selectable view-only subagent terminal tabs. Generated 2026-07-20 from the implementation diff, test output, canonical plan, and independent reviewer artifact.</p>
+  </footer>
+  <div id="interaction-status" class="status-region" role="status" aria-live="polite" aria-atomic="true"></div>
+</main>
+<script>
+(() => {
+  const tablist = document.querySelector('[role="tablist"]');
+  if (!tablist) return;
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.documentElement.classList.add('tabs-ready');
+
+  function activate(tab, { focus = false, updateHash = true, scroll = false } = {}) {
+    tabs.forEach((candidate) => {
+      const selected = candidate === tab;
+      candidate.setAttribute('aria-selected', String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) tab.focus();
+    if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+    if (scroll) document.getElementById(tab.getAttribute('aria-controls'))?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      let target = null;
+      if (event.key === 'ArrowRight') target = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') target = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') target = 0;
+      if (event.key === 'End') target = tabs.length - 1;
+      if (target === null) return;
+      event.preventDefault();
+      activate(tabs[target], { focus: true });
+    });
+  });
+
+  document.querySelector('[data-print]')?.addEventListener('click', () => window.print());
+  const hashPanel = tabs.find((tab) => `#${tab.getAttribute('aria-controls')}` === location.hash);
+  activate(hashPanel || tabs[0], { updateHash: false });
+})();
+</script>
+</body>
+</html>

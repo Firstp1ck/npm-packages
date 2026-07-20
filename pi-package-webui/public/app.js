@@ -44,6 +44,14 @@ const elements = {
   copyServerCommandButton: $("#copyServerCommandButton"),
   retryServerConnectionButton: $("#retryServerConnectionButton"),
   widgetArea: $("#widgetArea"),
+  subagentTerminalView: $("#subagentTerminalView"),
+  subagentTerminalTitle: $("#subagentTerminalTitle"),
+  subagentTerminalMeta: $("#subagentTerminalMeta"),
+  subagentTerminalTranscript: $("#subagentTerminalTranscript"),
+  subagentTerminalStatus: $("#subagentTerminalStatus"),
+  subagentTerminalCopyButton: $("#subagentTerminalCopyButton"),
+  subagentTerminalRefreshButton: $("#subagentTerminalRefreshButton"),
+  subagentTerminalInput: $("#subagentTerminalInput"),
   stickyUserPromptButton: $("#stickyUserPromptButton"),
   chat: $("#chat"),
   chatSearchBar: $("#chatSearchBar"),
@@ -221,6 +229,8 @@ const elements = {
   subagentsStatus: $("#subagentsStatus"),
   subagentsBox: $("#subagentsBox"),
   subagentCountBadge: $("#subagentCountBadge"),
+  subagentOpenModeSelect: $("#subagentOpenModeSelect"),
+  subagentOpenModeStatus: $("#subagentOpenModeStatus"),
   queueBox: $("#queueBox"),
   queueCountBadge: $("#queueCountBadge"),
   createPromptListButton: $("#createPromptListButton"),
@@ -485,6 +495,10 @@ let subagentOverlayError = "";
 let subagentOverlayLoading = false;
 let subagentOverlayRefreshTimer = null;
 let subagentOverlayRequestSerial = 0;
+let subagentOpenMode = "overlay";
+const subagentTerminalViews = new Map();
+let activeSubagentTerminalId = null;
+let subagentTerminalRefreshTimer = null;
 let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
@@ -594,6 +608,7 @@ const THINKING_VISIBILITY_STORAGE_KEY = "pi-webui-thinking-visible";
 const BUSY_PROMPT_BEHAVIOR_STORAGE_KEY = "pi-webui-busy-prompt-behavior";
 const SKILL_USAGE_STORAGE_KEY = "pi-webui-skill-usage-v1";
 const TERMINAL_TABS_LAYOUT_STORAGE_KEY = "pi-webui-terminal-tabs-layout";
+const SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode";
 const TERMINAL_CUSTOM_GROUPS_STORAGE_KEY = "pi-webui-terminal-custom-groups-v1";
 const TERMINAL_TAB_DRAG_MIME = "application/x-pi-terminal-tab-id";
 const FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY = "pi-webui-footer-scoped-model-order-v1";
@@ -734,6 +749,8 @@ const THEME_SCHEME_MODES = new Set(["light", "dark", "auto"]);
 let themeSchemeMode = "light"; // "light" | "dark" | "auto"; finalized in initializeThemes
 const TERMINAL_TABS_LAYOUTS = new Set(["top", "left"]);
 const TERMINAL_TABS_LAYOUT_LABELS = { top: "Top bar", left: "Left sidebar" };
+const SUBAGENT_OPEN_MODES = new Set(["overlay", "tab"]);
+const SUBAGENT_OPEN_MODE_LABELS = { overlay: "Overlay", tab: "Tab / terminal" };
 const BUSY_PROMPT_BEHAVIOR_VALUES = new Set(["followUp", "steer"]);
 const BUSY_PROMPT_BEHAVIOR_LABELS = { followUp: "Follow-up", steer: "Steer" };
 const SKILL_TAG_MAX_VISIBLE = 6;
@@ -1688,6 +1705,44 @@ function restoreTerminalTabsLayoutSetting() {
   setTerminalTabsLayout(readStoredTerminalTabsLayout(), { persist: false });
 }
 
+function normalizeSubagentOpenMode(value) {
+  return SUBAGENT_OPEN_MODES.has(value) ? value : "overlay";
+}
+
+function readStoredSubagentOpenMode() {
+  try {
+    return normalizeSubagentOpenMode(localStorage.getItem(SUBAGENT_OPEN_MODE_STORAGE_KEY));
+  } catch {
+    return "overlay";
+  }
+}
+
+function persistSubagentOpenMode(mode) {
+  try {
+    localStorage.setItem(SUBAGENT_OPEN_MODE_STORAGE_KEY, normalizeSubagentOpenMode(mode));
+  } catch {
+    // Ignore storage failures; the opening mode still applies for this page load.
+  }
+}
+
+function renderSubagentOpenModeControl() {
+  const mode = normalizeSubagentOpenMode(subagentOpenMode);
+  if (elements.subagentOpenModeSelect) elements.subagentOpenModeSelect.value = mode;
+  if (elements.subagentOpenModeStatus) elements.subagentOpenModeStatus.textContent = `${SUBAGENT_OPEN_MODE_LABELS[mode]} · saved in this browser`;
+}
+
+function setSubagentOpenMode(mode, { persist = true, announce = false } = {}) {
+  subagentOpenMode = normalizeSubagentOpenMode(mode);
+  if (persist) persistSubagentOpenMode(subagentOpenMode);
+  renderSubagentOpenModeControl();
+  renderSubagents();
+  if (announce) addEvent(`subagents now open in ${SUBAGENT_OPEN_MODE_LABELS[subagentOpenMode].toLowerCase()}`);
+}
+
+function restoreSubagentOpenModeSetting() {
+  setSubagentOpenMode(readStoredSubagentOpenMode(), { persist: false });
+}
+
 function normalizeTerminalCustomGroupTitle(value, fallback = "Custom group") {
   const title = String(value || "").replace(/\s+/g, " ").trim();
   return (title || fallback).slice(0, 40);
@@ -1948,6 +2003,7 @@ function setThinkingOutputVisible(visible, { announce = false } = {}) {
   if (!thinkingOutputVisible) removeStreamingThinkingBubble();
   renderAllMessages({ preserveScroll: true });
   if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();
+  if (activeSubagentTerminalId) renderSubagentTerminalView();
   if (announce) addEvent(thinkingOutputVisible ? "thinking output shown" : "thinking output hidden", thinkingOutputVisible ? "info" : "warn");
 }
 
@@ -7741,6 +7797,11 @@ function requestedTabIdFromUrl() {
 }
 
 function updateDocumentTitle() {
+  const subagentView = activeSubagentTerminalView();
+  if (subagentView) {
+    document.title = `Pi Web UI · ${subagentTerminalViewTitle(subagentView)} · Subagent`;
+    return;
+  }
   const tab = activeTab();
   document.title = tab ? `Pi Web UI · ${tab.title}` : "Pi Web UI";
 }
@@ -7759,7 +7820,7 @@ function restoreActiveDraft() {
 
 function focusPromptInput({ defer = false } = {}) {
   const focus = () => {
-    if (!elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.statsOverlayDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
+    if (activeSubagentTerminalId || !elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.statsOverlayDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
     try {
       elements.promptInput.focus({ preventScroll: true });
     } catch {
@@ -8087,11 +8148,12 @@ function terminalTabMeta(tab, indicator) {
   return parts.join(" · ");
 }
 
-function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0 }) {
+function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0, subagent = false }) {
   const titleRow = make("span", "terminal-tab-title-row");
   const indicatorDot = make("span", "terminal-tab-activity-indicator");
   indicatorDot.setAttribute("aria-hidden", "true");
   titleRow.append(indicatorDot, make("span", "terminal-tab-title", title));
+  if (subagent) titleRow.append(make("span", "terminal-tab-subagent-indicator", "subagent"));
   if (appRunnerIsRunning(appRunnerRun)) titleRow.append(make("span", "terminal-tab-app-runner-indicator", "app"));
   if (conversationModeActive) titleRow.append(make("span", "terminal-tab-conversation-indicator", "voice"));
   if (workflowModeActive || workflowCount) titleRow.append(make("span", "terminal-tab-workflow-indicator", workflowCount ? `wf ${workflowCount}` : "wf"));
@@ -8100,7 +8162,7 @@ function appendTerminalTabContent(button, { title, indicator, meta, count = null
 }
 
 function renderTerminalTab(tab) {
-  const isActive = tab.id === activeTabId;
+  const isActive = tab.id === activeTabId && !activeSubagentTerminalId;
   const indicator = tabIndicator(tab);
   const appRunnerRun = tabAppRunnerRunningRun(tab);
   const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
@@ -8140,7 +8202,7 @@ function renderTerminalTab(tab) {
 }
 
 function renderTerminalTabGroupItem(tab, group) {
-  const isActive = tab.id === activeTabId;
+  const isActive = tab.id === activeTabId && !activeSubagentTerminalId;
   const indicator = tabIndicator(tab);
   const appRunnerRun = tabAppRunnerRunningRun(tab);
   const appRunnerLabel = appRunnerRun ? terminalAppRunnerLabel(appRunnerRun) : "";
@@ -8190,7 +8252,7 @@ function shouldRenderTerminalTabGroup(group, groupCount) {
 function renderTerminalTabGroup(group, groupCount = 1) {
   const groupTabs = group.tabs;
   const activeGroupTab = groupTabs.find((tab) => tab.id === activeTabId) || groupTabs[0];
-  const isActive = groupTabs.some((tab) => tab.id === activeTabId);
+  const isActive = !activeSubagentTerminalId && groupTabs.some((tab) => tab.id === activeTabId);
   const isStopped = groupTabs.every((tab) => !tab.running);
   const indicator = tabGroupIndicator(groupTabs);
   const appRunnerRun = tabGroupAppRunnerRunningRun(groupTabs);
@@ -8333,15 +8395,18 @@ function scheduleTabsRender() {
 
 function renderTabs() {
   if (deferUiRenderDuringPointerActivation("tabs", renderTabs)) return;
-  const active = activeTab();
-  const activeIndicator = active ? tabIndicator(active) : null;
-  elements.terminalTabsToggleButton.textContent = active ? `${activeIndicator.glyph} ${active.title}${tabs.length > 1 ? ` · ${tabs.length}` : ""}` : "Tabs";
-  const toggleTooltip = active ? `Show terminal tabs · active: ${active.title} · ${activeIndicator.label}` : "Show terminal tabs";
+  const activeSubagent = activeSubagentTerminalView();
+  const active = activeSubagent || activeTab();
+  const activeIndicator = activeSubagent ? { glyph: "◉", label: "Subagent view" } : active ? tabIndicator(active) : null;
+  const activeTitle = activeSubagent ? subagentTerminalViewTitle(activeSubagent) : active?.title;
+  const totalTabCount = tabs.length + subagentTerminalViews.size;
+  elements.terminalTabsToggleButton.textContent = active ? `${activeIndicator.glyph} ${activeTitle}${totalTabCount > 1 ? ` · ${totalTabCount}` : ""}` : "Tabs";
+  const toggleTooltip = active ? `Show terminal tabs · active: ${activeTitle} · ${activeIndicator.label}` : "Show terminal tabs";
   applyStyledTooltip(elements.terminalTabsToggleButton, toggleTooltip, { ariaLabel: toggleTooltip });
   if (footerTooltipTarget && elements.tabBar.contains(footerTooltipTarget)) hideFooterTooltip();
   elements.tabBar.replaceChildren();
-  elements.tabBar.dataset.tabCount = String(tabs.length);
-  elements.tabBar.classList.toggle("terminal-tabs-dense", tabs.length >= 10);
+  elements.tabBar.dataset.tabCount = String(totalTabCount);
+  elements.tabBar.classList.toggle("terminal-tabs-dense", totalTabCount >= 10);
   const groups = tabCwdGroups();
   const renderedGroupKeys = new Set(groups.filter((group) => shouldRenderTerminalTabGroup(group, groups.length)).map((group) => group.key));
   if (openTerminalTabGroupKey && !renderedGroupKeys.has(openTerminalTabGroupKey)) openTerminalTabGroupKey = null;
@@ -8351,6 +8416,9 @@ function renderTabs() {
     } else {
       for (const tab of group.tabs) elements.tabBar.append(renderTerminalTab(tab));
     }
+  }
+  for (const view of [...subagentTerminalViews.values()].sort((a, b) => a.openedAt - b.openedAt)) {
+    elements.tabBar.append(renderSubagentTerminalTab(view));
   }
   elements.tabBar.append(elements.newTabMenu);
   elements.closeAllTabsButton.disabled = tabs.length === 0;
@@ -8369,6 +8437,10 @@ async function refreshTabs({ selectStored = false } = {}) {
   const response = await api("/api/tabs", { scoped: false });
   tabs = response.data?.tabs || [];
   syncTabMetadata(tabs);
+  const liveParentTabIds = new Set(tabs.map((tab) => tab.id));
+  for (const view of [...subagentTerminalViews.values()]) {
+    if (!liveParentTabIds.has(view.parentTabId)) removeSubagentTerminalViewsForParent(view.parentTabId);
+  }
   syncBlockedTabNotificationsFromTabs(tabs, previousTabs);
   syncAgentDoneNotificationsFromTabs(tabs, previousTabs);
   const requested = selectStored ? requestedTabIdFromUrl() : null;
@@ -8383,7 +8455,12 @@ async function refreshTabs({ selectStored = false } = {}) {
 }
 
 async function switchTab(tabId) {
-  if (!tabId || tabId === activeTabId || !tabs.some((tab) => tab.id === tabId)) return;
+  if (!tabId || !tabs.some((tab) => tab.id === tabId)) return;
+  if (tabId === activeTabId) {
+    if (activeSubagentTerminalId) deactivateSubagentTerminalView({ focusParent: true });
+    return;
+  }
+  if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
   clearOpenTerminalTabGroup(null, { force: true });
   setMobileTabsExpanded(false);
   footerModelPickerOpen = false;
@@ -8613,6 +8690,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
       btwWidgetDismissedIdsByTab.delete(id);
+      removeSubagentTerminalViewsForParent(id);
     }
     syncTerminalCustomGroupsWithTabs(tabs);
     clearOpenTerminalTabGroup(null, { force: true });
@@ -14446,20 +14524,42 @@ function subagentOverlayEmptyTranscriptText(messages) {
     : "No visible output was captured.";
 }
 
-function appendSubagentOutputWaitingIndicator(parent) {
-  const bubble = make("article", "message runIndicator run-indicator-message streaming subagent-output-waiting");
+function subagentRunIndicatorActivity(agent = {}) {
+  const currentTool = cleanStatusText(agent.currentTool || "");
+  const currentToolArgs = cleanStatusText(agent.currentToolArgs || "");
+  const activityState = cleanStatusText(agent.activityState || "");
+  return currentTool
+    ? `${currentTool}${currentToolArgs ? ` · ${currentToolArgs}` : ""}`
+    : activityState || "Waiting for output or action…";
+}
+
+function updateSubagentRunIndicatorElapsed(parent, run) {
+  const elapsedNode = parent?.querySelector?.(".subagent-run-indicator-elapsed");
+  if (!elapsedNode) return false;
+  const elapsed = subagentRunElapsed(run);
+  const text = elapsed ? `· run time ${elapsed}` : "";
+  if (elapsedNode.textContent !== text) elapsedNode.textContent = text;
+  return true;
+}
+
+function appendSubagentRunIndicator(parent, { agent = {}, run } = {}) {
+  const bubble = make("article", "message runIndicator run-indicator-message streaming subagent-run-indicator");
   bubble.setAttribute("role", "status");
-  bubble.setAttribute("aria-label", "Waiting for agent output");
+  bubble.setAttribute("aria-live", "polite");
+  bubble.setAttribute("aria-label", "Agent is running:");
   const body = make("div", "message-body");
   const row = make("div", "run-indicator-row");
-  row.append(
-    make("span", "subagent-output-waiting-dot", "."),
-    make("span", "subagent-output-waiting-dot", "."),
-    make("span", "subagent-output-waiting-dot", "."),
-  );
+  const pulse = make("span", "run-indicator-pulse");
+  pulse.setAttribute("aria-hidden", "true");
+  const headline = make("span", "run-indicator-text", "Agent is running:");
+  const activity = make("span", "run-indicator-meta", subagentRunIndicatorActivity(agent));
+  const elapsed = make("span", "run-indicator-meta subagent-run-indicator-elapsed");
+  elapsed.setAttribute("aria-hidden", "true");
+  row.append(pulse, headline, activity, elapsed);
   body.append(row);
   bubble.append(body);
   parent.append(bubble);
+  updateSubagentRunIndicatorElapsed(parent, run);
 }
 
 function appendSubagentOverlayTranscript(parent, messages) {
@@ -14568,7 +14668,7 @@ function renderSubagentOverlayWidget() {
     bubble.classList.add("subagent-overlay-message", "subagent-overlay-empty-fallback");
     output.append(bubble);
   }
-  if (running && (agent.currentTool || (hasStructuredTranscript && renderedTranscriptMessages === 0))) appendSubagentOutputWaitingIndicator(output);
+  if (running) appendSubagentRunIndicator(output, { agent, run: selection.run });
 
   const controls = make("div", "release-npm-controls subagent-overlay-output-controls");
   const actions = make("div", "app-runner-output-actions");
@@ -14629,6 +14729,7 @@ async function refreshSubagentOverlay() {
 
 async function openSubagentOverlay(tab, run, agent) {
   if (!tab?.tabId || !run?.id || !agent?.id) return;
+  if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
   try {
     if (activeTabId !== tab.tabId) await switchTab(tab.tabId);
     subagentOverlaySelection = {
@@ -14677,6 +14778,275 @@ async function copySubagentOverlayOutput() {
   }
 }
 
+function subagentTerminalViewId(tab, run, agent) {
+  return JSON.stringify([tab?.tabId || "", run?.id || "", agent?.id || ""]);
+}
+
+function activeSubagentTerminalView() {
+  return activeSubagentTerminalId ? subagentTerminalViews.get(activeSubagentTerminalId) || null : null;
+}
+
+function subagentTerminalViewTitle(view) {
+  return String(view?.data?.agent?.name || view?.agent?.name || "subagent").trim() || "subagent";
+}
+
+function subagentTerminalViewIsRunning(view) {
+  const status = view?.data?.agent?.status || view?.agent?.status || "running";
+  return view?.finished !== true && ["running", "queued", "pending"].includes(status);
+}
+
+function subagentTerminalViewMeaningfulSignature(view) {
+  const data = view?.data ? { ...view.data, updatedAt: undefined } : null;
+  return JSON.stringify({ data, error: view?.error || "", finished: view?.finished === true });
+}
+
+function updateSubagentTerminalRefreshState(view, { running = subagentTerminalViewIsRunning(view) } = {}) {
+  if (!view || view.id !== activeSubagentTerminalId) return;
+  const status = [
+    view.loading ? "Refreshing…" : running ? "Live view · refreshes automatically" : "View retained after the child stopped being tracked",
+    view.error,
+  ].filter(Boolean).join(" · ");
+  elements.subagentTerminalStatus.setAttribute("aria-live", view.error ? "polite" : "off");
+  elements.subagentTerminalStatus.textContent = status;
+  elements.subagentTerminalStatus.classList.toggle("warning", !!view.error);
+  elements.subagentTerminalRefreshButton.disabled = view.loading || view.finished === true;
+  elements.subagentTerminalRefreshButton.textContent = view.loading ? "Refreshing…" : "Refresh";
+}
+
+function renderSubagentTerminalView() {
+  const view = activeSubagentTerminalView();
+  const active = !!view;
+  document.body.classList.toggle("subagent-terminal-active", active);
+  if (!elements.subagentTerminalView) return;
+  elements.subagentTerminalView.hidden = !active;
+  if (!view) return;
+
+  const agent = view.data?.agent || view.agent || {};
+  const running = subagentTerminalViewIsRunning(view);
+  const transcriptMessages = subagentOverlayTranscriptMessages({ agent });
+  const hasStructuredTranscript = transcriptMessages.length > 0;
+  const outputText = subagentOverlayOutputText({ agent });
+  const fallbackText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
+  const parent = tabs.find((tab) => tab.id === view.parentTabId);
+  const facts = [
+    view.finished ? "finished" : running ? "running" : agent.status || "finished",
+    view.run?.mode,
+    view.run?.source === "foreground" ? "foreground" : "async",
+    agent.nested ? "nested" : "",
+    agent.currentTool ? `tool ${agent.currentTool}` : "",
+  ].filter(Boolean);
+
+  elements.subagentTerminalTitle.textContent = subagentTerminalViewTitle(view);
+  elements.subagentTerminalMeta.textContent = `${facts.join(" · ")} · parent ${parent?.title || view.parentTitle || "terminal"} · run ${view.runId}`;
+  const shouldFollowOutput = elements.subagentTerminalTranscript.scrollHeight - elements.subagentTerminalTranscript.clientHeight - elements.subagentTerminalTranscript.scrollTop < CHAT_BOTTOM_THRESHOLD_PX;
+  elements.subagentTerminalTranscript.replaceChildren();
+  elements.subagentTerminalTranscript.setAttribute("aria-live", running ? "polite" : "off");
+  const rendered = appendSubagentOverlayTranscript(elements.subagentTerminalTranscript, transcriptMessages);
+  const emptyTranscriptFallback = hasStructuredTranscript && rendered === 0 ? subagentOverlayEmptyTranscriptText(transcriptMessages) : "";
+  const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;
+  if (visibleFallbackText) {
+    const { bubble } = createMessageBubble({
+      role: "assistant",
+      title: "subagent output",
+      timestamp: view.data?.updatedAt || Date.now(),
+      content: visibleFallbackText,
+    }, { streaming: running && !hasStructuredTranscript, transient: true });
+    bubble.classList.add("subagent-overlay-message", "subagent-overlay-empty-fallback");
+    elements.subagentTerminalTranscript.append(bubble);
+  }
+  if (running) appendSubagentRunIndicator(elements.subagentTerminalTranscript, { agent, run: view.run });
+
+  updateSubagentTerminalRefreshState(view, { running });
+  elements.subagentTerminalCopyButton.disabled = !outputText;
+  if (shouldFollowOutput) requestAnimationFrame(() => { elements.subagentTerminalTranscript.scrollTop = elements.subagentTerminalTranscript.scrollHeight; });
+}
+
+function scheduleSubagentTerminalRefresh(delay = SUBAGENT_OVERLAY_REFRESH_MS) {
+  clearTimeout(subagentTerminalRefreshTimer);
+  const view = activeSubagentTerminalView();
+  if (!view || view.finished) return;
+  subagentTerminalRefreshTimer = setTimeout(() => {
+    refreshSubagentTerminalView(view.id).finally(() => scheduleSubagentTerminalRefresh());
+  }, delay);
+}
+
+async function refreshSubagentTerminalView(viewId = activeSubagentTerminalId, { showLoading = false } = {}) {
+  const view = viewId ? subagentTerminalViews.get(viewId) : null;
+  if (!view || view.loading || view.finished) return;
+  const requestSerial = (view.requestSerial || 0) + 1;
+  const previousSignature = subagentTerminalViewMeaningfulSignature(view);
+  view.requestSerial = requestSerial;
+  view.loading = true;
+  if (showLoading) updateSubagentTerminalRefreshState(view);
+  try {
+    const query = new URLSearchParams({ tab: view.parentTabId, run: view.runId, agent: view.agentId });
+    const response = await api(`/api/subagents/output?${query}`, { scoped: false });
+    if (view.requestSerial !== requestSerial || !subagentTerminalViews.has(view.id)) return;
+    view.data = response.data || null;
+    view.error = "";
+  } catch (error) {
+    if (view.requestSerial !== requestSerial || !subagentTerminalViews.has(view.id)) return;
+    if (error?.statusCode === 404) view.finished = true;
+    view.error = error?.statusCode === 404
+      ? "This subagent has finished or is no longer tracked. Showing the last captured output."
+      : `Subagent output refresh failed: ${error.message || String(error)}`;
+  } finally {
+    if (view.requestSerial === requestSerial && subagentTerminalViews.has(view.id)) {
+      view.loading = false;
+      const meaningfulChange = previousSignature !== subagentTerminalViewMeaningfulSignature(view);
+      if (view.id === activeSubagentTerminalId) {
+        if (meaningfulChange) {
+          renderSubagentTerminalView();
+          renderTabs();
+        } else {
+          if (showLoading) updateSubagentTerminalRefreshState(view);
+          updateSubagentRunIndicatorElapsed(elements.subagentTerminalTranscript, view.run);
+        }
+      }
+    }
+  }
+}
+
+function deactivateSubagentTerminalView({ render = true, focusParent = false } = {}) {
+  clearTimeout(subagentTerminalRefreshTimer);
+  subagentTerminalRefreshTimer = null;
+  activeSubagentTerminalId = null;
+  renderSubagentTerminalView();
+  if (render) renderTabs();
+  updateDocumentTitle();
+  if (focusParent) focusPromptInput({ defer: true });
+}
+
+async function activateSubagentTerminalView(viewId) {
+  const view = subagentTerminalViews.get(viewId);
+  if (!view) return;
+  if (activeTabId !== view.parentTabId) await switchTab(view.parentTabId);
+  closeSubagentOverlay();
+  activeSubagentTerminalId = view.id;
+  renderSubagentTerminalView();
+  renderTabs();
+  updateDocumentTitle();
+  if (isSidePanelOverlayView()) setSidePanelCollapsed(true, { persist: false });
+  await refreshSubagentTerminalView(view.id);
+  scheduleSubagentTerminalRefresh();
+}
+
+async function openSubagentTerminal(tab, run, agent) {
+  if (!tab?.tabId || !run?.id || !agent?.id) return;
+  const id = subagentTerminalViewId(tab, run, agent);
+  const existing = subagentTerminalViews.get(id);
+  if (existing) {
+    existing.tab = tab;
+    existing.run = run;
+    existing.agent = agent;
+    existing.parentTitle = tab.tabTitle;
+  } else {
+    subagentTerminalViews.set(id, {
+      id,
+      parentTabId: tab.tabId,
+      parentTitle: tab.tabTitle,
+      tabIndex: tab.tabIndex,
+      tab,
+      run,
+      agent,
+      runId: run.id,
+      agentId: agent.id,
+      data: null,
+      error: "",
+      loading: false,
+      finished: false,
+      requestSerial: 0,
+      openedAt: Date.now(),
+    });
+  }
+  try {
+    await activateSubagentTerminalView(id);
+  } catch (error) {
+    addEvent(`could not open subagent terminal: ${error.message || String(error)}`, "error");
+  }
+}
+
+function closeSubagentTerminalTab(viewId) {
+  const view = subagentTerminalViews.get(viewId);
+  if (!view) return;
+  view.requestSerial += 1;
+  subagentTerminalViews.delete(viewId);
+  if (activeSubagentTerminalId === viewId) deactivateSubagentTerminalView({ render: false, focusParent: true });
+  renderTabs();
+  addEvent(`closed subagent view for ${subagentTerminalViewTitle(view)}; the child run was not stopped`, "info");
+}
+
+async function copySubagentTerminalOutput() {
+  const view = activeSubagentTerminalView();
+  const text = view ? subagentOverlayOutputText(view.data || { agent: view.agent }) : "";
+  if (!text) {
+    addEvent("subagent output is empty", "warn");
+    return;
+  }
+  try {
+    await copyText(text);
+    addEvent("copied subagent output", "info");
+  } catch (error) {
+    addEvent(`subagent output copy failed: ${error.message || String(error)}`, "warn");
+  }
+}
+
+function removeSubagentTerminalViewsForParent(parentTabId) {
+  for (const [viewId, view] of subagentTerminalViews) {
+    if (view.parentTabId !== parentTabId) continue;
+    view.requestSerial += 1;
+    subagentTerminalViews.delete(viewId);
+    if (activeSubagentTerminalId === viewId) deactivateSubagentTerminalView({ render: false });
+  }
+}
+
+function syncSubagentTerminalViewsFromOverview() {
+  for (const view of subagentTerminalViews.values()) {
+    const tab = (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : []).find((candidate) => candidate.tabId === view.parentTabId);
+    const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === view.runId);
+    const agent = (Array.isArray(run?.agents) ? run.agents : []).find((candidate) => candidate.id === view.agentId);
+    if (tab) {
+      view.tab = tab;
+      view.parentTitle = tab.tabTitle;
+    }
+    if (run) view.run = run;
+    if (agent) view.agent = agent;
+  }
+}
+
+function renderSubagentTerminalTab(view) {
+  const active = view.id === activeSubagentTerminalId;
+  const running = subagentTerminalViewIsRunning(view);
+  const stateClass = running ? "activity-working" : view.error && !view.data ? "stopped" : "activity-done";
+  const wrapper = make("div", `terminal-tab terminal-tab-subagent ${stateClass}${active ? " active" : ""}`);
+  wrapper.dataset.subagentViewId = view.id;
+  const button = make("button", "terminal-tab-button");
+  button.type = "button";
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-selected", active ? "true" : "false");
+  button.setAttribute("aria-label", `${subagentTerminalViewTitle(view)} subagent view, parent ${view.parentTitle || "terminal"}`);
+  appendTerminalTabContent(button, {
+    title: subagentTerminalViewTitle(view),
+    indicator: { state: running ? "working" : "done" },
+    meta: `Subagent · ${view.parentTitle || "parent terminal"}`,
+    subagent: true,
+  });
+  button.addEventListener("click", () => activateSubagentTerminalView(view.id));
+  const close = make("button", "terminal-tab-close", "×");
+  close.type = "button";
+  applyStyledTooltip(close, `Close ${subagentTerminalViewTitle(view)} view without stopping the subagent`, { ariaLabel: `Close ${subagentTerminalViewTitle(view)} subagent view` });
+  close.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeSubagentTerminalTab(view.id);
+  });
+  wrapper.append(button, close);
+  return wrapper;
+}
+
+function openSubagentOutput(tab, run, agent) {
+  return subagentOpenMode === "tab" ? openSubagentTerminal(tab, run, agent) : openSubagentOverlay(tab, run, agent);
+}
+
 function renderSubagentAgent(tab, run, agent) {
   const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}`);
   row.type = "button";
@@ -14694,9 +15064,10 @@ function renderSubagentAgent(tab, run, agent) {
   ].filter(Boolean);
   content.append(make("span", "subagent-agent-meta", facts.join(" · ")));
   row.append(dot, content);
-  row.title = `${agent?.name || "subagent"} · ${facts.join(" · ")} · run ${run?.id || "unknown"} · open live output`;
-  row.setAttribute("aria-label", `Open live output for ${agent?.name || "subagent"} in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
-  row.addEventListener("click", () => openSubagentOverlay(tab, run, agent));
+  const destination = subagentOpenMode === "tab" ? "subagent tab" : "live output overlay";
+  row.title = `${agent?.name || "subagent"} · ${facts.join(" · ")} · run ${run?.id || "unknown"} · open ${destination}`;
+  row.setAttribute("aria-label", `Open ${destination} for ${agent?.name || "subagent"} in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
+  row.addEventListener("click", () => openSubagentOutput(tab, run, agent));
   return row;
 }
 
@@ -14763,6 +15134,7 @@ async function refreshSubagents() {
   try {
     const response = await api("/api/subagents", { scoped: false });
     latestSubagents = response.data || null;
+    syncSubagentTerminalViewsFromOverview();
     subagentsError = null;
   } catch (error) {
     subagentsError = error;
@@ -29062,6 +29434,15 @@ if (elements.terminalTabsLayoutSelect) {
     setTerminalTabsLayout(elements.terminalTabsLayoutSelect.value, { announce: true });
   });
 }
+if (elements.subagentOpenModeSelect) {
+  elements.subagentOpenModeSelect.addEventListener("change", () => {
+    setSubagentOpenMode(elements.subagentOpenModeSelect.value, { announce: true });
+  });
+}
+elements.subagentTerminalCopyButton?.addEventListener("click", () => copySubagentTerminalOutput());
+elements.subagentTerminalRefreshButton?.addEventListener("click", () => {
+  refreshSubagentTerminalView(activeSubagentTerminalId, { showLoading: true }).finally(() => scheduleSubagentTerminalRefresh());
+});
 elements.piVersionButton?.addEventListener("click", () => {
   openPiReleaseNotes().catch((error) => addEvent(error.message || String(error), "error"));
 });
@@ -29671,6 +30052,7 @@ initializeFastPicks().catch((error) => addEvent(`failed to initialize path fast 
 restoreAgentDoneNotificationsSetting();
 restoreThinkingVisibilitySetting();
 restoreTerminalTabsLayoutSetting();
+restoreSubagentOpenModeSetting();
 restoreTerminalCustomGroups();
 restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();

@@ -113,6 +113,8 @@ assert.doesNotMatch(html, /id="btwOverlayDialog"/, "/btw should not use a blocki
 assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscription usage status");
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
 assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*foreground or async mode[\s\S]*id="subagentsBox"/, "side panel should explain how to launch tracked subagents and expose grouped running agents with a live count");
+assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
+assert.match(html, /id="subagentTerminalView"[\s\S]*Subagent · view only[\s\S]*id="subagentTerminalTranscript"[\s\S]*id="subagentTerminalStatus"[^>]*aria-live="off"[\s\S]*id="subagentTerminalInput"[^>]*placeholder="View only — send messages from the parent terminal"[^>]*disabled[\s\S]*Use its parent terminal to interact with the run/, "dedicated subagent tabs should expose a view-only transcript, non-announcing routine status, and disabled input");
 assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
 assert.match(html, /data-side-panel-section="session"[\s\S]*data-side-panel-section="subagents"[\s\S]*data-side-panel-section="queue"/, "Subagents should appear between Session and Queue in the side panel");
 assert.match(html, /data-side-panel-section="queue"[\s\S]*id="createPromptListButton"[\s\S]*>Create prompt list<\/button>/, "Queue section should expose prompt-list creation");
@@ -350,7 +352,10 @@ assert.match(css, /\.subagents-help \{[\s\S]*border-left:[\s\S]*font-size:\s*0\.
 assert.match(css, /\.subagents-box\.has-items[\s\S]*\.subagent-tab-group[\s\S]*\.subagent-agent-row/, "running subagents should render as grouped terminal/session cards");
 assert.match(css, /\.subagent-agent-row:hover,[\s\S]*\.subagent-agent-row:focus-visible/, "subagent rows should expose clickable hover and keyboard focus states");
 assert.match(css, /\.subagent-overlay-widget[\s\S]*\.subagent-overlay-transcript[\s\S]*\.subagent-overlay-message[\s\S]*\.subagent-overlay-close-action/, "subagent output should combine the non-blocking widget shell with the main transcript message styling");
-assert.match(css, /\.subagent-output-waiting-dot[\s\S]*@keyframes subagent-output-waiting-pulse/, "subagent output should animate one transient ellipsis while waiting");
+assert.match(css, /\.terminal-tab-subagent-indicator[\s\S]*\.terminal-tab-subagent[\s\S]*\.subagent-terminal-view[\s\S]*\.subagent-terminal-composer textarea:disabled/, "subagent terminal tabs should be visibly marked and retain an explicit disabled composer");
+assert.match(css, /body\.subagent-terminal-active \.workspace-dashboard,[\s\S]*body\.subagent-terminal-active \.composer[\s\S]*display: none !important/, "the dedicated child view should replace parent terminal content without mutating it");
+assert.match(css, /\.subagent-run-indicator[\s\S]*\.subagent-run-indicator \.run-indicator-meta/, "subagent output should reuse the main live run-indicator treatment with wrapping activity metadata");
+assert.match(css, /\.subagent-terminal-transcript > \.message \{[\s\S]*width: 100%;[\s\S]*max-width: none;/, "dedicated subagent transcript cards should fill the available tab width");
 assert.doesNotMatch(css, /\.extension-dialog\.subagent-overlay-dialog/, "subagent output should not retain blocking dialog styles");
 assert.match(css, /@keyframes subagent-running-pulse/, "running subagents should expose a live activity indicator");
 assert.match(css, /\.optional-feature-pill\.enabled/, "optional features should visually distinguish enabled state");
@@ -714,10 +719,57 @@ assert.match(
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents by terminal and session");
-assert.match(app, /function openSubagentOverlay\(tab, run, agent\)[\s\S]*activeTabId !== tab\.tabId[\s\S]*await switchTab\(tab\.tabId\)[\s\S]*renderWidgets\(\)/, "clicking an agent should switch to its owning tab before rendering the live widget");
+assert.match(app, /SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode"[\s\S]*function normalizeSubagentOpenMode\(value\)[\s\S]*function restoreSubagentOpenModeSetting\(\)/, "subagent opening mode should default safely and persist in this browser");
+assert.match(app, /function openSubagentOutput\(tab, run, agent\) \{[\s\S]*subagentOpenMode === "tab" \? openSubagentTerminal\(tab, run, agent\) : openSubagentOverlay\(tab, run, agent\)/, "clicking an agent should dispatch to the selected overlay or terminal-tab view");
+assert.match(app, /function openSubagentOverlay\(tab, run, agent\)[\s\S]*activeSubagentTerminalId[\s\S]*deactivateSubagentTerminalView\(\{ render: false \}\)[\s\S]*activeTabId !== tab\.tabId[\s\S]*await switchTab\(tab\.tabId\)[\s\S]*renderWidgets\(\)/, "opening an overlay should first leave any virtual child tab, then switch to its owning terminal before rendering the widget");
 assert.match(app, /function renderWidgets\(\)[\s\S]*renderAppRunnerWidget\(\)[\s\S]*renderSubagentOverlayWidgetSafely\(\)/, "subagent output should render in the shared non-blocking top widget area after App Runner");
 assert.doesNotMatch(app, /subagentOverlayDialog\.showModal|elements\.subagentOverlayDialog/, "subagent output should not open or depend on a modal dialog");
 assert.match(app, /api\(`\/api\/subagents\/output\?\$\{query\}`, \{ scoped: false \}\)/, "subagent overlay should fetch selected live output from the owning tab");
+assert.match(app, /function subagentRunIndicatorActivity\(agent = \{\}\)[\s\S]*currentToolArgs[\s\S]*activityState[\s\S]*function appendSubagentRunIndicator\(parent,[\s\S]*run-indicator-pulse[\s\S]*Agent is running:[\s\S]*subagent-run-indicator-elapsed[\s\S]*updateSubagentRunIndicatorElapsed\(parent, run\)/, "running child output should show the main-style pulse, current tool or activity, and separately refreshed elapsed runtime");
+assert.match(app, /const facts = \[[\s\S]*view\.finished \? "finished" : running \? "running"/, "retained completed child views should not keep contradictory running header metadata");
+assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*if \(running\) appendSubagentRunIndicator\(elements\.subagentTerminalTranscript, \{ agent, run: view\.run \}\)/, "the dedicated child tab should append a live run indicator whenever the selected child is running");
+const subagentTerminalSignatureSource = appFunctionSource("subagentTerminalViewMeaningfulSignature", "updateSubagentTerminalRefreshState");
+const subagentTerminalRefreshSource = appFunctionSource("refreshSubagentTerminalView", "deactivateSubagentTerminalView");
+assert.ok(subagentTerminalRefreshSource.includes("tab: view.parentTabId, run: view.runId, agent: view.agentId"), "subagent terminal refresh should stay scoped to the child and its owning parent terminal");
+assert.ok(subagentTerminalRefreshSource.includes("view.finished = true"), "an open child tab should retain its last snapshot after the run is no longer tracked");
+assert.ok(subagentTerminalRefreshSource.includes("previousSignature !== subagentTerminalViewMeaningfulSignature(view)"), "automatic child polling should compare meaningful snapshots before rebuilding the transcript");
+let unchangedSubagentRenderCount = 0;
+let unchangedSubagentTabRenderCount = 0;
+let unchangedSubagentElapsedUpdateCount = 0;
+const unchangedSubagentView = {
+  id: "child-view",
+  parentTabId: "parent-tab",
+  runId: "run-1",
+  agentId: "agent-1",
+  data: { updatedAt: 1, agent: { id: "agent-1", status: "running", currentTool: "read" } },
+  error: "",
+  finished: false,
+  loading: false,
+  requestSerial: 0,
+};
+await vm.runInNewContext(`${subagentTerminalSignatureSource}\nasync ${subagentTerminalRefreshSource}\nrefreshSubagentTerminalView("child-view");`, {
+  activeSubagentTerminalId: "child-view",
+  elements: { subagentTerminalTranscript: {} },
+  subagentTerminalViews: new Map([["child-view", unchangedSubagentView]]),
+  URLSearchParams,
+  api: async () => ({ data: { updatedAt: 2, agent: { id: "agent-1", status: "running", currentTool: "read" } } }),
+  renderSubagentTerminalView() { unchangedSubagentRenderCount += 1; },
+  renderTabs() { unchangedSubagentTabRenderCount += 1; },
+  updateSubagentRunIndicatorElapsed() { unchangedSubagentElapsedUpdateCount += 1; },
+  updateSubagentTerminalRefreshState() { throw new Error("background polls must not announce routine loading state"); },
+});
+assert.equal(unchangedSubagentRenderCount, 0, "an unchanged background poll should preserve the existing transcript DOM");
+assert.equal(unchangedSubagentTabRenderCount, 0, "an unchanged background poll should not rebuild terminal tabs");
+assert.equal(unchangedSubagentElapsedUpdateCount, 1, "an unchanged background poll should refresh only the existing visual elapsed-time node");
+assert.equal(unchangedSubagentView.loading, false, "an unchanged background poll should still clear its internal loading flag");
+const subagentTerminalCloseStart = app.indexOf("function closeSubagentTerminalTab(");
+const subagentTerminalCloseEnd = app.indexOf("\nasync function copySubagentTerminalOutput(", subagentTerminalCloseStart);
+assert.ok(subagentTerminalCloseStart >= 0 && subagentTerminalCloseEnd > subagentTerminalCloseStart, "closeSubagentTerminalTab should remain a standalone frontend helper");
+const subagentTerminalCloseSource = app.slice(subagentTerminalCloseStart, subagentTerminalCloseEnd);
+assert.ok(subagentTerminalCloseSource.includes("subagentTerminalViews.delete(viewId)"), "closing a subagent tab should remove only its client-side view record");
+assert.doesNotMatch(subagentTerminalCloseSource, /\bapi\(|closeTerminalTabs\(|closeSubagentOverlay\(/, "closing a subagent tab must not call backend terminal or subagent lifecycle APIs");
+assert.match(app, /function renderSubagentTerminalTab\(view\)[\s\S]*terminal-tab-subagent[\s\S]*subagent: true[\s\S]*closeSubagentTerminalTab\(view\.id\)/, "virtual tabs should be marked as subagents and have a view-only close action");
+assert.match(app, /function subagentTerminalViewId\(tab, run, agent\)[\s\S]*JSON\.stringify\(\[tab\?\.tabId[\s\S]*run\?\.id[\s\S]*agent\?\.id/, "virtual child tabs should be uniquely keyed by parent terminal, run, and child agent");
 assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
 assert.match(app, /function createMessageBubble\(message,[\s\S]*renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \}\)[\s\S]*function appendMessage\(message, options = \{\}\)[\s\S]*createMessageBubble\(message, options\)/, "main transcript output should use the reusable message bubble renderer");
 const subagentTranscriptMessagesSource = appFunctionSource("subagentOverlayTranscriptMessages", "subagentOverlayToolArguments");
@@ -733,12 +785,13 @@ const subagentAppendSource = appFunctionSource("appendSubagentOverlayTranscript"
 assert.ok(subagentAppendSource.includes("subagentOverlayTranscriptDisplayMessages(messages)"), "subagent bubbles should use the paired structured display sequence");
 assert.ok(subagentAppendSource.includes("createMessageBubble(displayMessage, { transient: true })"), "subagent bubbles should reuse the main message renderer");
 const thinkingVisibilitySource = appFunctionSource("setThinkingOutputVisible", "applyToolOutputExpansionToDom");
-assert.ok(thinkingVisibilitySource.includes("if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();"), "changing thinking visibility should rerender an open subagent transcript, including finished agents");
+assert.ok(thinkingVisibilitySource.includes("if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();"), "changing thinking visibility should rerender an open subagent overlay transcript, including finished agents");
+assert.ok(thinkingVisibilitySource.includes("if (activeSubagentTerminalId) renderSubagentTerminalView();"), "changing thinking visibility should rerender an open subagent terminal transcript, including finished agents");
 const subagentCopySource = appFunctionSource("subagentOverlayTranscriptOutputLines", "subagentOverlayOutputLines");
 assert.ok(subagentCopySource.includes("messageCopyText(message)"), "global subagent copy should derive from the same structured bubble messages");
 const subagentOutputSource = appFunctionSource("subagentOverlayOutputLines", "subagentOverlayOutputText");
 assert.ok(subagentOutputSource.includes("if (transcriptMessages.length) return subagentOverlayTranscriptOutputLines(data);"), "global subagent copy should prefer structured transcript content over flattened recent output");
-const subagentEmptySource = appFunctionSource("subagentOverlayEmptyTranscriptText", "appendSubagentOutputWaitingIndicator");
+const subagentEmptySource = appFunctionSource("subagentOverlayEmptyTranscriptText", "appendSubagentRunIndicator");
 assert.ok(subagentEmptySource.includes("No visible output was captured."), "hidden or non-renderable structured output should have explicit fallback text");
 const subagentRenderErrorSource = appFunctionSource("renderSubagentOverlayErrorWidget", "renderSubagentOverlayWidgetSafely");
 assert.ok(subagentRenderErrorSource.includes("Subagent output unavailable"), "a failed subagent renderer should show a minimal recoverable widget");
@@ -755,7 +808,7 @@ assert.equal(rendererContainmentResult, rendererFallbackSentinel, "subagent rend
 const subagentWidgetSource = appFunctionSource("renderSubagentOverlayWidget", "scheduleSubagentOverlayRefresh");
 assert.ok(subagentWidgetSource.includes("const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;"), "the widget should render a fallback instead of leaving structured-but-hidden output blank");
 assert.ok(subagentWidgetSource.includes("if (visibleFallbackText) {"), "the widget should append the nonblank fallback bubble");
-assert.ok(subagentWidgetSource.includes("if (running && (agent.currentTool || (hasStructuredTranscript && renderedTranscriptMessages === 0))) appendSubagentOutputWaitingIndicator(output);"), "subagent widgets should retain one waiting indicator while structured output is hidden or a tool is running");
+assert.ok(subagentWidgetSource.includes("if (running) appendSubagentRunIndicator(output, { agent, run: selection.run });"), "running subagent widgets should append the shared live activity indicator");
 assert.match(app, /api\("\/api\/subagents", \{ scoped: false \}\)/, "frontend should refresh the cross-tab subagent overview");
 assert.match(app, /SUBAGENTS_ACTIVE_REFRESH_MS = 1500/, "running subagents should receive a fast live refresh cadence");
 assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*webuiSubagentsData\(\)/, "server should expose a cross-tab running-subagent endpoint");
@@ -1343,7 +1396,7 @@ assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(p
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\) \{[\s\S]*?\.terminal-tab-group-menu \{[\s\S]*?grid-column:\s*1 \/ -1;[\s\S]*?margin:\s*0\.34rem 0 0;/, "mobile terminal tab group menus should not add horizontal margins that overflow and distort the tab card");
 assert.match(app, /let openTerminalTabGroupKey = null/, "frontend should track the open terminal tab group across tab bar rerenders");
 assert.match(app, /function updateTerminalTabGroupOpenState\(\)/, "frontend should be able to reapply open terminal tab group state after rerenders");
-assert.match(app, /classList\.toggle\("terminal-tabs-dense", tabs\.length >= 10\)/, "frontend should enable dense tab layout before tab names become unreadable");
+assert.match(app, /const totalTabCount = tabs\.length \+ subagentTerminalViews\.size;[\s\S]*classList\.toggle\("terminal-tabs-dense", totalTabCount >= 10\)/, "frontend should include virtual subagent tabs when enabling dense tab layout");
 assert.match(app, /appendTerminalTabContent\(button, \{ title: activeTitle,[\s\S]*?count: groupTabs\.length,[^}]*\}\)/, "group buttons should show the active terminal name instead of only the cwd label");
 assert.match(app, /wrapper\.addEventListener\("pointerenter", \(\) => setOpenTerminalTabGroup\(group\.key\)\)/, "terminal tab groups should mark themselves open while hovered");
 assert.match(app, /if \(openTerminalTabGroupKey\) \{\n\s+scheduleRefreshTabs\(600\);/, "tab polling should defer full tab refreshes while a group menu is open");
@@ -1357,6 +1410,8 @@ assert.match(app, /function closeAllTerminalTabs\(\)[\s\S]*?closeTerminalTabs\(t
 assert.match(app, /WARNING: \$\{activeAgentTabs\.length\}[\s\S]*?still running or waiting for input/, "tab close confirmations should warn when agents are still running");
 assert.match(app, /elements\.closeAllTabsButton\.addEventListener\("click", \(\) => closeAllTerminalTabs\(\)\)/, "close-all tabs button should be wired in JS");
 assert.match(app, /const groups = tabCwdGroups\(\);[\s\S]*?for \(const group of groups\) \{\n\s+if \(shouldRenderTerminalTabGroup\(group, groups\.length\)\)[\s\S]*?renderTerminalTabGroup\(group, groups\.length\)[\s\S]*?for \(const tab of group\.tabs\) elements\.tabBar\.append\(renderTerminalTab\(tab\)\);/, "terminal tabs should render groups with group count and ungrouped tabs when grouping is skipped");
+assert.match(app, /for \(const view of \[\.\.\.subagentTerminalViews\.values\(\)\][\s\S]*renderSubagentTerminalTab\(view\)/, "open subagent views should render as first-class virtual terminal tabs");
+assert.match(readme, /Tracked subagent output[\s\S]*dedicated \*\*Subagent\*\* terminal tab[\s\S]*view-only[\s\S]*close without stopping or interrupting/, "README should document the selectable view-only child terminal behavior");
 assert.match(app, /let tabSeenCompletionSerials = new Map\(\)/, "frontend should track which tab completions have been seen");
 assert.match(app, /let activeTabGeneration = 0/, "frontend should version active-tab UI state to reject stale async work");
 assert.match(app, /function isCurrentTabContext\(context\)/, "frontend should identify stale active-tab refresh contexts");

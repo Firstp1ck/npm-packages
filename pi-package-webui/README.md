@@ -143,6 +143,7 @@ Optional Natural Conversation server-side voice fallback variables:
 
 - Pathless `pi-webui` startup: the server opens first, then the browser prompts for the first terminal CWD.
 - Multi-tab Pi sessions with isolated processes, working directories, prompt drafts, activity state, per-tab settings, and a workspace dashboard for common actions.
+- Tracked subagent output can open in the existing non-blocking overlay/widget or in a dedicated **Subagent** terminal tab, selected from the Subagents side-panel section and saved in the browser. Subagent tabs are view-only, reuse the bounded live transcript at the normal full terminal width, show the pulsing **Agent is running:** card with current child activity, and close without stopping or interrupting the child run; use the parent terminal for interaction.
 - Unified command palette (`Ctrl/Cmd+K`) for commands, tabs, models, sessions, settings, app controls, and frequent Web UI actions.
 - Automatic tab naming from the first prompt, with `--name <name>` still available for an explicit initial tab name.
 - Streaming chat transcript with Markdown, copy buttons for fenced code blocks, rendered Mermaid diagrams from fenced `mermaid`/`mmd` code blocks, thinking output, tool/bash cards, queue and compaction events, edit-and-retry from user prompts, transcript search, copy buttons, and guarded abort controls that require holding Esc or the Abort button for 3 seconds.
