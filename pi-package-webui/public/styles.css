@@ -1012,6 +1012,33 @@ body.embedded-split .side-panel-backdrop {
   font-size: 1rem;
   line-height: 1.25;
 }
+.side-panel-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+  min-width: 0;
+}
+.sponsor-link {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  color: rgba(245, 194, 231, 0.62);
+  background: transparent;
+  font-size: 0.95rem;
+  line-height: 1;
+  text-decoration: none;
+  transition: color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.sponsor-link:hover,
+.sponsor-link:focus-visible {
+  color: var(--ctp-pink);
+  background: rgba(245, 194, 231, 0.11);
+  box-shadow: 0 0 0.75rem rgba(245, 194, 231, 0.2);
+  outline: none;
+}
 .side-panel-version-row {
   display: flex;
   align-items: center;

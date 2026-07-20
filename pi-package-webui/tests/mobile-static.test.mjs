@@ -68,6 +68,7 @@ assert.match(html, /id="newTabWorktreeButton" class="terminal-new-tab-menu-item 
 assert.match(html, /id="closeAllTabsButton"[\s\S]*?>Close all Tabs<\/button>/, "tab header should expose a top-right close-all tabs action");
 assert.match(html, /id="sidePanelBackdrop"/, "mobile side panel needs an overlay/backdrop close target");
 assert.match(html, /<div class="side-panel-heading">[\s\S]*<strong class="side-panel-title">Control Deck<\/strong>[\s\S]*<div class="side-panel-version-row"[\s\S]*<button id="piVersionButton"[\s\S]*aria-controls="piReleaseNotesDialog"[\s\S]*<button id="webuiVersionButton"[\s\S]*aria-controls="confirmationDialog"[\s\S]*id="webuiDevBadge"/, "Control Deck header should keep its title separate from an aligned version and build row");
+assert.match(html, /<div class="side-panel-brand-row">[\s\S]*<span class="side-panel-kicker">Pi Web UI<\/span>[\s\S]*<a class="sponsor-link" href="https:\/\/github\.com\/sponsors\/Firstp1ck" target="_blank" rel="noopener noreferrer" aria-label="Sponsor Firstp1ck on GitHub"[^>]*>♡<\/a>/, "Control Deck brand should expose a subtle, accessible sponsor link beside the Pi Web UI name");
 assert.match(html, /<dialog id="piReleaseNotesDialog"[\s\S]*id="piReleaseNotesTitle"[\s\S]*id="piReleaseNotesStatus"[\s\S]*id="piReleaseNotesBody"[\s\S]*id="piReleaseNotesGithubLink"/, "Pi release notes should use a dedicated accessible dialog");
 assert.doesNotMatch(html, /Safer option|confirmationAlternative/, "shared confirmation dialogs should not render a safer-option row");
 assert.doesNotMatch(app, /confirmationAlternative|\balternative:\s*options\.alternative/, "confirmation logic should not populate a removed safer-option row");
@@ -336,6 +337,8 @@ assert.match(css, /\.session-detail-value\.truncate[\s\S]*?text-overflow:\s*elli
 assert.match(css, /\.server-restart-panel \{[\s\S]*?z-index:\s*62/, "server restart overlay should render above the offline shell");
 assert.match(css, /@keyframes server-restart-spin/, "server restart overlay should show a loading spinner");
 assert.match(css, /\.side-panel-version-row \{[\s\S]*?display:\s*flex[\s\S]*?align-items:\s*center[\s\S]*?flex-wrap:\s*wrap/, "Control Deck versions and build status should use a dedicated responsive row");
+assert.match(css, /\.side-panel-brand-row \{[\s\S]*?display:\s*flex[\s\S]*?align-items:\s*center[\s\S]*?\.sponsor-link \{[\s\S]*?text-decoration:\s*none/, "Sponsor heart should sit inline with the Pi Web UI brand and remain visually subtle");
+assert.match(css, /\.sponsor-link:hover,[\s\S]*?\.sponsor-link:focus-visible/, "Sponsor heart should expose visible hover and keyboard focus states");
 assert.match(css, /\.pi-version-button,\n\.webui-version-button,\n\.webui-dev-badge \{[\s\S]*?border-radius:\s*999px/, "Pi and Web UI version buttons plus the dev indicator should render as compact title controls");
 assert.match(css, /\.webui-version-button:hover,[\s\S]*?\.webui-version-button:focus-visible/, "Web UI version button should expose visible hover and keyboard focus states");
 assert.match(css, /\.pi-version-button:hover,[\s\S]*?\.pi-version-button:focus-visible/, "Pi version button should expose visible hover and keyboard focus states");
