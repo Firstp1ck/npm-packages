@@ -12017,6 +12017,13 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
 .confirmation-details > div { display: grid; grid-template-columns: minmax(6rem, 0.32fr) minmax(0, 1fr); gap: 0.7rem; }
 .confirmation-details dt { color: var(--ctp-subtext); font-weight: 800; }
 .confirmation-details dd { margin: 0; overflow-wrap: anywhere; }
+.git-worktree-base-options { display: grid; gap: 0.65rem; margin: 1rem 0; padding: 0; border: 0; }
+.git-worktree-base-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.7rem; padding: 0.8rem; border: 1px solid rgba(180, 190, 254, 0.2); border-radius: 0.75rem; background: rgba(var(--ctp-surface-rgb), 0.3); cursor: pointer; }
+.git-worktree-base-option:has(input:checked) { border-color: rgba(137, 180, 250, 0.72); background: rgba(137, 180, 250, 0.12); }
+.git-worktree-base-option input { margin-top: 0.2rem; accent-color: var(--ctp-blue); }
+.git-worktree-base-option span { display: grid; gap: 0.2rem; min-width: 0; }
+.git-worktree-base-option strong { color: var(--ctp-text); overflow-wrap: anywhere; }
+.git-worktree-base-option small { color: var(--ctp-subtext); line-height: 1.45; }
 
 @media (max-width: 720px) {
   .remote-access-indicator { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

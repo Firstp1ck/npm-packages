@@ -555,6 +555,30 @@ try {
     assert.equal(initialWorktrees.body?.ok, true, "worktree list endpoint should return data for a git repository");
     assert.ok(initialWorktrees.body?.data?.worktrees?.some((worktree) => worktree.isMainWorktree && worktree.current), "worktree list should include the current main worktree");
 
+    const originMainBase = runGitFixture(["rev-parse", "HEAD"], cwd, "origin/main base fixture should resolve current HEAD");
+    runGitFixture(["update-ref", "refs/remotes/origin/main", originMainBase], cwd, "origin/main base fixture should create a remote-tracking ref");
+    await writeFile(path.join(cwd, "workspace-head.txt"), "current workspace only\n");
+    runGitFixture(["add", "workspace-head.txt"], cwd, "workspace HEAD fixture should stage its marker");
+    runGitFixture(["commit", "-m", "test: advance workspace head"], cwd, "workspace HEAD fixture should advance main beyond origin/main");
+    const workspaceHead = runGitFixture(["rev-parse", "HEAD"], cwd, "workspace HEAD fixture should resolve advanced HEAD");
+    assert.notEqual(workspaceHead, originMainBase, "workspace HEAD should differ from origin/main for base selection coverage");
+
+    const originBasedBranch = "feat/origin-main-base";
+    const originBasedWorktree = await request("127.0.0.1", "/api/git-worktrees", {
+      method: "POST",
+      body: { tab: tabId, branchName: originBasedBranch, baseRef: "origin/main", sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(originBasedWorktree.status, 200);
+    assert.equal(originBasedWorktree.body?.ok, true, `origin/main-based worktree should be created: ${originBasedWorktree.body?.error || ""}`);
+    const originBasedWorktreePath = originBasedWorktree.body?.data?.worktree?.path || originBasedWorktree.body?.data?.path;
+    const originBasedWorktreeTabId = originBasedWorktree.body?.data?.tab?.id;
+    assert.equal(runGitFixture(["rev-parse", "HEAD"], originBasedWorktreePath, "origin/main-based worktree should resolve its HEAD"), originMainBase, "explicit baseRef should create the branch from origin/main rather than the current workspace HEAD");
+    const closeOriginBasedTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [originBasedWorktreeTabId] }, timeoutMs: 10_000 });
+    assert.equal(closeOriginBasedTab.body?.ok, true, "origin/main-based worktree tab should close before cleanup");
+    const removeOriginBasedWorktree = await request("127.0.0.1", "/api/git-worktrees", { method: "DELETE", body: { tab: tabId, path: originBasedWorktreePath, confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(removeOriginBasedWorktree.body?.ok, true, "origin/main-based worktree should be removable after the tab closes");
+
     await writeFile(path.join(cwd, "guided.txt"), "guided worktree flow\n");
     runGitFixture(["add", "guided.txt"], cwd, "source checkout should stage guided workflow changes");
     await mkdir(path.join(cwd, "dev", "COMMIT"), { recursive: true });
@@ -597,7 +621,7 @@ try {
     const worktreeBranch = "feat/http-worktree";
     const createWorktree = await request("127.0.0.1", "/api/git-worktrees", {
       method: "POST",
-      body: { tab: tabId, branchName: worktreeBranch, sessionMode: "empty", openTab: true },
+      body: { tab: tabId, branchName: worktreeBranch, baseRef: "HEAD", sessionMode: "empty", openTab: true },
       timeoutMs: 20_000,
     });
     assert.equal(createWorktree.status, 200);
@@ -611,6 +635,7 @@ try {
     assert.equal(createWorktree.body?.data?.tab?.cwd, worktreePath, "opened worktree tab should be rooted at the worktree path");
     assert.equal(createWorktree.body?.data?.tab?.gitWorkspace?.branch, worktreeBranch, "opened tab metadata should record the worktree branch");
     assert.equal(createWorktree.body?.data?.tab?.gitWorkspace?.worktreePath, worktreePath, "opened tab metadata should record the worktree path");
+    assert.equal(runGitFixture(["rev-parse", "HEAD"], worktreePath, "current-HEAD-based worktree should resolve its HEAD"), workspaceHead, "explicit HEAD baseRef should create the branch from the active workspace commit");
 
     const branchesWithWorktree = await request("127.0.0.1", `/api/git-branches?tab=${encodeURIComponent(tabId)}`);
     assert.equal(branchesWithWorktree.status, 200);

@@ -263,6 +263,12 @@ const elements = {
   confirmationUndo: $("#confirmationUndo"),
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
+  gitWorktreeBaseDialog: $("#gitWorktreeBaseDialog"),
+  gitWorktreeBaseBranch: $("#gitWorktreeBaseBranch"),
+  gitWorktreeBaseOriginMain: $("#gitWorktreeBaseOriginMain"),
+  gitWorktreeBaseCurrentHead: $("#gitWorktreeBaseCurrentHead"),
+  gitWorktreeBaseCancelButton: $("#gitWorktreeBaseCancelButton"),
+  gitWorktreeBaseCreateButton: $("#gitWorktreeBaseCreateButton"),
   piReleaseNotesDialog: $("#piReleaseNotesDialog"),
   piReleaseNotesTitle: $("#piReleaseNotesTitle"),
   piReleaseNotesStatus: $("#piReleaseNotesStatus"),
@@ -390,6 +396,7 @@ let foregroundReconcileTimer = null;
 let eventSource = null;
 let activeDialog = null;
 let activeConfirmationResolve = null;
+let activeGitWorktreeBaseResolve = null;
 let activeUndoAction = null;
 let undoToastTimer = null;
 let undoToastFocusReturn = null;
@@ -2759,6 +2766,31 @@ function appConfirmText(message, options = {}) {
     undoable: options.undoable === true,
     confirmLabel: options.confirmLabel || "Continue",
     danger: options.danger !== false,
+  });
+}
+
+function finishGitWorktreeBaseChoice(baseRef = null) {
+  const resolve = activeGitWorktreeBaseResolve;
+  activeGitWorktreeBaseResolve = null;
+  if (elements.gitWorktreeBaseDialog?.open) elements.gitWorktreeBaseDialog.close();
+  resolve?.(baseRef);
+}
+
+function chooseGitWorktreeBase(branch) {
+  const branchName = cleanStatusText(branch) || "the new branch";
+  if (!elements.gitWorktreeBaseDialog?.showModal) {
+    const choice = window.prompt(`Create ${branchName} from:\n1. origin/main (default)\n2. Current workspace HEAD\n\nEnter 1 or 2. Cancel to abort.`, "1");
+    if (choice === null) return Promise.resolve(null);
+    return Promise.resolve(String(choice).trim() === "2" ? "HEAD" : "origin/main");
+  }
+  if (activeGitWorktreeBaseResolve) finishGitWorktreeBaseChoice(null);
+  elements.gitWorktreeBaseBranch.textContent = branchName;
+  elements.gitWorktreeBaseOriginMain.checked = true;
+  elements.gitWorktreeBaseCurrentHead.checked = false;
+  return new Promise((resolve) => {
+    activeGitWorktreeBaseResolve = resolve;
+    elements.gitWorktreeBaseDialog.showModal();
+    queueMicrotask(() => elements.gitWorktreeBaseOriginMain?.focus());
   });
 }
 
@@ -12851,8 +12883,8 @@ function footerBranchCreateWorktreePathPreview(branch = footerBranchCreateName()
   return `${root.replace(/\/+$/, "")}/${slugifyWorktreePathPart(branch || footerBranchCreatePreviewName())}`;
 }
 
-function gitWorktreeCreateCommandDisplay(branch, state = footerBranchPickerState) {
-  return `git worktree add -b ${quoteGitBranchForDisplay(branch)} ${quoteGitBranchForDisplay(footerBranchCreateWorktreePathPreview(branch, state))}`;
+function gitWorktreeCreateCommandDisplay(branch, state = footerBranchPickerState, baseRef = "origin/main") {
+  return `git worktree add -b ${quoteGitBranchForDisplay(branch)} ${quoteGitBranchForDisplay(footerBranchCreateWorktreePathPreview(branch, state))} ${quoteGitBranchForDisplay(baseRef)}`;
 }
 
 function gitWorktreeOpenCommandDisplay(path) {
@@ -12868,7 +12900,7 @@ function footerBranchCreateTooltip(branchName = footerBranchCreateName(), state 
     `This will run roughly: ${command}`,
     "",
     "What happens:",
-    "• creates the branch from the current HEAD when it does not exist",
+    "• asks whether to base the new branch on origin/main (default) or this workspace's current HEAD",
     "• opens a separate Pi tab rooted at that worktree",
     "• does not switch this tab's branch, commit, push, or delete anything",
     "",
@@ -12910,18 +12942,20 @@ async function openWorktreeResponseTab(response, { branchName = "", action = "op
   requestGitFooterWebuiPayload(activeTabContext(), { force: true });
 }
 
-async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), { tabContext = activeTabContext(), skipConfirm = false } = {}) {
+async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), { tabContext = activeTabContext(), skipConfirm = false, chooseBase = true } = {}) {
   const branchName = cleanStatusText(branch);
   if (!branchName) {
     addEvent("Enter a branch name before creating a branch worktree.", "warn");
     return;
   }
   if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { create: true, requireConfirm: true }))) return;
+  const baseRef = chooseBase ? await chooseGitWorktreeBase(branchName) : "HEAD";
+  if (baseRef === null) return;
   const tabId = tabContext.tabId || activeTabId;
   try {
     footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName, tabId };
     renderFooter();
-    const response = await api("/api/git-worktrees", { method: "POST", body: { branchName, sessionMode: "fork-current", openTab: true }, tabId });
+    const response = await api("/api/git-worktrees", { method: "POST", body: { branchName, baseRef, sessionMode: "fork-current", openTab: true }, tabId });
     await openWorktreeResponseTab(response, { branchName, action: "create" });
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
@@ -13120,7 +13154,7 @@ function footerBranchOptionDetail(branch, state, { selected, worktreePath } = {}
 function openFooterBranchOption(branch, state = footerBranchPickerState) {
   const worktreePath = footerBranchWorktreePath(branch, state);
   if (worktreePath && !branch.worktreeCurrent) return openFooterGitWorktree(worktreePath, { branchName: branch.name, skipConfirm: true });
-  return createFooterGitBranchWorktree(branch.name, { skipConfirm: true });
+  return createFooterGitBranchWorktree(branch.name, { skipConfirm: true, chooseBase: false });
 }
 
 function renderFooterBranchOption(branch, state = footerBranchPickerState) {
@@ -13275,7 +13309,7 @@ function renderFooterBranchPicker() {
   const hasOtherBranches = state.branches.some((branch) => !branch.current && branch.name !== state.current);
   if (!state.loading && !hasOtherBranches) {
     const empty = make("div", "footer-model-picker-empty muted");
-    empty.append(make("strong", undefined, "No other local branches available."), make("span", undefined, " Create a branch worktree from the current HEAD to continue."));
+    empty.append(make("strong", undefined, "No other local branches available."), make("span", undefined, " Create a branch worktree from origin/main or the current workspace HEAD to continue."));
     picker.append(empty);
   }
 
@@ -19359,6 +19393,11 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
     failGitWorkflow(new Error("Branch name is required to create a PR branch worktree."), "message", { tabId });
     return;
   }
+  const baseRef = await chooseGitWorktreeBase(branch);
+  if (baseRef === null) {
+    setGitWorkflow({ step: "message", busy: false, output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nPR branch worktree creation cancelled before choosing a base.` }, { tabId });
+    return;
+  }
   let expectedStagedContentHash;
   try {
     expectedStagedContentHash = await assertGuidedGitStagedContentBinding(tabId, "PR worktree creation");
@@ -19369,7 +19408,7 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
   const runId = workflow.runId;
   setGitWorkflow({ step: "branching", prMode: true, prBranch: branch, branchName: branch, busy: true, error: "", output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nCreating or opening branch worktree ${branch}…` }, { tabId });
   try {
-    const result = await gitWorkflowRequest("/api/git-workflow/branch", { body: { branch, sessionMode: "fork-current", openTab: true, ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
+    const result = await gitWorkflowRequest("/api/git-workflow/branch", { body: { branch, baseRef, sessionMode: "fork-current", openTab: true, ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!result) return;
     syncGitWorkflowWorktreeTabs(result);
     const targetTabId = result.tab?.id && tabs.some((tab) => tab.id === result.tab.id) ? result.tab.id : tabId;
@@ -28605,6 +28644,19 @@ elements.confirmationDialog?.addEventListener("cancel", (event) => {
 });
 elements.confirmationDialog?.addEventListener("close", () => {
   if (activeConfirmationResolve) finishApplicationConfirmation(false);
+});
+elements.gitWorktreeBaseCancelButton?.addEventListener("click", () => finishGitWorktreeBaseChoice(null));
+elements.gitWorktreeBaseCreateButton?.addEventListener("click", () => finishGitWorktreeBaseChoice(elements.gitWorktreeBaseCurrentHead?.checked ? "HEAD" : "origin/main"));
+elements.gitWorktreeBaseDialog?.querySelector("form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  finishGitWorktreeBaseChoice(elements.gitWorktreeBaseCurrentHead?.checked ? "HEAD" : "origin/main");
+});
+elements.gitWorktreeBaseDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishGitWorktreeBaseChoice(null);
+});
+elements.gitWorktreeBaseDialog?.addEventListener("close", () => {
+  if (activeGitWorktreeBaseResolve) finishGitWorktreeBaseChoice(null);
 });
 elements.commandPaletteDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
 elements.commandPaletteDialog?.addEventListener("cancel", (event) => {

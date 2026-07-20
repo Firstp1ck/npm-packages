@@ -2,6 +2,9 @@
   "name": "@firstpick/pi-prompts-git-pr",
   "version": "0.1.3",
   "description": "Reusable Pi prompt templates for commits, pull requests, and PR review workflows.",
+  "scripts": {
+    "test": "node tests/git-staged-msg.test.mjs"
+  },
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-prompts-git-pr#readme",
   "repository": {

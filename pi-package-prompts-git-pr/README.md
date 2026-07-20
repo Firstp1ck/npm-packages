@@ -40,7 +40,7 @@ No required configuration. After installation, type `/` in Pi to autocomplete th
 /pr [language: en|de]
 ```
 
-Defaults remain English with automatic scope selection, so existing invocations without arguments continue to work.
+Defaults remain English with automatic scope selection, so existing invocations without arguments continue to work. The prompt resolves the Git repository root before reading staged changes and always writes its output under the root-level `dev/COMMIT` directory, including when invoked from a nested subdirectory.
 
 ## Dependencies
 

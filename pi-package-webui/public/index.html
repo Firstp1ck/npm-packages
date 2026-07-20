@@ -768,6 +768,28 @@
       </form>
     </dialog>
 
+    <dialog id="gitWorktreeBaseDialog" class="extension-dialog git-worktree-base-dialog">
+      <form method="dialog">
+        <h2>Choose branch starting point</h2>
+        <p>Create <code id="gitWorktreeBaseBranch"></code> from:</p>
+        <fieldset class="git-worktree-base-options">
+          <legend class="sr-only">Branch starting point</legend>
+          <label class="git-worktree-base-option" for="gitWorktreeBaseOriginMain">
+            <input id="gitWorktreeBaseOriginMain" type="radio" name="gitWorktreeBase" value="origin/main" checked />
+            <span><strong>origin/main</strong><small>Default. Start from the remote-tracking main branch.</small></span>
+          </label>
+          <label class="git-worktree-base-option" for="gitWorktreeBaseCurrentHead">
+            <input id="gitWorktreeBaseCurrentHead" type="radio" name="gitWorktreeBase" value="HEAD" />
+            <span><strong>Current workspace HEAD</strong><small>Start from the commit currently checked out in this Pi tab. Uncommitted files are not part of the branch base.</small></span>
+          </label>
+        </fieldset>
+        <menu>
+          <button id="gitWorktreeBaseCancelButton" type="button">Cancel</button>
+          <button id="gitWorktreeBaseCreateButton" class="primary" type="button">Create worktree</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="extensionDialog" class="extension-dialog">
       <form id="dialogForm" method="dialog">
         <h2 id="dialogTitle">Pi request</h2>
