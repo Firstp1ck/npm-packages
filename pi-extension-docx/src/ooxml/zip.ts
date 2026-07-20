@@ -1,4 +1,5 @@
 import { inflateSync, zipSync } from "fflate";
+import { crc32 } from "@firstpick/pi-utils/hash";
 import { DocxError, fail } from "../errors.ts";
 import { mergeLimits, type DocxLimits } from "../core/limits.ts";
 
@@ -21,8 +22,7 @@ function canonicalPath(raw: string): string {
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) fail("INVALID_PACKAGE", `ZIP path traversal or empty segment: ${JSON.stringify(raw)}.`);
   return raw;
 }
-const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let v = n; for (let k = 0; k < 8; k++) v = (v & 1) ? 0xedb88320 ^ (v >>> 1) : v >>> 1; t[n] = v >>> 0; } return t; })();
-export function crc32(data: Uint8Array): number { let crc = 0xffffffff; for (const byte of data) crc = CRC_TABLE[(crc ^ byte) & 255] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; }
+export { crc32 };
 
 function parseDirectory(bytes: Uint8Array, limits: DocxLimits): ZipEntryMetadata[] {
   const eocd = findEocd(bytes);

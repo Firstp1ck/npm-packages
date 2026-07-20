@@ -40,6 +40,7 @@ registerHooks({
             clear: () => {},
           });
           export const envFlag = ${envFlag.toString()};
+          export const normalizeTimestampMs = (timestamp) => timestamp < 1e11 ? timestamp * 1000 : timestamp > 1e14 ? Math.floor(timestamp / 1000) : timestamp;
           export const estimateStableInitialPromptFromPiContext = async () => null;
           export const estimateTokensFromCharCount = (chars) => Math.ceil(chars / 4);
           export const formatTokens = (n) => String(n);

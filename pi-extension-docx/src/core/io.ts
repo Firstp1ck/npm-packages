@@ -1,9 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { syncDirectory } from "@firstpick/pi-utils/filesystem";
 import { fail } from "../errors.ts";
-
-async function syncDirectory(directory: string): Promise<void> { try { const handle = await fs.open(directory, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch (error) { if (process.platform !== "win32") throw error; } }
 export function recoveryPathFor(destination: string): string { const extension = path.extname(destination), stamp = new Date().toISOString().replace(/[:.]/g, "-"); return destination.slice(0, -extension.length) + `.pi-recovery-${stamp}` + extension; }
 export async function durableAtomicReplace(destination: string, data: Uint8Array, options: { overwrite: boolean; permanentRecovery?: boolean }): Promise<{ recoveryPath?: string }> {
   const directory = path.dirname(destination), temp = path.join(directory, `.${path.basename(destination)}.pi-tmp-${randomUUID()}`);

@@ -65,6 +65,11 @@ export function resolveUserPath(input: string, cwd = process.cwd(), options: { s
   return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded);
 }
 
+export function samePath(a: string, b: string): boolean {
+  const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  return normalize(a) === normalize(b);
+}
+
 export function isPathInside(basePath: string, candidatePath: string): boolean {
   const relative = path.relative(path.resolve(basePath), path.resolve(candidatePath));
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));

@@ -12,6 +12,7 @@ import {
   formatTokens,
   formatUserPath,
   pathExists,
+  normalizeTimestampMs,
   type InitialPromptEstimateSnapshot,
   type InitialPromptInputEstimate,
 } from "@firstpick/pi-utils";
@@ -731,16 +732,6 @@ const PROMPT_ESTIMATE_ENABLED = !envFlag("PI_GIT_FOOTER_DISABLE_PROMPT_ESTIMATE"
 
 function formatCwd(cwd: string): string {
   return formatUserPath(cwd);
-}
-
-function normalizeTimestampMs(timestamp: number): number {
-  // Handle mixed timestamp units from different session formats.
-  // seconds   -> ms  (e.g. 1715000000)
-  // ms        -> ms  (e.g. 1715000000000)
-  // microsec  -> ms  (e.g. 1715000000000000)
-  if (timestamp < 1e11) return timestamp * 1000;
-  if (timestamp > 1e14) return Math.floor(timestamp / 1000);
-  return timestamp;
 }
 
 function getEntryTimestampMs(entry: { type: string; timestamp: string; message?: { timestamp?: number } }): number | null {

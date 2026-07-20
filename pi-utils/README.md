@@ -30,10 +30,14 @@ Shared helper utilities used by `@firstpick/pi-extension-*` packages.
 - `readJsonFile(path)` / `readJsonIfExists(path, fallback)` / `writeJsonFile(path, data)`
 - `runCommand(command, args, options?)` / `runShellCommand(cwd, command, options?)`
 - `shellQuote(value)` / `stripAnsi(input)` / `resolveExecutableFromPath(name)`
+- `detachChildProcess(child)` / `killGracefully(target, options?)` / `terminateProcessTree(target, signal?)`
+- `sha256Bytes(data)` / `sha256Text(value)` / `sha256File(path)` / `shortHash(value, length?)` / `crc32(data)`
+- `syncFile(path)` / `syncDirectory(path)`
+- `normalizeTimestampMs(timestamp)`
 - `jsonToolResult(payload)` / `textToolResult(text, details?)`
 - `createRunLog(cwd)` / `appendRunLog(log, chunk)` / `saveRunLog(log, options)` / `listRunLogs(dir)`
 - `parseChecklistLine(line)` / `extractChecklist(text)` / `stripChecklistLines(text)` / `countChecklistProgress(textOrItems)`
-- `expandTilde(input)` / `resolveUserPath(input, cwd?)` / `safeResolveInside(base, ref)` / `formatUserPath(path)`
+- `expandTilde(input)` / `resolveUserPath(input, cwd?)` / `safeResolveInside(base, ref)` / `samePath(a, b)` / `formatUserPath(path)`
 - `createExtensionWorkingIndicator(ctx, initialMessage, options?)`
 - `withExtensionWorkingIndicator(ctx, initialMessage, run, options?)`
 - `appendDisplayChunk(lines, chunk)` / `outputLinesFromDisplay(lines)` / `formatElapsed(startMs)`

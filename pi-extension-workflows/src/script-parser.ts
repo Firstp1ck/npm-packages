@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { basename, extname } from "node:path";
+import { sha256Text } from "@firstpick/pi-utils/hash";
 import { parse } from "acorn";
 import { WorkflowValidationError } from "./errors.ts";
 import { validateWorkflowScriptMeta } from "./script-schema.ts";
@@ -210,6 +210,6 @@ export function parseWorkflowScript(source: string, options: ParseWorkflowScript
     meta,
     source,
     body,
-    sourceHash: createHash("sha256").update(source, "utf8").digest("hex"),
+    sourceHash: sha256Text(source),
   };
 }

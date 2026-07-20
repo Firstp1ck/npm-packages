@@ -1,4 +1,5 @@
 import { inflateSync, zipSync } from "fflate";
+import { crc32 } from "@firstpick/pi-utils/hash";
 import { WorkbookError, fail } from "../errors.ts";
 import { mergeLimits, type WorkbookLimits } from "../core/limits.ts";
 
@@ -55,21 +56,7 @@ function validatePartPath(raw: string): string {
   return raw;
 }
 
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let value = n;
-    for (let k = 0; k < 8; k++) value = (value & 1) ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    table[n] = value >>> 0;
-  }
-  return table;
-})();
-
-export function crc32(data: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of data) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
-}
+export { crc32 };
 
 function parseCentralDirectory(bytes: Uint8Array, limits: WorkbookLimits): ZipEntryMetadata[] {
   const eocd = findEocd(bytes);

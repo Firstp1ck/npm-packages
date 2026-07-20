@@ -40,7 +40,7 @@
     "pack:dry": "npm pack --dry-run"
   },
   "dependencies": {
-    "@firstpick/pi-utils": "^0.2.3",
+    "@firstpick/pi-utils": "^0.2.4",
     "@xmldom/xmldom": "^0.9.10",
     "fflate": "^0.8.3"
   },

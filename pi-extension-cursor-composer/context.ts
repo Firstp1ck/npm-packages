@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import type { SDKCustomTool } from "@cursor/sdk";
 import { parseBooleanFlag } from "@firstpick/pi-utils/env";
+import { sha256Text as sha256 } from "@firstpick/pi-utils/hash";
 import { formatBytes } from "@firstpick/pi-utils/text";
 
 // Keep provider replay truncation aligned with Pi's normal tool-output truncation defaults.
@@ -80,13 +80,9 @@ function lineCount(text: string): number {
 	return text.split(/\r?\n/).length;
 }
 
-function sha256(text: string): string {
-	return createHash("sha256").update(text).digest("hex");
-}
-
 export function deterministicToolResultRecoveryId(toolName: string, toolCallId: string | undefined, contentSha256: string): string {
 	const stableIdentity = JSON.stringify({ toolName, toolCallId: toolCallId ?? null, contentSha256 });
-	return `ptr_${createHash("sha256").update(stableIdentity).digest("hex").slice(0, 24)}`;
+	return `ptr_${sha256(stableIdentity).slice(0, 24)}`;
 }
 
 function normalizeText(value: unknown): string {

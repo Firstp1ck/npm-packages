@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
+import { sha256Text } from "@firstpick/pi-utils/hash";
 import { WorkflowValidationError } from "./errors.ts";
 import type { WorkflowRunStatus, WorkflowScriptPolicy, WorkflowUsage, WorkflowWorktreeRecord } from "./types.ts";
 
@@ -304,7 +304,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+  return sha256Text(value);
 }
 
 export function hashWorkflowPolicy(policy: WorkflowScriptPolicy): string {

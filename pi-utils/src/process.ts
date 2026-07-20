@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
 export const ANSI_ESCAPE_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -27,6 +27,19 @@ export type RunCommandOptions = {
 export type AbortableProcess = ChildProcessByStdio<null, Readable, Readable> & {
   abortProcessGroup?: () => void;
   abortReleaseStep?: () => void;
+};
+
+export type DetachableChildProcess = {
+  stdout: Readable & { unref?: () => void };
+  stderr: Readable & { unref?: () => void };
+  unref: () => void;
+};
+
+export type ProcessTreeTarget = {
+  pid?: number | null;
+  kill?: (signal?: NodeJS.Signals | number) => boolean;
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
 };
 
 export type KillTarget = number | {
@@ -97,6 +110,14 @@ function signalKillTarget(target: KillTarget, signal: NodeJS.Signals, processGro
   }
 }
 
+export function detachChildProcess(child: DetachableChildProcess): void {
+  child.stdout.removeAllListeners("data");
+  child.stderr.removeAllListeners("data");
+  child.stdout.unref?.();
+  child.stderr.unref?.();
+  child.unref();
+}
+
 export function isProcessRunning(pid: number): boolean {
   if (!Number.isInteger(pid) || pid === 0) return false;
   try {
@@ -126,6 +147,47 @@ export function killGracefully(target: KillTarget, options: KillGracefullyOption
     }, killAfterMs).unref?.();
   }
   return signaled;
+}
+
+export function terminateChildProcess(child: AbortableProcess, options: KillGracefullyOptions = {}): boolean {
+  const signaled = killGracefully(child, { ...options, killAfterMs: options.killAfterMs ?? 2000 });
+  child.stdout.destroy();
+  child.stderr.destroy();
+  return signaled;
+}
+
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
+
+/** Terminate a detached POSIX process group or a complete Windows process tree. */
+export function terminateProcessTree(target: ProcessTreeTarget, signal: NodeJS.Signals = "SIGTERM"): boolean {
+  if (target.exitCode !== null && target.exitCode !== undefined || target.signalCode !== null && target.signalCode !== undefined) return false;
+  const pid = Number(target.pid);
+
+  if (process.platform === "win32" && Number.isInteger(pid) && pid > 0) {
+    try {
+      const windowsRoot = process.env.SystemRoot || process.env.WINDIR;
+      const command = windowsRoot ? path.join(windowsRoot, "System32", "taskkill.exe") : "taskkill.exe";
+      const result = spawnSync(command, ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+        timeout: WINDOWS_TREE_KILL_TIMEOUT_MS,
+      });
+      if (!result.error && result.status === 0) return true;
+    } catch {
+      // Fall back to direct-child termination below.
+    }
+    try { return target.kill?.("SIGKILL") ?? false; } catch { return false; }
+  }
+
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch {
+      // Fall back when the child is not a process-group leader.
+    }
+  }
+  try { return target.kill?.(signal) ?? false; } catch { return false; }
 }
 
 export async function readLines(stream: AsyncIterable<Buffer | string>, onLine: (line: string) => void | Promise<void>, options: ReadLinesOptions = {}): Promise<void> {

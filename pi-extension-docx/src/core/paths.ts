@@ -1,13 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { samePath } from "@firstpick/pi-utils/paths";
 import { resolveUserPath } from "../pi-utils.ts";
 import { fail } from "../errors.ts";
 
+export { samePath };
+
 const READABLE = new Set([".docx", ".dotx", ".docm", ".dotm"]);
-export function samePath(a: string, b: string): boolean {
-  const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
-  return normalize(a) === normalize(b);
-}
 export async function requireOfficeFile(input: string, cwd: string): Promise<string> {
   const filePath = resolveUserPath(input, cwd);
   const extension = path.extname(filePath).toLowerCase();

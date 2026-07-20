@@ -3,6 +3,9 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { delay, takeValue, tokenizeArgs } from "@firstpick/pi-utils";
+import { detachChildProcess as releaseStartedChild, isProcessRunning, terminateChildProcess as terminateFailedChild } from "@firstpick/pi-utils/process";
+import { fetchJsonWithTimeout as fetchJsonWithTimeoutBase } from "@firstpick/pi-utils/http";
 import {
   gitWorkflowPreferencesSummary,
   readGitWorkflowPreferences,
@@ -57,53 +60,6 @@ type RestorableWebuiTab = {
 };
 
 type WebuiChild = ChildProcessByStdio<null, Readable, Readable>;
-
-function tokenizeArgs(input: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | undefined;
-  let escaped = false;
-
-  for (const char of input) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) quote = undefined;
-      else current += char;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-
-  if (escaped) current += "\\";
-  if (quote) throw new Error(`Unclosed ${quote} quote`);
-  if (current) tokens.push(current);
-  return tokens;
-}
-
-function takeValue(tokens: string[], index: number, flag: string): string {
-  const value = tokens[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
-}
 
 function parseStartWebuiArgs(args: string): StartWebuiOptions {
   const options: StartWebuiOptions = {
@@ -210,18 +166,8 @@ function urlFor(options: WebuiAddress): string {
   return `http://${host}:${options.port}/`;
 }
 
-async function fetchJsonWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 900): Promise<{ ok: boolean; status: number; body: any } | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    const body = await response.json().catch(() => undefined);
-    return { ok: response.ok, status: response.status, body };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
+async function fetchJsonWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 900): Promise<{ ok: boolean; status: number; body?: any }> {
+  return fetchJsonWithTimeoutBase(url, init, { timeoutMs });
 }
 
 async function probeExistingWebui(url: string): Promise<ExistingWebui | null> {
@@ -324,15 +270,11 @@ async function fetchRestorableTabs(url: string, existing: ExistingWebui, options
   return mergeRestorableTabsFromStatusSources([statusData?.restorableTabs, existing.restorableTabs], options);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function waitForWebuiToStop(url: string, timeoutMs = 7_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!(await probeExistingWebui(url))) return true;
-    await sleep(180);
+    await delay(180);
   }
   return !(await probeExistingWebui(url));
 }
@@ -340,15 +282,6 @@ async function waitForWebuiToStop(url: string, timeoutMs = 7_000): Promise<boole
 async function requestWebuiShutdown(url: string): Promise<boolean> {
   const result = await fetchJsonWithTimeout(`${url.replace(/\/$/, "")}/api/shutdown`, { method: "POST" }, 1_500);
   return result?.ok === true && result.body?.ok === true;
-}
-
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException)?.code === "EPERM";
-  }
 }
 
 async function terminatePid(pid: number): Promise<void> {
@@ -362,7 +295,7 @@ async function terminatePid(pid: number): Promise<void> {
   const deadline = Date.now() + 4_000;
   while (Date.now() < deadline) {
     if (!isProcessRunning(pid)) return;
-    await sleep(160);
+    await delay(160);
   }
 
   try {
@@ -470,23 +403,6 @@ function openDefaultBrowser(url: string): void {
 
   const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
   child.unref();
-}
-
-function releaseStartedChild(child: WebuiChild): void {
-  child.stdout.removeAllListeners("data");
-  child.stderr.removeAllListeners("data");
-  (child.stdout as Readable & { unref?: () => void }).unref?.();
-  (child.stderr as Readable & { unref?: () => void }).unref?.();
-  child.unref();
-}
-
-function terminateFailedChild(child: WebuiChild): void {
-  if (child.exitCode === null) child.kill("SIGTERM");
-  setTimeout(() => {
-    if (child.exitCode === null) child.kill("SIGKILL");
-  }, 2000).unref?.();
-  child.stdout.destroy();
-  child.stderr.destroy();
 }
 
 function startupTimeoutMs(restoreTabCount: number): number {

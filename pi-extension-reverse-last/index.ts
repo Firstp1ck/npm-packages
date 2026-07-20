@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, resolvePathFromAgentDir } from "@firstpick/pi-utils";
+import { getAgentDir, normalizeTimestampMs, resolvePathFromAgentDir } from "@firstpick/pi-utils";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { matchesKey } from "@earendil-works/pi-tui";
@@ -219,12 +219,6 @@ export default function reverseLastExtension(pi: ExtensionAPI) {
 
     if (activeSessionId) saveState(activeSessionId, state);
     return { steps, restored };
-  };
-
-  const normalizeTimestampMs = (timestamp: number): number => {
-    if (timestamp < 1e11) return timestamp * 1000;
-    if (timestamp > 1e14) return Math.floor(timestamp / 1000);
-    return timestamp;
   };
 
   const lastUserMessageTimestamp = (ctx: { sessionManager: { getEntries(): any[] } }): number | null => {

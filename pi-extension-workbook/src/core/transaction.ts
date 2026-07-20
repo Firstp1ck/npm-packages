@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { samePath } from "@firstpick/pi-utils/paths";
 import { canonicalWorkbookOutputPath, defaultOutputPath, requireWorkbookFile } from "./paths.ts";
 import { durableAtomicWrite } from "./io.ts";
 import { sha256Bytes, sha256File } from "./hash.ts";
@@ -27,11 +28,6 @@ export type TransactionResult = {
   validation: ReturnType<typeof validatePackage>;
   warnings: string[];
 };
-
-function samePath(a: string, b: string): boolean {
-  const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
-  return normalize(a) === normalize(b);
-}
 
 function recoveryPathFor(sourcePath: string): string {
   const extension = path.extname(sourcePath);

@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { killGracefully } from "@firstpick/pi-utils/process";
+import { detachChildProcess as releaseStartedChild, terminateChildProcess as terminateFailedChild } from "@firstpick/pi-utils/process";
 import { truncate } from "@firstpick/pi-utils/text";
 import {
   DEFAULT_PORT,
@@ -88,20 +88,6 @@ function resolveWebuiBin(): string {
 function appendBoundedOutput(current: string, chunk: Buffer | string, maxChars = 20_000): string {
   const next = current + String(chunk);
   return next.length > maxChars ? next.slice(-maxChars) : next;
-}
-
-function releaseStartedChild(child: WebuiChild): void {
-  child.stdout.removeAllListeners("data");
-  child.stderr.removeAllListeners("data");
-  (child.stdout as Readable & { unref?: () => void }).unref?.();
-  (child.stderr as Readable & { unref?: () => void }).unref?.();
-  child.unref();
-}
-
-function terminateFailedChild(child: WebuiChild): void {
-  killGracefully(child, { killAfterMs: 2_000 });
-  child.stdout.destroy();
-  child.stderr.destroy();
 }
 
 async function spawnWebui(options: RemoteOptions, ctx: ExtensionCommandContext): Promise<void> {

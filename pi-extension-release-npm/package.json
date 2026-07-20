@@ -26,7 +26,7 @@
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/process-tree.test.mjs && node tests/npm-pack-json.test.mjs"
   },
   "dependencies": {
-    "@firstpick/pi-utils": "^0.1.9"
+    "@firstpick/pi-utils": "^0.2.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
