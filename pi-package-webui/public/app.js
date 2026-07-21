@@ -3550,6 +3550,9 @@ async function api(path, { method = "GET", body, tabId = activeTabId, scoped = t
       signal,
     });
   } catch (error) {
+    // Aborted autocomplete requests are expected while the user keeps typing;
+    // they do not indicate that the Web UI backend became unreachable.
+    if (signal?.aborted || error?.name === "AbortError") throw error;
     const offlineError = error instanceof Error ? error : new Error(String(error));
     offlineError.backendOffline = true;
     setBackendOffline(true, offlineError);

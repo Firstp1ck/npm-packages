@@ -293,6 +293,8 @@ assert.match(css, /button\.composer-skill-tag:hover,[\s\S]*?button\.composer-ski
 assert.match(css, /\.extension-dialog\.skill-editor-dialog \{[\s\S]*?--skill-editor-size:\s*min\(152rem[\s\S]*?width:\s*var\(--skill-editor-size\);[\s\S]*?height:\s*var\(--skill-editor-size\);[\s\S]*?aspect-ratio:\s*1 \/ 1/, "skill editor should use a square viewport-bounded modal layout");
 assert.match(css, /\.skill-editor-dialog form \{[\s\S]*?height:\s*100%;[\s\S]*?min-height:\s*0/, "skill editor form should fill the square modal without forcing overflow");
 assert.match(css, /\.skill-editor-text \{[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?white-space:\s*pre-wrap/, "skill editor text should wrap long lines instead of horizontal scrolling");
+assert.match(html, /<textarea id="fileViewerEditor"[^>]*\bwrap="soft"/, "file viewer source mode should enable soft wrapping");
+assert.match(css, /\.file-viewer-editor \{[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?white-space:\s*pre-wrap/, "file viewer source mode should wrap long lines to the available preview width");
 assert.match(css, /\.composer-busy-mode-menu \{[\s\S]*?bottom:\s*calc\(100% \+ 0\.22rem\);[\s\S]*?background:\s*var\(--ctp-crust\)/, "busy prompt behavior dropdown should expand above the tag with an opaque background");
 assert.match(css, /\.sticky-user-prompt-button \{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto/, "last-user-prompt jump control should render as a fixed transcript header");
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?\.sticky-user-prompt-button \{\n\s+grid-template-columns:\s*minmax\(0, 1fr\) auto;\n\s+min-height:\s*36px;[\s\S]*?\.sticky-user-prompt-text \{[\s\S]*?font-size:\s*var\(--text-xs\)/, "mobile last-user-prompt card should preserve compact height while respecting the text floor");
@@ -1238,6 +1240,7 @@ assert.match(app, /case "agent_end":[\s\S]*?clearRunIndicatorActivity\(\)/, "age
 assert.match(app, /case "agent_end":[\s\S]*?notifyAgentDone\(event\.tabId \|\| activeTabId/, "agent completion should trigger optional done notifications");
 assert.match(app, /function getPathTrigger\(\)/, "prompt composer should detect @ file\/path reference triggers");
 assert.match(app, /api\(`\/api\/path-suggestions\?query=\$\{encodeURIComponent\(trigger\.query\)\}`/, "@ reference suggestions should load from the server as the user types");
+assert.match(app, /async function api\([\s\S]*?if \(signal\?\.aborted \|\| error\?\.name === "AbortError"\) throw error;[\s\S]*?setBackendOffline\(true, offlineError\)/, "cancelled @ autocomplete requests should not mark the server offline");
 assert.match(app, /formatPathReference\(suggestion\.path, trigger\.quoted\)/, "accepting a path suggestion should insert an @ reference into the prompt");
 assert.match(app, /let pathSuggestActiveQuery = null/, "@ autocomplete should track the active path query to avoid duplicate refresh flicker");
 assert.match(app, /pathSuggestActiveQuery === trigger\.query[\s\S]*?return;/, "@ autocomplete should skip duplicate same-query fetches from input and keyup events");
