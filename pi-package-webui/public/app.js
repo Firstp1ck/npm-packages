@@ -818,6 +818,7 @@ const workflowModeByTab = new Map();
 const workflowModeTogglePendingByTab = new Set();
 const workflowInspectorByTab = new Map();
 const workflowInspectorSelectionByTab = new Map();
+const workflowInspectorMinimizedByTab = new Set();
 const appRunnerInputDraftByRun = new Map();
 const appRunnerContextLineDraftByRun = new Map();
 const liveToolRuns = new Map();
@@ -7559,6 +7560,7 @@ function syncTabMetadata(nextTabs = []) {
       workflowModeTogglePendingByTab.delete(tabId);
       workflowInspectorByTab.delete(tabId);
       workflowInspectorSelectionByTab.delete(tabId);
+      workflowInspectorMinimizedByTab.delete(tabId);
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
@@ -15964,6 +15966,18 @@ function workflowInspectorSetSelection(patch) {
   renderWidgets();
 }
 
+function workflowInspectorSetMinimized(minimized) {
+  if (!activeTabId) return;
+  const tabId = activeTabId;
+  if (minimized) workflowInspectorMinimizedByTab.add(tabId);
+  else workflowInspectorMinimizedByTab.delete(tabId);
+  renderWidgets();
+  requestAnimationFrame(() => {
+    if (activeTabId !== tabId) return;
+    elements.widgetArea.querySelector(".workflow-inspector-minimize-button")?.focus({ preventScroll: true });
+  });
+}
+
 function workflowInspectorJson(value) {
   if (value === undefined) return "—";
   if (typeof value === "string") return value;
@@ -16027,9 +16041,13 @@ function renderWorkflowInspectorWidget() {
   if (!payload?.runs?.length) return null;
   const { run, phase } = workflowInspectorSelection(payload);
   if (!run) return null;
+  const minimized = Boolean(activeTabId && workflowInspectorMinimizedByTab.has(activeTabId));
 
-  const node = make("section", "widget release-npm-widget workflow-widget workflow-inspector-widget");
+  const node = make("section", `widget release-npm-widget workflow-widget workflow-inspector-widget${minimized ? " minimized" : ""}`);
   node.setAttribute("aria-label", "workflow run inspector");
+  const body = make("div", "workflow-inspector-body");
+  body.id = "workflowInspectorBody";
+  body.hidden = minimized;
   const header = make("div", "release-npm-header");
   const titleWrap = make("div", "release-npm-title-wrap");
   titleWrap.append(make("span", "release-npm-kicker", "workflows"), make("strong", "release-npm-title", `${payload.runs.length} run${payload.runs.length === 1 ? "" : "s"}`));
@@ -16037,7 +16055,17 @@ function renderWorkflowInspectorWidget() {
   meta.append(make("span", "release-npm-pill", payload.mode?.enabled ? `mode ${payload.mode.phase}` : "mode off"));
   const liveCount = payload.runs.filter(workflowRunIsLive).length;
   if (liveCount) meta.append(make("span", "release-npm-pill workflow-status running", `${liveCount} active`));
+  const minimizeButton = make("button", "release-npm-action workflow-inspector-minimize-button", minimized ? "Restore" : "Minimize");
+  minimizeButton.type = "button";
+  minimizeButton.setAttribute("aria-controls", body.id);
+  minimizeButton.setAttribute("aria-expanded", minimized ? "false" : "true");
+  minimizeButton.setAttribute("aria-label", minimized ? "Restore workflow inspector" : "Minimize workflow inspector");
+  minimizeButton.setAttribute("title", minimized ? "Restore workflow inspector" : "Minimize workflow inspector");
+  minimizeButton.addEventListener("click", () => workflowInspectorSetMinimized(!minimized));
+  meta.append(minimizeButton);
   header.append(titleWrap, meta);
+  node.append(header, body);
+  if (minimized) return node;
 
   const layout = make("div", "workflow-inspector-layout");
   const runList = make("nav", "workflow-inspector-run-list");
@@ -16089,7 +16117,7 @@ function renderWorkflowInspectorWidget() {
     detail.append(raw);
   }
   layout.append(runList, detail);
-  node.append(header, layout);
+  body.append(layout);
   return node;
 }
 

@@ -18,7 +18,12 @@ const onceStore = createWorkflowApprovalStore();
 const choices = ["View raw workflow script", "Run once"];
 const previews = [];
 let approvalTitle = "";
-const once = await requestWorkflowLaunchApproval({
+let selectCalls = 0;
+let previewStarted;
+let releasePreview;
+const previewStartedPromise = new Promise((resolve) => { previewStarted = resolve; });
+const previewReleasePromise = new Promise((resolve) => { releasePreview = resolve; });
+const oncePromise = requestWorkflowLaunchApproval({
   approvals: onceStore,
   key,
   workflowName: "test",
@@ -27,15 +32,48 @@ const once = await requestWorkflowLaunchApproval({
   ctx: {
     hasUI: true,
     ui: {
-      async select(title) { approvalTitle = title; return choices.shift(); },
-      notify(message) { previews.push(message); },
+      async select(title) { selectCalls++; approvalTitle = title; return choices.shift(); },
+      async editor(title, prefill) {
+        previews.push({ title, prefill });
+        previewStarted();
+        return await previewReleasePromise;
+      },
     },
   },
 });
+await previewStartedPromise;
+assert.equal(selectCalls, 1, "approval must remain suspended while the source preview is open");
+releasePreview(undefined);
+const once = await oncePromise;
 assert.equal(once.source, "once");
+assert.equal(selectCalls, 2, "approval must reopen only after the source preview closes");
 assert.match(approvalTitle, /Repository: \/repo[\s\S]*one git worktree per write agent[\s\S]*write=true[\s\S]*Large workflow/);
-assert.match(previews[0], /export const meta/);
+assert.match(previews[0].title, /Raw workflow script.*edits are ignored/);
+assert.match(previews[0].prefill, /export const meta/);
 assert.equal(onceStore.isApproved(key), false, "one-shot approval must be consumed before launch");
+
+const fallbackStore = createWorkflowApprovalStore();
+const fallbackChoices = ["View raw workflow script", "Back to approval", "Run once"];
+const fallbackDialogs = [];
+const fallback = await requestWorkflowLaunchApproval({
+  approvals: fallbackStore,
+  key,
+  workflowName: "fallback-test",
+  source: "export const meta = { name: 'fallback' };\nreturn 2",
+  ctx: {
+    hasUI: true,
+    ui: {
+      async select(title, options) {
+        fallbackDialogs.push({ title, options });
+        return fallbackChoices.shift();
+      },
+    },
+  },
+});
+assert.equal(fallback.source, "once");
+assert.match(fallbackDialogs[1].title, /Raw workflow script[\s\S]*export const meta/);
+assert.deepEqual(fallbackDialogs[1].options, ["Back to approval"]);
+assert.equal(fallbackDialogs.length, 3, "select-only UIs must return to approval after the source preview");
 
 const rememberedStore = createWorkflowApprovalStore();
 let prompts = 0;

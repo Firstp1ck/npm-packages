@@ -44,7 +44,12 @@ export async function requestWorkflowLaunchApproval(options: {
       const truncated = options.source.length > MAX_SOURCE_PREVIEW_CHARS
         ? `${options.source.slice(0, MAX_SOURCE_PREVIEW_CHARS)}\n\n… source preview truncated …`
         : options.source;
-      options.ctx.ui.notify?.(truncated, "info");
+      const previewTitle = "Raw workflow script (inspection only; edits are ignored)";
+      if (options.ctx.ui.editor) {
+        await options.ctx.ui.editor(previewTitle, truncated);
+      } else {
+        await options.ctx.ui.select(`${previewTitle}\n\n${truncated}`, ["Back to approval"]);
+      }
       continue;
     }
     throw new WorkflowCancelledError("Workflow launch approval was cancelled.");

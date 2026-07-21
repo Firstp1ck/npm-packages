@@ -22,6 +22,7 @@ type UILike = {
   notify?: (message: string, level?: "info" | "warning" | "error" | "success") => void;
   select?: (title: string, options: string[]) => Promise<string | undefined>;
   confirm?: (title: string, message: string) => Promise<boolean>;
+  editor?: (title: string, prefill?: string) => Promise<string | undefined>;
   theme?: ThemeLike;
 };
 
