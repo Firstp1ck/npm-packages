@@ -69,6 +69,13 @@ class HtmlReportContractTests(unittest.TestCase):
         ]:
             self.assertIn(phrase, text)
 
+    def test_final_response_requires_clickable_report_link(self):
+        text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("final assistant response must always end", text.lower())
+        self.assertIn("standalone clickable Markdown link", text)
+        self.assertIn("[report-name.html](/absolute/path/to/report-name.html)", text)
+        self.assertIn("final non-empty line", text)
+
     def test_bundled_resources_exist(self):
         expected = [
             TEMPLATE,

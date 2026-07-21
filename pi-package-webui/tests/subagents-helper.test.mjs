@@ -75,8 +75,8 @@ await writeFile(asyncStatusFile, JSON.stringify({
   startedAt: Date.now() - 1000,
   lastUpdate: Date.now(),
   steps: [
-    { agent: "reviewer", status: "running", sessionFile: asyncSessionFile, recentOutput: [], currentTool: "bash", currentToolArgs: "sleep 5" },
-    { agent: "scout", status: "running" },
+    { agent: "reviewer", status: "running", sessionFile: asyncSessionFile, recentOutput: [], currentTool: "bash", currentToolArgs: "sleep 5", model: "anthropic/claude-opus-4-8:high", thinking: "high" },
+    { agent: "scout", status: "running", model: "openai-codex/gpt-5.6-sol", thinking: "high" },
   ],
 }));
 
@@ -121,6 +121,7 @@ let payload = latestPayload();
 assert.equal(payload.available, true, "successful pi-subagents RPC should mark status available");
 assert.deepEqual(payload.runs.map((run) => run.id), ["run-a", "run-b"]);
 assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.name, agent.currentTool]), [["reviewer", "read"], ["scout", "grep"]]);
+assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "async overview should publish effective lifecycle model and reasoning metadata");
 assert.deepEqual(payload.runs[1].agents.map((agent) => [agent.name, agent.nested]), [["worker", false], ["nested-oracle", true]]);
 
 const helperCommand = registeredCommands.get("webui-helper");
@@ -134,6 +135,8 @@ const asyncOutputNotice = notifications.find((entry) => entry.message.includes("
 assert.ok(asyncOutputNotice, "async subagent output helper action should return a response notification");
 const asyncOutputResponse = JSON.parse(asyncOutputNotice.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length));
 assert.equal(asyncOutputResponse.ok, true);
+assert.equal(asyncOutputResponse.data.agent.model, "anthropic/claude-opus-4-8:high");
+assert.equal(asyncOutputResponse.data.agent.thinking, "high");
 assert.deepEqual(asyncOutputResponse.data.agent.recentOutput, [
   "REVIEWER STREAM 1 OF 18",
   "▶ bash {\"command\":\"sleep 5\"}",
@@ -222,12 +225,19 @@ for (const handler of extensionHandlers.get("tool_execution_start") || []) {
     type: "tool_execution_start",
     toolCallId: "foreground-call",
     toolName: "subagent",
-    args: { tasks: [{ agent: "tester", task: "Run tests" }, { agent: "reviewer", task: "Review diff" }] },
+    args: {
+      model: "openai-codex/gpt-5.6-terra:xhigh",
+      tasks: [
+        { agent: "tester", task: "Run tests" },
+        { agent: "reviewer", task: "Review diff", model: "anthropic/claude-opus-4-8:high" },
+      ],
+    },
   }, ctx);
 }
 payload = latestPayload();
 let foreground = payload.runs.find((run) => run.source === "foreground");
 assert.deepEqual(foreground?.agents.map((agent) => agent.name), ["tester", "reviewer"], "foreground parallel children should appear while the tool runs");
+assert.deepEqual(foreground?.agents.map((agent) => [agent.model, agent.thinking]), [["openai-codex/gpt-5.6-terra:xhigh", "xhigh"], ["anthropic/claude-opus-4-8:high", "high"]], "foreground overview should preserve run-level defaults and per-child model/reasoning overrides");
 
 for (const handler of extensionHandlers.get("tool_execution_update") || []) {
   handler({
@@ -272,6 +282,8 @@ const outputResponse = JSON.parse(outputNotice.message.slice("__PI_WEBUI_HELPER_
 assert.equal(outputResponse.ok, true);
 assert.equal(outputResponse.data.agent.currentTool, "bash");
 assert.equal(outputResponse.data.agent.currentToolArgs, "npm test");
+assert.equal(outputResponse.data.agent.model, "openai-codex/gpt-5.6-terra:xhigh");
+assert.equal(outputResponse.data.agent.thinking, "xhigh");
 assert.deepEqual(outputResponse.data.agent.recentOutput, ["Running focused tests", "12 assertions passed"]);
 assert.deepEqual(outputResponse.data.agent.transcript, [], "foreground snapshots without a child session transcript should retain the recentOutput-only fallback");
 assert.deepEqual(outputResponse.data.agent.recentTools, [{ tool: "read", args: "package.json", endMs: 1000 }]);

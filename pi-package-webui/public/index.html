@@ -620,6 +620,26 @@
               </div>
             </div>
           </section>
+          <section class="side-panel-section collapsed" data-side-panel-section="git">
+            <h2>
+              <button id="sidePanelSectionToggleGit" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionGit" aria-label="Expand Git section" title="Expand Git section" data-side-panel-section-toggle="git">
+                <span class="side-panel-section-label">Git</span>
+                <span class="side-panel-section-trailing">
+                  <span id="gitPanelCountBadge" class="side-panel-section-badge" hidden>0</span>
+                  <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+                </span>
+              </button>
+            </h2>
+            <div id="sidePanelSectionGit" class="side-panel-section-content" hidden>
+              <div class="git-side-panel">
+                <div class="git-side-panel-intro">
+                  <p>Expand a repository to view local changes and history. Right-click rows for actions.</p>
+                </div>
+                <p id="gitPanelStatus" class="git-side-panel-status muted" role="status" aria-live="polite"></p>
+                <div id="gitPanelGroups" class="git-side-panel-groups" aria-label="Git repositories"></div>
+              </div>
+            </div>
+          </section>
           <section class="side-panel-section collapsed" data-side-panel-section="optional-features">
             <h2>
               <button id="sidePanelSectionToggleOptionalFeatures" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionOptionalFeatures" aria-label="Expand Optional features section" title="Expand Optional features section" data-side-panel-section-toggle="optional-features">
@@ -754,6 +774,7 @@
       <button type="button" role="menuitem" data-file-menu-action="move">Move/Rename…</button>
       <button type="button" role="menuitem" class="danger" data-file-menu-action="delete">Delete…</button>
     </div>
+    <div id="gitPanelContextMenu" class="file-context-menu git-side-panel-context-menu" role="menu" aria-label="Git actions" hidden></div>
 
     <aside id="undoToast" class="undo-toast" aria-live="polite" aria-atomic="true" hidden>
       <span id="undoToastMessage" class="undo-toast-message"></span>

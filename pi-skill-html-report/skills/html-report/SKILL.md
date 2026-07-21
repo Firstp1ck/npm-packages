@@ -105,9 +105,17 @@ python3 ./scripts/validate_report.py <path-to-report.html> --strict
 ```
 
    - Also inspect the report at narrow/mobile width and print preview when browser tooling is available.
-   - Completion criterion: validation passes, intentional warnings are disclosed, and the final response gives the output path plus any unverified rendering caveat.
+   - Completion criterion: validation passes, intentional warnings are disclosed, and the final response includes a clickable Markdown link to the report plus any unverified rendering caveat.
 
 ## Output Contract
+
+The final assistant response must always end with a standalone clickable Markdown link to the generated report, using the report filename as the label and its absolute path as the target:
+
+```markdown
+[report-name.html](/absolute/path/to/report-name.html)
+```
+
+Do not provide only a plain-text path or wrap the link in a code block. Keep this link as the final non-empty line so it is easy to find and click.
 
 Every generated report must include:
 
@@ -189,4 +197,5 @@ Before delivery, confirm:
 - Use Pi file-reading and repository exploration tools to gather evidence before drafting.
 - Use `write` for a new self-contained report and `edit` for targeted changes to an existing report.
 - For multi-step creation, use Pi's todo progress UI and verify the final path.
+- End the final response with the standalone Markdown report link required by the Output Contract; use the verified absolute file path as the link target.
 - Do not install this local package or modify Pi settings without explicit user confirmation.

@@ -4907,6 +4907,144 @@ async function readGitChanges(cwd) {
   };
 }
 
+const GIT_PANEL_HISTORY_LIMIT = 30;
+const GIT_PANEL_MAX_OUTPUT = 240_000;
+
+function parseGitNumstatZ(text = "") {
+  const stats = new Map();
+  for (const record of String(text || "").split("\0")) {
+    if (!record) continue;
+    const firstTab = record.indexOf("\t");
+    const secondTab = firstTab < 0 ? -1 : record.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const additionsText = record.slice(0, firstTab);
+    const deletionsText = record.slice(firstTab + 1, secondTab);
+    const filePath = normalizeGitStatusPath(record.slice(secondTab + 1));
+    if (!filePath) continue;
+    const binary = additionsText === "-" || deletionsText === "-";
+    stats.set(filePath, {
+      additions: binary ? 0 : Number.parseInt(additionsText || "0", 10) || 0,
+      deletions: binary ? 0 : Number.parseInt(deletionsText || "0", 10) || 0,
+      binary,
+    });
+  }
+  return stats;
+}
+
+function gitPanelPathStats(entry, stagedStats, unstagedStats) {
+  const paths = [entry.path, entry.oldPath].map(normalizeGitStatusPath).filter(Boolean);
+  const aggregate = (stats) => {
+    const value = { additions: 0, deletions: 0, binary: false };
+    for (const filePath of paths) {
+      const current = stats.get(filePath);
+      if (!current) continue;
+      value.additions += Number(current.additions || 0) || 0;
+      value.deletions += Number(current.deletions || 0) || 0;
+      value.binary ||= current.binary === true;
+    }
+    return value;
+  };
+  const staged = aggregate(stagedStats);
+  const unstaged = aggregate(unstagedStats);
+  return {
+    additions: staged.additions + unstaged.additions,
+    deletions: staged.deletions + unstaged.deletions,
+    binary: staged.binary || unstaged.binary,
+    stagedAdditions: staged.additions,
+    stagedDeletions: staged.deletions,
+    stagedBinary: staged.binary,
+    unstagedAdditions: unstaged.additions,
+    unstagedDeletions: unstaged.deletions,
+    unstagedBinary: unstaged.binary,
+  };
+}
+
+function gitPanelChangeEntry(entry, stagedStats, unstagedStats) {
+  const x = entry.x || " ";
+  const y = entry.y || " ";
+  const untracked = x === "?" && y === "?";
+  const conflicted = x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D");
+  return {
+    path: normalizeGitStatusPath(entry.path),
+    oldPath: normalizeGitStatusPath(entry.oldPath || ""),
+    status: `${x}${y}`,
+    staged: !untracked && x !== " " && x !== "?",
+    unstaged: !untracked && y !== " " && y !== "?",
+    untracked,
+    conflicted,
+    ...gitPanelPathStats(entry, stagedStats, unstagedStats),
+  };
+}
+
+function parseGitPanelHistory(text = "") {
+  const fields = String(text || "").split("\0").filter(Boolean);
+  const history = [];
+  for (let index = 0; index + 4 < fields.length && history.length < GIT_PANEL_HISTORY_LIMIT; index += 5) {
+    const [hash, shortHash, author, authoredAt, subject] = fields.slice(index, index + 5);
+    if (!hash) continue;
+    history.push({ hash, shortHash, author, authoredAt, subject });
+  }
+  return history;
+}
+
+async function readGitPanel(cwd) {
+  const root = await getGitRoot(cwd);
+  const historyPromise = runGitReadCommand(root, [
+    "log", `-n${GIT_PANEL_HISTORY_LIMIT}`, "-z", "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%aI%x00%s",
+  ], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }).catch(() => "");
+  const [statusText, porcelainStatusText, stagedNumstatText, unstagedNumstatText, historyText] = await Promise.all([
+    runGitReadCommand(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    runGitReadCommand(root, ["status", "--porcelain=2", "--branch", "--untracked-files=all"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    runGitReadCommand(root, ["diff", "--cached", "--numstat", "-z", "--no-renames", "--"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    runGitReadCommand(root, ["diff", "--numstat", "-z", "--no-renames", "--"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    historyPromise,
+  ]);
+  const stagedStats = parseGitNumstatZ(stagedNumstatText);
+  const unstagedStats = parseGitNumstatZ(unstagedNumstatText);
+  const changes = parseGitPorcelainZEntries(statusText)
+    .map((entry) => gitPanelChangeEntry(entry, stagedStats, unstagedStats))
+    .filter((entry) => entry.path);
+  return {
+    cwd,
+    root,
+    branch: gitBranchFromPorcelainStatus(porcelainStatusText),
+    generatedAt: new Date().toISOString(),
+    summary: summarizeGitPorcelainStatus(porcelainStatusText),
+    changes,
+    history: parseGitPanelHistory(historyText),
+  };
+}
+
+async function readGitCommit(cwd, requestedHash) {
+  const hash = String(requestedHash || "").trim().toLowerCase();
+  if (!/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(hash)) throw makeHttpError(400, "A full Git commit hash is required");
+  const root = await getGitRoot(cwd);
+  const verified = (await runGitReadCommand(root, ["rev-parse", "--verify", `${hash}^{commit}`], { maxOutputLength: 1000 })).trim();
+  if (verified.toLowerCase() !== hash) throw makeHttpError(404, "Git commit not found in this repository");
+  const [metaText, diff] = await Promise.all([
+    runGitReadCommand(root, ["show", "-s", "-z", "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%aI%x00%s", hash], { maxOutputLength: 20_000 }),
+    runGitReadCommandDetailed(root, ["show", "--format=", "--no-ext-diff", "--no-color", "--find-renames", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", hash]),
+  ]);
+  const [commit] = parseGitPanelHistory(metaText);
+  return {
+    root,
+    branch: "",
+    generatedAt: new Date().toISOString(),
+    commit: commit || { hash, shortHash: hash.slice(0, 12), author: "", authoredAt: "", subject: "" },
+    summary: { staged: 0, unstaged: 0, untracked: 0, conflicted: 0, ahead: 0, behind: 0 },
+    remote: { upstream: "", ahead: 0, behind: 0, diverged: false, canPull: false },
+    sections: [{
+      key: "commit",
+      label: `Commit ${commit?.shortHash || hash.slice(0, 12)}`,
+      command: `git show --unified=0 ${hash}`,
+      diff: diff.output.trimEnd(),
+      truncated: diff.truncated,
+      capBytes: diff.capBytes,
+    }],
+    untracked: [],
+  };
+}
+
 const GIT_LOCK_RETRY_ATTEMPTS = 3;
 const GIT_LOCK_RETRY_DELAY_MS = 250;
 const GIT_FETCH_TIMEOUT_MS = 2 * 60 * 1000;
@@ -5412,6 +5550,23 @@ async function unstageGitFile(cwd, body = {}) {
   }
   if (payload.data) payload.data.root = root;
   if (payload.ok) payload.data.changes = await readGitChanges(root);
+  return payload;
+}
+
+async function stageAllGitChanges(cwd) {
+  const root = await getGitRoot(cwd);
+  const payload = await gitAddAllPayload(root);
+  if (payload.data) payload.data.root = root;
+  return payload;
+}
+
+async function unstageAllGitChanges(cwd) {
+  const root = await getGitRoot(cwd);
+  let payload = await runGuardedGitMutation(["restore", "--staged", "--", "."], { cwd: root, label: "git restore --staged -- ." });
+  if (!payload.ok && /HEAD/.test(payload.error || "")) {
+    payload = await runGuardedGitMutation(["rm", "--cached", "-r", "--", "."], { cwd: root, label: "git rm --cached -r -- ." });
+  }
+  if (payload.data) payload.data.root = root;
   return payload;
 }
 
@@ -7403,6 +7558,8 @@ function normalizeWebuiSubagentPayload(value) {
         index: Number.isInteger(rawAgent.index) ? rawAgent.index : agents.length,
         currentTool: normalizeWebuiSubagentText(rawAgent.currentTool, 120) || undefined,
         activityState: normalizeWebuiSubagentText(rawAgent.activityState, 80) || undefined,
+        model: normalizeWebuiSubagentText(rawAgent.model, 240) || undefined,
+        thinking: normalizeWebuiSubagentText(rawAgent.thinking, 40) || undefined,
         nested: rawAgent.nested === true,
       });
     }
@@ -8274,6 +8431,8 @@ function normalizeWebuiSubagentOutput(value, selection) {
       turnCount: Number.isFinite(rawAgent.turnCount) ? rawAgent.turnCount : undefined,
       toolCount: Number.isFinite(rawAgent.toolCount) ? rawAgent.toolCount : undefined,
       tokens: Number.isFinite(rawAgent.tokens) ? rawAgent.tokens : undefined,
+      model: normalizeWebuiSubagentText(rawAgent.model, 240) || selection.agent.model || undefined,
+      thinking: normalizeWebuiSubagentText(rawAgent.thinking, 40) || selection.agent.thinking || undefined,
       recentTools,
       recentOutput,
       transcript,
@@ -12423,6 +12582,37 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/git-root" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        sendJson(res, 200, { ok: true, data: { cwd: tab.cwd, root: await getGitRoot(tab.cwd) } });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-panel" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        sendJson(res, 200, { ok: true, data: await readGitPanel(tab.cwd) });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-commit" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        sendJson(res, 200, { ok: true, data: await readGitCommit(tab.cwd, url.searchParams.get("hash") || "") });
+      } catch (error) {
+        const statusCode = Number(error?.statusCode || error?.status || 200) || 200;
+        sendJson(res, statusCode, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/git-changes/untracked-file" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       try {
@@ -12544,6 +12734,8 @@ const server = createServer(async (req, res) => {
         "/api/git-changes/integrate": (cwd, body) => integrateGitUpstream(cwd, body),
         "/api/git-changes/stage-file": (cwd, body) => stageGitFile(cwd, body),
         "/api/git-changes/unstage-file": (cwd, body) => unstageGitFile(cwd, body),
+        "/api/git-changes/stage-all": (cwd) => stageAllGitChanges(cwd),
+        "/api/git-changes/unstage-all": (cwd) => unstageAllGitChanges(cwd),
         "/api/git-changes/discard-file": (cwd, body) => discardGitFile(cwd, body),
         "/api/git-changes/delete-untracked": (cwd, body) => deleteGitUntrackedFile(cwd, body),
         "/api/git-operation/continue": (cwd, body) => gitOperationAction(cwd, "continue", body),

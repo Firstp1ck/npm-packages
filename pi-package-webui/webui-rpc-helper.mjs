@@ -198,6 +198,32 @@ function subagentText(value, maxLength = 240) {
   return text ? text.slice(0, maxLength) : "";
 }
 
+function subagentModel(value) {
+  return subagentText(value, 240);
+}
+
+function subagentThinking(value) {
+  return subagentText(value, 40);
+}
+
+function subagentThinkingFromModel(value) {
+  const match = subagentModel(value).match(/:(off|minimal|low|medium|high|xhigh|max)$/i);
+  return subagentThinking(match?.[1]?.toLowerCase());
+}
+
+function subagentExecutionMetadata(step = {}, defaults = {}) {
+  const stepModel = subagentModel(step?.model);
+  const model = stepModel || subagentModel(defaults?.model) || undefined;
+  return {
+    model,
+    thinking: subagentThinking(step?.thinking)
+      || subagentThinkingFromModel(stepModel)
+      || subagentThinking(defaults?.thinking)
+      || subagentThinkingFromModel(model)
+      || undefined,
+  };
+}
+
 function subagentMode(value, fallback = "single") {
   return ["single", "parallel", "chain"].includes(value) ? value : fallback;
 }
@@ -370,26 +396,28 @@ function subagentTranscriptOutput(sessionFile) {
   }
 }
 
-function subagentInitialAgentsFromStep(step) {
+function subagentInitialAgentsFromStep(step, defaults = {}) {
   if (!step || typeof step !== "object") return [];
   if (Array.isArray(step.parallel)) {
     return step.parallel.flatMap((task) => {
       const name = subagentAgentName(task?.agent);
       const count = Number.isInteger(task?.count) && task.count > 0 ? Math.min(task.count, 32) : 1;
-      return name ? Array.from({ length: count }, (_unused, index) => ({ name, index })) : [];
+      const metadata = subagentExecutionMetadata(task, defaults);
+      return name ? Array.from({ length: count }, (_unused, index) => ({ name, index, ...metadata })) : [];
     });
   }
   const name = subagentAgentName(step.agent);
-  return name ? [{ name, index: 0 }] : [];
+  return name ? [{ name, index: 0, ...subagentExecutionMetadata(step, defaults) }] : [];
 }
 
 function subagentInitialAgentsFromArgs(args = {}) {
+  const defaults = subagentExecutionMetadata(args);
   if (Array.isArray(args.tasks) && args.tasks.length) {
-    return args.tasks.flatMap((task) => subagentInitialAgentsFromStep(task));
+    return args.tasks.flatMap((task) => subagentInitialAgentsFromStep(task, defaults));
   }
-  if (Array.isArray(args.chain) && args.chain.length) return subagentInitialAgentsFromStep(args.chain[0]);
+  if (Array.isArray(args.chain) && args.chain.length) return subagentInitialAgentsFromStep(args.chain[0], defaults);
   const name = subagentAgentName(args.agent);
-  return name ? [{ name, index: 0 }] : [];
+  return name ? [{ name, index: 0, ...defaults }] : [];
 }
 
 function subagentRunningAgentsFromDetails(details, runId) {
@@ -398,7 +426,9 @@ function subagentRunningAgentsFromDetails(details, runId) {
   if (Array.isArray(details.progress)) candidates.push(...details.progress);
   if (Array.isArray(details.results)) {
     for (const result of details.results) {
-      if (result?.progress && typeof result.progress === "object") candidates.push({ agent: result.agent, ...result.progress });
+      if (result?.progress && typeof result.progress === "object") {
+        candidates.push({ agent: result.agent, model: result.model, thinking: result.thinking, ...result.progress });
+      }
     }
   }
   return candidates.flatMap((entry, index) => {
@@ -419,6 +449,8 @@ function subagentRunningAgentsFromDetails(details, runId) {
       turnCount: Number.isFinite(entry.turnCount) ? entry.turnCount : undefined,
       toolCount: Number.isFinite(entry.toolCount) ? entry.toolCount : undefined,
       tokens: Number.isFinite(entry.tokens) ? entry.tokens : undefined,
+      model: subagentModel(entry.model) || undefined,
+      thinking: subagentThinking(entry.thinking) || subagentThinkingFromModel(entry.model) || undefined,
       nested: false,
     }];
   });
@@ -534,6 +566,8 @@ export default function webuiRpcHelper(pi) {
             index: Number.isInteger(agent.index) ? agent.index : index,
             currentTool: subagentText(agent.currentTool, 120) || undefined,
             activityState: subagentText(agent.activityState, 80) || undefined,
+            model: subagentModel(agent.model) || undefined,
+            thinking: subagentThinking(agent.thinking) || subagentThinkingFromModel(agent.model) || undefined,
             nested: agent.nested === true,
           })),
       }))
@@ -593,6 +627,51 @@ export default function webuiRpcHelper(pi) {
     return value && path.isAbsolute(value) ? path.normalize(value) : "";
   }
 
+  function subagentStatusStepForAgent(status, agent) {
+    const steps = Array.isArray(status?.steps) ? status.steps : [];
+    const indexed = steps[agent.index];
+    if (indexed?.agent === agent.name) return indexed;
+    return steps.find((step) => step?.agent === agent.name && ["running", "queued", "pending"].includes(step?.status))
+      || steps.find((step) => step?.agent === agent.name)
+      || (steps.length === 1 ? steps[0] : undefined);
+  }
+
+  async function enrichAsyncSubagentAgent(run, agent, statusByDir) {
+    const targetRunId = subagentText(agent.targetRunId || run.id, 160);
+    let asyncDir = subagentText(agent.asyncDir || (targetRunId === run.id ? run.asyncDir : ""), 4096);
+    if (!asyncDir) {
+      try {
+        const data = await requestSubagentStatus({ id: targetRunId });
+        asyncDir = subagentAsyncDirFromStatusText(data?.text);
+      } catch {
+        return;
+      }
+    }
+    if (!asyncDir) return;
+    agent.asyncDir = asyncDir;
+    if (targetRunId === run.id) run.asyncDir = asyncDir;
+    if (!statusByDir.has(asyncDir)) {
+      try {
+        statusByDir.set(asyncDir, JSON.parse(readFileSync(path.join(asyncDir, "status.json"), "utf8")));
+      } catch {
+        statusByDir.set(asyncDir, null);
+      }
+    }
+    const status = statusByDir.get(asyncDir);
+    if (!status || (status.runId && status.runId !== targetRunId)) return;
+    const step = subagentStatusStepForAgent(status, agent);
+    if (!step) return;
+    agent.model = subagentModel(step.model) || agent.model;
+    agent.thinking = subagentThinking(step.thinking) || subagentThinkingFromModel(step.model) || agent.thinking;
+  }
+
+  async function enrichAsyncSubagentRun(run) {
+    const statusByDir = new Map();
+    for (const agent of Array.isArray(run?.agents) ? run.agents : []) {
+      await enrichAsyncSubagentAgent(run, agent, statusByDir);
+    }
+  }
+
   function subagentOutputSnapshotFromAgent(run, agent, patch = {}) {
     return {
       version: 1,
@@ -614,6 +693,8 @@ export default function webuiRpcHelper(pi) {
         turnCount: Number.isFinite(patch.turnCount) ? patch.turnCount : Number.isFinite(agent.turnCount) ? agent.turnCount : undefined,
         toolCount: Number.isFinite(patch.toolCount) ? patch.toolCount : Number.isFinite(agent.toolCount) ? agent.toolCount : undefined,
         tokens: Number.isFinite(patch.tokens) ? patch.tokens : Number.isFinite(agent.tokens) ? agent.tokens : undefined,
+        model: subagentModel(patch.model || agent.model) || undefined,
+        thinking: subagentThinking(patch.thinking || agent.thinking) || undefined,
         recentTools: subagentRecentTools(patch.recentTools || agent.recentTools),
         recentOutput: subagentOutputLines(patch.recentOutput || agent.recentOutput),
         transcript: Array.isArray(patch.transcript) ? patch.transcript : [],
@@ -630,10 +711,11 @@ export default function webuiRpcHelper(pi) {
     if (run.source === "foreground") return subagentOutputSnapshotFromAgent(run, agent);
 
     const targetRunId = subagentText(agent.targetRunId || run.id, 160);
-    let asyncDir = subagentText(run.asyncDir, 4096);
+    let asyncDir = subagentText(agent.asyncDir || (targetRunId === run.id ? run.asyncDir : ""), 4096);
     if (!asyncDir) {
       const data = await requestSubagentStatus({ id: targetRunId });
       asyncDir = subagentAsyncDirFromStatusText(data?.text);
+      if (asyncDir) agent.asyncDir = asyncDir;
       if (asyncDir && targetRunId === run.id) run.asyncDir = asyncDir;
     }
     if (!asyncDir) return subagentOutputSnapshotFromAgent(run, agent);
@@ -674,7 +756,18 @@ export default function webuiRpcHelper(pi) {
       }
       for (const run of parsedRuns) {
         const previous = asyncSubagentRuns.get(run.id);
-        asyncSubagentRuns.set(run.id, { ...previous, ...run, eventSeenAt: previous?.eventSeenAt || Date.now() });
+        const previousAgents = Array.isArray(previous?.agents) ? previous.agents : [];
+        const merged = {
+          ...previous,
+          ...run,
+          eventSeenAt: previous?.eventSeenAt || Date.now(),
+          agents: run.agents.map((agent) => ({
+            ...previousAgents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name),
+            ...agent,
+          })),
+        };
+        await enrichAsyncSubagentRun(merged);
+        asyncSubagentRuns.set(run.id, merged);
       }
       publishSubagentStatus();
     } catch {
@@ -939,6 +1032,8 @@ export default function webuiRpcHelper(pi) {
       name: agent.name,
       status: "running",
       index,
+      model: agent.model,
+      thinking: agent.thinking,
       nested: false,
     }));
     if (!initialAgents.length) return;
@@ -961,7 +1056,17 @@ export default function webuiRpcHelper(pi) {
     subagentContext = ctx;
     const details = event.partialResult?.details || event.result?.details;
     const agents = subagentRunningAgentsFromDetails(details, details?.runId || id);
-    if (agents.length) run.agents = agents;
+    if (agents.length) {
+      run.agents = agents.map((agent) => {
+        const previous = run.agents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name);
+        return {
+          ...previous,
+          ...agent,
+          model: agent.model || previous?.model,
+          thinking: agent.thinking || previous?.thinking,
+        };
+      });
+    }
     if (details?.runId) run.id = subagentText(details.runId, 160);
     run.mode = subagentMode(details?.mode, run.mode);
     publishSubagentStatus();

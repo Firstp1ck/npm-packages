@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Reviewed implementation report for Git panel render stability and folder override persistence.">
+  <title>Git Panel Render Stability — Reviewed Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 12% 0%, #17345d 0, var(--bg) 31rem);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); text-underline-offset: 0.2em; }
+    a:hover { text-decoration-thickness: 2px; }
+    a:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; border-radius: 4px; }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section, footer {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    section { padding: 24px; margin-top: 20px; }
+    footer { padding: 20px 24px; margin-top: 20px; color: var(--muted); }
+    h1 { margin: 0.3rem 0 0.75rem; font-size: clamp(1.9rem, 5vw, 3rem); line-height: 1.08; letter-spacing: -0.035em; }
+    h2 { margin: 0 0 1rem; padding-bottom: 0.65rem; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin: 0 0 0.45rem; font-size: 1.05rem; }
+    p { margin: 0.5rem 0 0; }
+    .eyebrow, .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.2rem 0.65rem;
+      font-size: 0.78rem;
+      font-weight: 750;
+      letter-spacing: 0.03em;
+    }
+    .eyebrow { color: var(--blue); background: #0d2036; }
+    .badge.success { color: var(--green); border-color: #2a6b4d; background: #102b23; }
+    .badge.warning { color: var(--yellow); border-color: #705d2d; background: #2c2515; }
+    .badge.info { color: var(--blue); border-color: #315c86; background: #112943; }
+    .badge.deferred { color: var(--muted); background: #172235; }
+    .lead { max-width: 76ch; color: var(--muted); font-size: 1.05rem; }
+    .conclusion {
+      margin-top: 1.2rem;
+      padding: 1rem 1.1rem;
+      border-left: 4px solid var(--green);
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      background: #102820;
+    }
+    .conclusion strong { color: var(--green); }
+    nav { margin-top: 1.2rem; display: flex; flex-wrap: wrap; gap: 0.55rem; }
+    nav a { padding: 0.25rem 0.65rem; border: 1px solid var(--line); border-radius: 999px; text-decoration: none; background: var(--panel-2); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { padding: 0.75rem 0.85rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { background: var(--panel-2); color: var(--text); font-size: 0.86rem; }
+    tr:last-child td { border-bottom: 0; }
+    td { color: var(--muted); }
+    td strong { color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card p, .card li { color: var(--muted); }
+    .card ul { margin: 0.55rem 0 0; padding-left: 1.2rem; }
+    .card code, td code { color: #cfe6ff; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { overflow-wrap: anywhere; }
+    pre { margin: 0.8rem 0 0; padding: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--code); color: #d7e6fa; white-space: pre-wrap; }
+    figure { margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--code); }
+    figure svg { width: 100%; height: auto; display: block; }
+    figcaption { margin-top: 0.75rem; color: var(--muted); font-size: 0.9rem; }
+    .finding { border-left: 4px solid var(--blue); }
+    .finding.accepted { border-left-color: var(--green); }
+    .finding.deferred { border-left-color: var(--yellow); }
+    .finding.rejected { border-left-color: var(--red); }
+    .status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.88rem; }
+    .callout { padding: 14px 16px; border: 1px solid #705d2d; border-radius: var(--radius-md); background: #292315; color: #f6e3aa; }
+    .steps { counter-reset: step; display: grid; gap: 12px; }
+    .step { position: relative; padding: 15px 15px 15px 54px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .step::before { counter-increment: step; content: counter(step); position: absolute; left: 14px; top: 14px; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: #163c61; color: var(--blue); font-weight: 800; }
+    .step p { color: var(--muted); }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 18px, 1120px); margin: 12px auto 30px; }
+      header, section { padding: 18px; }
+      nav { gap: 0.4rem; }
+      nav a { font-size: 0.88rem; }
+      .grid { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #132238; font-size: 11pt; }
+      .shell { width: 100%; margin: 0; }
+      header, section, footer, .card, .step, figure { background: white; color: #132238; border-color: #98a7b9; box-shadow: none; break-inside: avoid; }
+      .lead, td, .card p, .card li, .step p, figcaption, footer { color: #405167; }
+      h2 { border-color: #98a7b9; }
+      nav { display: none; }
+      a { color: #164f86; }
+      pre { background: #f4f6f8; color: #132238; border-color: #98a7b9; }
+      .badge, .eyebrow { background: white !important; color: #132238 !important; border-color: #66788d !important; }
+      .conclusion, .callout { background: #f4f6f8; color: #132238; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <span class="eyebrow">Reviewed implementation report</span>
+      <h1>Git panel rendering is now stable across poll cycles</h1>
+      <p class="lead">This report traces the source-confirmed rebuild sequence, the localized signature guards, canonical folder overrides, required checks, and two independent qualifying reviews. It covers only the approved render-stability scope.</p>
+      <div class="conclusion"><strong>Conclusion:</strong> accepted fixes are implemented and focused checks pass. The review gate is complete. The repository-wide check reaches 28 of 29 test files and stops only at a known unrelated package-lock assertion.</div>
+      <nav aria-label="Report sections">
+        <a href="#overview">Overview</a>
+        <a href="#root-cause">Root cause</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#evidence">Checks</a>
+        <a href="#reviews">Reviews</a>
+        <a href="#risks">Risks</a>
+        <a href="#verify">Verify</a>
+      </nav>
+    </header>
+
+    <section id="overview" aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Observed problem</th><th>Implemented response</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Git panel</strong></td><td>Poll/activity fan-out repeatedly replaced card DOM.</td><td>Input signature plus child-count integrity fallback skips unchanged rebuilds.</td><td><span class="badge success">Complete</span></td></tr>
+            <tr><td><strong>Folder state</strong></td><td>Rebuilds restored depth defaults and could record programmatic defaults.</td><td>Map stores only user deviations from <code>defaultOpen</code>.</td><td><span class="badge success">Accepted fix</span></td></tr>
+            <tr><td><strong>Sibling renderers</strong></td><td>Dashboard and meter shared the same repeated-render pattern.</td><td>Co-located signatures guard each renderer without restructuring.</td><td><span class="badge success">Complete</span></td></tr>
+            <tr><td><strong>Review gate</strong></td><td>Two independent provider-family reviews required.</td><td>Anthropic and DeepSeek approved; failed Google auth attempt did not count.</td><td><span class="badge success">Satisfied</span></td></tr>
+            <tr><td><strong>Full check</strong></td><td>Unrelated package metadata conflicts with a mobile static assertion.</td><td>Recorded exactly; package/package-lock left untouched.</td><td><span class="badge warning">28/29 files</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="root-cause" aria-labelledby="root-cause-title">
+      <h2 id="root-cause-title">Source-grounded root-cause sequence</h2>
+      <figure data-visual-kind="diagram" data-purpose="Show how polling caused repeated DOM teardown and where the new guard interrupts it">
+        <svg role="img" aria-labelledby="sequence-title sequence-desc" viewBox="0 0 980 350">
+          <title id="sequence-title">Polling-to-render sequence and stability guard</title>
+          <desc id="sequence-desc">A working-tab poll or activity event reaches renderTabs, which calls the Git panel, context meter, and dashboard renderers. Each renderer now computes an input signature. Unchanged input preserves current DOM; changed input performs a rebuild. Git folder rebuilds restore canonical user overrides.</desc>
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#65b5ff"/></marker>
+          </defs>
+          <g font-family="system-ui, sans-serif" font-size="16">
+            <rect x="20" y="32" width="180" height="70" rx="12" fill="#18253a" stroke="#2b3b55"/>
+            <text x="110" y="61" text-anchor="middle" fill="#e8eef8" font-weight="700">Poll / activity event</text>
+            <text x="110" y="84" text-anchor="middle" fill="#a9b7cb" font-size="13">working tab ≈ 1.5 s</text>
+            <rect x="270" y="32" width="170" height="70" rx="12" fill="#18253a" stroke="#2b3b55"/>
+            <text x="355" y="73" text-anchor="middle" fill="#e8eef8" font-weight="700">renderTabs()</text>
+            <rect x="510" y="32" width="210" height="70" rx="12" fill="#18253a" stroke="#2b3b55"/>
+            <text x="615" y="61" text-anchor="middle" fill="#e8eef8" font-weight="700">Renderer fan-out</text>
+            <text x="615" y="84" text-anchor="middle" fill="#a9b7cb" font-size="13">Git · meter · dashboard</text>
+            <rect x="790" y="32" width="170" height="70" rx="12" fill="#112943" stroke="#65b5ff"/>
+            <text x="875" y="61" text-anchor="middle" fill="#e8eef8" font-weight="700">Input signature</text>
+            <text x="875" y="84" text-anchor="middle" fill="#a9b7cb" font-size="13">+ DOM fallback</text>
+            <path d="M200 67 H270" stroke="#65b5ff" stroke-width="2" marker-end="url(#arrow)"/>
+            <path d="M440 67 H510" stroke="#65b5ff" stroke-width="2" marker-end="url(#arrow)"/>
+            <path d="M720 67 H790" stroke="#65b5ff" stroke-width="2" marker-end="url(#arrow)"/>
+            <rect x="530" y="210" width="210" height="82" rx="12" fill="#102b23" stroke="#50d890"/>
+            <text x="635" y="239" text-anchor="middle" fill="#50d890" font-weight="700">Unchanged</text>
+            <text x="635" y="264" text-anchor="middle" fill="#e8eef8" font-size="14">Preserve current DOM</text>
+            <rect x="770" y="210" width="190" height="82" rx="12" fill="#2c2515" stroke="#f7c65c"/>
+            <text x="865" y="239" text-anchor="middle" fill="#f7c65c" font-weight="700">Changed</text>
+            <text x="865" y="264" text-anchor="middle" fill="#e8eef8" font-size="14">Rebuild + restore override</text>
+            <path d="M875 102 V155 H635 V210" stroke="#50d890" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+            <text x="714" y="146" fill="#50d890" font-size="13">same</text>
+            <path d="M875 102 V210" stroke="#f7c65c" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+            <text x="887" y="163" fill="#f7c65c" font-size="13">different</text>
+            <text x="20" y="331" fill="#a9b7cb" font-size="13">Evidence: plans/git-panel-render-stability.md and target functions in public/app.js. No synthetic timing or performance measurements are shown.</text>
+          </g>
+        </svg>
+        <figcaption>The guard interrupts only unnecessary DOM replacement. Legitimate state/data changes still rebuild, and Git folders restore a stored user override or their depth-based default.</figcaption>
+      </figure>
+    </section>
+
+    <section id="implementation" aria-labelledby="implementation-title">
+      <h2 id="implementation-title">Implementation map</h2>
+      <div class="grid">
+        <article class="card">
+          <h3><code>renderGitPanelFolder()</code></h3>
+          <p>Defines <code>defaultOpen = depth === 0</code>, restores a stored override when present, deletes a key when the toggle equals the default, and stores only a deviation.</p>
+        </article>
+        <article class="card">
+          <h3><code>renderGitPanel()</code></h3>
+          <p>Prunes stale root state, computes rendered inputs, skips a same-signature rebuild when top-level card count is intact, and no longer hashes the always-true <code>sectionExpanded</code>.</p>
+        </article>
+        <article class="card">
+          <h3>Sibling guards</h3>
+          <p><code>renderContextMeter()</code> and <code>renderWorkspaceDashboard()</code> compare their own visible-state inputs before replacing children.</p>
+        </article>
+        <article class="card">
+          <h3>Static regression coverage</h3>
+          <p>The focused test checks canonical override rules, removed-root pruning, guard-before-rebuild ordering, and absence of the dead signature member. The existing mobile assertion now recognizes the named default.</p>
+        </article>
+      </div>
+      <pre><code>const defaultOpen = depth === 0;
+details.open = hasOverride ? storedOverride : defaultOpen;
+
+on toggle:
+  state equals default  → delete override
+  state differs         → store Boolean override</code></pre>
+    </section>
+
+    <section id="evidence" aria-labelledby="evidence-title">
+      <h2 id="evidence-title">Acceptance and check evidence</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Command</th><th>Status</th><th>Observed output</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">node --check public/app.js</td><td><span class="badge success">Passed</span></td><td>Exit 0; no syntax diagnostics.</td></tr>
+            <tr><td class="mono">node --test tests/git-panel-render-stability-static.test.mjs</td><td><span class="badge success">Passed</span></td><td>TAP: 1 test, 1 pass, 0 fail.</td></tr>
+            <tr><td class="mono">npm run check</td><td><span class="badge warning">Expected failure</span></td><td>All syntax checks and 28/29 test files pass. Only <code>mobile-static.test.mjs:1751</code> fails: package-lock root has optional <code>@firstpick/pi-extension-bang-command-autocomplete: ^0.2.1</code>, expected <code>undefined</code>.</td></tr>
+            <tr><td class="mono">git diff --check -- …scoped files…</td><td><span class="badge success">Passed</span></td><td>No whitespace errors.</td></tr>
+            <tr><td class="mono">validate_report.py … --strict</td><td><span class="badge success">Passed</span></td><td>Strict report validation passed.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="callout"><strong>Scope boundary:</strong> package.json and package-lock.json were not changed. The repository already contains unrelated staged and unstaged work; this implementation did not commit, reset, or unstage it.</p>
+    </section>
+
+    <section id="reviews" aria-labelledby="reviews-title">
+      <h2 id="reviews-title">Independent review evidence and dispositions</h2>
+      <div class="grid">
+        <article class="card">
+          <div class="status-line"><span class="badge success">Qualifying · approve</span></div>
+          <h3>Anthropic / Claude</h3>
+          <p><span class="mono">bc028140-aa0c-4ad6-add2-b2e005c63e71</span>, reviewer 0<br><code>anthropic/claude-opus-4-8:high</code><br>Confidence: 88/100</p>
+          <p>Verified signature invalidation, child-count fallback, side-effect ordering, key isolation, context-menu behavior, and sibling signatures.</p>
+        </article>
+        <article class="card">
+          <div class="status-line"><span class="badge success">Qualifying · approve</span></div>
+          <h3>OpenRouter / DeepSeek</h3>
+          <p><span class="mono">bc06461c-de5a-4259-beef-952c2933515f</span><br><code>openrouter/deepseek/deepseek-v4-pro:high</code><br>Confidence: 92/100</p>
+          <p>Verified all salient signature fields, hidden/empty DOM fallbacks, state transitions, deterministic group inputs, pruning, and test adequacy.</p>
+        </article>
+        <article class="card">
+          <div class="status-line"><span class="badge warning">Non-qualifying · replaced</span></div>
+          <h3>Google / Gemini attempt</h3>
+          <p><span class="mono">bc028140-aa0c-4ad6-add2-b2e005c63e71</span>, reviewer 1<br><code>google/gemini-3.1-pro-preview:high</code></p>
+          <p>Failed before review with HTTP 400 <code>INVALID_ARGUMENT</code>, reason <code>API_KEY_INVALID</code>. It produced no findings and was replaced by DeepSeek.</p>
+        </article>
+      </div>
+
+      <h3 style="margin-top:1.2rem">Finding-by-finding disposition</h3>
+      <div class="grid">
+        <article class="card finding accepted"><div class="status-line"><span class="badge success">Accepted · fixed</span></div><h3>Programmatic toggles wrote defaults</h3><p>Canonical delete-on-default/store-on-override behavior makes delayed events idempotent.</p></article>
+        <article class="card finding accepted"><div class="status-line"><span class="badge success">Accepted · fixed</span></div><h3>Dead <code>sectionExpanded</code></h3><p>Removed from the local and signature because collapsed execution already returns.</p></article>
+        <article class="card finding deferred"><div class="status-line"><span class="badge warning">Deferred</span></div><h3>Live-root dead paths may linger</h3><p>Only real user overrides now remain. Exact path pruning requires disproportionate tree traversal/threading.</p></article>
+        <article class="card finding rejected"><div class="status-line"><span class="badge info">Rejected</span></div><h3>Git theme signature</h3><p>Git DOM has no theme-dependent value; its appearance is CSS-driven.</p></article>
+        <article class="card finding deferred"><div class="status-line"><span class="badge deferred">Deferred · out of scope</span></div><h3><code>card.tabTitle</code> fallback</h3><p>Pre-existing, unrelated behavior was not changed.</p></article>
+        <article class="card finding accepted"><div class="status-line"><span class="badge info">Accepted limitation</span></div><h3>Structural tests</h3><p>Assertions were strengthened for canonical behavior without adding jsdom/browser dependencies.</p></article>
+        <article class="card finding deferred"><div class="status-line"><span class="badge warning">Deferred</span></div><h3>Behavioral DOM test</h3><p>No browser/jsdom harness exists; adding one is disproportionate. Real-browser behavior remains unverified.</p></article>
+        <article class="card finding"><div class="status-line"><span class="badge info">No action evidence</span></div><h3>Verified-correct observations</h3><p>Both reviewers found guard inputs, integrity fallbacks, discovery/cleanup ordering, view switches, loading/error changes, and deterministic construction sound.</p></article>
+      </div>
+    </section>
+
+    <section id="risks" aria-labelledby="risks-title">
+      <h2 id="risks-title">Residual risks and limitations</h2>
+      <div class="grid">
+        <article class="card"><h3>Live-root override retention</h3><p>Overrides for vanished paths can remain while a root stays live. Canonicalization limits growth to folders the user actually toggled.</p></article>
+        <article class="card"><h3>Signature maintenance drift</h3><p>A future rendered value must also be added to its co-located signature or DOM could remain stale until another input changes.</p></article>
+        <article class="card"><h3>Browser behavior unexecuted</h3><p>Timing, focus, and scroll behavior were reasoned from source and covered structurally, not executed in a browser/jsdom harness.</p></article>
+        <article class="card"><h3>Repository-wide check blocked</h3><p>The unrelated optional-companion package-lock mismatch prevents a full green <code>npm run check</code>.</p></article>
+      </div>
+    </section>
+
+    <section id="verify" aria-labelledby="verify-title">
+      <h2 id="verify-title">Usage and verification guidance</h2>
+      <div class="steps">
+        <article class="step"><h3>Exercise unchanged polling</h3><p>Expand Git, close a top-level folder, open a nested folder, and observe several active-agent poll cycles. Unchanged inputs should preserve DOM and choices.</p></article>
+        <article class="step"><h3>Trigger a legitimate update</h3><p>Change the Git snapshot or switch Changes/History. The signature should change, the panel should rebuild, and stored folder deviations should be restored.</p></article>
+        <article class="step"><h3>Check default restoration</h3><p>Toggle each folder back to its depth default. A later rebuild should use top-level-open/deeper-closed without retaining an explicit map entry.</p></article>
+        <article class="step"><h3>Repeat automated checks</h3><pre><code>node --check public/app.js
+node --test tests/git-panel-render-stability-static.test.mjs
+npm run check
+python3 /home/firstpick/.pi/agent/skills/html-report/scripts/validate_report.py reports/git-panel-render-stability.html --strict</code></pre></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="sources-title">
+      <h2 id="sources-title">Evidence sources</h2>
+      <ul>
+        <li><a href="../plans/git-panel-render-stability.md">Canonical implementation plan and review trace</a></li>
+        <li><code>public/app.js</code>: Git panel folder/panel renderers and sibling signature guards</li>
+        <li><code>tests/git-panel-render-stability-static.test.mjs</code> and the targeted assertion in <code>tests/mobile-static.test.mjs</code></li>
+        <li>Reviewer artifacts for the Anthropic, DeepSeek, and failed Google attempts</li>
+        <li>Command output recorded during final verification</li>
+      </ul>
+      <p>Confidence: 94/100. Focused code and static checks plus two independent reviews support the conclusion. Confidence is reduced because no real-browser behavioral run was performed and the full repository check is blocked by unrelated package metadata.</p>
+    </section>
+
+    <footer>
+      <strong>Report boundary:</strong> no external assets, scripts, fonts, telemetry, or invented performance metrics. Generated as the linked audit companion to the implementation plan.
+    </footer>
+  </main>
+</body>
+</html>

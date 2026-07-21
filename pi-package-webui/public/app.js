@@ -203,6 +203,10 @@ const elements = {
   fileTreeRefreshButton: $("#fileTreeRefreshButton"),
   fileTreeSearchInput: $("#fileTreeSearchInput"),
   fileTreeSearchClearButton: $("#fileTreeSearchClearButton"),
+  gitPanelGroups: $("#gitPanelGroups"),
+  gitPanelStatus: $("#gitPanelStatus"),
+  gitPanelCountBadge: $("#gitPanelCountBadge"),
+  gitPanelContextMenu: $("#gitPanelContextMenu"),
   fileViewerPane: $("#fileViewerPane"),
   fileViewerResizeHandle: $("#fileViewerResizeHandle"),
   fileViewerTitle: $("#fileViewerTitle"),
@@ -413,8 +417,19 @@ let undoToastFocusReturn = null;
 const modalSurfaceState = new WeakMap();
 let activeDrawerModal = null;
 let activeGitPrDialogResolve = null;
-let gitChangesState = { loading: false, pulling: false, fetching: false, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, data: null, operation: null, lastFetch: null, tabId: null };
+let gitChangesState = { loading: false, pulling: false, fetching: false, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, data: null, operation: null, lastFetch: null, tabId: null, mode: "changes", commit: null };
 let gitToolsState = { tabId: null, openSections: new Set(), cache: {}, busy: new Set(), notice: {} };
+let gitPanelState = {
+  expandedCardKey: "",
+  discovery: new Map(),
+  repositories: new Map(),
+  activeViews: new Map(),
+  openFolders: new Map(),
+  busy: new Set(),
+  requestSerial: 0,
+};
+let gitPanelContextMenuState = null;
+let gitPanelRenderSignature = null;
 let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
@@ -713,6 +728,7 @@ const AUR_REVIEW_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-aur-review.review";
 const AUR_REVIEW_RPC_PAYLOAD_VERSION = 3;
 const GIT_CHANGES_RENDER_ROW_LIMIT = 4000;
 const GIT_PULL_RESULT_FILE_LIMIT = 48;
+const GIT_PANEL_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const LAST_USER_PROMPT_STORAGE_KEY = "pi-webui-last-user-prompts";
 const PROMPT_HISTORY_STORAGE_KEY = "pi-webui-prompt-history";
 const PROMPT_LIST_STORAGE_KEY = "pi-webui-prompt-lists";
@@ -1518,6 +1534,12 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
   record.button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   record.button.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
   record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
+  if (!collapsed && record.id === "git") {
+    queueMicrotask(() => {
+      renderGitPanel();
+      ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
+    });
+  }
   if (persist) persistSidePanelSectionState();
 }
 
@@ -6611,6 +6633,7 @@ function showFileContextMenu(event, entry) {
   if (!elements.fileContextMenu) return;
   event.preventDefault();
   event.stopPropagation();
+  closeGitPanelContextMenu({ returnFocus: false });
   const path = normalizeFileTreePath(entry?.path || "");
   fileContextMenuState = { entry: { ...entry, path }, trigger: event.currentTarget || document.activeElement };
   const menu = elements.fileContextMenu;
@@ -8089,6 +8112,583 @@ function terminalDisplayGroupDetail(group, fallback = "group") {
   return `${cwdLabels[0]} + ${cwdLabels.length - 1} cwd${cwdLabels.length === 2 ? "" : "s"}`;
 }
 
+function gitPanelSectionExpanded() {
+  const section = elements.sidePanel?.querySelector('[data-side-panel-section="git"]');
+  return Boolean(section && !section.classList.contains("collapsed"));
+}
+
+function gitPanelTerminalGroups() {
+  const cwdGroups = tabCwdGroups();
+  const groups = [];
+  for (const group of cwdGroups) {
+    if (shouldRenderTerminalTabGroup(group, cwdGroups.length)) {
+      groups.push({ ...group, title: terminalDisplayGroupTitle(group), detail: terminalDisplayGroupDetail(group) });
+      continue;
+    }
+    for (const tab of group.tabs || []) {
+      groups.push({
+        key: `tab:${tab.id}`,
+        custom: false,
+        cwd: tab.cwd || "",
+        tabs: [tab],
+        title: tabGroupTitle(tab.cwd, "Working directory"),
+        detail: normalizeDisplayPath(tab.cwd || ""),
+      });
+    }
+  }
+  return groups;
+}
+
+function gitPanelCandidates(groups = gitPanelTerminalGroups()) {
+  const byCwd = new Map();
+  for (const group of groups) {
+    for (const tab of group.tabs || []) {
+      const cwd = String(tab.cwd || "").trim();
+      if (!cwd || byCwd.has(cwd)) continue;
+      byCwd.set(cwd, {
+        key: `cwd:${cwd}`,
+        cwd,
+        tabId: tab.id,
+        tabTitle: tabGroupTitle(cwd, "Working directory"),
+      });
+    }
+  }
+  return [...byCwd.values()];
+}
+
+function gitPanelRepositoryCards(groups = gitPanelTerminalGroups()) {
+  const byIdentity = new Map();
+  for (const candidate of gitPanelCandidates(groups)) {
+    const discovery = gitPanelState.discovery.get(candidate.key);
+    const root = String(discovery?.root || "");
+    const identity = root ? `root:${root}` : candidate.key;
+    let card = byIdentity.get(identity);
+    if (!card) {
+      card = {
+        key: identity,
+        root,
+        cwd: candidate.cwd,
+        tabId: candidate.tabId,
+        candidates: [],
+        discovery,
+      };
+      byIdentity.set(identity, card);
+    }
+    card.candidates.push(candidate);
+    if (!card.discovery && discovery) card.discovery = discovery;
+  }
+  return [...byIdentity.values()];
+}
+
+function gitPanelRootLabel(root, fallback = "Repository") {
+  const normalized = normalizeDisplayPath(root || "").replace(/\/+$/, "");
+  return normalized.split("/").filter(Boolean).pop() || normalized || fallback;
+}
+
+function gitPanelSnapshot(root) {
+  return root ? gitPanelState.repositories.get(root) || null : null;
+}
+
+function gitPanelSnapshotFresh(snapshot) {
+  return Boolean(snapshot?.data && Date.now() - Number(snapshot.loadedAt || 0) < GIT_PANEL_CACHE_MAX_AGE_MS);
+}
+
+async function discoverGitPanelCandidate(candidate, { force = false } = {}) {
+  const current = gitPanelState.discovery.get(candidate.key);
+  if (current?.loading || (!force && (current?.root || current?.resolved))) return;
+  const requestSerial = ++gitPanelState.requestSerial;
+  gitPanelState.discovery.set(candidate.key, { loading: true, resolved: false, requestSerial, root: "", error: "" });
+  renderGitPanel();
+  try {
+    const response = await api("/api/git-root", { tabId: candidate.tabId });
+    const latest = gitPanelState.discovery.get(candidate.key);
+    if (latest?.requestSerial !== requestSerial) return;
+    if (!response.ok || !response.data?.root) throw new Error(response.error || "Not a Git repository");
+    gitPanelState.discovery.set(candidate.key, { loading: false, resolved: true, requestSerial, checkedAt: Date.now(), root: response.data.root, error: "" });
+  } catch (error) {
+    const latest = gitPanelState.discovery.get(candidate.key);
+    if (latest?.requestSerial !== requestSerial) return;
+    gitPanelState.discovery.set(candidate.key, { loading: false, resolved: true, requestSerial, checkedAt: Date.now(), root: "", error: error.message || String(error) });
+  }
+  renderGitPanel();
+}
+
+function ensureGitPanelRepositoriesDiscovered({ retryUnavailable = false } = {}) {
+  if (!gitPanelSectionExpanded()) return;
+  for (const candidate of gitPanelCandidates()) {
+    const discovery = gitPanelState.discovery.get(candidate.key);
+    if (!discovery || (!discovery.loading && !discovery.resolved)) {
+      void discoverGitPanelCandidate(candidate);
+    } else if (retryUnavailable && !discovery.loading && !discovery.root) {
+      void discoverGitPanelCandidate(candidate, { force: true });
+    }
+  }
+}
+
+async function loadGitPanelRepository(card, { force = false } = {}) {
+  if (!card?.root || !card.tabId) return;
+  const existing = gitPanelSnapshot(card.root);
+  if (!force && gitPanelSnapshotFresh(existing)) return;
+  if (existing?.loading) return;
+  const requestSerial = ++gitPanelState.requestSerial;
+  gitPanelState.repositories.set(card.root, { ...existing, loading: true, error: "", requestSerial });
+  renderGitPanel();
+  try {
+    const response = await api("/api/git-panel", { tabId: card.tabId });
+    const latest = gitPanelSnapshot(card.root);
+    if (latest?.requestSerial !== requestSerial) return;
+    if (!response.ok || !response.data?.root) throw new Error(response.error || "Failed to load Git repository");
+    gitPanelState.repositories.set(card.root, {
+      loading: false,
+      error: "",
+      requestSerial,
+      loadedAt: Date.now(),
+      data: response.data,
+    });
+  } catch (error) {
+    const latest = gitPanelSnapshot(card.root);
+    if (latest?.requestSerial !== requestSerial) return;
+    gitPanelState.repositories.set(card.root, {
+      ...latest,
+      loading: false,
+      error: error.message || String(error),
+      requestSerial,
+    });
+  }
+  renderGitPanel();
+}
+
+function toggleGitPanelRepository(card) {
+  if (!card?.root) return;
+  if (gitPanelState.expandedCardKey === card.key) {
+    gitPanelState.expandedCardKey = "";
+    renderGitPanel();
+    return;
+  }
+  gitPanelState.expandedCardKey = card.key;
+  renderGitPanel();
+  const snapshot = gitPanelSnapshot(card.root);
+  if (!gitPanelSnapshotFresh(snapshot)) void loadGitPanelRepository(card);
+}
+
+function gitPanelChangeCount(data) {
+  return Array.isArray(data?.changes) ? data.changes.length : 0;
+}
+
+function gitPanelStatsText(entry = {}, category = "") {
+  const prefix = category === "staged" ? "staged" : category === "changes" ? "unstaged" : "";
+  const binary = prefix ? entry[`${prefix}Binary`] === true : entry.binary === true;
+  if (binary) return "binary";
+  const additions = Number(prefix ? entry[`${prefix}Additions`] : entry.additions || 0) || 0;
+  const deletions = Number(prefix ? entry[`${prefix}Deletions`] : entry.deletions || 0) || 0;
+  if (!additions && !deletions) return entry.untracked ? "new" : "";
+  return `${additions ? `+${additions}` : "+0"} ${deletions ? `−${deletions}` : "−0"}`;
+}
+
+function gitPanelTree(entries = []) {
+  const root = { name: "", path: "", folders: new Map(), files: [] };
+  for (const entry of entries) {
+    const parts = String(entry.path || "").split("/").filter(Boolean);
+    if (!parts.length) continue;
+    const fileName = parts.pop();
+    let node = root;
+    let currentPath = "";
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      if (!node.folders.has(part)) node.folders.set(part, { name: part, path: currentPath, folders: new Map(), files: [] });
+      node = node.folders.get(part);
+    }
+    node.files.push({ ...entry, name: fileName });
+  }
+  return root;
+}
+
+function closeGitPanelContextMenu({ returnFocus = true } = {}) {
+  const trigger = gitPanelContextMenuState?.trigger;
+  gitPanelContextMenuState = null;
+  if (elements.gitPanelContextMenu) elements.gitPanelContextMenu.hidden = true;
+  if (returnFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus({ preventScroll: true }));
+}
+
+function gitPanelContextMenuItems(context) {
+  const { card, category = "", kind = "file", path = "" } = context || {};
+  if (!card?.root) return [];
+  if (kind === "repository") {
+    const snapshot = gitPanelSnapshot(card.root);
+    return [
+      { label: "View Diff", run: () => openGitChangesDialog(card.tabId) },
+      { label: snapshot?.loading ? "Refreshing…" : "Refresh", disabled: snapshot?.loading, run: () => loadGitPanelRepository(card, { force: true }) },
+      { label: "Stage All", disabled: gitPanelActionBusy(card, "stage-all"), run: () => runGitPanelAction(card, "stage-all") },
+      { label: "Unstage All", disabled: gitPanelActionBusy(card, "unstage-all"), run: () => runGitPanelAction(card, "unstage-all") },
+    ];
+  }
+  const target = kind === "folder" ? "folder" : "file";
+  if (category === "staged") {
+    return [{ label: `Unstage ${target}`, disabled: gitPanelActionBusy(card, "unstage", path), run: () => runGitPanelAction(card, "unstage", path) }];
+  }
+  const stageLabel = category === "conflicted" ? `Stage ${target} / mark resolved` : `Stage ${target}`;
+  const items = [{ label: stageLabel, disabled: gitPanelActionBusy(card, "stage", path), run: () => runGitPanelAction(card, "stage", path) }];
+  if (kind === "file" && category === "changes") {
+    items.push({ label: "Discard changes…", danger: true, disabled: gitPanelActionBusy(card, "discard", path), run: () => runGitPanelAction(card, "discard", path) });
+  }
+  if (kind === "file" && category === "untracked") {
+    items.push({ label: "Delete file…", danger: true, disabled: gitPanelActionBusy(card, "delete", path), run: () => runGitPanelAction(card, "delete", path) });
+  }
+  return items;
+}
+
+function showGitPanelContextMenu(event, context) {
+  if (!elements.gitPanelContextMenu) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeFileContextMenu({ returnFocus: false });
+  closeGitPanelContextMenu({ returnFocus: false });
+  const menu = elements.gitPanelContextMenu;
+  const items = gitPanelContextMenuItems(context);
+  if (!items.length) return;
+  const trigger = event.currentTarget || document.activeElement;
+  gitPanelContextMenuState = { ...context, trigger };
+  const labelText = context.kind === "repository" ? gitPanelRootLabel(context.card.root) : context.path;
+  const label = make("div", "git-side-panel-context-label", labelText);
+  const buttons = items.map((item) => {
+    const button = make("button", item.danger ? "danger" : "", item.label);
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.disabled = Boolean(item.disabled);
+    button.addEventListener("click", () => {
+      closeGitPanelContextMenu();
+      void item.run();
+    });
+    return button;
+  });
+  menu.replaceChildren(label, ...buttons);
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, Math.max(8, window.innerWidth - rect.width - 8));
+  const top = Math.min(event.clientY, Math.max(8, window.innerHeight - rect.height - 8));
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.querySelector('[role="menuitem"]:not([disabled])')?.focus({ preventScroll: true });
+}
+
+function bindGitPanelContextMenu(trigger, context) {
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.addEventListener("contextmenu", (event) => showGitPanelContextMenu(event, context));
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    const rect = trigger.getBoundingClientRect();
+    showGitPanelContextMenu({
+      preventDefault: () => event.preventDefault(),
+      stopPropagation: () => event.stopPropagation(),
+      clientX: rect.left + Math.min(rect.width, 24),
+      clientY: rect.bottom,
+      currentTarget: trigger,
+    }, context);
+  });
+}
+
+function gitPanelActionBusy(card, action, path = "") {
+  return gitPanelState.busy.has(`${card.root}\u0000${action}\u0000${path}`);
+}
+
+async function runGitPanelAction(card, action, path = "") {
+  const config = {
+    stage: { url: "/api/git-changes/stage-file", body: { path }, past: `Staged ${path}.` },
+    unstage: { url: "/api/git-changes/unstage-file", body: { path }, past: `Unstaged ${path}.` },
+    "stage-all": { url: "/api/git-changes/stage-all", body: {}, past: `Staged all changes in ${card.root}.` },
+    "unstage-all": { url: "/api/git-changes/unstage-all", body: {}, past: `Unstaged all changes in ${card.root}.` },
+    discard: {
+      url: "/api/git-changes/discard-file",
+      body: { path, confirmed: true },
+      past: `Discarded tracked changes in ${path}.`,
+      confirm: `Discard tracked working-tree changes in ${path}?\n\nRepository: ${card.root}\nCommand: git restore -- ${path}\n\nThis permanently reverts unstaged edits to this path.`,
+      confirmLabel: "Discard changes",
+    },
+    delete: {
+      url: "/api/git-changes/delete-untracked",
+      body: { path, confirmed: true },
+      past: `Deleted untracked file ${path}.`,
+      confirm: `Delete untracked file ${path}?\n\nRepository: ${card.root}\n\nThis permanently removes the file from disk.`,
+      confirmLabel: "Delete file",
+    },
+  }[action];
+  if (!config || !card?.root || !card.tabId) return;
+  if (config.confirm && !(await appConfirmText(config.confirm, { affected: path || card.root, confirmLabel: config.confirmLabel }))) return;
+  const busyKey = `${card.root}\u0000${action}\u0000${path}`;
+  if (gitPanelState.busy.has(busyKey)) return;
+  gitPanelState.busy.add(busyKey);
+  renderGitPanel();
+  try {
+    const response = await api(config.url, { method: "POST", body: config.body, tabId: card.tabId });
+    if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || `Git ${action} failed`);
+    addEvent(config.past, "success");
+    await loadGitPanelRepository(card, { force: true });
+    requestGitFooterWebuiPayload({ tabId: card.tabId }, { force: true });
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    const snapshot = gitPanelSnapshot(card.root);
+    gitPanelState.repositories.set(card.root, { ...snapshot, error: error.message || String(error), loading: false });
+  } finally {
+    gitPanelState.busy.delete(busyKey);
+    renderGitPanel();
+  }
+}
+
+function renderGitPanelFolder(node, card, category, depth = 0) {
+  const details = make("details", "git-side-panel-folder");
+  const folderKey = `${card.root}\u0000${category}\u0000${node.path}`;
+  const defaultOpen = depth === 0;
+  details.open = gitPanelState.openFolders.has(folderKey) ? gitPanelState.openFolders.get(folderKey) : defaultOpen;
+  details.addEventListener("toggle", () => {
+    if (details.open === defaultOpen) gitPanelState.openFolders.delete(folderKey);
+    else gitPanelState.openFolders.set(folderKey, details.open);
+  });
+  const summary = make("summary", "git-side-panel-folder-summary");
+  summary.title = `${node.path} · Right-click for Git actions`;
+  const chevron = make("span", "git-side-panel-folder-chevron", "›");
+  chevron.setAttribute("aria-hidden", "true");
+  summary.append(chevron, make("span", "git-side-panel-folder-name", node.name));
+  const folderEntries = [];
+  const collect = (current) => {
+    folderEntries.push(...current.files);
+    for (const child of current.folders.values()) collect(child);
+  };
+  collect(node);
+  summary.append(make("span", "git-side-panel-folder-count", String(folderEntries.length)));
+  bindGitPanelContextMenu(summary, { card, category, kind: "folder", path: node.path });
+  details.append(summary);
+  const body = make("div", "git-side-panel-folder-body");
+  for (const child of [...node.folders.values()].sort((a, b) => a.name.localeCompare(b.name))) body.append(renderGitPanelFolder(child, card, category, depth + 1));
+  for (const file of [...node.files].sort((a, b) => a.name.localeCompare(b.name))) body.append(renderGitPanelFile(file, card, category));
+  details.append(body);
+  return details;
+}
+
+function renderGitPanelFile(entry, card, category) {
+  const row = make("div", `git-side-panel-file ${category}`);
+  const fullPath = entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path;
+  row.title = `${fullPath} · Right-click for Git actions`;
+  row.tabIndex = 0;
+  row.setAttribute("aria-label", `${entry.name || entry.path}, ${gitPanelStatsText(entry, category) || "no line statistics"}`);
+  const status = make("span", "git-side-panel-file-status", entry.status?.trim() || (entry.untracked ? "?" : "•"));
+  const name = make("span", "git-side-panel-file-name", entry.name || entry.path);
+  const statsText = gitPanelStatsText(entry, category);
+  const stats = make("span", "git-side-panel-file-stats", statsText);
+  stats.hidden = !statsText;
+  bindGitPanelContextMenu(row, { card, category, kind: "file", path: entry.path });
+  row.append(status, name, stats);
+  return row;
+}
+
+function renderGitPanelTreeSection(label, category, entries, card) {
+  if (!entries.length) return null;
+  const section = make("section", `git-side-panel-tree-section ${category}`);
+  const heading = make("div", "git-side-panel-tree-heading");
+  heading.append(make("strong", undefined, label), make("span", undefined, String(entries.length)));
+  section.append(heading);
+  const tree = gitPanelTree(entries);
+  const body = make("div", "git-side-panel-tree", undefined);
+  body.setAttribute("aria-label", `${label} files`);
+  for (const folder of [...tree.folders.values()].sort((a, b) => a.name.localeCompare(b.name))) body.append(renderGitPanelFolder(folder, card, category));
+  for (const file of [...tree.files].sort((a, b) => a.name.localeCompare(b.name))) body.append(renderGitPanelFile(file, card, category));
+  section.append(body);
+  return section;
+}
+
+function renderGitPanelChanges(card, data) {
+  const wrapper = make("div", "git-side-panel-changes");
+  const changes = Array.isArray(data?.changes) ? data.changes : [];
+  const categories = [
+    ["Conflicts", "conflicted", changes.filter((entry) => entry.conflicted)],
+    ["Staged", "staged", changes.filter((entry) => entry.staged && !entry.conflicted)],
+    ["Changes", "changes", changes.filter((entry) => entry.unstaged && !entry.untracked && !entry.conflicted)],
+    ["Untracked", "untracked", changes.filter((entry) => entry.untracked)],
+  ];
+  for (const [label, category, entries] of categories) {
+    const section = renderGitPanelTreeSection(label, category, entries, card);
+    if (section) wrapper.append(section);
+  }
+  if (!changes.length) wrapper.append(make("p", "git-side-panel-empty success", "Working tree clean."));
+  return wrapper;
+}
+
+function gitPanelHistoryDate(value) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString();
+}
+
+function renderGitPanelHistory(card, data) {
+  const wrapper = make("div", "git-side-panel-history");
+  const history = Array.isArray(data?.history) ? data.history : [];
+  if (!history.length) {
+    wrapper.append(make("p", "git-side-panel-empty", "No commits yet."));
+    return wrapper;
+  }
+  for (const commit of history) {
+    const button = make("button", "git-side-panel-commit");
+    button.type = "button";
+    button.title = `View commit ${commit.hash}`;
+    button.append(
+      make("code", "git-side-panel-commit-hash", commit.shortHash || String(commit.hash || "").slice(0, 12)),
+      make("span", "git-side-panel-commit-subject", commit.subject || "(no subject)"),
+      make("span", "git-side-panel-commit-meta", [commit.author, gitPanelHistoryDate(commit.authoredAt)].filter(Boolean).join(" · ")),
+    );
+    button.addEventListener("click", () => openGitCommitDialog(card.tabId, commit));
+    wrapper.append(button);
+  }
+  return wrapper;
+}
+
+function renderGitPanelRepositoryContent(card, snapshot) {
+  const content = make("div", "git-side-panel-repository-content");
+  if (snapshot?.error) content.append(make("p", "git-side-panel-error", snapshot.error));
+  if (snapshot?.loading && !snapshot?.data) {
+    content.append(make("p", "git-side-panel-empty", "Loading local Git status and history…"));
+    return content;
+  }
+  const data = snapshot?.data;
+  if (!data) {
+    content.append(make("p", "git-side-panel-empty", "Expand this repository to load Git status."));
+    return content;
+  }
+  const tabs = make("div", "git-side-panel-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", `${gitPanelRootLabel(card.root)} repository view`);
+  const views = ["changes", "history"];
+  const activeView = gitPanelState.activeViews.get(card.root) || "changes";
+  for (const view of views) {
+    const label = view === "changes" ? `Changes (${gitPanelChangeCount(data)})` : `History (${data.history?.length || 0})`;
+    const button = make("button", "git-side-panel-tab", label);
+    button.id = `git-side-panel-${view}-tab`;
+    button.type = "button";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-controls", `git-side-panel-${view}-panel`);
+    button.setAttribute("aria-selected", activeView === view ? "true" : "false");
+    button.tabIndex = activeView === view ? 0 : -1;
+    button.addEventListener("click", () => {
+      gitPanelState.activeViews.set(card.root, view);
+      renderGitPanel();
+    });
+    tabs.append(button);
+  }
+  tabs.addEventListener("keydown", (event) => {
+    const currentIndex = views.indexOf(gitPanelState.activeViews.get(card.root) || "changes");
+    let nextIndex = -1;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % views.length;
+    else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + views.length) % views.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = views.length - 1;
+    if (nextIndex < 0) return;
+    event.preventDefault();
+    const nextView = views[nextIndex];
+    gitPanelState.activeViews.set(card.root, nextView);
+    renderGitPanel();
+    queueMicrotask(() => document.getElementById(`git-side-panel-${nextView}-tab`)?.focus({ preventScroll: true }));
+  });
+  const meta = make("div", "git-side-panel-repository-meta");
+  meta.append(
+    make("strong", undefined, data.branch || "detached"),
+    make("span", undefined, snapshot.loading ? "Refreshing…" : `Updated ${gitPanelHistoryDate(data.generatedAt)}`),
+  );
+  const changesPanel = renderGitPanelChanges(card, data);
+  changesPanel.id = "git-side-panel-changes-panel";
+  changesPanel.setAttribute("role", "tabpanel");
+  changesPanel.setAttribute("aria-labelledby", "git-side-panel-changes-tab");
+  changesPanel.hidden = activeView !== "changes";
+  const historyPanel = renderGitPanelHistory(card, data);
+  historyPanel.id = "git-side-panel-history-panel";
+  historyPanel.setAttribute("role", "tabpanel");
+  historyPanel.setAttribute("aria-labelledby", "git-side-panel-history-tab");
+  historyPanel.hidden = activeView !== "history";
+  content.append(tabs, meta, changesPanel, historyPanel);
+  return content;
+}
+
+function renderGitPanelRepositoryCard(card) {
+  const discovery = card.discovery;
+  if (!card.root) {
+    const row = make("div", `git-side-panel-repository unavailable${discovery?.loading ? " loading" : ""}`);
+    row.append(
+      make("strong", undefined, gitPanelRootLabel(card.cwd, card.tabTitle)),
+      make("span", "git-side-panel-repository-path", card.cwd),
+      make("span", "git-side-panel-repository-state", discovery?.loading ? "Discovering repository…" : discovery?.error || "Waiting for repository discovery…"),
+    );
+    return row;
+  }
+  const snapshot = gitPanelSnapshot(card.root);
+  const expanded = gitPanelState.expandedCardKey === card.key;
+  const section = make("section", `git-side-panel-repository${expanded ? " expanded" : ""}`);
+  const button = make("button", "git-side-panel-repository-toggle");
+  button.type = "button";
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  button.title = `${expanded ? "Collapse" : "Expand"} ${card.root} · Right-click for repository actions`;
+  const count = gitPanelChangeCount(snapshot?.data);
+  button.append(
+    make("span", "git-side-panel-repository-chevron", "›"),
+    make("span", "git-side-panel-repository-copy", undefined),
+    make("span", "git-side-panel-repository-count", String(count)),
+  );
+  const copy = button.querySelector(".git-side-panel-repository-copy");
+  copy.append(make("strong", undefined, gitPanelRootLabel(card.root)), make("span", undefined, card.root));
+  button.addEventListener("click", () => toggleGitPanelRepository(card));
+  bindGitPanelContextMenu(button, { card, kind: "repository", path: card.root });
+  section.append(button);
+  if (expanded) section.append(renderGitPanelRepositoryContent(card, snapshot));
+  return section;
+}
+
+function renderGitPanel() {
+  if (!elements.gitPanelGroups || !gitPanelSectionExpanded()) return;
+  if (gitPanelContextMenuState && !elements.gitPanelContextMenu?.hidden) return;
+  const groups = gitPanelTerminalGroups();
+  const candidates = gitPanelCandidates(groups);
+  const cards = gitPanelRepositoryCards(groups);
+  const liveCandidateKeys = new Set(candidates.map((candidate) => candidate.key));
+  const liveRoots = new Set(cards.map((card) => card.root).filter(Boolean));
+  for (const key of [...gitPanelState.discovery.keys()]) if (!liveCandidateKeys.has(key)) gitPanelState.discovery.delete(key);
+  for (const key of [...gitPanelState.activeViews.keys()]) if (!liveRoots.has(key)) gitPanelState.activeViews.delete(key);
+  for (const key of [...gitPanelState.repositories.keys()]) if (!liveRoots.has(key)) gitPanelState.repositories.delete(key);
+  for (const key of [...gitPanelState.openFolders.keys()]) if (!liveRoots.has(key.split("\u0000", 1)[0])) gitPanelState.openFolders.delete(key);
+  const liveCardKeys = new Set(cards.filter((card) => card.root).map((card) => card.key));
+  if (gitPanelState.expandedCardKey && !liveCardKeys.has(gitPanelState.expandedCardKey)) gitPanelState.expandedCardKey = "";
+  closeGitPanelContextMenu({ returnFocus: false });
+  const repositoryCount = cards.filter((card) => card.root).length;
+  const discovering = [...gitPanelState.discovery.values()].some((entry) => entry.loading);
+  const signature = JSON.stringify({
+    expandedCardKey: gitPanelState.expandedCardKey,
+    groups: groups.map((group) => [group.key, group.cwd, group.title, group.detail]),
+    candidates: candidates.map((candidate) => {
+      const discovery = gitPanelState.discovery.get(candidate.key);
+      return [candidate.key, candidate.cwd, candidate.tabId, candidate.tabTitle, discovery?.root || "", !!discovery?.loading, discovery?.error || ""];
+    }),
+    cards: cards.map((card) => {
+      const snapshot = gitPanelSnapshot(card.root);
+      const data = snapshot?.data;
+      return [card.key, card.root, card.cwd, card.tabId, snapshot?.loadedAt || 0, !!snapshot?.loading, snapshot?.error || "", gitPanelChangeCount(data), data?.history?.length || 0, data?.branch || "", data?.generatedAt || "", gitPanelState.activeViews.get(card.root) || "changes"];
+    }),
+    repositoryCount,
+    discovering,
+  });
+  if (signature === gitPanelRenderSignature && elements.gitPanelGroups.childElementCount === cards.length) {
+    ensureGitPanelRepositoriesDiscovered();
+    return;
+  }
+  gitPanelRenderSignature = signature;
+  elements.gitPanelGroups.replaceChildren(...cards.map(renderGitPanelRepositoryCard));
+  if (elements.gitPanelCountBadge) {
+    elements.gitPanelCountBadge.textContent = String(repositoryCount);
+    elements.gitPanelCountBadge.hidden = repositoryCount === 0;
+  }
+  if (elements.gitPanelStatus) {
+    elements.gitPanelStatus.textContent = !groups.length
+      ? "No terminal tabs are open."
+      : discovering
+        ? "Discovering repositories…"
+        : `${repositoryCount} Git ${repositoryCount === 1 ? "repository" : "repositories"} · Right-click for actions`;
+  }
+  ensureGitPanelRepositoriesDiscovered();
+}
+
 function tabAppRunnerRun(tab) {
   if (!tab?.id) return null;
   const cached = appRunnerDataByTab.get(tab.id);
@@ -8428,6 +9028,7 @@ function renderTabs() {
   updateDocumentTitle();
   renderWorkspaceDashboard();
   renderContextMeter();
+  renderGitPanel();
   if (elements.commandPaletteDialog?.open) renderCommandPalette({ preserveScroll: true });
   syncTabPolling();
 }
@@ -10952,7 +11553,7 @@ function gitChangesFileActionsFor(sectionKey, path) {
       ...gitChangesCommonFileActions(path),
     ];
   }
-  if (sectionKey === "incoming") return [{ label: "Copy path", title: "Copy the repo-relative path", onClick: () => copyGitPathToClipboard(path) }];
+  if (sectionKey === "incoming" || sectionKey === "commit") return [{ label: "Copy path", title: "Copy the repo-relative path", onClick: () => copyGitPathToClipboard(path) }];
   return [];
 }
 
@@ -11336,28 +11937,34 @@ function renderGitPullResultPanel(result) {
 
 function renderGitChangesDialog() {
   if (!elements.gitChangesDialog || !elements.gitChangesBody) return;
-  const { loading, pulling, fetching, error, message, pullResult, data, operation } = gitChangesState;
+  const { loading, pulling, fetching, error, message, pullResult, data, operation, mode, commit } = gitChangesState;
+  const commitView = mode === "commit";
   const busyAction = pulling || fetching;
   const behind = Number(data?.remote?.behind ?? data?.summary?.behind ?? 0) || 0;
   const diverged = data?.remote?.diverged === true;
   const canPull = behind > 0 && data?.remote?.canPull !== false && !diverged;
-  const hasOperation = Boolean(operation?.operation);
-  const remoteNotice = !error && data?.remote?.error ? `Incoming diff unavailable: ${data.remote.error}` : "";
-  if (elements.gitChangesTitle) elements.gitChangesTitle.textContent = "Git Changes";
+  const hasOperation = !commitView && Boolean(operation?.operation);
+  const remoteNotice = !commitView && !error && data?.remote?.error ? `Incoming diff unavailable: ${data.remote.error}` : "";
+  if (elements.gitChangesTitle) elements.gitChangesTitle.textContent = commitView ? "Git Commit" : "Git Changes";
   if (elements.gitChangesSubtitle) {
-    const base = data?.root ? `${data.branch || "detached"} · ${data.root}` : "Current tab git diff";
-    elements.gitChangesSubtitle.textContent = data?.remote?.upstream ? `${base} · upstream ${data.remote.upstream}` : base;
+    const commitData = data?.commit || commit;
+    const base = commitView
+      ? [commitData?.shortHash || String(commitData?.hash || "").slice(0, 12), commitData?.subject, data?.root].filter(Boolean).join(" · ") || "Commit diff"
+      : data?.root ? `${data.branch || "detached"} · ${data.root}` : "Current tab git diff";
+    elements.gitChangesSubtitle.textContent = !commitView && data?.remote?.upstream ? `${base} · upstream ${data.remote.upstream}` : base;
   }
   if (elements.gitChangesRefreshButton) {
     elements.gitChangesRefreshButton.disabled = loading || busyAction;
-    elements.gitChangesRefreshButton.textContent = loading ? "Refreshing…" : "Refresh";
+    elements.gitChangesRefreshButton.textContent = loading ? "Refreshing…" : commitView ? "Reload" : "Refresh";
   }
   if (elements.gitChangesFetchButton) {
+    elements.gitChangesFetchButton.hidden = commitView;
     elements.gitChangesFetchButton.disabled = loading || busyAction || !data?.root;
     elements.gitChangesFetchButton.textContent = fetching ? "Fetching…" : "Fetch";
     elements.gitChangesFetchButton.title = "Run git fetch --prune to refresh remote tracking state";
   }
   if (elements.gitChangesPullButton) {
+    elements.gitChangesPullButton.hidden = commitView;
     elements.gitChangesPullButton.disabled = loading || busyAction || !canPull;
     elements.gitChangesPullButton.textContent = pulling ? "Pulling…" : behind > 0 ? `Pull ↓${behind}` : "Pull";
     elements.gitChangesPullButton.title = canPull
@@ -11367,7 +11974,7 @@ function renderGitChangesDialog() {
         : "No remote commits to pull";
   }
   if (elements.gitChangesStatus) {
-    const statusText = error || (pulling ? "Pulling changes…" : fetching ? "Fetching from remote…" : loading ? "Loading git diff…" : message || remoteNotice || (data ? gitChangesGeneratedLabel(data) : ""));
+    const statusText = error || (pulling ? "Pulling changes…" : fetching ? "Fetching from remote…" : loading ? `Loading ${commitView ? "commit" : "git"} diff…` : message || remoteNotice || (data ? gitChangesGeneratedLabel(data) : ""));
     elements.gitChangesStatus.className = `git-changes-status ${error || remoteNotice ? "error" : message ? "success" : "muted"}`;
     elements.gitChangesStatus.textContent = statusText;
     elements.gitChangesStatus.hidden = !elements.gitChangesStatus.textContent;
@@ -11388,19 +11995,21 @@ function renderGitChangesDialog() {
     return;
   }
 
-  if (pullResult) body.append(renderGitPullResultPanel(pullResult));
+  if (pullResult && !commitView) body.append(renderGitPullResultPanel(pullResult));
   if (hasOperation) {
     const panel = renderGitOperationPanel(operation);
     if (panel) body.append(panel);
   }
-  body.append(renderGitChangesOverview(data));
-  const fetchStateLines = gitChangesFetchStateLines();
-  if (fetchStateLines.length) {
-    const fetchNote = make("div", "git-tools-note git-fetch-state-note");
-    for (const line of fetchStateLines) fetchNote.append(make("div", undefined, line));
-    body.append(fetchNote);
+  if (!commitView) {
+    body.append(renderGitChangesOverview(data));
+    const fetchStateLines = gitChangesFetchStateLines();
+    if (fetchStateLines.length) {
+      const fetchNote = make("div", "git-tools-note git-fetch-state-note");
+      for (const line of fetchStateLines) fetchNote.append(make("div", undefined, line));
+      body.append(fetchNote);
+    }
+    if (diverged && !hasOperation) body.append(renderGitDivergedBar(data));
   }
-  if (diverged && !hasOperation) body.append(renderGitDivergedBar(data));
   const parsedSections = (Array.isArray(data.sections) ? data.sections : [])
     .map((section) => ({ section, files: parseGitUnifiedDiff(section.diff || "") }))
     .filter((entry) => entry.files.length > 0);
@@ -11417,14 +12026,14 @@ function renderGitChangesDialog() {
     const emptyMessage = behind > 0 ? "No textual incoming diff was available for the remote commits." : "Working tree is clean. No staged, unstaged, untracked, or incoming diff.";
     body.append(make("div", "git-changes-empty success", emptyMessage));
   }
-  body.append(renderGitToolsSection());
+  if (!commitView) body.append(renderGitToolsSection());
   if (hasVisibleFiles) requestAnimationFrame(updateGitChangesCurrentFileHeader);
 }
 
 async function loadGitChangesDialog(tabContext = activeTabContext()) {
   const requestSerial = ++gitChangesRequestSerial;
   gitChangesUntrackedContentRequests.clear();
-  gitChangesState = { ...gitChangesState, loading: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId };
+  gitChangesState = { ...gitChangesState, loading: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId, mode: "changes", commit: null };
   renderGitChangesDialog();
   try {
     const [response, operationResponse] = await Promise.all([
@@ -11454,10 +12063,10 @@ async function loadGitChangesDialog(tabContext = activeTabContext()) {
   renderGitChangesDialog();
 }
 
-function openGitChangesDialog() {
+function openGitChangesDialog(requestedTabId = activeTabId) {
   if (!elements.gitChangesDialog) return;
   hideFooterTooltip();
-  const tabContext = activeTabContext();
+  const tabContext = activeTabContext(requestedTabId);
   const tabId = tabContext.tabId || activeTabId;
   if (gitToolsState.tabId !== tabId) resetGitToolsState(tabId);
   gitChangesState = {
@@ -11474,15 +12083,47 @@ function openGitChangesDialog() {
     operation: gitChangesState.tabId === tabId ? gitChangesState.operation : null,
     lastFetch: gitChangesState.tabId === tabId ? gitChangesState.lastFetch : null,
     tabId,
+    mode: "changes",
+    commit: null,
   };
   renderGitChangesDialog();
   if (!elements.gitChangesDialog.open) elements.gitChangesDialog.showModal();
   loadGitChangesDialog(tabContext).catch((error) => addEvent(error.message || String(error), "error"));
 }
 
+async function loadGitCommitDialog(tabId, commit) {
+  const requestSerial = ++gitChangesRequestSerial;
+  const hash = String(commit?.hash || "");
+  gitChangesState = { ...gitChangesState, loading: true, error: "", message: "", data: null, operation: null, tabId, mode: "commit", commit };
+  renderGitChangesDialog();
+  try {
+    const response = await api(`/api/git-commit?hash=${encodeURIComponent(hash)}`, { tabId });
+    if (requestSerial !== gitChangesRequestSerial) return;
+    if (!response.ok) throw new Error(response.error || "Failed to load Git commit");
+    gitChangesState = { ...gitChangesState, loading: false, error: "", data: response.data || null, tabId, mode: "commit", commit: response.data?.commit || commit };
+  } catch (error) {
+    if (requestSerial !== gitChangesRequestSerial) return;
+    gitChangesState = { ...gitChangesState, loading: false, error: error.message || String(error), tabId, mode: "commit", commit };
+  }
+  renderGitChangesDialog();
+}
+
+function openGitCommitDialog(tabId, commit) {
+  if (!elements.gitChangesDialog || !tabId || !commit?.hash) return;
+  hideFooterTooltip();
+  gitChangesState = { ...gitChangesState, loading: true, pulling: false, fetching: false, error: "", message: "", data: null, operation: null, tabId, mode: "commit", commit };
+  renderGitChangesDialog();
+  if (!elements.gitChangesDialog.open) elements.gitChangesDialog.showModal();
+  loadGitCommitDialog(tabId, commit).catch((error) => addEvent(error.message || String(error), "error"));
+}
+
 function refreshGitChangesDialog() {
-  const tabContext = { tabId: gitChangesState.tabId || activeTabId };
-  loadGitChangesDialog(tabContext).catch((error) => addEvent(error.message || String(error), "error"));
+  const tabId = gitChangesState.tabId || activeTabId;
+  if (gitChangesState.mode === "commit" && gitChangesState.commit?.hash) {
+    loadGitCommitDialog(tabId, gitChangesState.commit).catch((error) => addEvent(error.message || String(error), "error"));
+    return;
+  }
+  loadGitChangesDialog({ tabId }).catch((error) => addEvent(error.message || String(error), "error"));
 }
 
 async function pullGitChangesDialog() {
@@ -12413,20 +13054,29 @@ async function requestManualCompaction({ triggerButton = null } = {}) {
   }
 }
 
+let contextMeterSignature = null;
+
 function renderContextMeter() {
   if (deferUiRenderDuringPointerActivation("context-meter", renderContextMeter)) return;
   const root = elements.contextMeterBar;
   if (!root) return;
   const tab = activeTab();
-  if (!tab) {
-    root.hidden = true;
-    root.replaceChildren();
-    return;
-  }
-  root.hidden = false;
   const snapshot = contextUsageSnapshot();
-  if (!snapshot || typeof snapshot.percent !== "number" || snapshot.percent <= 50) {
-    root.hidden = true;
+  const visible = Boolean(tab && snapshot && typeof snapshot.percent === "number" && snapshot.percent > 50);
+  const autoCompactionEnabled = footerAutoCompactionEnabled();
+  const signature = JSON.stringify({
+    tabId: tab?.id || "",
+    visible,
+    snapshot,
+    isCompacting: !!currentState?.isCompacting,
+    autoCompactionEnabled,
+    autoCompactionToggleInFlight: footerAutoCompactionToggleInFlight,
+    theme: [currentThemeName, effectiveScheme()],
+  });
+  if (signature === contextMeterSignature && root.hidden === !visible && (!visible || root.childElementCount > 0)) return;
+  contextMeterSignature = signature;
+  root.hidden = !visible;
+  if (!visible) {
     root.replaceChildren();
     return;
   }
@@ -12445,9 +13095,9 @@ function renderContextMeter() {
   compact.disabled = !!currentState?.isCompacting;
   compact.title = "Manually compact this tab's conversation context";
   compact.addEventListener("click", () => requestManualCompaction({ triggerButton: compact }));
-  const auto = make("button", "context-meter-auto", footerAutoCompactionEnabled() ? "Auto on" : "Auto off");
+  const auto = make("button", "context-meter-auto", autoCompactionEnabled ? "Auto on" : "Auto off");
   auto.type = "button";
-  auto.setAttribute("aria-pressed", footerAutoCompactionEnabled() ? "true" : "false");
+  auto.setAttribute("aria-pressed", autoCompactionEnabled ? "true" : "false");
   auto.disabled = footerAutoCompactionToggleInFlight;
   auto.title = footerAutoCompactionToggleInFlight ? "Updating auto-compaction…" : footerAutoCompactionToggleAction();
   auto.addEventListener("click", () => toggleFooterAutoCompaction());
@@ -12560,11 +13210,14 @@ function renderWorkspaceDashboard() {
     queueCount,
     modelLabel,
     modelTitle: currentState?.model ? shortModelLabel(currentState.model) : "Model loading…",
+    hasModel: !!currentState?.model,
     thinking: currentState?.thinkingLevel || "",
-    context: { display: contextUsageDisplay(snapshot), detail: contextUsageDetail(snapshot), tone: contextDashboardTone(snapshot) },
+    context: { snapshot, display: contextUsageDisplay(snapshot), detail: contextUsageDetail(snapshot), tone: contextDashboardTone(snapshot) },
+    theme: [currentThemeName, effectiveScheme()],
     session: sessionSummary,
+    hasSession: !!(currentState?.sessionId || currentState?.sessionName),
     activeTabId,
-    tabs: tabs.slice(0, 8).map((item) => ({ id: item.id, title: item.title, state: tabIndicator(item).state, active: item.id === activeTabId, cwd: item.cwd ? normalizeDisplayPath(item.cwd) : "" })),
+    tabs: tabs.slice(0, 8).map((item) => ({ id: item.id, title: item.title, indicator: tabIndicator(item), active: item.id === activeTabId, cwd: item.cwd ? normalizeDisplayPath(item.cwd) : "" })),
     overflow: tabs.length > 8 ? tabs.length - 8 : 0,
   });
   if (signature === workspaceDashboardSignature && root.childElementCount > 0) return;
@@ -14447,6 +15100,16 @@ function subagentRunElapsed(run) {
   return Number.isFinite(startedAt) ? formatDuration(Math.max(0, Date.now() - startedAt)) : "";
 }
 
+function subagentExecutionFacts(agent = {}) {
+  const thinking = String(agent?.thinking || "").trim();
+  let model = String(agent?.model || "").trim();
+  const suffixIndex = model.lastIndexOf(":");
+  if (thinking && suffixIndex > model.indexOf("/") && model.slice(suffixIndex + 1).toLowerCase() === thinking.toLowerCase()) {
+    model = model.slice(0, suffixIndex);
+  }
+  return [`model ${model || "unknown"}`, `reasoning ${thinking || "unknown"}`];
+}
+
 function subagentOverlayTranscriptMessages(data = subagentOverlayData) {
   const agent = data?.agent || subagentOverlaySelection?.agent || {};
   return (Array.isArray(agent.transcript) ? agent.transcript : [])
@@ -14580,6 +15243,7 @@ function subagentOverlayStateFacts(data = subagentOverlayData) {
     data?.mode || subagentOverlaySelection?.run?.mode,
     data?.source || subagentOverlaySelection?.run?.source,
     agent.nested ? "nested" : "",
+    ...subagentExecutionFacts(agent),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
     Number.isFinite(agent.turnCount) ? `${agent.turnCount} turns` : "",
     Number.isFinite(agent.toolCount) ? `${agent.toolCount} tools` : "",
@@ -14833,6 +15497,7 @@ function renderSubagentTerminalView() {
     view.run?.mode,
     view.run?.source === "foreground" ? "foreground" : "async",
     agent.nested ? "nested" : "",
+    ...subagentExecutionFacts(agent),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
   ].filter(Boolean);
 
@@ -15028,7 +15693,7 @@ function renderSubagentTerminalTab(view) {
   appendTerminalTabContent(button, {
     title: subagentTerminalViewTitle(view),
     indicator: { state: running ? "working" : "done" },
-    meta: `Subagent · ${view.parentTitle || "parent terminal"}`,
+    meta: ["Subagent", ...subagentExecutionFacts(view.data?.agent || view.agent), view.parentTitle || "parent terminal"].join(" · "),
     subagent: true,
   });
   button.addEventListener("click", () => activateSubagentTerminalView(view.id));
@@ -15059,6 +15724,7 @@ function renderSubagentAgent(tab, run, agent) {
     agent?.nested ? "nested" : "",
     run?.mode && run.mode !== "single" ? run.mode : "",
     run?.source === "foreground" ? "foreground" : "async",
+    ...subagentExecutionFacts(agent),
     agent?.currentTool ? `tool: ${agent.currentTool}` : "",
     elapsed ? `running ${elapsed}` : "",
   ].filter(Boolean);
@@ -29515,6 +30181,9 @@ document.addEventListener("pointerdown", (event) => {
   if (elements.fileContextMenu && !elements.fileContextMenu.hidden && !event.target?.closest?.(".file-context-menu")) {
     closeFileContextMenu();
   }
+  if (elements.gitPanelContextMenu && !elements.gitPanelContextMenu.hidden && !event.target?.closest?.(".git-side-panel-context-menu")) {
+    closeGitPanelContextMenu();
+  }
 }, { passive: true });
 document.addEventListener("pointermove", (event) => {
   if (openTerminalTabGroupKey && !event.target?.closest?.(".terminal-tab-group")) {
@@ -29868,6 +30537,21 @@ elements.fileContextMenu?.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();
     closeFileContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+elements.gitPanelContextMenu?.addEventListener("keydown", (event) => {
+  const items = [...elements.gitPanelContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeGitPanelContextMenu();
   } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
     const direction = event.key === "ArrowDown" ? 1 : -1;

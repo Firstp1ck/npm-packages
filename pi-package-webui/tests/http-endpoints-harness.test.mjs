@@ -425,11 +425,14 @@ try {
   assert.equal(subagentsResponse.body?.data?.totalAgents, 2, "subagent overview should count all running agents");
   assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.tabId, tabId, "subagent overview should group agents under their terminal tab");
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => agent.name), ["reviewer", "scout"], "subagent overview should preserve agent order within the session run");
+  assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "subagent overview should preserve bounded model and reasoning metadata");
   const subagentOutputResponse = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=${encodeURIComponent("fixture-run")}&agent=${encodeURIComponent("fixture-run:0")}`);
   assert.equal(subagentOutputResponse.status, 200, "running subagent output endpoint should respond");
   assert.equal(subagentOutputResponse.body?.data?.agent?.name, "reviewer", "subagent output should target the selected child agent");
   assert.deepEqual(subagentOutputResponse.body?.data?.agent?.recentOutput, ["Inspecting current implementation", "Waiting for the next tool result"], "subagent output should preserve bounded live output lines");
   assert.equal(subagentOutputResponse.body?.data?.agent?.currentToolArgs, "README.md", "subagent output should include current tool state");
+  assert.equal(subagentOutputResponse.body?.data?.agent?.model, "anthropic/claude-opus-4-8:high", "subagent output should preserve the effective model");
+  assert.equal(subagentOutputResponse.body?.data?.agent?.thinking, "high", "subagent output should preserve the effective reasoning effort");
   assert.deepEqual(subagentOutputResponse.body?.data?.agent?.transcript, [
     {
       role: "assistant",
@@ -836,10 +839,54 @@ try {
     await writeFile(path.join(stagingRepo, "file.txt"), "modified\n");
     await writeFile(path.join(stagingRepo, "loose.txt"), "loose\n");
 
+    const gitRoot = await request("127.0.0.1", `/api/git-root?tab=${encodeURIComponent(stagingTab)}`);
+    assert.equal(gitRoot.body?.ok, true, "git-root endpoint should discover the tab repository");
+    assert.equal(gitRoot.body?.data?.root, stagingRepo, "git-root should return the canonical fixture root");
+
+    const gitPanel = await request("127.0.0.1", `/api/git-panel?tab=${encodeURIComponent(stagingTab)}`);
+    assert.equal(gitPanel.body?.ok, true, "git-panel endpoint should return compact local status and history");
+    assert.equal(gitPanel.body?.data?.root, stagingRepo);
+    assert.equal(gitPanel.body?.data?.history?.length, 1, "git-panel should include the bounded recent commit history");
+    assert.equal(gitPanel.body?.data?.history?.[0]?.subject, "base");
+    const modifiedPanelEntry = gitPanel.body?.data?.changes?.find((entry) => entry.path === "file.txt");
+    assert.equal(modifiedPanelEntry?.unstaged, true, "git-panel should classify modified tracked files");
+    assert.equal(modifiedPanelEntry?.additions, 1, "git-panel should report unstaged additions from numstat");
+    assert.equal(modifiedPanelEntry?.deletions, 1, "git-panel should report unstaged deletions from numstat");
+    assert.equal(gitPanel.body?.data?.changes?.find((entry) => entry.path === "loose.txt")?.untracked, true, "git-panel should classify untracked files");
+    assert.equal(Object.prototype.hasOwnProperty.call(gitPanel.body?.data?.changes?.[0] || {}, "content"), false, "compact git-panel entries must not include file contents");
+
+    const fixtureHead = runGitFixture(["rev-parse", "HEAD"], stagingRepo, "staging fixture should expose its full HEAD hash");
+    const gitPanelCommit = await request("127.0.0.1", `/api/git-commit?tab=${encodeURIComponent(stagingTab)}&hash=${encodeURIComponent(fixtureHead)}`);
+    assert.equal(gitPanelCommit.body?.ok, true, "git-commit endpoint should return a bounded read-only commit diff");
+    assert.equal(gitPanelCommit.body?.data?.commit?.hash, fixtureHead);
+    assert.match(gitPanelCommit.body?.data?.sections?.[0]?.diff || "", /diff --git a\/file\.txt b\/file\.txt/, "git-commit should include the selected commit patch");
+    const invalidCommit = await request("127.0.0.1", `/api/git-commit?tab=${encodeURIComponent(stagingTab)}&hash=HEAD`);
+    assert.equal(invalidCommit.status, 400, "git-commit should reject symbolic or abbreviated revisions");
+
+    const stageAll = await request("127.0.0.1", "/api/git-changes/stage-all", { method: "POST", body: { tab: stagingTab } });
+    assert.equal(stageAll.body?.ok, true, "stage-all endpoint should stage the selected repository");
+    const stagedPanel = await request("127.0.0.1", `/api/git-panel?tab=${encodeURIComponent(stagingTab)}`);
+    assert.equal(stagedPanel.body?.data?.summary?.staged, 2, "stage-all should stage tracked and untracked changes");
+    const unstageAll = await request("127.0.0.1", "/api/git-changes/unstage-all", { method: "POST", body: { tab: stagingTab } });
+    assert.equal(unstageAll.body?.ok, true, "unstage-all endpoint should clear the selected repository index");
+    const unstagedPanel = await request("127.0.0.1", `/api/git-panel?tab=${encodeURIComponent(stagingTab)}`);
+    assert.equal(unstagedPanel.body?.data?.summary?.staged, 0, "unstage-all should leave no staged changes");
+    assert.equal(unstagedPanel.body?.data?.changes?.find((entry) => entry.path === "loose.txt")?.untracked, true, "unstage-all should restore newly added files to untracked state");
+
     const stageFile = await request("127.0.0.1", "/api/git-changes/stage-file", { method: "POST", body: { tab: stagingTab, path: "file.txt" } });
     assert.equal(stageFile.status, 200);
     assert.equal(stageFile.body?.ok, true, "stage-file endpoint should stage a modified file");
     assert.equal(stageFile.body?.data?.changes?.summary?.staged, 1, "stage-file should report one staged file afterwards");
+
+    await writeFile(path.join(stagingRepo, "file.txt"), "modified again\n");
+    const mixedPanel = await request("127.0.0.1", `/api/git-panel?tab=${encodeURIComponent(stagingTab)}`);
+    const mixedEntry = mixedPanel.body?.data?.changes?.find((entry) => entry.path === "file.txt");
+    assert.equal(mixedEntry?.staged, true, "mixed index/worktree files should remain staged");
+    assert.equal(mixedEntry?.unstaged, true, "mixed index/worktree files should also remain unstaged");
+    assert.equal(mixedEntry?.stagedAdditions, 1, "Git panel should preserve staged additions separately");
+    assert.equal(mixedEntry?.stagedDeletions, 1, "Git panel should preserve staged deletions separately");
+    assert.equal(mixedEntry?.unstagedAdditions, 1, "Git panel should preserve unstaged additions separately");
+    assert.equal(mixedEntry?.unstagedDeletions, 1, "Git panel should preserve unstaged deletions separately");
 
     const unstageFile = await request("127.0.0.1", "/api/git-changes/unstage-file", { method: "POST", body: { tab: stagingTab, path: "file.txt" } });
     assert.equal(unstageFile.status, 200);

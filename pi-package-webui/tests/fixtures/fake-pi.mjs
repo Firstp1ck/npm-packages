@@ -259,6 +259,8 @@ function handleWebuiHelperPrompt(command, base) {
             status: "running",
             currentTool: "read",
             currentToolArgs: "README.md",
+            model: "anthropic/claude-opus-4-8:high",
+            thinking: "high",
             recentTools: [{ tool: "grep", args: "Subagents", endMs: Date.now() - 200 }],
             recentOutput: ["Inspecting current implementation", "Waiting for the next tool result"],
             transcript: [
@@ -340,8 +342,8 @@ function handleSubagentFixturePrompt(command, base) {
     status: "running",
     startedAt: Date.now() - 2500,
     agents: [
-      { id: "fixture-run:0", name: "reviewer", status: "running", index: 0, currentTool: "read", nested: false },
-      { id: "fixture-run:1", name: "scout", status: "running", index: 1, nested: false },
+      { id: "fixture-run:0", name: "reviewer", status: "running", index: 0, currentTool: "read", model: "anthropic/claude-opus-4-8:high", thinking: "high", nested: false },
+      { id: "fixture-run:1", name: "scout", status: "running", index: 1, model: "openai-codex/gpt-5.6-sol", thinking: "high", nested: false },
     ],
   }];
   respond({ ...base, data: { output: "fake subagent status emitted" } });

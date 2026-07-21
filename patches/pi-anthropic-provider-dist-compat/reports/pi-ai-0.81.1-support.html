@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pi-ai 0.81.1 Compatibility Patch — Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel-2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius-lg:16px;--radius-md:12px;--shadow:0 14px 36px rgb(0 0 0 / 22%)}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 14% -10%,#183765 0,transparent 34%),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif} main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}.panel{background:linear-gradient(135deg,var(--panel),#101a2a);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:24px;margin:18px 0}.hero{padding:30px}.badge{display:inline-block;padding:4px 10px;border:1px solid #2f7a59;border-radius:999px;color:var(--green);background:#123526;font-weight:700;font-size:.8rem}.lead{font-size:1.15rem;color:var(--muted);max-width:78ch}.callout{border-left:4px solid var(--green);background:#102d23;padding:14px 16px;border-radius:0 var(--radius-md) var(--radius-md) 0}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:16px}.value{font-size:1.55rem;font-weight:800}.ok{color:var(--green)}.warn{color:var(--yellow)}.muted{color:var(--muted)}h1{font-size:clamp(1.9rem,5vw,3rem);line-height:1.12;margin:.4rem 0 1rem}h2{font-size:1.45rem;border-bottom:1px solid var(--line);padding-bottom:.45rem;margin-top:0}h3{margin-bottom:.3rem}a{color:var(--blue)}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line)}th{color:#cfe2ff;background:#14243b}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{background:var(--code);padding:14px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}figure{margin:16px 0;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:14px}figcaption{color:var(--muted);margin-top:8px;font-size:.92rem}.steps{counter-reset:step;display:grid;gap:12px}.step{position:relative;padding:14px 14px 14px 54px;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-md)}.step:before{counter-increment:step;content:counter(step);position:absolute;left:15px;top:15px;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:#1d5590;color:white;font-weight:800}details{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:12px;margin:10px 0}summary{cursor:pointer;font-weight:700}footer{color:var(--muted);font-size:.9rem;padding:8px 0}.tag{font-size:.82rem;border-radius:999px;padding:3px 8px;border:1px solid var(--line);white-space:nowrap}.tag.ok{background:#113624}.tag.warn{background:#3a3016}@media(max-width:620px){main{width:min(100% - 20px,1120px);margin:12px auto 40px}.panel{padding:17px}.hero{padding:22px}.grid{grid-template-columns:1fr}table{font-size:.91rem}th,td{padding:8px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}@media print{body{background:#fff;color:#111;font-size:11pt}main{width:auto;margin:0}.panel,figure,.card,.step,details{box-shadow:none;background:#fff;border-color:#999;break-inside:avoid}.muted,figcaption,footer{color:#444}a{color:#0645ad}pre,code{background:#f2f2f2;color:#111}th{background:#e7edf4;color:#111}}
+  </style>
+</head>
+<body>
+<main>
+  <header class="panel hero">
+    <span class="badge">IMPLEMENTED · OFFLINE VERIFIED</span>
+    <h1>pi-ai 0.81.1 compatibility patch</h1>
+    <p class="lead">A bounded, semantic-gated update to the Anthropic OAuth compatibility fallback for the native Pi TUI and Pi WebUI RPC runtime.</p>
+    <div class="callout"><strong>Conclusion:</strong> patch package v2.0.1 now supports anchor-matching <code>@earendil-works/pi-ai</code> 0.81.x through <code>&lt;0.82.0</code>. A fresh reviewed plan atomically patched both discovered 0.81.1 targets; offline syntax, semantics, local request capture, receipt backups, and a zero-write second plan all passed.</div>
+  </header>
+
+  <section class="panel" aria-labelledby="overview"><h2 id="overview">Overview</h2>
+    <div class="grid"><div class="card"><div class="muted">Targets applied</div><div class="value ok">2 / 2</div><div>Native TUI and WebUI RPC</div></div><div class="card"><div class="muted">Package checks</div><div class="value ok">14 / 14</div><div>Lifecycle tests passing</div></div><div class="card"><div class="muted">Offline provider use</div><div class="value ok">0</div><div>Network and billing both false</div></div></div>
+    <table data-overview><thead><tr><th>Stage</th><th>Evidence</th><th>Outcome</th></tr></thead><tbody>
+      <tr><td>Compatibility scope</td><td>Real 0.81.1 dist fixture; exact semantic anchors and transforms</td><td><span class="tag ok">bounded to &lt;0.82.0</span></td></tr>
+      <tr><td>Package validation</td><td>Strict PATCH.md extraction; syntax check; 14 lifecycle tests</td><td><span class="tag ok">passed</span></td></tr>
+      <tr><td>Independent review</td><td>Anthropic Claude Opus 4.6 and xAI Grok 4.5</td><td><span class="tag ok">no blockers</span></td></tr>
+      <tr><td>Transactional apply</td><td>Fresh plan hash <code>46873ab…2379632</code>; receipt written</td><td><span class="tag ok">2 writes</span></td></tr>
+      <tr><td>Post-apply assurance</td><td>Offline local HTTP capture + backup hashes + second plan</td><td><span class="tag ok">passed / noop</span></td></tr>
+    </tbody></table>
+  </section>
+
+  <section class="panel" aria-labelledby="change"><h2 id="change">What changed</h2>
+    <table><thead><tr><th>Artifact</th><th>Change</th><th>Safety boundary</th></tr></thead><tbody>
+      <tr><td><code>patch.manifest.json</code></td><td>Version 2.0.1; support range changed from <code>&lt;0.81.0</code> to <code>&lt;0.82.0</code>.</td><td>0.82.0 and later remain unsupported by version gate.</td></tr>
+      <tr><td><code>PATCH.md</code></td><td>Documents anchor-gated 0.81.x support.</td><td>Unknown versions/layouts still fail closed.</td></tr>
+      <tr><td><code>tests/fixtures/pi-ai-0.81</code></td><td>Captured real 0.81.1 Anthropic implementation.</td><td>Fixture hash matched both discovered targets before application.</td></tr>
+      <tr><td><code>tests/lifecycle.test.mjs</code></td><td>0.81.1 transform and discovery-plan coverage; 0.82.0 block boundary.</td><td>Idempotence, unsupported layout, transaction, and rollback coverage retained.</td></tr>
+    </tbody></table>
+    <p>The transformer was intentionally unchanged. It still requires legacy anchors and exact-once replacements before it can generate a write, so passing the version range alone is insufficient.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="flow"><h2 id="flow">Validated lifecycle</h2>
+    <figure data-visual-kind="diagram" data-purpose="Show the observed safety gates from discovery to post-apply no-op confirmation.">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1000 210" width="100%" preserveAspectRatio="xMidYMid meet">
+        <title id="flow-title">Compatibility patch lifecycle</title><desc id="flow-desc">Two discovered runtime dependency graphs are semantically classified, reviewed, applied in one transaction from a fresh hash, checked offline, and confirmed as a no-op on a second plan.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6Z" fill="#65b5ff"/></marker></defs>
+        <g font-family="system-ui,sans-serif" font-size="16" text-anchor="middle"><g fill="#18253a" stroke="#65b5ff" stroke-width="2"><rect x="15" y="55" width="160" height="80" rx="12"/><rect x="220" y="55" width="160" height="80" rx="12"/><rect x="425" y="55" width="160" height="80" rx="12"/><rect x="630" y="55" width="160" height="80" rx="12"/><rect x="835" y="55" width="150" height="80" rx="12"/></g><g fill="#65b5ff" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"><line x1="176" y1="95" x2="218" y2="95"/><line x1="381" y1="95" x2="423" y2="95"/><line x1="586" y1="95" x2="628" y2="95"/><line x1="791" y1="95" x2="833" y2="95"/></g><g fill="#e8eef8"><text x="95" y="84">Resolve</text><text x="95" y="108">two runtimes</text><text x="300" y="84">Version +</text><text x="300" y="108">semantic gates</text><text x="505" y="84">Fresh plan</text><text x="505" y="108">2 applicable writes</text><text x="710" y="84">Atomic apply</text><text x="710" y="108">receipt + backups</text><text x="910" y="84">Offline verify</text><text x="910" y="108">then zero-write plan</text></g></g>
+      </svg>
+      <figcaption>Observed process. The offline verify step used a loopback HTTP capture and a fake local token; it made no Anthropic network request.</figcaption>
+    </figure>
+  </section>
+
+  <section class="panel" aria-labelledby="evidence"><h2 id="evidence">Verification evidence</h2>
+    <div class="steps"><div class="step"><h3>Strict package validation</h3><p><code>patch_md_extract.mjs --strict</code> accepted the v2 PATCH.md package. <code>npm run check</code> passed with 14 tests, including the added 0.81.1 discovery-plan regression.</p></div><div class="step"><h3>Fresh plan and transactional application</h3><p>Both 0.81.1 target files were <code>applicable</code> with a shared pre-image hash and a shared computed after-image hash. The unblocked plan wrote both targets under plan hash <code>46873ab…2379632</code> and recorded a receipt.</p></div><div class="step"><h3>Offline runtime verification</h3><p>Both targets passed syntax, semantic postconditions, local header/system-block capture, and backup verification. Captured checks: session header, user agent, beta features, billing system block, identity system block, and long cache control.</p></div><div class="step"><h3>Idempotence confirmation</h3><p>The following plan reported <code>writes: 0</code> and <code>noop: true</code>; both runtime files classified as <code>already-applied</code>.</p></div></div>
+    <details><summary>Independent review dispositions</summary><p><strong>Anthropic / Claude Opus 4.6</strong> and <strong>xAI / Grok 4.5</strong> independently found no blockers. Accepted fixes: correct a plan hash transcription, align wording to anchor-gated 0.81.x support, and add the 0.81.1 discovery-plan regression. Deferred: fixture-directory renaming and pre-existing lifecycle nuances not introduced by this patch.</p><p>A direct Google review could not run because its configured API key was invalid; an unavailable Moonshot model ID also failed before execution. Neither failed attempt counts as a review.</p></details>
+    <details><summary>Relevant identifiers</summary><pre>Patch ID: pi.anthropic-provider-dist-compat
+Patch version: 2.0.1
+Applied plan hash: 46873abdea1c785f731156ff810cd0711ac9fd1a8090f2a323970a8dd2379632
+Post-apply target hash: c55f88d0829b60904b73b16626380c0f9da2b3dbad5dc4858099f05a3c03bde4
+Receipt: patch-state/pi.anthropic-provider-dist-compat.json</pre></details>
+  </section>
+
+  <section class="panel" aria-labelledby="risks"><h2 id="risks">Residual risks and operator action</h2>
+    <div class="callout" style="border-color:var(--yellow);background:#332a12"><strong>Restart required:</strong> restart native Pi and the WebUI child RPC process to load the changed dist files. No live Anthropic request was made in this work.</div>
+    <ul><li>This remains an undocumented compatibility shim rather than a public Anthropic protocol contract.</li><li>Future package updates can overwrite the dist files; re-run status/plan and obtain fresh approval rather than reapplying blindly.</li><li>Live Anthropic validation is intentionally deferred because it may use network, credentials, and billable usage.</li><li>Rollback is available through the recorded receipt and refuses drifted after-images.</li></ul>
+  </section>
+
+  <section class="panel" aria-labelledby="sources"><h2 id="sources">Artifacts and limitations</h2><ul><li>Execution plan: <a href="../plans/pi-ai-0.81.1-support.md">plans/pi-ai-0.81.1-support.md</a></li><li>Machine-readable patch source: <a href="../patch.manifest.json">patch.manifest.json</a></li><li>Lifecycle implementation: <a href="../scripts/lifecycle.mjs">scripts/lifecycle.mjs</a></li><li>Report evidence is limited to local package checks, patchctl output, and offline loopback capture. It does not establish live-provider acceptance.</li></ul><p><strong>Confidence: 98/100.</strong> The package behavior, dual-target application, receipt backups, and offline request shape were directly validated. The remaining uncertainty is deliberate: no live Anthropic call was performed.</p></section>
+  <footer>Generated from verified local evidence. No remote assets, telemetry, or external scripts are used.</footer>
+</main>
+</body>
+</html>
