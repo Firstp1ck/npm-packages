@@ -106,6 +106,8 @@ const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
 const WEBUI_SUBAGENT_RUN_LIMIT = 128;
 const WEBUI_SUBAGENT_AGENT_LIMIT = 256;
+const WEBUI_SUBAGENT_GATE_LIMIT = 32;
+const WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT = 100;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -7573,12 +7575,56 @@ function normalizeWebuiSubagentPayload(value) {
       agents: agents.sort((a, b) => a.index - b.index || a.name.localeCompare(b.name)),
     });
   }
+  const gates = [];
+  for (const rawGate of Array.isArray(value.gates) ? value.gates.slice(-WEBUI_SUBAGENT_GATE_LIMIT) : []) {
+    if (!rawGate || typeof rawGate !== "object") continue;
+    const id = normalizeWebuiSubagentText(rawGate.id, 160);
+    if (!id) continue;
+    const attempts = [];
+    for (const rawAttempt of Array.isArray(rawGate.attempts) ? rawGate.attempts.slice(-WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT) : []) {
+      if (!rawAttempt || typeof rawAttempt !== "object") continue;
+      const attemptId = normalizeWebuiSubagentText(rawAttempt.id || `${id}:${attempts.length}`, 240);
+      const agent = normalizeWebuiSubagentText(rawAttempt.agent, 160) || "subagent";
+      attempts.push({
+        id: attemptId,
+        taskIndex: Number.isInteger(rawAttempt.taskIndex) ? rawAttempt.taskIndex : attempts.length,
+        attempt: Number.isInteger(rawAttempt.attempt) ? Math.max(1, rawAttempt.attempt) : 1,
+        maxAttempts: Number.isInteger(rawAttempt.maxAttempts) ? Math.max(1, rawAttempt.maxAttempts) : 1,
+        agent,
+        label: normalizeWebuiSubagentText(rawAttempt.label, 200) || undefined,
+        phase: normalizeWebuiSubagentText(rawAttempt.phase, 120) || undefined,
+        retrySafety: rawAttempt.retrySafety === "read-only" ? "read-only" : "may-write",
+        runId: normalizeWebuiSubagentText(rawAttempt.runId, 160) || undefined,
+        retryOf: normalizeWebuiSubagentText(rawAttempt.retryOf, 160) || undefined,
+        model: normalizeWebuiSubagentText(rawAttempt.model, 240) || undefined,
+        provider: normalizeWebuiSubagentText(rawAttempt.provider, 80) || undefined,
+        status: ["launching", "running", "succeeded", "failed", "not-qualifying", "cancelled"].includes(rawAttempt.status) ? rawAttempt.status : "failed",
+        failureKind: normalizeWebuiSubagentText(rawAttempt.failureKind, 80) || undefined,
+        error: normalizeWebuiSubagentText(rawAttempt.error, 1000) || undefined,
+        startedAt: Number.isFinite(rawAttempt.startedAt) ? rawAttempt.startedAt : undefined,
+        endedAt: Number.isFinite(rawAttempt.endedAt) ? rawAttempt.endedAt : undefined,
+      });
+    }
+    gates.push({
+      version: 1,
+      id,
+      status: ["running", "satisfied", "failed", "cancelled"].includes(rawGate.status) ? rawGate.status : "failed",
+      requiredSuccesses: Number.isInteger(rawGate.requiredSuccesses) ? Math.max(1, rawGate.requiredSuccesses) : 1,
+      qualifyingSuccesses: Number.isInteger(rawGate.qualifyingSuccesses) ? Math.max(0, rawGate.qualifyingSuccesses) : 0,
+      requireDistinctProviders: rawGate.requireDistinctProviders === true,
+      startedAt: Number.isFinite(rawGate.startedAt) ? rawGate.startedAt : Date.now(),
+      updatedAt: Number.isFinite(rawGate.updatedAt) ? rawGate.updatedAt : Date.now(),
+      endedAt: Number.isFinite(rawGate.endedAt) ? rawGate.endedAt : undefined,
+      attempts,
+    });
+  }
   return {
     version: 1,
     available: value.available === true,
     updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
     receivedAt: Date.now(),
     runs: runs.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
+    gates: gates.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
   };
 }
 
@@ -8299,8 +8345,9 @@ function listTabs() {
 function webuiSubagentsData() {
   const sortedTabs = [...tabs.values()].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title));
   const tabSummaries = sortedTabs.map((tab) => {
-    const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [] };
+    const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [], gates: [] };
     const runs = Array.isArray(status.runs) ? status.runs : [];
+    const gates = Array.isArray(status.gates) ? status.gates : [];
     return {
       tabId: tab.id,
       tabIndex: tab.index,
@@ -8313,7 +8360,9 @@ function webuiSubagentsData() {
       updatedAt: status.updatedAt || null,
       receivedAt: status.receivedAt || null,
       runs,
+      gates,
       agentCount: runs.reduce((count, run) => count + run.agents.length, 0),
+      gateCount: gates.length,
     };
   });
   return {
@@ -8322,6 +8371,7 @@ function webuiSubagentsData() {
     available: tabSummaries.some((tab) => tab.available),
     totalRuns: tabSummaries.reduce((count, tab) => count + tab.runs.length, 0),
     totalAgents: tabSummaries.reduce((count, tab) => count + tab.agentCount, 0),
+    totalGates: tabSummaries.reduce((count, tab) => count + tab.gateCount, 0),
     tabs: tabSummaries,
   };
 }

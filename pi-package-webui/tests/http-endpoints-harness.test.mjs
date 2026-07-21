@@ -426,6 +426,9 @@ try {
   assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.tabId, tabId, "subagent overview should group agents under their terminal tab");
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => agent.name), ["reviewer", "scout"], "subagent overview should preserve agent order within the session run");
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "subagent overview should preserve bounded model and reasoning metadata");
+  assert.equal(subagentsResponse.body?.data?.totalGates, 1, "subagent overview should expose retry gates independently from running children");
+  assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.gates?.[0]?.qualifyingSuccesses, 1, "retry gate quorum should be normalized");
+  assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.gates?.[0]?.attempts?.map((attempt) => [attempt.status, attempt.failureKind]), [["succeeded", undefined], ["failed", "transient-provider"]], "retry gate attempts should preserve bounded status and failure classification");
   const subagentOutputResponse = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=${encodeURIComponent("fixture-run")}&agent=${encodeURIComponent("fixture-run:0")}`);
   assert.equal(subagentOutputResponse.status, 200, "running subagent output endpoint should respond");
   assert.equal(subagentOutputResponse.body?.data?.agent?.name, "reviewer", "subagent output should target the selected child agent");
@@ -462,6 +465,7 @@ try {
     await delay(50);
   }
   assert.equal(subagentsResponse.body?.data?.totalAgents, 0, "completed subagents should disappear from the running overview");
+  assert.equal(subagentsResponse.body?.data?.totalGates, 0, "cleared retry gates should disappear from the overview");
 
   const state = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);
   assert.equal(state.status, 200);

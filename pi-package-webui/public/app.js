@@ -15080,7 +15080,7 @@ function initializeClaudeUsage() {
 
 function subagentTabsWithRunningAgents() {
   return (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [])
-    .filter((tab) => Number(tab?.agentCount || 0) > 0)
+    .filter((tab) => Number(tab?.agentCount || 0) > 0 || Number(tab?.gateCount || 0) > 0)
     .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
 }
 
@@ -15737,6 +15737,50 @@ function renderSubagentAgent(tab, run, agent) {
   return row;
 }
 
+function subagentGateStatusLabel(status) {
+  return status === "satisfied" ? "satisfied" : status === "running" ? "running" : status === "cancelled" ? "cancelled" : "failed";
+}
+
+function renderSubagentGateAttempt(attempt) {
+  const row = make("div", `subagent-gate-attempt ${attempt?.status || "failed"}`);
+  const marker = make("span", "subagent-gate-attempt-marker");
+  marker.setAttribute("aria-hidden", "true");
+  const content = make("div", "subagent-gate-attempt-content");
+  const title = attempt?.label || attempt?.agent || "subagent";
+  content.append(make("strong", undefined, `${title} · attempt ${attempt?.attempt || 1}/${attempt?.maxAttempts || 1}`));
+  const facts = [
+    attempt?.status,
+    attempt?.phase ? `phase ${attempt.phase}` : "",
+    attempt?.provider ? `provider ${attempt.provider}` : "provider unknown",
+    attempt?.model ? `model ${attempt.model}` : "model unknown",
+    attempt?.retrySafety,
+    attempt?.failureKind ? `failure ${attempt.failureKind}` : "",
+    attempt?.runId ? `run ${attempt.runId}` : "",
+  ].filter(Boolean);
+  content.append(make("span", "subagent-gate-attempt-meta", facts.join(" · ")));
+  if (attempt?.error) content.append(make("span", "subagent-gate-attempt-error", attempt.error));
+  row.append(marker, content);
+  return row;
+}
+
+function renderSubagentGate(gate) {
+  const status = subagentGateStatusLabel(gate?.status);
+  const card = make("section", `subagent-gate-card ${status}`);
+  const header = make("div", "subagent-gate-header");
+  const title = make("div", "subagent-gate-title");
+  title.append(
+    make("strong", undefined, `Retry gate · ${gate?.qualifyingSuccesses || 0}/${gate?.requiredSuccesses || 1}`),
+    make("span", undefined, `${status}${gate?.requireDistinctProviders ? " · distinct providers" : ""}`),
+  );
+  header.append(title, make("span", `subagent-gate-status ${status}`, status));
+  card.append(header);
+  const attempts = make("div", "subagent-gate-attempts");
+  for (const attempt of Array.isArray(gate?.attempts) ? gate.attempts : []) attempts.append(renderSubagentGateAttempt(attempt));
+  if (!attempts.childElementCount) attempts.append(make("div", "subagents-empty", "Waiting for the first attempt…"));
+  card.append(attempts);
+  return card;
+}
+
 function renderSubagentTabGroup(tab) {
   const group = make("section", `subagent-tab-group${tab.tabId === activeTabId ? " active" : ""}`);
   const header = make("button", "subagent-tab-header");
@@ -15747,7 +15791,8 @@ function renderSubagentTabGroup(tab) {
     make("strong", undefined, tab.tabTitle || `Terminal ${tab.tabIndex || "?"}`),
     make("span", "subagent-tab-session", `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
   );
-  header.append(title, make("span", "subagent-tab-count", String(tab.agentCount || 0)));
+  const countLabel = Number(tab.gateCount || 0) > 0 ? `${tab.agentCount || 0} agents · ${tab.gateCount} gates` : String(tab.agentCount || 0);
+  header.append(title, make("span", "subagent-tab-count", countLabel));
   header.addEventListener("click", () => switchTab(tab.tabId));
   group.append(header);
 
@@ -15761,6 +15806,9 @@ function renderSubagentTabGroup(tab) {
       .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || String(a.name || "").localeCompare(String(b.name || "")));
     for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
   }
+  for (const gate of (Array.isArray(tab.gates) ? tab.gates : []).slice().sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))) {
+    list.append(renderSubagentGate(gate));
+  }
   group.append(list);
   return group;
 }
@@ -15770,23 +15818,25 @@ function renderSubagents() {
   if (!box) return;
   const activeTabs = subagentTabsWithRunningAgents();
   const totalAgents = activeTabs.reduce((count, tab) => count + Number(tab.agentCount || 0), 0);
+  const totalGates = activeTabs.reduce((count, tab) => count + Number(tab.gateCount || 0), 0);
+  const totalItems = totalAgents + totalGates;
   if (elements.subagentCountBadge) {
-    elements.subagentCountBadge.textContent = String(totalAgents);
-    elements.subagentCountBadge.hidden = totalAgents === 0;
+    elements.subagentCountBadge.textContent = String(totalItems);
+    elements.subagentCountBadge.hidden = totalItems === 0;
   }
   if (elements.subagentsStatus) {
-    elements.subagentsStatus.textContent = totalAgents > 0
-      ? `${totalAgents} running across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`
+    elements.subagentsStatus.textContent = totalItems > 0
+      ? [`${totalAgents} running`, totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`].filter(Boolean).join(" · ")
       : subagentsLoading && !latestSubagents
-        ? "Checking running subagents…"
-        : "No running subagents.";
+        ? "Checking subagents and retry gates…"
+        : "No running subagents or retained retry gates.";
   }
 
   box.replaceChildren();
-  box.classList.toggle("muted", totalAgents === 0);
-  box.classList.toggle("has-items", totalAgents > 0);
-  if (totalAgents === 0) {
-    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running subagents will appear here, grouped by terminal and session."));
+  box.classList.toggle("muted", totalItems === 0);
+  box.classList.toggle("has-items", totalItems > 0);
+  if (totalItems === 0) {
+    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running subagents and retry-gate attempts will appear here, grouped by terminal and session."));
     return;
   }
   for (const tab of activeTabs) box.append(renderSubagentTabGroup(tab));
@@ -15813,7 +15863,8 @@ async function refreshSubagents() {
 function scheduleRefreshSubagents(delay) {
   clearTimeout(refreshSubagentsTimer);
   const totalAgents = Number(latestSubagents?.totalAgents || 0);
-  const nextDelay = delay ?? (document.visibilityState === "hidden" ? SUBAGENTS_HIDDEN_REFRESH_MS : totalAgents > 0 ? SUBAGENTS_ACTIVE_REFRESH_MS : SUBAGENTS_IDLE_REFRESH_MS);
+  const hasRunningGate = (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : []).some((tab) => (Array.isArray(tab?.gates) ? tab.gates : []).some((gate) => gate?.status === "running"));
+  const nextDelay = delay ?? (document.visibilityState === "hidden" ? SUBAGENTS_HIDDEN_REFRESH_MS : totalAgents > 0 || hasRunningGate ? SUBAGENTS_ACTIVE_REFRESH_MS : SUBAGENTS_IDLE_REFRESH_MS);
   refreshSubagentsTimer = setTimeout(() => {
     refreshSubagents().finally(() => scheduleRefreshSubagents());
   }, nextDelay);

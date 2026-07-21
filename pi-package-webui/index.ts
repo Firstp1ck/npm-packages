@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { delay, takeValue, tokenizeArgs } from "@firstpick/pi-utils";
 import { detachChildProcess as releaseStartedChild, isProcessRunning, terminateChildProcess as terminateFailedChild } from "@firstpick/pi-utils/process";
 import { fetchJsonWithTimeout as fetchJsonWithTimeoutBase } from "@firstpick/pi-utils/http";
+import { registerSubagentGate } from "./lib/subagent-gate.mjs";
 import {
   gitWorkflowPreferencesSummary,
   readGitWorkflowPreferences,
@@ -849,6 +850,9 @@ async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> 
 }
 
 export default function (pi: ExtensionAPI) {
+  const subagentGate = registerSubagentGate(pi);
+  pi.on("session_shutdown", () => subagentGate.dispose());
+
   const startWebuiHandler = async (args: string, ctx: ExtensionCommandContext) => {
     let options: StartWebuiOptions;
     try {

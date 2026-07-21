@@ -2527,6 +2527,75 @@ body.embedded-split .side-panel-backdrop {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.subagent-gate-card {
+  display: grid;
+  gap: 0.48rem;
+  min-width: 0;
+  padding: 0.54rem;
+  border: 1px solid rgba(137, 180, 250, 0.22);
+  border-radius: 0.68rem;
+  background: rgba(137, 180, 250, 0.06);
+}
+.subagent-gate-card.satisfied { border-color: rgba(166, 227, 161, 0.38); }
+.subagent-gate-card.failed,
+.subagent-gate-card.cancelled { border-color: rgba(243, 139, 168, 0.38); }
+.subagent-gate-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.subagent-gate-title {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+.subagent-gate-title strong { color: var(--ctp-text); font-size: 0.75rem; }
+.subagent-gate-title span { color: rgba(var(--ctp-subtext-rgb), 0.72); font-size: var(--text-xs); }
+.subagent-gate-status {
+  flex: 0 0 auto;
+  padding: 0.08rem 0.34rem;
+  border-radius: 999px;
+  color: var(--ctp-blue);
+  background: rgba(137, 180, 250, 0.12);
+  font-size: var(--text-xs);
+  font-weight: 850;
+}
+.subagent-gate-status.satisfied { color: var(--ctp-green); background: rgba(166, 227, 161, 0.12); }
+.subagent-gate-status.failed,
+.subagent-gate-status.cancelled { color: var(--ctp-red); background: rgba(243, 139, 168, 0.12); }
+.subagent-gate-attempts { display: grid; gap: 0.32rem; }
+.subagent-gate-attempt {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.4rem;
+  padding: 0.38rem;
+  border-radius: 0.5rem;
+  background: rgba(var(--ctp-surface-rgb), 0.16);
+}
+.subagent-gate-attempt-marker {
+  width: 0.48rem;
+  height: 0.48rem;
+  margin-top: 0.18rem;
+  border-radius: 999px;
+  background: var(--ctp-blue);
+}
+.subagent-gate-attempt.running .subagent-gate-attempt-marker,
+.subagent-gate-attempt.launching .subagent-gate-attempt-marker { animation: subagent-running-pulse 1.35s ease-in-out infinite; }
+.subagent-gate-attempt.succeeded .subagent-gate-attempt-marker { background: var(--ctp-green); }
+.subagent-gate-attempt.failed .subagent-gate-attempt-marker,
+.subagent-gate-attempt.not-qualifying .subagent-gate-attempt-marker,
+.subagent-gate-attempt.cancelled .subagent-gate-attempt-marker { background: var(--ctp-red); }
+.subagent-gate-attempt-content { display: grid; gap: 0.08rem; min-width: 0; }
+.subagent-gate-attempt-content strong { color: rgba(var(--ctp-text-rgb), 0.92); font-size: 0.7rem; }
+.subagent-gate-attempt-meta,
+.subagent-gate-attempt-error {
+  color: rgba(var(--ctp-subtext-rgb), 0.68);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.subagent-gate-attempt-error { color: var(--ctp-red); }
 @keyframes subagent-running-pulse {
   0%, 100% { opacity: 0.58; transform: scale(0.86); }
   50% { opacity: 1; transform: scale(1); }

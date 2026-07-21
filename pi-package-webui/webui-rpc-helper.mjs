@@ -2,6 +2,7 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs"
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
+import { SUBAGENT_GATE_UPDATE_EVENT } from "./lib/subagent-gate.mjs";
 
 const HELPER_COMMAND = "webui-helper";
 const RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
@@ -547,6 +548,7 @@ export default function webuiRpcHelper(pi) {
   let lastPublishedSubagentSignature = "";
   const asyncSubagentRuns = new Map();
   const foregroundSubagentRuns = new Map();
+  const subagentGates = new Map();
 
   function publicSubagentRuns() {
     return [...foregroundSubagentRuns.values(), ...asyncSubagentRuns.values()]
@@ -575,10 +577,48 @@ export default function webuiRpcHelper(pi) {
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
+  function publicSubagentGates() {
+    return [...subagentGates.values()]
+      .slice(-32)
+      .map((gate) => ({
+        version: 1,
+        id: subagentText(gate.id, 160),
+        status: ["running", "satisfied", "failed", "cancelled"].includes(gate.status) ? gate.status : "failed",
+        requiredSuccesses: Number.isInteger(gate.requiredSuccesses) ? gate.requiredSuccesses : 1,
+        qualifyingSuccesses: Number.isInteger(gate.qualifyingSuccesses) ? gate.qualifyingSuccesses : 0,
+        requireDistinctProviders: gate.requireDistinctProviders === true,
+        startedAt: Number.isFinite(gate.startedAt) ? gate.startedAt : Date.now(),
+        updatedAt: Number.isFinite(gate.updatedAt) ? gate.updatedAt : Date.now(),
+        endedAt: Number.isFinite(gate.endedAt) ? gate.endedAt : undefined,
+        attempts: (Array.isArray(gate.attempts) ? gate.attempts : []).slice(-100).map((attempt, index) => ({
+          id: subagentText(attempt?.id || `${gate.id}:${index}`, 240),
+          taskIndex: Number.isInteger(attempt?.taskIndex) ? attempt.taskIndex : index,
+          attempt: Number.isInteger(attempt?.attempt) ? attempt.attempt : 1,
+          maxAttempts: Number.isInteger(attempt?.maxAttempts) ? attempt.maxAttempts : 1,
+          agent: subagentAgentName(attempt?.agent) || "subagent",
+          label: subagentText(attempt?.label, 200) || undefined,
+          phase: subagentText(attempt?.phase, 120) || undefined,
+          retrySafety: attempt?.retrySafety === "read-only" ? "read-only" : "may-write",
+          runId: subagentText(attempt?.runId, 160) || undefined,
+          retryOf: subagentText(attempt?.retryOf, 160) || undefined,
+          model: subagentModel(attempt?.model) || undefined,
+          provider: subagentText(attempt?.provider, 80) || undefined,
+          status: ["launching", "running", "succeeded", "failed", "not-qualifying", "cancelled"].includes(attempt?.status) ? attempt.status : "failed",
+          failureKind: subagentText(attempt?.failureKind, 80) || undefined,
+          error: subagentText(attempt?.error, 1000) || undefined,
+          startedAt: Number.isFinite(attempt?.startedAt) ? attempt.startedAt : undefined,
+          endedAt: Number.isFinite(attempt?.endedAt) ? attempt.endedAt : undefined,
+        })),
+      }))
+      .filter((gate) => gate.id)
+      .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
+  }
+
   function publishSubagentStatus() {
     if (!subagentContext?.hasUI) return;
     const runs = publicSubagentRuns();
-    const snapshot = { version: 1, available: subagentBridgeAvailable, runs };
+    const gates = publicSubagentGates();
+    const snapshot = { version: 1, available: subagentBridgeAvailable, runs, gates };
     const signature = JSON.stringify(snapshot);
     if (signature === lastPublishedSubagentSignature) return;
     lastPublishedSubagentSignature = signature;
@@ -827,6 +867,13 @@ export default function webuiRpcHelper(pi) {
       if (id) asyncSubagentRuns.delete(id);
       publishSubagentStatus();
     }),
+    pi.events.on(SUBAGENT_GATE_UPDATE_EVENT, (value) => {
+      const id = subagentText(value?.id, 160);
+      if (!id) return;
+      subagentGates.set(id, { ...value, id });
+      while (subagentGates.size > 32) subagentGates.delete(subagentGates.keys().next().value);
+      publishSubagentStatus();
+    }),
   ].filter((unsubscribe) => typeof unsubscribe === "function");
 
   function allToolNames() {
@@ -1010,6 +1057,7 @@ export default function webuiRpcHelper(pi) {
     subagentPollGeneration += 1;
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
+    subagentGates.clear();
     lastPublishedSubagentSignature = "";
     publishSubagentStatus();
     scheduleSubagentStatusPoll(subagentPollGeneration, 0);
@@ -1085,6 +1133,7 @@ export default function webuiRpcHelper(pi) {
     subagentPollTimer = null;
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
+    subagentGates.clear();
     for (const unsubscribe of subagentEventUnsubscribers) unsubscribe();
   });
 

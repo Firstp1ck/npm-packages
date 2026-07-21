@@ -706,7 +706,7 @@
               </button>
             </h2>
             <div id="sidePanelSectionSubagents" class="side-panel-section-content" hidden>
-              <p class="subagents-help"><strong>How to use:</strong> Ask Pi to call the <code>subagent</code> tool in foreground or async mode—for example, “Use a subagent to review this change.” Only active runs launched through that tool appear here.</p>
+              <p class="subagents-help"><strong>How to use:</strong> Ask Pi to call <code>subagent</code> for ordinary delegation or <code>subagent_gate</code> when failed calls need bounded retries or a success quorum. Active children and retained gate attempts appear here.</p>
               <div class="subagent-open-mode-field">
                 <label for="subagentOpenModeSelect">Open subagents in</label>
                 <select id="subagentOpenModeSelect" aria-describedby="subagentOpenModeStatus">

@@ -124,6 +124,25 @@ assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.name, agent.curren
 assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "async overview should publish effective lifecycle model and reasoning metadata");
 assert.deepEqual(payload.runs[1].agents.map((agent) => [agent.name, agent.nested]), [["worker", false], ["nested-oracle", true]]);
 
+bus.emit("webui:subagent-gate:v1:update", {
+  version: 1,
+  id: "gate-a",
+  status: "running",
+  requiredSuccesses: 2,
+  qualifyingSuccesses: 1,
+  requireDistinctProviders: true,
+  startedAt: Date.now() - 2000,
+  updatedAt: Date.now(),
+  attempts: [
+    { id: "gate-a:0:1", taskIndex: 0, attempt: 1, maxAttempts: 2, agent: "reviewer", retrySafety: "read-only", runId: "review-1", model: "anthropic/claude-opus-4-8", provider: "anthropic", status: "succeeded" },
+    { id: "gate-a:1:1", taskIndex: 1, attempt: 1, maxAttempts: 2, agent: "reviewer", retrySafety: "read-only", runId: "review-2", model: "openrouter/moonshotai/kimi-k3", provider: "openrouter", status: "failed", failureKind: "transient-provider", error: "provider overloaded" },
+  ],
+});
+payload = latestPayload();
+assert.equal(payload.gates.length, 1, "helper should publish retry gate lifecycle alongside running children");
+assert.equal(payload.gates[0].qualifyingSuccesses, 1);
+assert.deepEqual(payload.gates[0].attempts.map((attempt) => [attempt.status, attempt.failureKind]), [["succeeded", undefined], ["failed", "transient-provider"]]);
+
 const helperCommand = registeredCommands.get("webui-helper");
 assert.ok(helperCommand?.handler, "Web UI helper command should be registered");
 await helperCommand.handler(JSON.stringify({
