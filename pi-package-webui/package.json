@@ -74,7 +74,8 @@
     "@firstpick/pi-extension-workflows": "^0.1.4",
     "@firstpick/pi-package-remote-webui": "^0.1.6",
     "@firstpick/pi-prompts-git-pr": "^0.1.3",
-    "@firstpick/pi-themes-bundle": "^0.1.4"
+    "@firstpick/pi-themes-bundle": "^0.1.4",
+    "node-pty": "^1.1.0"
   },
   "files": [
     "index.ts",

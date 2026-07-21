@@ -1234,7 +1234,7 @@ try {
   await writeFile(path.join(cwd, "interactive-runner.mjs"), [
     "import readline from 'node:readline';",
     "const rl = readline.createInterface({ input: process.stdin, output: process.stdout });",
-    "console.log('interactive ready');",
+    "console.log(`interactive ready; stdin tty=${Boolean(process.stdin.isTTY)}`);",
     "rl.question('name? ', (answer) => {",
     "  console.log(`hello ${answer}`);",
     "  rl.close();",
@@ -1255,6 +1255,9 @@ try {
     timeoutMs: 10_000,
   });
   assert.equal(interactiveRunStart.status, 200, `interactive runner start should return ok: ${interactiveRunStart.body?.error || ""}`);
+  if (process.platform === "win32") {
+    assert.equal(interactiveRunStart.body?.data?.activeRun?.executionMode, "conpty", "Windows interactive runners should use the node-pty ConPTY backend");
+  }
   let interactiveRunState = interactiveRunStart;
   for (let attempt = 0; attempt < 50; attempt++) {
     interactiveRunState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
@@ -1283,13 +1286,14 @@ try {
   assert.equal(interactiveRunState.body?.data?.activeRun?.status, "done", "interactive custom runner should finish after stdin");
   const interactiveOutput = (interactiveRunState.body?.data?.activeRun?.lines || []).join("\n");
   assert.match(interactiveOutput, /hello webui/, "interactive custom runner should receive stdin from the app-runner input endpoint");
+  if (process.platform === "win32") assert.match(interactiveOutput, /stdin tty=true/, "Windows ConPTY runners should expose a real TTY to the child process");
   assert.match(interactiveOutput, /# stdin sent \(5 chars\) and closed/, "app runner output should show that stdin was sent without echoing the input text itself");
   await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
 
   const scriptVersion = spawnSync("script", ["--version"], { encoding: "utf8" });
   const utilLinuxScriptAvailable = process.platform !== "win32" && scriptVersion.status === 0 && /util-linux/i.test(`${scriptVersion.stdout}\n${scriptVersion.stderr}`);
   const bashAvailable = spawnSync("bash", ["--version"], { encoding: "utf8" }).status === 0;
-  if (utilLinuxScriptAvailable && bashAvailable) {
+  if ((utilLinuxScriptAvailable || process.platform === "win32") && bashAvailable) {
     await mkdir(path.join(cwd, "qa"), { recursive: true });
     await writeFile(path.join(cwd, "qa", "read-p-runner.sh"), [
       "#!/usr/bin/env bash",
@@ -1312,7 +1316,8 @@ try {
       timeoutMs: 10_000,
     });
     assert.equal(readPromptStart.status, 200, `bash read -p runner start should return ok: ${readPromptStart.body?.error || ""}`);
-    assert.equal(readPromptStart.body?.data?.activeRun?.executionMode, "pty", "bash read -p runner should use the PTY-backed execution path when util-linux script is available");
+    const expectedPtyMode = process.platform === "win32" ? "conpty" : "pty";
+    assert.equal(readPromptStart.body?.data?.activeRun?.executionMode, expectedPtyMode, "bash read -p runner should use the platform PTY-backed execution path");
     let readPromptState = readPromptStart;
     for (let attempt = 0; attempt < 50; attempt++) {
       readPromptState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
@@ -1341,7 +1346,7 @@ try {
     assert.equal(readPromptState.body?.data?.activeRun?.status, "done", "bash read -p runner should finish after stdin");
     const readPromptOutput = (readPromptState.body?.data?.activeRun?.lines || []).join("\n");
     assert.match(readPromptOutput, /selected:alpha/, "bash read -p runner should receive stdin from the app-runner input endpoint");
-    assert.doesNotMatch(readPromptOutput, /^alpha$/m, "PTY-backed app runner should not echo raw stdin into captured output");
+    if (process.platform !== "win32") assert.doesNotMatch(readPromptOutput, /^alpha$/m, "script-backed PTY runner should not echo raw stdin into captured output");
     await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
   }
 

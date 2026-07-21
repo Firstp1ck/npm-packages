@@ -24,7 +24,9 @@ function windowsTaskkillCommand() {
  * used instead of child.kill(), which only terminates the direct child.
  */
 export function terminateProcessTree(target, signal = "SIGTERM") {
-  if (!target || target.exitCode !== null || target.signalCode !== null) return false;
+  const hasExited = (target?.exitCode !== undefined && target.exitCode !== null)
+    || (target?.signalCode !== undefined && target.signalCode !== null);
+  if (!target || hasExited) return false;
   const pid = Number(target.pid);
 
   if (process.platform === "win32" && Number.isInteger(pid) && pid > 0) {

@@ -2167,6 +2167,7 @@ async function readJsonFileIfExists(filePath) {
 
 const appRunnerCommandAvailability = new Map();
 let appRunnerPtyScriptAvailability = { available: false, expiresAt: 0 };
+let appRunnerNodePtyPromise = null;
 
 async function fileStatsIfExists(filePath) {
   try {
@@ -2224,6 +2225,40 @@ async function appRunnerCommandAvailable(command, cwd) {
 
 function appRunnerPtyDisabled() {
   return APP_RUNNER_PTY_DISABLED_VALUES.has(String(process.env.PI_WEBUI_APP_RUNNER_PTY || "").trim().toLowerCase());
+}
+
+async function appRunnerWindowsPty() {
+  if (process.platform !== "win32" || appRunnerPtyDisabled()) return null;
+  if (!appRunnerNodePtyPromise) {
+    appRunnerNodePtyPromise = import("node-pty")
+      .then((module) => module?.spawn ? module : module?.default?.spawn ? module.default : null)
+      .catch(() => null);
+  }
+  return appRunnerNodePtyPromise;
+}
+
+async function resolveWindowsAppRunnerExecutable(command, cwd) {
+  const value = String(command || "").trim();
+  if (process.platform !== "win32" || !value) return value;
+  const hasDirectory = path.isAbsolute(value) || value.includes("/") || value.includes("\\");
+  const bases = hasDirectory
+    ? [path.isAbsolute(value) ? value : path.resolve(cwd, value)]
+    : String(process.env.PATH || process.env.Path || "").split(path.delimiter).filter(Boolean).map((directory) => path.join(directory, value));
+  const extensions = path.extname(value)
+    ? [""]
+    : String(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((extension) => extension.toLowerCase()).concat("");
+  for (const base of bases) {
+    for (const extension of extensions) {
+      const candidate = `${base}${extension}`;
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+        // Keep searching PATH/PATHEXT.
+      }
+    }
+  }
+  return value;
 }
 
 async function appRunnerScriptPtyAvailable(cwd) {
@@ -2287,6 +2322,19 @@ async function spawnAppRunnerChild(run) {
     windowsHide: true,
     detached: process.platform !== "win32",
   };
+  const windowsPty = await appRunnerWindowsPty();
+  if (windowsPty) {
+    run.executionMode = "conpty";
+    const command = await resolveWindowsAppRunnerExecutable(run.command, run.cwd);
+    return windowsPty.spawn(command, run.args || [], {
+      name: process.env.TERM || "xterm-256color",
+      cols: Math.max(20, Number.parseInt(process.env.COLUMNS || "120", 10) || 120),
+      rows: Math.max(5, Number.parseInt(process.env.LINES || "40", 10) || 40),
+      cwd: run.cwd,
+      env: process.env,
+      useConpty: true,
+    });
+  }
   if (await appRunnerScriptPtyAvailable(run.cwd)) {
     run.executionMode = "pty";
     return spawn("script", [
@@ -3184,18 +3232,34 @@ function scheduleAppRunnerBroadcast(tab) {
   }, 120);
 }
 
+function appRunnerChildActive(run) {
+  if (!run?.child || run.settled) return false;
+  if (run.executionMode === "conpty") return true;
+  return run.child.exitCode === null && run.child.signalCode === null;
+}
+
 function terminateAppRunnerChild(run, signal = "SIGTERM") {
-  if (!run?.child || run.child.exitCode !== null || run.child.signalCode !== null) return false;
+  if (!appRunnerChildActive(run)) return false;
   return terminateProcessTree(run.child, signal);
 }
 
 function appRunnerStdinWritable(run) {
-  const stdin = run?.child?.stdin;
-  return !!stdin && !stdin.destroyed && !stdin.writableEnded && run.stdinClosed !== true;
+  if (!appRunnerChildActive(run) || run.stdinClosed === true) return false;
+  if (run.executionMode === "conpty") return typeof run.child.write === "function";
+  const stdin = run.child.stdin;
+  return !!stdin && !stdin.destroyed && !stdin.writableEnded;
 }
 
 function interruptAppRunnerChild(run) {
-  if (!run?.child || run.child.exitCode !== null || run.child.signalCode !== null) return false;
+  if (!appRunnerChildActive(run)) return false;
+  if (run.executionMode === "conpty" && appRunnerStdinWritable(run)) {
+    try {
+      run.child.write("\x03");
+      return true;
+    } catch {
+      // Fall back to process-tree termination below.
+    }
+  }
   // Writing ETX to a Windows pipe is data, not a console Ctrl+C event. Kill the
   // complete tree there so npm/bash wrappers cannot leave orphaned servers.
   if (process.platform === "win32") return terminateAppRunnerChild(run, "SIGKILL");
@@ -3220,6 +3284,14 @@ function finishAppRunner(tab, run, patch = {}) {
   run.signal = patch.signal;
   run.error = patch.error;
   run.status = patch.error ? "error" : patch.exitCode === 0 ? "done" : "failed";
+  for (const disposable of run.ptyDisposables || []) {
+    try {
+      disposable?.dispose?.();
+    } catch {
+      // The PTY has already exited; listener cleanup is best effort.
+    }
+  }
+  run.ptyDisposables = [];
   run.child = null;
   run.stdinClosed = true;
   run.stopping = false;
@@ -3241,19 +3313,26 @@ function normalizeAppRunnerInputText(value) {
 function sendAppRunnerInput(tab, value, { appendNewline = true, closeStdin = false } = {}) {
   const run = tab?.appRunner;
   if (!run || run.status !== "running") throw makeHttpError(409, "No app runner is running in this tab");
-  const stdin = run.child?.stdin;
-  if (!stdin || stdin.destroyed || stdin.writableEnded || run.stdinClosed === true) throw makeHttpError(409, "App runner stdin is closed");
+  if (!appRunnerStdinWritable(run)) throw makeHttpError(409, "App runner stdin is closed");
   const text = normalizeAppRunnerInputText(value);
-  const chunk = `${text}${appendNewline === false ? "" : "\n"}`;
+  const newline = run.executionMode === "conpty" && process.platform === "win32" ? "\r" : "\n";
+  const chunk = `${text}${appendNewline === false ? "" : newline}`;
   if (!chunk && !closeStdin) throw makeHttpError(400, "App runner input is empty");
   let buffered = false;
   try {
-    if (closeStdin) {
-      if (chunk) stdin.end(chunk, "utf8");
-      else stdin.end();
-      run.stdinClosed = true;
+    if (run.executionMode === "conpty") {
+      if (chunk) run.child.write(chunk);
+      else if (closeStdin) run.child.write("\x04");
+      if (closeStdin) run.stdinClosed = true;
     } else {
-      buffered = stdin.write(chunk, "utf8") === false;
+      const stdin = run.child.stdin;
+      if (closeStdin) {
+        if (chunk) stdin.end(chunk, "utf8");
+        else stdin.end();
+        run.stdinClosed = true;
+      } else {
+        buffered = stdin.write(chunk, "utf8") === false;
+      }
     }
   } catch (error) {
     run.stdinClosed = true;
@@ -3299,22 +3378,29 @@ async function startAppRunner(tab, runnerId) {
   run.pid = child.pid;
   tab.appRunner = run;
 
-  child.stdin?.on("error", (error) => {
-    run.stdinClosed = true;
-    run.stdinError = sanitizeError(error);
-    if (run.status === "running") {
-      appendAppRunnerLine(run, `# stdin error: ${run.stdinError}`);
-      scheduleAppRunnerBroadcast(tab);
-    }
-  });
-  child.stdin?.on("close", () => {
-    run.stdinClosed = true;
-    if (run.status === "running") scheduleAppRunnerBroadcast(tab);
-  });
-  child.stdout.on("data", (chunk) => appendAppRunnerChunk(tab, run, chunk, "stdout"));
-  child.stderr.on("data", (chunk) => appendAppRunnerChunk(tab, run, chunk, "stderr"));
-  child.on("error", (error) => finishAppRunner(tab, run, { error: sanitizeError(error) }));
-  child.on("exit", (exitCode, signal) => finishAppRunner(tab, run, { exitCode, signal }));
+  if (run.executionMode === "conpty") {
+    run.ptyDisposables = [
+      child.onData((chunk) => appendAppRunnerChunk(tab, run, chunk, "stdout")),
+      child.onExit(({ exitCode, signal }) => finishAppRunner(tab, run, { exitCode, signal })),
+    ];
+  } else {
+    child.stdin?.on("error", (error) => {
+      run.stdinClosed = true;
+      run.stdinError = sanitizeError(error);
+      if (run.status === "running") {
+        appendAppRunnerLine(run, `# stdin error: ${run.stdinError}`);
+        scheduleAppRunnerBroadcast(tab);
+      }
+    });
+    child.stdin?.on("close", () => {
+      run.stdinClosed = true;
+      if (run.status === "running") scheduleAppRunnerBroadcast(tab);
+    });
+    child.stdout.on("data", (chunk) => appendAppRunnerChunk(tab, run, chunk, "stdout"));
+    child.stderr.on("data", (chunk) => appendAppRunnerChunk(tab, run, chunk, "stderr"));
+    child.on("error", (error) => finishAppRunner(tab, run, { error: sanitizeError(error) }));
+    child.on("exit", (exitCode, signal) => finishAppRunner(tab, run, { exitCode, signal }));
+  }
 
   recordEvent({ type: "webui_app_runner_start", tabId: tab.id, tabTitle: tab.title, command: run.displayCommand, cwd: run.cwd, pid: run.pid });
   broadcastAppRunnerState(tab);
@@ -3325,7 +3411,9 @@ function stopAppRunnerForTab(tab, reason = "stop requested", { force = false } =
   const run = tab?.appRunner;
   if (!run || run.status !== "running") return false;
   run.stopping = true;
-  const action = process.platform === "win32" ? "terminating Windows process tree" : `sending ${force ? "SIGKILL" : "Ctrl+C"}`;
+  const action = run.executionMode === "conpty" && !force
+    ? "sending Ctrl+C"
+    : process.platform === "win32" ? "terminating Windows process tree" : `sending ${force ? "SIGKILL" : "Ctrl+C"}`;
   appendAppRunnerLine(run, `# ${reason}; ${action}`);
   if (force) terminateAppRunnerChild(run, "SIGKILL");
   else interruptAppRunnerChild(run);

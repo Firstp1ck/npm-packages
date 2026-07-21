@@ -230,7 +230,7 @@ These screenshots show the v0.4.8 Web UI surfaces. Current implementations inclu
 ![Pi Web UI app runner selector showing detected project runners and custom runner creation](https://raw.githubusercontent.com/Firstp1ck/npm-packages/main/pi-package-webui/images/Webui_AppRunner_v0.4.8.png)
 
 - **What it is:** A project runner detector for common stacks plus browseable custom runners from `.pi-webui-runners.json`.
-- **What you can do:** Launch dev servers, tests, builds, scripts, and custom commands from the active cwd, pass arguments, watch pinned live output, and send line-oriented stdin to interactive runners.
+- **What you can do:** Launch dev servers, tests, builds, scripts, and custom commands from the active cwd, pass arguments, watch pinned live output, and send line-oriented stdin to interactive runners. Windows runners use ConPTY through the optional `node-pty` dependency so Bash/Node scripts receive a real TTY; set `PI_WEBUI_APP_RUNNER_PTY=off` to force the pipe fallback.
 
 ### Queue manager
 
