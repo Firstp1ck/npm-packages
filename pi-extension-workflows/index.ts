@@ -176,6 +176,24 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
   const publishWorkflowMode = () => {
     pi.events?.emit?.(EXCLUSIVE_MODE_EVENT, exclusiveModeEvent(WORKFLOW_EXCLUSIVE_MODE_ID, mode.isEnabled()));
   };
+  const activateWorkflowTools = () => {
+    const required = ["workflow_run", "workflow_status"];
+    const active = pi.getActiveTools();
+    const missing = required.filter((name) => !active.includes(name));
+    if (missing.length === 0) return;
+
+    const available = new Set(pi.getAllTools().map((tool) => tool.name));
+    const unavailable = missing.filter((name) => !available.has(name));
+    if (unavailable.length > 0) {
+      throw new Error(`Workflow Mode cannot start because required tools are unavailable: ${unavailable.join(", ")}.`);
+    }
+
+    pi.setActiveTools([...new Set([...active, ...required])]);
+    const stillMissing = required.filter((name) => !pi.getActiveTools().includes(name));
+    if (stillMissing.length > 0) {
+      throw new Error(`Workflow Mode could not activate required tools: ${stillMissing.join(", ")}.`);
+    }
+  };
   const assertWorkflowModeAvailable = () => {
     if (conflictingExclusiveMode) throw new Error(`Workflow Mode conflicts with active exclusive mode '${conflictingExclusiveMode}'. Disable that mode first.`);
   };
@@ -585,17 +603,22 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
           const modeAction = requestedMode.toLowerCase() || "status";
           if (modeAction === "on" || modeAction === "enable" || modeAction === "start") {
             assertWorkflowModeAvailable();
+            activateWorkflowTools();
             mode.setEnabled(true, ctx);
             publishWorkflowMode();
           } else if (modeAction === "once") {
             assertWorkflowModeAvailable();
+            activateWorkflowTools();
             mode.armOnce(ctx);
             publishWorkflowMode();
           } else if (modeAction === "off" || modeAction === "disable" || modeAction === "stop") {
             mode.setEnabled(false, ctx);
             publishWorkflowMode();
           } else if (modeAction === "toggle") {
-            if (!mode.isEnabled()) assertWorkflowModeAvailable();
+            if (!mode.isEnabled()) {
+              assertWorkflowModeAvailable();
+              activateWorkflowTools();
+            }
             mode.toggle(ctx);
             publishWorkflowMode();
           } else if (modeAction !== "status") throw new Error("Usage: /workflow mode [once|on|off|toggle|status]");
@@ -795,6 +818,14 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
     const restored = state.restoreFromEntries(entries as never);
     approvals.restoreFromEntries(entries as never);
     mode.restoreFromEntries(entries as never);
+    if (mode.isEnabled()) {
+      try {
+        activateWorkflowTools();
+      } catch (error) {
+        mode.setEnabled(false, ctx);
+        notifyWorkflow(ctx, errorMessage(error), "error");
+      }
+    }
     mode.render(ctx);
     publishWorkflowMode();
     const sessionId = ctx.sessionManager?.getSessionId?.() ?? "ephemeral";
@@ -813,6 +844,14 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
     if (conflictingExclusiveMode) {
       mode.setRunning(false, ctx);
       notifyWorkflow(ctx, `Workflow Mode did not run because exclusive mode '${conflictingExclusiveMode}' is active. Disable one mode and retry.`, "warning");
+      return;
+    }
+    try {
+      activateWorkflowTools();
+    } catch (error) {
+      mode.setEnabled(false, ctx);
+      publishWorkflowMode();
+      notifyWorkflow(ctx, errorMessage(error), "error");
       return;
     }
     mode.setRunning(true, ctx);

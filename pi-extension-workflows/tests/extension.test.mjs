@@ -13,6 +13,9 @@ const commandHandlers = new Map();
 const commandDefinitions = new Map();
 const tools = [];
 const toolDefinitions = new Map();
+const activeTools = new Set(["read"]);
+const activeToolUpdates = [];
+let rejectWorkflowToolActivation = false;
 const events = [];
 const eventHandlers = new Map();
 const busHandlers = new Map();
@@ -28,6 +31,16 @@ workflowExtension({
   registerTool(definition) {
     tools.push(definition.name);
     toolDefinitions.set(definition.name, definition);
+  },
+  getActiveTools() { return [...activeTools]; },
+  getAllTools() { return [{ name: "read" }, ...tools.map((name) => ({ name }))]; },
+  setActiveTools(names) {
+    const applied = rejectWorkflowToolActivation
+      ? names.filter((name) => name !== "workflow_run" && name !== "workflow_status")
+      : names;
+    activeTools.clear();
+    for (const name of applied) activeTools.add(name);
+    activeToolUpdates.push([...applied]);
   },
   on(name, handler) {
     events.push(name);
@@ -93,11 +106,24 @@ const modeCtx = {
 };
 await commandHandlers.get("workflow")("mode on", modeCtx);
 assert.deepEqual(statuses.at(-1), { key: "workflow-mode", value: "Workflow: on" });
+assert.deepEqual(activeToolUpdates.at(-1), ["read", "workflow_run", "workflow_status"], "enabling Workflow Mode must add its required tools without disabling existing tools");
+activeTools.delete("workflow_run");
+activeTools.delete("workflow_status");
 const promptUpdate = await eventHandlers.get("before_agent_start")({ systemPrompt: "BASE" }, modeCtx);
 assert.match(promptUpdate.systemPrompt, /BASE[\s\S]*Workflow Mode[\s\S]*workflow_run/);
+assert.ok(activeTools.has("workflow_run") && activeTools.has("workflow_status"), "Workflow Mode must repair disabled required tools before an agent turn");
 assert.equal(statuses.at(-1).value, "Workflow: running");
 await eventHandlers.get("agent_end")({}, modeCtx);
 assert.equal(statuses.at(-1).value, "Workflow: on");
+activeTools.delete("workflow_run");
+activeTools.delete("workflow_status");
+rejectWorkflowToolActivation = true;
+const failedPromptUpdate = await eventHandlers.get("before_agent_start")({ systemPrompt: "BASE" }, modeCtx);
+assert.equal(failedPromptUpdate, undefined, "Workflow Mode must not inject its prompt when required tools cannot be activated");
+assert.equal(statuses.at(-1).value, "", "Workflow Mode must disable itself when tool activation fails");
+assert.equal(notifications.at(-1).level, "error");
+assert.match(notifications.at(-1).message, /could not activate required tools: workflow_run, workflow_status/);
+rejectWorkflowToolActivation = false;
 await commandHandlers.get("workflow")("mode off", modeCtx);
 assert.equal(statuses.at(-1).value, "");
 assert.ok(busEvents.some((entry) => entry.name === "firstpick:exclusive-mode:v1" && entry.payload.mode === "workflow" && entry.payload.enabled === false));
@@ -117,6 +143,25 @@ const oncePromptUpdate = await eventHandlers.get("before_agent_start")({ systemP
 assert.match(oncePromptUpdate.systemPrompt, /Workflow Mode/);
 await eventHandlers.get("agent_end")({}, modeCtx);
 assert.equal(statuses.at(-1).value, "", "mode once must disarm after one agent turn");
+
+activeTools.delete("workflow_run");
+activeTools.delete("workflow_status");
+await eventHandlers.get("session_start")({}, {
+  ...modeCtx,
+  sessionManager: {
+    getEntries() {
+      return [{
+        type: "custom",
+        customType: "workflow-mode-state",
+        data: { schemaVersion: 1, enabled: true, behavior: "persistent", phase: "armed", updatedAt: new Date().toISOString() },
+      }];
+    },
+    getSessionId() { return "restored-mode-test"; },
+  },
+});
+assert.ok(activeTools.has("workflow_run") && activeTools.has("workflow_status"), "restored Workflow Mode must activate its required tools");
+assert.equal(statuses.findLast((entry) => entry.key === "workflow-mode").value, "Workflow: on");
+await commandHandlers.get("workflow")("mode off", modeCtx);
 
 await mkdir(path.join(temp, ".pi", "workflows"), { recursive: true });
 await writeFile(path.join(temp, ".pi", "workflows", "project-js.js"), `
