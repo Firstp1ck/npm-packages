@@ -9432,15 +9432,7 @@ async function toggleFooterAutoCompaction(tabContext = activeTabContext()) {
   }
 }
 
-function scheduleGitFooterPiCalibrationRefresh(tabContext, delays = [600, 1600]) {
-  for (const delayMs of delays) {
-    setTimeout(() => {
-      if (isCurrentTabContext(tabContext)) requestGitFooterWebuiPayload(tabContext, { force: true });
-    }, delayMs);
-  }
-}
-
-async function runGitFooterPiCalibration(mode = "current", tabContext = activeTabContext()) {
+async function runGitFooterPiCalibration(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return;
   if (gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId)) return;
   if (currentState?.isStreaming || currentState?.isCompacting) {
@@ -9453,16 +9445,13 @@ async function runGitFooterPiCalibration(mode = "current", tabContext = activeTa
     addEvent("PI calibration unavailable: /calibrate is not loaded in this Pi tab.", "warn");
     return;
   }
-  if (mode === "probe" && !(await appConfirmText("Start an isolated PI calibration probe? This sends one tiny model request and may incur provider token usage.", { affected: "Provider token allowance and this tab's calibration result", confirmLabel: "Start probe", danger: false }))) return;
 
-  const command = mode === "probe" ? `/${commandName}` : `/${commandName} current`;
   gitFooterPiCalibrationInFlightByTab.add(tabContext.tabId);
   renderFooter();
   try {
-    await sendPrompt("prompt", command, { targetTabId: tabContext.tabId, throwOnError: true });
-    if (!isCurrentTabContext(tabContext)) return;
-    addEvent(mode === "probe" ? "PI calibration probe started; refreshing git footer value after it records…" : "PI calibration requested; refreshing git footer value…", "info");
-    scheduleGitFooterPiCalibrationRefresh(tabContext, mode === "probe" ? [5000, 14000] : [600, 1600]);
+    await sendPrompt("prompt", `/${commandName}`, { targetTabId: tabContext.tabId, throwOnError: true });
+    if (isCurrentTabContext(tabContext)) addEvent("PI calibration finished; refreshing the footer estimate…", "info");
+    await requestGitFooterWebuiPayload(tabContext, { force: true, allowDuringRun: true });
   } catch (error) {
     if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
   } finally {
@@ -9475,13 +9464,11 @@ function applyGitFooterPiCalibrationOptions(chip, options) {
   if (chip?.key !== "pi" || !FOOTER_PAYLOAD_ACTIONS.has(chip?.action)) return "";
   const tabContext = activeTabContext();
   const busy = !!tabContext.tabId && gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId);
-  const mode = chip.action === "calibrate-probe" ? "probe" : "current";
-  options.onClick = () => runGitFooterPiCalibration(mode);
+  options.onClick = () => runGitFooterPiCalibration();
   if (busy) options.ariaBusy = true;
-  if (busy) return "Calibrating PI estimate and refreshing this value…";
-  return mode === "probe"
-    ? "Click to start an isolated PI calibration probe, then refresh this value."
-    : "Click to calibrate this uncalibrated PI estimate from the current session, then refresh this value.";
+  return busy
+    ? "Running /calibrate in an isolated background probe and refreshing this value…"
+    : "Click to run /calibrate in an isolated background probe and refresh this value when it finishes.";
 }
 
 function applyGitFooterContextToggleOptions(chip, options) {
@@ -23944,7 +23931,7 @@ function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force =
 
   gitFooterPayloadRefreshInFlightByTab.add(tabContext.tabId);
   if (isCurrentTabContext(tabContext)) renderFooter();
-  api("/api/prompt", {
+  return api("/api/prompt", {
     method: "POST",
     body: { message: `/${refreshCommand}${silent ? " --webui-silent" : ""}`, streamingBehavior: "steer" },
     tabId: tabContext.tabId,

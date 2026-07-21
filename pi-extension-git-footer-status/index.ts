@@ -676,7 +676,6 @@ type FooterTelemetry = {
   latestTokenSpeed: number | null;
   promptInjectionTokens: number | null;
   promptInjectionCalibrationSamples: number;
-  promptInjectionCanCalibrateCurrent: boolean;
   contextWindow: number;
   contextPercent: number | null;
   contextDisplay: string;
@@ -1370,22 +1369,6 @@ function formatPromptEstimateDebugSnapshot(label: string, snapshot: InitialPromp
   ];
 }
 
-function canCalibrateCurrentPromptEstimate(ctx: ExtensionContext): boolean {
-  try {
-    let sawFirstUser = false;
-    for (const entry of ctx.sessionManager.getEntries()) {
-      const record = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
-      if (record.type !== "message") continue;
-      const message = (record.message && typeof record.message === "object" ? record.message : {}) as Record<string, unknown>;
-      if (message.role === "user" && !sawFirstUser) sawFirstUser = true;
-      if (message.role === "assistant" && message.usage) return sawFirstUser;
-    }
-  } catch {
-    return false;
-  }
-  return false;
-}
-
 function buildWebuiVisibilityRecord(): Record<FooterVisibilityKey, boolean> {
   return Object.fromEntries(FOOTER_VISIBILITY_KEYS.map((key) => [key, webuiFooterItemVisible(key)])) as Record<FooterVisibilityKey, boolean>;
 }
@@ -1399,20 +1382,17 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       ? " • thinking off"
       : ` • ${telemetry.thinkingLevel}`
     : "";
-  const piIsUncalibrated = telemetry.promptInjectionTokens !== null && telemetry.promptInjectionCalibrationSamples <= 0;
-  const piCanCalibrateCurrent = piIsUncalibrated && telemetry.promptInjectionCanCalibrateCurrent;
-  const piAction: WebuiFooterChip["action"] | undefined = webuiFooterItemVisible("webui-pi-calibration") && piIsUncalibrated
-    ? piCanCalibrateCurrent
-      ? "calibrate-current"
-      : "calibrate-probe"
+  const piAction: WebuiFooterChip["action"] | undefined = webuiFooterItemVisible("webui-pi-calibration")
+    ? "calibrate-probe"
     : undefined;
+  const piCalibrationAction = piAction
+    ? " Click to run /calibrate in an isolated background probe and refresh this value when it finishes."
+    : "";
   const piTitle = telemetry.promptInjectionTokens === null
-    ? "PI initial prompt estimate pending"
-    : piAction === "calibrate-current"
-      ? "PI initial prompt estimate is uncalibrated. Click to calibrate from this new session and refresh the value."
-      : piAction === "calibrate-probe"
-        ? "PI initial prompt estimate is uncalibrated. Click to start an isolated calibration probe and refresh the value."
-        : `PI initial prompt estimate calibrated from ${telemetry.promptInjectionCalibrationSamples} sample${telemetry.promptInjectionCalibrationSamples === 1 ? "" : "s"}.`;
+    ? `PI initial prompt estimate pending.${piCalibrationAction}`
+    : telemetry.promptInjectionCalibrationSamples > 0
+      ? `PI initial prompt estimate calibrated from ${telemetry.promptInjectionCalibrationSamples} sample${telemetry.promptInjectionCalibrationSamples === 1 ? "" : "s"}.${piCalibrationAction}`
+      : `PI initial prompt estimate is uncalibrated.${piCalibrationAction}`;
 
   const main: WebuiFooterChip[] = [];
   if (webuiFooterItemVisible("tokens") && (telemetry.totalInput || telemetry.totalOutput)) {
@@ -1546,7 +1526,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   // Non-UI modes (json/print) have no footer consumer; skip all background work.
   let backgroundWorkEnabled = false;
   let lastWebuiFooterPublishMs = 0;
-  let promptEstimateCanCalibrateCurrent = false;
   let accountedAssistantUsageKeys = new Set<string>();
   let promptCalibrationCache: { sessionDir: string; value: ReturnType<typeof collectInitialPromptCalibration>; checkedAt: number } | null = null;
 
@@ -1696,7 +1675,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       latestTokenSpeed,
       promptInjectionTokens: promptInjectionEstimate?.total ?? null,
       promptInjectionCalibrationSamples: promptInjectionEstimate?.calibrationSamples ?? 0,
-      promptInjectionCanCalibrateCurrent: promptEstimateCanCalibrateCurrent,
       contextWindow,
       contextPercent: rawContextPercent,
       contextDisplay,
@@ -1819,10 +1797,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     return true;
   };
 
-  const refreshPromptCalibrationCapability = (ctx: ExtensionContext) => {
-    promptEstimateCanCalibrateCurrent = canCalibrateCurrentPromptEstimate(ctx);
-  };
-
   const scheduleFooterUsageRecompute = (ctx: ExtensionContext, delayMs = FOOTER_USAGE_RECOMPUTE_DELAY_MS) => {
     if (footerUsageRecomputeTimer) return;
     rememberFooterContext(ctx);
@@ -1833,7 +1807,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       try {
         const footerCtx = getFooterContext(ctx);
         footerUsageSnapshot = recomputeFooterUsageSnapshot(footerCtx);
-        refreshPromptCalibrationCapability(footerCtx);
         requestFooterRender?.();
         publishWebuiFooter(footerCtx);
       } catch (error) {
@@ -2014,7 +1987,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     latestGitSnapshotFingerprint = null;
     footerUsageSnapshot = emptyFooterUsageSnapshot();
     accountedAssistantUsageKeys = new Set<string>();
-    promptEstimateCanCalibrateCurrent = false;
     promptCalibrationCache = null;
     stopGitAutoRefresh();
     scheduleFooterUsageRecompute(ctx);
@@ -2167,7 +2139,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
     resetLiveAssistantState();
-    refreshPromptCalibrationCapability(ctx);
     requestFooterRender?.();
     schedulePromptInjectionEstimateRefresh(ctx);
     void refresh(ctx).catch(swallowBackgroundError);
@@ -2247,7 +2218,6 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       recordAssistantSpeed(assistantMessage);
       resetLiveAssistantState();
     }
-    refreshPromptCalibrationCapability(ctx);
     requestFooterRender?.();
     schedulePromptInjectionEstimateRefresh(ctx);
     void refresh(ctx).catch(swallowBackgroundError);
@@ -2290,6 +2260,10 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       try {
         const silent = /(?:^|\s)--webui-silent(?:\s|$)/.test(args || "");
         rememberFooterContext(ctx);
+        // Calibration records are shared across workspace sessions. A manual or
+        // WebUI refresh must bypass the short-lived cache so a finished
+        // /calibrate probe is reflected in the next published PI chip.
+        promptCalibrationCache = null;
         await refreshPromptInjectionEstimate(ctx);
         await refresh(ctx);
         if (!silent) ctx.ui.notify("Git footer refreshed", "info");

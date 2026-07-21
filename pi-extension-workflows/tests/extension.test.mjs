@@ -67,9 +67,11 @@ workflowExtension({
 assert.deepEqual(commands, ["workflow", "workflows", "workflow-clear"]);
 assert.equal(commands.includes("workflow-test"), false, "production extension must not publish/register /workflow-test");
 assert.deepEqual(tools, ["workflow_run", "workflow_status"]);
-assert.match(toolDefinitions.get("workflow_run").description, /Do not use for routine one-agent work/);
-assert.match(toolDefinitions.get("workflow_run").promptSnippet, /approved reusable JavaScript workflow/);
+assert.match(toolDefinitions.get("workflow_run").description, /only when the user explicitly requests workflow execution or Workflow Mode is armed/);
+assert.match(toolDefinitions.get("workflow_run").description, /Tool availability alone does not authorize execution/);
+assert.match(toolDefinitions.get("workflow_run").promptSnippet, /explicitly requested or Workflow-Mode-authorized/);
 assert.ok(toolDefinitions.get("workflow_run").promptGuidelines.every((guideline) => guideline.includes("workflow_run")));
+assert.doesNotMatch(toolDefinitions.get("workflow_run").promptGuidelines.join("\n"), /substantive task benefits/);
 assert.match(toolDefinitions.get("workflow_status").promptSnippet, /workflow run by ID/);
 assert.deepEqual(events, ["session_start", "before_agent_start", "agent_end", "session_shutdown"]);
 

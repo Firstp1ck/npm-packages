@@ -750,10 +750,10 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
   pi.registerTool({
     name: "workflow_run",
     label: "Run Workflow",
-    description: "Launch a reusable capability-only JavaScript workflow for an explicit workflow request or substantive multi-agent task. Do not use for routine one-agent work.",
-    promptSnippet: "Launch an approved reusable JavaScript workflow with isolated Pi agents",
+    description: "Launch a reusable capability-only JavaScript workflow only when the user explicitly requests workflow execution or Workflow Mode is armed. Tool availability alone does not authorize execution.",
+    promptSnippet: "Launch an explicitly requested or Workflow-Mode-authorized JavaScript workflow",
     promptGuidelines: [
-      "Use workflow_run when the user explicitly requests a workflow, Workflow Mode is active, or a substantive task benefits from multiple isolated agents; do not use workflow_run for routine one-agent work.",
+      "Use workflow_run only when the user explicitly requests workflow execution or Workflow Mode is armed; the tool being enabled or the task being substantive is not sufficient authorization.",
       "When using workflow_run, provide a generated or saved workflow plus structured args and set confirmRun=true only when the user requested execution or enabled Workflow Mode.",
     ],
     parameters: Type.Object({

@@ -39,16 +39,16 @@ const companionDependencies = {
   "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
   "@firstpick/pi-extension-btw": "^0.1.3",
   "@firstpick/pi-extension-fish-user-bash": "^0.2.1",
-  "@firstpick/pi-extension-git-footer-status": "^0.4.0",
+  "@firstpick/pi-extension-git-footer-status": "^0.4.1",
   "@firstpick/pi-extension-release-aur": "^0.1.7",
-  "@firstpick/pi-extension-release-npm": "^0.4.1",
+  "@firstpick/pi-extension-release-npm": "^0.4.3",
   "@firstpick/pi-extension-safety-guard": "^0.2.5",
   "@firstpick/pi-extension-setup-skills": "^0.1.8",
   "@firstpick/pi-extension-stats": "^0.2.8",
   "@firstpick/pi-extension-todo-progress": "^0.2.8",
   "@firstpick/pi-extension-tools": "^0.1.6",
-  "@firstpick/pi-extension-workflows": "^0.1.3",
-  "@firstpick/pi-package-remote-webui": "^0.1.5",
+  "@firstpick/pi-extension-workflows": "^0.1.4",
+  "@firstpick/pi-package-remote-webui": "^0.1.6",
   "@firstpick/pi-prompts-git-pr": "^0.1.3",
   "@firstpick/pi-themes-bundle": "^0.1.4",
 };
@@ -839,7 +839,9 @@ assert.match(app, /function parseGitFooterWebuiPayloadRaw\(raw\)[\s\S]*GIT_FOOTE
 assert.match(app, /function normalizeFooterPayloadChangedFile\(value\)[\s\S]*FOOTER_CHANGED_FILE_KINDS\.has\(value\.kind\)[\s\S]*oldPath/, "git footer payload parsing should preserve changed-file details for changes popovers");
 assert.match(app, /const files = value\.files\.map\(normalizeFooterPayloadChangedFile\)\.filter\(Boolean\)\.slice\(0, 80\);[\s\S]*chip\.files = files;/, "git footer payload chips should retain bounded changed-file lists");
 assert.match(app, /FOOTER_PAYLOAD_ACTIONS = new Set\(\["calibrate-current", "calibrate-probe"\]\)[\s\S]*chip\.action = value\.action;/, "git footer payload chips should preserve allowlisted actions such as PI calibration");
-assert.match(app, /async function runGitFooterPiCalibration\(mode = "current", tabContext = activeTabContext\(\)\)[\s\S]*resolveAvailableCommandName\("calibrate", \{ rpcOnly: true \}\)[\s\S]*mode === "probe" \? `\/\$\{commandName\}` : `\/\$\{commandName\} current`[\s\S]*scheduleGitFooterPiCalibrationRefresh\(tabContext, mode === "probe" \? \[5000, 14000\] : \[600, 1600\]\)/, "clicking an uncalibrated PI footer chip should run current/probe calibration and refresh the git footer value");
+assert.match(app, /async function runGitFooterPiCalibration\(tabContext = activeTabContext\(\)\)[\s\S]*resolveAvailableCommandName\("calibrate", \{ rpcOnly: true \}\)[\s\S]*await sendPrompt\("prompt", `\/\$\{commandName\}`[\s\S]*await requestGitFooterWebuiPayload\(tabContext, \{ force: true, allowDuringRun: true \}\)/, "clicking the PI footer button should run exact /calibrate in the owning tab and await a forced footer refresh");
+assert.doesNotMatch(appFunctionSource("runGitFooterPiCalibration", "applyGitFooterPiCalibrationOptions"), /calibrate[^\n]*current|appConfirmText/, "the PI footer button should use the isolated /calibrate probe directly without switching to current-branch calibration or showing a second confirmation");
+assert.match(appFunctionSource("requestGitFooterWebuiPayload", "updateOptionalFeatureAvailability"), /return api\("\/api\/prompt"[\s\S]*\.finally\(\(\) =>/, "footer refresh requests should be awaitable so calibration stays busy through the updated payload");
 assert.match(app, /title: cleanFooterPayloadText\(value\.title, "", 4000\)/, "git footer tooltip titles should preserve long cwd paths instead of truncating at chip display length");
 assert.match(app, /const sourceTitle = cleanFooterPayloadText\(chip\?\.title, "", 4000\)/, "git footer tooltip rendering should keep full source titles for long cwd paths");
 assert.match(app, /function renderFooter\(\)[\s\S]*parseGitFooterWebuiPayload\(\)[\s\S]*renderGitFooterPayload\(footerPayloadWithLiveModel\(gitFooterPayload\)\)/, "detailed footer rendering should prefer the git-footer-status extension payload");
