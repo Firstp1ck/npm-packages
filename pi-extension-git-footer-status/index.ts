@@ -2290,6 +2290,9 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       try {
         const silent = /(?:^|\s)--webui-silent(?:\s|$)/.test(args || "");
         rememberFooterContext(ctx);
+        // An explicit refresh must observe calibration records written by the
+        // stats extension instead of reusing this extension's 60-second cache.
+        promptCalibrationCache = null;
         await refreshPromptInjectionEstimate(ctx);
         await refresh(ctx);
         if (!silent) ctx.ui.notify("Git footer refreshed", "info");

@@ -74,6 +74,7 @@ import {
   pruneGitWorktrees,
   removeGitWorktree,
 } from "../lib/git-worktrees.mjs";
+import { createGitLiveWatcher } from "../lib/git-live-watcher.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -1484,13 +1485,13 @@ function latestEvents(limit = 40) {
   return eventHistory.slice(-Math.max(0, Math.min(EVENT_HISTORY_LIMIT, limit)));
 }
 
-function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20000 } = {}) {
+function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20000, env = {} } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       // LC_ALL=C keeps tool output in English so error classification works
       // regardless of locale.
-      env: { ...process.env, LC_ALL: "C" },
+      env: { ...process.env, ...env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -4505,7 +4506,14 @@ async function getGitRoot(cwd) {
 }
 
 async function runGitReadCommandDetailed(root, args, { timeoutMs = GIT_CHANGES_COMMAND_TIMEOUT_MS, maxOutputLength = GIT_CHANGES_DIFF_MAX_OUTPUT } = {}) {
-  const result = await runCommand("git", args, { cwd: root, timeoutMs, maxOutputLength });
+  const result = await runCommand("git", args, {
+    cwd: root,
+    timeoutMs,
+    maxOutputLength,
+    // Prevent read-only status/diff commands from refreshing the index and
+    // feeding their own metadata writes back into the live Git watcher.
+    env: { GIT_OPTIONAL_LOCKS: "0" },
+  });
   if (result.exitCode === 0 && !result.timedOut && !result.error) {
     return { output: result.stdout, truncated: result.stdoutTruncated === true, capBytes: maxOutputLength };
   }
@@ -8300,6 +8308,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
   } catch (error) {
     if (!tab.rpc.isRunning()) {
       tab.rpcUnsubscribe?.();
+      gitLiveWatcher.unsubscribe(id);
       tabs.delete(id);
       throw new Error(`Pi RPC process failed while starting ${tabTitle}: ${sanitizeError(error)}`);
     }
@@ -9059,6 +9068,22 @@ function broadcastServerEvent(event) {
   for (const client of clients) sendSse(client, event);
 }
 
+const gitLiveWatcher = createGitLiveWatcher({
+  onChange: ({ root, changedAt }) => {
+    broadcastServerEvent({ type: "webui_git_changed", root, changedAt });
+  },
+  onError: ({ root, error }) => {
+    const message = sanitizeError(error);
+    recordEvent({ type: "webui_git_watch_error", root, error: message });
+    console.warn(`Git live watcher disabled for ${root}: ${message}`);
+  },
+});
+
+function trackGitRepositoryForTab(tab, root) {
+  if (tab?.id && root) gitLiveWatcher.subscribe(tab.id, root);
+  return root;
+}
+
 function renameTab(tab, title, { source = "explicit", maxLength, unique = source === "auto" } = {}) {
   if (!tab) return false;
   const rawTitle = maxLength ? truncateTabTitle(title, maxLength) : String(title || "").replace(/\s+/g, " ").trim();
@@ -9112,6 +9137,7 @@ async function updateTabCwd(id, cwd) {
   const piArgs = await buildPiArgsForTab(tab.index, tab.title, nextCwd);
   if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
+  gitLiveWatcher.unsubscribe(tab.id);
   const restartingEvent = { type: "webui_tab_restarting", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, sessionFile };
   recordEvent(restartingEvent);
   for (const client of tab.sseClients) {
@@ -11283,6 +11309,7 @@ async function closeTab(id) {
     if (stateResult.ok) restorableState = stateResult.data;
   }
   rememberClosedRestorableTab(tab, restorableState);
+  gitLiveWatcher.unsubscribe(tab.id);
 
   const closingEvent = { type: "webui_tab_closing", tabId: tab.id, tabTitle: tab.title };
   recordEvent(closingEvent);
@@ -11301,6 +11328,7 @@ async function closeTab(id) {
 
 async function discardTab(tab) {
   if (!tab || !tabs.has(tab.id)) return;
+  gitLiveWatcher.unsubscribe(tab.id);
   tab.rpcUnsubscribe?.();
   rejectTabBashQueue(tab, new Error("Pi recovery tab initialization failed"));
   stopAppRunnerForTab(tab, "recovery initialization failed", { force: true });
@@ -12635,7 +12663,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-root" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       try {
-        sendJson(res, 200, { ok: true, data: { cwd: tab.cwd, root: await getGitRoot(tab.cwd) } });
+        const root = trackGitRepositoryForTab(tab, await getGitRoot(tab.cwd));
+        sendJson(res, 200, { ok: true, data: { cwd: tab.cwd, root } });
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
       }
@@ -12645,7 +12674,9 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-panel" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       try {
-        sendJson(res, 200, { ok: true, data: await readGitPanel(tab.cwd) });
+        const data = await readGitPanel(tab.cwd);
+        trackGitRepositoryForTab(tab, data.root);
+        sendJson(res, 200, { ok: true, data });
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
       }
@@ -12963,6 +12994,7 @@ server.listen(options.port, currentHost, () => {
 
 function shutdown(signal) {
   console.log(`\n${signal}: shutting down Pi Web UI...`);
+  gitLiveWatcher.closeAll();
   const forceCloseTimer = setTimeout(() => {
     server.closeAllConnections?.();
   }, NETWORK_REBIND_FORCE_CLOSE_MS);

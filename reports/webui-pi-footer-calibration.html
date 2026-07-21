@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>WebUI PI Footer Calibration — Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius-lg:16px;--radius-md:12px;--shadow:0 14px 36px rgb(0 0 0/.22)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible,summary:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.skip{position:fixed;z-index:10;top:8px;left:8px;transform:translateY(-160%);background:var(--blue);color:#06111f;padding:8px 12px;border-radius:8px;font-weight:800}.skip:focus{transform:none}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,section{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow)}header{padding:30px;margin-bottom:20px}section{padding:24px;margin:18px 0}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.025em;margin-bottom:8px}h2{font-size:1.45rem;border-bottom:1px solid var(--line);padding-bottom:10px}h3{font-size:1.08rem;margin-bottom:6px}p{margin:8px 0 14px}.lead{font-size:1.08rem;max-width:82ch}.muted{color:var(--muted)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .38em;border-radius:5px;overflow-wrap:anywhere}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto;white-space:pre-wrap;color:#d9e6f7}.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:.78rem;font-weight:750;letter-spacing:.035em;text-transform:uppercase;margin-bottom:8px}.good{color:var(--green)}.warn{color:var(--yellow)}.info{color:var(--blue)}.badge.good{background:rgb(80 216 144/.14);border:1px solid rgb(80 216 144/.38)}.badge.warn{background:rgb(247 198 92/.14);border:1px solid rgb(247 198 92/.38)}.badge.info{background:rgb(101 181 255/.14);border:1px solid rgb(101 181 255/.38)}.callout{border-left:5px solid var(--green);background:rgb(80 216 144/.08);border-radius:8px;padding:14px 16px;margin:14px 0}.callout.warn{border-left-color:var(--yellow);background:rgb(247 198 92/.08);color:var(--text)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card,.finding,.step{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius-md);padding:16px}.card strong{display:block;font-size:1.3rem}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:660px}th,td{text-align:left;vertical-align:top;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.85rem;text-transform:uppercase;letter-spacing:.04em}tbody tr:hover{background:rgb(101 181 255/.05)}figure{margin:18px 0}figure svg{display:block;width:100%;height:auto;background:var(--code);border:1px solid var(--line);border-radius:12px}figcaption{color:var(--muted);margin-top:8px;font-size:.92rem}.node{fill:#182b43;stroke:#65b5ff;stroke-width:2}.node.goodnode{stroke:#50d890}.node-text{fill:#e8eef8;font:650 14px system-ui,sans-serif;text-anchor:middle}.node-small{fill:#a9b7cb;font:12px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:#a9b7cb;stroke-width:2.5;marker-end:url(#arrow)}.edge-dashed{stroke-dasharray:7 6}.steps{display:grid;gap:12px;counter-reset:step}.step{position:relative;padding-left:58px}.step:before{counter-increment:step;content:counter(step);position:absolute;left:16px;top:16px;width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:#163c61;color:var(--blue);font-weight:800}.status-label{font-weight:800}.accepted{color:var(--green)}.deferred{color:var(--yellow)}.rejected{color:var(--muted)}details{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}summary{cursor:pointer;color:var(--blue);font-weight:700}footer{color:var(--muted);margin-top:24px;font-size:.9rem}.links{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.links a{display:inline-block;border:1px solid var(--line);border-radius:9px;padding:7px 10px;text-decoration:none;background:var(--panel2)}
+    @media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,section{padding:18px}.step{padding-left:50px}.step:before{left:12px}figure svg text{font-size:12px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+    @media print{:root{color-scheme:light}body{background:white;color:#111}main{width:100%;margin:0}header,section,.card,.finding,.step{box-shadow:none;background:white;color:#111;border-color:#aaa;break-inside:avoid}.muted,figcaption,footer{color:#444}pre,code,figure svg{background:#f1f3f5;color:#111;border-color:#aaa}figure{break-inside:avoid}.skip{display:none}a{color:#111;text-decoration:underline}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report content</a>
+<main id="content">
+  <header>
+    <span class="badge good">Implementation complete</span>
+    <h1>Clicking PI now runs <code>/calibrate</code></h1>
+    <p class="lead">This report audits the Pi Web UI change that turns the extension-owned <strong>PI token metric</strong> into an always-available calibration action. It is grounded in the current implementation, focused tests, Pi extension lifecycle documentation, and two qualifying independent reviews.</p>
+    <div class="callout"><strong>Conclusion:</strong> clicking the PI metric dispatches exactly <code>/calibrate</code> through the active tab’s RPC path without using or changing the composer. The browser keeps a per-tab single-flight guard, exposes busy state, schedules bounded refresh attempts, and forces explicit git-footer refreshes to observe newly written calibration records.</div>
+    <p class="muted"><strong>Confidence: 94/100.</strong> Source paths, exact command construction, cache invalidation, and 21 focused/extension tests were verified. Confidence is below 100 because no live browser/provider calibration probe was run and the full package suite has unrelated working-tree/baseline failures.</p>
+    <div class="links"><a href="../plans/webui-pi-footer-calibration.md">Canonical implementation plan</a><a href="#verification">Verification evidence</a><a href="#reviews">Independent reviews</a></div>
+  </header>
+
+  <section aria-labelledby="overview-title">
+    <h2 id="overview-title">Executive overview</h2>
+    <div class="grid" aria-label="Implementation headline status">
+      <div class="card"><span class="badge good">Behavior</span><strong>Exact command</strong><span class="muted"><code>/calibrate</code>, with no <code>current</code> suffix and no injected composer text.</span></div>
+      <div class="card"><span class="badge good">Interaction</span><strong>Always clickable</strong><span class="muted">Every valid <code>key: "pi"</code> metric becomes a native button when the visibility capability is enabled.</span></div>
+      <div class="card"><span class="badge good">Evidence</span><strong>2 providers</strong><span class="muted">Moonshot/Kimi and Google/Gemini independently returned PASS.</span></div>
+      <div class="card"><span class="badge warn">Known limit</span><strong>No billed E2E probe</strong><span class="muted">Runtime behavior is verified through source and static/integration tests, not a live provider request.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Audit map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Implemented behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Trigger</td><td>PI metric attaches a click handler regardless of legacy payload action metadata.</td><td><code>applyGitFooterPiCalibrationOptions</code></td><td><span class="status-label accepted">Verified</span></td></tr>
+          <tr><td>Dispatch</td><td>RPC-visible command is resolved and sent as exactly <code>/${commandName}</code>.</td><td><code>runGitFooterPiCalibration</code></td><td><span class="status-label accepted">Verified</span></td></tr>
+          <tr><td>Busy safety</td><td>Per-tab single-flight, streaming/compaction refusal, cache-key invalidation, and <code>aria-busy</code>.</td><td>WebUI plus extension <code>ctx.isIdle()</code></td><td><span class="status-label accepted">Verified</span></td></tr>
+          <tr><td>Refresh</td><td>Delayed 5s/14s/30s attempts; explicit git-footer refresh clears stale calibration cache.</td><td>WebUI timers and git-footer command</td><td><span class="status-label accepted">Verified</span></td></tr>
+          <tr><td>Tests</td><td>6 focused WebUI tests and 15 git-footer extension tests pass.</td><td>Node test output</td><td><span class="status-label accepted">21 passed</span></td></tr>
+          <tr><td>Package suite</td><td>Feature assertions pass; unrelated package-lock/live-watcher failures remain outside scope.</td><td><code>npm run check</code> and reviewer reproduction</td><td><span class="status-label deferred">Partial baseline</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="design-title">
+    <h2 id="design-title">Design and implementation</h2>
+    <p>The value remains owned by <code>pi-extension-git-footer-status</code>; the browser only adds interaction to a validated PI chip. This avoids duplicating token-estimation logic in the WebUI and preserves the existing payload schema. The bare <code>/calibrate</code> command remains owned by <code>pi-extension-stats</code>, which starts its established isolated calibration session.</p>
+    <figure data-visual-kind="diagram" data-purpose="Show the click-to-calibration and refresh sequence">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 980 390">
+        <title id="flow-title">PI click-to-calibration sequence</title>
+        <desc id="flow-desc">The user clicks the PI button. WebUI checks idle and single-flight guards, dispatches exactly slash calibrate, the stats extension records a calibration sample in an isolated session, and delayed git-footer refreshes clear the calibration cache and republish the updated PI value.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0 L0 6 L9 3 Z" fill="#a9b7cb"/></marker></defs>
+        <path class="edge" d="M190 95 H285"/><path class="edge" d="M455 95 H550"/><path class="edge" d="M720 95 H815"/><path class="edge" d="M895 135 C895 235 710 270 650 270"/><path class="edge edge-dashed" d="M555 270 H360"/><path class="edge" d="M280 270 H190"/>
+        <rect class="node" x="30" y="55" width="160" height="80" rx="12"/><text class="node-text" x="110" y="87">PI button</text><text class="node-small" x="110" y="111">native Web button</text>
+        <rect class="node" x="285" y="55" width="170" height="80" rx="12"/><text class="node-text" x="370" y="87">WebUI guard</text><text class="node-small" x="370" y="111">idle + single-flight</text>
+        <rect class="node" x="550" y="55" width="170" height="80" rx="12"/><text class="node-text" x="635" y="87">RPC dispatch</text><text class="node-small" x="635" y="111">exact /calibrate</text>
+        <rect class="node" x="815" y="55" width="145" height="80" rx="12"/><text class="node-text" x="887" y="87">Stats probe</text><text class="node-small" x="887" y="111">isolated session</text>
+        <rect class="node goodnode" x="555" y="230" width="190" height="80" rx="12"/><text class="node-text" x="650" y="262">Calibration record</text><text class="node-small" x="650" y="286">provider usage sample</text>
+        <rect class="node" x="280" y="230" width="195" height="80" rx="12"/><text class="node-text" x="377" y="262">Fresh footer refresh</text><text class="node-small" x="377" y="286">clear 60s cache</text>
+        <rect class="node goodnode" x="30" y="230" width="160" height="80" rx="12"/><text class="node-text" x="110" y="262">Updated PI</text><text class="node-small" x="110" y="286">republished metric</text>
+      </svg>
+      <figcaption>Solid arrows are the normal command/result path. The dashed edge is the bounded delayed refresh path; explicit refresh invalidates the calibration-record cache before recomputing.</figcaption>
+    </figure>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Responsibility</th><th>Notable implementation</th></tr></thead>
+        <tbody>
+          <tr><td><code>pi-package-webui/public/app.js</code></td><td>Browser interaction</td><td>Exact dispatch, active-work refusal, per-tab guard, busy render-key state, delayed refresh.</td></tr>
+          <tr><td><code>pi-extension-git-footer-status/index.ts</code></td><td>Fresh PI publication</td><td>Explicit refresh clears <code>promptCalibrationCache</code> before estimating.</td></tr>
+          <tr><td><code>tests/pi-footer-calibration-static.test.mjs</code></td><td>Focused regression contract</td><td>Six assertions spanning trigger, dispatch, refresh, cache key, tab switch, and cache invalidation.</td></tr>
+          <tr><td><code>tests/mobile-static.test.mjs</code></td><td>Package-wide static contract</td><td>Confirms exact command and action-metadata-independent PI behavior.</td></tr>
+          <tr><td><code>pi-package-webui/README.md</code></td><td>User-facing behavior</td><td>Documents background dispatch and refreshed PI metric.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="verification" aria-labelledby="verification-title">
+    <h2 id="verification-title">Verification and acceptance evidence</h2>
+    <div class="grid">
+      <article class="finding"><span class="badge good">Pass</span><h3>Focused WebUI contract</h3><p><code>node --test tests/pi-footer-calibration-static.test.mjs</code></p><p><strong>6/6 passed</strong>, including the two review-driven fixes.</p></article>
+      <article class="finding"><span class="badge good">Pass</span><h3>Git-footer regressions</h3><p><code>stale-ctx</code>, <code>git-snapshot</code>, and <code>visibility-persistence</code></p><p><strong>15/15 passed</strong>; only the existing module-type warning was emitted.</p></article>
+      <article class="finding"><span class="badge good">Pass</span><h3>Syntax and diff hygiene</h3><p><code>node --check public/app.js</code> and <code>git diff --check</code></p><p>Both exited successfully after accepted fixes.</p></article>
+      <article class="finding"><span class="badge warn">Baseline</span><h3>Full package check</h3><p>The calibration assertions run before the existing package-lock assertion failure. Later concurrent live-watcher work introduced separate failures.</p><p>No manifest, lockfile, watcher, or danger-button change is attributed to this feature.</p></article>
+    </div>
+    <div class="callout warn"><strong>Evidence boundary:</strong> no real provider request was sent solely to validate this feature. That avoids unrequested token use, but means actual browser click timing and session replacement were verified by source tracing and independent review rather than a live E2E recording.</div>
+    <details><summary>Acceptance criteria trace</summary>
+      <ul>
+        <li>PI chip without action metadata becomes a native <code>button</code>: verified.</li>
+        <li>Exact bare <code>/calibrate</code>, no <code>current</code>, no confirmation dialog: verified.</li>
+        <li>Explicit message path does not consume composer value or attachments: verified by tracing <code>sendPrompt</code>.</li>
+        <li>Busy state invalidates the footer DOM cache key and exposes <code>aria-busy</code>: verified and review-fixed.</li>
+        <li>Streaming/compaction and missing-command cases fail safely with warnings: verified.</li>
+        <li>Delayed refresh survives immediate tab switching and reads fresh calibration records: verified and review-fixed.</li>
+      </ul>
+    </details>
+  </section>
+
+  <section id="reviews" aria-labelledby="reviews-title">
+    <h2 id="reviews-title">Independent review findings and dispositions</h2>
+    <p>Reviewer identities were verified from run metadata rather than trusted from model self-report. This matters because some unsuccessful direct-provider attempts fell back to Kimi, and one prose response incorrectly named its own provider.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Independent run</th><th>Verified provider/model</th><th>Verdict</th><th>Evidence focus</th></tr></thead>
+        <tbody>
+          <tr><td><code>e81b9505… / reviewer_0</code></td><td>Moonshot/Kimi — <code>openrouter/moonshotai/kimi-k3:high</code></td><td><span class="status-label accepted">PASS · 92/100</span></td><td>Exact command, busy/cache behavior, refresh timing, tests, and unrelated baseline isolation.</td></tr>
+          <tr><td><code>8cfe47c7… / reviewer</code></td><td>Google/Gemini — <code>openrouter/google/gemini-3.1-pro-preview:high</code></td><td><span class="status-label accepted">PASS · 95/100</span></td><td>Background user flow, tab-switch race, accessibility, and package-interference check.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 style="margin-top:22px">Disposition summary</h3>
+    <div class="steps">
+      <div class="step"><h3>Busy render cache — <span class="accepted">accepted and fixed</span></h3><p>The footer fast path originally reused the old PI node, making <code>aria-busy</code> unreachable. The calibration in-flight bit is now part of <code>gitFooterPickerStateKey</code>.</p></div>
+      <div class="step"><h3>Tab switch before dispatch reply — <span class="accepted">accepted and fixed</span></h3><p>Refresh timers are scheduled before current-tab-only notification logic, while each callback still refuses UI work for a non-current tab.</p></div>
+      <div class="step"><h3>60-second calibration cache — <span class="accepted">accepted and fixed</span></h3><p>Explicit git-footer refresh now clears the cache first, so the 5s/14s/30s attempts can observe a newly recorded sample.</p></div>
+      <div class="step"><h3>Refresh during streaming — <span class="deferred">risk accepted; proposed steering rejected</span></h3><p>Using <code>allowDuringRun: true</code> could steer a slash command into the isolated probe turn. The safer design keeps normal idle guards and multiple bounded attempts.</p></div>
+      <div class="step"><h3>Dispatch-only single-flight lifetime — <span class="deferred">deferred low risk</span></h3><p>The requirement covers the request round trip. A narrow later duplicate window is independently blocked by WebUI streaming state and the extension’s authoritative <code>ctx.isIdle()</code>.</p></div>
+      <div class="step"><h3>Package-lock and concurrent watcher failures — <span class="rejected">rejected as feature defects</span></h3><p>Reviewers reproduced and isolated them outside the calibration-owned diff. No unrelated concurrent writer’s files were changed or reverted.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="rollout-title">
+    <h2 id="rollout-title">Usage, rollout, and residual risk</h2>
+    <div class="grid">
+      <div class="card"><h3>Use</h3><p>With the stats and git-footer companions loaded, click the <strong>PI</strong> token card. The button dispatches <code>/calibrate</code>; no command text is inserted into the composer.</p></div>
+      <div class="card"><h3>Busy behavior</h3><p>If the active tab is streaming or compacting, WebUI refuses the action and logs a warning. While dispatch is in flight, repeated clicks are suppressed.</p></div>
+      <div class="card"><h3>Session behavior</h3><p>Bare <code>/calibrate</code> starts the stats extension’s existing isolated replacement session and may use provider tokens. This is inherent to the exact command requested.</p></div>
+      <div class="card"><h3>Deploy</h3><p>Reload or restart Pi Web UI so the changed <code>public/app.js</code> is served. No payload migration or new endpoint is required.</p></div>
+    </div>
+    <h3 style="margin-top:22px">Residual risks</h3>
+    <ul>
+      <li>A user who leaves the tab may not see a timer-driven update until returning; extension status publication and the next active refresh provide convergence.</li>
+      <li>The phrase “in the background” describes non-composer asynchronous dispatch, not preservation of the current session: <code>/calibrate</code> intentionally creates an isolated replacement session.</li>
+      <li>Static tests are intentionally source-contract tests and may require maintenance if function shapes are refactored without changing behavior.</li>
+      <li>The working tree contains concurrent unrelated changes. Integration must stage or commit this feature by explicit paths/hunks rather than treating every dirty file as part of the feature.</li>
+    </ul>
+    <div class="callout"><strong>Release recommendation:</strong> ready for integration within the feature-owned paths. Preserve the documented unrelated full-suite failure separately; do not “fix” it as part of this calibration change without its own scope and evidence.</div>
+  </section>
+
+  <footer><p><strong>Scope:</strong> implementation evidence captured 2026-07-21 from the local <code>/home/firstpick/npm-packages</code> worktree. Plan: <a href="../plans/webui-pi-footer-calibration.md">webui-pi-footer-calibration.md</a>.</p></footer>
+</main>
+</body>
+</html>

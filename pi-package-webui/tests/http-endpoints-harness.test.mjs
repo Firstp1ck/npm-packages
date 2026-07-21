@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -846,6 +846,15 @@ try {
     const gitRoot = await request("127.0.0.1", `/api/git-root?tab=${encodeURIComponent(stagingTab)}`);
     assert.equal(gitRoot.body?.ok, true, "git-root endpoint should discover the tab repository");
     assert.equal(gitRoot.body?.data?.root, stagingRepo, "git-root should return the canonical fixture root");
+
+    const liveFile = path.join(stagingRepo, "live-update.txt");
+    const renamedLiveFile = path.join(stagingRepo, "live-update-renamed.txt");
+    const isLiveGitEvent = (event) => event.type === "webui_git_changed" && event.root === stagingRepo;
+    const createdLiveEvent = await waitForSseEvent(stagingTab, isLiveGitEvent, () => writeFile(liveFile, "created\n"));
+    assert.match(createdLiveEvent.event.changedAt || "", /^\d{4}-\d{2}-\d{2}T/, "file creation should broadcast a timestamped Git invalidation");
+    await waitForSseEvent(stagingTab, isLiveGitEvent, () => writeFile(liveFile, "modified\n"));
+    await waitForSseEvent(stagingTab, isLiveGitEvent, () => rename(liveFile, renamedLiveFile));
+    await waitForSseEvent(stagingTab, isLiveGitEvent, () => rm(renamedLiveFile));
 
     const gitPanel = await request("127.0.0.1", `/api/git-panel?tab=${encodeURIComponent(stagingTab)}`);
     assert.equal(gitPanel.body?.ok, true, "git-panel endpoint should return compact local status and history");

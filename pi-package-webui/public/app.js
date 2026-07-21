@@ -8229,33 +8229,68 @@ async function loadGitPanelRepository(card, { force = false } = {}) {
   if (!card?.root || !card.tabId) return;
   const existing = gitPanelSnapshot(card.root);
   if (!force && gitPanelSnapshotFresh(existing)) return;
-  if (existing?.loading) return;
+  if (existing?.loading) {
+    if (force && !existing.refreshPending) {
+      gitPanelState.repositories.set(card.root, { ...existing, refreshPending: true });
+    }
+    return;
+  }
   const requestSerial = ++gitPanelState.requestSerial;
-  gitPanelState.repositories.set(card.root, { ...existing, loading: true, error: "", requestSerial });
+  gitPanelState.repositories.set(card.root, { ...existing, loading: true, error: "", requestSerial, refreshPending: false });
   renderGitPanel();
+  let refreshAgain = false;
   try {
     const response = await api("/api/git-panel", { tabId: card.tabId });
     const latest = gitPanelSnapshot(card.root);
     if (latest?.requestSerial !== requestSerial) return;
+    refreshAgain = latest.refreshPending === true;
     if (!response.ok || !response.data?.root) throw new Error(response.error || "Failed to load Git repository");
     gitPanelState.repositories.set(card.root, {
       loading: false,
       error: "",
       requestSerial,
       loadedAt: Date.now(),
+      refreshPending: false,
       data: response.data,
     });
   } catch (error) {
     const latest = gitPanelSnapshot(card.root);
     if (latest?.requestSerial !== requestSerial) return;
+    refreshAgain = refreshAgain || latest.refreshPending === true;
     gitPanelState.repositories.set(card.root, {
       ...latest,
       loading: false,
       error: error.message || String(error),
       requestSerial,
+      refreshPending: false,
     });
   }
   renderGitPanel();
+  if (refreshAgain) queueMicrotask(() => loadGitPanelRepository(card, { force: true }));
+}
+
+function invalidateGitPanelRepository(root) {
+  const repositoryRoot = String(root || "");
+  const snapshot = gitPanelSnapshot(repositoryRoot);
+  if (!snapshot) return;
+  gitPanelState.repositories.set(repositoryRoot, {
+    ...snapshot,
+    error: "",
+    loadedAt: 0,
+    refreshPending: snapshot.loading === true,
+  });
+  if (!gitPanelSectionExpanded()) return;
+  const card = gitPanelRepositoryCards().find((candidate) => candidate.root === repositoryRoot);
+  if (card) void loadGitPanelRepository(card, { force: true });
+}
+
+function ensureGitPanelVisibleRepositoriesFresh(cards = gitPanelRepositoryCards()) {
+  for (const card of cards) {
+    const snapshot = gitPanelSnapshot(card.root);
+    const expanded = gitPanelState.expandedCardKey === card.key;
+    if (snapshot?.loading || snapshot?.error || (!snapshot?.data && !expanded) || gitPanelSnapshotFresh(snapshot)) continue;
+    void loadGitPanelRepository(card);
+  }
 }
 
 function toggleGitPanelRepository(card) {
@@ -8671,6 +8706,7 @@ function renderGitPanel() {
   });
   if (signature === gitPanelRenderSignature && elements.gitPanelGroups.childElementCount === cards.length) {
     ensureGitPanelRepositoriesDiscovered();
+    ensureGitPanelVisibleRepositoriesFresh(cards);
     return;
   }
   gitPanelRenderSignature = signature;
@@ -8687,6 +8723,7 @@ function renderGitPanel() {
         : `${repositoryCount} Git ${repositoryCount === 1 ? "repository" : "repositories"} · Right-click for actions`;
   }
   ensureGitPanelRepositoriesDiscovered();
+  ensureGitPanelVisibleRepositoriesFresh(cards);
 }
 
 function tabAppRunnerRun(tab) {
@@ -10027,7 +10064,7 @@ async function toggleFooterAutoCompaction(tabContext = activeTabContext()) {
   }
 }
 
-function scheduleGitFooterPiCalibrationRefresh(tabContext, delays = [600, 1600]) {
+function scheduleGitFooterPiCalibrationRefresh(tabContext, delays = [5000, 14000, 30000]) {
   for (const delayMs of delays) {
     setTimeout(() => {
       if (isCurrentTabContext(tabContext)) requestGitFooterWebuiPayload(tabContext, { force: true });
@@ -10035,7 +10072,7 @@ function scheduleGitFooterPiCalibrationRefresh(tabContext, delays = [600, 1600])
   }
 }
 
-async function runGitFooterPiCalibration(mode = "current", tabContext = activeTabContext()) {
+async function runGitFooterPiCalibration(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return;
   if (gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId)) return;
   if (currentState?.isStreaming || currentState?.isCompacting) {
@@ -10048,16 +10085,14 @@ async function runGitFooterPiCalibration(mode = "current", tabContext = activeTa
     addEvent("PI calibration unavailable: /calibrate is not loaded in this Pi tab.", "warn");
     return;
   }
-  if (mode === "probe" && !(await appConfirmText("Start an isolated PI calibration probe? This sends one tiny model request and may incur provider token usage.", { affected: "Provider token allowance and this tab's calibration result", confirmLabel: "Start probe", danger: false }))) return;
 
-  const command = mode === "probe" ? `/${commandName}` : `/${commandName} current`;
   gitFooterPiCalibrationInFlightByTab.add(tabContext.tabId);
   renderFooter();
   try {
-    await sendPrompt("prompt", command, { targetTabId: tabContext.tabId, throwOnError: true });
+    await sendPrompt("prompt", `/${commandName}`, { targetTabId: tabContext.tabId, throwOnError: true });
+    scheduleGitFooterPiCalibrationRefresh(tabContext);
     if (!isCurrentTabContext(tabContext)) return;
-    addEvent(mode === "probe" ? "PI calibration probe started; refreshing git footer value after it records…" : "PI calibration requested; refreshing git footer value…", "info");
-    scheduleGitFooterPiCalibrationRefresh(tabContext, mode === "probe" ? [5000, 14000] : [600, 1600]);
+    addEvent("PI calibration started in the background; refreshing the footer value after it records…", "info");
   } catch (error) {
     if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
   } finally {
@@ -10067,16 +10102,16 @@ async function runGitFooterPiCalibration(mode = "current", tabContext = activeTa
 }
 
 function applyGitFooterPiCalibrationOptions(chip, options) {
-  if (chip?.key !== "pi" || !FOOTER_PAYLOAD_ACTIONS.has(chip?.action)) return "";
+  if (chip?.key !== "pi") return "";
   const tabContext = activeTabContext();
   const busy = !!tabContext.tabId && gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId);
-  const mode = chip.action === "calibrate-probe" ? "probe" : "current";
-  options.onClick = () => runGitFooterPiCalibration(mode);
+  options.onClick = () => {
+    void runGitFooterPiCalibration();
+  };
   if (busy) options.ariaBusy = true;
-  if (busy) return "Calibrating PI estimate and refreshing this value…";
-  return mode === "probe"
-    ? "Click to start an isolated PI calibration probe, then refresh this value."
-    : "Click to calibrate this uncalibrated PI estimate from the current session, then refresh this value.";
+  return busy
+    ? "Calibrating PI estimate in the background and refreshing this value…"
+    : "Click to run /calibrate in the background and refresh this PI token count.";
 }
 
 function applyGitFooterContextToggleOptions(chip, options) {
@@ -11180,8 +11215,9 @@ function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
   const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
+  const piCalibrationInFlight = tabContext.tabId ? gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -29086,6 +29122,9 @@ function handleEvent(event) {
       renderAppRunnerControls();
       renderWidgets();
       renderTabs();
+      break;
+    case "webui_git_changed":
+      invalidateGitPanelRepository(event.root);
       break;
     case "webui_cwd_changed":
       addEvent(`${event.tabTitle || "terminal"} cwd changed to ${event.cwd}`);
