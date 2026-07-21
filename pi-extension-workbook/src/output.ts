@@ -33,7 +33,7 @@ export async function boundedJsonResult(payload: unknown, label: string, maxChar
   return { content: [{ type: "text", text }], details: { ...summary, truncated: true, artifactPath, fullOutputBytes: Buffer.byteLength(json) } };
 }
 
-export function renderImageResult(payload: Record<string, unknown> & { png: Buffer; outputPath: string }): {
+export function renderImageResult(payload: Record<string, unknown> & { png: Uint8Array; outputPath: string }): {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
   details: Record<string, unknown>;
 } {
@@ -49,7 +49,7 @@ export function renderImageResult(payload: Record<string, unknown> & { png: Buff
   return {
     content: [
       { type: "text", text: lines.join("\n") },
-      { type: "image", mimeType: "image/png", data: png.toString("base64") },
+      { type: "image", mimeType: "image/png", data: Buffer.from(png).toString("base64") },
     ],
     details,
   };

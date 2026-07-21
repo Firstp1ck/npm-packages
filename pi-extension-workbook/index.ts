@@ -69,7 +69,7 @@ export default function workbookExtension(pi: ExtensionAPI): void {
     async execute(_id, rawParams, signal, onUpdate, ctx) {
       const params = rawParams as WorkbookRenderRequest;
       status(onUpdate, `Rendering ${params.sheet}${params.range ? `!${params.range}` : ""}…`);
-      const result = await new OoxmlSafeEngine(ctx.cwd).render(params, signal) as Record<string, unknown> & { png: Buffer; outputPath: string };
+      const result = await new OoxmlSafeEngine(ctx.cwd).render(params, signal) as Record<string, unknown> & { png: Uint8Array; outputPath: string };
       return renderImageResult(result);
     },
   });

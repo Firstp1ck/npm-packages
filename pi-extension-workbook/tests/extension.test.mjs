@@ -46,5 +46,13 @@ test("extension registers six strict workbook tools and doctor command", async (
   const rendered = await render.execute("test", { path: source, sheet: "Sheet1", range: "A1:B2" }, undefined, undefined, { cwd });
   assert.equal(rendered.content[1].type, "image");
   assert.equal(rendered.content[1].mimeType, "image/png");
+  assert.match(rendered.content[1].data, /^[A-Za-z0-9+/]+={0,2}$/);
+  const renderedPng = Buffer.from(rendered.content[1].data, "base64");
+  assert.equal(rendered.content[1].data, renderedPng.toString("base64"), "rendered image data should be canonical base64");
+  assert.deepEqual([...renderedPng.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.ok(rendered.details.outputPath.endsWith(".png"));
+
+  const cachedRender = await render.execute("test", { path: source, sheet: "Sheet1", range: "A1:B2" }, undefined, undefined, { cwd });
+  assert.equal(cachedRender.details.cacheHit, true);
+  assert.equal(cachedRender.content[1].data, rendered.content[1].data, "cached previews should serialize to the same base64 PNG");
 });

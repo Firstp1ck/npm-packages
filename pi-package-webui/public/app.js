@@ -386,6 +386,7 @@ let streamToolCallComplete = false;
 let streamThinkingBubble = null;
 let streamThinking = null;
 let streamMessageActive = false;
+let streamProviderErrorText = "";
 let runIndicatorBubble = null;
 let runIndicatorText = null;
 let runIndicatorMeta = null;
@@ -23530,6 +23531,17 @@ function addTransientMessage({ role = "notice", title, content, level = "info", 
   renderAllMessages();
 }
 
+function surfaceRuntimeDiagnostic(title, content, level = "error") {
+  const message = String(content || "").trim();
+  if (!message) return;
+  addEvent(message, level);
+  addTransientMessage({ role: level === "error" ? "error" : "warn", title, content: message, level });
+}
+
+function stderrDiagnosticLevel(content) {
+  return /(?:^|\b)(?:error|failed|failure|fatal|exception|invalid)(?:\b|:)/i.test(String(content || "")) ? "error" : "warn";
+}
+
 function addAbortTranscriptNotice({ activeRun = false, errorMessage = "" } = {}) {
   if (errorMessage) {
     addTransientMessage({ role: "error", title: "Abort failed", content: `Abort request failed: ${errorMessage}`, level: "error" });
@@ -26057,6 +26069,7 @@ function resetStreamBubble() {
   streamThinkingBubble = null;
   streamThinking = null;
   streamMessageActive = false;
+  streamProviderErrorText = "";
 }
 
 function liveStreamRenderActive() {
@@ -26233,6 +26246,17 @@ function syncStreamingThinkingFromUpdate(event, update, { placeholder = "" } = {
   return setStreamingThinkingText(streamThinkingRawText || placeholder);
 }
 
+function assistantStreamErrorMessage(event, update = event?.assistantMessageEvent || {}) {
+  return String(
+    update.error?.errorMessage ||
+    update.errorMessage ||
+    update.partial?.errorMessage ||
+    event?.message?.errorMessage ||
+    update.reason ||
+    "assistant error"
+  ).trim();
+}
+
 function handleMessageUpdate(event) {
   const update = event.assistantMessageEvent || {};
   if (update.type === "thinking_start") {
@@ -26277,8 +26301,9 @@ function handleMessageUpdate(event) {
     const name = updateStreamingToolCallFromEvent(event, { complete: true, scroll: true });
     setRunIndicatorActivity(`Tool call ready: ${name}; waiting to run…`, { scroll: false });
   } else if (update.type === "error") {
+    streamProviderErrorText = assistantStreamErrorMessage(event, update);
     setRunIndicatorActivity("Assistant stream reported an error…");
-    appendMessage({ role: "error", title: "assistant error", timestamp: Date.now(), content: update.reason || update.errorMessage || "assistant error", level: "error" }, { streaming: true });
+    appendMessage({ role: "error", title: "assistant error", timestamp: Date.now(), content: streamProviderErrorText, level: "error" }, { streaming: true });
     renderRunIndicator({ scroll: false });
     scheduleChatFollowScroll();
   }
@@ -28433,21 +28458,24 @@ function handleEvent(event) {
       renderNetworkStatus();
       break;
     case "pi_process_exit":
-      addEvent(`pi rpc exited (${event.code ?? event.signal ?? "unknown"})`, "error");
+      surfaceRuntimeDiagnostic("Pi process exited", `Pi RPC exited (${event.code ?? event.signal ?? "unknown"}).`);
       clearRunIndicatorActivity();
       refreshTabs().catch((error) => addEvent(error.message, "error"));
       break;
     case "pi_process_error":
-      addEvent(event.error || "pi rpc process error", "error");
+      surfaceRuntimeDiagnostic("Pi process error", event.error || "Pi RPC process error.");
       clearRunIndicatorActivity();
       refreshTabs().catch((error) => addEvent(error.message, "error"));
       break;
-    case "pi_stderr":
-      addEvent(event.text.trim(), "warn");
+    case "pi_stderr": {
+      const message = String(event.text || "").trim();
+      if (message) surfaceRuntimeDiagnostic("Pi runtime diagnostic", message, stderrDiagnosticLevel(message));
       break;
+    }
     case "pi_stderr_sink_error":
     case "pi_stdout_line_too_large":
-      addEvent(event.error || "Pi RPC transport diagnostic", "error");
+    case "pi_stdout_parse_error":
+      surfaceRuntimeDiagnostic("Pi RPC transport error", event.error || "Pi RPC transport diagnostic.");
       break;
     case "queue_update":
       renderQueue(event);
@@ -28520,13 +28548,19 @@ function handleEvent(event) {
     case "message_update":
       handleMessageUpdate(event);
       break;
-    case "message_end":
+    case "message_end": {
       streamMessageActive = false;
+      if (event.message?.role === "assistant" && event.message.stopReason === "error") {
+        const message = String(event.message.errorMessage || streamProviderErrorText || "The assistant request failed without an error message.").trim();
+        surfaceRuntimeDiagnostic("Assistant error", message);
+      }
+      streamProviderErrorText = "";
       if (runIndicatorIsActive()) setRunIndicatorActivity("Assistant message finished; waiting for the next step…", { scroll: false });
       scheduleRefreshMessages();
       scheduleRefreshState();
       scheduleRefreshFooter();
       break;
+    }
     case "tool_execution_start":
       streamToolCallSeen = true;
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: true });
@@ -28561,7 +28595,8 @@ function handleEvent(event) {
       if (currentState) currentState = { ...currentState, isCompacting: false };
       if (event.aborted) clearContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
       else markContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
-      addEvent(`compaction ${event.aborted ? "aborted" : "finished"}`);
+      if (event.errorMessage) surfaceRuntimeDiagnostic("Compaction error", event.errorMessage);
+      else addEvent(`compaction ${event.aborted ? "aborted" : "finished"}`);
       if (!currentState?.isStreaming) clearRunIndicatorActivity();
       markTabOutputSeen();
       renderStatus();
@@ -28596,7 +28631,7 @@ function handleEvent(event) {
       handleExtensionUiRequest(event);
       break;
     case "response":
-      if (event.success === false) addEvent(`${event.command} failed: ${event.error || "unknown error"}`, "error");
+      if (event.success === false) surfaceRuntimeDiagnostic(`${event.command || "Pi command"} failed`, event.error || "Unknown RPC command error.");
       else if (event.command === "get_state" && event.tabId === activeTabId) {
         currentState = event.data || currentState;
         syncActiveTabActivityFromState(currentState);
