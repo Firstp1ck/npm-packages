@@ -46,9 +46,10 @@ function runPatchctl(args, cwd, env) {
 }
 
 test("supported version range is explicit and future versions fail closed", () => {
-  assert.equal(versionInRange("0.78.0", ">=0.78.0 <0.81.0"), true);
-  assert.equal(versionInRange("0.80.9", ">=0.78.0 <0.81.0"), true);
-  assert.equal(versionInRange("0.81.0", ">=0.78.0 <0.81.0"), false);
+  assert.equal(versionInRange("0.78.0", ">=0.78.0 <0.82.0"), true);
+  assert.equal(versionInRange("0.80.9", ">=0.78.0 <0.82.0"), true);
+  assert.equal(versionInRange("0.81.1", ">=0.78.0 <0.82.0"), true);
+  assert.equal(versionInRange("0.82.0", ">=0.78.0 <0.82.0"), false);
   assert.equal(versionInRange("future", ">=0.78.0 <0.81.0"), false);
 });
 
@@ -57,6 +58,7 @@ for (const [label, relative] of [
   ["pi-ai 0.79 provider layout", "pi-ai-0.79/dist/providers/anthropic.js"],
   ["pi-ai 0.80 API layout", "pi-ai-0.80/dist/api/anthropic-messages.js"],
   ["pi-ai 0.80.9 API layout", "pi-ai-0.80.9/dist/api/anthropic-messages.js"],
+  ["pi-ai 0.81.1 API layout", "pi-ai-0.81/dist/api/anthropic-messages.js"],
 ]) {
   test(`${label} transforms idempotently`, () => {
     const source = fixture(relative);
@@ -91,6 +93,17 @@ test("runtime discovery resolves native and WebUI dependency graphs", () => {
   assert.ok(targets.every((target) => target.status === "applicable"));
 });
 
+test("pi-ai 0.81.1 fixture produces an applicable discovery plan", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "anthropic-081-plan-"));
+  const native = createRuntime(root, "0.81.1", fixture("pi-ai-0.81/dist/api/anthropic-messages.js"), "dist/api/anthropic-messages.js");
+  const result = runPatchctl(["plan", "--patch", path.join(patchRoot, "PATCH.md"), "--state-dir", path.join(root, "state")], patchRoot, isolatedEnv(native));
+  assert.equal(result.status, 0, JSON.stringify(result.payload));
+  assert.equal(result.payload.blocked, false);
+  assert.equal(result.payload.writes, 1);
+  assert.equal(result.payload.targets[0].packageVersion, "0.81.1");
+  assert.equal(result.payload.targets[0].status, "applicable");
+});
+
 test("shared pi-ai roots are deduplicated and roles are merged", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "anthropic-shared-"));
   const native = createRuntime(root, "0.80.9", fixture("pi-ai-0.80.9/dist/api/anthropic-messages.js"), "dist/api/anthropic-messages.js");
@@ -108,7 +121,7 @@ test("shared pi-ai roots are deduplicated and roles are merged", () => {
 test("unsupported discovered version blocks the complete plan", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "anthropic-version-block-"));
   const native = createRuntime(root, "0.80.9", fixture("pi-ai-0.80.9/dist/api/anthropic-messages.js"), "dist/api/anthropic-messages.js");
-  const webui = createRuntime(root, "0.81.0", fixture("pi-ai-0.80.9/dist/api/anthropic-messages.js"), "dist/api/anthropic-messages.js");
+  const webui = createRuntime(root, "0.82.0", fixture("pi-ai-0.80.9/dist/api/anthropic-messages.js"), "dist/api/anthropic-messages.js");
   const state = path.join(root, "state");
   const args = ["plan", "--patch", path.join(patchRoot, "PATCH.md"), "--state-dir", state];
   const result = runPatchctl(args, patchRoot, isolatedEnv(native, webui.codingRoot));

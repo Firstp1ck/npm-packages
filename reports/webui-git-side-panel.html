@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Pi WebUI Git Side Panel — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      padding: 8px 12px;
+      color: #06111f;
+      background: var(--blue);
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { padding: .12em .38em; background: var(--code); border-radius: 5px; }
+    pre {
+      overflow-x: auto;
+      padding: 14px;
+      color: #d9e6f7;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .lead { max-width: 82ch; font-size: 1.1rem; }
+    .badge {
+      display: inline-block;
+      margin-bottom: 8px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+    }
+    .badge.good { color: var(--green); background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.info { color: var(--blue); background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .badge.warn { color: var(--yellow); background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .callout {
+      margin: 14px 0;
+      padding: 14px 16px;
+      background: rgb(80 216 144 / 8%);
+      border-left: 5px solid var(--green);
+      border-radius: 8px;
+    }
+    .callout.warn { background: rgb(247 198 92 / 8%); border-left-color: var(--yellow); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .metric, .finding, .step, .card {
+      padding: 16px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: .42rem; }
+    .tabs-shell { margin-top: 18px; }
+    [role="tablist"] {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      margin: 0 0 18px;
+      padding: 8px;
+      background: rgb(7 16 28 / 72%);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      scrollbar-width: thin;
+    }
+    [role="tab"] {
+      min-height: 42px;
+      padding: 9px 13px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      font: inherit;
+      font-weight: 750;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    [role="tab"][aria-selected="true"] { color: var(--text); background: rgb(101 181 255 / 14%); border-color: rgb(101 181 255 / 45%); }
+    .tabs-ready [role="tabpanel"][hidden] { display: none; }
+    figure { margin: 18px 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    figcaption { margin-top: 8px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node.safe { stroke: var(--green); }
+    .node.guard { stroke: var(--yellow); }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .node-small { fill: var(--muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .edge-safe { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-dasharray: 7 5; marker-end: url(#arrow-green); }
+    details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+    summary { color: var(--blue); font-weight: 700; cursor: pointer; }
+    .status-region {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    footer { margin-top: 24px; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      [role="tablist"] { position: sticky; top: 0; z-index: 5; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { color: #111; background: white; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .finding, .step, .card {
+        color: #111;
+        background: white;
+        border-color: #bbb;
+        box-shadow: none;
+        break-inside: avoid;
+      }
+      [role="tablist"], .skip-link, .status-region { display: none !important; }
+      [role="tabpanel"], [role="tabpanel"][hidden] { display: block !important; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#report-main">Skip to report</a>
+  <main id="report-main">
+    <header>
+      <span class="badge good">Implemented · independently reviewed</span>
+      <h1>Pi WebUI Git Side Panel</h1>
+      <p class="lead">Implementation and audit report for the Git section in <code>pi-package-webui</code>, including screenshot-driven interaction refinements and global repository deduplication. Evidence comes from the approved plan, current source diff, focused endpoint/static tests, and fresh independent Anthropic and Moonshot/Kimi reviews.</p>
+      <div class="callout"><strong>Conclusion:</strong> The feature is complete and both qualifying final reviewers returned <strong>PASS</strong>. Repeated tabs, terminals, and groups now contribute one discovery candidate per cwd and one visible card per canonical Git root. Cards remain flat and directly actionable without weakening destructive guards, caching, history, or diff inspection.</div>
+      <p class="muted">Highest final review confidence: 92/100. Residual uncertainty is limited mainly to the absence of automated live-browser interaction coverage.</p>
+    </header>
+
+    <div class="tabs-shell">
+      <nav role="tablist" aria-label="Report sections">
+        <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview">Overview</button>
+        <button id="tab-architecture" role="tab" aria-selected="false" aria-controls="panel-architecture">Design &amp; implementation</button>
+        <button id="tab-verification" role="tab" aria-selected="false" aria-controls="panel-verification">Verification &amp; review</button>
+        <button id="tab-usage" role="tab" aria-selected="false" aria-controls="panel-usage">Usage &amp; risks</button>
+      </nav>
+
+      <section id="panel-overview" class="report-section" role="tabpanel" aria-labelledby="tab-overview">
+        <h2>Executive overview</h2>
+        <div class="grid">
+          <div class="metric"><span class="badge info">Freshness</span><strong>5 minutes</strong><span>Page-local cache; refreshed on first/stale expansion or manually.</span></div>
+          <div class="metric"><span class="badge info">History</span><strong>30 commits</strong><span>Bounded recent log with full-hash commit inspection.</span></div>
+          <div class="metric"><span class="badge good">Identity</span><strong>1 card / root</strong><span>Repeated tabs, terminals, groups, and repo subdirectories collapse globally.</span></div>
+          <div class="metric"><span class="badge good">Review</span><strong>PASS</strong><span>No blocker, high, or medium findings remain.</span></div>
+        </div>
+
+        <h3>Implementation map</h3>
+        <div class="table-wrap">
+          <table data-overview>
+            <thead><tr><th>Area</th><th>Delivered behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>Identity</td><td>Terminal groups are discovery inputs only. Cwds are deduplicated globally before discovery, then cards are deduplicated globally by canonical Git root and titled only from the root/cwd basename.</td><td><code>gitPanelCandidates</code>, <code>gitPanelRepositoryCards</code>, direct card rendering</td><td><span class="badge good">Complete</span></td></tr>
+              <tr><td>Changes</td><td>Conflicted, staged, modified, and untracked paths render as compact folder/file disclosures with explicit right/down state arrows, category-specific numstats, and filename-priority width.</td><td><code>renderGitPanelFolder</code>, custom chevron CSS, three-column file grid</td><td><span class="badge good">Complete</span></td></tr>
+              <tr><td>Actions</td><td>Repository, folder, and file actions use a target-aware context menu; Shift+F10/Context Menu keys, focus return, and destructive confirmation are preserved.</td><td><code>gitPanelContextMenuItems</code>, <code>bindGitPanelContextMenu</code></td><td><span class="badge good">Complete</span></td></tr>
+              <tr><td>History</td><td>Latest 30 commits with author/date/subject and bounded read-only commit patches in the existing diff dialog.</td><td><code>readGitCommit</code>, <code>openGitCommitDialog</code></td><td><span class="badge good">Complete</span></td></tr>
+              <tr><td>Freshness</td><td>No polling. Load on expansion; five-minute cache; manual/mutation refresh; unavailable cwd rediscovery on section reopen.</td><td><code>gitPanelSnapshotFresh</code>, discovery retry</td><td><span class="badge good">Complete</span></td></tr>
+              <tr><td>Quality gate</td><td>The executable VM test proves global cwd/root collapse; all Git-panel assertions run before an unrelated concurrent package-lock invariant; fresh Anthropic and Moonshot/Kimi final reviews pass.</td><td>HTTP harness, VM/static assertions, review run <code>0d0c74cc…</code></td><td><span class="badge good">Reviewed</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Scope boundaries</h3>
+        <div class="grid">
+          <div class="card"><strong>Included</strong><p>Local repository discovery, status tree, staging, confirmed discard/delete, recent history, commit patches, responsive styling, tests, and documentation.</p></div>
+          <div class="card"><strong>Deliberately excluded</strong><p>Automatic network <code>git fetch</code>, background polling, commit/push/pull/merge/rebase controls, recursive directory deletion, and replacement of the full Git Changes dialog.</p></div>
+        </div>
+      </section>
+
+      <section id="panel-architecture" class="report-section" role="tabpanel" aria-labelledby="tab-architecture">
+        <h2>Design and implementation</h2>
+        <h3>Approved decisions</h3>
+        <ul>
+          <li>Use terminal groups only as discovery inputs. Deduplicate repeated cwds globally before discovery, merge resolved candidates globally by canonical Git root, and render one flat card per root—never per tab, terminal, or group.</li>
+          <li>Keep Changes and History directly visible, with only one repository expanded globally.</li>
+          <li>Remove the repository toolbar and all inline folder/file action buttons; expose valid target actions through right click, Shift+F10, or the Context Menu key.</li>
+          <li>Keep discard/delete file-only, explicitly confirmed in the browser, and independently guarded by the server.</li>
+          <li>Open only top-level folders initially, show an explicit right-facing/down-facing arrow for every collapsed/expanded directory, and reserve a flexible minimum-width column for filenames.</li>
+          <li>Fetch local data only on first/stale expansion or explicit refresh/mutation; never add background network fetches.</li>
+        </ul>
+
+        <figure data-visual-kind="diagram" data-purpose="Explain repository discovery, cached status loading, safe actions, and diff reuse">
+          <svg role="img" aria-labelledby="architecture-title architecture-desc" viewBox="0 0 1000 470">
+            <title id="architecture-title">Git side-panel data and action flow</title>
+            <desc id="architecture-desc">Open terminal tabs contribute globally unique working-directory candidates, which resolve to canonical Git roots and collapse into one flat card per root. One expanded repository loads a compact local snapshot, and context-menu actions return through guarded mutations and forced refresh. Working-tree and commit patches reuse the existing diff dialog.</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#a9b7cb"/></marker>
+              <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#50d890"/></marker>
+            </defs>
+            <rect class="node" x="45" y="70" width="190" height="82" rx="14"/>
+            <text class="node-text" x="140" y="104">Open terminal tabs</text><text class="node-small" x="140" y="128">global unique cwd candidates</text>
+            <rect class="node" x="310" y="70" width="190" height="82" rx="14"/>
+            <text class="node-text" x="405" y="104">Repository discovery</text><text class="node-small" x="405" y="128">GET /api/git-root</text>
+            <rect class="node safe" x="575" y="70" width="190" height="82" rx="14"/>
+            <text class="node-text" x="670" y="104">One expanded root</text><text class="node-small" x="670" y="128">canonical-root cache key</text>
+            <rect class="node safe" x="575" y="225" width="190" height="92" rx="14"/>
+            <text class="node-text" x="670" y="258">Compact snapshot</text><text class="node-small" x="670" y="281">status + numstat + 30 logs</text><text class="node-small" x="670" y="301">GET /api/git-panel</text>
+            <rect class="node guard" x="310" y="345" width="190" height="82" rx="14"/>
+            <text class="node-text" x="405" y="378">Guarded mutation</text><text class="node-small" x="405" y="401">confirm + path/type validation</text>
+            <rect class="node" x="805" y="225" width="150" height="92" rx="14"/>
+            <text class="node-text" x="880" y="258">Existing dialog</text><text class="node-small" x="880" y="281">working diff or</text><text class="node-small" x="880" y="301">commit patch</text>
+            <path class="edge" d="M235 111 H310"/>
+            <path class="edge" d="M500 111 H575"/>
+            <path class="edge-safe" d="M670 152 V225"/>
+            <path class="edge" d="M765 271 H805"/>
+            <path class="edge" d="M575 271 C500 271 500 386 500 386"/>
+            <path class="edge-safe" d="M405 345 C405 300 525 300 575 284"/>
+            <text class="node-small" x="527" y="329">forced refresh</text>
+          </svg>
+          <figcaption>Groups contribute discovery inputs but never visible parents. Repeated cwd candidates collapse before discovery and resolved roots collapse before rendering. The compact panel never requests full file contents; full patches load only from View Diff or a history commit.</figcaption>
+        </figure>
+
+        <h3>Server interfaces</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Interface</th><th>Responsibility</th><th>Bound / guard</th></tr></thead>
+            <tbody>
+              <tr><td><code>GET /api/git-root</code></td><td>Resolve a registered tab cwd to its canonical repository root.</td><td>No arbitrary cwd parameter.</td></tr>
+              <tr><td><code>GET /api/git-panel</code></td><td>Return branch, summary, NUL-safe status entries, staged/unstaged numstats, and history.</td><td>240 KB command caps; 30 commits; no file contents.</td></tr>
+              <tr><td><code>GET /api/git-commit</code></td><td>Verify and return a bounded patch for one full commit hash.</td><td>40/64 hex only; commit equality check; existing diff cap.</td></tr>
+              <tr><td><code>POST .../stage-all</code></td><td>Stage the selected repository using guarded add-all behavior.</td><td>Registered tab scope; Windows reserved-path preflight.</td></tr>
+              <tr><td><code>POST .../unstage-all</code></td><td>Clear the index, with unborn-HEAD fallback.</td><td>Repository-scoped guarded mutation.</td></tr>
+              <tr><td>Existing path routes</td><td>Stage, unstage, discard, or delete one repo-relative path/folder.</td><td>Escape/NUL rejection; destructive confirmation; delete verifies untracked file.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>File-level implementation</h3>
+        <div class="grid">
+          <div class="card"><strong><code>bin/pi-webui.mjs</code></strong><p>Compact status/history readers, per-category numstats, full-hash commit reader, repository discovery, Stage All, Unstage All, and route wiring.</p></div>
+          <div class="card"><strong><code>public/app.js</code></strong><p>Global cwd candidate deduplication, canonical-root card identity, flat repository rendering, five-minute cache, one-open policy, accessible tabs, target-aware context menus, confirmations, and diff/history behavior.</p></div>
+          <div class="card"><strong><code>public/index.html</code> / <code>styles.css</code></strong><p>Dedicated Git action menu, direct repository disclosures, filename-priority three-column rows, top-level-only default folder expansion, and responsive tree/history presentation.</p></div>
+          <div class="card"><strong>Tests and README</strong><p>HTTP behavior/safety coverage plus static assertions for direct cards, cwd/root titles, removed inline controls, keyboard menus, tab semantics, directory-arrow states, and narrow-row sizing.</p></div>
+        </div>
+      </section>
+
+      <section id="panel-verification" class="report-section" role="tabpanel" aria-labelledby="tab-verification">
+        <h2>Testing and independent review</h2>
+        <h3>Verification evidence</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Check</th><th>Result</th><th>What it establishes</th></tr></thead>
+            <tbody>
+              <tr><td><code>node --check public/app.js</code></td><td><span class="badge good">Pass</span></td><td>Browser source parses.</td></tr>
+              <tr><td><code>node --check bin/pi-webui.mjs</code></td><td><span class="badge good">Pass</span></td><td>Server source parses.</td></tr>
+              <tr><td><code>node tests/http-endpoints-harness.test.mjs</code></td><td><span class="badge good">Pass</span></td><td>Root discovery, compact payload, history, commit validation, stage/unstage all, destructive guards, and mixed staged/unstaged numstats.</td></tr>
+              <tr><td><code>node tests/mobile-static.test.mjs</code></td><td><span class="badge warn">Feature assertions pass</span></td><td>All Git-panel assertions, including the executable global cwd/root dedup test and flat-list accessible label, pass; the suite later stops at line 1751 on an unrelated concurrent package/lock invariant.</td></tr>
+              <tr><td><code>npm run check</code></td><td><span class="badge warn">27/28 files</span></td><td>All syntax and test files except that same unrelated <code>mobile-static</code> package-lock assertion pass.</td></tr>
+              <tr><td><code>git diff --check</code></td><td><span class="badge good">Pass</span></td><td>No whitespace errors in feature/plan changes.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warn"><strong>Shared-worktree limitation:</strong> concurrent unrelated edits currently place optional companion packages in root <code>package-lock.json</code> dependencies as well as optional dependencies, so <code>mobile-static.test.mjs</code> stops at line 1751. The Git refinement did not edit the manifest/lockfile, and all of its assertions execute before this failure. Those concurrent package, subagent-helper, and shared-file changes are excluded from this feature’s attribution.</div>
+
+        <h3>Cross-provider review trail</h3>
+        <ol>
+          <li><strong>Original feature review:</strong> Opus review/fix/re-review cycle ended in PASS with no blocker/high/medium findings.</li>
+          <li><strong>User-feedback refinement:</strong> flattened repository cards, basename titles, removed inline controls, context menus, filename-priority rows, and less aggressive folder expansion.</li>
+          <li><strong>Early refinement review:</strong> identified menu dismissal during polling, dropped focus, and incomplete tab semantics; all were fixed before the qualifying final gate.</li>
+          <li><strong>Fresh final cross-provider gate:</strong> Anthropic Opus returned PASS at 84/100 and Moonshot/Kimi returned PASS at 90/100; neither found a blocker, high, or medium implementation defect.</li>
+          <li><strong>Folder-arrow micro-review:</strong> explicit per-directory collapsed/expanded chevrons received fresh Anthropic and Moonshot/Kimi PASS verdicts at 88/100 and 92/100.</li>
+          <li><strong>Global deduplication gate:</strong> run <code>0d0c74cc-586f-48eb-8316-bb9cd01e4310</code> produced independent Anthropic Opus-class and Moonshot/Kimi PASS verdicts at 92/100 and 87/100, with no blocker, high, or medium findings.</li>
+        </ol>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Review finding</th><th>Resolution</th><th>Evidence</th></tr></thead>
+            <tbody>
+              <tr><td>Polling could rebuild the expanded panel and disrupt focus/scroll.</td><td>Panel renderer now returns before DOM replacement while top-level Git is collapsed.</td><td>Static guard + final reviewer trace.</td></tr>
+              <tr><td>Non-Git discovery could remain stale after later <code>git init</code>.</td><td>Reopening Git retries unavailable cwd discoveries without adding polling.</td><td>Discovery force path + assertion.</td></tr>
+              <tr><td>ARIA tree role lacked treeitems.</td><td>Removed role; retained native details/summary semantics.</td><td>Regression assertion.</td></tr>
+              <tr><td>Mixed staged/unstaged rows repeated combined numstats.</td><td>Server and browser now keep staged/unstaged values separate by category.</td><td>Mixed-file HTTP test.</td></tr>
+              <tr><td>Folder staging scope, map growth, and idle action contrast.</td><td>Clarified labels; pruned stale state; inline controls were later removed entirely.</td><td>Source inspection + final PASS.</td></tr>
+              <tr><td>Visible session parent and repeated tab/group roots duplicated repository disclosures.</td><td>Removed visible grouping, deduplicated cwd candidates globally, and keyed the final card list globally by canonical <code>root:</code> identity.</td><td>Executable VM regression + both final reviewers.</td></tr>
+              <tr><td>Action buttons obscured filenames in narrow rows.</td><td>Moved actions to target-aware context menus and changed file rows to status/name/stats columns.</td><td>CSS/source assertions + both reviewers.</td></tr>
+              <tr><td>Polling could dismiss an open context menu; keyboard tab/menu semantics were incomplete.</td><td>Suppress renders while the menu is open, restore trigger focus, and add tabpanel linkage plus arrow/Home/End navigation.</td><td>Final Anthropic and Kimi PASS.</td></tr>
+              <tr><td>Flat repository container still announced “by terminal group.”</td><td>Changed its accessible label to “Git repositories” and added a static regression assertion.</td><td>Accepted Kimi finding; post-fix checks passed to the unrelated lockfile invariant.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <details>
+          <summary>Independent review artifacts</summary>
+          <ul>
+            <li>Initial: <code>.pi-subagents/artifacts/outputs/544988a1-1407-45d8-9959-d94fd280e67e/.pi-subagents/reviews/webui-git-side-panel.md</code></li>
+            <li>Original final: <code>.pi-subagents/artifacts/outputs/a50eb970-a917-4cdf-b8b5-a6430977f745/.pi-subagents/reviews/webui-git-side-panel-final.md</code></li>
+            <li>Refinement Anthropic: <code>.pi-subagents/artifacts/outputs/2a3dd688-caef-452c-a9ca-e8ede236d703/.pi-subagents/reviews/webui-git-side-panel-refinement-anthropic-final.md</code></li>
+            <li>Refinement Moonshot/Kimi: <code>.pi-subagents/artifacts/outputs/2a3dd688-caef-452c-a9ca-e8ede236d703/.pi-subagents/reviews/webui-git-side-panel-refinement-kimi-final.md</code></li>
+            <li>Folder-arrow Anthropic: <code>.pi-subagents/artifacts/outputs/df7f60b8-8907-4b77-816e-38d64655328e/.pi-subagents/reviews/webui-git-folder-arrow-anthropic.md</code></li>
+            <li>Folder-arrow Moonshot/Kimi: <code>.pi-subagents/artifacts/outputs/df7f60b8-8907-4b77-816e-38d64655328e/.pi-subagents/reviews/webui-git-folder-arrow-kimi.md</code></li>
+            <li>Global dedup Anthropic: <code>.pi-subagents/artifacts/outputs/0d0c74cc-586f-48eb-8316-bb9cd01e4310/.pi-subagents/reviews/webui-git-global-dedup-anthropic-final.md</code></li>
+            <li>Global dedup Moonshot/Kimi: <code>.pi-subagents/artifacts/outputs/0d0c74cc-586f-48eb-8316-bb9cd01e4310/.pi-subagents/reviews/webui-git-global-dedup-kimi-final.md</code></li>
+          </ul>
+        </details>
+      </section>
+
+      <section id="panel-usage" class="report-section" role="tabpanel" aria-labelledby="tab-usage">
+        <h2>Usage, rollout, and residual risk</h2>
+        <h3>Expected user flow</h3>
+        <ol>
+          <li><strong>Open Control Deck → Git.</strong> The WebUI takes one candidate per distinct cwd across all open tabs and resolves canonical roots.</li>
+          <li><strong>Expand a repository directly.</strong> Every canonical root appears once regardless of repeated tabs, terminals, groups, or repo subdirectory cwds. Cards use the Git-root/cwd basename; there is no session/group parent dropdown. Expanding another repository collapses the first.</li>
+          <li><strong>Use Changes.</strong> Browse folder/file disclosures; every directory has a right-facing arrow while collapsed and a down-facing arrow while expanded. File rows prioritize name width while retaining status and additions/deletions.</li>
+          <li><strong>Right-click for actions.</strong> Repository headers expose View Diff, Refresh, Stage All, and Unstage All. Folder/file rows expose only category-valid actions. Keyboard users press Shift+F10 or the Context Menu key.</li>
+          <li><strong>Use destructive controls deliberately.</strong> File-only Discard and Delete still display impact/command confirmation; the server independently validates confirmation, path scope, and file type.</li>
+          <li><strong>Use History.</strong> Select a recent commit to inspect its bounded read-only patch in the existing Git dialog.</li>
+        </ol>
+
+        <h3>Refresh contract</h3>
+        <div class="grid">
+          <div class="step"><strong>First expansion</strong><p>Loads a compact local snapshot.</p></div>
+          <div class="step"><strong>Fresh re-expansion</strong><p>Reuses page-local data younger than five minutes.</p></div>
+          <div class="step"><strong>Stale re-expansion</strong><p>Reloads once the cached snapshot reaches five minutes.</p></div>
+          <div class="step"><strong>Mutation/manual refresh</strong><p>Forces an immediate reload and refreshes footer Git status.</p></div>
+        </div>
+        <p class="muted">No automatic remote <code>git fetch</code> is performed. “Refresh” means reading local repository state from the WebUI server.</p>
+
+        <h3>Residual risks</h3>
+        <div class="grid">
+          <div class="finding"><span class="badge warn">Testing gap</span><strong>No live browser automation</strong><p>Expansion, one-open enforcement, focus behavior, and confirmation UX are covered by source tracing/static assertions rather than a DOM/browser harness.</p></div>
+          <div class="finding"><span class="badge warn">Shared worktree</span><strong>Full suite remains red</strong><p>An unrelated concurrent manifest/lockfile edit violates the optional-companion invariant. Isolate or resolve that work separately before claiming a globally green <code>npm run check</code>.</p></div>
+          <div class="finding"><span class="badge info">Accessibility note</span><strong>Generic focusable file rows</strong><p>File rows expose an accessible label and keyboard context menu but intentionally avoid an inaccurate tree/button role. Both final reviewers classified this as low/non-blocking.</p></div>
+          <div class="finding"><span class="badge info">Safe refusal</span><strong>Odd newline filenames</strong><p>Untracked delete may refuse C-quoted unusual names rather than target them incorrectly. This is safe-by-refusal and optional hardening.</p></div>
+        </div>
+
+        <h3>Audit links</h3>
+        <ul>
+          <li>Canonical plan: <a href="../plans/webui-git-side-panel.md"><code>plans/webui-git-side-panel.md</code></a></li>
+          <li>Primary package: <a href="../pi-package-webui/README.md"><code>pi-package-webui/README.md</code></a></li>
+          <li>Server implementation: <a href="../pi-package-webui/bin/pi-webui.mjs"><code>pi-package-webui/bin/pi-webui.mjs</code></a></li>
+          <li>Browser implementation: <a href="../pi-package-webui/public/app.js"><code>pi-package-webui/public/app.js</code></a></li>
+        </ul>
+        <p class="muted">Evidence is repository-local and current to this implementation snapshot. No external runtime, CDN, telemetry, or invented performance metric is used in this report.</p>
+      </section>
+    </div>
+
+    <footer>
+      Generated as the final implementation artifact for the Pi WebUI Git side-panel feature. The plan and report link to each other.
+    </footer>
+  </main>
+  <div id="report-status" class="status-region" role="status" aria-live="polite"></div>
+  <script>
+    (() => {
+      const tabs = [...document.querySelectorAll('[role="tab"]')];
+      const panels = [...document.querySelectorAll('[role="tabpanel"]')];
+      if (!tabs.length || tabs.length !== panels.length) return;
+      const select = (tab, { focus = false, updateHash = true } = {}) => {
+        for (const candidate of tabs) {
+          const selected = candidate === tab;
+          candidate.setAttribute('aria-selected', selected ? 'true' : 'false');
+          candidate.tabIndex = selected ? 0 : -1;
+          const panel = document.getElementById(candidate.getAttribute('aria-controls'));
+          if (panel) panel.hidden = !selected;
+        }
+        if (focus) tab.focus();
+        if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+        document.getElementById('report-status').textContent = `${tab.textContent.trim()} section selected`;
+      };
+      const hashTarget = tabs.find((tab) => `#${tab.getAttribute('aria-controls')}` === location.hash);
+      document.documentElement.classList.add('tabs-ready');
+      select(hashTarget || tabs[0], { updateHash: false });
+      tabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => select(tab));
+        tab.addEventListener('keydown', (event) => {
+          let next = null;
+          if (event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+          if (event.key === 'ArrowLeft') next = tabs[(index - 1 + tabs.length) % tabs.length];
+          if (event.key === 'Home') next = tabs[0];
+          if (event.key === 'End') next = tabs[tabs.length - 1];
+          if (!next) return;
+          event.preventDefault();
+          select(next, { focus: true });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

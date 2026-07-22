@@ -74,6 +74,7 @@ import {
   pruneGitWorktrees,
   removeGitWorktree,
 } from "../lib/git-worktrees.mjs";
+import { createGitLiveWatcher } from "../lib/git-live-watcher.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -106,6 +107,8 @@ const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
 const WEBUI_SUBAGENT_RUN_LIMIT = 128;
 const WEBUI_SUBAGENT_AGENT_LIMIT = 256;
+const WEBUI_SUBAGENT_GATE_LIMIT = 32;
+const WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT = 100;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -1482,13 +1485,13 @@ function latestEvents(limit = 40) {
   return eventHistory.slice(-Math.max(0, Math.min(EVENT_HISTORY_LIMIT, limit)));
 }
 
-function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20000 } = {}) {
+function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20000, env = {} } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       // LC_ALL=C keeps tool output in English so error classification works
       // regardless of locale.
-      env: { ...process.env, LC_ALL: "C" },
+      env: { ...process.env, ...env, LC_ALL: "C" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -4591,7 +4594,14 @@ async function getGitRoot(cwd) {
 }
 
 async function runGitReadCommandDetailed(root, args, { timeoutMs = GIT_CHANGES_COMMAND_TIMEOUT_MS, maxOutputLength = GIT_CHANGES_DIFF_MAX_OUTPUT } = {}) {
-  const result = await runCommand("git", args, { cwd: root, timeoutMs, maxOutputLength });
+  const result = await runCommand("git", args, {
+    cwd: root,
+    timeoutMs,
+    maxOutputLength,
+    // Prevent read-only status/diff commands from refreshing the index and
+    // feeding their own metadata writes back into the live Git watcher.
+    env: { GIT_OPTIONAL_LOCKS: "0" },
+  });
   if (result.exitCode === 0 && !result.timedOut && !result.error) {
     return { output: result.stdout, truncated: result.stdoutTruncated === true, capBytes: maxOutputLength };
   }
@@ -4992,6 +5002,144 @@ async function readGitChanges(cwd) {
       { key: "unstaged", label: "Unstaged", command: "git diff --unified=0", diff: unstagedDiff.output.trimEnd(), truncated: unstagedDiff.truncated, capBytes: unstagedDiff.capBytes },
     ].filter(Boolean),
     untracked,
+  };
+}
+
+const GIT_PANEL_HISTORY_LIMIT = 30;
+const GIT_PANEL_MAX_OUTPUT = 240_000;
+
+function parseGitNumstatZ(text = "") {
+  const stats = new Map();
+  for (const record of String(text || "").split("\0")) {
+    if (!record) continue;
+    const firstTab = record.indexOf("\t");
+    const secondTab = firstTab < 0 ? -1 : record.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const additionsText = record.slice(0, firstTab);
+    const deletionsText = record.slice(firstTab + 1, secondTab);
+    const filePath = normalizeGitStatusPath(record.slice(secondTab + 1));
+    if (!filePath) continue;
+    const binary = additionsText === "-" || deletionsText === "-";
+    stats.set(filePath, {
+      additions: binary ? 0 : Number.parseInt(additionsText || "0", 10) || 0,
+      deletions: binary ? 0 : Number.parseInt(deletionsText || "0", 10) || 0,
+      binary,
+    });
+  }
+  return stats;
+}
+
+function gitPanelPathStats(entry, stagedStats, unstagedStats) {
+  const paths = [entry.path, entry.oldPath].map(normalizeGitStatusPath).filter(Boolean);
+  const aggregate = (stats) => {
+    const value = { additions: 0, deletions: 0, binary: false };
+    for (const filePath of paths) {
+      const current = stats.get(filePath);
+      if (!current) continue;
+      value.additions += Number(current.additions || 0) || 0;
+      value.deletions += Number(current.deletions || 0) || 0;
+      value.binary ||= current.binary === true;
+    }
+    return value;
+  };
+  const staged = aggregate(stagedStats);
+  const unstaged = aggregate(unstagedStats);
+  return {
+    additions: staged.additions + unstaged.additions,
+    deletions: staged.deletions + unstaged.deletions,
+    binary: staged.binary || unstaged.binary,
+    stagedAdditions: staged.additions,
+    stagedDeletions: staged.deletions,
+    stagedBinary: staged.binary,
+    unstagedAdditions: unstaged.additions,
+    unstagedDeletions: unstaged.deletions,
+    unstagedBinary: unstaged.binary,
+  };
+}
+
+function gitPanelChangeEntry(entry, stagedStats, unstagedStats) {
+  const x = entry.x || " ";
+  const y = entry.y || " ";
+  const untracked = x === "?" && y === "?";
+  const conflicted = x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D");
+  return {
+    path: normalizeGitStatusPath(entry.path),
+    oldPath: normalizeGitStatusPath(entry.oldPath || ""),
+    status: `${x}${y}`,
+    staged: !untracked && x !== " " && x !== "?",
+    unstaged: !untracked && y !== " " && y !== "?",
+    untracked,
+    conflicted,
+    ...gitPanelPathStats(entry, stagedStats, unstagedStats),
+  };
+}
+
+function parseGitPanelHistory(text = "") {
+  const fields = String(text || "").split("\0").filter(Boolean);
+  const history = [];
+  for (let index = 0; index + 4 < fields.length && history.length < GIT_PANEL_HISTORY_LIMIT; index += 5) {
+    const [hash, shortHash, author, authoredAt, subject] = fields.slice(index, index + 5);
+    if (!hash) continue;
+    history.push({ hash, shortHash, author, authoredAt, subject });
+  }
+  return history;
+}
+
+async function readGitPanel(cwd) {
+  const root = await getGitRoot(cwd);
+  const historyPromise = runGitReadCommand(root, [
+    "log", `-n${GIT_PANEL_HISTORY_LIMIT}`, "-z", "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%aI%x00%s",
+  ], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }).catch(() => "");
+  const [statusText, porcelainStatusText, stagedNumstatText, unstagedNumstatText, historyText] = await Promise.all([
+    runGitReadCommand(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    runGitReadCommand(root, ["status", "--porcelain=2", "--branch", "--untracked-files=all"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    runGitReadCommand(root, ["diff", "--cached", "--numstat", "-z", "--no-renames", "--"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    runGitReadCommand(root, ["diff", "--numstat", "-z", "--no-renames", "--"], { maxOutputLength: GIT_PANEL_MAX_OUTPUT }),
+    historyPromise,
+  ]);
+  const stagedStats = parseGitNumstatZ(stagedNumstatText);
+  const unstagedStats = parseGitNumstatZ(unstagedNumstatText);
+  const changes = parseGitPorcelainZEntries(statusText)
+    .map((entry) => gitPanelChangeEntry(entry, stagedStats, unstagedStats))
+    .filter((entry) => entry.path);
+  return {
+    cwd,
+    root,
+    branch: gitBranchFromPorcelainStatus(porcelainStatusText),
+    generatedAt: new Date().toISOString(),
+    summary: summarizeGitPorcelainStatus(porcelainStatusText),
+    changes,
+    history: parseGitPanelHistory(historyText),
+  };
+}
+
+async function readGitCommit(cwd, requestedHash) {
+  const hash = String(requestedHash || "").trim().toLowerCase();
+  if (!/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(hash)) throw makeHttpError(400, "A full Git commit hash is required");
+  const root = await getGitRoot(cwd);
+  const verified = (await runGitReadCommand(root, ["rev-parse", "--verify", `${hash}^{commit}`], { maxOutputLength: 1000 })).trim();
+  if (verified.toLowerCase() !== hash) throw makeHttpError(404, "Git commit not found in this repository");
+  const [metaText, diff] = await Promise.all([
+    runGitReadCommand(root, ["show", "-s", "-z", "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%aI%x00%s", hash], { maxOutputLength: 20_000 }),
+    runGitReadCommandDetailed(root, ["show", "--format=", "--no-ext-diff", "--no-color", "--find-renames", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", hash]),
+  ]);
+  const [commit] = parseGitPanelHistory(metaText);
+  return {
+    root,
+    branch: "",
+    generatedAt: new Date().toISOString(),
+    commit: commit || { hash, shortHash: hash.slice(0, 12), author: "", authoredAt: "", subject: "" },
+    summary: { staged: 0, unstaged: 0, untracked: 0, conflicted: 0, ahead: 0, behind: 0 },
+    remote: { upstream: "", ahead: 0, behind: 0, diverged: false, canPull: false },
+    sections: [{
+      key: "commit",
+      label: `Commit ${commit?.shortHash || hash.slice(0, 12)}`,
+      command: `git show --unified=0 ${hash}`,
+      diff: diff.output.trimEnd(),
+      truncated: diff.truncated,
+      capBytes: diff.capBytes,
+    }],
+    untracked: [],
   };
 }
 
@@ -5500,6 +5648,23 @@ async function unstageGitFile(cwd, body = {}) {
   }
   if (payload.data) payload.data.root = root;
   if (payload.ok) payload.data.changes = await readGitChanges(root);
+  return payload;
+}
+
+async function stageAllGitChanges(cwd) {
+  const root = await getGitRoot(cwd);
+  const payload = await gitAddAllPayload(root);
+  if (payload.data) payload.data.root = root;
+  return payload;
+}
+
+async function unstageAllGitChanges(cwd) {
+  const root = await getGitRoot(cwd);
+  let payload = await runGuardedGitMutation(["restore", "--staged", "--", "."], { cwd: root, label: "git restore --staged -- ." });
+  if (!payload.ok && /HEAD/.test(payload.error || "")) {
+    payload = await runGuardedGitMutation(["rm", "--cached", "-r", "--", "."], { cwd: root, label: "git rm --cached -r -- ." });
+  }
+  if (payload.data) payload.data.root = root;
   return payload;
 }
 
@@ -7491,6 +7656,8 @@ function normalizeWebuiSubagentPayload(value) {
         index: Number.isInteger(rawAgent.index) ? rawAgent.index : agents.length,
         currentTool: normalizeWebuiSubagentText(rawAgent.currentTool, 120) || undefined,
         activityState: normalizeWebuiSubagentText(rawAgent.activityState, 80) || undefined,
+        model: normalizeWebuiSubagentText(rawAgent.model, 240) || undefined,
+        thinking: normalizeWebuiSubagentText(rawAgent.thinking, 40) || undefined,
         nested: rawAgent.nested === true,
       });
     }
@@ -7504,12 +7671,56 @@ function normalizeWebuiSubagentPayload(value) {
       agents: agents.sort((a, b) => a.index - b.index || a.name.localeCompare(b.name)),
     });
   }
+  const gates = [];
+  for (const rawGate of Array.isArray(value.gates) ? value.gates.slice(-WEBUI_SUBAGENT_GATE_LIMIT) : []) {
+    if (!rawGate || typeof rawGate !== "object") continue;
+    const id = normalizeWebuiSubagentText(rawGate.id, 160);
+    if (!id) continue;
+    const attempts = [];
+    for (const rawAttempt of Array.isArray(rawGate.attempts) ? rawGate.attempts.slice(-WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT) : []) {
+      if (!rawAttempt || typeof rawAttempt !== "object") continue;
+      const attemptId = normalizeWebuiSubagentText(rawAttempt.id || `${id}:${attempts.length}`, 240);
+      const agent = normalizeWebuiSubagentText(rawAttempt.agent, 160) || "subagent";
+      attempts.push({
+        id: attemptId,
+        taskIndex: Number.isInteger(rawAttempt.taskIndex) ? rawAttempt.taskIndex : attempts.length,
+        attempt: Number.isInteger(rawAttempt.attempt) ? Math.max(1, rawAttempt.attempt) : 1,
+        maxAttempts: Number.isInteger(rawAttempt.maxAttempts) ? Math.max(1, rawAttempt.maxAttempts) : 1,
+        agent,
+        label: normalizeWebuiSubagentText(rawAttempt.label, 200) || undefined,
+        phase: normalizeWebuiSubagentText(rawAttempt.phase, 120) || undefined,
+        retrySafety: rawAttempt.retrySafety === "read-only" ? "read-only" : "may-write",
+        runId: normalizeWebuiSubagentText(rawAttempt.runId, 160) || undefined,
+        retryOf: normalizeWebuiSubagentText(rawAttempt.retryOf, 160) || undefined,
+        model: normalizeWebuiSubagentText(rawAttempt.model, 240) || undefined,
+        provider: normalizeWebuiSubagentText(rawAttempt.provider, 80) || undefined,
+        status: ["launching", "running", "succeeded", "failed", "not-qualifying", "cancelled"].includes(rawAttempt.status) ? rawAttempt.status : "failed",
+        failureKind: normalizeWebuiSubagentText(rawAttempt.failureKind, 80) || undefined,
+        error: normalizeWebuiSubagentText(rawAttempt.error, 1000) || undefined,
+        startedAt: Number.isFinite(rawAttempt.startedAt) ? rawAttempt.startedAt : undefined,
+        endedAt: Number.isFinite(rawAttempt.endedAt) ? rawAttempt.endedAt : undefined,
+      });
+    }
+    gates.push({
+      version: 1,
+      id,
+      status: ["running", "satisfied", "failed", "cancelled"].includes(rawGate.status) ? rawGate.status : "failed",
+      requiredSuccesses: Number.isInteger(rawGate.requiredSuccesses) ? Math.max(1, rawGate.requiredSuccesses) : 1,
+      qualifyingSuccesses: Number.isInteger(rawGate.qualifyingSuccesses) ? Math.max(0, rawGate.qualifyingSuccesses) : 0,
+      requireDistinctProviders: rawGate.requireDistinctProviders === true,
+      startedAt: Number.isFinite(rawGate.startedAt) ? rawGate.startedAt : Date.now(),
+      updatedAt: Number.isFinite(rawGate.updatedAt) ? rawGate.updatedAt : Date.now(),
+      endedAt: Number.isFinite(rawGate.endedAt) ? rawGate.endedAt : undefined,
+      attempts,
+    });
+  }
   return {
     version: 1,
     available: value.available === true,
     updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
     receivedAt: Date.now(),
     runs: runs.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
+    gates: gates.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
   };
 }
 
@@ -8185,6 +8396,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
   } catch (error) {
     if (!tab.rpc.isRunning()) {
       tab.rpcUnsubscribe?.();
+      gitLiveWatcher.unsubscribe(id);
       tabs.delete(id);
       throw new Error(`Pi RPC process failed while starting ${tabTitle}: ${sanitizeError(error)}`);
     }
@@ -8230,8 +8442,9 @@ function listTabs() {
 function webuiSubagentsData() {
   const sortedTabs = [...tabs.values()].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title));
   const tabSummaries = sortedTabs.map((tab) => {
-    const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [] };
+    const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [], gates: [] };
     const runs = Array.isArray(status.runs) ? status.runs : [];
+    const gates = Array.isArray(status.gates) ? status.gates : [];
     return {
       tabId: tab.id,
       tabIndex: tab.index,
@@ -8244,7 +8457,9 @@ function webuiSubagentsData() {
       updatedAt: status.updatedAt || null,
       receivedAt: status.receivedAt || null,
       runs,
+      gates,
       agentCount: runs.reduce((count, run) => count + run.agents.length, 0),
+      gateCount: gates.length,
     };
   });
   return {
@@ -8253,6 +8468,7 @@ function webuiSubagentsData() {
     available: tabSummaries.some((tab) => tab.available),
     totalRuns: tabSummaries.reduce((count, tab) => count + tab.runs.length, 0),
     totalAgents: tabSummaries.reduce((count, tab) => count + tab.agentCount, 0),
+    totalGates: tabSummaries.reduce((count, tab) => count + tab.gateCount, 0),
     tabs: tabSummaries,
   };
 }
@@ -8362,6 +8578,8 @@ function normalizeWebuiSubagentOutput(value, selection) {
       turnCount: Number.isFinite(rawAgent.turnCount) ? rawAgent.turnCount : undefined,
       toolCount: Number.isFinite(rawAgent.toolCount) ? rawAgent.toolCount : undefined,
       tokens: Number.isFinite(rawAgent.tokens) ? rawAgent.tokens : undefined,
+      model: normalizeWebuiSubagentText(rawAgent.model, 240) || selection.agent.model || undefined,
+      thinking: normalizeWebuiSubagentText(rawAgent.thinking, 40) || selection.agent.thinking || undefined,
       recentTools,
       recentOutput,
       transcript,
@@ -8938,6 +9156,22 @@ function broadcastServerEvent(event) {
   for (const client of clients) sendSse(client, event);
 }
 
+const gitLiveWatcher = createGitLiveWatcher({
+  onChange: ({ root, changedAt }) => {
+    broadcastServerEvent({ type: "webui_git_changed", root, changedAt });
+  },
+  onError: ({ root, error }) => {
+    const message = sanitizeError(error);
+    recordEvent({ type: "webui_git_watch_error", root, error: message });
+    console.warn(`Git live watcher disabled for ${root}: ${message}`);
+  },
+});
+
+function trackGitRepositoryForTab(tab, root) {
+  if (tab?.id && root) gitLiveWatcher.subscribe(tab.id, root);
+  return root;
+}
+
 function renameTab(tab, title, { source = "explicit", maxLength, unique = source === "auto" } = {}) {
   if (!tab) return false;
   const rawTitle = maxLength ? truncateTabTitle(title, maxLength) : String(title || "").replace(/\s+/g, " ").trim();
@@ -8991,6 +9225,7 @@ async function updateTabCwd(id, cwd) {
   const piArgs = await buildPiArgsForTab(tab.index, tab.title, nextCwd);
   if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
+  gitLiveWatcher.unsubscribe(tab.id);
   const restartingEvent = { type: "webui_tab_restarting", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, sessionFile };
   recordEvent(restartingEvent);
   for (const client of tab.sseClients) {
@@ -11162,6 +11397,7 @@ async function closeTab(id) {
     if (stateResult.ok) restorableState = stateResult.data;
   }
   rememberClosedRestorableTab(tab, restorableState);
+  gitLiveWatcher.unsubscribe(tab.id);
 
   const closingEvent = { type: "webui_tab_closing", tabId: tab.id, tabTitle: tab.title };
   recordEvent(closingEvent);
@@ -11180,6 +11416,7 @@ async function closeTab(id) {
 
 async function discardTab(tab) {
   if (!tab || !tabs.has(tab.id)) return;
+  gitLiveWatcher.unsubscribe(tab.id);
   tab.rpcUnsubscribe?.();
   rejectTabBashQueue(tab, new Error("Pi recovery tab initialization failed"));
   stopAppRunnerForTab(tab, "recovery initialization failed", { force: true });
@@ -12511,6 +12748,40 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/git-root" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        const root = trackGitRepositoryForTab(tab, await getGitRoot(tab.cwd));
+        sendJson(res, 200, { ok: true, data: { cwd: tab.cwd, root } });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-panel" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        const data = await readGitPanel(tab.cwd);
+        trackGitRepositoryForTab(tab, data.root);
+        sendJson(res, 200, { ok: true, data });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-commit" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        sendJson(res, 200, { ok: true, data: await readGitCommit(tab.cwd, url.searchParams.get("hash") || "") });
+      } catch (error) {
+        const statusCode = Number(error?.statusCode || error?.status || 200) || 200;
+        sendJson(res, statusCode, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/git-changes/untracked-file" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       try {
@@ -12632,6 +12903,8 @@ const server = createServer(async (req, res) => {
         "/api/git-changes/integrate": (cwd, body) => integrateGitUpstream(cwd, body),
         "/api/git-changes/stage-file": (cwd, body) => stageGitFile(cwd, body),
         "/api/git-changes/unstage-file": (cwd, body) => unstageGitFile(cwd, body),
+        "/api/git-changes/stage-all": (cwd) => stageAllGitChanges(cwd),
+        "/api/git-changes/unstage-all": (cwd) => unstageAllGitChanges(cwd),
         "/api/git-changes/discard-file": (cwd, body) => discardGitFile(cwd, body),
         "/api/git-changes/delete-untracked": (cwd, body) => deleteGitUntrackedFile(cwd, body),
         "/api/git-operation/continue": (cwd, body) => gitOperationAction(cwd, "continue", body),
@@ -12809,6 +13082,7 @@ server.listen(options.port, currentHost, () => {
 
 function shutdown(signal) {
   console.log(`\n${signal}: shutting down Pi Web UI...`);
+  gitLiveWatcher.closeAll();
   const forceCloseTimer = setTimeout(() => {
     server.closeAllConnections?.();
   }, NETWORK_REBIND_FORCE_CLOSE_MS);

@@ -1,7 +1,7 @@
 {
   "schemaVersion": "2.0",
   "id": "pi.anthropic-provider-dist-compat",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "title": "Pi Anthropic Agent SDK dist compatibility",
   "description": "Version-gated, semantic fallback patch for the Anthropic OAuth request implementation actually resolved by native Pi and Pi WebUI RPC runtimes.",
   "risk": {
@@ -24,7 +24,7 @@
     "packages": [
       {
         "name": "@earendil-works/pi-ai",
-        "range": ">=0.78.0 <0.81.0",
+        "range": ">=0.78.0 <0.82.0",
         "layouts": ["dist/providers/anthropic.js", "dist/api/anthropic-messages.js"]
       }
     ]

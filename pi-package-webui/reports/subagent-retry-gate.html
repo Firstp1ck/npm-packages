@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Generic Subagent Retry Gate — Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--shadow:0 14px 36px rgb(0 0 0/.22)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.58 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.skip{position:fixed;top:8px;left:8px;z-index:10;transform:translateY(-150%);padding:8px 12px;border-radius:8px;background:var(--blue);color:#06111f;font-weight:800}.skip:focus{transform:none}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,.panel{padding:24px;border:1px solid var(--line);border-radius:16px;background:rgb(18 28 45/.96);box-shadow:var(--shadow)}header{padding:30px;margin-bottom:18px}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(2rem,5vw,3rem);letter-spacing:-.025em;margin-bottom:8px}h2{font-size:1.45rem;padding-bottom:10px;border-bottom:1px solid var(--line)}h3{font-size:1.06rem;margin-bottom:6px}p{margin:8px 0 14px}.lead{font-size:1.1rem;max-width:84ch}.muted{color:var(--muted)}.badge{display:inline-block;padding:3px 9px;margin-bottom:8px;border:1px solid;border-radius:999px;font-size:.76rem;font-weight:800;letter-spacing:.04em;text-transform:uppercase}.good{color:var(--green);border-color:rgb(80 216 144/.4);background:rgb(80 216 144/.1)}.warn{color:var(--yellow);border-color:rgb(247 198 92/.4);background:rgb(247 198 92/.1)}.info{color:var(--blue);border-color:rgb(101 181 255/.4);background:rgb(101 181 255/.1)}.bad{color:var(--red);border-color:rgb(255 115 115/.4);background:rgb(255 115 115/.1)}.callout{margin:16px 0;padding:14px 16px;border-left:5px solid var(--green);border-radius:8px;background:rgb(80 216 144/.08)}.callout.warn{border-color:var(--yellow);color:var(--text);background:rgb(247 198 92/.08)}.metrics,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.metric,.card{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.metric strong{display:block;font-size:1.4rem}.tabs{display:flex;gap:8px;overflow:auto;margin:0 0 18px;padding:8px;border:1px solid var(--line);border-radius:12px;background:rgb(7 16 28/.75)}[role=tab]{appearance:none;padding:9px 13px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font:inherit;font-weight:750;white-space:nowrap;cursor:pointer}[role=tab][aria-selected=true]{border-color:rgb(101 181 255/.45);background:rgb(101 181 255/.14);color:var(--text)}.tabs-ready [role=tabpanel][hidden]{display:none}.panel{margin:18px 0}.table-wrap{overflow:auto;border-radius:10px}table{width:100%;min-width:680px;border-collapse:collapse}th,td{padding:10px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.82rem;letter-spacing:.04em;text-transform:uppercase}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.12em .38em;border-radius:5px;background:var(--code)}pre{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--code);color:#d9e6f7;white-space:pre-wrap;overflow:auto}.path{overflow-wrap:anywhere}figure{margin:18px 0}svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px;background:var(--code)}figcaption{margin-top:8px;color:var(--muted);font-size:.92rem}.node{fill:#182b43;stroke:#65b5ff;stroke-width:2}.node.green{stroke:#50d890}.node.yellow{stroke:#f7c65c}.node-text{fill:#e8eef8;font:650 14px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:#a9b7cb;stroke-width:2.3;marker-end:url(#arrow)}.edge-label{fill:#a9b7cb;font:12px system-ui,sans-serif}.steps{counter-reset:s;list-style:none;padding:0}.steps li{counter-increment:s;margin:12px 0;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.steps li:before{content:counter(s);float:left;display:grid;place-items:center;width:30px;height:30px;margin-right:12px;border-radius:50%;background:var(--blue);color:#06111f;font-weight:800}details{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}summary{color:var(--blue);font-weight:700;cursor:pointer}.confidence{font-variant-numeric:tabular-nums}.legend{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.legend span{font-size:.85rem}footer{margin-top:22px;color:var(--muted);font-size:.9rem}@media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,.panel{padding:18px}.tabs{position:sticky;top:0;z-index:4}.node-text{font-size:12px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}@media print{:root{color-scheme:light}body{background:#fff;color:#111}main{width:100%;margin:0}header,.panel,.metric,.card,.steps li{box-shadow:none;background:#fff;color:#111;border-color:#bbb;break-inside:avoid}.tabs,.skip{display:none!important}[role=tabpanel],[role=tabpanel][hidden]{display:block!important}pre,code,svg{background:#f3f4f6;color:#111;border-color:#bbb}.muted,figcaption,footer{color:#444}a{color:#111;text-decoration:underline}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report content</a>
+<main id="content">
+  <header>
+    <span class="badge good">Implementation complete</span>
+    <h1>Generic Subagent Retry Gate</h1>
+    <p class="lead">A source-grounded implementation report for bounded, failure-aware subagent retries, success quorums, limited read-only model fallbacks, and retained WebUI observability. Evidence comes from the local implementation, focused tests, package checks, and two independent cross-provider reviews.</p>
+    <div class="callout"><strong>Conclusion:</strong> the requested retry policy, <code>subagent_gate</code> runtime, fallback configuration, and WebUI attempt history are implemented. Accepted review findings were fixed and re-tested. The only package-wide failure is an unrelated dirty-baseline lockfile invariant.</div>
+    <p class="muted confidence"><strong>Confidence: 93/100.</strong> Runtime state transitions, RPC correlation, safety rules, payload bounds, and rendering are directly tested. Confidence is below 100 because no test launched a paid/live provider child through the real pi-subagents bridge.</p>
+    <p><a href="../plans/subagent-retry-gate.md">Open the canonical Markdown plan and review record</a></p>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Report sections">
+    <button id="tab-overview" role="tab" aria-selected="true" aria-controls="overview">Overview</button>
+    <button id="tab-architecture" role="tab" aria-selected="false" aria-controls="architecture" tabindex="-1">Architecture</button>
+    <button id="tab-safety" role="tab" aria-selected="false" aria-controls="safety" tabindex="-1">Safety &amp; usage</button>
+    <button id="tab-review" role="tab" aria-selected="false" aria-controls="review" tabindex="-1">Independent review</button>
+    <button id="tab-evidence" role="tab" aria-selected="false" aria-controls="evidence" tabindex="-1">Verification</button>
+  </nav>
+
+  <section class="panel" id="overview" role="tabpanel" aria-labelledby="tab-overview">
+    <h2>Executive overview</h2>
+    <div class="metrics" aria-label="Headline implementation evidence">
+      <div class="metric"><span class="badge good">Review gate</span><strong>2 qualifying reviews</strong><span class="muted">Moonshot/Kimi and Cursor Composer; both distinct from the OpenAI implementation family.</span></div>
+      <div class="metric"><span class="badge good">Focused checks</span><strong>All passed</strong><span class="muted">Gate unit, helper bridge, HTTP harness, syntax, settings validation, and diff checks.</span></div>
+      <div class="metric"><span class="badge info">Fallback scope</span><strong>6 read-only roles</strong><span class="muted">Reviewer, scout, planner, context-builder, researcher, and oracle only.</span></div>
+      <div class="metric"><span class="badge warn">Package suite</span><strong>29 / 30 files</strong><span class="muted">One unrelated pre-existing lockfile assertion remains in the dirty baseline.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Implementation map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Responsibility</th><th>Primary artifacts</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Policy</td><td>General retry invariant and writer safety boundary</td><td class="path"><code>APPEND_SUBAGENTS.md</code></td><td><span class="badge good">Complete</span></td></tr>
+          <tr><td>Runtime gate</td><td>RPC v1 launch, correlation, retries, quorum, cancellation, structured results</td><td class="path"><code>lib/subagent-gate.mjs</code>, <code>index.ts</code></td><td><span class="badge good">Complete</span></td></tr>
+          <tr><td>Fallback stopgap</td><td>Bounded provider fallback lists for approved read-only agents</td><td class="path"><code>~/.dotfiles/.pi/agent/settings.json</code></td><td><span class="badge good">Complete</span></td></tr>
+          <tr><td>Observability</td><td>Retained gate and attempt status from extension event to browser</td><td class="path"><code>webui-rpc-helper.mjs</code>, <code>bin/pi-webui.mjs</code>, <code>public/app.js</code></td><td><span class="badge good">Complete</span></td></tr>
+          <tr><td>Evidence</td><td>Failure, safety, lifecycle, payload, and rendering coverage</td><td class="path"><code>tests/subagent-gate.test.mjs</code> plus helper/HTTP/static tests</td><td><span class="badge good">Verified</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="architecture" role="tabpanel" aria-labelledby="tab-architecture">
+    <h2>Architecture and data flow</h2>
+    <figure data-visual-kind="diagram" data-purpose="Show how policy, gate orchestration, pi-subagents RPC, lifecycle events, and WebUI observability remain separated.">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1000 430">
+        <title id="flow-title">Subagent retry gate architecture</title>
+        <desc id="flow-desc">The model invokes the gate under system policy. The gate launches through pi-subagents RPC v1 and consumes completion events. Bounded lifecycle snapshots flow through the WebUI helper and server normalizer to the browser side panel.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
+        <rect class="node yellow" x="40" y="55" width="190" height="72" rx="12"/><text class="node-text" x="135" y="86">System retry policy</text><text class="node-text" x="135" y="107">safety + quorum</text>
+        <rect class="node green" x="310" y="55" width="190" height="72" rx="12"/><text class="node-text" x="405" y="86">subagent_gate</text><text class="node-text" x="405" y="107">state machine</text>
+        <rect class="node" x="580" y="55" width="190" height="72" rx="12"/><text class="node-text" x="675" y="86">pi-subagents</text><text class="node-text" x="675" y="107">RPC v1 + lifecycle</text>
+        <rect class="node" x="790" y="205" width="170" height="72" rx="12"/><text class="node-text" x="875" y="236">Child attempts</text><text class="node-text" x="875" y="257">fresh async runs</text>
+        <rect class="node" x="420" y="310" width="190" height="72" rx="12"/><text class="node-text" x="515" y="341">WebUI helper</text><text class="node-text" x="515" y="362">bounded snapshots</text>
+        <rect class="node" x="690" y="310" width="190" height="72" rx="12"/><text class="node-text" x="785" y="341">Server + browser</text><text class="node-text" x="785" y="362">normalize + render</text>
+        <path class="edge" d="M230 91 H310"/><text class="edge-label" x="250" y="78">guides</text>
+        <path class="edge" d="M500 91 H580"/><text class="edge-label" x="516" y="78">spawn/stop</text>
+        <path class="edge" d="M770 105 C845 125 875 155 875 205"/><text class="edge-label" x="810" y="147">launch</text>
+        <path class="edge" d="M790 241 C690 240 642 170 675 127"/><text class="edge-label" x="660" y="220">complete</text>
+        <path class="edge" d="M405 127 V260 C405 293 430 310 465 310"/><text class="edge-label" x="418" y="250">gate events</text>
+        <path class="edge" d="M610 346 H690"/><text class="edge-label" x="622" y="333">status payload</text>
+      </svg>
+      <figcaption>The orchestration layer enforces retries; pi-subagents remains the child runtime; WebUI only observes bounded lifecycle data. Installed pi-subagents source is not patched.</figcaption>
+    </figure>
+    <div class="grid">
+      <article class="card"><h3>RPC correlation</h3><p>Reply listeners are installed before requests are emitted. A bounded completion cache covers a child finishing before the spawn reply reaches the gate.</p></article>
+      <article class="card"><h3>Quorum semantics</h3><p>Only successful, non-excluded, provider-eligible outputs count. Queued slots stop launching once quorum is met; already-running attempts finish normally.</p></article>
+      <article class="card"><h3>Lifecycle retention</h3><p>The helper retains at most 32 gate snapshots, each with at most 100 attempts. Every boundary truncates untrusted strings before browser rendering.</p></article>
+      <article class="card"><h3>Cancellation reconciliation</h3><p>A spawn reply is preserved after abort long enough to recover a late run ID. The attempt becomes terminal and the gate sends a bounded RPC <code>stop</code>.</p></article>
+    </div>
+    <h3 style="margin-top:20px">Key interfaces</h3>
+    <div class="table-wrap"><table><thead><tr><th>Interface</th><th>Input</th><th>Output</th><th>Bound</th></tr></thead><tbody>
+      <tr><td><code>subagent_gate</code></td><td>1–20 task slots, quorum, safety, models, timeouts</td><td>Gate snapshot, qualifying results, exhausted/skipped slots, residual failures</td><td>1–5 attempts/slot; concurrency 1–8; gate ≤2 h</td></tr>
+      <tr><td>RPC v1</td><td><code>spawn</code> / <code>stop</code></td><td>Correlated reply with async run ID</td><td>10 s RPC request timeout</td></tr>
+      <tr><td>Gate event</td><td>Internal lifecycle state</td><td><code>webui:subagent-gate:v1:update</code></td><td>100 retained attempts per snapshot</td></tr>
+      <tr><td><code>/api/subagents</code></td><td>Sanitized helper status</td><td>Cross-tab runs and retained gates</td><td>32 gates per tab</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section class="panel" id="safety" role="tabpanel" aria-labelledby="tab-safety">
+    <h2>Retry safety and usage</h2>
+    <div class="callout warn"><strong>Safety invariant:</strong> a task that may mutate files or external systems is never automatically retried after a child may have started. The caller must explicitly declare <code>retrySafety: "read-only"</code> to allow post-launch replacement.</div>
+    <div class="table-wrap"><table><thead><tr><th>Observed condition</th><th>Automatic retry?</th><th>Reason</th><th>Recorded status</th></tr></thead><tbody>
+      <tr><td>Proven pre-launch transient failure</td><td>Yes, within budget</td><td>No child run ID exists and launch failed</td><td><code>pre-launch</code></td></tr>
+      <tr><td>Started read-only child; transient provider, timeout, protocol, acceptance, or empty output</td><td>Yes, within budget</td><td>Rerun is explicitly side-effect safe</td><td>Failure class + fresh attempt lineage</td></tr>
+      <tr><td>Started <code>may-write</code> child fails</td><td>No</td><td>Duplicate mutation risk</td><td>Terminal failure returned for diagnosis</td></tr>
+      <tr><td>Stopped or interrupted child</td><td>No</td><td>User/operator control must be respected</td><td><code>stopped</code> or <code>interrupted</code></td></tr>
+      <tr><td>Spawn success reply has no run ID</td><td>Read-only only</td><td>Child creation is ambiguous; writers cannot be relaunched safely</td><td><code>protocol-ambiguous</code></td></tr>
+      <tr><td>No declared candidate satisfies provider constraints</td><td>No launch</td><td>Implicit defaults could violate diversity or exclusions</td><td><code>provider-exhausted</code></td></tr>
+      <tr><td>Gate abort or deadline</td><td>No</td><td>Active IDs are stopped and attempts become terminal</td><td><code>cancelled</code> or <code>timeout</code></td></tr>
+    </tbody></table></div>
+    <h3 style="margin-top:20px">Example</h3>
+    <pre><code>{
+  "tasks": [
+    {
+      "agent": "reviewer",
+      "task": "Review the completed change independently.",
+      "phase": "independent-review",
+      "label": "review-a",
+      "retrySafety": "read-only",
+      "model": "anthropic/claude-opus-4-8",
+      "fallbackModels": ["openrouter/moonshotai/kimi-k3"]
+    },
+    {
+      "agent": "reviewer",
+      "task": "Review the same acceptance criteria independently.",
+      "phase": "independent-review",
+      "label": "review-b",
+      "retrySafety": "read-only",
+      "model": "openrouter/moonshotai/kimi-k3"
+    }
+  ],
+  "requiredSuccesses": 2,
+  "maxAttemptsPerTask": 2,
+  "requireDistinctProviders": true
+}</code></pre>
+    <ol class="steps">
+      <li><h3>Reload the Pi session</h3><p>The existing WebUI package extension now registers <code>subagent_gate</code>, and settings changes are read when a new/reloaded session starts.</p></li>
+      <li><h3>Use ordinary delegation by default</h3><p>Continue using <code>subagent</code> for calls that do not need retry or quorum semantics. Use <code>subagent_gate</code> only when those guarantees matter.</p></li>
+      <li><h3>Declare safety conservatively</h3><p>Omit <code>retrySafety</code> or use <code>may-write</code> unless rerunning the child is demonstrably idempotent and read-only.</p></li>
+      <li><h3>Inspect retained attempts</h3><p>The Subagents side panel shows quorum, provider/model, failure class, retry lineage, and terminal state after children disappear from the running list.</p></li>
+    </ol>
+  </section>
+
+  <section class="panel" id="review" role="tabpanel" aria-labelledby="tab-review">
+    <h2>Independent cross-provider review</h2>
+    <p>Two qualifying reviewers ran independently in fresh, read-only sessions. The implementation model was OpenAI; the qualifying reviewers used Moonshot/Kimi and Cursor Composer. Two Anthropic attempts were not counted because rate limits caused failed runs.</p>
+    <div class="table-wrap"><table><thead><tr><th>Run</th><th>Model / family</th><th>Outcome</th><th>Main evidence</th></tr></thead><tbody>
+      <tr><td><code>150df49e…</code>, child 2</td><td>Kimi K3 / Moonshot via OpenRouter</td><td><span class="badge good">Qualifying</span></td><td>Verified RPC contract, retry safety, payload bounds, tests; reported spawn-abort, cancellation status, phase, and watchdog concerns.</td></tr>
+      <tr><td><code>680653e8…</code></td><td>Composer 2.5 / Cursor</td><td><span class="badge good">Qualifying</span></td><td>Verified core architecture; reported cancellation status, coverage, phase, quorum short-circuit, and ambiguous missing-ID risks.</td></tr>
+      <tr><td><code>150df49e…</code>, child 1; <code>d18040f5…</code></td><td>Opus 4.8 / Fable 5, Anthropic</td><td><span class="badge warn">Not counted</span></td><td>HTTP 429 followed by fallback and turn-budget failure. Partial observations were advisory only.</td></tr>
+    </tbody></table></div>
+    <h3 style="margin-top:20px">Disposition summary</h3>
+    <div class="table-wrap"><table><thead><tr><th>Finding</th><th>Disposition</th><th>Resolution</th></tr></thead><tbody>
+      <tr><td>In-flight spawn abort may lose run ID</td><td><span class="badge good">Accepted</span></td><td>Preserve correlated reply after abort, recover ID, mark terminal, and stop. Delayed-reply test added.</td></tr>
+      <tr><td>Cancelled attempts remain running</td><td><span class="badge good">Accepted</span></td><td>New terminal <code>cancelled</code> attempt state with <code>endedAt</code>; rendered end to end.</td></tr>
+      <tr><td>Provider candidates exhausted</td><td><span class="badge good">Accepted</span></td><td>Fail before launch with <code>provider-exhausted</code>; excluded models are prefiltered.</td></tr>
+      <tr><td><code>phase</code> contract drift</td><td><span class="badge good">Accepted</span></td><td>Schema accepts and snapshots phase. It is not forwarded because RPC v1 has no phase field.</td></tr>
+      <tr><td>No early quorum short-circuit</td><td><span class="badge good">Accepted</span></td><td>Queued slots skip after quorum and are reported separately.</td></tr>
+      <tr><td>Missing run ID unsafe for writer</td><td><span class="badge good">Accepted</span></td><td>Classify as ambiguous; never retry a writer.</td></tr>
+      <tr><td>Separate default per-attempt watchdog</td><td><span class="badge info">Rejected</span></td><td>Timeout ownership stays explicit: optional child timeout plus mandatory bounded gate deadline.</td></tr>
+      <tr><td>Terminal gate retention</td><td><span class="badge info">Rejected</span></td><td>Retention is required observability and is strictly bounded.</td></tr>
+      <tr><td>Unrelated lockfile assertion</td><td><span class="badge warn">Deferred</span></td><td>Outside approved scope and present in the dirty baseline; not modified.</td></tr>
+    </tbody></table></div>
+    <p class="muted">The complete per-finding rationale, including lower-priority notes, is preserved in the linked Markdown plan.</p>
+  </section>
+
+  <section class="panel" id="evidence" role="tabpanel" aria-labelledby="tab-evidence">
+    <h2>Verification evidence and residual risk</h2>
+    <div class="table-wrap"><table><thead><tr><th>Check</th><th>Result</th><th>What it proves</th><th>Limitation</th></tr></thead><tbody>
+      <tr><td><code>node tests/subagent-gate.test.mjs</code></td><td><span class="badge good">Pass</span></td><td>Completion race, transient fallback, writer boundary, cancellation, late spawn reply, interrupted/no-retry, exhaustion, exclusions, quorum stop, timeout, and invalid config.</td><td>Uses a faithful in-memory event/RPC bus.</td></tr>
+      <tr><td><code>node tests/subagents-helper.test.mjs</code></td><td><span class="badge good">Pass</span></td><td>Gate updates join the internal WebUI subagent payload.</td><td>Does not open a browser.</td></tr>
+      <tr><td><code>node tests/http-endpoints-harness.test.mjs</code></td><td><span class="badge good">Pass</span></td><td>Server normalization, <code>totalGates</code>, attempts, failure classes, and clear behavior.</td><td>Browser layout is asserted separately by static tests.</td></tr>
+      <tr><td>Syntax + diff + settings checks</td><td><span class="badge good">Pass</span></td><td>Changed JS parses, diffs have no whitespace errors, JSON is valid, and six role fallbacks match exact order.</td><td>Does not authenticate each remote provider.</td></tr>
+      <tr><td><code>npm pack --dry-run --json</code></td><td><span class="badge good">Pass</span></td><td>The published package includes <code>lib/subagent-gate.mjs</code>.</td><td>No package was published.</td></tr>
+      <tr><td><code>npm test</code> / <code>npm run check</code></td><td><span class="badge warn">29/30</span></td><td>All feature checks and 29 test files pass.</td><td><code>mobile-static.test.mjs:1756</code> detects an unrelated baseline lockfile dependency.</td></tr>
+    </tbody></table></div>
+    <details open><summary>Residual risks</summary><ul>
+      <li>No live-provider end-to-end test exercised the real RPC bridge; installed pi-subagents source and the exact v1 event/reply contract were inspected instead.</li>
+      <li>Fallback availability still depends on provider credentials, quotas, and account health. The gate exposes exhaustion rather than claiming unavailable outputs.</li>
+      <li>Agent-level <code>fallbackModels</code> are an intentionally limited stopgap. They can retry internally before the outer gate sees a completed attempt.</li>
+      <li>Terminal histories are session-local and bounded, not a durable audit database.</li>
+      <li>The WebUI and dotfiles worktrees were already dirty. Edits were narrow; no unrelated changes were reverted or reformatted.</li>
+    </ul></details>
+    <details><summary>Fallback configuration</summary><p>The exact order is <code>anthropic/claude-opus-4-8</code> → <code>openrouter/moonshotai/kimi-k3</code> → <code>openai-codex/gpt-5.6-sol</code>. It is applied only to <code>reviewer</code>, <code>scout</code>, <code>planner</code>, <code>context-builder</code>, <code>researcher</code>, and <code>oracle</code>. Mutation-capable workers were intentionally excluded.</p></details>
+    <details><summary>Source inventory</summary><ul>
+      <li><a href="../plans/subagent-retry-gate.md">Canonical plan, decisions, review identities, dispositions, and verification log</a></li>
+      <li><code>lib/subagent-gate.mjs</code> — runtime state machine and tool contract</li>
+      <li><code>tests/subagent-gate.test.mjs</code> — safety and lifecycle unit coverage</li>
+      <li><code>webui-rpc-helper.mjs</code>, <code>bin/pi-webui.mjs</code>, <code>public/app.js</code>, <code>public/styles.css</code> — observability pipeline</li>
+      <li><code>~/.dotfiles/.pi/agent/APPEND_SUBAGENTS.md</code>, <code>settings.json</code> — policy and fallback configuration</li>
+    </ul></details>
+  </section>
+
+  <footer><p><strong>Generated:</strong> 2026-07-21 · <strong>Scope:</strong> local implementation and review evidence only; no production deployment or external side effect was performed.</p></footer>
+</main>
+<script>
+(()=>{const tabs=[...document.querySelectorAll('[role="tab"]')];const panels=tabs.map(t=>document.getElementById(t.getAttribute('aria-controls')));document.documentElement.classList.add('tabs-ready');function activate(tab,focus=false){tabs.forEach((candidate,i)=>{const selected=candidate===tab;candidate.setAttribute('aria-selected',String(selected));candidate.tabIndex=selected?0:-1;if(panels[i])panels[i].hidden=!selected});history.replaceState(null,'','#'+tab.getAttribute('aria-controls'));if(focus)tab.focus()}tabs.forEach((tab,index)=>{tab.addEventListener('click',()=>activate(tab));tab.addEventListener('keydown',event=>{let target=null;if(event.key==='ArrowRight')target=(index+1)%tabs.length;if(event.key==='ArrowLeft')target=(index-1+tabs.length)%tabs.length;if(event.key==='Home')target=0;if(event.key==='End')target=tabs.length-1;if(target===null)return;event.preventDefault();activate(tabs[target],true)})});const hash=location.hash.slice(1);activate(tabs.find(t=>t.getAttribute('aria-controls')===hash)||tabs[0])})();
+</script>
+</body>
+</html>

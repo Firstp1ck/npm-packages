@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Reviewed implementation report for watcher-driven live updates in the Pi WebUI Git sidepanel.">
+  <title>Git Panel Live Updates — Reviewed Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius:16px;--shadow:0 14px 36px rgb(0 0 0 / 22%)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 12% 0%,#17345d 0,var(--bg) 31rem);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue);text-underline-offset:.2em}a:focus-visible,button:focus-visible{outline:3px solid var(--yellow);outline-offset:3px}.skip{position:fixed;top:8px;left:8px;z-index:20;transform:translateY(-160%);background:var(--blue);color:#07101c;padding:8px 12px;border-radius:8px;font-weight:800}.skip:focus{transform:none}.shell{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,.panel,footer{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}header{padding:30px}footer{padding:18px 24px;margin-top:18px;color:var(--muted)}h1,h2,h3{line-height:1.25}h1{margin:.35rem 0 .7rem;font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.035em}h2{margin:0 0 1rem;padding-bottom:.65rem;border-bottom:1px solid var(--line);font-size:1.45rem}h3{margin:0 0 .45rem;font-size:1.08rem}p{margin:.5rem 0 1rem}.lead{max-width:78ch;color:var(--muted);font-size:1.06rem}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:.2rem .65rem;font-size:.78rem;font-weight:800;letter-spacing:.035em;text-transform:uppercase}.good{color:var(--green);border-color:#2a6b4d;background:#102b23}.warn{color:var(--yellow);border-color:#705d2d;background:#2c2515}.info{color:var(--blue);border-color:#315c86;background:#112943}.bad{color:var(--red);border-color:#7d3b3b;background:#321b22}.callout{margin-top:1rem;padding:1rem 1.1rem;border-left:4px solid var(--green);border-radius:0 12px 12px 0;background:#102820}.callout.warnbox{border-color:var(--yellow);background:#2c2515}.tabs{display:flex;gap:8px;overflow-x:auto;margin:18px 0;padding:8px;border:1px solid var(--line);border-radius:12px;background:rgb(7 16 28 / 72%)}[role=tab]{appearance:none;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);padding:9px 13px;white-space:nowrap;font:inherit;font-weight:760;cursor:pointer}[role=tab][aria-selected=true]{color:var(--text);border-color:rgb(101 181 255 / 45%);background:rgb(101 181 255 / 14%)}.panel{padding:24px;margin:0 0 18px}.tabs-ready [role=tabpanel][hidden]{display:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card,.metric{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.metric strong{display:block;margin:.25rem 0;font-size:1.45rem}.muted{color:var(--muted)}.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}table{width:100%;min-width:680px;border-collapse:collapse}th,td{padding:.75rem .85rem;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}tbody tr:last-child td{border-bottom:0}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.12em .35em;border-radius:5px;background:var(--code)}pre{overflow:auto;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--code);white-space:pre-wrap}.flow{margin:18px 0;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}figure{margin:0}figure svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px;background:var(--code)}figcaption{margin-top:8px;color:var(--muted);font-size:.92rem}.node{fill:#182b43;stroke:var(--blue);stroke-width:2}.node.success{stroke:var(--green)}.node-text{fill:var(--text);font:650 14px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:var(--muted);stroke-width:2.5;marker-end:url(#arrow)}.edge-dashed{stroke-dasharray:7 6}.finding{margin:12px 0;padding:14px 16px;border-left:4px solid var(--line);border-radius:0 10px 10px 0;background:var(--panel2)}.finding.accepted{border-color:var(--green)}.finding.deferred{border-color:var(--yellow)}.finding.rejected{border-color:var(--red)}ul.compact{margin:.4rem 0;padding-left:1.2rem}details{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}summary{cursor:pointer;color:var(--blue);font-weight:750}.confidence{font-variant-numeric:tabular-nums}.status-line{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}.actions button{border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--text);padding:8px 12px;min-height:42px;font:inherit;font-weight:700;cursor:pointer}.actions button:hover{border-color:var(--blue)}
+    @media(max-width:620px){.shell{width:min(100% - 18px,1120px);margin-top:10px}header,.panel{padding:18px}.tabs{position:sticky;top:0;z-index:5}table{min-width:620px}.node-text{font-size:12px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+    @media print{:root{color-scheme:light}body{background:#fff;color:#111}.shell{width:100%;margin:0}header,.panel,footer,.card,.metric,.flow{box-shadow:none;background:#fff;color:#111;border-color:#bbb}.tabs,.actions,.skip{display:none!important}[role=tabpanel],[role=tabpanel][hidden]{display:block!important}.muted,figcaption,footer{color:#444}pre,code,figure svg{background:#f3f5f7;color:#111;border-color:#bbb}.panel,figure,.card,.metric{break-inside:avoid}a{color:#111;text-decoration:underline}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report content</a>
+<main class="shell" id="content">
+  <header>
+    <span class="badge good">Reviewed implementation</span>
+    <h1>Git Panel Live Updates</h1>
+    <p class="lead">Audit report for the Pi WebUI change that watches discovered Git repositories on the server, broadcasts debounced SSE invalidations, and refreshes the sidepanel from authoritative Git status. Evidence comes from the implementation, focused tests, the real HTTP/SSE harness, and two qualifying independent provider-family reviews.</p>
+    <div class="callout"><strong>Conclusion:</strong> the feature is implemented and review-complete. Create, modify, rename, and remove operations trigger repository-level invalidation without periodic Git polling or file-content transfer.</div>
+    <div class="status-line">
+      <span class="badge good">Feature checks pass</span>
+      <span class="badge good">Kimi + DeepSeek reviewed</span>
+      <span class="badge warn">Full suite 33/34</span>
+    </div>
+    <p class="muted confidence"><strong>Confidence: 93/100.</strong> Server watcher and SSE behavior were exercised end-to-end. Confidence is limited by the absence of a browser/jsdom behavioral harness, platform variability in recursive filesystem watching, and one unrelated package-lock assertion in the full suite.</p>
+    <div class="actions" aria-label="Report actions"><button type="button" id="printButton">Print report</button><button type="button" id="copyLinkButton">Copy current link</button><span id="actionStatus" class="muted" role="status" aria-live="polite"></span></div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Report sections">
+    <button id="tab-overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0">Overview</button>
+    <button id="tab-architecture" role="tab" aria-selected="false" aria-controls="architecture" tabindex="-1">Architecture</button>
+    <button id="tab-implementation" role="tab" aria-selected="false" aria-controls="implementation" tabindex="-1">Implementation</button>
+    <button id="tab-verification" role="tab" aria-selected="false" aria-controls="verification" tabindex="-1">Verification</button>
+    <button id="tab-review" role="tab" aria-selected="false" aria-controls="review" tabindex="-1">Reviews &amp; risks</button>
+  </nav>
+
+  <section class="panel" id="overview" role="tabpanel" aria-labelledby="tab-overview">
+    <h2>Executive overview</h2>
+    <div class="grid" aria-label="Headline facts">
+      <div class="metric"><span class="badge info">Sharing</span><strong>1 watcher / Git root</strong><span class="muted">Tabs in the same repository share one recursive watcher.</span></div>
+      <div class="metric"><span class="badge info">Latency policy</span><strong>250 ms / 2 s</strong><span class="muted">Trailing debounce with a maximum wait during sustained writes.</span></div>
+      <div class="metric"><span class="badge good">Integration</span><strong>4 operations observed</strong><span class="muted">Create, modify, rename, and remove all produced SSE invalidations.</span></div>
+      <div class="metric"><span class="badge good">Review gate</span><strong>2 provider families</strong><span class="muted">Kimi reviewed the initial feature; DeepSeek reviewed the post-fix implementation.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Audit map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Implemented behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Watcher lifecycle</td><td>Lazy per-root sharing, tab references, non-fatal errors, and deterministic cleanup.</td><td><code>lib/git-live-watcher.mjs</code> and unit test</td><td><span class="badge good">Verified</span></td></tr>
+          <tr><td>SSE invalidation</td><td>Repository root and timestamp only; no filename or content payload.</td><td>Server integration and HTTP harness</td><td><span class="badge good">Verified</span></td></tr>
+          <tr><td>Browser refresh</td><td>Visible stale snapshots reload; collapsed snapshots wait; in-flight invalidations queue one follow-up.</td><td><code>public/app.js</code> and static contract test</td><td><span class="badge good">Reviewed</span></td></tr>
+          <tr><td>Repository checks</td><td>All feature checks pass; one unrelated package-lock expectation fails in the full suite.</td><td><code>npm run check</code></td><td><span class="badge warn">33/34</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Canonical execution details and exact reviewer dispositions are preserved in <a href="../plans/git-panel-live-updates.md">the linked Markdown plan</a>.</p>
+  </section>
+
+  <section class="panel" id="architecture" role="tabpanel" aria-labelledby="tab-architecture">
+    <h2>Architecture and event flow</h2>
+    <figure class="flow" data-visual-kind="diagram" data-purpose="Show how a filesystem change reaches an authoritative Git sidepanel snapshot">
+      <svg role="img" aria-labelledby="flowTitle flowDesc" viewBox="0 0 980 360">
+        <title id="flowTitle">Git sidepanel live-update sequence</title>
+        <desc id="flowDesc">A filesystem event enters a shared repository watcher, passes through debounce and SSE invalidation, expires the browser cache, and causes a Git-panel HTTP read when visible. Collapsed views defer the final read.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
+        <path class="edge" d="M190 93 H260"/><path class="edge" d="M430 93 H500"/><path class="edge" d="M670 93 H740"/><path class="edge" d="M825 130 V208"/><path class="edge" d="M740 260 H590"/><path class="edge edge-dashed" d="M500 260 H365"/>
+        <rect class="node" x="20" y="52" width="170" height="82" rx="12"/><text class="node-text" x="105" y="86">fs.watch event</text><text class="node-text" x="105" y="108">shared Git root</text>
+        <rect class="node" x="260" y="52" width="170" height="82" rx="12"/><text class="node-text" x="345" y="86">250 ms debounce</text><text class="node-text" x="345" y="108">2 s maximum wait</text>
+        <rect class="node" x="500" y="52" width="170" height="82" rx="12"/><text class="node-text" x="585" y="86">SSE invalidation</text><text class="node-text" x="585" y="108">root + timestamp</text>
+        <rect class="node" x="740" y="52" width="170" height="82" rx="12"/><text class="node-text" x="825" y="86">Expire snapshot</text><text class="node-text" x="825" y="108">loadedAt = 0</text>
+        <rect class="node success" x="650" y="208" width="260" height="104" rx="12"/><text class="node-text" x="780" y="245">Visible: GET /api/git-panel</text><text class="node-text" x="780" y="270">Git status is authoritative</text><text class="node-text" x="780" y="293">one pending follow-up max</text>
+        <rect class="node" x="330" y="218" width="260" height="84" rx="12"/><text class="node-text" x="460" y="252">Collapsed: remain stale</text><text class="node-text" x="460" y="276">refresh on next visible render</text>
+      </svg>
+      <figcaption>Observed/proposed relationship: all components shown are implemented. The dashed path is deferred work while the Git section is collapsed, not a lost event.</figcaption>
+    </figure>
+    <div class="grid">
+      <article class="card"><h3>Resource model</h3><p>A canonical root owns one watcher and a set of tab IDs. The final unsubscribe closes its timer and watcher. Shutdown closes all roots.</p></article>
+      <article class="card"><h3>Authority model</h3><p>Filesystem events never attempt to classify Git state. They only invalidate; <code>/api/git-panel</code> runs bounded Git reads and returns the authoritative snapshot.</p></article>
+      <article class="card"><h3>Feedback prevention</h3><p>Read-only status/diff commands receive <code>GIT_OPTIONAL_LOCKS=0</code>, preventing optional index refresh writes from feeding back into the watcher.</p></article>
+      <article class="card"><h3>Failure model</h3><p>Watcher errors are diagnostic and non-fatal. Git read errors stop automatic render retries until a new invalidation or explicit refresh.</p></article>
+    </div>
+  </section>
+
+  <section class="panel" id="implementation" role="tabpanel" aria-labelledby="tab-implementation">
+    <h2>Implementation map</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Path</th><th>Responsibility</th><th>Key contract</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib/git-live-watcher.mjs</code></td><td>Watcher sharing, subscription moves, debounce/max-wait, failures, cleanup.</td><td>No external dependency; injectable watcher and callbacks.</td></tr>
+          <tr><td><code>bin/pi-webui.mjs</code></td><td>Lazy registration, SSE emission, lifecycle cleanup, read-only Git environment.</td><td><code>webui_git_changed</code> contains root and timestamp only.</td></tr>
+          <tr><td><code>public/app.js</code></td><td>Cache expiry, visibility-aware refresh, in-flight follow-up, error-loop guard.</td><td>At most one active request plus one pending follow-up per repository.</td></tr>
+          <tr><td><code>tests/git-live-watcher.test.mjs</code></td><td>Deterministic watcher-manager behavior.</td><td>Sharing, debounce, max wait, move/error/close behavior.</td></tr>
+          <tr><td><code>tests/http-endpoints-harness.test.mjs</code></td><td>Real server and filesystem integration.</td><td>Create/modify/rename/remove each emit the expected SSE event.</td></tr>
+          <tr><td><code>tests/git-panel-live-updates-static.test.mjs</code></td><td>Browser/server source contract.</td><td>Protects lifecycle hooks, event routing, pending refresh, and error guard.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 style="margin-top:22px">Race handling</h3>
+    <pre><code>if an SSE invalidation arrives while /api/git-panel is loading:
+  mark refreshPending = true
+  let the current request settle
+  render its result or error once
+  queue exactly one forced follow-up read</code></pre>
+    <div class="callout warnbox"><strong>Scope protection:</strong> the worktree also contains footer-calibration, git-footer, danger-button, and package-lock-related work. This feature used targeted edits and did not revert or claim those unrelated changes.</div>
+  </section>
+
+  <section class="panel" id="verification" role="tabpanel" aria-labelledby="tab-verification">
+    <h2>Testing and acceptance evidence</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td>Syntax checks</td><td><span class="badge good">Pass</span></td><td>New watcher module, server, and browser source parse under Node 22.</td></tr>
+          <tr><td>Watcher unit test</td><td><span class="badge good">Pass</span></td><td>Per-root sharing, debounce, 2 s max-wait logic, move, startup/runtime errors, and close-all.</td></tr>
+          <tr><td>Static UI/server contract</td><td><span class="badge good">Pass</span></td><td>SSE wiring, cache invalidation, pending follow-up, persistent-error guard, and README contract remain present.</td></tr>
+          <tr><td>HTTP/SSE integration harness</td><td><span class="badge good">Pass</span></td><td>A real temporary repository emits invalidations after all four required filesystem operations.</td></tr>
+          <tr><td>Feature diff whitespace</td><td><span class="badge good">Pass</span></td><td>No whitespace errors in the feature files.</td></tr>
+          <tr><td>Full <code>npm run check</code></td><td><span class="badge warn">33/34</span></td><td>Every feature test passes; only the known unrelated optional-companion package-lock assertion fails.</td></tr>
+          <tr><td>HTML strict validation</td><td><span class="badge good">Pass</span></td><td>This report meets the local self-contained report contract.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details><summary>Transient harness failure</summary><p>The first standalone HTTP harness attempt selected a random port already in use and failed with <code>EADDRINUSE</code>. A clean retry passed, and subsequent full-suite harness execution also passed. This was classified as a transient environment collision rather than a feature defect.</p></details>
+    <details><summary>Known full-suite failure</summary><p><code>tests/mobile-static.test.mjs:1758</code> expects the package-lock root not to require optional companion <code>@firstpick/pi-extension-bang-command-autocomplete</code>, but the current lock contains <code>^0.2.1</code>. Reviewers reproduced and classified this as pre-existing and unrelated.</p></details>
+    <h3 style="margin-top:22px">Repeatable commands</h3>
+    <pre><code>node --test tests/git-live-watcher.test.mjs
+node --test tests/git-panel-live-updates-static.test.mjs
+node tests/http-endpoints-harness.test.mjs
+npm run check
+python3 /home/firstpick/.pi/agent/skills/html-report/scripts/validate_report.py reports/git-panel-live-updates.html --strict</code></pre>
+  </section>
+
+  <section class="panel" id="review" role="tabpanel" aria-labelledby="tab-review">
+    <h2>Independent review and residual risk</h2>
+    <div class="grid">
+      <article class="card"><span class="badge info">Reviewer A</span><h3>Kimi K3 · high</h3><p>Initial independent review found the persistent-error retry loop and trailing-debounce starvation. Both were independently verified, accepted, and fixed.</p><p class="muted">Run <code>1aaf2f11-01a6-4ed3-a5cd-eb9f09259527</code>, child 0 · confidence 88/100.</p></article>
+      <article class="card"><span class="badge info">Reviewer B</span><h3>DeepSeek V4 Pro · high</h3><p>Reviewed the post-fix implementation and found no additional actionable issue across lifecycle, races, privacy, tests, and maintainability.</p><p class="muted">Run <code>7dab2d04-4c75-40f9-8338-807a9aadd5c3</code> · confidence 92/100.</p></article>
+    </div>
+    <h3 style="margin-top:22px">Finding dispositions</h3>
+    <article class="finding accepted"><strong>Accepted and fixed — unbounded read-error retries.</strong> Error snapshots are skipped by visible-refresh reconciliation; a new invalidation clears the error and retries once.</article>
+    <article class="finding accepted"><strong>Accepted and fixed — sustained-write starvation.</strong> A 2 s maximum wait now bounds the trailing debounce.</article>
+    <article class="finding accepted"><strong>Accepted and fixed — tab-start cleanup gap.</strong> The create-tab failure path defensively unsubscribes before deleting the tab.</article>
+    <article class="finding deferred"><strong>Deferred — watcher platform limits and build churn.</strong> Recursive watches can fail on network filesystems or host watch limits, and busy build trees can still cause periodic refresh work. Non-fatal fallback, debounce, max-wait, and in-flight bounds are the proportionate current controls.</article>
+    <article class="finding rejected"><strong>Rejected as a new privacy defect — repository-root disclosure.</strong> The same authorized browser already receives the root/cwd; invalidations add no filenames or contents.</article>
+    <h3 style="margin-top:22px">Residual risks</h3>
+    <ul class="compact">
+      <li>Watcher events are not replayed after an SSE disconnect; cache expiry or manual refresh recovers missed changes.</li>
+      <li>Browser DOM timing and pending-refresh behavior are reviewed and structurally tested, not run in a browser automation harness.</li>
+      <li>Recursive watcher reliability depends on the host filesystem and watch limits.</li>
+      <li>No workload benchmark was run for very large repositories or sustained generated-file churn.</li>
+    </ul>
+    <div class="callout"><strong>Rollout guidance:</strong> open the Git section, expand a repository, then create/edit/rename/delete a file. The Changes count and tree should refresh after the debounce window. Collapse the section, change a file, and re-open it to confirm deferred refresh. Manual Refresh remains the fallback.</div>
+  </section>
+
+  <footer><strong>Artifacts:</strong> <a href="../plans/git-panel-live-updates.md">execution plan</a> · report generated 2026-07-21 from local repository and review evidence. No external scripts, fonts, or telemetry.</footer>
+</main>
+<script>
+(() => {
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const panels = tabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+  document.documentElement.classList.add('tabs-ready');
+  function activate(tab, updateHash = true) {
+    tabs.forEach((candidate, index) => {
+      const selected = candidate === tab;
+      candidate.setAttribute('aria-selected', String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      if (panels[index]) panels[index].hidden = !selected;
+    });
+    if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', event => {
+      let next = null;
+      if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = tabs.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      activate(tabs[next]);
+      tabs[next].focus();
+    });
+  });
+  const hashPanel = panels.find(panel => panel && `#${panel.id}` === location.hash);
+  activate(hashPanel ? tabs[panels.indexOf(hashPanel)] : tabs[0], false);
+  const status = document.getElementById('actionStatus');
+  document.getElementById('printButton')?.addEventListener('click', () => window.print());
+  document.getElementById('copyLinkButton')?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      status.textContent = 'Link copied.';
+    } catch {
+      status.textContent = 'Copy unavailable; use the address bar.';
+    }
+  });
+})();
+</script>
+</body>
+</html>

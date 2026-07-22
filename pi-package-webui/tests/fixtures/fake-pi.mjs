@@ -259,6 +259,8 @@ function handleWebuiHelperPrompt(command, base) {
             status: "running",
             currentTool: "read",
             currentToolArgs: "README.md",
+            model: "anthropic/claude-opus-4-8:high",
+            thinking: "high",
             recentTools: [{ tool: "grep", args: "Subagents", endMs: Date.now() - 200 }],
             recentOutput: ["Inspecting current implementation", "Waiting for the next tool result"],
             transcript: [
@@ -333,15 +335,30 @@ function handleTransportFixturePrompt(command, base) {
 function handleSubagentFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
   if (message !== "fixture subagents running" && message !== "fixture subagents clear") return false;
-  const runs = message.endsWith("clear") ? [] : [{
+  const clearing = message.endsWith("clear");
+  const runs = clearing ? [] : [{
     id: "fixture-run",
     source: "async",
     mode: "parallel",
     status: "running",
     startedAt: Date.now() - 2500,
     agents: [
-      { id: "fixture-run:0", name: "reviewer", status: "running", index: 0, currentTool: "read", nested: false },
-      { id: "fixture-run:1", name: "scout", status: "running", index: 1, nested: false },
+      { id: "fixture-run:0", name: "reviewer", status: "running", index: 0, currentTool: "read", model: "anthropic/claude-opus-4-8:high", thinking: "high", nested: false },
+      { id: "fixture-run:1", name: "scout", status: "running", index: 1, model: "openai-codex/gpt-5.6-sol", thinking: "high", nested: false },
+    ],
+  }];
+  const gates = clearing ? [] : [{
+    version: 1,
+    id: "fixture-gate",
+    status: "running",
+    requiredSuccesses: 2,
+    qualifyingSuccesses: 1,
+    requireDistinctProviders: true,
+    startedAt: Date.now() - 3000,
+    updatedAt: Date.now(),
+    attempts: [
+      { id: "fixture-gate:0:1", taskIndex: 0, attempt: 1, maxAttempts: 2, agent: "reviewer", retrySafety: "read-only", runId: "fixture-review-1", model: "anthropic/claude-opus-4-8", provider: "anthropic", status: "succeeded" },
+      { id: "fixture-gate:1:1", taskIndex: 1, attempt: 1, maxAttempts: 2, agent: "reviewer", retrySafety: "read-only", runId: "fixture-review-2", model: "openrouter/moonshotai/kimi-k3", provider: "openrouter", status: "failed", failureKind: "transient-provider", error: "provider overloaded" },
     ],
   }];
   respond({ ...base, data: { output: "fake subagent status emitted" } });
@@ -350,7 +367,7 @@ function handleSubagentFixturePrompt(command, base) {
     id: randomUUID(),
     method: "setStatus",
     statusKey: "webui-subagents",
-    statusText: `PI_WEBUI_SUBAGENTS_V1 ${JSON.stringify({ version: 1, available: true, updatedAt: Date.now(), runs })}`,
+    statusText: `PI_WEBUI_SUBAGENTS_V1 ${JSON.stringify({ version: 1, available: true, updatedAt: Date.now(), runs, gates })}`,
   });
   return true;
 }

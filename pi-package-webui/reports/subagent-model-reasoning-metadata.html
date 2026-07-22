@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>WebUI Subagent Model and Reasoning Metadata</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius:16px;--shadow:0 14px 36px rgb(0 0 0/.22)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.skip{position:fixed;left:8px;top:8px;transform:translateY(-160%);background:var(--blue);color:#06111f;padding:8px 12px;border-radius:8px;font-weight:800}.skip:focus{transform:none}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,section{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;margin:18px 0}header{padding:30px}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.025em;margin-bottom:8px}h2{font-size:1.45rem;border-bottom:1px solid var(--line);padding-bottom:10px}h3{font-size:1.05rem;margin-bottom:6px}p{margin:8px 0 14px}.lead{font-size:1.1rem;max-width:82ch}.muted{color:var(--muted)}.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:.78rem;font-weight:800;letter-spacing:.035em;text-transform:uppercase;margin-bottom:8px}.good{color:var(--green)}.warn{color:var(--yellow)}.info{color:var(--blue)}.badge.good{background:rgb(80 216 144/.14);border:1px solid rgb(80 216 144/.38)}.badge.warn{background:rgb(247 198 92/.14);border:1px solid rgb(247 198 92/.38)}.badge.info{background:rgb(101 181 255/.14);border:1px solid rgb(101 181 255/.38)}.callout{border-left:5px solid var(--green);background:rgb(80 216 144/.08);border-radius:8px;padding:14px 16px;margin:14px 0}.callout.warn{border-left-color:var(--yellow);background:rgb(247 198 92/.08);color:var(--text)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card,.metric{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:16px}.metric strong{display:block;font-size:1.35rem}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:680px}th,td{text-align:left;vertical-align:top;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.84rem;text-transform:uppercase;letter-spacing:.04em}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .38em;border-radius:5px}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap;color:#d9e6f7}figure{margin:18px 0}figure svg{display:block;width:100%;height:auto;background:var(--code);border:1px solid var(--line);border-radius:12px}figcaption{color:var(--muted);margin-top:8px;font-size:.92rem}.node{fill:#182b43;stroke:var(--blue);stroke-width:2}.node.goodnode{stroke:var(--green)}.node-text{fill:var(--text);font:650 14px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:var(--muted);stroke-width:2.5;marker-end:url(#arrow)}.small{font-size:.9rem}footer{color:var(--muted);margin-top:24px;font-size:.9rem}@media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,section{padding:18px}.node-text{font-size:12px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}@media print{:root{color-scheme:light}body{background:#fff;color:#111}main{width:100%;margin:0}header,section,.card,.metric{box-shadow:none;background:#fff;color:#111;border-color:#bbb;break-inside:avoid}pre,code,figure svg{background:#f1f3f5;color:#111;border-color:#bbb}.muted,figcaption,footer{color:#444}a{color:#111}.skip{display:none}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report content</a>
+<main id="content">
+  <header>
+    <span class="badge good">Implemented · independently reviewed</span>
+    <h1>WebUI subagent model and reasoning metadata</h1>
+    <p class="lead">Implementation report for <code>pi-package-webui</code>. Evidence comes from the current source, focused helper and HTTP tests, static UI assertions, syntax checks, and independent Anthropic and Google-family reviews.</p>
+    <div class="callout"><strong>Conclusion:</strong> every tracked subagent now identifies its model and reasoning effort in the side panel, output overlay, and dedicated child terminal view. Legacy or unavailable metadata is shown honestly as <code>unknown</code>.</div>
+    <p class="muted"><strong>Confidence:</strong> 95/100. The data path and fixtures are verified; the remaining uncertainty is limited to live provider/runtime combinations not exercised by the local harness.</p>
+  </header>
+
+  <section aria-labelledby="overview-title">
+    <h2 id="overview-title">Executive overview</h2>
+    <div class="grid" aria-label="Headline results">
+      <div class="metric"><span class="badge good">Coverage</span><strong>3 UI surfaces</strong><span class="muted">Side-panel row, overlay pills, and child terminal metadata.</span></div>
+      <div class="metric"><span class="badge good">Review</span><strong>2 provider families</strong><span class="muted">Anthropic direct and Google Gemini through OpenRouter.</span></div>
+      <div class="metric"><span class="badge info">Protocol</span><strong>Backward compatible</strong><span class="muted">Optional additive fields retain payload version 1.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Audit map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Implemented behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Collection</td><td>Async runs use lifecycle <code>steps[].model</code> and <code>steps[].thinking</code>; foreground runs retain overrides and runtime updates.</td><td><code>webui-rpc-helper.mjs</code>, helper test</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Transport</td><td>Model and thinking strings are allowlisted into overview and output responses with 240/40-character bounds.</td><td><code>bin/pi-webui.mjs</code>, HTTP harness</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Presentation</td><td>One formatter emits <code>model …</code> and <code>reasoning …</code>, removes only a matching duplicate suffix, and uses explicit unknown fallbacks.</td><td><code>public/app.js</code>, static assertions</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Quality gate</td><td>Both independent review findings were fixed and focused checks were rerun.</td><td>Review dispositions and verification log</td><td><span class="good">Resolved</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="architecture-title">
+    <h2 id="architecture-title">Architecture and data flow</h2>
+    <figure data-visual-kind="diagram" data-purpose="Show how effective subagent execution metadata reaches every WebUI surface">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 980 330">
+        <title id="flow-title">Subagent model and reasoning metadata flow</title>
+        <desc id="flow-desc">Requested foreground metadata and canonical async lifecycle metadata enter the WebUI helper, pass through bounded server normalization, and are rendered consistently in three browser surfaces.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0 0 L0 6 L9 3z" fill="#a9b7cb"/></marker></defs>
+        <rect class="node" x="25" y="46" width="210" height="76" rx="12"/><text class="node-text" x="130" y="78">Foreground invocation</text><text class="node-text" x="130" y="100">model suffix / override</text>
+        <rect class="node" x="25" y="200" width="210" height="76" rx="12"/><text class="node-text" x="130" y="232">Async lifecycle status</text><text class="node-text" x="130" y="254">effective model + thinking</text>
+        <path class="edge" d="M235 84 H340"/><path class="edge" d="M235 238 H290 Q340 238 340 188"/>
+        <rect class="node goodnode" x="340" y="112" width="220" height="92" rx="12"/><text class="node-text" x="450" y="146">WebUI helper bridge</text><text class="node-text" x="450" y="168">merge + suffix fallback</text><text class="node-text" x="450" y="190">statusByDir read cache</text>
+        <path class="edge" d="M560 158 H650"/>
+        <rect class="node" x="650" y="112" width="180" height="92" rx="12"/><text class="node-text" x="740" y="148">Server normalizer</text><text class="node-text" x="740" y="172">bounded optional fields</text>
+        <path class="edge" d="M830 158 H900"/>
+        <rect class="node goodnode" x="875" y="28" width="90" height="68" rx="12"/><text class="node-text" x="920" y="58">Side</text><text class="node-text" x="920" y="78">panel</text>
+        <rect class="node goodnode" x="875" y="130" width="90" height="68" rx="12"/><text class="node-text" x="920" y="170">Overlay</text>
+        <rect class="node goodnode" x="875" y="232" width="90" height="68" rx="12"/><text class="node-text" x="920" y="262">Child</text><text class="node-text" x="920" y="282">terminal</text>
+        <path class="edge" d="M850 158 Q860 62 875 62"/><path class="edge" d="M850 158 H875"/><path class="edge" d="M850 158 Q860 266 875 266"/>
+      </svg>
+      <figcaption>The lifecycle status remains authoritative for async children. Requested values are temporary foreground metadata and are replaced by effective runtime model information when progress details provide it.</figcaption>
+    </figure>
+    <div class="grid">
+      <article class="card"><span class="badge info">Async</span><h3>Canonical effective values</h3><p>Each child resolves its own lifecycle directory, including nested runs. A refresh-local map parses each distinct <code>status.json</code> only once.</p></article>
+      <article class="card"><span class="badge info">Foreground</span><h3>Stable across updates</h3><p>Run defaults and per-child model suffixes seed the row immediately; live progress merges preserve metadata instead of dropping it.</p></article>
+      <article class="card"><span class="badge info">Legacy</span><h3>No invented values</h3><p>Missing fields remain optional through transport and render as <code>model unknown</code> and <code>reasoning unknown</code>.</p></article>
+    </div>
+  </section>
+
+  <section aria-labelledby="implementation-title">
+    <h2 id="implementation-title">Implementation map and usage</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Responsibility</th><th>Key safeguard</th></tr></thead>
+        <tbody>
+          <tr><td><code>webui-rpc-helper.mjs</code></td><td>Collect, derive, merge, and publish model/thinking metadata.</td><td>Nested run IDs, lifecycle run-ID validation, per-directory cache.</td></tr>
+          <tr><td><code>bin/pi-webui.mjs</code></td><td>Normalize overview and selected-output responses.</td><td>Bounded strings and optional additive fields.</td></tr>
+          <tr><td><code>public/app.js</code></td><td>Build consistent user-facing execution facts.</td><td>Text-node rendering and exact suffix de-duplication.</td></tr>
+          <tr><td><code>tests/*</code></td><td>Exercise async, foreground, endpoint, and static UI contracts.</td><td>Provider-qualified fixture values and unknown-compatible protocol.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Users do not need to configure another control. A running child appears with metadata such as:</p>
+    <pre><code>reviewer
+async · model anthropic/claude-opus-4-8 · reasoning high · running 18s</code></pre>
+    <p>The raw payload may retain a provider-specific suffix such as <code>:high</code>; the UI removes it from the model label only when it exactly matches the separate reasoning value.</p>
+  </section>
+
+  <section aria-labelledby="validation-title">
+    <h2 id="validation-title">Testing and acceptance evidence</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td><code>node --check</code> on helper, server, and app</td><td><span class="good">Passed</span></td><td>All changed runtime JavaScript parses.</td></tr>
+          <tr><td><code>node tests/subagents-helper.test.mjs</code></td><td><span class="good">Passed</span></td><td>Async lifecycle values and foreground model/reasoning overrides survive publication and output snapshots.</td></tr>
+          <tr><td><code>node tests/http-endpoints-harness.test.mjs</code></td><td><span class="good">Passed</span></td><td>Overview and output endpoints preserve normalized metadata.</td></tr>
+          <tr><td><code>node tests/mobile-static.test.mjs</code></td><td><span class="warn">Feature assertions passed; later unrelated failure</span></td><td>All new collection/normalization/rendering assertions pass before the existing dependency expectation fails.</td></tr>
+          <tr><td><code>git diff --check</code></td><td><span class="good">Passed</span></td><td>No whitespace errors in the current package diff.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warn"><strong>Known unrelated suite failure:</strong> the static dependency table expects <code>@firstpick/pi-extension-git-footer-status ^0.4.0</code>, while the package currently declares <code>^0.4.1</code>. Both reviewers confirmed this is pre-existing and unrelated to subagent metadata.</div>
+  </section>
+
+  <section aria-labelledby="review-title">
+    <h2 id="review-title">Independent review findings and dispositions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Reviewer</th><th>Finding</th><th>Disposition</th><th>Final status</th></tr></thead>
+        <tbody>
+          <tr><td>Anthropic Claude Opus 4.8 · high</td><td>Medium: repeated reads of the same lifecycle file in the polling path.</td><td>Added a refresh-local <code>statusByDir</code> map; each distinct lifecycle file is parsed once per refresh.</td><td><span class="good">Resolved</span></td></tr>
+          <tr><td>Anthropic Claude Opus 4.8 · high</td><td>Low: publish-time suffix derivation was not defensive.</td><td>Added model-suffix fallback when public metadata is assembled.</td><td><span class="good">Resolved</span></td></tr>
+          <tr><td>OpenRouter Google Gemini 3.1 Pro Preview · high</td><td>Blocker: static test regex still matched the pre-cache helper signature.</td><td>Updated the contract assertion for the <code>statusByDir</code> parameter and reran focused checks.</td><td><span class="good">Resolved</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 style="margin-top:22px">Residual risks</h3>
+    <ul>
+      <li>The suffix parser intentionally recognizes Pi’s current reasoning vocabulary: <code>off</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, and <code>max</code>. A future new level would display as unknown until allowlisted.</li>
+      <li>A run whose lifecycle directory cannot be resolved can retry the bounded status RPC on later polls. This preserves eventual discovery but may create small repeated local work.</li>
+      <li>Live end-to-end validation covered representative fixtures rather than every provider and nested workflow combination.</li>
+    </ul>
+    <p><strong>Final recommendation:</strong> ship the feature independently of the unrelated dependency-test cleanup.</p>
+  </section>
+
+  <footer>
+    <p>Generated 2026-07-21 · Canonical plan: <a href="../plans/subagent-model-reasoning-metadata.md">plans/subagent-model-reasoning-metadata.md</a> · Scope: WebUI subagent execution metadata only.</p>
+  </footer>
+</main>
+</body>
+</html>

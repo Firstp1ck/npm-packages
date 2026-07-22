@@ -10,7 +10,7 @@ Installed Pi runtimes may retain a legacy Claude Code OAuth request identity. Pa
 
 ### Expected outcome
 
-Every discovered runtime is classified before mutation. Known legacy layouts are transformed transactionally, already-patched or upstreamed layouts are no-ops, and unknown versions/layouts fail without partial writes.
+Every discovered runtime is classified before mutation. Known legacy layouts through `@earendil-works/pi-ai` `0.81.x` are transformed transactionally, already-patched or upstreamed layouts are no-ops, and unknown versions/layouts fail without partial writes.
 
 ## Lifecycle
 

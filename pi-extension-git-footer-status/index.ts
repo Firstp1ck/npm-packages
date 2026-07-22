@@ -2260,9 +2260,8 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       try {
         const silent = /(?:^|\s)--webui-silent(?:\s|$)/.test(args || "");
         rememberFooterContext(ctx);
-        // Calibration records are shared across workspace sessions. A manual or
-        // WebUI refresh must bypass the short-lived cache so a finished
-        // /calibrate probe is reflected in the next published PI chip.
+        // Calibration records are shared across workspace sessions. An explicit
+        // refresh must bypass the 60-second cache so newly recorded samples are visible.
         promptCalibrationCache = null;
         await refreshPromptInjectionEstimate(ctx);
         await refresh(ctx);

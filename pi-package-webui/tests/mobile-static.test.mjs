@@ -49,7 +49,7 @@ const companionDependencies = {
   "@firstpick/pi-extension-tools": "^0.1.6",
   "@firstpick/pi-extension-workflows": "^0.1.4",
   "@firstpick/pi-package-remote-webui": "^0.1.6",
-  "@firstpick/pi-prompts-git-pr": "^0.1.3",
+  "@firstpick/pi-prompts-git-pr": "^0.1.4",
   "@firstpick/pi-themes-bundle": "^0.1.4",
 };
 
@@ -107,12 +107,49 @@ assert.match(html, /id="pathPickerSearchInput"[^>]*type="search"[^>]*placeholder
 assert.match(html, /id="pathPickerClearSearchButton"[^>]*hidden[^>]*>Clear<\/button>/, "cwd picker should expose a clear-search action");
 assert.match(app, /function fileTreeGitStatusForEntry\(entry = \{\}\) \{\s+return fileTreeState\.gitStatusByPath\.get\(normalizeFileTreePath\(entry\.path \|\| ""\)\) \|\| null;\s+\}/, "file tree rendering should use the refreshed Git-status snapshot instead of stale status embedded in cached entries");
 assert.match(app, /confirmLabel: activeAgentTabs\.length \? "Close and stop work" : count === 1 \? "Close tab" : "Close tabs"/, "single-tab confirmation should use singular close wording");
+assert.match(html, /data-side-panel-section="git"[\s\S]*class="side-panel-section-label">Git<[\s\S]*id="gitPanelCountBadge"[\s\S]*id="gitPanelGroups"[\s\S]*aria-label="Git repositories"[\s\S]*id="gitPanelContextMenu"[\s\S]*role="menu"/, "side panel should expose a collapsed, globally deduplicated Git repository list with a count and dedicated action menu");
+assert.match(app, /const GIT_PANEL_CACHE_MAX_AGE_MS = 5 \* 60 \* 1000/, "Git panel should use the approved five-minute page-local freshness window");
+assert.match(app, /function gitPanelTerminalGroups\(\)[\s\S]*tabCwdGroups\(\)[\s\S]*shouldRenderTerminalTabGroup[\s\S]*key: `tab:\$\{tab\.id\}`[\s\S]*title: tabGroupTitle\(tab\.cwd, "Working directory"\)/, "Git panel discovery should mirror visible terminal groups while cwd—not session title—defines ungrouped labels");
+assert.match(app, /function gitPanelCandidates\(groups = gitPanelTerminalGroups\(\)\)[\s\S]*const byCwd = new Map\(\)[\s\S]*key: `cwd:\$\{cwd\}`/, "Git panel discovery should deduplicate repeated cwd candidates globally across terminal groups");
+assert.match(app, /function gitPanelRepositoryCards\(groups = gitPanelTerminalGroups\(\)\)[\s\S]*const identity = root \? `root:\$\{root\}` : candidate\.key[\s\S]*byIdentity/, "Git panel cards should deduplicate discovered repositories globally by canonical Git root");
+assert.match(app, /const cards = gitPanelRepositoryCards\(groups\)/, "Git panel rendering should consume the globally deduplicated repository card list");
+const gitPanelCandidatesSource = appFunctionSource("gitPanelCandidates", "gitPanelRepositoryCards");
+const gitPanelRepositoryCardsSource = appFunctionSource("gitPanelRepositoryCards", "gitPanelRootLabel");
+const gitPanelDeduplication = JSON.parse(vm.runInNewContext(`${gitPanelCandidatesSource}\n${gitPanelRepositoryCardsSource}\nJSON.stringify((() => {\n  const groups = [\n    { key: "group-a", tabs: [{ id: "tab-1", cwd: "/repo" }, { id: "tab-2", cwd: "/repo" }] },\n    { key: "group-b", tabs: [{ id: "tab-3", cwd: "/repo" }, { id: "tab-4", cwd: "/repo/subdir" }] },\n  ];\n  gitPanelState.discovery.set("cwd:/repo", { root: "/repo", resolved: true });\n  gitPanelState.discovery.set("cwd:/repo/subdir", { root: "/repo", resolved: true });\n  return { candidates: gitPanelCandidates(groups), cards: gitPanelRepositoryCards(groups) };\n})())`, {
+  gitPanelState: { discovery: new Map() },
+  gitPanelTerminalGroups: () => [],
+  tabGroupTitle: (cwd) => cwd.split("/").filter(Boolean).pop() || "Working directory",
+}));
+assert.equal(gitPanelDeduplication.candidates.length, 2, "repeated cwd tabs across terminal groups should create one discovery candidate per cwd");
+assert.equal(gitPanelDeduplication.cards.length, 1, "different cwd candidates in the same canonical repository should render one card globally");
+assert.equal(gitPanelDeduplication.cards[0].key, "root:/repo", "the global repository card key should be based only on the canonical Git root");
+assert.match(app, /function toggleGitPanelRepository\(card\)[\s\S]*gitPanelState\.expandedCardKey === card\.key[\s\S]*gitPanelState\.expandedCardKey = card\.key/, "only one Git repository card should be expanded at a time");
+assert.match(app, /function loadGitPanelRepository\(card, \{ force = false \} = \{\}\)[\s\S]*!force && gitPanelSnapshotFresh\(existing\)[\s\S]*api\("\/api\/git-panel"/, "repository expansion should reuse fresh cache and otherwise load local status on demand");
+assert.match(app, /ensureGitPanelRepositoriesDiscovered\(\{ retryUnavailable: true \}\)[\s\S]*function ensureGitPanelRepositoriesDiscovered\(\{ retryUnavailable = false \} = \{\}\)[\s\S]*discoverGitPanelCandidate\(candidate, \{ force: true \}\)/, "reopening the Git section should rediscover cwd entries that were previously not repositories");
+assert.match(app, /function renderGitPanel\(\) \{\s+if \(!elements\.gitPanelGroups \|\| !gitPanelSectionExpanded\(\)\) return;/, "tab polling should not rebuild the Git panel while its top-level section is collapsed");
+assert.doesNotMatch(app, /make\("div", "git-side-panel-tree"[\s\S]{0,180}setAttribute\("role", "tree"\)/, "Git file disclosures should use native details semantics instead of an incomplete ARIA tree");
+assert.match(app, /function gitPanelStatsText\(entry = \{\}, category = ""\)[\s\S]*category === "staged"[\s\S]*category === "changes"/, "mixed index/worktree files should display category-specific numstat values");
+assert.match(app, /function renderGitPanelChanges\(card, data\)[\s\S]*"Conflicts"[\s\S]*"Staged"[\s\S]*"Changes"[\s\S]*"Untracked"/, "Git panel should render every requested change category");
+assert.match(app, /function runGitPanelAction\(card, action, path = ""\)[\s\S]*"stage-all"[\s\S]*"unstage-all"[\s\S]*confirm:[\s\S]*git restore --[\s\S]*Delete untracked file/, "Git panel actions should cover staging plus confirmed destructive discard/delete flows");
+assert.match(app, /function renderGitPanelHistory\(card, data\)[\s\S]*openGitCommitDialog\(card\.tabId, commit\)/, "Git History should open bounded commit diffs from the selected repository");
+assert.match(app, /elements\.gitPanelGroups\.replaceChildren\(\.\.\.cards\.map\(renderGitPanelRepositoryCard\)\)/, "Git repositories should render directly without a redundant terminal/session disclosure");
+assert.doesNotMatch(app, /function renderGitPanelGroup\(/, "Git panel should not render terminal/session parent dropdowns");
+assert.match(app, /function gitPanelContextMenuItems\(context\)[\s\S]*kind === "repository"[\s\S]*"View Diff"[\s\S]*"Stage All"[\s\S]*"Unstage All"[\s\S]*"Discard changes…"[\s\S]*"Delete file…"/, "repository and path actions should be provided by the Git context menu");
+assert.match(app, /function bindGitPanelContextMenu\(trigger, context\)[\s\S]*"contextmenu"[\s\S]*"ContextMenu"[\s\S]*event\.shiftKey && event\.key === "F10"/, "Git context actions should support right click and keyboard-equivalent invocation");
+assert.doesNotMatch(app, /git-side-panel-file-actions|git-side-panel-toolbar-actions|git-side-panel-stage-select|gitPanelSmallButton/, "Git rows should not render the removed inline action controls");
+assert.match(app, /function renderGitPanelFolder\(node, card, category, depth = 0\)[\s\S]*const defaultOpen = depth === 0[\s\S]*details\.open =[\s\S]*git-side-panel-folder-chevron[\s\S]*aria-hidden/, "Git folders should render an explicit decorative disclosure arrow");
+assert.match(css, /\.git-side-panel-folder-chevron[\s\S]*transform: rotate\(0deg\)[\s\S]*\.git-side-panel-folder\[open\][\s\S]*transform: rotate\(90deg\)/, "Git folder arrows should indicate collapsed and expanded states");
+assert.match(css, /\.git-side-panel-repository[\s\S]*\.git-side-panel-file[\s\S]*grid-template-columns: 1\.3rem minmax\(5rem, 1fr\) auto[\s\S]*\.git-side-panel-context-menu[\s\S]*\.git-side-panel-commit/, "Git side panel should prioritize filename width and style repository, context-menu, and history surfaces");
+assert.match(server, /async function readGitPanel\(cwd\)[\s\S]*GIT_PANEL_HISTORY_LIMIT[\s\S]*"status", "--porcelain=v1", "-z"[\s\S]*"--numstat", "-z"/, "server should build compact bounded local Git snapshots without full file contents");
+assert.match(server, /async function readGitCommit\(cwd, requestedHash\)[\s\S]*\^\[a-f0-9\][\s\S]*"show", "--format="/, "commit inspection should require a full hash and use a bounded read-only Git show");
+assert.match(server, /"\/api\/git-changes\/stage-all"[\s\S]*stageAllGitChanges[\s\S]*"\/api\/git-changes\/unstage-all"[\s\S]*unstageAllGitChanges/, "server should expose repository-wide stage and unstage mutations");
+assert.match(readme, /side-panel \*\*Git\*\* section[\s\S]*five-minute cache window[\s\S]*confirmed discard\/delete actions[\s\S]*latest 30 commits/, "README should document Git panel grouping, refresh, actions, and history behavior");
 assert.match(html, /id="optionalFeaturesBox"/, "side panel should expose optional feature status and controls");
 assert.match(html, /class="optional-features-description[\s\S]*href="https:\/\/github\.com\/Firstp1ck\/npm-packages\/issues\/new"[\s\S]*open a GitHub issue/, "optional features should link users to GitHub issues for additional feature requests");
 assert.doesNotMatch(html, /id="btwOverlayDialog"/, "/btw should not use a blocking modal overlay");
 assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscription usage status");
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
-assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*foreground or async mode[\s\S]*id="subagentsBox"/, "side panel should explain how to launch tracked subagents and expose grouped running agents with a live count");
+assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*<code>subagent_gate<\/code>[\s\S]*bounded retries or a success quorum[\s\S]*id="subagentsBox"/, "side panel should explain ordinary delegation and retry-gate workflows with a live count");
 assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
 assert.match(html, /id="subagentTerminalView"[\s\S]*Subagent · view only[\s\S]*id="subagentTerminalTranscript"[\s\S]*id="subagentTerminalStatus"[^>]*aria-live="off"[\s\S]*id="subagentTerminalInput"[^>]*placeholder="View only — send messages from the parent terminal"[^>]*disabled[\s\S]*Use its parent terminal to interact with the run/, "dedicated subagent tabs should expose a view-only transcript, non-announcing routine status, and disabled input");
 assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
@@ -352,6 +389,7 @@ assert.match(css, /\.side-panel-section\.collapsed \.side-panel-section-content,
 assert.match(css, /\.side-panel-section:not\(\.collapsed\) \.side-panel-section-chevron/, "expanded side panel sections should rotate the chevron");
 assert.match(css, /\.subagents-help \{[\s\S]*border-left:[\s\S]*font-size:\s*0\.7rem;[\s\S]*\.subagents-help code/, "subagent invocation guidance should render as a compact informational callout");
 assert.match(css, /\.subagents-box\.has-items[\s\S]*\.subagent-tab-group[\s\S]*\.subagent-agent-row/, "running subagents should render as grouped terminal/session cards");
+assert.match(css, /\.subagent-gate-card[\s\S]*\.subagent-gate-status[\s\S]*\.subagent-gate-attempt[\s\S]*\.subagent-gate-attempt-error/, "retry gates should render quorum, attempt status, and failure details");
 assert.match(css, /\.subagent-agent-row:hover,[\s\S]*\.subagent-agent-row:focus-visible/, "subagent rows should expose clickable hover and keyboard focus states");
 assert.match(css, /\.subagent-overlay-widget[\s\S]*\.subagent-overlay-transcript[\s\S]*\.subagent-overlay-message[\s\S]*\.subagent-overlay-close-action/, "subagent output should combine the non-blocking widget shell with the main transcript message styling");
 assert.match(css, /\.terminal-tab-subagent-indicator[\s\S]*\.terminal-tab-subagent[\s\S]*\.subagent-terminal-view[\s\S]*\.subagent-terminal-composer textarea:disabled/, "subagent terminal tabs should be visibly marked and retain an explicit disabled composer");
@@ -721,7 +759,18 @@ assert.match(
   "side-panel section toggles should expand at most one section at a time",
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
-assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents by terminal and session");
+assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*totalGates[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents and retained retry gates by terminal and session");
+assert.match(app, /function renderSubagentGateAttempt\(attempt\)[\s\S]*failureKind[\s\S]*function renderSubagentGate\(gate\)[\s\S]*qualifyingSuccesses/, "frontend should render failure-classified attempts and gate quorum");
+assert.match(helper, /async function enrichAsyncSubagentAgent\(run, agent, statusByDir\)[\s\S]*status\.json[\s\S]*agent\.model = subagentModel\(step\.model\)[\s\S]*agent\.thinking = subagentThinking\(step\.thinking\)/, "WebUI helper should enrich async children from effective lifecycle model and reasoning metadata");
+assert.match(helper, /SUBAGENT_GATE_UPDATE_EVENT[\s\S]*function publicSubagentGates\(\)[\s\S]*failureKind[\s\S]*gates = publicSubagentGates\(\)/, "WebUI helper should publish bounded retry-gate lifecycle data");
+assert.match(extension, /registerSubagentGate\(pi\)[\s\S]*session_shutdown[\s\S]*subagentGate\.dispose\(\)/, "the WebUI package extension should own the retry-gate tool lifecycle without another extension package");
+assert.match(server, /function normalizeWebuiSubagentPayload\(value\)[\s\S]*model: normalizeWebuiSubagentText\(rawAgent\.model, 240\)[\s\S]*thinking: normalizeWebuiSubagentText\(rawAgent\.thinking, 40\)/, "server should bound model and reasoning metadata in the cross-tab overview");
+assert.match(server, /WEBUI_SUBAGENT_GATE_LIMIT[\s\S]*rawGate\.attempts[\s\S]*failureKind: normalizeWebuiSubagentText\(rawAttempt\.failureKind, 80\)[\s\S]*totalGates/, "server should bound retry gates and expose their cross-tab total");
+assert.match(server, /function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*model: normalizeWebuiSubagentText\(rawAgent\.model, 240\)[\s\S]*thinking: normalizeWebuiSubagentText\(rawAgent\.thinking, 40\)/, "server should preserve model and reasoning metadata in selected child output");
+assert.match(app, /function subagentExecutionFacts\(agent = \{\}\)[\s\S]*model \$\{model \|\| "unknown"\}[\s\S]*reasoning \$\{thinking \|\| "unknown"\}/, "subagent metadata should use one honest model/reasoning formatter with unknown fallbacks");
+assert.match(app, /function renderSubagentAgent\(tab, run, agent\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "Subagents side-panel rows should show model and reasoning effort");
+assert.match(app, /function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "subagent overlays should show model and reasoning effort");
+assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "dedicated subagent terminal views should show model and reasoning effort");
 assert.match(app, /SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode"[\s\S]*function normalizeSubagentOpenMode\(value\)[\s\S]*function restoreSubagentOpenModeSetting\(\)/, "subagent opening mode should default safely and persist in this browser");
 assert.match(app, /function openSubagentOutput\(tab, run, agent\) \{[\s\S]*subagentOpenMode === "tab" \? openSubagentTerminal\(tab, run, agent\) : openSubagentOverlay\(tab, run, agent\)/, "clicking an agent should dispatch to the selected overlay or terminal-tab view");
 assert.match(app, /function openSubagentOverlay\(tab, run, agent\)[\s\S]*activeSubagentTerminalId[\s\S]*deactivateSubagentTerminalView\(\{ render: false \}\)[\s\S]*activeTabId !== tab\.tabId[\s\S]*await switchTab\(tab\.tabId\)[\s\S]*renderWidgets\(\)/, "opening an overlay should first leave any virtual child tab, then switch to its owning terminal before rendering the widget");
@@ -839,9 +888,10 @@ assert.match(app, /function parseGitFooterWebuiPayloadRaw\(raw\)[\s\S]*GIT_FOOTE
 assert.match(app, /function normalizeFooterPayloadChangedFile\(value\)[\s\S]*FOOTER_CHANGED_FILE_KINDS\.has\(value\.kind\)[\s\S]*oldPath/, "git footer payload parsing should preserve changed-file details for changes popovers");
 assert.match(app, /const files = value\.files\.map\(normalizeFooterPayloadChangedFile\)\.filter\(Boolean\)\.slice\(0, 80\);[\s\S]*chip\.files = files;/, "git footer payload chips should retain bounded changed-file lists");
 assert.match(app, /FOOTER_PAYLOAD_ACTIONS = new Set\(\["calibrate-current", "calibrate-probe"\]\)[\s\S]*chip\.action = value\.action;/, "git footer payload chips should preserve allowlisted actions such as PI calibration");
-assert.match(app, /async function runGitFooterPiCalibration\(tabContext = activeTabContext\(\)\)[\s\S]*resolveAvailableCommandName\("calibrate", \{ rpcOnly: true \}\)[\s\S]*await sendPrompt\("prompt", `\/\$\{commandName\}`[\s\S]*await requestGitFooterWebuiPayload\(tabContext, \{ force: true, allowDuringRun: true \}\)/, "clicking the PI footer button should run exact /calibrate in the owning tab and await a forced footer refresh");
-assert.doesNotMatch(appFunctionSource("runGitFooterPiCalibration", "applyGitFooterPiCalibrationOptions"), /calibrate[^\n]*current|appConfirmText/, "the PI footer button should use the isolated /calibrate probe directly without switching to current-branch calibration or showing a second confirmation");
-assert.match(appFunctionSource("requestGitFooterWebuiPayload", "updateOptionalFeatureAvailability"), /return api\("\/api\/prompt"[\s\S]*\.finally\(\(\) =>/, "footer refresh requests should be awaitable so calibration stays busy through the updated payload");
+assert.match(app, /async function runGitFooterPiCalibration\(tabContext = activeTabContext\(\)\)[\s\S]*resolveAvailableCommandName\("calibrate", \{ rpcOnly: true \}\)[\s\S]*sendPrompt\("prompt", `\/\$\{commandName\}`[\s\S]*scheduleGitFooterPiCalibrationRefresh\(tabContext\)/, "clicking the PI footer chip should dispatch exactly /calibrate and schedule a refreshed footer value");
+assert.match(app, /function applyGitFooterPiCalibrationOptions\(chip, options\) \{\s+if \(chip\?\.key !== "pi"\) return "";[\s\S]*void runGitFooterPiCalibration\(\)/, "every PI footer chip should remain clickable regardless of payload calibration action metadata");
+assert.doesNotMatch(app.match(/async function runGitFooterPiCalibration[\s\S]*?\n\}/)?.[0] || "", /commandName\} current|appConfirmText/, "PI footer calibration should neither append the current-mode argument nor open a probe confirmation dialog");
+
 assert.match(app, /title: cleanFooterPayloadText\(value\.title, "", 4000\)/, "git footer tooltip titles should preserve long cwd paths instead of truncating at chip display length");
 assert.match(app, /const sourceTitle = cleanFooterPayloadText\(chip\?\.title, "", 4000\)/, "git footer tooltip rendering should keep full source titles for long cwd paths");
 assert.match(app, /function renderFooter\(\)[\s\S]*parseGitFooterWebuiPayload\(\)[\s\S]*renderGitFooterPayload\(footerPayloadWithLiveModel\(gitFooterPayload\)\)/, "detailed footer rendering should prefer the git-footer-status extension payload");
