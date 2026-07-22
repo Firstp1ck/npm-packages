@@ -11176,10 +11176,10 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
     options.disabled = inFlight;
     action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
   } else if (chip.key === "changes" && visible("webui-changes-modal")) {
-    options.onClick = openGitChangesDialog;
+    options.onClick = () => openGitChangesDialog(tab?.id || activeTabId);
     action = "Click to view the current git diff.";
   } else if (chip.key === "git-state" && visible("webui-changes-modal")) {
-    options.onClick = openGitChangesDialog;
+    options.onClick = () => openGitChangesDialog(tab?.id || activeTabId);
     action = "Click to open the conflicts and operation panel with continue/abort actions.";
   } else if (chip.key === "git-extra" && visible("webui-git-tools-modal")) {
     const toolsSection = gitToolsSectionForExtraChip(chip.value);
@@ -12111,8 +12111,8 @@ async function loadGitChangesDialog(tabContext = activeTabContext()) {
 function openGitChangesDialog(requestedTabId = activeTabId) {
   if (!elements.gitChangesDialog) return;
   hideFooterTooltip();
-  const tabContext = activeTabContext(requestedTabId);
-  const tabId = tabContext.tabId || activeTabId;
+  const tabId = typeof requestedTabId === "string" && requestedTabId ? requestedTabId : activeTabId;
+  const tabContext = activeTabContext(tabId);
   if (gitToolsState.tabId !== tabId) resetGitToolsState(tabId);
   gitChangesState = {
     ...gitChangesState,
