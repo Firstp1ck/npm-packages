@@ -2060,6 +2060,7 @@ body.embedded-split .side-panel-backdrop {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.3;
 }
 .model-search-result-main {
   font-weight: 900;

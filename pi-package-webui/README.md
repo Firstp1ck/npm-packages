@@ -404,7 +404,7 @@ For an existing repository, the workflow can:
 1. Show staged, unstaged, untracked, and fetched incoming changes.
 2. Fast-forward pull fetched incoming commits when the repository is safely behind.
 3. Review/select files, preserve a non-empty staged set, or explicitly opt into `git add .`.
-4. Generate `/git-staged-msg` with the configured model, supported reasoning effort, language, and scope policy, then restore the tab's prior model/effort.
+4. Generate `/git-staged-msg` with the configured model, supported reasoning effort, language, and scope policy, then restore the tab's prior model/effort. Each request is correlated to its originating tab and a before-generation snapshot of both message files; the browser advances only when both non-empty files are fresh and stable for that exact generation.
 5. Use the preferred generated short/long message, a generated single-file default such as `updated file.txt`, or a manual **Commit input** message.
 6. Show an optional pre-commit verification reminder, then require explicit confirmation before push and PR delivery actions.
 
@@ -420,7 +420,7 @@ If the configured model or effort is unavailable, generation stops and asks you 
 
 After the message is generated, **Create PR** asks Pi to generate `dev/COMMIT/staged-branch-name.txt`, lets you confirm or edit the `type/feature-name` branch, then switches with `git switch -c` before committing. In PR mode, choose **Commit short**, **Commit long**, or type a message and use **Commit input**, then **Push and Create PR** pushes the branch, sends `/pr`, shows the generated `dev/PR/<branch>.md` description for editing/confirmation, and creates the pull request with `gh pr create`. Use **Manual branch** to skip agent branch-name generation and type the branch directly.
 
-Use the workflow process buttons to jump directly to **Initialize**, **Stage**, **Message**, **Commit**, **Push**, or PR steps when earlier work was already completed manually. Selecting **Message** lets you either run `/git-staged-msg` or type a commit message and use **Commit input** directly. Selecting **Commit** loads the current generated files from `dev/COMMIT/` before enabling the commit choices. A yellow dot means that process was selected or is available but its action has not completed in this workflow; green means the process action completed.
+Use the workflow process buttons to jump directly to **Initialize**, **Stage**, **Message**, **Commit**, **Push**, or PR steps when earlier work was already completed manually. Selecting **Message** lets you either run `/git-staged-msg` or type a commit message and use **Commit input** directly. Selecting **Commit** loads the current generated files from `dev/COMMIT/` before enabling the commit choices. Manual preview remains available for existing files, while an active generation uses bounded single-flight polling so duplicate timer, reconnect, and `agent_end` signals cannot race or surface a stale pair. A yellow dot means that process was selected or is available but its action has not completed in this workflow; green means the process action completed.
 
 This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; branch-name generation uses `/git-branch-name`. Creating the PR also requires an authenticated GitHub CLI (`gh`). Review the generated commit message, branch name, remote URL, and PR description before committing, pushing, or creating a PR.
 

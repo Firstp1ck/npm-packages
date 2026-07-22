@@ -75,6 +75,11 @@ import {
   removeGitWorktree,
 } from "../lib/git-worktrees.mjs";
 import { createGitLiveWatcher } from "../lib/git-live-watcher.mjs";
+import {
+  gitMessageArtifactPairReadiness,
+  readStableGitMessageArtifactPair,
+  sameGitMessageArtifactPair,
+} from "../lib/git-message-artifacts.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -2099,6 +2104,23 @@ async function restoreGitWorkflowGenerationProfile(tab) {
   }
 }
 
+async function createGitWorkflowMessageGeneration(tab) {
+  // Keep generation dispatch backward-compatible for tabs whose cwd has not
+  // become a repository yet; the Guided Git flow itself still verifies Git
+  // state at its staging/review boundaries.
+  const root = await getGitRoot(tab.cwd).catch(() => path.resolve(tab.cwd));
+  const cwd = gitWorkflowMessageCwd(root, tab.cwd);
+  const paths = commitMessagePaths(cwd);
+  return {
+    id: randomUUID(),
+    kind: "commit",
+    root,
+    cwd,
+    createdAt: Date.now(),
+    baseline: await readStableGitMessageArtifactPair(paths),
+  };
+}
+
 async function startGitWorkflowGeneration(tab, body = {}) {
   if (tab.gitWorkflowGenerationRestore) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
   // Browser state is untrusted. When it claims an approved content token,
@@ -2106,6 +2128,8 @@ async function startGitWorkflowGeneration(tab, body = {}) {
   await assertExpectedStagedContentHash(tab, body);
   const preferences = await readGitWorkflowPreferences();
   if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
+  const kind = String(body.kind || "").trim();
+  const message = gitWorkflowGenerationPrompt(kind, preferences);
 
   const state = await currentSessionState(tab);
   if (stateIsBusyForSettings(state)) throw makeHttpError(409, "Wait for the current agent run to finish before generating Git text");
@@ -2118,7 +2142,10 @@ async function startGitWorkflowGeneration(tab, body = {}) {
   }
 
   const restore = { model: state.model || null, thinkingLevel: state.thinkingLevel || "off" };
+  const previousMessageGeneration = tab.gitWorkflowMessageGeneration || null;
+  const messageGeneration = kind === "commit" ? await createGitWorkflowMessageGeneration(tab) : null;
   tab.gitWorkflowGenerationRestore = restore;
+  if (messageGeneration) tab.gitWorkflowMessageGeneration = messageGeneration;
   try {
     if (gitWorkflowModelKey(state.model) !== gitWorkflowModelKey(selectedModel)) {
       const modelResponse = await tab.rpc.send({ type: "set_model", provider: selectedModel.provider, modelId: selectedModel.id });
@@ -2127,8 +2154,6 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     const thinkingResponse = await setThinkingLevelForTab(tab, preferences.generation.thinkingLevel, { allowPending: false });
     if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || `Failed to select thinking level ${preferences.generation.thinkingLevel}`);
 
-    const kind = String(body.kind || "").trim();
-    const message = gitWorkflowGenerationPrompt(kind, preferences);
     markTabWorking(tab);
     const response = await tab.rpc.send({ type: "prompt", message });
     if (response.success === false) throw new Error(response.error || "Guided Git generation prompt was rejected");
@@ -2136,6 +2161,7 @@ async function startGitWorkflowGeneration(tab, body = {}) {
       accepted: true,
       kind,
       message,
+      generationId: messageGeneration?.id || "",
       generation: {
         provider: selectedModel.provider,
         modelId: selectedModel.id,
@@ -2143,6 +2169,9 @@ async function startGitWorkflowGeneration(tab, body = {}) {
       },
     };
   } catch (error) {
+    if (messageGeneration && tab.gitWorkflowMessageGeneration?.id === messageGeneration.id) {
+      tab.gitWorkflowMessageGeneration = previousMessageGeneration;
+    }
     markTabIdle(tab);
     await restoreGitWorkflowGenerationProfile(tab);
     throw error;
@@ -5935,35 +5964,73 @@ async function readGitWorkflowBranchName(cwd) {
   }
 }
 
-async function readGitWorkflowMessages(cwd) {
+const GIT_WORKFLOW_MESSAGE_PAIR_SETTLE_MS = 80;
+
+function gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, reason, details = {}) {
+  const shortFile = gitWorkflowMessageFileMeta(root, messageCwd, paths.shortPath);
+  const longFile = gitWorkflowMessageFileMeta(root, messageCwd, paths.longPath);
+  return {
+    ready: false,
+    generationId,
+    reason,
+    root,
+    cwd: messageCwd,
+    shortPath: paths.shortPath,
+    longPath: paths.longPath,
+    shortRelativePath: shortFile.relativePath,
+    longRelativePath: longFile.relativePath,
+    shortRepoRelativePath: shortFile.repoRelativePath,
+    longRepoRelativePath: longFile.repoRelativePath,
+    ...details,
+  };
+}
+
+async function readGitWorkflowMessages(cwd, { generationId = "", generation = null } = {}) {
   const root = await getGitRoot(cwd);
   const messageCwd = gitWorkflowMessageCwd(root, cwd);
-  const { shortPath, longPath } = commitMessagePaths(messageCwd);
+  const paths = commitMessagePaths(messageCwd);
+  if (generationId && (!generation || generation.id !== generationId || generation.kind !== "commit" || generation.cwd !== messageCwd)) {
+    return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "This commit-message generation is no longer active. Regenerate the message files.", { expired: true });
+  }
   try {
-    const [shortText, longText, shortStat, longStat] = await Promise.all([
-      readFile(shortPath, "utf8"),
-      readFile(longPath, "utf8"),
-      stat(shortPath),
-      stat(longPath),
-    ]);
-    const shortFile = gitWorkflowMessageFileMeta(root, messageCwd, shortPath);
-    const longFile = gitWorkflowMessageFileMeta(root, messageCwd, longPath);
+    let pair = await readStableGitMessageArtifactPair(paths);
+    if (generationId) {
+      const readiness = gitMessageArtifactPairReadiness(generation.baseline, pair);
+      if (!readiness.ready) return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, readiness.reason, readiness);
+      await new Promise((resolve) => setTimeout(resolve, GIT_WORKFLOW_MESSAGE_PAIR_SETTLE_MS));
+      const settledPair = await readStableGitMessageArtifactPair(paths);
+      if (!sameGitMessageArtifactPair(pair, settledPair)) {
+        return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "Generated commit message files are still settling.");
+      }
+      const settledReadiness = gitMessageArtifactPairReadiness(generation.baseline, settledPair);
+      if (!settledReadiness.ready) return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, settledReadiness.reason, settledReadiness);
+      pair = settledPair;
+    }
+    if (!pair.short.exists || !pair.long.exists) {
+      throw new Error(`Missing ${!pair.short.exists ? paths.shortPath : paths.longPath}`);
+    }
+    const shortFile = gitWorkflowMessageFileMeta(root, messageCwd, paths.shortPath);
+    const longFile = gitWorkflowMessageFileMeta(root, messageCwd, paths.longPath);
     return {
+      ready: true,
+      generationId,
       root,
       cwd: messageCwd,
-      shortPath,
-      longPath,
+      shortPath: paths.shortPath,
+      longPath: paths.longPath,
       shortRelativePath: shortFile.relativePath,
       longRelativePath: longFile.relativePath,
       shortRepoRelativePath: shortFile.repoRelativePath,
       longRepoRelativePath: longFile.repoRelativePath,
-      short: shortText.trimEnd(),
-      long: longText.trimEnd(),
-      shortMtimeMs: shortStat.mtimeMs,
-      longMtimeMs: longStat.mtimeMs,
+      short: pair.short.text.trimEnd(),
+      long: pair.long.text.trimEnd(),
+      shortMtimeMs: Number(BigInt(pair.short.mtimeNs) / 1_000_000n),
+      longMtimeMs: Number(BigInt(pair.long.mtimeNs) / 1_000_000n),
+      shortSha256: pair.short.sha256,
+      longSha256: pair.long.sha256,
     };
   } catch (error) {
-    throw new Error(`Missing generated commit message files in ${path.join(messageCwd, "dev", "COMMIT")}. Run /git-staged-msg first. ${sanitizeError(error)}`);
+    throw new Error(`Missing or unstable generated commit message files in ${path.join(messageCwd, "dev", "COMMIT")}. Run /git-staged-msg first. ${sanitizeError(error)}`);
   }
 }
 
@@ -6707,8 +6774,11 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
       case "/api/git-workflow/staged-content":
         if (!tab) throw new Error("Staged-content lookup requires a Web UI tab");
         return { ok: true, data: await stagedContentHashForTab(tab) };
-      case "/api/git-workflow/message":
-        return { ok: true, data: await readGitWorkflowMessages(cwd) };
+      case "/api/git-workflow/message": {
+        const generationId = String(body.generationId || "").trim();
+        if (generationId && !tab) throw new Error("Fresh commit-message lookup requires a Web UI tab");
+        return { ok: true, data: await readGitWorkflowMessages(cwd, { generationId, generation: tab?.gitWorkflowMessageGeneration || null }) };
+      }
       case "/api/git-workflow/default-commit-message":
         return { ok: true, data: await readGitWorkflowDefaultCommitMessage(cwd) };
       case "/api/git-workflow/branch-name":
@@ -8325,6 +8395,7 @@ function attachRpcToTab(tab, rpc) {
     let scopedEvent = eventForTabClients(tab, event);
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
       tab.gitWorkflowGenerationRestore = null;
+      tab.gitWorkflowMessageGeneration = null;
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
       clearExtensionWidgets(tab);
@@ -8371,6 +8442,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     lastState: null,
     pendingThinkingLevel: undefined,
     gitWorkflowGenerationRestore: null,
+    gitWorkflowMessageGeneration: null,
     activity: createTabActivity(createdAt),
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
@@ -12950,7 +13022,7 @@ const server = createServer(async (req, res) => {
           sendJson(res, 405, { ok: false, error: `${url.pathname} requires ${requiredMethod}` });
           return;
         }
-        const body = mutatingWorkflow ? await readJsonBody(req) : {};
+        const body = mutatingWorkflow ? await readJsonBody(req) : { generationId: url.searchParams.get("generationId") || "" };
         const tab = getRequestedTab(req, url, body);
         if (mutatingWorkflow) ensureNaturalConversationRouteAllowed(tab, "git workflow actions are blocked");
         const response = await handleGitWorkflowRequest(url.pathname, body, tab);

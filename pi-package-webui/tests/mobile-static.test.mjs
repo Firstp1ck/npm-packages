@@ -548,6 +548,7 @@ assert.match(css, /\.footer-model-picker[\s\S]*?position:\s*absolute[\s\S]*?left
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?\.footer-model-picker \{[\s\S]*?position:\s*fixed/, "mobile footer model picker should escape footer-details stacking as a fixed overlay on narrow, device-width-narrow, or touch-only devices");
 assert.match(css, /bottom:\s*var\(--footer-model-picker-bottom/, "mobile footer model picker should be anchored by a JS-computed viewport offset");
 assert.match(css, /\.footer-model-option\.active/, "footer model picker should style the selected scoped model");
+assert.match(css, /\.model-search-result-main,\n\.model-search-result-name \{[\s\S]*?line-height:\s*1\.3;/, "side-panel model titles should reserve enough line height to avoid clipping heavy font glyphs");
 assert.match(app, /async function createPathPickerDirectory\(\)/, "cwd picker should implement create-directory behavior in the browser");
 assert.match(app, /function renderPathPickerDirectoryList\(\)[\s\S]*pathPickerDirectoryMatchesSearch/, "cwd picker should filter current-directory entries in the browser");
 assert.match(app, /elements\.pathPickerSearchInput\.addEventListener\("input", renderPathPickerDirectoryList\)/, "cwd picker should update directory matches as the user types");

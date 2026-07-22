@@ -1154,6 +1154,7 @@ function createGitWorkflowState() {
     manualCommitMessage: "",
     ...resetGitWorkflowManualCommitDefaultPatch(),
     messageRequestedAt: 0,
+    messageGenerationId: "",
     branchName: "",
     branchNameRequestedAt: 0,
     actionsDone: createGitWorkflowActionsDone(),
@@ -1169,6 +1170,7 @@ function createGitWorkflowState() {
 }
 
 const gitWorkflowsByTab = new Map();
+const gitWorkflowMessageLoadsByTab = new Map();
 let gitWorkflow = createGitWorkflowState();
 let gitWorkflowPreferences = null;
 
@@ -19302,6 +19304,7 @@ function selectGitInitWorkflowProcess(processValue, tabId, workflow) {
     manualCommitMessage: "",
     ...resetGitWorkflowManualCommitDefaultPatch(),
     messageRequestedAt: 0,
+    messageGenerationId: "",
     branchName: "",
     branchNameRequestedAt: 0,
     prMode: false,
@@ -19353,7 +19356,7 @@ function selectGitWorkflowProcess(processValue, tabId = gitWorkflowActionTabId()
   if (!guidedReviewPatch) return;
   workflow.runId += 1;
   const runId = workflow.runId;
-  const base = { mode: "standard", active: true, process, busy: false, error: "", githubUsername: "", repoName: "", remoteUrl: "", stack: "", readmeRequestedAt: 0, gitignoreRequestedAt: 0, initFilesStatus: null, manualCommitMessage: "", ...resetGitWorkflowManualCommitDefaultPatch(), messageRequestedAt: 0, branchName: "", branchNameRequestedAt: 0, prMode: false, prBranch: "", pr: null, prRequestedAt: 0, ...guidedReviewPatch };
+  const base = { mode: "standard", active: true, process, busy: false, error: "", githubUsername: "", repoName: "", remoteUrl: "", stack: "", readmeRequestedAt: 0, gitignoreRequestedAt: 0, initFilesStatus: null, manualCommitMessage: "", ...resetGitWorkflowManualCommitDefaultPatch(), messageRequestedAt: 0, messageGenerationId: "", branchName: "", branchNameRequestedAt: 0, prMode: false, prBranch: "", pr: null, prRequestedAt: 0, ...guidedReviewPatch };
 
   if (process === "stage") {
     setGitWorkflow({ ...base, step: "add", message: null, output: "Ready to stage all changes with git add ." }, { tabId });
@@ -19583,7 +19586,11 @@ function renderGitWorkflow() {
     addGitWorkflowAction("Preview current message files", () => loadGitWorkflowMessage({ requireFresh: false }), "", false);
     elements.gitWorkflowActions.append(commitInputButton);
   } else if (gitWorkflow.step === "generating") {
-    addGitWorkflowAction("Refresh message preview", () => loadGitWorkflowMessage({ requireFresh: true }), "", false);
+    if (gitWorkflow.messageGenerationId) {
+      addGitWorkflowAction("Refresh message preview", () => loadGitWorkflowMessage({ requireFresh: true }), "", false);
+    } else {
+      addGitWorkflowAction("Starting message generation…", () => {}, "", true);
+    }
   } else if (gitWorkflow.step === "message") {
     const deliveryMode = preferences.deliveryMode || "ask";
     const preferredVariant = preferences.commit?.defaultVariant || "short";
@@ -19920,6 +19927,7 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
     manualCommitMessage: "",
     ...resetGitWorkflowManualCommitDefaultPatch(),
     messageRequestedAt: 0,
+    messageGenerationId: "",
     branchName: "",
     branchNameRequestedAt: 0,
     actionsDone: createGitWorkflowActionsDone(),
@@ -19967,6 +19975,7 @@ async function startGitInitWorkflow(tabId = activeTabId) {
     manualCommitMessage: "",
     ...resetGitWorkflowManualCommitDefaultPatch(),
     messageRequestedAt: 0,
+    messageGenerationId: "",
     branchName: "",
     branchNameRequestedAt: 0,
     actionsDone: createGitWorkflowActionsDone(),
@@ -20359,19 +20368,24 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
     busy: true,
     error: "",
     messageRequestedAt: requestedAt,
+    messageGenerationId: "",
     output: "Sending /git-staged-msg to Pi.\n\nCancel will request Pi abort.",
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending /git-staged-msg to Pi…");
   try {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "commit", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput(`/git-staged-msg accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the message files will be loaded.`, { tabId });
+    const generationId = String(generation.generationId || "").trim();
+    if (!generationId) throw new Error("The WebUI server did not return a commit-message generation ID. Restart Pi Web UI and regenerate.");
+    setGitWorkflow({ messageGenerationId: generationId }, { tabId });
+    appendGitWorkflowOutput(`/git-staged-msg accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then both correlated message files will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
-      const targetStillBusy = tabId === activeTabId && currentState?.isStreaming;
-      if (isCurrentGitWorkflowRun(runId, tabId) && currentWorkflow?.step === "generating" && !targetStillBusy) {
-        loadGitWorkflowMessage({ requireFresh: true, retries: 1, runId, tabId });
+      const targetTab = tabs.find((tab) => tab.id === tabId);
+      const targetStillBusy = tabId === activeTabId ? !!currentState?.isStreaming : activityForTab(targetTab).isWorking;
+      if (isCurrentGitWorkflowRun(runId, tabId) && currentWorkflow?.step === "generating" && currentWorkflow.messageGenerationId === generationId && !targetStillBusy) {
+        loadGitWorkflowMessage({ requireFresh: true, generationId, runId, tabId });
       }
     }, 2500);
   } catch (error) {
@@ -20382,35 +20396,93 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
   }
 }
 
-async function loadGitWorkflowMessage({ requireFresh = false, retries = 0, runId, tabId = activeTabId } = {}) {
+const GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS = 30_000;
+const GIT_WORKFLOW_MESSAGE_POLL_DELAYS_MS = [250, 500, 800, 1200];
+
+function gitWorkflowMessageLoadIsCurrent(tabId, runId, generationId = "") {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  return !!workflow
+    && isCurrentGitWorkflowRun(runId, tabId)
+    && (!generationId || workflow.messageGenerationId === generationId);
+}
+
+function waitForGitWorkflowMessagePoll(attempt) {
+  const delayMs = GIT_WORKFLOW_MESSAGE_POLL_DELAYS_MS[Math.min(attempt, GIT_WORKFLOW_MESSAGE_POLL_DELAYS_MS.length - 1)];
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function loadGitWorkflowMessage({ requireFresh = false, generationId, runId, tabId = activeTabId } = {}) {
   const workflow = gitWorkflowForTab(tabId, { create: false });
   const expectedRunId = runId ?? workflow?.runId;
-  try {
-    const message = await gitWorkflowRequest("/api/git-workflow/message", { method: "GET", runId: expectedRunId, tabId });
-    if (!message) return;
-    const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
-    if (!currentWorkflow) return;
-    const newestMtime = Math.max(message.shortMtimeMs || 0, message.longMtimeMs || 0);
-    if (requireFresh && currentWorkflow.messageRequestedAt && newestMtime + 10000 < currentWorkflow.messageRequestedAt) {
-      throw new Error("Generated message files have not refreshed yet.");
+  const expectedGenerationId = requireFresh ? String(generationId ?? workflow?.messageGenerationId ?? "").trim() : "";
+  if (!workflow || expectedRunId === undefined) return;
+  if (requireFresh && !expectedGenerationId) {
+    // The generation POST can be accepted just before its correlation ID is
+    // returned to the browser. Timer/event wakeups in that narrow window are
+    // harmless; the accepted-request continuation and fallback timer retry.
+    if (workflow.step === "generating") return;
+    failGitWorkflow(new Error("No correlated commit-message generation is active. Run /git-staged-msg again."), "generate", { tabId });
+    return;
+  }
+
+  const loadKey = `${expectedRunId}:${expectedGenerationId || "preview"}`;
+  const existing = gitWorkflowMessageLoadsByTab.get(tabId);
+  if (existing?.key === loadKey) return existing.promise;
+
+  const promise = (async () => {
+    const deadline = Date.now() + (requireFresh ? GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS : 0);
+    const baseOutput = workflow.output || "Waiting for generated commit message files…";
+    let attempt = 0;
+    while (gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) {
+      try {
+        const query = expectedGenerationId ? `?generationId=${encodeURIComponent(expectedGenerationId)}` : "";
+        const message = await gitWorkflowRequest(`/api/git-workflow/message${query}`, { method: "GET", runId: expectedRunId, tabId });
+        if (!message || !gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) return;
+        if (message.ready === false) {
+          if (message.expired) throw new Error(message.reason || "This commit-message generation has expired. Regenerate the message files.");
+          if (!requireFresh || Date.now() >= deadline) {
+            throw new Error(`${message.reason || "Generated commit message files are not ready."} Regenerate, or use Preview current message files after verifying both files.`);
+          }
+          const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
+          const reason = message.reason || "Waiting for both correlated commit message files…";
+          if (currentWorkflow?.output !== `${baseOutput}\n\n${reason}`) {
+            setGitWorkflow({ busy: true, error: "", output: `${baseOutput}\n\n${reason}` }, { tabId });
+          }
+          await waitForGitWorkflowMessagePoll(attempt++);
+          continue;
+        }
+        const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
+        if (!currentWorkflow || !gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) return;
+        setGitWorkflow({
+          step: "message",
+          busy: false,
+          error: "",
+          message,
+          ...(requireFresh ? gitWorkflowActionDonePatch(currentWorkflow, "message") : {}),
+          output: formatCommitMessagePreview(message),
+        }, { tabId });
+        return;
+      } catch (error) {
+        if (!gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) return;
+        if (!requireFresh || Date.now() >= deadline || /expired|no longer active/i.test(error?.message || "")) throw error;
+        const reason = error?.message || String(error);
+        const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
+        if (currentWorkflow?.output !== `${baseOutput}\n\nWaiting for both correlated message files. ${reason}`) {
+          setGitWorkflow({ busy: true, error: "", output: `${baseOutput}\n\nWaiting for both correlated message files. ${reason}` }, { tabId });
+        }
+        await waitForGitWorkflowMessagePoll(attempt++);
+      }
     }
-    setGitWorkflow({
-      step: "message",
-      busy: false,
-      error: "",
-      message,
-      ...(requireFresh && currentWorkflow.messageRequestedAt ? gitWorkflowActionDonePatch(currentWorkflow, "message") : {}),
-      output: formatCommitMessagePreview(message),
-    }, { tabId });
-  } catch (error) {
-    if (!isCurrentGitWorkflowRun(expectedRunId, tabId)) return;
-    if (retries > 0) {
-      setTimeout(() => loadGitWorkflowMessage({ requireFresh, retries: retries - 1, runId: expectedRunId, tabId }), 1400);
-      return;
-    }
+  })().catch((error) => {
+    if (!gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) return;
     const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
     failGitWorkflow(error, currentWorkflow?.step === "generating" ? "generate" : currentWorkflow?.step, { tabId });
-  }
+  }).finally(() => {
+    if (gitWorkflowMessageLoadsByTab.get(tabId)?.key === loadKey) gitWorkflowMessageLoadsByTab.delete(tabId);
+  });
+
+  gitWorkflowMessageLoadsByTab.set(tabId, { key: loadKey, promise });
+  return promise;
 }
 
 function gitBranchNamePromptMessage() {
@@ -20597,6 +20669,7 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
       manualCommitMessageDefaultRequestedAt: sourceWorkflow.manualCommitMessageDefaultRequestedAt || 0,
       manualCommitMessageDefaultLoading: false,
       messageRequestedAt: sourceWorkflow.messageRequestedAt || 0,
+      messageGenerationId: sourceWorkflow.messageGenerationId || "",
       branchName: prBranch || branch,
       branchNameRequestedAt: sourceWorkflow.branchNameRequestedAt || 0,
       actionsDone: createGitWorkflowActionsDone({ ...sourceWorkflow.actionsDone, branch: true }),
@@ -20826,7 +20899,7 @@ function resumeGitWorkflowForActiveTab(tabContext = activeTabContext()) {
       setTimeout(() => resumeGitWorkflowForActiveTab(tabContext), retryDelayMs);
       return;
     }
-    loadGitWorkflowMessage({ requireFresh: true, retries: 3, runId: gitWorkflow.runId, tabId: workflowTabId });
+    loadGitWorkflowMessage({ requireFresh: true, generationId: gitWorkflow.messageGenerationId, runId: gitWorkflow.runId, tabId: workflowTabId });
   }
   if (workflowTabId === tabContext.tabId && gitWorkflow.active && gitWorkflow.step === "branchNaming" && !currentState?.isStreaming) {
     const retryDelayMs = Math.max(0, 2500 - (Date.now() - (gitWorkflow.branchNameRequestedAt || 0)));
@@ -29287,7 +29360,7 @@ function handleEvent(event) {
         const workflowTabId = event.tabId || activeTabId;
         const workflow = gitWorkflowForTab(workflowTabId, { create: false });
         if (workflow?.active && workflow.step === "generating") {
-          loadGitWorkflowMessage({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+          loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
         } else if (workflow?.active && workflow.step === "branchNaming") {
           loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
         } else if (workflow?.active && workflow.step === "prGenerating") {

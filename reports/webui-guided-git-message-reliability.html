@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>WebUI Guided Git Message Reliability — Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel-2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius-lg:16px;--radius-md:12px;--shadow:0 14px 36px rgb(0 0 0/22%)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible,summary:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.skip{position:fixed;z-index:10;top:8px;left:8px;transform:translateY(-160%);padding:8px 12px;border-radius:8px;background:var(--blue);color:#06111f;font-weight:800}.skip:focus{transform:none}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,.section{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow)}header{padding:30px;margin-bottom:20px}.section{padding:24px;margin:18px 0}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.025em;margin-bottom:8px}h2{font-size:1.45rem;border-bottom:1px solid var(--line);padding-bottom:10px}h3{font-size:1.08rem;margin-bottom:6px}.lead{font-size:1.1rem;max-width:84ch}.muted{color:var(--muted)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .38em;border-radius:5px}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto;white-space:pre-wrap;color:#d9e6f7}.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:.78rem;font-weight:750;letter-spacing:.035em;text-transform:uppercase;margin-bottom:8px}.good{color:var(--green)}.warn{color:var(--yellow)}.info{color:var(--blue)}.badge.good{background:rgb(80 216 144/14%);border:1px solid rgb(80 216 144/38%)}.badge.warn{background:rgb(247 198 92/14%);border:1px solid rgb(247 198 92/38%)}.badge.info{background:rgb(101 181 255/14%);border:1px solid rgb(101 181 255/38%)}.callout{border-left:5px solid var(--green);background:rgb(80 216 144/8%);border-radius:8px;padding:14px 16px;margin:14px 0}.callout.warn{border-left-color:var(--yellow);background:rgb(247 198 92/8%);color:var(--text)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:14px}.card,.finding,.step{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:16px}.card strong{display:block;font-size:1.35rem}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:660px}th,td{text-align:left;vertical-align:top;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.86rem;text-transform:uppercase;letter-spacing:.04em}tbody tr:hover{background:rgb(101 181 255/5%)}figure{margin:18px 0}figure svg{display:block;width:100%;height:auto;background:var(--code);border:1px solid var(--line);border-radius:12px}figcaption{color:var(--muted);margin-top:8px;font-size:.92rem}.node{fill:#182b43;stroke:var(--blue);stroke-width:2}.node-ok{fill:#153329;stroke:var(--green);stroke-width:2}.node-text{fill:var(--text);font:650 14px system-ui,sans-serif;text-anchor:middle}.node-sub{fill:var(--muted);font:12px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:var(--muted);stroke-width:2.5;marker-end:url(#arrow)}.edge-dash{fill:none;stroke:var(--yellow);stroke-width:2;stroke-dasharray:7 6;marker-end:url(#arrow-warn)}ol.steps{list-style:none;padding:0;counter-reset:steps}ol.steps>li{counter-increment:steps;margin:14px 0}ol.steps>li::before{content:counter(steps);float:left;display:grid;place-items:center;width:30px;height:30px;margin:1px 12px 0 0;border-radius:50%;background:var(--blue);color:#06111f;font-weight:800}.step{overflow:hidden}details{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}summary{cursor:pointer;color:var(--blue);font-weight:700}.path{overflow-wrap:anywhere}.status-list{padding-left:1.2rem}.status-list li{margin:.45rem 0}footer{color:var(--muted);margin-top:24px;font-size:.9rem}
+    @media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,.section{padding:18px}.node-text{font-size:11px}.node-sub{font-size:9px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+    @media print{:root{color-scheme:light}body{background:white;color:#111}main{width:100%;margin:0}header,.section,.card,.finding,.step{box-shadow:none;background:white;color:#111;border-color:#bbb;break-inside:avoid}a{color:#0645ad}code,pre,figure svg{background:#f4f4f4;color:#111;border-color:#bbb}.skip{display:none}.muted,figcaption{color:#444}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to report</a>
+<main id="main">
+  <header>
+    <span class="badge good">Implemented · Final reviews passed</span>
+    <h1>Guided Git messages now converge on the correct generation</h1>
+    <p class="lead">The WebUI no longer decides freshness from a permissive timestamp window or lets timer, reconnect, and <code>agent_end</code> retries race. A server-owned generation ID, exact two-file baseline, stable pair verification, and one browser poller now form a deterministic delivery contract.</p>
+    <div class="callout"><strong>Conclusion:</strong> stale, partial, mixed-generation, duplicated, and wrong-tab commit-message previews now fail closed. Both final independent reviewers—Anthropic Claude Opus 4.8 and Google Gemini 3.1 Pro—returned <strong>PASS</strong> with no material findings.</div>
+    <p class="muted">Scope: <code>pi-package-webui</code> · Evidence date: 2026-07-22 · Canonical plan: <a href="../plans/webui-guided-git-message-reliability.md">webui-guided-git-message-reliability.md</a></p>
+  </header>
+
+  <section class="section" aria-labelledby="overview-title">
+    <h2 id="overview-title">Executive overview</h2>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Previous failure mode</th><th>Implemented contract</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Correlation</td><td>Browser inferred freshness from request time and file mtime.</td><td>Server UUID binds the request to one tab, cwd, and exact pre-dispatch baseline.</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Two-file integrity</td><td><code>Math.max(shortMtime, longMtime)</code> could accept one new file and one stale file.</td><td>Short and long artifacts are validated independently; both must be new, non-empty, and stable.</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Read races</td><td>A file could change around an ordinary read/stat sequence.</td><td>Each read is bracketed by bigint stats, then the pair is re-read after an 80 ms settle interval.</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Browser wakeups</td><td>Timer, resume, and <code>agent_end</code> launched competing retry chains.</td><td>One promise per tab/run/generation coalesces every wakeup into bounded polling.</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Recovery</td><td>Short retries could fail early or a stale failure could overwrite newer success.</td><td>30-second adaptive polling, identity guards before every write, and actionable timeout/regenerate guidance.</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Compatibility</td><td>Existing manual preview and commit navigation depended on current message files.</td><td>GET without a generation ID preserves current-file preview; correlated generation uses strict readiness.</td><td><span class="good">Preserved</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="architecture-title">
+    <h2 id="architecture-title">Reliability architecture</h2>
+    <p>The core change is an explicit provenance chain. The browser can display a generated pair only when the backend proves that the pair belongs to the exact request the browser is waiting for.</p>
+    <figure data-visual-kind="diagram" data-purpose="Show the correlated generation and stable two-file delivery sequence">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1040 500">
+        <title id="flow-title">Correlated Guided Git commit-message delivery</title>
+        <desc id="flow-desc">The browser starts generation. The server snapshots both files and issues a generation ID before prompting Pi. Timer, resume, and agent-end signals converge on one poller. The server accepts output only when both files differ from baseline, are non-empty, and remain stable across a second read. Stale or partial output loops back to bounded waiting.</desc>
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#a9b7cb"/></marker>
+          <marker id="arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f7c65c"/></marker>
+        </defs>
+        <rect class="node" x="40" y="55" width="190" height="86" rx="14"/><text class="node-text" x="135" y="88">Browser starts</text><text class="node-sub" x="135" y="112">POST generate + tab</text>
+        <rect class="node" x="300" y="55" width="210" height="86" rx="14"/><text class="node-text" x="405" y="84">Server snapshots pair</text><text class="node-sub" x="405" y="108">short + long baseline</text><text class="node-sub" x="405" y="126">UUID generation ID</text>
+        <rect class="node" x="580" y="55" width="190" height="86" rx="14"/><text class="node-text" x="675" y="88">Pi writes files</text><text class="node-sub" x="675" y="112">then agent settles</text>
+        <rect class="node" x="835" y="55" width="165" height="86" rx="14"/><text class="node-text" x="917" y="84">One poller</text><text class="node-sub" x="917" y="108">tab + run + UUID</text><text class="node-sub" x="917" y="126">30 s bound</text>
+        <path class="edge" d="M230 98 H300"/><path class="edge" d="M510 98 H580"/><path class="edge" d="M770 98 H835"/>
+        <rect class="node" x="185" y="255" width="205" height="96" rx="14"/><text class="node-text" x="287" y="285">Stable file reads</text><text class="node-sub" x="287" y="309">stat → read → stat</text><text class="node-sub" x="287" y="329">bigint metadata + SHA-256</text>
+        <rect class="node" x="455" y="255" width="205" height="96" rx="14"/><text class="node-text" x="557" y="285">Pair readiness</text><text class="node-sub" x="557" y="309">both changed + non-empty</text><text class="node-sub" x="557" y="329">80 ms settle + re-read</text>
+        <rect class="node-ok" x="725" y="255" width="220" height="96" rx="14"/><text class="node-text" x="835" y="285">Render exactly once</text><text class="node-sub" x="835" y="309">guard run + UUID again</text><text class="node-sub" x="835" y="329">enable commit choices</text>
+        <path class="edge" d="M917 141 V205 H287 V255"/><path class="edge" d="M390 303 H455"/><path class="edge" d="M660 303 H725"/>
+        <path class="edge-dash" d="M557 351 V425 H917 V141"/><text x="715" y="416" fill="#f7c65c" font-family="system-ui" font-size="13">pending / partial / unstable → bounded wait</text>
+      </svg>
+      <figcaption>Implemented flow derived from <code>startGitWorkflowGeneration</code>, <code>readGitWorkflowMessages</code>, <code>git-message-artifacts.mjs</code>, and <code>loadGitWorkflowMessage</code>. The dashed path is fail-closed waiting, not acceptance.</figcaption>
+    </figure>
+
+    <div class="grid">
+      <article class="card"><span class="badge info">Backend</span><strong>Server-owned provenance</strong><p>The UUID is generated before dispatch and stored on the originating tab with the baseline and cwd. A wrong, superseded, cross-tab, or wrong-cwd ID returns an expired readiness response.</p></article>
+      <article class="card"><span class="badge info">Filesystem</span><strong>Stable artifact identity</strong><p>Identity includes size, nanosecond mtime/ctime, inode, and SHA-256. Identical text is accepted when metadata proves both files were rewritten.</p></article>
+      <article class="card"><span class="badge info">Frontend</span><strong>Single-flight convergence</strong><p>Timer fallback, active-tab resume, and <code>agent_end</code> reuse the same promise for a tab/run/generation. Older polls cannot mutate newer state.</p></article>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="implementation-title">
+    <h2 id="implementation-title">Implementation map and behavior</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Responsibility</th><th>Key behavior</th></tr></thead>
+        <tbody>
+          <tr><td class="path"><code>lib/git-message-artifacts.mjs</code></td><td>Reusable artifact semantics</td><td>Stable stat/read/stat snapshots, pair comparison, missing/unchanged/empty readiness reasons.</td></tr>
+          <tr><td class="path"><code>bin/pi-webui.mjs</code></td><td>Generation authority and API</td><td>Baseline + UUID before prompt; tab-owned record; optional <code>generationId</code> query; 80 ms pair settle; expired fail-closed response.</td></tr>
+          <tr><td class="path"><code>public/app.js</code></td><td>Workflow state and rendering</td><td>Binds returned UUID, disables refresh during the brief pre-ID window, coalesces wakeups, polls adaptively, and guards all results.</td></tr>
+          <tr><td class="path"><code>tests/git-message-artifacts.test.mjs</code></td><td>Runtime unit tests</td><td>Missing, partial, identical-content rewrite, pair equality, and empty-output cases.</td></tr>
+          <tr><td class="path"><code>tests/guided-git-message-reliability-static.test.mjs</code></td><td>Cross-layer contract checks</td><td>Locks correlation, cwd checks, settle behavior, single-flight map, timeout, no-op dispatch window, and removal of the old mtime rule.</td></tr>
+          <tr><td class="path"><code>README.md</code> and plan</td><td>User and audit documentation</td><td>Explains strict generation provenance, manual preview compatibility, polling, decisions, evidence, reviews, and rollout.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>State-transition guarantees</h3>
+    <ol class="steps">
+      <li><div class="step"><strong>Capture before dispatch</strong><p>The backend snapshots both paths before sending the prompt. This creates a concrete baseline rather than trusting a browser timestamp.</p></div></li>
+      <li><div class="step"><strong>Bind before loading</strong><p>The browser stores the returned generation ID. While that response is in flight, the Refresh control is disabled and event wakeups safely no-op.</p></div></li>
+      <li><div class="step"><strong>Wait for complete evidence</strong><p>Both files must independently differ from baseline, contain non-whitespace text, survive a stable read, and remain unchanged across the pair settle read.</p></div></li>
+      <li><div class="step"><strong>Recheck ownership before render</strong><p>Immediately before state mutation, the browser verifies active workflow, tab, run ID, and generation ID again. Superseded work exits silently.</p></div></li>
+      <li><div class="step"><strong>Fail with recovery</strong><p>Polling is bounded. Expired records stop immediately; delayed files remain visibly pending; timeout guidance offers regenerate or verified manual preview.</p></div></li>
+    </ol>
+  </section>
+
+  <section class="section" aria-labelledby="evidence-title">
+    <h2 id="evidence-title">Verification and independent review evidence</h2>
+    <div class="grid">
+      <article class="card"><span class="badge good">Focused tests</span><strong>5 targeted checks passed</strong><p>Artifact unit test, reliability static test, Guided Git review regression, mobile static suite, and remote-auth generation compatibility harness all passed after the final fix.</p></article>
+      <article class="card"><span class="badge good">Syntax & diff</span><strong>Clean</strong><p><code>node --check</code> passed for frontend, backend, and new helper. <code>git diff --check</code> reported no whitespace errors.</p></article>
+      <article class="card"><span class="badge good">Independent review</span><strong>2 provider families: PASS</strong><p>Anthropic Claude Opus 4.8 high and Google Gemini 3.1 Pro high independently reviewed the final code and plan.</p></article>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Evidence</th><th>Result</th><th>Interpretation</th></tr></thead>
+        <tbody>
+          <tr><td><code>git-message-artifacts.test.mjs</code></td><td class="good">Pass</td><td>Proves both-file freshness rules, partial rejection, non-empty requirement, and identical-content rewrite handling.</td></tr>
+          <tr><td><code>guided-git-message-reliability-static.test.mjs</code></td><td class="good">Pass</td><td>Proves the intended backend/frontend contracts remain present and the old 10-second heuristic/retry chain is absent.</td></tr>
+          <tr><td><code>guided-git-aur-review.test.mjs</code></td><td class="good">Pass</td><td>Staged-content review binding and action-boundary verification remain intact.</td></tr>
+          <tr><td><code>mobile-static.test.mjs</code></td><td class="good">Pass</td><td>Existing broad WebUI source contracts continue to pass with unrelated user changes preserved.</td></tr>
+          <tr><td><code>remote-auth-settings-harness.test.mjs</code></td><td class="good">Pass</td><td>Generation dispatch remains compatible with a pre-repository harness cwd.</td></tr>
+          <tr><td><code>npm run check</code></td><td class="warn">36/38 files passed</td><td>Two unrelated Windows environment failures remain: temp-directory cleanup <code>EBUSY</code> and symlink privilege <code>EPERM</code>. Feature-focused and affected harnesses pass.</td></tr>
+          <tr><td>Final Anthropic review</td><td class="good">PASS</td><td>No material/blocking findings; verified correlation, race safety, polling, compatibility, and dispatch-window fix.</td></tr>
+          <tr><td>Final Google review</td><td class="good">PASS</td><td>No material findings, missing tests, unresolved risks, or blockers observed.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <details><summary>Review finding resolved before the final review gate</summary><p>The first review identified a narrow window where the generating view could expose Refresh before the generation POST returned its correlation ID. The final implementation disables that action until the ID exists and treats early timer/event wakeups as harmless no-ops. Focused tests cover both behaviors; both final reviewers reviewed the corrected code.</p></details>
+    <details><summary>Independent review artifacts</summary><ul><li class="path"><code>.pi-subagents/artifacts/outputs/eefc3b34-8de9-4788-9b43-d482fe250cef/reviews-final/anthropic-correctness.md</code></li><li class="path"><code>.pi-subagents/artifacts/outputs/eefc3b34-8de9-4788-9b43-d482fe250cef/reviews-final/google-ux-tests.md</code></li></ul></details>
+  </section>
+
+  <section class="section" aria-labelledby="risks-title">
+    <h2 id="risks-title">Residual risks, compatibility, and rollout</h2>
+    <div class="grid">
+      <article class="finding"><span class="badge warn">Rare filesystem edge</span><h3>Indistinguishable identical rewrite</h3><p>On a coarse-timestamp filesystem with no useful inode change, a byte-identical rewrite may remain indistinguishable from baseline. The system fails closed after 30 seconds and asks for regeneration/manual verification; it does not show stale output.</p></article>
+      <article class="finding"><span class="badge warn">Restart boundary</span><h3>Correlation is intentionally in memory</h3><p>A full WebUI server restart during generation loses the tab-owned record. This is out of scope and requires regeneration, preserving correctness over convenience.</p></article>
+      <article class="finding"><span class="badge info">Compatibility</span><h3>Manual preview stays permissive</h3><p>Preview without a generation ID preserves existing current-file behavior, including showing <code>(empty)</code>. Correlated advancement requires non-empty files, and commit endpoints still reject empty messages.</p></article>
+      <article class="finding"><span class="badge info">Evidence limit</span><h3>No live billed generation</h3><p>Verification used unit, static, syntax, and related harness tests plus two independent reviews. A browser-driven live model generation was not run in this session.</p></article>
+    </div>
+
+    <div class="callout warn"><strong>Rollout:</strong> restart Pi Web UI so the updated backend and <code>public/app.js</code> load together. If versions are mixed, the flow intentionally asks for restart/regeneration instead of accepting uncorrelated files.</div>
+    <ul class="status-list">
+      <li>Keep <code>dev/COMMIT/staged-commit-short.txt</code> and <code>staged-commit-long.txt</code> as the canonical prompt outputs.</li>
+      <li>Use <strong>Regenerate</strong> after a bounded timeout; use manual preview only after personally verifying both files.</li>
+      <li>For future hardening, add a runtime browser/API harness that asserts promise coalescing and the backend “still settling” transition end to end.</li>
+      <li>Do not attribute the pre-existing working-tree edits in <code>public/styles.css</code> and <code>tests/mobile-static.test.mjs</code> to this feature.</li>
+    </ul>
+  </section>
+
+  <section class="section" aria-labelledby="audit-title">
+    <h2 id="audit-title">Audit trail</h2>
+    <p><strong>Plan:</strong> <a href="../plans/webui-guided-git-message-reliability.md">plans/webui-guided-git-message-reliability.md</a></p>
+    <p><strong>Repository exploration report:</strong> generated by the local repo-explorer under the installed skill directory for the goal “Trace the WebUI guided-git-workflow implementation end-to-end.”</p>
+    <p><strong>Changed feature surface:</strong> backend generation/read API, frontend Guided Git state and polling, one new artifact helper, two focused tests, package check wiring, README, plan, and this report.</p>
+    <p class="muted">This report contains no external runtime dependencies, invented metrics, or remote assets. Conclusions are based on the current local diff, command output, tests, and review artifacts.</p>
+  </section>
+
+  <footer>WebUI Guided Git Message Reliability implementation report · 2026-07-22</footer>
+</main>
+</body>
+</html>
