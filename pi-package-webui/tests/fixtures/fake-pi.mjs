@@ -439,6 +439,7 @@ rl.on("line", (line) => {
     direction: "command",
     type,
     ...(command.message !== undefined ? { message: String(command.message) } : {}),
+    ...(Array.isArray(command.images) ? { images: command.images } : {}),
     ...(command.provider !== undefined ? { provider: String(command.provider) } : {}),
     ...(command.modelId !== undefined ? { modelId: String(command.modelId) } : {}),
   });

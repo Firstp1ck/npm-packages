@@ -23,8 +23,28 @@ assert.match(
 );
 assert.match(
   app,
-  /case "message_end":[\s\S]*?event\.message\.stopReason === "error"[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", message\)/,
+  /case "message_end":[\s\S]*?event\.message\.stopReason === "error"[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", message\)[\s\S]*?assistantErrorSurfacedThisRun = true/,
   "final assistant errors should remain visible after transcript reconciliation",
+);
+assert.match(
+  app,
+  /function assistantErrorFromAgentEnd\(event\)[\s\S]*?event\?\.messages[\s\S]*?findLast\(\(item\) => item\?\.role === "assistant"\)[\s\S]*?message\?\.stopReason !== "error"[\s\S]*?message\.errorMessage/,
+  "agent_end should recover provider errors from its terminal assistant message",
+);
+assert.match(
+  app,
+  /case "agent_end":[\s\S]*?!assistantErrorSurfacedThisRun && event\.willRetry !== true[\s\S]*?assistantErrorFromAgentEnd\(event\)[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", message\)/,
+  "agent_end should visibly surface a non-retrying provider error when message_end was absent",
+);
+assert.match(
+  app,
+  /function toolImagePayloadError\(event\)[\s\S]*?event\?\.result\?\.content[\s\S]*?block\?\.type !== "image"[\s\S]*?btoa\(atob\(data\)\) === data[\s\S]*?invalid base64 data/,
+  "tool image payloads should be checked for canonical base64 without exposing their contents",
+);
+assert.match(
+  app,
+  /case "tool_execution_end":[\s\S]*?toolImagePayloadError\(event\)[\s\S]*?surfaceRuntimeDiagnostic\("Tool image payload error", imagePayloadError\)/,
+  "malformed tool image payloads should immediately surface in the transcript",
 );
 for (const eventType of ["pi_process_exit", "pi_process_error", "pi_stderr", "pi_stderr_sink_error", "pi_stdout_line_too_large", "pi_stdout_parse_error"]) {
   assert.match(app, new RegExp(`case "${eventType}":[\\s\\S]*?surfaceRuntimeDiagnostic\\(`), `${eventType} should surface in the transcript`);

@@ -7103,11 +7103,21 @@ function stripDataUrlPrefix(data) {
   return comma === -1 ? text : text.slice(comma + 1);
 }
 
-function decodeAttachmentData(data) {
+function decodeCanonicalBase64(data, label) {
   const base64 = stripDataUrlPrefix(data).replace(/\s+/g, "");
-  if (!base64) throw new Error("attachment data is required");
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) throw new Error("attachment data must be base64 encoded");
-  return Buffer.from(base64, "base64");
+  if (!base64) throw makeHttpError(400, `${label} data is required`);
+  if (base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+    throw makeHttpError(400, `${label} data must be canonical base64`);
+  }
+  const buffer = Buffer.from(base64, "base64");
+  if (buffer.length === 0 || buffer.toString("base64") !== base64) {
+    throw makeHttpError(400, `${label} data must be canonical base64`);
+  }
+  return { base64, buffer };
+}
+
+function decodeAttachmentData(data) {
+  return decodeCanonicalBase64(data, "attachment").buffer;
 }
 
 async function saveUploadedAttachments(body) {
@@ -7151,13 +7161,10 @@ function normalizeRpcImages(value) {
   let totalBytes = 0;
   for (const [index, image] of value.entries()) {
     const mimeType = normalizeMimeType(image?.mimeType);
-    if (!RPC_IMAGE_MIME_TYPES.has(mimeType)) throw new Error(`image ${index + 1} has unsupported MIME type ${mimeType}`);
-    const data = stripDataUrlPrefix(image?.data).replace(/\s+/g, "");
-    if (!data) throw new Error(`image ${index + 1} data is required`);
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error(`image ${index + 1} data must be base64 encoded`);
-    const approxBytes = Math.floor((data.length * 3) / 4);
-    if (approxBytes > INLINE_IMAGE_MAX_BYTES) throw new Error(`image ${index + 1} exceeds ${formatBytes(INLINE_IMAGE_MAX_BYTES)} inline limit`);
-    totalBytes += approxBytes;
+    if (!RPC_IMAGE_MIME_TYPES.has(mimeType)) throw makeHttpError(400, `image ${index + 1} has unsupported MIME type ${mimeType}`);
+    const { base64: data, buffer } = decodeCanonicalBase64(image?.data, `image ${index + 1}`);
+    if (buffer.length > INLINE_IMAGE_MAX_BYTES) throw new Error(`image ${index + 1} exceeds ${formatBytes(INLINE_IMAGE_MAX_BYTES)} inline limit`);
+    totalBytes += buffer.length;
     if (totalBytes > INLINE_IMAGE_TOTAL_MAX_BYTES) throw new Error(`inline images exceed ${formatBytes(INLINE_IMAGE_TOTAL_MAX_BYTES)} total`);
     images.push({ type: "image", data, mimeType });
   }

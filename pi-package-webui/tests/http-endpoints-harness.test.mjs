@@ -305,6 +305,39 @@ try {
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
 
+  const malformedInlineImage = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { tab: tabId, message: "malformed inline image fixture", images: [{ type: "image", mimeType: "image/png", data: "137,80,78,71,13,10,26,10" }] },
+  });
+  assert.equal(malformedInlineImage.status, 400, "comma-separated image bytes should be rejected before RPC dispatch");
+  assert.match(String(malformedInlineImage.body?.error || ""), /image 1 data must be canonical base64/i);
+
+  const unpaddedInlineImage = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { tab: tabId, message: "unpadded inline image fixture", images: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo" }] },
+  });
+  assert.equal(unpaddedInlineImage.status, 400, "non-canonical unpadded image base64 should be rejected before RPC dispatch");
+  assert.match(String(unpaddedInlineImage.body?.error || ""), /image 1 data must be canonical base64/i);
+
+  const malformedAttachment = await request("127.0.0.1", "/api/attachments", {
+    method: "POST",
+    body: { tab: tabId, files: [{ id: "bad-image", name: "bad.png", mimeType: "image/png", data: "137,80,78,71" }] },
+  });
+  assert.equal(malformedAttachment.status, 400, "malformed attachment data should be rejected before a file is written");
+  assert.match(String(malformedAttachment.body?.error || ""), /attachment data must be canonical base64/i);
+
+  const canonicalPng = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64");
+  const validInlineImage = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { tab: tabId, message: "canonical inline image fixture", images: [{ type: "image", mimeType: "image/png", data: canonicalPng }] },
+  });
+  assert.equal(validInlineImage.status, 200, `canonical inline image should reach Pi unchanged: ${validInlineImage.body?.error || ""}`);
+  const imageCommands = (await readFile(fakePiCommandLog, "utf8")).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(imageCommands.some((entry) => entry.direction === "command" && entry.message === "malformed inline image fixture"), false, "malformed inline images must not reach Pi");
+  assert.equal(imageCommands.some((entry) => entry.direction === "command" && entry.message === "unpadded inline image fixture"), false, "non-canonical inline images must not reach Pi");
+  const validImageCommand = imageCommands.find((entry) => entry.direction === "command" && entry.message === "canonical inline image fixture");
+  assert.deepEqual(validImageCommand?.images, [{ type: "image", data: canonicalPng, mimeType: "image/png" }], "canonical image bytes and MIME type should be forwarded unchanged");
+
   const optionalFeatures = await request("127.0.0.1", "/api/optional-features");
   assert.equal(optionalFeatures.status, 200, "optional feature status should load");
   const aurReviewFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");

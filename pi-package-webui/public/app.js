@@ -391,6 +391,7 @@ let streamThinkingBubble = null;
 let streamThinking = null;
 let streamMessageActive = false;
 let streamProviderErrorText = "";
+let assistantErrorSurfacedThisRun = false;
 let runIndicatorBubble = null;
 let runIndicatorText = null;
 let runIndicatorMeta = null;
@@ -24369,6 +24370,34 @@ function stderrDiagnosticLevel(content) {
   return /(?:^|\b)(?:error|failed|failure|fatal|exception|invalid)(?:\b|:)/i.test(String(content || "")) ? "error" : "warn";
 }
 
+function toolImagePayloadError(event) {
+  const blocks = Array.isArray(event?.result?.content) ? event.result.content : [];
+  for (const [index, block] of blocks.entries()) {
+    if (block?.type !== "image") continue;
+    const data = typeof block.data === "string" ? block.data.replace(/\s+/g, "") : "";
+    let canonical = data.length > 0 && data.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(data);
+    if (canonical) {
+      try {
+        canonical = btoa(atob(data)) === data;
+      } catch {
+        canonical = false;
+      }
+    }
+    if (!canonical) {
+      const toolName = String(event.toolName || "Tool");
+      return `${toolName} returned image output ${index + 1} with invalid base64 data. The next model request may fail. Upgrade or fix the tool, then start a new session or fork before this tool result to remove it from context.`;
+    }
+  }
+  return "";
+}
+
+function assistantErrorFromAgentEnd(event) {
+  const messages = Array.isArray(event?.messages) ? event.messages : [];
+  const message = messages.findLast((item) => item?.role === "assistant");
+  if (message?.stopReason !== "error") return "";
+  return String(message.errorMessage || "The assistant request failed without an error message.").trim();
+}
+
 function addAbortTranscriptNotice({ activeRun = false, errorMessage = "" } = {}) {
   if (errorMessage) {
     addTransientMessage({ role: "error", title: "Abort failed", content: `Abort request failed: ${errorMessage}`, level: "error" });
@@ -29329,6 +29358,7 @@ function handleEvent(event) {
       scheduleRefreshState();
       break;
     case "agent_start":
+      assistantErrorSurfacedThisRun = false;
       if (currentState) currentState = { ...currentState, isStreaming: true };
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ streaming: true });
       setRunIndicatorActivity("Agent run started; waiting for first output or action…");
@@ -29339,6 +29369,13 @@ function handleEvent(event) {
       break;
     case "agent_end":
       streamMessageActive = false;
+      if (!assistantErrorSurfacedThisRun && event.willRetry !== true) {
+        const message = assistantErrorFromAgentEnd(event);
+        if (message) {
+          surfaceRuntimeDiagnostic("Assistant error", message);
+          assistantErrorSurfacedThisRun = true;
+        }
+      }
       addEvent("agent finished");
       notifyAgentDone(event.tabId || activeTabId, { activity: event.tabActivity, tabTitle: event.tabTitle });
       clearContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
@@ -29383,6 +29420,7 @@ function handleEvent(event) {
       if (event.message?.role === "assistant" && event.message.stopReason === "error") {
         const message = String(event.message.errorMessage || streamProviderErrorText || "The assistant request failed without an error message.").trim();
         surfaceRuntimeDiagnostic("Assistant error", message);
+        assistantErrorSurfacedThisRun = true;
       }
       streamProviderErrorText = "";
       if (runIndicatorIsActive()) setRunIndicatorActivity("Assistant message finished; waiting for the next step…", { scroll: false });
@@ -29404,8 +29442,10 @@ function handleEvent(event) {
       handleToolExecutionUpdate(event);
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`, { scroll: false });
       break;
-    case "tool_execution_end":
+    case "tool_execution_end": {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
+      const imagePayloadError = toolImagePayloadError(event);
+      if (imagePayloadError) surfaceRuntimeDiagnostic("Tool image payload error", imagePayloadError);
       handleToolExecutionEnd(event);
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
       addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
@@ -29414,6 +29454,7 @@ function handleEvent(event) {
       // transcript. This avoids one fetch+render per tool call.
       scheduleRefreshFooter();
       break;
+    }
     case "compaction_start":
       if (currentState) currentState = { ...currentState, isCompacting: true };
       markContextUsageUnknownAfterCompaction(event.tabId || activeTabId);

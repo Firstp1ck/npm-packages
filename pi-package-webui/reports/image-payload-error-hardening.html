@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Reviewed implementation report for Pi WebUI image-payload validation and runtime error visibility hardening.">
+  <title>Image Payload Error Hardening — Reviewed Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 12% 0%, #17345d 0, var(--bg) 34rem);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); text-underline-offset: .2em; }
+    a:focus-visible, summary:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; border-radius: 4px; }
+    .skip-link { position: fixed; left: 8px; top: 8px; transform: translateY(-160%); z-index: 10; background: var(--blue); color: #06111f; padding: 8px 12px; border-radius: 8px; font-weight: 800; }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section, footer {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    section { padding: 24px; margin-top: 20px; scroll-margin-top: 12px; }
+    footer { padding: 18px 24px; margin-top: 20px; color: var(--muted); }
+    h1, h2, h3 { line-height: 1.24; }
+    h1 { margin: .25rem 0 .75rem; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.035em; }
+    h2 { margin: 0 0 1rem; padding-bottom: .65rem; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin: 0 0 .45rem; font-size: 1.08rem; }
+    p { margin: .45rem 0 1rem; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; }
+    pre { margin: .7rem 0; padding: 14px; overflow-x: auto; white-space: pre-wrap; background: var(--code); border: 1px solid var(--line); border-radius: 10px; color: #d9e6f7; }
+    .lead { max-width: 80ch; color: var(--muted); font-size: 1.07rem; }
+    .eyebrow, .badge { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: .2rem .65rem; font-size: .78rem; font-weight: 780; letter-spacing: .035em; }
+    .eyebrow { color: var(--blue); background: #0d2036; }
+    .badge.good { color: var(--green); border-color: #2a6b4d; background: #102b23; }
+    .badge.warn { color: var(--yellow); border-color: #705d2d; background: #2c2515; }
+    .badge.info { color: var(--blue); border-color: #315c86; background: #112943; }
+    .badge.defer { color: var(--muted); background: #172235; }
+    .conclusion, .callout { padding: 1rem 1.1rem; border-left: 5px solid var(--green); border-radius: 0 var(--radius-md) var(--radius-md) 0; background: #102820; }
+    .callout { border-left-color: var(--yellow); background: #2b2415; }
+    .callout.info { border-left-color: var(--blue); background: #10243a; }
+    nav { margin-top: 1.2rem; display: flex; flex-wrap: wrap; gap: .55rem; }
+    nav a { padding: .28rem .68rem; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); text-decoration: none; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card, .metric, .step { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .metric strong { display: block; margin: .1rem 0; font-size: 1.5rem; }
+    .muted { color: var(--muted); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); }
+    table { width: 100%; min-width: 700px; border-collapse: collapse; }
+    th, td { padding: .72rem .82rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .84rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:last-child td { border-bottom: 0; }
+    figure { margin: 18px 0 4px; }
+    figure svg { display: block; width: 100%; height: auto; background: var(--code); border: 1px solid var(--line); border-radius: 12px; }
+    figcaption { margin-top: 8px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #182b43; stroke: #65b5ff; stroke-width: 2; }
+    .node.warning { stroke: #f7c65c; }
+    .node.success { stroke: #50d890; }
+    .node-text { fill: #e8eef8; font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .node-small { fill: #a9b7cb; font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: #a9b7cb; stroke-width: 2.4; marker-end: url(#arrow); }
+    .edge.reject { stroke: #ff7373; stroke-dasharray: 7 5; }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 750; }
+    .review { border-left: 4px solid var(--green); }
+    ol.steps { list-style: none; padding: 0; counter-reset: steps; }
+    ol.steps > li { counter-increment: steps; margin: 14px 0; }
+    ol.steps > li::before { content: counter(steps); float: left; display: grid; place-items: center; width: 30px; height: 30px; margin: 1px 12px 0 0; border-radius: 50%; background: var(--blue); color: #06111f; font-weight: 800; }
+    .step { overflow: hidden; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, section { padding: 18px; }
+      nav a { flex: 1 1 145px; text-align: center; }
+      .node-text { font-size: 11px; }
+      .node-small { font-size: 9px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, section, footer, .card, .metric, .step { box-shadow: none; background: white; color: #111; border-color: #bbb; break-inside: avoid; }
+      nav, .skip-link { display: none; }
+      pre, code, figure svg { background: #f1f3f5; color: #111; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to report content</a>
+<main id="content">
+  <header>
+    <span class="eyebrow">Reviewed implementation report</span>
+    <h1>Image Payload Error Hardening</h1>
+    <p class="lead">Source-grounded report for the Pi WebUI fix that exposes malformed tool images and terminal Codex errors while rejecting non-canonical browser image payloads before RPC dispatch.</p>
+    <div class="conclusion"><strong>Conclusion:</strong> the silent-failure path is closed within the approved WebUI scope. Invalid browser payloads now fail with HTTP 400 before reaching Pi, malformed tool images produce an actionable transcript warning, and terminal assistant errors have an <code>agent_end</code> fallback. Two independent cross-provider reviewers approved the implementation.</div>
+    <p class="muted"><strong>Confidence:</strong> high for server/RPC behavior and event-handler structure. Real-browser transcript timing was not automated, and existing malformed session history is intentionally not rewritten.</p>
+    <nav aria-label="Report sections">
+      <a href="#overview">Overview</a>
+      <a href="#diagnosis">Diagnosis &amp; flow</a>
+      <a href="#implementation">Implementation</a>
+      <a href="#verification">Verification &amp; review</a>
+      <a href="#rollout">Rollout &amp; residual risk</a>
+    </nav>
+  </header>
+
+  <section id="overview">
+    <h2>Executive overview</h2>
+    <div class="grid" aria-label="Headline results">
+      <div class="metric"><span class="badge good">Verified</span><strong>3 guarded paths</strong><span class="muted">Browser attachments, inline RPC images, and runtime tool/provider diagnostics.</span></div>
+      <div class="metric"><span class="badge good">Reviewed</span><strong>2 independent approvals</strong><span class="muted">Anthropic Claude and DeepSeek, both fresh-context and read-only.</span></div>
+      <div class="metric"><span class="badge warn">Rollout</span><strong>1 stale producer install</strong><span class="muted">The repository serializer is fixed; the observed installed workbook extension still requires update/publication.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Implementation map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Verified problem</th><th>Implemented control</th><th>Status / next action</th></tr></thead>
+        <tbody>
+          <tr><td>Workbook tool output</td><td>Image <code>data</code> contained comma-separated PNG bytes, not base64.</td><td>Producer source already uses <code>Buffer.from(png).toString("base64")</code>; WebUI now warns on malformed tool image blocks.</td><td><span class="badge warn">Rollout</span> publish/install the corrected producer, then fork or start fresh.</td></tr>
+          <tr><td>Browser → WebUI</td><td>Alphabet-only checks relied on Node's permissive decoder.</td><td>Length, alphabet/padding, decode, and re-encode equality gate; invalid data returns HTTP 400.</td><td><span class="badge good">Complete</span> focused server harness passed.</td></tr>
+          <tr><td>Pi → browser errors</td><td>A terminal provider error could be missed if the expected final message event was absent.</td><td>Last assistant error in <code>agent_end.messages</code> is surfaced unless a normal <code>message_end</code> already did so.</td><td><span class="badge good">Complete</span> retry-aware deduplication covered.</td></tr>
+          <tr><td>Historical context</td><td>Malformed tool images remain in persisted conversation history.</td><td>No silent mutation or image dropping.</td><td><span class="badge info">Intentional</span> recover by forking before the result or opening a new session.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="diagnosis">
+    <h2>Diagnosis and failure flow</h2>
+    <p>The decisive evidence was structural rather than speculative: affected session tool results stored image strings beginning with <code>137,80,78,71,13,10,26,10</code>, the decimal PNG signature. Those strings failed alphabet checks and canonical round-tripping. The repository's workbook renderer had already been corrected, but the observed installed <code>@firstpick/pi-extension-workbook@0.1.1</code> still used <code>Uint8Array.toString("base64")</code>, which produces comma-separated decimal values rather than encoding bytes.</p>
+    <figure data-visual-kind="diagram" data-purpose="Show where malformed image payloads are detected, rejected, surfaced, and recovered">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 980 430">
+        <title id="flow-title">Image payload hardening flow</title>
+        <desc id="flow-desc">Browser images pass a canonical base64 gate before Pi. Tool result images are checked at tool completion and malformed data produces a warning. If Codex still fails, message_end or agent_end surfaces the error. Historical malformed context requires a fork or new session.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
+        <rect class="node" x="35" y="55" width="180" height="72" rx="12"/>
+        <text class="node-text" x="125" y="86">Browser image</text><text class="node-small" x="125" y="106">attachment or inline</text>
+        <path class="edge" d="M215 91 H300"/>
+        <rect class="node warning" x="300" y="45" width="210" height="92" rx="12"/>
+        <text class="node-text" x="405" y="78">Canonical gate</text><text class="node-small" x="405" y="99">alphabet + padding +</text><text class="node-small" x="405" y="116">decode/re-encode equality</text>
+        <path class="edge reject" d="M405 137 V205"/>
+        <rect class="node warning" x="300" y="205" width="210" height="72" rx="12"/>
+        <text class="node-text" x="405" y="235">Reject HTTP 400</text><text class="node-small" x="405" y="255">never dispatch to Pi</text>
+        <path class="edge" d="M510 91 H600"/>
+        <rect class="node success" x="600" y="55" width="170" height="72" rx="12"/>
+        <text class="node-text" x="685" y="86">Pi / Codex</text><text class="node-small" x="685" y="106">valid bytes unchanged</text>
+        <rect class="node" x="35" y="315" width="180" height="72" rx="12"/>
+        <text class="node-text" x="125" y="346">Tool image result</text><text class="node-small" x="125" y="366">runtime event</text>
+        <path class="edge" d="M215 351 H300"/>
+        <rect class="node warning" x="300" y="305" width="210" height="92" rx="12"/>
+        <text class="node-text" x="405" y="338">WebUI format check</text><text class="node-small" x="405" y="359">invalid → visible warning</text><text class="node-small" x="405" y="377">payload content not echoed</text>
+        <path class="edge" d="M510 351 H600"/>
+        <rect class="node" x="600" y="305" width="170" height="92" rx="12"/>
+        <text class="node-text" x="685" y="338">Provider outcome</text><text class="node-small" x="685" y="359">message_end error</text><text class="node-small" x="685" y="377">or agent_end fallback</text>
+        <path class="edge" d="M770 351 H825"/>
+        <rect class="node warning" x="825" y="305" width="125" height="92" rx="12"/>
+        <text class="node-text" x="887" y="338">Recovery</text><text class="node-small" x="887" y="359">upgrade tool</text><text class="node-small" x="887" y="377">fork or new</text>
+      </svg>
+      <figcaption>Observed and implemented paths only. The WebUI does not rewrite persisted tool results; the recovery node is therefore an explicit operator action.</figcaption>
+    </figure>
+    <div class="callout"><strong>Why not silently drop the image?</strong> Altering or hiding a tool result would mutate model context semantics and could conceal a producer defect. The implementation fails closed for browser input, warns for runtime tool output, and preserves existing session integrity.</div>
+  </section>
+
+  <section id="implementation">
+    <h2>Implementation details</h2>
+    <div class="grid">
+      <article class="card">
+        <span class="badge good">Server boundary</span>
+        <h3><code>decodeCanonicalBase64</code></h3>
+        <p>Normalizes an optional data-URL envelope and whitespace, requires non-empty standard base64 with length divisible by four, decodes it, and requires the decoded bytes to re-encode to the exact same string.</p>
+        <p class="muted">This rejects comma-separated bytes, URL-safe alphabets, invalid pad bits, malformed padding, and unpadded values that permissive decoders might accept.</p>
+      </article>
+      <article class="card">
+        <span class="badge good">Transcript visibility</span>
+        <h3><code>toolImagePayloadError</code></h3>
+        <p>Checks tool-result image blocks at <code>tool_execution_end</code>. An invalid block produces a visible, actionable warning without copying potentially huge or sensitive image data into the transcript.</p>
+      </article>
+      <article class="card">
+        <span class="badge good">Terminal fallback</span>
+        <h3><code>assistantErrorFromAgentEnd</code></h3>
+        <p>Reads only the last assistant message in the low-level run. It surfaces a terminal <code>stopReason: "error"</code> only when no normal final-message diagnostic was already shown and no retry is pending.</p>
+      </article>
+      <article class="card">
+        <span class="badge info">Preservation</span>
+        <h3>Valid input remains unchanged</h3>
+        <p>Decoded byte length replaces a padded-string approximation for limits. Valid raw base64 and normalized MIME values continue into the Pi RPC command without recompression or content transformation.</p>
+      </article>
+    </div>
+    <h3 style="margin-top:22px">Changed files</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Path</th><th>Responsibility</th><th>Review focus</th></tr></thead>
+        <tbody>
+          <tr><td><code>bin/pi-webui.mjs</code></td><td>Canonical browser payload gate and HTTP 400 validation.</td><td>Decoder permissiveness, exact byte limits, unchanged forwarding.</td></tr>
+          <tr><td><code>public/app.js</code></td><td>Malformed tool-image warning and retry-aware terminal error fallback.</td><td>Event ordering, deduplication, payload privacy.</td></tr>
+          <tr><td><code>tests/image-payload-hardening-harness.test.mjs</code></td><td>Focused real-server/fake-Pi boundary proof.</td><td>Rejected payloads absent from RPC log; canonical payload unchanged.</td></tr>
+          <tr><td><code>tests/http-endpoints-harness.test.mjs</code></td><td>Broader endpoint contract coverage.</td><td>Integration sequence before unrelated Git fixture cleanup.</td></tr>
+          <tr><td><code>tests/runtime-error-visibility.test.mjs</code></td><td>Client event-handler regression assertions.</td><td>Visible transcript path and fallback guard.</td></tr>
+          <tr><td><code>tests/fixtures/fake-pi.mjs</code></td><td>Records RPC image arrays for assertions.</td><td>Proof of non-dispatch and byte/MIME preservation.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="verification">
+    <h2>Verification and independent review</h2>
+    <h3>Acceptance evidence</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>Interpretation</th></tr></thead>
+        <tbody>
+          <tr><td>Changed JavaScript syntax</td><td><span class="badge good">Pass</span></td><td><code>node --check</code> succeeded for client, server, fixture, and focused harness.</td></tr>
+          <tr><td>Runtime visibility regression</td><td><span class="badge good">Pass</span></td><td>Provider, transport, malformed-tool, final-message, and <code>agent_end</code> paths are structurally asserted.</td></tr>
+          <tr><td>Focused image boundary harness</td><td><span class="badge good">Pass</span></td><td>Comma bytes, unpadded image data, and malformed attachment data returned 400; canonical PNG bytes reached fake Pi unchanged.</td></tr>
+          <tr><td>Workbook extension runtime tests</td><td><span class="badge good">24 / 24 pass</span></td><td>Includes canonical cold/cached PNG serialization from the corrected repository producer.</td></tr>
+          <tr><td>WebUI package check</td><td><span class="badge warn">37 / 39 files pass</span></td><td>Feature tests passed. Remaining failures were Windows <code>EBUSY</code> temp cleanup and <code>EPERM</code> symlink privilege.</td></tr>
+          <tr><td>Workbook TypeScript package check</td><td><span class="badge warn">Environment-blocked</span></td><td>Sibling <code>pi-utils</code> could not resolve the coding-agent type package; runtime tests remained green.</td></tr>
+          <tr><td>Report validation</td><td><span class="badge good">Pass</span></td><td>Bundled strict HTML validator found no unresolved placeholders, missing structure, or accessibility contract failure.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 style="margin-top:22px">Cross-provider review gate</h3>
+    <div class="grid">
+      <article class="card review">
+        <span class="badge good">Approve</span>
+        <h3>Anthropic / Claude Opus 4.8</h3>
+        <p>Run <code>3798f6a5…</code>, agent 0, high thinking. Verified canonical validation, HTTP 400 propagation, Pi type compatibility, exact byte handling, lifecycle guards, and focused tests.</p>
+      </article>
+      <article class="card review">
+        <span class="badge good">Approve</span>
+        <h3>DeepSeek v4 Pro</h3>
+        <p>Run <code>3798f6a5…</code>, agent 1, high thinking via OpenRouter. Independently challenged adversarial encodings, browser compatibility, event sequencing, duplicate suppression, and endpoint coverage.</p>
+      </article>
+    </div>
+    <h3 style="margin-top:22px">Finding disposition</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Finding</th><th>Disposition</th><th>Evidence-based rationale</th></tr></thead>
+        <tbody>
+          <tr><td>Count/size violations still default to HTTP 500.</td><td><span class="badge defer">Deferred</span></td><td>Verified pre-existing adjacent behavior; separate API cleanup should use 400 for count and 413 for decoded size with dedicated tests.</td></tr>
+          <tr><td>A full data URL in tool <code>data</code> is warned as malformed.</td><td><span class="badge info">Rejected as defect</span></td><td>Pi's image contract requires raw base64 plus separate MIME. Provider adapters prepend the data URL; an already-prefixed value would be invalid.</td></tr>
+          <tr><td>Run error flag is global, not per-tab.</td><td><span class="badge info">Rejected as regression</span></td><td>Active-tab event filtering follows the existing global stream-state model; no cross-tab failure was reproduced.</td></tr>
+          <tr><td><code>atob</code>/<code>btoa</code> costs memory for large tool images.</td><td><span class="badge defer">Deferred</span></td><td>One completion-time check per image; no observed performance failure. Optimize only after profiling.</td></tr>
+          <tr><td><code>findLast</code> requires a modern browser.</td><td><span class="badge good">Accepted / no change</span></td><td>Compatible with the package's modern browser and Node 22+ baseline.</td></tr>
+          <tr><td>Plan/report were incomplete during review.</td><td><span class="badge good">Accepted / fixed</span></td><td>The linked artifacts now contain final evidence, traceability, dispositions, and rollout constraints.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details>
+      <summary>Why the broad checks are not marked fully green</summary>
+      <p>The two WebUI failures occurred after the focused image hardening test had passed: a Windows file lock prevented deleting a temporary merge-conflict fixture, and the current account could not create a symbolic link. Repeating the broad HTTP harness reproduced the same unrelated lock. The workbook package's TypeScript check failed while resolving a sibling development dependency. These failures are preserved rather than relabeled as feature failures or silently ignored.</p>
+    </details>
+  </section>
+
+  <section id="rollout">
+    <h2>Rollout, recovery, and residual risk</h2>
+    <ol class="steps">
+      <li class="step"><h3>Publish and install the corrected workbook producer</h3><p>The repository source is correct, but an installed <code>0.1.1</code> copy produced the observed malformed image. Package publication/installation is an external side effect and was not performed in this task.</p><p class="muted"><strong>Done when:</strong> an installed render returns canonical base64 and its decoded first eight bytes are the PNG signature.</p></li>
+      <li class="step"><h3>Recover affected sessions without rewriting history</h3><p>After upgrading the tool, fork before the malformed <code>workbook_render</code> result or start a fresh session. Retrying in the same branch still sends the bad historical tool result to Codex.</p><p class="muted"><strong>Done when:</strong> the malformed tool result is absent from active model context and a new prompt succeeds.</p></li>
+      <li class="step"><h3>Run focused verification after packaging</h3><pre><code>cd pi-package-webui
+node tests/runtime-error-visibility.test.mjs
+node tests/image-payload-hardening-harness.test.mjs
+
+cd ../pi-extension-workbook
+npm test</code></pre><p class="muted"><strong>Done when:</strong> the WebUI focused tests and workbook canonical serialization test pass in the packaged environment.</p></li>
+    </ol>
+    <div class="callout info"><strong>Residual risk:</strong> WebUI diagnostics cannot stop Pi core from immediately making the next provider call after a malformed tool result, nor can they repair old context. The practical prevention layers are the corrected producer and strict browser-input gate; runtime warnings and terminal fallback make remaining failures visible and actionable.</div>
+    <h3>Sources and audit links</h3>
+    <ul>
+      <li><a href="../plans/image-payload-error-hardening.md">Canonical implementation plan and decision record</a></li>
+      <li><code>pi-package-webui/bin/pi-webui.mjs</code> — server payload boundary</li>
+      <li><code>pi-package-webui/public/app.js</code> — WebUI runtime diagnostics</li>
+      <li><code>pi-package-webui/tests/image-payload-hardening-harness.test.mjs</code> — focused transport evidence</li>
+      <li><code>pi-extension-workbook/src/output.ts</code> and <code>tests/extension.test.mjs</code> — producer fix and canonical serialization evidence</li>
+      <li>Pi RPC documentation — <code>agent_end.messages</code>, <code>willRetry</code>, image-content format, and event ordering contracts</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p><strong>Scope:</strong> Pi WebUI image payload validation and error visibility; generated from repository diff, focused test output, session-structure diagnostics, Pi RPC documentation, and two independent reviews on 2026-07-22.</p>
+  </footer>
+</main>
+</body>
+</html>
