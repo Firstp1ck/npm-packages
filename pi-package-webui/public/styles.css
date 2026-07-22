@@ -4025,6 +4025,25 @@ button.footer-tui-item {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.middle-truncate-value {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+.middle-truncate-start {
+  flex: 1 1 auto;
+  min-width: 6ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.middle-truncate-end {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .footer-meta {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

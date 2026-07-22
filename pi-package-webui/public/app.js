@@ -10350,6 +10350,43 @@ function applyFooterContextUsage(node, contextUsage) {
   return node;
 }
 
+const FOOTER_MIDDLE_TRUNCATION_END_CHARS = 16;
+const FOOTER_MIDDLE_TRUNCATION_MIN_START_CHARS = 6;
+
+function splitMiddleTruncationText(value, endChars = FOOTER_MIDDLE_TRUNCATION_END_CHARS) {
+  const characters = Array.from(String(value ?? ""));
+  const minimumSuffixLength = Math.max(0, Math.min(Math.trunc(Number(endChars) || 0), characters.length));
+  if (!minimumSuffixLength) return { start: characters.join(""), end: "" };
+  let componentEnd = characters.length - 1;
+  while (componentEnd >= 0 && (characters[componentEnd] === "/" || characters[componentEnd] === "\\")) componentEnd -= 1;
+  let separatorIndex = -1;
+  for (let index = componentEnd; index >= 0; index -= 1) {
+    if (characters[index] === "/" || characters[index] === "\\") {
+      separatorIndex = index;
+      break;
+    }
+  }
+  const componentSuffixLength = separatorIndex >= 0 ? characters.length - separatorIndex : 0;
+  const suffixLength = Math.min(characters.length, Math.max(minimumSuffixLength, componentSuffixLength));
+  if (!suffixLength || characters.length <= suffixLength + FOOTER_MIDDLE_TRUNCATION_MIN_START_CHARS) return { start: characters.join(""), end: "" };
+  return { start: characters.slice(0, -suffixLength).join(""), end: characters.slice(-suffixLength).join("") };
+}
+
+function setMiddleTruncatedText(node, value, endChars = FOOTER_MIDDLE_TRUNCATION_END_CHARS) {
+  const parts = splitMiddleTruncationText(value, endChars);
+  if (!parts.end) {
+    node.classList.remove("middle-truncate-value");
+    node.textContent = parts.start;
+    return node;
+  }
+  node.classList.add("middle-truncate-value");
+  node.replaceChildren(
+    make("span", "middle-truncate-start", parts.start),
+    make("span", "middle-truncate-end", parts.end),
+  );
+  return node;
+}
+
 function footerMeta(label, value, className = "", options = {}) {
   const isAction = typeof options.onClick === "function";
   const node = make(isAction ? "button" : "span", ["footer-meta", className, isAction ? "footer-meta-action" : ""].filter(Boolean).join(" "));
@@ -10363,7 +10400,10 @@ function footerMeta(label, value, className = "", options = {}) {
       node.setAttribute("aria-disabled", "true");
     }
   }
-  node.append(make("span", "footer-meta-label", label), make("span", "footer-meta-value", value));
+  const valueNode = make("span", "footer-meta-value");
+  if (options.middleTruncate) setMiddleTruncatedText(valueNode, value);
+  else valueNode.textContent = String(value ?? "");
+  node.append(make("span", "footer-meta-label", label), valueNode);
   return applyFooterTooltip(node, options.title || `${label}: ${value}`, { align: options.tooltipAlign });
 }
 
@@ -10969,7 +11009,9 @@ function gitFooterTooltipAlign(chip) {
 function footerTuiItem(value, className = "", options = {}) {
   const text = cleanStatusText(value);
   const isAction = typeof options.onClick === "function";
-  const node = make(isAction ? "button" : "span", `footer-tui-item ${className}${isAction ? " footer-tui-action" : ""}`.trim(), text);
+  const node = make(isAction ? "button" : "span", `footer-tui-item ${className}${isAction ? " footer-tui-action" : ""}`.trim());
+  if (options.middleTruncate) setMiddleTruncatedText(node, text);
+  else node.textContent = text;
   if (isAction) {
     node.type = "button";
     node.addEventListener("click", options.onClick);
@@ -10986,7 +11028,8 @@ function renderTuiFooterLine({ cwd, cwdTitle, message = "", stats = [], model = 
   line.append(footerTuiItem(cwd || "loading…", "footer-tui-cwd", tab ? {
     onClick: changeActiveTabCwd,
     title: cwdTitle || `Change cwd for ${tab.title}: ${cwd}`,
-  } : { title: cwdTitle }));
+    middleTruncate: true,
+  } : { title: cwdTitle, middleTruncate: true }));
   if (worktreeLabel) line.append(footerTuiItem(worktreeLabel, "footer-tui-worktree", { title: workspace?.worktreePath || worktreeLabel }));
   if (message) line.append(footerTuiItem(message, "footer-tui-status"));
   for (const stat of stats.filter(Boolean)) line.append(footerTuiItem(stat, "footer-tui-stat"));
@@ -11196,6 +11239,7 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
   action = (visible("webui-context-auto-compaction") ? applyGitFooterContextToggleOptions(chip, options) : "") || action;
   options.title = gitFooterPayloadTooltip(chip, { action });
   options.tooltipAlign = gitFooterTooltipAlign(chip);
+  options.middleTruncate = chip.key === "cwd";
   const node = footerMeta(chip.label, chip.value, footerMetaClassForPayload(chip), options);
   applyFooterChangedFilesDropdown(node, chip, payload);
   if (["git", "worktree"].includes(chip.key) && options.onClick && cleanFooterPayloadText(chip.value, "").toLowerCase() !== "no repo") {
@@ -11233,7 +11277,16 @@ function gitFooterPickerStateKey(payload) {
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
   if (!node) return;
   const valueNode = node.querySelector(valueSelector);
-  if (valueNode && valueNode.textContent !== String(chip.value ?? "")) valueNode.textContent = String(chip.value ?? "");
+  const nextValue = String(chip.value ?? "");
+  const middleTruncate = chip.key === "cwd";
+  const middleTruncateActive = middleTruncate && !!splitMiddleTruncationText(nextValue).end;
+  if (valueNode && (valueNode.textContent !== nextValue || valueNode.classList.contains("middle-truncate-value") !== middleTruncateActive)) {
+    if (middleTruncate) setMiddleTruncatedText(valueNode, nextValue);
+    else {
+      valueNode.classList.remove("middle-truncate-value");
+      valueNode.textContent = nextValue;
+    }
+  }
   if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
 }
 

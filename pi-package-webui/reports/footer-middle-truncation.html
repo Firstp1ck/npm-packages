@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Implementation and verification report for responsive middle truncation of WebUI footer working-directory paths.">
+  <title>Footer Path Middle Truncation — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 8% 4%, rgb(34 96 160 / 24%), transparent 34rem),
+        var(--bg);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section, figure {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgb(24 37 58 / 95%), rgb(18 28 45 / 97%));
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    section { margin-top: 22px; padding: 24px; }
+    h1 { max-width: 850px; margin: .35rem 0 .7rem; font-size: clamp(1.9rem, 5vw, 3rem); line-height: 1.08; }
+    h2 { margin: 0 0 1rem; padding-bottom: .55rem; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin: 0 0 .4rem; font-size: 1.03rem; }
+    p { margin: .45rem 0 1rem; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    code { color: #cfe7ff; }
+    pre { overflow-x: auto; margin: .8rem 0 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--code); white-space: pre-wrap; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .24rem .65rem;
+      border: 1px solid rgb(80 216 144 / 45%);
+      border-radius: 999px;
+      color: var(--green);
+      background: rgb(80 216 144 / 8%);
+      font-size: .82rem;
+      font-weight: 750;
+    }
+    .lead { max-width: 820px; color: var(--muted); font-size: 1.08rem; }
+    .callout { margin-top: 1rem; padding: 14px 16px; border-left: 4px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 7%); }
+    .meta { display: flex; flex-wrap: wrap; gap: .65rem 1rem; margin-top: 1rem; color: var(--muted); font-size: .9rem; }
+    nav { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.1rem; }
+    nav a { padding: .35rem .65rem; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; background: var(--panel-2); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .7rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #d7e8fb; background: rgb(101 181 255 / 7%); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .status { font-weight: 760; white-space: nowrap; }
+    .pass { color: var(--green); }
+    .note { color: var(--yellow); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card p:last-child { margin-bottom: 0; }
+    .path-demo { display: grid; gap: .65rem; }
+    .path-row { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: .7rem; align-items: center; }
+    .path-label { color: var(--muted); font-weight: 700; }
+    .path-value { min-width: 0; overflow: hidden; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--code); font-family: ui-monospace, monospace; white-space: nowrap; }
+    .old { text-overflow: ellipsis; }
+    .middle { display: flex; }
+    .middle .start { min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
+    .middle .end { flex: 0 0 auto; }
+    figure { margin: 18px 0 0; padding: 18px; }
+    figure svg { display: block; width: 100%; height: auto; }
+    figcaption { margin-top: .75rem; color: var(--muted); font-size: .9rem; }
+    .finding { border-left: 4px solid var(--blue); }
+    .finding.accepted { border-left-color: var(--green); }
+    .finding.rejected { border-left-color: var(--yellow); }
+    .small { color: var(--muted); font-size: .9rem; }
+    ul { padding-left: 1.2rem; }
+    li + li { margin-top: .35rem; }
+    footer { margin-top: 24px; color: var(--muted); text-align: center; font-size: .88rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 12px; }
+      header, section { padding: 18px; }
+      .path-row { grid-template-columns: 1fr; gap: .25rem; }
+      th, td { padding: .6rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { color: #152033; background: #fff; }
+      main { width: 100%; margin: 0; }
+      header, section, figure, .card { color: #152033; background: #fff; border-color: #9aa8ba; box-shadow: none; break-inside: avoid; }
+      nav { display: none; }
+      a, code, .pass, .note { color: #124f83; }
+      pre, .path-value { color: #152033; background: #f4f6f9; border-color: #9aa8ba; }
+      .lead, .meta, .small, figcaption, footer { color: #4f5e71; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="badge">Complete · independently reviewed</span>
+      <h1>Footer path truncation now preserves both ends</h1>
+      <p class="lead">This report documents the targeted WebUI change requested from the supplied footer screenshots: long working-directory paths keep their recognizable beginning and their complete final path component—back through the nearest <code>/</code> or <code>\</code>—while only the constrained middle is elided.</p>
+      <div class="callout"><strong>Conclusion:</strong> both the enhanced git-footer CWD chip and the minimal fallback footer now use the same responsive split-span rendering. All 40 package test files pass after review fixes.</div>
+      <div class="meta">
+        <span>Scope: WebUI footer CWD only</span>
+        <span>Implementation: <code>public/app.js</code> + <code>public/styles.css</code></span>
+        <span>Confidence: 94/100</span>
+      </div>
+      <nav aria-label="Report sections">
+        <a href="#overview">Overview</a>
+        <a href="#behavior">Behavior</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#verification">Verification</a>
+        <a href="#reviews">Reviews</a>
+        <a href="#risks">Risks &amp; usage</a>
+      </nav>
+    </header>
+
+    <section id="overview">
+      <h2>Executive overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Decision or evidence</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Visible behavior</td><td>Flexible prefix + suffix preserving whichever is longer: the final 16 characters or the complete final component through its nearest POSIX/Windows separator.</td><td class="status pass">Pass</td></tr>
+            <tr><td>Footer variants</td><td>Enhanced <code>cwd</code> metadata chip and TUI-style fallback share one rendering helper.</td><td class="status pass">Parity</td></tr>
+            <tr><td>Full value</td><td>Adjacent text spans reconstruct the complete path; existing title/tooltip continues to expose the original value.</td><td class="status pass">Preserved</td></tr>
+            <tr><td>Edge handling</td><td>Short values keep the normal end-ellipsis fallback; Unicode splitting uses code points rather than UTF-16 units.</td><td class="status pass">Covered</td></tr>
+            <tr><td>Verification</td><td>Focused test, syntax check, full package check, whitespace check, and two independent provider-family reviews.</td><td class="status pass">All passed</td></tr>
+            <tr><td>Residual limitation</td><td>No live browser pixel-level validation was available; standard flex/overflow behavior is verified statically.</td><td class="status note">Low risk</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="behavior">
+      <h2>Requested behavior</h2>
+      <p>The previous single-node <code>text-overflow: ellipsis</code> behavior kept the start and dropped the tail. For paths, the tail often contains the repository or project name, so losing it removes the most useful discriminator.</p>
+      <div class="path-demo" aria-label="Illustrative before and after path truncation">
+        <div class="path-row">
+          <span class="path-label">Before</span>
+          <span class="path-value old">/mnt/SSD_NVME_4TB/GitHub/laboratory-planning-app</span>
+        </div>
+        <div class="path-row">
+          <span class="path-label">After</span>
+          <span class="path-value middle"><span class="start">/mnt/SSD_NVME_4TB/GitHub</span><span class="end">/laboratory-planning-app</span></span>
+        </div>
+      </div>
+      <p class="small">The example is an explanatory rendering of the verified CSS strategy, not a pixel measurement. The actual visible cutoff adapts to the footer width.</p>
+    </section>
+
+    <section id="architecture">
+      <h2>Architecture and data flow</h2>
+      <figure data-visual-kind="diagram" data-purpose="Explain how a full CWD becomes a responsive two-ended footer value">
+        <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 980 250">
+          <title id="flow-title">Responsive middle-truncation flow</title>
+          <desc id="flow-desc">The complete CWD is split by Unicode code points into a flexible prefix and a suffix extending through the nearest slash or backslash before the final component, with 16 characters as the minimum suffix. Both footer renderers use the same helper. CSS clips only the prefix and keeps the suffix visible, while the original full value remains in text content and the tooltip.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#65b5ff"/></marker>
+          </defs>
+          <g fill="#18253a" stroke="#2b3b55" stroke-width="2">
+            <rect x="20" y="72" width="180" height="100" rx="14"/>
+            <rect x="270" y="72" width="190" height="100" rx="14"/>
+            <rect x="530" y="28" width="190" height="82" rx="14"/>
+            <rect x="530" y="142" width="190" height="82" rx="14"/>
+            <rect x="790" y="72" width="170" height="100" rx="14"/>
+          </g>
+          <g fill="#e8eef8" font-family="system-ui, sans-serif" text-anchor="middle">
+            <text x="110" y="111" font-size="18" font-weight="700">Complete CWD</text><text x="110" y="137" font-size="14" fill="#a9b7cb">original string</text>
+            <text x="365" y="105" font-size="18" font-weight="700">Split helper</text><text x="365" y="131" font-size="14" fill="#a9b7cb">Unicode code points</text><text x="365" y="151" font-size="14" fill="#a9b7cb">nearest / or \ boundary</text>
+            <text x="625" y="62" font-size="17" font-weight="700">Enhanced CWD chip</text><text x="625" y="87" font-size="14" fill="#a9b7cb">footer metadata</text>
+            <text x="625" y="176" font-size="17" font-weight="700">Fallback CWD item</text><text x="625" y="201" font-size="14" fill="#a9b7cb">TUI-style footer</text>
+            <text x="875" y="105" font-size="18" font-weight="700">Responsive flex</text><text x="875" y="131" font-size="14" fill="#a9b7cb">prefix ellipsizes</text><text x="875" y="151" font-size="14" fill="#a9b7cb">suffix stays fixed</text>
+          </g>
+          <g fill="none" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)">
+            <path d="M200 122 H260"/><path d="M460 112 C495 112 495 69 520 69"/><path d="M460 132 C495 132 495 183 520 183"/><path d="M720 69 C755 69 755 108 780 108"/><path d="M720 183 C755 183 755 136 780 136"/>
+          </g>
+        </svg>
+        <figcaption>The path is never destructively shortened in application state. The split is a rendering concern shared by both footer variants.</figcaption>
+      </figure>
+    </section>
+
+    <section id="implementation">
+      <h2>Implementation map</h2>
+      <div class="grid">
+        <article class="card">
+          <h3><code>public/app.js</code></h3>
+          <p><code>splitMiddleTruncationText</code> creates code-point-safe start/end parts. <code>setMiddleTruncatedText</code> builds safe text spans without <code>innerHTML</code>.</p>
+        </article>
+        <article class="card">
+          <h3>Enhanced footer integration</h3>
+          <p><code>renderGitFooterPayloadMeta</code> opts in only when <code>chip.key === "cwd"</code>. <code>updateGitFooterChipNodeValue</code> retains the structured value during live updates.</p>
+        </article>
+        <article class="card">
+          <h3>Fallback footer integration</h3>
+          <p><code>renderTuiFooterLine</code> passes the same option to the CWD item in both tab-present and loading branches.</p>
+        </article>
+        <article class="card">
+          <h3><code>public/styles.css</code></h3>
+          <p>The container is a bounded flex row. The start has a six-character floor and owns the ellipsis; the complete final component is non-shrinking, with 16 characters retained when that reaches farther back.</p>
+        </article>
+        <article class="card">
+          <h3><code>tests/footer-middle-truncation.test.mjs</code></h3>
+          <p>Tests boundaries, POSIX and Windows final components, trailing separators, reconstruction, disabled splitting, Unicode surrogate safety, both render paths, dynamic updates, and CSS structure.</p>
+        </article>
+      </div>
+      <h3 style="margin-top:1.2rem">Scope boundary</h3>
+      <p>No server payload, extension protocol, branch/model labels, tabs, file names, or other generic ellipsis styles were changed.</p>
+    </section>
+
+    <section id="verification">
+      <h2>Testing and acceptance evidence</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td><code>node --check public/app.js</code></td><td>JavaScript syntax validation completed with exit 0.</td><td class="status pass">Passed</td></tr>
+            <tr><td><code>node --test tests/footer-middle-truncation.test.mjs</code></td><td>TAP: 1 test file, 1 pass, 0 fail.</td><td class="status pass">Passed</td></tr>
+            <tr><td><code>npm run check</code></td><td>All package syntax checks and all 40 test files completed successfully after accepted fixes.</td><td class="status pass">Passed</td></tr>
+            <tr><td><code>git diff --check</code></td><td>No whitespace errors in implementation, test, plan, or report paths.</td><td class="status pass">Passed</td></tr>
+            <tr><td>Independent review gates</td><td>Initial and follow-up gates each used separately instantiated read-only Anthropic Claude Opus 4.8 and DeepSeek v4 Pro children.</td><td class="status pass">Passed</td></tr>
+            <tr><td>Live browser visual check</td><td>No browser automation was available in this workflow.</td><td class="status note">Not run</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="reviews">
+      <h2>Independent reviews and dispositions</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Reviewer A · Anthropic</h3>
+          <p><strong>Runtime identity:</strong> parallel run <code>ab63d39a-fbd2-47af-b872-3b9bff09c875</code>, child 0; <code>anthropic/claude-opus-4-8:high</code>.</p>
+          <p><strong>Verdict:</strong> approve with minor notes. Confidence 88/100. Focused and full checks passed.</p>
+        </article>
+        <article class="card">
+          <h3>Reviewer B · DeepSeek</h3>
+          <p><strong>Runtime identity:</strong> same parallel run, independently instantiated child 1; <code>openrouter/deepseek/deepseek-v4-pro:high</code>.</p>
+          <p><strong>Verdict:</strong> pass, no code findings. Confidence 95/100. Runtime status is authoritative; the prose output incorrectly self-labelled its provider as Anthropic.</p>
+        </article>
+      </div>
+      <div class="grid" style="margin-top:14px">
+        <article class="card finding accepted">
+          <h3>Accepted · short-value ellipsis fallback</h3>
+          <p><strong>Finding:</strong> applying flex mode to unsplit values could replace the normal final ellipsis with clipping in an unusually narrow chip.</p>
+          <p><strong>Resolution:</strong> flex middle-truncation mode is now removed when there is no suffix split. Focused and full checks pass.</p>
+        </article>
+        <article class="card finding rejected">
+          <h3>Rejected · hypothetical main-metric asymmetry</h3>
+          <p><strong>Finding:</strong> a future CWD placed in <code>payload.main</code> could initially render differently from updates.</p>
+          <p><strong>Disposition:</strong> not applicable to the current contract. The installed git-footer source explicitly appends CWD to <code>meta</code>; expanding to hypothetical payload shapes would add unapproved scope.</p>
+        </article>
+        <article class="card finding accepted">
+          <h3>Accepted · report completion</h3>
+          <p><strong>Finding:</strong> the report was pending during review.</p>
+          <p><strong>Resolution:</strong> this self-contained report was created and strictly validated before completion.</p>
+        </article>
+        <article class="card finding accepted">
+          <h3>Parent verification · Unicode boundary</h3>
+          <p><strong>Finding:</strong> UTF-16 slicing could place surrogate halves in separate spans even though concatenated text reconstructed correctly.</p>
+          <p><strong>Resolution:</strong> splitting now uses <code>Array.from</code> code points, with a regression case where an emoji lies exactly on the suffix boundary.</p>
+        </article>
+      </div>
+      <h3 style="margin-top:1.2rem">Path-component follow-up review</h3>
+      <div class="grid">
+        <article class="card">
+          <h3>Follow-up reviewer A · Anthropic</h3>
+          <p><strong>Runtime identity:</strong> parallel run <code>e6bae8af-7ffa-49be-ae96-a17051cd4908</code>, child 0; <code>anthropic/claude-opus-4-8:high</code>.</p>
+          <p><strong>Verdict:</strong> approve, no actionable findings. Confidence 90/100. POSIX, Windows, trailing separators, Unicode, updates, accessibility, CSS, and all checks passed.</p>
+        </article>
+        <article class="card">
+          <h3>Follow-up reviewer B · DeepSeek</h3>
+          <p><strong>Runtime identity:</strong> the same parallel run, independently instantiated child 1; <code>openrouter/deepseek/deepseek-v4-pro:high</code>.</p>
+          <p><strong>Verdict:</strong> pass, no actionable findings. Confidence 93/100. Adversarial separator/reconstruction tests and all package checks passed.</p>
+        </article>
+        <article class="card finding rejected">
+          <h3>Deferred · impossible-width cases</h3>
+          <p>A final component wider than the whole container cannot coexist with a visible prefix. Both reviewers classified this as the acknowledged physical layout limit; mobile grants CWD a full row and the tooltip keeps the full path.</p>
+        </article>
+        <article class="card finding accepted">
+          <h3>Accepted · preserve beyond 16 characters</h3>
+          <p>When the final component is longer than 16 characters, the suffix now starts at its nearest <code>/</code> or <code>\</code>. When shorter, the original 16-character minimum may intentionally reach into the preceding component.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>Residual risks and usage guidance</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Residual: extreme widths</h3>
+          <p>If a footer value becomes narrower than the six-character prefix floor plus the complete final component, overflow is unavoidable. Existing mobile layout gives CWD the full row, reducing this risk.</p>
+        </article>
+        <article class="card">
+          <h3>Residual: pixel rendering</h3>
+          <p>The implementation uses standard flex and overflow semantics, but exact font and viewport rendering was not exercised in a real browser during this change.</p>
+        </article>
+        <article class="card">
+          <h3>How to verify manually</h3>
+          <p>Open the WebUI with a long CWD, narrow the viewport, and confirm the path starts with its mount/root while retaining the complete project component from the nearest <code>/</code> or <code>\</code>. Repeat with git-footer enabled and disabled.</p>
+        </article>
+      </div>
+      <pre><code>cd /home/firstpick/npm-packages/pi-package-webui
+node --test tests/footer-middle-truncation.test.mjs
+npm run check</code></pre>
+      <p class="small">Canonical execution record: <a href="../plans/footer-middle-truncation.md">plans/footer-middle-truncation.md</a>.</p>
+    </section>
+
+    <footer>Source-grounded implementation report · no external scripts, fonts, or network dependencies.</footer>
+  </main>
+</body>
+</html>
