@@ -136,7 +136,7 @@ try {
   const disableAuth = await request("/api/remote-auth/settings", { method: "POST", body: { enabled: false } });
   assert.equal(disableAuth.status, 200);
   const savedAfterDisable = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(savedAfterDisable.version, 3, "Web UI settings should migrate to the resource-default schema version");
+  assert.equal(savedAfterDisable.version, 4, "Web UI settings should migrate to the output-mode schema version");
   assert.equal(savedAfterDisable.remoteAuthEnabled, false, "disabling Remote PIN auth should persist the off preference");
   assert.equal(savedAfterDisable.gitWorkflow?.generation?.modelId, "fake-model", "Remote PIN updates should preserve guided Git preferences");
 

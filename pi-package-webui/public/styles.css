@@ -6942,6 +6942,23 @@ button.git-workflow-step:hover:not(:disabled) {
 .streaming-markdown {
   min-height: 1.35rem;
 }
+.compact-live-output {
+  outline-color: rgba(148, 226, 213, 0.46);
+}
+.compact-live-text,
+.compact-live-thinking,
+.compact-tool-status {
+  min-height: 1.35rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.compact-live-thinking {
+  color: rgba(var(--ctp-text-rgb), 0.82);
+  font-style: italic;
+}
+.compact-tool-shell .compact-tool-status {
+  color: var(--ctp-subtext);
+}
 .text-block, .code-block {
   margin: 0.35rem 0;
   white-space: pre-wrap;

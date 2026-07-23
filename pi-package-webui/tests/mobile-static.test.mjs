@@ -630,7 +630,7 @@ assert.match(app, /remoteAuthToggle: \$\("#remoteAuthToggle"\)/, "Remote WebUI c
 assert.match(html, /id="networkControlField"[^>]*hidden/, "Remote WebUI browser controls should be hidden until the optional package is loaded and enabled");
 assert.match(app, /remoteWebuiCommand\(enable \? "authOn" : "authOff"/, "remote PIN auth toggle should dispatch through the Remote WebUI package command");
 assert.match(server, /webuiSettingsFile,[\s\S]*from "\.\.\/lib\/git-workflow-preferences\.mjs"/, "server should use the shared Pi Web UI settings persistence module");
-assert.match(server, /let persistedRemoteAuthEnabled = await readPersistedRemoteAuthEnabled\(\)/, "server should load the saved Remote PIN auth preference before startup");
+assert.match(server, /const persistedStartupSettings = await readWebuiSettings\(undefined, \{ reportInvalidOutputMode: true \}\);[\s\S]*?let persistedRemoteAuthEnabled = persistedStartupSettings\.remoteAuthEnabled === true;/, "server should load the saved Remote PIN auth preference before startup");
 assert.match(server, /if \(remoteAuthStartupEnabled\(\)\) enableRemoteAuth\(remoteAuthStartupReason\(\)\)/, "saved Remote PIN auth preference should enable auth on startup");
 assert.match(server, /await saveRemoteAuthPreference\(true\)/, "enabling Remote PIN auth should persist the on preference");
 assert.match(server, /await saveRemoteAuthPreference\(false\)/, "disabling Remote PIN auth should persist the off preference");
@@ -1479,7 +1479,7 @@ assert.match(readme, /Tracked subagent output[\s\S]*dedicated \*\*Subagent\*\* t
 assert.match(app, /let tabSeenCompletionSerials = new Map\(\)/, "frontend should track which tab completions have been seen");
 assert.match(app, /let activeTabGeneration = 0/, "frontend should version active-tab UI state to reject stale async work");
 assert.match(app, /function isCurrentTabContext\(context\)/, "frontend should identify stale active-tab refresh contexts");
-assert.match(app, /function connectEvents\(tabContext = activeTabContext\(\)\)[\s\S]*?eventSource !== source/, "frontend should ignore stale SSE messages from old active tabs");
+assert.match(app, /function connectEvents\(tabContext = activeTabContext\(\), \{ requestedMode = "auto", fallbackAttempted = false \} = \{\}\)[\s\S]*?eventSource !== source/, "frontend should ignore stale SSE messages from old active tabs");
 assert.match(app, /let foregroundReconcileTimer = null/, "frontend should debounce foreground resume reconciliation");
 assert.match(app, /case "webui_connected":[\s\S]*?scheduleForegroundReconcile\("event stream reconnect", 0\)/, "SSE reconnect should reconcile authoritative state and messages instead of only tabs");
 assert.match(app, /async function reconcileForegroundState\(reason = "resume"\)[\s\S]*?refreshTabs\(\)[\s\S]*?ensureActiveEventStream\(tabContext\)[\s\S]*?refreshAll\(tabContext\)/, "foreground reconciliation should refresh tabs plus active transcript after mobile backgrounding");
@@ -1587,10 +1587,10 @@ assert.match(server, /function rememberExtensionWidgetEvent\(tab, event\)[\s\S]*
 assert.match(server, /rememberExtensionStatusEvent\(tab, scopedEvent\)[\s\S]*rememberExtensionWidgetEvent\(tab, scopedEvent\)[\s\S]*trackPendingExtensionUiRequest\(tab, scopedEvent\)/, "RPC events should retain extension statuses and widgets before broadcasting");
 assert.match(server, /trackPendingExtensionUiRequest\(tab, scopedEvent\)/, "RPC events should populate pending extension UI storage before broadcasting");
 assert.match(server, /scopedEvent = \{ \.\.\.scopedEvent,[\s\S]*?pendingExtensionUiRequestCount: pendingExtensionUiRequests\(tab\)\.length \}/, "RPC events should broadcast pending blocker counts for tab indicators");
-assert.match(server, /function replayExtensionStatuses\(tab, res\)[\s\S]*method: "setStatus"/, "server should replay latest extension statuses on SSE reconnect");
-assert.match(server, /function replayExtensionWidgets\(tab, res\)[\s\S]*method: "setWidget"/, "server should replay latest extension widgets on SSE reconnect");
-assert.match(server, /function replayPendingExtensionUiRequests\(tab, res\)/, "server should be able to replay missed extension UI requests on SSE reconnect");
-assert.match(server, /replayExtensionStatuses\(tab, res\);\n\s+replayExtensionWidgets\(tab, res\);\n\s+replayPendingExtensionUiRequests\(tab, res\)/, "SSE connections should replay extension statuses and widgets before pending blockers");
+assert.match(server, /function replayExtensionStatuses\(tab, client\)[\s\S]*method: "setStatus"/, "server should replay latest extension statuses on SSE reconnect");
+assert.match(server, /function replayExtensionWidgets\(tab, client\)[\s\S]*method: "setWidget"/, "server should replay latest extension widgets on SSE reconnect");
+assert.match(server, /function replayPendingExtensionUiRequests\(tab, client\)/, "server should be able to replay missed extension UI requests on SSE reconnect");
+assert.match(server, /replayExtensionStatuses\(tab, client\);\n\s+replayExtensionWidgets\(tab, client\);\n\s+replayPendingExtensionUiRequests\(tab, client\)/, "SSE connections should replay extension statuses and widgets before pending blockers");
 assert.match(server, /pendingExtensionUiRequests: pendingExtensionUiRequestSummaries\(tab\)/, "detailed Web UI status should expose pending extension UI blockers");
 assert.match(server, /resolvePendingExtensionUiRequest\(tab, payload\.id\)/, "extension UI responses should clear the pending blocker cache");
 assert.match(server, /type: "webui_extension_ui_resolved"[\s\S]*?pendingExtensionUiRequestCount/, "extension UI responses should notify clients that a blocker resolved");

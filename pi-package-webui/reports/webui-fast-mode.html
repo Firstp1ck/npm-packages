@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>WebUI Fast Mode — Final Integration Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link { position: fixed; top: 8px; left: 8px; z-index: 10; transform: translateY(-160%); background: var(--blue); color: #06111f; border-radius: 8px; padding: 8px 12px; font-weight: 800; }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+    header { padding: 30px; margin-bottom: 18px; }
+    .report-section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    ul, ol { padding-left: 1.3rem; }
+    li + li { margin-top: 6px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; overflow-wrap: anywhere; }
+    pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; white-space: pre-wrap; color: #d9e6f7; }
+    .lead { font-size: 1.1rem; max-width: 82ch; }
+    .muted { color: var(--muted); }
+    .confidence { font-variant-numeric: tabular-nums; }
+    .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; margin-bottom: 8px; }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.info { background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout { border-left: 5px solid var(--green); background: rgb(80 216 144 / 8%); border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+    .callout.warning { border-left-color: var(--yellow); background: rgb(247 198 92 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(218px, 1fr)); gap: 14px; }
+    .metric, .card, .step { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 16px; }
+    .metric strong { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 650px; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; padding: 10px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .83rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    [role="tablist"] { display: flex; gap: 8px; overflow-x: auto; padding: 8px; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 12px; background: rgb(7 16 28 / 72%); }
+    [role="tab"] { appearance: none; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted); padding: 9px 13px; white-space: nowrap; font: inherit; font-weight: 750; cursor: pointer; }
+    [role="tab"][aria-selected="true"] { color: var(--text); border-color: rgb(101 181 255 / 45%); background: rgb(101 181 255 / 14%); }
+    [role="tabpanel"] { scroll-margin-top: 16px; }
+    .tabs-ready [role="tabpanel"][hidden] { display: none; }
+    figure { margin: 18px 0; }
+    figure svg { display: block; width: 100%; height: auto; background: var(--code); border: 1px solid var(--line); border-radius: 12px; }
+    figcaption { color: var(--muted); margin-top: 8px; font-size: .92rem; }
+    .chart-grid { stroke: #26374f; stroke-width: 1; }
+    .chart-axis { fill: var(--muted); font: 12px system-ui, sans-serif; }
+    .chart-label { fill: var(--text); font: 600 14px system-ui, sans-serif; }
+    .bar-normal { fill: var(--blue); }
+    .bar-compact { fill: var(--green); }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node-compact { fill: #17352e; stroke: var(--green); stroke-width: 2; }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .edge-compact { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-dasharray: 7 5; marker-end: url(#arrow-green); }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    .steps { list-style: none; padding: 0; counter-reset: step; }
+    .steps li { counter-increment: step; margin: 14px 0; }
+    .steps li::before { content: counter(step); float: left; display: grid; place-items: center; width: 30px; height: 30px; margin: 1px 12px 0 0; border-radius: 50%; background: var(--blue); color: #06111f; font-weight: 800; }
+    .steps .step { overflow: hidden; }
+    .status-list { list-style: none; padding: 0; }
+    .status-list li { padding: 9px 0; border-bottom: 1px solid var(--line); }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      [role="tablist"] { position: sticky; top: 0; z-index: 5; }
+      .chart-axis { font-size: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: #fff; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .card, .step { box-shadow: none; background: #fff; color: #111; border-color: #bbb; break-inside: avoid; }
+      [role="tablist"], .skip-link { display: none !important; }
+      [role="tabpanel"], [role="tabpanel"][hidden] { display: block !important; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge good">Post-review integration · completion fix · PASS</span>
+    <h1>WebUI Fast Mode</h1>
+    <p class="lead">A final integration record for the default-normal, optional <code>compact-v1</code> WebUI output path. It consolidates the canonical contract, implementation handoffs, two independent reviews, accepted fixes, the accepted final-acceptance settings correction, and post-fix validation into one portable evidence report.</p>
+    <div class="callout">
+      <strong>Conclusion:</strong> The feature preserves final transcript semantics while materially reducing the defined post-parse JSON byte-work for the fixed cumulative-delta trace. The production-seam gate passed at <strong>2.927574×</strong>; the full package check passed all <strong>46 test files</strong> after the accepted browser transition fixes and Browser workflow settings completion fix.
+    </div>
+    <p class="muted confidence"><strong>Confidence: 97/100.</strong> Source, transport, unit/static/harness, metric/hash, full-suite, and Browser workflow settings-control evidence are recorded. The residual uncertainty is interactive browser paint timing, which was not visually exercised.</p>
+    <p class="muted">Companion record: <a href="../plans/webui-fast-mode.md">canonical WebUI Fast Mode plan</a>.</p>
+  </header>
+
+  <nav role="tablist" aria-label="Report sections">
+    <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+    <button id="tab-contract" role="tab" aria-selected="false" aria-controls="panel-contract" tabindex="-1">Contract &amp; flow</button>
+    <button id="tab-metrics" role="tab" aria-selected="false" aria-controls="panel-metrics" tabindex="-1">Metrics &amp; acceptance</button>
+    <button id="tab-review" role="tab" aria-selected="false" aria-controls="panel-review" tabindex="-1">Review &amp; rollout</button>
+    <button id="tab-evidence" role="tab" aria-selected="false" aria-controls="panel-evidence" tabindex="-1">Evidence</button>
+  </nav>
+
+  <section class="report-section" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+    <h2>Integration overview</h2>
+    <div class="grid" aria-label="Headline results">
+      <article class="metric"><span class="badge good">Metric PASS</span><strong>2.927574×</strong><span class="muted">Defined byte-work ratio, threshold ≥ 1.5.</span></article>
+      <article class="metric"><span class="badge good">Semantic parity</span><strong>SHA-256 match</strong><span class="muted">Stable semantic payload hash is identical in normal and compact output.</span></article>
+      <article class="metric"><span class="badge good">Suite PASS</span><strong>46 / 46 files</strong><span class="muted">Post-fix <code>npm run check</code> result.</span></article>
+      <article class="metric"><span class="badge info">Default</span><strong>normal</strong><span class="muted">Compact remains explicit, optional server-default behavior.</span></article>
+    </div>
+    <h3 style="margin-top:22px">Report map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>What was integrated</th><th>Evidence</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Configuration, settings, and protocol</td><td>Schema-v4 default, CLI/environment precedence, authenticated API, Browser workflow selector, and negotiated per-client SSE.</td><td>Unit, persistence, server API/SSE harness, and Browser workflow static contract.</td><td><span class="good">PASS — fail closed</span></td></tr>
+          <tr><td>Output transformation</td><td>Production encoder removes only duplicated compact delta snapshots; other shapes fail open.</td><td>Non-mutation, semantic deep equality, and SHA-256 parity gate.</td><td><span class="good">PASS — bounded</span></td></tr>
+          <tr><td>Browser live path</td><td>Direct raw accumulators, plain nodes, 100 ms sustained coalescing, tool shells, final reconciliation.</td><td>Fake clock, static integration guard, post-review regressions.</td><td><span class="good">PASS — reconciled</span></td></tr>
+          <tr><td>Review and hygiene</td><td>Three low-severity browser findings and the prior final-acceptance settings blocker accepted/fixed; schema-test expectation aligned.</td><td>Post-fix run <code>f3dec8fb-38c7-4e0d-8bf9-79582bbe8029</code>; completion-fix run <code>2aff7a57-6650-40ed-ac50-b78fac97c9f5</code>.</td><td><span class="good">PASS — no staged files</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warning">
+      <strong>What “speedup” means here:</strong> it is not a wall-clock, network, DOM-CPU, model token/s, or inference claim. It is a deterministic reduction in the explicitly counted post-parse serialized JSON work for one fixed trace and one connected browser. The shared inbound parse term is intentionally retained in both modes.
+    </div>
+    <div class="grid">
+      <article class="card"><h3>Scope boundary</h3><p>The optimization starts after Pi RPC JSON parsing. It does not alter Pi input serialization, prompts, provider/model behavior, tools, inference, extension execution, transcript APIs, or dependencies.</p></article>
+      <article class="card"><h3>Final authority</h3><p>Compact live output is temporary plain text and lightweight tool status. Existing <code>/api/messages</code> reconciliation remains the authority that restores rich Markdown, thinking formatting, and complete tool cards.</p></article>
+      <article class="card"><h3>Operational posture</h3><p>Normal is the default. A compact and a normal client may observe the same tab independently, and server-default changes affect auto-negotiated clients only. Browser workflow settings now provide the server-scoped persisted default rather than requiring an API-only workflow.</p></article>
+    </div>
+  </section>
+
+  <section class="report-section" id="panel-contract" role="tabpanel" aria-labelledby="tab-contract">
+    <h2>Approved contract and output flow</h2>
+    <p>The feature establishes a small, versioned browser contract rather than persisting a client choice in a tab or Pi process. The server owns the default; each EventSource connection chooses a representation safely.</p>
+    <div class="grid">
+      <article class="card"><span class="badge info">Configuration</span><h3>Server default</h3><p>Accepted modes are <code>normal</code> and <code>compact-v1</code>. Resolution is explicit <code>--output-mode</code> → <code>PI_WEBUI_OUTPUT_MODE</code> → persisted <code>outputModeDefault</code> → <code>normal</code>.</p><p>Settings schema is v4. Missing or invalid persisted values normalize to normal; invalid CLI/environment values stop startup with an actionable error.</p></article>
+      <article class="card"><span class="badge info">API</span><h3>Authenticated configuration</h3><p><code>GET /api/webui-output-mode</code> and <code>PUT /api/webui-output-mode</code> expose or persist <code>persistedDefault</code>, <code>effectiveDefault</code>, <code>source</code>, and <code>overridden</code>.</p><p>PUT is remote-auth-gated, writes even while CLI/environment overrides, and does not restart Pi or mutate session state.</p></article>
+      <article class="card"><span class="badge info">Browser workflow</span><h3>Output processing control</h3><p><code>/settings</code> now shows a server-badged <strong>Output processing</strong> select with <code>normal</code> and <code>compact-v1</code>. It loads unscoped metadata, selects the persisted default, and displays persisted default, effective mode, source, and a CLI/environment override when one wins.</p><p>On a changed value, normal settings still apply through <code>/api/settings</code>; the separate selector sends only <code>{ outputModeDefault }</code> to the output-mode PUT endpoint and then refreshes its metadata. It never enters the Pi <code>SettingsManager</code> payload. If that API is unavailable, the normal-default selector is disabled and a visible nonfatal diagnostic leaves other settings usable.</p></article>
+      <article class="card"><span class="badge info">SSE v1</span><h3>Connection negotiation</h3><p>Browsers use <code>/api/events?tab=&lt;id&gt;&amp;outputMode=auto&amp;outputModeProtocol=1</code>. Invalid/missing/old negotiation receives normal protocol 0; compact activates only after a protocol-1 acknowledgement.</p><p>A new browser talking to an old server retries once with explicit normal mode and does not loop.</p></article>
+    </div>
+
+    <figure data-visual-kind="diagram" data-purpose="Show where compact-v1 transforms browser-bound events after Pi RPC parsing and before browser rendering.">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 900 390">
+        <title id="flow-title">WebUI Fast Mode output flow</title>
+        <desc id="flow-desc">Pi RPC JSON lines are decoded and parsed, then server bookkeeping retains canonical events. Per-client negotiation chooses normal or compact-v1 before SSE JSON encoding. The browser parses events; compact live output uses plain text and tool shells, then final messages reconcile rich output.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb" /></marker>
+          <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50d890" /></marker>
+        </defs>
+        <path class="edge" d="M183 95 H276" /><path class="edge" d="M410 95 H500" /><path class="edge" d="M638 95 H724" />
+        <path class="edge-compact" d="M569 140 V224 H390" /><path class="edge" d="M560 140 V300 H690" />
+        <rect class="node" x="30" y="58" width="153" height="74" rx="12" /><text class="node-text" x="106" y="88">Pi RPC JSONL</text><text class="node-text" x="106" y="110">decode + parse</text>
+        <rect class="node" x="276" y="58" width="134" height="74" rx="12" /><text class="node-text" x="343" y="88">Canonical</text><text class="node-text" x="343" y="110">bookkeeping</text>
+        <rect class="node" x="500" y="58" width="138" height="74" rx="12" /><text class="node-text" x="569" y="88">Per-client</text><text class="node-text" x="569" y="110">SSE encoder</text>
+        <rect class="node" x="724" y="58" width="146" height="74" rx="12" /><text class="node-text" x="797" y="88">Browser JSON</text><text class="node-text" x="797" y="110">parse</text>
+        <rect class="node-compact" x="202" y="224" width="188" height="74" rx="12" /><text class="node-text" x="296" y="254">compact-v1: direct</text><text class="node-text" x="296" y="276">plain live output</text>
+        <rect class="node" x="690" y="300" width="176" height="62" rx="12" /><text class="node-text" x="778" y="328">final /api/messages</text><text class="node-text" x="778" y="348">rich reconciliation</text>
+        <text class="chart-axis" x="502" y="165">normal: unchanged event object</text><text class="chart-axis" x="394" y="212">compact: allowlisted browser copy</text>
+      </svg>
+      <figcaption><strong>Text equivalent:</strong> parsed RPC events are preserved for server bookkeeping before any client-specific copy is made. Normal clients receive the existing representation. Compact clients receive only allowlisted direct assistant fields with duplicate snapshots removed; all other event categories pass through. The browser renders compact output plainly, then fetches final authoritative messages for rich rendering.</figcaption>
+    </figure>
+
+    <h3>Transform, switching, and implementation map</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Seam</th><th>Responsibility</th><th>Compact-v1 behavior</th><th>Guardrail</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib/webui-output-mode.mjs</code></td><td>Normalization, precedence, negotiation, transform, encode, barriers.</td><td>Only direct canonical text/thinking/tool-call deltas and self-contained ends remove duplicate accumulated snapshots; only intermediate <code>tool_execution_update</code> is omitted.</td><td>Production server and byte-work test call the same encoder; input is never mutated.</td></tr>
+          <tr><td><code>bin/pi-webui.mjs</code></td><td>Server default, v4 settings, API, client descriptors, centralized sending, history summaries.</td><td>Auto descriptors change at idle or after a semantic barrier; explicit requests never inherit default changes.</td><td>Unknown/error/lifecycle/extension shapes are fail-open; normal encoding follows the same send seam.</td></tr>
+          <tr><td><code>public/fast-output-live.mjs</code></td><td>Pure direct-field reducer and injectable scheduler.</td><td>First pending output flushes immediately; sustained writes coalesce at 100 ms; recognized empty ends are consumed.</td><td>Fake-clock coverage and no accumulated <code>message</code>/<code>partial</code> reads.</td></tr>
+          <tr><td><code>public/app.js</code></td><td>Acknowledgement gate, Browser workflow output-default control, live DOM, tool shells, reconciliation.</td><td>Loads/persists the server default separately from Pi settings, then uses stable <code>textContent</code>/<code>pre-wrap</code> nodes, lightweight tool state, and final-message refresh.</td><td>Metadata/fallback UI is normal-safe; one normal SSE fallback and F1/F2 state transfers remain intact.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details>
+      <summary>Semantic barrier ordering</summary>
+      <p>For an active auto client, the server forwards the barrier in the old representation, emits an untransformed <code>webui_output_mode</code> control with protocol version 1, then switches the descriptor for later events. Barriers are <code>message_end</code>, <code>tool_execution_end</code>, <code>agent_end</code>, <code>agent_settled</code>, <code>compaction_end</code>, <code>pi_process_exit</code>, and <code>pi_process_error</code>. This avoids a single semantic unit receiving two representations.</p>
+    </details>
+  </section>
+
+  <section class="report-section" id="panel-metrics" role="tabpanel" aria-labelledby="tab-metrics">
+    <h2>Deterministic methodology and acceptance</h2>
+    <p>The primary fixture has exactly 512 ordered 32-byte ASCII assistant deltas and 16,384 final assistant bytes. Each delta event carries cumulative top-level and nested snapshots in normal form. Lifecycle, tool start/end, and diagnostic records surround the trace and remain part of semantic parity. Fresh deterministic fixtures are encoded through the production seam for each mode.</p>
+    <div class="callout info-callout"><strong>Formula:</strong> <code>Wmode = R + 2 × Smode</code>. <code>R</code> is the UTF-8 byte sum of <code>JSON.stringify</code> for parsed inbound RPC events. <code>S</code> is the UTF-8 byte sum of production-encoded browser JSON. The multiplier counts the browser-bound JSON serialization and browser JSON parse visits. SSE framing bytes are deliberately excluded.</div>
+    <div class="grid">
+      <article class="metric"><span class="badge info">Inbound R</span><strong>8,581,802</strong><span class="muted">Shared parsed inbound JSON bytes.</span></article>
+      <article class="metric"><span class="badge info">Normal S</span><strong>8,581,802</strong><span class="muted">Browser JSON payload bytes with cumulative snapshots.</span></article>
+      <article class="metric"><span class="badge good">Compact S</span><strong>106,154</strong><span class="muted">Browser JSON payload bytes after approved compaction.</span></article>
+      <article class="metric"><span class="badge good">Parity hash</span><strong>74c47d64…58d10f</strong><span class="muted">Full SHA-256 value is preserved below.</span></article>
+    </div>
+
+    <figure data-visual-kind="graph" data-purpose="Compare the measured deterministic byte-work totals for normal and compact-v1 output." data-source="Production encoder test tests/fast-mode-output-work.test.mjs">
+      <svg role="img" aria-labelledby="work-chart-title work-chart-desc" viewBox="0 0 900 350">
+        <title id="work-chart-title">Deterministic byte-work comparison</title>
+        <desc id="work-chart-desc">Normal deterministic byte-work is 25,745,406 bytes and compact-v1 byte-work is 8,794,110 bytes. The compact value is about 34 percent of normal, producing a ratio of 2.927574.</desc>
+        <line class="chart-grid" x1="210" y1="64" x2="830" y2="64" /><line class="chart-grid" x1="210" y1="145" x2="830" y2="145" /><line class="chart-grid" x1="210" y1="226" x2="830" y2="226" /><line class="chart-grid" x1="210" y1="286" x2="830" y2="286" />
+        <text class="chart-axis" x="205" y="312">0</text><text class="chart-axis" x="750" y="312">26,000,000 bytes</text><text class="chart-axis" x="210" y="42">Deterministic W = R + 2 × S (zero baseline)</text>
+        <text class="chart-label" x="34" y="114">normal</text><rect class="bar-normal" x="210" y="82" width="614" height="52" rx="7" /><text class="chart-label" x="558" y="115">25,745,406</text>
+        <text class="chart-label" x="34" y="206">compact-v1</text><rect class="bar-compact" x="210" y="174" width="210" height="52" rx="7" /><text class="chart-label" x="430" y="207">8,794,110</text>
+        <text class="chart-axis" x="210" y="338">Compact-v1 is 34.16% of normal; normal ÷ compact = 2.927574.</text>
+      </svg>
+      <figcaption>The bar lengths use the exact production-encoder totals. Exact inputs and the semantic hash are in the adjacent table; the graph is not a timing benchmark.</figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Metric</th><th>Normal</th><th>Compact-v1</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Inbound <code>R</code></td><td>8,581,802</td><td>8,581,802</td><td>Shared, intentionally unchanged.</td></tr>
+          <tr><td>Encoded browser <code>S</code></td><td>8,581,802</td><td>106,154</td><td>Only approved browser-bound snapshot duplication is removed.</td></tr>
+          <tr><td><code>W = R + 2 × S</code></td><td>25,745,406</td><td>8,794,110</td><td><strong class="good">2.927574× PASS</strong> (required ≥ 1.5).</td></tr>
+          <tr><td>Canonical semantic payload SHA-256</td><td colspan="2"><code>74c47d64c4a1b2100af15d0b6e73e4ae96cbaf68f1e0ab49c34eed7c2858d10f</code></td><td>Equal after deep semantic comparison.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Browser work ledger</h3>
+    <p>The browser static guard uses the same fixed trace and a stated 20 ms arrival model. It compares cumulative normal-message scan work to direct compact delta work and models first-plus-at-most-one-per-100-ms flushing. It is a deterministic scheduling/scanning ledger, not a measured browser profiler result.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Ledger item</th><th>Normal</th><th>Compact-v1</th><th>Interpretation</th></tr></thead>
+        <tbody>
+          <tr><td>Scan characters</td><td>8,464,384</td><td>16,384</td><td><strong class="good">516.625× scan ratio</strong>.</td></tr>
+          <tr><td>Flushes / modeled DOM writes</td><td>512</td><td>103</td><td>First flush is live; sustained work is coalesced to the 100 ms rule.</td></tr>
+          <tr><td>Live presentation</td><td>Existing rich streaming path</td><td>Plain text/thinking nodes and tool shells</td><td>Final reconciliation restores rich presentation.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Compatibility and acceptance matrix</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Case</th><th>Required behavior</th><th>Verification result</th></tr></thead>
+        <tbody>
+          <tr><td>No explicit setting / migration</td><td>Default normal; invalid persisted value normalizes safely; precedence is CLI, environment, persisted, normal.</td><td><span class="good">PASS</span> — persistence and unit tests.</td></tr>
+          <tr><td>Legacy or invalid negotiation</td><td>Protocol 0 and normal representation; no compact fields assumed.</td><td><span class="good">PASS</span> — unit and live legacy-client harness.</td></tr>
+          <tr><td>New client / old server</td><td>Exactly one normal reconnect and no loop.</td><td><span class="good">PASS</span> — browser static contract guard.</td></tr>
+          <tr><td>Mixed clients on one tab</td><td>Normal retains snapshots; compact omits only duplicates and intermediate tool updates; no cross-talk.</td><td><span class="good">PASS</span> — real server/fake Pi SSE harness.</td></tr>
+          <tr><td>Active auto mode change</td><td>Barrier in old representation, control event, later events in new representation.</td><td><span class="good">PASS</span> — barrier ordering harness.</td></tr>
+          <tr><td>Lifecycle, errors, dialogs, diagnostics</td><td>Preserved and routed; final messages remain authoritative.</td><td><span class="good">PASS</span> — SSE, runtime visibility, transport hardening.</td></tr>
+          <tr><td>Browser workflow output default</td><td>Server-badged <strong>Output processing</strong> selects the persisted default, shows persisted/effective/source/override metadata, uses unscoped GET plus changed-value PUT/refresh, remains outside Pi settings, and falls back safely to disabled normal/default with a visible diagnostic.</td><td><span class="good">PASS</span> — completion-fix static contract, API/SSE harness, and all-46-file suite.</td></tr>
+          <tr><td>Schema-v4 coexistence</td><td>Remote-auth write preserves the new schema version and sibling settings.</td><td><span class="good">PASS</span> — accepted integration test expectation in full suite.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="report-section" id="panel-review" role="tabpanel" aria-labelledby="tab-review">
+    <h2>Review disposition, rollout, and rollback</h2>
+    <p>Both original reviewer artifacts were read against the integrated diff. The post-fix validator re-read the corrected transition and consume-policy paths. The prior final-acceptance artifact then found one missing approved Browser workflow control; that blocker was accepted and fixed in a bounded completion run. The record is not merely prose: each correction has targeted regression evidence, production encoder parity, live SSE coverage, and a full suite result.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Review identity</th><th>Finding</th><th>Disposition</th><th>Evidence</th></tr></thead>
+        <tbody>
+          <tr><td>Reviewer 1<br>run <code>ad664cf2-3385-4820-986d-5d1252b1d48a</code><br>authoritative runtime status: <code>kimi-k3</code>, thinking high</td><td>F1: normal → compact could leave a stale normal bubble and make a split live view.</td><td><span class="good">Accepted and fixed</span></td><td>Normal text/thinking seed compact state, normal bubbles are removed, and compact state flushes synchronously; pure and static regressions pass. Its prose artifact names only its Pi review session; execution metadata supplies the runtime identity.</td></tr>
+          <tr><td>Reviewer 1</td><td>F2: compact → normal could begin with only post-switch deltas.</td><td><span class="good">Accepted and fixed</span></td><td>Compact text/thinking snapshots transfer to normal accumulators and render before later normal deltas; pure and static regressions pass.</td></tr>
+          <tr><td>Reviewer 1</td><td>F3: empty recognized compact end variants could fall into normal handlers after snapshots were stripped.</td><td><span class="good">Accepted and fixed</span></td><td>Recognized no-write text/thinking/tool-call ends are consumed; unknown and error shapes still fail open.</td></tr>
+          <tr><td>Reviewer 1</td><td>N1: output-mode PUT is remote-auth-gated but not localhost-only.</td><td><span class="warn">Rejected</span></td><td>Remote-auth-gated server settings match the existing authenticated configuration policy; no new localhost-only product rule was approved.</td></tr>
+          <tr><td>Reviewer 1</td><td>N2: raw-response compatibility branch in <code>sendSse()</code>.</td><td><span class="warn">Deferred optional cleanup</span></td><td>Descriptor callers are centralized; branch is harmless and outside required behavior.</td></tr>
+          <tr><td>Reviewer 1</td><td>N3: id-less compact tool-shell fallback can create a cosmetic duplicate.</td><td><span class="warn">Deferred optional cleanup</span></td><td>Real Pi tool events carry IDs; no correctness or data-loss path found.</td></tr>
+          <tr><td>Reviewer 2<br>same run<br>authoritative runtime status: <code>gemini-3-flash-preview</code>, thinking high</td><td>Browser/performance review of seam, scheduler, negotiation, barriers, and parity.</td><td><span class="good">PASS</span></td><td>No material finding. It confirmed the bounded metric and production seam use. Its prose artifact self-reports <code>claude-3-7-sonnet-20250219</code>; that model-generated label conflicts with authoritative execution metadata and is disclosed as an artifact error rather than treated as the runtime identity.</td></tr>
+          <tr><td>Post-fix validator<br>run <code>f3dec8fb-38c7-4e0d-8bf9-79582bbe8029</code></td><td>Fresh validation of F1/F2/F3, schema-v4 integration fix, full suite, and hygiene.</td><td><span class="good">PASS</span></td><td>No blocker, material regression, unrelated scope drift, or staged file. Reported confidence: 97/100.</td></tr>
+          <tr><td>Prior final acceptance<br>run <code>cbda3c74-a08b-451c-be42-b36a8a810aa6</code></td><td><strong>Blocker:</strong> approved persisted output-mode control was absent from <code>/settings</code> → Browser workflow; API-or-UI rollback wording was therefore stale.</td><td><span class="good">Accepted and fixed</span></td><td>Completion-fix run <code>2aff7a57-6650-40ed-ac50-b78fac97c9f5</code> (worker 0) added the server-badged selector, persisted/effective/source/override metadata, unavailable-API fallback, separate PUT/refresh, and Pi-payload exclusion without widening server policy.</td></tr>
+          <tr><td>Completion-fix worker<br>run <code>2aff7a57-6650-40ed-ac50-b78fac97c9f5</code><br>worker 0</td><td>Bounded remediation and static regression for the accepted settings blocker.</td><td><span class="good">PASS</span></td><td>Focused static/coupling, API/SSE, deterministic metric/hash, all-46 suite, diff, and no-staged checks passed; the completion handoff records the exact contract.</td></tr>
+          <tr><td>Final re-verifier<br>same completion run<br>reviewer 2</td><td>Claimed reviewer identities contradicted prose artifacts; also found a stale handoff count.</td><td><span class="warn">Partially rejected/corrected</span></td><td>Runtime identity claim rejected using authoritative subagent status; the prose self-label mismatch is now explicitly disclosed. The valid wording issue was accepted: the canonical evidence set contains four handoffs.</td></tr>
+          <tr><td>Final record audit and feature gate<br>run <code>bb042cb4-8a2b-407e-bfe0-409db7c6886c</code><br>runtimes <code>gpt-5.6-sol</code> high and <code>gemini-3-flash-preview</code> high</td><td>Rechecked reviewer metadata disclosure, four handoffs, settings UI remediation, complete source/test/report gate, and repository hygiene.</td><td><span class="good">PASS / COMPLETE</span></td><td>All 46 tests, ratio/hash, SSE/API harness, strict HTML, link checks, diff checks, and no-staged checks passed. Record-audit confidence 99/100; feature-gate confidence 97/100.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Examples</h3>
+    <div class="grid">
+      <article class="card"><h3>Start compact by CLI</h3><pre><code>pi-webui --output-mode compact-v1</code></pre><p>CLI is the highest-priority server default. Existing explicit normal clients remain normal; auto clients negotiate the effective default.</p></article>
+      <article class="card"><h3>Set an environment default</h3><pre><code>PI_WEBUI_OUTPUT_MODE=compact-v1 pi-webui</code></pre><p>Environment applies when the CLI flag is absent. Invalid environment values fail startup instead of silently selecting a mode.</p></article>
+      <article class="card"><h3>Persist the default</h3><pre><code>Settings → Browser workflow → Output processing
+compact-v1</code></pre><p>The server-badged selector writes the persisted setting through the separate authenticated endpoint, then refreshes its metadata. The equivalent API body is <code>{ "outputModeDefault": "compact-v1" }</code>; CLI/environment can still temporarily override the effective result.</p></article>
+    </div>
+
+    <ol class="steps">
+      <li class="step"><h3>Roll out from the normal default</h3><p>Enable compact only for the desired server default: use <code>--output-mode</code>, <code>PI_WEBUI_OUTPUT_MODE</code>, or <code>/settings</code> → Browser workflow → <strong>Output processing</strong>. The control displays the persisted value separately from an effective CLI/environment override. Use normal/compact mixed-client harness coverage as the behavior contract, observe diagnostics and reconciliation, and do not market elapsed-time improvement from this evidence.</p></li>
+      <li class="step"><h3>Roll back operationally first</h3><p>Choose <code>normal</code> in <code>/settings</code> → Browser workflow → <strong>Output processing</strong>, send <code>{ "outputModeDefault": "normal" }</code> to the configuration API, or remove the CLI/environment compact override. Idle auto clients switch immediately and active auto clients switch at the next semantic barrier. Explicit compact clients remain explicit until reconnecting or requesting normal.</p></li>
+      <li class="step"><h3>Revert code only as a coordinated unit</h3><p>If code rollback is required, revert the transport and browser work together or force the server default to normal first. No session, transcript, prompt, tool, model, provider, or data migration exists to undo.</p></li>
+    </ol>
+
+    <div class="callout warning"><strong>Remaining risks and limitations:</strong> no interactive visual-browser run exercised actual paint/reconciliation timing or the settings dialog, so no screenshot is included; compatibility with a historical released server was structural rather than binary-to-binary; and compact live tool bodies are intentionally deferred until final reconciliation. The settings control's placement, API wiring, metadata, payload exclusion, and unavailable-API fallback are structurally covered. These limits do not alter the deterministic parity or full-suite result, but they bound the confidence claim.</div>
+  </section>
+
+  <section class="report-section" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence">
+    <h2>Evidence paths and command record</h2>
+    <p>All paths below are repository-relative so the report has no embedded private absolute path, external asset, telemetry, or network dependency. The report is self-contained; the listed paths identify the primary evidence that was read.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Evidence</th><th>Repository-relative path</th><th>What it establishes</th></tr></thead>
+        <tbody>
+          <tr><td>Canonical plan</td><td><a href="../plans/webui-fast-mode.md"><code>../plans/webui-fast-mode.md</code></a></td><td>Approved contract, scope, risks, rollback, and final integration record.</td></tr>
+          <tr><td>Workstream A handoff</td><td><code>../plans/handoffs/webui-fast-mode-A-config-transport.md</code></td><td>Production seam, settings/API/SSE behavior, exact byte-work and hash ledger.</td></tr>
+          <tr><td>Workstream B handoff</td><td><code>../plans/handoffs/webui-fast-mode-B-browser.md</code></td><td>Browser reducer/scheduler, PWA wiring, live-display constraints, browser ledger.</td></tr>
+          <tr><td>Post-review fixes</td><td><code>../plans/handoffs/webui-fast-mode-post-review-fixes.md</code></td><td>F1/F2/F3 implementation and focused regression record.</td></tr>
+          <tr><td>Prior final acceptance</td><td><a href="../../.pi-subagents/artifacts/outputs/cbda3c74-a08b-451c-be42-b36a8a810aa6/verification/fast-mode-final-acceptance.md"><code>../../.pi-subagents/artifacts/outputs/cbda3c74-a08b-451c-be42-b36a8a810aa6/verification/fast-mode-final-acceptance.md</code></a></td><td>The sole settings-UI blocker that this correction accepts and fixes.</td></tr>
+          <tr><td>Browser settings completion fix</td><td><a href="../plans/handoffs/webui-fast-mode-settings-ui-fix.md"><code>../plans/handoffs/webui-fast-mode-settings-ui-fix.md</code></a></td><td>Run <code>2aff7a57-6650-40ed-ac50-b78fac97c9f5</code> UI/API contract, regression coverage, command results, and residual risk.</td></tr>
+          <tr><td>Original reviews</td><td><code>../../.pi-subagents/artifacts/outputs/ad664cf2-3385-4820-986d-5d1252b1d48a/reviews/</code></td><td>Feature-correctness findings/dispositions and independent browser/performance PASS.</td></tr>
+          <tr><td>Post-fix validation</td><td><code>../../.pi-subagents/artifacts/outputs/f3dec8fb-38c7-4e0d-8bf9-79582bbe8029/reviews/fast-mode-post-fix-validation.md</code></td><td>Fresh F1/F2/F3, full-suite, metric, and hygiene PASS.</td></tr>
+          <tr><td>Production metric test</td><td><code>../tests/fast-mode-output-work.test.mjs</code></td><td>Actual production encoder, non-mutation, semantic deep/hash parity, formula threshold.</td></tr>
+          <tr><td>Browser ledger guard</td><td><code>../tests/fast-mode-client-static.test.mjs</code></td><td>Protocol gate, prohibited rich work, PWA wiring, scan/flush/DOM ledger.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Post-fix and completion-fix commands and outcomes</h3>
+    <pre><code>cd pi-package-webui &amp;&amp; node --check public/app.js &amp;&amp; node --check public/fast-output-live.mjs \
+  &amp;&amp; node tests/fast-output-live.test.mjs \
+  &amp;&amp; node tests/fast-mode-client-static.test.mjs \
+  &amp;&amp; node tests/streaming-ui-coupling.test.mjs \
+  &amp;&amp; node tests/runtime-error-visibility.test.mjs
+# PASS
+
+cd pi-package-webui &amp;&amp; node tests/fast-mode-output-work.test.mjs
+# PASS: R=8581802 Snormal=8581802 Sfast=106154 Wnormal=25745406 Wfast=8794110
+#       ratio=2.927574 semantic SHA-256=74c47d64c4a1b2100af15d0b6e73e4ae96cbaf68f1e0ab49c34eed7c2858d10f
+
+cd pi-package-webui &amp;&amp; npm run check
+# PASS: all 46 test files passed, including remote-auth-settings-harness.test.mjs
+
+git diff --check
+# PASS
+
+test -z "$(git diff --cached --name-only)"
+# PASS: no staged files
+
+# Completion-fix run 2aff7a57-6650-40ed-ac50-b78fac97c9f5 (worker 0)
+cd pi-package-webui &amp;&amp; node --check public/app.js \
+  &amp;&amp; node tests/fast-mode-client-static.test.mjs \
+  &amp;&amp; node tests/streaming-ui-coupling.test.mjs
+# PASS: Browser workflow settings contract; scan ratio 516.625; 512 normal vs 103 compact modeled writes
+
+cd pi-package-webui &amp;&amp; node tests/fast-mode-sse-harness.test.mjs \
+  &amp;&amp; node tests/fast-mode-output-work.test.mjs &amp;&amp; npm run check
+# PASS: API/SSE harness, ratio=2.927574, semantic SHA-256=74c47d64c4a1b2100af15d0b6e73e4ae96cbaf68f1e0ab49c34eed7c2858d10f,
+#       all 46 test files passed</code></pre>
+    <div class="grid">
+      <article class="card"><h3>Integration schema-test fix</h3><p>The settings migration changed the normalized schema to v4. The remote-auth harness expectation was intentionally aligned from schema 3 to schema 4, then included in the all-46-file package check. This is an integration compatibility test correction, not a configuration policy change.</p></article>
+      <article class="card"><h3>Evidence interpretation</h3><p>Production transform and browser scheduling have separate ledgers. Their common requirement is semantic final-output preservation. Neither ledger claims measured end-user latency, model throughput, or a universal performance result beyond the fixed, stated workload.</p></article>
+      <article class="card"><h3>Hygiene</h3><p>The completion-fix run changed only <code>public/app.js</code>, <code>tests/fast-mode-client-static.test.mjs</code>, and its handoff. This final reporting correction changes only the canonical plan and report. No dependency, lockfile, generated file, or commit is created by either reporting step.</p></article>
+    </div>
+    <details>
+      <summary>Why the semantic hash matters</summary>
+      <p>Byte reduction alone would not establish a safe output-mode change. The metric reparses every emitted normal and compact browser payload and reduces ordered text, content indices, lifecycle records, tool start/end data, errors, and final message semantics. It requires deep equality and equality of the stable SHA-256 payload before accepting the ratio. The hash is therefore a compact witness for the independently compared canonical semantic payload, not a replacement for the test assertions.</p>
+    </details>
+    <details>
+      <summary>Why normal remains the default</summary>
+      <p>Compact mode deliberately trades rich progressive formatting and intermediate tool-body construction for bounded live display work. The browser restores full rich output from final messages, but normal remains the compatibility-preserving default for every connection that does not explicitly negotiate protocol 1 and an applicable compact selection.</p>
+    </details>
+  </section>
+
+  <footer>
+    <p><strong>Scope:</strong> final post-review integration evidence for WebUI Fast Mode. This report contains no external assets, analytics, telemetry, absolute private paths, or timing/inference claims beyond the recorded deterministic tests.</p>
+  </footer>
+</main>
+<script>
+(() => {
+  const tablist = document.querySelector('[role="tablist"]');
+  if (!tablist) return;
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls'))).filter(Boolean);
+  if (tabs.length !== panels.length) return;
+  document.documentElement.classList.add('tabs-ready');
+
+  function activate(tab, { focus = false, updateHash = true } = {}) {
+    tabs.forEach((candidate) => {
+      const selected = candidate === tab;
+      candidate.setAttribute('aria-selected', String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) tab.focus();
+    if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      let target = null;
+      if (event.key === 'ArrowRight') target = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') target = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') target = 0;
+      if (event.key === 'End') target = tabs.length - 1;
+      if (target === null) return;
+      event.preventDefault();
+      activate(tabs[target], { focus: true });
+    });
+  });
+
+  const hashPanel = panels.find((panel) => `#${panel.id}` === location.hash);
+  const initial = hashPanel
+    ? tabs.find((tab) => tab.getAttribute('aria-controls') === hashPanel.id)
+    : tabs.find((tab) => tab.getAttribute('aria-selected') === 'true') || tabs[0];
+  activate(initial, { updateHash: false });
+})();
+</script>
+</body>
+</html>

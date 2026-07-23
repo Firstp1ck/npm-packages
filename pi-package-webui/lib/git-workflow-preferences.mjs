@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { normalizeOutputMode, OUTPUT_MODE_NORMAL } from "./webui-output-mode.mjs";
 
 export const GIT_WORKFLOW_SETUP_VERSION = 1;
 export const GIT_WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -22,7 +23,7 @@ export function supportedGitWorkflowThinkingLevels(model) {
   });
 }
 
-const WEBUI_SETTINGS_VERSION = 3;
+const WEBUI_SETTINGS_VERSION = 4;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
 
 function cleanBoundedString(value, maxLength = 512) {
@@ -139,14 +140,20 @@ export function normalizeWebuiSettings(value) {
   return {
     version: WEBUI_SETTINGS_VERSION,
     remoteAuthEnabled: value?.remoteAuthEnabled === true,
+    outputModeDefault: normalizeOutputMode(value?.outputModeDefault, OUTPUT_MODE_NORMAL),
     gitWorkflow: normalizeGitWorkflowPreferences(value?.gitWorkflow),
     resourceDefaults: normalizeResourceDefaults(value?.resourceDefaults),
   };
 }
 
-export async function readWebuiSettings(storageFile = webuiSettingsFile()) {
+export async function readWebuiSettings(storageFile = webuiSettingsFile(), { reportInvalidOutputMode = false } = {}) {
   try {
-    return normalizeWebuiSettings(JSON.parse(await readFile(storageFile, "utf8")));
+    const raw = JSON.parse(await readFile(storageFile, "utf8"));
+    const normalized = normalizeWebuiSettings(raw);
+    if (reportInvalidOutputMode && raw?.outputModeDefault !== undefined && normalized.outputModeDefault !== raw.outputModeDefault) {
+      console.warn(`Invalid persisted Web UI output mode ${JSON.stringify(raw.outputModeDefault)} in ${storageFile}; using ${OUTPUT_MODE_NORMAL}.`);
+    }
+    return normalized;
   } catch (error) {
     if (error?.code === "ENOENT") return normalizeWebuiSettings({});
     throw new Error(`Cannot read Pi Web UI settings at ${storageFile}: ${error instanceof Error ? error.message : String(error)}`);

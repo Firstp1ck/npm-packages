@@ -49,6 +49,16 @@ import {
   writeWebuiSettings,
 } from "../lib/git-workflow-preferences.mjs";
 import {
+  encodeBrowserSseEvent,
+  isOutputModeSemanticBarrier,
+  negotiateOutputMode,
+  normalizeOutputMode,
+  OUTPUT_MODE_COMPACT_V1,
+  OUTPUT_MODE_NORMAL,
+  OUTPUT_MODE_PROTOCOL_VERSION,
+  resolveOutputModeDefault,
+} from "../lib/webui-output-mode.mjs";
+import {
   evaluateDispatchTrustGuards,
   guardsForNativeCommand,
   isLocalRequest,
@@ -365,6 +375,7 @@ Options:
   --name <name>       Initial Web UI tab display name
   --remote-auth       Enable startup PIN authentication for non-local clients
   --no-remote-auth    Disable startup PIN authentication
+  --output-mode <mode>  Web UI output default: normal or compact-v1
   -h, --help          Show this help
   -v, --version       Print version
 
@@ -392,6 +403,14 @@ function takeValue(argv, index, flag) {
   return value;
 }
 
+function requiredOutputMode(value, source) {
+  const mode = String(value || "").trim();
+  if (![OUTPUT_MODE_NORMAL, OUTPUT_MODE_COMPACT_V1].includes(mode)) {
+    throw new Error(`${source} must be one of: ${OUTPUT_MODE_NORMAL}, ${OUTPUT_MODE_COMPACT_V1}`);
+  }
+  return mode;
+}
+
 function parseArgs(argv) {
   const options = {
     host: process.env.PI_WEBUI_HOST || DEFAULT_HOST,
@@ -404,6 +423,8 @@ function parseArgs(argv) {
     name: undefined,
     remoteAuth: isTruthyEnv(process.env.PI_WEBUI_REMOTE_AUTH),
     remoteAuthExplicit: process.env.PI_WEBUI_REMOTE_AUTH !== undefined,
+    outputMode: undefined,
+    envOutputMode: process.env.PI_WEBUI_OUTPUT_MODE === undefined ? undefined : requiredOutputMode(process.env.PI_WEBUI_OUTPUT_MODE, "PI_WEBUI_OUTPUT_MODE"),
     piArgs: [],
     help: false,
     version: false,
@@ -455,6 +476,11 @@ function parseArgs(argv) {
     }
     if (arg === "--name") {
       options.name = takeValue(argv, i, arg);
+      i++;
+      continue;
+    }
+    if (arg === "--output-mode") {
+      options.outputMode = requiredOutputMode(takeValue(argv, i, arg), "--output-mode");
       i++;
       continue;
     }
@@ -1095,8 +1121,12 @@ function sendRemoteAuthRequired(req, res, url) {
   sendJson(res, 401, { ok: false, error: "Remote PIN required", remoteAuthRequired: true }, { "www-authenticate": "PiRemotePin" });
 }
 
-function sendSse(res, event) {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+function sendSse(client, event) {
+  const res = client?.res || client;
+  const payload = encodeBrowserSseEvent(event, { outputMode: client?.activeMode || OUTPUT_MODE_NORMAL });
+  if (payload === undefined) return false;
+  res.write(`data: ${payload}\n\n`);
+  return true;
 }
 
 function rpcSuccess(command, data = {}) {
@@ -1481,8 +1511,33 @@ function statusEventSummary(event) {
   return summary;
 }
 
+function deltaHistorySummary(event) {
+  const update = event?.assistantMessageEvent;
+  if (event?.type !== "message_update" || !update || typeof update !== "object" || !["text_delta", "thinking_delta", "toolcall_delta"].includes(update.type) || typeof update.delta !== "string") return null;
+  return {
+    type: "message_update",
+    firstTimestamp: new Date().toISOString(),
+    lastTimestamp: new Date().toISOString(),
+    tabId: event.tabId,
+    updateType: update.type,
+    contentIndex: update.contentIndex ?? event.contentIndex ?? null,
+    deltaCount: 1,
+    deltaChars: update.delta.length,
+    deltaUtf8Bytes: Buffer.byteLength(update.delta),
+  };
+}
+
 function recordEvent(event) {
-  eventHistory.push(statusEventSummary(event));
+  const delta = deltaHistorySummary(event);
+  const previous = eventHistory.at(-1);
+  if (delta && previous?.type === delta.type && previous.tabId === delta.tabId && previous.updateType === delta.updateType && previous.contentIndex === delta.contentIndex && Number.isInteger(previous.deltaCount)) {
+    previous.lastTimestamp = delta.lastTimestamp;
+    previous.deltaCount += delta.deltaCount;
+    previous.deltaChars += delta.deltaChars;
+    previous.deltaUtf8Bytes += delta.deltaUtf8Bytes;
+  } else {
+    eventHistory.push(delta || statusEventSummary(event));
+  }
   if (eventHistory.length > EVENT_HISTORY_LIMIT) eventHistory.splice(0, eventHistory.length - EVENT_HISTORY_LIMIT);
 }
 
@@ -7907,9 +7962,9 @@ function enforceNaturalConversationCommandAllowed(tab, command) {
   }
 }
 
-function replayExtensionStatuses(tab, res) {
+function replayExtensionStatuses(tab, client) {
   for (const [statusKey, statusText] of extensionStatusMap(tab)) {
-    sendSse(res, {
+    sendSseToClient(client, {
       type: "extension_ui_request",
       id: randomUUID(),
       method: "setStatus",
@@ -7924,10 +7979,10 @@ function replayExtensionStatuses(tab, res) {
   }
 }
 
-function replayExtensionWidgets(tab, res) {
+function replayExtensionWidgets(tab, client) {
   const pendingExtensionUiRequestCount = pendingExtensionUiRequests(tab).length;
   for (const [widgetKey, request] of extensionWidgetMap(tab)) {
-    sendSse(res, {
+    sendSseToClient(client, {
       ...request,
       type: "extension_ui_request",
       id: randomUUID(),
@@ -8214,10 +8269,10 @@ function clearPendingExtensionUiRequests(tab) {
   tab?.pendingExtensionUiRequests?.clear();
 }
 
-function replayPendingExtensionUiRequests(tab, res) {
+function replayPendingExtensionUiRequests(tab, client) {
   const pending = pendingExtensionUiRequests(tab);
   for (const request of pending) {
-    sendSse(res, {
+    sendSseToClient(client, {
       ...request,
       type: "extension_ui_request",
       replayed: true,
@@ -8416,7 +8471,7 @@ function attachRpcToTab(tab, rpc) {
     }
     scopedEvent = { ...scopedEvent, tabActivity: tabActivitySnapshot(tab), pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length };
     recordEvent(scopedEvent);
-    for (const client of tab.sseClients) sendSse(client, scopedEvent);
+    for (const client of tab.sseClients) sendSseToClient(client, scopedEvent);
     if (event?.type === "compaction_end") void flushCompactionQueue(tab, event);
     if (event?.type === "agent_settled") void restoreGitWorkflowGenerationProfile(tab);
   });
@@ -9223,7 +9278,7 @@ function rememberClosedRestorableTab(tab, state = null) {
 
 function broadcastTabEvent(tab, event) {
   recordEvent(event);
-  for (const client of tab.sseClients) sendSse(client, event);
+  for (const client of tab.sseClients) sendSseToClient(client, event);
 }
 
 function broadcastServerEvent(event) {
@@ -9232,7 +9287,7 @@ function broadcastServerEvent(event) {
   for (const tab of tabs.values()) {
     for (const client of tab.sseClients) clients.add(client);
   }
-  for (const client of clients) sendSse(client, event);
+  for (const client of clients) sendSseToClient(client, event);
 }
 
 const gitLiveWatcher = createGitLiveWatcher({
@@ -9306,10 +9361,7 @@ async function updateTabCwd(id, cwd) {
   const piCommand = await resolvePiCommand(piArgs);
   gitLiveWatcher.unsubscribe(tab.id);
   const restartingEvent = { type: "webui_tab_restarting", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, sessionFile };
-  recordEvent(restartingEvent);
-  for (const client of tab.sseClients) {
-    sendSse(client, restartingEvent);
-  }
+  broadcastTabEvent(tab, restartingEvent);
 
   const oldRpc = tab.rpc;
   tab.rpcUnsubscribe?.();
@@ -9332,10 +9384,7 @@ async function updateTabCwd(id, cwd) {
   await primeTabRpc(tab).catch(() => {});
 
   const changedEvent = { type: "webui_cwd_changed", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, pid: tab.rpc.child?.pid, sessionFile, tabActivity: tabActivitySnapshot(tab) };
-  recordEvent(changedEvent);
-  for (const client of tab.sseClients) {
-    sendSse(client, changedEvent);
-  }
+  broadcastTabEvent(tab, changedEvent);
   return { tab, changed: true };
 }
 
@@ -9350,8 +9399,7 @@ async function restartTabRpc(tab, reason = "reload") {
   if (state.data?.sessionFile && !options.noSession) piArgs.push("--session", state.data.sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
   const reloadingEvent = { type: "webui_tab_reloading", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, reason, sessionFile: state.data?.sessionFile };
-  recordEvent(reloadingEvent);
-  for (const client of tab.sseClients) sendSse(client, reloadingEvent);
+  broadcastTabEvent(tab, reloadingEvent);
 
   const oldRpc = tab.rpc;
   tab.rpcUnsubscribe?.();
@@ -9370,8 +9418,7 @@ async function restartTabRpc(tab, reason = "reload") {
   rpc.start();
 
   const reloadedEvent = { type: "webui_tab_reloaded", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, pid: tab.rpc.child?.pid, reason, sessionFile: state.data?.sessionFile, tabActivity: tabActivitySnapshot(tab) };
-  recordEvent(reloadedEvent);
-  for (const client of tab.sseClients) sendSse(client, reloadedEvent);
+  broadcastTabEvent(tab, reloadedEvent);
   return tab;
 }
 
@@ -11481,8 +11528,8 @@ async function closeTab(id) {
   const closingEvent = { type: "webui_tab_closing", tabId: tab.id, tabTitle: tab.title };
   recordEvent(closingEvent);
   for (const client of tab.sseClients) {
-    sendSse(client, closingEvent);
-    client.end();
+    sendSseToClient(client, closingEvent);
+    client.res.end();
   }
   tab.sseClients.clear();
   tab.rpcUnsubscribe?.();
@@ -11613,12 +11660,89 @@ async function createInitialTabs() {
 }
 
 const serverStartedAt = new Date().toISOString();
-let persistedRemoteAuthEnabled = await readPersistedRemoteAuthEnabled();
+const persistedStartupSettings = await readWebuiSettings(undefined, { reportInvalidOutputMode: true });
+let persistedRemoteAuthEnabled = persistedStartupSettings.remoteAuthEnabled === true;
+let persistedOutputModeDefault = persistedStartupSettings.outputModeDefault;
 const initialTabs = await createInitialTabs();
 const initialTab = initialTabs[0];
 let currentHost = options.host;
 let networkRebindInProgress = false;
 let networkRebindTargetHost = null;
+
+function resolvedOutputModeDefault() {
+  return resolveOutputModeDefault({
+    cliMode: options.outputMode,
+    envMode: options.envOutputMode,
+    persistedMode: persistedOutputModeDefault,
+  });
+}
+
+function outputModeMetadata() {
+  const resolved = resolvedOutputModeDefault();
+  return {
+    persistedDefault: normalizeOutputMode(persistedOutputModeDefault),
+    effectiveDefault: resolved.mode,
+    source: resolved.source,
+    overridden: resolved.source === "cli" || resolved.source === "env",
+  };
+}
+
+function tabHasActiveOutput(tab) {
+  return tab?.activity?.isWorking === true || tab?.lastState?.isStreaming === true || tab?.lastState?.isCompacting === true;
+}
+
+function activateOutputMode(client, activeMode, reason = "server-default-change") {
+  const nextMode = normalizeOutputMode(activeMode);
+  if (client.activeMode === nextMode) {
+    client.pendingMode = undefined;
+    return;
+  }
+  sendSse(client, {
+    type: "webui_output_mode",
+    protocolVersion: OUTPUT_MODE_PROTOCOL_VERSION,
+    previousMode: client.activeMode,
+    activeMode: nextMode,
+    reason,
+  });
+  client.activeMode = nextMode;
+  client.pendingMode = undefined;
+}
+
+function sendSseToClient(client, event) {
+  sendSse(client, event);
+  if (client?.pendingMode && isOutputModeSemanticBarrier(event)) activateOutputMode(client, client.pendingMode);
+}
+
+function refreshAutoOutputModes() {
+  const resolved = resolvedOutputModeDefault();
+  for (const tab of tabs.values()) {
+    for (const client of tab.sseClients) {
+      if (client.requestedMode !== "auto") continue;
+      client.defaultSource = resolved.source;
+      if (client.activeMode === resolved.mode) {
+        client.pendingMode = undefined;
+      } else if (tabHasActiveOutput(tab)) {
+        client.pendingMode = resolved.mode;
+      } else {
+        activateOutputMode(client, resolved.mode);
+      }
+    }
+  }
+}
+
+async function saveOutputModeDefault(value) {
+  let mode;
+  try {
+    mode = requiredOutputMode(value, "outputModeDefault");
+  } catch (error) {
+    throw makeHttpError(400, formatCliError(error));
+  }
+  const settings = await writeWebuiSettings({ outputModeDefault: mode });
+  persistedOutputModeDefault = settings.outputModeDefault;
+  refreshAutoOutputModes();
+  return outputModeMetadata();
+}
+
 const remoteAuth = {
   pin: undefined,
   token: undefined,
@@ -11751,8 +11875,8 @@ function closeSseClientsForRebind(nextHost) {
     };
     recordEvent(rebindEvent);
     for (const client of tab.sseClients) {
-      sendSse(client, rebindEvent);
-      client.end();
+      sendSseToClient(client, rebindEvent);
+      client.res.end();
     }
     tab.sseClients.clear();
   }
@@ -11768,8 +11892,8 @@ function closeSseClientsForRemoteAuthChange() {
     };
     recordEvent(authEvent);
     for (const client of tab.sseClients) {
-      sendSse(client, authEvent);
-      client.end();
+      sendSseToClient(client, authEvent);
+      client.res.end();
     }
     tab.sseClients.clear();
   }
@@ -11980,6 +12104,7 @@ async function webuiStatus({ detailed = false, eventLimit = 40, includeAuthPin =
     network,
     piPid: tab?.rpc.child?.pid,
     piRunning: !!tab?.rpc.child && tab.rpc.child.exitCode === null,
+    outputMode: outputModeMetadata(),
     tabs: statusTabs,
     restorableTabs: mergeRestorableTabDescriptors(statusTabs),
   };
@@ -12046,6 +12171,17 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/webui-output-mode" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, data: outputModeMetadata() });
+      return;
+    }
+
+    if (url.pathname === "/api/webui-output-mode" && req.method === "PUT") {
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, data: await saveOutputModeDefault(body.outputModeDefault) });
+      return;
+    }
+
     if (url.pathname === "/api/tabs" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: { tabs: await listTabsWithReconciledActivity() } });
       return;
@@ -12096,6 +12232,20 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/events" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
+      const resolvedDefault = resolvedOutputModeDefault();
+      const negotiated = negotiateOutputMode({
+        requestedMode: url.searchParams.get("outputMode"),
+        protocolVersion: url.searchParams.get("outputModeProtocol"),
+        serverDefault: resolvedDefault.mode,
+      });
+      const client = {
+        res,
+        requestedMode: negotiated.requestedMode,
+        protocolVersion: negotiated.protocolVersion,
+        activeMode: negotiated.activeMode,
+        pendingMode: undefined,
+        defaultSource: resolvedDefault.source,
+      };
       res.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",
@@ -12103,13 +12253,20 @@ const server = createServer(async (req, res) => {
         "x-content-type-options": "nosniff",
       });
       res.write(": connected\n\n");
-      tab.sseClients.add(res);
-      sendSse(res, {
+      tab.sseClients.add(client);
+      sendSseToClient(client, {
         type: "webui_connected",
         version: packageJson.version,
         piVersion: String(piPackageJson.version || ""),
         webuiDev: webuiDevServer,
         webuiMode: webuiDevServer ? "dev" : "production",
+        outputMode: {
+          protocolVersion: negotiated.protocolVersion,
+          requestedMode: negotiated.requestedMode,
+          activeMode: negotiated.activeMode,
+          serverDefault: resolvedDefault.mode,
+          serverDefaultSource: resolvedDefault.source,
+        },
         tabId: tab.id,
         tabTitle: tab.title,
         pid: tab.rpc.child?.pid,
@@ -12119,13 +12276,13 @@ const server = createServer(async (req, res) => {
         pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length,
         activeRun: publicAppRunnerState(tab.appRunner),
       });
-      replayExtensionStatuses(tab, res);
-      replayExtensionWidgets(tab, res);
-      replayPendingExtensionUiRequests(tab, res);
+      replayExtensionStatuses(tab, client);
+      replayExtensionWidgets(tab, client);
+      replayPendingExtensionUiRequests(tab, client);
       const keepAlive = setInterval(() => res.write(": keepalive\n\n"), 15000);
       req.on("close", () => {
         clearInterval(keepAlive);
-        tab.sseClients.delete(res);
+        tab.sseClients.delete(client);
       });
       return;
     }
@@ -12142,6 +12299,7 @@ const server = createServer(async (req, res) => {
         piPid: status.piPid,
         piRunning: status.piRunning,
         cwd: status.cwd,
+        outputMode: status.outputMode,
         network: status.network,
         tabs: status.tabs,
         restorableTabs: status.restorableTabs,

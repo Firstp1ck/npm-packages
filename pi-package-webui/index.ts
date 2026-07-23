@@ -33,6 +33,7 @@ type StartWebuiOptions = WebuiAddress & {
   open: boolean;
   noSession: boolean;
   remoteAuth: boolean;
+  outputMode?: "normal" | "compact-v1";
   name?: string;
   piArgs: string[];
 };
@@ -85,6 +86,13 @@ function parseStartWebuiArgs(args: string): StartWebuiOptions {
     }
     if (token === "--no-session") {
       options.noSession = true;
+      continue;
+    }
+    if (token === "--output-mode") {
+      const outputMode = takeValue(tokens, i, token);
+      if (outputMode !== "normal" && outputMode !== "compact-v1") throw new Error("--output-mode must be normal or compact-v1");
+      options.outputMode = outputMode;
+      i++;
       continue;
     }
     if (token === "--remote-auth") {
@@ -450,6 +458,7 @@ async function startWebui(options: StartWebuiOptions, ctx: ExtensionCommandConte
   const args = [webuiBin, "--host", options.host, "--port", String(options.port), "--cwd", ctx.cwd];
   if (options.noSession) args.push("--no-session");
   if (options.remoteAuth) args.push("--remote-auth");
+  if (options.outputMode) args.push("--output-mode", options.outputMode);
   if (options.name) args.push("--name", options.name);
   if (options.piArgs.length > 0) args.push("--", ...options.piArgs);
 
@@ -696,7 +705,7 @@ function formatWebuiStatus(result: WebuiStatusFetchResult, requestedDetailed: bo
 
 function usage(): string {
   return [
-    "Usage: /webui-start [port] [--port N] [--no-open] [--no-session] [--remote-auth] [--name NAME] [-- --model provider/model]",
+    "Usage: /webui-start [port] [--port N] [--no-open] [--no-session] [--remote-auth] [--output-mode normal|compact-v1] [--name NAME] [-- --model provider/model]",
     "Starts the Pi Web UI companion server for the current cwd, prints the localhost URL, and opens it in your default browser.",
   ].join("\n");
 }
