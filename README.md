@@ -220,6 +220,34 @@ Scaffold and maintain local wiki/documentation extension packages from templates
 - bundled `wiki-tools` skill for using `templates/local-wiki-extension`
 - safe defaults: create refuses existing targets; update defaults to dry-run
 
+### `@firstpick/pi-extension-anthropic-auth-recovery`
+Plan-only recovery assistance for narrowly classified Anthropic compatibility errors.
+
+- selects an authenticated non-Anthropic model only after confirmation
+- runs external compatibility-patch status and planning without automatic apply
+- supports explicit authenticated RPC/WebUI recovery endpoints and secure local fallback
+
+### `@firstpick/pi-extension-conditional-system-prompts`
+Conditionally appends trusted local policy files to Pi's system prompt.
+
+- loads `APPEND_WINDOWS.md` on Windows
+- loads `APPEND_SUBAGENTS.md` when the `subagent` tool is selected
+- preserves existing prompt content and documents fail-fast missing-file behavior
+
+### `@firstpick/pi-extension-feature-system-prompt`
+Routes feature requests to an external feature-development policy.
+
+- classifies requests with the active conversation model in an isolated tool-free session
+- distinguishes lightweight and complex features
+- bounds continuation context and uses safe local fallbacks when classification is unavailable
+
+### `@firstpick/pi-extension-subagent-minimum-fanout`
+Enforces zero-or-multiple model delegation for Pi subagent tool calls.
+
+- blocks direct and statically single-child execution requests
+- supports tasks, chains, schedules, dynamic fanout, and execution-mode aliases
+- leaves management/recovery actions available and documents slash-command/RPC boundaries
+
 ### `@firstpick/pi-utils`
 Shared helpers used by multiple Pi extensions.
 
@@ -244,7 +272,7 @@ Reusable scaffold for local documentation/wiki extensions analogous to the ArchW
 - `dev/scripts/publish-packages.sh` – plans/applies publish actions dynamically for all package folders or a `--targets-file` shortlist
 - `dev/scripts/bump-package-versions.sh` – checks npm published versions first and enforces the next release version for changed packages (`+0.0.1`, rolling `*.9` to next minor `.0`; bumps up or reduces down only when needed); can write publish candidates to a target list
 - `dev/scripts/release-workflow.sh` – orchestrates release checks: `--check` reports required bumps, `--plan` uses bump planning to shortlist packages before publish checks, and `--publish` applies required bumps before publishing
-- `dev/scripts/sync-pi-package-symlinks.sh` – uses Pi's package resource resolver to symlink local development extensions, skills, prompts, and themes from top-level `pi-*` workspace packages into `~/.pi/agent/`; package-local `node_modules` resources referenced by Pi manifests are linked to top-level workspace packages first, so dev packages win over stale installed optional dependencies; index-based extensions are linked as directories so relative imports keep working; renames non-symlink conflicts to `.hardcoded.<timestamp>.bak`
+- `dev/scripts/sync-pi-package-symlinks.sh` – uses Pi's package resource resolver to symlink local development extensions, skills, prompts, and themes from top-level `pi-*` workspace packages into `~/.pi/agent/`; package-local `node_modules` resources referenced by Pi manifests are linked to top-level workspace packages first, so dev packages win over stale installed optional dependencies; index-based extensions are linked as directories and standalone package resources as files; local-only dev extensions use generated wrappers so their relative imports resolve from the source checkout; unrelated non-symlink conflicts are renamed to `.hardcoded.<timestamp>.bak`
 - `dev/scripts/validate-skill-routing-fixtures.mjs` – validates development-only `tests/routing/*.json`; schema-only by default, with optional `--settings` or `--skill-root` target coverage
 
 ## Publish model

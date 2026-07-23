@@ -1,0 +1,42 @@
+{
+  "name": "@firstpick/pi-extension-anthropic-auth-recovery",
+  "version": "0.1.0",
+  "description": "Offer a plan-only Pi recovery flow for classified Anthropic compatibility errors.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-anthropic-auth-recovery#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-extension-anthropic-auth-recovery"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "anthropic",
+    "recovery"
+  ],
+  "pi": {
+    "extensions": [
+      "./anthropic-subscription-auth-recovery.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "check": "node --experimental-strip-types --check anthropic-subscription-auth-recovery.ts",
+    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./anthropic-subscription-auth-recovery.ts')\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "files": [
+    "anthropic-subscription-auth-recovery.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -225,6 +225,7 @@ const elements = {
   fileSelectionCommentInput: $("#fileSelectionCommentInput"),
   fileSelectionSendButton: $("#fileSelectionSendButton"),
   fileContextMenu: $("#fileContextMenu"),
+  sidePanelContextMenu: $("#sidePanelContextMenu"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
   sidePanelBackdrop: $("#sidePanelBackdrop"),
@@ -364,6 +365,7 @@ let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), l
 let activeFileViewer = null;
 let fileViewerSelection = null;
 let fileContextMenuState = null;
+let sidePanelContextMenuState = null;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let fileTreeSearchTimer = null;
@@ -617,6 +619,7 @@ const dialogQueue = [];
 const SIDE_PANEL_STORAGE_KEY = "pi-webui-side-panel-collapsed";
 const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
+const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
 const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
 const AGENT_DONE_NOTIFICATIONS_STORAGE_KEY = "pi-webui-agent-done-notifications";
@@ -1532,6 +1535,46 @@ function persistSidePanelSectionState() {
   }
 }
 
+function readStoredSidePanelSectionHiddenIds() {
+  try {
+    const stored = localStorage.getItem(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY);
+    if (stored === null) return new Set();
+    const parsed = JSON.parse(stored);
+    return new Set(Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistSidePanelSectionVisibility() {
+  try {
+    const hidden = sidePanelSectionRecords()
+      .filter(({ section }) => section.hidden)
+      .map(({ id }) => id);
+    localStorage.setItem(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY, JSON.stringify(hidden));
+  } catch {
+    // Ignore storage failures; visibility toggles should still work for this page load.
+  }
+}
+
+function setSidePanelSectionVisible(record, visible, { persist = true } = {}) {
+  record.section.hidden = !visible;
+  if (visible && record.id === "git" && !record.section.classList.contains("collapsed")) {
+    queueMicrotask(() => {
+      renderGitPanel();
+      ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
+    });
+  }
+  if (persist) persistSidePanelSectionVisibility();
+}
+
+function restoreSidePanelSectionVisibility() {
+  const hiddenIds = readStoredSidePanelSectionHiddenIds();
+  for (const record of sidePanelSectionRecords()) {
+    setSidePanelSectionVisible(record, !hiddenIds.has(record.id), { persist: false });
+  }
+}
+
 function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}) {
   const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || "side panel";
   record.section.classList.toggle("collapsed", collapsed);
@@ -1539,7 +1582,7 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
   record.button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   record.button.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
   record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
-  if (!collapsed && record.id === "git") {
+  if (!collapsed && record.id === "git" && !record.section.hidden) {
     queueMicrotask(() => {
       renderGitPanel();
       ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
@@ -1566,6 +1609,58 @@ function restoreSidePanelSectionState() {
   }
 }
 
+function closeSidePanelContextMenu({ returnFocus = true } = {}) {
+  const trigger = sidePanelContextMenuState?.trigger;
+  sidePanelContextMenuState = null;
+  if (elements.sidePanelContextMenu) elements.sidePanelContextMenu.hidden = true;
+  if (!returnFocus) return;
+  const focusTarget = trigger?.isConnected && !trigger.closest?.("[data-side-panel-section][hidden]")
+    ? trigger
+    : elements.toggleSidePanelButton;
+  if (focusTarget?.isConnected) queueMicrotask(() => focusTarget.focus?.({ preventScroll: true }));
+}
+
+function showSidePanelContextMenu(event) {
+  if (!elements.sidePanelContextMenu) return;
+  if (event.target?.closest?.("a, input, textarea, select, [contenteditable='true']")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeFileContextMenu({ returnFocus: false });
+  closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
+
+  const menu = elements.sidePanelContextMenu;
+  const eventTrigger = event.currentTarget;
+  const trigger = eventTrigger && eventTrigger !== elements.sidePanel ? eventTrigger : document.activeElement;
+  sidePanelContextMenuState = { trigger: trigger?.focus ? trigger : elements.toggleSidePanelButton };
+  const label = make("div", "side-panel-context-menu-label", "Show sections");
+  label.setAttribute("role", "presentation");
+  label.setAttribute("aria-hidden", "true");
+  const items = sidePanelSectionRecords().map((record) => {
+    const sectionLabel = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || record.id;
+    const button = make("button", "side-panel-context-menu-item", sectionLabel);
+    const visible = !record.section.hidden;
+    button.type = "button";
+    button.setAttribute("role", "menuitemcheckbox");
+    button.setAttribute("aria-checked", visible ? "true" : "false");
+    button.dataset.sidePanelSectionVisibility = record.id;
+    button.addEventListener("click", () => {
+      const nextVisible = record.section.hidden;
+      setSidePanelSectionVisible(record, nextVisible);
+      button.setAttribute("aria-checked", nextVisible ? "true" : "false");
+    });
+    return button;
+  });
+  menu.replaceChildren(label, ...items);
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, Math.max(8, window.innerWidth - rect.width - 8));
+  const top = Math.min(event.clientY, Math.max(8, window.innerHeight - rect.height - 8));
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.querySelector('[role="menuitemcheckbox"]')?.focus({ preventScroll: true });
+}
+
 function bindSidePanelSectionToggles() {
   for (const record of sidePanelSectionRecords()) {
     record.button.addEventListener("click", () => {
@@ -1576,6 +1671,23 @@ function bindSidePanelSectionToggles() {
       }
     });
   }
+}
+
+function bindSidePanelContextMenu() {
+  elements.sidePanel?.addEventListener("contextmenu", showSidePanelContextMenu);
+  elements.sidePanel?.addEventListener("keydown", (event) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    const trigger = event.target instanceof Element ? event.target : elements.sidePanel;
+    const rect = trigger.getBoundingClientRect();
+    showSidePanelContextMenu({
+      preventDefault: () => event.preventDefault(),
+      stopPropagation: () => event.stopPropagation(),
+      clientX: rect.left + Math.min(rect.width, 24),
+      clientY: rect.bottom,
+      currentTarget: trigger,
+      target: trigger,
+    });
+  });
 }
 
 function readStoredAgentDoneNotificationsEnabled() {
@@ -2936,6 +3048,7 @@ function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false }
   elements.toggleSidePanelButton.setAttribute("aria-label", collapsed ? "Expand side panel" : "Collapse side panel");
   elements.sidePanelExpandButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
   syncMobileSidePanelState(collapsed);
+  if (collapsed) closeSidePanelContextMenu({ returnFocus: false });
 
   if (!collapsed && focusPanel && isSidePanelOverlayView()) {
     requestAnimationFrame(() => elements.toggleSidePanelButton.focus());
@@ -6642,6 +6755,7 @@ function showFileContextMenu(event, entry) {
   event.preventDefault();
   event.stopPropagation();
   closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
   const path = normalizeFileTreePath(entry?.path || "");
   fileContextMenuState = { entry: { ...entry, path }, trigger: event.currentTarget || document.activeElement };
   const menu = elements.fileContextMenu;
@@ -8123,7 +8237,7 @@ function terminalDisplayGroupDetail(group, fallback = "group") {
 
 function gitPanelSectionExpanded() {
   const section = elements.sidePanel?.querySelector('[data-side-panel-section="git"]');
-  return Boolean(section && !section.classList.contains("collapsed"));
+  return Boolean(section && !section.hidden && !section.classList.contains("collapsed"));
 }
 
 function gitPanelTerminalGroups() {
@@ -8387,6 +8501,7 @@ function showGitPanelContextMenu(event, context) {
   event.stopPropagation();
   closeFileContextMenu({ returnFocus: false });
   closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
   const menu = elements.gitPanelContextMenu;
   const items = gitPanelContextMenuItems(context);
   if (!items.length) return;
@@ -8481,7 +8596,7 @@ async function runGitPanelAction(card, action, path = "") {
 function renderGitPanelFolder(node, card, category, depth = 0) {
   const details = make("details", "git-side-panel-folder");
   const folderKey = `${card.root}\u0000${category}\u0000${node.path}`;
-  const defaultOpen = depth === 0;
+  const defaultOpen = true;
   details.open = gitPanelState.openFolders.has(folderKey) ? gitPanelState.openFolders.get(folderKey) : defaultOpen;
   details.addEventListener("toggle", () => {
     if (details.open === defaultOpen) gitPanelState.openFolders.delete(folderKey);
@@ -30449,6 +30564,7 @@ elements.sidePanelExpandButton.addEventListener("click", () => {
 elements.sidePanelBackdrop.addEventListener("click", () => {
   setSidePanelCollapsed(true);
 });
+bindSidePanelContextMenu();
 elements.stickyUserPromptButton?.addEventListener("click", jumpToStickyUserPrompt);
 elements.jumpToLatestButton.addEventListener("click", jumpToLatest);
 elements.chat.addEventListener("wheel", noteChatUserScrollIntent, { passive: true });
@@ -30507,6 +30623,9 @@ document.addEventListener("pointerdown", (event) => {
   }
   if (elements.gitPanelContextMenu && !elements.gitPanelContextMenu.hidden && !event.target?.closest?.(".git-side-panel-context-menu")) {
     closeGitPanelContextMenu();
+  }
+  if (elements.sidePanelContextMenu && !elements.sidePanelContextMenu.hidden && !event.target?.closest?.(".side-panel-context-menu")) {
+    closeSidePanelContextMenu();
   }
 }, { passive: true });
 document.addEventListener("pointermove", (event) => {
@@ -30706,6 +30825,7 @@ window.addEventListener("focus", () => scheduleForegroundReconcile("window focus
 window.addEventListener("online", () => scheduleForegroundReconcile("network online", 0));
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
+  if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
 });
 window.addEventListener("resize", syncFileViewerWidthForViewport, { passive: true });
 window.addEventListener("keydown", (event) => {
@@ -30876,6 +30996,21 @@ elements.gitPanelContextMenu?.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();
     closeGitPanelContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+elements.sidePanelContextMenu?.addEventListener("keydown", (event) => {
+  const items = [...elements.sidePanelContextMenu.querySelectorAll('[role="menuitemcheckbox"]')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSidePanelContextMenu();
   } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
     const direction = event.key === "ArrowDown" ? 1 : -1;
@@ -31066,6 +31201,7 @@ restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
 restoreInterfaceDensity();
 initializeTerminalHeaderTooltips();
+restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
 restoreSidePanelState();

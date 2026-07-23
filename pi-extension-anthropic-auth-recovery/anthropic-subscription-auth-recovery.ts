@@ -4,11 +4,13 @@ import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants, existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const execFileAsync = promisify(execFile);
+const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const RECOVERY_TITLE = "Pi Anthropic compatibility recovery";
 const STATUS_KEY = "anthropic-dist-compat";
 const CLEANUP_DELAY_MS = 10 * 60 * 1000;
@@ -91,11 +93,11 @@ async function readable(file: string): Promise<boolean> {
   try { await access(file, fsConstants.R_OK); return true; } catch { return false; }
 }
 
-function ancestorPatchCandidates(cwd: string): string[] {
+function ancestorResourceCandidates(cwd: string, pathSegments: string[]): string[] {
   const candidates: string[] = [];
   let current = resolve(cwd);
   for (let depth = 0; depth < 8; depth++) {
-    candidates.push(join(current, "patches", "pi-anthropic-provider-dist-compat", "PATCH.md"));
+    candidates.push(join(current, ...pathSegments));
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
@@ -107,16 +109,20 @@ export async function discoverRecoveryFiles(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
 ): Promise<RecoveryFiles | undefined> {
-  const agentDir = env.PI_AGENT_DIR || join(homedir(), ".pi", "agent");
+  const agentDir = env.PI_AGENT_DIR || env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+  const patchSegments = ["patches", "pi-anthropic-provider-dist-compat", "PATCH.md"];
+  const patchctlSegments = ["pi-skill-patch-md", "skills", "patch-md", "scripts", "patchctl.mjs"];
   const patchCandidates = [
     env.PI_ANTHROPIC_PATCH_PATH,
-    ...ancestorPatchCandidates(cwd),
-    join(homedir(), "npm-packages", "patches", "pi-anthropic-provider-dist-compat", "PATCH.md"),
+    join(agentDir, ...patchSegments),
+    ...ancestorResourceCandidates(cwd, patchSegments),
+    ...ancestorResourceCandidates(MODULE_DIRECTORY, patchSegments),
   ].filter((value): value is string => Boolean(value));
   const patchctlCandidates = [
     env.PI_PATCHCTL_PATH,
     join(agentDir, "skills", "patch-md", "scripts", "patchctl.mjs"),
-    join(homedir(), "npm-packages", "pi-skill-patch-md", "skills", "patch-md", "scripts", "patchctl.mjs"),
+    ...ancestorResourceCandidates(cwd, patchctlSegments),
+    ...ancestorResourceCandidates(MODULE_DIRECTORY, patchctlSegments),
   ].filter((value): value is string => Boolean(value));
   const patchPath = (await Promise.all(patchCandidates.map(async (candidate) => ((await readable(candidate)) ? resolve(candidate) : "")))).find(Boolean);
   const patchctlPath = (await Promise.all(patchctlCandidates.map(async (candidate) => ((await readable(candidate)) ? resolve(candidate) : "")))).find(Boolean);

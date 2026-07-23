@@ -44,9 +44,9 @@ Ensures local npm-packages Pi resources are live-linked for development:
 - every discovered extension gets a matching development entry under
   ~/.pi/agent/extensions/; index.ts|js resources are linked as directories so
   relative imports keep working, package standalone files are linked as files
-- local-only development extensions matching pi-*/dev/*-extension.ts|js get
-  generated wrapper files for TUI testing so their relative imports resolve
-  from the source checkout; they are not package manifest resources
+- local-only development extensions matching pi-*/dev/*-extension.ts|js use
+  generated wrapper files for TUI testing so relative imports resolve from the
+  source checkout; they remain excluded from package manifests and npm publication
 - every discovered skill gets a matching
   ~/.pi/agent/skills/<skill-name> symlink to that skill directory
 - every discovered prompt template gets a matching

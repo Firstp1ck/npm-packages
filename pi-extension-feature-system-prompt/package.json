@@ -1,0 +1,42 @@
+{
+  "name": "@firstpick/pi-extension-feature-system-prompt",
+  "version": "0.1.0",
+  "description": "Classify Pi requests and inject a feature-workflow prompt only for feature work.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-feature-system-prompt#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-extension-feature-system-prompt"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "system-prompt",
+    "feature-routing"
+  ],
+  "pi": {
+    "extensions": [
+      "./feature-system-prompt.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "node --experimental-strip-types --check feature-system-prompt.ts",
+    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./feature-system-prompt.ts')\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "files": [
+    "feature-system-prompt.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

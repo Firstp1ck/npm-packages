@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Replace the former monolithic subscription-auth patch with independently planned, applied, verified, and rolled-back lifecycle components.
+Replace the former monolithic subscription-auth patch with independently maintained lifecycle components and a separately distributed recovery extension package.
 
 ### Root cause
 
@@ -10,7 +10,7 @@ The old document mixed provider dist mutation, warning/docs copy, WebUI behavior
 
 ### Expected outcome
 
-Provider compatibility, recovery installation, and warning ownership can evolve independently. This index is read-only and reports whether each component exists.
+Provider compatibility and warning ownership can evolve as independent patch components, while recovery installation is handled by `@firstpick/pi-extension-anthropic-auth-recovery`. This index is read-only and reports whether its remaining patch components exist.
 
 ## Lifecycle
 
@@ -20,8 +20,7 @@ Provider compatibility, recovery installation, and warning ownership can evolve 
 
 Files or logical targets:
 1. `component:provider-dist-compat`
-2. `component:auth-recovery`
-3. `component:warning-policy`
+2. `component:warning-policy`
 
 ## Change 1 — Extract provider dist compatibility
 
@@ -35,19 +34,7 @@ Moved runtime discovery, semantic transformation, transactional application, off
 
 Provider mutation has high risk and needs independent version gates and receipts.
 
-## Change 2 — Extract recovery installation
-
-**File:** `component:auth-recovery`
-
-### What was changed
-
-Moved the hardened recovery extension source, installation lifecycle, and tests to `../pi-anthropic-auth-recovery/`.
-
-### Why
-
-Recovery UX and launch security should evolve without rewriting provider transport code.
-
-## Change 3 — Retire warning-copy mutation
+## Change 2 — Retire warning-copy mutation
 
 **File:** `component:warning-policy`
 
@@ -70,8 +57,9 @@ node "$PATCHCTL" verify --patch ./PATCH.md
 ```
 
 Expected:
-- All three split component PATCH.md files exist.
+- Both indexed component PATCH.md files exist.
 - This index reports zero writes.
+- Recovery is installed independently with `pi install npm:@firstpick/pi-extension-anthropic-auth-recovery` when needed.
 
 ## Rollback
 
@@ -80,6 +68,7 @@ printf '%s\n' 'Roll back the independently applied component receipt; this index
 ```
 
 - Component receipts remain independent.
+- Removing the recovery package is handled through Pi package management, not this patch index.
 
 ## Operational notes
 

@@ -1,0 +1,42 @@
+{
+  "name": "@firstpick/pi-extension-subagent-minimum-fanout",
+  "version": "0.1.0",
+  "description": "Block Pi subagent executions with fewer than two statically guaranteed children.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-subagent-minimum-fanout#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-extension-subagent-minimum-fanout"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "subagent",
+    "delegation"
+  ],
+  "pi": {
+    "extensions": [
+      "./subagent-minimum-fanout.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "node --experimental-strip-types --check subagent-minimum-fanout.ts",
+    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./subagent-minimum-fanout.ts')\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "files": [
+    "subagent-minimum-fanout.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Side-panel section visibility — feature report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link {
+      position: fixed; z-index: 10; top: 8px; left: 8px; transform: translateY(-160%);
+      padding: 8px 12px; border-radius: 8px; background: var(--blue); color: #06111f; font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section {
+      margin: 18px 0; padding: 24px; border: 1px solid var(--line);
+      border-radius: var(--radius-lg); background: rgb(18 28 45 / 94%); box-shadow: var(--shadow);
+    }
+    header { margin-top: 0; padding: 30px; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code { padding: .12em .38em; border-radius: 5px; background: var(--code); font-family: ui-monospace, monospace; }
+    .lead { max-width: 82ch; font-size: 1.1rem; }
+    .muted { color: var(--muted); }
+    .badge {
+      display: inline-block; margin-bottom: 8px; padding: 3px 9px; border: 1px solid currentColor;
+      border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase;
+    }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); }
+    .badge.info { background: rgb(101 181 255 / 14%); }
+    .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 8%); }
+    .callout.info { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card strong.metric { display: block; font-size: 1.45rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 650px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .86rem; letter-spacing: .04em; text-transform: uppercase; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    ul.compact { margin: 8px 0; padding-left: 1.25rem; }
+    .status { font-weight: 750; }
+    figure { margin: 18px 0 0; }
+    figure svg { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--code); }
+    figcaption { margin-top: 8px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #182b43; stroke: #65b5ff; stroke-width: 2; }
+    .node.persisted { stroke: #50d890; }
+    .node-text { fill: #e8eef8; font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: #a9b7cb; stroke-width: 2.5; marker-end: url(#arrow); }
+    footer { margin-top: 24px; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, section { padding: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, section, .card { break-inside: avoid; box-shadow: none; background: white; color: #111; border-color: #aaa; }
+      .muted, figcaption, footer { color: #444; }
+      .skip-link { display: none; }
+      code, figure svg { background: #f1f3f5; }
+      a { color: #111; text-decoration: underline; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#report-content">Skip to report content</a>
+  <main id="report-content">
+    <header>
+      <span class="badge good">Implemented · verified</span>
+      <h1>Side-panel section visibility</h1>
+      <p class="lead">Feature report for the Pi Web UI right-click menu that lists all side-panel sections and lets users show or hide each section independently of its expanded/collapsed state.</p>
+      <div class="callout"><strong>Conclusion:</strong> The lightweight feature is complete, all 41 package test files pass, and two independent provider-diverse reviews returned PASS. Accepted minor review notes were fixed before final validation.</div>
+      <p class="muted"><strong>Confidence:</strong> 94/100. Source, diff, syntax, static behavior checks, full package tests, and two independent reviews were verified. No live browser automation was available, so pointer positioning and focus behavior were not observed in a rendered browser.</p>
+    </header>
+
+    <section id="overview">
+      <h2>Executive overview</h2>
+      <div class="grid" aria-label="Feature metrics">
+        <article class="card"><span class="badge info">Coverage</span><strong class="metric">11 sections</strong><span class="muted">Discovered dynamically from existing side-panel markup.</span></article>
+        <article class="card"><span class="badge good">Validation</span><strong class="metric">41 / 41</strong><span class="muted">Package test files passed after review fixes.</span></article>
+        <article class="card"><span class="badge good">Review</span><strong class="metric">2 PASS</strong><span class="muted">Anthropic and Google reviewers, both distinct from OpenAI implementation.</span></article>
+      </div>
+      <h3 style="margin-top:22px">Implementation map</h3>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Delivered behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Menu surface</td><td>Right-click the side panel to open a viewport-bounded menu containing every current section.</td><td><a href="../public/index.html">public/index.html</a>, <a href="../public/app.js">public/app.js</a></td><td class="status good">Verified</td></tr>
+            <tr><td>Visibility state</td><td>Checkable items set each section's <code>hidden</code> state and persist hidden IDs separately from accordion state.</td><td><a href="../public/app.js">public/app.js</a></td><td class="status good">Verified</td></tr>
+            <tr><td>Accessibility</td><td>Menu checkbox roles, checked state, Escape, arrows, Home/End, Context Menu key, and Shift+F10 are supported.</td><td><a href="../public/app.js">public/app.js</a>, <a href="../public/styles.css">public/styles.css</a></td><td class="status good">Verified</td></tr>
+            <tr><td>Regression coverage</td><td>A focused static contract test is auto-discovered by the package test runner.</td><td><a href="../tests/side-panel-context-menu-static.test.mjs">tests/side-panel-context-menu-static.test.mjs</a></td><td class="status good">Passing</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="design">
+      <h2>Design decisions and architecture</h2>
+      <div class="grid">
+        <article class="card"><span class="badge info">Lightweight classification</span><h3>One cohesive UI slice</h3><p>The change stays within the existing static Web UI shell: markup, client state/event handling, styling, and one focused test. It introduces no server contract, migration, dependency, or deployment change, so a canonical complex-feature plan was not required.</p></article>
+        <article class="card"><span class="badge info">Single source</span><h3>Discover sections from the DOM</h3><p><code>sidePanelSectionRecords()</code> already defines the valid section set. The menu maps those records at open time, so adding a future section automatically adds it to the menu without a second list.</p></article>
+        <article class="card"><span class="badge info">Independent state</span><h3>Visibility does not replace collapse</h3><p>Hidden section IDs use <code>pi-webui-side-panel-sections-hidden</code>. The pre-existing expanded/collapsed preference remains intact, so re-showing a section restores its accordion state.</p></article>
+        <article class="card"><span class="badge info">Menu coexistence</span><h3>Preserve specialized actions</h3><p>File and Git row context menus stop propagation and mutually close the section menu. Native link and text-entry context menus remain available.</p></article>
+      </div>
+
+      <figure data-visual-kind="diagram" data-purpose="Explain the section visibility event and persistence flow">
+        <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 920 260">
+          <title id="flow-title">Side-panel visibility interaction flow</title>
+          <desc id="flow-desc">A side-panel right click discovers section records, renders checkable menu items, updates the selected section's hidden state, then stores hidden section IDs in local storage. Startup and storage events restore those IDs.</desc>
+          <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
+          <path class="edge" d="M205 75 H270"/><path class="edge" d="M465 75 H530"/><path class="edge" d="M725 75 H790"/>
+          <path class="edge" d="M835 112 C835 205 660 205 630 155"/>
+          <rect class="node" x="25" y="38" width="180" height="74" rx="12"/><text class="node-text" x="115" y="70">Right-click / Shift+F10</text><text class="node-text" x="115" y="91">on side panel</text>
+          <rect class="node" x="270" y="38" width="195" height="74" rx="12"/><text class="node-text" x="367" y="70">Discover all 11 section</text><text class="node-text" x="367" y="91">records and render menu</text>
+          <rect class="node" x="530" y="38" width="195" height="74" rx="12"/><text class="node-text" x="627" y="70">Toggle section.hidden</text><text class="node-text" x="627" y="91">and ARIA checked state</text>
+          <rect class="node persisted" x="790" y="38" width="105" height="74" rx="12"/><text class="node-text" x="842" y="70">Persist</text><text class="node-text" x="842" y="91">hidden IDs</text>
+          <rect class="node persisted" x="530" y="160" width="195" height="64" rx="12"/><text class="node-text" x="627" y="188">Reload / storage event</text><text class="node-text" x="627" y="207">restores visibility</text>
+        </svg>
+        <figcaption>The menu is generated from the live section registry. Visibility is applied immediately and restored independently from the existing accordion preference.</figcaption>
+      </figure>
+    </section>
+
+    <section id="verification">
+      <h2>Testing and acceptance evidence</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Check</th><th>Result</th><th>What it establishes</th></tr></thead>
+          <tbody>
+            <tr><td><code>node --check public/app.js</code></td><td class="status good">Pass</td><td>The modified client bundle parses successfully.</td></tr>
+            <tr><td><code>node tests/side-panel-context-menu-static.test.mjs</code></td><td class="status good">Pass</td><td>Markup, storage, dynamic section discovery, ARIA, keyboard handling, Git refresh, focus fallback, and styling contracts are present.</td></tr>
+            <tr><td><code>node tests/mobile-static.test.mjs</code></td><td class="status good">Pass</td><td>The menu styling respects existing mobile typography and side-panel contracts.</td></tr>
+            <tr><td><code>npm run check</code></td><td class="status good">Pass · 41 files</td><td>All package syntax checks and the complete test suite pass after accepted review fixes.</td></tr>
+            <tr><td><code>git diff --check</code></td><td class="status good">Pass</td><td>No whitespace errors were introduced in the feature files.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout info"><strong>Repository state note:</strong> <code>pi-package-webui/package-lock.json</code> was already modified before this feature and was intentionally left untouched.</div>
+    </section>
+
+    <section id="reviews">
+      <h2>Independent review quorum and dispositions</h2>
+      <p>Both reviews inspected the integrated implementation from fresh context. The implementation provider was OpenAI; reviewer providers were distinct from it and from each other.</p>
+      <div class="grid">
+        <article class="card"><span class="badge good">PASS</span><h3>Anthropic reviewer</h3><p><strong>Run:</strong> <code>f3371d1e… / child 0</code><br><strong>Model:</strong> Claude Opus 4.8 · high thinking</p><p>No blockers. Four optional notes and one residual test gap were reported.</p></article>
+        <article class="card"><span class="badge good">PASS</span><h3>Google reviewer</h3><p><strong>Run:</strong> <code>f3371d1e… / child 1</code><br><strong>Model:</strong> Gemini 3.1 Pro Preview · high thinking</p><p>No blockers. One minor Git refresh note duplicated an Anthropic finding.</p></article>
+      </div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table>
+          <thead><tr><th>Finding</th><th>Disposition</th><th>Evidence / action</th></tr></thead>
+          <tbody>
+            <tr><td>Pointer-opened menu may not restore focus to a useful element.</td><td class="status good">Accepted · fixed</td><td>The actual active/keyboard trigger is retained; the persistent panel toggle is the fallback.</td></tr>
+            <tr><td>All sections hidden could create a keyboard dead-end.</td><td class="status info">Rejected</td><td>The side-panel header's collapse button remains visible and focusable, and its Context Menu key or Shift+F10 event bubbles to the menu binding.</td></tr>
+            <tr><td>Re-showing an already expanded Git section may display stale deferred content.</td><td class="status good">Accepted · fixed</td><td>Showing an expanded Git section now queues render and repository discovery immediately.</td></tr>
+            <tr><td>Visual heading inside <code>role="menu"</code> is not a menu item.</td><td class="status good">Accepted · fixed</td><td>The heading is explicitly presentational and hidden from the accessibility tree; the menu retains its container label.</td></tr>
+            <tr><td>No live DOM/browser behavioral automation.</td><td class="status warn">Deferred</td><td>The repository currently uses static UI contract tests. Full static and package suites pass; live pointer/focus rendering remains the residual validation gap.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="usage">
+      <h2>Usage, rollout, and residual risks</h2>
+      <ol>
+        <li><strong>Open the side panel.</strong> Right-click a non-editable area. Keyboard users can focus a side-panel control and press the Context Menu key or Shift+F10.</li>
+        <li><strong>Choose visible sections.</strong> Checked entries are shown; selecting an entry toggles it immediately. The menu remains open for multiple changes.</li>
+        <li><strong>Continue normally.</strong> Click elsewhere or press Escape to close the menu. Visibility persists in this browser and synchronizes to other tabs through the storage event.</li>
+      </ol>
+      <div class="grid">
+        <article class="card"><span class="badge good">Rollout</span><h3>No migration</h3><p>The new storage key defaults to an empty hidden list. Existing users therefore keep all sections visible until they choose otherwise.</p></article>
+        <article class="card"><span class="badge warn">Residual risk</span><h3>Browser behavior not visually exercised</h3><p>Viewport clamping, native context-menu preservation, and focus movement are source-verified and review-verified, but not observed in a headless or manual browser session during this run.</p></article>
+        <article class="card"><span class="badge info">Rollback</span><h3>Self-contained removal</h3><p>Rollback consists of removing the context-menu markup/style/handlers and the visibility storage functions. Existing stored hidden IDs become inert and do not affect older code.</p></article>
+      </div>
+    </section>
+
+    <footer>
+      <p><strong>Generated:</strong> 23 July 2026 · <strong>Scope:</strong> <code>pi-package-webui</code> side-panel visibility feature. Evidence comes from the integrated diff, package test output, and the two recorded independent reviews.</p>
+    </footer>
+  </main>
+</body>
+</html>

@@ -959,6 +959,44 @@ body.file-viewer-resizing * {
   text-align: left;
   box-shadow: none;
 }
+.side-panel-context-menu {
+  max-height: calc(100vh - 1rem);
+  max-height: calc(100dvh - 1rem);
+  overflow-y: auto;
+}
+.side-panel-context-menu-label {
+  padding: 0.38rem 0.58rem 0.24rem;
+  color: var(--ctp-subtext);
+  font-size: var(--text-xs);
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.side-panel-context-menu-item {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.48rem;
+}
+.side-panel-context-menu-item::before {
+  content: "";
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid rgba(180, 190, 254, 0.48);
+  border-radius: 0.28rem;
+  color: var(--ctp-crust);
+  background: rgba(var(--ctp-crust-rgb), 0.52);
+  font-size: var(--text-xs);
+  font-weight: 950;
+  line-height: 1;
+}
+.side-panel-context-menu-item[aria-checked="true"]::before {
+  content: "✓";
+  border-color: rgba(148, 226, 213, 0.82);
+  background: var(--ctp-teal);
+}
 body.embedded-split .layout,
 body.embedded-split.side-panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr);

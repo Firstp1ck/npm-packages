@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Implementation, test, and independent-review report for default-expanded directories in the WebUI Git section.">
+  <title>Git Folder Default Expansion — Feature Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: radial-gradient(circle at 8% 4%, rgb(34 96 160 / 24%), transparent 34rem), var(--bg);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section, figure {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgb(24 37 58 / 95%), rgb(18 28 45 / 97%));
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    section { margin-top: 22px; padding: 24px; }
+    h1 { max-width: 860px; margin: .35rem 0 .7rem; font-size: clamp(1.9rem, 5vw, 3rem); line-height: 1.08; }
+    h2 { margin: 0 0 1rem; padding-bottom: .55rem; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin: 0 0 .4rem; font-size: 1.03rem; }
+    p { margin: .45rem 0 1rem; }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    code { color: #cfe7ff; }
+    pre { overflow-x: auto; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--code); white-space: pre-wrap; }
+    .badge { display: inline-flex; padding: .24rem .65rem; border: 1px solid rgb(80 216 144 / 45%); border-radius: 999px; color: var(--green); background: rgb(80 216 144 / 8%); font-size: .82rem; font-weight: 750; }
+    .lead { max-width: 840px; color: var(--muted); font-size: 1.08rem; }
+    .callout { margin-top: 1rem; padding: 14px 16px; border-left: 4px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 7%); }
+    .meta { display: flex; flex-wrap: wrap; gap: .65rem 1rem; margin-top: 1rem; color: var(--muted); font-size: .9rem; }
+    nav { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.1rem; }
+    nav a { padding: .35rem .65rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); text-decoration: none; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .7rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #d7e8fb; background: rgb(101 181 255 / 7%); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .status { font-weight: 760; white-space: nowrap; }
+    .pass { color: var(--green); }
+    .note { color: var(--yellow); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card p:last-child { margin-bottom: 0; }
+    .finding { border-left: 4px solid var(--green); }
+    .risk { border-left: 4px solid var(--yellow); }
+    figure { margin: 18px 0 0; padding: 18px; }
+    figure svg { display: block; width: 100%; height: auto; }
+    figcaption, .small { color: var(--muted); font-size: .9rem; }
+    ul { padding-left: 1.2rem; }
+    li + li { margin-top: .35rem; }
+    footer { margin-top: 24px; color: var(--muted); text-align: center; font-size: .88rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 12px; }
+      header, section { padding: 18px; }
+      th, td { padding: .6rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { color: #152033; background: #fff; }
+      main { width: 100%; margin: 0; }
+      header, section, figure, .card { color: #152033; background: #fff; border-color: #9aa8ba; box-shadow: none; break-inside: avoid; }
+      nav { display: none; }
+      a, code, .pass, .note { color: #124f83; }
+      pre { color: #152033; background: #f4f6f9; border-color: #9aa8ba; }
+      .lead, .meta, .small, figcaption, footer { color: #4f5e71; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="badge">Complete · independently reviewed</span>
+      <h1>Git directories now open expanded at every depth</h1>
+      <p class="lead">When a repository card is opened from a parent workspace such as <code>npm-packages</code>, all directory nodes in the Git Changes and Untracked trees now start expanded. A directory that the user collapses remains collapsed through subsequent in-page rerenders.</p>
+      <div class="callout"><strong>Conclusion:</strong> the feature is implemented by changing only the folder default, reusing the existing override map for manual toggles. Focused tests and all 41 package test files pass; two fresh provider-diverse reviews found no blocker.</div>
+      <div class="meta">
+        <span>Classification: lightweight feature</span>
+        <span>Primary implementation provider: OpenAI</span>
+        <span>Confidence: 97/100</span>
+      </div>
+      <nav aria-label="Report sections">
+        <a href="#overview">Overview</a>
+        <a href="#behavior">Behavior</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#verification">Verification</a>
+        <a href="#reviews">Reviews</a>
+        <a href="#risks">Risks &amp; usage</a>
+      </nav>
+    </header>
+
+    <section id="overview">
+      <h2>Executive overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Decision or evidence</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Default state</td><td><code>renderGitPanelFolder</code> now uses <code>defaultOpen = true</code> for every directory depth.</td><td class="status pass">Passed</td></tr>
+            <tr><td>Manual collapse</td><td>The existing <code>openFolders</code> map stores <code>false</code> as an explicit override and restores it on rerender.</td><td class="status pass">Preserved</td></tr>
+            <tr><td>Override cleanup</td><td>Reopening a folder removes the now-default override; removed repository roots are pruned by existing logic.</td><td class="status pass">Preserved</td></tr>
+            <tr><td>Scope</td><td>One production line and two focused static assertions changed; unrelated dirty-worktree edits were not modified for this request.</td><td class="status pass">Minimal</td></tr>
+            <tr><td>Validation</td><td>Two focused test files and the complete 41-file package test suite passed.</td><td class="status pass">All passed</td></tr>
+            <tr><td>Independent review</td><td>Fresh Anthropic and Google reviewer runs independently inspected the integrated diff and state lifecycle.</td><td class="status pass">Quorum met</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="behavior">
+      <h2>Behavior and state flow</h2>
+      <figure data-visual-kind="diagram" data-purpose="Show how default-open folders and manual collapse overrides interact across rerenders">
+        <svg role="img" aria-labelledby="state-title state-desc" viewBox="0 0 980 260">
+          <title id="state-title">Git folder expansion state flow</title>
+          <desc id="state-desc">A newly rendered folder has no override and opens by default. Collapsing it stores false in the openFolders map. A rerender restores false. Expanding it again matches the default and removes the override.</desc>
+          <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#65b5ff"/></marker></defs>
+          <g fill="#18253a" stroke="#2b3b55" stroke-width="2">
+            <rect x="20" y="76" width="185" height="105" rx="14"/>
+            <rect x="270" y="76" width="185" height="105" rx="14"/>
+            <rect x="520" y="76" width="185" height="105" rx="14"/>
+            <rect x="770" y="76" width="185" height="105" rx="14"/>
+          </g>
+          <g fill="#e8eef8" font-family="system-ui, sans-serif" text-anchor="middle">
+            <text x="112" y="112" font-size="17" font-weight="700">Initial render</text><text x="112" y="139" font-size="14" fill="#a9b7cb">no override</text><text x="112" y="160" font-size="14" fill="#50d890">open = true</text>
+            <text x="362" y="112" font-size="17" font-weight="700">User collapses</text><text x="362" y="139" font-size="14" fill="#a9b7cb">store override</text><text x="362" y="160" font-size="14" fill="#f7c65c">Map[key] = false</text>
+            <text x="612" y="112" font-size="17" font-weight="700">DOM rerender</text><text x="612" y="139" font-size="14" fill="#a9b7cb">override wins</text><text x="612" y="160" font-size="14" fill="#f7c65c">open = false</text>
+            <text x="862" y="112" font-size="17" font-weight="700">User expands</text><text x="862" y="139" font-size="14" fill="#a9b7cb">matches default</text><text x="862" y="160" font-size="14" fill="#50d890">delete override</text>
+          </g>
+          <g fill="none" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"><path d="M205 128 H258"/><path d="M455 128 H508"/><path d="M705 128 H758"/></g>
+        </svg>
+        <figcaption>The existing map already represented deviations from a depth-based default. Making the default universally open preserves the same compact state model: only user-collapsed folders require entries.</figcaption>
+      </figure>
+    </section>
+
+    <section id="implementation">
+      <h2>Implementation map</h2>
+      <div class="grid">
+        <article class="card">
+          <h3><code>public/app.js</code></h3>
+          <p>In <code>renderGitPanelFolder</code>, <code>const defaultOpen = depth === 0</code> became <code>const defaultOpen = true</code>. No new storage or rendering branch was introduced.</p>
+        </article>
+        <article class="card">
+          <h3><code>tests/git-panel-render-stability-static.test.mjs</code></h3>
+          <p>The state-lifecycle assertion now requires all-depth default expansion while retaining checks for override read, write, cleanup, and root pruning.</p>
+        </article>
+        <article class="card">
+          <h3><code>tests/mobile-static.test.mjs</code></h3>
+          <p>The Git-panel contract assertion verifies the default and the manual-collapse override sequence together with the disclosure chevron semantics.</p>
+        </article>
+        <article class="card">
+          <h3>Planning decision</h3>
+          <p>Repository evidence confirmed a single cohesive behavior change with no interface, migration, security, or deployment slice. The preliminary lightweight classification was retained, so no canonical complex-feature plan was required.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="verification">
+      <h2>Testing and acceptance evidence</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Check</th><th>Evidence</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td><code>node tests/mobile-static.test.mjs</code></td><td>Focused Git-panel static contract passed after the test update.</td><td class="status pass">Passed</td></tr>
+            <tr><td><code>node tests/git-panel-render-stability-static.test.mjs</code></td><td>Folder default, override lifecycle, and render-stability checks passed.</td><td class="status pass">Passed</td></tr>
+            <tr><td><code>npm test</code></td><td>All 41 package test files passed. The initial run exposed one stale depth-based assertion; it was updated and the suite was rerun successfully.</td><td class="status pass">Passed</td></tr>
+            <tr><td>Reviewer validation</td><td>The Anthropic reviewer also reported syntax validation and all 41 tests passing; the Google reviewer reported <code>npm run check</code> passing.</td><td class="status pass">Passed</td></tr>
+            <tr><td>Live browser interaction</td><td>No browser automation or manual pixel-level run was performed in this workflow.</td><td class="status note">Not run</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="reviews">
+      <h2>Independent reviews and dispositions</h2>
+      <div class="grid">
+        <article class="card finding">
+          <h3>R1 · Anthropic</h3>
+          <p><strong>Run:</strong> <code>7c8b66e6-db7d-459c-9e7a-f52d24dfaeb6</code>, child 0; <code>anthropic/claude-opus-4-6</code>, high thinking.</p>
+          <p><strong>Verdict:</strong> no blocker. Confirmed the one-line default change, collapse override algebra, root pruning, and focused tests. Confidence 95/100.</p>
+        </article>
+        <article class="card finding">
+          <h3>R2 · Google</h3>
+          <p><strong>Run:</strong> <code>7c8b66e6-db7d-459c-9e7a-f52d24dfaeb6</code>, child 1; <code>google/gemini-3-flash-preview</code>, high thinking.</p>
+          <p><strong>Verdict:</strong> no blocker. Independently confirmed all-depth defaults, rerender persistence, pruning, accessibility fit, and test coverage.</p>
+        </article>
+      </div>
+      <h3 style="margin-top:1.2rem">Finding dispositions</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Finding</th><th>Disposition</th><th>Rationale</th></tr></thead>
+          <tbody>
+            <tr><td>Deep trees render more visible nodes initially.</td><td class="status note">Accepted residual risk</td><td>This is the requested UX behavior; users can collapse noisy branches, and the data was already rendered in the same tree.</td></tr>
+            <tr><td>Folder overrides reset on page reload.</td><td class="status note">Deferred / unchanged</td><td>In-memory lifetime is pre-existing behavior and persistence across reloads was not requested.</td></tr>
+            <tr><td>Overrides for vanished paths can remain while the same root is live.</td><td class="status note">Deferred / bounded</td><td>Existing entries are small booleans, and all entries are pruned when the repository root leaves the live set. Changing path-level pruning would broaden scope.</td></tr>
+            <tr><td>Unrelated side-panel visibility edits appear in the dirty diff.</td><td class="status pass">Excluded from this feature</td><td>Those edits predated this request and were neither authored nor altered as part of the folder-default change.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>Residual risks and usage</h2>
+      <div class="grid">
+        <article class="card risk"><h3>Large Git trees</h3><p>Opening a repository with many nested changed paths can present a taller initial tree. This is intentional; collapse individual branches to retain a compact view during the current page session.</p></article>
+        <article class="card"><h3>Usage</h3><p>Open the Git section, then expand the repository card. Changes and Untracked directory branches should already be open. Click a folder summary to collapse or reopen it.</p></article>
+        <article class="card"><h3>Rollback</h3><p>Restore <code>const defaultOpen = depth === 0</code> and the corresponding two test expectations to return to top-level-only expansion.</p></article>
+      </div>
+      <p class="small">Evidence is based on the repository diff, direct package tests, and two fresh-context independent reviews. The missing browser-level visual run is the only meaningful verification limitation.</p>
+    </section>
+
+    <footer>Generated for <code>@firstpick/pi-package-webui</code> · 2026-07-23</footer>
+  </main>
+</body>
+</html>

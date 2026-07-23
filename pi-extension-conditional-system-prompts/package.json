@@ -1,0 +1,41 @@
+{
+  "name": "@firstpick/pi-extension-conditional-system-prompts",
+  "version": "0.1.0",
+  "description": "Conditionally append platform and enabled-tool system prompts in Pi.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-conditional-system-prompts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "directory": "pi-extension-conditional-system-prompts"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "system-prompt"
+  ],
+  "pi": {
+    "extensions": [
+      "./conditional-system-prompts.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "check": "node --experimental-strip-types --check conditional-system-prompts.ts",
+    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./conditional-system-prompts.ts')\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "files": [
+    "conditional-system-prompts.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

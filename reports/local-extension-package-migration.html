@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Local Pi Extension Package Migration — Completion Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#09111e;--panel:#111d30;--panel2:#17263c;--text:#e8eef8;--muted:#a9b8cc;--line:#2a3d58;--green:#55d991;--yellow:#f6c85f;--red:#ff7474;--blue:#6ab8ff;--code:#07101b;--shadow:0 14px 36px rgb(0 0 0/.24)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 12% 0,#153056 0,transparent 34rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible,summary:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.skip{position:fixed;top:8px;left:8px;transform:translateY(-160%);background:var(--blue);color:#06111e;padding:8px 12px;border-radius:8px;font-weight:800;z-index:5}.skip:focus{transform:none}main{width:min(1140px,calc(100% - 32px));margin:34px auto 64px}header,.section{background:color-mix(in srgb,var(--panel) 95%,transparent);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}header{padding:30px;margin-bottom:18px}.section{padding:24px;margin:18px 0;scroll-margin-top:12px}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(2rem,5vw,3rem);letter-spacing:-.025em;margin-bottom:7px}h2{font-size:1.45rem;border-bottom:1px solid var(--line);padding-bottom:10px}h3{font-size:1.08rem;margin-bottom:6px}p{margin:8px 0 14px}.lead{font-size:1.1rem;max-width:84ch}.muted{color:var(--muted)}nav{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 18px;padding:10px;background:rgb(7 16 27/.72);border:1px solid var(--line);border-radius:12px}nav a{padding:7px 10px;text-decoration:none;border-radius:8px;font-weight:700}nav a:hover{background:rgb(106 184 255/.12%)}.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:.78rem;font-weight:800;letter-spacing:.035em;text-transform:uppercase;margin-bottom:8px}.badge.good{color:var(--green);background:rgb(85 217 145/.13);border:1px solid rgb(85 217 145/.38)}.badge.warn{color:var(--yellow);background:rgb(246 200 95/.13);border:1px solid rgb(246 200 95/.38)}.badge.info{color:var(--blue);background:rgb(106 184 255/.13);border:1px solid rgb(106 184 255/.38)}.good{color:var(--green)}.warn{color:var(--yellow)}.bad{color:var(--red)}.callout{border-left:5px solid var(--green);background:rgb(85 217 145/.08);border-radius:8px;padding:14px 16px;margin:14px 0}.callout.warn{border-left-color:var(--yellow);background:rgb(246 200 95/.08)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.card,.metric,.step{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:16px}.metric strong{display:block;font-size:1.55rem}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:700px}th,td{text-align:left;vertical-align:top;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.83rem;text-transform:uppercase;letter-spacing:.04em}tbody tr:hover{background:rgb(106 184 255/.05)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .38em;border-radius:5px}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto;white-space:pre-wrap;color:#d9e6f7}figure{margin:18px 0}figure svg{display:block;width:100%;height:auto;background:var(--code);border:1px solid var(--line);border-radius:12px}figcaption{color:var(--muted);margin-top:8px;font-size:.92rem}.node{fill:#182c45;stroke:var(--blue);stroke-width:2}.node.good{stroke:var(--green)}.node.warn{stroke:var(--yellow)}.node-text{fill:var(--text);font:650 15px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:var(--muted);stroke-width:2.5;marker-end:url(#arrow)}.edge-label{fill:var(--muted);font:13px system-ui,sans-serif}ol.steps{list-style:none;padding:0;counter-reset:steps}ol.steps>li{counter-increment:steps;margin:14px 0}ol.steps>li:before{content:counter(steps);float:left;display:grid;place-items:center;width:30px;height:30px;margin:1px 12px 0 0;border-radius:50%;background:var(--blue);color:#06111e;font-weight:800}.step{overflow:hidden}details{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}summary{cursor:pointer;color:var(--blue);font-weight:700}footer{color:var(--muted);margin-top:24px;font-size:.9rem}
+    @media(max-width:640px){main{width:min(100% - 18px,1140px);margin-top:10px}header,.section{padding:18px}table{min-width:620px}.node-text{font-size:12px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+    @media print{:root{color-scheme:light}body{background:white;color:#111}main{width:100%;margin:0}header,.section,.card,.metric,.step{box-shadow:none;background:white;color:#111;border-color:#bbb;break-inside:avoid}nav,.skip{display:none!important}pre,code,figure svg{color:#111;background:#f1f3f5;border-color:#bbb}.muted,figcaption,footer{color:#444}a{color:#111;text-decoration:underline}figure{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report content</a>
+<main id="content">
+  <header>
+    <span class="badge good">Integrated · reviewed · package-ready</span>
+    <h1>Local Pi Extension Package Migration</h1>
+    <p class="lead">Completion report for moving four standalone Pi extensions into reusable npm packages, broadening their public documentation, preserving local runtime behavior, and consolidating each implementation with its tests and package metadata.</p>
+    <div class="callout"><strong>Conclusion:</strong> four <code>@firstpick/pi-extension-*</code> packages are npm-ready and active locally through repository-managed symlinks. All 33 package tests, import checks, pack inspections, four publish-readiness checks, runtime resource sync, and the provider-diverse review quorum passed.</div>
+    <p class="muted"><strong>Confidence:</strong> 96/100. No package was published. Existing Pi processes still need <code>/reload</code>. Two dotfiles paths remain tracked as typechanged symlinks until a future explicit Git index/commit operation.</p>
+  </header>
+
+  <nav aria-label="Report sections"><a href="#overview">Overview</a><a href="#architecture">Architecture</a><a href="#packages">Packages</a><a href="#validation">Validation</a><a href="#review">Review</a><a href="#rollout">Rollout</a><a href="#risks">Risks</a></nav>
+
+  <section class="section" id="overview">
+    <h2>Executive overview</h2>
+    <div class="grid" aria-label="Headline metrics">
+      <div class="metric"><span class="badge good">Packages</span><strong>4</strong><span class="muted">Independent installable Pi extension packages.</span></div>
+      <div class="metric"><span class="badge good">Tests</span><strong>33 / 33</strong><span class="muted">Package-local deterministic suites passed.</span></div>
+      <div class="metric"><span class="badge good">Readiness</span><strong>4 / 4</strong><span class="muted">Npm publish dry-runs and metadata checks passed.</span></div>
+      <div class="metric"><span class="badge info">Runtime</span><strong>4 links + 1 wrapper</strong><span class="muted">Canonical sources in this repository.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Completion map</h3>
+    <div class="table-wrap"><table data-overview><thead><tr><th>Area</th><th>Delivered outcome</th><th>Evidence</th><th>Status</th></tr></thead><tbody>
+      <tr><td>Package migration</td><td>Conditional prompts, feature routing, minimum fanout, and Anthropic recovery now have independent npm manifests, docs, licenses, sources, and tests.</td><td>Four new package directories</td><td class="good">Complete</td></tr>
+      <tr><td>Recovery promotion</td><td>Obsolete private recovery installer removed; one package source remains. Discovery now uses explicit, standard-agent, cwd-ancestor, and module-ancestor paths.</td><td>8 recovery tests; source audit</td><td class="good">Complete</td></tr>
+      <tr><td>Runtime migration</td><td>Four former regular extension files now point to package sources. The workflow dev extension keeps a generated compatibility wrapper.</td><td>47/47 sync idempotence; child startup</td><td class="good">Verified</td></tr>
+      <tr><td>Independent review</td><td>Anthropic and Moonshot reviewers inspected the integrated state from fresh context.</td><td>Run <code>0587d315…</code></td><td class="good">Quorum complete</td></tr>
+      <tr><td>Publication</td><td>Dry-run readiness only; no registry mutation or release.</td><td>Four readiness PASS results</td><td class="warn">Not published</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section class="section" id="architecture">
+    <h2>Source-of-truth architecture</h2>
+    <p>The migration separates package source from machine-local runtime discovery. Pi packages own implementation, documentation, tests, and manifest metadata; the development sync script exposes those resources under the agent directory.</p>
+    <figure data-visual-kind="diagram" data-purpose="Show package sources flowing through Pi manifests and the local development sync boundary into runtime discovery">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1080 370">
+        <title id="flow-title">Pi extension package and runtime discovery flow</title>
+        <desc id="flow-desc">Four package directories expose standalone extension files through Pi manifests. The sync script creates four runtime symlinks. A separate local-only workflow test source uses an absolute file URL wrapper because direct symlinking breaks its relative imports. Both paths load into Pi.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b8cc"/></marker></defs>
+        <rect class="node good" x="35" y="48" width="230" height="84" rx="12"/><text class="node-text" x="150" y="82">4 npm package roots</text><text class="node-text" x="150" y="106">source · tests · README</text>
+        <path class="edge" d="M265 90 H345"/>
+        <rect class="node" x="345" y="48" width="190" height="84" rx="12"/><text class="node-text" x="440" y="82">package.json</text><text class="node-text" x="440" y="106">pi.extensions</text>
+        <path class="edge" d="M535 90 H620"/>
+        <rect class="node" x="620" y="48" width="190" height="84" rx="12"/><text class="node-text" x="715" y="82">sync package</text><text class="node-text" x="715" y="106">resources</text>
+        <path class="edge" d="M810 90 H885"/>
+        <rect class="node good" x="885" y="48" width="160" height="84" rx="12"/><text class="node-text" x="965" y="82">4 runtime</text><text class="node-text" x="965" y="106">symlinks</text>
+        <rect class="node" x="345" y="245" width="190" height="84" rx="12"/><text class="node-text" x="440" y="279">Workflow dev</text><text class="node-text" x="440" y="303">extension source</text>
+        <path class="edge" d="M535 287 H620"/>
+        <rect class="node warn" x="620" y="245" width="190" height="84" rx="12"/><text class="node-text" x="715" y="279">Absolute file-URL</text><text class="node-text" x="715" y="303">generated wrapper</text>
+        <path class="edge" d="M965 132 V190 H820"/><path class="edge" d="M810 287 H900 V225"/>
+        <rect class="node good" x="745" y="166" width="220" height="68" rx="12"/><text class="node-text" x="855" y="197">Pi extension loader</text><text class="node-text" x="855" y="219">and child sessions</text>
+      </svg>
+      <figcaption>Four publishable resources use symlinks. The workflow test entry is deliberately not another package: its repository source already belongs to <code>pi-extension-workflows</code>, and the wrapper preserves correct relative-import resolution in Pi/jiti.</figcaption>
+    </figure>
+    <div class="callout warn"><strong>Compatibility finding:</strong> directly symlinking the workflow dev extension caused child startup to fail on <code>../src/errors.ts</code>. The generated wrapper was restored, sync became idempotent again, and the corrected two-reviewer child workflow completed.</div>
+  </section>
+
+  <section class="section" id="packages">
+    <h2>Implementation map</h2>
+    <div class="grid">
+      <article class="card"><span class="badge info">Prompt routing</span><h3><code>@firstpick/pi-extension-conditional-system-prompts</code></h3><p>Appends trusted platform/tool-specific prompt files, preserving chained system prompts. Documents required external files, caching, local trust, and fail-fast behavior.</p><p class="muted">Tests: 4/4</p></article>
+      <article class="card"><span class="badge info">Feature routing</span><h3><code>@firstpick/pi-extension-feature-system-prompt</code></h3><p>Uses the active model in a bounded, tool-free classifier session and injects external feature policy only for classified feature work. Privacy and fallback boundaries are explicit.</p><p class="muted">Tests: 12/12</p></article>
+      <article class="card"><span class="badge info">Delegation guard</span><h3><code>@firstpick/pi-extension-subagent-minimum-fanout</code></h3><p>Enforces zero-or-multiple model delegation for direct, task, chain, dynamic, alias, and scheduled subagent requests while preserving management actions.</p><p class="muted">Tests: 9/9</p></article>
+      <article class="card"><span class="badge info">Recovery</span><h3><code>@firstpick/pi-extension-anthropic-auth-recovery</code></h3><p>Offers confirmed, authenticated, plan-only compatibility recovery. It keeps prompt files private, forbids automatic apply, and requires explicit secure RPC configuration.</p><p class="muted">Tests: 8/8</p></article>
+    </div>
+    <details><summary>Generalization choices</summary><ul><li>Public READMEs lead with reusable behavior, installation, prerequisites, configuration, security/privacy, limitations, and development checks.</li><li>Published package files contain no machine-specific absolute paths or private policy bodies.</li><li>The recovery extension replaced its implicit home-checkout fallback with standard agent paths, explicit environment overrides, and portable ancestor discovery.</li><li>Conditional and feature policies remain external trusted configuration instead of being embedded in public packages.</li></ul></details>
+  </section>
+
+  <section class="section" id="validation">
+    <h2>Testing and acceptance evidence</h2>
+    <div class="table-wrap"><table><thead><tr><th>Check</th><th>Result</th><th>Observed evidence</th></tr></thead><tbody>
+      <tr><td>Package test suites</td><td class="good">PASS</td><td>4 + 12 + 9 + 8 = 33 tests; zero failures.</td></tr>
+      <tr><td>Syntax and import smoke</td><td class="good">PASS</td><td>Every package <code>check</code> and <code>smoke</code> script passed.</td></tr>
+      <tr><td>Npm tarball inspection</td><td class="good">PASS</td><td>Exactly source, README, LICENSE, and package manifest per package; tests excluded.</td></tr>
+      <tr><td>Publish readiness</td><td class="good">PASS</td><td>Four metadata/hardcode/npm-publish dry-run checks passed; auth and registry lookup intentionally skipped.</td></tr>
+      <tr><td>Resource sync</td><td class="good">PASS</td><td>Post-fix dry-run: 47 total extensions, 47 correct, zero linked/relinked/renamed/skipped.</td></tr>
+      <tr><td>Patch lifecycle</td><td class="good">PASS</td><td>Strict extraction, status, and offline verify of the umbrella patch: <code>ok=true</code>, <code>blocked=false</code>, zero writes.</td></tr>
+      <tr><td>Unrelated dirty files</td><td class="good">PASS</td><td>Six recorded SHA-256 hashes remained unchanged; no staged files.</td></tr>
+    </tbody></table></div>
+    <pre><code># Representative local checks
+npm test                       # in each new package
+npm pack --dry-run --json      # exact file-set inspection
+dev/scripts/check-publish-readiness.sh --target &lt;package&gt; --skip-auth --skip-registry
+dev/scripts/sync-pi-package-symlinks.sh --dry-run</code></pre>
+  </section>
+
+  <section class="section" id="review">
+    <h2>Independent review and dispositions</h2>
+    <div class="table-wrap"><table><thead><tr><th>Review/finding</th><th>Provider</th><th>Verdict</th><th>Disposition and evidence</th></tr></thead><tbody>
+      <tr><td>R1 architecture/correctness/security</td><td>Anthropic · Claude Opus 4.8</td><td class="good">ACCEPT</td><td>No blockers. Verified package/runtime migration and wrapper remediation.</td></tr>
+      <tr><td>R2 portability/packaging adversarial audit</td><td>Moonshot AI · Kimi K3</td><td class="good">PASS</td><td>No blockers. Re-ran 33 tests, pack checks, sync checks, wrapper import, and portability scan.</td></tr>
+      <tr><td>Dangling umbrella recovery component</td><td>R1 finding</td><td class="good">Accepted and fixed</td><td>Removed obsolete required patch target; strict status/verify now passes with two remaining components.</td></tr>
+      <tr><td>Tracked absolute dotfiles symlinks</td><td>R1 finding</td><td class="warn">Deferred</td><td>Runtime is correct; untracking requires a deliberate Git index/commit operation. No staging or commit was authorized.</td></tr>
+      <tr><td>Future subagent action-schema drift</td><td>R2 note</td><td class="warn">Accepted residual</td><td>Current aliases are tested; README requires compatibility review after upgrades.</td></tr>
+    </tbody></table></div>
+    <p class="muted">Qualifying review run: <code>0587d315-f471-4b2e-af46-11c43b4a5b2f</code>. The first attempt does not count: both slots failed before child creation due the workflow direct-symlink regression.</p>
+  </section>
+
+  <section class="section" id="rollout">
+    <h2>Rollout and operator actions</h2>
+    <ol class="steps">
+      <li class="step"><h3>Reload the active Pi process</h3><pre><code>/reload</code></pre><p>Future turns then use the package-backed extension sources and restored workflow compatibility wrapper.</p></li>
+      <li class="step"><h3>Keep publication separate</h3><p>The packages are readiness-checked but not published. Use the repository release workflow only under a separate explicit release request.</p></li>
+      <li class="step"><h3>Untrack two dotfiles links before committing that repository</h3><pre><code>git -C ~/.dotfiles rm --cached \
+  .pi/agent/extensions/conditional-system-prompts.ts \
+  .pi/agent/extensions/feature-system-prompt.ts</code></pre><p>The files remain working-tree symlinks and are covered by <code>.gitignore</code>. This command was intentionally not run because it stages index changes.</p></li>
+    </ol>
+    <details><summary>Rollback</summary><p>Remove an affected runtime symlink, restore its previous source from Git or the package source, and reload Pi. Revert migration-owned README/sync/umbrella-patch changes only. No registry rollback is required because nothing was published.</p></details>
+  </section>
+
+  <section class="section" id="risks">
+    <h2>Residual risks and boundaries</h2>
+    <div class="table-wrap"><table><thead><tr><th>Boundary</th><th>Status</th><th>Implication</th></tr></thead><tbody>
+      <tr><td>External <code>APPEND_*.md</code> policies</td><td class="warn">Consumer-owned</td><td>Prompt packages require trusted, locally maintained policy files.</td></tr>
+      <tr><td>Anthropic compatibility patch/runner</td><td class="warn">External prerequisite</td><td>Recovery planning requires separately available patch and <code>patchctl</code> resources.</td></tr>
+      <tr><td>Human slash commands and extension RPC</td><td class="warn">Outside fanout gate</td><td>Minimum fanout governs model-issued <code>subagent</code> tool calls only.</td></tr>
+      <tr><td>Future Pi/subagent schemas</td><td class="warn">Upgrade review</td><td>New execution actions or runtime APIs require test/parity review.</td></tr>
+      <tr><td>Git tracking of two symlinks</td><td class="warn">Deferred</td><td>Run the documented <code>git rm --cached</code> before committing dotfiles.</td></tr>
+      <tr><td>Npm publication</td><td class="good">No side effect</td><td>All checks were dry-run/readiness only.</td></tr>
+    </tbody></table></div>
+    <h3 style="margin-top:22px">Primary evidence</h3>
+    <ul><li><a href="../plans/local-extension-package-migration.md">Canonical plan, validation evidence, reviewer identities, and dispositions</a></li><li><code>/tmp/local-extension-package-migration-w1.md</code> and <code>-w2.md</code> — implementation handoffs</li><li><code>/tmp/local-extension-package-migration-review-anthropic.md</code> and <code>-kimi.md</code> — independent reviews</li><li><code>dev/scripts/sync-pi-package-symlinks.sh</code> — development resource synchronization</li></ul>
+  </section>
+
+  <footer><p><strong>Generated:</strong> 2026-07-23 · <strong>Scope:</strong> local Pi extension package migration · <strong>Plan:</strong> <a href="../plans/local-extension-package-migration.md">plans/local-extension-package-migration.md</a></p></footer>
+</main>
+</body>
+</html>

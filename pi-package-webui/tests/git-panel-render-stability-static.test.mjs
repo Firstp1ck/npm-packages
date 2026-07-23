@@ -19,7 +19,7 @@ const renderContextMeter = functionBody("renderContextMeter");
 const renderWorkspaceDashboard = functionBody("renderWorkspaceDashboard");
 
 assert.match(app, /openFolders: new Map\(\)/, "Git panel state should persist folder toggles");
-assert.match(renderGitPanelFolder, /const defaultOpen = depth === 0;/, "folder rendering should retain depth-based defaults");
+assert.match(renderGitPanelFolder, /const defaultOpen = true;/, "folder rendering should expand every directory depth by default");
 assert.match(renderGitPanelFolder, /details\.open = gitPanelState\.openFolders\.has\(folderKey\) \? gitPanelState\.openFolders\.get\(folderKey\) : defaultOpen;/, "folder rendering should prefer a stored override over its default");
 assert.match(renderGitPanelFolder, /if \(details\.open === defaultOpen\) gitPanelState\.openFolders\.delete\(folderKey\);/, "folder toggles back to the default should remove the override");
 assert.match(renderGitPanelFolder, /else gitPanelState\.openFolders\.set\(folderKey, details\.open\);/, "folder toggles away from the default should store an override");
