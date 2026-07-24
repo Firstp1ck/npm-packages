@@ -71,6 +71,7 @@
   --tooltip-blend-duration: 160ms;
   --tooltip-blend-ease: ease;
   --file-viewer-width: 520px;
+  --side-panel-width: 384px;
 
   /* Tier 1 typography scale: --text-xs is the absolute interface floor. */
   --text-xs: 0.75rem;
@@ -305,7 +306,7 @@ textarea::placeholder { color: rgba(var(--ctp-subtext-rgb), 0.62); }
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, var(--side-panel-width));
   gap: 1rem;
   padding: 1rem;
   width: 100%;
@@ -319,19 +320,19 @@ body.side-panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr);
 }
 body.terminal-split-open .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(20rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(20rem, var(--side-panel-width));
 }
 body.terminal-split-open.side-panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 body.file-viewer-open .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(24rem, var(--file-viewer-width)) minmax(20rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(24rem, var(--file-viewer-width)) minmax(20rem, var(--side-panel-width));
 }
 body.file-viewer-open.side-panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr) minmax(24rem, var(--file-viewer-width));
 }
 body.terminal-split-open.file-viewer-open .layout {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, var(--file-viewer-width)) minmax(20rem, 24rem);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, var(--file-viewer-width)) minmax(20rem, var(--side-panel-width));
 }
 body.terminal-split-open.file-viewer-open.side-panel-collapsed .layout {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(24rem, var(--file-viewer-width));
@@ -741,7 +742,8 @@ body.side-panel-collapsed .terminal-tabs-shell {
   background: var(--panel-gradient);
   box-shadow: 0 1rem 3rem var(--shadow), 0 0 2rem rgba(137, 180, 250, 0.10), inset 0 1px 0 rgba(255,255,255,0.06);
 }
-.file-viewer-resize-handle {
+.file-viewer-resize-handle,
+.side-panel-resize-handle {
   position: absolute;
   top: 50%;
   left: -0.78rem;
@@ -761,7 +763,8 @@ body.side-panel-collapsed .terminal-tabs-shell {
     var(--neon-gradient);
   box-shadow: 0 0 1rem rgba(148, 226, 213, 0.22), 0 0.7rem 1.4rem rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.08);
 }
-.file-viewer-resize-handle::before {
+.file-viewer-resize-handle::before,
+.side-panel-resize-handle::before {
   content: "";
   width: 0.28rem;
   height: 3.1rem;
@@ -771,19 +774,29 @@ body.side-panel-collapsed .terminal-tabs-shell {
 }
 .file-viewer-resize-handle:hover,
 .file-viewer-resize-handle:focus-visible,
-body.file-viewer-resizing .file-viewer-resize-handle {
+.side-panel-resize-handle:hover,
+.side-panel-resize-handle:focus-visible,
+body.file-viewer-resizing .file-viewer-resize-handle,
+body.side-panel-resizing .side-panel-resize-handle {
   border-color: rgba(148, 226, 213, 0.72);
   box-shadow: 0 0 1.35rem rgba(148, 226, 213, 0.34), 0 0.9rem 1.7rem rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.11);
   outline: none;
 }
-.file-viewer-resize-handle[hidden] {
+.file-viewer-resize-handle[hidden],
+.side-panel-resize-handle[hidden] {
   display: none;
 }
-body.file-viewer-resizing {
+body.file-viewer-resizing .layout,
+body.side-panel-resizing .layout {
+  transition: none;
+}
+body.file-viewer-resizing,
+body.side-panel-resizing {
   cursor: col-resize;
   user-select: none;
 }
-body.file-viewer-resizing * {
+body.file-viewer-resizing *,
+body.side-panel-resizing * {
   cursor: col-resize !important;
 }
 .file-viewer-header {
@@ -1022,6 +1035,8 @@ body.embedded-split .side-panel-backdrop {
 .side-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   padding: 0;
 }
@@ -1676,7 +1691,7 @@ body.embedded-split .side-panel-backdrop {
 }
 .file-tree-node {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.18rem;
   align-items: center;
   min-width: 0;
@@ -1686,7 +1701,7 @@ body.embedded-split .side-panel-backdrop {
 }
 .file-tree-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   gap: 0.36rem;
   align-items: center;
   width: 100%;
@@ -1714,7 +1729,14 @@ body.embedded-split .side-panel-backdrop {
   background: rgba(148, 226, 213, 0.18);
   box-shadow: inset 3px 0 0 var(--ctp-teal), 0 0 0 1px rgba(148, 226, 213, 0.10);
 }
-.file-tree-expander,
+.file-tree-expander {
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  min-width: 1rem;
+  color: var(--ctp-teal);
+  pointer-events: none;
+}
 .file-tree-overflow-button {
   display: inline-grid;
   place-items: center;
@@ -1726,8 +1748,6 @@ body.embedded-split .side-panel-backdrop {
   background: transparent;
   box-shadow: none;
 }
-.file-tree-expander:hover,
-.file-tree-expander:focus-visible,
 .file-tree-overflow-button:hover,
 .file-tree-overflow-button:focus-visible {
   color: var(--ctp-teal);
@@ -1735,7 +1755,7 @@ body.embedded-split .side-panel-backdrop {
   background: rgba(148, 226, 213, 0.10);
 }
 .file-tree-expander-spacer {
-  width: 2rem;
+  width: 1rem;
 }
 .file-tree-item.file-tree-draggable {
   cursor: grab;
@@ -7064,6 +7084,24 @@ button.git-workflow-step:hover:not(:disabled) {
   min-height: 1.35rem;
   overflow-wrap: anywhere;
 }
+.message.compact-thinking-aggregate {
+  padding: 0;
+  border-color: rgba(203, 166, 247, 0.34);
+  background: linear-gradient(145deg, rgba(203, 166, 247, 0.11), rgba(var(--ctp-surface-rgb), 0.52));
+}
+.compact-thinking-aggregate .compact-thinking-disclosure {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.compact-thinking-aggregate .compact-thinking-disclosure > summary.message-header::after {
+  color: var(--ctp-mauve);
+  text-shadow: 0 0 0.75rem rgba(203, 166, 247, 0.38);
+}
+.compact-thinking-aggregate .compact-thinking-disclosure > .message-body {
+  border-top-color: rgba(203, 166, 247, 0.16);
+}
 .message.compact-tool-shell {
   display: grid;
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
@@ -10722,7 +10760,8 @@ body.subagent-terminal-active .composer-remote-mic-consent {
     height: calc(var(--visual-viewport-height, 100dvh) - 2rem);
     min-height: 28rem;
   }
-  .file-viewer-resize-handle {
+  .file-viewer-resize-handle,
+  .side-panel-resize-handle {
     display: none;
   }
   .chat { flex-basis: 0; }
@@ -10823,7 +10862,8 @@ body.subagent-terminal-active .composer-remote-mic-consent {
     min-height: 0;
     border-radius: 0;
   }
-  .file-viewer-resize-handle {
+  .file-viewer-resize-handle,
+  .side-panel-resize-handle {
     display: none;
   }
   .file-viewer-header,

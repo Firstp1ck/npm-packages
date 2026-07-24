@@ -1,0 +1,59 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const app = await readFile(join(root, "public", "app.js"), "utf8");
+
+function findFunctionBody(source, name) {
+  const signature = new RegExp(`function\\s+${name}\\s*\\(`, "m");
+  const match = signature.exec(source);
+  assert.ok(match, `${name} should be defined`);
+  let parenDepth = 0;
+  let openBrace = -1;
+  for (let index = match.index + match[0].length - 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "(") parenDepth += 1;
+    else if (char === ")") parenDepth -= 1;
+    else if (char === "{" && parenDepth === 0) {
+      openBrace = index;
+      break;
+    }
+  }
+  assert.notEqual(openBrace, -1, `${name} body should open`);
+  let depth = 0;
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(openBrace + 1, index);
+    }
+  }
+  assert.fail(`${name} body should close`);
+}
+
+const touchStart = findFunctionBody(app, "noteChatTouchStart");
+const awayIntent = findFunctionBody(app, "isChatScrollAwayIntent");
+const noteIntent = findFunctionBody(app, "noteChatUserScrollIntent");
+const syncAutoFollow = findFunctionBody(app, "syncAutoFollowFromChatScroll");
+const updateLatest = findFunctionBody(app, "updateJumpToLatestButton");
+const applyFollow = findFunctionBody(app, "applyChatFollowScroll");
+const resumeFollow = findFunctionBody(app, "resumeChatAutoFollow");
+const forceFollow = findFunctionBody(app, "scrollChatToBottom");
+
+assert.match(awayIntent, /event\?\.type === "wheel"[\s\S]*event\.deltaY < 0/, "wheel-up should be recognized as intent to read earlier output");
+assert.match(touchStart, /touches\?\.\[0\]\?\.clientY[\s\S]*chatLastTouchClientY/, "touch scrolling should capture its starting direction");
+assert.match(awayIntent, /event\?\.type === "touchmove"[\s\S]*clientY > chatLastTouchClientY[\s\S]*return scrollAway/, "downward finger movement should pause follow while upward movement can resume at Latest");
+assert.match(awayIntent, /"ArrowUp"[\s\S]*"Home"[\s\S]*"PageUp"/, "upward keyboard navigation should pause streaming follow");
+assert.match(noteIntent, /autoFollowChat = false;[\s\S]*updateJumpToLatestButton\(\)/, "upward intent should pause follow and reveal Latest before the scroll event fires");
+assert.match(syncAutoFollow, /^\s*const nearBottom[\s\S]*if \(isChatUserScrollAwayIntentActive\(\)\) \{\s*autoFollowChat = false;/, "the near-bottom threshold must not re-enable follow during active upward input");
+assert.match(updateLatest, /hidden = autoFollowChat/, "Latest visibility should reflect paused follow even while still inside the near-bottom threshold");
+assert.doesNotMatch(updateLatest, /isChatNearBottom/, "Latest must not remain hidden solely because the first upward movement is near the bottom");
+assert.match(applyFollow, /if \(!autoFollowChat\)[\s\S]*return;/, "already queued streaming frames must honor the immediate follow pause");
+assert.match(resumeFollow, /chatUserScrollAwayIntentUntil = 0;[\s\S]*autoFollowChat = true;/, "explicit resume should clear stale upward intent before following again");
+assert.match(forceFollow, /if \(force\) resumeChatAutoFollow\(\)/, "Latest and other forced-bottom actions should use the explicit resume path");
+assert.match(app, /addEventListener\("touchstart", noteChatTouchStart[\s\S]*addEventListener\("touchend", clearChatTouchIntent[\s\S]*addEventListener\("touchcancel", clearChatTouchIntent/, "touch direction tracking should be initialized and cleared for each gesture");
+
+console.log("chat-scroll-intent-static.test.mjs passed");

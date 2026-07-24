@@ -420,6 +420,7 @@
 
       <button id="sidePanelBackdrop" class="side-panel-backdrop" type="button" aria-label="Close side panel" hidden></button>
       <aside id="sidePanel" class="side-panel" role="dialog" aria-label="Control Deck">
+        <div id="sidePanelResizeHandle" class="side-panel-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize Control Deck width" tabindex="0" title="Drag to resize Control Deck"></div>
         <div class="side-panel-header">
           <div class="side-panel-heading">
             <div class="side-panel-brand-row">
@@ -571,7 +572,7 @@
                   <div class="control-field">
                     <div class="control-field-header">
                       <label for="fastOutputModeSelect">Fast mode (Experimental)</label>
-                      <span class="control-field-context">Markdown final output and thinking; current tool replaces the previous one</span>
+                      <span class="control-field-context">Markdown final output; live thinking expanded; stored thinking grouped and collapsed</span>
                     </div>
                     <div class="control-action-row">
                       <select id="fastOutputModeSelect" title="Output processing mode" aria-describedby="fastOutputModeStatus">
@@ -1128,6 +1129,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=86"></script>
+    <script type="module" src="/app.js?v=89"></script>
   </body>
 </html>

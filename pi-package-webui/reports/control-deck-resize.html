@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Control Deck Resizing — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220; --panel: #121c2d; --panel-2: #18253a; --text: #e8eef8;
+      --muted: #a9b7cb; --line: #2b3b55; --green: #50d890; --yellow: #f7c65c;
+      --red: #ff7373; --blue: #65b5ff; --code: #07101c; --radius-lg: 16px;
+      --radius-md: 12px; --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link { position: fixed; top: 8px; left: 8px; transform: translateY(-160%); background: var(--blue); color: #06111f; padding: 8px 12px; border-radius: 8px; font-weight: 800; }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+    header { padding: 30px; margin-bottom: 20px; }
+    section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--code); padding: .12em .38em; border-radius: 5px; overflow-wrap: anywhere; }
+    pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; white-space: pre-wrap; }
+    .lead { font-size: 1.1rem; max-width: 82ch; }
+    .muted { color: var(--muted); }
+    .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; margin-bottom: 8px; }
+    .badge.good { color: var(--green); background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { color: var(--yellow); background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.info { color: var(--blue); background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout { border-left: 5px solid var(--green); background: rgb(80 216 144 / 8%); border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+    .callout.warn { border-left-color: var(--yellow); background: rgb(247 198 92 / 8%); color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 16px; }
+    .card strong.metric { display: block; font-size: 1.35rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    ul, ol { padding-left: 1.3rem; }
+    li + li { margin-top: .4rem; }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) { main { width: min(100% - 18px, 1120px); margin-top: 10px; } header, section { padding: 18px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, section, .card { box-shadow: none; background: white; color: #111; border-color: #bbb; break-inside: avoid; }
+      pre, code { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, footer { color: #444; }
+      .skip-link { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#report-content">Skip to report content</a>
+  <main id="report-content">
+    <header>
+      <span class="badge good">Implemented and reviewed</span>
+      <h1>Control Deck resizing</h1>
+      <p class="lead">Implementation report for the lightweight Pi Web UI feature that makes the right-hand Control Deck resizable like the file viewer. Evidence comes from the current repository diff, focused static tests, syntax checks, the full test runner, and independent Anthropic and OpenRouter/xAI reviews.</p>
+      <div class="callout"><strong>Conclusion:</strong> desktop users can drag or keyboard-resize the Control Deck, the selected width persists in browser storage, all desktop layout variants consume that width, and mobile/overlay layouts retain their fixed full-width behavior.</div>
+      <p class="muted"><strong>Confidence: 91/100.</strong> Source, test, and independent-review evidence is strong. Confidence is limited by the absence of a live browser pointer/paint test and one unrelated pre-existing static-test failure.</p>
+    </header>
+
+    <section aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="grid" aria-label="Implementation summary">
+        <article class="card"><span class="badge good">Feature</span><strong class="metric">320 px minimum</strong><span class="muted">Default 384 px, viewport-aware maximum.</span></article>
+        <article class="card"><span class="badge good">Focused tests</span><strong class="metric">4 / 4 passed</strong><span class="muted">Resize-specific static acceptance checks.</span></article>
+        <article class="card"><span class="badge info">Review</span><strong class="metric">2-provider quorum</strong><span class="muted">Anthropic plus OpenRouter/xAI; one supplemental Anthropic validation.</span></article>
+      </div>
+      <h3 style="margin-top:22px">Implementation map</h3>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Implementation</th><th>Status</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td>Interaction</td><td>Pointer capture, drag direction, pointer-up/cancel cleanup, and keyboard Arrow/Home/End controls.</td><td>Verified</td><td><code>public/app.js</code> SidePanelWidth and SidePanelResize functions</td></tr>
+            <tr><td>Layout</td><td><code>--side-panel-width</code> drives normal, split, file-viewer, and combined desktop grid tracks; panel content uses full available width.</td><td>Verified</td><td><code>public/styles.css</code></td></tr>
+            <tr><td>Responsive behavior</td><td>The handle is hidden and resize handlers are gated at the existing 1050 px overlay breakpoint.</td><td>Verified</td><td>CSS media rules and <code>isSidePanelOverlayView()</code></td></tr>
+            <tr><td>Persistence</td><td>Rounded width is stored in <code>pi-webui-side-panel-width</code> and restored at startup.</td><td>Verified</td><td><code>public/app.js</code> and startup assertion</td></tr>
+            <tr><td>Layout transitions</td><td>Opening/closing the file viewer or split view schedules a joint width reclamp after layout.</td><td>Fixed after review</td><td><code>syncResizablePanelWidthsForViewport</code> call sites</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="design-title">
+      <h2 id="design-title">Design and behavior</h2>
+      <div class="grid">
+        <article class="card"><h3>Mouse and touch pointer</h3><p>The separator sits on the Control Deck's left edge. Moving it left increases width; moving it right decreases width. Pointer capture and window-level move/up/cancel listeners preserve cleanup when the pointer leaves the handle.</p></article>
+        <article class="card"><h3>Keyboard</h3><p>When the separator is focused, Left/Right resize by 24 px, Shift modifies the step to 80 px, Home selects the minimum, and End selects the current viewport-aware maximum.</p></article>
+        <article class="card"><h3>Dynamic content</h3><p>The desktop grid column uses the CSS custom property while <code>.side-panel</code> remains <code>width: 100%</code> with <code>min-width: 0</code>. Existing controls, lists, and responsive rows therefore reflow within the selected track rather than retaining a fixed 24 rem width.</p></article>
+        <article class="card"><h3>Mobile and narrow screens</h3><p>At the established overlay breakpoint, the Control Deck remains a fixed inset drawer. Both resize handles are hidden, and JavaScript refuses pointer or keyboard resize starts.</p></article>
+      </div>
+      <div class="callout warn"><strong>Usage:</strong> On desktop, drag the colored grip on the Control Deck's left edge. The width is saved automatically in this browser. Keyboard users can focus the grip with Tab and use Left, Right, Home, End, and Shift-modified arrows.</div>
+    </section>
+
+    <section aria-labelledby="review-title">
+      <h2 id="review-title">Independent review and dispositions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Reviewer</th><th>Finding</th><th>Disposition</th><th>Resolution</th></tr></thead>
+          <tbody>
+            <tr><td>Anthropic Claude Opus 4.8<br><span class="muted">Run 8a8b4acb… child 0</span></td><td>No blockers. Noted unused container declaration and preference-restoration parity behavior.</td><td>Cleanup accepted; parity note deferred</td><td>Unused declaration removed. Preference behavior remains aligned with the existing file viewer.</td></tr>
+            <tr><td>OpenRouter / xAI Grok 4.5<br><span class="muted">Run b1cb7f3a… child 0</span></td><td>Medium: large side-panel widths were not reclamped when file viewer or split visibility changed.</td><td>Accepted</td><td>Joint width synchronization is now scheduled from file-viewer open/close and split-view updates; regression assertions added.</td></tr>
+            <tr><td>Anthropic Claude Sonnet 5<br><span class="muted">Run b1cb7f3a… child 1</span></td><td>No correctness blocker. Noted that handler wiring lacked a direct assertion and browser-level interaction remains untested.</td><td>Test gap accepted; browser test deferred</td><td>Pointerdown and keydown wiring is now asserted. Live browser automation remains a residual risk.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details><summary>Reviewer qualification note</summary><p>The qualifying independent quorum uses provider families distinct from the OpenAI implementation session and from each other: direct Anthropic and OpenRouter/xAI. The first OpenRouter attempt failed only because it omitted a runtime-specific structured acceptance report; it produced no substantive review and was replaced.</p></details>
+    </section>
+
+    <section aria-labelledby="validation-title">
+      <h2 id="validation-title">Validation evidence</h2>
+      <div class="grid">
+        <article class="card"><span class="badge good">Passed</span><h3>Focused feature suite</h3><pre><code>node --test tests/side-panel-resize-static.test.mjs
+# 4 tests passed</code></pre></article>
+        <article class="card"><span class="badge good">Passed</span><h3>Syntax and diff hygiene</h3><pre><code>node --check public/app.js
+node --check public/service-worker.js
+git diff --check</code></pre></article>
+        <article class="card"><span class="badge good">Passed</span><h3>Cache-busting contract</h3><pre><code>node tests/fast-mode-client-static.test.mjs
+# passed</code></pre></article>
+      </div>
+      <div class="callout warn"><strong>Full-suite limitation:</strong> <code>npm test</code> completed with 1 of 49 test files failing. The failure is the pre-existing <code>mobile-static.test.mjs</code> typography-floor assertion against an unchanged <code>font-size: 0.72rem</code> rule; reviewers independently confirmed it also fails at the current HEAD without this feature. All resize-specific tests pass.</div>
+    </section>
+
+    <section aria-labelledby="files-title">
+      <h2 id="files-title">Implementation files and residual risks</h2>
+      <ul>
+        <li><code>public/index.html</code> — accessible separator and app cache-buster.</li>
+        <li><code>public/styles.css</code> — width custom property, grid tracks, shared handle styles, resizing cursor/transition behavior, and responsive hiding.</li>
+        <li><code>public/app.js</code> — width bounds, persistence, pointer/keyboard handlers, viewport synchronization, and event bindings.</li>
+        <li><code>public/service-worker.js</code> — PWA cache identity bump.</li>
+        <li><code>tests/side-panel-resize-static.test.mjs</code> — focused feature acceptance checks.</li>
+        <li><code>tests/mobile-static.test.mjs</code> and <code>tests/fast-mode-client-static.test.mjs</code> — startup and cache-version contract updates.</li>
+      </ul>
+      <h3>Residual risks</h3>
+      <ul>
+        <li>No real-browser drag, keyboard, computed-layout, or breakpoint paint test was run; current evidence is static plus call-graph reasoning.</li>
+        <li>Viewport constraint changes may reduce the applied width for the current page session rather than restoring a previously larger preference immediately, matching existing file-viewer behavior.</li>
+        <li>The repository was already dirty with unrelated feature work. This implementation avoided reverting or rewriting those changes.</li>
+      </ul>
+      <p class="muted">Classification: lightweight. The work is a localized UI interaction and layout change with one focused implementation slice, no API or data migration, and no deployment architecture change; therefore no complex-feature canonical plan was created.</p>
+    </section>
+
+    <footer><p><strong>Generated:</strong> 24 July 2026 · <strong>Scope:</strong> Control Deck width resizing in <code>pi-package-webui</code>.</p></footer>
+  </main>
+</body>
+</html>

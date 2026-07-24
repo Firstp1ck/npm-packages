@@ -233,6 +233,7 @@ const elements = {
   fileSelectionSendButton: $("#fileSelectionSendButton"),
   fileContextMenu: $("#fileContextMenu"),
   sidePanelContextMenu: $("#sidePanelContextMenu"),
+  sidePanelResizeHandle: $("#sidePanelResizeHandle"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
   sidePanelBackdrop: $("#sidePanelBackdrop"),
@@ -375,6 +376,7 @@ let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
+let sidePanelResizeState = null;
 let fileTreeSearchTimer = null;
 let fileTreeSearchRequestSerial = 0;
 let tabActivities = new Map();
@@ -594,6 +596,8 @@ let liveTodoProgressPendingText = "";
 let liveTodoProgressPendingTabId = null;
 let lastChatProgrammaticScrollAt = 0;
 let chatUserScrollIntentUntil = 0;
+let chatUserScrollAwayIntentUntil = 0;
+let chatLastTouchClientY = null;
 let mobileFooterExpanded = false;
 let footerModelPickerOpen = false;
 let footerThinkingPickerOpen = false;
@@ -760,6 +764,9 @@ const WORKSPACE_DASHBOARD_STORAGE_KEY = "pi-webui-workspace-dashboard-collapsed"
 const FILE_VIEWER_WIDTH_STORAGE_KEY = "pi-webui-file-viewer-width";
 const FILE_VIEWER_WIDTH_DEFAULT_PX = 520;
 const FILE_VIEWER_WIDTH_MIN_PX = 384;
+const SIDE_PANEL_WIDTH_STORAGE_KEY = "pi-webui-side-panel-width";
+const SIDE_PANEL_WIDTH_DEFAULT_PX = 384;
+const SIDE_PANEL_WIDTH_MIN_PX = 320;
 const FILE_VIEWER_CONTEXT_RADIUS_LINES = 6;
 const FILE_TREE_ROOT_PATH = "";
 const FILE_TREE_DRAG_MIME = "application/x-pi-webui-file-path";
@@ -850,6 +857,7 @@ const featureCategoryByTab = new Map();
 const widgets = new Map();
 const widgetsByTab = new Map();
 const todoProgressWidgetExpandedByTab = new Map();
+const compactThinkingDisclosureStateByTab = new Map();
 const todoProgressGoalByTab = new Map();
 const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
@@ -3097,6 +3105,8 @@ function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false }
   elements.toggleSidePanelButton.setAttribute("aria-label", collapsed ? "Expand side panel" : "Collapse side panel");
   elements.sidePanelExpandButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
   syncMobileSidePanelState(collapsed);
+  updateSidePanelResizeHandle();
+  requestAnimationFrame(syncResizablePanelWidthsForViewport);
   if (collapsed) closeSidePanelContextMenu({ returnFocus: false });
 
   if (!collapsed && focusPanel && isSidePanelOverlayView()) {
@@ -6571,17 +6581,10 @@ function fileTreeOverflowButton(entry) {
   return button;
 }
 
-function fileTreeExpander(entry, expanded = false, { search = false } = {}) {
-  const button = make("button", "file-tree-expander", expanded ? "▾" : "▸");
-  button.type = "button";
-  button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${entry.name || fileDisplayName(entry.path)}`);
-  button.setAttribute("aria-expanded", expanded ? "true" : "false");
-  button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    if (search) revealFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
-    else toggleFileTreeDirectory(entry.path).catch((error) => addEvent(error.message || String(error), "error"));
-  });
-  return button;
+function fileTreeExpander(expanded = false) {
+  const arrow = make("span", "file-tree-expander", expanded ? "▾" : "▸");
+  arrow.setAttribute("aria-hidden", "true");
+  return arrow;
 }
 
 function appendFileSearchEntry(parent, entry) {
@@ -6598,6 +6601,10 @@ function appendFileSearchEntry(parent, entry) {
   button.style.setProperty("--file-tree-depth", "0");
   button.setAttribute("role", "treeitem");
   button.setAttribute("aria-selected", fileTreeState.selectedPath === path ? "true" : "false");
+  if (isDirectory) {
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", `Expand ${entry.name || fileDisplayName(path)}`);
+  }
   button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   const label = make("span", "file-tree-search-label");
   label.append(
@@ -6605,6 +6612,7 @@ function appendFileSearchEntry(parent, entry) {
     make("span", "file-tree-search-path", path || "."),
   );
   button.append(
+    isDirectory ? fileTreeExpander(false) : make("span", "file-tree-expander-spacer"),
     make("span", "file-tree-icon", fileEntryIcon(entry)),
     label,
   );
@@ -6616,11 +6624,11 @@ function appendFileSearchEntry(parent, entry) {
   button.addEventListener("click", () => {
     fileTreeState.selectedPath = path;
     if (entry.type === "file") openFileInViewer(path);
-    else renderFileTree();
+    else revealFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
   bindFileTreeDragAndDrop(button, item, entry);
-  item.append(isDirectory ? fileTreeExpander(entry, false, { search: true }) : make("span", "file-tree-expander-spacer"), button, fileTreeOverflowButton(entry));
+  item.append(button, fileTreeOverflowButton(entry));
   parent.append(item);
 }
 
@@ -6663,9 +6671,13 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   button.style.setProperty("--file-tree-depth", String(depth));
   button.setAttribute("role", "treeitem");
   button.setAttribute("aria-selected", fileTreeState.selectedPath === path ? "true" : "false");
-  if (isDirectory) button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  if (isDirectory) {
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${entry.name || fileDisplayName(path)}`);
+  }
   button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   button.append(
+    isDirectory ? fileTreeExpander(expanded) : make("span", "file-tree-expander-spacer"),
     make("span", `file-tree-icon ${isDirectory && expanded ? "expanded" : ""}`, loading ? "…" : fileEntryIcon(entry)),
     make("span", "file-tree-name", entry.name || fileDisplayName(path)),
   );
@@ -6676,11 +6688,11 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   button.addEventListener("click", () => {
     fileTreeState.selectedPath = path;
     if (entry.type === "file") openFileInViewer(path);
-    else renderFileTree();
+    else toggleFileTreeDirectory(path).catch((error) => addEvent(error.message || String(error), "error"));
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
   bindFileTreeDragAndDrop(button, item, entry);
-  item.append(isDirectory ? fileTreeExpander(entry, expanded) : make("span", "file-tree-expander-spacer"), button, fileTreeOverflowButton(entry));
+  item.append(button, fileTreeOverflowButton(entry));
   if (isDirectory && expanded) {
     const children = fileTreeState.entriesByPath.get(path) || [];
     const childList = make("ul", "file-tree-list");
@@ -7283,6 +7295,133 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
   await moveFileTreeEntryToDestination(entry, destinationPath, { confirmMove: true });
 }
 
+function readStoredSidePanelWidth() {
+  try {
+    const width = Number.parseFloat(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY) || "");
+    return Number.isFinite(width) && width >= SIDE_PANEL_WIDTH_MIN_PX ? width : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSidePanelWidth(width) {
+  try {
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch {
+    // Ignore storage failures; resizing should still work for this page load.
+  }
+}
+
+function sidePanelMaxWidth() {
+  const layout = document.querySelector(".layout");
+  const layoutRect = layout?.getBoundingClientRect?.();
+  const layoutWidth = layoutRect?.width || window.innerWidth || SIDE_PANEL_WIDTH_DEFAULT_PX;
+  const layoutStyle = layout ? getComputedStyle(layout) : null;
+  const gap = Number.parseFloat(layoutStyle?.columnGap || layoutStyle?.gap || "0") || 0;
+  const horizontalPadding = (Number.parseFloat(layoutStyle?.paddingLeft || "0") || 0) + (Number.parseFloat(layoutStyle?.paddingRight || "0") || 0);
+  const contentWidth = Math.max(0, layoutWidth - horizontalPadding);
+  const fileViewerVisible = !!activeFileViewer && elements.fileViewerPane && getComputedStyle(elements.fileViewerPane).display !== "none";
+  const fileViewerWidth = fileViewerVisible ? elements.fileViewerPane.getBoundingClientRect().width : 0;
+  const splitOpen = document.body.classList.contains("terminal-split-open");
+  const primaryMinWidth = splitOpen ? 560 : 320;
+  const otherColumnCount = 1 + (splitOpen ? 1 : 0) + (fileViewerVisible ? 1 : 0);
+  const available = contentWidth - fileViewerWidth - primaryMinWidth - (gap * otherColumnCount);
+  return Math.max(SIDE_PANEL_WIDTH_MIN_PX, Math.min(Math.floor(contentWidth * 0.72), Math.floor(available)));
+}
+
+function clampSidePanelWidth(width) {
+  const number = Number(width);
+  const max = sidePanelMaxWidth();
+  const fallback = readStoredSidePanelWidth() || SIDE_PANEL_WIDTH_DEFAULT_PX;
+  return Math.max(SIDE_PANEL_WIDTH_MIN_PX, Math.min(max, Number.isFinite(number) ? number : fallback));
+}
+
+function currentSidePanelWidth() {
+  const width = elements.sidePanel?.getBoundingClientRect?.().width;
+  return Number.isFinite(width) && width > 0 ? width : readStoredSidePanelWidth() || SIDE_PANEL_WIDTH_DEFAULT_PX;
+}
+
+function updateSidePanelResizeHandle(width = currentSidePanelWidth()) {
+  const handle = elements.sidePanelResizeHandle;
+  if (!handle) return;
+  const resizeAvailable = !isSidePanelOverlayView() && !document.body.classList.contains("side-panel-collapsed");
+  handle.hidden = !resizeAvailable;
+  handle.setAttribute("aria-valuemin", String(SIDE_PANEL_WIDTH_MIN_PX));
+  handle.setAttribute("aria-valuemax", String(sidePanelMaxWidth()));
+  handle.setAttribute("aria-valuenow", String(Math.round(width)));
+  handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
+}
+
+function applySidePanelWidth(width, { persist = false } = {}) {
+  const clamped = clampSidePanelWidth(width);
+  document.documentElement.style.setProperty("--side-panel-width", `${Math.round(clamped)}px`);
+  updateSidePanelResizeHandle(clamped);
+  if (persist) persistSidePanelWidth(clamped);
+  return clamped;
+}
+
+function restoreSidePanelWidthPreference() {
+  const width = readStoredSidePanelWidth();
+  if (width) document.documentElement.style.setProperty("--side-panel-width", `${Math.round(width)}px`);
+  if (!isSidePanelOverlayView()) applySidePanelWidth(width || SIDE_PANEL_WIDTH_DEFAULT_PX);
+  else updateSidePanelResizeHandle(width || SIDE_PANEL_WIDTH_DEFAULT_PX);
+}
+
+function beginSidePanelResize(event) {
+  if (isSidePanelOverlayView() || document.body.classList.contains("side-panel-collapsed")) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  const startWidth = currentSidePanelWidth();
+  sidePanelResizeState = { pointerId: event.pointerId, startX: event.clientX, startWidth, width: startWidth };
+  document.body.classList.add("side-panel-resizing");
+  elements.sidePanelResizeHandle?.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", updateSidePanelResize, { passive: false });
+  window.addEventListener("pointerup", finishSidePanelResize, { passive: false });
+  window.addEventListener("pointercancel", finishSidePanelResize, { passive: false });
+}
+
+function updateSidePanelResize(event) {
+  const state = sidePanelResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault();
+  state.width = applySidePanelWidth(state.startWidth + (state.startX - event.clientX));
+}
+
+function finishSidePanelResize(event) {
+  const state = sidePanelResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault?.();
+  elements.sidePanelResizeHandle?.releasePointerCapture?.(state.pointerId);
+  window.removeEventListener("pointermove", updateSidePanelResize);
+  window.removeEventListener("pointerup", finishSidePanelResize);
+  window.removeEventListener("pointercancel", finishSidePanelResize);
+  document.body.classList.remove("side-panel-resizing");
+  applySidePanelWidth(state.width, { persist: true });
+  sidePanelResizeState = null;
+}
+
+function handleSidePanelResizeKeydown(event) {
+  if (isSidePanelOverlayView() || document.body.classList.contains("side-panel-collapsed")) return;
+  const step = event.shiftKey ? 80 : 24;
+  const current = currentSidePanelWidth();
+  let next = current;
+  if (event.key === "ArrowLeft") next = current + step;
+  else if (event.key === "ArrowRight") next = current - step;
+  else if (event.key === "Home") next = SIDE_PANEL_WIDTH_MIN_PX;
+  else if (event.key === "End") next = sidePanelMaxWidth();
+  else return;
+  event.preventDefault();
+  applySidePanelWidth(next, { persist: true });
+}
+
+function syncSidePanelWidthForViewport() {
+  if (isSidePanelOverlayView() || document.body.classList.contains("side-panel-collapsed")) {
+    updateSidePanelResizeHandle();
+    return;
+  }
+  applySidePanelWidth(currentSidePanelWidth());
+}
+
 function readStoredFileViewerWidth() {
   try {
     const width = Number.parseFloat(localStorage.getItem(FILE_VIEWER_WIDTH_STORAGE_KEY) || "");
@@ -7411,6 +7550,11 @@ function syncFileViewerWidthForViewport() {
   applyFileViewerWidth(currentFileViewerWidth());
 }
 
+function syncResizablePanelWidthsForViewport() {
+  syncSidePanelWidthForViewport();
+  syncFileViewerWidthForViewport();
+}
+
 async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
   if (!entry) return;
   const path = normalizeFileTreePath(entry.path || "");
@@ -7441,6 +7585,7 @@ function updateFileViewerUi() {
   const open = !!activeFileViewer;
   document.body.classList.toggle("file-viewer-open", open);
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
+  requestAnimationFrame(syncResizablePanelWidthsForViewport);
   updateFileViewerResizeHandle();
   if (!open) return;
   if (!isSidePanelOverlayView()) applyFileViewerWidth(currentFileViewerWidth());
@@ -7607,6 +7752,7 @@ function closeFileViewer() {
   document.body.classList.remove("file-viewer-open");
   updateFileViewerResizeHandle();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
+  requestAnimationFrame(syncResizablePanelWidthsForViewport);
   if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.dataset.path = "";
   if (elements.fileViewerEditor) {
     elements.fileViewerEditor.value = "";
@@ -7795,6 +7941,7 @@ function syncTabMetadata(nextTabs = []) {
       workflowInspectorMinimizedByTab.delete(tabId);
       workflowSubprocessMinimizedByTab.delete(tabId);
       workflowOverlayMinimizedByTab.delete(tabId);
+      compactThinkingDisclosureStateByTab.delete(tabId);
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
@@ -9354,6 +9501,7 @@ function updateTerminalSplitUi() {
   const canShowSplit = !!tab && !embeddedSplitMode && !isSidePanelOverlayView();
   document.body.classList.toggle("terminal-split-open", canShowSplit);
   if (elements.terminalSplitShell) elements.terminalSplitShell.hidden = !canShowSplit;
+  requestAnimationFrame(syncResizablePanelWidthsForViewport);
   if (elements.splitTabButton) {
     elements.splitTabButton.disabled = embeddedSplitMode || isSidePanelOverlayView() || !activeTab();
     elements.splitTabButton.setAttribute("aria-pressed", canShowSplit ? "true" : "false");
@@ -24088,11 +24236,42 @@ function renderCompactTranscriptBody(body, message) {
   return true;
 }
 
+function compactThinkingDisclosureExpanded(key, defaultExpanded = false) {
+  if (!key) return !!defaultExpanded;
+  const disclosureState = compactThinkingDisclosureStateByTab.get(activeTabId || "default");
+  return disclosureState?.has(key) ? disclosureState.get(key) === true : !!defaultExpanded;
+}
+
+function setCompactThinkingDisclosureExpanded(key, expanded, defaultExpanded = false) {
+  if (!key) return;
+  const tabId = activeTabId || "default";
+  let disclosureState = compactThinkingDisclosureStateByTab.get(tabId);
+  if (expanded === defaultExpanded) {
+    disclosureState?.delete(key);
+    if (disclosureState?.size === 0) compactThinkingDisclosureStateByTab.delete(tabId);
+    return;
+  }
+  if (!disclosureState) {
+    disclosureState = new Map();
+    compactThinkingDisclosureStateByTab.set(tabId, disclosureState);
+  }
+  disclosureState.set(key, !!expanded);
+}
+
+function clearCompactThinkingDisclosureState(key) {
+  if (!key) return;
+  const tabId = activeTabId || "default";
+  const disclosureState = compactThinkingDisclosureStateByTab.get(tabId);
+  disclosureState?.delete(key);
+  if (disclosureState?.size === 0) compactThinkingDisclosureStateByTab.delete(tabId);
+}
+
 function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "" } = {}) {
   const role = String(message.role || "message");
   const safeRole = role.replace(/[^a-z0-9_-]/gi, "");
   const compactTranscript = compactOutputActive() && !streaming;
-  const bubble = make("article", `message ${safeRole}${message.level ? ` ${message.level}` : ""}${streaming ? " streaming" : ""}${animateEntry ? " action-enter" : ""}${compactTranscript ? " compact-transcript-output" : ""}`);
+  const compactThinkingAggregate = compactOutputActive() && message.role === "thinking" && message.compactThinkingAggregate === true;
+  const bubble = make("article", `message ${safeRole}${message.level ? ` ${message.level}` : ""}${streaming ? " streaming" : ""}${animateEntry ? " action-enter" : ""}${compactTranscript ? " compact-transcript-output" : ""}${compactThinkingAggregate ? " compact-thinking-aggregate" : ""}`);
   applyChatEventMetadata(bubble, message);
   if (message.role === "toolExecution") applyToolExecutionBubbleState(bubble, message);
   if (!transient && messageIndex >= 0) {
@@ -24100,7 +24279,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
     if (role === "user") bubble.dataset.userPrompt = "true";
   }
   if (itemKey) bubble.dataset.itemKey = itemKey;
-  const isCollapsibleOutput = !streaming && (message.role === "toolResult" || message.role === "bashExecution" || message.role === "compactionSummary");
+  const isCollapsibleOutput = compactThinkingAggregate || (!streaming && (message.role === "toolResult" || message.role === "bashExecution" || message.role === "compactionSummary"));
 
   const hideMessageHeader = message.role === "assistant" && !isCollapsibleOutput;
   if (hideMessageHeader) bubble.setAttribute("aria-label", messageTitle(message));
@@ -24129,12 +24308,16 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   } else if (message.role === "assistantEvent") {
     appendText(body, typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? {}, null, 2), "code-block");
   } else {
-    renderContent(body, message.content, { markdown: message.role === "assistant" });
+    renderContent(body, message.content, { markdown: message.role === "assistant" || message.role === "custom" });
   }
 
   if (isCollapsibleOutput) {
-    const details = make("details", "message-collapse");
-    if (shouldOpenMessageCollapseByDefault(message)) details.open = true;
+    const details = make("details", `message-collapse${compactThinkingAggregate ? " compact-thinking-disclosure" : ""}`);
+    if (compactThinkingAggregate) {
+      const defaultExpanded = message.compactThinkingDefaultExpanded === true;
+      details.open = compactThinkingDisclosureExpanded(message.compactThinkingKey, defaultExpanded);
+      if (message.compactThinkingKey) details.addEventListener("toggle", () => setCompactThinkingDisclosureExpanded(message.compactThinkingKey, details.open, defaultExpanded));
+    } else if (shouldOpenMessageCollapseByDefault(message)) details.open = true;
     details.append(header, body);
     bubble.append(details);
     if (message.role === "toolResult" && !message.isError) {
@@ -24177,6 +24360,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
   }
 
   let finalOutput = null;
+  const compactTranscript = compactOutputActive();
   const displayMessages = assistantDisplayMessages(message);
   displayMessages.forEach((displayMessage) => {
     let transcriptMessage = displayMessage;
@@ -24196,7 +24380,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
         live: !!liveRun && !result,
       };
     }
-    if (compactOutputActive() && !["assistant", "thinking"].includes(transcriptMessage.role)) return;
+    if (compactTranscript && transcriptMessage.role !== "assistant") return;
     if (transcriptMessage.role === "thinking" && !thinkingOutputVisible) return;
     const created = appendMessage(transcriptMessage, {
       streaming: false,
@@ -24473,14 +24657,86 @@ function rememberActionEntries(items) {
   actionEntryAnimationPrimedTabs.add(activeTabId);
 }
 
-function orderedTranscriptItems() {
+function compactThinkingSegments(message) {
+  if (!thinkingOutputVisible) return [];
+  if (message?.role === "thinking") {
+    const thinking = visibleThinkingText(message.thinking || textFromContent(message.content));
+    return thinking ? [thinking] : [];
+  }
+  if (message?.role !== "assistant") return [];
+  return assistantDisplayMessages(message)
+    .filter((displayMessage) => displayMessage.role === "thinking")
+    .map((displayMessage) => visibleThinkingText(displayMessage.thinking || textFromContent(displayMessage.content)))
+    .filter(Boolean);
+}
+
+function compactAssistantHasFinalOutput(message) {
+  return message?.role === "assistant" && assistantDisplayMessages(message).some((displayMessage) => displayMessage.role === "assistant");
+}
+
+function compactStoredTranscriptItems() {
   const items = [];
+  let pendingThinking = null;
+
+  const flushThinking = () => {
+    if (!pendingThinking?.segments.length) return;
+    const segmentCount = pendingThinking.segments.length;
+    const title = segmentCount === 1 ? "thinking" : `thinking (${segmentCount} segments)`;
+    items.push({
+      message: {
+        role: "thinking",
+        title,
+        timestamp: pendingThinking.timestamp,
+        content: pendingThinking.segments.join("\n\n"),
+        thinking: pendingThinking.segments.join("\n\n"),
+        compactThinkingAggregate: true,
+        compactThinkingKey: `turn:${pendingThinking.firstIndex}`,
+      },
+      messageIndex: -1,
+      transient: false,
+      timestampMs: pendingThinking.timestampMs,
+      order: pendingThinking.lastIndex - 0.5,
+      transcriptKey: `compact-thinking:${pendingThinking.firstIndex}`,
+    });
+    pendingThinking = null;
+  };
+
+  latestMessages.forEach((message, index) => {
+    if (message?.role === "user") flushThinking();
+
+    const thinkingSegments = compactThinkingSegments(message);
+    if (thinkingSegments.length) {
+      if (!pendingThinking) {
+        pendingThinking = {
+          segments: [],
+          firstIndex: index,
+          lastIndex: index,
+          timestamp: message.timestamp,
+          timestampMs: messageTimestampMs(message),
+        };
+      }
+      pendingThinking.segments.push(...thinkingSegments);
+      pendingThinking.lastIndex = index;
+      pendingThinking.timestamp = message.timestamp;
+      pendingThinking.timestampMs = messageTimestampMs(message);
+    }
+
+    if (message?.role === "thinking" || ["toolCall", "toolExecution", "toolResult", "assistantEvent"].includes(message?.role)) return;
+    if (message?.role === "assistant" && !compactAssistantHasFinalOutput(message)) return;
+    if (message?.role === "assistant") flushThinking();
+    items.push({ message, messageIndex: index, transient: false, timestampMs: messageTimestampMs(message), order: index });
+  });
+  flushThinking();
+  return items;
+}
+
+function orderedTranscriptItems() {
+  const items = compactOutputActive() ? compactStoredTranscriptItems() : [];
   const assistantToolCallIds = buildAssistantToolCallIdSet(latestMessages);
   const toolResults = buildToolResultMap(latestMessages);
-  latestMessages.forEach((message, index) => {
+  if (!compactOutputActive()) latestMessages.forEach((message, index) => {
     const resultId = message?.role === "toolResult" ? toolResultCallId(message) : "";
     if (resultId && assistantToolCallIds.has(resultId)) return;
-    if (compactOutputActive() && ["toolCall", "toolExecution", "toolResult", "assistantEvent"].includes(message?.role)) return;
     items.push({ message, messageIndex: index, transient: false, timestampMs: messageTimestampMs(message), order: index });
   });
   transientMessages.forEach((message, index) => {
@@ -24510,6 +24766,7 @@ function transcriptRenderEpoch() {
 }
 
 function transcriptItemKey(item) {
+  if (item.transcriptKey) return item.transcriptKey;
   if (!item.transient) return `m:${item.messageIndex}`;
   if (item.messageIndex >= 0) return `t:${item.messageIndex}`;
   return `live:${item.message?.toolCallId || `o${item.order}`}`;
@@ -24802,16 +25059,49 @@ function isChatNearBottom() {
 }
 
 function updateJumpToLatestButton() {
-  elements.jumpToLatestButton.hidden = autoFollowChat || isChatNearBottom();
+  elements.jumpToLatestButton.hidden = autoFollowChat;
+}
+
+function noteChatTouchStart(event) {
+  const clientY = Number(event?.touches?.[0]?.clientY);
+  chatLastTouchClientY = Number.isFinite(clientY) ? clientY : null;
+}
+
+function clearChatTouchIntent() {
+  chatLastTouchClientY = null;
+}
+
+function isChatScrollAwayIntent(event) {
+  if (event?.type === "wheel") return event.deltaY < 0;
+  if (event?.type === "touchmove") {
+    const clientY = Number(event?.touches?.[0]?.clientY);
+    const scrollAway = !Number.isFinite(clientY) || chatLastTouchClientY === null || clientY > chatLastTouchClientY;
+    if (Number.isFinite(clientY)) chatLastTouchClientY = clientY;
+    return scrollAway;
+  }
+  if (event?.type !== "keydown") return false;
+  return event.key === "ArrowUp" || event.key === "Home" || event.key === "PageUp" || (event.key === " " && event.shiftKey);
 }
 
 function noteChatUserScrollIntent(event) {
   if (event?.type === "wheel" && event.deltaY >= 0 && autoFollowChat) return;
-  chatUserScrollIntentUntil = performance.now() + CHAT_USER_SCROLL_INTENT_MS;
+  const now = performance.now();
+  chatUserScrollIntentUntil = now + CHAT_USER_SCROLL_INTENT_MS;
+  if (!isChatScrollAwayIntent(event)) {
+    chatUserScrollAwayIntentUntil = 0;
+    return;
+  }
+  chatUserScrollAwayIntentUntil = now + CHAT_USER_SCROLL_INTENT_MS;
+  autoFollowChat = false;
+  updateJumpToLatestButton();
 }
 
 function isChatUserScrollIntentActive() {
   return performance.now() <= chatUserScrollIntentUntil;
+}
+
+function isChatUserScrollAwayIntentActive() {
+  return performance.now() <= chatUserScrollAwayIntentUntil;
 }
 
 function setChatScrollTopInstant(top) {
@@ -24848,17 +25138,24 @@ function scheduleChatFollowScroll({ settle = true } = {}) {
   }, CHAT_FOLLOW_SETTLE_DELAY_MS);
 }
 
+function resumeChatAutoFollow() {
+  chatUserScrollAwayIntentUntil = 0;
+  autoFollowChat = true;
+}
+
 function scrollChatToBottom({ force = false } = {}) {
   if (deferChatFollowScrollDuringPointerActivation({ force })) return;
   if (deferChatFollowScrollDuringInteractiveDropdown({ force })) return;
-  if (force) autoFollowChat = true;
+  if (force) resumeChatAutoFollow();
   scheduleChatFollowScroll();
 }
 
 function syncAutoFollowFromChatScroll() {
   const nearBottom = isChatNearBottom();
   const recentProgrammaticScroll = performance.now() - lastChatProgrammaticScrollAt <= CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
-  if (nearBottom || isChatUserScrollIntentActive() || !autoFollowChat || !recentProgrammaticScroll) {
+  if (isChatUserScrollAwayIntentActive()) {
+    autoFollowChat = false;
+  } else if (nearBottom || isChatUserScrollIntentActive() || !autoFollowChat || !recentProgrammaticScroll) {
     autoFollowChat = nearBottom;
   } else {
     scheduleChatFollowScroll();
@@ -24874,7 +25171,6 @@ function jumpToLatest() {
 
 function syncMobileChatToBottomForInput() {
   if (!isMobileView()) return;
-  autoFollowChat = true;
   scrollChatToBottom({ force: true });
   requestAnimationFrame(() => scrollChatToBottom({ force: true }));
   setTimeout(() => scrollChatToBottom({ force: true }), 140);
@@ -26148,7 +26444,7 @@ async function openNativeSettingsDialog() {
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
     doubleEscape: nativeSettingSelect("Double-escape action", settings.doubleEscapeAction || doubleEscapeAction, SETTINGS_DOUBLE_ESCAPE_OPTIONS, "Action when pressing Escape twice with an empty composer.", { label: "browser", tone: "browser" }),
     treeFilter: nativeSettingSelect("Tree filter mode", settings.treeFilterMode || treeFilterMode, SETTINGS_TREE_FILTER_OPTIONS, "Default filter when opening /tree.", { label: "browser", tone: "browser" }),
-    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Fast mode preserves Markdown formatting for final output and thinking while showing only the current tool status transiently, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
+    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Fast mode preserves Markdown final output, keeps live thinking expanded, groups stored thinking in one collapsed disclosure per turn, shows only the current tool status transiently, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
     autoResizeImages: nativeSettingToggle("Auto-resize images", settings.autoResizeImages !== false, "Resize large images to 2000x2000 max for better model compatibility.", { label: "reload", tone: "reload" }),
     blockImages: nativeSettingToggle("Block images", settings.blockImages === true, "Prevent images from being sent to LLM providers.", { label: "reload", tone: "reload" }),
     showImages: nativeSettingToggle("Show terminal images", settings.showImages !== false, "Native TUI inline image rendering preference.", { label: "TUI", tone: "tui" }),
@@ -27254,6 +27550,7 @@ function clearCompactToolShells() {
 function resetCompactLiveOutput({ remove = true } = {}) {
   compactLiveScheduler.cancel();
   compactLiveState = createFastOutputLiveState();
+  clearCompactThinkingDisclosureState("live");
   if (remove) {
     removeCompactLiveBubble(compactTextBubble);
     removeCompactLiveBubble(compactThinkingBubble);
@@ -27280,7 +27577,7 @@ function ensureCompactTextBubble() {
 function ensureCompactThinkingBubble() {
   if (!thinkingOutputVisible) return false;
   if (compactThinkingBubble?.parentElement === elements.chat && compactThinkingNode) return true;
-  const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "thinking", title: "thinking (live)", timestamp: Date.now(), content: "", compactThinkingAggregate: true, compactThinkingKey: "live", compactThinkingDefaultExpanded: true }, { streaming: true });
   compactThinkingBubble = created.bubble;
   compactThinkingBubble.classList.add("compact-live-output");
   compactThinkingNode = make("div", "markdown-body thinking-text compact-live-thinking");
@@ -29493,7 +29790,7 @@ async function runUserBashCommand(parsed, { usesPromptInput = false, targetTabId
   if (!targetTabId || !parsed?.command) return;
   const tabContext = activeTabContext(targetTabId);
   const { command, excludeFromContext } = parsed;
-  autoFollowChat = true;
+  resumeChatAutoFollow();
   setComposerActionsOpen(false);
   hideCommandSuggestions();
   userBashByTab.set(targetTabId, { command, excludeFromContext, startedAt: Date.now() });
@@ -29591,7 +29888,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   const targetWasBusy = targetWasStreaming || targetWasCompacting;
   const busyBehavior = normalizeBusyPromptBehavior(busyPromptBehavior);
   const startsRun = kind === "prompt" && !targetWasBusy;
-  autoFollowChat = true;
+  resumeChatAutoFollow();
   updateJumpToLatestButton();
   setComposerActionsOpen(false);
   if (startsRun) {
@@ -31343,7 +31640,10 @@ bindSidePanelContextMenu();
 elements.stickyUserPromptButton?.addEventListener("click", jumpToStickyUserPrompt);
 elements.jumpToLatestButton.addEventListener("click", jumpToLatest);
 elements.chat.addEventListener("wheel", noteChatUserScrollIntent, { passive: true });
+elements.chat.addEventListener("touchstart", noteChatTouchStart, { passive: true });
 elements.chat.addEventListener("touchmove", noteChatUserScrollIntent, { passive: true });
+elements.chat.addEventListener("touchend", clearChatTouchIntent, { passive: true });
+elements.chat.addEventListener("touchcancel", clearChatTouchIntent, { passive: true });
 elements.chat.addEventListener("keydown", (event) => {
   if (CHAT_SCROLL_KEYS.has(event.key)) noteChatUserScrollIntent(event);
 }, { passive: true });
@@ -31602,7 +31902,7 @@ window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
 });
-window.addEventListener("resize", syncFileViewerWidthForViewport, { passive: true });
+window.addEventListener("resize", syncResizablePanelWidthsForViewport, { passive: true });
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (event.defaultPrevented) return;
@@ -31808,6 +32108,8 @@ elements.fileContextMenu?.addEventListener("click", (event) => {
   else if (action === "delete") deleteFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
 });
 elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(currentFileViewerPath()));
+elements.sidePanelResizeHandle?.addEventListener("pointerdown", beginSidePanelResize);
+elements.sidePanelResizeHandle?.addEventListener("keydown", handleSidePanelResizeKeydown);
 elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewerResize);
 elements.fileViewerResizeHandle?.addEventListener("keydown", handleFileViewerResizeKeydown);
 elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
@@ -31948,6 +32250,7 @@ elements.promptInput.addEventListener("blur", () => {
 
 installModalPrimitives();
 resizePromptInput();
+restoreSidePanelWidthPreference();
 restoreFileViewerWidthPreference();
 focusPromptInput({ defer: true });
 restoreStoredSkillUsage();

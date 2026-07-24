@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Implementation and verification report for the Pi WebUI Files-sidepanel combined directory expansion button.">
+  <title>Files Directory Combined Button — Feature Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 10;
+      transform: translateY(-160%);
+      padding: 8px 12px;
+      color: #06111f;
+      background: var(--blue);
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section {
+      margin: 18px 0;
+      padding: 24px;
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    h1, h2, h3 { margin-top: 0; line-height: 1.25; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; font-size: 1.45rem; border-bottom: 1px solid var(--line); }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code { padding: .12em .38em; background: var(--code); border-radius: 5px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .lead { max-width: 82ch; font-size: 1.1rem; }
+    .muted { color: var(--muted); }
+    .badge {
+      display: inline-block;
+      margin-bottom: 8px;
+      padding: 3px 9px;
+      border: 1px solid rgb(101 181 255 / 38%);
+      border-radius: 999px;
+      color: var(--blue);
+      background: rgb(101 181 255 / 14%);
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+    }
+    .badge.good { color: var(--green); border-color: rgb(80 216 144 / 38%); background: rgb(80 216 144 / 14%); }
+    .badge.warn { color: var(--yellow); border-color: rgb(247 198 92 / 38%); background: rgb(247 198 92 / 14%); }
+    .callout {
+      margin: 14px 0;
+      padding: 14px 16px;
+      border-left: 5px solid var(--green);
+      border-radius: 8px;
+      background: rgb(80 216 144 / 8%);
+    }
+    .callout.warn { border-left-color: var(--yellow); background: rgb(247 198 92 / 8%); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card {
+      padding: 16px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; letter-spacing: .04em; text-transform: uppercase; }
+    .pass { color: var(--green); font-weight: 750; }
+    .note { color: var(--yellow); font-weight: 750; }
+    figure { margin: 18px 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    figcaption { margin-top: 8px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node.action { stroke: var(--green); }
+    .node-text { fill: var(--text); font: 650 15px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrowhead); }
+    footer { margin-top: 24px; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, section { padding: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { color: #111; background: white; }
+      main { width: 100%; margin: 0; }
+      header, section, .card { color: #111; background: white; border-color: #bbb; box-shadow: none; break-inside: avoid; }
+      code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+      .skip-link { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#report-content">Skip to report content</a>
+  <main id="report-content">
+    <header>
+      <span class="badge good">Lightweight feature · verified</span>
+      <h1>Files directory rows now use one expansion button</h1>
+      <p class="lead">This report covers the scoped Pi WebUI change that places each directory arrow and directory label inside one accessible Files-sidepanel button. It is grounded in the current source diff, focused checks, and two provider-diverse independent reviews.</p>
+      <div class="callout"><strong>Conclusion:</strong> clicking the arrow, directory icon, or directory label now invokes the same row button and toggles that directory. File opening, search reveal, overflow actions, context menus, drag-and-drop, and tree keyboard semantics remain wired.</div>
+      <p class="muted"><strong>Classification:</strong> lightweight. The evidence shows one bounded client-side rendering/interaction slice with matching CSS and static-test updates; there is no new API contract, migration, security boundary, dependency, or rollout mechanism. A canonical complex-feature plan was therefore not required.</p>
+      <p class="muted"><strong>Confidence:</strong> 94/100. Source structure, syntax, focused assertions, Git diff hygiene, and two independent reviews agree. Confidence is below 100 because no browser-level click simulation was run and the package-wide static test stops on an unrelated baseline typography rule.</p>
+    </header>
+
+    <section aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Implemented behavior</th><th>Evidence</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Directory control</td><td>The disclosure arrow is an <code>aria-hidden</code> span inside the row's <code>button.file-tree-item</code>.</td><td><code>fileTreeExpander()</code>, <code>appendFileTreeEntry()</code></td><td class="pass">Passed</td></tr>
+            <tr><td>Expansion behavior</td><td>The directory row click calls <code>toggleFileTreeDirectory(path)</code>; search results call <code>revealFileTreeEntry(entry)</code>.</td><td><code>public/app.js</code> focused source assertions</td><td class="pass">Passed</td></tr>
+            <tr><td>Layout</td><td>The row grid now contains the combined main button and the independent overflow button; arrow alignment moved inside the main button.</td><td><code>public/styles.css</code></td><td class="pass">Passed</td></tr>
+            <tr><td>Regression coverage</td><td>Four static assertions lock the combined DOM shape, click handlers, search behavior, and grid contract.</td><td><code>tests/mobile-static.test.mjs</code></td><td class="pass">Passed</td></tr>
+            <tr><td>Full static suite</td><td>The run reaches an existing baseline failure at <code>styles.css:7141</code>: <code>font-size: 0.72rem</code> violates the test's 0.75rem floor.</td><td>The same rule exists in <code>HEAD</code>; it is outside this feature's hunks.</td><td class="note">Unrelated blocker</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="design-title">
+      <h2 id="design-title">Design and interaction flow</h2>
+      <div class="grid">
+        <article class="card"><span class="badge good">Single target</span><h3>One accessible action</h3><p>The row button owns <code>role="treeitem"</code>, <code>aria-selected</code>, and—on directories—<code>aria-expanded</code> plus an Expand/Collapse accessible label. The arrow is decorative to assistive technology.</p></article>
+        <article class="card"><span class="badge">Preserved sibling</span><h3>Overflow stays separate</h3><p>The ellipsis action remains a sibling button with its own event handling, so combining the directory row does not nest buttons or absorb menu actions.</p></article>
+        <article class="card"><span class="badge">Existing state path</span><h3>No new state model</h3><p>The change reuses <code>fileTreeState.expanded</code>, <code>toggleFileTreeDirectory()</code>, and <code>revealFileTreeEntry()</code>. Only the click target and DOM composition changed.</p></article>
+      </div>
+      <figure data-visual-kind="diagram" data-purpose="Show how any click within the combined directory button reaches the existing expansion state transition">
+        <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 900 270">
+          <title id="flow-title">Combined directory button interaction flow</title>
+          <desc id="flow-desc">The arrow, directory icon, and directory label are children of one row button. Activating that button calls the existing directory toggle, updates expanded state, and rerenders the row with the corresponding arrow and ARIA state.</desc>
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker>
+          </defs>
+          <rect class="node" x="35" y="80" width="210" height="105" rx="14"/>
+          <text class="node-text" x="140" y="115">▸  DIR  directory-name</text>
+          <text class="node-text" x="140" y="145">one row button</text>
+          <text class="node-text" x="140" y="168">arrow is decorative</text>
+          <path class="edge" d="M245 132 H345"/>
+          <rect class="node action" x="345" y="90" width="220" height="85" rx="14"/>
+          <text class="node-text" x="455" y="125">toggleFileTreeDirectory</text>
+          <text class="node-text" x="455" y="151">existing state transition</text>
+          <path class="edge" d="M565 132 H665"/>
+          <rect class="node" x="665" y="80" width="200" height="105" rx="14"/>
+          <text class="node-text" x="765" y="115">▾  DIR  directory-name</text>
+          <text class="node-text" x="765" y="145">rerendered button</text>
+          <text class="node-text" x="765" y="168">aria-expanded=true</text>
+        </svg>
+        <figcaption>The implementation changes the event target, not the underlying expansion state machine. Search-result directory buttons follow the parallel reveal path.</figcaption>
+      </figure>
+    </section>
+
+    <section aria-labelledby="implementation-title">
+      <h2 id="implementation-title">Implementation map</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Changed symbols/selectors</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>public/app.js</code></td><td><code>fileTreeExpander</code>, <code>appendFileSearchEntry</code>, <code>appendFileTreeEntry</code></td><td>Render the arrow as a decorative child, move it inside the row button, put directory ARIA state on that button, and route directory clicks to existing expansion/reveal functions.</td></tr>
+            <tr><td><code>public/styles.css</code></td><td><code>.file-tree-node</code>, <code>.file-tree-item</code>, <code>.file-tree-expander</code>, <code>.file-tree-expander-spacer</code></td><td>Match the two-action row structure and align arrow, icon, label, badges, and file metadata within the combined button.</td></tr>
+            <tr><td><code>tests/mobile-static.test.mjs</code></td><td>Four focused assertions near the existing file-tree checks</td><td>Prevent restoration of a separate arrow button and verify normal-tree, search-result, and CSS layout wiring.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="validation-title">
+      <h2 id="validation-title">Testing and acceptance evidence</h2>
+      <div class="grid">
+        <article class="card"><span class="badge good">Passed</span><h3>JavaScript syntax</h3><p><code>node --check public/app.js</code> completed without errors.</p></article>
+        <article class="card"><span class="badge good">Passed</span><h3>Focused feature assertions</h3><p>A standalone Node assertion run verified all four source and CSS contracts; the same assertions also passed before the full static test reached its unrelated baseline failure.</p></article>
+        <article class="card"><span class="badge good">Passed</span><h3>Diff hygiene</h3><p><code>git diff --check</code> completed successfully. The feature's hunks were independently isolated from concurrent unrelated workspace changes.</p></article>
+        <article class="card"><span class="badge warn">Not run</span><h3>Browser interaction</h3><p>No browser automation or manual pointer/keyboard pass was available in this task. Source-level behavior is strongly corroborated but not visually exercised here.</p></article>
+      </div>
+      <div class="callout warn"><strong>Suite limitation:</strong> <code>node tests/mobile-static.test.mjs</code> stops at its interface-font floor assertion because <code>public/styles.css</code> contains <code>font-size: 0.72rem</code>. A direct <code>git show HEAD:pi-package-webui/public/styles.css</code> check confirms that rule is present in the baseline at line 7102, so it is not caused by this feature.</div>
+    </section>
+
+    <section aria-labelledby="reviews-title">
+      <h2 id="reviews-title">Independent review quorum and dispositions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Reviewer run</th><th>Model/provider</th><th>Result</th><th>Findings</th><th>Disposition</th></tr></thead>
+          <tbody>
+            <tr><td><code>b80af389…</code>, child <code>files-directory-button-anthropic</code></td><td>Anthropic <code>claude-sonnet-5</code>, high thinking</td><td class="pass">PASS</td><td>No blocker. Notes: static rather than DOM-level tests; minor accessible-name/status nuance; search-result Expand wording remains approximate.</td><td><strong>Deferred / unchanged.</strong> Verified as non-blocking and either consistent with repository test conventions or pre-existing behavior. No scope-expanding fix justified.</td></tr>
+            <tr><td><code>eff5d92c…</code>, child <code>files-directory-button-qwen</code></td><td>OpenRouter Qwen <code>qwen3.7-plus</code>, high thinking</td><td class="pass">PASS</td><td>No blocker. Confirmed DOM structure, ARIA, click paths, preserved interactions, syntax, focused assertions, and unrelated suite blocker.</td><td><strong>Accepted as verification.</strong> No corrective finding to implement.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">The qualifying reviewers are provider-distinct from each other and from the OpenAI implementation session. Two additional attempts (Gemini review and Mistral acceptance review) failed their execution gates and were excluded from the quorum.</p>
+    </section>
+
+    <section aria-labelledby="usage-title">
+      <h2 id="usage-title">Usage, rollout, and residual risk</h2>
+      <div class="grid">
+        <article class="card"><h3>Use</h3><p>Open the sidepanel's Files section, then click a directory's arrow, icon, or name. The directory should expand; clicking the same row again should collapse it. The ellipsis remains a separate actions button.</p></article>
+        <article class="card"><h3>Rollout</h3><p>No migration, storage reset, server restart contract, or API change is required. The updated client assets take effect through the package's normal WebUI asset delivery and cache/version workflow.</p></article>
+        <article class="card"><h3>Residual risk</h3><p>Low. The main unverified dimension is browser-rendered behavior under pointer and keyboard input. The preserved existing functions and two reviews reduce—but do not eliminate—that risk.</p></article>
+      </div>
+    </section>
+
+    <footer>
+      <p><strong>Scope:</strong> Files-sidepanel directory row composition and expansion behavior only. Generated 2026-07-24 from repository source, local command evidence, baseline comparison, and independent review artifacts.</p>
+    </footer>
+  </main>
+</body>
+</html>

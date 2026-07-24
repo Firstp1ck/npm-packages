@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Custom message Markdown rendering — completion report</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#121c2d; --panel-2:#18253a; --text:#e8eef8; --muted:#a9b7cb; --line:#2b3b55; --green:#50d890; --yellow:#f7c65c; --red:#ff7373; --blue:#65b5ff; --code:#07101c; --radius-lg:16px; --radius-md:12px; --shadow:0 14px 36px rgb(0 0 0 / 22%); }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin:0; background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg); color:var(--text); font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    a { color:var(--blue); }
+    a:focus-visible, summary:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+    .skip { position:absolute; left:10px; top:-80px; padding:8px 12px; background:var(--blue); color:#06111f; border-radius:8px; font-weight:800; }
+    .skip:focus { top:10px; }
+    main { width:min(1120px,calc(100% - 32px)); margin:36px auto 64px; }
+    header, section { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:var(--radius-lg); box-shadow:var(--shadow); }
+    header { padding:30px; margin-bottom:20px; }
+    section { padding:24px; margin:18px 0; }
+    h1,h2,h3 { line-height:1.25; margin-top:0; }
+    h1 { font-size:clamp(1.9rem,5vw,3rem); margin-bottom:8px; letter-spacing:-.025em; }
+    h2 { font-size:1.45rem; border-bottom:1px solid var(--line); padding-bottom:10px; }
+    h3 { font-size:1.08rem; margin-bottom:6px; }
+    .lead { font-size:1.1rem; max-width:80ch; }
+    .muted { color:var(--muted); }
+    .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:.78rem; font-weight:750; letter-spacing:.035em; text-transform:uppercase; margin-bottom:8px; }
+    .good { color:var(--green); }
+    .warn { color:var(--yellow); }
+    .info { color:var(--blue); }
+    .badge.good { background:rgb(80 216 144 / 14%); border:1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background:rgb(247 198 92 / 14%); border:1px solid rgb(247 198 92 / 38%); }
+    .badge.info { background:rgb(101 181 255 / 14%); border:1px solid rgb(101 181 255 / 38%); }
+    .callout { border-left:5px solid var(--green); background:rgb(80 216 144 / 8%); border-radius:8px; padding:14px 16px; margin:14px 0; }
+    .callout.warn { border-left-color:var(--yellow); background:rgb(247 198 92 / 8%); color:var(--text); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+    .card { background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius-md); padding:16px; }
+    .card strong { display:block; font-size:1.3rem; }
+    .table-wrap { overflow-x:auto; border-radius:10px; }
+    table { width:100%; border-collapse:collapse; min-width:620px; }
+    th,td { text-align:left; vertical-align:top; padding:11px 9px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-size:.86rem; text-transform:uppercase; letter-spacing:.04em; }
+    code,pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    code { background:var(--code); padding:.12em .38em; border-radius:5px; }
+    pre { background:var(--code); border:1px solid var(--line); border-radius:10px; padding:14px; overflow-x:auto; white-space:pre-wrap; }
+    details { border-top:1px solid var(--line); padding-top:10px; margin-top:10px; }
+    summary { cursor:pointer; color:var(--blue); font-weight:700; }
+    footer { color:var(--muted); margin-top:24px; font-size:.9rem; }
+    @media (max-width:620px) { main { width:min(100% - 18px,1120px); margin-top:10px; } header,section { padding:18px; } }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; transition:none !important; } }
+    @media print { :root { color-scheme:light; } body { background:white; color:#111; } main { width:100%; margin:0; } header,section,.card { box-shadow:none; background:white; color:#111; border-color:#bbb; break-inside:avoid; } pre,code { color:#111; background:#f1f3f5; border-color:#bbb; } .muted,footer { color:#444; } a { color:#111; text-decoration:underline; } }
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to report content</a>
+<main id="content">
+  <header>
+    <span class="badge good">Completed lightweight feature</span>
+    <h1>Custom output now renders as Markdown</h1>
+    <p class="lead">Completion evidence for the Pi WebUI change that routes messages with <code>role: "custom"</code> through the existing, safe Markdown renderer.</p>
+    <div class="callout"><strong>Conclusion:</strong> The implementation is minimal, targeted checks pass, and two independent provider families approved the integrated behavior with no blocking findings.</div>
+    <p class="muted"><strong>Confidence:</strong> 96/100. The routing and inherited renderer behavior are verified; confidence is reduced only because the broad static suite is currently blocked by an unrelated dirty-tree CSS assertion.</p>
+  </header>
+
+  <section aria-labelledby="overview-title">
+    <h2 id="overview-title">Overview</h2>
+    <div class="grid" aria-label="Headline evidence">
+      <div class="card"><span class="badge good">Implementation</span><strong>1 routing line</strong><span class="muted">No new parser or dependency.</span></div>
+      <div class="card"><span class="badge good">Review</span><strong>2 approvals</strong><span class="muted">Anthropic and Google reviewer families.</span></div>
+      <div class="card"><span class="badge info">Validation</span><strong>3 focused checks</strong><span class="muted">Syntax, static regression, and diff hygiene.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Completion map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Outcome</th><th>Evidence</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Rendering</td><td>Custom message text uses Markdown.</td><td><code>public/app.js</code> generic message-body fallback</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Compatibility</td><td>Assistant and role-specific paths remain unchanged.</td><td>Single Boolean extension to the existing option</td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Security</td><td>No new HTML sink; existing DOM construction and strict Mermaid policy are reused.</td><td><code>renderContent</code>, <code>appendMarkdown</code>, <code>securityLevel: "strict"</code></td><td><span class="good">Verified</span></td></tr>
+          <tr><td>Testing</td><td>Focused routing regression passes.</td><td><code>tests/custom-message-markdown-static.test.mjs</code></td><td><span class="good">Passed</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="design-title">
+    <h2 id="design-title">Design and implementation</h2>
+    <p>Pi's documented session format represents extension-injected messages as <code>role: "custom"</code>, with either a string or structured text/image content array. The WebUI already rendered assistant content as Markdown through <code>renderContent</code>. The change extends only that opt-in condition:</p>
+    <pre><code>renderContent(body, message.content, {
+  markdown: message.role === "assistant" || message.role === "custom"
+});</code></pre>
+    <div class="grid">
+      <article class="card"><h3>String content</h3><p>Flows to <code>appendMarkdown</code> after transcript-progress stripping.</p></article>
+      <article class="card"><h3>Structured content</h3><p>Every <code>type: "text"</code> part uses the same Markdown path; image parts retain existing image rendering.</p></article>
+      <article class="card"><h3>Unknown roles</h3><p>Continue to default to plain text, preserving the existing fail-safe behavior.</p></article>
+    </div>
+  </section>
+
+  <section aria-labelledby="validation-title">
+    <h2 id="validation-title">Testing and acceptance evidence</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>node --check public/app.js</code></td><td class="good">Passed</td><td>Frontend syntax validity</td></tr>
+          <tr><td><code>node --check tests/custom-message-markdown-static.test.mjs</code></td><td class="good">Passed</td><td>Test syntax validity</td></tr>
+          <tr><td><code>node tests/custom-message-markdown-static.test.mjs</code></td><td class="good">Passed</td><td>Role-routing regression</td></tr>
+          <tr><td><code>git diff --check</code> on scoped files</td><td class="good">Passed</td><td>Whitespace and patch hygiene</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warn"><strong>Suite limitation:</strong> <code>tests/mobile-static.test.mjs</code> currently stops at an unrelated existing CSS font-floor assertion in the dirty working tree. This feature's dedicated test is independent and passes.</div>
+  </section>
+
+  <section aria-labelledby="review-title">
+    <h2 id="review-title">Independent review quorum and dispositions</h2>
+    <div class="grid">
+      <article class="card"><span class="badge good">Pass</span><h3>Anthropic Claude</h3><p>Run <code>cb0551ce-78bd-40bd-956e-4591874b8cf2</code>. Found no blocker; requested follow-up verification of structured content and escaping.</p></article>
+      <article class="card"><span class="badge good">Approved</span><h3>Google Gemini</h3><p>Resumed run <code>bd99f360</code>. Independently confirmed semantics, string/array handling, safe DOM construction, and the passing test.</p></article>
+    </div>
+    <div class="table-wrap" style="margin-top:16px">
+      <table>
+        <thead><tr><th>Reviewer item</th><th>Disposition</th><th>Rationale</th></tr></thead>
+        <tbody>
+          <tr><td>Structured custom content required verification.</td><td><code>rejected</code> as residual risk after verification</td><td>The array branch applies Markdown to text parts and preserves image handling; reviewer B independently confirmed it.</td></tr>
+          <tr><td>Markdown/XSS behavior required verification.</td><td><code>rejected</code> as residual risk after verification</td><td>The inherited renderer builds text/DOM nodes and strict Mermaid output; this change introduces no sink.</td></tr>
+          <tr><td>Static check does not execute a browser DOM.</td><td><code>deferred</code>, low risk</td><td>The new behavior reuses the established assistant renderer. Add a DOM integration test if rendering is later modularized.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="usage-title">
+    <h2 id="usage-title">Usage, rollout, and rollback</h2>
+    <p>No user configuration or migration is required. Extension messages already returned by Pi as <code>role: "custom"</code> will display headings, lists, links, code blocks, tables, and other supported Markdown in the WebUI.</p>
+    <p>Rollback is a one-line condition removal plus deletion of the focused test. No persisted data changes are involved.</p>
+    <details><summary>Source and scope references</summary>
+      <ul>
+        <li><a href="../plans/custom-message-markdown.md">Lightweight feature plan and finding dispositions</a></li>
+        <li><code>public/app.js</code> — message rendering and Markdown implementation</li>
+        <li><code>tests/custom-message-markdown-static.test.mjs</code> — focused regression check</li>
+        <li><code>node_modules/@earendil-works/pi-coding-agent/docs/session-format.md</code> — custom message semantics</li>
+      </ul>
+    </details>
+  </section>
+
+  <footer><p><strong>Scope:</strong> Pi WebUI custom-message presentation path. Generated 2026-07-24 from local repository evidence and independent review artifacts.</p></footer>
+</main>
+</body>
+</html>

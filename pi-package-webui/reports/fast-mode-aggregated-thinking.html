@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Fast Mode Aggregated Thinking — Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--mauve:#c9a7ff;--code:#07101c;--shadow:0 14px 36px rgb(0 0 0/.22)}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,section{margin:18px 0;padding:24px;border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:var(--shadow)}header{padding:30px}h1,h2,h3{line-height:1.25;margin-top:0}h1{margin-bottom:8px;font-size:clamp(1.9rem,5vw,3rem)}h2{padding-bottom:9px;border-bottom:1px solid var(--line);font-size:1.45rem}h3{font-size:1.02rem}.lead{max-width:900px;font-size:1.1rem}.muted{color:var(--muted)}a{color:var(--blue)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.12em .38em;border-radius:5px;background:var(--code)}pre{overflow:auto;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--code);white-space:pre-wrap}.badge{display:inline-block;padding:3px 9px;border:1px solid rgb(80 216 144/.4);border-radius:999px;background:rgb(80 216 144/.12);color:var(--green);font-size:.78rem;font-weight:750;text-transform:uppercase}.callout{margin-top:14px;padding:14px 16px;border-left:5px solid var(--green);border-radius:8px;background:rgb(80 216 144/.08)}.warn{border-left-color:var(--yellow);background:rgb(247 198 92/.08)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}.table-wrap{overflow:auto}table{width:100%;min-width:690px;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.84rem;text-transform:uppercase}.status{display:inline-block;padding:.12rem .46rem;border-radius:999px;font-size:.76rem;font-weight:800}.pass{color:#07160d;background:var(--green)}.deferred{color:#261d05;background:var(--yellow)}figure{margin:16px 0 0;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--code)}svg{display:block;width:100%;height:auto}figcaption{margin-top:8px;color:var(--muted);font-size:.9rem}details{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}summary{cursor:pointer;color:var(--blue);font-weight:750}footer{text-align:center;color:var(--muted);margin-top:24px}@media(max-width:620px){main{width:min(100% - 18px,1120px);margin:18px auto 36px}header,section{padding:18px}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}@media print{:root{color-scheme:light}body{background:#fff;color:#111}main{width:100%;margin:0}header,section,.card,figure,details{background:#fff;color:#111;border-color:#aaa;box-shadow:none}.muted,figcaption{color:#444}code,pre{background:#f4f4f4;color:#111}details{break-inside:avoid}details>*{display:block!important}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Implemented · independently reviewed</span>
+    <h1>Fast Mode Aggregated Thinking</h1>
+    <p class="lead">Fast mode combines thinking segments separated by tool calls into one native disclosure per user turn. Live thinking starts expanded, stored thinking starts collapsed, and explicit user toggles survive content reconciliation.</p>
+    <div class="callout"><strong>Result:</strong> current reasoning remains visible while streaming, historical thinking stays compact by default, and normal-mode transcript rendering is unchanged.</div>
+    <p class="muted"><strong>Confidence: 92/100.</strong> The role-specific disclosure state machine, focused executable checks, keyed reconciliation, cache updates, and a fresh provider-diverse correction review quorum were verified. No live browser click-through was performed.</p>
+    <p><a href="../plans/fast-mode-aggregated-thinking.md">Implementation, validation, and review record</a></p>
+  </header>
+
+  <section>
+    <h2>Overview</h2>
+    <div class="table-wrap"><table data-overview>
+      <thead><tr><th>Area</th><th>Outcome</th><th>Evidence</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Aggregation</td><td>Thinking before and after intervening tool calls becomes one Markdown payload per user turn.</td><td><code>compactThinkingSegments()</code> and <code>compactStoredTranscriptItems()</code></td><td><span class="status pass">Pass</span></td></tr>
+        <tr><td>Disclosure</td><td>Native <code>&lt;details&gt;/&lt;summary&gt;</code> keeps live thinking expanded by default and stored thinking collapsed by default.</td><td><code>createMessageBubble()</code> role-specific compact aggregate defaults</td><td><span class="status pass">Pass</span></td></tr>
+        <tr><td>Reconciliation</td><td>Turn-stable and live keys preserve explicit overrides while content is rebuilt; a new stream resets to its expanded default.</td><td><code>compactThinkingDisclosureStateByTab</code>, <code>resetCompactLiveOutput()</code></td><td><span class="status pass">Pass</span></td></tr>
+        <tr><td>Isolation</td><td>Thinking-hidden mode emits no aggregate, per-tab state is cleaned up, and normal mode keeps its prior projection.</td><td><code>orderedTranscriptItems()</code>, render epoch, tab teardown</td><td><span class="status pass">Pass</span></td></tr>
+        <tr><td>Broad suite</td><td>Focused suites pass; the integrated broad suite remains blocked by out-of-scope shared-worktree assertions.</td><td><code>npm run check</code> and reviewer probes</td><td><span class="status deferred">External block</span></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Interaction and data flow</h2>
+    <figure data-visual-kind="diagram" data-purpose="Show how thinking segments separated by tool calls become one live-expanded and stored-collapsed disclosure before final output">
+      <svg viewBox="0 0 1020 300" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">Fast-mode thinking aggregation flow</title>
+        <desc id="flow-desc">A user prompt starts a turn. Multiple thinking segments and tool calls pass through a fast-mode projection. Tool rows are omitted and thinking segments are joined into one native disclosure that is expanded while live and collapsed after storage; final assistant output follows.</desc>
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10z" fill="#65b5ff"/></marker></defs>
+        <g fill="#18253a" stroke="#385071" stroke-width="2"><rect x="24" y="76" width="170" height="120" rx="16"/><rect x="250" y="30" width="205" height="210" rx="16"/><rect x="510" y="55" width="220" height="160" rx="16"/><rect x="785" y="76" width="210" height="120" rx="16"/></g>
+        <g fill="#e8eef8" font-family="system-ui,sans-serif" text-anchor="middle"><text x="109" y="112" font-size="18" font-weight="700">User turn</text><text x="109" y="147" font-size="14">Prompt boundary</text><text x="352" y="68" font-size="18" font-weight="700">Incoming stream</text><text x="352" y="105" font-size="14">Thinking segment 1</text><text x="352" y="135" font-size="14" fill="#f7c65c">Tool call / result</text><text x="352" y="165" font-size="14">Thinking segment 2</text><text x="352" y="195" font-size="14" fill="#f7c65c">Tool call / result</text><text x="620" y="92" font-size="18" font-weight="700">Compact projection</text><text x="620" y="130" font-size="14">Join thinking with Markdown</text><text x="620" y="158" font-size="14">Omit stored tool rows</text><text x="890" y="112" font-size="18" font-weight="700">One disclosure</text><text x="890" y="147" font-size="14" fill="#c9a7ff">Live open · stored closed</text><text x="890" y="174" font-size="14">Final output follows</text></g>
+        <g fill="none" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"><path d="M194 136h46"/><path d="M455 136h45"/><path d="M730 136h45"/></g>
+      </svg>
+      <figcaption>The compact projection treats tool activity as transparent to the thinking group while preserving the final assistant response as a separate Markdown output.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Implementation map</h2>
+    <div class="grid">
+      <article class="card"><h3><code>public/app.js</code></h3><p>Collects direct and embedded thinking, defines user/final-output boundaries, emits a synthetic aggregate item, stores explicit disclosure state per tab, resets live state for new streams, and keeps compact behavior acknowledgement-gated.</p></article>
+      <article class="card"><h3><code>public/styles.css</code></h3><p>Scopes the single-box mauve treatment to <code>.compact-thinking-aggregate</code> and reuses the established collapsible-message styles.</p></article>
+      <article class="card"><h3><code>tests/fast-mode-client-static.test.mjs</code></h3><p>Locks collection, joining, boundaries, visibility, stable keys, role-specific defaults, explicit overrides, live reset, per-tab cleanup, mode isolation, copy, and cache identity.</p></article>
+      <article class="card"><h3>Browser assets</h3><p>The integrated worktree serves <code>app.js?v=89</code> and <code>pi-webui-pwa-v42</code>. Sidebar and settings copy distinguish expanded live thinking from collapsed stored thinking.</p></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Validation</h2>
+    <pre><code>node --check public/app.js
+node tests/fast-mode-client-static.test.mjs
+node tests/fast-output-live.test.mjs
+node tests/streaming-ui-coupling.test.mjs
+node tests/runtime-error-visibility.test.mjs
+node tests/fast-mode-output-work.test.mjs
+git diff --check
+# PASS</code></pre>
+    <div class="callout warn"><strong>Broad-suite boundary:</strong> <code>npm run check</code> reached the shared mobile/static area and failed on out-of-scope worktree assertions. Reviewers reproduced the focused feature checks as passing and excluded concurrent side-panel, chat-scroll, and file-tree hunks from this feature's completion claim.</div>
+  </section>
+
+  <section>
+    <h2>Independent review and dispositions</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Review</th><th>Finding</th><th>Disposition</th></tr></thead>
+      <tbody>
+        <tr><td>Initial Anthropic review</td><td>A growing stored aggregate could rebuild and re-collapse after explicit expansion.</td><td><strong>Accepted and fixed:</strong> use a turn-stable key and per-tab expansion state.</td></tr>
+        <tr><td>Moonshot validation</td><td>Live expansion could be lost during a mid-stream rebuild.</td><td><strong>Accepted and fixed:</strong> use the stable <code>live</code> key and clear it only when resetting a stream.</td></tr>
+        <tr><td>Final Anthropic review<br><span class="muted">Run 97d11015… · Claude Sonnet 5 · high</span></td><td>No blocker. Live-to-stored replacement returns to the stored box's collapsed default.</td><td><strong>Deferred by design:</strong> the authoritative stored disclosure is a new instance and the requirement specifies a collapsed default; no content is lost.</td></tr>
+        <tr><td>Final Moonshot review<br><span class="muted">Run 97d11015… · Kimi K3 · high</span></td><td>No blocker. Index-based turn keys and no real-browser toggle harness remain low risks.</td><td><strong>Deferred:</strong> current histories are append-only and fail safely to collapsed; browser automation is outside this localized slice.</td></tr>
+        <tr><td>Both final reviewers</td><td>A rare interleaved <code>compactionSummary</code> boundary is not explicitly split.</td><td><strong>Deferred:</strong> content remains preserved, compaction is not a tool-call separator, and no current requirement calls for a separate group.</td></tr>
+        <tr><td>Correction Anthropic review<br><span class="muted">Run 7057dfd0… · Claude Sonnet 5 · high</span></td><td>No blocker. Verified live-open/stored-closed defaults, tri-state overrides, reset and rebuild paths, tab cleanup, copy/cache updates, and focused checks.</td><td><strong>Accepted:</strong> correction is ready. <strong>Deferred:</strong> index-derived stored keys and browser click-through coverage. Sidebar tool-status wording remains available in the full settings description.</td></tr>
+        <tr><td>Correction Moonshot review<br><span class="muted">Run 7057dfd0… · Kimi K3 · high</span></td><td>No blocker. Traced all eight absent/override/rebuild/reset state transitions and confirmed native disclosure semantics.</td><td><strong>Accepted:</strong> live thinking opens by default, explicit collapse survives same-stream rebuilds, and each new stream resets to open. Stored thinking remains collapsed by default.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="muted">Correction reviewer confidence: Anthropic 88/100; Moonshot 92/100. Both runs were fresh, read-only, provider-distinct from each other and from the OpenAI implementation provider.</p>
+  </section>
+
+  <section>
+    <h2>Usage, rollout, and limitations</h2>
+    <ol>
+      <li>Enable <strong>Fast</strong> under Output processing.</li>
+      <li>While a turn is running, the <strong>thinking (live)</strong> disclosure is expanded by default.</li>
+      <li>After reconciliation, stored thinking appears as one collapsed row labeled <strong>thinking</strong> or <strong>thinking (N segments)</strong>.</li>
+      <li>Select either row or focus it and press Enter/Space to override its current open/closed state.</li>
+    </ol>
+    <ul>
+      <li>The existing global thinking-visibility setting still hides the disclosure entirely.</li>
+      <li>Expansion state is terminal-tab-local and intentionally does not persist across page reloads.</li>
+      <li>No live browser screenshot or automated DOM click test was performed.</li>
+      <li>Rollback is a direct revert of the localized fast-mode renderer, CSS, copy/cache tests, plan, and report; no migration is involved.</li>
+    </ul>
+    <details><summary>Concurrent worktree note</summary><p>Other Pi sessions modified side-panel resize, chat-scroll, file-tree, and related tests in the same shared files while this feature was in progress. Those hunks are explicitly outside this feature's ownership, review findings, and validation claims.</p></details>
+  </section>
+
+  <footer>Self-contained local implementation report · no external assets, scripts, telemetry, or network requests.</footer>
+</main>
+</body>
+</html>
