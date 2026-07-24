@@ -258,6 +258,15 @@ try {
   assert.equal(gzipResponse.headers.get("content-encoding"), "gzip", "styles.css should fall back to gzip");
   await gzipResponse.arrayBuffer();
 
+  // app.js statically imports the fast-output helper at startup. Verify the
+  // real server serves it so an omitted allowlist entry cannot disable the UI.
+  const fastOutputModuleResponse = await fetch(`http://127.0.0.1:${port}/fast-output-live.mjs`, {
+    signal: AbortSignal.timeout(5_000),
+  });
+  assert.equal(fastOutputModuleResponse.status, 200, "fast-output-live.mjs must be served for the Web UI entry point");
+  assert.match(fastOutputModuleResponse.headers.get("content-type") || "", /text\/javascript/, "fast-output-live.mjs should use a JavaScript MIME type");
+  assert.equal(await fastOutputModuleResponse.text(), await readFile(join(root, "public", "fast-output-live.mjs"), "utf8"), "served fast-output-live.mjs must match the source module");
+
   // The browser voice loop is dynamically imported by app.js; a missing static
   // allowlist entry would 404 the module and silently disable voice mode.
   const voiceModuleResponse = await fetch(`http://127.0.0.1:${port}/voice-conversation.mjs`, {
