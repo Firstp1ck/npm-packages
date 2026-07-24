@@ -111,8 +111,8 @@ assert.match(
 );
 assert.match(
   css,
-  /\.middle-truncate-start \{[\s\S]*?min-width:\s*6ch;[\s\S]*?text-overflow:\s*ellipsis[\s\S]*?\.middle-truncate-end \{[\s\S]*?flex:\s*0 0 auto/,
-  "responsive styling should shrink the prefix while keeping the suffix fixed",
+  /\.middle-truncate-start \{[\s\S]*?flex:\s*0 1 auto;[\s\S]*?min-width:\s*6ch;[\s\S]*?text-overflow:\s*ellipsis[\s\S]*?\.middle-truncate-end \{[\s\S]*?flex:\s*0 0 auto/,
+  "responsive styling should keep split path parts contiguous until the prefix must shrink, then preserve the suffix",
 );
 
 console.log("footer-middle-truncation.test.mjs passed");

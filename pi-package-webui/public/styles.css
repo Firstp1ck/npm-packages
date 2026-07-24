@@ -4084,7 +4084,7 @@ button.footer-tui-item {
   white-space: nowrap;
 }
 .middle-truncate-start {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 6ch;
   overflow: hidden;
   text-overflow: ellipsis;
