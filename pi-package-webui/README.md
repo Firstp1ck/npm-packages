@@ -135,7 +135,7 @@ Environment variables:
 
 ### Compact live output mode
 
-Normal output is the default. Set `--output-mode compact-v1`, `PI_WEBUI_OUTPUT_MODE=compact-v1`, or the persisted Web UI `outputModeDefault` setting to make compact output the server default. Precedence is explicit CLI flag, then environment variable, then the persisted setting, then `normal`.
+Normal output is the default. In the sidebar, open **Controls → Output processing**, select **Fast**, and click **Apply**. The same persisted server default is also available under **Settings → Browser workflow → Output processing**. Alternatively, set `--output-mode compact-v1`, `PI_WEBUI_OUTPUT_MODE=compact-v1`, or `outputModeDefault` directly. Precedence is explicit CLI flag, then environment variable, then the persisted setting, then `normal`.
 
 The browser negotiates compact-v1 per EventSource connection (`outputMode=auto&outputModeProtocol=1`), so normal and compact clients can share one Pi tab. A browser only enables compact handling after the protocol-1 acknowledgement; an older server gets one normal-mode reconnect instead. The server default applies only to `auto` clients, and active auto streams change representation at a semantic boundary.
 

@@ -437,7 +437,7 @@
             </h2>
             <div id="sidePanelSectionControls" class="side-panel-section-content" hidden>
               <div class="side-panel-controls">
-                <p class="controls-intro">Session controls affect the active Pi tab. Interface preferences are saved in this browser.</p>
+                <p class="controls-intro">Session controls affect the active Pi tab. Interface preferences are saved in this browser. Output processing is a shared server default.</p>
 
                 <section class="control-group" aria-labelledby="sessionControlsTitle">
                   <div class="control-group-header">
@@ -544,6 +544,30 @@
                         <span id="agentDoneNotificationsStatus" class="toggle-control-hint">Off</span>
                       </span>
                     </label>
+                  </div>
+                </section>
+
+                <section class="control-group output-processing-control-group" aria-labelledby="outputProcessingControlsTitle">
+                  <div class="control-group-header">
+                    <div class="control-group-heading">
+                      <h3 id="outputProcessingControlsTitle">Output processing</h3>
+                      <p>Choose the default live-output path for auto-negotiated Web UI connections.</p>
+                    </div>
+                    <span class="control-scope-badge">Server</span>
+                  </div>
+                  <div class="control-field">
+                    <div class="control-field-header">
+                      <label for="fastOutputModeSelect">Fast mode</label>
+                      <span class="control-field-context">Rich final output is preserved</span>
+                    </div>
+                    <div class="control-action-row">
+                      <select id="fastOutputModeSelect" title="Output processing mode" aria-describedby="fastOutputModeStatus">
+                        <option value="normal">Normal</option>
+                        <option value="compact-v1">Fast</option>
+                      </select>
+                      <button id="setFastOutputModeButton" class="control-apply-button" type="button" aria-label="Apply selected output processing mode" disabled>Apply</button>
+                    </div>
+                    <div id="fastOutputModeStatus" class="toggle-control-hint" role="status" aria-live="polite">Loading server default…</div>
                   </div>
                 </section>
 
@@ -1091,6 +1115,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=81"></script>
+    <script type="module" src="/app.js?v=82"></script>
   </body>
 </html>

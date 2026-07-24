@@ -2255,6 +2255,9 @@ body.embedded-split .side-panel-backdrop {
   font-size: var(--text-xs);
   font-weight: 700;
 }
+.toggle-control-hint.warning {
+  color: var(--ctp-yellow);
+}
 .toggle-control:has(input:checked) {
   border-color: rgba(148, 226, 213, 0.42);
   box-shadow: 0 0 0.9rem rgba(148, 226, 213, 0.10);

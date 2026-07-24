@@ -164,6 +164,9 @@ const elements = {
   setThinkingButton: $("#setThinkingButton"),
   thinkingVisibilityToggle: $("#thinkingVisibilityToggle"),
   thinkingVisibilityStatus: $("#thinkingVisibilityStatus"),
+  fastOutputModeSelect: $("#fastOutputModeSelect"),
+  setFastOutputModeButton: $("#setFastOutputModeButton"),
+  fastOutputModeStatus: $("#fastOutputModeStatus"),
   terminalTabsLayoutSelect: $("#terminalTabsLayoutSelect"),
   terminalTabsLayoutStatus: $("#terminalTabsLayoutStatus"),
   themeControlLabel: $("#themeControlLabel"),
@@ -25794,6 +25797,76 @@ function webuiOutputModeMetadataText(metadata) {
   return `Persisted default: ${metadata.persistedDefault}. Effective mode: ${metadata.effectiveDefault}. Source: ${sourceLabel}.${overridden}`;
 }
 
+let sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata();
+let sidebarOutputModeDiagnostic = "";
+let sidebarOutputModeNotice = "";
+let sidebarOutputModeLoaded = false;
+let sidebarOutputModeBusy = false;
+
+function updateSidebarOutputModeApplyState() {
+  if (!elements.fastOutputModeSelect || !elements.setFastOutputModeButton) return;
+  const unavailable = !sidebarOutputModeLoaded || !!sidebarOutputModeDiagnostic;
+  elements.fastOutputModeSelect.disabled = unavailable || sidebarOutputModeBusy;
+  elements.setFastOutputModeButton.disabled = unavailable
+    || sidebarOutputModeBusy
+    || elements.fastOutputModeSelect.value === sidebarOutputModeMetadata.persistedDefault;
+  elements.setFastOutputModeButton.textContent = sidebarOutputModeBusy ? "Applying…" : "Apply";
+}
+
+function renderSidebarOutputModeControl({ syncSelection = true } = {}) {
+  if (!elements.fastOutputModeSelect || !elements.fastOutputModeStatus) return;
+  if (syncSelection) elements.fastOutputModeSelect.value = sidebarOutputModeMetadata.persistedDefault;
+  elements.fastOutputModeStatus.textContent = sidebarOutputModeDiagnostic
+    || sidebarOutputModeNotice
+    || webuiOutputModeMetadataText(sidebarOutputModeMetadata);
+  elements.fastOutputModeStatus.classList.toggle("warning", !!sidebarOutputModeDiagnostic || !!sidebarOutputModeNotice);
+  updateSidebarOutputModeApplyState();
+}
+
+async function refreshSidebarOutputMode() {
+  if (!elements.fastOutputModeSelect) return sidebarOutputModeMetadata;
+  sidebarOutputModeLoaded = false;
+  sidebarOutputModeDiagnostic = "";
+  sidebarOutputModeNotice = "";
+  renderSidebarOutputModeControl();
+  try {
+    const response = await api("/api/webui-output-mode", { scoped: false });
+    sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata(response.data);
+  } catch (error) {
+    sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata();
+    sidebarOutputModeDiagnostic = `Fast-mode control unavailable: ${error.message || String(error)}. Using the normal default.`;
+  } finally {
+    sidebarOutputModeLoaded = true;
+    renderSidebarOutputModeControl();
+  }
+  return sidebarOutputModeMetadata;
+}
+
+async function applySidebarOutputMode() {
+  if (!elements.fastOutputModeSelect || sidebarOutputModeBusy) return;
+  const outputModeDefault = elements.fastOutputModeSelect.value === "compact-v1" ? "compact-v1" : "normal";
+  if (outputModeDefault === sidebarOutputModeMetadata.persistedDefault) return;
+  sidebarOutputModeBusy = true;
+  updateSidebarOutputModeApplyState();
+  try {
+    await api("/api/webui-output-mode", {
+      method: "PUT",
+      body: { outputModeDefault },
+      scoped: false,
+    });
+    await refreshSidebarOutputMode();
+    addEvent(outputModeDefault === "compact-v1" ? "Fast output mode enabled for auto-negotiated Web UI connections." : "Normal output processing restored for auto-negotiated Web UI connections.", "info");
+  } catch (error) {
+    sidebarOutputModeDiagnostic = "";
+    sidebarOutputModeNotice = `Failed to update fast mode: ${error.message || String(error)}. You can retry.`;
+    sidebarOutputModeLoaded = true;
+    addEvent(sidebarOutputModeNotice, "error");
+  } finally {
+    sidebarOutputModeBusy = false;
+    renderSidebarOutputModeControl();
+  }
+}
+
 function collectNativeSettingsPayload(controls) {
   return {
     transport: controls.transport.select.value,
@@ -26023,6 +26096,11 @@ async function openNativeSettingsDialog() {
           const refreshedOutputMode = await api("/api/webui-output-mode", { scoped: false });
           outputModeMetadata = normalizeWebuiOutputModeMetadata(refreshedOutputMode.data);
           outputModeApiDiagnostic = "";
+          sidebarOutputModeMetadata = outputModeMetadata;
+          sidebarOutputModeDiagnostic = "";
+          sidebarOutputModeNotice = "";
+          sidebarOutputModeLoaded = true;
+          renderSidebarOutputModeControl();
         } catch (error) {
           outputModeApiDiagnostic = `Output-mode API unavailable after saving: ${error.message || String(error)}. Showing the normal default; other settings can still be applied.`;
           outputModeMetadata = normalizeWebuiOutputModeMetadata();
@@ -30810,6 +30888,11 @@ if (elements.thinkingVisibilityToggle) {
     setThinkingOutputVisible(elements.thinkingVisibilityToggle.checked, { announce: true });
   });
 }
+elements.fastOutputModeSelect?.addEventListener("change", () => {
+  sidebarOutputModeNotice = "";
+  renderSidebarOutputModeControl({ syncSelection: false });
+});
+elements.setFastOutputModeButton?.addEventListener("click", () => applySidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error")));
 if (elements.terminalTabsLayoutSelect) {
   elements.terminalTabsLayoutSelect.addEventListener("change", () => {
     setTerminalTabsLayout(elements.terminalTabsLayoutSelect.value, { announce: true });
@@ -31489,4 +31572,5 @@ bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();
 registerPwaServiceWorker();
 renderServerOfflinePanel();
+refreshSidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error"));
 initializeTabs().catch((error) => addEvent(error.message, "error"));

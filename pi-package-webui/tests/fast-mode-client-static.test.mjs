@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 import { createFastModeOutputEvents } from "./fixtures/fast-mode-output-events.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [app, helper, html, worker, packageRaw] = await Promise.all([
+const [app, helper, html, worker, styles, packageRaw] = await Promise.all([
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "fast-output-live.mjs"), "utf8"),
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "service-worker.js"), "utf8"),
+  readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
 ]);
 
@@ -49,6 +50,8 @@ const compactToNormal = functionBody(app, "transitionCompactLiveOutputToNormal")
 const nativeSettingsDialog = functionBody(app, "openNativeSettingsDialog");
 const nativeSettingsPayload = functionBody(app, "collectNativeSettingsPayload");
 const outputModeMetadataText = functionBody(app, "webuiOutputModeMetadataText");
+const sidebarOutputModeRefresh = functionBody(app, "refreshSidebarOutputMode");
+const sidebarOutputModeApply = functionBody(app, "applySidebarOutputMode");
 
 assert.match(app, /from "\.\/fast-output-live\.mjs"/, "browser should import the pure compact live helper");
 assert.match(connectEvents, /outputMode:\s*eventSourceOutputModeRequest/, "all new EventSource connections should negotiate an explicit output mode");
@@ -88,9 +91,20 @@ assert.match(nativeSettingsDialog, /method: "PUT",[\s\S]*?body: \{ outputModeDef
 assert.doesNotMatch(nativeSettingsPayload, /outputMode(?:Default|Metadata|ApiDiagnostic|Changed)?/, "server-scoped output mode must stay out of the native SettingsManager payload");
 assert.match(nativeSettingsDialog, /const response = await nativeCommandApi\("\/api\/settings", \{ method: "POST", body: \{ settings: payload, reload \} \}\);[\s\S]*?nativeSettingsChangedMessage\(response, reload\)/, "existing native settings apply behavior should remain intact");
 
+assert.match(html, /data-side-panel-section="controls"[\s\S]*?id="outputProcessingControlsTitle">Output processing<[\s\S]*?<span class="control-scope-badge">Server<\/span>[\s\S]*?id="fastOutputModeSelect"[\s\S]*?<option value="normal">Normal<\/option>[\s\S]*?<option value="compact-v1">Fast<\/option>[\s\S]*?id="setFastOutputModeButton"[\s\S]*?id="fastOutputModeStatus"/, "Controls should expose a server-scoped normal/fast selector with apply button and live status");
+assert.match(app, /fastOutputModeSelect: \$\("#fastOutputModeSelect"\)[\s\S]*?setFastOutputModeButton: \$\("#setFastOutputModeButton"\)[\s\S]*?fastOutputModeStatus: \$\("#fastOutputModeStatus"\)/, "sidebar fast-mode elements should be wired");
+assert.match(sidebarOutputModeRefresh, /api\("\/api\/webui-output-mode", \{ scoped: false \}\)[\s\S]*?normalizeWebuiOutputModeMetadata\(response\.data\)/, "sidebar selector should load current server output-mode metadata");
+assert.match(sidebarOutputModeApply, /method: "PUT"[\s\S]*?body: \{ outputModeDefault \}[\s\S]*?scoped: false[\s\S]*?await refreshSidebarOutputMode\(\)/, "sidebar selector should persist the selected mode and refresh effective metadata");
+assert.match(sidebarOutputModeApply, /outputModeDefault === "compact-v1"[\s\S]*?Fast output mode enabled[\s\S]*?Normal output processing restored/, "sidebar apply feedback should distinguish enabling fast mode from restoring normal mode");
+assert.match(sidebarOutputModeApply, /sidebarOutputModeDiagnostic = ""[\s\S]*?sidebarOutputModeNotice = `Failed to update fast mode:[\s\S]*?You can retry\.`[\s\S]*?sidebarOutputModeLoaded = true/, "a transient apply failure should remain visible without permanently disabling retry");
+assert.match(app, /function renderSidebarOutputModeControl[\s\S]*?sidebarOutputModeNotice[\s\S]*?webuiOutputModeMetadataText\(sidebarOutputModeMetadata\)[\s\S]*?updateSidebarOutputModeApplyState\(\)/, "sidebar status should expose retry notices or persisted/effective/source metadata and apply state");
+assert.match(styles, /\.toggle-control-hint\.warning\s*\{[\s\S]*?color: var\(--ctp-yellow\)/, "sidebar output-mode failures should use the warning palette");
+assert.match(app, /fastOutputModeSelect\?\.addEventListener\("change", \(\) => \{[\s\S]*?sidebarOutputModeNotice = ""[\s\S]*?renderSidebarOutputModeControl\(\{ syncSelection: false \}\)[\s\S]*?setFastOutputModeButton\?\.addEventListener\("click", \(\) => applySidebarOutputMode\(\)/, "sidebar selection should clear transient failures and keep Apply retryable");
+assert.match(app, /refreshSidebarOutputMode\(\)\.catch[\s\S]*?initializeTabs\(\)/, "sidebar output mode should initialize with the WebUI");
+
 assert.match(helper, /FAST_OUTPUT_FLUSH_INTERVAL_MS = 100/, "the live scheduler should retain the exact 100 ms sustained-output bound");
-assert.match(worker, /pi-webui-pwa-v34[\s\S]*?"\/fast-output-live\.mjs"/, "PWA cache identity and app shell should include the compact helper");
-assert.match(html, /<script type="module" src="\/app\.js\?v=81"><\/script>/, "the PWA entry point should cache-bust browser wiring");
+assert.match(worker, /pi-webui-pwa-v35[\s\S]*?"\/fast-output-live\.mjs"/, "PWA cache identity and app shell should include the compact helper");
+assert.match(html, /<script type="module" src="\/app\.js\?v=82"><\/script>/, "the PWA entry point should cache-bust browser wiring");
 assert.match(JSON.parse(packageRaw).scripts.check, /node --check public\/fast-output-live\.mjs/, "package checks should parse the compact helper");
 
 const events = createFastModeOutputEvents();
