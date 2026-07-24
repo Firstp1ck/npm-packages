@@ -5700,7 +5700,8 @@ button.git-workflow-step:hover:not(:disabled) {
   .workflow-inspector-actions { justify-content: stretch; }
   .workflow-inspector-actions button { flex: 1 1 7rem; min-height: 44px; }
   .workflow-inspector-minimize-button,
-  .workflow-subprocess-minimize-button { min-height: 44px; }
+  .workflow-subprocess-minimize-button,
+  .workflow-overlay-close-button { min-height: 44px; }
 }
 .btw-widget {
   border-color: rgba(148, 226, 213, 0.62);
@@ -7054,19 +7055,91 @@ button.git-workflow-step:hover:not(:disabled) {
   outline-color: rgba(148, 226, 213, 0.46);
 }
 .compact-live-text,
-.compact-live-thinking,
 .compact-tool-status {
   min-height: 1.35rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .compact-live-thinking {
-  color: rgba(var(--ctp-text-rgb), 0.82);
-  font-style: italic;
+  min-height: 1.35rem;
+  overflow-wrap: anywhere;
+}
+.message.compact-tool-shell {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 0;
+  margin: 0.32rem 0;
+  padding: 0.46rem 0.62rem;
+  border-color: rgba(249, 226, 175, 0.30);
+  border-radius: 0.68rem;
+  background: linear-gradient(110deg, rgba(249, 226, 175, 0.10), rgba(var(--ctp-surface-rgb), 0.38));
+  box-shadow: none;
+}
+.message.compact-tool-shell.streaming {
+  outline: 1px solid rgba(148, 226, 213, 0.30);
+  box-shadow: 0 0 0.7rem rgba(148, 226, 213, 0.10);
+}
+.message.compact-tool-shell::before {
+  width: 2px;
+  background: var(--ctp-yellow);
+  box-shadow: 0 0 0.55rem rgba(249, 226, 175, 0.28);
+}
+.message.compact-tool-shell.tool-running::before { background: var(--ctp-teal); }
+.message.compact-tool-shell.tool-success::before { background: var(--ctp-green); }
+.message.compact-tool-shell.tool-error::before { background: var(--ctp-red); }
+.compact-tool-shell .message-header {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  min-width: 0;
+  margin: 0;
+}
+.compact-tool-shell .message-role {
+  overflow: hidden;
+  color: var(--ctp-yellow);
+  font-size: 0.72rem;
+  letter-spacing: 0.09em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.compact-tool-shell .message-header .muted { display: none; }
+.compact-tool-shell .message-body {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
 }
 .compact-tool-shell .compact-tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+  min-height: 1.35rem;
+  padding: 0.08rem 0.46rem;
+  border: 1px solid rgba(var(--ctp-subtext-rgb), 0.20);
+  border-radius: 999px;
   color: var(--ctp-subtext);
+  background: rgba(var(--ctp-crust-rgb), 0.45);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.15;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
+.compact-tool-shell .compact-tool-status::before {
+  content: "";
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0.42rem currentColor;
+}
+.compact-tool-shell.tool-running .compact-tool-status { color: var(--ctp-teal); }
+.compact-tool-shell.tool-running .compact-tool-status::before { animation: run-indicator-pulse 1.1s ease-in-out infinite; }
+.compact-tool-shell.tool-success .compact-tool-status { color: var(--ctp-green); }
+.compact-tool-shell.tool-error .compact-tool-status { color: var(--ctp-red); }
 .text-block, .code-block {
   margin: 0.35rem 0;
   white-space: pre-wrap;
@@ -7732,10 +7805,14 @@ button.composer-skill-tag:focus-visible {
 .spacer { flex: 1; }
 .composer-new-button,
 .composer-compact-button,
-.composer-workflow-mode-button,
 .composer-git-button,
 .composer-publish-menu {
   margin-right: 0.45rem;
+}
+.composer-workflow-mode-controls .composer-workflow-mode-button { margin-right: 0; }
+.composer-workflow-mode-controls.has-open-control {
+  min-width: 1.95rem;
+  min-height: 1.95rem;
 }
 .composer-workflow-mode-button {
   min-width: 6.8rem;
@@ -7758,8 +7835,45 @@ button.composer-skill-tag:focus-visible {
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-mauve), var(--ctp-blue), var(--ctp-teal));
 }
-.composer-workflow-mode-button[hidden] {
+.composer-workflow-mode-button[hidden],
+.composer-workflow-overlay-open-button[hidden] {
   display: none !important;
+}
+.composer-workflow-overlay-open-button {
+  position: absolute;
+  top: -0.48rem;
+  right: -0.48rem;
+  z-index: 2;
+  flex: none;
+  width: 1.95rem;
+  min-width: 1.95rem;
+  max-width: 1.95rem;
+  height: 1.95rem;
+  min-height: 1.95rem;
+  padding: 0.28rem;
+  overflow: hidden;
+  color: var(--ctp-mauve);
+  border-color: rgba(203, 166, 247, 0.40);
+  border-radius: 999px;
+  background:
+    linear-gradient(120deg, rgba(203, 166, 247, 0.16), rgba(137, 180, 250, 0.10)),
+    linear-gradient(180deg, rgba(var(--ctp-surface-rgb), 0.96), rgba(var(--ctp-crust-rgb), 0.96));
+  box-shadow: 0 0 0 1px rgba(203, 166, 247, 0.08), 0 0.55rem 1.2rem rgba(0, 0, 0, 0.16);
+}
+.composer-workflow-overlay-open-button:hover,
+.composer-workflow-overlay-open-button:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-mauve), var(--ctp-blue));
+  transform: translateY(-1px);
+}
+.workflow-overlay-close-button {
+  border-color: rgba(243, 139, 168, 0.42);
+  color: var(--ctp-red);
+}
+.workflow-overlay-close-button:hover,
+.workflow-overlay-close-button:focus-visible {
+  border-color: rgba(243, 139, 168, 0.82);
 }
 .composer-publish-menu {
   position: relative;

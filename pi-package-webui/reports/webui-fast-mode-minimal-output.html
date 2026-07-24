@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>WebUI Fast Mode Transient Output — Implementation Report</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--blue:#65b5ff;--code:#07101c}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}main{width:min(1050px,calc(100% - 32px));margin:36px auto 64px}header,section{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px;margin:18px 0}h1,h2,h3{line-height:1.25;margin-top:0}h1{font-size:clamp(1.9rem,5vw,3rem);margin-bottom:8px}h2{font-size:1.4rem;border-bottom:1px solid var(--line);padding-bottom:9px}.lead{font-size:1.1rem}.muted{color:var(--muted)}a{color:var(--blue)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:var(--code);padding:.12em .38em;border-radius:5px}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap}.badge{display:inline-block;padding:3px 9px;border:1px solid rgb(80 216 144/.4);border-radius:999px;background:rgb(80 216 144/.12);color:var(--green);font-size:.78rem;font-weight:750;text-transform:uppercase}.callout{border-left:5px solid var(--green);background:rgb(80 216 144/.08);border-radius:8px;padding:14px 16px}.warn{border-left-color:var(--yellow);background:rgb(247 198 92/.08)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:16px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:650px}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.84rem;text-transform:uppercase}footer{text-align:center;color:var(--muted);margin-top:24px}@media(max-width:620px){main{width:min(100% - 18px,1050px);margin:18px auto 36px}header,section{padding:18px}}@media print{body{background:#fff;color:#111}main{width:100%;margin:0}header,section,.card{background:#fff;color:#111;border-color:#aaa}.muted{color:#444}code,pre{background:#f4f4f4;color:#111}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Implemented · focused validation passed</span>
+    <h1>WebUI Fast Mode Transient Output</h1>
+    <p class="lead">Fast mode now preserves Markdown-formatted thinking and final responses while showing at most the current transient tool status. Intermediate tool history is removed during final reconciliation.</p>
+    <div class="callout"><strong>Result:</strong> focused syntax, rendering-contract, live-output, streaming-coupling, runtime-visibility, transport-metric, and diff checks pass.</div>
+    <p class="muted"><strong>Confidence: 94/100.</strong> Source control flow, focused tests, deterministic transport parity, and independent review findings were checked. No live browser visual inspection was performed.</p>
+    <p><a href="../plans/webui-fast-mode-minimal-output.md">Implementation and validation record</a></p>
+  </header>
+
+  <section>
+    <h2>Behavior</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Area</th><th>Fast mode</th><th>Normal mode</th></tr></thead>
+      <tbody>
+        <tr><td>Final assistant output</td><td>Rendered with the existing Markdown renderer.</td><td>Existing rich renderer unchanged.</td></tr>
+        <tr><td>Thinking</td><td>Rendered as Markdown live and after reconciliation when the existing visibility setting is enabled.</td><td>Existing behavior unchanged.</td></tr>
+        <tr><td>Tool activity</td><td>Only the current transient status is shown; a new tool or assistant delta removes the prior shell.</td><td>Full tool cards remain available.</td></tr>
+        <tr><td>Final reconciliation</td><td>Tool calls, results, diffs, images, and raw details are omitted; current activity uses one compact labeled status row.</td><td>Full transcript presentation remains available.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Implementation</h2>
+    <div class="grid">
+      <article class="card"><h3><code>public/app.js</code></h3><p>Uses <code>appendMarkdown</code> for compact final output and <code>renderThinkingMarkdown</code> for live thinking, filters action history, replaces transient shells, and safely restores active compact output across transcript rebuilds.</p></article>
+      <article class="card"><h3><code>tests/fast-mode-client-static.test.mjs</code></h3><p>Guards final Markdown, thinking visibility, tool omission, single-shell replacement, mode isolation, and compact-stream reconciliation.</p></article>
+      <article class="card"><h3>Browser cache</h3><p><code>app.js?v=86</code> and <code>pi-webui-pwa-v39</code> invalidate the previous browser assets.</p></article>
+      <article class="card"><h3>Documentation</h3><p>The sidebar, settings copy, README, and implementation plan describe the same transient-output contract.</p></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Review findings and disposition</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Finding</th><th>Disposition</th><th>Evidence</th></tr></thead>
+      <tbody>
+        <tr><td>Compact output could be reset by a mid-stream transcript refresh.</td><td>Accepted and fixed.</td><td><code>compactLiveStreamRenderActive</code>, <code>restoreCompactLiveOutputAfterChatRebuild</code>, and <code>refreshMessages</code>.</td></tr>
+        <tr><td>Completed final output could be duplicated between <code>message_end</code> and <code>agent_end</code>.</td><td>Accepted and fixed.</td><td>Message text/thinking restoration now requires <code>streamMessageActive</code>; the current tool shell may still survive between messages.</td></tr>
+        <tr><td>Static tests do not replace a full browser event-ordering harness.</td><td>Recorded limitation.</td><td>Focused source assertions and existing live-output suites pass; no visual browser run was claimed.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Validation</h2>
+    <pre><code>node --check public/app.js
+node tests/fast-mode-client-static.test.mjs
+node tests/fast-output-live.test.mjs
+node tests/streaming-ui-coupling.test.mjs
+node tests/runtime-error-visibility.test.mjs
+node tests/fast-mode-output-work.test.mjs
+git diff --check
+# PASS
+
+npm run check
+# 45/46 test files passed
+# unrelated dirty-worktree mismatch: expected ^0.2.1, configured ^0.2.2</code></pre>
+    <div class="callout warn"><strong>Residual limitation:</strong> no live browser screenshot or narrow-width visual inspection was performed. The full package check remains blocked only by the unrelated dependency-version expectation in <code>mobile-static.test.mjs</code>.</div>
+  </section>
+
+  <footer>Self-contained local report · no external assets, telemetry, secrets, or unsupported performance claims.</footer>
+</main>
+</body>
+</html>

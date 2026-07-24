@@ -178,14 +178,26 @@
             <div id="composerActionsPanel" class="composer-actions-panel" aria-label="Composer actions">
               <button id="newSessionButton" class="composer-new-button" type="button">New</button>
               <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context">Compact</button>
-              <button
-                id="workflowModeButton"
-                class="composer-workflow-mode-button"
-                type="button"
-                aria-pressed="false"
-                data-tooltip="Workflow Mode: generate and run reusable JavaScript orchestration for substantive prompts."
-                hidden
-              ><span>Workflow</span></button>
+              <div id="workflowModeControls" class="composer-publish-menu composer-workflow-mode-controls" hidden>
+                <button
+                  id="workflowOverlayOpenButton"
+                  class="composer-icon-button composer-workflow-overlay-open-button"
+                  type="button"
+                  aria-label="Open workflow overlay"
+                  aria-controls="widgetArea"
+                  aria-expanded="false"
+                  data-tooltip="Open the minimized workflow overlay."
+                  hidden
+                ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button
+                  id="workflowModeButton"
+                  class="composer-workflow-mode-button"
+                  type="button"
+                  aria-pressed="false"
+                  data-tooltip="Workflow Mode: generate and run reusable JavaScript orchestration for substantive prompts."
+                  hidden
+                ><span>Workflow</span></button>
+              </div>
               <button
                 id="gitWorkflowButton"
                 class="composer-icon-button composer-git-button"
@@ -558,8 +570,8 @@
                   </div>
                   <div class="control-field">
                     <div class="control-field-header">
-                      <label for="fastOutputModeSelect">Fast mode</label>
-                      <span class="control-field-context">Rich final output is preserved</span>
+                      <label for="fastOutputModeSelect">Fast mode (Experimental)</label>
+                      <span class="control-field-context">Markdown final output and thinking; current tool replaces the previous one</span>
                     </div>
                     <div class="control-action-row">
                       <select id="fastOutputModeSelect" title="Output processing mode" aria-describedby="fastOutputModeStatus">
@@ -1116,6 +1128,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=82"></script>
+    <script type="module" src="/app.js?v=86"></script>
   </body>
 </html>

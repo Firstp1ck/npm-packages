@@ -102,7 +102,9 @@ const elements = {
   remoteMicStreamingConsentButton: $("#remoteMicStreamingConsentButton"),
   newSessionButton: $("#newSessionButton"),
   compactButton: $("#compactButton"),
+  workflowModeControls: $("#workflowModeControls"),
   workflowModeButton: $("#workflowModeButton"),
+  workflowOverlayOpenButton: $("#workflowOverlayOpenButton"),
   gitWorkflowButton: $("#gitWorkflowButton"),
   publishButton: $("#publishButton"),
   publishMenu: $("#publishMenu"),
@@ -853,6 +855,7 @@ const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
 const workflowTerminalScrollByTab = new Map();
 const workflowSubprocessMinimizedByTab = new Set();
+const workflowOverlayMinimizedByTab = new Set();
 const appRunnerDataByTab = new Map();
 const conversationModeByTab = new Map();
 const workflowModeByTab = new Map();
@@ -5071,6 +5074,42 @@ function workflowModeCommandName() {
   return resolveAvailableCommandName("workflow", { rpcOnly: true }) || "";
 }
 
+function workflowOverlayHasContent() {
+  if (!isOptionalFeatureEnabled("workflows")) return false;
+  const inspector = activeWorkflowInspectorPayload();
+  if (inspector?.runs?.length) return true;
+  return !!parseWorkflowSubprocessPayload(getWidgetLines("workflow:subprocess"));
+}
+
+function workflowOverlayIsMinimized() {
+  return Boolean(activeTabId && workflowOverlayMinimizedByTab.has(activeTabId));
+}
+
+function renderWorkflowOverlayControls() {
+  const openAvailable = workflowOverlayHasContent() && workflowOverlayIsMinimized();
+  if (elements.workflowOverlayOpenButton) elements.workflowOverlayOpenButton.hidden = !openAvailable;
+  if (elements.workflowModeControls) {
+    elements.workflowModeControls.hidden = Boolean(elements.workflowModeButton?.hidden) && !openAvailable;
+    elements.workflowModeControls.classList.toggle("has-open-control", openAvailable);
+  }
+}
+
+function setWorkflowOverlayMinimized(minimized) {
+  if (!activeTabId || !workflowOverlayHasContent()) return;
+  const tabId = activeTabId;
+  if (minimized) workflowOverlayMinimizedByTab.add(tabId);
+  else workflowOverlayMinimizedByTab.delete(tabId);
+  renderWidgets();
+  renderWorkflowModeControls();
+  requestAnimationFrame(() => {
+    if (activeTabId !== tabId) return;
+    const focusTarget = minimized
+      ? elements.workflowOverlayOpenButton
+      : elements.widgetArea.querySelector(".workflow-overlay-close-button");
+    focusTarget?.focus({ preventScroll: true });
+  });
+}
+
 function renderWorkflowModeControls() {
   const mode = activeWorkflowMode();
   const commandName = workflowModeCommandName();
@@ -5092,6 +5131,7 @@ function renderWorkflowModeControls() {
       : "Workflow Mode is unavailable because the /workflow command is not loaded.";
     applyStyledTooltip(elements.workflowModeButton, tooltip, { ariaLabel: true, align: "start" });
   }
+  renderWorkflowOverlayControls();
 
   if (elements.workflowModeChip) {
     elements.workflowModeChip.hidden = !active;
@@ -7754,6 +7794,7 @@ function syncTabMetadata(nextTabs = []) {
       workflowInspectorSelectionByTab.delete(tabId);
       workflowInspectorMinimizedByTab.delete(tabId);
       workflowSubprocessMinimizedByTab.delete(tabId);
+      workflowOverlayMinimizedByTab.delete(tabId);
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
@@ -19114,6 +19155,24 @@ function mirrorRemoteWebuiWidgetToTranscript(widgetKey, lines = [], request = {}
   addTransientMessage({ role: "extension", title: "/remote", content, level: "info", widgetKey });
 }
 
+function workflowOverlayCloseButton() {
+  const button = make("button", "release-npm-action workflow-overlay-close-button", "Close");
+  button.type = "button";
+  button.setAttribute("aria-controls", "widgetArea");
+  button.setAttribute("aria-expanded", "true");
+  button.setAttribute("aria-label", "Close and minimize workflow overlay");
+  button.setAttribute("title", "Close and minimize workflow overlay");
+  button.addEventListener("click", () => setWorkflowOverlayMinimized(true));
+  return button;
+}
+
+function attachWorkflowOverlayCloseButton(widget) {
+  if (!widget) return;
+  const header = widget.querySelector(":scope > .release-npm-header");
+  const actions = header?.querySelector(".release-npm-actions") || header?.querySelector(".release-npm-meta");
+  actions?.append(workflowOverlayCloseButton());
+}
+
 function renderWidgets() {
   if (deferUiRenderDuringPointerActivation("widgets", renderWidgets)) return;
   const appRunnerInputFocus = captureAppRunnerInputFocus();
@@ -19128,10 +19187,14 @@ function renderWidgets() {
   if (releaseAurLog) elements.widgetArea.append(releaseAurLog);
   const aurReviewWidget = renderAurReviewWidget();
   if (aurReviewWidget) elements.widgetArea.append(aurReviewWidget);
-  const workflowInspectorWidget = renderWorkflowInspectorWidget();
-  if (workflowInspectorWidget) elements.widgetArea.append(workflowInspectorWidget);
-  const workflowSubprocessWidget = renderWorkflowSubprocessWidget();
-  if (workflowSubprocessWidget) elements.widgetArea.append(workflowSubprocessWidget);
+  if (!workflowOverlayIsMinimized()) {
+    const workflowInspectorWidget = renderWorkflowInspectorWidget();
+    const workflowSubprocessWidget = renderWorkflowSubprocessWidget();
+    attachWorkflowOverlayCloseButton(workflowInspectorWidget || workflowSubprocessWidget);
+    if (workflowInspectorWidget) elements.widgetArea.append(workflowInspectorWidget);
+    if (workflowSubprocessWidget) elements.widgetArea.append(workflowSubprocessWidget);
+  }
+  renderWorkflowOverlayControls();
   const appRunnerWidget = renderAppRunnerWidget();
   if (appRunnerWidget) elements.widgetArea.append(appRunnerWidget);
   const subagentWidget = renderSubagentOverlayWidgetSafely();
@@ -23861,7 +23924,7 @@ function captureReusableToolCards() {
 }
 
 function reuseToolExecutionBubble(reusableToolCards, message, { streaming = false, messageIndex = -1, transient = false } = {}) {
-  if (streaming || message?.role !== "toolExecution" || !message.toolCallId || !reusableToolCards) return null;
+  if (compactOutputActive() || streaming || message?.role !== "toolExecution" || !message.toolCallId || !reusableToolCards) return null;
   const id = String(message.toolCallId);
   const bubble = reusableToolCards.get(id);
   if (!bubble) return null;
@@ -24017,10 +24080,19 @@ function jumpToStickyUserPrompt() {
   requestAnimationFrame(updateStickyUserPromptButton);
 }
 
+function renderCompactTranscriptBody(body, message) {
+  if (message.role !== "assistant") return false;
+  const output = stripTodoProgressLines(textFromContent(message.content));
+  const block = appendMarkdown(body, output || "_[non-text output omitted in fast mode]_");
+  block.classList.add("compact-transcript-text");
+  return true;
+}
+
 function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "" } = {}) {
   const role = String(message.role || "message");
   const safeRole = role.replace(/[^a-z0-9_-]/gi, "");
-  const bubble = make("article", `message ${safeRole}${message.level ? ` ${message.level}` : ""}${streaming ? " streaming" : ""}${animateEntry ? " action-enter" : ""}`);
+  const compactTranscript = compactOutputActive() && !streaming;
+  const bubble = make("article", `message ${safeRole}${message.level ? ` ${message.level}` : ""}${streaming ? " streaming" : ""}${animateEntry ? " action-enter" : ""}${compactTranscript ? " compact-transcript-output" : ""}`);
   applyChatEventMetadata(bubble, message);
   if (message.role === "toolExecution") applyToolExecutionBubbleState(bubble, message);
   if (!transient && messageIndex >= 0) {
@@ -24037,7 +24109,9 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   header.append(make("span", "muted", formatDate(message.timestamp)));
   const body = make("div", "message-body");
 
-  if (message.role === "bashExecution") {
+  if (compactTranscript && renderCompactTranscriptBody(body, message)) {
+    // Fast mode preserves final Markdown while omitting reconciled tool history.
+  } else if (message.role === "bashExecution") {
     appendText(body, `$ ${message.command || ""}\n\n${message.output || ""}`, "code-block");
   } else if (message.role === "compactionSummary") {
     appendText(body, message.summary || "Context was compacted.");
@@ -24122,6 +24196,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
         live: !!liveRun && !result,
       };
     }
+    if (compactOutputActive() && !["assistant", "thinking"].includes(transcriptMessage.role)) return;
     if (transcriptMessage.role === "thinking" && !thinkingOutputVisible) return;
     const created = appendMessage(transcriptMessage, {
       streaming: false,
@@ -24405,16 +24480,19 @@ function orderedTranscriptItems() {
   latestMessages.forEach((message, index) => {
     const resultId = message?.role === "toolResult" ? toolResultCallId(message) : "";
     if (resultId && assistantToolCallIds.has(resultId)) return;
+    if (compactOutputActive() && ["toolCall", "toolExecution", "toolResult", "assistantEvent"].includes(message?.role)) return;
     items.push({ message, messageIndex: index, transient: false, timestampMs: messageTimestampMs(message), order: index });
   });
   transientMessages.forEach((message, index) => {
     items.push({ message, messageIndex: index, transient: true, timestampMs: messageTimestampMs(message), order: latestMessages.length + index });
   });
   let liveOrder = latestMessages.length + transientMessages.length;
-  for (const [toolCallId, run] of liveToolRuns.entries()) {
-    if (assistantToolCallIds.has(toolCallId) || toolResults.has(toolCallId)) continue;
-    const message = liveToolRunMessage(run);
-    items.push({ message, messageIndex: -1, transient: true, timestampMs: messageTimestampMs(message), order: liveOrder++ });
+  if (!compactOutputActive()) {
+    for (const [toolCallId, run] of liveToolRuns.entries()) {
+      if (assistantToolCallIds.has(toolCallId) || toolResults.has(toolCallId)) continue;
+      const message = liveToolRunMessage(run);
+      items.push({ message, messageIndex: -1, transient: true, timestampMs: messageTimestampMs(message), order: liveOrder++ });
+    }
   }
   return items.sort((a, b) => a.timestampMs - b.timestampMs || a.order - b.order);
 }
@@ -24428,7 +24506,7 @@ function orderedTranscriptItems() {
 let renderedTranscriptState = { epoch: "", entries: [] };
 
 function transcriptRenderEpoch() {
-  return `${activeTabId || ""}|${thinkingOutputVisible ? 1 : 0}`;
+  return `${activeTabId || ""}|${thinkingOutputVisible ? 1 : 0}|${compactOutputActive() ? "compact" : "normal"}`;
 }
 
 function transcriptItemKey(item) {
@@ -26070,7 +26148,7 @@ async function openNativeSettingsDialog() {
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
     doubleEscape: nativeSettingSelect("Double-escape action", settings.doubleEscapeAction || doubleEscapeAction, SETTINGS_DOUBLE_ESCAPE_OPTIONS, "Action when pressing Escape twice with an empty composer.", { label: "browser", tone: "browser" }),
     treeFilter: nativeSettingSelect("Tree filter mode", settings.treeFilterMode || treeFilterMode, SETTINGS_TREE_FILTER_OPTIONS, "Default filter when opening /tree.", { label: "browser", tone: "browser" }),
-    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Compact reduces local output-processing and live fidelity, restores rich final output, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
+    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Fast mode preserves Markdown formatting for final output and thinking while showing only the current tool status transiently, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
     autoResizeImages: nativeSettingToggle("Auto-resize images", settings.autoResizeImages !== false, "Resize large images to 2000x2000 max for better model compatibility.", { label: "reload", tone: "reload" }),
     blockImages: nativeSettingToggle("Block images", settings.blockImages === true, "Prevent images from being sent to LLM providers.", { label: "reload", tone: "reload" }),
     showImages: nativeSettingToggle("Show terminal images", settings.showImages !== false, "Native TUI inline image rendering preference.", { label: "TUI", tone: "tui" }),
@@ -27168,19 +27246,25 @@ function removeCompactLiveBubble(bubble) {
   bubble?.remove();
 }
 
+function clearCompactToolShells() {
+  for (const shell of compactToolShells.values()) removeCompactLiveBubble(shell?.bubble);
+  compactToolShells.clear();
+}
+
 function resetCompactLiveOutput({ remove = true } = {}) {
   compactLiveScheduler.cancel();
   compactLiveState = createFastOutputLiveState();
   if (remove) {
     removeCompactLiveBubble(compactTextBubble);
     removeCompactLiveBubble(compactThinkingBubble);
-    for (const shell of compactToolShells.values()) removeCompactLiveBubble(shell?.bubble);
+    clearCompactToolShells();
+  } else {
+    compactToolShells.clear();
   }
   compactTextBubble = null;
   compactTextNode = null;
   compactThinkingBubble = null;
   compactThinkingNode = null;
-  compactToolShells.clear();
 }
 
 function ensureCompactTextBubble() {
@@ -27199,7 +27283,7 @@ function ensureCompactThinkingBubble() {
   const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true });
   compactThinkingBubble = created.bubble;
   compactThinkingBubble.classList.add("compact-live-output");
-  compactThinkingNode = make("div", "compact-live-thinking");
+  compactThinkingNode = make("div", "markdown-body thinking-text compact-live-thinking");
   created.body.append(compactThinkingNode);
   renderRunIndicator({ scroll: false });
   return true;
@@ -27214,6 +27298,7 @@ function renderCompactToolShell(event, { complete = false } = {}) {
   const id = compactToolShellId(event);
   let shell = compactToolShells.get(id);
   if (!shell) {
+    clearCompactToolShells();
     const bubble = make("article", "message toolExecution compact-tool-shell streaming");
     const header = make("div", "message-header");
     const role = make("span", "message-role");
@@ -27231,8 +27316,8 @@ function renderCompactToolShell(event, { complete = false } = {}) {
   const name = String(event?.toolName || event?.name || "tool");
   shell.role.textContent = `tool: ${name}`;
   shell.status.textContent = complete
-    ? `${name} ${event?.isError ? "failed" : "finished"}; restoring final details…`
-    : `${name} running…`;
+    ? event?.isError ? "failed" : "done"
+    : "running";
   shell.bubble.classList.toggle("tool-error", !!event?.isError);
   shell.bubble.classList.toggle("tool-running", !complete);
   shell.bubble.classList.toggle("tool-success", complete && !event?.isError);
@@ -27245,7 +27330,7 @@ function flushCompactLiveOutput() {
     if (compactTextNode?.textContent !== compactLiveState.text) compactTextNode.textContent = compactLiveState.text;
   }
   if (compactLiveState.thinking && ensureCompactThinkingBubble()) {
-    if (compactThinkingNode?.textContent !== compactLiveState.thinking) compactThinkingNode.textContent = compactLiveState.thinking;
+    if (compactThinkingNode?._rawThinkingText !== compactLiveState.thinking) renderThinkingMarkdown(compactThinkingNode, compactLiveState.thinking);
   }
   scheduleChatFollowScroll();
 }
@@ -27260,6 +27345,7 @@ function handleCompactMessageUpdate(event) {
   if (!shouldConsumeFastOutputLiveEvent(reduced)) return false;
   if (!reduced.changed) return true;
   compactLiveState = reduced.state;
+  clearCompactToolShells();
   if (reduced.kind.startsWith("thinking")) setRunIndicatorActivity("Thinking…", { scroll: false });
   else if (reduced.kind.startsWith("toolcall")) setRunIndicatorActivity("Building tool call…", { scroll: false });
   else setRunIndicatorActivity("Writing response…", { scroll: false });
@@ -27272,6 +27358,7 @@ function acceptOutputModeAcknowledgement(event) {
   if (acknowledgement) {
     activeOutputMode = acknowledgement.activeMode;
     outputModeAcknowledged = true;
+    if (!currentState?.isStreaming) renderAllMessages({ preserveScroll: true, forceRebuild: true });
     return true;
   }
   activeOutputMode = "normal";
@@ -27317,6 +27404,7 @@ function applyOutputModeControl(event, tabContext = activeTabContext()) {
   }
   activeOutputMode = event.activeMode;
   outputModeAcknowledged = true;
+  if (!currentState?.isStreaming) renderAllMessages({ preserveScroll: true, forceRebuild: true });
   addEvent(`live output mode changed to ${event.activeMode}`, "info");
   return true;
 }
@@ -27534,8 +27622,29 @@ function resetStreamBubble() {
   streamProviderErrorText = "";
 }
 
+function compactLiveStreamRenderActive() {
+  const messageOutputActive = streamMessageActive && Boolean(
+    compactTextBubble
+    || compactThinkingBubble
+    || compactLiveState.text
+    || compactLiveState.thinking
+    || compactLiveState.toolCall?.arguments,
+  );
+  return compactOutputActive() && currentState?.isStreaming === true && Boolean(compactToolShells.size || messageOutputActive);
+}
+
 function liveStreamRenderActive() {
   return streamMessageActive && currentState?.isStreaming === true && Boolean(streamBubble || streamThinkingBubble || streamToolCallBubble || streamRawText || streamToolCallRawArguments);
+}
+
+function restoreCompactLiveOutputAfterChatRebuild() {
+  compactTextBubble = null;
+  compactTextNode = null;
+  compactThinkingBubble = null;
+  compactThinkingNode = null;
+  if (streamMessageActive) flushCompactLiveOutput();
+  for (const shell of compactToolShells.values()) appendChatMessageBubble(shell.bubble);
+  renderRunIndicator({ scroll: false });
 }
 
 /**
@@ -28051,10 +28160,12 @@ async function refreshMessages(tabContext = activeTabContext()) {
   latestMessages = nextMessages;
   latestMessagesSessionKey = sessionKey;
   cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);
-  const preserveLiveStream = liveStreamRenderActive();
-  if (!preserveLiveStream) resetStreamBubble();
+  const preserveCompactStream = compactLiveStreamRenderActive();
+  const preserveNormalStream = !preserveCompactStream && liveStreamRenderActive();
+  if (!preserveCompactStream && !preserveNormalStream) resetStreamBubble();
   renderMessages(latestMessages);
-  if (preserveLiveStream) restoreStreamRenderAfterChatRebuild();
+  if (preserveCompactStream) restoreCompactLiveOutputAfterChatRebuild();
+  else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
   markTabOutputSeen();
   renderFooter();
 }
@@ -30669,6 +30780,7 @@ elements.nativeSkillsButton.addEventListener("click", () => runNativeCommandMenu
 elements.nativeToolsButton.addEventListener("click", () => runNativeCommandMenu("/tools"));
 elements.optionsCommandPaletteButton.addEventListener("click", () => openCommandPalette());
 elements.workflowModeButton?.addEventListener("click", () => toggleWorkflowMode());
+elements.workflowOverlayOpenButton?.addEventListener("click", () => setWorkflowOverlayMinimized(false));
 elements.workflowModeChip?.addEventListener("click", () => setWorkflowModeEnabled(false));
 elements.optionsConversationModeButton?.addEventListener("click", () => toggleNaturalConversationMode());
 elements.conversationModeChip?.addEventListener("click", () => toggleVoiceConversationPaused());
