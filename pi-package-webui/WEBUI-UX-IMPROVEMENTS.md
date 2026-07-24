@@ -179,7 +179,7 @@ Consolidations:
 Model, context, session, queue, CWD, and Git state appear in the dashboard, footer, side panel, and tab metadata. Pick one canonical, clickable status strip:
 
 ```text
-~/npm-packages • main • 3 changes | gpt-5.6 • xhigh • Context 0%
+~/pi-coding-agent-forge • main • 3 changes | gpt-5.6 • xhigh • Context 0%
 ```
 
 - Hide zero-value metrics (`$0.00`, `queue 0`) until relevant.
@@ -190,7 +190,7 @@ Model, context, session, queue, CWD, and Git state appear in the dashboard, foot
 
 Ambiguous controls (**Tab**, **Default**, **Root**, "Fast pick added"), oversized rows, weak location context.
 
-- Rename to **Choose working folder**; add clickable breadcrumbs (`Home / npm-packages / …`).
+- Rename to **Choose working folder**; add clickable breadcrumbs (`Home / pi-coding-agent-forge / …`).
 - Buttons: Back, Up, Home, Current workspace. "Fast picks" → **Pinned folders**; show pinned as a state, not a disabled button.
 - Compact rows with folder icons; deprioritize `.git`, `node_modules`, build output by default with a "show hidden/ignored" toggle.
 - Enter opens; explicit **Select this folder**; preserve focus across navigation; inline loading/permission errors.

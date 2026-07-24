@@ -4,10 +4,10 @@
   "description": "Safe per-process Natural Conversation Mode for Pi, with /talk commands and read-only tool constraints.",
   "license": "MIT",
   "type": "module",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-natural-conversation#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-natural-conversation#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-package-natural-conversation"
   },
   "keywords": [

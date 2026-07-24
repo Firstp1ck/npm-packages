@@ -186,7 +186,7 @@ Open the WebUI in a long working directory and narrow the viewport. Confirm the 
 Hover or focus the footer item to confirm the existing tooltip still exposes the complete original path. For repeatable checks:
 
 ```sh
-cd /home/firstpick/npm-packages/pi-package-webui
+cd /home/firstpick/pi-coding-agent-forge/pi-package-webui
 node --test tests/footer-middle-truncation.test.mjs
 npm run check
 python3 /home/firstpick/.pi/agent/skills/html-report/scripts/validate_report.py reports/footer-middle-truncation.html --strict

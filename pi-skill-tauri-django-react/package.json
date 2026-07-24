@@ -3,10 +3,10 @@
   "version": "0.1.7",
   "description": "Agents should invoke this skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-skill-tauri-django-react#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-tauri-django-react#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-skill-tauri-django-react"
   },
   "keywords": [

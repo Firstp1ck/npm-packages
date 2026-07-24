@@ -36,6 +36,8 @@ export type ActiveClassifierModel = NonNullable<ExtensionContext["model"]>;
 
 export const CLASSIFIER_TIMEOUT_MS = 15_000;
 export const MAX_CLASSIFIER_PROMPT_CHARS = 4_096;
+/** Replayable RPC status key for the effective feature category. */
+export const FEATURE_CATEGORY_STATUS_KEY = "feature-category";
 
 const CLASSIFIER_SYSTEM_PROMPT = [
 	"Classify the current user request for workflow routing.",
@@ -93,6 +95,26 @@ export function isLikelyContinuation(currentPrompt: string): boolean {
 	return /^(?:continue(?: (?:with|from|on|implementing)(?: .*)?)?|go on|proceed|carry on|keep going|yes|yes, (?:please )?(?:continue|proceed)|approved|lgtm|looks good|do it|please do|that works|fix (?:it|that)|correct (?:it|that)|clarify (?:that|the previous (?:answer|response)))\s*[.!?]*$/u.test(normalized);
 }
 
+const POTENTIAL_FEATURE_SIGNAL = /\b(?:add|build|create|develop|enable|enhance|extend|feature|implement|introduce|new|support)\b/u;
+const BUG_ACTION_SIGNAL = /\b(?:debug|diagnos(?:e|is)|find(?: and)? (?:fix|solve)|fix|repair|resolve|root ?cause|solve)\b/u;
+const BUG_SUBJECT_SIGNAL = /\b(?:bug|broken|crash(?:es|ed|ing)?|delay(?:s|ed)?|error|fail(?:s|ed|ure|ing)?|hang(?:s|ing)?|issue|latency|not working|problem|regression|root ?cause)\b/u;
+
+/**
+ * Skip the network classifier only for explicit, unambiguous non-feature work.
+ * Anything with an additive capability signal remains model-routed so this
+ * fast path cannot silently bypass the feature workflow.
+ */
+export function classifyObviousNonFeatureRequest(prompt: string): EffectiveRequestKind | undefined {
+	const normalized = prompt.trim().replace(/\s+/g, " ").toLowerCase();
+	if (!normalized || POTENTIAL_FEATURE_SIGNAL.test(normalized)) return undefined;
+	if (BUG_ACTION_SIGNAL.test(normalized) && BUG_SUBJECT_SIGNAL.test(normalized)) return "bug";
+	if (/^(?:review|audit)(?:\s|:|$)/u.test(normalized)) return "review";
+	if (/^(?:research|compare|evaluate)(?:\s|:|$)/u.test(normalized)) return "research";
+	if (/^(?:explain|summarize|what is|what are|why (?:is|are|does|do|did)|how (?:is|are|does|do|did))\b/u.test(normalized)) return "question";
+	if (/^(?:troubleshoot|diagnose)(?:\s|:|$)/u.test(normalized)) return "troubleshooting";
+	return undefined;
+}
+
 export function parseRequestKind(text: string): RequestKind | undefined {
 	return (REQUEST_KINDS as readonly string[]).includes(text) ? (text as RequestKind) : undefined;
 }
@@ -112,6 +134,12 @@ export function getFeatureComplexity(result: RequestKind | undefined): FeatureCo
 
 export function shouldInjectFeaturePrompt(result: RequestKind | undefined): boolean {
 	return getFeatureComplexity(result) !== undefined;
+}
+
+function setFeatureCategoryStatus(ctx: Pick<ExtensionContext, "mode" | "ui">, result: RequestKind | undefined): void {
+	if (ctx.mode !== "rpc") return;
+	const complexity = getFeatureComplexity(result);
+	ctx.ui.setStatus(FEATURE_CATEGORY_STATUS_KEY, complexity === undefined ? undefined : `${complexity}-feature`);
 }
 
 export function buildFeatureClassificationContext(result: RequestKind): string {
@@ -226,41 +254,55 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 		});
 		const requestClassifier = dependencies.classifyRequest ?? classifyRequest;
 
-		pi.on("session_start", resetContinuationState);
-		pi.on("session_tree", resetContinuationState);
+		const resetSessionState = (_event: unknown, ctx: ExtensionContext) => {
+			resetContinuationState();
+			setFeatureCategoryStatus(ctx, undefined);
+		};
+
+		pi.on("session_start", resetSessionState);
+		pi.on("session_tree", resetSessionState);
 
 		pi.on("before_agent_start", async (event, ctx) => {
-			if (!ctx.model) {
-				resetContinuationState();
-				return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
-			}
-
 			const continuation = isLikelyContinuation(event.prompt);
-			const input: ClassifierPromptInput = {
-				prompt: event.prompt,
-				...(continuation && previousPrompt !== undefined
-					? { previousPrompt, previousEffectiveKind }
-					: {}),
-			};
+			let resolvedKind: EffectiveRequestKind | undefined = continuation ? previousEffectiveKind : classifyObviousNonFeatureRequest(event.prompt);
 
-			let classifiedKind: RequestKind | undefined;
-			try {
-				classifiedKind = await requestClassifier(input, ctx.model);
-			} catch {
-				resetContinuationState();
-				return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
+			if (resolvedKind === undefined) {
+				if (!ctx.model) {
+					resetContinuationState();
+					setFeatureCategoryStatus(ctx, undefined);
+					return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
+				}
+
+				const input: ClassifierPromptInput = {
+					prompt: event.prompt,
+					...(continuation && previousPrompt !== undefined
+						? { previousPrompt, previousEffectiveKind }
+						: {}),
+				};
+
+				let classifiedKind: RequestKind | undefined;
+				try {
+					classifiedKind = await requestClassifier(input, ctx.model);
+				} catch {
+					resetContinuationState();
+					setFeatureCategoryStatus(ctx, undefined);
+					return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
+				}
+
+				if (classifiedKind === undefined) {
+					resetContinuationState();
+					setFeatureCategoryStatus(ctx, undefined);
+					return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
+				}
+
+				resolvedKind = classifiedKind === "continuation" && !continuation
+					? "other"
+					: resolveRequestKind(classifiedKind, previousEffectiveKind);
 			}
 
-			if (classifiedKind === undefined) {
-				resetContinuationState();
-				return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
-			}
-
-			const resolvedKind = classifiedKind === "continuation" && !continuation
-				? "other"
-				: resolveRequestKind(classifiedKind, previousEffectiveKind);
 			previousPrompt = truncateClassifierPrompt(event.prompt);
 			previousEffectiveKind = resolvedKind;
+			setFeatureCategoryStatus(ctx, resolvedKind);
 
 			if (!shouldInjectFeaturePrompt(resolvedKind)) return;
 

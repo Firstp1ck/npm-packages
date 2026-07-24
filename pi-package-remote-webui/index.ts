@@ -82,7 +82,7 @@ function resolveWebuiBin(): string {
     }
   }
 
-  throw new Error("Could not locate @firstpick/pi-package-webui/bin/pi-webui.mjs. Install @firstpick/pi-package-webui or run from the npm-packages checkout.");
+  throw new Error("Could not locate @firstpick/pi-package-webui/bin/pi-webui.mjs. Install @firstpick/pi-package-webui or run from the pi-coding-agent-forge checkout.");
 }
 
 function appendBoundedOutput(current: string, chunk: Buffer | string, maxChars = 20_000): string {

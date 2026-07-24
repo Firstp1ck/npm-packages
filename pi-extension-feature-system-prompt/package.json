@@ -4,10 +4,10 @@
   "description": "Classify Pi requests and inject a feature-workflow prompt only for feature work.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-feature-system-prompt#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-feature-system-prompt#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-feature-system-prompt"
   },
   "keywords": [

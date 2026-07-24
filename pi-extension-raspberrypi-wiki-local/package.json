@@ -3,10 +3,10 @@
   "version": "0.1.4",
   "description": "Local Raspberry Pi Documentation search and retrieval tools for Pi backed by a local documentation corpus.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-raspberrypi-wiki-local#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-raspberrypi-wiki-local#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-raspberrypi-wiki-local"
   },
   "keywords": [

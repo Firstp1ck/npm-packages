@@ -17,7 +17,7 @@ function packageRoot(): string {
   const candidates = [
     __dirname,
     path.join(process.cwd(), "pi-package-learnings"),
-    path.join(os.homedir(), "npm-packages", "pi-package-learnings"),
+    path.join(os.homedir(), "pi-coding-agent-forge", "pi-package-learnings"),
     path.join(os.homedir(), ".bun", "install", "global", "node_modules", "pi-package-learnings"),
     path.join(os.homedir(), ".bun", "install", "global", "node_modules", "@firstpick", "pi-package-learnings"),
   ];

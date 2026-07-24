@@ -131,7 +131,7 @@ Acceptance:
 
 - Future priority reviews can answer “what are users using most?” from local evidence.
 - No privacy regression: usage counters are local, non-secret, and user-visible.
-- `npm --prefix /home/firstpick/npm-packages/pi-package-webui run check` passes.
+- `npm --prefix /home/firstpick/pi-coding-agent-forge/pi-package-webui run check` passes.
 
 ### Phase B — Core interaction loop
 
@@ -199,7 +199,7 @@ Do not spend new roadmap capacity on these except for regressions or polish:
 Run at least:
 
 ```bash
-npm --prefix /home/firstpick/npm-packages/pi-package-webui run check
+npm --prefix /home/firstpick/pi-coding-agent-forge/pi-package-webui run check
 git diff --check
 ```
 

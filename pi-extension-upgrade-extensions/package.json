@@ -3,10 +3,10 @@
   "version": "0.1.7",
   "description": "Upgrade npm-installed Pi extensions with up-to-date checks.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-upgrade-extensions#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-upgrade-extensions#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-upgrade-extensions"
   },
   "keywords": [

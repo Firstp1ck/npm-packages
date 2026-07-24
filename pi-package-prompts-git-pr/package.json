@@ -6,10 +6,10 @@
     "test": "node tests/git-staged-msg.test.mjs"
   },
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-prompts-git-pr#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-prompts-git-pr#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-package-prompts-git-pr"
   },
   "keywords": [

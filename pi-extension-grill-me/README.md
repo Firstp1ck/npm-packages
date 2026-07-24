@@ -22,7 +22,7 @@ pi install npm:@firstpick/pi-extension-grill-me
 For local development, symlink Pi's global extension entry to this package:
 
 ```bash
-ln -s /home/firstpick/npm-packages/pi-extension-grill-me/index.ts ~/.pi/agent/extensions/grill-me.ts
+ln -s /home/firstpick/pi-coding-agent-forge/pi-extension-grill-me/index.ts ~/.pi/agent/extensions/grill-me.ts
 ```
 
 Then run `/reload` in Pi.

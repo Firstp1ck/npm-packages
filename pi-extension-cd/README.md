@@ -28,7 +28,7 @@ Examples:
 ```text
 /cd ..
 /cd ~/code/my-app
-/cd --add npm /home/firstpick/npm-packages
+/cd --add npm /home/firstpick/pi-coding-agent-forge
 /cd npm
 /cd --remove npm
 ```

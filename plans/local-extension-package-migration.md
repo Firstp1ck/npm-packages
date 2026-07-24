@@ -1,9 +1,9 @@
 # Local Pi Extension Package Migration
 
 **Status:** Complete — packages, runtime migration, review quorum, validation, and report verified  
-**Feature classification:** Complex — four standalone runtime extensions become independently publishable packages, their tests and metadata move with them, local runtime discovery changes from hardcoded files to repository-managed symlinks, and the migration crosses the npm-packages and dotfiles repositories.  
+**Feature classification:** Complex — four standalone runtime extensions become independently publishable packages, their tests and metadata move with them, local runtime discovery changes from hardcoded files to repository-managed symlinks, and the migration crosses the pi-coding-agent-forge and dotfiles repositories.
 **Integration owner:** Main agent  
-**Primary repository:** `/home/firstpick/npm-packages`  
+**Primary repository:** `/home/firstpick/pi-coding-agent-forge`
 **Secondary runtime repository:** `/home/firstpick/.dotfiles`  
 **Report:** [`../reports/local-extension-package-migration.html`](../reports/local-extension-package-migration.html)
 
@@ -106,7 +106,7 @@ Workers must preserve all paths outside their boundary, must not stage or commit
 8. Conditional prompt routing gains focused tests for platform/tool conditions, chained prompt preservation, caching, and missing-file behavior as implemented.
 9. `sync-pi-package-symlinks.sh --dry-run` resolves all package resources without duplicate names or unresolved sources.
 10. Applied sync produces symlinks for all four migrated standalone files and the expected generated wrapper for `workflow-test-extension.ts`; no standalone source owned by this migration remains a regular file.
-11. Runtime discovery/import smoke confirms the four symlinks resolve into `/home/firstpick/npm-packages`, the workflow wrapper imports its repository source by absolute file URL, and child Pi startup succeeds.
+11. Runtime discovery/import smoke confirms the four symlinks resolve into `/home/firstpick/pi-coding-agent-forge`, the workflow wrapper imports its repository source by absolute file URL, and child Pi startup succeeds.
 12. Root and package `git diff --check` pass; no files are staged; unrelated dirty files are byte-preserved.
 13. Repository publish-readiness checks pass for all four packages without publishing.
 14. The final HTML report passes the strict report validator.
@@ -122,7 +122,7 @@ Workers must preserve all paths outside their boundary, must not stage or commit
 | Runtime resource sync | Pass | Applied sync created four package symlinks; post-fix dry-run reports 47/47 extensions already correct with zero relinks, renames, or skips. |
 | Workflow dev compatibility | Pass after remediation | Direct symlink caused both first reviewer slots to fail before child creation. Restored generated absolute-file-URL wrapper; corrected two-provider reviewer run then started and completed both child Pi sessions. |
 | Anthropic umbrella patch | Pass after accepted fix | Removed dangling required recovery component; strict extraction, status, and offline verify report `ok=true`, `blocked=false`, and zero writes. |
-| Portability scan | Pass | Published files contain no `/home/firstpick`, `.dotfiles`, or fixed `~/npm-packages` assumptions beyond expected public `@firstpick` package metadata. |
+| Portability scan | Pass | Published files contain no `/home/firstpick`, `.dotfiles`, or fixed `~/pi-coding-agent-forge` assumptions beyond expected public `@firstpick` package metadata. |
 | Unrelated dirty files | Pass | Saved SHA-256 hashes for four WebUI files and both model inventory files remained unchanged. |
 | Repository hygiene | Pass with deferred index note | Both repos pass `git diff --check`; no files are staged. Two dotfiles paths remain tracked as typechanged symlinks until a future explicit index/commit operation. |
 | HTML completion report | Pass | `reports/local-extension-package-migration.html` passed strict validation with zero errors and zero warnings. |
@@ -141,7 +141,7 @@ The qualifying fresh-context review quorum completed under run `0587d315-f471-4b
 | R1-F1 | Umbrella Anthropic patch still required removed `../pi-anthropic-auth-recovery/PATCH.md` | Accepted and fixed | Removed the obsolete target/component, documented npm-package recovery ownership, then passed strict extraction plus status/verify with two remaining components and zero writes. |
 | R1-F2 | Two dotfiles source paths remain tracked as absolute symlink typechanges | Deferred to commit/index operation | Runtime migration is correct and `.gitignore` now covers the links, but stopping Git tracking requires `git rm --cached` and an eventual commit. This task deliberately leaves both repositories unstaged and does not commit without authorization. Before committing dotfiles, run `git rm --cached .pi/agent/extensions/conditional-system-prompts.ts .pi/agent/extensions/feature-system-prompt.ts`; the working symlinks remain present and ignored. |
 | R1-N1 | Inventory-time byte-identical statement no longer describes final recovery source | Clarified | The statement records the pre-promotion baseline. Final source intentionally differs only in approved portable discovery; W2 tests and source comparison verify the delta. |
-| R2-N1 | Old implicit `~/npm-packages` recovery fallback removed | Accepted portability change | Standard agent paths, cwd/module ancestors, and explicit environment overrides replace the personal checkout assumption; failure degrades safely. |
+| R2-N1 | Old implicit `~/pi-coding-agent-forge` recovery fallback removed | Accepted portability change | Standard agent paths, cwd/module ancestors, and explicit environment overrides replace the personal checkout assumption; failure degrades safely. |
 | R2-N2 | Unknown future subagent execution action could bypass current aliases | Accepted residual | Current installed semantics are covered; README requires compatibility review after schema upgrades. |
 | R2-N3 | Full child startup was not re-run by R2 | Verified independently | The corrected reviewer workflow itself started and completed both child Pi sessions after wrapper restoration, directly covering the prior startup failure. |
 

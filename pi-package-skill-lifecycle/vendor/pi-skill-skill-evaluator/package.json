@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Reusable Pi skill evaluation harness for validating skill structure, routing quality, safety boundaries, referenced scripts, and bundled tests.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-skill-lifecycle/vendor/pi-skill-skill-evaluator#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-skill-lifecycle/vendor/pi-skill-skill-evaluator#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-package-skill-lifecycle/vendor/pi-skill-skill-evaluator"
   },
   "keywords": [

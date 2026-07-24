@@ -310,12 +310,12 @@ Tasks:
 Suggested checks:
 
 ```bash
-npm --prefix /home/firstpick/npm-packages/pi-package-webui run check
-node --experimental-strip-types --check /home/firstpick/npm-packages/pi-extension-release-npm/index.ts
-node --experimental-strip-types --check /home/firstpick/npm-packages/pi-extension-release-aur/index.ts
-node --experimental-strip-types --check /home/firstpick/npm-packages/pi-extension-todo-progress/index.ts
-node --experimental-strip-types --check /home/firstpick/npm-packages/pi-extension-tools/index.ts
-node --experimental-strip-types --check /home/firstpick/npm-packages/pi-extension-setup-skills/index.ts
+npm --prefix /home/firstpick/pi-coding-agent-forge/pi-package-webui run check
+node --experimental-strip-types --check /home/firstpick/pi-coding-agent-forge/pi-extension-release-npm/index.ts
+node --experimental-strip-types --check /home/firstpick/pi-coding-agent-forge/pi-extension-release-aur/index.ts
+node --experimental-strip-types --check /home/firstpick/pi-coding-agent-forge/pi-extension-todo-progress/index.ts
+node --experimental-strip-types --check /home/firstpick/pi-coding-agent-forge/pi-extension-tools/index.ts
+node --experimental-strip-types --check /home/firstpick/pi-coding-agent-forge/pi-extension-setup-skills/index.ts
 git diff --check
 ```
 

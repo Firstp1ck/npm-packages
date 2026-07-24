@@ -62,7 +62,7 @@ Official/source evidence used:
 
 ## Practical checks
 
-- `validate_wiki /home/firstpick/npm-packages/pi-extension-raspberrypi-wiki-local`: passed.
+- `validate_wiki /home/firstpick/pi-coding-agent-forge/pi-extension-raspberrypi-wiki-local`: passed.
 - `npm install --package-lock-only --ignore-scripts`: passed, 0 vulnerabilities reported.
 - `npm pack --dry-run`: passed after the evaluation report was added; tarball contained 7 package files and excluded cache/docs/package-lock artifacts.
 - `bun build index.ts --target=node --outfile=/tmp/raspberrypi-wiki-local-index-check.js`: passed.

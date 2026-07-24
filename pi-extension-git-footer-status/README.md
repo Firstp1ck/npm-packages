@@ -65,7 +65,7 @@ None.
 
 ```text
 🪙 ↑126k · ↓11k │ 💾 R1.4M │ PI: 6.8k tok │ ⚡ 48.6 tok/s │ 💸 $1.667 (sub) │ 🧠 19.0%/272k                                                                                                                (openai-codex) gpt-5.5 • low
-~/npm-packages (main) │ ✎15 │ ⏱15m · Agent
+~/pi-coding-agent-forge (main) │ ✎15 │ ⏱15m · Agent
 ```
 
 At a glance you can see token flow, cache reads, prompt-injection size, streaming speed, cost/subscription state, context pressure, model/reasoning level, current repo/branch, dirty-file count, and session time without running `git status`.

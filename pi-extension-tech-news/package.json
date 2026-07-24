@@ -3,10 +3,10 @@
   "version": "0.1.9",
   "description": "Tech news tools and commands for Pi using Hacker News, Reddit, Socket.dev, and daily.dev sources.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-tech-news#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-tech-news#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-tech-news"
   },
   "keywords": [

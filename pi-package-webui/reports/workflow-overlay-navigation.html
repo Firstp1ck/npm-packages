@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Workflow Overlay Navigation — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section {
+      margin: 18px 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { padding: .12em .38em; border-radius: 5px; background: var(--code); }
+    pre { padding: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--code); color: #d9e6f7; white-space: pre-wrap; }
+    .lead { max-width: 84ch; color: var(--muted); font-size: 1.08rem; }
+    .badge { display: inline-block; margin-bottom: 8px; padding: 3px 9px; border: 1px solid; border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .info { color: var(--blue); }
+    .badge.good { border-color: rgb(80 216 144 / 38%); background: rgb(80 216 144 / 14%); }
+    .badge.warn { border-color: rgb(247 198 92 / 38%); background: rgb(247 198 92 / 14%); }
+    .badge.info { border-color: rgb(101 181 255 / 38%); background: rgb(101 181 255 / 14%); }
+    .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card strong.metric { display: block; color: var(--green); font-size: 1.35rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .86rem; letter-spacing: .04em; text-transform: uppercase; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    figure { margin: 18px 0 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    figure svg { display: block; width: 100%; height: auto; }
+    figcaption { margin-top: 12px; color: var(--muted); }
+    ul { padding-left: 1.3rem; }
+    .status { font-weight: 750; }
+    .evidence { color: var(--muted); font-size: .94rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 20px, 1120px); margin: 16px auto 36px; }
+      header, section { padding: 17px; }
+      table { min-width: 620px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --panel: #fff; --panel-2: #f4f7fb; --text: #111827; --muted: #475569; --line: #cbd5e1; --code: #eef2f7; }
+      body { background: #fff; }
+      main { width: 100%; margin: 0; }
+      header, section, figure, .card { box-shadow: none; break-inside: avoid; }
+      table { min-width: 0; }
+      a { color: #075985; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="badge good">Implemented · independently reviewed</span>
+      <h1>Workflow Overlay Navigation</h1>
+      <p class="lead">A lightweight WebUI refinement that gives workflow status, phase, task progress, and output limits a clear hierarchy while making live terminal scrolling predictable instead of forcing the reader back to the newest line.</p>
+      <div class="callout"><strong>Conclusion:</strong> the workflow overlay now separates summary information from actions and output, preserves the reader’s terminal position per tab and run, and keeps horizontal log scrolling local. Syntax, focused tests, the full 41-file package suite, and a cross-provider review quorum passed.</div>
+      <p class="evidence">Scope: <code>public/app.js</code>, <code>public/styles.css</code>, <code>tests/mobile-static.test.mjs</code>. Confidence: <strong>96/100</strong>. A browser pixel comparison was not available; runtime layout confidence is based on source inspection, CSS cascade analysis, focused contracts, and three successful independent reviews.</p>
+    </header>
+
+    <section aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Before</th><th>Implemented behavior</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td>Status hierarchy</td><td>Undifferentiated pills</td><td>Labeled <strong>Run</strong>, <strong>Phase</strong>, <strong>Tasks</strong>, and conditional <strong>Output</strong> groups</td><td><code>workflowMetaItem()</code>; workflow meta grid CSS</td></tr>
+            <tr><td>Output limit</td><td>Ambiguous “truncated” pill</td><td>“Limited history” with visible “Older output omitted from this view” explanation</td><td><code>renderWorkflowSubprocessWidget()</code></td></tr>
+            <tr><td>Live scrolling</td><td>Every rerender forced the terminal to the bottom</td><td>Follow only while near the tail; scrolling up pauses follow and preserves position</td><td><code>bindWorkflowTerminalScroll()</code></td></tr>
+            <tr><td>Scroll boundaries</td><td>Competing outer and terminal scroll behavior</td><td>Outer vertical overlay is bounded; terminal vertical overscroll chains upward; horizontal log scroll remains local</td><td>Dedicated live-workflow and terminal overflow rules</td></tr>
+            <tr><td>Regression safety</td><td>Shared output helper always jumped to bottom on open</td><td>Workflow opts into position restoration; npm/AUR/app-runner behavior remains unchanged</td><td><code>preserveScrollOnToggle</code> guard</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="design-title">
+      <h2 id="design-title">Interaction and layout design</h2>
+      <div class="grid">
+        <article class="card"><span class="badge info">Summary</span><h3>Readable at a glance</h3><p>Compact labeled cards replace a row of visually equal pills. Status colors remain semantic, but labels carry the meaning without relying on color alone.</p></article>
+        <article class="card"><span class="badge info">Reader control</span><h3>Auto-follow is conditional</h3><p>A 24-pixel near-bottom threshold decides whether new output follows the live tail. The footer says when following is active or paused.</p></article>
+        <article class="card"><span class="badge info">Responsive</span><h3>Three layout states</h3><p>Desktop uses a three-part header; at 1100px metadata moves to its own row; at 720px it becomes a two-column grid and help text stacks.</p></article>
+        <article class="card"><span class="badge info">Accessibility</span><h3>Limits are visible</h3><p>The summary uses <code>role="group"</code> with an accessible label. Output-limit detail is visible text rather than a hover-only native tooltip.</p></article>
+      </div>
+
+      <figure data-visual-kind="diagram" data-purpose="Explain the final workflow overlay hierarchy and scroll propagation">
+        <svg role="img" aria-labelledby="scroll-diagram-title scroll-diagram-desc" viewBox="0 0 920 330">
+          <title id="scroll-diagram-title">Workflow overlay structure and scroll propagation</title>
+          <desc id="scroll-diagram-desc">The overlay contains a summary and action header, an expandable stream heading, a terminal viewport, and follow-state help. Vertical scrolling passes from the terminal to the bounded overlay at its edge, while horizontal scrolling stays inside the terminal.</desc>
+          <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#65b5ff"/></marker></defs>
+          <rect x="30" y="22" width="860" height="285" rx="18" fill="#121c2d" stroke="#65b5ff" stroke-width="2"/>
+          <text x="54" y="55" fill="#e8eef8" font-size="20" font-weight="700">Bounded workflow overlay · vertical scroll only</text>
+          <rect x="55" y="75" width="810" height="65" rx="12" fill="#18253a" stroke="#2b3b55"/>
+          <text x="75" y="101" fill="#a9b7cb" font-size="13">HEADER</text>
+          <text x="75" y="125" fill="#e8eef8" font-size="16">Workflow title</text>
+          <text x="280" y="125" fill="#65b5ff" font-size="16">Run · Phase · Tasks · Output limit</text>
+          <text x="725" y="125" fill="#e8eef8" font-size="16">Actions</text>
+          <rect x="55" y="155" width="810" height="38" rx="9" fill="#07101c" stroke="#2b3b55"/>
+          <text x="75" y="180" fill="#e8eef8" font-size="15">▾ Live subprocess output</text>
+          <rect x="55" y="208" width="620" height="75" rx="10" fill="#07101c" stroke="#50d890"/>
+          <text x="75" y="236" fill="#50d890" font-size="13">TERMINAL VIEWPORT</text>
+          <text x="75" y="261" fill="#e8eef8" font-size="15">Vertical edge → continue through overlay</text>
+          <line x1="620" y1="258" x2="620" y2="218" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"/>
+          <rect x="695" y="208" width="170" height="75" rx="10" fill="#18253a" stroke="#f7c65c"/>
+          <text x="715" y="235" fill="#f7c65c" font-size="13">HORIZONTAL</text>
+          <text x="715" y="261" fill="#e8eef8" font-size="15">Contained locally</text>
+        </svg>
+        <figcaption>The browser state map survives widget rerenders, so the terminal can be rebuilt without losing whether the user is following the tail or reading older output.</figcaption>
+      </figure>
+    </section>
+
+    <section aria-labelledby="implementation-title">
+      <h2 id="implementation-title">Implementation map</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Change</th><th>Boundary preserved</th></tr></thead>
+          <tbody>
+            <tr><td><code>public/app.js</code></td><td>Per-tab/per-run scroll state; follow/pause restoration; labeled metadata; visible output-limit description</td><td>No workflow payload, server API, or dependency change</td></tr>
+            <tr><td><code>public/styles.css</code></td><td>Dedicated subprocess header/meta grid; explicit live-workflow overflow axes; terminal overscroll chaining; responsive breakpoints</td><td>Shared npm/AUR terminal sizing remains unchanged</td></tr>
+            <tr><td><code>tests/mobile-static.test.mjs</code></td><td>Contracts for hierarchy, accessibility, follow state, scroll restoration, live CSS cascade, and overflow boundaries</td><td>Uses the repository’s existing static frontend test convention</td></tr>
+            <tr><td><code>plans/workflow-overlay-navigation.md</code></td><td>Approved design, scope, evidence, reviews, rollback, and residual risk</td><td>Records unrelated dirty work as explicitly out of scope</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="validation-title">
+      <h2 id="validation-title">Validation and acceptance evidence</h2>
+      <div class="grid">
+        <article class="card"><strong class="metric">PASS</strong><h3>Syntax</h3><p><code>node --check public/app.js</code></p></article>
+        <article class="card"><strong class="metric">1 / 1</strong><h3>Focused test</h3><p><code>node --test tests/mobile-static.test.mjs</code></p></article>
+        <article class="card"><strong class="metric">41 / 41</strong><h3>Package suite</h3><p><code>npm run check</code></p></article>
+        <article class="card"><strong class="metric">3 clean</strong><h3>Independent reviews</h3><p>Google, DeepSeek, and Qwen completed read-only reviews; no blockers remained.</p></article>
+      </div>
+      <pre>node --check public/app.js                         PASS
+node --test tests/mobile-static.test.mjs          PASS (1 test, 0 failures)
+npm run check                                     PASS (all 41 test files)
+workflow live cascade guard                       PASS
+git diff --check -- scoped feature paths          PASS</pre>
+      <p class="evidence">A live browser/pixel comparison was not run because the repository has no installed Playwright or Puppeteer surface. The supplied screenshot guided the hierarchy and boundary design; source tests and cascade inspection provide the saved verification evidence.</p>
+    </section>
+
+    <section aria-labelledby="reviews-title">
+      <h2 id="reviews-title">Independent review findings and dispositions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Review</th><th>Finding</th><th>Disposition</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td>Google · run <code>3853d01c…</code></td><td>Low: generic metadata div needed an explicit grouping role</td><td><span class="status good">Accepted and fixed</span></td><td>Added <code>role="group"</code> with “Workflow run summary” label</td></tr>
+            <tr><td>Google · run <code>3853d01c…</code></td><td>Low: native title explanation was not keyboard discoverable</td><td><span class="status good">Accepted and fixed</span></td><td>Replaced title-only detail with visible <code>.workflow-meta-description</code></td></tr>
+            <tr><td>Anthropic retry · run <code>2184e22f…</code></td><td>Partial review suggested accessibility contracts should be explicit; run itself exceeded its turn budget</td><td><span class="status good">Accepted evidence, not counted in quorum</span></td><td>Added focused ARIA, description, and preserve-scroll assertions</td></tr>
+            <tr><td>Parent cascade verification</td><td>High-specificity shared live selector could override workflow <code>overflow-x: hidden</code></td><td><span class="status good">Accepted and fixed</span></td><td>Separated a dedicated live-workflow widget-area rule; added a cascade guard</td></tr>
+            <tr><td>DeepSeek · run <code>b9daa5fa…</code></td><td>No blockers; low-risk notes on stale tab state and optional extra assertions</td><td><span class="status info">Accepted as residual risk / deferred polish</span></td><td>Memory is bounded to one tiny record per previously rendered tab; no user-visible defect</td></tr>
+            <tr><td>Qwen · run <code>b9daa5fa…</code></td><td>No blockers; harmless old pill selectors and inspector-wide outer bound noted</td><td><span class="status info">Deferred</span></td><td>Removing shared legacy selectors is outside this focused feature and offers no material benefit</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout info-callout"><strong>Qualifying quorum:</strong> Google plus DeepSeek satisfy the required fresh, read-only, distinct-provider review quorum; Qwen provides an additional independent CSS/accessibility check. OpenAI remained the implementation provider.</div>
+    </section>
+
+    <section aria-labelledby="risk-title">
+      <h2 id="risk-title">Residual risks, rollout, and rollback</h2>
+      <div class="grid">
+        <article class="card"><span class="badge warn">Residual</span><h3>No browser pixel test</h3><p>Static CSS and source contracts cannot fully prove visual density on every browser/zoom combination. A manual check against a long live workflow remains useful.</p></article>
+        <article class="card"><span class="badge info">Low impact</span><h3>Closed-tab state</h3><p>The in-memory map can retain one small record for a formerly rendered tab until page reload. It contains only booleans and pixel position, not output content.</p></article>
+        <article class="card"><span class="badge good">Rollout</span><h3>No migration</h3><p>The change is browser-only and activates with the existing workflow widget payload. Reloading the WebUI is sufficient.</p></article>
+        <article class="card"><span class="badge good">Rollback</span><h3>Localized revert</h3><p>Revert the scoped renderer, CSS, and test hunks. No stored data, protocol, package dependency, or server route needs rollback.</p></article>
+      </div>
+      <p>Recommended manual acceptance: open a long-running workflow, scroll upward, confirm the footer changes to “Auto-follow paused,” let new lines arrive without a jump, then scroll to the bottom and confirm follow resumes. Check that long log lines scroll horizontally only inside the terminal.</p>
+    </section>
+
+    <section aria-labelledby="sources-title">
+      <h2 id="sources-title">Evidence and limitations</h2>
+      <ul>
+        <li><a href="../plans/workflow-overlay-navigation.md">Canonical plan</a></li>
+        <li><code>public/app.js</code>: workflow subprocess renderer and scroll-state logic</li>
+        <li><code>public/styles.css</code>: workflow overlay, metadata, responsive, and overflow rules</li>
+        <li><code>tests/mobile-static.test.mjs</code>: focused implementation contracts</li>
+        <li>Independent review artifacts under <code>.pi-subagents/artifacts/outputs/</code> for runs <code>3853d01c…</code> and <code>b9daa5fa…</code></li>
+      </ul>
+      <p class="evidence">This report intentionally excludes concurrent raw workflow-script inspector and footer/report changes present in the dirty worktree. Reviewers were instructed to ignore those unrelated modifications.</p>
+    </section>
+  </main>
+</body>
+</html>

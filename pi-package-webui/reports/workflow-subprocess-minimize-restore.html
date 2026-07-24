@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Workflow Subprocess Minimize / Restore — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link {
+      position: fixed;
+      z-index: 10;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--blue);
+      color: #06111f;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section {
+      margin: 18px 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { padding: .12em .38em; border-radius: 5px; background: var(--code); }
+    pre { padding: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--code); color: #d9e6f7; white-space: pre-wrap; }
+    .lead { max-width: 84ch; color: var(--muted); font-size: 1.08rem; }
+    .muted, .evidence { color: var(--muted); }
+    .evidence { font-size: .94rem; }
+    .badge { display: inline-block; margin-bottom: 8px; padding: 3px 9px; border: 1px solid; border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .info { color: var(--blue); }
+    .badge.good { border-color: rgb(80 216 144 / 38%); background: rgb(80 216 144 / 14%); }
+    .badge.warn { border-color: rgb(247 198 92 / 38%); background: rgb(247 198 92 / 14%); }
+    .badge.info { border-color: rgb(101 181 255 / 38%); background: rgb(101 181 255 / 14%); }
+    .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card strong.metric { display: block; color: var(--green); font-size: 1.35rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .86rem; letter-spacing: .04em; text-transform: uppercase; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    .status { font-weight: 750; }
+    figure { margin: 18px 0 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    figure svg { display: block; width: 100%; height: auto; }
+    figcaption { margin-top: 12px; color: var(--muted); }
+    ul { padding-left: 1.3rem; }
+    footer { margin-top: 24px; color: var(--muted); font-size: .92rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 20px, 1120px); margin: 16px auto 36px; }
+      header, section { padding: 17px; }
+      table { min-width: 620px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --panel: #fff; --panel-2: #f4f7fb; --text: #111827; --muted: #475569; --line: #cbd5e1; --code: #eef2f7; }
+      body { background: #fff; }
+      main { width: 100%; margin: 0; }
+      header, section, figure, .card { box-shadow: none; break-inside: avoid; }
+      table { min-width: 0; }
+      a { color: #075985; }
+      .skip-link { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#report-content">Skip to report content</a>
+  <main id="report-content">
+    <header>
+      <span class="badge good">Implemented · independently reviewed</span>
+      <h1>Workflow Subprocess Minimize / Restore</h1>
+      <p class="lead">A lightweight Pi WebUI feature that lets users collapse the verbose Workflow Subprocesses output while keeping the workflow identity, run summary, safety actions, and a clear Restore control available.</p>
+      <div class="callout"><strong>Conclusion:</strong> the subprocess card now has an accessible per-tab Minimize/Restore control. Minimized cards stop building the terminal body, release the workflow sizing rule when every workflow card is minimized, and restore the existing output expansion plus scroll/follow state. A validated follow-up replaced the earlier fixed slot with intrinsic growth up to a viewport-safe cap.</div>
+      <p class="evidence">Scope: <code>public/app.js</code>, <code>public/styles.css</code>, and <code>tests/mobile-static.test.mjs</code>. Syntax, the focused test, all 41 package test files, scoped diff checks, two independent minimize/restore reviews, and a headless Chrome geometry probe passed. Confidence: <strong>94/100</strong>; focus and cross-tab interaction remain recommended manual checks.</p>
+    </header>
+
+    <section aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Implemented behavior</th><th>User impact</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td>Card control</td><td>Header button switches between <strong>Minimize</strong> and <strong>Restore</strong></td><td>Verbose output can be hidden without clearing or aborting the run</td><td><code>renderWorkflowSubprocessWidget()</code></td></tr>
+            <tr><td>Per-tab state</td><td>One ephemeral minimized flag per browser terminal tab</td><td>Live rerenders do not unexpectedly restore the card; different tabs remain independent</td><td><code>workflowSubprocessMinimizedByTab</code></td></tr>
+            <tr><td>Accessibility</td><td><code>aria-controls</code>, <code>aria-expanded</code>, explicit labels, native hidden body, post-render focus restoration</td><td>Keyboard and assistive-technology users receive the same disclosure state</td><td><code>workflowSubprocessSetMinimized()</code></td></tr>
+            <tr><td>Layout</td><td>Restored workflow content sizes intrinsically up to desktop/mobile viewport caps; minimized-only content releases that rule</td><td>Short output stays compact, long output grows, and minimizing returns space to the transcript</td><td><code>.workflow-widget:not(.minimized)</code></td></tr>
+            <tr><td>Regression safety</td><td>The existing output <code>&lt;details&gt;</code>, commands, live-follow map, and payload protocol are unchanged</td><td>Restore returns to the familiar output view rather than introducing another output mode</td><td>Focused contracts and full suite</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="behavior-title">
+      <h2 id="behavior-title">Interaction and architecture</h2>
+      <div class="grid">
+        <article class="card"><span class="badge info">Expanded</span><h3>Everything stays available</h3><p>The title, run/phase/task metadata, Status, Abort, Clear, output disclosure, terminal, and follow-state message retain their current behavior.</p></article>
+        <article class="card"><span class="badge info">Minimized</span><h3>Header remains actionable</h3><p>The terminal body is not built, but workflow context and actions remain visible. The toggle changes to Restore and exposes its collapsed state.</p></article>
+        <article class="card"><span class="badge info">Restored</span><h3>Output state returns</h3><p>The terminal is rebuilt from the latest payload. Existing browser-memory maps recover inner expansion and per-run scroll/follow state.</p></article>
+        <article class="card"><span class="badge info">Responsive</span><h3>Touch target preserved</h3><p>The control reuses the inspector button palette and receives the existing 44px mobile/coarse-pointer minimum height.</p></article>
+        <article class="card"><span class="badge info">Intrinsic height</span><h3>Content sets the size</h3><p>The outer area uses <code>flex: 0 0 auto</code> up to <code>min(44rem, 68dvh)</code>; the terminal uses a <code>max-height</code>, not a forced height. Mobile remains capped at <code>34dvh</code>.</p></article>
+      </div>
+
+      <figure data-visual-kind="diagram" data-purpose="Explain minimize and restore state transitions across live workflow rerenders">
+        <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 960 360">
+          <title id="flow-title">Workflow subprocess minimize and restore flow</title>
+          <desc id="flow-desc">An expanded card can be minimized. The active tab identifier is stored in a set and widgets rerender to a header-only card. Live payload updates keep it minimized. Restore removes the tab identifier, rerenders the terminal body, and recovers expansion and scroll state from existing maps.</desc>
+          <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#65b5ff"/></marker></defs>
+          <rect x="35" y="60" width="205" height="92" rx="14" fill="#18253a" stroke="#50d890" stroke-width="2"/>
+          <text x="137" y="94" fill="#50d890" font-size="15" text-anchor="middle" font-weight="700">EXPANDED CARD</text>
+          <text x="137" y="121" fill="#e8eef8" font-size="14" text-anchor="middle">header + terminal body</text>
+          <text x="137" y="142" fill="#a9b7cb" font-size="12" text-anchor="middle">Minimize button visible</text>
+
+          <rect x="365" y="42" width="230" height="128" rx="14" fill="#07101c" stroke="#65b5ff" stroke-width="2"/>
+          <text x="480" y="76" fill="#65b5ff" font-size="15" text-anchor="middle" font-weight="700">PER-TAB STATE</text>
+          <text x="480" y="104" fill="#e8eef8" font-size="13" text-anchor="middle">Set add/delete → renderWidgets()</text>
+          <text x="480" y="128" fill="#a9b7cb" font-size="12" text-anchor="middle">requestAnimationFrame</text>
+          <text x="480" y="148" fill="#a9b7cb" font-size="12" text-anchor="middle">focuses replacement control</text>
+
+          <rect x="720" y="60" width="205" height="92" rx="14" fill="#18253a" stroke="#f7c65c" stroke-width="2"/>
+          <text x="822" y="94" fill="#f7c65c" font-size="15" text-anchor="middle" font-weight="700">MINIMIZED CARD</text>
+          <text x="822" y="121" fill="#e8eef8" font-size="14" text-anchor="middle">header only; body hidden</text>
+          <text x="822" y="142" fill="#a9b7cb" font-size="12" text-anchor="middle">Restore button visible</text>
+
+          <line x1="240" y1="106" x2="355" y2="106" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"/>
+          <text x="297" y="91" fill="#a9b7cb" font-size="12" text-anchor="middle">Minimize</text>
+          <line x1="595" y1="106" x2="710" y2="106" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"/>
+
+          <path d="M822 162 V255 H480 V181" fill="none" stroke="#65b5ff" stroke-width="3" marker-end="url(#arrow)"/>
+          <text x="656" y="245" fill="#a9b7cb" font-size="12" text-anchor="middle">Restore removes tab from Set</text>
+          <path d="M480 181 V304 H137 V162" fill="none" stroke="#50d890" stroke-width="3" marker-end="url(#arrow)"/>
+          <text x="307" y="294" fill="#a9b7cb" font-size="12" text-anchor="middle">rebuild latest output + recover browser-memory state</text>
+
+          <path d="M925 106 H945 V205 H822 V162" fill="none" stroke="#f7c65c" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+          <text x="857" y="224" fill="#f7c65c" font-size="12" text-anchor="middle">live updates stay minimized</text>
+        </svg>
+        <figcaption>The new card-level disclosure is intentionally separate from the existing terminal output <code>&lt;details&gt;</code>. Minimize controls overall overlay space; the inner disclosure still controls only command output.</figcaption>
+      </figure>
+    </section>
+
+    <section aria-labelledby="implementation-title">
+      <h2 id="implementation-title">Implementation and validation</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Feature change</th><th>Boundary preserved</th></tr></thead>
+          <tbody>
+            <tr><td><code>public/app.js</code></td><td>Per-tab Set, cleanup on tab close, toggle handler, accessible control, header-only minimized branch</td><td>No extension payload, command, persistence, or server change</td></tr>
+            <tr><td><code>public/styles.css</code></td><td>Minimized spacing, shared toggle colors/focus state, mobile target size, intrinsic outer sizing, and terminal <code>max-height</code></td><td>Shared release and app-runner output behavior remains unchanged</td></tr>
+            <tr><td><code>tests/mobile-static.test.mjs</code></td><td>Contracts for state, focus restoration, ARIA, early return, cleanup, intrinsic sizing/caps, and minimized styling</td><td>Uses the package’s established static frontend test convention</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout info-callout"><strong>Sizing supersession:</strong> a coordinated follow-up replaced the original fixed reserved slot with intrinsic <code>flex: 0 0 auto</code> sizing and a viewport-safe <code>--workflow-overlay-max-height</code>. The subprocess terminal changed from fixed <code>height</code> to <code>max-height</code>; mobile remains capped at <code>34dvh</code>. Minimize/restore state, accessibility, focus restoration, and controls were preserved.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Chrome probe at 1600×1000</th><th>Outer height</th><th>Observed behavior</th></tr></thead>
+          <tbody>
+            <tr><td>Expanded · 2 output lines</td><td>289px</td><td>Compact intrinsic baseline</td></tr>
+            <tr><td>Expanded · 80 output lines</td><td>535px</td><td>Grew with output below the viewport cap</td></tr>
+            <tr><td>Expanded again · 1 output line</td><td>270px</td><td>Shrank after content reduction</td></tr>
+            <tr><td>Output disclosure collapsed</td><td>224px</td><td>Released terminal space while retaining the actionable header</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid" style="margin-top:14px">
+        <article class="card"><strong class="metric">PASS</strong><h3>Syntax</h3><p><code>node --check public/app.js</code></p></article>
+        <article class="card"><strong class="metric">1 / 1</strong><h3>Focused test</h3><p><code>node --test tests/mobile-static.test.mjs</code></p></article>
+        <article class="card"><strong class="metric">41 / 41</strong><h3>Package suite</h3><p><code>npm run check</code></p></article>
+        <article class="card"><strong class="metric">2 / 2</strong><h3>Independent reviews</h3><p>MoonshotAI Kimi and Qwen outputs completed with no blockers.</p></article>
+        <article class="card"><strong class="metric">289→535→270→224</strong><h3>Chrome geometry</h3><p>Outer-area pixels for 2 lines, 80 lines, 1 line, then output collapsed.</p></article>
+      </div>
+      <pre>node --check public/app.js                         PASS
+node --test tests/mobile-static.test.mjs          PASS (1 test, 0 failures)
+npm run check                                     PASS (all 41 test files)
+git diff --check -- scoped feature paths          PASS
+headless Chrome geometry probe (1600×1000)        PASS</pre>
+    </section>
+
+    <section aria-labelledby="reviews-title">
+      <h2 id="reviews-title">Independent review findings and dispositions</h2>
+      <div class="callout info-callout"><strong>Qualifying quorum:</strong> fresh, read-only high-thinking outputs from MoonshotAI Kimi K3 and Qwen 3.7 Plus. Their model-author families are distinct from each other and from the OpenAI implementation provider. Anthropic subscription attempts were rate-limited before output, so they do not count. These reviews cover the preserved minimize/restore state, accessibility, and control implementation; the later intrinsic-height supersession was validated separately with contracts, the full suite, diff checks, and Chrome geometry.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Reviewer</th><th>Finding</th><th>Disposition</th><th>Rationale</th></tr></thead>
+          <tbody>
+            <tr><td>Kimi K3 · run <code>c763a4fe…</code> child 0</td><td>No blocker; pre-existing closed-tab scroll-map cleanup gap</td><td><span class="status info">Deferred</span></td><td>Predates this feature and stores only tiny browser-memory state; changing it would expand scope.</td></tr>
+            <tr><td>Kimi K3</td><td>No blocker; optional exact assertion for the 44px mobile rule</td><td><span class="status info">Deferred</span></td><td>The CSS rule was directly verified, focused behavior contracts pass, and no correctness defect exists.</td></tr>
+            <tr><td>Kimi K3</td><td>No blocker; passive live rerenders can replace a focused widget button</td><td><span class="status info">Deferred</span></td><td>Inherited app-wide <code>replaceChildren()</code> behavior, not caused by minimize activation; activation itself restores focus.</td></tr>
+            <tr><td>Qwen 3.7 Plus · run <code>c763a4fe…</code> child 1</td><td>Suggested duplicate <code>aria-hidden</code> for the hidden body</td><td><span class="status warn">Rejected</span></td><td>The native <code>hidden</code> attribute already removes the body from layout and the accessibility tree; dual state adds drift risk.</td></tr>
+            <tr><td>Qwen 3.7 Plus</td><td>Claimed a cosmetic double space in the class string</td><td><span class="status warn">Rejected</span></td><td>The live/log ternary always emits one class before the optional minimized token, so the claimed failure mode is absent.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="evidence">Authoritative runtime status identifies child 0 as <code>openrouter/moonshotai/kimi-k3:high</code>. Its output filename retained the originally requested Anthropic label because the path was allocated before provider fallback.</p>
+    </section>
+
+    <section aria-labelledby="rollout-title">
+      <h2 id="rollout-title">Usage, rollout, rollback, and limitations</h2>
+      <div class="grid">
+        <article class="card"><span class="badge good">Use</span><h3>Minimize and restore</h3><p>Select <strong>Minimize</strong> in the Workflow Subprocesses header. The terminal disappears and the control becomes <strong>Restore</strong>. Select Restore to rebuild the latest output.</p></article>
+        <article class="card"><span class="badge good">Rollout</span><h3>Reload only</h3><p>This is a browser-only renderer change. No migration, configuration, dependency, server restart contract, or workflow payload version is required.</p></article>
+        <article class="card"><span class="badge good">Rollback</span><h3>Localized revert</h3><p>Revert the per-tab Set/setter, minimized renderer branch, intrinsic sizing/cap rules, and static assertions. No data rollback is necessary.</p></article>
+        <article class="card"><span class="badge warn">Manual check</span><h3>Focus and tab continuity</h3><p>Geometry is browser-probed. Still recommended: minimize during a live run, switch tabs, let updates arrive, restore, and confirm keyboard focus plus per-tab scroll continuity.</p></article>
+      </div>
+      <h3 style="margin-top:22px">Evidence and scope</h3>
+      <ul>
+        <li><a href="../plans/workflow-subprocess-minimize-restore.md">Canonical feature plan</a></li>
+        <li><code>public/app.js</code>: <code>workflowSubprocessSetMinimized()</code> and <code>renderWorkflowSubprocessWidget()</code></li>
+        <li><code>public/styles.css</code>: intrinsic workflow sizing, viewport caps, terminal <code>max-height</code>, and minimize-control selectors</li>
+        <li><code>tests/mobile-static.test.mjs</code>: focused state/control and dynamic-height contracts</li>
+        <li>Headless Chrome at 1600×1000: 289px (2 lines), 535px (80 lines), 270px (1 line), and 224px with output collapsed</li>
+        <li>Reviewer artifacts beneath <code>.pi-subagents/artifacts/outputs/c763a4fe-aaa1-4afb-b224-12629a6a2229/</code></li>
+      </ul>
+      <p class="evidence">The shared implementation files already contained unrelated uncommitted WebUI work. This report and the independent reviews intentionally cover only the minimize/restore feature hunks named above.</p>
+    </section>
+
+    <footer>
+      <p>Feature report for <code>@firstpick/pi-package-webui</code>. Canonical execution record: <a href="../plans/workflow-subprocess-minimize-restore.md">plans/workflow-subprocess-minimize-restore.md</a>.</p>
+    </footer>
+  </main>
+</body>
+</html>

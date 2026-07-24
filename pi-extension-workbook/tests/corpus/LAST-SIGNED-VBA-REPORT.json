@@ -2,7 +2,7 @@
   "status": "PASS_PACKAGE_ONLY",
   "generatedAt": "2026-07-14T16:56:36.280Z",
   "fixture": {
-    "sourcePath": "/home/firstpick/npm-packages/pi-extension-workbook/tests/corpus/fixtures/signed-vba/xlsxwriter-macro04.xlsm",
+    "sourcePath": "/home/firstpick/pi-coding-agent-forge/pi-extension-workbook/tests/corpus/fixtures/signed-vba/xlsxwriter-macro04.xlsm",
     "sourceSha256": "d49e30414b59e66446689d77119fa5b9f4f99fa86dbcade003f4d3fe1b8e225d",
     "legalProvenance": {
       "kind": "vendored-open-source-test-fixture",

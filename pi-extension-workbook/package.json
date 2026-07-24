@@ -4,10 +4,10 @@
   "description": "High-fidelity, fail-closed XLSX/XLSM inspection, rendering, editing, diffing, and validation tools for Pi agents.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-workbook#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-workbook#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-workbook"
   },
   "keywords": [

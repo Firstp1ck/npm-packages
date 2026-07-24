@@ -3,10 +3,10 @@
   "version": "0.2.1",
   "description": "Use fish shell backend for Pi user bash commands (! and !!).",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-fish-user-bash#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-fish-user-bash#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-fish-user-bash"
   },
   "keywords": [

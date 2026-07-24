@@ -3,10 +3,10 @@
   "version": "0.1.1",
   "description": "Task-state, loop-detection, scratchpad, and verification harness for improving small-LLM reliability in Pi.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-small-modal-reliability#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-small-modal-reliability#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-small-modal-reliability"
   },
   "keywords": [

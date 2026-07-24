@@ -36,7 +36,7 @@ usage() {
 Usage:
   sync-pi-package-symlinks.sh [--dry-run] [--color=auto|always|never]
 
-Ensures local npm-packages Pi resources are live-linked for development:
+Ensures local pi-coding-agent-forge Pi resources are live-linked for development:
 
 - discovers every top-level pi-* workspace package through Pi's package
   resource resolver, including resources exposed by package.json pi manifests,
@@ -54,7 +54,7 @@ Ensures local npm-packages Pi resources are live-linked for development:
 - every discovered theme gets a matching
   ~/.pi/agent/themes/<theme>.json symlink
 - broken symlinks in those target directories, stale symlinks that point
-  back into this npm-packages tree, and stale generated dev-extension wrappers
+  back into this pi-coding-agent-forge tree, and stale generated dev-extension wrappers
   that no longer match a current resource are removed
 - package-local node_modules entries referenced by pi manifests are linked to
   top-level workspace packages before resource discovery, so local development

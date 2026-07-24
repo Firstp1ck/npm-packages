@@ -1,8 +1,8 @@
-# firstpick npm/bun packages
+# Pi Coding Agent Forge
 
-This repository contains my public JavaScript/TypeScript packages published via npm (using Bun and/or npm).
+Extensions, skills, prompts, themes, companion packages, and developer tools for the [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
-Right now it contains **Pi extension, skill, package, theme bundle, and companion utility packages**.
+This public JavaScript/TypeScript monorepo contains Firstpick's Pi ecosystem packages, published through npm with npm and/or Bun. It includes **Pi extensions, Agent Skills, prompt collections, theme bundles, WebUI packages, and companion utilities**.
 
 ## Skill authoring standards
 

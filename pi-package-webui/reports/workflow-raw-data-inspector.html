@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Workflow Raw-Data Inspector — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220; --panel: #121c2d; --panel-2: #18253a; --text: #e8eef8;
+      --muted: #a9b7cb; --line: #2b3b55; --green: #50d890; --yellow: #f7c65c;
+      --red: #ff7373; --blue: #65b5ff; --code: #07101c; --radius-lg: 16px;
+      --radius-md: 12px; --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link { position: fixed; top: 8px; left: 8px; transform: translateY(-160%); z-index: 10; padding: 8px 12px; border-radius: 8px; background: var(--blue); color: #06111f; font-weight: 800; }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section { margin: 18px 0; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: var(--shadow); }
+    header { padding: 30px; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { padding: .12em .38em; border-radius: 5px; background: var(--code); }
+    .lead { max-width: 82ch; font-size: 1.1rem; }
+    .muted { color: var(--muted); }
+    .badge { display: inline-block; margin-bottom: 8px; padding: 3px 9px; border: 1px solid rgb(101 181 255 / 38%); border-radius: 999px; background: rgb(101 181 255 / 14%); color: var(--blue); font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; }
+    .badge.good { border-color: rgb(80 216 144 / 38%); background: rgb(80 216 144 / 14%); color: var(--green); }
+    .badge.warn { border-color: rgb(247 198 92 / 38%); background: rgb(247 198 92 / 14%); color: var(--yellow); }
+    .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 8%); }
+    nav { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 18px 0; padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .metric, .finding { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 700px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .86rem; letter-spacing: .04em; text-transform: uppercase; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    figure { margin: 18px 0; }
+    figure svg { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--code); }
+    figcaption { margin-top: 8px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node.good { stroke: var(--green); }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .node-sub { fill: var(--muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .checklist { padding-left: 1.3rem; }
+    .checklist li { margin: .4rem 0; }
+    details { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    footer { margin-top: 24px; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) { main { width: min(100% - 18px, 1120px); margin-top: 10px; } header, section { padding: 18px; } .node-text { font-size: 12px; } .node-sub { font-size: 10px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, section, .metric, .finding { break-inside: avoid; border-color: #bbb; background: white; color: #111; box-shadow: none; }
+      nav, .skip-link { display: none; }
+      a, .muted, figcaption, footer { color: #333; }
+      figure svg { border-color: #bbb; background: #f1f3f5; }
+      .node-text { fill: #111; } .node-sub { fill: #444; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge good">Feature complete</span>
+    <h1>Workflow raw-data inspector</h1>
+    <p class="lead">Implementation and verification report for replacing the generic editable-looking workflow source popup with a large, syntax-highlighted, clearly read-only inspection experience.</p>
+    <div class="callout"><strong>Conclusion:</strong> The workflow source preview now uses a viewport-sized code viewer with safe TypeScript highlighting, line numbers, search navigation, wrapping, copy feedback, source metadata, and explicit workflow actions while returning the original source unchanged.</div>
+    <p class="muted"><strong>Confidence: 94/100.</strong> Source inspection, focused checks, all 41 package test files, and two provider-diverse independent reviews passed. Confidence is limited by the absence of a live-browser viewport and interaction run.</p>
+  </header>
+
+  <nav aria-label="Report sections">
+    <a href="#overview">Overview</a><a href="#design">Design</a><a href="#implementation">Implementation</a><a href="#verification">Verification</a><a href="#usage">Usage and residual risks</a>
+  </nav>
+
+  <section id="overview">
+    <h2>Executive overview</h2>
+    <div class="grid" aria-label="Headline results">
+      <div class="metric"><span class="badge good">Verified</span><strong>41 / 41</strong><span class="muted">package test files passed after the final fix</span></div>
+      <div class="metric"><span class="badge good">Reviewed</span><strong>2 reviewers</strong><span class="muted">Anthropic Claude Sonnet 5 and OpenRouter/Qwen 3.7 Plus</span></div>
+      <div class="metric"><span class="badge">Focused scope</span><strong>3 source files</strong><span class="muted">behavior, presentation, and static acceptance coverage</span></div>
+    </div>
+    <h3 style="margin-top:22px">Result map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Before</th><th>Implemented result</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Window size</td><td>Generic 42rem modal with a short textarea</td><td>Up to 96rem wide and 58rem tall, bounded to the visual viewport; mobile bottom sheet</td><td>Verified</td></tr>
+          <tr><td>Readability</td><td>Plain editable-looking text</td><td>Line numbers, monospace code surface, TypeScript token colors, metadata, wrapping</td><td>Verified</td></tr>
+          <tr><td>Navigation</td><td>Scrollbar only</td><td>Literal source search, previous/next match, Enter and Shift+Enter navigation, active-line emphasis</td><td>Verified</td></tr>
+          <tr><td>Read-only semantics</td><td>Edits appeared possible but were ignored</td><td>No textarea; explicit “Back to approval” returns untouched <code>request.prefill</code></td><td>Verified</td></tr>
+          <tr><td>Convenience</td><td>No dedicated source action</td><td>Copy source with success/failure announcement and a wrap toggle</td><td>Verified</td></tr>
+          <tr><td>Safety</td><td>Generic editor path</td><td>DOM text-node tokenization, narrow title detection, Enter-form guard, unchanged generic fallback</td><td>Reviewed</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="design">
+    <h2>Design and architecture</h2>
+    <p>The feature specializes only the workflow extension’s existing <code>editor</code> request. It does not change the workflows extension protocol or introduce a code-editor dependency.</p>
+    <figure data-visual-kind="diagram" data-purpose="Show how workflow source moves through the specialized read-only renderer without mutation">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1000 300">
+        <title id="flow-title">Workflow source inspection flow</title>
+        <desc id="flow-desc">The existing workflow editor request is narrowly detected, safely tokenized into text nodes and spans, displayed in a read-only viewport, and the original prefill value is returned when the user goes back to approval.</desc>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
+        <path class="edge" d="M220 142 H290"/><path class="edge" d="M460 142 H530"/><path class="edge" d="M700 142 H770"/>
+        <rect class="node" x="35" y="92" width="185" height="100" rx="14"/><text class="node-text" x="127" y="132">Editor request</text><text class="node-sub" x="127" y="157">Original prefill source</text>
+        <rect class="node" x="290" y="92" width="170" height="100" rx="14"/><text class="node-text" x="375" y="132">Narrow detection</text><text class="node-sub" x="375" y="157">Method + exact title intent</text>
+        <rect class="node good" x="530" y="92" width="170" height="100" rx="14"/><text class="node-text" x="615" y="132">Safe renderer</text><text class="node-sub" x="615" y="157">Text nodes + token spans</text>
+        <rect class="node good" x="770" y="92" width="195" height="100" rx="14"/><text class="node-text" x="867" y="132">Read-only viewer</text><text class="node-sub" x="867" y="157">Original value returned</text>
+      </svg>
+      <figcaption>The display pipeline never reserializes the source for approval. Highlighted text is constructed with DOM-safe text nodes and spans; the response uses the original prefill value.</figcaption>
+    </figure>
+    <div class="grid">
+      <article class="finding"><span class="badge good">Invariant</span><h3>Structurally read-only</h3><p>The specialized path contains no textarea or content-editable surface. The generic editor remains unchanged for all other extension requests.</p></article>
+      <article class="finding"><span class="badge good">Invariant</span><h3>Source preserving</h3><p>Syntax highlighting changes presentation only. Copy and “Back to approval” operate on the original source value.</p></article>
+      <article class="finding"><span class="badge good">Invariant</span><h3>Dependency free</h3><p>A compact tokenizer highlights comments, strings, numbers, and TypeScript keywords without Monaco, CodeMirror, Prism, or highlight.js.</p></article>
+    </div>
+  </section>
+
+  <section id="implementation">
+    <h2>Implementation map</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Responsibility</th><th>Key additions</th></tr></thead>
+        <tbody>
+          <tr><td><a href="../public/app.js"><code>public/app.js</code></a></td><td>Request detection and interaction behavior</td><td>Safe tokenizer, line renderer, search state, match navigation, wrapping, copy feedback, explicit response actions, unconditional Enter suppression</td></tr>
+          <tr><td><a href="../public/styles.css"><code>public/styles.css</code></a></td><td>Desktop/mobile presentation</td><td>96rem viewport-bounded modal, code gutter, token colors, focus ring, match states, responsive controls, safe-area handling</td></tr>
+          <tr><td><a href="../tests/mobile-static.test.mjs"><code>tests/mobile-static.test.mjs</code></a></td><td>Acceptance contracts</td><td>Narrow detection, unchanged fallback, no textarea/HTML injection, control presence, original response, Enter ordering, desktop/mobile CSS</td></tr>
+          <tr><td><a href="../plans/workflow-raw-data-inspector.md"><code>plans/workflow-raw-data-inspector.md</code></a></td><td>Canonical feature record</td><td>Decisions, worker boundaries, integration evidence, review findings/dispositions, risks and rollback</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details><summary>Independent review finding and resolution</summary><p>The preliminary Anthropic review found that pressing Enter in the search box with no matches could submit the enclosing <code>method="dialog"</code> form before a response was sent. The finding was accepted after source verification. The handler now prevents the default action for every Enter press before checking match count, and a focused assertion locks in that ordering. Both final reviewers confirmed the blocker was resolved.</p></details>
+  </section>
+
+  <section id="verification">
+    <h2>Testing and review evidence</h2>
+    <ul class="checklist">
+      <li><strong>Syntax:</strong> <code>node --check public/app.js</code> — passed.</li>
+      <li><strong>Focused acceptance:</strong> <code>node tests/mobile-static.test.mjs</code> — passed.</li>
+      <li><strong>Full package suite:</strong> <code>npm test</code> — all 41 test files passed after the final fix.</li>
+      <li><strong>Diff hygiene:</strong> scoped <code>git diff --check</code> — passed.</li>
+      <li><strong>Final reviewer A:</strong> Anthropic Claude Sonnet 5, high thinking — no blockers; accepted fix verified.</li>
+      <li><strong>Final reviewer B:</strong> OpenRouter/Qwen 3.7 Plus, high thinking — no blockers; UX, accessibility, responsive behavior, tests, and fix verified.</li>
+    </ul>
+    <div class="callout"><strong>Review disposition:</strong> one preliminary blocker was accepted and fixed. Final reviewers reported no remaining blockers. Cosmetic notes about multiline block-comment coloring and occurrence-level search were deferred because they do not violate the approved scope or source-preservation guarantees.</div>
+  </section>
+
+  <section id="usage">
+    <h2>Usage, rollout, and residual risks</h2>
+    <h3>How it behaves</h3>
+    <ol>
+      <li>From workflow launch approval, choose the existing source-preview action.</li>
+      <li>Search with the source search field; use Enter/Next and Shift+Enter/Previous to move between matching lines.</li>
+      <li>Use <strong>Wrap lines</strong> for long commands or prompts and <strong>Copy source</strong> for an exact copy.</li>
+      <li>Choose <strong>Back to approval</strong> to return without changing the script, or <strong>Cancel workflow</strong> to cancel explicitly.</li>
+    </ol>
+    <h3>Residual risks</h3>
+    <ul>
+      <li>No live-browser/manual viewport run was available; responsive and interaction claims are source- and static-test-backed.</li>
+      <li>Multiline block comments are not colored across physical line boundaries; displayed and returned source remains exact.</li>
+      <li>Search counts matching lines rather than every character occurrence on a line.</li>
+      <li>The shared repository contained unrelated concurrent edits; feature inspection and validation were scoped to the recorded workflow-inspector hunks.</li>
+    </ul>
+    <p><strong>Rollback:</strong> remove the specialized branch/helpers, the <code>workflow-script-*</code> CSS block, and focused assertions. The unchanged generic editor remains the protocol-compatible fallback; no migration is required.</p>
+  </section>
+
+  <footer>
+    <p><strong>Scope:</strong> <code>@firstpick/pi-package-webui</code> workflow raw-script approval preview. Generated 2026-07-23 from the canonical plan, integrated source, package tests, worker handoffs, and independent review artifacts.</p>
+  </footer>
+</main>
+</body>
+</html>

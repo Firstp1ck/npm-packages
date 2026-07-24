@@ -72,6 +72,7 @@ const elements = {
   busyPromptBehaviorTag: $("#busyPromptBehaviorTag"),
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
+  featureCategoryTag: $("#featureCategoryTag"),
   conversationModeChip: $("#conversationModeChip"),
   workflowModeChip: $("#workflowModeChip"),
   skillEditorDialog: $("#skillEditorDialog"),
@@ -723,6 +724,7 @@ const WORKFLOW_INSPECTOR_PAYLOAD_PREFIX = "WORKFLOW_RPC_PAYLOAD ";
 const WORKFLOW_INSPECTOR_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.inspector";
 const WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1;
 const WORKFLOW_MODE_STATUS_KEY = "workflow-mode";
+const FEATURE_CATEGORY_STATUS_KEY = "feature-category";
 const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
 const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
 const WORKFLOW_MODE_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.mode";
@@ -827,12 +829,15 @@ const initialUrlParams = new URLSearchParams(window.location.search);
 const embeddedSplitMode = initialUrlParams.get("embed") === "split";
 document.body.classList.toggle("embedded-split", embeddedSplitMode);
 const statusEntries = new Map();
+const featureCategoryByTab = new Map();
 const widgets = new Map();
 const widgetsByTab = new Map();
 const todoProgressWidgetExpandedByTab = new Map();
 const todoProgressGoalByTab = new Map();
 const todoProgressSignatureByTab = new Map();
 const releaseNpmOutputExpandedByTab = new Map();
+const workflowTerminalScrollByTab = new Map();
+const workflowSubprocessMinimizedByTab = new Set();
 const appRunnerDataByTab = new Map();
 const conversationModeByTab = new Map();
 const workflowModeByTab = new Map();
@@ -2361,6 +2366,28 @@ function renderSessionSkillTags(tabId = activeTabId) {
     container.append(overflow);
   }
   container.hidden = false;
+}
+
+function normalizeFeatureCategory(value) {
+  return value === "lightweight-feature" || value === "complex-feature" ? value : "";
+}
+
+function renderFeatureCategoryTag(tabId = activeTabId) {
+  const tag = elements.featureCategoryTag;
+  if (!tag) return;
+  const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
+  tag.hidden = !category;
+  tag.textContent = category;
+  tag.classList.toggle("lightweight-feature", category === "lightweight-feature");
+  tag.classList.toggle("complex-feature", category === "complex-feature");
+}
+
+function handleFeatureCategoryStatus(statusText, tabId = activeTabId) {
+  if (!tabId) return;
+  const category = normalizeFeatureCategory(statusText);
+  if (category) featureCategoryByTab.set(tabId, category);
+  else featureCategoryByTab.delete(tabId);
+  if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
 }
 
 function trackSkillUsage(tabId, skillName, kind = "used", source = "", details = {}) {
@@ -6258,6 +6285,7 @@ function setActiveTabId(tabId, { remember = false } = {}) {
   if (nextTabId !== activeTabId) activeTabGeneration += 1;
   activeTabId = nextTabId;
   bindGitWorkflowToActiveTab();
+  renderFeatureCategoryTag(nextTabId);
   if (remember) rememberActiveTab();
   return activeTabContext(nextTabId);
 }
@@ -7696,6 +7724,7 @@ function syncTabMetadata(nextTabs = []) {
       suppressPendingAgentDoneNotificationsForTab(tabId, { markSeen: false });
       actionFeedbackByTab.delete(tabId);
       skillUsageByTab.delete(tabId);
+      featureCategoryByTab.delete(tabId);
       tabMessagesCache.delete(tabId);
       widgetsByTab.delete(tabId);
       appRunnerDataByTab.delete(tabId);
@@ -7705,6 +7734,7 @@ function syncTabMetadata(nextTabs = []) {
       workflowInspectorByTab.delete(tabId);
       workflowInspectorSelectionByTab.delete(tabId);
       workflowInspectorMinimizedByTab.delete(tabId);
+      workflowSubprocessMinimizedByTab.delete(tabId);
       remoteMicConsentTabs.delete(tabId);
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
@@ -9448,6 +9478,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
       tabDrafts.delete(id);
       clearAttachments(id);
       clearGitWorkflowForTab(id);
+      featureCategoryByTab.delete(id);
       commandCatalogsByTab.delete(id);
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
@@ -16588,7 +16619,9 @@ function renderReleaseNpmOutputDetails(key, streamHeader, terminal, controls = n
   node.open = releaseNpmOutputExpandedByTab.get(stateKey) !== false;
   node.addEventListener("toggle", () => {
     releaseNpmOutputExpandedByTab.set(stateKey, node.open);
-    if (node.open) requestAnimationFrame(() => { terminal.scrollTop = terminal.scrollHeight; });
+    if (node.open && terminal.dataset.preserveScrollOnToggle !== "true") {
+      requestAnimationFrame(() => { terminal.scrollTop = terminal.scrollHeight; });
+    }
   });
 
   const summary = make("summary", "release-npm-output-summary");
@@ -17076,14 +17109,72 @@ function workflowTaskCountLabel(payload) {
   return `${done}/${total} done${failed ? ` · ${failed} failed` : ""}${cancelled ? ` · ${cancelled} cancelled` : ""}`;
 }
 
+function workflowMetaItem(label, value, className = "", description = "") {
+  const item = make("span", `workflow-meta-item ${className}`.trim());
+  item.append(
+    make("span", "workflow-meta-label", label),
+    make("strong", "workflow-meta-value", value),
+  );
+  if (description) item.append(make("span", "workflow-meta-description", description));
+  return item;
+}
+
+function bindWorkflowTerminalScroll(terminal, outputDetails, followStatus, { live = false, runId = "unknown" } = {}) {
+  const statePrefix = `${activeTabId || "default"}:workflow:subprocess:`;
+  const stateKey = `${statePrefix}${runId}`;
+  for (const key of workflowTerminalScrollByTab.keys()) {
+    if (key.startsWith(statePrefix) && key !== stateKey) workflowTerminalScrollByTab.delete(key);
+  }
+  const state = workflowTerminalScrollByTab.get(stateKey) || { following: true, scrollTop: 0 };
+  const updateFollowStatus = () => {
+    followStatus.textContent = live
+      ? (state.following ? "Following live output · scroll up to pause" : "Auto-follow paused · scroll to the bottom to resume")
+      : "Output complete · scroll position is preserved";
+    followStatus.classList.toggle("paused", live && !state.following);
+  };
+  const restorePosition = () => {
+    if (!outputDetails.open) return;
+    const maxScrollTop = Math.max(0, terminal.scrollHeight - terminal.clientHeight);
+    terminal.scrollTop = state.following ? maxScrollTop : Math.min(state.scrollTop, maxScrollTop);
+  };
+  terminal.addEventListener("scroll", () => {
+    const distanceFromBottom = terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;
+    state.following = distanceFromBottom <= 24;
+    state.scrollTop = terminal.scrollTop;
+    workflowTerminalScrollByTab.set(stateKey, state);
+    updateFollowStatus();
+  }, { passive: true });
+  outputDetails.addEventListener("toggle", () => {
+    if (outputDetails.open) requestAnimationFrame(restorePosition);
+  });
+  updateFollowStatus();
+  requestAnimationFrame(restorePosition);
+}
+
+function workflowSubprocessSetMinimized(minimized) {
+  if (!activeTabId) return;
+  const tabId = activeTabId;
+  if (minimized) workflowSubprocessMinimizedByTab.add(tabId);
+  else workflowSubprocessMinimizedByTab.delete(tabId);
+  renderWidgets();
+  requestAnimationFrame(() => {
+    if (activeTabId !== tabId) return;
+    elements.widgetArea.querySelector(".workflow-subprocess-minimize-button")?.focus({ preventScroll: true });
+  });
+}
+
 function renderWorkflowSubprocessWidget() {
   if (!isOptionalFeatureEnabled("workflows")) return null;
   const payload = parseWorkflowSubprocessPayload(getWidgetLines("workflow:subprocess"));
   if (!payload) return null;
 
   const live = workflowSubprocessIsLive(payload);
-  const node = make("section", `widget release-npm-widget workflow-widget ${live ? "workflow-live-widget" : "workflow-log-widget"}`);
+  const minimized = Boolean(activeTabId && workflowSubprocessMinimizedByTab.has(activeTabId));
+  const node = make("section", `widget release-npm-widget workflow-widget workflow-subprocess-widget ${live ? "workflow-live-widget" : "workflow-log-widget"}${minimized ? " minimized" : ""}`);
   node.setAttribute("aria-label", "workflow subprocess output");
+  const body = make("div", "workflow-subprocess-body");
+  body.id = "workflowSubprocessBody";
+  body.hidden = minimized;
 
   const header = make("div", "release-npm-header");
   const titleWrap = make("div", "release-npm-title-wrap");
@@ -17092,29 +17183,56 @@ function renderWorkflowSubprocessWidget() {
     make("strong", "release-npm-title", payload.workflowName || payload.workflowKey || "workflow"),
   );
 
-  const meta = make("div", "release-npm-meta");
-  meta.append(make("span", `release-npm-pill workflow-status ${payload.status || "unknown"}`, payload.status || "unknown"));
-  if (payload.activePhase) meta.append(make("span", "release-npm-pill", payload.activePhase));
-  meta.append(make("span", "release-npm-pill elapsed", workflowTaskCountLabel(payload)));
-  if (payload.truncated) meta.append(make("span", "release-npm-pill workflow-truncated", "truncated"));
+  const meta = make("div", "release-npm-meta workflow-meta");
+  meta.setAttribute("role", "group");
+  meta.setAttribute("aria-label", "Workflow run summary");
+  meta.append(workflowMetaItem("Run", payload.status || "unknown", `workflow-status ${payload.status || "unknown"}`));
+  if (payload.activePhase) meta.append(workflowMetaItem("Phase", String(payload.activePhase).replace(/^phases?(?::|\s)+/i, "")));
+  meta.append(workflowMetaItem("Tasks", workflowTaskCountLabel(payload), "workflow-tasks"));
+  if (payload.truncated) {
+    meta.append(workflowMetaItem(
+      "Output",
+      "Limited history",
+      "workflow-truncated",
+      "Older output omitted from this view.",
+    ));
+  }
 
   const actions = make("div", "release-npm-actions");
   actions.append(releaseNpmActionButton("Status", "/workflow status"));
   if (live) actions.append(releaseNpmActionButton("Abort", "/workflow abort", "danger"));
   actions.append(releaseNpmActionButton("Clear", "/workflow-clear"));
+  const minimizeButton = make("button", "release-npm-action workflow-subprocess-minimize-button", minimized ? "Restore" : "Minimize");
+  minimizeButton.type = "button";
+  minimizeButton.setAttribute("aria-controls", body.id);
+  minimizeButton.setAttribute("aria-expanded", minimized ? "false" : "true");
+  minimizeButton.setAttribute("aria-label", minimized ? "Restore workflow subprocess output" : "Minimize workflow subprocess output");
+  minimizeButton.setAttribute("title", minimized ? "Restore workflow subprocess output" : "Minimize workflow subprocess output");
+  minimizeButton.addEventListener("click", () => workflowSubprocessSetMinimized(!minimized));
+  actions.append(minimizeButton);
   header.append(titleWrap, meta, actions);
+  node.append(header, body);
+  if (minimized) return node;
 
   const lines = Array.isArray(payload.lines) && payload.lines.length ? payload.lines : ["Waiting for workflow subprocess output..."];
   const streamHeader = releaseNpmStreamHeader(live ? "Live subprocess output" : "Subprocess output", lines.length, { live });
   const terminal = make("div", "release-npm-terminal");
+  terminal.dataset.preserveScrollOnToggle = "true";
   terminal.setAttribute("role", "log");
   terminal.setAttribute("aria-live", live ? "polite" : "off");
   for (const line of lines) appendReleaseNpmTerminalLine(terminal, line);
 
-  const controls = make("div", "release-npm-controls", "Workflow subprocess output is shown as a non-blocking Web UI widget. Use /workflow abort to stop an active run.");
+  const controls = make("div", "release-npm-controls workflow-output-controls");
+  const followStatus = make("span", "workflow-follow-status");
+  followStatus.setAttribute("role", "status");
+  followStatus.setAttribute("aria-live", "polite");
+  controls.append(
+    followStatus,
+    make("span", "workflow-output-help", live ? "Use /workflow abort to stop the active run." : "The subprocess run has finished."),
+  );
   const outputDetails = renderReleaseNpmOutputDetails("workflow:subprocess", streamHeader, terminal, controls);
-  node.append(header, outputDetails);
-  requestAnimationFrame(() => { if (outputDetails.open) terminal.scrollTop = terminal.scrollHeight; });
+  body.append(outputDetails);
+  bindWorkflowTerminalScroll(terminal, outputDetails, followStatus, { live, runId: payload.runId });
   return node;
 }
 
@@ -29152,6 +29270,10 @@ function handleExtensionUiRequest(request) {
     }
     case "setStatus": {
       const statusKey = request.statusKey || "extension";
+      if (statusKey === FEATURE_CATEGORY_STATUS_KEY) {
+        handleFeatureCategoryStatus(request.statusText, request.tabId || activeTabId);
+        return;
+      }
       if (request.statusText) {
         statusEntries.set(statusKey, request.statusText);
         if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) cacheGitFooterWebuiPayload(request.statusText, request.tabId);
@@ -29276,6 +29398,180 @@ function addDialogButton(label, handler, className) {
   return button;
 }
 
+const WORKFLOW_SCRIPT_TOKEN_PATTERN = /\/\/.*$|\/\*.*?\*\/|`(?:\\.|[^`])*`|"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\b(?:abstract|any|as|asserts|async|await|boolean|break|case|catch|class|const|continue|declare|default|delete|do|else|enum|export|extends|false|finally|for|from|function|get|if|implements|import|in|instanceof|interface|is|keyof|let|namespace|never|new|null|number|of|private|protected|public|readonly|return|satisfies|set|static|string|super|switch|symbol|this|throw|true|try|type|typeof|undefined|unknown|using|var|void|while|yield)\b|\b\d+(?:\.\d+)?\b/g;
+
+function isWorkflowScriptPreviewRequest(request, prompt) {
+  const title = String(prompt?.title || "");
+  return request?.method === "editor"
+    && title.startsWith("Raw workflow script")
+    && /\binspection only;\s*edits are ignored\b/i.test(title);
+}
+
+function workflowScriptTokenClass(token) {
+  if (/^\/\//.test(token) || /^\/\*/.test(token)) return "comment";
+  if (/^[`"']/.test(token)) return "string";
+  if (/^\d/.test(token)) return "number";
+  return "keyword";
+}
+
+function appendWorkflowScriptTokens(parent, line) {
+  let start = 0;
+  WORKFLOW_SCRIPT_TOKEN_PATTERN.lastIndex = 0;
+  for (let match = WORKFLOW_SCRIPT_TOKEN_PATTERN.exec(line); match; match = WORKFLOW_SCRIPT_TOKEN_PATTERN.exec(line)) {
+    if (match.index > start) parent.append(document.createTextNode(line.slice(start, match.index)));
+    parent.append(make("span", `workflow-script-token workflow-script-token-${workflowScriptTokenClass(match[0])}`, match[0]));
+    start = match.index + match[0].length;
+  }
+  if (start < line.length) parent.append(document.createTextNode(line.slice(start)));
+}
+
+function renderWorkflowScriptPreview(request) {
+  const source = request.prefill ?? "";
+  const sourceLines = source.split("\n");
+  const searchableLines = sourceLines.map((line) => line.toLocaleLowerCase());
+  const preview = make("section", "workflow-script-preview");
+  preview.setAttribute("aria-label", "Read-only TypeScript workflow script");
+
+  const metadata = make("div", "workflow-script-meta");
+  metadata.append(
+    make("span", "workflow-script-language", "TypeScript · read-only"),
+    make("span", "workflow-script-source-stats", `${sourceLines.length.toLocaleString()} ${sourceLines.length === 1 ? "line" : "lines"} · ${source.length.toLocaleString()} characters`),
+  );
+
+  const toolbar = make("div", "workflow-script-toolbar");
+  const search = make("input", "workflow-script-search");
+  search.type = "search";
+  search.placeholder = "Search source";
+  search.setAttribute("aria-label", "Search workflow source");
+
+  const previous = make("button", "workflow-script-search-button", "Previous match");
+  previous.type = "button";
+  previous.title = "Previous search match";
+  previous.setAttribute("aria-label", "Previous search match");
+  previous.disabled = true;
+
+  const next = make("button", "workflow-script-search-button", "Next match");
+  next.type = "button";
+  next.title = "Next search match";
+  next.setAttribute("aria-label", "Next search match");
+  next.disabled = true;
+
+  const wrap = make("button", "workflow-script-wrap-button", "Wrap lines");
+  wrap.type = "button";
+  wrap.title = "Wrap long lines";
+  wrap.setAttribute("aria-label", "Wrap long lines");
+  wrap.setAttribute("aria-pressed", "false");
+
+  const copy = make("button", "workflow-script-copy-button", "Copy source");
+  copy.type = "button";
+  copy.title = "Copy workflow source";
+  copy.setAttribute("aria-label", "Copy workflow source");
+
+  const searchStatus = make("span", "workflow-script-search-status", "Search source.");
+  searchStatus.setAttribute("role", "status");
+  searchStatus.setAttribute("aria-live", "polite");
+  const copyStatus = make("span", "workflow-script-copy-status");
+  copyStatus.setAttribute("role", "status");
+  copyStatus.setAttribute("aria-live", "polite");
+  toolbar.append(search, previous, next, wrap, copy, searchStatus, copyStatus);
+
+  const codeViewer = make("div", "workflow-script-code");
+  codeViewer.id = "workflowScriptViewer";
+  codeViewer.tabIndex = 0;
+  codeViewer.setAttribute("role", "region");
+  codeViewer.setAttribute("aria-label", "Read-only workflow source with line numbers");
+  search.setAttribute("aria-controls", codeViewer.id);
+
+  const lineRows = sourceLines.map((line, index) => {
+    const row = make("div", "workflow-script-line");
+    row.dataset.line = String(index + 1);
+    const number = make("span", "workflow-script-line-number", String(index + 1));
+    number.setAttribute("aria-hidden", "true");
+    const text = make("code", "workflow-script-line-text");
+    appendWorkflowScriptTokens(text, line);
+    row.append(number, text);
+    codeViewer.append(row);
+    return row;
+  });
+
+  let matchingLineIndexes = [];
+  let activeMatchIndex = -1;
+  const setActiveMatch = (index, { scroll = true } = {}) => {
+    if (matchingLineIndexes.length === 0) return;
+    activeMatchIndex = (index + matchingLineIndexes.length) % matchingLineIndexes.length;
+    const activeLine = matchingLineIndexes[activeMatchIndex];
+    lineRows.forEach((row, lineIndex) => {
+      const active = lineIndex === activeLine;
+      row.classList.toggle("is-active-match", active);
+      if (active) row.setAttribute("aria-current", "true");
+      else row.removeAttribute("aria-current");
+    });
+    searchStatus.textContent = `${activeMatchIndex + 1} of ${matchingLineIndexes.length} matching ${matchingLineIndexes.length === 1 ? "line" : "lines"}.`;
+    if (scroll) lineRows[activeLine].scrollIntoView({ block: "center" });
+  };
+  const updateMatches = () => {
+    const query = search.value.toLocaleLowerCase();
+    matchingLineIndexes = [];
+    if (query) {
+      searchableLines.forEach((line, index) => {
+        if (line.includes(query)) matchingLineIndexes.push(index);
+      });
+    }
+    const matchingLineSet = new Set(matchingLineIndexes);
+    lineRows.forEach((row, index) => {
+      const matched = matchingLineSet.has(index);
+      row.classList.toggle("is-search-match", matched);
+      row.classList.remove("is-active-match");
+      row.removeAttribute("aria-current");
+    });
+    activeMatchIndex = -1;
+    previous.disabled = matchingLineIndexes.length === 0;
+    next.disabled = matchingLineIndexes.length === 0;
+    if (matchingLineIndexes.length > 0) setActiveMatch(0);
+    else searchStatus.textContent = query ? "No matching lines." : "Search source.";
+  };
+
+  search.addEventListener("input", updateMatches);
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (matchingLineIndexes.length === 0) return;
+    setActiveMatch(activeMatchIndex + (event.shiftKey ? -1 : 1));
+  });
+  previous.addEventListener("click", () => setActiveMatch(activeMatchIndex - 1));
+  next.addEventListener("click", () => setActiveMatch(activeMatchIndex + 1));
+  wrap.addEventListener("click", () => {
+    const wrapped = codeViewer.classList.toggle("is-wrapped");
+    wrap.textContent = wrapped ? "Unwrap lines" : "Wrap lines";
+    wrap.title = wrapped ? "Do not wrap long lines" : "Wrap long lines";
+    wrap.setAttribute("aria-label", wrap.title);
+    wrap.setAttribute("aria-pressed", String(wrapped));
+  });
+  copy.addEventListener("click", async () => {
+    copy.disabled = true;
+    try {
+      await copyText(source);
+      copy.textContent = "Copied";
+      copyStatus.textContent = "Workflow source copied.";
+    } catch (error) {
+      copy.textContent = "Copy failed";
+      copyStatus.textContent = "Could not copy workflow source.";
+    } finally {
+      window.setTimeout(() => {
+        if (!copy.isConnected) return;
+        copy.textContent = "Copy source";
+        copy.disabled = false;
+      }, 1600);
+    }
+  });
+
+  preview.append(metadata, toolbar, codeViewer);
+  elements.dialogBody.append(preview);
+  addDialogButton("Cancel workflow", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, cancelled: true, tabId: request.tabId }));
+  addDialogButton("Back to approval", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: request.prefill, tabId: request.tabId }), "primary");
+  setTimeout(() => codeViewer.focus(), 0);
+}
+
 function showNextDialog() {
   if (activeDialog || dialogQueue.length === 0) return;
   activeDialog = dialogQueue.shift();
@@ -29287,8 +29583,10 @@ function showNextDialog() {
   const displayPrompt = releasePrompt || prompt;
   const isGuardrailDialog = isGuardrailDialogPrompt(displayPrompt);
   const isReleaseDialog = !!releasePrompt;
+  const isWorkflowScriptPreview = isWorkflowScriptPreviewRequest(request, prompt);
   elements.dialog.classList.toggle("guardrail-dialog", isGuardrailDialog);
   elements.dialog.classList.toggle("release-dialog", isReleaseDialog);
+  elements.dialog.classList.toggle("workflow-script-dialog", isWorkflowScriptPreview);
   elements.dialogTitle.textContent = displayPrompt.title;
   if (isReleaseDialog) renderReleaseDialogMessage(elements.dialogMessage, displayPrompt.message);
   else renderAnsiText(elements.dialogMessage, displayPrompt.message);
@@ -29328,6 +29626,8 @@ function showNextDialog() {
     addDialogButton("Cancel", cancel);
     addDialogButton("Submit", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: input.value, tabId: request.tabId }), "primary");
     setTimeout(() => input.focus(), 0);
+  } else if (isWorkflowScriptPreview) {
+    renderWorkflowScriptPreview(request);
   } else if (request.method === "editor") {
     const textarea = make("textarea", "dialog-editor");
     textarea.value = request.prefill || "";
@@ -29378,7 +29678,10 @@ function handleEvent(event) {
   }
   const tabContext = activeTabContext(event.tabId || activeTabId);
   switch (event.type) {
-    case "webui_connected":
+    case "webui_connected": {
+      const connectedTabId = event.tabId || activeTabId;
+      featureCategoryByTab.delete(connectedTabId);
+      if (connectedTabId === activeTabId) renderFeatureCategoryTag(connectedTabId);
       setWebuiVersion(event.version);
       setPiVersion(event.piVersion);
       setWebuiDevServer(isWebuiDevMetadata(event));
@@ -29390,6 +29693,7 @@ function handleEvent(event) {
       addEvent(`connected to ${event.tabTitle || "terminal"} for ${event.cwd}`);
       scheduleForegroundReconcile("event stream reconnect", 0);
       break;
+    }
     case "webui_tab_renamed":
       applyTabMetadata(event.tab || { id: event.tabId, title: event.tabTitle, activity: event.tabActivity });
       addEvent(`${event.previousTabTitle || "terminal"} renamed to ${event.tabTitle || "terminal"}`);

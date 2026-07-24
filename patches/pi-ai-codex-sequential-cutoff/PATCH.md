@@ -28,7 +28,7 @@ When Codex emits `response.reasoning_summary_text.done`, Pi appends the done-eve
 
 Path variables:
 
-- `NPM_PACKAGES=/home/firstpick/npm-packages`
+- `NPM_PACKAGES=/home/firstpick/pi-coding-agent-forge`
 - `WEBUI_PACKAGE=${NPM_PACKAGES}/pi-package-webui`
 - `PI_AI_RUNTIME=${WEBUI_PACKAGE}/node_modules/@earendil-works/pi-ai`
 - `PI_AI_NESTED=${WEBUI_PACKAGE}/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai`
@@ -220,7 +220,7 @@ The same runtime edit was applied to all installed generated response shared fil
 Run from any directory:
 
 ```bash
-NPM_PACKAGES=/home/firstpick/npm-packages
+NPM_PACKAGES=/home/firstpick/pi-coding-agent-forge
 WEBUI_PACKAGE="${NPM_PACKAGES}/pi-package-webui"
 PI_AI_RUNTIME="${WEBUI_PACKAGE}/node_modules/@earendil-works/pi-ai"
 PI_AI_NESTED="${WEBUI_PACKAGE}/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"

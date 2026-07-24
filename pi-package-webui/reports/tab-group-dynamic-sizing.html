@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Dynamic Tab-Group Sizing — Feature Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section {
+      margin-bottom: 18px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 1.45rem; }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { padding: .12em .38em; border-radius: 5px; background: var(--code); }
+    pre { overflow-x: auto; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--code); color: #d9e6f7; }
+    .lead { max-width: 78ch; color: var(--muted); font-size: 1.1rem; }
+    .badge { display: inline-block; margin-bottom: 12px; padding: 4px 10px; border: 1px solid rgb(80 216 144 / 48%); border-radius: 999px; color: var(--green); background: rgb(80 216 144 / 10%); font-weight: 800; }
+    .callout { margin-top: 18px; padding: 16px 18px; border-left: 4px solid var(--green); border-radius: var(--radius-md); background: var(--panel-2); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .card { padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .card strong { display: block; margin-bottom: 5px; color: var(--green); }
+    .muted { color: var(--muted); }
+    .status-pass { color: var(--green); font-weight: 800; }
+    .status-risk { color: var(--yellow); font-weight: 800; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--panel-2); color: var(--blue); }
+    .table-wrap { overflow-x: auto; }
+    ul { padding-left: 1.35rem; }
+    li + li { margin-top: 6px; }
+    footer { color: var(--muted); text-align: center; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin: 14px auto 36px; }
+      header, section { padding: 18px; }
+      th, td { padding: 9px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: #fff; color: #172033; }
+      main { width: 100%; margin: 0; }
+      header, section, .card { break-inside: avoid; border-color: #aab4c2; background: #fff; box-shadow: none; }
+      .lead, .muted, footer { color: #445066; }
+      code, pre { color: #172033; background: #eef2f6; }
+      a { color: #174e85; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="badge">Implemented · Lightweight feature</span>
+      <h1>Dynamic tab-group sizing</h1>
+      <p class="lead">Terminal tab-group menus now expand to the natural height of their open tabs instead of imposing a capped, internally scrollable viewport.</p>
+      <div class="callout"><strong>Conclusion:</strong> The scoped CSS change meets the no-internal-scroll requirement across default desktop, dense, left-sidebar, and mobile layouts. All 41 package test files passed, and two provider-diverse independent reviewers found no blockers.</div>
+    </header>
+
+    <section aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Outcome</th><th>Evidence</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Group sizing</td><td>Menus use intrinsic content height.</td><td><code>max-height: none</code></td><td class="status-pass">Pass</td></tr>
+            <tr><td>Internal scrolling</td><td>The menu no longer creates its own scroll container.</td><td><code>overflow: visible</code></td><td class="status-pass">Pass</td></tr>
+            <tr><td>Layout variants</td><td>Desktop, dense, left-sidebar, and mobile cascades remain coherent.</td><td>Static cascade inspection by integration owner and two reviewers</td><td class="status-pass">Pass</td></tr>
+            <tr><td>Validation</td><td>Targeted and full package checks succeeded.</td><td><code>npm test</code>: all 41 test files passed</td><td class="status-pass">Pass</td></tr>
+            <tr><td>Residual risk</td><td>Extremely large desktop groups can extend beyond the viewport.</td><td>Intentional consequence of forbidding an internal scrollbar</td><td class="status-risk">Accepted</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="decision-title">
+      <h2 id="decision-title">Design decision and architecture</h2>
+      <div class="grid">
+        <article class="card"><strong>Before</strong><code>max-height: min(60vh, 24rem)</code><br><code>overflow: auto</code><p class="muted">Large groups were constrained to a local scroll viewport.</p></article>
+        <article class="card"><strong>After</strong><code>max-height: none</code><br><code>overflow: visible</code><p class="muted">The menu grows with the number of tabs and shows the full list.</p></article>
+        <article class="card"><strong>Why CSS only</strong><p>The existing menu already uses a column flex layout, natural-height children, visible group overflow, open-state ancestor overflow, and a static mobile expansion. No JavaScript sizing or state change was needed.</p></article>
+      </div>
+      <p>The feature was validated as <strong>lightweight</strong>: it changes one presentation rule and its regression contracts, without affecting persisted tab groups, drag-and-drop behavior, APIs, dependencies, security boundaries, migrations, or rollout.</p>
+    </section>
+
+    <section aria-labelledby="implementation-title">
+      <h2 id="implementation-title">Implementation map</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Change</th><th>Reason</th></tr></thead>
+          <tbody>
+            <tr><td><a href="../public/styles.css"><code>public/styles.css</code></a></td><td>Removed the height cap, internal scrolling, and obsolete scrollbar styling from <code>.terminal-tab-group-menu</code>.</td><td>Allow content-driven growth.</td></tr>
+            <tr><td><a href="../tests/mobile-static.test.mjs"><code>tests/mobile-static.test.mjs</code></a></td><td>Added rule-bounded sizing coverage and strengthened the ancestor anti-clipping contract.</td><td>Prevent silent reintroduction of menu scrolling or desktop clipping.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre>.terminal-tab-group-menu {
+  /* existing positioning and flex-column rules remain */
+  max-height: none;
+  overflow: visible;
+}</pre>
+    </section>
+
+    <section aria-labelledby="validation-title">
+      <h2 id="validation-title">Testing and acceptance evidence</h2>
+      <div class="grid">
+        <article class="card"><strong>Targeted static test</strong><code>node tests/mobile-static.test.mjs</code><p>Passed after implementation and again after review-driven assertion hardening.</p></article>
+        <article class="card"><strong>Full package suite</strong><code>npm test</code><p>All 41 test files passed.</p></article>
+        <article class="card"><strong>Diff hygiene</strong><code>git diff --check</code><p>Passed for the scoped CSS and test files.</p></article>
+      </div>
+      <p class="muted">No live browser or device rendering run was available. Confidence is therefore based on CSS cascade inspection, regression contracts, the package suite, and independent reviews.</p>
+    </section>
+
+    <section aria-labelledby="review-title">
+      <h2 id="review-title">Independent review quorum</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Reviewer</th><th>Provider / model</th><th>Focus</th><th>Verdict</th></tr></thead>
+          <tbody>
+            <tr><td><code>9e4a5895…/0</code></td><td>Anthropic · Claude Opus 4.8 · high</td><td>Layout correctness, cascade, accessibility, maintainability</td><td class="status-pass">Pass · no blockers</td></tr>
+            <tr><td><code>9e4a5895…/1</code></td><td>OpenRouter / Moonshot · Kimi K3 · high</td><td>Tests, edge cases, desktop/dense/sidebar/mobile behavior</td><td class="status-pass">Pass · no blockers</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Finding dispositions</h3>
+      <ul>
+        <li><strong>Accepted and fixed:</strong> narrowed the CSS assertion so it cannot cross rule boundaries, and explicitly guarded the ancestor <code>overflow: visible</code> behavior.</li>
+        <li><strong>Accepted as residual risk:</strong> very large desktop groups may extend beyond the viewport; adding a cap and scrollbar would conflict with the approved requirement.</li>
+        <li><strong>Deferred:</strong> a pre-existing left-sidebar hover interaction can suspend outer sidebar scrolling; it was not introduced by this change.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="usage-title">
+      <h2 id="usage-title">Usage, rollout, and rollback</h2>
+      <p>No user action, configuration migration, or service rollout is required. Open a group normally; every grouped tab should be visible in the expanded menu without scrolling inside that menu.</p>
+      <p>Rollback is CSS-only: restore the previous menu height cap, <code>overflow: auto</code>, and thin-scrollbar rule, then update the static contract. No data rollback is needed.</p>
+      <p><strong>Confidence: 94/100.</strong> The implementation and cascade are directly inspected, all tests pass, and both independent reviewers agreed. Confidence is below 100 because no live browser rendering was performed.</p>
+      <p>Canonical implementation note: <a href="../plans/tab-group-dynamic-sizing.md">plans/tab-group-dynamic-sizing.md</a>.</p>
+    </section>
+
+    <footer>Feature evidence captured 2026-07-23 · Pi WebUI</footer>
+  </main>
+</body>
+</html>

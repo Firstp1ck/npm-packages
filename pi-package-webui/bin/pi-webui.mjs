@@ -302,7 +302,13 @@ function isTruthyEnv(value) {
 
 function isSourceCheckout(root) {
   const normalized = String(root || "").replace(/\\/g, "/");
-  return normalized.includes("/npm-packages/") && !normalized.includes("/node_modules/");
+  if (normalized.includes("/node_modules/")) return false;
+  try {
+    const gitMarker = statSync(path.join(root, "..", ".git"));
+    return gitMarker.isDirectory() || gitMarker.isFile();
+  } catch {
+    return false;
+  }
 }
 
 const NATIVE_SLASH_COMMANDS = nativeSlashCommandEntries(nativeParityMatrix);

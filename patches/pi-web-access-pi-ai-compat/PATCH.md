@@ -124,7 +124,7 @@ grep -R -n '@earendil-works/pi-ai' "${HOME}/.pi/agent/npm/node_modules/pi-web-ac
 
 tmp_log="$(mktemp)"
 set +e
-timeout 25s "${HOME}/npm-packages/pi-package-webui/dev/scripts/start-webui.sh" --dev --port 31416 --cwd "${HOME}/.dotfiles/.config/hypr" >"${tmp_log}" 2>&1
+timeout 25s "${HOME}/pi-coding-agent-forge/pi-package-webui/dev/scripts/start-webui.sh" --dev --port 31416 --cwd "${HOME}/.dotfiles/.config/hypr" >"${tmp_log}" 2>&1
 status=$?
 set -e
 cat "${tmp_log}"

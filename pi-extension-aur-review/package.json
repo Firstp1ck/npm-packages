@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Deterministic manual AUR review gate bound to the exact Git working-tree snapshot.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-aur-review#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-aur-review#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-aur-review"
   },
   "type": "module",

@@ -1,6 +1,6 @@
 # @firstpick/pi-extension-release-npm
 
-Release orchestration command for this npm-packages workspace.
+Release orchestration command for this pi-coding-agent-forge workspace.
 
 ## What it does
 
@@ -48,7 +48,7 @@ This extension is intended for a package workspace, not a single arbitrary npm p
 For local development workspaces, release helper scripts live under `dev/scripts`:
 
 ```text
-npm-packages/
+pi-coding-agent-forge/
   dev/
     scripts/
       release-workflow.sh

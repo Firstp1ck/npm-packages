@@ -3,10 +3,10 @@
   "version": "0.7.3",
   "description": "Pi Web UI companion package with a local browser UI CLI plus /webui-start and /webui-status commands.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-webui#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-webui#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-package-webui"
   },
   "type": "module",
@@ -20,7 +20,7 @@
     "extension"
   ],
   "pi": {
-    "image": "https://raw.githubusercontent.com/Firstp1ck/npm-packages/main/pi-package-webui/images/Webui_MainWindow_v0.4.8.png",
+    "image": "https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_MainWindow_v0.4.8.png",
     "extensions": [
       "./index.ts",
       "node_modules/@firstpick/pi-extension-bang-command-autocomplete/index.ts",

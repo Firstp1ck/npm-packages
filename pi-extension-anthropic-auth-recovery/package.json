@@ -4,10 +4,10 @@
   "description": "Offer a plan-only Pi recovery flow for classified Anthropic compatibility errors.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-anthropic-auth-recovery#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-anthropic-auth-recovery#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-anthropic-auth-recovery"
   },
   "keywords": [

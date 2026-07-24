@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Pi skill and extension tools for read-only auditing, inventorying, and lifecycle planning of the local skill bank.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-skill-lifecycle/vendor/pi-skill-skill-bank-manager#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-skill-lifecycle/vendor/pi-skill-skill-bank-manager#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-package-skill-lifecycle/vendor/pi-skill-skill-bank-manager"
   },
   "keywords": [

@@ -3,10 +3,10 @@
   "version": "0.1.5",
   "description": "Self-contained Pi package for skill lifecycle management: memory, skill-bank audit, evaluation, creation, and refinement tools.",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-package-skill-lifecycle#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-skill-lifecycle#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-package-skill-lifecycle"
   },
   "keywords": [

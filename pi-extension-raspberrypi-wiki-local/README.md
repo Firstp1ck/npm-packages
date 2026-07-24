@@ -73,7 +73,7 @@ The tuning was derived from the local corpus profile and representative searches
 ## Development checks
 
 ```bash
-validate_wiki /home/firstpick/npm-packages/pi-extension-raspberrypi-wiki-local
+validate_wiki /home/firstpick/pi-coding-agent-forge/pi-extension-raspberrypi-wiki-local
 npm install --package-lock-only --ignore-scripts
 npm pack --dry-run
 bun build index.ts --target=node --outfile=/tmp/raspberrypi-wiki-local-index-check.js

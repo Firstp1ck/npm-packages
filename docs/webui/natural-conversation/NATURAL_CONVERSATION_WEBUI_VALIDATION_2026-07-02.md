@@ -17,7 +17,7 @@ PI_OFFLINE=1 PI_WEBUI_SETTINGS_FILE=<work>/webui-settings.json node bin/pi-webui
   --offline --no-context-files \
   --no-extensions --no-skills --no-prompt-templates --no-themes \
   --thinking high \
-  --extension /home/firstpick/npm-packages/pi-package-natural-conversation
+  --extension /home/firstpick/pi-coding-agent-forge/pi-package-natural-conversation
 ```
 
 Real pi accepted `--thinking high` in RPC mode; the `/api/settings` fallback was not needed.
@@ -81,7 +81,7 @@ GET /api/features/natural-conversation   -> mode.enabled: false, statusText: ""
 ## Rerun
 
 ```sh
-node /home/firstpick/npm-packages/pi-package-webui/dev/scripts/natural-conversation-webui-validation.mjs --pi /home/firstpick/.npm-global/bin/pi
+node /home/firstpick/pi-coding-agent-forge/pi-package-webui/dev/scripts/natural-conversation-webui-validation.mjs --pi /home/firstpick/.npm-global/bin/pi
 ```
 
 The script boots the server itself in a throwaway work dir, runs all 11 checks, prints a PASS/FAIL table, exits nonzero on any failure, and kills both the original and the restarted (detached) server process even on failure. Options: `--pi CMD`, `--port N`, `--work-dir DIR` (kept when given), `--keep-work-dir`.

@@ -4,10 +4,10 @@
   "description": "Fail-closed DOCX inspection, rendering, transactional editing, diffing, validation, and commit tools for Pi agents.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/Firstp1ck/npm-packages/tree/main/pi-extension-docx#readme",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-docx#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Firstp1ck/npm-packages.git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
     "directory": "pi-extension-docx"
   },
   "keywords": [

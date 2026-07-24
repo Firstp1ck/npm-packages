@@ -1,1 +1,11 @@
-{}
+{
+  "name": "pi-coding-agent-forge",
+  "private": true,
+  "description": "Extensions, skills, prompts, themes, companion packages, and developer tools for the Pi coding agent.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git"
+  },
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge#readme"
+}

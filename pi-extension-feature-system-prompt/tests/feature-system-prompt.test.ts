@@ -5,7 +5,9 @@ import featureSystemPrompt, {
 	buildClassifierPrompt,
 	buildFeatureClassificationContext,
 	CLASSIFIER_TIMEOUT_MS,
+	classifyObviousNonFeatureRequest,
 	createFeatureSystemPrompt,
+	FEATURE_CATEGORY_STATUS_KEY,
 	FEATURE_CLASSIFICATION_FALLBACK,
 	FEATURE_PROMPT_LOAD_FAILURE_FALLBACK,
 	getFeatureComplexity,
@@ -23,14 +25,26 @@ import featureSystemPrompt, {
 
 type BeforeAgentStartEvent = { prompt: string; systemPrompt: string };
 type BeforeAgentStartResult = { systemPrompt: string } | undefined;
-type BeforeAgentStartHandler = (event: BeforeAgentStartEvent, ctx: Pick<ExtensionContext, "model">) => Promise<BeforeAgentStartResult>;
-type LifecycleHandler = () => void;
+type TestContext = Pick<ExtensionContext, "model" | "mode" | "ui">;
+type BeforeAgentStartHandler = (event: BeforeAgentStartEvent, ctx: TestContext) => Promise<BeforeAgentStartResult>;
+type LifecycleHandler = (event: unknown, ctx: TestContext) => void;
+type StatusUpdate = { key: string; text: string | undefined };
 
 const ACTIVE_MODEL = { provider: "local-provider", id: "active-conversation-model" } as ActiveClassifierModel;
 
 function createFeaturePromptHarness(dependencies: FeatureSystemPromptDependencies) {
 	let beforeAgentStart: BeforeAgentStartHandler | undefined;
 	const lifecycleHandlers = new Map<string, LifecycleHandler>();
+	const statusUpdates: StatusUpdate[] = [];
+	const createContext = (model: ActiveClassifierModel | undefined, mode: ExtensionContext["mode"]): TestContext => ({
+		model,
+		mode,
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statusUpdates.push({ key, text });
+			},
+		} as ExtensionContext["ui"],
+	});
 	createFeatureSystemPrompt(dependencies)({
 		on(name: string, candidate: unknown) {
 			if (name === "before_agent_start") beforeAgentStart = candidate as BeforeAgentStartHandler;
@@ -42,11 +56,20 @@ function createFeaturePromptHarness(dependencies: FeatureSystemPromptDependencie
 	return {
 		beforeAgentStart,
 		lifecycleHandlers,
+		statusUpdates,
 		run(prompt: string) {
-			return beforeAgentStart({ prompt, systemPrompt: "BASE" }, { model: ACTIVE_MODEL } as Pick<ExtensionContext, "model">);
+			return beforeAgentStart({ prompt, systemPrompt: "BASE" }, createContext(ACTIVE_MODEL, "tui"));
 		},
-		runWithoutModel(prompt: string) {
-			return beforeAgentStart({ prompt, systemPrompt: "BASE" }, { model: undefined } as Pick<ExtensionContext, "model">);
+		runInRpcMode(prompt: string) {
+			return beforeAgentStart({ prompt, systemPrompt: "BASE" }, createContext(ACTIVE_MODEL, "rpc"));
+		},
+		runWithoutModel(prompt: string, mode: ExtensionContext["mode"] = "tui") {
+			return beforeAgentStart({ prompt, systemPrompt: "BASE" }, createContext(undefined, mode));
+		},
+		runLifecycle(name: string, mode: ExtensionContext["mode"] = "tui") {
+			const handler = lifecycleHandlers.get(name);
+			if (!handler) throw new Error(`${name} handler was not registered`);
+			handler({}, createContext(ACTIVE_MODEL, mode));
 		},
 	};
 }
@@ -97,6 +120,22 @@ test("the continuation signal is conservative and exported", () => {
 	}
 });
 
+test("the local fast path accepts only explicit non-feature work", () => {
+	assert.equal(classifyObviousNonFeatureRequest("sending a prompt has a delay; find and solve the rootcause"), "bug");
+	assert.equal(classifyObviousNonFeatureRequest("Review this diff"), "review");
+	assert.equal(classifyObviousNonFeatureRequest("Research current package managers"), "research");
+	assert.equal(classifyObviousNonFeatureRequest("Explain the existing API"), "question");
+	assert.equal(classifyObviousNonFeatureRequest("Troubleshoot this network problem"), "troubleshooting");
+
+	for (const prompt of [
+		"Add a command palette",
+		"Implement a fix for this bug",
+		"Build support for retries",
+		"How do we add a command palette?",
+		"",
+	]) assert.equal(classifyObviousNonFeatureRequest(prompt), undefined, prompt);
+});
+
 test("classifier prompt is bounded and current-only by default", () => {
 	const current = `${"c".repeat(MAX_CLASSIFIER_PROMPT_CHARS)}CURRENT-TAIL`;
 	const previous = `${"p".repeat(MAX_CLASSIFIER_PROMPT_CHARS)}PREVIOUS-TAIL`;
@@ -129,15 +168,14 @@ test("feature complexity and injection are limited to successful feature labels"
 	assert.throws(() => buildFeatureClassificationContext("question"), /requires a feature result/);
 });
 
-test("the handler uses the active conversation model and sends prior context only for likely continuations", async () => {
+test("the handler model-routes ambiguous work but locally resolves obvious non-features and known continuations", async () => {
 	const classifierInputs: ClassifierPromptInput[] = [];
 	const classifierModels: ActiveClassifierModel[] = [];
-	const classifications: RequestKind[] = ["feature_complex", "continuation", "question", "continuation"];
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async (input, model) => {
 			classifierInputs.push(input);
 			classifierModels.push(model);
-			return classifications.shift();
+			return "feature_complex";
 		},
 		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 	});
@@ -147,19 +185,20 @@ test("the handler uses the active conversation model and sends prior context onl
 	assert.equal(await harness.run("Explain the existing API"), undefined);
 	assert.equal(await harness.run("Continue"), undefined);
 
-	assert.deepEqual(classifierModels, [ACTIVE_MODEL, ACTIVE_MODEL, ACTIVE_MODEL, ACTIVE_MODEL]);
-	assert.deepEqual(classifierInputs[0], { prompt: "Add a command palette" });
-	assert.deepEqual(classifierInputs[1], {
-		prompt: "Continue with that implementation",
-		previousPrompt: "Add a command palette",
-		previousEffectiveKind: "feature_complex",
+	assert.deepEqual(classifierModels, [ACTIVE_MODEL]);
+	assert.deepEqual(classifierInputs, [{ prompt: "Add a command palette" }]);
+});
+
+test("a continuation without known local state still uses the active model without leaking prior text", async () => {
+	const classifierInputs: ClassifierPromptInput[] = [];
+	const harness = createFeaturePromptHarness({
+		classifyRequest: async (input) => {
+			classifierInputs.push(input);
+			return "continuation";
+		},
 	});
-	assert.deepEqual(classifierInputs[2], { prompt: "Explain the existing API" });
-	assert.deepEqual(classifierInputs[3], {
-		prompt: "Continue",
-		previousPrompt: "Explain the existing API",
-		previousEffectiveKind: "question",
-	});
+	assert.equal(await harness.run("Continue"), undefined);
+	assert.deepEqual(classifierInputs, [{ prompt: "Continue" }]);
 });
 
 test("successful feature and non-feature routing injects only the appropriate policy", async () => {
@@ -171,6 +210,54 @@ test("successful feature and non-feature routing injects only the appropriate po
 
 	assert.deepEqual(await harness.run("Add a focused command"), { systemPrompt: injectedFeaturePrompt("feature_lightweight") });
 	assert.equal(await harness.run("Review this diff"), undefined);
+});
+
+test("RPC mode emits the effective feature category and clears it for non-features", async () => {
+	const classifications: RequestKind[] = ["feature_lightweight", "feature_lightweight", "feature_complex"];
+	const harness = createFeaturePromptHarness({
+		classifyRequest: async () => classifications.shift(),
+		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
+	});
+
+	await harness.run("Add a focused command");
+	assert.deepEqual(harness.statusUpdates, []);
+	await harness.runInRpcMode("Add a focused command");
+	await harness.runInRpcMode("Continue");
+	await harness.runInRpcMode("Add a broader command");
+	await harness.runInRpcMode("Continue");
+	await harness.runInRpcMode("Review this diff");
+
+	assert.deepEqual(harness.statusUpdates, [
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "lightweight-feature" },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "lightweight-feature" },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
+});
+
+test("RPC mode clears the feature category after unavailable classification and lifecycle resets", async () => {
+	const invalidHarness = createFeaturePromptHarness({ classifyRequest: async () => undefined });
+	await invalidHarness.runInRpcMode("Do some work");
+	assert.deepEqual(invalidHarness.statusUpdates, [{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined }]);
+
+	const throwingHarness = createFeaturePromptHarness({
+		classifyRequest: async () => {
+			throw new Error("classifier unavailable");
+		},
+	});
+	await throwingHarness.runInRpcMode("Do some work");
+	assert.deepEqual(throwingHarness.statusUpdates, [{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined }]);
+
+	const noModelHarness = createFeaturePromptHarness({});
+	await noModelHarness.runWithoutModel("Do some work", "rpc");
+	noModelHarness.runLifecycle("session_start", "rpc");
+	noModelHarness.runLifecycle("session_tree", "rpc");
+	assert.deepEqual(noModelHarness.statusUpdates, [
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
 });
 
 test("classifier invalid output, throw, and no active model inject only the short fallback", async () => {
@@ -226,9 +313,7 @@ test("session starts reset continuation state for startup, new, resume, fork, an
 			loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 		});
 		assert.deepEqual(await harness.run("Add a command palette"), { systemPrompt: injectedFeaturePrompt("feature_complex") }, reason);
-		const sessionStart = harness.lifecycleHandlers.get("session_start");
-		assert.ok(sessionStart, `${reason}: session_start handler is registered`);
-		sessionStart();
+		harness.runLifecycle("session_start");
 		assert.equal(await harness.run("Continue"), undefined, reason);
 	}
 });
@@ -240,9 +325,7 @@ test("tree navigation resets branch-local continuation state", async () => {
 		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 	});
 	assert.deepEqual(await harness.run("Add a command palette"), { systemPrompt: injectedFeaturePrompt("feature_lightweight") });
-	const sessionTree = harness.lifecycleHandlers.get("session_tree");
-	assert.ok(sessionTree, "session_tree handler is registered");
-	sessionTree();
+	harness.runLifecycle("session_tree");
 	assert.equal(await harness.run("Continue"), undefined);
 });
 

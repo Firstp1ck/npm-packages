@@ -98,8 +98,8 @@ Recommended default:
 Example:
 
 ```text
-/home/firstpick/npm-packages
-/home/firstpick/npm-packages.worktrees/feature-parallel-branches
+/home/firstpick/pi-coding-agent-forge
+/home/firstpick/pi-coding-agent-forge.worktrees/feature-parallel-branches
 ```
 
 Rationale:
@@ -316,7 +316,7 @@ Extend `pi-package-webui/tests/http-endpoints-harness.test.mjs`:
 Run:
 
 ```bash
-cd /home/firstpick/npm-packages/pi-package-webui
+cd /home/firstpick/pi-coding-agent-forge/pi-package-webui
 npm test
 npm run check
 ```
