@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-subagent-minimum-fanout",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Block Pi subagent executions with fewer than two statically guaranteed children.",
   "type": "module",
   "license": "MIT",

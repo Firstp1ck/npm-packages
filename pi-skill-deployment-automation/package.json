@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-deployment-automation",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Agents should invoke this skill for Docker Compose deployments, container updates, stack health checks, rollbacks, compose-file changes, image upgrades, failed deploys, or service restart planning. Provides safe deployment and rollback workflows.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-deployment-automation#readme",

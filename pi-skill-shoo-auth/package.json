@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-shoo-auth",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Use when evaluating, implementing, reviewing, or debugging Shoo auth (shoo.dev) Google sign-in in browser apps, including @shoojs/react, @shoojs/auth, hosted shoo.js, Convex custom JWT integration, PKCE callbacks, session checks, and server-side id_token verification.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-shoo-auth#readme",

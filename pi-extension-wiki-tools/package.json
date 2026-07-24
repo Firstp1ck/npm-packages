@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-wiki-tools",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi tools and skill for scaffolding local wiki extension packages from repository templates.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-wiki-tools#readme",

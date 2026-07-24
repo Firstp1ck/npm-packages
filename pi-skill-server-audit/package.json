@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-server-audit",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Agents should invoke this skill for Linux server security reviews, SSH hardening, firewall/open-port audits, user/permission checks, exposed services, or host hardening requests. Produces severity-rated findings and practical remediation steps.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-server-audit#readme",

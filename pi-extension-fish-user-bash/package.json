@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-fish-user-bash",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Use fish shell backend for Pi user bash commands (! and !!).",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-fish-user-bash#readme",

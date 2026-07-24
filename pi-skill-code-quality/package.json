@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-code-quality",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Agents should invoke this skill for code reviews, linting/formatting setup, maintainability checks, complexity concerns, warning cleanup, coding standards, or quality gates in Rust, TypeScript, Python, shell, and mixed repos.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-code-quality#readme",

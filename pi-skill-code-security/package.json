@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-code-security",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Agents should invoke this skill for code security reviews, leaked secret checks, dependency risk, unsafe shell/Python/TypeScript/Rust patterns, auth/input-validation flaws, SAST-style audits, or supply-chain concerns in repositories.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-code-security#readme",
