@@ -1,6 +1,7 @@
 import { aurReviewSafePath as parsedAurReviewSafePath, parseAurReviewPayload as parseValidatedAurReviewPayload } from "./aur-review-payload.mjs";
 import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
+import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -164,6 +165,9 @@ const elements = {
   setThinkingButton: $("#setThinkingButton"),
   thinkingVisibilityToggle: $("#thinkingVisibilityToggle"),
   thinkingVisibilityStatus: $("#thinkingVisibilityStatus"),
+  fastOutputModeSelect: $("#fastOutputModeSelect"),
+  setFastOutputModeButton: $("#setFastOutputModeButton"),
+  fastOutputModeStatus: $("#fastOutputModeStatus"),
   terminalTabsLayoutSelect: $("#terminalTabsLayoutSelect"),
   terminalTabsLayoutStatus: $("#terminalTabsLayoutStatus"),
   themeControlLabel: $("#themeControlLabel"),
@@ -394,6 +398,17 @@ let streamThinkingBubble = null;
 let streamThinking = null;
 let streamMessageActive = false;
 let streamProviderErrorText = "";
+let compactLiveState = createFastOutputLiveState();
+let compactTextBubble = null;
+let compactTextNode = null;
+let compactThinkingBubble = null;
+let compactThinkingNode = null;
+const compactToolShells = new Map();
+let activeOutputMode = "normal";
+let outputModeAcknowledged = false;
+let eventSourceOutputModeRequest = "auto";
+let eventSourceOutputModeFallbackAttempted = false;
+const compactLiveScheduler = createSustainedFlushScheduler({ flush: () => flushCompactLiveOutput() });
 let assistantErrorSurfacedThisRun = false;
 let runIndicatorBubble = null;
 let runIndicatorText = null;
@@ -1077,6 +1092,10 @@ const SETTINGS_DOUBLE_ESCAPE_OPTIONS = [
   { value: "none", label: "do nothing" },
 ];
 const SETTINGS_TREE_FILTER_OPTIONS = ["default", "no-tools", "user-only", "labeled-only", "all"];
+const SETTINGS_OUTPUT_MODE_OPTIONS = [
+  { value: "normal", label: "normal" },
+  { value: "compact-v1", label: "compact-v1" },
+];
 const SETTINGS_IMAGE_WIDTH_OPTIONS = ["60", "80", "120"];
 const SETTINGS_EDITOR_PADDING_OPTIONS = ["0", "1", "2", "3"];
 const SETTINGS_AUTOCOMPLETE_OPTIONS = ["3", "5", "7", "10", "15", "20"];
@@ -25879,6 +25898,93 @@ function httpIdleTimeoutOptions(settings) {
   return [{ value: current, label }, ...SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS];
 }
 
+function normalizeWebuiOutputModeMetadata(metadata = {}) {
+  const modes = new Set(["normal", "compact-v1"]);
+  const sources = new Set(["cli", "env", "persisted", "normal"]);
+  return {
+    persistedDefault: modes.has(metadata.persistedDefault) ? metadata.persistedDefault : "normal",
+    effectiveDefault: modes.has(metadata.effectiveDefault) ? metadata.effectiveDefault : "normal",
+    source: sources.has(metadata.source) ? metadata.source : "normal",
+    overridden: metadata.overridden === true && (metadata.source === "cli" || metadata.source === "env"),
+  };
+}
+
+function webuiOutputModeMetadataText(metadata) {
+  const sourceLabel = { cli: "CLI", env: "environment", persisted: "persisted setting", normal: "normal default" }[metadata.source] || "normal default";
+  const overridden = metadata.overridden ? ` ${sourceLabel} overrides the persisted setting.` : "";
+  return `Persisted default: ${metadata.persistedDefault}. Effective mode: ${metadata.effectiveDefault}. Source: ${sourceLabel}.${overridden}`;
+}
+
+let sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata();
+let sidebarOutputModeDiagnostic = "";
+let sidebarOutputModeNotice = "";
+let sidebarOutputModeLoaded = false;
+let sidebarOutputModeBusy = false;
+
+function updateSidebarOutputModeApplyState() {
+  if (!elements.fastOutputModeSelect || !elements.setFastOutputModeButton) return;
+  const unavailable = !sidebarOutputModeLoaded || !!sidebarOutputModeDiagnostic;
+  elements.fastOutputModeSelect.disabled = unavailable || sidebarOutputModeBusy;
+  elements.setFastOutputModeButton.disabled = unavailable
+    || sidebarOutputModeBusy
+    || elements.fastOutputModeSelect.value === sidebarOutputModeMetadata.persistedDefault;
+  elements.setFastOutputModeButton.textContent = sidebarOutputModeBusy ? "Applying…" : "Apply";
+}
+
+function renderSidebarOutputModeControl({ syncSelection = true } = {}) {
+  if (!elements.fastOutputModeSelect || !elements.fastOutputModeStatus) return;
+  if (syncSelection) elements.fastOutputModeSelect.value = sidebarOutputModeMetadata.persistedDefault;
+  elements.fastOutputModeStatus.textContent = sidebarOutputModeDiagnostic
+    || sidebarOutputModeNotice
+    || webuiOutputModeMetadataText(sidebarOutputModeMetadata);
+  elements.fastOutputModeStatus.classList.toggle("warning", !!sidebarOutputModeDiagnostic || !!sidebarOutputModeNotice);
+  updateSidebarOutputModeApplyState();
+}
+
+async function refreshSidebarOutputMode() {
+  if (!elements.fastOutputModeSelect) return sidebarOutputModeMetadata;
+  sidebarOutputModeLoaded = false;
+  sidebarOutputModeDiagnostic = "";
+  sidebarOutputModeNotice = "";
+  renderSidebarOutputModeControl();
+  try {
+    const response = await api("/api/webui-output-mode", { scoped: false });
+    sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata(response.data);
+  } catch (error) {
+    sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata();
+    sidebarOutputModeDiagnostic = `Fast-mode control unavailable: ${error.message || String(error)}. Using the normal default.`;
+  } finally {
+    sidebarOutputModeLoaded = true;
+    renderSidebarOutputModeControl();
+  }
+  return sidebarOutputModeMetadata;
+}
+
+async function applySidebarOutputMode() {
+  if (!elements.fastOutputModeSelect || sidebarOutputModeBusy) return;
+  const outputModeDefault = elements.fastOutputModeSelect.value === "compact-v1" ? "compact-v1" : "normal";
+  if (outputModeDefault === sidebarOutputModeMetadata.persistedDefault) return;
+  sidebarOutputModeBusy = true;
+  updateSidebarOutputModeApplyState();
+  try {
+    await api("/api/webui-output-mode", {
+      method: "PUT",
+      body: { outputModeDefault },
+      scoped: false,
+    });
+    await refreshSidebarOutputMode();
+    addEvent(outputModeDefault === "compact-v1" ? "Fast output mode enabled for auto-negotiated Web UI connections." : "Normal output processing restored for auto-negotiated Web UI connections.", "info");
+  } catch (error) {
+    sidebarOutputModeDiagnostic = "";
+    sidebarOutputModeNotice = `Failed to update fast mode: ${error.message || String(error)}. You can retry.`;
+    sidebarOutputModeLoaded = true;
+    addEvent(sidebarOutputModeNotice, "error");
+  } finally {
+    sidebarOutputModeBusy = false;
+    renderSidebarOutputModeControl();
+  }
+}
+
 function collectNativeSettingsPayload(controls) {
   return {
     transport: controls.transport.select.value,
@@ -25925,6 +26031,15 @@ async function openNativeSettingsDialog() {
     return;
   }
 
+  let outputModeMetadata = normalizeWebuiOutputModeMetadata();
+  let outputModeApiDiagnostic = "";
+  try {
+    const response = await api("/api/webui-output-mode", { scoped: false });
+    outputModeMetadata = normalizeWebuiOutputModeMetadata(response.data);
+  } catch (error) {
+    outputModeApiDiagnostic = `Output-mode API unavailable: ${error.message || String(error)}. Showing the normal default; other settings can still be applied.`;
+  }
+
   const state = currentState || {};
   const settings = settingsData.settings || {};
   applyNativeSettingsForBrowser(settings);
@@ -25955,6 +26070,7 @@ async function openNativeSettingsDialog() {
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
     doubleEscape: nativeSettingSelect("Double-escape action", settings.doubleEscapeAction || doubleEscapeAction, SETTINGS_DOUBLE_ESCAPE_OPTIONS, "Action when pressing Escape twice with an empty composer.", { label: "browser", tone: "browser" }),
     treeFilter: nativeSettingSelect("Tree filter mode", settings.treeFilterMode || treeFilterMode, SETTINGS_TREE_FILTER_OPTIONS, "Default filter when opening /tree.", { label: "browser", tone: "browser" }),
+    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Compact reduces local output-processing and live fidelity, restores rich final output, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
     autoResizeImages: nativeSettingToggle("Auto-resize images", settings.autoResizeImages !== false, "Resize large images to 2000x2000 max for better model compatibility.", { label: "reload", tone: "reload" }),
     blockImages: nativeSettingToggle("Block images", settings.blockImages === true, "Prevent images from being sent to LLM providers.", { label: "reload", tone: "reload" }),
     showImages: nativeSettingToggle("Show terminal images", settings.showImages !== false, "Native TUI inline image rendering preference.", { label: "TUI", tone: "tui" }),
@@ -25969,6 +26085,14 @@ async function openNativeSettingsDialog() {
     clearOnShrink: nativeSettingToggle("Clear on shrink", settings.clearOnShrink === true, "Native TUI row clearing when content shrinks; may flicker.", { label: "TUI", tone: "tui" }),
     terminalProgress: nativeSettingToggle("Terminal progress", settings.showTerminalProgress === true, "Native TUI OSC 9;4 terminal progress indicators.", { label: "TUI", tone: "tui" }),
   };
+  const outputModeStatus = make("span", "native-settings-hint");
+  controls.outputMode.field.append(outputModeStatus);
+  const renderOutputModeMetadata = () => {
+    controls.outputMode.select.value = outputModeMetadata.persistedDefault;
+    controls.outputMode.select.disabled = !!outputModeApiDiagnostic;
+    outputModeStatus.textContent = outputModeApiDiagnostic || webuiOutputModeMetadataText(outputModeMetadata);
+  };
+  renderOutputModeMetadata();
 
   const remoteAccessSection = make("details", "native-settings-section native-settings-remote-access");
   remoteAccessSection.open = false;
@@ -26010,7 +26134,7 @@ async function openNativeSettingsDialog() {
     nativeSettingsNote("Scopes", "Each field says whether it affects this tab, this browser, global Pi settings, or the native TUI."),
     remoteAccessSection,
     nativeSettingsSection("Runtime", "Model behavior and request transport.", [controls.thinking, controls.autoCompact, controls.steering, controls.followUp, controls.transport, controls.httpIdleTimeout], { open: true }),
-    nativeSettingsSection("Browser workflow", "Local Web UI behavior plus shared composer defaults.", [controls.busyBehavior, controls.density, controls.thinkingOutput, controls.doneNotifications, controls.autocompleteMax, controls.doubleEscape, controls.treeFilter], { open: true }),
+    nativeSettingsSection("Browser workflow", "Local Web UI behavior, shared composer defaults, and server output processing.", [controls.busyBehavior, controls.density, controls.thinkingOutput, controls.doneNotifications, controls.autocompleteMax, controls.doubleEscape, controls.treeFilter, controls.outputMode], { open: true }),
     nativeSettingsSection("Images", "Provider image policy and native terminal image display.", [controls.autoResizeImages, controls.blockImages, controls.showImages, controls.imageWidth], { open: true }),
     nativeSettingsSection("Startup & safety", "Command registration, warnings, update/startup behavior.", [controls.skillCommands, controls.anthropicWarning, controls.collapseChangelog, controls.quietStartup, controls.installTelemetry], { open: false }),
     nativeSettingsSection("Native TUI advanced", "Saved for the terminal UI; mostly informational in the browser.", [controls.hardwareCursor, controls.editorPadding, controls.clearOnShrink, controls.terminalProgress], { open: false })
@@ -26022,6 +26146,7 @@ async function openNativeSettingsDialog() {
   addNativeCommandAction("Cancel", () => closeNativeCommandDialog());
 
   const initialPayload = collectNativeSettingsPayload(controls);
+  const initialOutputModeDefault = controls.outputMode.select.value;
   const initialRuntime = JSON.stringify({
     thinking: state.thinkingLevel || "off",
     autoCompact: state.autoCompactionEnabled !== false,
@@ -26047,7 +26172,9 @@ async function openNativeSettingsDialog() {
   });
   let applyButton;
   const updateDirtyState = () => {
-    nativeSettingsDirty = currentRuntime() !== initialRuntime || JSON.stringify(collectNativeSettingsPayload(controls)) !== JSON.stringify(initialPayload);
+    nativeSettingsDirty = currentRuntime() !== initialRuntime
+      || JSON.stringify(collectNativeSettingsPayload(controls)) !== JSON.stringify(initialPayload)
+      || controls.outputMode.select.value !== initialOutputModeDefault;
     if (applyButton) {
       applyButton.disabled = !nativeSettingsDirty;
       applyButton.textContent = reloadNeeded() ? "Apply and reload" : "Apply";
@@ -26063,6 +26190,7 @@ async function openNativeSettingsDialog() {
     try {
       const requests = [];
       const thinkingLevelChanged = controls.thinking.select.value !== (state.thinkingLevel || "off");
+      const outputModeChanged = controls.outputMode.select.value !== initialOutputModeDefault;
       if (thinkingLevelChanged) requests.push(nativeCommandApi("/api/thinking", { method: "POST", body: { level: controls.thinking.select.value } }));
       if (controls.steering.select.value !== (state.steeringMode || "one-at-a-time")) requests.push(nativeCommandApi("/api/steering-mode", { method: "POST", body: { mode: controls.steering.select.value } }));
       if (controls.followUp.select.value !== (state.followUpMode || "one-at-a-time")) requests.push(nativeCommandApi("/api/follow-up-mode", { method: "POST", body: { mode: controls.followUp.select.value } }));
@@ -26076,8 +26204,32 @@ async function openNativeSettingsDialog() {
       const response = await nativeCommandApi("/api/settings", { method: "POST", body: { settings: payload, reload } });
       applyResponseTab(response);
       applyNativeSettingsForBrowser(response.data?.settings || payload);
+      if (outputModeChanged) {
+        try {
+          await api("/api/webui-output-mode", {
+            method: "PUT",
+            body: { outputModeDefault: controls.outputMode.select.value },
+            scoped: false,
+          });
+          const refreshedOutputMode = await api("/api/webui-output-mode", { scoped: false });
+          outputModeMetadata = normalizeWebuiOutputModeMetadata(refreshedOutputMode.data);
+          outputModeApiDiagnostic = "";
+          sidebarOutputModeMetadata = outputModeMetadata;
+          sidebarOutputModeDiagnostic = "";
+          sidebarOutputModeNotice = "";
+          sidebarOutputModeLoaded = true;
+          renderSidebarOutputModeControl();
+        } catch (error) {
+          outputModeApiDiagnostic = `Output-mode API unavailable after saving: ${error.message || String(error)}. Showing the normal default; other settings can still be applied.`;
+          outputModeMetadata = normalizeWebuiOutputModeMetadata();
+          renderOutputModeMetadata();
+          throw error;
+        }
+        renderOutputModeMetadata();
+      }
       if (thinkingLevelChanged) requestGitFooterWebuiPayload(activeTabContext(), { force: true });
-      addTransientMessage({ role: "native", title: "/settings", content: nativeSettingsChangedMessage(response, reload), level: response.data?.reloadRecommended?.length && !response.data?.reloaded ? "warn" : "info" });
+      const outputModeMessage = outputModeChanged ? ` ${webuiOutputModeMetadataText(outputModeMetadata)}` : "";
+      addTransientMessage({ role: "native", title: "/settings", content: `${nativeSettingsChangedMessage(response, reload)}${outputModeMessage}`, level: response.data?.reloadRecommended?.length && !response.data?.reloaded ? "warn" : "info" });
       nativeSettingsDirty = false;
       closeNativeCommandDialog({ force: true });
       await refreshAll();
@@ -27002,6 +27154,173 @@ function cancelStreamBubbleHide() {
   streamBubbleHideTimer = null;
 }
 
+function compactOutputActive() {
+  return outputModeAcknowledged && activeOutputMode === "compact-v1";
+}
+
+function outputModeAcknowledgement(event) {
+  const outputMode = event?.outputMode;
+  if (outputMode?.protocolVersion !== 1 || !["normal", "compact-v1"].includes(outputMode.activeMode)) return null;
+  return outputMode;
+}
+
+function removeCompactLiveBubble(bubble) {
+  bubble?.remove();
+}
+
+function resetCompactLiveOutput({ remove = true } = {}) {
+  compactLiveScheduler.cancel();
+  compactLiveState = createFastOutputLiveState();
+  if (remove) {
+    removeCompactLiveBubble(compactTextBubble);
+    removeCompactLiveBubble(compactThinkingBubble);
+    for (const shell of compactToolShells.values()) removeCompactLiveBubble(shell?.bubble);
+  }
+  compactTextBubble = null;
+  compactTextNode = null;
+  compactThinkingBubble = null;
+  compactThinkingNode = null;
+  compactToolShells.clear();
+}
+
+function ensureCompactTextBubble() {
+  if (compactTextBubble?.parentElement === elements.chat && compactTextNode) return;
+  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true });
+  compactTextBubble = created.bubble;
+  compactTextBubble.classList.add("compact-live-output");
+  compactTextNode = make("div", "compact-live-text");
+  created.body.append(compactTextNode);
+  renderRunIndicator({ scroll: false });
+}
+
+function ensureCompactThinkingBubble() {
+  if (!thinkingOutputVisible) return false;
+  if (compactThinkingBubble?.parentElement === elements.chat && compactThinkingNode) return true;
+  const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true });
+  compactThinkingBubble = created.bubble;
+  compactThinkingBubble.classList.add("compact-live-output");
+  compactThinkingNode = make("div", "compact-live-thinking");
+  created.body.append(compactThinkingNode);
+  renderRunIndicator({ scroll: false });
+  return true;
+}
+
+function compactToolShellId(event) {
+  const direct = String(event?.toolCallId || event?.id || "").trim();
+  return direct || `compact-tool-${compactToolShells.size + 1}`;
+}
+
+function renderCompactToolShell(event, { complete = false } = {}) {
+  const id = compactToolShellId(event);
+  let shell = compactToolShells.get(id);
+  if (!shell) {
+    const bubble = make("article", "message toolExecution compact-tool-shell streaming");
+    const header = make("div", "message-header");
+    const role = make("span", "message-role");
+    const timestamp = make("span", "muted", formatDate(Date.now()));
+    const body = make("div", "message-body");
+    const status = make("div", "compact-tool-status");
+    header.append(role, timestamp);
+    body.append(status);
+    bubble.append(header, body);
+    bubble.dataset.toolCallId = id;
+    appendChatMessageBubble(bubble);
+    shell = { bubble, role, status };
+    compactToolShells.set(id, shell);
+  }
+  const name = String(event?.toolName || event?.name || "tool");
+  shell.role.textContent = `tool: ${name}`;
+  shell.status.textContent = complete
+    ? `${name} ${event?.isError ? "failed" : "finished"}; restoring final details…`
+    : `${name} running…`;
+  shell.bubble.classList.toggle("tool-error", !!event?.isError);
+  shell.bubble.classList.toggle("tool-running", !complete);
+  shell.bubble.classList.toggle("tool-success", complete && !event?.isError);
+  return shell;
+}
+
+function flushCompactLiveOutput() {
+  if (compactLiveState.text) {
+    ensureCompactTextBubble();
+    if (compactTextNode?.textContent !== compactLiveState.text) compactTextNode.textContent = compactLiveState.text;
+  }
+  if (compactLiveState.thinking && ensureCompactThinkingBubble()) {
+    if (compactThinkingNode?.textContent !== compactLiveState.thinking) compactThinkingNode.textContent = compactLiveState.thinking;
+  }
+  scheduleChatFollowScroll();
+}
+
+function finishCompactLiveOutput(tabContext = activeTabContext()) {
+  compactLiveScheduler.flushNow();
+  scheduleRefreshMessages(0, tabContext);
+}
+
+function handleCompactMessageUpdate(event) {
+  const reduced = reduceFastOutputLiveEvent(compactLiveState, event);
+  if (!shouldConsumeFastOutputLiveEvent(reduced)) return false;
+  if (!reduced.changed) return true;
+  compactLiveState = reduced.state;
+  if (reduced.kind.startsWith("thinking")) setRunIndicatorActivity("Thinking…", { scroll: false });
+  else if (reduced.kind.startsWith("toolcall")) setRunIndicatorActivity("Building tool call…", { scroll: false });
+  else setRunIndicatorActivity("Writing response…", { scroll: false });
+  compactLiveScheduler.request();
+  return true;
+}
+
+function acceptOutputModeAcknowledgement(event) {
+  const acknowledgement = outputModeAcknowledgement(event);
+  if (acknowledgement) {
+    activeOutputMode = acknowledgement.activeMode;
+    outputModeAcknowledged = true;
+    return true;
+  }
+  activeOutputMode = "normal";
+  outputModeAcknowledged = false;
+  if (!eventSourceOutputModeFallbackAttempted) {
+    eventSourceOutputModeFallbackAttempted = true;
+    queueMicrotask(() => connectEvents(activeTabContext(), { requestedMode: "normal", fallbackAttempted: true }));
+  }
+  return false;
+}
+
+function transitionNormalLiveOutputToCompact() {
+  compactLiveState = seedFastOutputLiveState({ text: streamRawText, thinking: streamThinkingRawText });
+  setStreamRawText("");
+  setStreamThinkingRawText("");
+  removeStreamBubble();
+  removeStreamingThinkingBubble();
+  flushCompactLiveOutput();
+}
+
+function transitionCompactLiveOutputToNormal(tabContext = activeTabContext()) {
+  finishCompactLiveOutput(tabContext);
+  const live = fastOutputLiveTextAndThinking(compactLiveState);
+  resetCompactLiveOutput();
+  setStreamRawText(live.text);
+  setStreamThinkingRawText(live.thinking);
+  if (live.thinking) setStreamingThinkingText(live.thinking);
+  if (live.text) renderStreamingAssistantText();
+}
+
+function applyOutputModeControl(event, tabContext = activeTabContext()) {
+  if (event?.protocolVersion !== 1 || !["normal", "compact-v1"].includes(event.activeMode)) return false;
+  const previousMode = activeOutputMode;
+  if (previousMode === "normal" && event.activeMode === "compact-v1") {
+    transitionNormalLiveOutputToCompact();
+  } else if (previousMode === "compact-v1" && event.activeMode === "normal") {
+    transitionCompactLiveOutputToNormal(tabContext);
+  } else if (previousMode === "compact-v1") {
+    finishCompactLiveOutput(tabContext);
+    resetCompactLiveOutput();
+  } else if (event.activeMode === "normal") {
+    resetCompactLiveOutput();
+  }
+  activeOutputMode = event.activeMode;
+  outputModeAcknowledged = true;
+  addEvent(`live output mode changed to ${event.activeMode}`, "info");
+  return true;
+}
+
 function cancelStreamingAssistantTextRender() {
   clearTimeout(streamTextRenderTimer);
   streamTextRenderTimer = null;
@@ -27197,6 +27516,7 @@ function showStreamingThinking(initialText = "") {
 }
 
 function resetStreamBubble() {
+  resetCompactLiveOutput();
   cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
   streamBubble = null;
@@ -27400,6 +27720,7 @@ function assistantStreamErrorMessage(event, update = event?.assistantMessageEven
 }
 
 function handleMessageUpdate(event) {
+  if (compactOutputActive() && handleCompactMessageUpdate(event)) return;
   const update = event.assistantMessageEvent || {};
   if (update.type === "thinking_start") {
     setRunIndicatorActivity("Thinking…", { scroll: false });
@@ -29682,6 +30003,7 @@ function handleEvent(event) {
       const connectedTabId = event.tabId || activeTabId;
       featureCategoryByTab.delete(connectedTabId);
       if (connectedTabId === activeTabId) renderFeatureCategoryTag(connectedTabId);
+      acceptOutputModeAcknowledgement(event);
       setWebuiVersion(event.version);
       setPiVersion(event.piVersion);
       setWebuiDevServer(isWebuiDevMetadata(event));
@@ -29694,6 +30016,9 @@ function handleEvent(event) {
       scheduleForegroundReconcile("event stream reconnect", 0);
       break;
     }
+    case "webui_output_mode":
+      applyOutputModeControl(event, tabContext);
+      break;
     case "webui_tab_renamed":
       applyTabMetadata(event.tab || { id: event.tabId, title: event.tabTitle, activity: event.tabActivity });
       addEvent(`${event.previousTabTitle || "terminal"} renamed to ${event.tabTitle || "terminal"}`);
@@ -29789,11 +30114,13 @@ function handleEvent(event) {
       renderNetworkStatus();
       break;
     case "pi_process_exit":
+      if (compactOutputActive()) compactLiveScheduler.flushNow();
       surfaceRuntimeDiagnostic("Pi process exited", `Pi RPC exited (${event.code ?? event.signal ?? "unknown"}).`);
       clearRunIndicatorActivity();
       refreshTabs().catch((error) => addEvent(error.message, "error"));
       break;
     case "pi_process_error":
+      if (compactOutputActive()) compactLiveScheduler.flushNow();
       surfaceRuntimeDiagnostic("Pi process error", event.error || "Pi RPC process error.");
       clearRunIndicatorActivity();
       refreshTabs().catch((error) => addEvent(error.message, "error"));
@@ -29840,6 +30167,7 @@ function handleEvent(event) {
       renderFeedbackTray();
       break;
     case "agent_end":
+      if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       streamMessageActive = false;
       if (!assistantErrorSurfacedThisRun && event.willRetry !== true) {
         const message = assistantErrorFromAgentEnd(event);
@@ -29888,6 +30216,7 @@ function handleEvent(event) {
       handleMessageUpdate(event);
       break;
     case "message_end": {
+      if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       streamMessageActive = false;
       if (event.message?.role === "assistant" && event.message.stopReason === "error") {
         const message = String(event.message.errorMessage || streamProviderErrorText || "The assistant request failed without an error message.").trim();
@@ -29904,26 +30233,36 @@ function handleEvent(event) {
     case "tool_execution_start":
       streamToolCallSeen = true;
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: true });
-      suppressStreamingAssistantTextBeforeToolCall();
-      removeStreamingToolCallCard();
-      handleToolExecutionStart(event);
+      if (compactOutputActive()) {
+        compactLiveScheduler.flushNow();
+        renderCompactToolShell(event);
+      } else {
+        suppressStreamingAssistantTextBeforeToolCall();
+        removeStreamingToolCallCard();
+        handleToolExecutionStart(event);
+      }
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
       addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
       break;
     case "tool_execution_update":
-      handleToolExecutionUpdate(event);
+      if (!compactOutputActive()) handleToolExecutionUpdate(event);
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`, { scroll: false });
       break;
     case "tool_execution_end": {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
       const imagePayloadError = toolImagePayloadError(event);
       if (imagePayloadError) surfaceRuntimeDiagnostic("Tool image payload error", imagePayloadError);
-      handleToolExecutionEnd(event);
+      if (compactOutputActive()) {
+        compactLiveScheduler.flushNow();
+        renderCompactToolShell(event, { complete: true });
+        finishCompactLiveOutput(tabContext);
+      } else {
+        handleToolExecutionEnd(event);
+      }
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
       addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
-      // No transcript refresh here: the live tool card already shows the
-      // result via renderLiveToolRun, and message_end/agent_end reconcile the
-      // transcript. This avoids one fetch+render per tool call.
+      // Compact tool shells deliberately defer rich body construction to the
+      // final transcript reconciliation; normal mode retains its live card.
       scheduleRefreshFooter();
       break;
     }
@@ -29935,6 +30274,7 @@ function handleEvent(event) {
       renderStatus();
       break;
     case "compaction_end":
+      if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       if (currentState) currentState = { ...currentState, isCompacting: false };
       if (event.aborted) clearContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
       else markContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
@@ -29946,6 +30286,9 @@ function handleEvent(event) {
       scheduleRefreshState();
       scheduleRefreshMessages();
       scheduleRefreshFooter();
+      break;
+    case "agent_settled":
+      if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       break;
     case "auto_retry_start": {
       const seconds = Math.max(0, Math.ceil(Number(event.delayMs || 0) / 1000));
@@ -30003,11 +30346,21 @@ function handleEvent(event) {
   }
 }
 
-function connectEvents(tabContext = activeTabContext()) {
+function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto", fallbackAttempted = false } = {}) {
   eventSource?.close();
   eventSource = null;
+  resetCompactLiveOutput();
+  activeOutputMode = "normal";
+  outputModeAcknowledged = false;
+  eventSourceOutputModeRequest = requestedMode === "normal" ? "normal" : "auto";
+  eventSourceOutputModeFallbackAttempted = !!fallbackAttempted;
   if (!tabContext.tabId || !isCurrentTabContext(tabContext)) return;
-  const source = new EventSource(`/api/events?tab=${encodeURIComponent(tabContext.tabId)}`);
+  const parameters = new URLSearchParams({
+    tab: tabContext.tabId,
+    outputMode: eventSourceOutputModeRequest,
+    outputModeProtocol: "1",
+  });
+  const source = new EventSource(`/api/events?${parameters.toString()}`);
   eventSource = source;
   source.onmessage = (message) => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
@@ -30019,6 +30372,7 @@ function connectEvents(tabContext = activeTabContext()) {
   };
   source.onerror = () => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
+    if (compactOutputActive()) compactLiveScheduler.flushNow();
     addEvent("event stream disconnected; browser will retry", "warn");
     fetch("/api/health", { cache: "no-store" }).catch((error) => setBackendOffline(true, error));
   };
@@ -30838,6 +31192,11 @@ if (elements.thinkingVisibilityToggle) {
     setThinkingOutputVisible(elements.thinkingVisibilityToggle.checked, { announce: true });
   });
 }
+elements.fastOutputModeSelect?.addEventListener("change", () => {
+  sidebarOutputModeNotice = "";
+  renderSidebarOutputModeControl({ syncSelection: false });
+});
+elements.setFastOutputModeButton?.addEventListener("click", () => applySidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error")));
 if (elements.terminalTabsLayoutSelect) {
   elements.terminalTabsLayoutSelect.addEventListener("change", () => {
     setTerminalTabsLayout(elements.terminalTabsLayoutSelect.value, { announce: true });
@@ -31517,4 +31876,5 @@ bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();
 registerPwaServiceWorker();
 renderServerOfflinePanel();
+refreshSidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error"));
 initializeTabs().catch((error) => addEvent(error.message, "error"));

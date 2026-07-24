@@ -31,13 +31,17 @@ const settingsFile = path.join(root, "settings.json");
 try {
   await writeFile(settingsFile, `${JSON.stringify({ version: 1, remoteAuthEnabled: true }, null, 2)}\n`, "utf8");
   const migrated = await readWebuiSettings(settingsFile);
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 4);
   assert.equal(migrated.remoteAuthEnabled, true, "legacy Remote PIN state should survive schema migration");
+  assert.equal(migrated.outputModeDefault, "normal", "legacy settings should default browser output to normal");
   assert.equal(isGitWorkflowSetupComplete(migrated.gitWorkflow), false);
   assert.equal(migrated.resourceDefaults.tools.enabledTools, null, "legacy settings should inherit Pi's normal tool defaults");
   assert.equal(migrated.resourceDefaults.skills.enabledSkills, null, "legacy settings should inherit Pi's normal skill defaults");
   assert.equal(migrated.gitWorkflow.stagingPolicy, "review");
   assert.equal(migrated.gitWorkflow.generation.thinkingLevel, "low");
+
+  await writeFile(settingsFile, `${JSON.stringify({ version: 4, remoteAuthEnabled: true, outputModeDefault: "unsupported" }, null, 2)}\n`, "utf8");
+  assert.equal((await readWebuiSettings(settingsFile)).outputModeDefault, "normal", "invalid persisted output modes must fail closed to normal");
 
   const saved = await writeGitWorkflowPreferences({
     generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", unavailablePolicy: "ask" },
@@ -53,6 +57,7 @@ try {
   assert.equal(saved.stagingPolicy, "preserve");
 
   await writeWebuiSettings({
+    outputModeDefault: "compact-v1",
     resourceDefaults: {
       tools: { enabledTools: ["read", " write ", "read", ""] },
       skills: { enabledSkills: ["repo-explorer", "code-security"] },
@@ -65,8 +70,9 @@ try {
   assert.equal(partiallyUpdated.deliveryMode, "current");
 
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persisted.version, 3);
+  assert.equal(persisted.version, 4);
   assert.equal(persisted.remoteAuthEnabled, true);
+  assert.equal(persisted.outputModeDefault, "compact-v1", "output-mode default should persist beside existing Web UI settings");
   assert.equal(persisted.gitWorkflow.generation.provider, "fake");
   assert.deepEqual(persisted.resourceDefaults.tools.enabledTools, ["read", "write"], "global tool defaults should be normalized and deduplicated");
   assert.deepEqual(persisted.resourceDefaults.skills.enabledSkills, ["repo-explorer", "code-security"], "global skill defaults should persist beside other Web UI settings");

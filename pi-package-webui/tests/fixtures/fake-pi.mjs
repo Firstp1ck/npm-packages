@@ -307,6 +307,63 @@ function handleDocumentArtifactFixturePrompt(command, base) {
   return true;
 }
 
+function fastModeMessageUpdate(delta, accumulated) {
+  const partial = { role: "assistant", content: [{ type: "text", text: accumulated }] };
+  return {
+    type: "message_update",
+    message: partial,
+    assistantMessageEvent: { type: "text_delta", delta, contentIndex: 0, partial },
+  };
+}
+
+function runFastModeFixtureFlow({ barrierOnly = false } = {}) {
+  const toolCallId = "fast-mode-tool";
+  const firstText = "fast mode first delta ";
+  const finalText = `${firstText}and final delta`;
+  const finish = () => {
+    emitEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalText }] } });
+    emitEvent({ type: "agent_end" });
+  };
+  emitEvent({ type: "agent_start" });
+  emitEvent({ type: "message_start", message: { role: "assistant" } });
+  emitEvent(fastModeMessageUpdate(firstText, firstText));
+  if (barrierOnly) {
+    setTimeout(finish, 180);
+    return;
+  }
+  setTimeout(() => {
+    emitEvent({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "fast-mode.txt" } });
+    emitEvent({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: "intermediate tool work" }] } });
+    emitEvent({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "final tool result" }] } });
+    emitEvent({ type: "pi_stderr", text: "fast mode fixture diagnostic" });
+    emitEvent({ type: "extension_ui_request", id: "fast-mode-dialog", method: "confirm", title: "Fast mode dialog", message: "Preserve this dialog" });
+    emitEvent(fastModeMessageUpdate("and final delta", finalText));
+    finish();
+  }, 20);
+}
+
+function runFastModeHistoryFlow() {
+  let accumulated = "";
+  emitEvent({ type: "agent_start" });
+  emitEvent({ type: "message_start", message: { role: "assistant" } });
+  for (let index = 0; index < 512; index += 1) {
+    const delta = `h${String(index).padStart(3, "0")}`;
+    accumulated += delta;
+    emitEvent(fastModeMessageUpdate(delta, accumulated));
+  }
+  emitEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: accumulated }] } });
+  emitEvent({ type: "agent_end" });
+}
+
+function handleFastModeFixturePrompt(command, base) {
+  const message = String(command.message || "").trim();
+  if (!["fixture fast mode flow", "fixture fast mode barrier", "fixture fast mode history"].includes(message)) return false;
+  respond({ ...base, data: { output: "fast mode fixture accepted" } });
+  if (message.endsWith("history")) runFastModeHistoryFlow();
+  else runFastModeFixtureFlow({ barrierOnly: message.endsWith("barrier") });
+  return true;
+}
+
 function handleTransportFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
   if (message === "fixture stderr diagnostic") {
@@ -510,6 +567,7 @@ rl.on("line", (line) => {
     }
     case "prompt":
       if (handleWebuiHelperPrompt(command, base)) return;
+      if (handleFastModeFixturePrompt(command, base)) return;
       if (handleTransportFixturePrompt(command, base)) return;
       if (handleSubagentFixturePrompt(command, base)) return;
       if (handleDocumentArtifactFixturePrompt(command, base)) return;

@@ -101,6 +101,7 @@ pi-webui [options] [-- <pi args...>]
   --name <name>       Initial Web UI tab name
   --remote-auth       Enable startup PIN authentication for non-local clients
   --no-remote-auth    Disable startup PIN authentication
+  --output-mode <mode>  Web UI output default: normal or compact-v1
   -h, --help          Show help
   -v, --version       Print version
 ```
@@ -114,6 +115,7 @@ pi-webui
 pi-webui --cwd ~/src/my-project
 pi-webui --host 0.0.0.0 --remote-auth --cwd ~/src/my-project
 pi-webui --port 3000 -- --model anthropic/claude-sonnet-4-5:high
+pi-webui --output-mode compact-v1
 PI_WEBUI_PI_BIN=/path/to/pi pi-webui --no-session
 ```
 
@@ -122,6 +124,7 @@ Environment variables:
 - `PI_WEBUI_HOST` and `PI_WEBUI_PORT` set the default bind address.
 - `PI_WEBUI_PI_BIN=/path/to/pi` selects the Pi executable when `--pi` is not passed.
 - `PI_WEBUI_REMOTE_AUTH=1` starts with Remote PIN authentication enabled.
+- `PI_WEBUI_OUTPUT_MODE=normal|compact-v1` sets the server default for newly auto-negotiated browser connections.
 - Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as Remote PIN auth, guided Git preferences, and global Tools/Skills defaults.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
@@ -129,6 +132,16 @@ Environment variables:
 - `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves `npm-cli.js` beside the active Node executable (and on `PATH`) and runs it through Node, avoiding Windows `npm.cmd` spawn failures.
 - `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
 - `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
+
+### Compact live output mode
+
+Normal output is the default. In the sidebar, open **Controls → Output processing**, select **Fast**, and click **Apply**. The same persisted server default is also available under **Settings → Browser workflow → Output processing**. Alternatively, set `--output-mode compact-v1`, `PI_WEBUI_OUTPUT_MODE=compact-v1`, or `outputModeDefault` directly. Precedence is explicit CLI flag, then environment variable, then the persisted setting, then `normal`.
+
+The browser negotiates compact-v1 per EventSource connection (`outputMode=auto&outputModeProtocol=1`), so normal and compact clients can share one Pi tab. A browser only enables compact handling after the protocol-1 acknowledgement; an older server gets one normal-mode reconnect instead. The server default applies only to `auto` clients, and active auto streams change representation at a semantic boundary.
+
+Compact mode keeps live text and thinking as plain text, coalesces sustained live DOM/scroll flushes to at most once every 100 ms, and uses lightweight tool shells. It then reconciles with the existing final `/api/messages` transcript to restore Markdown, thinking formatting, and full tool cards. It does not change Pi generation, prompts, tools, models, providers, inference, final transcript semantics, or the normal renderer.
+
+The included fast-mode metric measures deterministic post-parse serialized JSON byte-work only (`R + 2×S`) and semantic parity; it does not claim wall-clock improvement, lower DOM CPU, reduced network latency, or higher model token/s.
 
 Optional Natural Conversation server-side voice fallback variables:
 
