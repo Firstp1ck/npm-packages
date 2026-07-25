@@ -188,6 +188,18 @@ button.danger {
 }
 button:disabled { cursor: not-allowed; opacity: 0.5; transform: none; }
 [hidden] { display: none !important; }
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
 button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible {
   border-color: var(--ctp-teal);
   box-shadow: 0 0 0 3px rgba(148, 226, 213, 0.15), 0 0 1rem var(--glow-teal);
@@ -2418,6 +2430,197 @@ body.embedded-split .side-panel-backdrop {
 .subagents-help strong,
 .subagents-help code {
   color: var(--ctp-teal);
+}
+.subagent-launch-slots {
+  display: block;
+  container: subagent-launch-slots / inline-size;
+  min-width: 0;
+  margin: 0 0 0.55rem;
+  overflow: hidden;
+  border: 1px solid rgba(203, 166, 247, 0.30);
+  border-radius: 0.8rem;
+  background:
+    radial-gradient(circle at 100% 0, rgba(203, 166, 247, 0.11), transparent 12rem),
+    rgba(var(--ctp-crust-rgb), 0.46);
+}
+.subagent-launch-slots-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-height: 3.35rem;
+  padding: 0.66rem 0.72rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.subagent-launch-slots-summary::-webkit-details-marker { display: none; }
+.subagent-launch-slots-summary:hover { background: rgba(203, 166, 247, 0.07); }
+.subagent-launch-slots[open] > .subagent-launch-slots-summary { border-bottom: 1px solid rgba(203, 166, 247, 0.20); }
+.subagent-launch-slots-summary-heading { display: grid; gap: 0.08rem; min-width: 0; }
+.subagent-launch-slots-summary-heading strong { color: var(--ctp-text); font-size: 0.82rem; }
+.subagent-launch-slots-summary-heading span { color: rgba(var(--ctp-subtext-rgb), 0.75); font-size: var(--text-xs); line-height: 1.35; }
+.subagent-launch-slots-summary-chevron {
+  flex: 0 0 auto;
+  color: var(--ctp-mauve);
+  font-size: 1.3rem;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+.subagent-launch-slots[open] .subagent-launch-slots-summary-chevron { transform: rotate(90deg); }
+.subagent-launch-slots-body { display: grid; gap: 0.58rem; min-width: 0; padding: 0.62rem; }
+.subagent-launch-slots-intro,
+.subagent-launch-slot-role-header,
+.subagent-launch-slot-row-header,
+.subagent-launch-slots-actions,
+.subagent-launch-slots-reload-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.55rem;
+  min-width: 0;
+}
+.subagent-launch-slots-intro p,
+.subagent-launch-slot-role-heading p,
+.subagent-launch-slot-meta,
+.subagent-launch-slot-scope p {
+  margin: 0.18rem 0 0;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-size: var(--text-xs);
+  line-height: 1.42;
+}
+.subagent-launch-slots-intro p { flex: 1 1 auto; margin: 0; }
+.subagent-launch-slot-role-heading h4 { margin: 0; color: var(--ctp-text); font-size: 0.8rem; }
+.subagent-launch-slots-intro button,
+.subagent-launch-slot-add,
+.subagent-launch-slot-remove,
+.subagent-launch-slots-actions button,
+.subagent-launch-slots-reload-actions button,
+.subagent-launch-slot-scope button {
+  min-height: 2.4rem;
+  font-size: var(--text-xs);
+}
+.subagent-launch-slot-scope {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, auto) auto;
+  gap: 0.35rem 0.5rem;
+  align-items: center;
+  padding: 0.5rem;
+  border: 1px solid rgba(137, 180, 250, 0.18);
+  border-radius: 0.64rem;
+  background: rgba(137, 180, 250, 0.05);
+}
+.subagent-launch-slot-scope label { color: rgba(var(--ctp-text-rgb), 0.9); font-size: var(--text-xs); font-weight: 850; }
+.subagent-launch-slot-scope select { min-width: 8rem; font-size: var(--text-xs); }
+.subagent-launch-slot-scope p { grid-column: 1 / -1; }
+.subagent-launch-slots-status { min-height: 1.25rem; margin: 0; font-size: var(--text-xs); line-height: 1.4; }
+.subagent-launch-slots-status.error { color: var(--ctp-red); }
+.subagent-launch-slot-roles { display: grid; gap: 0.52rem; min-width: 0; }
+.subagent-launch-slot-empty { margin: 0; color: rgba(var(--ctp-subtext-rgb), 0.74); font-size: var(--text-xs); }
+.subagent-launch-slot-role {
+  display: grid;
+  gap: 0.48rem;
+  min-width: 0;
+  padding: 0.54rem;
+  border: 1px solid rgba(180, 190, 254, 0.18);
+  border-radius: 0.7rem;
+  background: rgba(var(--ctp-base-rgb), 0.22);
+}
+.subagent-launch-slot-role-header { align-items: center; }
+.subagent-launch-slot-role-heading { min-width: 0; }
+.subagent-launch-slot-count {
+  flex: 0 0 auto;
+  padding: 0.12rem 0.38rem;
+  border-radius: 999px;
+  color: var(--ctp-mauve);
+  background: rgba(203, 166, 247, 0.12);
+  font-size: var(--text-xs);
+  font-weight: 850;
+}
+.subagent-launch-slot-list { display: grid; gap: 0.42rem; }
+.subagent-launch-slot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.38rem 0.5rem;
+  min-width: 0;
+  padding: 0.48rem;
+  border: 1px solid rgba(180, 190, 254, 0.13);
+  border-radius: 0.58rem;
+  background: rgba(var(--ctp-surface-rgb), 0.16);
+}
+.subagent-launch-slot-row-header { grid-column: 1 / -1; align-items: center; }
+.subagent-launch-slot-row-header strong { color: rgba(var(--ctp-text-rgb), 0.92); font-size: var(--text-xs); }
+.subagent-launch-slot-id {
+  max-width: 14rem;
+  overflow-wrap: anywhere;
+  color: rgba(var(--ctp-subtext-rgb), 0.67);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: var(--text-xs);
+}
+.subagent-launch-slot-controls {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42rem;
+  min-width: 0;
+}
+.subagent-launch-slot-field { display: grid; gap: 0.22rem; min-width: 0; color: rgba(var(--ctp-text-rgb), 0.88); font-size: var(--text-xs); font-weight: 750; }
+.subagent-launch-slot-field select { width: 100%; min-width: 0; font-size: var(--text-xs); }
+.subagent-launch-slot-meta { grid-column: 1; align-self: center; overflow-wrap: anywhere; }
+.subagent-launch-slot-remove { grid-column: 2; align-self: center; color: var(--ctp-red); border-color: rgba(243, 139, 168, 0.32); }
+.subagent-launch-slot-add { justify-self: start; }
+.subagent-launch-slots-actions { align-items: center; flex-wrap: wrap; }
+.subagent-launch-slots-actions span,
+.subagent-launch-slots-reload-actions span { color: rgba(var(--ctp-subtext-rgb), 0.78); font-size: var(--text-xs); line-height: 1.35; }
+.subagent-launch-slots-reload-actions {
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 0.5rem;
+  border: 1px solid rgba(166, 227, 161, 0.30);
+  border-radius: 0.64rem;
+  background: rgba(166, 227, 161, 0.08);
+}
+.subagent-launch-slots-reload-actions span { flex: 1 1 12rem; color: rgba(var(--ctp-text-rgb), 0.88); }
+@container subagent-launch-slots (max-width: 30rem) {
+  .subagent-launch-slots-intro,
+  .subagent-launch-slot-row-header,
+  .subagent-launch-slots-reload-actions { align-items: stretch; flex-direction: column; }
+  .subagent-launch-slots-intro button,
+  .subagent-launch-slot-add,
+  .subagent-launch-slot-remove,
+  .subagent-launch-slots-actions button,
+  .subagent-launch-slots-reload-actions button,
+  .subagent-launch-slot-scope button { width: 100%; min-height: 44px; }
+  .subagent-launch-slot-scope,
+  .subagent-launch-slot-row,
+  .subagent-launch-slot-controls { grid-template-columns: minmax(0, 1fr); }
+  .subagent-launch-slot-scope select,
+  .subagent-launch-slot-field select { width: 100%; }
+  .subagent-launch-slot-meta,
+  .subagent-launch-slot-remove { grid-column: 1; }
+  .subagent-launch-slot-id { max-width: 100%; }
+  .subagent-launch-slots-actions { align-items: stretch; flex-direction: column; }
+}
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .subagent-launch-slots-intro,
+  .subagent-launch-slot-row-header,
+  .subagent-launch-slots-reload-actions { align-items: stretch; flex-direction: column; }
+  .subagent-launch-slots-intro button,
+  .subagent-launch-slot-add,
+  .subagent-launch-slot-remove,
+  .subagent-launch-slots-actions button,
+  .subagent-launch-slots-reload-actions button,
+  .subagent-launch-slot-scope button { width: 100%; min-height: 44px; }
+  .subagent-launch-slot-scope,
+  .subagent-launch-slot-row,
+  .subagent-launch-slot-controls { grid-template-columns: minmax(0, 1fr); }
+  .subagent-launch-slot-scope select,
+  .subagent-launch-slot-field select { width: 100%; }
+  .subagent-launch-slot-meta,
+  .subagent-launch-slot-remove { grid-column: 1; }
+  .subagent-launch-slot-id { max-width: 100%; }
+  .subagent-launch-slots-actions { align-items: stretch; flex-direction: column; }
 }
 .subagent-open-mode-field {
   display: grid;

@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const [html, app, css, server, serviceWorker, pkg] = await Promise.all([
+  readFile(join(root, "public", "index.html"), "utf8"),
+  readFile(join(root, "public", "app.js"), "utf8"),
+  readFile(join(root, "public", "styles.css"), "utf8"),
+  readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
+  readFile(join(root, "public", "service-worker.js"), "utf8"),
+  readFile(join(root, "package.json"), "utf8"),
+]);
+
+assert.match(html, /<details id="subagentLaunchSlots" class="subagent-launch-slots">[\s\S]*<summary class="subagent-launch-slots-summary">[\s\S]*id="subagentLaunchSlotsTitle">Agent models<[\s\S]*id="subagentLaunchSlotRoles"[\s\S]*id="subagentsStatus"[\s\S]*id="subagentsBox"/, "launch-slot configuration should be a native collapsible surface separate from the live monitor");
+assert.doesNotMatch(html, /<details id="subagentLaunchSlots"[^>]*\sopen(?:\s|>)/, "Agent models should start collapsed to keep the Subagents panel compact");
+assert.match(html, /id="subagentLaunchSlotScope"[^>]*aria-describedby="subagentLaunchSlotScopeStatus"/, "scope selection should use stable accessible help");
+assert.match(html, /id="subagentLaunchSlotsAnnouncer"[^>]*aria-live="polite"[^>]*aria-atomic="true"/, "slot changes should be announced accessibly");
+assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"/, "the browser should use the pure launch-slot state helper");
+assert.match(app, /const subagentLaunchSlotReloadTabs = new Set\(\)[\s\S]*subagentLaunchSlotReloadTabs\.add\(activeTabId\)[\s\S]*subagentLaunchSlotReloadTabs\.delete\(activeTabId\)/, "reload reminders should be tracked per tab until reload");
+assert.match(app, /subagentLaunchSlotsSummaryStatus\.textContent[\s\S]*"Unsaved changes"[\s\S]*"Saved · reload this tab"[\s\S]*subagentLaunchSlots\.open = true/, "the collapsed summary should surface state and reopen for errors or required reloads");
+assert.doesNotMatch(app, /`(?:Model|Thinking) · \$\{slotLabel\}`/, "visible field labels should stay compact while aria-labels retain slot context");
+assert.match(app, /api\(`\/api\/subagents\/config\?\$\{query\}`/, "the editor should load configuration through the tab-scoped API");
+assert.match(app, /api\("\/api\/subagents\/config", \{ method: "POST", body, scoped: false \}\)/, "the editor should save through the localhost-scoped configuration API");
+assert.match(css, /\.subagent-launch-slots \{[\s\S]*container: subagent-launch-slots \/ inline-size[\s\S]*@container subagent-launch-slots \(max-width: 30rem\)[\s\S]*\.subagent-launch-slot-controls \{ grid-template-columns: minmax\(0, 1fr\); \}/, "launch-slot controls should respond to the narrow side-panel container rather than only the viewport");
+assert.match(css, /\.subagent-launch-slot-controls \{[\s\S]*grid-column: 1 \/ -1/, "model and thinking controls should own the full slot-row width before responsive stacking");
+assert.match(css, /\.sr-only \{[\s\S]*clip-path: inset\(50%\)[\s\S]*white-space: nowrap/, "screen-reader announcements should stay visually hidden without leaving the accessibility tree");
+assert.match(css, /\.subagent-launch-slot-remove \{[^}]*color: var\(--ctp-red\)/, "destructive slot removal should have a textual control and warning color");
+assert.match(server, /"subagent-launch-slot-state\.mjs"/, "the pure browser module should be on the static allowlist");
+assert.match(serviceWorker, /pi-webui-pwa-v44[\s\S]*"\/subagent-launch-slot-state\.mjs"/, "the refreshed PWA cache should include the browser module");
+assert.match(pkg, /node --check public\/subagent-launch-slot-state\.mjs/, "package checks should syntax-check the browser state module");
+
+console.log("subagent-launch-slots-static.test.mjs passed");

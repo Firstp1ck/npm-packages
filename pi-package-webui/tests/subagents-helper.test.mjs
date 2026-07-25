@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import webuiRpcHelper from "../webui-rpc-helper.mjs";
+import { defaultSubagentLaunchSlotRoles } from "../lib/subagent-launch-slots.mjs";
 
 class EventBus {
   constructor() {
@@ -50,6 +51,14 @@ const ctx = {
   sessionManager: {
     getBranch() { return []; },
   },
+  getSystemPromptOptions() {
+    return {
+      skills: [
+        { name: "repo-explorer", description: "Inspect repository context", filePath: "/tmp/repo-explorer/SKILL.md" },
+        { name: "code-security", description: "Review code security", filePath: "/tmp/code-security/SKILL.md" },
+      ],
+    };
+  },
   ui: {
     setStatus(key, text) {
       statuses.push({ key, text });
@@ -61,6 +70,15 @@ const ctx = {
 };
 
 const asyncRunDir = await mkdtemp(path.join(tmpdir(), "pi-webui-subagent-output-test-"));
+const settingsFile = path.join(asyncRunDir, "webui-settings.json");
+const initialLaunchRoles = defaultSubagentLaunchSlotRoles();
+initialLaunchRoles.reviewer[0] = { id: "reviewer:base", model: "fake/reviewer", thinking: "high" };
+await writeFile(settingsFile, `${JSON.stringify({
+  version: 5,
+  resourceDefaults: { tools: { enabledTools: null }, skills: { enabledSkills: ["repo-explorer"] } },
+  subagentLaunchSlots: { version: 1, user: { roles: initialLaunchRoles }, projects: {} },
+}, null, 2)}\n`);
+process.env.PI_WEBUI_SETTINGS_FILE = settingsFile;
 const asyncSessionFile = path.join(asyncRunDir, "reviewer-session.jsonl");
 await writeFile(asyncSessionFile, [
   JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:00.000Z", message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking structured transcript extraction" }, { type: "text", text: "REVIEWER STREAM 1 OF 18" }, { type: "toolCall", id: "review-call", name: "bash", arguments: { command: "sleep 5" } }, { type: "text", text: "Review complete." }] } }),
@@ -106,6 +124,33 @@ const unsubscribeRpc = bus.on("subagents:rpc:v1:request", (request) => {
 });
 
 for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "startup" }, ctx);
+const beforeAgentStart = (extensionHandlers.get("before_agent_start") || [])[0];
+assert.ok(beforeAgentStart, "helper should register before_agent_start guidance");
+const promptWithSkills = [
+  "Base system prompt.",
+  "The following skills provide specialized capabilities:",
+  "<available_skills>",
+  "  <skill>",
+  "    <name>repo-explorer</name>",
+  "  </skill>",
+  "  <skill>",
+  "    <name>code-security</name>",
+  "  </skill>",
+  "</available_skills>",
+].join("\n");
+const initialGuidance = await beforeAgentStart({ systemPrompt: promptWithSkills, systemPromptOptions: ctx.getSystemPromptOptions() });
+assert.match(initialGuidance?.systemPrompt || "", /reviewer slot 1: agent=reviewer model=fake\/reviewer:high/, "session_start should cache effective launch-slot guidance");
+assert.doesNotMatch(initialGuidance?.systemPrompt || "", /code-security/, "launch-slot guidance must compose with disabled-skill filtering");
+const changedLaunchRoles = defaultSubagentLaunchSlotRoles();
+changedLaunchRoles.reviewer[0] = { id: "reviewer:base", model: "fake/changed", thinking: "high" };
+await writeFile(settingsFile, `${JSON.stringify({
+  version: 5,
+  resourceDefaults: { tools: { enabledTools: null }, skills: { enabledSkills: ["repo-explorer"] } },
+  subagentLaunchSlots: { version: 1, user: { roles: changedLaunchRoles }, projects: {} },
+}, null, 2)}\n`);
+const cachedGuidance = await beforeAgentStart({ systemPrompt: "Base system prompt.", systemPromptOptions: ctx.getSystemPromptOptions() });
+assert.match(cachedGuidance?.systemPrompt || "", /fake\/reviewer:high/, "a settings save must not mutate the active helper snapshot");
+assert.doesNotMatch(cachedGuidance?.systemPrompt || "", /fake\/changed:high/);
 for (let attempt = 0; attempt < 20 && !statuses.some((entry) => entry.text?.startsWith("PI_WEBUI_SUBAGENTS_V1 ") && entry.text.includes("run-a")); attempt++) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -315,6 +360,7 @@ assert.equal(payload.runs.some((run) => run.source === "foreground"), false, "fo
 
 for (const handler of extensionHandlers.get("session_shutdown") || []) await handler({ reason: "quit" }, ctx);
 unsubscribeRpc();
+delete process.env.PI_WEBUI_SETTINGS_FILE;
 await rm(asyncRunDir, { recursive: true, force: true });
 
 console.log("subagents-helper.test.mjs passed");

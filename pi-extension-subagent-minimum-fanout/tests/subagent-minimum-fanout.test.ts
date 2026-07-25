@@ -6,6 +6,7 @@ import subagentMinimumFanout, {
 	blocksForMinimumFanout,
 	countStaticChainChildren,
 	countStaticTasks,
+	countStaticWorkers,
 	MINIMUM_FANOUT_BLOCK_REASON,
 	positiveTaskCount,
 } from "../subagent-minimum-fanout.ts";
@@ -42,7 +43,9 @@ test("positive task count defaults invalid values to one and sums top-level task
 	for (const value of [undefined, 0, -1, 1.5, Number.POSITIVE_INFINITY, "2"]) {
 		assert.equal(positiveTaskCount(value), 1, String(value));
 	}
-	assert.equal(countStaticTasks([{ agent: "worker", count: 2 }, { agent: "reviewer" }]), 3);
+	const tasks = [{ agent: "worker", count: 2 }, { agent: "reviewer" }];
+	assert.equal(countStaticTasks(tasks), 3);
+	assert.equal(countStaticWorkers(tasks), 2);
 });
 
 test("a direct single execution is analyzed and blocked", () => {
@@ -51,7 +54,9 @@ test("a direct single execution is analyzed and blocked", () => {
 		kind: "direct",
 		mode: "direct",
 		guaranteedChildren: 1,
+		guaranteedWorkers: 1,
 		execution: true,
+		workerExecution: true,
 		dynamicFanout: false,
 	});
 	assert.equal(blocksForMinimumFanout(analysis), true);
@@ -73,18 +78,18 @@ test("one-task and one-static-step workflows are blocked", () => {
 	assertBlocked({ chain: [{ agent: "worker", task: "Implement the change" }] });
 });
 
-test("two declared tasks, count: 2, and two static chain children are allowed", () => {
+test("two declared children and two declared workers are allowed", () => {
 	assertAllowed({
 		tasks: [
-			{ agent: "worker", task: "Implement the change" },
-			{ agent: "reviewer", task: "Review the change" },
+			{ agent: "reviewer", task: "Review correctness" },
+			{ agent: "reviewer", task: "Review tests" },
 		],
 	});
 	assertAllowed({ tasks: [{ agent: "worker", task: "Implement the change", count: 2 }] });
 	assertAllowed({
 		chain: [
-			{ agent: "worker", task: "Implement the change" },
-			{ agent: "reviewer", task: "Review the change" },
+			{ agent: "worker", task: "Implement slice A" },
+			{ agent: "worker", task: "Implement slice B" },
 		],
 	});
 	assertAllowed({ chain: [{ parallel: [{ agent: "worker", task: "Implement the change", count: 2 }] }] });
@@ -92,7 +97,65 @@ test("two declared tasks, count: 2, and two static chain children are allowed", 
 	assert.deepEqual(countStaticChainChildren([
 		{ agent: "worker", task: "Implement the change" },
 		{ parallel: [{ agent: "reviewer", task: "Review the change", count: 2 }] },
-	]), { guaranteedChildren: 3, dynamicFanout: false });
+	]), {
+		guaranteedChildren: 3,
+		guaranteedWorkers: 1,
+		workerExecution: true,
+		dynamicFanout: false,
+	});
+});
+
+test("one worker cannot hide inside an otherwise compliant multi-child workflow", () => {
+	for (const input of [
+		{
+			tasks: [
+				{ agent: "worker", task: "Implement" },
+				{ agent: "reviewer", task: "Review" },
+			],
+		},
+		{
+			chain: [
+				{ agent: "worker", task: "Implement" },
+				{ agent: "reviewer", task: "Review" },
+			],
+		},
+		{
+			tasks: [
+				{ agent: "worker", task: "Implement" },
+				{ agent: "reviewer", task: "Review", count: 2 },
+			],
+		},
+		{
+			action: "parallel",
+			tasks: [
+				{ agent: "worker", task: "Implement" },
+				{ agent: "reviewer", task: "Review" },
+			],
+		},
+		{
+			action: "schedule",
+			chain: [
+				{ agent: "worker", task: "Implement" },
+				{ agent: "reviewer", task: "Review" },
+			],
+			schedule: "+10m",
+		},
+	]) {
+		const analysis = analyzeSubagentCall(input);
+		assert.equal(analysis.guaranteedChildren >= 2, true);
+		assert.equal(analysis.guaranteedWorkers, 1);
+		assert.equal(analysis.workerExecution, true);
+		assert.equal(blocksForMinimumFanout(analysis), true);
+		assertBlocked(input);
+	}
+
+	assertAllowed({
+		tasks: [
+			{ agent: "worker", task: "Implement slice A" },
+			{ agent: "worker", task: "Implement slice B" },
+			{ agent: "reviewer", task: "Review" },
+		],
+	});
 });
 
 test("dynamic expand contributes zero guaranteed children", () => {
@@ -106,6 +169,8 @@ test("dynamic expand contributes zero guaranteed children", () => {
 	assert.equal(dynamicOnly.kind, "indeterminate");
 	assert.equal(dynamicOnly.guaranteedChildren, 0);
 	assert.equal(dynamicOnly.dynamicFanout, true);
+	assert.equal(dynamicOnly.workerExecution, true);
+	assert.equal(dynamicOnly.guaranteedWorkers, 0);
 	assert.equal(blocksForMinimumFanout(dynamicOnly), true);
 
 	const oneStaticPlusDynamic = analyzeSubagentCall({
@@ -114,6 +179,8 @@ test("dynamic expand contributes zero guaranteed children", () => {
 	assert.equal(oneStaticPlusDynamic.kind, "chain");
 	assert.equal(oneStaticPlusDynamic.guaranteedChildren, 1);
 	assert.equal(oneStaticPlusDynamic.dynamicFanout, true);
+	assert.equal(oneStaticPlusDynamic.workerExecution, true);
+	assert.equal(oneStaticPlusDynamic.guaranteedWorkers, 0);
 	assert.equal(blocksForMinimumFanout(oneStaticPlusDynamic), true);
 
 	const twoStaticPlusDynamic = analyzeSubagentCall({
@@ -125,14 +192,22 @@ test("dynamic expand contributes zero guaranteed children", () => {
 	});
 	assert.equal(twoStaticPlusDynamic.guaranteedChildren, 2);
 	assert.equal(twoStaticPlusDynamic.dynamicFanout, true);
-	assert.equal(blocksForMinimumFanout(twoStaticPlusDynamic), false);
+	assert.equal(twoStaticPlusDynamic.workerExecution, true);
+	assert.equal(twoStaticPlusDynamic.guaranteedWorkers, 0);
+	assert.equal(blocksForMinimumFanout(twoStaticPlusDynamic), true);
 
 	assertBlocked({ chain: [dynamicStep] });
 	assertBlocked({ chain: [{ agent: "planner", task: "Identify targets" }, dynamicStep] });
-	assertAllowed({
+	assertBlocked({
 		chain: [
 			{ agent: "planner", task: "Identify targets" },
 			{ agent: "reviewer", task: "Review the plan" },
+			dynamicStep,
+		],
+	});
+	assertAllowed({
+		chain: [
+			{ parallel: [{ agent: "worker", task: "Inspect A", count: 2 }] },
 			dynamicStep,
 		],
 	});
@@ -166,8 +241,8 @@ test("schedule applies the same minimum to deferred direct, tasks, and chain exe
 	const scheduledChain = {
 		action: "schedule",
 		chain: [
-			{ agent: "worker", task: "Implement" },
-			{ agent: "reviewer", task: "Review" },
+			{ agent: "worker", task: "Implement slice A" },
+			{ agent: "worker", task: "Implement slice B" },
 		],
 		schedule: "+10m",
 	};
@@ -183,7 +258,9 @@ test("management, status, control, recovery, and non-schedule actions remain exe
 		assert.deepEqual(analysis, {
 			kind: "non-execution",
 			guaranteedChildren: 0,
+			guaranteedWorkers: 0,
 			execution: false,
+			workerExecution: false,
 			dynamicFanout: false,
 		}, action);
 		assert.equal(blocksForMinimumFanout(analysis), false, action);
@@ -200,7 +277,7 @@ test("each independent single-child call and malformed subagent input fail close
 	assertBlocked({});
 	assert.equal(harness.call("read", { path: "README.md" }), undefined);
 
-	assert.match(MINIMUM_FANOUT_BLOCK_REASON, /Do not retry a single child\./);
+	assert.match(MINIMUM_FANOUT_BLOCK_REASON, /Do not retry a single child/);
 	assert.match(MINIMUM_FANOUT_BLOCK_REASON, /work directly in the main agent/i);
 	assert.match(MINIMUM_FANOUT_BLOCK_REASON, /one statically compliant tasks or chain workflow/i);
 });

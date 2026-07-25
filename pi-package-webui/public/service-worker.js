@@ -1,10 +1,11 @@
-const CACHE_NAME = "pi-webui-pwa-v42";
+const CACHE_NAME = "pi-webui-pwa-v44";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
   "/fast-output-live.mjs",
+  "/subagent-launch-slot-state.mjs",
   "/voice-conversation.mjs",
   "/favicon.svg",
   "/apple-touch-icon.png",

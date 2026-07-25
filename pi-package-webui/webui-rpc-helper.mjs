@@ -2,6 +2,11 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs"
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
+import {
+  formatSubagentLaunchSlotGuidance,
+  resolveSubagentLaunchSlotProjectKey,
+  subagentLaunchSlotScopeEntry,
+} from "./lib/subagent-launch-slots.mjs";
 import { SUBAGENT_GATE_UPDATE_EVENT } from "./lib/subagent-gate.mjs";
 
 const HELPER_COMMAND = "webui-helper";
@@ -540,6 +545,7 @@ export default function webuiRpcHelper(pi) {
   let enabledTools = new Set();
   let disabledSkills = new Set();
   let inheritedEnabledSkills = null;
+  let subagentLaunchSlotGuidance = "";
   let subagentContext = null;
   let subagentBridgeAvailable = false;
   let subagentPollTimer = null;
@@ -889,6 +895,18 @@ export default function webuiRpcHelper(pi) {
     }
   }
 
+  async function loadSubagentLaunchSlotGuidance(ctx) {
+    try {
+      const settings = await readWebuiSettings();
+      const projectKey = await resolveSubagentLaunchSlotProjectKey(ctx?.cwd);
+      const effective = subagentLaunchSlotScopeEntry(settings.subagentLaunchSlots, "project", projectKey);
+      subagentLaunchSlotGuidance = formatSubagentLaunchSlotGuidance(effective.entry.roles);
+    } catch (error) {
+      subagentLaunchSlotGuidance = "";
+      console.warn(`Web UI subagent launch slots could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   function persistToolsState() {
     pi.appendEntry(TOOLS_CONFIG_TYPE, { enabledTools: [...enabledTools] });
   }
@@ -1053,6 +1071,7 @@ export default function webuiRpcHelper(pi) {
     const globalDefaults = await readGlobalResourceDefaults();
     restoreToolsFromBranch(ctx, globalDefaults);
     restoreSkillsFromBranch(ctx, globalDefaults);
+    await loadSubagentLaunchSlotGuidance(ctx);
     subagentContext = ctx;
     subagentPollGeneration += 1;
     foregroundSubagentRuns.clear();
@@ -1128,6 +1147,7 @@ export default function webuiRpcHelper(pi) {
 
   pi.on("session_shutdown", () => {
     subagentContext = null;
+    subagentLaunchSlotGuidance = "";
     subagentPollGeneration += 1;
     clearTimeout(subagentPollTimer);
     subagentPollTimer = null;
@@ -1147,14 +1167,22 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("before_agent_start", async (event) => {
-    if (disabledSkills.size === 0 && inheritedEnabledSkills === null) return;
-    const allSkills = Array.isArray(event.systemPromptOptions?.skills) ? event.systemPromptOptions.skills : [];
-    if (allSkills.length === 0) return;
-    const disabledNames = allSkills.filter((skill) => !isSkillEnabled(skill.name)).map((skill) => skill.name);
-    if (disabledNames.length === 0) return;
-    const filteredSkills = allSkills.filter((skill) => isSkillEnabled(skill.name));
-    let nextPrompt = replaceAvailableSkillsSection(event.systemPrompt, filteredSkills);
-    for (const name of disabledNames) nextPrompt = nextPrompt.replace(skillBlockPattern(name), "");
-    return { systemPrompt: nextPrompt };
+    let nextPrompt = event.systemPrompt;
+    let changed = false;
+    if (disabledSkills.size !== 0 || inheritedEnabledSkills !== null) {
+      const allSkills = Array.isArray(event.systemPromptOptions?.skills) ? event.systemPromptOptions.skills : [];
+      const disabledNames = allSkills.filter((skill) => !isSkillEnabled(skill.name)).map((skill) => skill.name);
+      if (disabledNames.length) {
+        const filteredSkills = allSkills.filter((skill) => isSkillEnabled(skill.name));
+        nextPrompt = replaceAvailableSkillsSection(nextPrompt, filteredSkills);
+        for (const name of disabledNames) nextPrompt = nextPrompt.replace(skillBlockPattern(name), "");
+        changed = true;
+      }
+    }
+    if (subagentLaunchSlotGuidance) {
+      nextPrompt = `${String(nextPrompt || "").trimEnd()}\n\n${subagentLaunchSlotGuidance}\n`;
+      changed = true;
+    }
+    return changed ? { systemPrompt: nextPrompt } : undefined;
   });
 }

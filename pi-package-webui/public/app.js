@@ -2,6 +2,7 @@ import { aurReviewSafePath as parsedAurReviewSafePath, parseAurReviewPayload as 
 import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
 import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
+import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -244,6 +245,20 @@ const elements = {
   subagentCountBadge: $("#subagentCountBadge"),
   subagentOpenModeSelect: $("#subagentOpenModeSelect"),
   subagentOpenModeStatus: $("#subagentOpenModeStatus"),
+  subagentLaunchSlots: $("#subagentLaunchSlots"),
+  subagentLaunchSlotsSummaryStatus: $("#subagentLaunchSlotsSummaryStatus"),
+  subagentLaunchSlotsRefresh: $("#subagentLaunchSlotsRefresh"),
+  subagentLaunchSlotScope: $("#subagentLaunchSlotScope"),
+  subagentLaunchSlotScopeStatus: $("#subagentLaunchSlotScopeStatus"),
+  subagentLaunchSlotsInherit: $("#subagentLaunchSlotsInherit"),
+  subagentLaunchSlotsStatus: $("#subagentLaunchSlotsStatus"),
+  subagentLaunchSlotRoles: $("#subagentLaunchSlotRoles"),
+  subagentLaunchSlotsSave: $("#subagentLaunchSlotsSave"),
+  subagentLaunchSlotsDirty: $("#subagentLaunchSlotsDirty"),
+  subagentLaunchSlotsReloadActions: $("#subagentLaunchSlotsReloadActions"),
+  subagentLaunchSlotsReload: $("#subagentLaunchSlotsReload"),
+  subagentLaunchSlotsLater: $("#subagentLaunchSlotsLater"),
+  subagentLaunchSlotsAnnouncer: $("#subagentLaunchSlotsAnnouncer"),
   queueBox: $("#queueBox"),
   queueCountBadge: $("#queueCountBadge"),
   createPromptListButton: $("#createPromptListButton"),
@@ -538,6 +553,17 @@ let subagentOpenMode = "overlay";
 const subagentTerminalViews = new Map();
 let activeSubagentTerminalId = null;
 let subagentTerminalRefreshTimer = null;
+let subagentLaunchSlotConfig = null;
+let subagentLaunchSlotConfigTabId = null;
+let subagentLaunchSlotDraft = null;
+let subagentLaunchSlotScope = "user";
+let subagentLaunchSlotLoading = false;
+let subagentLaunchSlotSaving = false;
+let subagentLaunchSlotError = "";
+let subagentLaunchSlotRequestSerial = 0;
+let subagentLaunchSlotReloadRequired = false;
+const subagentLaunchSlotReloadTabs = new Set();
+let subagentLaunchSlotFocusTarget = null;
 let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
@@ -9479,6 +9505,11 @@ async function switchTab(tabId) {
   connectEvents(tabContext);
   await refreshAll(tabContext);
   if (isCurrentTabContext(tabContext)) markTabOutputSeen();
+  if (!subagentLaunchSlotDraftIsDirty()) {
+    loadSubagentLaunchSlotConfig({ tabId }).catch(() => {});
+  } else {
+    renderSubagentLaunchSlots();
+  }
 }
 
 function currentDirectoryForNewTab() {
@@ -9749,6 +9780,9 @@ async function initializeTabs() {
   if (activeTabId) {
     await refreshAll(tabContext);
     if (isCurrentTabContext(tabContext)) markTabOutputSeen();
+    if (!subagentLaunchSlotDraftIsDirty() || subagentLaunchSlotConfigTabId !== activeTabId) {
+      loadSubagentLaunchSlotConfig().catch(() => {});
+    }
   }
 }
 
@@ -16326,6 +16360,417 @@ function scheduleRefreshSubagents(delay) {
 function initializeSubagents() {
   renderSubagents();
   refreshSubagents().finally(() => scheduleRefreshSubagents());
+}
+
+function subagentLaunchSlotLimits() {
+  return {
+    slotsPerRole: Number(subagentLaunchSlotConfig?.limits?.slotsPerRole) || 8,
+    totalSlots: Number(subagentLaunchSlotConfig?.limits?.totalSlots) || 32,
+  };
+}
+
+function subagentLaunchSlotDraftRoles() {
+  return subagentLaunchSlotDraft || subagentLaunchSlotConfig?.roles || {};
+}
+
+function subagentLaunchSlotDraftIsDirty() {
+  return !!subagentLaunchSlotConfig && !!subagentLaunchSlotDraft
+    && !launchSlotRolesEqual(subagentLaunchSlotDraft, subagentLaunchSlotConfig.roles || {});
+}
+
+function subagentLaunchSlotModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+function subagentLaunchSlotModelsByKey() {
+  return new Map((Array.isArray(subagentLaunchSlotConfig?.models) ? subagentLaunchSlotConfig.models : [])
+    .map((model) => [subagentLaunchSlotModelKey(model), model])
+    .filter(([key]) => key));
+}
+
+function subagentLaunchSlotThinkingForModel(model) {
+  const levels = subagentLaunchSlotConfig?.modelThinkingLevels?.[model];
+  return Array.isArray(levels) ? levels : [];
+}
+
+function subagentLaunchSlotTotal(roles = subagentLaunchSlotDraftRoles()) {
+  return Object.values(roles).reduce((total, slots) => total + (Array.isArray(slots) ? slots.length : 0), 0);
+}
+
+function newSubagentLaunchSlotId(roles) {
+  const used = new Set(Object.values(roles).flatMap((slots) => (Array.isArray(slots) ? slots : []).map((slot) => slot?.id)));
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const id = `slot-${token}`;
+    if (!used.has(id)) return id;
+  }
+  return "";
+}
+
+function setSubagentLaunchSlotAnnouncement(message = "") {
+  if (elements.subagentLaunchSlotsAnnouncer) elements.subagentLaunchSlotsAnnouncer.textContent = message;
+}
+
+function focusSubagentLaunchSlotControl() {
+  const target = subagentLaunchSlotFocusTarget;
+  subagentLaunchSlotFocusTarget = null;
+  if (!target || !elements.subagentLaunchSlotRoles) return;
+  requestAnimationFrame(() => {
+    const control = [...elements.subagentLaunchSlotRoles.querySelectorAll("select[data-launch-slot-role]")]
+      .find((candidate) => candidate.dataset.launchSlotRole === target.roleId
+        && candidate.dataset.launchSlotId === target.slotId
+        && candidate.dataset.launchSlotControl === target.control);
+    control?.focus();
+  });
+}
+
+function subagentLaunchSlotOption(value, text, { disabled = false } = {}) {
+  const option = document.createElement("option");
+  option.value = value || "";
+  option.textContent = text;
+  option.disabled = disabled;
+  return option;
+}
+
+function renderSubagentLaunchSlotCard(role, slots) {
+  const limits = subagentLaunchSlotLimits();
+  const modelsByKey = subagentLaunchSlotModelsByKey();
+  const roleId = String(role?.id || "");
+  const card = make("section", "subagent-launch-slot-role");
+  card.setAttribute("aria-labelledby", `subagent-launch-slot-role-${roleId}`);
+  const header = make("header", "subagent-launch-slot-role-header");
+  const heading = make("div", "subagent-launch-slot-role-heading");
+  heading.append(
+    make("h4", undefined, role?.title || roleId),
+    make("p", undefined, role?.purpose || "Configure launch-slot defaults for this role."),
+  );
+  heading.querySelector("h4")?.setAttribute("id", `subagent-launch-slot-role-${roleId}`);
+  header.append(heading, make("span", "subagent-launch-slot-count", `${slots.length}/${limits.slotsPerRole} slots`));
+  card.append(header);
+
+  const list = make("div", "subagent-launch-slot-list");
+  for (const [index, slot] of slots.entries()) {
+    const ordinal = index + 1;
+    const slotLabel = `${role?.title || roleId} slot ${ordinal}`;
+    const row = make("section", "subagent-launch-slot-row");
+    row.setAttribute("aria-label", slotLabel);
+    const rowHeader = make("div", "subagent-launch-slot-row-header");
+    rowHeader.append(make("strong", undefined, `Slot ${ordinal}`), make("span", "subagent-launch-slot-id", slot.id));
+    row.append(rowHeader);
+
+    const controls = make("div", "subagent-launch-slot-controls");
+    const modelField = make("label", "subagent-launch-slot-field");
+    const modelId = `subagent-launch-slot-model-${roleId}-${slot.id}`;
+    modelField.append(make("span", undefined, "Model"));
+    const modelSelect = document.createElement("select");
+    modelSelect.id = modelId;
+    modelSelect.dataset.launchSlotRole = roleId;
+    modelSelect.dataset.launchSlotId = slot.id;
+    modelSelect.dataset.launchSlotControl = "model";
+    modelSelect.setAttribute("aria-label", `Model for ${slotLabel}`);
+    modelSelect.append(subagentLaunchSlotOption("", "Default / inherit"));
+    for (const [modelKey, model] of modelsByKey) {
+      modelSelect.append(subagentLaunchSlotOption(modelKey, model?.name ? `${modelKey} · ${model.name}` : modelKey));
+    }
+    if (slot.model && !modelsByKey.has(slot.model)) {
+      modelSelect.append(subagentLaunchSlotOption(slot.model, `Unavailable: ${slot.model}`, { disabled: true }));
+    }
+    modelSelect.value = slot.model || "";
+    modelSelect.disabled = subagentLaunchSlotLoading || subagentLaunchSlotSaving;
+    modelSelect.addEventListener("change", () => {
+      const model = modelSelect.value || null;
+      const thinking = model && subagentLaunchSlotThinkingForModel(model).includes(slot.thinking) ? slot.thinking : null;
+      subagentLaunchSlotDraft = updateLaunchSlot(subagentLaunchSlotDraftRoles(), roleId, slot.id, { model, thinking });
+      subagentLaunchSlotError = "";
+      subagentLaunchSlotFocusTarget = { roleId, slotId: slot.id, control: "model" };
+      renderSubagentLaunchSlots();
+    });
+    modelField.append(modelSelect);
+
+    const thinkingField = make("label", "subagent-launch-slot-field");
+    const thinkingId = `subagent-launch-slot-thinking-${roleId}-${slot.id}`;
+    thinkingField.append(make("span", undefined, "Thinking"));
+    const thinkingSelect = document.createElement("select");
+    thinkingSelect.id = thinkingId;
+    thinkingSelect.dataset.launchSlotRole = roleId;
+    thinkingSelect.dataset.launchSlotId = slot.id;
+    thinkingSelect.dataset.launchSlotControl = "thinking";
+    thinkingSelect.setAttribute("aria-label", `Thinking for ${slotLabel}`);
+    thinkingSelect.append(subagentLaunchSlotOption("", "Default / inherit"));
+    const supportedThinking = slot.model ? subagentLaunchSlotThinkingForModel(slot.model) : [];
+    for (const thinking of supportedThinking) thinkingSelect.append(subagentLaunchSlotOption(thinking, thinking));
+    if (slot.thinking && !supportedThinking.includes(slot.thinking)) {
+      thinkingSelect.append(subagentLaunchSlotOption(slot.thinking, `Unavailable: ${slot.thinking}`, { disabled: true }));
+    }
+    thinkingSelect.value = slot.thinking || "";
+    thinkingSelect.disabled = !slot.model || subagentLaunchSlotLoading || subagentLaunchSlotSaving || !modelsByKey.has(slot.model);
+    thinkingSelect.addEventListener("change", () => {
+      subagentLaunchSlotDraft = updateLaunchSlot(subagentLaunchSlotDraftRoles(), roleId, slot.id, { thinking: thinkingSelect.value || null });
+      subagentLaunchSlotError = "";
+      subagentLaunchSlotFocusTarget = { roleId, slotId: slot.id, control: "thinking" };
+      renderSubagentLaunchSlots();
+    });
+    thinkingField.append(thinkingSelect);
+    controls.append(modelField, thinkingField);
+    row.append(controls);
+    const metadata = slot.model
+      ? `${slot.model}${slot.thinking ? ` · ${slot.thinking}` : " · thinking default"}`
+      : "Inherits the model and thinking default.";
+    row.append(make("p", "subagent-launch-slot-meta", metadata));
+    if (slot.id !== `${roleId}:base`) {
+      const remove = make("button", "subagent-launch-slot-remove", "Remove");
+      remove.type = "button";
+      remove.disabled = subagentLaunchSlotLoading || subagentLaunchSlotSaving;
+      remove.setAttribute("aria-label", `Remove ${slotLabel}`);
+      remove.addEventListener("click", () => {
+        const removed = removeLaunchSlot(subagentLaunchSlotDraftRoles(), roleId, slot.id);
+        if (!removed) return;
+        subagentLaunchSlotDraft = removed.roles;
+        subagentLaunchSlotError = "";
+        subagentLaunchSlotFocusTarget = removed.focusSlotId ? { roleId, slotId: removed.focusSlotId, control: "model" } : null;
+        setSubagentLaunchSlotAnnouncement(`Removed ${slotLabel}.`);
+        renderSubagentLaunchSlots();
+      });
+      row.append(remove);
+    }
+    list.append(row);
+  }
+  card.append(list);
+
+  const add = make("button", "subagent-launch-slot-add", "Add slot");
+  add.type = "button";
+  const source = slots[slots.length - 1];
+  const atRoleLimit = slots.length >= limits.slotsPerRole || subagentLaunchSlotTotal() >= limits.totalSlots;
+  add.disabled = atRoleLimit || subagentLaunchSlotLoading || subagentLaunchSlotSaving;
+  add.setAttribute("aria-label", `Add same ${role?.title || roleId} type from slot ${slots.length}`);
+  add.addEventListener("click", () => {
+    const slotId = newSubagentLaunchSlotId(subagentLaunchSlotDraftRoles());
+    if (!slotId) {
+      setSubagentLaunchSlotAnnouncement(`Could not generate a unique ${role?.title || roleId} slot identifier. Try again.`);
+      return;
+    }
+    const added = addLaunchSlot(subagentLaunchSlotDraftRoles(), roleId, source?.id, {
+      ...limits,
+      createId: () => slotId,
+    });
+    if (!added) {
+      setSubagentLaunchSlotAnnouncement(`Cannot add another ${role?.title || roleId} slot because the configured limit was reached.`);
+      return;
+    }
+    subagentLaunchSlotDraft = added.roles;
+    subagentLaunchSlotError = "";
+    subagentLaunchSlotFocusTarget = { roleId, slotId: added.slot.id, control: "model" };
+    setSubagentLaunchSlotAnnouncement(`Added ${role?.title || roleId} slot ${slots.length + 1}.`);
+    renderSubagentLaunchSlots();
+  });
+  card.append(add);
+  return card;
+}
+
+function renderSubagentLaunchSlots() {
+  if (!elements.subagentLaunchSlotRoles) return;
+  const config = subagentLaunchSlotConfig;
+  const dirty = subagentLaunchSlotDraftIsDirty();
+  const activeConfigTab = !!subagentLaunchSlotConfigTabId && subagentLaunchSlotConfigTabId === activeTabId;
+  if (elements.subagentLaunchSlotsSummaryStatus) {
+    const roleCount = Array.isArray(config?.roleMetadata) ? config.roleMetadata.length : 8;
+    elements.subagentLaunchSlotsSummaryStatus.textContent = subagentLaunchSlotError
+      ? "Needs attention"
+      : subagentLaunchSlotLoading
+        ? "Loading launch presets…"
+        : dirty
+          ? "Unsaved changes"
+          : subagentLaunchSlotReloadRequired && activeConfigTab
+            ? "Saved · reload this tab"
+            : config
+              ? `${roleCount} roles · ${subagentLaunchSlotScope === "project" ? "project scope" : "user defaults"}`
+              : "Select a running Pi tab";
+  }
+  if (elements.subagentLaunchSlots && (subagentLaunchSlotError || (subagentLaunchSlotReloadRequired && activeConfigTab))) {
+    elements.subagentLaunchSlots.open = true;
+  }
+  if (elements.subagentLaunchSlotScope) {
+    elements.subagentLaunchSlotScope.value = subagentLaunchSlotScope;
+    elements.subagentLaunchSlotScope.disabled = subagentLaunchSlotLoading || subagentLaunchSlotSaving;
+  }
+  if (elements.subagentLaunchSlotsRefresh) elements.subagentLaunchSlotsRefresh.disabled = subagentLaunchSlotLoading || subagentLaunchSlotSaving;
+  if (elements.subagentLaunchSlotScopeStatus) {
+    elements.subagentLaunchSlotScopeStatus.textContent = config
+      ? subagentLaunchSlotScope === "project"
+        ? config.inherited
+          ? `This project (${config.projectLabel || "current project"}) inherits your user defaults.`
+          : `This project (${config.projectLabel || "current project"}) has its own launch-slot defaults.`
+        : "User defaults apply to new projects unless that project has its own defaults."
+      : "Select a running Pi tab to load its available models.";
+  }
+  if (elements.subagentLaunchSlotsInherit) {
+    elements.subagentLaunchSlotsInherit.hidden = !(config && subagentLaunchSlotScope === "project" && !config.inherited);
+    elements.subagentLaunchSlotsInherit.disabled = subagentLaunchSlotLoading || subagentLaunchSlotSaving || !activeConfigTab;
+  }
+  if (elements.subagentLaunchSlotsStatus) {
+    const message = subagentLaunchSlotError || (subagentLaunchSlotLoading
+      ? "Loading agent models…"
+      : config
+        ? !activeConfigTab
+          ? "This unsaved draft belongs to a different tab. Switch back to save or reload it."
+          : subagentLaunchSlotScope === "project" && config.inherited
+            ? "This project currently inherits user-default launch slots."
+            : "Model assignments are saved separately from the live monitor."
+        : "Agent model configuration is unavailable.");
+    elements.subagentLaunchSlotsStatus.textContent = message;
+    elements.subagentLaunchSlotsStatus.classList.toggle("error", !!subagentLaunchSlotError);
+  }
+  if (elements.subagentLaunchSlotsSave) {
+    elements.subagentLaunchSlotsSave.disabled = !config || !subagentLaunchSlotDraft || !dirty || subagentLaunchSlotLoading || subagentLaunchSlotSaving || !activeConfigTab;
+    elements.subagentLaunchSlotsSave.textContent = subagentLaunchSlotSaving ? "Saving…" : "Save agent models";
+  }
+  if (elements.subagentLaunchSlotsDirty) {
+    elements.subagentLaunchSlotsDirty.textContent = dirty ? "Unsaved changes" : "No unsaved changes";
+  }
+  if (elements.subagentLaunchSlotsReloadActions) {
+    elements.subagentLaunchSlotsReloadActions.hidden = !(subagentLaunchSlotReloadRequired && activeConfigTab);
+  }
+  if (elements.subagentLaunchSlotsReload) elements.subagentLaunchSlotsReload.disabled = subagentLaunchSlotSaving || subagentLaunchSlotLoading;
+  if (elements.subagentLaunchSlotsLater) elements.subagentLaunchSlotsLater.disabled = subagentLaunchSlotSaving || subagentLaunchSlotLoading;
+
+  elements.subagentLaunchSlotRoles.setAttribute("aria-busy", subagentLaunchSlotLoading ? "true" : "false");
+  elements.subagentLaunchSlotRoles.replaceChildren();
+  if (!config) {
+    elements.subagentLaunchSlotRoles.append(make("p", "subagent-launch-slot-empty", subagentLaunchSlotLoading ? "Loading launch-slot defaults…" : "No agent-model configuration is loaded."));
+    return;
+  }
+  const roles = subagentLaunchSlotDraftRoles();
+  for (const role of Array.isArray(config.roleMetadata) ? config.roleMetadata : []) {
+    const slots = Array.isArray(roles[role.id]) ? roles[role.id] : [];
+    if (slots.length) elements.subagentLaunchSlotRoles.append(renderSubagentLaunchSlotCard(role, slots));
+  }
+  focusSubagentLaunchSlotControl();
+}
+
+async function loadSubagentLaunchSlotConfig({ tabId = activeTabId, scope = subagentLaunchSlotScope } = {}) {
+  if (!tabId) {
+    renderSubagentLaunchSlots();
+    return;
+  }
+  const requestSerial = ++subagentLaunchSlotRequestSerial;
+  subagentLaunchSlotLoading = true;
+  subagentLaunchSlotError = "";
+  renderSubagentLaunchSlots();
+  try {
+    const query = new URLSearchParams({ tab: tabId, scope });
+    const response = await api(`/api/subagents/config?${query}`, { scoped: false });
+    if (requestSerial !== subagentLaunchSlotRequestSerial || tabId !== activeTabId || scope !== subagentLaunchSlotScope) return;
+    subagentLaunchSlotConfig = response.data || null;
+    subagentLaunchSlotConfigTabId = tabId;
+    subagentLaunchSlotDraft = cloneLaunchSlotRoles(response.data?.roles || {});
+    subagentLaunchSlotReloadRequired = subagentLaunchSlotReloadTabs.has(tabId);
+  } catch (error) {
+    if (requestSerial !== subagentLaunchSlotRequestSerial) return;
+    subagentLaunchSlotError = `Could not load agent models: ${error.message || String(error)}`;
+  } finally {
+    if (requestSerial === subagentLaunchSlotRequestSerial) {
+      subagentLaunchSlotLoading = false;
+      renderSubagentLaunchSlots();
+    }
+  }
+}
+
+async function confirmDiscardSubagentLaunchSlotDraft(action) {
+  if (!subagentLaunchSlotDraftIsDirty()) return true;
+  return appConfirm({
+    title: "Discard unsaved agent models?",
+    summary: `${action} replaces the current launch-slot draft with saved settings.`,
+    affected: "Unsaved model and thinking assignments in this browser tab",
+    undoable: false,
+    confirmLabel: "Discard changes",
+  });
+}
+
+async function selectSubagentLaunchSlotScope(scope) {
+  const nextScope = scope === "project" ? "project" : "user";
+  if (nextScope === subagentLaunchSlotScope) return;
+  if (!(await confirmDiscardSubagentLaunchSlotDraft("Changing scope"))) {
+    renderSubagentLaunchSlots();
+    return;
+  }
+  subagentLaunchSlotScope = nextScope;
+  subagentLaunchSlotReloadRequired = false;
+  await loadSubagentLaunchSlotConfig();
+}
+
+async function reloadSubagentLaunchSlotConfig() {
+  if (!(await confirmDiscardSubagentLaunchSlotDraft("Reloading configuration"))) return;
+  subagentLaunchSlotReloadRequired = false;
+  await loadSubagentLaunchSlotConfig();
+}
+
+function applySavedSubagentLaunchSlotConfig(data) {
+  subagentLaunchSlotConfig = data || null;
+  subagentLaunchSlotConfigTabId = activeTabId;
+  subagentLaunchSlotDraft = cloneLaunchSlotRoles(data?.roles || {});
+  if (data?.changed === true && data?.reloadRequired === true && activeTabId) {
+    subagentLaunchSlotReloadTabs.add(activeTabId);
+  }
+  subagentLaunchSlotReloadRequired = subagentLaunchSlotReloadTabs.has(activeTabId);
+}
+
+async function saveSubagentLaunchSlotConfig({ inherit = false } = {}) {
+  if (!subagentLaunchSlotConfig || !subagentLaunchSlotConfigTabId || subagentLaunchSlotConfigTabId !== activeTabId) {
+    subagentLaunchSlotError = "Return to the tab that owns this launch-slot draft before saving.";
+    renderSubagentLaunchSlots();
+    return;
+  }
+  subagentLaunchSlotSaving = true;
+  subagentLaunchSlotError = "";
+  renderSubagentLaunchSlots();
+  try {
+    const body = {
+      tab: activeTabId,
+      scope: subagentLaunchSlotScope,
+      revision: subagentLaunchSlotConfig.revision,
+    };
+    if (inherit) body.inherit = true;
+    else body.roles = cloneLaunchSlotRoles(subagentLaunchSlotDraftRoles());
+    const response = await api("/api/subagents/config", { method: "POST", body, scoped: false });
+    applySavedSubagentLaunchSlotConfig(response.data);
+    setSubagentLaunchSlotAnnouncement(inherit ? "This project now uses user-default agent models." : "Agent models saved.");
+  } catch (error) {
+    const conflict = error?.statusCode === 409;
+    subagentLaunchSlotError = `${conflict ? "Conflict: reload configuration before saving." : "Could not save agent models:"} ${conflict ? "" : error.message || String(error)}`.trim();
+  } finally {
+    subagentLaunchSlotSaving = false;
+    renderSubagentLaunchSlots();
+  }
+}
+
+async function resetSubagentLaunchSlotProjectScope() {
+  if (subagentLaunchSlotScope !== "project" || !subagentLaunchSlotConfig || subagentLaunchSlotConfig.inherited) return;
+  if (!(await confirmDiscardSubagentLaunchSlotDraft("Using user defaults"))) return;
+  await saveSubagentLaunchSlotConfig({ inherit: true });
+}
+
+async function reloadActiveTabForSubagentLaunchSlots() {
+  if (!subagentLaunchSlotReloadRequired || subagentLaunchSlotConfigTabId !== activeTabId) return;
+  subagentLaunchSlotSaving = true;
+  subagentLaunchSlotError = "";
+  renderSubagentLaunchSlots();
+  try {
+    await sendPrompt("prompt", "/reload", { targetTabId: activeTabId, throwOnError: true });
+    subagentLaunchSlotReloadTabs.delete(activeTabId);
+    subagentLaunchSlotReloadRequired = false;
+    setSubagentLaunchSlotAnnouncement("Active tab reloaded. Agent model guidance now applies to future launches.");
+    await loadSubagentLaunchSlotConfig();
+  } catch (error) {
+    subagentLaunchSlotError = `Could not reload the active tab: ${error.message || String(error)}`;
+  } finally {
+    subagentLaunchSlotSaving = false;
+    renderSubagentLaunchSlots();
+  }
+}
+
+function initializeSubagentLaunchSlots() {
+  renderSubagentLaunchSlots();
+  if (activeTabId) loadSubagentLaunchSlotConfig().catch(() => {});
 }
 
 function sessionCopyButton(label, value) {
@@ -31616,6 +32061,41 @@ if (elements.subagentOpenModeSelect) {
     setSubagentOpenMode(elements.subagentOpenModeSelect.value, { announce: true });
   });
 }
+elements.subagentLaunchSlotScope?.addEventListener("change", () => {
+  selectSubagentLaunchSlotScope(elements.subagentLaunchSlotScope.value).catch((error) => {
+    subagentLaunchSlotError = error.message || String(error);
+    renderSubagentLaunchSlots();
+  });
+});
+elements.subagentLaunchSlotsRefresh?.addEventListener("click", () => {
+  reloadSubagentLaunchSlotConfig().catch((error) => {
+    subagentLaunchSlotError = error.message || String(error);
+    renderSubagentLaunchSlots();
+  });
+});
+elements.subagentLaunchSlotsSave?.addEventListener("click", () => {
+  saveSubagentLaunchSlotConfig().catch((error) => {
+    subagentLaunchSlotError = error.message || String(error);
+    renderSubagentLaunchSlots();
+  });
+});
+elements.subagentLaunchSlotsInherit?.addEventListener("click", () => {
+  resetSubagentLaunchSlotProjectScope().catch((error) => {
+    subagentLaunchSlotError = error.message || String(error);
+    renderSubagentLaunchSlots();
+  });
+});
+elements.subagentLaunchSlotsReload?.addEventListener("click", () => {
+  reloadActiveTabForSubagentLaunchSlots().catch((error) => {
+    subagentLaunchSlotError = error.message || String(error);
+    renderSubagentLaunchSlots();
+  });
+});
+elements.subagentLaunchSlotsLater?.addEventListener("click", () => {
+  subagentLaunchSlotReloadRequired = false;
+  setSubagentLaunchSlotAnnouncement("Agent models are saved. Reload this tab later before relying on them for future launches.");
+  renderSubagentLaunchSlots();
+});
 elements.subagentTerminalCopyButton?.addEventListener("click", () => copySubagentTerminalOutput());
 elements.subagentTerminalRefreshButton?.addEventListener("click", () => {
   refreshSubagentTerminalView(activeSubagentTerminalId, { showLoading: true }).finally(() => scheduleSubagentTerminalRefresh());
@@ -32286,6 +32766,7 @@ restoreSidePanelState();
 initializeCodexUsage();
 initializeClaudeUsage();
 initializeSubagents();
+initializeSubagentLaunchSlots();
 initializeUpdateNotifications();
 bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();

@@ -1,6 +1,6 @@
 # @firstpick/pi-extension-subagent-minimum-fanout
 
-Enforces a zero-or-multiple delegation policy for model-initiated Pi `subagent` tool calls. It blocks executions that declare fewer than two statically guaranteed child launches.
+Enforces a zero-or-multiple delegation policy for model-initiated Pi `subagent` tool calls. It blocks executions that declare fewer than two statically guaranteed child launches and prevents a lone implementation worker from being hidden among non-worker children.
 
 ## Install
 
@@ -17,7 +17,8 @@ The extension inspects each model `tool_call` for the `subagent` tool:
 - A direct child launch counts as one and is blocked.
 - `tasks` entries count their positive integer `count` values; invalid or omitted counts conservatively count as one.
 - A `chain` counts direct static steps and statically declared `parallel` tasks.
-- Dynamic `expand` fanout contributes zero guaranteed children, so it cannot make a one-child chain compliant.
+- If any declared launch uses the `worker` agent, the same request must statically guarantee at least two `worker` launches; a worker plus reviewers, planners, or other roles is blocked.
+- Dynamic `expand` fanout contributes zero guaranteed children or workers, so it cannot establish either minimum.
 - `action: "single"`, `"parallel"`, and `"tasks"` use the same checks case-insensitively when they describe an execution.
 - `action: "schedule"` is treated as a new deferred execution and must meet the same minimum.
 - Management, status, control, recovery, and other non-schedule actions pass through.
@@ -54,7 +55,7 @@ npm run smoke
 npm pack --dry-run --json
 ```
 
-The package-local tests cover static task and chain counting, dynamic fanout, execution aliases, schedules, exempt management actions, malformed input, and non-subagent pass-through.
+The package-local tests cover static child and worker counting, mixed-role bypass attempts, dynamic fanout, execution aliases, schedules, exempt management actions, malformed input, and non-subagent pass-through.
 
 ## License
 

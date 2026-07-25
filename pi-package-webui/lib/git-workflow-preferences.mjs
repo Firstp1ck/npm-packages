@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { normalizeSubagentLaunchSlots } from "./subagent-launch-slots.mjs";
 import { normalizeOutputMode, OUTPUT_MODE_NORMAL } from "./webui-output-mode.mjs";
 
 export const GIT_WORKFLOW_SETUP_VERSION = 1;
@@ -25,6 +26,7 @@ export function supportedGitWorkflowThinkingLevels(model) {
 
 const WEBUI_SETTINGS_VERSION = 4;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
+const webuiSettingsUpdateQueues = new Map();
 
 function cleanBoundedString(value, maxLength = 512) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -136,52 +138,112 @@ export function normalizeResourceDefaults(value) {
   };
 }
 
+function settingsObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function normalizedSettingsVersion(value) {
+  const stored = Number.isInteger(value?.version) ? value.version : 0;
+  return Math.max(WEBUI_SETTINGS_VERSION, stored, value?.subagentLaunchSlots !== undefined ? 5 : 0);
+}
+
 export function normalizeWebuiSettings(value) {
+  const source = settingsObject(value);
   return {
-    version: WEBUI_SETTINGS_VERSION,
-    remoteAuthEnabled: value?.remoteAuthEnabled === true,
-    outputModeDefault: normalizeOutputMode(value?.outputModeDefault, OUTPUT_MODE_NORMAL),
-    gitWorkflow: normalizeGitWorkflowPreferences(value?.gitWorkflow),
-    resourceDefaults: normalizeResourceDefaults(value?.resourceDefaults),
+    ...source,
+    version: normalizedSettingsVersion(source),
+    remoteAuthEnabled: source.remoteAuthEnabled === true,
+    outputModeDefault: normalizeOutputMode(source.outputModeDefault, OUTPUT_MODE_NORMAL),
+    gitWorkflow: normalizeGitWorkflowPreferences(source.gitWorkflow),
+    resourceDefaults: normalizeResourceDefaults(source.resourceDefaults),
+    subagentLaunchSlots: normalizeSubagentLaunchSlots(source.subagentLaunchSlots),
   };
 }
 
-export async function readWebuiSettings(storageFile = webuiSettingsFile(), { reportInvalidOutputMode = false } = {}) {
+async function readRawWebuiSettings(storageFile) {
   try {
-    const raw = JSON.parse(await readFile(storageFile, "utf8"));
-    const normalized = normalizeWebuiSettings(raw);
-    if (reportInvalidOutputMode && raw?.outputModeDefault !== undefined && normalized.outputModeDefault !== raw.outputModeDefault) {
-      console.warn(`Invalid persisted Web UI output mode ${JSON.stringify(raw.outputModeDefault)} in ${storageFile}; using ${OUTPUT_MODE_NORMAL}.`);
-    }
-    return normalized;
+    return settingsObject(JSON.parse(await readFile(storageFile, "utf8")));
   } catch (error) {
-    if (error?.code === "ENOENT") return normalizeWebuiSettings({});
+    if (error?.code === "ENOENT") return {};
     throw new Error(`Cannot read Pi Web UI settings at ${storageFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-export async function writeWebuiSettings(patch, storageFile = webuiSettingsFile()) {
-  const current = await readWebuiSettings(storageFile);
-  const next = normalizeWebuiSettings({
-    ...current,
-    ...(patch || {}),
-    gitWorkflow: patch?.gitWorkflow
-      ? mergeGitWorkflowPreferences(current.gitWorkflow, patch.gitWorkflow)
+export async function readWebuiSettings(storageFile = webuiSettingsFile(), { reportInvalidOutputMode = false } = {}) {
+  const raw = await readRawWebuiSettings(storageFile);
+  const normalized = normalizeWebuiSettings(raw);
+  if (reportInvalidOutputMode && raw.outputModeDefault !== undefined && normalized.outputModeDefault !== raw.outputModeDefault) {
+    console.warn(`Invalid persisted Web UI output mode ${JSON.stringify(raw.outputModeDefault)} in ${storageFile}; using ${OUTPUT_MODE_NORMAL}.`);
+  }
+  return normalized;
+}
+
+function mergeWebuiSettings(rawCurrent, patch) {
+  const raw = settingsObject(rawCurrent);
+  const current = normalizeWebuiSettings(raw);
+  const patchValue = settingsObject(patch);
+  const hasLaunchSlotPatch = Object.hasOwn(patchValue, "subagentLaunchSlots");
+  const persistLaunchSlots = raw.subagentLaunchSlots !== undefined || hasLaunchSlotPatch;
+  const source = {
+    ...raw,
+    ...patchValue,
+    gitWorkflow: patchValue.gitWorkflow
+      ? mergeGitWorkflowPreferences(current.gitWorkflow, patchValue.gitWorkflow)
       : current.gitWorkflow,
-    resourceDefaults: patch?.resourceDefaults
+    resourceDefaults: patchValue.resourceDefaults
       ? {
           ...current.resourceDefaults,
-          ...patch.resourceDefaults,
-          tools: { ...current.resourceDefaults.tools, ...(patch.resourceDefaults.tools || {}) },
-          skills: { ...current.resourceDefaults.skills, ...(patch.resourceDefaults.skills || {}) },
+          ...patchValue.resourceDefaults,
+          tools: { ...current.resourceDefaults.tools, ...(patchValue.resourceDefaults.tools || {}) },
+          skills: { ...current.resourceDefaults.skills, ...(patchValue.resourceDefaults.skills || {}) },
         }
       : current.resourceDefaults,
-  });
+  };
+  if (persistLaunchSlots) {
+    source.subagentLaunchSlots = hasLaunchSlotPatch
+      ? normalizeSubagentLaunchSlots(patchValue.subagentLaunchSlots)
+      : normalizeSubagentLaunchSlots(raw.subagentLaunchSlots);
+    source.version = Math.max(5, Number.isInteger(raw.version) ? raw.version : 0);
+  } else {
+    delete source.subagentLaunchSlots;
+    source.version = Math.max(WEBUI_SETTINGS_VERSION, Number.isInteger(raw.version) ? raw.version : 0);
+  }
+  return { settings: normalizeWebuiSettings(source), persistLaunchSlots };
+}
+
+async function writeMergedWebuiSettings(rawCurrent, patch, storageFile) {
+  const { settings, persistLaunchSlots } = mergeWebuiSettings(rawCurrent, patch);
+  const persisted = { ...settings };
+  if (!persistLaunchSlots) delete persisted.subagentLaunchSlots;
   await mkdir(path.dirname(storageFile), { recursive: true });
   const temporaryFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporaryFile, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(temporaryFile, `${JSON.stringify(persisted, null, 2)}\n`, { mode: 0o600 });
   await rename(temporaryFile, storageFile);
-  return next;
+  return settings;
+}
+
+/**
+ * Applies a settings patch against the latest on-disk snapshot and writes it
+ * atomically. Returning undefined from the updater avoids an unnecessary write.
+ */
+export function updateWebuiSettings(updater, storageFile = webuiSettingsFile()) {
+  const queueKey = path.resolve(storageFile);
+  const previous = webuiSettingsUpdateQueues.get(queueKey) || Promise.resolve();
+  const currentUpdate = previous.catch(() => {}).then(async () => {
+    const rawCurrent = await readRawWebuiSettings(storageFile);
+    const current = normalizeWebuiSettings(rawCurrent);
+    const patch = await updater(current);
+    if (patch === undefined) return current;
+    return writeMergedWebuiSettings(rawCurrent, patch, storageFile);
+  });
+  webuiSettingsUpdateQueues.set(queueKey, currentUpdate);
+  return currentUpdate.finally(() => {
+    if (webuiSettingsUpdateQueues.get(queueKey) === currentUpdate) webuiSettingsUpdateQueues.delete(queueKey);
+  });
+}
+
+export async function writeWebuiSettings(patch, storageFile = webuiSettingsFile()) {
+  return updateWebuiSettings(() => patch, storageFile);
 }
 
 export async function readGitWorkflowPreferences(storageFile = webuiSettingsFile()) {

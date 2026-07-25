@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Subagent Launch-Slot Configuration — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220; --panel: #121c2d; --panel-2: #18253a; --text: #e8eef8;
+      --muted: #a9b7cb; --line: #2b3b55; --green: #50d890; --yellow: #f7c65c;
+      --red: #ff7373; --blue: #65b5ff; --code: #07101c; --radius-lg: 16px;
+      --radius-md: 12px; --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    a { color: var(--blue); }
+    button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link { position: fixed; z-index: 20; top: 8px; left: 8px; transform: translateY(-160%); background: var(--blue); color: #06111f; padding: 8px 12px; border-radius: 8px; font-weight: 800; }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; overflow-wrap: anywhere; }
+    pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; color: #d9e6f7; white-space: pre-wrap; }
+    .muted { color: var(--muted); }
+    .lead { font-size: 1.1rem; max-width: 82ch; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .metric, .finding, .visual-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 16px; }
+    .metric strong { display: block; font-size: 1.35rem; }
+    .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; margin-bottom: 8px; }
+    .good { color: var(--green); } .warn { color: var(--yellow); } .bad { color: var(--red); } .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.bad { background: rgb(255 115 115 / 14%); border: 1px solid rgb(255 115 115 / 38%); }
+    .badge.info { background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout { border-left: 5px solid var(--yellow); background: rgb(247 198 92 / 8%); border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+    .callout.good-callout { border-left-color: var(--green); background: rgb(80 216 144 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    .status { font-weight: 750; white-space: nowrap; }
+    .tabs-shell { margin-top: 18px; }
+    [role="tablist"] { display: flex; gap: 8px; overflow-x: auto; padding: 8px; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 12px; background: rgb(7 16 28 / 72%); scrollbar-width: thin; }
+    [role="tab"] { appearance: none; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted); padding: 9px 13px; white-space: nowrap; font: inherit; font-weight: 750; cursor: pointer; }
+    [role="tab"][aria-selected="true"] { color: var(--text); border-color: rgb(101 181 255 / 45%); background: rgb(101 181 255 / 14%); }
+    .tabs-ready [role="tabpanel"][hidden] { display: none; }
+    figure { margin: 18px 0; }
+    figure svg { display: block; width: 100%; height: auto; background: var(--code); border: 1px solid var(--line); border-radius: 12px; }
+    figcaption { color: var(--muted); margin-top: 8px; font-size: .92rem; }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node-live { fill: #182b43; stroke: var(--green); stroke-width: 2; stroke-dasharray: 7 5; }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .node-note { fill: var(--muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .edge-dashed { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-dasharray: 8 6; marker-end: url(#arrow-green); }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    ul.compact li { margin-bottom: 7px; }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) { main { width: min(100% - 18px, 1120px); margin-top: 10px; } header, .report-section { padding: 18px; } [role="tablist"] { position: sticky; top: 0; z-index: 5; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .finding, .visual-card { box-shadow: none; background: white; color: #111; border-color: #bbb; break-inside: avoid; }
+      [role="tablist"], .skip-link { display: none !important; }
+      [role="tabpanel"], [role="tabpanel"][hidden] { display: block !important; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge good">Implementation complete</span>
+    <h1>Subagent launch-slot configuration</h1>
+    <p class="lead">Implementation and verification report for WebUI-managed model and thinking presets across repeated instances of the eight existing builtin subagent roles. Evidence comes from the integrated uncommitted diff, focused tests, package checks, and two independent non-OpenAI feature reviews.</p>
+    <div class="callout good-callout"><strong>Conclusion:</strong> the feature is implemented end to end without modifying <code>pi-subagents</code>. User and project settings are persisted locally, future launches receive bounded session-cached guidance after tab reload, and live subagent monitoring remains a separate read-only surface.</div>
+    <p class="muted"><strong>Confidence: 96/100.</strong> Core persistence, API, runtime, and pure browser-state behavior are executable-test verified. Confidence is capped because there is no browser DOM harness and the package-wide suite retains one pre-existing typography-floor failure unrelated to this feature.</p>
+  </header>
+
+  <div class="tabs-shell">
+    <nav role="tablist" aria-label="Report sections">
+      <button id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button id="tab-architecture" role="tab" aria-selected="false" aria-controls="panel-architecture" tabindex="-1">Architecture</button>
+      <button id="tab-review" role="tab" aria-selected="false" aria-controls="panel-review" tabindex="-1">Review dispositions</button>
+      <button id="tab-validation" role="tab" aria-selected="false" aria-controls="panel-validation" tabindex="-1">Validation</button>
+      <button id="tab-scope" role="tab" aria-selected="false" aria-controls="panel-scope" tabindex="-1">Scope &amp; limits</button>
+    </nav>
+
+    <section class="report-section" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <h2>Overview</h2>
+      <div class="grid" aria-label="Headline metrics">
+        <div class="metric"><span class="badge good">Supported roles</span><strong>8 builtin roles</strong><span class="muted">Context builder, delegate, oracle, planner, researcher, reviewer, scout, and worker.</span></div>
+        <div class="metric"><span class="badge info">Bounded storage</span><strong>8 per role · 32 total</strong><span class="muted">Stable IDs, model validation, and explicit thinking compatibility checks.</span></div>
+        <div class="metric"><span class="badge good">Independent review</span><strong>2 provider families</strong><span class="muted">Claude Sonnet 5 and Kimi K3, both with high thinking.</span></div>
+      </div>
+      <h3 style="margin-top:22px">Implementation map</h3>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Delivered behavior</th><th>Status</th><th>Primary evidence</th></tr></thead>
+          <tbody>
+            <tr><td>Persistence</td><td>Version-5 WebUI envelope containing <code>subagentLaunchSlots.version = 1</code>, preserving unrelated settings and project inheritance.</td><td class="status good">Verified</td><td><code>lib/subagent-launch-slots.mjs</code>; <code>lib/git-workflow-preferences.mjs</code></td></tr>
+            <tr><td>Local API</td><td>Tab-aware GET and localhost-only POST with model/thinking validation, scope revisions, and stale-draft 409 responses.</td><td class="status good">Verified</td><td><code>bin/pi-webui.mjs</code>; HTTP harness</td></tr>
+            <tr><td>Runtime</td><td>Effective slots are snapshotted at <code>session_start</code> and appended to the system prompt without discarding skill filtering.</td><td class="status good">Verified</td><td><code>webui-rpc-helper.mjs</code>; helper tests</td></tr>
+            <tr><td>Editor</td><td>Native collapsible Agent models surface with scope selection, add/remove, dirty/conflict handling, inheritance reset, and container-responsive controls that remain readable in a narrow side panel.</td><td class="status good">Verified</td><td><code>public/app.js</code>; state/static tests</td></tr>
+            <tr><td>Live monitor</td><td>Existing active-child monitoring remains independent; configuration refresh never replaces focused monitor content.</td><td class="status good">Preserved</td><td>Static separation assertions and reviewer inspection</td></tr>
+            <tr><td>Package gate</td><td>All feature-focused checks pass; package-wide checks have one known committed CSS baseline failure.</td><td class="status warn">Qualified pass</td><td><code>mobile-static.test.mjs</code> at the 0.75rem floor assertion</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout info-callout"><strong>Operational contract:</strong> added rows are launch presets for the original role, not callable aliases. Two reviewer rows still produce separate <code>{ agent: "reviewer", model: "…" }</code> launches. Explicit user/tool-call model choices continue to win.</div>
+    </section>
+
+    <section class="report-section" id="panel-architecture" role="tabpanel" aria-labelledby="tab-architecture">
+      <h2>Architecture and lifecycle</h2>
+      <figure class="visual-card" data-visual-kind="diagram" data-purpose="Explain how WebUI launch-slot configuration reaches future subagent calls while live monitoring remains separate">
+        <svg role="img" aria-labelledby="architecture-title architecture-desc" viewBox="0 0 980 500">
+          <title id="architecture-title">Launch-slot configuration data flow</title>
+          <desc id="architecture-desc">The browser editor reads and writes a localhost API. The server validates and atomically persists WebUI settings. On session start the helper resolves user or project slots and caches prompt guidance, which informs future original-role subagent launches. A separate dashed path represents live monitoring and does not share editor state.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker>
+            <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#50d890"/></marker>
+          </defs>
+          <path class="edge" d="M220 105 H300"/><path class="edge" d="M470 105 H550"/><path class="edge" d="M720 105 C810 105 825 220 825 262"/>
+          <path class="edge" d="M825 346 C825 405 700 415 610 415"/>
+          <path class="edge-dashed" d="M220 362 H355"/>
+          <rect class="node" x="40" y="62" width="180" height="88" rx="13"/><text class="node-text" x="130" y="98">Agent models editor</text><text class="node-note" x="130" y="123">user/project draft</text>
+          <rect class="node" x="300" y="62" width="170" height="88" rx="13"/><text class="node-text" x="385" y="98">Local config API</text><text class="node-note" x="385" y="123">GET + localhost POST</text>
+          <rect class="node" x="550" y="62" width="170" height="88" rx="13"/><text class="node-text" x="635" y="98">WebUI settings</text><text class="node-note" x="635" y="123">versioned + atomic</text>
+          <rect class="node" x="735" y="262" width="180" height="84" rx="13"/><text class="node-text" x="825" y="296">Session snapshot</text><text class="node-note" x="825" y="321">reload required</text>
+          <rect class="node" x="410" y="372" width="200" height="86" rx="13"/><text class="node-text" x="510" y="407">Future role launch</text><text class="node-note" x="510" y="432">same agent + explicit model</text>
+          <rect class="node-live" x="40" y="319" width="180" height="86" rx="13"/><text class="node-text" x="130" y="354">Live monitor</text><text class="node-note" x="130" y="379">read-only active runs</text>
+          <rect class="node-live" x="355" y="319" width="170" height="86" rx="13"/><text class="node-text" x="440" y="354">Subagent status API</text><text class="node-note" x="440" y="379">separate polling path</text>
+        </svg>
+        <figcaption>Solid path: configuration becomes future-launch guidance only after the active Pi tab reloads. Dashed green path: live monitoring stays operationally separate and running children are never changed.</figcaption>
+      </figure>
+      <div class="grid">
+        <article class="finding"><span class="badge info">Scope precedence</span><h3>User defaults, then project override</h3><p>Project identity comes from the active tab’s server-owned canonical cwd. An absent project entry inherits user settings; “Use user defaults” deletes only the active project override.</p></article>
+        <article class="finding"><span class="badge info">Responsive editor</span><h3>Collapsible and container-aware</h3><p>The editor starts collapsed using native <code>details</code>/<code>summary</code> semantics. Its summary reports dirty and reload state, while a 30rem container query stacks fields based on the side panel’s real width—even when the overall desktop viewport is wide.</p></article>
+        <article class="finding"><span class="badge info">Mixed slots</span><h3>Ordering remains explicit</h3><p>If one role mixes inherited and explicit slots, guidance retains inherited rows as “use the role/default model” entries. This preserves slot ordinal meaning without creating aliases.</p></article>
+        <article class="finding"><span class="badge info">Concurrency</span><h3>Same-file updates are serialized</h3><p>A per-settings-file promise queue now closes the in-process lost-update window identified by both reviewers. A focused test holds one updater open and verifies the second cannot enter until the first write completes.</p></article>
+      </div>
+    </section>
+
+    <section class="report-section" id="panel-review" role="tabpanel" aria-labelledby="tab-review">
+      <h2>Independent review and finding dispositions</h2>
+      <p>Two independent review rounds completed successfully using <strong>Claude Sonnet 5</strong> and <strong>Kimi K3</strong>, both with high thinking. The second round specifically inspected the collapsible narrow-panel refinement and the supplied screenshot. Reviewer output was advisory; each note was checked against the plan, source, rendered evidence, and tests before disposition.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Finding</th><th>Disposition</th><th>Rationale / change</th><th>Verification</th></tr></thead>
+          <tbody>
+            <tr><td>Concurrent POSTs could both pass the same revision snapshot.</td><td class="status good">Accepted · fixed</td><td>Serialized <code>updateWebuiSettings</code> operations per resolved storage path.</td><td>Interleaving regression in <code>subagent-launch-slots.test.mjs</code></td></tr>
+            <tr><td>Reload-required reminder was a single scalar and vanished across tab switches.</td><td class="status good">Accepted · fixed</td><td>Track pending reloads in a tab-ID set; clear only after that tab’s successful <code>/reload</code>.</td><td>Dedicated static contract assertion</td></tr>
+            <tr><td>Scope select was described by a changing live status region.</td><td class="status good">Accepted · fixed</td><td>Keep only stable scope help in <code>aria-describedby</code>.</td><td>HTML static assertion</td></tr>
+            <tr><td>UUID collision exhaustion announced a false limit error.</td><td class="status good">Accepted · fixed</td><td>Generate the ID before insertion and announce a distinct generation failure.</td><td>Source/static inspection</td></tr>
+            <tr><td>Plan example omitted inherited rows in mixed same-role guidance.</td><td class="status good">Accepted · fixed</td><td>Updated the runtime contract to document inherited-marker rows and ordering.</td><td>Exact formatter unit assertion</td></tr>
+            <tr><td>409 response did not prove the settings file remained unchanged.</td><td class="status good">Accepted · fixed</td><td>HTTP harness now compares settings bytes before and after rejected stale save.</td><td><code>http-endpoints-harness.test.mjs</code></td></tr>
+            <tr><td>Mobile static assertion still expected the removed “Add same type” label.</td><td class="status good">Accepted · fixed</td><td>Updated the masked assertion to the compact “Add slot” UI contract.</td><td>Focused static suite passes</td></tr>
+            <tr><td>The screen-reader-only announcer had no visual-hiding utility.</td><td class="status good">Accepted · fixed</td><td>Added a standard <code>.sr-only</code> utility that preserves accessibility-tree content without visible layout noise.</td><td>Dedicated CSS contract assertion</td></tr>
+            <tr><td>“Later” could imply a durable dismissal although the per-tab reminder intentionally returns.</td><td class="status good">Accepted · clarified</td><td>Renamed the temporary action to “Not now”; reload reminders still survive until the tab reloads.</td><td>Markup and state review</td></tr>
+            <tr><td>Unavailable persisted model blocks unrelated saves in the same full draft.</td><td class="status warn">Deferred</td><td>This is the approved contract: GET preserves stale values; a new save must resolve or inherit them. A role-scoped warning is optional UX follow-up.</td><td>Server validation + unit coverage</td></tr>
+            <tr><td>Thinking-level compatibility logic exists in two modules.</td><td class="status warn">Deferred</td><td>Low-risk duplication; extracting shared behavior during this feature would expand coupling without changing acceptance behavior.</td><td>Both implementations and tests currently agree</td></tr>
+            <tr><td>Project map has no global entry-count cap.</td><td class="status warn">Deferred</td><td>Each entry is bounded and localhost-owned; no project-count limit was approved. Long-term pruning can be a separate migration.</td><td>Per-entry and total-slot caps verified</td></tr>
+            <tr><td>No repository-owned visual regression harness for narrow panels.</td><td class="status warn">Deferred test gap</td><td>Pure state/static/API tests remain the permanent suite. The independent Claude reviewer additionally rendered the current DOM/CSS in Chrome 152 at 200–340px container widths inside a 1600px viewport and observed correct stacking without overlap.</td><td>Focused suites pass; independent runtime rendering completed</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout good-callout"><strong>Review gate:</strong> no blocker or high/medium-severity finding remained. All accepted findings were fixed in the integrated tree and targeted checks were rerun.</div>
+    </section>
+
+    <section class="report-section" id="panel-validation" role="tabpanel" aria-labelledby="tab-validation">
+      <h2>Validation evidence</h2>
+      <div class="grid">
+        <article class="finding"><span class="badge good">Pass</span><h3>Focused feature suite</h3><p>Persistence/concurrency, browser state, collapsible/container-responsive browser contracts, runtime helper composition, HTTP endpoints, and fast-mode/PWA regressions all pass.</p></article>
+        <article class="finding"><span class="badge good">Pass</span><h3>Syntax and whitespace</h3><p>Changed JS/MJS entry points pass <code>node --check</code>; <code>git diff --check -- pi-package-webui</code> is clean.</p></article>
+        <article class="finding"><span class="badge warn">Known baseline</span><h3>51 of 52 package test files pass</h3><p><code>mobile-static.test.mjs</code> fails on a committed <code>font-size: 0.72rem</code> at <code>public/styles.css:7290</code>, outside this feature’s CSS block.</p></article>
+      </div>
+      <h3 style="margin-top:22px">Commands and outcomes</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Command</th><th>Outcome</th><th>Interpretation</th></tr></thead>
+          <tbody>
+            <tr><td><code>node tests/subagent-launch-slots.test.mjs</code></td><td class="status good">Pass</td><td>Normalization, migration, limits, guidance, project resolution, revisions, and serialized updates.</td></tr>
+            <tr><td><code>node tests/subagent-launch-slot-state.test.mjs</code></td><td class="status good">Pass</td><td>Pure add/remove/update/clone/equality semantics.</td></tr>
+            <tr><td><code>node tests/subagent-launch-slots-static.test.mjs</code></td><td class="status good">Pass</td><td>Editor separation, accessibility wiring, per-tab reload state, responsive CSS, and PWA delivery.</td></tr>
+            <tr><td><code>node tests/subagents-helper.test.mjs</code></td><td class="status good">Pass</td><td>Session-cached guidance and skill-filter composition.</td></tr>
+            <tr><td><code>node tests/http-endpoints-harness.test.mjs</code></td><td class="status good">Pass</td><td>GET/POST, inheritance, localhost guard, model validation, stale 409, and byte-unchanged rejection.</td></tr>
+            <tr><td><code>npm test</code></td><td class="status warn">51/52 pass</td><td>Only the unrelated committed typography-floor baseline fails.</td></tr>
+            <tr><td><code>npm run check</code></td><td class="status warn">Syntax pass; 51/52 tests pass</td><td>Same single unrelated baseline; no feature-specific failures.</td></tr>
+            <tr><td><code>git diff --check -- pi-package-webui</code></td><td class="status good">Pass</td><td>No whitespace errors.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details>
+        <summary>Known baseline evidence</summary>
+        <p>The package test asserts that interface font declarations do not fall below <code>0.75rem</code>. Committed <code>public/styles.css</code> already contains <code>font-size: 0.72rem</code> at line 7290. The launch-slot CSS is around lines 2422–2571 and uses <code>var(--text-xs)</code> (0.75rem) or <code>0.8rem</code>; the feature neither introduced nor worsened the failure.</p>
+      </details>
+    </section>
+
+    <section class="report-section" id="panel-scope" role="tabpanel" aria-labelledby="tab-scope">
+      <h2>Scope, usage, and residual limits</h2>
+      <h3>What changes after save</h3>
+      <ul class="compact">
+        <li>A changed save updates WebUI-owned local settings and displays a reload-required action for the relevant tab.</li>
+        <li>Reloading that tab creates a new session snapshot. Future orchestration is instructed to pass each explicit provider-qualified model and thinking suffix to the original role.</li>
+        <li>Already-running children remain unchanged. Live monitoring continues independently.</li>
+      </ul>
+      <h3>Intentional non-goals</h3>
+      <ul class="compact">
+        <li>No changes to installed <code>pi-subagents</code>, its RPC protocol, agent files, or role names.</li>
+        <li>No callable aliases such as <code>reviewer-2</code>, no direct launch button, and no task composer.</li>
+        <li>No fallback-model, tool, skill, prompt, retry-gate, watchdog, or custom-agent configuration.</li>
+        <li>No remote mutation: configuration POSTs remain localhost-only.</li>
+      </ul>
+      <h3>Residual risks</h3>
+      <div class="grid">
+        <article class="finding"><span class="badge warn">Guidance</span><h3>Prompt adherence is not hard enforcement</h3><p>Because <code>pi-subagents</code> is unchanged, slots are bounded system guidance. Explicit user instructions and explicit tool-call model fields can override the preset.</p></article>
+        <article class="finding"><span class="badge warn">Catalog drift</span><h3>Eight-role compatibility boundary</h3><p>The role catalog is version-coupled to the installed builtin set. A future role change requires updating the exported catalog and tests.</p></article>
+        <article class="finding"><span class="badge warn">Browser behavior</span><h3>No executable DOM harness</h3><p>Focus restoration and dialog behavior are supported by accessible markup, pure state tests, static contracts, and review, but not a simulated browser test.</p></article>
+      </div>
+      <h3 style="margin-top:22px">Primary artifacts</h3>
+      <ul class="compact">
+        <li>Plan: <code>plans/subagent-launch-slot-configuration.md</code></li>
+        <li>Persistence/runtime model: <code>lib/subagent-launch-slots.mjs</code></li>
+        <li>Server/API: <code>bin/pi-webui.mjs</code></li>
+        <li>Session guidance: <code>webui-rpc-helper.mjs</code></li>
+        <li>Editor: <code>public/index.html</code>, <code>public/app.js</code>, <code>public/styles.css</code></li>
+        <li>Pure browser state: <code>public/subagent-launch-slot-state.mjs</code></li>
+      </ul>
+      <div class="callout info-callout"><strong>Final limitation:</strong> this report verifies the local integrated worktree, not a published package or deployed browser instance. The user must reload the active Pi tab after saving slots for future launches to use the new guidance.</div>
+    </section>
+  </div>
+
+  <footer><p><strong>Scope:</strong> <code>pi-package-webui</code> integrated feature implementation · Generated 2026-07-24 · No external assets or telemetry.</p></footer>
+</main>
+<script>
+(() => {
+  const tablist = document.querySelector('[role="tablist"]');
+  if (!tablist) return;
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls'))).filter(Boolean);
+  document.documentElement.classList.add('tabs-ready');
+  function activate(tab, { focus = false, updateHash = true } = {}) {
+    tabs.forEach((candidate) => {
+      const selected = candidate === tab;
+      candidate.setAttribute('aria-selected', String(selected));
+      candidate.tabIndex = selected ? 0 : -1;
+      const panel = document.getElementById(candidate.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) tab.focus();
+    if (updateHash) history.replaceState(null, '', `#${tab.getAttribute('aria-controls')}`);
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      let target = null;
+      if (event.key === 'ArrowRight') target = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') target = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') target = 0;
+      if (event.key === 'End') target = tabs.length - 1;
+      if (target === null) return;
+      event.preventDefault();
+      activate(tabs[target], { focus: true });
+    });
+  });
+  const hashPanel = panels.find((panel) => `#${panel.id}` === location.hash);
+  const initial = hashPanel ? tabs.find((tab) => tab.getAttribute('aria-controls') === hashPanel.id) : tabs[0];
+  activate(initial || tabs[0], { updateHash: false });
+})();
+</script>
+</body>
+</html>

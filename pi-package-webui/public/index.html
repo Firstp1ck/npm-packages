@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=81" />
+    <link rel="stylesheet" href="/styles.css?v=83" />
   </head>
   <body>
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
@@ -745,6 +745,42 @@
             </h2>
             <div id="sidePanelSectionSubagents" class="side-panel-section-content" hidden>
               <p class="subagents-help"><strong>How to use:</strong> Ask Pi to call <code>subagent</code> for ordinary delegation or <code>subagent_gate</code> when failed calls need bounded retries or a success quorum. Active children and retained gate attempts appear here.</p>
+              <details id="subagentLaunchSlots" class="subagent-launch-slots">
+                <summary class="subagent-launch-slots-summary">
+                  <span class="subagent-launch-slots-summary-heading">
+                    <strong id="subagentLaunchSlotsTitle">Agent models</strong>
+                    <span id="subagentLaunchSlotsSummaryStatus">Launch presets for 8 builtin roles</span>
+                  </span>
+                  <span class="subagent-launch-slots-summary-chevron" aria-hidden="true">›</span>
+                </summary>
+                <div class="subagent-launch-slots-body">
+                  <div class="subagent-launch-slots-intro">
+                    <p>Choose model and thinking presets for future same-role launches. Running children are not changed.</p>
+                    <button id="subagentLaunchSlotsRefresh" type="button">Refresh models</button>
+                  </div>
+                  <div class="subagent-launch-slot-scope">
+                    <label for="subagentLaunchSlotScope">Apply to</label>
+                    <select id="subagentLaunchSlotScope" aria-describedby="subagentLaunchSlotScopeStatus">
+                      <option value="user">User default</option>
+                      <option value="project">This project</option>
+                    </select>
+                    <button id="subagentLaunchSlotsInherit" type="button" hidden>Use user defaults</button>
+                    <p id="subagentLaunchSlotScopeStatus" class="muted"></p>
+                  </div>
+                  <p id="subagentLaunchSlotsStatus" class="subagent-launch-slots-status muted" role="status" aria-live="polite">Loading agent models…</p>
+                  <div id="subagentLaunchSlotRoles" class="subagent-launch-slot-roles" aria-busy="true"></div>
+                  <div class="subagent-launch-slots-actions">
+                    <button id="subagentLaunchSlotsSave" class="primary" type="button" disabled>Save agent models</button>
+                    <span id="subagentLaunchSlotsDirty" class="muted">No unsaved changes</span>
+                  </div>
+                  <div id="subagentLaunchSlotsReloadActions" class="subagent-launch-slots-reload-actions" hidden>
+                    <span>Saved changes apply to future launches after this tab reloads.</span>
+                    <button id="subagentLaunchSlotsReload" class="primary" type="button">Reload active tab</button>
+                    <button id="subagentLaunchSlotsLater" type="button">Not now</button>
+                  </div>
+                  <p id="subagentLaunchSlotsAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></p>
+                </div>
+              </details>
               <div class="subagent-open-mode-field">
                 <label for="subagentOpenModeSelect">Open subagents in</label>
                 <select id="subagentOpenModeSelect" aria-describedby="subagentOpenModeStatus">
@@ -1129,6 +1165,6 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=89"></script>
+    <script type="module" src="/app.js?v=91"></script>
   </body>
 </html>

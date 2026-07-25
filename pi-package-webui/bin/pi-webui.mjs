@@ -44,10 +44,24 @@ import {
   readGitWorkflowPreferences,
   readWebuiSettings,
   supportedGitWorkflowThinkingLevels,
+  updateWebuiSettings,
   webuiSettingsFile,
   writeGitWorkflowPreferences,
   writeWebuiSettings,
 } from "../lib/git-workflow-preferences.mjs";
+import {
+  SUBAGENT_LAUNCH_SLOT_LIMITS,
+  SUBAGENT_LAUNCH_SLOT_ROLE_CATALOG,
+  SUBAGENT_LAUNCH_SLOT_THINKING_LEVELS,
+  normalizeSubagentLaunchSlots,
+  resolveSubagentLaunchSlotProjectKey,
+  subagentLaunchSlotModelKey,
+  subagentLaunchSlotProjectLabel,
+  subagentLaunchSlotRevision,
+  subagentLaunchSlotScopeEntry,
+  supportedSubagentLaunchSlotThinkingLevels,
+  validateSubagentLaunchSlotRoles,
+} from "../lib/subagent-launch-slots.mjs";
 import {
   encodeBrowserSseEvent,
   isOutputModeSemanticBarrier,
@@ -2057,6 +2071,107 @@ async function saveSafetyGuardConfigData(body = {}) {
   } catch (error) {
     throw makeHttpError(500, error instanceof Error ? error.message : String(error));
   }
+}
+
+function requireSubagentLaunchSlotScope(value) {
+  const scope = String(value || "").trim();
+  if (!["user", "project"].includes(scope)) throw makeHttpError(400, "scope must be user or project");
+  return scope;
+}
+
+async function availableSubagentLaunchSlotModels(tab) {
+  const response = await safeRpcData(tab, { type: "get_available_models" });
+  if (!response.ok) throw makeHttpError(400, response.error || "Failed to load available models");
+  return (Array.isArray(response.data?.models) ? response.data.models : [])
+    .filter((model) => subagentLaunchSlotModelKey(model))
+    .sort((left, right) => subagentLaunchSlotModelKey(left).localeCompare(subagentLaunchSlotModelKey(right)));
+}
+
+async function subagentLaunchSlotProjectContext(tab) {
+  const projectKey = await resolveSubagentLaunchSlotProjectKey(tab.cwd);
+  return { projectKey, projectLabel: subagentLaunchSlotProjectLabel(projectKey) };
+}
+
+function subagentLaunchSlotConfigPayload(settings, scope, project, models, extra = {}) {
+  const config = normalizeSubagentLaunchSlots(settings?.subagentLaunchSlots);
+  const effective = subagentLaunchSlotScopeEntry(config, scope, project.projectKey);
+  return {
+    scope,
+    projectKey: project.projectKey,
+    projectLabel: project.projectLabel,
+    inherited: effective.inherited,
+    revision: subagentLaunchSlotRevision(config, scope, project.projectKey),
+    roles: effective.entry.roles,
+    roleMetadata: SUBAGENT_LAUNCH_SLOT_ROLE_CATALOG,
+    models,
+    modelThinkingLevels: Object.fromEntries(models.map((model) => [
+      subagentLaunchSlotModelKey(model),
+      supportedSubagentLaunchSlotThinkingLevels(model),
+    ])),
+    limits: SUBAGENT_LAUNCH_SLOT_LIMITS,
+    thinkingLevels: SUBAGENT_LAUNCH_SLOT_THINKING_LEVELS,
+    reloadRequired: false,
+    ...extra,
+  };
+}
+
+async function subagentLaunchSlotConfigData(tab, requestedScope) {
+  const scope = requireSubagentLaunchSlotScope(requestedScope);
+  const [settings, models, project] = await Promise.all([
+    readWebuiSettings(),
+    availableSubagentLaunchSlotModels(tab),
+    subagentLaunchSlotProjectContext(tab),
+  ]);
+  return subagentLaunchSlotConfigPayload(settings, scope, project, models);
+}
+
+async function saveSubagentLaunchSlotConfigData(tab, body = {}) {
+  const scope = requireSubagentLaunchSlotScope(body.scope);
+  const revision = typeof body.revision === "string" ? body.revision.trim() : "";
+  if (!revision || revision.length > 128) throw makeHttpError(400, "revision is required");
+  const inherit = body.inherit === true;
+  if (inherit && scope !== "project") throw makeHttpError(400, "inherit is only supported for project scope");
+
+  const [models, project] = await Promise.all([
+    availableSubagentLaunchSlotModels(tab),
+    subagentLaunchSlotProjectContext(tab),
+  ]);
+  let roles;
+  if (!inherit) {
+    try {
+      roles = validateSubagentLaunchSlotRoles(body.roles, models);
+    } catch (error) {
+      throw makeHttpError(400, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  let changed = false;
+  const settings = await updateWebuiSettings((currentSettings) => {
+    const config = normalizeSubagentLaunchSlots(currentSettings.subagentLaunchSlots);
+    const currentRevision = subagentLaunchSlotRevision(config, scope, project.projectKey);
+    if (currentRevision !== revision) {
+      throw makeHttpError(409, "Subagent launch-slot configuration changed; reload it before saving.");
+    }
+
+    const nextConfig = normalizeSubagentLaunchSlots(config);
+    if (scope === "user") {
+      nextConfig.user = { roles };
+    } else if (inherit) {
+      delete nextConfig.projects[project.projectKey];
+    } else {
+      nextConfig.projects[project.projectKey] = { roles };
+    }
+    const before = scope === "user" ? config.user : config.projects[project.projectKey] || null;
+    const after = scope === "user" ? nextConfig.user : nextConfig.projects[project.projectKey] || null;
+    changed = JSON.stringify(before) !== JSON.stringify(after);
+    return changed ? { subagentLaunchSlots: nextConfig } : undefined;
+  });
+
+  return subagentLaunchSlotConfigPayload(settings, scope, project, models, {
+    saved: true,
+    changed,
+    reloadRequired: changed,
+  });
 }
 
 function gitWorkflowModelKey(model) {
@@ -7044,7 +7159,7 @@ async function readBundledThemes() {
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "fast-output-live.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  if (!["index.html", "app.js", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
   return name;
 }
 
@@ -12204,6 +12319,20 @@ const server = createServer(async (req, res) => {
       const agentId = normalizeWebuiSubagentText(url.searchParams.get("agent"), 240);
       if (!runId || !agentId) throw makeHttpError(400, "run and agent query parameters are required");
       sendJson(res, 200, { ok: true, data: await webuiSubagentOutputData(tab, runId, agentId) });
+      return;
+    }
+
+    if (url.pathname === "/api/subagents/config" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await subagentLaunchSlotConfigData(tab, url.searchParams.get("scope")) });
+      return;
+    }
+
+    if (url.pathname === "/api/subagents/config" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await saveSubagentLaunchSlotConfigData(tab, body) });
       return;
     }
 

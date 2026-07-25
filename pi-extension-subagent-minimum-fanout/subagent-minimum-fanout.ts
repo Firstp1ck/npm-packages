@@ -7,15 +7,17 @@ export interface SubagentFanoutAnalysis {
 	kind: SubagentAnalysisKind;
 	mode?: SubagentExecutionMode;
 	guaranteedChildren: number;
+	guaranteedWorkers: number;
 	execution: boolean;
+	workerExecution: boolean;
 	dynamicFanout: boolean;
 	scheduledKind?: SubagentExecutionMode;
 }
 
 export const MINIMUM_FANOUT_BLOCK_REASON = [
-	"Blocked by the zero-or-multiple delegation policy: this request declares fewer than two statically guaranteed child launches.",
-	"Do not retry a single child.",
-	"Either work directly in the main agent, or issue one statically compliant tasks or chain workflow with at least two necessary child launches.",
+	"Blocked by the zero-or-multiple delegation policy: every execution needs at least two statically guaranteed child launches, and any workflow that launches the worker agent needs at least two statically guaranteed worker launches.",
+	"Do not retry a single child or hide one worker among non-worker children.",
+	"Either work directly in the main agent, or issue one statically compliant tasks or chain workflow with the required launches.",
 ].join(" ");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,14 +29,28 @@ export function positiveTaskCount(value: unknown): number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
 }
 
+function isWorkerTask(task: unknown): task is Record<string, unknown> & { agent: "worker" } {
+	return isRecord(task) && task.agent === "worker";
+}
+
 /** Sums the statically declared children in a top-level tasks workflow. */
 export function countStaticTasks(tasks: unknown): number {
 	if (!Array.isArray(tasks)) return 0;
 	return tasks.reduce((total, task) => total + positiveTaskCount(isRecord(task) ? task.count : undefined), 0);
 }
 
+/** Sums statically declared launches of the implementation worker agent. */
+export function countStaticWorkers(tasks: unknown): number {
+	if (!Array.isArray(tasks)) return 0;
+	return tasks.reduce((total, task) => total + (isWorkerTask(task)
+		? positiveTaskCount(task.count)
+		: 0), 0);
+}
+
 export interface StaticChainCount {
 	guaranteedChildren: number;
+	guaranteedWorkers: number;
+	workerExecution: boolean;
 	dynamicFanout: boolean;
 }
 
@@ -43,7 +59,9 @@ export interface StaticChainCount {
  * templates intentionally contribute zero because their cardinality is unknown.
  */
 export function countStaticChainChildren(chain: unknown): StaticChainCount {
-	if (!Array.isArray(chain)) return { guaranteedChildren: 0, dynamicFanout: false };
+	if (!Array.isArray(chain)) {
+		return { guaranteedChildren: 0, guaranteedWorkers: 0, workerExecution: false, dynamicFanout: false };
+	}
 
 	return chain.reduce<StaticChainCount>((total, step) => {
 		if (!isRecord(step)) return total;
@@ -51,20 +69,32 @@ export function countStaticChainChildren(chain: unknown): StaticChainCount {
 		if (Array.isArray(step.parallel)) {
 			return {
 				guaranteedChildren: total.guaranteedChildren + countStaticTasks(step.parallel),
+				guaranteedWorkers: total.guaranteedWorkers + countStaticWorkers(step.parallel),
+				workerExecution: total.workerExecution || step.parallel.some(isWorkerTask),
 				dynamicFanout: total.dynamicFanout,
 			};
 		}
 
 		if (isRecord(step.parallel) || step.expand !== undefined) {
-			return { ...total, dynamicFanout: true };
+			return {
+				...total,
+				workerExecution: total.workerExecution || isWorkerTask(step.parallel),
+				dynamicFanout: true,
+			};
 		}
 
 		if (typeof step.agent === "string") {
-			return { ...total, guaranteedChildren: total.guaranteedChildren + 1 };
+			const worker = step.agent === "worker";
+			return {
+				...total,
+				guaranteedChildren: total.guaranteedChildren + 1,
+				guaranteedWorkers: total.guaranteedWorkers + (worker ? 1 : 0),
+				workerExecution: total.workerExecution || worker,
+			};
 		}
 
 		return total;
-	}, { guaranteedChildren: 0, dynamicFanout: false });
+	}, { guaranteedChildren: 0, guaranteedWorkers: 0, workerExecution: false, dynamicFanout: false });
 }
 
 function analyzeExecution(input: Record<string, unknown>): SubagentFanoutAnalysis {
@@ -75,7 +105,9 @@ function analyzeExecution(input: Record<string, unknown>): SubagentFanoutAnalysi
 			kind: mode,
 			mode,
 			guaranteedChildren: chain.guaranteedChildren,
+			guaranteedWorkers: chain.guaranteedWorkers,
 			execution: true,
+			workerExecution: chain.workerExecution,
 			dynamicFanout: chain.dynamicFanout,
 		};
 	}
@@ -85,17 +117,22 @@ function analyzeExecution(input: Record<string, unknown>): SubagentFanoutAnalysi
 			kind: "tasks",
 			mode: "tasks",
 			guaranteedChildren: countStaticTasks(input.tasks),
+			guaranteedWorkers: countStaticWorkers(input.tasks),
 			execution: true,
+			workerExecution: input.tasks.some(isWorkerTask),
 			dynamicFanout: false,
 		};
 	}
 
 	if (typeof input.agent === "string") {
+		const worker = input.agent === "worker";
 		return {
 			kind: "direct",
 			mode: "direct",
 			guaranteedChildren: 1,
+			guaranteedWorkers: worker ? 1 : 0,
 			execution: true,
+			workerExecution: worker,
 			dynamicFanout: false,
 		};
 	}
@@ -104,7 +141,9 @@ function analyzeExecution(input: Record<string, unknown>): SubagentFanoutAnalysi
 		kind: "indeterminate",
 		mode: "indeterminate",
 		guaranteedChildren: 0,
+		guaranteedWorkers: 0,
 		execution: true,
+		workerExecution: false,
 		dynamicFanout: false,
 	};
 }
@@ -119,7 +158,9 @@ export function analyzeSubagentCall(input: unknown): SubagentFanoutAnalysis {
 			kind: "indeterminate",
 			mode: "indeterminate",
 			guaranteedChildren: 0,
+			guaranteedWorkers: 0,
 			execution: true,
+			workerExecution: false,
 			dynamicFanout: false,
 		};
 	}
@@ -136,7 +177,9 @@ export function analyzeSubagentCall(input: unknown): SubagentFanoutAnalysis {
 			return {
 				kind: "non-execution",
 				guaranteedChildren: 0,
+				guaranteedWorkers: 0,
 				execution: false,
+				workerExecution: false,
 				dynamicFanout: false,
 			};
 		}
@@ -146,7 +189,9 @@ export function analyzeSubagentCall(input: unknown): SubagentFanoutAnalysis {
 			kind: "scheduled",
 			mode: scheduled.mode,
 			guaranteedChildren: scheduled.guaranteedChildren,
+			guaranteedWorkers: scheduled.guaranteedWorkers,
 			execution: true,
+			workerExecution: scheduled.workerExecution,
 			dynamicFanout: scheduled.dynamicFanout,
 			scheduledKind: scheduled.kind as SubagentExecutionMode,
 		};
@@ -156,7 +201,10 @@ export function analyzeSubagentCall(input: unknown): SubagentFanoutAnalysis {
 }
 
 export function blocksForMinimumFanout(analysis: SubagentFanoutAnalysis): boolean {
-	return analysis.execution && analysis.guaranteedChildren < 2;
+	return analysis.execution && (
+		analysis.guaranteedChildren < 2
+		|| (analysis.workerExecution && analysis.guaranteedWorkers < 2)
+	);
 }
 
 export default function subagentMinimumFanout(pi: ExtensionAPI): void {

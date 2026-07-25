@@ -155,6 +155,10 @@ assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscri
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
 assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*<code>subagent_gate<\/code>[\s\S]*bounded retries or a success quorum[\s\S]*id="subagentsBox"/, "side panel should explain ordinary delegation and retry-gate workflows with a live count");
 assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
+assert.match(html, /id="subagentLaunchSlots"[\s\S]*id="subagentLaunchSlotsTitle">Agent models<[\s\S]*id="subagentLaunchSlotScope"[\s\S]*<option value="user">User default<\/option>[\s\S]*<option value="project">This project<\/option>[\s\S]*id="subagentLaunchSlotRoles"[\s\S]*id="subagentLaunchSlotsSave"[\s\S]*Save agent models[\s\S]*id="subagentLaunchSlotsReload"[\s\S]*Reload active tab/, "Subagents should expose a separate scoped Agent models editor before the live monitor");
+assert.match(html, /id="subagentLaunchSlotsInherit"[^>]*hidden[^>]*>Use user defaults<\/button>/, "project launch-slot overrides should expose an explicit inheritance reset");
+assert.match(html, /id="subagentLaunchSlotScope"[^>]*aria-describedby="subagentLaunchSlotScopeStatus"/, "scope selection should use stable scope help rather than dynamic live status as its accessible description");
+assert.match(html, /id="subagentLaunchSlotsAnnouncer"[^>]*aria-live="polite"[^>]*aria-atomic="true"/, "launch-slot additions and removals should have a dedicated live announcement");
 assert.match(html, /id="subagentTerminalView"[\s\S]*Subagent · view only[\s\S]*id="subagentTerminalTranscript"[\s\S]*id="subagentTerminalStatus"[^>]*aria-live="off"[\s\S]*id="subagentTerminalInput"[^>]*placeholder="View only — send messages from the parent terminal"[^>]*disabled[\s\S]*Use its parent terminal to interact with the run/, "dedicated subagent tabs should expose a view-only transcript, non-announcing routine status, and disabled input");
 assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
 assert.match(html, /data-side-panel-section="session"[\s\S]*data-side-panel-section="subagents"[\s\S]*data-side-panel-section="queue"/, "Subagents should appear between Session and Queue in the side panel");
@@ -403,6 +407,8 @@ assert.match(css, /\.webui-dev-badge \{[\s\S]*?color:\s*var\(--ctp-yellow\)/, "W
 assert.match(css, /\.side-panel-section\.collapsed \.side-panel-section-content,\n\.side-panel-section-content\[hidden\] \{\n\s+display:\s*none;/, "collapsed side panel section content should be hidden");
 assert.match(css, /\.side-panel-section:not\(\.collapsed\) \.side-panel-section-chevron/, "expanded side panel sections should rotate the chevron");
 assert.match(css, /\.subagents-help \{[\s\S]*border-left:[\s\S]*font-size:\s*0\.7rem;[\s\S]*\.subagents-help code/, "subagent invocation guidance should render as a compact informational callout");
+assert.match(css, /\.subagent-launch-slots \{[\s\S]*\.subagent-launch-slot-role \{[\s\S]*\.subagent-launch-slot-controls \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/, "launch-slot cards should group role slots with paired model and thinking controls");
+assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\) \{[\s\S]*min-height: 44px[\s\S]*\.subagent-launch-slot-scope,[\s\S]*\.subagent-launch-slot-row,[\s\S]*\.subagent-launch-slot-controls \{ grid-template-columns: minmax\(0, 1fr\); \}/, "launch-slot controls should stack with coarse-pointer touch targets");
 assert.match(css, /\.subagents-box\.has-items[\s\S]*\.subagent-tab-group[\s\S]*\.subagent-agent-row/, "running subagents should render as grouped terminal/session cards");
 assert.match(css, /\.subagent-gate-card[\s\S]*\.subagent-gate-status[\s\S]*\.subagent-gate-attempt[\s\S]*\.subagent-gate-attempt-error/, "retry gates should render quorum, attempt status, and failure details");
 assert.match(css, /\.subagent-agent-row:hover,[\s\S]*\.subagent-agent-row:focus-visible/, "subagent rows should expose clickable hover and keyboard focus states");
@@ -785,6 +791,13 @@ assert.match(
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*totalGates[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents and retained retry gates by terminal and session");
+assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"[\s\S]*function renderSubagentLaunchSlots\(\)[\s\S]*function loadSubagentLaunchSlotConfig\([\s\S]*\/api\/subagents\/config/, "launch-slot configuration should have its own browser state and API loader");
+assert.match(app, /function subagentLaunchSlotThinkingForModel\(model\)[\s\S]*modelThinkingLevels/, "launch-slot thinking choices should come from the selected model metadata");
+assert.match(app, /function renderSubagentLaunchSlotCard\(role, slots\)[\s\S]*Default \/ inherit[\s\S]*"Add slot"[\s\S]*Remove/, "role cards should render independent same-role slots and inheritance controls");
+assert.match(app, /async function saveSubagentLaunchSlotConfig[\s\S]*scope: subagentLaunchSlotScope,[\s\S]*revision: subagentLaunchSlotConfig\.revision,[\s\S]*body\.roles = cloneLaunchSlotRoles[\s\S]*async function reloadActiveTabForSubagentLaunchSlots[\s\S]*sendPrompt\("prompt", "\/reload"/, "launch-slot saves should be revision checked and offer active-tab reload through the existing path");
+assert.match(app, /const subagentLaunchSlotReloadTabs = new Set\(\)[\s\S]*subagentLaunchSlotReloadTabs\.add\(activeTabId\)[\s\S]*subagentLaunchSlotReloadTabs\.delete\(activeTabId\)/, "reload-required reminders should survive tab switches until that tab is actually reloaded");
+const subagentOverviewRefreshSource = appFunctionSource("refreshSubagents", "scheduleRefreshSubagents");
+assert.doesNotMatch(subagentOverviewRefreshSource, /subagentLaunchSlot/, "live subagent polling must not recreate or reset the launch-slot editor");
 assert.match(app, /function renderSubagentGateAttempt\(attempt\)[\s\S]*failureKind[\s\S]*function renderSubagentGate\(gate\)[\s\S]*qualifyingSuccesses/, "frontend should render failure-classified attempts and gate quorum");
 assert.match(helper, /async function enrichAsyncSubagentAgent\(run, agent, statusByDir\)[\s\S]*status\.json[\s\S]*agent\.model = subagentModel\(step\.model\)[\s\S]*agent\.thinking = subagentThinking\(step\.thinking\)/, "WebUI helper should enrich async children from effective lifecycle model and reasoning metadata");
 assert.match(helper, /SUBAGENT_GATE_UPDATE_EVENT[\s\S]*function publicSubagentGates\(\)[\s\S]*failureKind[\s\S]*gates = publicSubagentGates\(\)/, "WebUI helper should publish bounded retry-gate lifecycle data");
@@ -1599,6 +1612,7 @@ assert.match(serviceWorker, /fetchThenCache\(request\)\.catch\(/, "PWA service w
 assert.match(serviceWorker, /ignoreSearch: true/, "PWA service worker offline fallback should ignore ?v= cache busters");
 assert.match(serviceWorker, /self\.addEventListener\("notificationclick"/, "PWA service worker should focus Web UI when blocked-tab notifications are clicked");
 assert.match(serviceWorker, /event\.notification\.data\?\.url/, "blocked-tab notifications should carry a URL for service-worker click handling");
+assert.match(serviceWorker, /"\/subagent-launch-slot-state\.mjs"/, "PWA service worker should cache the launch-slot state module imported by the app shell");
 assert.match(serviceWorker, /"\/apple-touch-icon\.png"/, "PWA service worker should cache the apple touch icon");
 assert.match(serviceWorker, /"\/matrix-background\.webp"/, "PWA service worker should cache the Matrix background image");
 assert.match(serviceWorker, /"\/catppuccin-mocha-background\.png"/, "PWA service worker should cache the Catppuccin Mocha background image");
@@ -1778,6 +1792,7 @@ assert.match(server, /writeFile\(tmpFile, body\.content[\s\S]*?rename\(tmpFile, 
 assert.match(server, /url\.pathname === "\/api\/themes" && req\.method === "GET"/, "server should expose GET /api/themes");
 assert.match(server, /readBundledThemes\(\)/, "server should read bundled theme JSON files for the browser");
 assert.match(server, /"apple-touch-icon\.png", "icon-192\.png"/, "server should serve the conventional apple touch icon path");
+assert.match(server, /"fast-output-live\.mjs", "subagent-launch-slot-state\.mjs", "voice-conversation\.mjs"/, "server should serve the launch-slot state module imported by the browser app");
 assert.match(server, /"catppuccin-mocha-background\.png", "matrix-background\.webp", "manifest\.webmanifest", "service-worker\.js"/, "server should serve theme background images as static assets");
 assert.match(server, /\["\.webmanifest", "application\/manifest\+json; charset=utf-8"\]/, "server should serve manifest with the correct MIME type");
 assert.match(server, /\["\.png", "image\/png"\]/, "server should serve PWA PNG icons with the correct MIME type");

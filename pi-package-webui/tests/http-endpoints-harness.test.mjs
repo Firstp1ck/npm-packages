@@ -314,6 +314,65 @@ try {
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
 
+  const initialUserLaunchSlots = await request("127.0.0.1", `/api/subagents/config?tab=${encodeURIComponent(tabId)}&scope=user`);
+  assert.equal(initialUserLaunchSlots.status, 200, `user launch-slot config should load: ${initialUserLaunchSlots.body?.error || ""}`);
+  assert.equal(initialUserLaunchSlots.body?.data?.reloadRequired, false);
+  assert.equal(initialUserLaunchSlots.body?.data?.roleMetadata?.length, 8, "launch-slot config should expose the documented builtin role metadata");
+  assert.deepEqual(initialUserLaunchSlots.body?.data?.roles?.reviewer, [{ id: "reviewer:base", model: null, thinking: null }], "launch-slot defaults should materialize a stable base slot");
+  assert.deepEqual(initialUserLaunchSlots.body?.data?.modelThinkingLevels?.["fake/fake-model"], ["off"], "the active tab model registry should drive supported thinking choices");
+
+  const userLaunchDraft = JSON.parse(JSON.stringify(initialUserLaunchSlots.body.data.roles));
+  userLaunchDraft.reviewer[0] = { id: "reviewer:base", model: "fake/fake-model", thinking: "off" };
+  userLaunchDraft.reviewer.push({ id: "reviewer-secondary", model: "fake/fake-model", thinking: "off" });
+  const savedUserLaunchSlots = await request("127.0.0.1", "/api/subagents/config", {
+    method: "POST",
+    body: { tab: tabId, scope: "user", revision: initialUserLaunchSlots.body.data.revision, roles: userLaunchDraft },
+  });
+  assert.equal(savedUserLaunchSlots.status, 200, `user launch-slot config should save: ${savedUserLaunchSlots.body?.error || ""}`);
+  assert.equal(savedUserLaunchSlots.body?.data?.saved, true);
+  assert.equal(savedUserLaunchSlots.body?.data?.changed, true);
+  assert.equal(savedUserLaunchSlots.body?.data?.reloadRequired, true, "a changed save must require active-tab reload before helper guidance changes");
+  assert.deepEqual(savedUserLaunchSlots.body?.data?.roles?.reviewer, userLaunchDraft.reviewer, "same-role launch slots must retain independent explicit model specs");
+  const persistedLaunchSlots = JSON.parse(await readFile(settingsFile, "utf8"));
+  assert.equal(persistedLaunchSlots.version, 5, "launch-slot persistence should upgrade the private WebUI settings envelope");
+  assert.deepEqual(persistedLaunchSlots.subagentLaunchSlots?.user?.roles?.reviewer, userLaunchDraft.reviewer);
+
+  const inheritedProjectLaunchSlots = await request("127.0.0.1", `/api/subagents/config?tab=${encodeURIComponent(tabId)}&scope=project`);
+  assert.equal(inheritedProjectLaunchSlots.status, 200);
+  assert.equal(inheritedProjectLaunchSlots.body?.data?.inherited, true, "project scope must inherit user launch slots until customized");
+  assert.deepEqual(inheritedProjectLaunchSlots.body?.data?.roles?.reviewer, userLaunchDraft.reviewer);
+  const projectLaunchDraft = JSON.parse(JSON.stringify(inheritedProjectLaunchSlots.body.data.roles));
+  projectLaunchDraft.reviewer[0] = { id: "reviewer:base", model: null, thinking: null };
+  const savedProjectLaunchSlots = await request("127.0.0.1", "/api/subagents/config", {
+    method: "POST",
+    body: { tab: tabId, scope: "project", revision: inheritedProjectLaunchSlots.body.data.revision, roles: projectLaunchDraft },
+  });
+  assert.equal(savedProjectLaunchSlots.status, 200);
+  assert.equal(savedProjectLaunchSlots.body?.data?.inherited, false, "saving project roles should create an explicit project entry");
+  assert.equal(savedProjectLaunchSlots.body?.data?.roles?.reviewer?.[0]?.model, null);
+  const resetProjectLaunchSlots = await request("127.0.0.1", "/api/subagents/config", {
+    method: "POST",
+    body: { tab: tabId, scope: "project", revision: savedProjectLaunchSlots.body.data.revision, inherit: true },
+  });
+  assert.equal(resetProjectLaunchSlots.status, 200);
+  assert.equal(resetProjectLaunchSlots.body?.data?.inherited, true, "project inherit reset should remove only the explicit project entry");
+  assert.deepEqual(resetProjectLaunchSlots.body?.data?.roles?.reviewer, userLaunchDraft.reviewer);
+
+  const settingsBeforeStaleLaunchSave = await readFile(settingsFile, "utf8");
+  const staleLaunchSave = await request("127.0.0.1", "/api/subagents/config", {
+    method: "POST",
+    body: { tab: tabId, scope: "user", revision: initialUserLaunchSlots.body.data.revision, roles: userLaunchDraft },
+  });
+  assert.equal(staleLaunchSave.status, 409, "stale launch-slot revisions must not overwrite current settings");
+  assert.equal(await readFile(settingsFile, "utf8"), settingsBeforeStaleLaunchSave, "a rejected stale launch-slot save must leave the settings file byte-for-byte unchanged");
+  const invalidLaunchDraft = JSON.parse(JSON.stringify(userLaunchDraft));
+  invalidLaunchDraft.reviewer[0].model = "fake/fake-model:high";
+  const invalidLaunchSave = await request("127.0.0.1", "/api/subagents/config", {
+    method: "POST",
+    body: { tab: tabId, scope: "user", revision: savedUserLaunchSlots.body.data.revision, roles: invalidLaunchDraft },
+  });
+  assert.equal(invalidLaunchSave.status, 400, "thinking-suffixed persisted model IDs must be rejected on save");
+
   const malformedInlineImage = await request("127.0.0.1", "/api/prompt", {
     method: "POST",
     body: { tab: tabId, message: "malformed inline image fixture", images: [{ type: "image", mimeType: "image/png", data: "137,80,78,71,13,10,26,10" }] },
@@ -1857,6 +1916,12 @@ try {
       body: { tab: tabId, path: viewerRelative, content: "remote save should be blocked\n" },
     });
     assert.equal(remoteFileSave.status, 403, "file saves must be localhost-only");
+
+    const remoteLaunchSlotSave = await request(lan, "/api/subagents/config", {
+      method: "POST",
+      body: { tab: tabId, scope: "user", revision: "remote-request-must-not-read", roles: {} },
+    });
+    assert.equal(remoteLaunchSlotSave.status, 403, "launch-slot saves must be localhost-only before the request body is processed");
 
     const remoteFileOpenDefault = await request(lan, "/api/files/open-default", {
       method: "POST",
