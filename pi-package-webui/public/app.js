@@ -25044,6 +25044,12 @@ function appendMessage(message, options = {}) {
   return created;
 }
 
+function appendOptimisticUserPrompt(message, attachmentCount = 0) {
+  const text = String(message || "").trim() || `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
+  appendMessage({ role: "user", title: "you", timestamp: Date.now(), content: text }, { transient: true, animateEntry: true });
+  if (autoFollowChat || isChatNearBottom()) scrollChatToBottom({ force: true });
+}
+
 function appendTranscriptMessage(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, reusableToolCards = null, itemKey = "" } = {}) {
   if (streaming || transient || message?.role !== "assistant") {
     return appendMessage(message, { streaming, messageIndex, transient, animateEntry, reusableToolCards, itemKey });
@@ -30598,7 +30604,10 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   setComposerActionsOpen(false);
   if (startsRun) {
     markTabWorkingLocally(targetTabId);
-    setRunIndicatorActivity(attachments.length ? "Uploading attachments…" : "Sending prompt to Pi…");
+    if (isCurrentTabContext(tabContext)) {
+      appendOptimisticUserPrompt(originalMessage, attachments.length);
+      setRunIndicatorActivity(attachments.length ? "Preparing attachments for routing…" : "Routing prompt to the selected agent…");
+    }
   }
 
   let message = originalMessage;
@@ -30614,7 +30623,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       rememberPromptHistory(message, { tabId: targetTabId });
       if (kind === "prompt") rememberLastUserPrompt(message, { tabId: targetTabId });
     }
-    if (startsRun && isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending prompt to Pi…");
+    if (startsRun && isCurrentTabContext(tabContext)) setRunIndicatorActivity("Routing complete; starting agent…");
 
     let response;
     if (kind === "steer") {
