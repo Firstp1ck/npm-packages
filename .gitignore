@@ -12,3 +12,6 @@ __pycache__/
 pi-skill-repo-explorer/skills/repo-explorer/repo-explorer-effectiveness-*.md
 pi-extension-cursor-composer/benchmark-output/
 .pi-subagents
+pi-package-webui/reports/
+pi-package-webui/plans/
+pi-extension-workflows/reports/

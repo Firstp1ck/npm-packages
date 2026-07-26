@@ -325,6 +325,16 @@ export async function postSecureWebuiRecovery(
   }
 }
 
+export function formatPatchStatusSummary(
+  targets: Array<{ roles?: string[]; status?: string; packageVersion?: string }>,
+): string {
+  if (targets.length === 0) return "no runtime targets discovered";
+  return targets
+    .filter((target) => target.status !== "already-applied")
+    .map((target) => `${(target.roles || []).join("+") || "runtime"}: ${target.status}${target.packageVersion ? ` (${target.packageVersion})` : ""}`)
+    .join("; ");
+}
+
 async function runPatchStatus(files: RecoveryFiles): Promise<{ ok: boolean; summary: string; payload?: unknown }> {
   try {
     const { stdout } = await execFileAsync(process.execPath, [files.patchctlPath, "status", "--patch", files.patchPath], {
@@ -334,8 +344,7 @@ async function runPatchStatus(files: RecoveryFiles): Promise<{ ok: boolean; summ
       maxBuffer: 1024 * 1024,
     });
     const payload = JSON.parse(stdout) as { targets?: Array<{ roles?: string[]; status?: string; packageVersion?: string }> };
-    const summary = (payload.targets || []).map((target) => `${(target.roles || []).join("+") || "runtime"}: ${target.status}${target.packageVersion ? ` (${target.packageVersion})` : ""}`).join("; ") || "no runtime targets discovered";
-    return { ok: true, summary, payload };
+    return { ok: true, summary: formatPatchStatusSummary(payload.targets || []), payload };
   } catch (error) {
     return { ok: false, summary: error instanceof Error ? error.message : String(error) };
   }
@@ -388,8 +397,10 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
       ctx.ui.setStatus(STATUS_KEY, "Anthropic patch status unavailable");
       return;
     }
-    ctx.ui.setStatus(STATUS_KEY, status.summary);
-    if (/applicable|drifted|unsupported/iu.test(status.summary)) ctx.ui.notify(`Anthropic compatibility status: ${status.summary}`, "warning");
+    if (status.summary) {
+      ctx.ui.setStatus(STATUS_KEY, status.summary);
+      if (/applicable|drifted|unsupported/iu.test(status.summary)) ctx.ui.notify(`Anthropic compatibility status: ${status.summary}`, "warning");
+    }
   });
 
   pi.registerCommand("anthropic-auth-status", {
@@ -401,7 +412,7 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
         return;
       }
       const status = await runPatchStatus(discovery.files);
-      ctx.ui.notify(status.summary, status.ok ? "info" : "error");
+      ctx.ui.notify(status.summary || "No Anthropic compatibility action required", status.ok ? "info" : "error");
     },
   });
 

@@ -16,6 +16,7 @@ It supports both the legacy JSON Workflow IR and capability-only JavaScript work
 /workflow list
 /workflow status [run-id]
 /workflow mode [once|on|off|toggle|status]
+/workflow-setup
 /workflow run <workflow-name> [json-args]
 /workflow <workflow-name> [json-args]
 /workflow pause|resume|abort <run-id>
@@ -165,6 +166,31 @@ Enable persistent Workflow Mode for the current Pi session:
 
 While enabled, the extension augments the main agent's system prompt so substantive requests are planned as reusable JavaScript workflows and sent through `workflow_run`. Disable it with `/workflow mode off`. Use `/workflow mode once` to arm only the next agent turn.
 
+Generated workflows declare needed `write` or `shell` values in `meta.pi.permissions` as workflow-wide upper bounds. The effective user/project `workflow-policy.json` ceiling may narrow or deny them. A global permission does not give every call that authority: each mutation-capable `agent()` call must explicitly request `bash`, `write`, `edit`, or `apply_patch` in its own `tools` array, while planning and review calls remain read-only. Authority is never inferred from phase names.
+
+```js
+export const meta = {
+  name: "implement-and-review",
+  description: "Make an approved change, then review it read-only",
+  phases: ["implementation", "review"],
+  pi: { permissions: { write: true, shell: true } }
+}
+
+const implementation = await phase("implementation", () =>
+  agent("Implement and test the approved change", {
+    label: "implement",
+    tools: ["read", "edit", "bash"]
+  })
+)
+
+return phase("review", () => agent(`Review this result: ${implementation}`, {
+  label: "review",
+  tools: ["read", "grep"]
+}))
+```
+
+Workflow Mode does not create, edit, or relax user or project `workflow-policy.json` files. Missing ceilings remain deny-by-default; configure them separately and deliberately when broader authority is intended.
+
 Workflow Mode publishes human-readable native status plus a versioned RPC payload. It fails closed when another extension announces an active exclusive mode.
 
 The WebUI exposes the same extension-owned mode through its **Workflow** toggle. The browser sends canonical `/workflow mode on|off` commands and reflects the extension's `workflow-mode` status; it does not rewrite ordinary prompts itself.
@@ -178,13 +204,14 @@ The WebUI exposes the same extension-owned mode through its **Workflow** toggle.
 - Read-only tools (`read`, `grep`, `find`, and `ls`) remain the default.
 - Write, shell, and network permissions default to deny. Explicit user/project ceilings are loaded from `workflow-policy.json`; project ceilings can only narrow user authority.
 - Every write agent receives a separate git worktree. Binary patches, base commit, branch, dirty state, and changed files are persisted; the target checkout changes only after `/workflow apply` confirmation and configured verification.
-- A subprocess policy-guard extension blocks tools outside the frozen allowlist and lexical or symlink filesystem escapes. Shell (`bash`) is intentionally unavailable until enforceable OS sandboxing and an argv-level policy exist; network hosts remain allowlisted.
+- A subprocess policy-guard extension blocks tools outside each call's frozen allowlist and lexical or symlink filesystem escapes. `bash` additionally requires the call's shell permission and accepts only one simple command whose executable is in the effective shell allowlist; shell operators, substitutions, unquoted expansions/comments, redirections, newlines, ambiguous quoting, and executable-path bypasses are rejected.
+- A shell allowlist is not an OS sandbox: an admitted executable retains its full behavior, including subcommands, file arguments, child processes, and possible access outside the worktree. The network allowlist governs Web/network tools only; it cannot constrain network access performed by an allowlisted shell executable. Allowlist script-running or network-capable programs only for repositories you trust.
 - The LLM-callable `workflow_run` tool requires explicit `confirmRun: true` and separate launch approval when no exact remembered consent exists.
 - Every accepted run persists immutable source and policy snapshots plus versioned run, event, call, usage, and result artifacts under `~/.pi/agent/workflow-runs/<session-id>/<run-id>/`.
 - Runs execute asynchronously through a global scheduler; cancellation terminates subprocess process groups.
 - Replay resume caches unchanged completed calls; changed, failed, running, and explicitly retried calls run again. Pause lets active calls finish but starts no new work.
 - Run/phase admission and per-agent token/turn stops produce `budget_exhausted`; transient read-only failures use bounded exponential backoff with jitter.
-- Token/turn limits do not grant new tools or authority. Shell remains unavailable, and filesystem/network policy is unchanged.
+- Token/turn limits do not grant new tools or authority. Shell, write, filesystem, and network authority still require the exact call tool request and applicable permission ceiling.
 - Large agent/token policies are shown before launch and while running.
 
 ## Saving and JSON migration
@@ -214,7 +241,11 @@ User ceiling: `~/.pi/agent/workflow-policy.json` (or `$PI_CODING_AGENT_DIR/workf
 }
 ```
 
-If both files exist, permissions and allowlists are intersected. Shell commands are limited to simple commands without shell operators. Network tools require explicit URLs whose hosts match the effective allowlist. Unmerged worktrees are preserved during cleanup or recovery.
+If both files exist, permissions and allowlists are intersected. If the user file is missing, broader permissions default to deny; a project file can only narrow user authority. These files are never automatically created or relaxed.
+
+Use `/workflow-setup` in Pi's native TUI to explicitly review and save the **global user** ceiling. It starts from the current policy (or all-deny when missing), accepts newline-delimited shell and network allowlists plus one JSON argv verification command per line, and shows the normalized JSON and target path before Save. Cancel or a declined review never creates a file. The setup flow is never invoked automatically by generated workflows or model tool calls. An empty verification command list is supported, but applying worktrees then requires an explicit waiver.
+
+A workflow's `meta.pi.permissions` request is also only an upper bound, and each `agent()` call receives only the tools explicitly listed on that call. Shell commands are limited to one simple allowlisted command without shell operators, substitutions, unquoted expansions/comments, redirections, newlines, ambiguous quoting, or executable-path bypasses. Allowlisting a command grants that executable's full argv-level capability and is not OS-level containment. Network tools require explicit URLs whose hosts match the effective allowlist; shell executables are outside that host filter. Unmerged mutation-capable worktrees are preserved during cleanup or recovery.
 
 ### Bundles, compatibility, and schedules
 

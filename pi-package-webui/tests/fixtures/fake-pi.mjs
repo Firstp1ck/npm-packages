@@ -20,7 +20,9 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
 const sessionIndex = process.argv.indexOf("--session");
-const sessionFile = sessionIndex !== -1 ? process.argv[sessionIndex + 1] : undefined;
+const sessionFile = sessionIndex !== -1
+  ? process.argv[sessionIndex + 1]
+  : process.env.FAKE_PI_CONTINUITY_MODE === "1" ? process.env.FAKE_PI_CONTINUITY_SESSION_FILE || undefined : undefined;
 
 let activeBash = 0;
 let peakBash = 0;
@@ -38,7 +40,13 @@ let enabledToolNames = new Set(fakeTools.map((tool) => tool.name));
 let enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name));
 
 const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
+// The continuity harness opts into this behavior explicitly so existing fixture
+// consumers retain their current timing and log shapes.
+const continuityModeEnabled = process.env.FAKE_PI_CONTINUITY_MODE === "1";
+const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
+const largeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
+const largeTokenSamples = Array.from({ length: 300 }, (_, index) => ({ index, input: index + 1, output: index + 2 }));
 const staticEntries = [
   { type: "message", id: "u0000001", parentId: null, timestamp: new Date(1000).toISOString(), message: { role: "user", content: "fake prompt", timestamp: 1000 } },
   { type: "message", id: "a0000001", parentId: "u0000001", timestamp: new Date(2000).toISOString(), message: { role: "assistant", content: [{ type: "text", text: "fake answer" }], timestamp: 2000 } },
@@ -48,6 +56,8 @@ const dynamicEntries = [];
 const dynamicMessages = [];
 let dynamicLeafId = "u0000002";
 let scriptedStreaming = false;
+let continuityRun = 0;
+let largeTranscriptEnabled = false;
 
 function allSessionEntries() {
   return [...staticEntries, ...dynamicEntries];
@@ -93,7 +103,24 @@ logJsonLine({
   direction: "startup",
   recoveryUrl: String(process.env.PI_WEBUI_RECOVERY_URL || ""),
   recoveryTokenConfigured: Boolean(process.env.PI_WEBUI_RECOVERY_TOKEN),
+  ...(continuityModeEnabled ? { pid: process.pid, continuityMode: true } : {}),
 });
+
+function continuityExitMarker(signal) {
+  if (continuityModeEnabled) logJsonLine({ direction: "exit", signal, pid: process.pid });
+}
+
+if (continuityModeEnabled) {
+  process.on("SIGTERM", () => {
+    continuityExitMarker("SIGTERM");
+    process.exit(143);
+  });
+  process.on("SIGINT", () => {
+    continuityExitMarker("SIGINT");
+    process.exit(130);
+  });
+}
+
 
 function respond(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -158,6 +185,45 @@ function runVoiceScriptFlow({ text, chunks, chunkSpacingMs = 60, toolPhase = fal
     },
   });
   runScriptedSteps(steps);
+}
+
+function runContinuityDelayedStream() {
+  scriptedStreaming = true;
+  const text = "continuity stream complete";
+  const run = ++continuityRun;
+  const tagged = (payload) => ({ ...payload, continuityRun: run });
+  const steps = [
+    { afterMs: 80, run: () => emitScriptedEvent(tagged({ type: "agent_start", continuityStep: "start" })) },
+    { afterMs: 80, run: () => emitScriptedEvent(tagged({ type: "message_start", continuityStep: "message-start", message: { role: "assistant" } })) },
+    { afterMs: 300, run: () => emitScriptedEvent(tagged({ type: "message_update", continuityStep: "delta-1", assistantMessageEvent: { type: "text_delta", delta: "continuity " } })) },
+    { afterMs: 300, run: () => emitScriptedEvent(tagged({ type: "message_update", continuityStep: "delta-2", assistantMessageEvent: { type: "text_delta", delta: "stream " } })) },
+    { afterMs: 300, run: () => emitScriptedEvent(tagged({ type: "message_update", continuityStep: "delta-3", assistantMessageEvent: { type: "text_delta", delta: "complete" } })) },
+    { afterMs: 100, run: () => {
+      const message = { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() };
+      appendDynamicMessage(message);
+      emitScriptedEvent(tagged({ type: "message_end", continuityStep: "message-end", message }));
+    } },
+    { afterMs: 80, run: () => {
+      scriptedStreaming = false;
+      emitScriptedEvent(tagged({ type: "agent_end", continuityStep: "end" }));
+    } },
+  ];
+  runScriptedSteps(steps);
+}
+
+function handleContinuityPrompt(command, base) {
+  if (!continuityModeEnabled || String(command.message || "").trim() !== "fixture continuity delayed stream") return false;
+  appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
+  respond({ ...base, data: { output: "fake continuity stream accepted", pid: process.pid } });
+  runContinuityDelayedStream();
+  return true;
+}
+
+function handleLargePayloadPrompt(command, base) {
+  if (!largePayloadsEnabled || String(command.message || "").trim() !== "fixture large rpc payload") return false;
+  largeTranscriptEnabled = true;
+  respond({ ...base, data: { output: largeRpcText, tokens: { input: 123456, output: 654321 }, samples: largeTokenSamples } });
+  return true;
 }
 
 function handleVoiceScriptPrompt(command, base) {
@@ -499,6 +565,7 @@ rl.on("line", (line) => {
     ...(Array.isArray(command.images) ? { images: command.images } : {}),
     ...(command.provider !== undefined ? { provider: String(command.provider) } : {}),
     ...(command.modelId !== undefined ? { modelId: String(command.modelId) } : {}),
+    ...(type === "extension_ui_response" ? { id: String(command.id), value: command.value, cancelled: command.cancelled === true } : {}),
   });
   const base = { type: "response", id, command: type, success: true };
 
@@ -531,6 +598,7 @@ rl.on("line", (line) => {
             { role: "assistant", content: [{ type: "text", text: "fake answer" }], timestamp: 2000 },
             { role: "user", content: "fake follow-up", timestamp: 3000 },
             ...dynamicMessages,
+            ...(largeTranscriptEnabled ? [{ role: "assistant", content: [{ type: "text", text: largeRpcText }], timestamp: 4000 }] : []),
           ],
         },
       });
@@ -573,6 +641,8 @@ rl.on("line", (line) => {
       if (handleDocumentArtifactFixturePrompt(command, base)) return;
       if (handleWorkflowFixturePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
+      if (handleContinuityPrompt(command, base)) return;
+      if (handleLargePayloadPrompt(command, base)) return;
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });
       return;
@@ -591,10 +661,19 @@ rl.on("line", (line) => {
       respond({ ...base, data: { models: [{ provider: "fake", id: "fake-model", name: "Fake Model" }] } });
       return;
     case "get_session_stats":
-      respond({ ...base, data: { tokens: 0 } });
+      respond({
+        ...base,
+        data: largePayloadsEnabled
+          ? { tokens: { input: 123456, output: 654321, total: 777777 }, samples: largeTokenSamples }
+          : { tokens: 0 },
+      });
       return;
     case "get_last_assistant_text":
       respond({ ...base, data: { text: "fake last text" } });
+      return;
+    case "extension_ui_response":
+      // Pi's extension UI response is a one-way RPC write. Deliberately emit
+      // no response so supervised HTTP coverage catches accidental waits.
       return;
     case "bash": {
       activeBash += 1;

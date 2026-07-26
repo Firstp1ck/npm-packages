@@ -109,6 +109,21 @@ assert.doesNotMatch(
 assert.match(syncLiveTodoProgressWidgetFromText, /scheduleLiveWidgetRender\s*\(/, "fixed theory #0: live todo-progress widget rendering should remain scheduler-based");
 assert.match(scheduleLiveWidgetRender, /requestAnimationFrame\s*\(/, "fixed theory #0: live widget rebuilds should remain coalesced to animation frames");
 assert.match(scheduleLiveWidgetRender, /liveWidgetRenderFrame !== null/, "fixed theory #0: repeated tokens in one frame should not queue duplicate widget rebuilds");
+assert.match(
+  stripTodoProgressLines,
+  /isOptionalFeatureDetected\("todoProgressWidget"\)/,
+  "todo-progress transport lines should remain hidden when only the optional widget renderer is disabled",
+);
+assert.doesNotMatch(
+  stripTodoProgressLines,
+  /isOptionalFeatureEnabled\("todoProgressWidget"\)/,
+  "todo-progress output filtering must not depend on the widget renderer toggle",
+);
+assert.match(
+  liveTodoProgressWidgetLinesFromText,
+  /isOptionalFeatureEnabled\("todoProgressWidget"\)/,
+  "disabling todo-progress should still suppress the optional widget renderer itself",
+);
 
 futureInvariant("theory #1: message_update streaming hot path must not call immediate scroll/layout work", () => {
   assert.doesNotMatch(handleMessageUpdate, /scrollChatToBottom\s*\(/, "handleMessageUpdate should schedule/coalesce follow-scroll instead of calling scrollChatToBottom() directly");

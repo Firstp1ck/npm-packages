@@ -93,6 +93,11 @@ async function pathExists(target) {
   return !!(await stat(target).catch(() => null));
 }
 
+async function readJsonLines(target) {
+  const text = await readFile(target, "utf8").catch(() => "");
+  return text.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
 function runGitFixture(args, cwd, message) {
   const result = spawnSync("git", args, {
     cwd,
@@ -112,6 +117,13 @@ function runGitFixture(args, cwd, message) {
 const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
 const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-side-effects-"));
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
+const workflowPolicyAgentDir = path.join(harnessSideEffectsRoot, "agent");
+const workflowPolicyFile = path.join(workflowPolicyAgentDir, "workflow-policy.json");
+const canonicalWorkflowPolicySuggestions = {
+  shellAllowlist: ["git", "node", "npm"],
+  networkAllowlist: ["api.github.com", "registry.npmjs.org"],
+  verificationCommands: [["npm", "test"], ["npm", "run", "lint"]],
+};
 const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
 const fakePiCommandLog = path.join(harnessSideEffectsRoot, "fake-pi-commands.jsonl");
 const recoveryEndpointToken = "test-recovery-token-6e1cc61d22d44c8dbf3c";
@@ -173,8 +185,9 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     GIT_COMMITTER_NAME: "Pi WebUI Test",
     GIT_COMMITTER_EMAIL: "pi-webui-test@example.invalid",
     PATH: `${fakeOpenBinDir}${path.delimiter}${process.env.PATH || ""}`,
-    PI_CODING_AGENT_DIR: path.join(harnessSideEffectsRoot, "agent"),
+    PI_CODING_AGENT_DIR: workflowPolicyAgentDir,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
+    PI_WEBUI_RPC_SUPERVISOR: "1",
     ...(process.platform === "linux" ? {} : { PI_WEBUI_OPEN_COMMAND: openCommandScript }),
     PI_WEBUI_OPEN_LOG: openCommandLog,
     PI_WEBUI_ARTIFACT_ROOTS: artifactRoot,
@@ -182,6 +195,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     FAKE_PI_ARTIFACT_DOWNLOAD: artifactDownload,
     FAKE_PI_LOG_FILE: fakePiCommandLog,
     FAKE_PI_VOICE_SCRIPTS: "1",
+    FAKE_PI_LARGE_PAYLOADS: "1",
     PI_WEBUI_RECOVERY_TOKEN: recoveryEndpointToken,
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
@@ -213,6 +227,91 @@ try {
   assert.equal(health.body.ok, true);
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
   assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
+
+  // Workflow policy setup is server-scoped: missing policy reads as canonical
+  // deny-default state without creating PI_CODING_AGENT_DIR or its policy file.
+  const missingWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy");
+  assert.equal(missingWorkflowPolicy.status, 200, `missing workflow policy should load: ${missingWorkflowPolicy.body?.error || ""}`);
+  assert.equal(missingWorkflowPolicy.body?.data?.filePath, workflowPolicyFile, "workflow policy path must use server-derived PI_CODING_AGENT_DIR");
+  assert.equal(missingWorkflowPolicy.body?.data?.exists, false, "missing workflow policy should report absent state");
+  assert.equal(missingWorkflowPolicy.body?.data?.revision, null, "missing workflow policy should have no revision");
+  assert.deepEqual(missingWorkflowPolicy.body?.data?.policy, {
+    schemaVersion: 1,
+    permissions: { write: false, shell: false, network: false },
+    shellAllowlist: [],
+    networkAllowlist: [],
+    verificationCommands: [],
+  }, "missing workflow policy should expose canonical deny defaults");
+  assert.deepEqual(missingWorkflowPolicy.body?.data?.suggestions, canonicalWorkflowPolicySuggestions, "workflow policy GET should expose the canonical advisory catalog");
+  assert.equal(await pathExists(workflowPolicyFile), false, "workflow policy GET must not create a missing file");
+
+  const workflowPolicyToSave = {
+    schemaVersion: 1,
+    permissions: { write: true, shell: true, network: false },
+    shellAllowlist: [" npm ", "git", "npm"],
+    networkAllowlist: ["https://registry.npmjs.org", "https://npmjs.org"],
+    verificationCommands: [["npm", "test"], ["node", "--check", "bin/pi-webui.mjs"]],
+  };
+  const savedWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    body: { policy: workflowPolicyToSave, expectedRevision: missingWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(savedWorkflowPolicy.status, 200, `workflow policy save should succeed: ${savedWorkflowPolicy.body?.error || ""}`);
+  assert.equal(savedWorkflowPolicy.body?.data?.filePath, workflowPolicyFile);
+  assert.equal(savedWorkflowPolicy.body?.data?.exists, true);
+  assert.match(savedWorkflowPolicy.body?.data?.revision || "", /^sha256:[a-f0-9]{64}$/, "saved workflow policy should expose a content revision");
+  assert.deepEqual(savedWorkflowPolicy.body?.data?.policy?.shellAllowlist, ["git", "npm"], "canonical writer should normalize workflow shell allowlists");
+  const persistedWorkflowPolicy = JSON.parse(await readFile(workflowPolicyFile, "utf8"));
+  assert.deepEqual(persistedWorkflowPolicy, savedWorkflowPolicy.body?.data?.policy, "workflow policy file should contain exactly the canonical saved policy");
+  assert.equal(Object.hasOwn(savedWorkflowPolicy.body?.data?.policy || {}, "suggestions"), false, "saved v1 response policy must not persist advisory suggestions");
+  assert.equal(Object.hasOwn(persistedWorkflowPolicy, "suggestions"), false, "saved v1 file must not persist advisory suggestions");
+  assert.equal((await stat(workflowPolicyFile)).mode & 0o777, 0o600, "workflow policy file must be private");
+
+  const readWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy");
+  assert.equal(readWorkflowPolicy.status, 200, `saved workflow policy should reload: ${readWorkflowPolicy.body?.error || ""}`);
+  assert.equal(readWorkflowPolicy.body?.data?.revision, savedWorkflowPolicy.body?.data?.revision, "workflow policy read should preserve the saved revision");
+  assert.deepEqual(readWorkflowPolicy.body?.data?.policy, savedWorkflowPolicy.body?.data?.policy, "workflow policy read should preserve canonical data");
+  assert.equal(Object.hasOwn(readWorkflowPolicy.body?.data?.policy || {}, "suggestions"), false, "read v1 policy must not expose persisted advisory suggestions");
+
+  const clientSelectedPolicyPath = path.join(harnessSideEffectsRoot, "client-selected-workflow-policy.json");
+  const clientPathWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    body: { policy: workflowPolicyToSave, expectedRevision: savedWorkflowPolicy.body?.data?.revision, agentDir: clientSelectedPolicyPath },
+  });
+  assert.equal(clientPathWorkflowPolicy.status, 400, "workflow policy save must reject a client-selected target path");
+  assert.equal(await pathExists(clientSelectedPolicyPath), false, "client-selected workflow policy path must never be written");
+
+  const unknownWorkflowPolicyField = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    body: { policy: { ...workflowPolicyToSave, unsupported: true }, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(unknownWorkflowPolicyField.status, 400, "workflow policy save must reject canonical unknown fields");
+
+  const malformedWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    body: { policy: { ...workflowPolicyToSave, permissions: { ...workflowPolicyToSave.permissions, shell: "yes" } }, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(malformedWorkflowPolicy.status, 400, "workflow policy save must reject malformed canonical policy values");
+
+  const staleWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    body: { policy: workflowPolicyToSave, expectedRevision: missingWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(staleWorkflowPolicy.status, 409, "workflow policy save must reject a stale read revision");
+
+  const nonJsonWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: { policy: workflowPolicyToSave, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(nonJsonWorkflowPolicy.status, 415, "workflow policy saves must reject cross-origin-simple non-JSON content types");
+
+  const crossOriginWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    body: { policy: workflowPolicyToSave, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(crossOriginWorkflowPolicy.status, 403, "workflow policy saves must reject browser cross-origin requests");
 
   const releaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
   assert.equal(releaseNotes.status, 200, `Pi release notes should load through the server: ${releaseNotes.body?.error || ""}`);
@@ -258,39 +357,17 @@ try {
   assert.equal(gzipResponse.headers.get("content-encoding"), "gzip", "styles.css should fall back to gzip");
   await gzipResponse.arrayBuffer();
 
-  // app.js statically imports the fast-output helper at startup. Verify the
-  // real server serves it so an omitted allowlist entry cannot disable the UI.
-  const fastOutputModuleResponse = await fetch(`http://127.0.0.1:${port}/fast-output-live.mjs`, {
-    signal: AbortSignal.timeout(5_000),
-  });
-  assert.equal(fastOutputModuleResponse.status, 200, "fast-output-live.mjs must be served for the Web UI entry point");
-  assert.match(fastOutputModuleResponse.headers.get("content-type") || "", /text\/javascript/, "fast-output-live.mjs should use a JavaScript MIME type");
-  assert.equal(await fastOutputModuleResponse.text(), await readFile(join(root, "public", "fast-output-live.mjs"), "utf8"), "served fast-output-live.mjs must match the source module");
-
-  // The browser voice loop is dynamically imported by app.js; a missing static
-  // allowlist entry would 404 the module and silently disable voice mode.
-  const voiceModuleResponse = await fetch(`http://127.0.0.1:${port}/voice-conversation.mjs`, {
-    signal: AbortSignal.timeout(5_000),
-  });
-  assert.equal(voiceModuleResponse.status, 200, "voice-conversation.mjs must be served for the Natural Conversation browser voice loop");
-  assert.match(voiceModuleResponse.headers.get("content-type") || "", /text\/javascript/, "voice-conversation.mjs should use a JavaScript MIME type");
-  const voiceModuleBody = await voiceModuleResponse.arrayBuffer();
-  const rawVoiceModuleSize = (await stat(join(root, "public", "voice-conversation.mjs"))).size;
-  assert.equal(voiceModuleBody.byteLength, rawVoiceModuleSize, "served voice-conversation.mjs should match the raw file byte-for-byte in size");
-
-  // app.js imports this pure Guided Git review gate at startup. Fetch it over
-  // the real server so an omitted static allowlist entry cannot 404 the UI.
-  const guidedGitReviewStateResponse = await fetch(`http://127.0.0.1:${port}/guided-git-review-state.mjs`, {
-    signal: AbortSignal.timeout(5_000),
-  });
-  assert.equal(guidedGitReviewStateResponse.status, 200, "guided-git-review-state.mjs must be served for the Guided Git review gate");
-  assert.match(guidedGitReviewStateResponse.headers.get("content-type") || "", /text\/javascript/, "guided-git-review-state.mjs should use a JavaScript MIME type");
-  assert.equal(await guidedGitReviewStateResponse.text(), await readFile(join(root, "public", "guided-git-review-state.mjs"), "utf8"), "served Guided Git review state must match the source module");
-  for (const moduleName of ["aur-review-payload.mjs", "guided-git-command-state.mjs"]) {
+  // Every literal same-origin module imported by app.js is startup-critical.
+  // Derive the set so adding a new import without a server allowlist entry fails
+  // this harness before it can ship as a blank browser UI.
+  const appSource = await readFile(join(root, "public", "app.js"), "utf8");
+  const startupModuleNames = [...new Set([...appSource.matchAll(/(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']\.\/([^"'?]+)(?:\?[^"']*)?["']/g)].map((match) => match[1]))];
+  assert.ok(startupModuleNames.length >= 1, "the startup-module harness should discover app.js imports");
+  for (const moduleName of startupModuleNames) {
     const response = await fetch(`http://127.0.0.1:${port}/${moduleName}`, { signal: AbortSignal.timeout(5_000) });
-    assert.equal(response.status, 200, `${moduleName} must be served for the Guided Git review gate`);
+    assert.equal(response.status, 200, `${moduleName} is imported by app.js and must be served by the WebUI`);
     assert.match(response.headers.get("content-type") || "", /text\/javascript/, `${moduleName} should use a JavaScript MIME type`);
-    assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served ${moduleName} must match the source module`);
+    assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served startup module ${moduleName} must match its source file`);
   }
 
   const mermaidModuleResponse = await fetch(`http://127.0.0.1:${port}/vendor/mermaid/mermaid.esm.min.mjs`, {
@@ -313,6 +390,31 @@ try {
   assert.equal(tabList.length, 1, "startup should create one tab for --cwd");
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
+
+  const extensionResponseId = `fixture-extension-response-${Date.now()}`;
+  const extensionResponseStartedAt = Date.now();
+  const extensionResponse = await request("127.0.0.1", "/api/extension-ui-response", {
+    method: "POST",
+    body: { tab: tabId, id: extensionResponseId, value: "fixture choice" },
+    timeoutMs: 2_000,
+  });
+  const extensionResponseElapsedMs = Date.now() - extensionResponseStartedAt;
+  assert.equal(extensionResponse.status, 200, `supervised extension UI response should return after the raw write: ${extensionResponse.body?.error || ""}`);
+  assert.ok(extensionResponseElapsedMs < 1_500, `supervised one-way extension UI response should return promptly (took ${extensionResponseElapsedMs}ms)`);
+  let extensionResponseCommands = [];
+  for (let attempt = 0; attempt < 20; attempt++) {
+    extensionResponseCommands = (await readJsonLines(fakePiCommandLog)).filter((entry) => entry.direction === "command" && entry.type === "extension_ui_response" && entry.id === extensionResponseId);
+    if (extensionResponseCommands.length) break;
+    await delay(25);
+  }
+  assert.deepEqual(extensionResponseCommands, [{
+    at: extensionResponseCommands[0]?.at,
+    direction: "command",
+    type: "extension_ui_response",
+    id: extensionResponseId,
+    value: "fixture choice",
+    cancelled: false,
+  }], "supervisor must preserve the extension request ID and write the raw response to fake Pi exactly once without a Pi reply");
 
   const initialUserLaunchSlots = await request("127.0.0.1", `/api/subagents/config?tab=${encodeURIComponent(tabId)}&scope=user`);
   assert.equal(initialUserLaunchSlots.status, 200, `user launch-slot config should load: ${initialUserLaunchSlots.body?.error || ""}`);
@@ -525,6 +627,7 @@ try {
   assert.equal(subagentsResponse?.status, 200, "subagent overview endpoint should respond");
   assert.equal(subagentsResponse.body?.data?.totalAgents, 2, "subagent overview should count all running agents");
   assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.tabId, tabId, "subagent overview should group agents under their terminal tab");
+  assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.source, "async", "ordinary async overview rows should retain their source");
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => agent.name), ["reviewer", "scout"], "subagent overview should preserve agent order within the session run");
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "subagent overview should preserve bounded model and reasoning metadata");
   assert.equal(subagentsResponse.body?.data?.totalGates, 1, "subagent overview should expose retry gates independently from running children");
@@ -532,6 +635,7 @@ try {
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.gates?.[0]?.attempts?.map((attempt) => [attempt.status, attempt.failureKind]), [["succeeded", undefined], ["failed", "transient-provider"]], "retry gate attempts should preserve bounded status and failure classification");
   const subagentOutputResponse = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=${encodeURIComponent("fixture-run")}&agent=${encodeURIComponent("fixture-run:0")}`);
   assert.equal(subagentOutputResponse.status, 200, "running subagent output endpoint should respond");
+  assert.equal(subagentOutputResponse.body?.data?.source, "async", "ordinary selected output should retain its async source");
   assert.equal(subagentOutputResponse.body?.data?.agent?.name, "reviewer", "subagent output should target the selected child agent");
   assert.deepEqual(subagentOutputResponse.body?.data?.agent?.recentOutput, ["Inspecting current implementation", "Waiting for the next tool result"], "subagent output should preserve bounded live output lines");
   assert.equal(subagentOutputResponse.body?.data?.agent?.currentToolArgs, "README.md", "subagent output should include current tool state");
@@ -1437,6 +1541,53 @@ try {
   assert.equal(clampedMessages.body?.data?.since, 3, "since beyond the transcript should clamp to the total count");
   assert.equal((clampedMessages.body?.data?.messages || []).length, 0);
 
+  const expectedLargeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
+  assert.ok(Buffer.byteLength(expectedLargeRpcText) > 64 * 1024 && Buffer.byteLength(expectedLargeRpcText) < 32 * 1024 * 1024, "large RPC fixture must exceed the former sanitizer limit while staying within the transport bound");
+  const largePayloadResponse = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { tab: tabId, message: "fixture large rpc payload" },
+    timeoutMs: 10_000,
+  });
+  assert.equal(largePayloadResponse.status, 200, "supervised live command must round-trip a large bounded response");
+  assert.equal(largePayloadResponse.body?.data?.output, expectedLargeRpcText, "large multibyte live output must remain byte-exact");
+  assert.deepEqual(largePayloadResponse.body?.data?.tokens, { input: 123456, output: 654321 }, "live token fields must not be stripped");
+  assert.equal(largePayloadResponse.body?.data?.samples?.length, 300, "live response arrays above metadata caps must not be truncated");
+  const largeStats = await request("127.0.0.1", `/api/stats?tab=${encodeURIComponent(tabId)}`);
+  assert.deepEqual(largeStats.body?.data?.tokens, { input: 123456, output: 654321, total: 777777 }, "supervised token statistics must round-trip intact");
+  assert.equal(largeStats.body?.data?.samples?.length, 300, "supervised statistics samples must remain complete");
+  const largeTranscript = await request("127.0.0.1", `/api/messages?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 10_000 });
+  assert.equal(largeTranscript.body?.data?.messages?.at(-1)?.content?.[0]?.text, expectedLargeRpcText, "authoritative transcript must preserve the large multibyte assistant output");
+
+  // Project-local shell and Python discovery paths use a version-2 config without replacing custom runners.
+  const searchToolsDir = path.join(cwd, "runner-tools");
+  const searchNestedDir = path.join(cwd, "runner-nested", "scripts");
+  const searchBuiltInDir = path.join(cwd, "scripts");
+  const staleSearchDir = path.join(cwd, "stale-runner-tools");
+  await Promise.all([
+    mkdir(path.join(searchToolsDir, "deep"), { recursive: true }),
+    mkdir(searchNestedDir, { recursive: true }),
+    mkdir(searchBuiltInDir, { recursive: true }),
+    mkdir(staleSearchDir, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(path.join(searchToolsDir, "alpha.sh"), "#!/usr/bin/env bash\nprintf 'configured alpha cwd=%s\\n' \"$PWD\"\n"),
+    writeFile(path.join(searchToolsDir, "beta.bash"), "#!/usr/bin/env bash\nprintf 'configured beta\\n'\n"),
+    writeFile(path.join(searchToolsDir, "gamma.zsh"), "#!/usr/bin/env zsh\nprintf 'configured gamma\\n'\n"),
+    writeFile(path.join(searchToolsDir, "delta.fish"), "#!/usr/bin/env fish\nprintf 'configured delta\\n'\n"),
+    writeFile(path.join(searchToolsDir, "shebang-run"), "#!/bin/sh\nprintf 'configured shebang\\n'\n"),
+    writeFile(path.join(searchToolsDir, "ignored.txt"), "#!/bin/sh\nprintf 'not detected by existing extensionless semantics\\n'\n"),
+    writeFile(path.join(searchToolsDir, "python-tool.py"), "import os\nprint(f'configured python cwd={os.getcwd()}')\n"),
+    writeFile(path.join(searchToolsDir, "python-shebang"), "#!/usr/bin/env python3\nprint('configured python shebang')\n"),
+    writeFile(path.join(searchToolsDir, "ignored-python.txt"), "#!/usr/bin/env python3\nprint('unsupported Python filename')\n"),
+    writeFile(path.join(searchToolsDir, "deep", "recursive.sh"), "#!/usr/bin/env bash\nprintf 'not recursive\\n'\n"),
+    writeFile(path.join(searchToolsDir, "deep", "recursive.py"), "print('not recursive')\n"),
+    writeFile(path.join(searchNestedDir, "nested.sh"), "#!/usr/bin/env bash\nprintf 'configured nested\\n'\n"),
+    writeFile(path.join(searchBuiltInDir, "shared.sh"), "#!/usr/bin/env bash\nprintf 'built-in and configured once\\n'\n"),
+    writeFile(path.join(cwd, "root-search.sh"), "#!/usr/bin/env bash\nprintf 'configured root\\n'\n"),
+    writeFile(path.join(cwd, "root-search.py"), "print('configured root python')\n"),
+    writeFile(path.join(staleSearchDir, "stale.sh"), "#!/usr/bin/env bash\nprintf 'stale\\n'\n"),
+  ]);
+
   // Custom app runners: save failures must be explicit, saved runners must be runnable,
   // and stale saved runners must explain why they are not shown in the Run menu.
   await writeFile(path.join(cwd, "custom-runner.mjs"), "console.log('custom runner ok')\n");
@@ -1457,6 +1608,177 @@ try {
   assert.equal(customConfigRunner?.available, true, "saved custom runner config should mark runnable entries available");
   const customRunner = savedCustomRunner.body?.data?.runners?.find((runner) => runner.custom === true && runner.label === "Custom node");
   assert.ok(customRunner?.id, "saved available custom runner should appear in detected app runners");
+
+  const savedSearchPaths = await request("127.0.0.1", "/api/app-runner-config", {
+    method: "POST",
+    body: { tab: tabId, searchPaths: ["./runner-tools", "runner-nested/scripts", "scripts", ".", "stale-runner-tools"] },
+    timeoutMs: 10_000,
+  });
+  assert.equal(savedSearchPaths.status, 200, `saving project discovery paths should succeed: ${savedSearchPaths.body?.error || ""}`);
+  const expectedSearchPaths = ["runner-tools", "runner-nested/scripts", "scripts", ".", "stale-runner-tools"];
+  assert.deepEqual(savedSearchPaths.body?.data?.customRunnerConfig?.searchPaths, expectedSearchPaths, "search paths should be slash-normalized while preserving user order");
+  assert.equal(savedSearchPaths.body?.data?.customRunnerConfig?.version, 2, "search-path saves should expose the version-2 config contract");
+  assert.ok(savedSearchPaths.body?.data?.customRunnerConfig?.runners?.some((runner) => runner.label === "Custom node"), "search-path saves must preserve custom runners");
+  const persistedSearchConfig = JSON.parse(await readFile(path.join(cwd, ".pi-webui-runners.json"), "utf8"));
+  assert.equal(persistedSearchConfig.version, 2, "search-path saves should write version 2");
+  assert.deepEqual(persistedSearchConfig.searchPaths, expectedSearchPaths, "version-2 config should persist normalized search paths");
+  assert.ok(persistedSearchConfig.runners.some((runner) => runner.label === "Custom node"), "version-2 config should retain existing custom runners");
+
+  const commandAvailable = (command) => spawnSync(command, ["--version"], { encoding: "utf8" }).status === 0;
+  const availableShells = new Set(["bash", "zsh", "fish"].filter(commandAvailable));
+  const configuredShellExpectations = [
+    ["runner-tools/alpha.sh", "bash"],
+    ["runner-tools/beta.bash", "bash"],
+    ["runner-tools/gamma.zsh", "zsh"],
+    ["runner-tools/delta.fish", "fish"],
+    ["runner-tools/shebang-run", "bash"],
+    ["runner-nested/scripts/nested.sh", "bash"],
+    ["scripts/shared.sh", "bash"],
+    ["root-search.sh", "bash"],
+  ];
+  const detectedSearchRunners = savedSearchPaths.body?.data?.runners || [];
+  for (const [projectFile, shell] of configuredShellExpectations) {
+    const candidate = detectedSearchRunners.find((runner) => runner.kind === "shell" && runner.projectFile === projectFile);
+    if (availableShells.has(shell)) {
+      assert.equal(candidate?.command, shell, `${projectFile} should be detected with its supported ${shell} interpreter`);
+      if (projectFile.startsWith("runner-")) assert.equal(candidate?.cwd, cwd, `${projectFile} should run from the project root`);
+    } else {
+      assert.equal(candidate, undefined, `${projectFile} should not be offered when ${shell} is unavailable`);
+    }
+  }
+  assert.equal(detectedSearchRunners.filter((runner) => runner.kind === "shell" && runner.projectFile === "scripts/shared.sh").length, availableShells.has("bash") ? 1 : 0, "configured paths overlapping built-in directories must not duplicate candidates");
+  assert.equal(detectedSearchRunners.some((runner) => runner.projectFile === "runner-tools/deep/recursive.sh"), false, "configured discovery must not recurse into child directories");
+  assert.equal(detectedSearchRunners.some((runner) => runner.projectFile === "runner-tools/ignored.txt"), false, "configured discovery must retain existing extensionless shell semantics");
+
+  const uvAvailable = commandAvailable("uv");
+  const pythonCommand = commandAvailable("python3") ? "python3" : commandAvailable("python") ? "python" : "";
+  for (const projectFile of ["runner-tools/python-tool.py", "runner-tools/python-shebang", "root-search.py"]) {
+    const candidates = detectedSearchRunners.filter((runner) => runner.kind === "python" && runner.projectFile === projectFile);
+    assert.equal(candidates.some((runner) => runner.command === "uv" && runner.args?.[0] === "run" && runner.args?.[1] === projectFile), uvAvailable, `${projectFile} should expose uv run when uv is available`);
+    assert.equal(candidates.some((runner) => runner.command === pythonCommand && runner.args?.[0] === projectFile), Boolean(pythonCommand), `${projectFile} should expose the available Python interpreter`);
+    assert.equal(candidates.length, Number(uvAvailable) + Number(Boolean(pythonCommand)), `${projectFile} should expose every applicable Python runtime once`);
+    for (const candidate of candidates) assert.equal(candidate.cwd, cwd, `${projectFile} should run from the project root`);
+  }
+  assert.equal(detectedSearchRunners.some((runner) => runner.projectFile === "runner-tools/deep/recursive.py"), false, "configured Python discovery must not recurse into child directories");
+  assert.equal(detectedSearchRunners.some((runner) => runner.projectFile === "runner-tools/ignored-python.txt"), false, "Python shebang detection must remain limited to extensionless files");
+
+  if (pythonCommand) {
+    const pythonRunner = detectedSearchRunners.find((runner) => runner.kind === "python" && runner.command === pythonCommand && runner.projectFile === "runner-tools/python-tool.py");
+    let pythonRunState = await request("127.0.0.1", "/api/app-runner", {
+      method: "POST",
+      body: { tab: tabId, runnerId: pythonRunner?.id },
+      timeoutMs: 10_000,
+    });
+    assert.equal(pythonRunState.status, 200, `configured Python runner should start: ${pythonRunState.body?.error || ""}`);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (pythonRunState.body?.data?.activeRun?.status && pythonRunState.body.data.activeRun.status !== "running") break;
+      await delay(100);
+      pythonRunState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 5_000 });
+    }
+    assert.equal(pythonRunState.body?.data?.activeRun?.status, "done", "configured Python runner should complete");
+    assert.match((pythonRunState.body?.data?.activeRun?.lines || []).join("\n"), new RegExp(`configured python cwd=${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "configured Python runners should execute at the project root");
+    await request("127.0.0.1", "/api/app-runner/clear", { method: "POST", body: { tab: tabId } });
+  }
+
+  const configBeforeRejectedSearchPathSave = await readFile(path.join(cwd, ".pi-webui-runners.json"), "utf8");
+  for (const [searchPaths, expectation] of [
+    ["runner-tools", /searchPaths must be an array/i],
+    [["runner-tools", "runner-tools"], /Duplicate search path/i],
+    [["../outside"], /cannot contain . or \.\. segments/i],
+    [[path.join(cwd, "runner-tools")], /must be relative/i],
+    [["C:\\runner-tools"], /must be relative/i],
+    [["runner-tools\0bad"], /null bytes/i],
+    [["missing-runner-tools"], /does not exist/i],
+    [["custom-runner.mjs"], /not a directory/i],
+    [[...Array.from({ length: 25 }, (_, index) => `many-runner-paths-${index}`)], /limit reached/i],
+  ]) {
+    const rejected = await request("127.0.0.1", "/api/app-runner-config", {
+      method: "POST",
+      body: { tab: tabId, searchPaths },
+    });
+    assert.equal(rejected.status, 400, `invalid search path mutation should fail atomically: ${JSON.stringify(searchPaths)}`);
+    assert.match(String(rejected.body?.error || ""), expectation);
+    assert.equal(await readFile(path.join(cwd, ".pi-webui-runners.json"), "utf8"), configBeforeRejectedSearchPathSave, "a rejected search-path mutation must not change the config file");
+  }
+
+  let symlinkSearchPathAvailable = false;
+  const escapedSearchRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-runner-search-escape-"));
+  try {
+    await writeFile(path.join(escapedSearchRoot, "escaped.sh"), "#!/usr/bin/env bash\nprintf 'escaped\\n'\n");
+    await symlink(escapedSearchRoot, path.join(cwd, "escaped-runner-tools"));
+    symlinkSearchPathAvailable = true;
+    const escapedSearchPath = await request("127.0.0.1", "/api/app-runner-config", {
+      method: "POST",
+      body: { tab: tabId, searchPaths: ["escaped-runner-tools"] },
+    });
+    assert.equal(escapedSearchPath.status, 400, "a configured directory symlink escaping the project root must be rejected");
+    assert.match(String(escapedSearchPath.body?.error || ""), /outside the project root/i);
+    assert.equal(await readFile(path.join(cwd, ".pi-webui-runners.json"), "utf8"), configBeforeRejectedSearchPathSave, "an escaped symlink mutation must not change the config file");
+    await symlink(path.join(escapedSearchRoot, "escaped.sh"), path.join(searchToolsDir, "escaped-file.sh"));
+    const escapedDiscoveredFile = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 10_000 });
+    assert.equal(escapedDiscoveredFile.body?.data?.runners?.some((runner) => runner.projectFile === "runner-tools/escaped-file.sh"), false, "a discovered file symlink escaping the project root must not become a candidate");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+    console.log(`http-endpoints-harness: symlink unavailable (${error.code}); skipping app-runner search-path escape check`);
+  } finally {
+    if (symlinkSearchPathAvailable) {
+      await rm(path.join(cwd, "escaped-runner-tools"), { force: true });
+      await rm(path.join(searchToolsDir, "escaped-file.sh"), { force: true });
+    }
+    await rmWithRetry(escapedSearchRoot);
+  }
+
+  if (availableShells.has("bash")) {
+    const nestedSearchTab = await request("127.0.0.1", "/api/tabs", {
+      method: "POST",
+      body: { cwd: path.join(searchToolsDir, "deep"), title: "search-path-nested" },
+    });
+    assert.equal(nestedSearchTab.status, 201, `nested app-runner tab should open: ${nestedSearchTab.body?.error || ""}`);
+    const nestedSearchTabId = nestedSearchTab.body?.data?.tab?.id;
+    try {
+      const nestedSearchRunners = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(nestedSearchTabId)}`, { timeoutMs: 10_000 });
+      const nestedAlpha = nestedSearchRunners.body?.data?.runners?.find((runner) => runner.kind === "shell" && runner.projectFile === "runner-tools/alpha.sh");
+      assert.equal(nestedAlpha?.cwd, cwd, "configured candidates from a nested tab must retain the project-root cwd");
+      const nestedSearchStart = await request("127.0.0.1", "/api/app-runner", {
+        method: "POST",
+        body: { tab: nestedSearchTabId, runnerId: nestedAlpha?.id },
+        timeoutMs: 10_000,
+      });
+      assert.equal(nestedSearchStart.status, 200, `configured shell runner should start from a nested tab: ${nestedSearchStart.body?.error || ""}`);
+      let nestedSearchState = nestedSearchStart;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        if (nestedSearchState.body?.data?.activeRun?.status && nestedSearchState.body.data.activeRun.status !== "running") break;
+        await delay(100);
+        nestedSearchState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(nestedSearchTabId)}`, { timeoutMs: 5_000 });
+      }
+      assert.equal(nestedSearchState.body?.data?.activeRun?.status, "done", "configured shell runner should complete");
+      assert.match((nestedSearchState.body?.data?.activeRun?.lines || []).join("\n"), new RegExp(`configured alpha cwd=${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "configured shell runners should execute at the project root");
+    } finally {
+      if (nestedSearchTabId) await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [nestedSearchTabId] }, timeoutMs: 10_000 });
+    }
+  }
+
+  await rmWithRetry(staleSearchDir);
+  const staleSearchPaths = await request("127.0.0.1", "/api/app-runner-config", { timeoutMs: 10_000 });
+  assert.deepEqual(staleSearchPaths.body?.data?.searchPaths, expectedSearchPaths, "stale on-disk search paths should remain visible so users can remove them");
+  assert.ok(staleSearchPaths.body?.data?.diagnostics?.some((diagnostic) => diagnostic.path === "stale-runner-tools" && /does not exist/i.test(diagnostic.message)), "stale configured paths should surface a diagnostic");
+  assert.equal(staleSearchPaths.body?.data?.runners?.some((runner) => runner.projectFile === "stale-runner-tools/stale.sh"), false, "stale configured paths must not be scanned");
+
+  const temporaryCustomRunner = await request("127.0.0.1", "/api/app-runner-config", {
+    method: "POST",
+    body: { tab: tabId, runner: { label: "Temporary search-path custom", command: process.execPath, path: "custom-runner.mjs" } },
+    timeoutMs: 10_000,
+  });
+  assert.equal(temporaryCustomRunner.status, 200, `custom runner saves should preserve search paths: ${temporaryCustomRunner.body?.error || ""}`);
+  assert.deepEqual(temporaryCustomRunner.body?.data?.customRunnerConfig?.searchPaths, expectedSearchPaths, "custom-runner POST must preserve search paths");
+  const temporaryCustomRunnerId = temporaryCustomRunner.body?.data?.customRunnerConfig?.runners?.find((runner) => runner.label === "Temporary search-path custom")?.id;
+  const deletedTemporaryCustomRunner = await request("127.0.0.1", "/api/app-runner-config", {
+    method: "DELETE",
+    body: { tab: tabId, id: temporaryCustomRunnerId },
+    timeoutMs: 10_000,
+  });
+  assert.equal(deletedTemporaryCustomRunner.status, 200, `custom runner deletion should preserve search paths: ${deletedTemporaryCustomRunner.body?.error || ""}`);
+  assert.deepEqual(deletedTemporaryCustomRunner.body?.data?.customRunnerConfig?.searchPaths, expectedSearchPaths, "custom-runner DELETE must preserve search paths");
 
   const customRunStart = await request("127.0.0.1", "/api/app-runner", {
     method: "POST",
@@ -1650,7 +1972,8 @@ try {
   }
 
   await writeFile(path.join(cwd, ".pi-webui-runners.json"), `${JSON.stringify({
-    version: 1,
+    version: 2,
+    searchPaths: ["runner-tools", "missing-stored-runner-tools", "../malformed-runner-tools", "runner-tools"],
     runners: [{ id: "broken-custom", label: "Broken custom", command: "definitely-missing-pi-webui-runner", path: "custom-runner.mjs" }],
   }, null, 2)}\n`);
   const staleCustomRunner = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(tabId)}`, { timeoutMs: 10_000 });
@@ -1659,6 +1982,10 @@ try {
   assert.equal(brokenConfigRunner?.available, false, "unavailable saved custom runners should be flagged in config data");
   assert.match(String(brokenConfigRunner?.unavailableReason || ""), /Command is not available: definitely-missing-pi-webui-runner/);
   assert.equal(staleCustomRunner.body?.data?.runners?.some((runner) => runner.label === "Broken custom"), false, "unavailable custom runners should not appear in runnable menu data");
+  assert.deepEqual(staleCustomRunner.body?.data?.customRunnerConfig?.searchPaths, ["runner-tools", "missing-stored-runner-tools"], "stored search paths should normalize and de-duplicate malformed config data");
+  assert.ok(staleCustomRunner.body?.data?.customRunnerConfig?.diagnostics?.some((diagnostic) => diagnostic.path === "missing-stored-runner-tools" && /does not exist/i.test(diagnostic.message)), "missing stored search paths should report diagnostics");
+  assert.ok(staleCustomRunner.body?.data?.customRunnerConfig?.diagnostics?.some((diagnostic) => /Invalid search path ignored/i.test(diagnostic.message)), "malformed stored search paths should report diagnostics");
+  assert.ok(staleCustomRunner.body?.data?.customRunnerConfig?.diagnostics?.some((diagnostic) => diagnostic.path === "runner-tools" && /Duplicate search path/i.test(diagnostic.message)), "duplicate stored search paths should report diagnostics");
 
   // Native slash command routed through the adapter (/copy → get_last_assistant_text).
   const copy = await request("127.0.0.1", "/api/prompt", {
@@ -1899,6 +2226,13 @@ try {
   assert.equal(blockedSettings.status, 409, "settings changes should be blocked while Natural Conversation is active");
   assert.match(String(blockedSettings.body?.error || ""), /settings changes are blocked/);
 
+  const blockedWorkflowPolicySave = await request("127.0.0.1", "/api/workflow-policy", {
+    method: "POST",
+    body: { policy: workflowPolicyToSave, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
+  });
+  assert.equal(blockedWorkflowPolicySave.status, 409, "workflow policy changes should be blocked while Natural Conversation is active");
+  assert.match(String(blockedWorkflowPolicySave.body?.error || ""), /workflow policy changes are blocked/);
+
   const blockedBash = await request("127.0.0.1", "/api/bash", { method: "POST", body: { command: "echo blocked", tab: tabId } });
   assert.equal(blockedBash.status, 409, "user bash should be blocked while Natural Conversation is active");
   assert.match(String(blockedBash.body?.error || ""), /bash is blocked|Natural Conversation Mode is active/);
@@ -1972,6 +2306,15 @@ try {
   if (lan) {
     const remoteHealthBeforeAuth = await request(lan, "/api/health");
     assert.equal(remoteHealthBeforeAuth.status, 200, "LAN clients should connect without a PIN while auth is off");
+
+    const remoteWorkflowPolicyRead = await request(lan, "/api/workflow-policy");
+    assert.equal(remoteWorkflowPolicyRead.status, 403, "workflow policy reads must be localhost-only");
+
+    const remoteWorkflowPolicySave = await request(lan, "/api/workflow-policy", {
+      method: "POST",
+      body: { policy: workflowPolicyToSave, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
+    });
+    assert.equal(remoteWorkflowPolicySave.status, 403, "workflow policy saves must be localhost-only before the request body is processed");
 
     const remoteSttWithoutConsent = await request(lan, "/api/stt/transcribe", {
       method: "POST",

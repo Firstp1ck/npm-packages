@@ -65,9 +65,9 @@ try {
   assert.equal(await toolCall({ toolName: "write", input: { path: "inside.txt" } }), undefined);
   assert.match((await toolCall({ toolName: "write", input: { path: "../escape.txt" } })).reason, /outside isolated root/);
   assert.match((await toolCall({ toolName: "read", input: { path: "escape-link/secret.txt" } })).reason, /outside isolated root/);
-  for (const command of ["git status", "git -c core.sshCommand=x fetch", "git -C . fetch", "git submodule update", "git archive --remote=x HEAD"]) {
-    assert.match((await toolCall({ toolName: "bash", input: { command } })).reason, /shell access is unavailable/i, command);
-  }
+  assert.equal(await toolCall({ toolName: "bash", input: { command: "git status" } }), undefined);
+  assert.match((await toolCall({ toolName: "bash", input: { command: "npm test" } })).reason, /shell policy denied command/i);
+  assert.match((await toolCall({ toolName: "bash", input: { command: "git status && git log" } })).reason, /shell policy denied command/i);
   assert.equal(await toolCall({ toolName: "fetch_content", input: { url: "https://docs.example.com/page" } }), undefined);
   assert.match((await toolCall({ toolName: "fetch_content", input: { url: "https://evil.invalid" } })).reason, /allowlist denied/);
   assert.match((await toolCall({ toolName: "web_search", input: { query: "anything" } })).reason, /denied tool/);
@@ -115,13 +115,60 @@ return await parallel([
   assert.equal(cleanup.removed.length, 2);
   assert.equal(cleanup.preserved.length, 0);
 
-  const shellScript = parseWorkflowScript(`export const meta = { name: "shell-unavailable", description: "Shell unavailable", pi: { permissions: { write: true, shell: true } } }\nreturn await agent("inspect safely", { label: "shell-agent", tools: ["bash"] })`);
-  const shellRun = await runJavaScriptWorkflow(
-    { path: "/tmp/shell-unavailable.js", scope: "inline", sourceType: "javascript", script: shellScript }, {}, { hasUI: false },
-    { cwd: repo, state: createWorkflowStateStore(), storage, policy: { ...shellScript.meta.pi, permissions: { write: true, shell: true, network: false }, shellAllowlist: ["git"], networkAllowlist: [], verificationCommands: [] }, taskRunner: { async runTask() { throw new Error("bash must be denied before task launch"); } } },
+  const deniedShellScript = parseWorkflowScript(`export const meta = { name: "denied-shell", description: "Denied shell", pi: { permissions: { shell: true } } }\nreturn await agent("inspect safely", { label: "shell-agent", tools: ["bash"] })`);
+  let deniedShellAttempts = 0;
+  const deniedShellRun = await runJavaScriptWorkflow(
+    { path: "/tmp/denied-shell.js", scope: "inline", sourceType: "javascript", script: deniedShellScript }, {}, { hasUI: false },
+    {
+      cwd: repo, state: createWorkflowStateStore(), storage,
+      policy: { ...deniedShellScript.meta.pi, permissions: { write: false, shell: false, network: false }, shellAllowlist: [], networkAllowlist: [], verificationCommands: [] },
+      taskRunner: { async runTask() { deniedShellAttempts++; return { ok: true, output: "unreachable" }; } },
+    },
   );
-  assert.equal(shellRun.status, "failed");
-  assert.match(shellRun.error, /denied requested tool 'bash'/);
+  assert.equal(deniedShellRun.status, "failed");
+  assert.equal(deniedShellAttempts, 0, "bash must be denied before task launch when the effective shell ceiling is false");
+  assert.match(deniedShellRun.error, /denied requested tool 'bash'/);
+
+  const scopedAuthorityScript = parseWorkflowScript(`
+export const meta = { name: "scoped-authority", description: "Scoped authority", pi: { permissions: { write: true, shell: true, network: true } } }
+await phase("implementation", () => agent("inspect with git", { label: "shell-agent", tools: ["bash"] }))
+return await phase("review", () => agent("review without mutation tools", { label: "reviewer" }))
+`);
+  const scopedContexts = [];
+  const scopedRun = await runJavaScriptWorkflow(
+    { path: "/tmp/scoped-authority.js", scope: "inline", sourceType: "javascript", script: scopedAuthorityScript }, {}, { hasUI: false },
+    {
+      cwd: repo, state: createWorkflowStateStore(), storage,
+      policy: { ...scopedAuthorityScript.meta.pi, permissions: { write: true, shell: true, network: true }, shellAllowlist: ["git"], networkAllowlist: ["example.com"], verificationCommands: [] },
+      taskRunner: {
+        async runTask(task, context) {
+          scopedContexts.push({ task, context });
+          if (task.id === "shell-agent") await writeFile(path.join(context.cwd, "shell-change.txt"), "isolated\n");
+          return { ok: true, output: task.id };
+        },
+      },
+    },
+  );
+  assert.equal(scopedRun.status, "completed");
+  assert.equal(scopedContexts.length, 2);
+  const shellContext = scopedContexts.find(({ task }) => task.id === "shell-agent").context;
+  assert.deepEqual(shellContext.agentPolicy.allowedTools, ["bash"]);
+  assert.deepEqual(shellContext.agentPolicy.permissions, { write: false, shell: true, network: false });
+  assert.deepEqual(shellContext.agentPolicy.shellAllowlist, ["git"]);
+  assert.deepEqual(shellContext.agentPolicy.networkAllowlist, []);
+  assert.notEqual(shellContext.cwd, repo, "bash calls must run in isolated worktrees");
+  const reviewContext = scopedContexts.find(({ task }) => task.id === "reviewer").context;
+  assert.deepEqual(reviewContext.agentPolicy.allowedTools, ["read", "grep", "find", "ls"]);
+  assert.deepEqual(reviewContext.agentPolicy.permissions, { write: false, shell: false, network: false });
+  assert.deepEqual(reviewContext.agentPolicy.shellAllowlist, []);
+  assert.deepEqual(reviewContext.agentPolicy.networkAllowlist, []);
+  assert.equal(reviewContext.cwd, repo, "later read-only phases must not inherit mutation isolation or authority");
+  const scopedWorktrees = await listWorkflowWorktrees(await storage.runDirectory(scopedRun.runId));
+  assert.equal(scopedWorktrees.length, 1, "only the bash call receives a worktree");
+  assert.equal(scopedWorktrees[0].status, "changed");
+  await assert.rejects(() => readFile(path.join(repo, "shell-change.txt")), /ENOENT/);
+  const scopedCleanup = await cleanupWorkflowWorktrees(await storage.runDirectory(scopedRun.runId));
+  assert.equal(scopedCleanup.preserved.length, 1, "unmerged bash changes must remain isolated for explicit apply or recovery");
 
   const noRetryScript = parseWorkflowScript(`export const meta = { name: "write-no-retry", description: "Write no retry", pi: { permissions: { write: true }, retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2, jitter: 0 } } }\nreturn await agent("write once", { label: "writer", tools: ["write"] })`);
   let writeAttempts = 0;
@@ -137,6 +184,21 @@ return await parallel([
   assert.equal(writeAttempts, 1, "write actions must never be duplicated by transient retry policy");
   const noRetryCleanup = await cleanupWorkflowWorktrees(await storage.runDirectory(noRetryRun.runId));
   assert.equal(noRetryCleanup.removed.length, 1);
+
+  const shellNoRetryScript = parseWorkflowScript(`export const meta = { name: "shell-no-retry", description: "Shell no retry", pi: { permissions: { shell: true }, retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2, jitter: 0 } } }\nreturn await agent("inspect once", { label: "shell", tools: ["bash"] })`);
+  let shellAttempts = 0;
+  const shellNoRetryRun = await runJavaScriptWorkflow(
+    { path: "/tmp/shell-no-retry.js", scope: "inline", sourceType: "javascript", script: shellNoRetryScript }, {}, { hasUI: false },
+    {
+      cwd: repo, state: createWorkflowStateStore(), storage,
+      policy: { ...shellNoRetryScript.meta.pi, permissions: { write: false, shell: true, network: false }, shellAllowlist: ["git"], networkAllowlist: [], verificationCommands: [] },
+      taskRunner: { async runTask() { shellAttempts++; return { ok: false, output: "", error: "503 temporary overload" }; } },
+    },
+  );
+  assert.equal(shellNoRetryRun.status, "failed");
+  assert.equal(shellAttempts, 1, "bash actions must never be duplicated by transient retry policy");
+  const shellNoRetryCleanup = await cleanupWorkflowWorktrees(await storage.runDirectory(shellNoRetryRun.runId));
+  assert.equal(shellNoRetryCleanup.removed.length, 1);
 
   const cancelScript = parseWorkflowScript(`export const meta = { name: "write-cancel", description: "Write cancel", pi: { permissions: { write: true } } }\nreturn await agent("write then wait", { label: "cancel-writer", tools: ["write"] })`);
   const cancelController = new AbortController();

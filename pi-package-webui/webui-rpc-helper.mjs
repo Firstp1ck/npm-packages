@@ -22,6 +22,19 @@ const SUBAGENT_RPC_READY_EVENT = "subagents:rpc:v1:ready";
 const SUBAGENT_RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
 const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
 const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
+const WORKFLOW_SUBAGENTS_EVENT = "firstpick:workflow-subagents:v1";
+const WORKFLOW_SUBAGENTS_VERSION = 1;
+const WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS = {
+  runs: 32,
+  agentsPerRun: 32,
+  runIdentifierLength: 160,
+  agentIdentifierLength: 240,
+  nameLength: 160,
+  activityLength: 80,
+  modelLength: 240,
+  recentOutputLines: 8,
+  recentOutputLineLength: 500,
+};
 const SUBAGENT_STATUS_POLL_MS = 1500;
 const SUBAGENT_STATUS_RPC_TIMEOUT_MS = 900;
 const SUBAGENT_OUTPUT_LINE_LIMIT = 120;
@@ -255,6 +268,76 @@ function subagentOutputLines(value) {
   return (Array.isArray(value) ? value : [])
     .slice(-SUBAGENT_OUTPUT_LINE_LIMIT)
     .map((line) => String(line ?? "").replace(/\r/g, "").slice(0, SUBAGENT_OUTPUT_LINE_LENGTH));
+}
+
+function workflowSubagentText(value, maxLength) {
+  return typeof value === "string" ? value.slice(0, maxLength).replace(/\r/g, "") : "";
+}
+
+function workflowSubagentIdentifier(value, maxLength) {
+  if (typeof value !== "string" || !value.trim() || value.length > maxLength) return "";
+  return value;
+}
+
+function workflowSubagentTimestamp(value) {
+  if (typeof value !== "string" || value.length > 128) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function workflowSubagentRun(value, updatedAt) {
+  if (!value || typeof value !== "object" || value.source !== "workflow") return undefined;
+  const id = workflowSubagentIdentifier(value.id, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.runIdentifierLength);
+  const name = workflowSubagentText(value.name, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.nameLength).trim();
+  const startedAt = workflowSubagentTimestamp(value.startedAt);
+  if (!id || !name || startedAt === undefined || typeof value.status !== "string") return undefined;
+
+  const agents = [];
+  const agentIds = new Set();
+  for (const [fallbackIndex, agent] of (Array.isArray(value.agents) ? value.agents : []).slice(0, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.agentsPerRun).entries()) {
+    if (!agent || typeof agent !== "object" || agent.status !== "running") continue;
+    const agentId = workflowSubagentIdentifier(agent.id, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.agentIdentifierLength);
+    const agentName = workflowSubagentText(agent.name, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.nameLength).trim();
+    if (!agentId || !agentName || agentIds.has(agentId)) continue;
+    agentIds.add(agentId);
+    const recentOutput = (Array.isArray(agent.recentOutput) ? agent.recentOutput : [])
+      .slice(-WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.recentOutputLines)
+      .flatMap((line) => typeof line === "string"
+        ? [workflowSubagentText(line, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.recentOutputLineLength)]
+        : []);
+    agents.push({
+      id: agentId,
+      name: agentName,
+      status: "running",
+      index: Number.isInteger(agent.index) && agent.index >= 0 ? agent.index : fallbackIndex,
+      activityState: workflowSubagentText(agent.activityState, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.activityLength).trim() || undefined,
+      model: workflowSubagentText(agent.model, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.modelLength).trim() || undefined,
+      recentOutput,
+      nested: false,
+    });
+  }
+
+  return {
+    id,
+    source: "workflow",
+    name,
+    mode: agents.length > 1 ? "parallel" : "single",
+    status: "running",
+    startedAt,
+    updatedAt,
+    agents,
+  };
+}
+
+function workflowSubagentSnapshot(value) {
+  if (!value || typeof value !== "object" || value.version !== WORKFLOW_SUBAGENTS_VERSION || !Array.isArray(value.runs)) return undefined;
+  const updatedAt = workflowSubagentTimestamp(value.updatedAt) || Date.now();
+  const runs = new Map();
+  for (const candidate of value.runs.slice(0, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.runs)) {
+    const run = workflowSubagentRun(candidate, updatedAt);
+    if (run) runs.set(run.id, run);
+  }
+  return runs;
 }
 
 function subagentRecentTools(value) {
@@ -556,10 +639,11 @@ export default function webuiRpcHelper(pi) {
   let lastPublishedSubagentSignature = "";
   const asyncSubagentRuns = new Map();
   const foregroundSubagentRuns = new Map();
+  const workflowSubagentRuns = new Map();
   const subagentGates = new Map();
 
   function publicSubagentRuns() {
-    return [...foregroundSubagentRuns.values(), ...asyncSubagentRuns.values()]
+    const ordinaryRuns = [...foregroundSubagentRuns.values(), ...asyncSubagentRuns.values()]
       .map((run) => ({
         id: subagentText(run.id, 160),
         source: run.source === "foreground" ? "foreground" : "async",
@@ -580,7 +664,28 @@ export default function webuiRpcHelper(pi) {
             thinking: subagentThinking(agent.thinking) || subagentThinkingFromModel(agent.model) || undefined,
             nested: agent.nested === true,
           })),
-      }))
+      }));
+    const workflowRuns = [...workflowSubagentRuns.values()]
+      .map((run) => ({
+        id: run.id,
+        source: "workflow",
+        name: run.name,
+        mode: subagentMode(run.mode),
+        status: "running",
+        startedAt: run.startedAt,
+        agents: run.agents.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          status: "running",
+          index: agent.index,
+          activityState: agent.activityState,
+          model: agent.model,
+          // Workflow snapshots do not publish thinking metadata, so unknown must remain unknown.
+          thinking: undefined,
+          nested: false,
+        })),
+      }));
+    return [...ordinaryRuns, ...workflowRuns]
       .filter((run) => run.id && run.agents.length > 0)
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
@@ -669,6 +774,39 @@ export default function webuiRpcHelper(pi) {
     return { run, agent };
   }
 
+  function findWorkflowSubagent(runId, agentId) {
+    const run = workflowSubagentRuns.get(runId);
+    if (!run) return undefined;
+    const agent = run.agents.find((candidate) => candidate.id === agentId);
+    if (!agent) throw new Error(`Running subagent not found: ${agentId}`);
+    return { run, agent };
+  }
+
+  function workflowSubagentOutputSnapshot(run, agent) {
+    return {
+      version: 1,
+      runId: run.id,
+      source: "workflow",
+      mode: subagentMode(run.mode),
+      startedAt: run.startedAt,
+      updatedAt: run.updatedAt,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        index: agent.index,
+        nested: false,
+        status: "running",
+        activityState: agent.activityState,
+        model: agent.model,
+        // Workflow snapshots do not carry reasoning data.
+        thinking: undefined,
+        recentTools: [],
+        recentOutput: agent.recentOutput,
+        transcript: [],
+      },
+    };
+  }
+
   function subagentAsyncDirFromStatusText(text) {
     const match = String(text || "").match(/^Dir:\s+(.+)$/m);
     const value = String(match?.[1] || "").trim();
@@ -752,6 +890,13 @@ export default function webuiRpcHelper(pi) {
   }
 
   async function subagentOutputSnapshot(payload = {}) {
+    const workflowRunId = workflowSubagentIdentifier(payload.runId, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.runIdentifierLength);
+    const workflowAgentId = workflowSubagentIdentifier(payload.agentId, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.agentIdentifierLength);
+    if (workflowRunId && workflowAgentId) {
+      const workflow = findWorkflowSubagent(workflowRunId, workflowAgentId);
+      if (workflow) return workflowSubagentOutputSnapshot(workflow.run, workflow.agent);
+    }
+
     const runId = subagentText(payload.runId, 160);
     const agentId = subagentText(payload.agentId, 240);
     if (!runId || !agentId) throw new Error("Subagent output requires runId and agentId");
@@ -836,6 +981,17 @@ export default function webuiRpcHelper(pi) {
   }
 
   const subagentEventUnsubscribers = [
+    pi.events.on(WORKFLOW_SUBAGENTS_EVENT, (value) => {
+      try {
+        const nextRuns = workflowSubagentSnapshot(value);
+        if (!nextRuns) return;
+        workflowSubagentRuns.clear();
+        for (const [id, run] of nextRuns) workflowSubagentRuns.set(id, run);
+        publishSubagentStatus();
+      } catch {
+        // Ignore malformed cross-extension events without disrupting current live rows.
+      }
+    }),
     pi.events.on(SUBAGENT_RPC_READY_EVENT, () => {
       subagentBridgeAvailable = true;
       publishSubagentStatus();
@@ -1078,6 +1234,7 @@ export default function webuiRpcHelper(pi) {
     subagentPollGeneration += 1;
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
+    workflowSubagentRuns.clear();
     subagentGates.clear();
     lastPublishedSubagentSignature = "";
     publishSubagentStatus();
@@ -1155,6 +1312,7 @@ export default function webuiRpcHelper(pi) {
     subagentPollTimer = null;
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
+    workflowSubagentRuns.clear();
     subagentGates.clear();
     for (const unsubscribe of subagentEventUnsubscribers) unsubscribe();
   });

@@ -33,7 +33,18 @@ assert.match(workflowModeDescription(controller.getState()), /is on/);
 controller.setRunning(true, ctx);
 assert.equal(controller.getState().phase, "running");
 assert.equal(statuses.at(-1).value, "Workflow: running");
-assert.match(controller.buildSystemPrompt("BASE"), /BASE[\s\S]*Workflow Mode[\s\S]*workflow_run/);
+const workflowPrompt = controller.buildSystemPrompt("BASE");
+assert.match(workflowPrompt, /BASE[\s\S]*Workflow Mode[\s\S]*workflow_run/);
+assert.match(workflowPrompt, /`write` and `shell` there only as workflow-wide upper bounds/,
+  "global write and shell declarations must be described as upper bounds");
+assert.match(workflowPrompt, /request `bash`, `write`, `edit`, or `apply_patch` only in the `tools` array of the exact `agent\(\)` call/,
+  "mutation tools must be requested on the exact agent call that needs them");
+assert.match(workflowPrompt, /never infer authority from phase names/,
+  "phase names must not imply authority");
+assert.match(workflowPrompt, /never create, edit, or relax `workflow-policy\.json`/,
+  "Workflow Mode must not modify permission ceilings");
+assert.match(workflowPrompt, /missing effective user\/project permission ceiling denies the broader capability/,
+  "missing ceilings must remain deny-by-default");
 controller.setRunning(false, ctx);
 assert.equal(controller.getState().phase, "armed");
 

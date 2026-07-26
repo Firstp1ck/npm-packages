@@ -30,6 +30,7 @@ const extensionHandlers = new Map();
 const registeredCommands = new Map();
 const statuses = [];
 const notifications = [];
+let subagentStatusRequestCount = 0;
 const pi = {
   events: bus,
   on(name, handler) {
@@ -111,6 +112,7 @@ const statusText = `Active async runs: 2
 
 webuiRpcHelper(pi);
 const unsubscribeRpc = bus.on("subagents:rpc:v1:request", (request) => {
+  subagentStatusRequestCount += 1;
   const text = request.params?.id === "run-a"
     ? `Run: run-a\nState: running\nMode: parallel\nDir: ${asyncRunDir}`
     : statusText;
@@ -189,8 +191,90 @@ assert.equal(payload.gates.length, 1, "helper should publish retry gate lifecycl
 assert.equal(payload.gates[0].qualifyingSuccesses, 1);
 assert.deepEqual(payload.gates[0].attempts.map((attempt) => [attempt.status, attempt.failureKind]), [["succeeded", undefined], ["failed", "transient-provider"]]);
 
+const workflowRunId = "workflow:run-42";
+const workflowAgentId = "workflow:run-42:phase:implement:call:call-0123456789abcdef";
+const workflowSnapshot = {
+  version: 1,
+  updatedAt: "2026-07-26T12:00:05.000Z",
+  runs: [{
+    id: workflowRunId,
+    source: "workflow",
+    name: "Workflow build",
+    status: "running",
+    startedAt: "2026-07-26T12:00:00.000Z",
+    agents: [{
+      id: workflowAgentId,
+      name: "Implementation worker",
+      status: "running",
+      index: 0,
+      activityState: "stdout",
+      model: "openai-codex/gpt-5.6-terra:xhigh",
+      recentOutput: ["Inspecting helper contract", "Implementing local output route"],
+    }],
+  }],
+};
+bus.emit("firstpick:workflow-subagents:v1", workflowSnapshot);
+payload = latestPayload();
+const workflowRun = payload.runs.find((run) => run.id === workflowRunId);
+assert.deepEqual(workflowRun && {
+  id: workflowRun.id,
+  source: workflowRun.source,
+  name: workflowRun.name,
+  agents: workflowRun.agents.map((agent) => [agent.id, agent.name, agent.activityState, agent.model, agent.thinking]),
+}, {
+  id: workflowRunId,
+  source: "workflow",
+  name: "Workflow build",
+  agents: [[workflowAgentId, "Implementation worker", "stdout", "openai-codex/gpt-5.6-terra:xhigh", undefined]],
+}, "workflow snapshots should preserve stable IDs, source, name, activity, model, and unknown thinking alongside ordinary rows");
+assert.ok(payload.runs.some((run) => run.id === "run-a") && payload.runs.some((run) => run.id === "run-b"), "workflow rows should coexist with ordinary async rows");
+
+const requestsBeforeWorkflowPoll = subagentStatusRequestCount;
+bus.emit("subagents:rpc:v1:ready", { version: 1 });
+await new Promise((resolve) => setTimeout(resolve, 0));
+payload = latestPayload();
+assert.ok(subagentStatusRequestCount > requestsBeforeWorkflowPoll, "ordinary pi-subagents polling should still run after workflow snapshots arrive");
+assert.ok(payload.runs.some((run) => run.id === workflowRunId), "pi-subagents polling must not reconcile away workflow rows");
+
 const helperCommand = registeredCommands.get("webui-helper");
 assert.ok(helperCommand?.handler, "Web UI helper command should be registered");
+const requestsBeforeWorkflowOutput = subagentStatusRequestCount;
+await helperCommand.handler(JSON.stringify({
+  requestId: "workflow-subagent-output-test",
+  action: "subagent-output",
+  payload: { runId: workflowRunId, agentId: workflowAgentId },
+}), ctx);
+const workflowOutputNotice = notifications.find((entry) => entry.message.startsWith("__PI_WEBUI_HELPER_RESPONSE__:")
+  && JSON.parse(entry.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length)).requestId === "workflow-subagent-output-test");
+assert.ok(workflowOutputNotice, "workflow output should return a local helper response");
+const workflowOutputResponse = JSON.parse(workflowOutputNotice.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length));
+assert.equal(workflowOutputResponse.ok, true);
+assert.equal("thinking" in workflowOutputResponse.data.agent, false, "workflow output must leave unknown thinking metadata absent rather than infer it from the model");
+assert.deepEqual(workflowOutputResponse.data, {
+  version: 1,
+  runId: workflowRunId,
+  source: "workflow",
+  mode: "single",
+  startedAt: Date.parse("2026-07-26T12:00:00.000Z"),
+  updatedAt: Date.parse("2026-07-26T12:00:05.000Z"),
+  agent: {
+    id: workflowAgentId,
+    name: "Implementation worker",
+    index: 0,
+    nested: false,
+    status: "running",
+    activityState: "stdout",
+    model: "openai-codex/gpt-5.6-terra:xhigh",
+    recentTools: [],
+    recentOutput: ["Inspecting helper contract", "Implementing local output route"],
+    transcript: [],
+  },
+}, "workflow output should use only cached bounded workflow fields");
+assert.equal(subagentStatusRequestCount, requestsBeforeWorkflowOutput, "workflow output must not request pi-subagents status or filesystem data");
+
+assert.doesNotThrow(() => bus.emit("firstpick:workflow-subagents:v1", { version: 1, runs: "not-an-array" }), "malformed workflow payloads must not crash the helper");
+payload = latestPayload();
+assert.ok(payload.runs.some((run) => run.id === workflowRunId), "malformed workflow payloads must not clear the prior valid snapshot");
 await helperCommand.handler(JSON.stringify({
   requestId: "async-subagent-output-test",
   action: "subagent-output",
@@ -358,6 +442,58 @@ for (const handler of extensionHandlers.get("tool_execution_end") || []) {
 }
 payload = latestPayload();
 assert.equal(payload.runs.some((run) => run.source === "foreground"), false, "foreground children should disappear when their tool finishes");
+
+const boundedWorkflowSnapshot = {
+  version: 1,
+  updatedAt: "2026-07-26T12:01:00.000Z",
+  runs: Array.from({ length: 33 }, (_unused, runIndex) => ({
+    id: `workflow:bounded-run-${runIndex}`,
+    source: "workflow",
+    name: `Bounded workflow ${runIndex}`,
+    status: "running",
+    startedAt: "2026-07-26T12:00:00.000Z",
+    agents: Array.from({ length: 33 }, (_agentUnused, agentIndex) => ({
+      id: `workflow:bounded-run-${runIndex}:phase:phase-${agentIndex}:call:call-${agentIndex}`,
+      name: `Bounded worker ${agentIndex}`,
+      status: "running",
+      index: agentIndex,
+      activityState: "x".repeat(200),
+      model: "m".repeat(300),
+      recentOutput: Array.from({ length: 9 }, (_lineUnused, lineIndex) => `line-${lineIndex}:${"o".repeat(700)}`),
+    })),
+  })),
+};
+assert.doesNotThrow(() => bus.emit("firstpick:workflow-subagents:v1", boundedWorkflowSnapshot), "oversized workflow snapshots should be bounded safely at ingress");
+payload = latestPayload();
+const boundedWorkflowRuns = payload.runs.filter((run) => run.source === "workflow");
+assert.equal(boundedWorkflowRuns.length, 32, "workflow ingress should cap the number of cached runs");
+assert.equal(boundedWorkflowRuns[0].agents.length, 32, "workflow ingress should cap agents per run");
+assert.equal(boundedWorkflowRuns[0].agents[0].activityState.length, 80, "workflow ingress should bound activity text");
+assert.equal(boundedWorkflowRuns[0].agents[0].model.length, 240, "workflow ingress should bound model text");
+
+const boundedWorkflowRun = boundedWorkflowRuns[0];
+const boundedWorkflowAgent = boundedWorkflowRun.agents[0];
+await helperCommand.handler(JSON.stringify({
+  requestId: "bounded-workflow-subagent-output-test",
+  action: "subagent-output",
+  payload: { runId: boundedWorkflowRun.id, agentId: boundedWorkflowAgent.id },
+}), ctx);
+const boundedWorkflowOutputNotice = notifications.find((entry) => entry.message.startsWith("__PI_WEBUI_HELPER_RESPONSE__:")
+  && JSON.parse(entry.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length)).requestId === "bounded-workflow-subagent-output-test");
+assert.ok(boundedWorkflowOutputNotice, "bounded workflow output should return a local helper response");
+const boundedWorkflowOutput = JSON.parse(boundedWorkflowOutputNotice.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length));
+assert.equal(boundedWorkflowOutput.data.agent.recentOutput.length, 8, "workflow ingress should cap cached output lines");
+assert.equal(boundedWorkflowOutput.data.agent.recentOutput[0].length, 500, "workflow ingress should cap cached output line length");
+assert.match(boundedWorkflowOutput.data.agent.recentOutput[0], /^line-1:/, "workflow ingress should retain the bounded output tail");
+
+bus.emit("firstpick:workflow-subagents:v1", {
+  version: 1,
+  updatedAt: "2026-07-26T12:02:00.000Z",
+  runs: [],
+});
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.source === "workflow"), false, "an empty workflow snapshot should clear only workflow rows");
+assert.ok(payload.runs.some((run) => run.id === "run-a") && payload.runs.some((run) => run.id === "run-b"), "workflow cleanup must preserve ordinary async rows");
 
 for (const handler of extensionHandlers.get("session_shutdown") || []) await handler({ reason: "quit" }, ctx);
 unsubscribeRpc();

@@ -69,7 +69,7 @@ Examples:
 /webui-start --name browser -- --model anthropic/claude-sonnet-4-5:high
 ```
 
-Running `/webui-start` again on the same URL restarts the server and restores currently open Web UI tabs from their session files when possible.
+Running `/webui-start` again on the same URL restarts the HTTP server. By default, supervised Pi tabs—including an active model turn—continue in their original Pi processes and reconnect to the replacement server; session-file restoration remains the fallback when no managed tabs exist.
 
 ### `/webui-status` options
 
@@ -125,6 +125,7 @@ Environment variables:
 - `PI_WEBUI_PI_BIN=/path/to/pi` selects the Pi executable when `--pi` is not passed.
 - `PI_WEBUI_REMOTE_AUTH=1` starts with Remote PIN authentication enabled.
 - `PI_WEBUI_OUTPUT_MODE=normal|compact-v1` sets the server default for newly auto-negotiated browser connections.
+- `PI_WEBUI_RPC_SUPERVISOR=0` opts out to the legacy server-owned Pi transport only when the current scope has no live managed tabs. Use explicit shutdown before disabling or downgrading; fallback startup refuses to create duplicate direct children for a live managed scope.
 - Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as Remote PIN auth, guided Git preferences, and global Tools/Skills defaults.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
@@ -132,6 +133,23 @@ Environment variables:
 - `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves `npm-cli.js` beside the active Node executable (and on `PATH`) and runs it through Node, avoiding Windows `npm.cmd` spawn failures.
 - `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
 - `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
+
+### Durable Pi session continuity
+
+Pi Web UI normally runs Pi RPC tabs under a narrow detached supervisor. Restarting only the HTTP Web UI—through `/webui-start` on the same URL, **Restart**, a successful **Update & restart**, `POST /api/restart`, or a restart-safe service-manager `SIGTERM`—preserves each managed Pi PID, tab identity, cwd, session file, running state, and active model turn. Output produced while the HTTP server is absent is replayed in supervisor order. The browser rejects duplicate or older replay records; if the bounded live buffer has a gap, it refreshes tabs, state, and the durable transcript from Pi and warns that buffered live output may be incomplete.
+
+Continuity is scoped to the resolved private Pi agent/config root and Web UI port. A replacement server must use the same root and port; changing ports creates a different scope and does not migrate active tabs. The supervisor communicates only over per-user local IPC (an owner-private Unix-domain socket on POSIX or a local named pipe on Windows) with a private random credential and incarnation fencing. Runtime state and metadata are private (`0700` directory and `0600` files on POSIX), bounded, and secret-key sanitized. Supervisor credentials, IPC paths, and raw private state are not exposed to browser APIs, server diagnostics, logs, or Pi child environments.
+
+Updates preserve already-running supervised Pi processes, so an active tab continues with the Pi/runtime code it already loaded. Newly created or explicitly reloaded tabs use the newly installed versions. Additive supervisor protocol-minor changes are compatible; a protocol-major mismatch with live children fails closed instead of replacing the supervisor or spawning duplicates. Roll forward to a compatible Web UI rather than killing a healthy supervisor that owns active work.
+
+Continuity deliberately excludes app runners: restart and update stop their process trees, and they must be started again after reconnection. It also does not preserve browser drafts, SSE connections, arbitrary extension memory, or an active request across supervisor failure, OS reboot, power loss, or machine restart. Session files can still restore durable transcript history after those failures, but they cannot resume the same in-flight model request.
+
+Operations and recovery:
+
+- Use `/webui-status detailed`, `GET /api/health`, or `GET /api/webui-status?detailed=1` for diagnostics. Public supervisor diagnostics are limited to enabled/attached state and managed-tab count; private credentials and paths are intentionally omitted. A browser warning about incomplete buffered output means authoritative tabs/state/messages were requested, not that missing live deltas were reconstructed.
+- Use the side-panel **Stop** action or localhost-only `POST /api/shutdown` for an explicit full stop. Explicit tab close terminates only that managed Pi child; explicit shutdown and `SIGINT` terminate the scope's managed Pi children. Do not use restart/update when the intent is to terminate active work.
+- Normal authenticated shutdown removes the private scope state. Do not manually delete runtime files, sockets, pipes, journals, or PID records while managed tabs may be live. For cleanup, explicitly shut down first, verify the Web UI/scope has no managed tabs, and let normal startup clean stale empty state; removing private state for a live supervisor destroys the safe attachment path and can risk duplicate processes.
+- To opt out or roll back, first perform explicit shutdown and verify no managed tabs remain. Then set `PI_WEBUI_RPC_SUPERVISOR=0` and restart, or install the previous Web UI package before restarting. Never disable, downgrade, change the continuity port, or remove private runtime state while a supervisor still owns live tabs. Re-enable by removing the opt-out and starting normally; continuity begins for newly supervised Pi tabs.
 
 ### Compact live output mode
 
@@ -173,7 +191,7 @@ Optional Natural Conversation server-side voice fallback variables:
 - Persistent context-window meter with manual compact and auto-compaction controls near the composer; side-panel thinking changes made while a tab is busy are queued for the next prompt.
 - Side-panel theme picker backed by optional `@firstpick/pi-themes-bundle` themes when loaded.
 - Per-tab cwd changes, a clickable footer cwd picker, directory creation/search in the picker, saved path fast picks, server-persisted fast picks, and restart-safe restoration of open tabs. When the optional stats and git-footer companions are loaded, clicking the footer **PI** token metric dispatches `/calibrate` in the background and refreshes the metric after the isolated calibration sample is recorded.
-- Detected app runner dropdown for the active tab cwd, including Cargo, Bun, npm/npx/pnpm, Python/uv, Go/Golang, Zig, C/C++, Docker Compose, root/dev/scripts shell scripts, and other common project runners with live output pinned at the top of the terminal. Running app runners expose line-oriented stdin in the widget for interactive scripts. Projects can add browseable custom runners in `.pi-webui-runners.json` with a command (default `./`) plus a relative path to the file to run.
+- Detected app runner dropdown for the active tab cwd, including Cargo, Bun, npm/npx/pnpm, Python/uv, Go/Golang, Zig, C/C++, Docker Compose, root/dev/scripts shell scripts, and other common project runners with live output pinned at the top of the terminal. Running app runners expose line-oriented stdin in the widget for interactive scripts. Projects can add browseable custom runners in `.pi-webui-runners.json` with a command (default `./`) plus a relative path to the file to run. The same dialog also configures project discovery paths: project-relative directories that are scanned one level deep (no subdirectories) for `.sh`, `.bash`, `.zsh`, `.fish`, and `.py` files plus extensionless files with a bash/sh, zsh, fish, or Python shebang. Python candidates use `uv run` and/or the available `python3`/`python` interpreter. Discovered scripts extend the built-in root, `dev/`, `scripts/`, and `dev/scripts/` detection and run from the resolved project root.
 - Guided Git workflow for existing repos and new repos with persistent model/reasoning preferences, review-first staging, an optional manual staged repository-review gate from `aur-review`, generated or typed commit messages, explicit push/PR confirmation, and optional PR worktrees. When the review extension is loaded/enabled, both `git add .` and accepting the current staged set send `/aur-review start --scope staged --origin guided-git` to the same tab. Only its matching approval advances to message generation. The browser and server recheck the approved domain-separated staged-content hash before message generation, commit, and PR-worktree transfer; drift, missing hashes, or hash-check errors return to Stage and require a new review. A decline returns to staging and rejects an unchanged declined staged hash until corrected content is restaged. Guided Git never stages, commits, or pushes remediation automatically. The extension remains the decision authority; direct API callers are not granted an approval by this browser workflow.
 - Browser support for Pi extension UI prompts, widgets, status updates, `/btw` side-question output widgets with optional context transfer/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications.
 - Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update --self` for Pi-only updates, while **Update Pi + Packages & Restart** first checks the selected Pi executable's `pi update --help`. It uses `pi update --all` when advertised, otherwise falls back to `pi update --self` followed by `pi update --extensions`, then updates detected Web UI/Optional Feature package roots for configured, local agent, project, global npm, and global Bun installs.
@@ -244,8 +262,23 @@ These screenshots show the v0.4.8 Web UI surfaces. Current implementations inclu
 
 ![Pi Web UI app runner selector showing detected project runners and custom runner creation](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_AppRunner_v0.4.8.png)
 
-- **What it is:** A project runner detector for common stacks plus browseable custom runners from `.pi-webui-runners.json`.
+- **What it is:** A project runner detector for common stacks plus browseable custom runners and project discovery paths from `.pi-webui-runners.json`.
 - **What you can do:** Launch dev servers, tests, builds, scripts, and custom commands from the active cwd, pass arguments, watch pinned live output, and send line-oriented stdin to interactive runners. Windows runners use ConPTY through the optional `node-pty` dependency so Bash/Node scripts receive a real TTY; set `PI_WEBUI_APP_RUNNER_PTY=off` to force the pipe fallback.
+- **Project discovery paths:** The app-runner dialog stays reachable even when nothing is detected, so you can add extra directories to scan for shell and Python scripts. Paths are project-local and relative to the resolved project root (`.` means the project root itself), are browseable from the dialog, and are saved beside custom runners.
+
+`.pi-webui-runners.json` uses a backward-compatible version 2 shape; a missing `searchPaths` array simply means no extra directories are scanned:
+
+```json
+{
+  "version": 2,
+  "searchPaths": ["tools", "ops/scripts"],
+  "runners": [
+    { "id": "start-dev", "label": "Start dev", "command": "./", "path": "dev/scripts/start.sh", "args": [] }
+  ]
+}
+```
+
+Discovery-path rules: at most 24 paths and direct children only (no recursive walk). Shell discovery supports `.sh`, `.bash`, `.zsh`, `.fish`, and matching extensionless shebang files. Python discovery supports `.py` and extensionless Python-shebang files, exposing `uv run` and/or the available `python3`/`python` interpreter. Required interpreters must be installed locally; duplicates and built-in overlaps do not duplicate menu entries. Absolute, drive/UNC, `..`, null-byte, missing, non-directory, or symlinked-outside-the-project paths are rejected. Stale or invalid stored paths surface diagnostics in the dialog instead of being scanned. `POST /api/app-runner-config` accepts either `{ "runner": { ... } }` or `{ "searchPaths": [...] }` (not both in one request) and preserves the other field.
 
 ### Queue manager
 
@@ -349,7 +382,7 @@ Useful browser endpoints exposed by the local server include:
 - `GET /api/skill-file` and localhost-only `POST /api/skill-file` for guarded `SKILL.md` editing from tracked skill tags.
 - `GET /api/sessions`, `GET /api/session-tree`, `POST /api/switch-session`, `POST /api/session-rename`, and localhost-only `POST /api/session-delete` for resume/tree/session metadata flows.
 - `GET /api/auth-providers` and localhost-only `POST /api/auth-logout` for provider-auth status and stored-credential removal.
-- `GET /api/app-runners`, `POST /api/app-runner`, `POST /api/app-runner/input`, `POST /api/app-runner/stop`, `GET/POST/DELETE /api/app-runner-config`, and `GET /api/app-runner-files` for detected and custom project runners.
+- `GET /api/app-runners`, `POST /api/app-runner`, `POST /api/app-runner/input`, `POST /api/app-runner/stop`, `GET/POST/DELETE /api/app-runner-config`, and `GET /api/app-runner-files` for detected and custom project runners. `POST /api/app-runner-config` replaces project discovery paths with `{ "searchPaths": [...] }` or saves a custom runner with `{ "runner": { ... } }`; invalid path submissions fail atomically and leave the stored configuration unchanged.
 - `GET /api/git-root`, `GET /api/git-panel`, and `GET /api/git-commit?hash=<full-hash>` for compact per-terminal-group repository discovery, local status/history snapshots, and bounded read-only commit diffs. `POST /api/git-changes/stage-all` and `POST /api/git-changes/unstage-all` complement the guarded path-level staging routes.
 - `GET /api/git-changes`, `POST /api/git-changes/pull`, `GET /api/git-branches`, `POST /api/git-branch`, and `/api/git-workflow/*` for browser Git status, diff, branch, init, commit, push, and PR helpers.
 - `POST /api/action-feedback?tab=<tabId>` for feedback on final assistant output and action cards.

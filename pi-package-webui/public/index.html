@@ -12,9 +12,66 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=83" />
+    <link rel="stylesheet" href="/styles.css?v=84" />
+    <style id="webuiBootFailureStyles">
+      .webui-boot-failure[hidden] { display: none !important; }
+      .webui-boot-failure {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: grid;
+        place-items: center;
+        overflow: auto;
+        padding: 1rem;
+        color: #cdd6f4;
+        background: rgba(17, 17, 27, 0.96);
+        font: 16px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+      .webui-boot-failure-card {
+        width: min(52rem, 100%);
+        padding: clamp(1.2rem, 4vw, 2rem);
+        border: 1px solid rgba(249, 226, 175, 0.5);
+        border-radius: 1rem;
+        background: #1e1e2e;
+        box-shadow: 0 1.2rem 4rem rgba(0, 0, 0, 0.6);
+      }
+      .webui-boot-failure-kicker { color: #f9e2af; font-size: 0.78rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+      .webui-boot-failure h1 { margin: 0.45rem 0; font-size: clamp(1.4rem, 4vw, 2rem); }
+      .webui-boot-failure p { margin: 0 0 1rem; }
+      .webui-boot-failure label { display: block; margin-bottom: 0.4rem; font-weight: 700; }
+      .webui-boot-failure textarea {
+        width: 100%;
+        min-height: min(42vh, 22rem);
+        padding: 0.8rem;
+        resize: vertical;
+        color: #cdd6f4;
+        background: #11111b;
+        border: 1px solid #45475a;
+        border-radius: 0.7rem;
+        font: 0.82rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      .webui-boot-failure-actions { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 0.8rem; }
+      .webui-boot-failure button { min-height: 44px; padding: 0.55rem 0.9rem; color: #cdd6f4; background: #313244; border: 1px solid #6c7086; border-radius: 0.7rem; cursor: pointer; font: inherit; }
+      .webui-boot-failure button:first-child { color: #11111b; background: #a6e3a1; border-color: #a6e3a1; font-weight: 800; }
+      .webui-boot-failure-status { min-height: 1.5em; margin-top: 0.65rem !important; color: #a6e3a1; }
+    </style>
   </head>
   <body>
+    <section id="webuiBootFailurePanel" class="webui-boot-failure" aria-live="assertive" hidden>
+      <div class="webui-boot-failure-card" role="alert">
+        <span class="webui-boot-failure-kicker">Frontend startup failed</span>
+        <h1>Pi Web UI could not load correctly</h1>
+        <p id="webuiBootFailureReason">The browser could not initialize the application. A bounded diagnostic report is being collected.</p>
+        <label for="webuiBootFailureReport">Copyable troubleshooting report</label>
+        <textarea id="webuiBootFailureReport" rows="14" readonly spellcheck="false">Collecting diagnostics…</textarea>
+        <div class="webui-boot-failure-actions">
+          <button id="copyWebuiBootFailureReportButton" type="button">Copy troubleshooting report</button>
+          <button id="reloadWebuiAfterBootFailureButton" type="button">Reload page</button>
+        </div>
+        <p id="webuiBootFailureCopyStatus" class="webui-boot-failure-status" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
     <button id="sidePanelExpandButton" class="side-panel-expand-button" type="button" aria-controls="sidePanel" aria-expanded="false" aria-label="Expand side panel" title="Expand side panel">
       <span class="side-panel-button-icon" aria-hidden="true">
         <span></span><span></span><span></span>
@@ -260,7 +317,7 @@
                   aria-haspopup="menu"
                   aria-expanded="false"
                   aria-controls="optionsMenu"
-                  data-tooltip="Options: command palette, Safety Guard Setup, Guided Git Setup, Git-footer Visibility, natural conversation, resume, reload, remote, name, clone, settings, export, fork, or tree."
+                  data-tooltip="Options: command palette, Workflow Permission Setup, Safety Guard Setup, Guided Git Setup, Git-footer Visibility, natural conversation, resume, reload, remote, name, clone, settings, export, fork, or tree."
                 ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="8" cy="7" r="1.6" fill="currentColor"/><circle cx="16" cy="12" r="1.6" fill="currentColor"/><circle cx="11" cy="17" r="1.6" fill="currentColor"/></svg></button>
                 <div id="optionsMenu" class="composer-publish-menu-panel composer-options-menu-panel composer-auto-height-menu-panel" role="menu" aria-label="Common Pi options">
                   <button id="optionsCommandPaletteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem">
@@ -286,6 +343,9 @@
                   </button>
                   <button id="optionsSettingsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/settings">
                     <span>Settings</span>
+                  </button>
+                  <button id="optionsWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/workflow-setup" hidden>
+                    <span>Workflow Permission Setup</span>
                   </button>
                   <button id="optionsSafetyGuardSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/safety-guard-setup" hidden>
                     <span>Safety Guard Setup</span>
@@ -1168,6 +1228,253 @@
       </form>
     </dialog>
 
-    <script type="module" src="/app.js?v=91"></script>
+    <script id="webuiBootLoader" data-app-src="/app.js?v=91">
+      (() => {
+        "use strict";
+
+        const loader = document.currentScript;
+        const panel = document.querySelector("#webuiBootFailurePanel");
+        const reasonElement = document.querySelector("#webuiBootFailureReason");
+        const reportElement = document.querySelector("#webuiBootFailureReport");
+        const copyButton = document.querySelector("#copyWebuiBootFailureReportButton");
+        const reloadButton = document.querySelector("#reloadWebuiAfterBootFailureButton");
+        const copyStatus = document.querySelector("#webuiBootFailureCopyStatus");
+        const appSource = loader?.dataset?.appSrc || "/app.js";
+        const bootStartedAt = new Date();
+        let bootSettled = false;
+        let bootFailed = false;
+        let watchdog = null;
+
+        function sanitizedUrl(value) {
+          try {
+            const url = new URL(String(value || ""), window.location.href);
+            return `${url.origin}${url.pathname}`;
+          } catch {
+            return String(value || "").split(/[?#]/, 1)[0];
+          }
+        }
+
+        function boundedSafeText(value, limit = 600) {
+          const sanitized = String(value || "Unknown startup failure")
+            .replace(/https?:\/\/[^\s)\]}]+/gi, (url) => sanitizedUrl(url))
+            .replace(/\b(Bearer\s+)[^\s]+/gi, "$1[redacted]")
+            .replace(/\b(token|password|secret|api[-_]?key)\s*[=:]\s*[^\s,;]+/gi, "$1=[redacted]");
+          return sanitized.length > limit ? `${sanitized.slice(0, limit)}…` : sanitized;
+        }
+
+        function errorText(error) {
+          if (error instanceof Error) return `${error.name}: ${error.message}`;
+          return boundedSafeText(error);
+        }
+
+        async function responseSummary(url, label, { parseHealth = false, readSource = false } = {}) {
+          const safeUrl = sanitizedUrl(url);
+          try {
+            const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+            const type = String(response.headers?.get?.("content-type") || "unknown").split(";", 1)[0];
+            let suffix = "";
+            let source = "";
+            if (parseHealth && response.ok) {
+              const data = await response.clone().json().catch(() => null);
+              const fields = [data?.ok === true ? "ok=true" : "", data?.webuiVersion ? `webuiVersion=${boundedSafeText(data.webuiVersion, 80)}` : ""].filter(Boolean);
+              if (fields.length) suffix = ` (${fields.join(", ")})`;
+            }
+            if (readSource && response.ok) source = await response.text();
+            else response.body?.cancel?.().catch?.(() => {});
+            return { ok: response.ok, status: response.status, type, safeUrl, label, line: `- ${label}: HTTP ${response.status} ${type}${suffix} — ${safeUrl}`, source };
+          } catch (error) {
+            return { ok: false, status: null, type: "unknown", safeUrl, label, line: `- ${label}: request failed (${boundedSafeText(errorText(error), 240)}) — ${safeUrl}`, source: "" };
+          }
+        }
+
+        async function startupAssetReport() {
+          const appUrl = new URL(appSource, window.location.href);
+          const app = await responseSummary(appUrl.href, "entry module", { readSource: true });
+          if (!app.source) return { probes: [app], lines: [app.line], failures: app.ok ? [] : [app] };
+
+          const imported = [];
+          const importPattern = /(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["'](\.\/[^"']+)["']/g;
+          for (const match of app.source.matchAll(importPattern)) {
+            const assetUrl = new URL(match[1], appUrl);
+            if (assetUrl.origin !== window.location.origin) continue;
+            const key = `${assetUrl.origin}${assetUrl.pathname}`;
+            if (!imported.some((item) => item.key === key)) imported.push({ key, url: assetUrl.href });
+            if (imported.length >= 24) break;
+          }
+
+          const importedProbes = await Promise.all(imported.map((item) => responseSummary(item.url, "imported module")));
+          const probes = [app, ...importedProbes];
+          return { probes, lines: probes.map((probe) => probe.line), failures: probes.filter((probe) => !probe.ok) };
+        }
+
+        function startupAssessment(health, assets, error) {
+          const missingImports = assets.failures.filter((probe) => probe.label === "imported module" && probe.status === 404);
+          const firstFailure = assets.failures[0] || (!health.ok ? health : null);
+          const originalError = boundedSafeText(errorText(error));
+          if (missingImports.length) {
+            const paths = missingImports.map((probe) => new URL(probe.safeUrl).pathname);
+            return {
+              summary: `Missing startup module${paths.length === 1 ? "" : "s"}: ${paths.join(", ")} (HTTP 404).`,
+              likelyCause: health.ok
+                ? "The backend is healthy, but the running server's static asset allowlist is out of sync with app.js."
+                : "The startup module is unavailable and the backend health check also failed; verify the server process first.",
+              failingUrls: missingImports.map((probe) => probe.safeUrl),
+            };
+          }
+          if (firstFailure) {
+            return {
+              summary: `Startup request failed: ${new URL(firstFailure.safeUrl).pathname}${firstFailure.status ? ` (HTTP ${firstFailure.status})` : ""}.`,
+              likelyCause: firstFailure.label === "backend health"
+                ? "The browser shell loaded, but the WebUI backend is unavailable or unreachable."
+                : "A startup asset is unavailable, blocked, or served with an unsuccessful response.",
+              failingUrls: [firstFailure.safeUrl],
+            };
+          }
+          if (/critical stylesheet/i.test(originalError)) {
+            return { summary: "The critical stylesheet failed to load.", likelyCause: "The stylesheet request failed even though the startup-module probes succeeded.", failingUrls: [] };
+          }
+          return {
+            summary: "All probed startup URLs currently respond successfully, but module evaluation still failed.",
+            likelyCause: "The failure may be a stale browser/PWA cache, a transient request failure, or a JavaScript evaluation error rather than a current HTTP 404.",
+            failingUrls: [],
+          };
+        }
+
+        async function troubleshootingReport(reason, error) {
+          const pageUrl = sanitizedUrl(window.location.href);
+          const health = await responseSummary(new URL("/api/health", window.location.href).href, "backend health", { parseHealth: true });
+          const assets = await startupAssetReport();
+          const assessment = startupAssessment(health, assets, error);
+          const failedProbes = [...(!health.ok ? [health] : []), ...assets.failures];
+          const failingChecks = failedProbes.length
+            ? failedProbes.map((probe) => probe.line)
+            : ["- none detected by the HTTP probes"];
+          const failingAssetCommand = assessment.failingUrls[0]
+            ? `3. Recheck the failing asset: curl -i ${assessment.failingUrls[0]}`
+            : "3. Reload once with the browser cache bypassed, then compare the new report.";
+          const text = [
+            "Pi Web UI startup failure",
+            "=========================",
+            `Time: ${new Date().toISOString()}`,
+            `Page: ${pageUrl}`,
+            `Reason: ${boundedSafeText(reason)}`,
+            `Error: ${boundedSafeText(errorText(error))}`,
+            `Document state: ${document.readyState}`,
+            `Browser: ${boundedSafeText(navigator.userAgent, 300)}`,
+            "",
+            "Diagnosis",
+            "---------",
+            `Summary: ${assessment.summary}`,
+            `Likely cause: ${assessment.likelyCause}`,
+            "Browser note: a transitive import failure may be reported as app.js; the individual probes below identify the actual failing file.",
+            "",
+            "Failing checks",
+            "--------------",
+            ...failingChecks,
+            "",
+            "All checks",
+            "----------",
+            health.line,
+            ...assets.lines,
+            "",
+            "Suggested troubleshooting",
+            "-------------------------",
+            "1. In Pi, run: /webui-status detailed",
+            `2. Check the backend: curl -i ${new URL("/api/health", pageUrl).href}`,
+            failingAssetCommand,
+            "4. For an imported-module 404, synchronize the WebUI static allowlist and PWA app shell with app.js imports.",
+            "5. After correcting files, run /webui-start again to restart the server and restore tabs.",
+            "6. Share this complete report with your troubleshooting assistant.",
+          ].join("\n");
+          return { text, summary: assessment.summary };
+        }
+
+        async function showBootFailure(reason, error) {
+          if (bootSettled || bootFailed) return;
+          bootFailed = true;
+          clearTimeout(watchdog);
+          if (reasonElement) reasonElement.textContent = boundedSafeText(reason, 300);
+          if (panel) panel.hidden = false;
+          if (reportElement) reportElement.value = "Collecting diagnostics…";
+          const report = await troubleshootingReport(reason, error).catch((diagnosticError) => ({
+            summary: boundedSafeText(reason, 300),
+            text: [
+              "Pi Web UI startup failure",
+              `Time: ${new Date().toISOString()}`,
+              `Page: ${sanitizedUrl(window.location.href)}`,
+              `Reason: ${boundedSafeText(reason)}`,
+              `Error: ${boundedSafeText(errorText(error))}`,
+              `Diagnostic collection failed: ${boundedSafeText(errorText(diagnosticError))}`,
+              "Run /webui-status detailed and share this text with your troubleshooting assistant.",
+            ].join("\n"),
+          }));
+          if (reasonElement) reasonElement.textContent = report.summary;
+          if (reportElement) reportElement.value = report.text;
+        }
+
+        function markBootReady() {
+          if (bootFailed) return;
+          bootSettled = true;
+          clearTimeout(watchdog);
+          window.removeEventListener("error", onWindowError, true);
+          window.removeEventListener("unhandledrejection", onUnhandledRejection);
+          if (panel) panel.hidden = true;
+        }
+
+        function onWindowError(event) {
+          const target = event.target;
+          const resource = target && target !== window ? target.src || target.href : "";
+          const tag = String(target?.tagName || "").toUpperCase();
+          if (resource && !["SCRIPT", "LINK"].includes(tag)) return;
+          const reason = resource ? `A critical ${tag.toLowerCase()} resource failed to load: ${sanitizedUrl(resource)}` : "A JavaScript error stopped WebUI startup.";
+          showBootFailure(reason, event.error || event.message || resource);
+        }
+
+        function onUnhandledRejection(event) {
+          showBootFailure("An unhandled promise rejection stopped WebUI startup.", event.reason);
+        }
+
+        async function copyReport() {
+          const report = reportElement?.value || "";
+          try {
+            if (!report) throw new Error("The report is empty.");
+            if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(report);
+            else {
+              reportElement.focus();
+              reportElement.select();
+              if (!document.execCommand?.("copy")) throw new Error("Clipboard API unavailable.");
+            }
+            if (copyStatus) copyStatus.textContent = "Troubleshooting report copied.";
+          } catch {
+            reportElement?.focus();
+            reportElement?.select();
+            if (copyStatus) copyStatus.textContent = "Automatic copy failed. The report is selected; copy it manually.";
+          }
+        }
+
+        window.addEventListener("error", onWindowError, true);
+        window.addEventListener("unhandledrejection", onUnhandledRejection);
+        copyButton?.addEventListener("click", copyReport);
+        reloadButton?.addEventListener("click", () => window.location.reload());
+
+        watchdog = setTimeout(() => {
+          showBootFailure(`WebUI startup did not finish within ${Math.round((Date.now() - bootStartedAt.getTime()) / 1000)} seconds.`, new Error("Startup watchdog timed out"));
+        }, 12_000);
+
+        const importApp = typeof window.__PI_WEBUI_BOOT_IMPORT__ === "function"
+          ? window.__PI_WEBUI_BOOT_IMPORT__
+          : (source) => import(source);
+        const criticalStylesheet = document.querySelector('link[rel="stylesheet"]');
+        const stylesheetReady = criticalStylesheet?.sheet
+          ? Promise.resolve()
+          : fetch(criticalStylesheet?.href || "/styles.css", { cache: "no-store", credentials: "same-origin" }).then((response) => {
+              if (!response.ok) throw new Error(`Critical stylesheet returned HTTP ${response.status}: ${sanitizedUrl(response.url || criticalStylesheet?.href)}`);
+              response.body?.cancel?.().catch?.(() => {});
+            });
+        Promise.all([importApp(appSource), stylesheetReady]).then(markBootReady).catch((error) => {
+          showBootFailure("The WebUI entry module, one of its imports, or the critical stylesheet failed to load or evaluate.", error);
+        });
+      })();
+    </script>
   </body>
 </html>

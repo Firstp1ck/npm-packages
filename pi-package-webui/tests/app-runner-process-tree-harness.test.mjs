@@ -6,6 +6,8 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { connectRpcSupervisor } from "../lib/rpc-supervisor-client.mjs";
+import { readSupervisorState, supervisorPaths } from "../lib/rpc-supervisor-state.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const serverScript = join(root, "bin", "pi-webui.mjs");
@@ -53,6 +55,8 @@ function killFixtureProcess(pid) {
 }
 
 const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-app-runner-tree-"));
+const agentDir = path.join(cwd, "agent");
+const supervisorStatePaths = await supervisorPaths({ agentDir, port });
 const settingsFile = path.join(cwd, "webui-settings.json");
 await chmod(fakePi, 0o755);
 await writeFile(path.join(cwd, "tree-child.mjs"), "setInterval(() => {}, 1000);\n");
@@ -72,27 +76,37 @@ const server = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "1
   stdio: ["ignore", "pipe", "pipe"],
   env: {
     ...process.env,
+    PI_CODING_AGENT_DIR: agentDir,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
     PI_WEBUI_APP_RUNNER_PTY: "off",
   },
   windowsHide: true,
 });
 let serverOutput = "";
+let piPid = 0;
+let supervisorPid = 0;
 let runnerPid = 0;
 let treeChildPid = 0;
 server.stdout.on("data", (chunk) => { serverOutput += String(chunk); });
 server.stderr.on("data", (chunk) => { serverOutput += String(chunk); });
 
 try {
-  await waitFor("server health", async () => {
+  const health = await waitFor("server health", async () => {
     if (server.exitCode !== null) return false;
     try {
-      const health = await request("/api/health", { timeoutMs: 1_000 });
-      return health.status === 200 && health.body?.ok === true ? health : false;
+      const response = await request("/api/health", { timeoutMs: 1_000 });
+      return response.status === 200 && response.body?.ok === true ? response : false;
     } catch {
       return false;
     }
   }, { attempts: 100, intervalMs: 120 });
+  piPid = Number(health.body?.piPid) || 0;
+  assert.ok(piPid > 0, `startup fake Pi PID should be available, output:\n${serverOutput}`);
+  if (health.body?.rpcSupervisor?.enabled === true) {
+    const state = await waitFor("isolated supervisor state", () => readSupervisorState(supervisorStatePaths));
+    supervisorPid = Number(state.pid) || 0;
+    assert.ok(supervisorPid > 0, "isolated supervisor state should identify its process");
+  }
 
   const tabsResponse = await request("/api/tabs");
   const tabId = tabsResponse.body?.data?.tabs?.[0]?.id || tabsResponse.body?.tabs?.[0]?.id;
@@ -149,6 +163,11 @@ try {
   await request("/api/shutdown", { method: "POST" }).catch(() => undefined);
   for (let attempt = 0; attempt < 50 && server.exitCode === null; attempt += 1) await delay(100);
   assert.notEqual(server.exitCode, null, "server should exit after /api/shutdown");
+  await waitFor("fake Pi teardown", () => !isProcessRunning(piPid));
+  if (supervisorPid > 0) await waitFor("supervisor teardown", () => !isProcessRunning(supervisorPid));
+  await waitFor("isolated supervisor state cleanup", async () => (await readSupervisorState(supervisorStatePaths)) === null);
+  assert.equal(isProcessRunning(piPid), false, "server teardown must not leave its fake Pi running");
+  assert.equal(isProcessRunning(supervisorPid), false, "server teardown must not leave its supervisor running");
   console.log("app-runner-process-tree-harness.test.mjs passed");
 } finally {
   if (server.exitCode === null) {
@@ -156,7 +175,22 @@ try {
     for (let attempt = 0; attempt < 20 && server.exitCode === null; attempt += 1) await delay(100);
     if (server.exitCode === null) server.kill("SIGKILL");
   }
+  const remainingSupervisor = await readSupervisorState(supervisorStatePaths).catch(() => null);
+  if (remainingSupervisor) {
+    const cleanupClient = await connectRpcSupervisor({
+      agentDir,
+      port,
+      controllerId: "app-runner-process-tree-cleanup",
+      connectTimeoutMs: 1_000,
+    }).catch(() => null);
+    if (cleanupClient) {
+      try { await cleanupClient.shutdown(); } catch {}
+      cleanupClient.close();
+    }
+  }
   killFixtureProcess(runnerPid);
   killFixtureProcess(treeChildPid);
+  killFixtureProcess(piPid);
+  killFixtureProcess(supervisorPid);
   await rm(cwd, { recursive: true, force: true });
 }

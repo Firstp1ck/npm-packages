@@ -3,6 +3,8 @@ import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, res
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
 import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
 import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
+import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
+import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -129,6 +131,7 @@ const elements = {
   optionsNameButton: $("#optionsNameButton"),
   optionsCloneButton: $("#optionsCloneButton"),
   optionsSettingsButton: $("#optionsSettingsButton"),
+  optionsWorkflowSetupButton: $("#optionsWorkflowSetupButton"),
   optionsSafetyGuardSetupButton: $("#optionsSafetyGuardSetupButton"),
   optionsGitWorkflowSetupButton: $("#optionsGitWorkflowSetupButton"),
   optionsExportButton: $("#optionsExportButton"),
@@ -399,6 +402,7 @@ let sidePanelResizeState = null;
 let fileTreeSearchTimer = null;
 let fileTreeSearchRequestSerial = 0;
 let tabActivities = new Map();
+const promptRoutingTabs = new Set();
 let tabSeenCompletionSerials = new Map();
 let streamBubble = null;
 let streamText = null;
@@ -451,6 +455,11 @@ let refreshTabsTimer = null;
 let tabsRenderFrame = null;
 let foregroundReconcileTimer = null;
 let eventSource = null;
+const supervisorEventCursors = new Map();
+const supervisorRetiredEpochs = new Map();
+const supervisorGapWarnings = new Set();
+const supervisorContinuityRefreshes = new Map();
+const supervisorEnvelopeWarnings = new Set();
 let activeDialog = null;
 let activeConfirmationResolve = null;
 let activeGitWorktreeBaseResolve = null;
@@ -496,6 +505,9 @@ const skillUsageByTab = new Map();
 let appRunnerCustomDraft = { id: "", label: "", command: "./", path: "", args: "" };
 let appRunnerCustomFeedback = { type: "", message: "" };
 let appRunnerFileBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
+let appRunnerSearchPathDraft = "";
+let appRunnerSearchPathFeedback = { type: "", message: "" };
+let appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
 let optionsMenuOpen = false;
 let availableCommands = [];
 let rawAvailableCommands = [];
@@ -547,6 +559,7 @@ let latestSubagents = null;
 let subagentsError = null;
 let subagentsLoading = false;
 let refreshSubagentsTimer = null;
+const dismissedSubagentGateKeys = new Set();
 let subagentOverlaySelection = null;
 let subagentOverlayData = null;
 let subagentOverlayError = "";
@@ -931,6 +944,7 @@ const optionalFeatureAvailability = {
 };
 const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
 const APP_RUNNER_CONTEXT_MAX_LINES = 1000;
+const APP_RUNNER_SEARCH_PATH_LIMIT = 24;
 const OPTIONAL_FEATURES = [
   {
     id: "bangCommandAutocomplete",
@@ -1100,6 +1114,7 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["aur-review", "aurReview"],
   ["workflow", "workflows"],
   ["workflow-clear", "workflows"],
+  ["workflow-setup", "workflows"],
   ["safety-guard", "safetyGuard"],
   ["safety-guard-setup", "safetyGuard"],
   ["skills", "tuiSkillsCommand"],
@@ -1117,7 +1132,7 @@ const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
 HIDDEN_COMMAND_NAMES.add("stats-webui");
 HIDDEN_COMMAND_NAMES.add("btw-status");
 HIDDEN_COMMAND_NAMES.add("btw-transfer");
-const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
+const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "workflow-setup", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
 const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_OPTIONS = ["sse", "websocket", "websocket-cached", "auto"];
 const SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS = [
@@ -8127,6 +8142,7 @@ function setTabActivity(tabId, activity = {}) {
   if (!tabId) return null;
   const previous = tabActivities.get(tabId);
   const normalized = normalizeTabActivity(activity);
+  if (promptRoutingTabs.has(tabId) && previous?.isWorking && !normalized.isWorking) return previous;
   tabActivities.set(tabId, normalized);
   if (!tabSeenCompletionSerials.has(tabId) || (previous && normalized.completionSerial < previous.completionSerial)) {
     tabSeenCompletionSerials.set(tabId, normalized.completionSerial);
@@ -8265,7 +8281,8 @@ function markTabWorkingLocally(tabId = activeTabId) {
   const tab = tabs.find((item) => item.id === tabId);
   if (!tab) return false;
   const previous = activityForTab(tab);
-  const next = normalizeTabActivity({ ...previous, status: "working", isWorking: true });
+  const timestamp = new Date().toISOString();
+  const next = normalizeTabActivity({ ...previous, status: "working", isWorking: true, lastStartedAt: timestamp, lastChangedAt: timestamp });
   tabActivities.set(tabId, next);
   if (tabActivityStateChanged(previous, next)) scheduleTabsRender();
   return true;
@@ -8282,6 +8299,7 @@ function markTabIdleLocally(tabId = activeTabId) {
 }
 
 function markTabDoneLocally(tabId = activeTabId) {
+  if (promptRoutingTabs.has(tabId)) return false;
   const tab = tabs.find((item) => item.id === tabId);
   if (!tab) return false;
   const previous = activityForTab(tab);
@@ -15809,7 +15827,13 @@ function initializeClaudeUsage() {
 }
 
 function subagentTabsWithRunningAgents() {
+  const serverNow = Number(latestSubagents?.updatedAt);
+  const now = Number.isFinite(serverNow) ? serverNow : Date.now();
   return (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [])
+    .map((tab) => {
+      const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
+      return { ...tab, gates, gateCount: gates.length };
+    })
     .filter((tab) => Number(tab?.agentCount || 0) > 0 || Number(tab?.gateCount || 0) > 0)
     .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
 }
@@ -15828,6 +15852,10 @@ function subagentTabMeta(tab) {
 function subagentRunElapsed(run) {
   const startedAt = Number(run?.startedAt);
   return Number.isFinite(startedAt) ? formatDuration(Math.max(0, Date.now() - startedAt)) : "";
+}
+
+function subagentSourceLabel(source = "") {
+  return source === "foreground" || source === "workflow" ? source : "async";
 }
 
 function subagentExecutionFacts(agent = {}) {
@@ -15971,7 +15999,7 @@ function subagentOverlayStateFacts(data = subagentOverlayData) {
   return [
     agent.status || "running",
     data?.mode || subagentOverlaySelection?.run?.mode,
-    data?.source || subagentOverlaySelection?.run?.source,
+    subagentSourceLabel(data?.source || subagentOverlaySelection?.run?.source),
     agent.nested ? "nested" : "",
     ...subagentExecutionFacts(agent),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
@@ -16225,7 +16253,7 @@ function renderSubagentTerminalView() {
   const facts = [
     view.finished ? "finished" : running ? "running" : agent.status || "finished",
     view.run?.mode,
-    view.run?.source === "foreground" ? "foreground" : "async",
+    subagentSourceLabel(view.data?.source || view.run?.source),
     agent.nested ? "nested" : "",
     ...subagentExecutionFacts(agent),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
@@ -16423,7 +16451,7 @@ function renderSubagentTerminalTab(view) {
   appendTerminalTabContent(button, {
     title: subagentTerminalViewTitle(view),
     indicator: { state: running ? "working" : "done" },
-    meta: ["Subagent", ...subagentExecutionFacts(view.data?.agent || view.agent), view.parentTitle || "parent terminal"].join(" · "),
+    meta: ["Subagent", subagentSourceLabel(view.data?.source || view.run?.source), ...subagentExecutionFacts(view.data?.agent || view.agent), view.parentTitle || "parent terminal"].join(" · "),
     subagent: true,
   });
   button.addEventListener("click", () => activateSubagentTerminalView(view.id));
@@ -16453,7 +16481,7 @@ function renderSubagentAgent(tab, run, agent) {
   const facts = [
     agent?.nested ? "nested" : "",
     run?.mode && run.mode !== "single" ? run.mode : "",
-    run?.source === "foreground" ? "foreground" : "async",
+    subagentSourceLabel(run?.source),
     ...subagentExecutionFacts(agent),
     agent?.currentTool ? `tool: ${agent.currentTool}` : "",
     elapsed ? `running ${elapsed}` : "",
@@ -16493,7 +16521,7 @@ function renderSubagentGateAttempt(attempt) {
   return row;
 }
 
-function renderSubagentGate(gate) {
+function renderSubagentGate(tab, gate) {
   const status = subagentGateStatusLabel(gate?.status);
   const card = make("section", `subagent-gate-card ${status}`);
   const header = make("div", "subagent-gate-header");
@@ -16502,7 +16530,24 @@ function renderSubagentGate(gate) {
     make("strong", undefined, `Retry gate · ${gate?.qualifyingSuccesses || 0}/${gate?.requiredSuccesses || 1}`),
     make("span", undefined, `${status}${gate?.requireDistinctProviders ? " · distinct providers" : ""}`),
   );
-  header.append(title, make("span", `subagent-gate-status ${status}`, status));
+  const actions = make("div", "subagent-gate-actions");
+  actions.append(make("span", `subagent-gate-status ${status}`, status));
+  if (subagentGateIsTerminal(gate)) {
+    const close = make("button", "subagent-gate-close", "×");
+    close.type = "button";
+    applyStyledTooltip(close, "Hide finished retry gate", { ariaLabel: "Hide finished retry gate" });
+    close.addEventListener("click", (event) => {
+      const key = subagentGateKey(tab?.tabId, gate?.id);
+      if (key) dismissedSubagentGateKeys.add(key);
+      renderSubagents();
+      if (event.detail === 0) {
+        const focusTarget = elements.subagentsBox?.querySelector(".subagent-gate-close") || document.querySelector("#sidePanelSectionToggleSubagents");
+        focusTarget?.focus({ preventScroll: true });
+      }
+    });
+    actions.append(close);
+  }
+  header.append(title, actions);
   card.append(header);
   const attempts = make("div", "subagent-gate-attempts");
   for (const attempt of Array.isArray(gate?.attempts) ? gate.attempts : []) attempts.append(renderSubagentGateAttempt(attempt));
@@ -16537,7 +16582,7 @@ function renderSubagentTabGroup(tab) {
     for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
   }
   for (const gate of (Array.isArray(tab.gates) ? tab.gates : []).slice().sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))) {
-    list.append(renderSubagentGate(gate));
+    list.append(renderSubagentGate(tab, gate));
   }
   group.append(list);
   return group;
@@ -16580,6 +16625,7 @@ async function refreshSubagents() {
   try {
     const response = await api("/api/subagents", { scoped: false });
     latestSubagents = response.data || null;
+    pruneDismissedSubagentGateKeys(latestSubagents?.tabs, dismissedSubagentGateKeys);
     syncSubagentTerminalViewsFromOverview();
     subagentsError = null;
   } catch (error) {
@@ -17225,7 +17271,10 @@ function textLines(raw) {
 }
 
 function stripTodoProgressLines(text, { streaming = false } = {}) {
-  if (!isOptionalFeatureEnabled("todoProgressWidget")) return String(text || "");
+  // Checklist text is transport for the todo-progress extension, not final
+  // assistant output. Keep filtering it when the widget UI is user-disabled;
+  // disabling the renderer does not unload the extension or its prompt policy.
+  if (!isOptionalFeatureDetected("todoProgressWidget")) return String(text || "");
   let inFence = false;
   const kept = [];
   const raw = String(text || "");
@@ -18423,6 +18472,7 @@ const APP_RUNNER_SUPPORTED_ITEMS = [
   "C/C++: CMake, cc/c++ main files",
   "Docker Compose: docker compose up",
   "Shell scripts: bash/zsh/fish in root, dev/, scripts/, dev/scripts/",
+  "Project discovery paths: shell and Python scripts directly inside directories you configure",
   "Deno, make, just, and plain Node entry files",
 ];
 const APP_RUNNER_SUPPORTED_TOOLTIP = [
@@ -18438,7 +18488,12 @@ function appRunnerMenuCanOpen() {
 }
 
 function activeAppRunnerCustomConfig() {
-  return activeAppRunnerData().customRunnerConfig || { runners: [], projectRoot: "", displayProjectRoot: "", displayConfigFile: "" };
+  return activeAppRunnerData().customRunnerConfig || { runners: [], searchPaths: [], projectRoot: "", displayProjectRoot: "", displayConfigFile: "" };
+}
+
+function activeAppRunnerSearchPaths() {
+  const config = activeAppRunnerCustomConfig();
+  return Array.isArray(config.searchPaths) ? config.searchPaths.filter((item) => typeof item === "string" && item) : [];
 }
 
 function resetAppRunnerCustomDraft({ clearFeedback = true } = {}) {
@@ -18455,6 +18510,13 @@ function appRunnerRelativeDir(filePath) {
   const normalized = String(filePath || "").replace(/\\/g, "/").replace(/^\.\/+/, "");
   const index = normalized.lastIndexOf("/");
   return index === -1 ? "" : normalized.slice(0, index);
+}
+
+function appRunnerSourceLabel(runner = {}, displayCommand = "") {
+  const projectFile = String(runner.projectFile || "").replace(/\\/g, "/");
+  if (!projectFile) return "";
+  if (String(displayCommand || "").includes(projectFile)) return "";
+  return `from ${projectFile}`;
 }
 
 function appRunnerCustomArgsText(args) {
@@ -18576,6 +18638,270 @@ async function deleteAppRunnerCustomRunner(runner = {}) {
     renderAppRunnerInfoDialog();
     addEvent(`custom app runner was not deleted: ${message}`, "error");
   }
+}
+
+function setAppRunnerSearchPathFeedback(type, message) {
+  appRunnerSearchPathFeedback = { type, message: cleanStatusText(message || "") };
+}
+
+function normalizeAppRunnerSearchPathInput(value) {
+  const raw = String(value || "").replace(/\\/g, "/").trim();
+  if (!raw) return "";
+  if (raw === "." || /^\.\/+$/.test(raw)) return ".";
+  const trimmed = raw.replace(/^\.\/+/, "").replace(/\/+$/g, "");
+  return trimmed || ".";
+}
+
+function appRunnerSearchPathLabel(searchPath) {
+  return searchPath === "." ? "Project root (.)" : searchPath;
+}
+
+async function saveAppRunnerSearchPaths(searchPaths, { successMessage = "Saved project discovery paths.", eventMessage = "saved app runner discovery paths", onSuccess = null } = {}) {
+  const tabContext = activeTabContext();
+  try {
+    const response = await api("/api/app-runner-config", { method: "POST", body: { searchPaths }, tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return false;
+    setAppRunnerData(tabContext.tabId, response.data || {});
+    setAppRunnerSearchPathFeedback("success", successMessage);
+    onSuccess?.(tabContext);
+    renderAppRunnerControls();
+    renderWidgets();
+    renderAppRunnerInfoDialog();
+    addEvent(eventMessage, "info");
+    return true;
+  } catch (error) {
+    if (!isCurrentTabContext(tabContext)) return false;
+    const message = error.message || String(error);
+    setAppRunnerSearchPathFeedback("error", `Project discovery paths were not saved: ${message}`);
+    renderAppRunnerInfoDialog();
+    addEvent(`app runner discovery paths were not saved: ${message}`, "error");
+    return false;
+  }
+}
+
+async function addAppRunnerSearchPath(container) {
+  const input = container?.querySelector("#appRunnerSearchPathInput");
+  if (input) appRunnerSearchPathDraft = input.value || "";
+  const searchPath = normalizeAppRunnerSearchPathInput(appRunnerSearchPathDraft);
+  const focusInput = () => requestAnimationFrame(() => document.querySelector("#appRunnerSearchPathInput")?.focus());
+  if (!searchPath) {
+    setAppRunnerSearchPathFeedback("warning", "Enter a project-relative directory, or . for the project root.");
+    renderAppRunnerInfoDialog();
+    focusInput();
+    addEvent("app runner discovery path is required", "warn");
+    return;
+  }
+  const current = activeAppRunnerSearchPaths();
+  if (current.includes(searchPath)) {
+    setAppRunnerSearchPathFeedback("warning", `${appRunnerSearchPathLabel(searchPath)} is already configured.`);
+    renderAppRunnerInfoDialog();
+    focusInput();
+    return;
+  }
+  if (current.length >= APP_RUNNER_SEARCH_PATH_LIMIT) {
+    setAppRunnerSearchPathFeedback("warning", `Project discovery path limit reached (${APP_RUNNER_SEARCH_PATH_LIMIT}). Remove a path first.`);
+    renderAppRunnerInfoDialog();
+    return;
+  }
+  await saveAppRunnerSearchPaths([...current, searchPath], {
+    successMessage: `Added ${appRunnerSearchPathLabel(searchPath)}. Supported shell scripts directly inside it now appear in the Run menu.`,
+    eventMessage: `added app runner discovery path ${searchPath}`,
+    onSuccess: () => {
+      appRunnerSearchPathDraft = "";
+      appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
+    },
+  });
+}
+
+async function removeAppRunnerSearchPath(searchPath) {
+  const current = activeAppRunnerSearchPaths();
+  if (!current.includes(searchPath)) return;
+  const tabContext = activeTabContext();
+  const saved = await saveAppRunnerSearchPaths(current.filter((item) => item !== searchPath), {
+    successMessage: `Removed ${appRunnerSearchPathLabel(searchPath)}.`,
+    eventMessage: `removed app runner discovery path ${searchPath}`,
+  });
+  if (!saved) return;
+  offerUndo({
+    message: `Removed project discovery path “${appRunnerSearchPathLabel(searchPath)}”.`,
+    undo: async () => {
+      const restored = await api("/api/app-runner-config", { method: "POST", body: { searchPaths: current }, tabId: tabContext.tabId });
+      if (!isCurrentTabContext(tabContext)) return;
+      setAppRunnerData(tabContext.tabId, restored.data || {});
+      setAppRunnerSearchPathFeedback("success", `Restored ${appRunnerSearchPathLabel(searchPath)}.`);
+      renderAppRunnerControls();
+      renderWidgets();
+      renderAppRunnerInfoDialog();
+    },
+    successMessage: `Restored project discovery path “${appRunnerSearchPathLabel(searchPath)}”.`,
+  });
+}
+
+async function loadAppRunnerDirectoryBrowser(relativePath = "") {
+  const tabContext = activeTabContext();
+  const path = String(relativePath || "").replace(/^\.\/+/, "").replace(/\/+$/g, "");
+  appRunnerDirectoryBrowserState = { open: true, loading: true, path, data: null, error: "" };
+  renderAppRunnerInfoDialog();
+  try {
+    const response = await api(`/api/app-runner-files?path=${encodeURIComponent(path)}`, { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    appRunnerDirectoryBrowserState = { open: true, loading: false, path, data: response.data || {}, error: "" };
+    renderAppRunnerInfoDialog();
+  } catch (error) {
+    if (!isCurrentTabContext(tabContext)) return;
+    appRunnerDirectoryBrowserState = { open: true, loading: false, path, data: null, error: error.message || String(error) };
+    renderAppRunnerInfoDialog();
+  }
+}
+
+function chooseAppRunnerSearchPath(relativeDir) {
+  const searchPath = normalizeAppRunnerSearchPathInput(relativeDir) || ".";
+  appRunnerSearchPathDraft = searchPath;
+  appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
+  setAppRunnerSearchPathFeedback("info", `Selected ${appRunnerSearchPathLabel(searchPath)}. Choose Add path to save it.`);
+  renderAppRunnerInfoDialog();
+  requestAnimationFrame(() => document.querySelector("#appRunnerSearchPathAddButton")?.focus());
+}
+
+function renderAppRunnerDirectoryBrowser() {
+  if (!appRunnerDirectoryBrowserState.open) return null;
+  const browser = make("div", "app-runner-file-browser app-runner-directory-browser");
+  if (appRunnerDirectoryBrowserState.loading) {
+    browser.append(make("div", "muted", "Loading project directories…"));
+    return browser;
+  }
+  if (appRunnerDirectoryBrowserState.error) {
+    browser.append(make("div", "path-picker-error", appRunnerDirectoryBrowserState.error));
+    return browser;
+  }
+  const data = appRunnerDirectoryBrowserState.data || {};
+  const currentDir = normalizeAppRunnerSearchPathInput(data.relativeDir || "") || ".";
+  const header = make("div", "app-runner-file-browser-header");
+  header.append(make("strong", "", data.displayRelativeDir || "."));
+  const headerActions = make("div", "app-runner-directory-browser-actions");
+  const use = make("button", "app-runner-directory-use", "Use this directory");
+  use.type = "button";
+  use.title = `Use ${appRunnerSearchPathLabel(currentDir)} as a project discovery path`;
+  use.addEventListener("click", () => chooseAppRunnerSearchPath(currentDir));
+  const close = make("button", "app-runner-file-browser-close", "Hide browser");
+  close.type = "button";
+  close.addEventListener("click", () => {
+    appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
+    renderAppRunnerInfoDialog();
+  });
+  headerActions.append(use, close);
+  header.append(headerActions);
+  browser.append(header);
+
+  const roots = make("div", "path-picker-roots app-runner-file-browser-roots");
+  if (data.parent !== null && data.parent !== undefined) roots.append(pathPickerButton("↑ Parent", data.parent || ".", () => loadAppRunnerDirectoryBrowser(data.parent || ""), "path-picker-root-button"));
+  roots.append(pathPickerButton("Project root", data.displayProjectRoot || "Project root", () => loadAppRunnerDirectoryBrowser(""), "path-picker-root-button"));
+  browser.append(roots);
+
+  const list = make("div", "path-picker-list app-runner-file-browser-list");
+  const directories = Array.isArray(data.directories) ? data.directories : [];
+  for (const directory of directories) {
+    const row = make("div", "app-runner-directory-row");
+    row.append(pathPickerButton(`${directory.name}/`, directory.path, () => loadAppRunnerDirectoryBrowser(directory.path), `path-picker-directory${directory.hidden ? " hidden-directory" : ""}`));
+    const choose = make("button", "app-runner-directory-choose", "Use");
+    choose.type = "button";
+    choose.title = `Use ${directory.path} as a project discovery path`;
+    choose.setAttribute("aria-label", `Use ${directory.path} as a project discovery path`);
+    choose.addEventListener("click", () => chooseAppRunnerSearchPath(directory.path));
+    row.append(choose);
+    list.append(row);
+  }
+  if (!directories.length) list.append(make("div", "path-picker-empty muted", "No subdirectories here. Use this directory to scan it directly."));
+  browser.append(list);
+  if (data.truncated) browser.append(make("div", "path-picker-error", "Showing the first project entries only."));
+  return browser;
+}
+
+function renderAppRunnerSearchPathSection() {
+  const config = activeAppRunnerCustomConfig();
+  const searchPaths = activeAppRunnerSearchPaths();
+  const section = make("section", "app-runner-info-section app-runner-search-path-section");
+  const titleRow = make("div", "app-runner-section-title-row");
+  titleRow.append(make("h3", "", "Project discovery paths"));
+  if (config.displayProjectRoot) titleRow.append(make("code", "", config.displayProjectRoot));
+  section.append(titleRow);
+  section.append(make("p", "muted", "Scan extra project directories for runnable shell and Python scripts. Paths are project-local, relative to the project root, saved in .pi-webui-runners.json, and scanned one level deep only (no subdirectories). Supported scripts are .sh, .bash, .zsh, .fish, and .py files plus extensionless files with a bash/sh, zsh, fish, or Python shebang. Python scripts use uv and/or python3/python when available, and all discovered scripts run from the project root."));
+
+  const list = make("div", "app-runner-custom-list app-runner-search-path-list");
+  if (!searchPaths.length) {
+    list.append(make("div", "app-runner-custom-empty muted", "No project discovery paths configured. Built-in root, dev/, scripts/, and dev/scripts/ detection still applies."));
+  } else {
+    for (const searchPath of searchPaths) {
+      const row = make("div", "app-runner-custom-item app-runner-search-path-item");
+      const details = make("div", "app-runner-custom-item-details");
+      details.append(make("code", "", appRunnerSearchPathLabel(searchPath)));
+      const diagnostic = (Array.isArray(config.diagnostics) ? config.diagnostics : []).find((item) => item?.message && item.path === searchPath);
+      if (diagnostic) {
+        row.classList.add("unavailable");
+        details.append(make("span", "app-runner-custom-warning", diagnostic.message));
+      }
+      const actions = make("div", "app-runner-custom-item-actions");
+      const remove = make("button", "danger", "Remove");
+      remove.type = "button";
+      remove.title = `Stop scanning ${appRunnerSearchPathLabel(searchPath)}`;
+      remove.setAttribute("aria-label", `Remove project discovery path ${appRunnerSearchPathLabel(searchPath)}`);
+      remove.addEventListener("click", () => removeAppRunnerSearchPath(searchPath));
+      actions.append(remove);
+      row.append(details, actions);
+      list.append(row);
+    }
+  }
+  section.append(list);
+
+  const form = make("div", "app-runner-custom-form app-runner-search-path-form");
+  const field = make("label", "app-runner-custom-field");
+  field.setAttribute("for", "appRunnerSearchPathInput");
+  field.append(make("span", "", "Project-relative directory"));
+  const input = make("input", "dialog-input");
+  input.id = "appRunnerSearchPathInput";
+  input.type = "text";
+  input.value = appRunnerSearchPathDraft;
+  input.placeholder = "tools";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", "Project-relative directory to scan for shell and Python scripts");
+  field.append(input);
+  field.append(make("small", "muted", `Use . for the project root. Up to ${APP_RUNNER_SEARCH_PATH_LIMIT} paths; absolute paths and .. segments are rejected.`));
+  input.addEventListener("input", () => { appRunnerSearchPathDraft = input.value; });
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addAppRunnerSearchPath(form);
+  });
+  const pathRow = make("div", "app-runner-custom-path-row");
+  pathRow.append(field);
+  const browse = make("button", "app-runner-custom-browse", "Browse…");
+  browse.type = "button";
+  browse.title = "Browse project directories";
+  browse.addEventListener("click", () => loadAppRunnerDirectoryBrowser(normalizeAppRunnerSearchPathInput(appRunnerSearchPathDraft) === "." ? "" : normalizeAppRunnerSearchPathInput(appRunnerSearchPathDraft)));
+  pathRow.append(browse);
+  form.append(pathRow);
+
+  const formActions = make("div", "app-runner-custom-form-actions");
+  const add = make("button", "primary", "Add path");
+  add.id = "appRunnerSearchPathAddButton";
+  add.type = "button";
+  add.addEventListener("click", () => addAppRunnerSearchPath(form));
+  const clear = make("button", "", "Reset");
+  clear.type = "button";
+  clear.addEventListener("click", () => {
+    appRunnerSearchPathDraft = "";
+    appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
+    setAppRunnerSearchPathFeedback("", "");
+    renderAppRunnerInfoDialog();
+  });
+  formActions.append(add, clear);
+  form.append(formActions);
+  if (appRunnerSearchPathFeedback.message) form.append(make("div", `app-runner-custom-feedback ${appRunnerSearchPathFeedback.type || "info"}`, appRunnerSearchPathFeedback.message));
+  const browser = renderAppRunnerDirectoryBrowser();
+  if (browser) form.append(browser);
+  section.append(form);
+  return section;
 }
 
 async function loadAppRunnerFileBrowser(relativePath = "") {
@@ -18730,9 +19056,14 @@ function renderAppRunnerControls() {
   const running = appRunnerIsRunning(activeRun);
   menu.hidden = false;
   menu.classList.toggle("has-runners", runners.length > 0);
+  menu.classList.toggle("no-runners", runners.length === 0);
   if (elements.appRunnerInfoButton) {
-    elements.appRunnerInfoButton.hidden = runners.length === 0;
-    elements.appRunnerInfoButton.disabled = runners.length === 0;
+    elements.appRunnerInfoButton.hidden = false;
+    elements.appRunnerInfoButton.disabled = false;
+    elements.appRunnerInfoButton.title = runners.length
+      ? "Explain app runners and configure project discovery paths"
+      : "No app runners detected: configure project discovery paths or custom runners";
+    elements.appRunnerInfoButton.setAttribute("aria-label", elements.appRunnerInfoButton.title);
   }
   button.disabled = running;
   button.title = running
@@ -18750,7 +19081,8 @@ function renderAppRunnerControls() {
     item.type = "button";
     item.setAttribute("role", "menuitem");
     const runnerDisplayCommand = runner.shortDisplayCommand || runner.displayCommand;
-    item.title = runner.description ? `${runnerDisplayCommand}\n${runner.description}` : runnerDisplayCommand;
+    const runnerSource = appRunnerSourceLabel(runner, runnerDisplayCommand);
+    item.title = [runnerDisplayCommand, runnerSource, runner.description].filter(Boolean).join("\n");
     item.addEventListener("click", () => runAppRunner(runner.id));
     const label = make("span", "app-runner-menu-item-label", runner.label || runnerDisplayCommand);
     const command = make("span", "app-runner-menu-item-command", runnerDisplayCommand);
@@ -18777,6 +19109,8 @@ function renderAppRunnerInfoDialog() {
         make("strong", "", runner.label || command || "runner"),
         make("code", "", command || "detected command"),
       );
+      const source = appRunnerSourceLabel(runner, command);
+      if (source) item.append(make("span", "app-runner-info-source muted", source));
       if (runner.description) item.append(make("span", "", runner.description));
       list.append(item);
     }
@@ -18794,6 +19128,7 @@ function renderAppRunnerInfoDialog() {
     "Starting a runner keeps live output pinned above the chat/terminal area.",
     "While a runner is active, the widget can send line-oriented stdin to interactive scripts.",
     "Only one app runner can be active per tab; Close/Stop terminates the process/server.",
+    "Project discovery paths are project-local, relative to the project root, and scanned one level deep only.",
   ]) howList.append(make("li", "", line));
   how.append(howList);
 
@@ -18803,7 +19138,7 @@ function renderAppRunnerInfoDialog() {
   for (const itemText of APP_RUNNER_SUPPORTED_ITEMS) supportedList.append(make("li", "", itemText));
   supported.append(supportedList);
 
-  body.append(current, renderAppRunnerCustomSection(), how, supported);
+  body.append(current, renderAppRunnerSearchPathSection(), renderAppRunnerCustomSection(), how, supported);
 }
 
 function openAppRunnerInfoDialog() {
@@ -24675,11 +25010,62 @@ const WEBUI_TOOL_RENDERERS = {
   ls: renderLsToolExecution,
 };
 
-function renderToolExecution(parent, message) {
+function renderSingleToolExecution(parent, message) {
   const tool = normalizeToolExecution(message);
   const renderer = WEBUI_TOOL_RENDERERS[tool.name] || renderGenericToolExecution;
   renderer(parent, tool);
   appendToolRawDetails(parent, tool);
+}
+
+function renderWorkflowStatusStack(parent, message) {
+  const updates = Array.isArray(message?.workflowStatusUpdates) ? message.workflowStatusUpdates : [];
+  const latest = updates.at(-1);
+  if (!latest) return;
+  const snapshot = workflowStatusSnapshot(toolResultText(toolExecutionResult(latest)));
+  const hasStructuredSnapshot = snapshot.workflow || snapshot.run || snapshot.status || snapshot.tasks;
+  const countLabel = `${updates.length} update${updates.length === 1 ? "" : "s"}`;
+  const snapshotFields = [["Workflow", snapshot.workflow], ["Run", snapshot.run], ["Status", snapshot.status], ["Tasks", snapshot.tasks]];
+  const latestLabel = hasStructuredSnapshot
+    ? `latest ${snapshotFields.filter(([, value]) => value).map(([label, value]) => `${label} ${value}`).join(", ")}`
+    : `latest ${snapshot.fallback}`;
+
+  const details = make("details", "workflow-status-stack-details");
+  details.open = !!message.isError;
+  const summary = make("summary", "workflow-status-stack-summary");
+  summary.setAttribute("aria-label", `Workflow status updates, ${countLabel}; ${latestLabel}${message.isError ? "; contains an error" : ""}`);
+  const heading = make("span", "workflow-status-stack-heading");
+  heading.append(make("span", "tool-name", "workflow_status"), make("span", "workflow-status-stack-count", countLabel));
+  if (message.isError) heading.append(make("span", "workflow-status-stack-error", "contains error"));
+  const snapshotLine = make("span", "workflow-status-stack-snapshot");
+  if (hasStructuredSnapshot) {
+    for (const [label, value] of snapshotFields) {
+      if (value) snapshotLine.append(make("span", "workflow-status-stack-field", `${label}: ${value}`));
+    }
+  } else {
+    snapshotLine.append(make("span", "workflow-status-stack-field", snapshot.fallback));
+  }
+  summary.append(heading, snapshotLine);
+
+  const members = make("div", "workflow-status-stack-members");
+  updates.forEach((update, index) => {
+    const member = make("section", `workflow-status-stack-member${update?.isError || update?.result?.isError ? " error" : ""}`);
+    const memberTitleText = [`Update ${index + 1} of ${updates.length}`, formatDate(update?.timestamp), toolExecutionStatus(update)].filter(Boolean).join(" · ");
+    const memberTitle = make("div", "workflow-status-stack-member-title", memberTitleText);
+    const memberBody = make("div", "workflow-status-stack-member-body");
+    renderSingleToolExecution(memberBody, update);
+    member.append(memberTitle, memberBody);
+    members.append(member);
+  });
+  details.append(summary, members);
+  parent.append(details);
+}
+
+function renderToolExecution(parent, message) {
+  if (message?.role === "workflowStatusStack") {
+    renderWorkflowStatusStack(parent, message);
+    return;
+  }
+  renderSingleToolExecution(parent, message);
 }
 
 function liveToolRunMessage(run) {
@@ -24990,6 +25376,9 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   } else if (message.role === "toolExecution") {
     renderToolExecution(body, message);
     bubble._toolRenderSignature = toolExecutionRenderSignature(message);
+  } else if (message.role === "workflowStatusStack") {
+    renderToolExecution(body, message);
+    if (message.isError) bubble.classList.add("error");
   } else if (message.role === "thinking") {
     const thinkingText = visibleThinkingText(message.thinking || textFromContent(message.content));
     if (thinkingOutputVisible && thinkingText) appendThinkingMarkdown(body, thinkingText);
@@ -25020,7 +25409,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   } else {
     bubble.append(header, body);
   }
-  attachMessageCopyButton(bubble, message, body);
+  if (message.role !== "workflowStatusStack") attachMessageCopyButton(bubble, message, body);
   attachMessageEditRetryButton(bubble, message, messageIndex, { streaming, transient });
   if (!streaming && !transient) renderActionFeedbackControls(bubble, message, messageIndex);
   return { bubble, body };
@@ -25050,6 +25439,21 @@ function appendOptimisticUserPrompt(message, attachmentCount = 0) {
   if (autoFollowChat || isChatNearBottom()) scrollChatToBottom({ force: true });
 }
 
+function toolExecutionMessageFromCall(displayMessage, { result = toolResultForCallId(displayMessage?.toolCallId), liveRun = liveToolRuns.get(displayMessage?.toolCallId) } = {}) {
+  return {
+    ...displayMessage,
+    role: "toolExecution",
+    title: `tool: ${displayMessage?.toolName || "unknown"}`,
+    arguments: liveRun?.arguments ?? displayMessage?.arguments,
+    result: result || liveRun?.result || null,
+    isPartial: !result && !!liveRun?.isPartial,
+    isError: !!(result?.isError || liveRun?.isError),
+    startedAt: liveRun?.startedAt || null,
+    endedAt: liveRun?.endedAt || null,
+    live: !!liveRun && !result,
+  };
+}
+
 function appendTranscriptMessage(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, reusableToolCards = null, itemKey = "" } = {}) {
   if (streaming || transient || message?.role !== "assistant") {
     return appendMessage(message, { streaming, messageIndex, transient, animateEntry, reusableToolCards, itemKey });
@@ -25061,20 +25465,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
   displayMessages.forEach((displayMessage) => {
     let transcriptMessage = displayMessage;
     if (displayMessage.role === "toolCall" && displayMessage.toolCallId) {
-      const result = toolResultForCallId(displayMessage.toolCallId);
-      const liveRun = liveToolRuns.get(displayMessage.toolCallId);
-      transcriptMessage = {
-        ...displayMessage,
-        role: "toolExecution",
-        title: `tool: ${displayMessage.toolName || "unknown"}`,
-        arguments: liveRun?.arguments ?? displayMessage.arguments,
-        result: result || liveRun?.result || null,
-        isPartial: !result && !!liveRun?.isPartial,
-        isError: !!(result?.isError || liveRun?.isError),
-        startedAt: liveRun?.startedAt || null,
-        endedAt: liveRun?.endedAt || null,
-        live: !!liveRun && !result,
-      };
+      transcriptMessage = toolExecutionMessageFromCall(displayMessage);
     }
     if (compactTranscript && transcriptMessage.role !== "assistant") return;
     if (transcriptMessage.role === "thinking" && !thinkingOutputVisible) return;
@@ -25426,6 +25817,29 @@ function compactStoredTranscriptItems() {
   return items;
 }
 
+function workflowStatusExecutionFromTranscriptItem(item, toolResults) {
+  const message = item?.message;
+  if (isCompletedWorkflowStatusExecution(message)) return message;
+  if (message?.role !== "assistant") return null;
+  const visibleMessages = assistantDisplayMessages(message)
+    .filter((displayMessage) => displayMessage.role !== "thinking" || thinkingOutputVisible);
+  if (visibleMessages.length !== 1) return null;
+  const toolCall = visibleMessages[0];
+  if (toolCall.role !== "toolCall" || toolCall.toolName !== "workflow_status" || !toolCall.toolCallId) return null;
+  const result = toolResults instanceof Map ? toolResults.get(toolCall.toolCallId) : toolResultForCallId(toolCall.toolCallId);
+  if (!result) return null;
+  return toolExecutionMessageFromCall(toolCall, { result, liveRun: liveToolRuns.get(toolCall.toolCallId) });
+}
+
+function groupWorkflowStatusTranscriptItems(items, toolResults) {
+  if (compactOutputActive()) return items;
+  const projected = items.map((item) => {
+    const execution = workflowStatusExecutionFromTranscriptItem(item, toolResults);
+    return execution ? { ...item, message: execution } : item;
+  });
+  return groupConsecutiveWorkflowStatusItems(projected);
+}
+
 function orderedTranscriptItems() {
   const items = compactOutputActive() ? compactStoredTranscriptItems() : [];
   const assistantToolCallIds = buildAssistantToolCallIdSet(latestMessages);
@@ -25446,7 +25860,8 @@ function orderedTranscriptItems() {
       items.push({ message, messageIndex: -1, transient: true, timestampMs: messageTimestampMs(message), order: liveOrder++ });
     }
   }
-  return items.sort((a, b) => a.timestampMs - b.timestampMs || a.order - b.order);
+  const ordered = items.sort((a, b) => a.timestampMs - b.timestampMs || a.order - b.order);
+  return groupWorkflowStatusTranscriptItems(ordered, toolResults);
 }
 
 /**
@@ -25550,6 +25965,8 @@ function messageStaticSignature(message) {
       contentSignature(message.result?.content),
       String(safeJsonLength(message.arguments)),
     );
+  } else if (message.role === "workflowStatusStack") {
+    for (const update of message.workflowStatusUpdates || []) sig.push(messageStaticSignature(update));
   }
   const joined = sig.join("|");
   if (cacheable) messageStaticSignatureCache.set(message, joined);
@@ -26460,6 +26877,16 @@ function renderOptionalFeatureControls() {
   );
   if (!hasNativeCommandMenu && nativeCommandMenuOpen) setNativeCommandMenuOpen(false);
 
+  const hasWorkflowSetup = isOptionalFeatureEnabled("workflows") && hasLoadedRpcCommand("workflow-setup");
+  if (elements.optionsWorkflowSetupButton) {
+    elements.optionsWorkflowSetupButton.hidden = !hasWorkflowSetup;
+    setOptionalControlState(
+      elements.optionsWorkflowSetupButton,
+      hasWorkflowSetup,
+      commandUnavailableMessage("workflow-setup"),
+    );
+  }
+
   const hasSafetyGuardSetup = isOptionalFeatureEnabled("safetyGuard") && hasAvailableCommand("safety-guard-setup");
   if (elements.optionsSafetyGuardSetupButton) {
     elements.optionsSafetyGuardSetupButton.hidden = !hasSafetyGuardSetup;
@@ -27222,7 +27649,7 @@ async function openNativeSettingsDialog() {
     autoCompact: state.autoCompactionEnabled !== false,
     steering: state.steeringMode || "one-at-a-time",
     followUp: state.followUpMode || "one-at-a-time",
-    busyBehavior,
+    busyBehavior: busyPromptBehavior,
     density: interfaceDensity,
     doneNotifications: agentDoneNotificationsEnabled,
   });
@@ -27583,6 +28010,331 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
       setNativeActionBusy(save, false);
     }
   }, "primary");
+}
+
+function normalizedWorkflowPolicyList(value) {
+  return [...new Set(String(value || "").split("\n").map((entry) => entry.trim()).filter(Boolean))].sort();
+}
+
+function parseWorkflowPolicyVerificationCommands(value) {
+  const commands = [];
+  for (const [index, line] of String(value || "").split("\n").entries()) {
+    if (!line.trim()) continue;
+    let command;
+    try {
+      command = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`Verification command line ${index + 1} is not valid JSON: ${error.message || String(error)}`);
+    }
+    if (!Array.isArray(command) || command.length === 0 || command.some((part) => typeof part !== "string" || part.length === 0)) {
+      throw new Error(`Verification command line ${index + 1} must be a non-empty JSON string argv array.`);
+    }
+    commands.push(command);
+  }
+  return commands;
+}
+
+function normalizeWorkflowPolicySuggestions(value) {
+  const empty = { shellAllowlist: [], networkAllowlist: [], verificationCommands: [] };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return empty;
+
+  const normalizeStringGroup = (group) => {
+    if (!Array.isArray(group) || group.some((item) => (
+      typeof item !== "string"
+      || !item
+      || item.trim() !== item
+      || item.includes("\n")
+      || item.includes("\r")
+    ))) return [];
+    return [...new Set(group)];
+  };
+  const normalizeVerificationGroup = (group) => {
+    if (!Array.isArray(group) || group.some((command) => (
+      !Array.isArray(command)
+      || command.length === 0
+      || command.some((part) => typeof part !== "string" || part.length === 0)
+    ))) return [];
+    return [...new Set(group.map((command) => JSON.stringify(command)))];
+  };
+
+  return {
+    shellAllowlist: normalizeStringGroup(value.shellAllowlist),
+    networkAllowlist: normalizeStringGroup(value.networkAllowlist),
+    verificationCommands: normalizeVerificationGroup(value.verificationCommands),
+  };
+}
+
+function workflowPolicyPresentSuggestionLines(textarea, kind) {
+  if (kind !== "verification") return new Set(normalizedWorkflowPolicyList(textarea.value));
+  const present = new Set();
+  for (const line of String(textarea.value || "").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const command = JSON.parse(line);
+      if (Array.isArray(command) && command.length > 0 && command.every((part) => typeof part === "string" && part.length > 0)) {
+        present.add(JSON.stringify(command));
+      }
+    } catch {
+      // Invalid manual lines remain editable and are reported by the normalized preview.
+    }
+  }
+  return present;
+}
+
+function appendWorkflowPolicySuggestion(textarea, line) {
+  const separator = textarea.value && !textarea.value.endsWith("\n") ? "\n" : "";
+  textarea.value = `${textarea.value}${separator}${line}`;
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.focus();
+}
+
+function workflowPolicySuggestionGroup(label, textarea, suggestions, kind, id) {
+  if (!suggestions.length) return null;
+  const group = make("div", "workflow-policy-suggestions");
+  group.setAttribute("role", "group");
+  const labelNode = make("span", "workflow-policy-suggestions-label", label);
+  labelNode.id = `${id}SuggestionsLabel`;
+  group.setAttribute("aria-labelledby", labelNode.id);
+  group.append(labelNode);
+
+  const buttons = suggestions.map((line) => {
+    const button = make("button", "workflow-policy-suggestion", `Add ${line}`);
+    button.type = "button";
+    button.setAttribute("aria-label", `${label}: add ${line}`);
+    button.addEventListener("click", () => appendWorkflowPolicySuggestion(textarea, line));
+    group.append(button);
+    return { button, line };
+  });
+  const sync = () => {
+    const present = workflowPolicyPresentSuggestionLines(textarea, kind);
+    for (const { button, line } of buttons) button.disabled = present.has(line);
+  };
+  textarea.addEventListener("input", sync);
+  sync();
+  return { element: group, sync };
+}
+
+function workflowPolicyTextarea(label, value, hint, id, { suggestions = [], suggestionLabel = "Suggestions", kind = "list" } = {}) {
+  const field = make("div", "native-settings-field workflow-policy-field");
+  const labelNode = make("label", "native-settings-label", label);
+  labelNode.htmlFor = id;
+  field.append(labelNode);
+  const textarea = make("textarea", "workflow-policy-textarea");
+  textarea.id = id;
+  textarea.value = value;
+  textarea.rows = 5;
+  textarea.autocomplete = "off";
+  textarea.spellcheck = false;
+  const hintNode = make("span", "native-settings-hint", hint);
+  hintNode.id = `${id}Hint`;
+  textarea.setAttribute("aria-describedby", hintNode.id);
+  const suggestionGroup = workflowPolicySuggestionGroup(suggestionLabel, textarea, suggestions, kind, id);
+  field.append(textarea);
+  if (suggestionGroup) field.append(suggestionGroup.element);
+  field.append(hintNode);
+  return { field, textarea, syncSuggestions: suggestionGroup?.sync || (() => {}) };
+}
+
+function workflowPolicyDraftSignature(controls) {
+  return JSON.stringify({
+    permissions: {
+      write: controls.write.input.checked,
+      shell: controls.shell.input.checked,
+      network: controls.network.input.checked,
+    },
+    shellAllowlist: controls.shellAllowlist.textarea.value,
+    networkAllowlist: controls.networkAllowlist.textarea.value,
+    verificationCommands: controls.verificationCommands.textarea.value,
+  });
+}
+
+function collectWorkflowPolicyFromControls(controls) {
+  return {
+    schemaVersion: 1,
+    permissions: {
+      write: controls.write.input.checked,
+      shell: controls.shell.input.checked,
+      network: controls.network.input.checked,
+    },
+    shellAllowlist: normalizedWorkflowPolicyList(controls.shellAllowlist.textarea.value),
+    networkAllowlist: normalizedWorkflowPolicyList(controls.networkAllowlist.textarea.value),
+    verificationCommands: parseWorkflowPolicyVerificationCommands(controls.verificationCommands.textarea.value),
+  };
+}
+
+function applyDeniedWorkflowPolicyControls(controls) {
+  controls.write.input.checked = false;
+  controls.shell.input.checked = false;
+  controls.network.input.checked = false;
+  controls.shellAllowlist.textarea.value = "";
+  controls.networkAllowlist.textarea.value = "";
+  controls.verificationCommands.textarea.value = "";
+}
+
+async function openNativeWorkflowSetupDialog() {
+  openNativeCommandDialog({
+    title: "/workflow-setup",
+    message: "Review and save the global workflow permission ceiling. This browser flow never starts an agent turn.",
+  });
+  renderNativeLoading("Loading workflow permission ceiling…");
+
+  let data;
+  try {
+    const response = await api("/api/workflow-policy", { scoped: false });
+    data = response.data || {};
+  } catch (error) {
+    setNativeCommandError(`Could not load workflow policy: ${error.message || String(error)}`);
+    elements.nativeCommandBody.replaceChildren();
+    return;
+  }
+
+  const deniedPolicy = {
+    schemaVersion: 1,
+    permissions: { write: false, shell: false, network: false },
+    shellAllowlist: [],
+    networkAllowlist: [],
+    verificationCommands: [],
+  };
+  const policy = data.policy || deniedPolicy;
+  const suggestions = normalizeWorkflowPolicySuggestions(data.suggestions);
+  const controls = {
+    write: nativeSettingToggle("Allow write", policy.permissions?.write === true, "Ceiling for workflow write capability; each workflow still has to request it.", { label: "global", tone: "safety" }),
+    shell: nativeSettingToggle("Allow shell", policy.permissions?.shell === true, "Ceiling for workflow shell capability; the executable allowlist is not a sandbox.", { label: "global", tone: "safety" }),
+    network: nativeSettingToggle("Allow network", policy.permissions?.network === true, "Ceiling for workflow network capability; each workflow still has to request it.", { label: "global", tone: "safety" }),
+    shellAllowlist: workflowPolicyTextarea(
+      "Shell executable allowlist",
+      Array.isArray(policy.shellAllowlist) ? policy.shellAllowlist.join("\n") : "",
+      "One executable entry per line. Entries are trimmed, deduplicated, and sorted in the preview. This is not an OS sandbox.",
+      "workflowPolicyShellAllowlist",
+      { suggestions: suggestions.shellAllowlist, suggestionLabel: "Shell executable suggestions" },
+    ),
+    networkAllowlist: workflowPolicyTextarea(
+      "Network host allowlist",
+      Array.isArray(policy.networkAllowlist) ? policy.networkAllowlist.join("\n") : "",
+      "One host entry per line. Entries are trimmed, deduplicated, and sorted in the preview.",
+      "workflowPolicyNetworkAllowlist",
+      { suggestions: suggestions.networkAllowlist, suggestionLabel: "Network host suggestions" },
+    ),
+    verificationCommands: workflowPolicyTextarea(
+      "Verification commands",
+      Array.isArray(policy.verificationCommands) ? policy.verificationCommands.map((command) => JSON.stringify(command)).join("\n") : "",
+      'One JSON argv array per line, in execution order; for example ["npm","test"]. Blank lines are ignored.',
+      "workflowPolicyVerificationCommands",
+      { suggestions: suggestions.verificationCommands, suggestionLabel: "Verification command suggestions", kind: "verification" },
+    ),
+  };
+
+  const preview = make("pre", "workflow-policy-preview");
+  preview.tabIndex = 0;
+  preview.setAttribute("aria-label", "Exact normalized workflow policy JSON preview");
+  const verificationStatus = make("p", "workflow-policy-verification-status muted");
+  verificationStatus.setAttribute("role", "status");
+  verificationStatus.setAttribute("aria-live", "polite");
+  const previewSection = make("section", "workflow-policy-review");
+  previewSection.append(make("h3", undefined, "Exact normalized JSON preview"), preview, verificationStatus);
+
+  const body = make("div", "native-settings-panel workflow-policy-panel");
+  body.append(
+    nativeSettingsNote("Authorization ceiling", "This ceiling is not blanket authority. Every workflow and agent call must still request its own capabilities, and all runtime restrictions still apply."),
+    nativeSettingsNote("Shell safety", "The shell executable allowlist limits admitted commands only; it is not an OS sandbox."),
+    nativeSettingsNote("Persistence", `${data.exists ? "Loaded" : "No file exists yet; Save is required to create"} ${data.filePath || "~/.pi/agent/workflow-policy.json"}. Browser data cannot choose another target.`),
+    nativeSettingsSection("Permission toggles", "Lists may stay populated while a permission is off, but runtime authority remains off.", [controls.write, controls.shell, controls.network], { open: true }),
+    nativeSettingsSection("Shell and network allowlists", "Enter one canonicalizable value per line.", [controls.shellAllowlist, controls.networkAllowlist], { open: true }),
+    nativeSettingsSection("Ordered verification", "Each nonblank line is one JSON argv array. Line order is preserved.", [controls.verificationCommands], { open: true }),
+    previewSection,
+  );
+  elements.nativeCommandBody.replaceChildren(body);
+  elements.nativeCommandActions.replaceChildren();
+  addNativeCommandAction("Cancel", closeNativeCommandDialog);
+
+  const initialDraftSignature = workflowPolicyDraftSignature(controls);
+  let candidatePolicy = null;
+  let saveButton;
+  const renderPreview = () => {
+    controls.shellAllowlist.syncSuggestions();
+    controls.networkAllowlist.syncSuggestions();
+    controls.verificationCommands.syncSuggestions();
+    nativeSettingsDirty = workflowPolicyDraftSignature(controls) !== initialDraftSignature;
+    try {
+      candidatePolicy = collectWorkflowPolicyFromControls(controls);
+      preview.textContent = JSON.stringify(candidatePolicy, null, 2);
+      setNativeCommandError("");
+      verificationStatus.textContent = candidatePolicy.verificationCommands.length
+        ? `${candidatePolicy.verificationCommands.length} ordered verification command${candidatePolicy.verificationCommands.length === 1 ? "" : "s"} configured.`
+        : "No verification commands are configured. Applying workflow worktrees will require an explicit empty-verification waiver.";
+      verificationStatus.classList.toggle("warning", candidatePolicy.verificationCommands.length === 0);
+      if (saveButton) saveButton.disabled = false;
+    } catch (error) {
+      candidatePolicy = null;
+      preview.textContent = "Normalized preview unavailable until the editor error is fixed.";
+      verificationStatus.textContent = "Fix the verification editor before review and save.";
+      verificationStatus.classList.add("warning");
+      setNativeCommandError(error.message || String(error));
+      if (saveButton) saveButton.disabled = true;
+    }
+  };
+  body.addEventListener("input", renderPreview);
+  body.addEventListener("change", renderPreview);
+
+  addNativeCommandAction("Reset to all deny", () => {
+    applyDeniedWorkflowPolicyControls(controls);
+    renderPreview();
+    controls.write.input.focus();
+  });
+
+  saveButton = addNativeCommandAction("Review and save", async () => {
+    renderPreview();
+    if (!candidatePolicy) return;
+    const policyToSave = candidatePolicy;
+    const normalizedPreview = JSON.stringify(policyToSave, null, 2);
+    const verificationReview = policyToSave.verificationCommands.length
+      ? `Verification commands: ${policyToSave.verificationCommands.length} configured in the shown order.`
+      : "Verification commands: none — applying workflow worktrees will require an explicit empty-verification waiver.";
+    const reviewed = await appConfirm({
+      title: "Save reviewed workflow permission ceiling?",
+      summary: [
+        `Target: ${data.filePath}`,
+        `Expected revision: ${data.revision ?? "missing (the file is created only after Save)"}`,
+        "This is an authorization ceiling, not blanket authority.",
+        "The shell allowlist is not an OS sandbox.",
+        verificationReview,
+        "",
+        "Exact normalized JSON:",
+        normalizedPreview,
+      ].join("\n"),
+      affected: data.filePath || "The global workflow policy",
+      undoable: false,
+      confirmLabel: "Save reviewed policy",
+    });
+    if (!reviewed) return;
+
+    setNativeActionBusy(saveButton, true, "Saving…");
+    setNativeCommandError("");
+    try {
+      const response = await api("/api/workflow-policy", {
+        method: "POST",
+        body: { policy: policyToSave, expectedRevision: data.revision ?? null },
+        scoped: false,
+      });
+      const saved = response.data || {};
+      addTransientMessage({
+        role: "native",
+        title: "/workflow-setup",
+        content: `Saved the global workflow permission ceiling to ${saved.filePath || data.filePath}. No agent turn was started.`,
+        level: "info",
+      });
+      nativeSettingsDirty = false;
+      closeNativeCommandDialog({ force: true });
+    } catch (error) {
+      const message = error.message || String(error);
+      setNativeCommandError(error.statusCode === 409
+        ? `${message} Reload /workflow-setup and review the latest policy before saving again.`
+        : `Workflow policy save failed: ${message}`);
+    } finally {
+      setNativeActionBusy(saveButton, false);
+    }
+  }, "primary");
+  renderPreview();
 }
 
 async function openNativeForkSelector() {
@@ -28139,6 +28891,14 @@ async function handleNativeSlashSelectorCommand(message, { usesPromptInput = fal
   const name = slashCommandName(message);
   if (!NATIVE_SELECTOR_COMMANDS.has(name)) return false;
   const featureId = optionalFeatureIdForCommand(name);
+  if (name === "workflow-setup" && !hasLoadedRpcCommand(name)) {
+    const tabContext = activeTabContext();
+    addEvent(commandUnavailableMessage(name), "warn");
+    refreshCommands(tabContext).catch((error) => {
+      if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+    });
+    return true;
+  }
   if (featureId && !isOptionalFeatureEnabled(featureId)) {
     const tabContext = activeTabContext();
     addEvent(commandUnavailableMessage(name), "warn");
@@ -28159,6 +28919,9 @@ async function handleNativeSlashSelectorCommand(message, { usesPromptInput = fal
       return true;
     case "settings":
       await openNativeSettingsDialog();
+      return true;
+    case "workflow-setup":
+      await openNativeWorkflowSetupDialog();
       return true;
     case "safety-guard-setup":
       await openNativeSafetyGuardSetupDialog();
@@ -29148,12 +29911,12 @@ function mergeMessagesDelta(previous, data) {
   return previous.slice(0, since).concat(data.messages);
 }
 
-async function refreshMessages(tabContext = activeTabContext()) {
+async function refreshMessages(tabContext = activeTabContext(), { authoritative = false } = {}) {
   if (!tabContext.tabId) return;
   const previousMessages = latestMessages;
   const sessionKey = resolveMessagesSessionKey(tabContext.tabId);
   let nextMessages = null;
-  if (previousMessages.length > 1 && sessionKey === latestMessagesSessionKey) {
+  if (!authoritative && previousMessages.length > 1 && sessionKey === latestMessagesSessionKey) {
     // Delta fetch with a one-message overlap: the last known message is
     // re-requested so retroactive changes are detected via mergeMessagesDelta.
     const response = await api(`/api/messages?since=${previousMessages.length - 1}`, { tabId: tabContext.tabId });
@@ -30578,10 +31341,32 @@ async function sendUserBashCommand(parsed, { usesPromptInput = false, targetTabI
   await runUserBashCommand(parsed, { usesPromptInput, targetTabId });
 }
 
+function clearPromptInputForRouting({ usesPromptInput, targetTabId, tabContext }) {
+  if (!usesPromptInput) return;
+  tabDrafts.set(targetTabId, "");
+  if (!isCurrentTabContext(tabContext)) return;
+  elements.promptInput.value = "";
+  resizePromptInput();
+  hideCommandSuggestions();
+}
+
+function restorePromptInputAfterRoutingError(message, { usesPromptInput, targetTabId, tabContext }) {
+  if (!usesPromptInput) return;
+  if (isCurrentTabContext(tabContext)) {
+    if (elements.promptInput.value) return;
+    elements.promptInput.value = message;
+    resizePromptInput();
+    tabDrafts.set(targetTabId, message);
+    return;
+  }
+  if (!tabDrafts.get(targetTabId)) tabDrafts.set(targetTabId, message);
+}
+
 async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = activeTabId, throwOnError = false, streamingBehavior } = {}) {
   const usesPromptInput = explicitMessage === undefined;
   const rawMessage = usesPromptInput ? elements.promptInput.value : explicitMessage;
-  const originalMessage = String(rawMessage || "").trim();
+  const inputMessage = String(rawMessage || "");
+  const originalMessage = inputMessage.trim();
   if (!targetTabId) return;
   if (voiceConversationActiveFor(targetTabId)) voiceConversation.handleUserActivity();
   const tabContext = activeTabContext(targetTabId);
@@ -30599,10 +31384,12 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   const targetWasBusy = targetWasStreaming || targetWasCompacting;
   const busyBehavior = normalizeBusyPromptBehavior(busyPromptBehavior);
   const startsRun = kind === "prompt" && !targetWasBusy;
+  clearPromptInputForRouting({ usesPromptInput, targetTabId, tabContext });
   resumeChatAutoFollow();
   updateJumpToLatestButton();
   setComposerActionsOpen(false);
   if (startsRun) {
+    promptRoutingTabs.add(targetTabId);
     markTabWorkingLocally(targetTabId);
     if (isCurrentTabContext(tabContext)) {
       appendOptimisticUserPrompt(originalMessage, attachments.length);
@@ -30636,6 +31423,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       response = await api("/api/prompt", { method: "POST", body, tabId: targetTabId });
     }
     applyResponseTab(response);
+    if (startsRun) promptRoutingTabs.delete(targetTabId);
     if (response?.command === "native_slash_command" && /^\/new(?:\s|$)/.test(message)) forgetLastUserPrompt(targetTabId);
     const targetStillActive = isCurrentTabContext(tabContext);
     if (startsRun && response?.command === "native_slash_command") {
@@ -30652,15 +31440,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     if (targetStillActive && response?.command === "native_slash_command") {
       applyNativeSlashCommandEffects(response, message, tabContext);
     }
-    if (usesPromptInput) {
-      clearAttachments(targetTabId);
-      if (targetStillActive) {
-        elements.promptInput.value = "";
-        resizePromptInput();
-      } else {
-        tabDrafts.set(targetTabId, "");
-      }
-    }
+    if (usesPromptInput) clearAttachments(targetTabId);
     if (targetStillActive) {
       hideCommandSuggestions();
       if (response?.command !== "native_slash_command") scheduleRefreshState(120, tabContext);
@@ -30668,7 +31448,9 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       scheduleRefreshTabs(300);
     }
   } catch (error) {
+    restorePromptInputAfterRoutingError(inputMessage, { usesPromptInput, targetTabId, tabContext });
     if (startsRun) {
+      promptRoutingTabs.delete(targetTabId);
       markTabIdleLocally(targetTabId);
       if (isCurrentTabContext(tabContext)) clearRunIndicatorActivity();
     }
@@ -31083,6 +31865,99 @@ function showNextDialog() {
   elements.dialog.showModal();
 }
 
+function supervisorEventEnvelope(event, fallbackTabId = activeTabId) {
+  if (!event || typeof event !== "object") return null;
+  const fields = ["supervisorScopeId", "supervisorEpoch", "supervisorSeq"];
+  const present = fields.map((field) => Object.prototype.hasOwnProperty.call(event, field));
+  if (!present.some(Boolean)) return null;
+  const scopeId = String(event.supervisorScopeId || "").trim();
+  const epoch = String(event.supervisorEpoch || "").trim();
+  const tabId = String(event.tabId || fallbackTabId || "").trim();
+  const sequenceText = present[2] ? String(event.supervisorSeq ?? "").trim() : null;
+  const sequenceValid = sequenceText === null || /^(?:0|[1-9]\d*)$/.test(sequenceText);
+  return {
+    valid: present[0] && present[1] && scopeId.length > 0 && epoch.length > 0 && tabId.length > 0 && sequenceValid,
+    scopeId,
+    epoch,
+    tabId,
+    sequence: sequenceText === null || !sequenceValid ? null : BigInt(sequenceText),
+  };
+}
+
+function supervisorCursorKey(envelope) {
+  return JSON.stringify([envelope.scopeId, envelope.tabId]);
+}
+
+function acceptSupervisorEvent(event, fallbackTabId = activeTabId) {
+  const envelope = supervisorEventEnvelope(event, fallbackTabId);
+  if (!envelope) return true;
+  if (!envelope.valid) {
+    const warningKey = String(event?.type || "unknown");
+    if (!supervisorEnvelopeWarnings.has(warningKey)) {
+      supervisorEnvelopeWarnings.add(warningKey);
+      addEvent(`ignored malformed supervisor event (${warningKey})`, "warn");
+    }
+    return false;
+  }
+
+  const key = supervisorCursorKey(envelope);
+  const cursor = supervisorEventCursors.get(key);
+  if (!cursor) {
+    supervisorEventCursors.set(key, { epoch: envelope.epoch, sequence: envelope.sequence });
+    return true;
+  }
+
+  if (cursor.epoch !== envelope.epoch) {
+    const retired = supervisorRetiredEpochs.get(key) || new Set();
+    if (retired.has(envelope.epoch)) return false;
+    retired.add(cursor.epoch);
+    supervisorRetiredEpochs.set(key, retired);
+    supervisorEventCursors.set(key, { epoch: envelope.epoch, sequence: envelope.sequence });
+    return true;
+  }
+
+  if (envelope.sequence === null) return true;
+  if (cursor.sequence !== null && envelope.sequence <= cursor.sequence) return false;
+  cursor.sequence = envelope.sequence;
+  return true;
+}
+
+function supervisorContinuityKey(event, fallbackTabId = activeTabId) {
+  const envelope = supervisorEventEnvelope(event, fallbackTabId);
+  return envelope?.valid ? `${supervisorCursorKey(envelope)}|${envelope.epoch}` : "";
+}
+
+function scheduleSupervisorContinuityRefresh(event, { gap = false } = {}) {
+  const tabContext = activeTabContext(event?.tabId || activeTabId);
+  const key = supervisorContinuityKey(event, tabContext.tabId);
+  if (!key || !tabContext.tabId || !isCurrentTabContext(tabContext)) return;
+
+  if (gap && !supervisorGapWarnings.has(key)) {
+    supervisorGapWarnings.add(key);
+    addEvent("Buffered live output may be incomplete; refreshing tabs, state, and transcript from Pi.", "warn");
+  }
+  if (supervisorContinuityRefreshes.has(key)) return;
+
+  const timer = setTimeout(async () => {
+    try {
+      const results = await Promise.allSettled([refreshTabs()]);
+      if (isCurrentTabContext(tabContext)) {
+        results.push(...(await Promise.allSettled([
+          refreshState(tabContext),
+          refreshMessages(tabContext, { authoritative: true }),
+        ])));
+      }
+      if (!isCurrentTabContext(tabContext)) return;
+      for (const result of results) {
+        if (result.status === "rejected") addEvent(`continuity refresh failed: ${result.reason?.message || String(result.reason)}`, "error");
+      }
+    } finally {
+      supervisorContinuityRefreshes.delete(key);
+    }
+  }, 25);
+  supervisorContinuityRefreshes.set(key, timer);
+}
+
 function handleInactiveTabEvent(event) {
   if (event.type === "extension_ui_request" && EXTENSION_UI_BLOCKING_METHODS.has(event.method)) {
     if (!event.replayed) notifyBlockedTab(event.tabId, { request: event, count: event.pendingExtensionUiRequestCount });
@@ -31135,9 +32010,17 @@ function handleEvent(event) {
         renderWidgets();
       }
       addEvent(`connected to ${event.tabTitle || "terminal"} for ${event.cwd}`);
+      if (event.supervisorReplayGap === true) scheduleSupervisorContinuityRefresh(event, { gap: true });
       scheduleForegroundReconcile("event stream reconnect", 0);
       break;
     }
+    case "webui_supervisor_reconnected":
+      addEvent("reconnected to the running Pi session");
+      scheduleSupervisorContinuityRefresh(event);
+      break;
+    case "webui_supervisor_replay_gap":
+      scheduleSupervisorContinuityRefresh(event, { gap: true });
+      break;
     case "webui_output_mode":
       applyOutputModeControl(event, tabContext);
       break;
@@ -31487,7 +32370,9 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   source.onmessage = (message) => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
     try {
-      handleEvent(JSON.parse(message.data));
+      const event = JSON.parse(message.data);
+      if (!acceptSupervisorEvent(event, tabContext.tabId)) return;
+      handleEvent(event);
     } catch (error) {
       if (isCurrentTabContext(tabContext)) addEvent(error.message, "error");
     }
@@ -31821,6 +32706,7 @@ elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsNameButton.addEventListener("click", () => runNativeCommandMenu("/name"));
 elements.optionsCloneButton.addEventListener("click", () => runNativeCommandMenu("/clone"));
 elements.optionsSettingsButton.addEventListener("click", () => runNativeCommandMenu("/settings"));
+elements.optionsWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/workflow-setup"));
 elements.optionsSafetyGuardSetupButton?.addEventListener("click", () => runNativeCommandMenu("/safety-guard-setup"));
 elements.optionsGitWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/git-workflow-setup"));
 elements.optionsExportButton.addEventListener("click", () => runNativeCommandMenu("/export"));

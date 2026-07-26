@@ -2843,6 +2843,35 @@ body.embedded-split .side-panel-backdrop {
 }
 .subagent-gate-title strong { color: var(--ctp-text); font-size: 0.75rem; }
 .subagent-gate-title span { color: rgba(var(--ctp-subtext-rgb), 0.72); font-size: var(--text-xs); }
+.subagent-gate-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 0 0 auto;
+}
+.subagent-gate-close {
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+  border: 1px solid rgba(var(--ctp-subtext-rgb), 0.2);
+  border-radius: 999px;
+  color: rgba(var(--ctp-text-rgb), 0.76);
+  background: rgba(var(--ctp-surface-rgb), 0.2);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.subagent-gate-close:hover,
+.subagent-gate-close:focus-visible {
+  border-color: rgba(243, 139, 168, 0.48);
+  color: var(--ctp-red);
+  background: rgba(243, 139, 168, 0.12);
+}
 .subagent-gate-status {
   flex: 0 0 auto;
   padding: 0.08rem 0.34rem;
@@ -6751,6 +6780,90 @@ button.git-workflow-step:hover:not(:disabled) {
 .message.toolExecution.tool-error {
   border-color: rgba(243, 139, 168, 0.72);
 }
+.message.workflowStatusStack {
+  padding: 0.72rem;
+  border-color: rgba(249, 226, 175, 0.42);
+  background: linear-gradient(145deg, rgba(249, 226, 175, 0.13), rgba(var(--ctp-surface-rgb), 0.62));
+  box-shadow:
+    0 0.3rem 0 -1px rgba(249, 226, 175, 0.16),
+    0 0.6rem 0 -2px rgba(249, 226, 175, 0.09),
+    0 0.8rem 1.8rem rgba(var(--ctp-crust-rgb), 0.34);
+}
+.message.workflowStatusStack > .message-header {
+  margin-bottom: 0.35rem;
+}
+.workflow-status-stack-details {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.72rem;
+  background: rgba(var(--ctp-crust-rgb), 0.22);
+  overflow: hidden;
+}
+.workflow-status-stack-summary {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.68rem 0.75rem;
+  cursor: pointer;
+  list-style-position: inside;
+}
+.workflow-status-stack-summary:focus-visible {
+  outline: 2px solid var(--ctp-blue);
+  outline-offset: -2px;
+  box-shadow: 0 0 0.9rem rgba(137, 180, 250, 0.28);
+}
+.workflow-status-stack-heading,
+.workflow-status-stack-snapshot {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.workflow-status-stack-count,
+.workflow-status-stack-error,
+.workflow-status-stack-field {
+  padding: 0.18rem 0.44rem;
+  border: 1px solid rgba(249, 226, 175, 0.22);
+  border-radius: 999px;
+  color: rgba(var(--ctp-text-rgb), 0.82);
+  background: rgba(var(--ctp-mantle-rgb), 0.62);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.workflow-status-stack-error {
+  border-color: rgba(243, 139, 168, 0.48);
+  color: var(--ctp-red);
+  background: rgba(243, 139, 168, 0.10);
+}
+.workflow-status-stack-members {
+  display: grid;
+  gap: 0.55rem;
+  max-height: min(52rem, 65dvh);
+  padding: 0.65rem;
+  border-top: 1px solid rgba(249, 226, 175, 0.14);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+.workflow-status-stack-member {
+  padding: 0.65rem;
+  border: 1px solid rgba(249, 226, 175, 0.18);
+  border-radius: 0.68rem;
+  background: rgba(var(--ctp-mantle-rgb), 0.52);
+}
+.workflow-status-stack-member.error {
+  border-color: rgba(243, 139, 168, 0.62);
+}
+.workflow-status-stack-member-title {
+  margin-bottom: 0.45rem;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-size: var(--text-xs);
+  font-weight: 850;
+}
+.workflow-status-stack-member-body {
+  min-width: 0;
+}
 .message.streaming {
   outline: 1px solid rgba(148, 226, 213, 0.72);
   box-shadow: 0 0 1.7rem var(--glow-teal), 0 0.8rem 2rem rgba(var(--ctp-crust-rgb), 0.4);
@@ -8296,6 +8409,7 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
 }
 .composer-app-runner-menu.has-runners:hover .composer-app-runner-info-button,
 .composer-app-runner-menu.has-runners:focus-within .composer-app-runner-info-button,
+.composer-app-runner-menu.no-runners .composer-app-runner-info-button,
 .composer-app-runner-info-button:focus-visible {
   opacity: 1;
   pointer-events: auto;
@@ -10516,6 +10630,47 @@ body.subagent-terminal-active .composer-remote-mic-consent {
 .app-runner-file-choice:focus-visible {
   background: linear-gradient(120deg, var(--ctp-yellow), var(--ctp-green));
 }
+.app-runner-custom-feedback.info {
+  color: var(--ctp-sky);
+  border-color: rgba(137, 220, 235, 0.28);
+  background: rgba(137, 220, 235, 0.08);
+}
+.app-runner-info-source {
+  color: rgba(var(--ctp-text-rgb), 0.68);
+  font-size: 0.78rem;
+}
+.app-runner-search-path-item code {
+  color: var(--ctp-teal);
+}
+.app-runner-directory-browser-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+.app-runner-directory-use,
+.app-runner-directory-choose {
+  min-height: 2.25rem;
+  padding: 0.38rem 0.68rem;
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.32);
+  border-radius: 0.64rem;
+}
+.app-runner-directory-use:hover,
+.app-runner-directory-use:focus-visible,
+.app-runner-directory-choose:hover,
+.app-runner-directory-choose:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-green));
+}
+.app-runner-directory-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.42rem;
+  align-items: center;
+}
 
 .native-command-dialog {
   width: min(56rem, calc(100vw - 2rem));
@@ -10761,6 +10916,71 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   margin-top: 0.18rem;
   font-size: 0.78rem;
   font-weight: 500;
+}
+.workflow-policy-textarea {
+  min-height: 7rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+}
+.workflow-policy-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.34rem;
+  margin-top: 0.34rem;
+}
+.workflow-policy-suggestions-label {
+  color: rgba(var(--ctp-text-rgb), 0.68);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.workflow-policy-suggestion {
+  min-height: 2.1rem;
+  padding: 0.26rem 0.62rem;
+  border: 1px solid rgba(148, 226, 213, 0.28);
+  border-radius: 999px;
+  background: rgba(var(--ctp-crust-rgb), 0.52);
+  color: rgba(var(--ctp-text-rgb), 0.92);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.workflow-policy-suggestion:hover:not(:disabled),
+.workflow-policy-suggestion:focus-visible {
+  border-color: rgba(148, 226, 213, 0.68);
+  background: rgba(148, 226, 213, 0.14);
+  color: var(--ctp-teal);
+}
+.workflow-policy-suggestion:focus-visible {
+  outline: 2px solid var(--ctp-blue);
+  outline-offset: 2px;
+}
+.workflow-policy-suggestion:disabled {
+  opacity: 0.52;
+  cursor: default;
+}
+.workflow-policy-review {
+  display: grid;
+  gap: 0.5rem;
+}
+.workflow-policy-review h3,
+.workflow-policy-verification-status {
+  margin: 0;
+}
+.workflow-policy-preview {
+  max-height: 22rem;
+  margin: 0;
+  padding: 0.82rem;
+  overflow: auto;
+  border: 1px solid rgba(148, 226, 213, 0.24);
+  border-radius: 0.82rem;
+  background: rgba(var(--ctp-crust-rgb), 0.64);
+  color: var(--ctp-teal);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  line-height: 1.45;
+  white-space: pre;
+}
+.workflow-policy-verification-status.warning {
+  color: var(--ctp-yellow);
 }
 .native-tree-options {
   position: sticky;
@@ -12195,15 +12415,29 @@ button.git-workflow-step { min-height: 1.9rem; }
   .native-command-body { max-height: min(28rem, 54dvh); }
   .native-settings-grid,
   .native-tree-options { grid-template-columns: 1fr; }
+  .workflow-policy-suggestions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .workflow-policy-suggestion {
+    width: 100%;
+    min-height: 44px;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
   .app-runner-custom-item,
   .app-runner-custom-path-row,
+  .app-runner-directory-row,
   .app-runner-context-form,
   .app-runner-context-lines-label,
   .app-runner-stdin-form { grid-template-columns: 1fr; }
   .app-runner-custom-item-actions,
+  .app-runner-directory-browser-actions,
   .app-runner-custom-form-actions { justify-content: stretch; }
   .app-runner-custom-item-actions button,
   .app-runner-custom-form-actions button,
+  .app-runner-directory-use,
+  .app-runner-directory-choose,
   .app-runner-custom-browse,
   .app-runner-context-action,
   .app-runner-stdin-send,

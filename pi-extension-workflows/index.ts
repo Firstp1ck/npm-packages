@@ -11,7 +11,8 @@ import { requestWorkflowLaunchApproval } from "./src/launch-approval.ts";
 import { buildWorkflowInspectorPayload, WORKFLOW_INSPECTOR_WIDGET_KEY, workflowInspectorPayloadLine, type WorkflowInspectorAgent } from "./src/inspector.ts";
 import { findWorkflowSource, formatWorkflowList, loadWorkflowRegistry, loadWorkflowScriptPath, workflowSourceKey } from "./src/loader.ts";
 import { hashWorkflowPolicy, workflowProjectIdentity, type WorkflowRunRecordV1 } from "./src/persistence-schema.ts";
-import { deniedRequestedPermissions, loadWorkflowPolicyCeiling, policyCeilingForScript } from "./src/policy.ts";
+import { deniedRequestedPermissions, loadWorkflowPolicyCeiling, policyCeilingForScript, type WorkflowPolicyCeilingV1 } from "./src/policy.ts";
+import { createDeniedWorkflowPolicy, readWorkflowPolicyState, validateWorkflowPolicy, WORKFLOW_POLICY_SUGGESTIONS, writeWorkflowPolicyState } from "./src/workflow-policy.mjs";
 import { loadWorkflowReplayCache, type WorkflowReplayCache } from "./src/replay.ts";
 import { runWorkflow } from "./src/runner.ts";
 import { WorkflowRunManager, type WorkflowRunLaunchReceipt } from "./src/run-manager.ts";
@@ -23,6 +24,7 @@ import { saveWorkflowSnapshot } from "./src/saved-workflows.ts";
 import { WorkflowScheduleStore } from "./src/schedules.ts";
 import { createWorkflowRun, createWorkflowStateStore } from "./src/state.ts";
 import { createSubprocessTaskRunner } from "./src/task-runner.ts";
+import { publishWorkflowSubagentsSnapshot } from "./src/webui-subagents.ts";
 import { formatWorkflowScript, importClaudeWorkflowScript } from "./src/tooling.ts";
 import type { TaskRunner, WorkflowInput, WorkflowJavaScriptSource, WorkflowRun, WorkflowScriptPolicy, WorkflowSource } from "./src/types.ts";
 import { clearWorkflowUI, notifyWorkflow, renderWorkflowRun, type WorkflowUIContext } from "./src/ui.ts";
@@ -117,6 +119,159 @@ function normalizeInput(value: unknown): WorkflowInput {
   return value as WorkflowInput;
 }
 
+function parseWorkflowSetupList(value: string): string[] {
+  return [...new Set(value.split("\n").map((entry) => entry.trim()).filter(Boolean))].sort();
+}
+
+function parseWorkflowSetupVerificationCommands(value: string): string[][] {
+  const commands: string[][] = [];
+  for (const [index, line] of value.split("\n").entries()) {
+    if (!line.trim()) continue;
+    let command: unknown;
+    try {
+      command = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`Verification command line ${index + 1} is not valid JSON: ${errorMessage(error)}`);
+    }
+    if (!Array.isArray(command) || command.length === 0 || command.some((part) => typeof part !== "string" || !part.length)) {
+      throw new Error(`Verification command line ${index + 1} must be a non-empty JSON string argv array.`);
+    }
+    commands.push(command as string[]);
+  }
+  return commands;
+}
+
+async function selectWorkflowSetupPermission(
+  ui: NonNullable<WorkflowUIContext["ui"]>,
+  permission: "write" | "shell" | "network",
+  current: boolean,
+): Promise<boolean | undefined> {
+  const choice = await ui.select!(
+    `Workflow ${permission} permission`,
+    [
+      `Allow ${permission} (${current ? "currently allowed" : "currently denied"})`,
+      `Deny ${permission} (${current ? "currently allowed" : "currently denied"})`,
+      "Cancel setup",
+    ],
+  );
+  if (!choice || choice === "Cancel setup") return undefined;
+  return choice.startsWith("Allow ");
+}
+
+async function selectWorkflowSetupSuggestions<T>(
+  ui: NonNullable<WorkflowUIContext["ui"]>,
+  title: string,
+  current: readonly T[],
+  suggestions: readonly T[],
+  format: (suggestion: T) => string,
+): Promise<T[] | undefined> {
+  const selected = [...current];
+  while (true) {
+    const remaining = suggestions.filter((suggestion) => !selected.some((entry) => format(entry) === format(suggestion)));
+    const choices = [
+      "Continue to manual editor",
+      ...remaining.map((suggestion) => `Add: ${format(suggestion)}`),
+      "Cancel setup",
+    ];
+    const choice = await ui.select!(title, choices);
+    if (!choice || choice === "Cancel setup") return undefined;
+    if (choice === "Continue to manual editor") return selected;
+    const selectedSuggestion = remaining.find((suggestion) => `Add: ${format(suggestion)}` === choice);
+    if (selectedSuggestion) selected.push(selectedSuggestion);
+  }
+}
+
+async function openWorkflowSetup(ctx: { cwd: string } & WorkflowUIContext): Promise<void> {
+  const ui = ctx.ui;
+  if (!ui?.select || !ui.editor || !ui.confirm) {
+    throw new Error("/workflow-setup requires an interactive Pi UI with selection, editor, and confirmation support.");
+  }
+
+  const state = await readWorkflowPolicyState();
+  ui.notify?.([
+    "Workflow setup edits the global user authorization ceiling only; it is not blanket permission.",
+    "Every workflow and agent call still needs its own explicit requested capability.",
+    "A shell allowlist limits admitted commands but is not an OS sandbox.",
+  ].join("\n"), "info");
+  const action = await ui.select("Workflow permission ceiling", [
+    "Configure global policy",
+    "Reset global policy to deny-by-default",
+    "Cancel setup",
+  ]);
+  if (!action || action === "Cancel setup") return;
+
+  let candidate: WorkflowPolicyCeilingV1;
+  if (action === "Reset global policy to deny-by-default") {
+    candidate = createDeniedWorkflowPolicy() as WorkflowPolicyCeilingV1;
+  } else {
+    const write = await selectWorkflowSetupPermission(ui, "write", state.policy.permissions.write);
+    if (write === undefined) return;
+    const shell = await selectWorkflowSetupPermission(ui, "shell", state.policy.permissions.shell);
+    if (shell === undefined) return;
+    const network = await selectWorkflowSetupPermission(ui, "network", state.policy.permissions.network);
+    if (network === undefined) return;
+
+    const suggestedShellAllowlist = await selectWorkflowSetupSuggestions(
+      ui,
+      "Shell executable suggestions",
+      state.policy.shellAllowlist,
+      WORKFLOW_POLICY_SUGGESTIONS.shellAllowlist,
+      (suggestion) => suggestion,
+    );
+    if (!suggestedShellAllowlist) return;
+    const shellAllowlist = await ui.editor("Shell executable allowlist (one entry per line; not an OS sandbox)", suggestedShellAllowlist.join("\n"));
+    if (shellAllowlist === undefined) return;
+
+    const suggestedNetworkAllowlist = await selectWorkflowSetupSuggestions(
+      ui,
+      "Network host suggestions",
+      state.policy.networkAllowlist,
+      WORKFLOW_POLICY_SUGGESTIONS.networkAllowlist,
+      (suggestion) => suggestion,
+    );
+    if (!suggestedNetworkAllowlist) return;
+    const networkAllowlist = await ui.editor("Network host allowlist (one entry per line)", suggestedNetworkAllowlist.join("\n"));
+    if (networkAllowlist === undefined) return;
+
+    const suggestedVerificationCommands = await selectWorkflowSetupSuggestions(
+      ui,
+      "Verification command suggestions",
+      state.policy.verificationCommands,
+      WORKFLOW_POLICY_SUGGESTIONS.verificationCommands,
+      (suggestion) => JSON.stringify(suggestion),
+    );
+    if (!suggestedVerificationCommands) return;
+    const verificationCommands = await ui.editor("Verification commands (one JSON argv array per line)", suggestedVerificationCommands.map((command) => JSON.stringify(command)).join("\n"));
+    if (verificationCommands === undefined) return;
+
+    candidate = validateWorkflowPolicy({
+      schemaVersion: 1,
+      permissions: { write, shell, network },
+      shellAllowlist: parseWorkflowSetupList(shellAllowlist),
+      networkAllowlist: parseWorkflowSetupList(networkAllowlist),
+      verificationCommands: parseWorkflowSetupVerificationCommands(verificationCommands),
+    }, "workflow setup") as WorkflowPolicyCeilingV1;
+  }
+
+  const verificationNote = candidate.verificationCommands.length
+    ? `Verification commands: ${candidate.verificationCommands.length} configured.`
+    : "Verification commands: none — applying workflow worktrees will require an explicit waiver.";
+  const reviewed = await ui.confirm("Review workflow permission ceiling", [
+    `Target: ${state.filePath}`,
+    `Revision: ${state.revision ?? "missing (file is created only after Save)"}`,
+    "This is an authorization ceiling, not blanket permission.",
+    "Shell allowlists constrain admitted commands only; they are not an OS sandbox.",
+    verificationNote,
+    "",
+    "Normalized policy:",
+    JSON.stringify(candidate, null, 2),
+  ].join("\n"));
+  if (!reviewed) return;
+
+  const saved = await writeWorkflowPolicyState({ policy: candidate, expectedRevision: state.revision });
+  ui.notify?.(`Saved global workflow permission ceiling at ${saved.filePath}.`, "success");
+}
+
 function inspectValue(value: unknown): string {
   if (value === undefined) return "—";
   if (typeof value === "string") return value;
@@ -198,6 +353,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
     if (conflictingExclusiveMode) throw new Error(`Workflow Mode conflicts with active exclusive mode '${conflictingExclusiveMode}'. Disable that mode first.`);
   };
 
+  let publishWorkflowSubagents = () => {};
   const manager = new WorkflowRunManager({
     onRequest(run) {
       pi.sendMessage?.({
@@ -208,6 +364,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
       }, { triggerTurn: false });
     },
     onResult(run) {
+      publishWorkflowSubagents();
       const content = run.status === "completed"
         ? (typeof run.result === "string" ? run.result : JSON.stringify(run.result ?? run.summary ?? null, null, 2))
         : `Workflow ${run.status}: ${run.error ?? run.summary ?? run.workflowName}`;
@@ -219,6 +376,10 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
       }, { triggerTurn: true, deliverAs: "followUp" });
     },
   });
+  publishWorkflowSubagents = () => {
+    publishWorkflowSubagentsSnapshot(manager, (event, snapshot) => { pi.events?.emit?.(event, snapshot); });
+  };
+
   let inspectorPublishSequence = 0;
   const publishInspector = async (ctx: { cwd: string } & WorkflowUIContext, storage?: ReturnType<typeof createWorkflowRunStorage>) => {
     if (ctx.hasUI === false || ctx.mode !== "rpc" || !ctx.ui) return;
@@ -308,6 +469,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
           signal,
           onRunUpdate: (updated: WorkflowRun) => {
             onRunUpdate(updated);
+            publishWorkflowSubagents();
             void publishInspector(ctx, storage);
           },
         };
@@ -316,6 +478,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
           : await runWorkflow(source, normalizeInput(effectiveInput), ctx, commonOptions);
       },
     });
+    publishWorkflowSubagents();
     void publishInspector(ctx, storage);
     notifyWorkflow(ctx, `Workflow launched: ${workflowSourceKey(source)} (${receipt.runId})`, "info");
     return receipt;
@@ -639,6 +802,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
         if (action === "pause") {
           const { token: runId } = splitFirstToken(rest);
           if (!runId || !manager.pause(runId)) throw new Error("Usage: /workflow pause <running-run-id>");
+          publishWorkflowSubagents();
           ctx.ui.notify(`Workflow run ${runId} paused. Active agent calls may finish; no new calls will start.`, "warning");
           return;
         }
@@ -647,6 +811,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
           const { token: runId, rest: resumeArgs } = splitFirstToken(rest);
           if (!runId) throw new Error("Usage: /workflow resume <run-id> [json-args]");
           if (manager.resume(runId)) {
+            publishWorkflowSubagents();
             ctx.ui.notify(`Workflow run ${runId} resumed.`, "success");
             return;
           }
@@ -735,6 +900,18 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
       } catch (error) {
         const message = error instanceof WorkflowLoadError ? error.issues.join("\n") : errorMessage(error);
         ctx.ui.notify(message, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("workflow-setup", {
+    description: "Review and save the global workflow permission ceiling",
+    handler: async (args, ctx) => {
+      try {
+        if (args.trim()) throw new Error("Usage: /workflow-setup");
+        await openWorkflowSetup(ctx);
+      } catch (error) {
+        ctx.ui.notify(errorMessage(error), "error");
       }
     },
   });
@@ -836,6 +1013,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
       notifyWorkflow(ctx, "Recovered inspectable workflow state from a previous host lifecycle.", "warning");
     }
     renderWorkflowRun(ctx, manager.active().at(-1) ?? restored);
+    publishWorkflowSubagents();
     await publishInspector(ctx, sessionStorage);
   });
 
@@ -866,6 +1044,7 @@ export default function workflowExtension(pi: ExtensionAPI, dependencies: { task
 
   pi.on("session_shutdown", async () => {
     await manager.shutdown();
+    publishWorkflowSubagents();
   });
 
   pi.registerCommand("workflow-clear", {

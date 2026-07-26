@@ -421,15 +421,21 @@ export async function runJavaScriptWorkflow(
         phaseRun.tasks.push(taskRun);
         updateRun();
 
-        const requestedTools = request.options.tools?.length ? request.options.tools : [...DEFAULT_ALLOWED_TOOLS];
+        const requestedTools = [...new Set(request.options.tools?.length ? request.options.tools : [...DEFAULT_ALLOWED_TOOLS])];
         const allowedTools = new Set<string>(DEFAULT_ALLOWED_TOOLS);
         if (script.meta.pi.permissions.write) for (const tool of ["write", "edit", "apply_patch"]) allowedTools.add(tool);
-        // Shell is intentionally unavailable until commands have enforceable
-        // OS sandboxing and an argv-level policy.
+        if (script.meta.pi.permissions.shell) allowedTools.add("bash");
         if (script.meta.pi.permissions.network) for (const tool of ["fetch_content", "web_search", "brave_search"]) allowedTools.add(tool);
         const deniedTool = requestedTools.find((tool) => !allowedTools.has(tool));
-        const needsWriteIsolation = requestedTools.some((tool) => ["write", "edit", "apply_patch"].includes(tool));
-        const policyDescription = `\n\nWorkflow agent policy: root all filesystem operations inside the assigned cwd. Write=${script.meta.pi.permissions.write}; shell=false (unavailable until secure shell sandboxing and argv policy exist); network=${script.meta.pi.permissions.network}.`;
+        const callPermissions = {
+          write: script.meta.pi.permissions.write && requestedTools.some((tool) => ["write", "edit", "apply_patch"].includes(tool)),
+          shell: script.meta.pi.permissions.shell && requestedTools.includes("bash"),
+          network: script.meta.pi.permissions.network && requestedTools.some((tool) => ["fetch_content", "web_search", "brave_search"].includes(tool)),
+        };
+        // Any shell or write-capable call may mutate, even when its prompt
+        // requests inspection only. Isolate it and never retry automatically.
+        const needsWriteIsolation = callPermissions.write || callPermissions.shell;
+        const policyDescription = `\n\nWorkflow agent policy: root all filesystem operations inside the assigned cwd. Write=${callPermissions.write}; shell=${callPermissions.shell}; network=${callPermissions.network}.`;
         const task: WorkflowTask = {
           id: identity.taskId,
           name: identity.name,
@@ -482,7 +488,7 @@ export async function runJavaScriptWorkflow(
             let reservationSettled = false;
             try {
               if (needsWriteIsolation && !worktreePrepared) {
-                if (!options.storage) throw new WorkflowTaskError(identity.taskId, "Write agents require durable run storage for isolated worktrees.");
+                if (!options.storage) throw new WorkflowTaskError(identity.taskId, "Mutation-capable agents require durable run storage for isolated worktrees.");
                 const runDir = await options.storage.runDirectory(run.runId);
                 taskRun.worktree = await createWorkflowWorktree({ repoCwd: options.cwd, runDir, runId: run.runId, callId: `${identity.taskId}-${request.callIndex}` });
                 if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task setup.");
@@ -500,10 +506,10 @@ export async function runJavaScriptWorkflow(
                 agentBudget: admission.limits,
                 agentPolicy: {
                   root: taskRoot,
-                  permissions: script.meta.pi.permissions,
-                  allowedTools: [...allowedTools],
-                  shellAllowlist: script.meta.pi.shellAllowlist ?? [],
-                  networkAllowlist: script.meta.pi.networkAllowlist ?? [],
+                  permissions: callPermissions,
+                  allowedTools: requestedTools,
+                  shellAllowlist: callPermissions.shell ? script.meta.pi.shellAllowlist ?? [] : [],
+                  networkAllowlist: callPermissions.network ? script.meta.pi.networkAllowlist ?? [] : [],
                 },
                 onSubprocessEvent: (event) => {
                   if (finalized) return;

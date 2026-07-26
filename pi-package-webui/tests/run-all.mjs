@@ -8,7 +8,10 @@ const files = (await readdir(testsDir)).filter((name) => name.endsWith(".test.mj
 
 const failures = [];
 for (const file of files) {
-  const result = spawnSync(process.execPath, [join(testsDir, file)], { stdio: "inherit" });
+  const result = spawnSync(process.execPath, [join(testsDir, file)], {
+    stdio: "inherit",
+    env: { ...process.env, PI_WEBUI_RPC_SUPERVISOR: "0" },
+  });
   if (result.status !== 0) failures.push(`${file} (exit ${result.status ?? "signal"})`);
 }
 

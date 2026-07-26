@@ -43,6 +43,7 @@ assert.equal(isLocalRequest(remoteReq), false);
 assert.throws(() => requireLocalhost(remoteReq, "blocked"), (error) => error.statusCode === 403);
 assert.throws(() => requireLocalhostRoute(remoteReq, "/api/update"), (error) => error.statusCode === 403);
 assert.doesNotThrow(() => requireLocalhostRoute(localReq, "/api/update"));
+assert.ok(LOCALHOST_ONLY_POST_ROUTES.has("/api/workflow-policy"), "workflow policy mutation must stay in the canonical localhost route registry");
 
 for (const pathname of LOCALHOST_ONLY_POST_ROUTES.keys()) {
   assert.match(pathname, /^\/api\//, `${pathname} should be an API route`);
@@ -129,7 +130,7 @@ for (const target of ["state", "tabs", "commands", "themes", "workspace"]) {
 }
 
 const slashCommands = nativeSlashCommandEntries(parity);
-assert.equal(slashCommands.length, 26);
+assert.equal(slashCommands.length, 27);
 assert.equal(slashCommands[0].name, "settings");
 assert.equal(slashCommands.at(-1).name, "quit");
 

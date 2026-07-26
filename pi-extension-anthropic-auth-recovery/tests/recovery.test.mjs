@@ -9,6 +9,7 @@ import {
   buildRecoveryPiArgs,
   classifyAnthropicError,
   discoverRecoveryFiles,
+  formatPatchStatusSummary,
   formatRecoveryDiscoveryFailure,
   inspectRecoveryFiles,
   postSecureWebuiRecovery,
@@ -27,6 +28,18 @@ function writePatchPackage(patch) {
   writeResource(path.join(root, "patch.manifest.json"), JSON.stringify({ lifecycle: { handler: "./scripts/lifecycle.mjs" } }));
   writeResource(path.join(root, "scripts", "lifecycle.mjs"), "export {};\n");
 }
+
+test("patch status summary hides already-applied targets and preserves actionable statuses", () => {
+  assert.equal(formatPatchStatusSummary([
+    { roles: ["native-tui"], status: "already-applied", packageVersion: "0.82.1" },
+    { roles: ["webui-rpc"], status: "already-applied", packageVersion: "0.82.1" },
+  ]), "");
+  assert.equal(formatPatchStatusSummary([
+    { roles: ["native-tui"], status: "already-applied", packageVersion: "0.82.1" },
+    { roles: ["webui-rpc"], status: "applicable", packageVersion: "0.83.0" },
+  ]), "webui-rpc: applicable (0.83.0)");
+  assert.equal(formatPatchStatusSummary([]), "no runtime targets discovered");
+});
 
 test("error classifiers are provider-scoped, normalized, and stable", () => {
   const message = "400  Third-party apps now draw from your extra usage,\nnot your plan limits. Add more.";

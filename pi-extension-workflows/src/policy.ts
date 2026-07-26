@@ -1,7 +1,10 @@
-import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  createDeniedWorkflowPolicy,
+  readWorkflowPolicyFile,
+  validateWorkflowPolicy,
+} from "./workflow-policy.mjs";
 import { getAgentDir } from "@firstpick/pi-utils/paths";
-import { WorkflowValidationError } from "./errors.ts";
 import type { WorkflowScriptPermissions, WorkflowScriptPolicy } from "./types.ts";
 
 export type WorkflowPolicyCeilingV1 = {
@@ -12,52 +15,13 @@ export type WorkflowPolicyCeilingV1 = {
   verificationCommands: string[][];
 };
 
-const DEFAULT_CEILING: WorkflowPolicyCeilingV1 = {
-  schemaVersion: 1,
-  permissions: { write: false, shell: false, network: false },
-  shellAllowlist: [],
-  networkAllowlist: [],
-  verificationCommands: [],
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function validateWorkflowPolicyCeiling(value: unknown, source = "workflow policy"): WorkflowPolicyCeilingV1 {
-  if (!isRecord(value)) throw new WorkflowValidationError([`${source} must be an object.`]);
-  const issues: string[] = [];
-  for (const key of Object.keys(value)) if (!["schemaVersion", "permissions", "shellAllowlist", "networkAllowlist", "verificationCommands"].includes(key)) issues.push(`${source} contains unsupported field '${key}'.`);
-  if (value.schemaVersion !== 1) issues.push(`${source}.schemaVersion must be 1.`);
-  const permissions = isRecord(value.permissions) ? value.permissions : {};
-  for (const key of Object.keys(permissions)) if (!["write", "shell", "network"].includes(key)) issues.push(`${source}.permissions contains unsupported field '${key}'.`);
-  const normalizedPermissions = { write: false, shell: false, network: false };
-  for (const key of Object.keys(normalizedPermissions) as Array<keyof WorkflowScriptPermissions>) {
-    if (permissions[key] !== undefined && typeof permissions[key] !== "boolean") issues.push(`${source}.permissions.${key} must be boolean.`);
-    normalizedPermissions[key] = permissions[key] === true;
-  }
-  const strings = (key: "shellAllowlist" | "networkAllowlist") => {
-    const raw = value[key] ?? [];
-    if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string" || !item.trim())) {
-      issues.push(`${source}.${key} must be an array of non-empty strings.`);
-      return [];
-    }
-    return [...new Set(raw.map((item) => item.trim()))].sort();
-  };
-  const commandsRaw = value.verificationCommands ?? [];
-  const verificationCommands = Array.isArray(commandsRaw) && commandsRaw.every((command) => Array.isArray(command) && command.length > 0 && command.every((part) => typeof part === "string" && part.length > 0))
-    ? commandsRaw.map((command) => [...command]) as string[][]
-    : (issues.push(`${source}.verificationCommands must be an array of non-empty argv arrays.`), []);
-  if (issues.length) throw new WorkflowValidationError(issues);
-  return { schemaVersion: 1, permissions: normalizedPermissions, shellAllowlist: strings("shellAllowlist"), networkAllowlist: strings("networkAllowlist"), verificationCommands };
-}
+export const validateWorkflowPolicyCeiling = validateWorkflowPolicy as (
+  value: unknown,
+  source?: string,
+) => WorkflowPolicyCeilingV1;
 
 async function readOptionalPolicy(filePath: string): Promise<WorkflowPolicyCeilingV1 | undefined> {
-  try { return validateWorkflowPolicyCeiling(JSON.parse(await readFile(filePath, "utf8")), filePath); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
-    throw error;
-  }
+  return (await readWorkflowPolicyFile(filePath))?.policy as WorkflowPolicyCeilingV1 | undefined;
 }
 
 function intersection(left: string[], right: string[]): string[] {
@@ -70,7 +34,8 @@ export async function loadWorkflowPolicyCeiling(options: {
   projectTrusted: boolean;
   agentDir?: string;
 }): Promise<WorkflowPolicyCeilingV1> {
-  const user = await readOptionalPolicy(path.join(options.agentDir ?? getAgentDir(), "workflow-policy.json")) ?? DEFAULT_CEILING;
+  const user = await readOptionalPolicy(path.join(options.agentDir ?? getAgentDir(), "workflow-policy.json"))
+    ?? createDeniedWorkflowPolicy() as WorkflowPolicyCeilingV1;
   if (!options.projectTrusted) return {
     ...structuredClone(user),
     shellAllowlist: user.permissions.shell ? [...user.shellAllowlist] : [],

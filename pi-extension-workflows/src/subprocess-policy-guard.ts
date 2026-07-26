@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { validateShellCommand } from "./shell-command-policy.ts";
 
 const WRITE_TOOLS = new Set(["write", "edit", "apply_patch"]);
 const NETWORK_TOOLS = new Set(["fetch_content", "web_search", "brave_search"]);
@@ -14,12 +15,25 @@ type GuardPolicy = {
   networkAllowlist: string[];
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 function loadPolicy(): GuardPolicy {
   const raw = process.env.PI_WORKFLOW_AGENT_POLICY;
   if (!raw) throw new Error("PI_WORKFLOW_AGENT_POLICY is required for guarded workflow agents.");
-  const policy = JSON.parse(raw) as GuardPolicy;
-  if (!policy || typeof policy.root !== "string" || !Array.isArray(policy.allowedTools)) throw new Error("Workflow agent policy is invalid.");
-  return policy;
+  const value = JSON.parse(raw) as unknown;
+  if (!isRecord(value) || typeof value.root !== "string" || !isStringArray(value.allowedTools)
+    || !isRecord(value.permissions) || typeof value.permissions.write !== "boolean"
+    || typeof value.permissions.shell !== "boolean" || typeof value.permissions.network !== "boolean"
+    || !isStringArray(value.shellAllowlist) || !isStringArray(value.networkAllowlist)) {
+    throw new Error("Workflow agent policy is invalid.");
+  }
+  return value as GuardPolicy;
 }
 
 function resolvedPathInside(root: string, target: string): boolean {
@@ -82,12 +96,15 @@ export default function workflowSubprocessPolicyGuard(pi: ExtensionAPI) {
   const allowedTools = new Set(policy.allowedTools);
   pi.on("tool_call", async (event) => {
     const tool = String(event.toolName || "");
-    // The parent boundary never grants bash. Retain this guard for direct
-    // subprocess launches: without an OS sandbox and argv policy, shell
-    // commands cannot be contained to the workflow root or network policy.
-    if (tool === "bash") return { block: true, reason: "Workflow shell access is unavailable because secure shell sandboxing and argv policy are not implemented." };
     if (!allowedTools.has(tool)) return { block: true, reason: `Workflow policy denied tool '${tool}'.` };
     const input = event.input as Record<string, unknown>;
+
+    if (tool === "bash") {
+      if (!policy.permissions.shell) return { block: true, reason: "Workflow policy denied shell access." };
+      const shellCommand = validateShellCommand(input?.command, policy.shellAllowlist);
+      if (!shellCommand.ok) return { block: true, reason: `Workflow shell policy denied command: ${shellCommand.reason}.` };
+      return;
+    }
 
     for (const field of PATH_FIELDS) {
       const value = input?.[field];

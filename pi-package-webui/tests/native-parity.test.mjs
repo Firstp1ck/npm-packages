@@ -55,6 +55,7 @@ const requiredNativeCommands = [
   "settings",
   "safety-guard-setup",
   "git-workflow-setup",
+  "workflow-setup",
   "model",
   "theme",
   "scoped-models",
@@ -86,6 +87,12 @@ for (const surface of slashSurfaces) {
   assert.equal(typeof surface.command.description, "string", `${surface.id} should provide a command description`);
   assert.ok(surface.command.description.trim(), `${surface.id} command description should not be empty`);
 }
+
+const workflowSetupSurface = slashSurfaces.find((surface) => surface.id === "/workflow-setup");
+assert.ok(workflowSetupSurface, "/workflow-setup should be represented in the native parity matrix");
+assert.equal(workflowSetupSurface.webStatus, "implemented", "/workflow-setup browser-native support should be implemented");
+assert.equal(workflowSetupSurface.sensitive, true, "/workflow-setup should be tracked as a sensitive policy mutation");
+assert.deepEqual(workflowSetupSurface.guards, ["localhost", "confirmation"], "/workflow-setup should require both localhost and explicit confirmation guards");
 
 const selectorMatch = app.match(/const NATIVE_SELECTOR_COMMANDS = new Set\(\[(.*?)\]\)/s);
 assert.ok(selectorMatch, "frontend native selector command set should be discoverable");
@@ -132,6 +139,10 @@ assert.match(server, /url\.pathname === "\/api\/session-rename" && req\.method =
 assert.match(server, /url\.pathname === "\/api\/session-delete" && req\.method === "POST"/, "server should expose localhost-only POST /api/session-delete");
 assert.match(server, /url\.pathname === "\/api\/auth-providers" && req\.method === "GET"/, "server should expose GET /api/auth-providers");
 assert.match(server, /url\.pathname === "\/api\/auth-logout" && req\.method === "POST"/, "server should expose localhost-only POST /api/auth-logout");
+assert.match(server, /url\.pathname === "\/api\/workflow-policy" && req\.method === "GET"[\s\S]*requireLocalhost\(req, "Workflow policy setup is only allowed from localhost\."\)/, "workflow policy reads should be localhost-only");
+assert.match(server, /url\.pathname === "\/api\/workflow-policy" && req\.method === "POST"[\s\S]*requireLocalhostRoute\(req, url\.pathname\)[\s\S]*requireWorkflowPolicyJsonRequest\(req\)[\s\S]*expectedRevision: body\.expectedRevision/, "workflow policy saves should be registry-guarded, same-origin JSON, and revision protected");
+assert.match(app, /name === "workflow-setup" && !hasLoadedRpcCommand\(name\)[\s\S]*case "workflow-setup":[\s\S]*openNativeWorkflowSetupDialog\(\)/, "frontend should gate exact /workflow-setup native routing on the active tab's loaded extension catalog");
+assert.match(app, /title: "Save reviewed workflow permission ceiling\?"[\s\S]*if \(!reviewed\) return;[\s\S]*body: \{ policy: policyToSave, expectedRevision: data\.revision \?\? null \}/, "frontend should explicitly confirm the normalized workflow policy before revision-protected save");
 assert.match(server, /url\.pathname === "\/api\/native-parity" && req\.method === "GET"/, "server should expose the native parity matrix for clients/tests");
 assert.match(server, /const NATIVE_DOWNLOAD_TOKEN_TTL_MS = 10 \* 60 \* 1000/, "native downloads should use short-lived tokens");
 assert.match(server, /const WEBUI_HELPER_COMMAND = "webui-helper"/, "server should declare the hidden Web UI RPC helper command");

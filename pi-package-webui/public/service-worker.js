@@ -1,11 +1,16 @@
-const CACHE_NAME = "pi-webui-pwa-v44";
+const CACHE_NAME = "pi-webui-pwa-v46";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
+  "/aur-review-payload.mjs",
+  "/guided-git-command-state.mjs",
+  "/guided-git-review-state.mjs",
   "/fast-output-live.mjs",
   "/subagent-launch-slot-state.mjs",
+  "/subagent-gate-visibility.mjs",
+  "/workflow-status-stack.mjs",
   "/voice-conversation.mjs",
   "/favicon.svg",
   "/apple-touch-icon.png",

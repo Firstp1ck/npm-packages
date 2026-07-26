@@ -64,7 +64,7 @@ workflowExtension({
   },
 });
 
-assert.deepEqual(commands, ["workflow", "workflows", "workflow-clear"]);
+assert.deepEqual(commands, ["workflow", "workflow-setup", "workflows", "workflow-clear"]);
 assert.equal(commands.includes("workflow-test"), false, "production extension must not publish/register /workflow-test");
 assert.deepEqual(tools, ["workflow_run", "workflow_status"]);
 assert.match(toolDefinitions.get("workflow_run").description, /only when the user explicitly requests workflow execution or Workflow Mode is armed/);
@@ -163,6 +163,9 @@ await eventHandlers.get("session_start")({}, {
 });
 assert.ok(activeTools.has("workflow_run") && activeTools.has("workflow_status"), "restored Workflow Mode must activate its required tools");
 assert.equal(statuses.findLast((entry) => entry.key === "workflow-mode").value, "Workflow: on");
+const workflowSubagentSnapshots = () => busEvents.filter((entry) => entry.name === "firstpick:workflow-subagents:v1").map((entry) => entry.payload);
+const startupWorkflowSnapshot = workflowSubagentSnapshots().at(-1);
+assert.deepEqual(startupWorkflowSnapshot?.runs, [], "session startup must publish an empty complete workflow snapshot when no run is active");
 await commandHandlers.get("workflow")("mode off", modeCtx);
 
 await mkdir(path.join(temp, ".pi", "workflows"), { recursive: true });
@@ -233,6 +236,16 @@ await commandHandlers.get("workflows")("", {
 });
 assert.deepEqual(nativeSelections.map((selection) => selection.title).slice(0, 4), ["Select workflow run", "Inspected run (completed)", "Select workflow phase", "Select workflow agent"]);
 assert.match(notifications.at(-1).message, /Prompt:[\s\S]*Inspect workflow files[\s\S]*Recent activity:[\s\S]*read activity for inspector[\s\S]*Result:[\s\S]*result for Inspect workflow files[\s\S]*Usage:/);
+const inspectedWorkflowRunId = `workflow:${inspectedResult.details.runId}`;
+const inspectedActiveSnapshotIndex = workflowSubagentSnapshots().findIndex((snapshot) => snapshot.runs.some((run) => run.id === inspectedWorkflowRunId && run.agents.some((agent) => agent.recentOutput?.length)));
+assert.ok(inspectedActiveSnapshotIndex >= 0, "authoritative task updates must publish an active workflow agent snapshot with recent output");
+const inspectedActiveSnapshot = workflowSubagentSnapshots()[inspectedActiveSnapshotIndex];
+const inspectedAgent = inspectedActiveSnapshot.runs.find((run) => run.id === inspectedWorkflowRunId).agents.find((agent) => agent.recentOutput?.length);
+assert.match(inspectedAgent.id, new RegExp(`^workflow:${inspectedResult.details.runId}:phase:`));
+assert.equal(inspectedAgent.activityState, "stdout");
+assert.deepEqual(inspectedAgent.recentOutput, ["read activity for inspector"]);
+assert.equal(JSON.stringify(inspectedActiveSnapshot).includes("Inspect workflow files"), false, "workflow prompts must not be published to the WebUI event");
+assert.ok(workflowSubagentSnapshots().slice(inspectedActiveSnapshotIndex + 1).some((snapshot) => !snapshot.runs.some((run) => run.id === inspectedWorkflowRunId)), "terminal completion must publish a complete snapshot without the workflow run");
 let replayConfirmation = "";
 await commandHandlers.get("workflows")("", {
   cwd: temp,

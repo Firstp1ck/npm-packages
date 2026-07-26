@@ -15,6 +15,8 @@ import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendi
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
 import { nativeExportDownloadPayload } from "../lib/native-export-payload.mjs";
+import { discoverStartAttachRpcSupervisor } from "../lib/rpc-supervisor-client.mjs";
+import { readSupervisorState, supervisorPaths } from "../lib/rpc-supervisor-state.mjs";
 import {
   collectOpenSessionFiles,
   deleteSessionFile,
@@ -128,6 +130,9 @@ let remoteQrCorePromise = null;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 31415;
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+// Keep supervisor waits bounded while preserving the existing two-hour prompt
+// contract. A detached owner may legitimately outlive the HTTP server request.
+const RPC_SUPERVISOR_COMMAND_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
 const PROMPT_REQUEST_TIMEOUT_MS = Math.max(REQUEST_TIMEOUT_MS, Number.parseInt(process.env.PI_WEBUI_PROMPT_TIMEOUT_MS || "7200000", 10) || 7200000);
 const WEBUI_HELPER_TIMEOUT_MS = 8 * 1000;
 const WEBUI_HELPER_COMMAND = "webui-helper";
@@ -277,6 +282,8 @@ const AUTO_TAB_TITLE_STOP_WORDS = new Set([
 const APP_RUNNER_CONFIG_FILE = ".pi-webui-runners.json";
 const APP_RUNNER_CUSTOM_LIMIT = 48;
 const APP_RUNNER_CUSTOM_ARG_LIMIT = 32;
+const APP_RUNNER_SEARCH_PATH_LIMIT = 24;
+const APP_RUNNER_SEARCH_PATH_MAX_CHARS = 4_096;
 const APP_RUNNER_FILE_PICKER_LIMIT = 500;
 const APP_RUNNER_DETECTION_TIMEOUT_MS = 1_200;
 const APP_RUNNER_COMMAND_CACHE_TTL_MS = 30_000;
@@ -296,6 +303,8 @@ const APP_RUNNER_CPP_ENTRIES = ["main.cpp", "src/main.cpp", "main.cc", "src/main
 const APP_RUNNER_DOCKER_COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 const APP_RUNNER_SHELL_SCRIPT_DIRS = ["", "dev", "scripts", "dev/scripts"];
 const APP_RUNNER_SHELL_SCRIPT_LIMIT = 24;
+const APP_RUNNER_PYTHON_SCRIPT_LIMIT = 24;
+const APP_RUNNER_CONFIGURED_SCRIPT_SCAN_LIMIT = (APP_RUNNER_SHELL_SCRIPT_LIMIT + APP_RUNNER_PYTHON_SCRIPT_LIMIT) * 2;
 const APP_RUNNER_SHELL_EXTENSIONS = new Map([
   [".sh", "bash"],
   [".bash", "bash"],
@@ -730,6 +739,105 @@ function mirrorPiStderr(text, onFailure) {
     });
   } catch (error) {
     reportFailure(error);
+  }
+}
+
+class SupervisorPiRpcProcess {
+  constructor({ supervisor, tabId, displayCommand = "supervised Pi RPC", cwd, snapshot = {} }) {
+    this.supervisor = supervisor;
+    this.tabId = tabId;
+    this.displayCommand = displayCommand;
+    this.cwd = cwd;
+    this.startedAt = snapshot.startedAt || new Date().toISOString();
+    this.listeners = new Set();
+    this.metadataUpdate = Promise.resolve();
+    this.applySnapshot(snapshot);
+  }
+
+  applySnapshot(snapshot = {}) {
+    this.startedAt = snapshot.startedAt || this.startedAt;
+    this.cwd = snapshot.metadata?.cwd || this.cwd;
+    const running = snapshot.running !== false;
+    this.child = {
+      pid: Number.isInteger(snapshot.pid) ? snapshot.pid : undefined,
+      exitCode: running ? null : 1,
+      signalCode: null,
+      killed: !running,
+    };
+  }
+
+  isRunning() {
+    return !!this.child && this.child.exitCode === null && this.child.signalCode === null;
+  }
+
+  onEvent(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(event) {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error("webui listener failed:", error);
+      }
+    }
+  }
+
+  receiveSupervisorEvent(event) {
+    const payload = event?.payload;
+    if (!payload || typeof payload !== "object") return;
+    if (payload.type === "pi_process_start") {
+      this.child = { pid: payload.pid, exitCode: null, signalCode: null, killed: false };
+      this.startedAt = event.at || new Date().toISOString();
+    } else if (payload.type === "pi_process_exit") {
+      this.child = { ...(this.child || {}), exitCode: payload.code ?? 1, signalCode: payload.signal ?? null, killed: true };
+    } else if (payload.type === "pi_process_error" && !this.isRunning()) {
+      this.child = { ...(this.child || {}), exitCode: 1, signalCode: null, killed: true };
+    }
+    this.emit({
+      ...payload,
+      supervisorScopeId: event.scopeId,
+      supervisorEpoch: event.epoch,
+      supervisorSeq: event.seq,
+    });
+    if (payload.type === "pi_stderr" && payload.text) {
+      mirrorPiStderr(payload.text, (error) => this.emit({
+        type: "pi_stderr_sink_error",
+        error: `Pi RPC stderr could not be mirrored to the Web UI server log: ${sanitizeError(error)}`,
+      }));
+    }
+  }
+
+  send(command, timeoutMs = REQUEST_TIMEOUT_MS) {
+    const requestId = command?.id || randomUUID();
+    const boundedTimeoutMs = Math.min(Math.max(1, Number(timeoutMs) || REQUEST_TIMEOUT_MS), RPC_SUPERVISOR_COMMAND_TIMEOUT_MAX_MS);
+    return this.supervisor.command(this.tabId, command, { requestId, timeoutMs: boundedTimeoutMs });
+  }
+
+  async writeRaw(command) {
+    await this.supervisor.write(this.tabId, command);
+  }
+
+  async replace({ child, metadata, displayCommand }) {
+    const snapshot = await this.supervisor.replaceTab({ tabId: this.tabId, metadata, child });
+    if (displayCommand) this.displayCommand = displayCommand;
+    this.applySnapshot(snapshot);
+    return snapshot;
+  }
+
+  updateMetadata(metadata) {
+    this.metadataUpdate = this.metadataUpdate.catch(() => {}).then(() => this.supervisor.updateTab(this.tabId, metadata));
+    return this.metadataUpdate;
+  }
+
+  async stop() {
+    return this.supervisor.closeTab(this.tabId);
+  }
+
+  dispose() {
+    this.listeners.clear();
   }
 }
 
@@ -2014,6 +2122,82 @@ async function saveRemoteAuthPreference(enabled) {
   return persistedRemoteAuthEnabled;
 }
 
+const WORKFLOW_POLICY_MODULE_API = ["readWorkflowPolicyState", "writeWorkflowPolicyState"];
+// Advisory draft catalog owned by the workflow package; the browser never invents suggestions.
+const WORKFLOW_POLICY_MODULE_CATALOG_API = ["WORKFLOW_POLICY_SUGGESTIONS"];
+let workflowPolicyModulePromise;
+
+async function workflowPolicyModule() {
+  if (!workflowPolicyModulePromise) {
+    workflowPolicyModulePromise = (async () => {
+      const specifiers = [
+        "@firstpick/pi-extension-workflows/src/workflow-policy.mjs",
+        new URL("../../pi-extension-workflows/src/workflow-policy.mjs", import.meta.url).href,
+      ];
+      const failures = [];
+      for (const specifier of specifiers) {
+        try {
+          const module = await import(specifier);
+          const missing = [
+            ...WORKFLOW_POLICY_MODULE_API.filter((name) => typeof module?.[name] !== "function"),
+            ...WORKFLOW_POLICY_MODULE_CATALOG_API.filter((name) => !module?.[name] || typeof module[name] !== "object" || Array.isArray(module[name])),
+          ];
+          if (missing.length) throw new Error(`missing ${missing.join(", ")}`);
+          return module;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      throw makeHttpError(503, `Workflow policy setup support is unavailable. Install or update @firstpick/pi-extension-workflows and restart Web UI. ${failures.at(-1) || ""}`.trim());
+    })().catch((error) => {
+      workflowPolicyModulePromise = undefined;
+      throw error;
+    });
+  }
+  return workflowPolicyModulePromise;
+}
+
+function requireWorkflowPolicyJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw makeHttpError(415, "Workflow policy saves require Content-Type: application/json.");
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw makeHttpError(403, "Cross-origin workflow policy saves are blocked.");
+  }
+}
+
+function workflowPolicySaveBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw makeHttpError(400, "Workflow policy save body must be an object with only policy and expectedRevision.");
+  }
+  const allowedFields = new Set(["policy", "expectedRevision"]);
+  const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
+  if (unknownFields.length) {
+    throw makeHttpError(400, `Workflow policy save body contains unsupported field${unknownFields.length === 1 ? "" : "s"}: ${unknownFields.join(", ")}.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, "policy") || !Object.prototype.hasOwnProperty.call(body, "expectedRevision")) {
+    throw makeHttpError(400, "Workflow policy save body requires policy and expectedRevision.");
+  }
+  if (body.expectedRevision !== null && typeof body.expectedRevision !== "string") {
+    throw makeHttpError(400, "expectedRevision must be a read revision string or null for a missing policy.");
+  }
+  return body;
+}
+
+function workflowPolicyRequestError(error) {
+  if (error?.statusCode) return error;
+  if (error?.code === "WORKFLOW_POLICY_INVALID") return makeHttpError(400, formatCliError(error));
+  if (error?.code === "WORKFLOW_POLICY_STALE_REVISION") return makeHttpError(409, formatCliError(error));
+  if (error?.code === "WORKFLOW_POLICY_UNSAFE_TARGET") return makeHttpError(409, formatCliError(error));
+  if (error instanceof TypeError) return makeHttpError(400, formatCliError(error));
+  return error;
+}
+
+function ensureWorkflowPolicyMutationAllowed() {
+  // The policy is global, so any active Natural Conversation tab blocks a global mutation.
+  for (const tab of tabs.values()) ensureNaturalConversationRouteAllowed(tab, "workflow policy changes are blocked");
+}
+
 let safetyGuardConfigModulePromise;
 
 async function safetyGuardConfigModule() {
@@ -2406,6 +2590,20 @@ async function appRunnerTextIfExists(cwd, relativePath, maxLength = 120_000) {
   }
 }
 
+async function appRunnerFilePrefix(filePath, maxLength = 256) {
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+    const buffer = Buffer.alloc(maxLength);
+    const { bytesRead } = await handle.read(buffer, 0, maxLength, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 async function firstExistingRunnerFile(cwd, candidates) {
   for (const candidate of candidates) {
     if (await appRunnerFileExists(cwd, candidate)) return candidate;
@@ -2595,6 +2793,64 @@ function appRunnerPathInside(root, target) {
   return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function normalizeAppRunnerSearchPath(value) {
+  if (typeof value !== "string") throw makeHttpError(400, "Search path must be a string");
+  const raw = normalizeSuggestionPath(value).trim();
+  if (!raw) throw makeHttpError(400, "Search path is required");
+  if (raw.includes("\0")) throw makeHttpError(400, "Search path cannot contain null bytes");
+  if (raw.length > APP_RUNNER_SEARCH_PATH_MAX_CHARS) throw makeHttpError(400, `Search path is too long; limit is ${APP_RUNNER_SEARCH_PATH_MAX_CHARS} characters`);
+  if (path.isAbsolute(raw) || /^[a-z]:\//i.test(raw)) throw makeHttpError(400, "Search path must be relative to the project root");
+  if (raw === "." || /^\.\/+$/i.test(raw)) return ".";
+  const normalized = raw.replace(/^\.\/+/, "").replace(/\/+$/g, "");
+  if (!normalized) return ".";
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.some((part) => part === "." || part === "..")) throw makeHttpError(400, "Search path cannot contain . or .. segments");
+  return parts.join("/");
+}
+
+async function canonicalAppRunnerProjectRoot(projectRoot) {
+  try {
+    return await realpath(projectRoot);
+  } catch (error) {
+    throw makeHttpError(400, `Cannot resolve project root: ${formatCliError(error)}`);
+  }
+}
+
+async function appRunnerSearchPathStatus(projectRoot, relativePath, canonicalProjectRoot) {
+  const absolutePath = resolveProjectRelativePath(projectRoot, relativePath === "." ? "" : relativePath);
+  let canonicalPath;
+  try {
+    canonicalPath = await realpath(absolutePath);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return { available: false, reason: `Search path does not exist: ${relativePath}` };
+    return { available: false, reason: `Cannot access search path ${relativePath}: ${formatCliError(error)}` };
+  }
+  if (!appRunnerPathInside(canonicalProjectRoot, canonicalPath)) {
+    return { available: false, reason: `Search path resolves outside the project root: ${relativePath}` };
+  }
+  const info = await fileStatsIfExists(canonicalPath).catch(() => null);
+  if (!info?.isDirectory()) return { available: false, reason: `Search path is not a directory: ${relativePath}` };
+  return { available: true, absolutePath, canonicalPath };
+}
+
+async function appRunnerCanonicalFileInsideProject(projectRoot, relativePath, canonicalProjectRoot) {
+  let absolutePath;
+  try {
+    absolutePath = resolveProjectRelativePath(projectRoot, relativePath);
+  } catch {
+    return null;
+  }
+  let canonicalPath;
+  try {
+    canonicalPath = await realpath(absolutePath);
+  } catch {
+    return null;
+  }
+  if (!appRunnerPathInside(canonicalProjectRoot, canonicalPath)) return null;
+  const info = await fileStatsIfExists(canonicalPath).catch(() => null);
+  return info?.isFile() ? { absolutePath, canonicalPath, info } : null;
+}
+
 function normalizeProjectRelativePath(value, { allowEmpty = false } = {}) {
   const raw = normalizeSuggestionPath(value).replace(/\0/g, "").trim();
   const withoutDot = raw.replace(/^\.\/+/, "").replace(/\/+$/g, "");
@@ -2680,7 +2936,7 @@ function normalizeCustomRunnerDefinition(raw, projectRoot, { strict = false } = 
   const args = parseCustomRunnerArgs(raw?.args);
   const label = String(raw?.label || path.basename(filePath)).trim().slice(0, 120) || path.basename(filePath);
   const rawId = String(raw?.id || "").trim();
-  const id = appRunnerId(rawId || label, command, filePath) || appRunnerId(command, filePath);
+  const id = appRunnerId(rawId) || appRunnerId(label, command, filePath) || appRunnerId(command, filePath);
   if (!id) throw makeHttpError(400, "Custom runner id could not be generated");
   if (strict && !appRunnerPathInside(projectRoot, absolutePath)) throw makeHttpError(400, "Path must stay inside the project root");
   return { id, label, command, path: filePath, args };
@@ -2706,19 +2962,61 @@ function directCustomRunnerUnavailableReason(filePath, stats) {
 
 async function customAppRunnerUnavailableReason(projectRoot, runner) {
   const filePath = runner.path;
-  let stats;
-  try {
-    stats = await fileStatsIfExists(resolveProjectRelativePath(projectRoot, filePath));
-  } catch (error) {
-    return `Cannot access path ${filePath}: ${formatCliError(error)}`;
+  const canonicalProjectRoot = await canonicalAppRunnerProjectRoot(projectRoot);
+  const file = await appRunnerCanonicalFileInsideProject(projectRoot, filePath, canonicalProjectRoot);
+  if (!file) {
+    const absolutePath = resolveProjectRelativePath(projectRoot, filePath);
+    const info = await fileStatsIfExists(absolutePath).catch(() => null);
+    if (info?.isFile()) return `Path resolves outside the project root: ${filePath}`;
+    return `Path to file does not exist: ${filePath}`;
   }
-  if (!stats?.isFile()) return `Path to file does not exist: ${filePath}`;
   const command = cleanCustomRunnerCommand(runner.command);
-  const directReason = command === "./" ? directCustomRunnerUnavailableReason(filePath, stats) : "";
+  const directReason = command === "./" ? directCustomRunnerUnavailableReason(filePath, file.info) : "";
   if (directReason) return directReason;
   const commandParts = customRunnerCommandParts(command);
   if (command !== "./" && !await appRunnerCommandAvailable(commandParts[0], projectRoot)) return `Command is not available: ${commandParts[0]}`;
   return "";
+}
+
+function appRunnerSearchPathDiagnostic(severity, message, pathValue) {
+  return customAppRunnerDiagnostic(severity, message, { path: pathValue });
+}
+
+async function normalizeAppRunnerSearchPaths(rawSearchPaths, projectRoot, { requireDirectories = false, diagnostics = null } = {}) {
+  if (!Array.isArray(rawSearchPaths)) throw makeHttpError(400, `${APP_RUNNER_CONFIG_FILE} searchPaths must be an array`);
+  if (rawSearchPaths.length > APP_RUNNER_SEARCH_PATH_LIMIT) {
+    throw makeHttpError(400, `Search path limit reached (${APP_RUNNER_SEARCH_PATH_LIMIT})`);
+  }
+  const canonicalProjectRoot = await canonicalAppRunnerProjectRoot(projectRoot);
+  const searchPaths = [];
+  const availableSearchPaths = [];
+  const seen = new Set();
+  for (const rawPath of rawSearchPaths) {
+    let searchPath;
+    try {
+      searchPath = normalizeAppRunnerSearchPath(rawPath);
+    } catch (error) {
+      if (!diagnostics) throw error;
+      diagnostics.push(appRunnerSearchPathDiagnostic("error", `Invalid search path ignored: ${formatCliError(error)}`, typeof rawPath === "string" ? rawPath : ""));
+      continue;
+    }
+    if (seen.has(searchPath)) {
+      const message = `Duplicate search path ignored: ${searchPath}`;
+      if (!diagnostics) throw makeHttpError(400, message);
+      diagnostics.push(appRunnerSearchPathDiagnostic("warning", message, searchPath));
+      continue;
+    }
+    seen.add(searchPath);
+    searchPaths.push(searchPath);
+    const status = await appRunnerSearchPathStatus(projectRoot, searchPath, canonicalProjectRoot);
+    if (!status.available) {
+      if (requireDirectories) throw makeHttpError(400, status.reason);
+      diagnostics?.push(appRunnerSearchPathDiagnostic("warning", status.reason, searchPath));
+      continue;
+    }
+    availableSearchPaths.push({ path: searchPath, ...status });
+  }
+  return { searchPaths, availableSearchPaths, canonicalProjectRoot };
 }
 
 async function readAppRunnerConfig(projectRoot, { strictRead = false } = {}) {
@@ -2747,6 +3045,11 @@ async function readAppRunnerConfig(projectRoot, { strictRead = false } = {}) {
     if (strictRead) throw makeHttpError(400, message);
     diagnostics.push(customAppRunnerDiagnostic("error", message));
   }
+  if (source.searchPaths !== undefined && !Array.isArray(source.searchPaths)) {
+    const message = `${APP_RUNNER_CONFIG_FILE} searchPaths must be an array`;
+    if (strictRead) throw makeHttpError(400, message);
+    diagnostics.push(appRunnerSearchPathDiagnostic("error", message, ""));
+  }
   const rawRunners = Array.isArray(source.runners) ? source.runners : [];
   const runners = [];
   for (const raw of rawRunners) {
@@ -2764,20 +3067,31 @@ async function readAppRunnerConfig(projectRoot, { strictRead = false } = {}) {
     }
     if (runners.length >= APP_RUNNER_CUSTOM_LIMIT) break;
   }
-  return { projectRoot, configPath, runners, diagnostics };
+  let searchPathData = { searchPaths: [], availableSearchPaths: [], canonicalProjectRoot: await canonicalAppRunnerProjectRoot(projectRoot) };
+  if (Array.isArray(source.searchPaths)) {
+    try {
+      searchPathData = await normalizeAppRunnerSearchPaths(source.searchPaths, projectRoot, { diagnostics });
+    } catch (error) {
+      const message = `Invalid search paths ignored: ${formatCliError(error)}`;
+      if (strictRead) throw makeHttpError(400, message);
+      diagnostics.push(appRunnerSearchPathDiagnostic("error", message, ""));
+    }
+  }
+  return { projectRoot, configPath, runners, diagnostics, ...searchPathData };
 }
 
-async function writeAppRunnerConfig(projectRoot, runners) {
+async function writeAppRunnerConfig(projectRoot, runners, searchPaths = []) {
   const configPath = path.join(projectRoot, APP_RUNNER_CONFIG_FILE);
-  const normalized = [];
+  const normalizedRunners = [];
   for (const runner of runners) {
-    normalized.push(normalizeCustomRunnerDefinition(runner, projectRoot, { strict: true }));
-    if (normalized.length >= APP_RUNNER_CUSTOM_LIMIT) break;
+    normalizedRunners.push(normalizeCustomRunnerDefinition(runner, projectRoot, { strict: true }));
+    if (normalizedRunners.length >= APP_RUNNER_CUSTOM_LIMIT) break;
   }
+  const { searchPaths: normalizedSearchPaths } = await normalizeAppRunnerSearchPaths(searchPaths, projectRoot);
   const tmpFile = `${configPath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmpFile, `${JSON.stringify({ version: 1, runners: normalized }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(tmpFile, `${JSON.stringify({ version: 2, searchPaths: normalizedSearchPaths, runners: normalizedRunners }, null, 2)}\n`, { mode: 0o600 });
   await rename(tmpFile, configPath);
-  return { projectRoot, configPath, runners: normalized };
+  return { projectRoot, configPath, runners: normalizedRunners, searchPaths: normalizedSearchPaths };
 }
 
 async function customAppRunnerCandidate(projectRoot, configPath, runner) {
@@ -2825,11 +3139,13 @@ async function getCustomAppRunnerConfigData(tab) {
     });
   }
   return {
+    version: 2,
     projectRoot,
     displayProjectRoot: displayPath(projectRoot),
     configFile: config.configPath,
     displayConfigFile: displayPath(config.configPath),
     relativeConfigFile: APP_RUNNER_CONFIG_FILE,
+    searchPaths: config.searchPaths,
     runners,
     diagnostics: config.diagnostics,
   };
@@ -2844,7 +3160,15 @@ async function saveCustomAppRunner(tab, rawRunner) {
   const runners = config.runners.filter((runner) => runner.id !== normalized.id);
   if (runners.length >= APP_RUNNER_CUSTOM_LIMIT) throw makeHttpError(400, `Custom runner limit reached (${APP_RUNNER_CUSTOM_LIMIT})`);
   runners.push(normalized);
-  await writeAppRunnerConfig(projectRoot, runners);
+  await writeAppRunnerConfig(projectRoot, runners, config.searchPaths);
+  return getAppRunnerData(tab);
+}
+
+async function saveAppRunnerSearchPaths(tab, rawSearchPaths) {
+  const projectRoot = await findAppRunnerProjectRoot(tab?.cwd || options.cwd);
+  const config = await readAppRunnerConfig(projectRoot, { strictRead: true });
+  const { searchPaths } = await normalizeAppRunnerSearchPaths(rawSearchPaths, projectRoot, { requireDirectories: true });
+  await writeAppRunnerConfig(projectRoot, config.runners, searchPaths);
   return getAppRunnerData(tab);
 }
 
@@ -2855,7 +3179,7 @@ async function deleteCustomAppRunner(tab, runnerId) {
   const config = await readAppRunnerConfig(projectRoot);
   const runners = config.runners.filter((runner) => runner.id !== id);
   if (runners.length === config.runners.length) throw makeHttpError(404, "Custom runner not found");
-  await writeAppRunnerConfig(projectRoot, runners);
+  await writeAppRunnerConfig(projectRoot, runners, config.searchPaths);
   return getAppRunnerData(tab);
 }
 
@@ -3190,6 +3514,11 @@ function shellFromShebang(text) {
   return "";
 }
 
+function pythonFromShebang(text) {
+  const firstLine = String(text || "").split(/\r?\n/, 1)[0] || "";
+  return firstLine.startsWith("#!") && /\bpython(?:3(?:\.\d+)?)?\b/i.test(firstLine);
+}
+
 function shellScriptPriority(relativePath, shell) {
   const base = path.basename(relativePath).replace(/\.(?:sh|bash|zsh|fish)$/i, "").toLowerCase();
   const directory = path.dirname(relativePath).replace(/\\/g, "/");
@@ -3199,10 +3528,20 @@ function shellScriptPriority(relativePath, shell) {
   return 70 + (nameRank === -1 ? 18 : nameRank) + (dirRank === -1 ? 8 : dirRank) + shellRank / 10;
 }
 
-async function shellScriptRunnerForFile(cwd, relativePath) {
+async function shellScriptRunnerForFile(cwd, relativePath, { canonicalProjectRoot = "", runnerCwd = "" } = {}) {
+  let file;
+  if (canonicalProjectRoot) {
+    file = await appRunnerCanonicalFileInsideProject(cwd, relativePath, canonicalProjectRoot);
+    if (!file) return null;
+  }
   const extensionShell = APP_RUNNER_SHELL_EXTENSIONS.get(path.extname(relativePath).toLowerCase()) || "";
   let shell = extensionShell;
-  if (!shell) shell = shellFromShebang(await appRunnerTextIfExists(cwd, relativePath, 256));
+  if (!shell) {
+    const text = file
+      ? await appRunnerFilePrefix(file.canonicalPath)
+      : await appRunnerTextIfExists(cwd, relativePath, 256);
+    shell = shellFromShebang(text);
+  }
   if (!shell || !await appRunnerCommandAvailable(shell, cwd)) return null;
   const fileName = path.basename(relativePath);
   const directory = path.dirname(relativePath);
@@ -3215,7 +3554,101 @@ async function shellScriptRunnerForFile(cwd, relativePath) {
     projectFile: relativePath,
     description: `Detected ${shell} shell script${directory && directory !== "." ? ` in ${directory}` : ""}`,
     priority: shellScriptPriority(relativePath, shell),
+    cwd: runnerCwd,
   });
+}
+
+async function pythonScriptRunnersForFile(cwd, relativePath, { canonicalProjectRoot, runnerCwd, uvAvailable, pythonCommand }) {
+  if (!uvAvailable && !pythonCommand) return [];
+  const file = await appRunnerCanonicalFileInsideProject(cwd, relativePath, canonicalProjectRoot);
+  if (!file) return [];
+  const extension = path.extname(relativePath).toLowerCase();
+  if (extension !== ".py") {
+    if (path.basename(relativePath).includes(".")) return [];
+    const text = await appRunnerFilePrefix(file.canonicalPath);
+    if (!pythonFromShebang(text)) return [];
+  }
+  const directory = path.dirname(relativePath);
+  const descriptionSuffix = directory && directory !== "." ? ` in ${directory}` : "";
+  const candidates = [];
+  if (uvAvailable) {
+    candidates.push(appRunnerCandidate({
+      id: appRunnerId("python", "uv", relativePath),
+      label: `uv run ${path.basename(relativePath)}`,
+      kind: "python",
+      command: "uv",
+      args: ["run", relativePath],
+      projectFile: relativePath,
+      description: `Detected Python script${descriptionSuffix} from a configured project discovery path`,
+      priority: 56,
+      cwd: runnerCwd,
+    }));
+  }
+  if (pythonCommand) {
+    candidates.push(appRunnerCandidate({
+      id: appRunnerId("python", pythonCommand, relativePath),
+      label: `${pythonCommand} ${path.basename(relativePath)}`,
+      kind: "python",
+      command: pythonCommand,
+      args: [relativePath],
+      projectFile: relativePath,
+      description: `Detected Python script${descriptionSuffix} from a configured project discovery path`,
+      priority: 69,
+      cwd: runnerCwd,
+    }));
+  }
+  return candidates;
+}
+
+function shellScriptEntrySupported(entry) {
+  const extension = path.extname(entry.name).toLowerCase();
+  return APP_RUNNER_SHELL_EXTENSIONS.has(extension) || !entry.name.includes(".");
+}
+
+function configuredScriptEntrySupported(entry) {
+  return shellScriptEntrySupported(entry) || path.extname(entry.name).toLowerCase() === ".py";
+}
+
+async function addConfiguredScriptRunners(runners, cwd) {
+  const projectRoot = await findAppRunnerProjectRoot(cwd);
+  const config = await readAppRunnerConfig(projectRoot);
+  const [uvAvailable, python3Available, pythonAvailable] = await Promise.all([
+    appRunnerCommandAvailable("uv", projectRoot),
+    appRunnerCommandAvailable("python3", projectRoot),
+    appRunnerCommandAvailable("python", projectRoot),
+  ]);
+  const pythonCommand = python3Available ? "python3" : pythonAvailable ? "python" : "";
+  let pythonFilesAdded = 0;
+  for (const directory of config.availableSearchPaths) {
+    const shellLimitReached = runners.filter((item) => item.kind === "shell").length >= APP_RUNNER_SHELL_SCRIPT_LIMIT;
+    if (shellLimitReached && pythonFilesAdded >= APP_RUNNER_PYTHON_SCRIPT_LIMIT) break;
+    const entries = await readdir(directory.canonicalPath, { withFileTypes: true }).catch(() => []);
+    const sortedEntries = entries
+      .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && configuredScriptEntrySupported(entry))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))
+      .slice(0, APP_RUNNER_CONFIGURED_SCRIPT_SCAN_LIMIT);
+    for (const entry of sortedEntries) {
+      const relativePath = directory.path === "." ? entry.name : `${directory.path}/${entry.name}`;
+      if (runners.filter((item) => item.kind === "shell").length < APP_RUNNER_SHELL_SCRIPT_LIMIT && shellScriptEntrySupported(entry)) {
+        const shellRunner = await shellScriptRunnerForFile(projectRoot, relativePath, {
+          canonicalProjectRoot: config.canonicalProjectRoot,
+          runnerCwd: projectRoot,
+        });
+        if (shellRunner) addAppRunner(runners, shellRunner);
+      }
+      if (pythonFilesAdded < APP_RUNNER_PYTHON_SCRIPT_LIMIT && (path.extname(entry.name).toLowerCase() === ".py" || !entry.name.includes("."))) {
+        const pythonRunners = await pythonScriptRunnersForFile(projectRoot, relativePath, {
+          canonicalProjectRoot: config.canonicalProjectRoot,
+          runnerCwd: projectRoot,
+          uvAvailable,
+          pythonCommand,
+        });
+        for (const pythonRunner of pythonRunners) addAppRunner(runners, pythonRunner);
+        if (pythonRunners.length) pythonFilesAdded += 1;
+      }
+      if (runners.filter((item) => item.kind === "shell").length >= APP_RUNNER_SHELL_SCRIPT_LIMIT && pythonFilesAdded >= APP_RUNNER_PYTHON_SCRIPT_LIMIT) break;
+    }
+  }
 }
 
 async function addShellScriptRunners(runners, cwd) {
@@ -3228,9 +3661,7 @@ async function addShellScriptRunners(runners, cwd) {
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       const relativePath = directory ? `${directory}/${entry.name}` : entry.name;
-      const extension = path.extname(entry.name).toLowerCase();
-      const explicitShellExtension = APP_RUNNER_SHELL_EXTENSIONS.has(extension);
-      if (!explicitShellExtension && entry.name.includes(".")) continue;
+      if (!shellScriptEntrySupported(entry)) continue;
       candidates.push(relativePath);
     }
   }
@@ -3240,6 +3671,7 @@ async function addShellScriptRunners(runners, cwd) {
     if (runner) addAppRunner(runners, runner);
     if (runners.filter((item) => item.kind === "shell").length >= APP_RUNNER_SHELL_SCRIPT_LIMIT) break;
   }
+  await addConfiguredScriptRunners(runners, cwd);
 }
 
 function firstTaskFromText(text, names) {
@@ -6657,12 +7089,14 @@ async function openWorktreeResultForTab(sourceTab, result, body = {}) {
 
   if (sameResolvedPath(worktreePath, sourceTab.cwd)) {
     sourceTab.gitWorkspace = gitWorkspaceFromWorktreeResult(result, worktree);
+    scheduleSupervisorMetadataUpdate(sourceTab);
     return { ...result, session: null, tab: tabMeta(sourceTab), tabs: listTabs(), openedTab: false, openedCurrent: true };
   }
 
   const existingTab = [...tabs.values()].find((item) => sameResolvedPath(item.cwd, worktreePath));
   if (existingTab) {
     existingTab.gitWorkspace = gitWorkspaceFromWorktreeResult(result, worktree);
+    scheduleSupervisorMetadataUpdate(existingTab);
     return { ...result, session: null, tab: tabMeta(existingTab), tabs: listTabs(), openedTab: false, openedExistingTab: true };
   }
 
@@ -7220,7 +7654,7 @@ async function readBundledThemes() {
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  if (!["index.html", "app.js", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
   return name;
 }
 
@@ -7573,6 +8007,7 @@ if (Number.isFinite(startupDelayMs) && startupDelayMs > 0) {
 }
 
 const restoreTabs = readRestoreTabsFromEnv();
+const supervisorAttachCursor = readSupervisorCursorFromEnv();
 
 function normalizedRestoreString(value, maxLength) {
   const text = typeof value === "string" ? value.trim() : "";
@@ -7613,6 +8048,19 @@ function readRestoreTabsFromEnv() {
     console.warn(`failed to parse PI_WEBUI_RESTORE_TABS: ${sanitizeError(error)}`);
     return [];
   }
+}
+
+function readSupervisorCursorFromEnv() {
+  const raw = process.env.PI_WEBUI_RPC_SUPERVISOR_CURSOR;
+  delete process.env.PI_WEBUI_RPC_SUPERVISOR_CURSOR;
+  if (!raw) return undefined;
+  try {
+    const cursor = JSON.parse(raw);
+    if (typeof cursor?.epoch === "string" && typeof cursor?.seq === "string") return cursor;
+  } catch {
+    // A malformed inherited cursor must not prevent a clean authenticated attach.
+  }
+  return undefined;
 }
 
 async function packageNameForResourcePath(resourcePath) {
@@ -7823,6 +8271,205 @@ async function resolvePiCommand(piArgs) {
 const tabs = new Map();
 const closedRestorableTabs = [];
 let nextTabIndex = 1;
+let rpcSupervisor = null;
+let rpcSupervisorSnapshot = null;
+let rpcSupervisorEventUnsubscribe = null;
+let rpcSupervisorSequenceState = null;
+
+function markRpcSupervisorDiscontinuity(reason) {
+  if (!rpcSupervisorSnapshot) return;
+  const message = String(reason || "unknown discontinuity");
+  rpcSupervisorSnapshot.gap = true;
+  const state = rpcSupervisorSequenceState;
+  const previousSize = state?.discontinuities.size || 0;
+  state?.discontinuities.add(message);
+  if (state?.startupComplete && state.discontinuities.size > previousSize && !state.recoveryScheduled) {
+    state.recoveryScheduled = true;
+    queueMicrotask(async () => {
+      await Promise.all([...tabs.values()].flatMap((tab) => [
+        safeRpcData(tab, { type: "get_state" }).catch(() => {}),
+        safeRpcData(tab, { type: "get_messages" }).catch(() => {}),
+      ]));
+      for (const tab of tabs.values()) {
+        broadcastTabEvent(tab, {
+          type: "webui_supervisor_replay_gap",
+          tabId: tab.id,
+          tabTitle: tab.title,
+          reason: message,
+          ...rpcSupervisorBrowserState(),
+        });
+      }
+      state.recoveryScheduled = false;
+    });
+  }
+}
+
+function validateRpcSupervisorEvent(event) {
+  const state = rpcSupervisorSequenceState;
+  if (!state) return true;
+  const sequenceText = String(event?.seq ?? "");
+  if (event?.type !== "event" || event.scopeId !== state.scopeId || event.epoch !== state.epoch || !/^[1-9]\d*$/.test(sequenceText)) {
+    markRpcSupervisorDiscontinuity("malformed or mismatched supervisor event envelope");
+    return false;
+  }
+  const sequence = BigInt(sequenceText);
+  if (state.lastSequence !== null) {
+    if (sequence <= state.lastSequence) {
+      markRpcSupervisorDiscontinuity(`duplicate or out-of-order supervisor sequence ${sequenceText}`);
+      return false;
+    }
+    if (sequence !== state.lastSequence + 1n) {
+      markRpcSupervisorDiscontinuity(`missing supervisor sequence before ${sequenceText}`);
+    }
+  }
+  state.lastSequence = sequence;
+  return true;
+}
+
+function dispatchRpcSupervisorEvent(event) {
+  if (!validateRpcSupervisorEvent(event)) return;
+  const tab = tabs.get(event.tabId);
+  if (!tab) {
+    markRpcSupervisorDiscontinuity(`supervisor event ${event.seq} targeted an unknown tab`);
+    return;
+  }
+  tab.rpc.receiveSupervisorEvent?.(event);
+}
+
+function installRpcSupervisorEventDispatch(snapshot) {
+  if (!rpcSupervisor || !snapshot) return;
+  const attachSequence = supervisorAttachCursor?.epoch === snapshot.epoch && snapshot.gap !== true
+    ? BigInt(supervisorAttachCursor.seq)
+    : snapshot.latestSeq === "0" ? 0n : null;
+  rpcSupervisorSequenceState = {
+    scopeId: snapshot.scopeId,
+    epoch: snapshot.epoch,
+    lastSequence: attachSequence,
+    discontinuities: new Set(snapshot.gap === true ? ["supervisor reported a replay gap"] : []),
+    startupComplete: false,
+    recoveryScheduled: false,
+  };
+  rpcSupervisorEventUnsubscribe = rpcSupervisor.onEvent(dispatchRpcSupervisorEvent);
+}
+
+function finishRpcSupervisorReplay(snapshot) {
+  if (!snapshot || !rpcSupervisorSequenceState) return;
+  const latestSequence = BigInt(snapshot.latestSeq);
+  const observed = rpcSupervisorSequenceState.lastSequence;
+  if (observed === null) {
+    if (latestSequence > 0n) markRpcSupervisorDiscontinuity("retained replay did not include the supervisor latest sequence");
+  } else if (observed !== latestSequence) {
+    markRpcSupervisorDiscontinuity(`retained replay ended at ${observed} instead of ${latestSequence}`);
+  }
+  // A known replay gap is repaired authoritatively. Resume continuity checks
+  // from the attach snapshot boundary before draining attach-window events.
+  rpcSupervisorSequenceState.lastSequence = latestSequence;
+}
+
+async function finishRpcSupervisorStartup(initialTabs) {
+  if (!rpcSupervisor || !rpcSupervisorSnapshot) return;
+  finishRpcSupervisorReplay(rpcSupervisorSnapshot);
+  rpcSupervisor.drainStartupEvents();
+  if (rpcSupervisorSnapshot.tabs?.length) {
+    await Promise.all(initialTabs.map((tab) => primeTabRpc(tab).catch(() => {})));
+  }
+  if (rpcSupervisorSnapshot.gap === true) {
+    await Promise.all(initialTabs.flatMap((tab) => [
+      safeRpcData(tab, { type: "get_state" }).catch(() => {}),
+      safeRpcData(tab, { type: "get_messages" }).catch(() => {}),
+    ]));
+    recordEvent({
+      type: "webui_supervisor_replay_gap",
+      tabCount: initialTabs.length,
+      reason: [...(rpcSupervisorSequenceState?.discontinuities || [])].join("; "),
+    });
+  }
+  rpcSupervisorSequenceState.startupComplete = true;
+}
+
+function rpcSupervisorDisabled() {
+  return ["0", "false", "no", "off"].includes(String(process.env.PI_WEBUI_RPC_SUPERVISOR || "").trim().toLowerCase());
+}
+
+async function initializeRpcSupervisor() {
+  if (rpcSupervisorDisabled()) {
+    const paths = await supervisorPaths({ agentDir, port: options.port });
+    const state = await readSupervisorState(paths);
+    if (state?.tabs?.length) {
+      throw new Error("PI_WEBUI_RPC_SUPERVISOR is disabled but this WebUI scope still has managed Pi tabs; use /api/shutdown before starting direct mode.");
+    }
+    return null;
+  }
+  return discoverStartAttachRpcSupervisor({
+    agentDir,
+    port: options.port,
+    cursor: supervisorAttachCursor,
+    // The detached host inherits only the existing Pi child environment. Keep
+    // recovery routing available without persisting it in supervisor metadata.
+    environment: piRpcEnvironment(),
+  });
+}
+
+function supervisedTabMetadata(tab) {
+  return {
+    index: tab.index,
+    title: tab.title,
+    titleSource: tab.titleSource,
+    conversationStarted: tab.conversationStarted === true,
+    cwd: tab.cwd,
+    sessionFile: tabRestorableSessionFile(tab),
+    gitWorkspace: tab.gitWorkspace || null,
+    createdAt: tab.createdAt,
+  };
+}
+
+function scheduleSupervisorMetadataUpdate(tab) {
+  if (!(tab?.rpc instanceof SupervisorPiRpcProcess) || tab.supervisorMetadataUpdateQueued) return;
+  tab.supervisorMetadataUpdateQueued = true;
+  queueMicrotask(() => {
+    tab.supervisorMetadataUpdateQueued = false;
+    if (!(tab.rpc instanceof SupervisorPiRpcProcess) || !tabs.has(tab.id)) return;
+    void tab.rpc.updateMetadata(supervisedTabMetadata(tab)).catch((error) => {
+      console.warn(`failed to update managed Pi tab metadata: ${sanitizeError(error)}`);
+    });
+  });
+}
+
+function rpcSupervisorDiagnostics() {
+  if (!rpcSupervisor) return { enabled: false, attached: false, managedTabCount: 0 };
+  return {
+    enabled: true,
+    attached: rpcSupervisor.isConnected(),
+    managedTabCount: tabs.size,
+  };
+}
+
+function rpcSupervisorBrowserState() {
+  if (!rpcSupervisor || !rpcSupervisorSnapshot) return {};
+  return {
+    supervisorScopeId: rpcSupervisorSnapshot.scopeId,
+    supervisorEpoch: rpcSupervisorSnapshot.epoch,
+    supervisorReplayGap: rpcSupervisorSnapshot.gap === true,
+  };
+}
+
+async function prepareRpcSupervisorHandoff() {
+  if (!rpcSupervisor) return undefined;
+  const handoff = await rpcSupervisor.prepareHandoff();
+  return { epoch: handoff.epoch, seq: handoff.latestSeq };
+}
+
+async function detachRpcSupervisor() {
+  if (!rpcSupervisor) return;
+  try {
+    if (rpcSupervisor.isConnected()) await rpcSupervisor.detach();
+  } finally {
+    rpcSupervisorEventUnsubscribe?.();
+    rpcSupervisorEventUnsubscribe = null;
+    rpcSupervisor.close();
+    rpcSupervisor = null;
+  }
+}
 const TAB_ACTIVITY_IDLE_RECONCILE_GRACE_MS = 1200;
 const TAB_ACTIVITY_STATE_RECONCILE_INTERVAL_MS = 2500;
 const TAB_ACTIVITY_STATE_RECONCILE_TIMEOUT_MS = 1200;
@@ -7835,6 +8482,7 @@ function rememberTabState(tab, state) {
   if (!tab || !state || typeof state !== "object") return;
   tab.lastState = state;
   if (!options.noSession && Object.prototype.hasOwnProperty.call(state, "sessionFile")) tab.sessionFile = sessionFileFromState(state);
+  scheduleSupervisorMetadataUpdate(tab);
 }
 
 function patchTabState(tab, patch) {
@@ -7878,6 +8526,7 @@ function forgetTabState(tab) {
   tab.lastState = null;
   tab.sessionFile = undefined;
   tab.pendingThinkingLevel = undefined;
+  scheduleSupervisorMetadataUpdate(tab);
 }
 
 function tabRestorableSessionFile(tab) {
@@ -7952,6 +8601,10 @@ function normalizeWebuiSubagentText(value, maxLength = 240) {
   return text ? text.slice(0, maxLength) : "";
 }
 
+function normalizeWebuiSubagentSource(value) {
+  return value === "foreground" || value === "workflow" ? value : "async";
+}
+
 function normalizeWebuiSubagentPayload(value) {
   if (!value || typeof value !== "object" || value.version !== 1) return null;
   const runs = [];
@@ -7978,7 +8631,7 @@ function normalizeWebuiSubagentPayload(value) {
     if (!agents.length) continue;
     runs.push({
       id,
-      source: rawRun.source === "foreground" ? "foreground" : "async",
+      source: normalizeWebuiSubagentSource(rawRun.source),
       mode: ["single", "parallel", "chain"].includes(rawRun.mode) ? rawRun.mode : "single",
       status: "running",
       startedAt: Number.isFinite(rawRun.startedAt) ? rawRun.startedAt : Date.now(),
@@ -8659,27 +9312,14 @@ function attachRpcToTab(tab, rpc) {
   });
 }
 
-async function createTab({ id: requestedId, index, title, titleSource, conversationStarted, cwd, sessionFile, gitWorkspace } = {}) {
-  const tabIndex = Number.isInteger(index) && index > 0 ? index : nextTabIndex;
-  nextTabIndex = Math.max(nextTabIndex, tabIndex + 1);
-  const explicitTitle = String(title || "").trim();
-  const tabTitle = explicitTitle || defaultTabTitle(tabIndex);
-  const titleIsExplicit = Boolean(explicitTitle || (options.name && tabIndex === 1));
-  const resolvedTitleSource = ["explicit", "auto", "default"].includes(titleSource) ? titleSource : titleIsExplicit ? "explicit" : "default";
-  const tabCwd = cwd ? await resolveCwd(cwd, options.cwd) : options.cwd;
-  const id = requestedId && !tabs.has(requestedId) ? requestedId : randomUUID();
-  const piArgs = await buildPiArgsForTab(tabIndex, tabTitle, tabCwd);
-  if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
-  const piCommand = await resolvePiCommand(piArgs);
-  const rpc = new PiRpcProcess({ ...piCommand, cwd: tabCwd, env: piRpcEnvironment() });
-  const createdAt = new Date().toISOString();
+function createTabRecord({ id, index, title, titleSource, conversationStarted, cwd, createdAt = new Date().toISOString(), sessionFile, gitWorkspace, rpc }) {
   const tab = {
     id,
-    index: tabIndex,
-    title: tabTitle,
-    titleSource: resolvedTitleSource,
+    index,
+    title,
+    titleSource,
     conversationStarted: conversationStarted === true,
-    cwd: tabCwd,
+    cwd,
     createdAt,
     sessionFile: options.noSession ? undefined : normalizedRestoreString(sessionFile, 4096),
     gitWorkspace: gitWorkspace || null,
@@ -8698,20 +9338,61 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     bashQueueDraining: false,
     compactionQueue: [],
     compactionQueueDraining: false,
-    rpc: undefined,
+    rpc,
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
   };
   resetNaturalConversationMode(tab);
+  return tab;
+}
+
+async function createTab({ id: requestedId, index, title, titleSource, conversationStarted, cwd, sessionFile, gitWorkspace } = {}) {
+  const tabIndex = Number.isInteger(index) && index > 0 ? index : nextTabIndex;
+  nextTabIndex = Math.max(nextTabIndex, tabIndex + 1);
+  const explicitTitle = String(title || "").trim();
+  const tabTitle = explicitTitle || defaultTabTitle(tabIndex);
+  const titleIsExplicit = Boolean(explicitTitle || (options.name && tabIndex === 1));
+  const resolvedTitleSource = ["explicit", "auto", "default"].includes(titleSource) ? titleSource : titleIsExplicit ? "explicit" : "default";
+  const tabCwd = cwd ? await resolveCwd(cwd, options.cwd) : options.cwd;
+  const id = requestedId && !tabs.has(requestedId) ? requestedId : randomUUID();
+  const piArgs = await buildPiArgsForTab(tabIndex, tabTitle, tabCwd);
+  if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
+  const piCommand = await resolvePiCommand(piArgs);
+  const createdAt = new Date().toISOString();
+  const rpc = rpcSupervisor
+    ? new SupervisorPiRpcProcess({ supervisor: rpcSupervisor, tabId: id, displayCommand: piCommand.displayCommand, cwd: tabCwd, snapshot: { startedAt: createdAt, running: false } })
+    : new PiRpcProcess({ ...piCommand, cwd: tabCwd, env: piRpcEnvironment() });
+  const tab = createTabRecord({
+    id,
+    index: tabIndex,
+    title: tabTitle,
+    titleSource: resolvedTitleSource,
+    conversationStarted,
+    cwd: tabCwd,
+    createdAt,
+    sessionFile,
+    gitWorkspace,
+    rpc,
+  });
 
   attachRpcToTab(tab, rpc);
   tabs.set(id, tab);
-  rpc.start();
   try {
+    if (rpc instanceof SupervisorPiRpcProcess) {
+      const snapshot = await rpcSupervisor.createTab({
+        tabId: id,
+        metadata: supervisedTabMetadata(tab),
+        child: { command: piCommand.command, args: piCommand.args, cwd: tabCwd },
+      });
+      rpc.applySnapshot(snapshot);
+    } else {
+      rpc.start();
+    }
     await primeTabRpc(tab);
   } catch (error) {
     if (!tab.rpc.isRunning()) {
       tab.rpcUnsubscribe?.();
+      rpc.dispose?.();
       gitLiveWatcher.unsubscribe(id);
       tabs.delete(id);
       throw new Error(`Pi RPC process failed while starting ${tabTitle}: ${sanitizeError(error)}`);
@@ -8721,6 +9402,56 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     recordEvent({ type: "webui_tab_restored", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd });
   }
   return tab;
+}
+
+async function hydrateManagedTabs(snapshot) {
+  const managedTabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs : [];
+  if (!managedTabs.length) return [];
+  const hydrated = [];
+  try {
+    for (const managed of managedTabs) {
+      const metadata = managed?.metadata;
+      const descriptor = normalizeRestoreTabDescriptor({ id: managed?.id, ...metadata }, new Set());
+      if (!descriptor?.id || !descriptor.cwd || tabs.has(descriptor.id)) {
+        throw new Error("RPC supervisor returned invalid or duplicate managed tab metadata");
+      }
+      const tabIndex = Number.isInteger(descriptor.index) && descriptor.index > 0 ? descriptor.index : nextTabIndex;
+      nextTabIndex = Math.max(nextTabIndex, tabIndex + 1);
+      const tabTitle = descriptor.title || defaultTabTitle(tabIndex);
+      const resolvedTitleSource = ["explicit", "auto", "default"].includes(descriptor.titleSource) ? descriptor.titleSource : "default";
+      const rpc = new SupervisorPiRpcProcess({
+        supervisor: rpcSupervisor,
+        tabId: descriptor.id,
+        cwd: descriptor.cwd,
+        snapshot: managed,
+      });
+      const tab = createTabRecord({
+        id: descriptor.id,
+        index: tabIndex,
+        title: tabTitle,
+        titleSource: resolvedTitleSource,
+        conversationStarted: descriptor.conversationStarted,
+        cwd: descriptor.cwd,
+        createdAt: normalizedRestoreString(metadata?.createdAt, 128) || managed.startedAt || new Date().toISOString(),
+        sessionFile: descriptor.sessionFile,
+        gitWorkspace: metadata?.gitWorkspace || null,
+        rpc,
+      });
+      attachRpcToTab(tab, rpc);
+      tabs.set(tab.id, tab);
+      hydrated.push(tab);
+    }
+  } catch (error) {
+    for (const tab of hydrated) {
+      tab.rpcUnsubscribe?.();
+      tab.rpc.dispose?.();
+      tabs.delete(tab.id);
+    }
+    throw error;
+  }
+
+  for (const event of snapshot.replay || []) dispatchRpcSupervisorEvent(event);
+  return hydrated;
 }
 
 function firstTab() {
@@ -8877,7 +9608,7 @@ function normalizeWebuiSubagentOutput(value, selection) {
   return {
     version: 1,
     runId: normalizeWebuiSubagentText(value.runId, 160) || selection.run.id,
-    source: value.source === "foreground" ? "foreground" : "async",
+    source: normalizeWebuiSubagentSource(selection.run?.source || value.source),
     mode: ["single", "parallel", "chain"].includes(value.mode) ? value.mode : selection.run.mode,
     startedAt: Number.isFinite(value.startedAt) ? value.startedAt : selection.run.startedAt,
     updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
@@ -8962,12 +9693,14 @@ async function restorableTabsForRestart() {
   return mergeRestorableTabDescriptors(liveDescriptors);
 }
 
-function spawnRestartServer(restorableTabs) {
+function spawnRestartServer(restorableTabs, supervisorCursor) {
   const env = {
     ...process.env,
     PI_WEBUI_RESTORE_TABS: JSON.stringify(restorableTabs || []),
     PI_WEBUI_START_DELAY_MS: "1200",
   };
+  if (supervisorCursor) env.PI_WEBUI_RPC_SUPERVISOR_CURSOR = JSON.stringify(supervisorCursor);
+  else delete env.PI_WEBUI_RPC_SUPERVISOR_CURSOR;
   if (webuiDevServer) env.PI_WEBUI_DEV = "1";
   else delete env.PI_WEBUI_DEV;
   const child = spawn(process.execPath, process.argv.slice(1), {
@@ -9430,7 +10163,8 @@ async function runPiUpdateAndPrepareRestart({ all = false } = {}) {
 
     updateStatusCache = null;
     updateStatusCacheAt = 0;
-    const child = spawnRestartServer(restorableTabs);
+    const supervisorCursor = await prepareRpcSupervisorHandoff();
+    const child = spawnRestartServer(restorableTabs, supervisorCursor);
     restartPrepared = true;
     recordEvent({ type: "webui_update_restarting", command, updateAll: all, nextWebuiPid: child.pid, restorableTabCount: restorableTabs.length });
     return {
@@ -9498,6 +10232,7 @@ function renameTab(tab, title, { source = "explicit", maxLength, unique = source
   tab.title = nextTitle;
   tab.titleSource = source;
   if (previousTitle === nextTitle) return false;
+  scheduleSupervisorMetadataUpdate(tab);
 
   broadcastTabEvent(tab, {
     type: "webui_tab_renamed",
@@ -9515,6 +10250,7 @@ function maybeNameTabForConversation(tab, command) {
   if (!tab || !commandStartsConversation(command)) return false;
   const shouldRename = !tab.conversationStarted && tab.titleSource !== "explicit";
   tab.conversationStarted = true;
+  scheduleSupervisorMetadataUpdate(tab);
   if (!shouldRename) return false;
   const title = generatedTabTitleFromPrompt(command.message) || `Conversation ${tab.index}`;
   return renameTab(tab, title, { source: "auto", maxLength: AUTO_TAB_TITLE_MAX_LENGTH });
@@ -9550,7 +10286,6 @@ async function updateTabCwd(id, cwd) {
   tab.rpcUnsubscribe = undefined;
   rejectTabBashQueue(tab, new Error("Pi tab is restarting; queued bash commands were cancelled"));
   stopAppRunnerForTab(tab, "cwd changed", { force: true });
-  oldRpc.stop();
 
   tab.cwd = nextCwd;
   resetTabActivity(tab);
@@ -9559,9 +10294,22 @@ async function updateTabCwd(id, cwd) {
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
-  const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
-  attachRpcToTab(tab, rpc);
-  rpc.start();
+  let rpc;
+  if (oldRpc instanceof SupervisorPiRpcProcess) {
+    const snapshot = await oldRpc.replace({
+      child: { command: piCommand.command, args: piCommand.args, cwd: tab.cwd },
+      metadata: supervisedTabMetadata(tab),
+      displayCommand: piCommand.displayCommand,
+    });
+    oldRpc.dispose();
+    rpc = new SupervisorPiRpcProcess({ supervisor: rpcSupervisor, tabId: tab.id, displayCommand: piCommand.displayCommand, cwd: tab.cwd, snapshot });
+    attachRpcToTab(tab, rpc);
+  } else {
+    oldRpc.stop();
+    rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
+    attachRpcToTab(tab, rpc);
+    rpc.start();
+  }
   // Non-fatal: a failed start surfaces through pi_process_error/exit events.
   await primeTabRpc(tab).catch(() => {});
 
@@ -9587,7 +10335,6 @@ async function restartTabRpc(tab, reason = "reload") {
   tab.rpcUnsubscribe?.();
   tab.rpcUnsubscribe = undefined;
   rejectTabBashQueue(tab, new Error("Pi tab is reloading; queued bash commands were cancelled"));
-  oldRpc.stop();
 
   resetTabActivity(tab);
   clearPendingExtensionUiRequests(tab);
@@ -9595,9 +10342,22 @@ async function restartTabRpc(tab, reason = "reload") {
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
-  const rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
-  attachRpcToTab(tab, rpc);
-  rpc.start();
+  let rpc;
+  if (oldRpc instanceof SupervisorPiRpcProcess) {
+    const snapshot = await oldRpc.replace({
+      child: { command: piCommand.command, args: piCommand.args, cwd: tab.cwd },
+      metadata: supervisedTabMetadata(tab),
+      displayCommand: piCommand.displayCommand,
+    });
+    oldRpc.dispose();
+    rpc = new SupervisorPiRpcProcess({ supervisor: rpcSupervisor, tabId: tab.id, displayCommand: piCommand.displayCommand, cwd: tab.cwd, snapshot });
+    attachRpcToTab(tab, rpc);
+  } else {
+    oldRpc.stop();
+    rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
+    attachRpcToTab(tab, rpc);
+    rpc.start();
+  }
 
   const reloadedEvent = { type: "webui_tab_reloaded", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, pid: tab.rpc.child?.pid, reason, sessionFile: state.data?.sessionFile, tabActivity: tabActivitySnapshot(tab) };
   broadcastTabEvent(tab, reloadedEvent);
@@ -11366,6 +12126,7 @@ async function switchTabSession(tab, sessionPath) {
   if (response.success === false) return response;
   if (!response.data?.cancelled) {
     tab.cwd = manager.getCwd();
+    scheduleSupervisorMetadataUpdate(tab);
     const state = await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS);
     if (state.ok) rememberTabState(tab, state.data);
   }
@@ -11717,7 +12478,8 @@ async function closeTab(id) {
   tab.rpcUnsubscribe?.();
   rejectTabBashQueue(tab, new Error("Pi tab closed; queued bash commands were cancelled"));
   stopAppRunnerForTab(tab, "tab closed", { force: true });
-  tab.rpc.stop();
+  await tab.rpc.stop();
+  tab.rpc.dispose?.();
   tabs.delete(id);
   return tab;
 }
@@ -11728,7 +12490,8 @@ async function discardTab(tab) {
   tab.rpcUnsubscribe?.();
   rejectTabBashQueue(tab, new Error("Pi recovery tab initialization failed"));
   stopAppRunnerForTab(tab, "recovery initialization failed", { force: true });
-  tab.rpc.stop();
+  await tab.rpc.stop();
+  tab.rpc.dispose?.();
   tabs.delete(tab.id);
 }
 
@@ -11827,6 +12590,8 @@ function directoryPickerActiveCwd(req, url, body = {}) {
 }
 
 async function createInitialTabs() {
+  const managedTabs = await hydrateManagedTabs(rpcSupervisorSnapshot);
+  if (rpcSupervisorSnapshot?.tabs?.length) return managedTabs;
   if (!restoreTabs.length) return options.cwdExplicit ? [await createTab()] : [];
 
   const created = [];
@@ -11845,7 +12610,11 @@ const serverStartedAt = new Date().toISOString();
 const persistedStartupSettings = await readWebuiSettings(undefined, { reportInvalidOutputMode: true });
 let persistedRemoteAuthEnabled = persistedStartupSettings.remoteAuthEnabled === true;
 let persistedOutputModeDefault = persistedStartupSettings.outputModeDefault;
+rpcSupervisor = await initializeRpcSupervisor();
+rpcSupervisorSnapshot = rpcSupervisor?.snapshot || null;
+installRpcSupervisorEventDispatch(rpcSupervisorSnapshot);
 const initialTabs = await createInitialTabs();
+await finishRpcSupervisorStartup(initialTabs);
 const initialTab = initialTabs[0];
 let currentHost = options.host;
 let networkRebindInProgress = false;
@@ -12284,6 +13053,7 @@ async function webuiStatus({ detailed = false, eventLimit = 40, includeAuthPin =
     pageUrl: network.localUrl,
     boundUrl: `http://${formatUrlHost(currentHost)}:${options.port}/`,
     network,
+    rpcSupervisor: rpcSupervisorDiagnostics(),
     piPid: tab?.rpc.child?.pid,
     piRunning: !!tab?.rpc.child && tab.rpc.child.exitCode === null,
     outputMode: outputModeMetadata(),
@@ -12334,6 +13104,37 @@ const server = createServer(async (req, res) => {
 
     if (shouldChallengeRemoteAuth(req, url)) {
       sendRemoteAuthRequired(req, res, url);
+      return;
+    }
+
+    if (url.pathname === "/api/workflow-policy" && req.method === "GET") {
+      requireLocalhost(req, "Workflow policy setup is only allowed from localhost.");
+      try {
+        const policyModule = await workflowPolicyModule();
+        const state = await policyModule.readWorkflowPolicyState({ agentDir });
+        // Suggestions are advisory helpers only and are never part of the persisted v1 policy.
+        sendJson(res, 200, { ok: true, data: { ...state, suggestions: policyModule.WORKFLOW_POLICY_SUGGESTIONS } });
+      } catch (error) {
+        throw workflowPolicyRequestError(error);
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/workflow-policy" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      requireWorkflowPolicyJsonRequest(req);
+      const body = workflowPolicySaveBody(await readJsonBody(req));
+      ensureWorkflowPolicyMutationAllowed();
+      try {
+        const policyModule = await workflowPolicyModule();
+        sendJson(res, 200, { ok: true, data: await policyModule.writeWorkflowPolicyState({
+          agentDir,
+          policy: body.policy,
+          expectedRevision: body.expectedRevision,
+        }) });
+      } catch (error) {
+        throw workflowPolicyRequestError(error);
+      }
       return;
     }
 
@@ -12471,7 +13272,24 @@ const server = createServer(async (req, res) => {
         tabActivity: tabActivitySnapshot(tab),
         pendingExtensionUiRequestCount: pendingExtensionUiRequests(tab).length,
         activeRun: publicAppRunnerState(tab.appRunner),
+        ...rpcSupervisorBrowserState(),
       });
+      if (rpcSupervisor) {
+        sendSseToClient(client, {
+          type: "webui_supervisor_reconnected",
+          tabId: tab.id,
+          tabTitle: tab.title,
+          ...rpcSupervisorBrowserState(),
+        });
+        if (rpcSupervisorSnapshot?.gap === true) {
+          sendSseToClient(client, {
+            type: "webui_supervisor_replay_gap",
+            tabId: tab.id,
+            tabTitle: tab.title,
+            ...rpcSupervisorBrowserState(),
+          });
+        }
+      }
       replayExtensionStatuses(tab, client);
       replayExtensionWidgets(tab, client);
       replayPendingExtensionUiRequests(tab, client);
@@ -12497,6 +13315,7 @@ const server = createServer(async (req, res) => {
         cwd: status.cwd,
         outputMode: status.outputMode,
         network: status.network,
+        rpcSupervisor: status.rpcSupervisor,
         tabs: status.tabs,
         restorableTabs: status.restorableTabs,
       });
@@ -12613,9 +13432,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/restart" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
       const restorableTabs = await restorableTabsForRestart();
-      const child = spawnRestartServer(restorableTabs);
+      const supervisorCursor = await prepareRpcSupervisorHandoff();
+      const child = spawnRestartServer(restorableTabs, supervisorCursor);
       sendJson(res, 200, { ok: true, message: "Pi Web UI restarting", webuiPid: process.pid, nextWebuiPid: child.pid, restorableTabCount: restorableTabs.length });
-      setTimeout(() => shutdown("api restart"), 20).unref();
+      setTimeout(() => { void shutdown("api restart", { preserveSessions: true }); }, 20).unref();
       return;
     }
 
@@ -12626,14 +13446,14 @@ const server = createServer(async (req, res) => {
       const bodyAll = body?.all === true || String(body?.mode || "").toLowerCase() === "all";
       const data = await runPiUpdateAndPrepareRestart({ all: queryAll || bodyAll });
       sendJson(res, 200, { ok: true, data });
-      setTimeout(() => shutdown("api update"), 20).unref();
+      setTimeout(() => { void shutdown("api update", { preserveSessions: true }); }, 20).unref();
       return;
     }
 
     if (url.pathname === "/api/shutdown" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
       sendJson(res, 200, { ok: true, message: "Pi Web UI shutting down", webuiPid: process.pid });
-      setTimeout(() => shutdown("api shutdown"), 20).unref();
+      setTimeout(() => { void shutdown("api shutdown", { preserveSessions: false }); }, 20).unref();
       return;
     }
 
@@ -12705,7 +13525,12 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "app runner configuration changes are blocked");
-      sendJson(res, 200, { ok: true, data: await saveCustomAppRunner(tab, body.runner || body) });
+      if (Object.prototype.hasOwnProperty.call(body, "searchPaths")) {
+        if (body.runner !== undefined) throw makeHttpError(400, "Choose either a custom runner or searchPaths for this mutation");
+        sendJson(res, 200, { ok: true, data: await saveAppRunnerSearchPaths(tab, body.searchPaths) });
+      } else {
+        sendJson(res, 200, { ok: true, data: await saveCustomAppRunner(tab, body.runner || body) });
+      }
       return;
     }
 
@@ -13498,11 +14323,7 @@ server.on("error", (error) => {
     return;
   }
   console.error("Web UI server failed:", sanitizeError(error));
-  for (const tab of tabs.values()) {
-    stopAppRunnerForTab(tab, "server error", { force: true });
-    tab.rpc.stop();
-  }
-  process.exit(1);
+  void shutdown("server error", { preserveSessions: true, exitCode: 1 });
 });
 
 function sweepWebuiTempArtifacts() {
@@ -13525,24 +14346,51 @@ server.listen(options.port, currentHost, () => {
   }
 });
 
-function shutdown(signal) {
+let shutdownInProgress = false;
+
+async function shutdown(signal, { preserveSessions = false, exitCode = 0 } = {}) {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
   console.log(`\n${signal}: shutting down Pi Web UI...`);
   gitLiveWatcher.closeAll();
+  for (const tab of tabs.values()) stopAppRunnerForTab(tab, "server shutdown", { force: true });
+
+  const forceExit = setTimeout(() => process.exit(exitCode), 4000);
+  forceExit.unref?.();
+  try {
+    if (rpcSupervisor) {
+      if (preserveSessions) await detachRpcSupervisor();
+      else {
+        try {
+          if (rpcSupervisor.isConnected()) await rpcSupervisor.shutdown();
+        } finally {
+          rpcSupervisor.close();
+          rpcSupervisor = null;
+        }
+      }
+    } else {
+      await Promise.all([...tabs.values()].map((tab) => Promise.resolve(tab.rpc.stop()).catch(() => {})));
+    }
+  } catch (error) {
+    console.error("Web UI RPC shutdown failed:", sanitizeError(error));
+  }
+
   const forceCloseTimer = setTimeout(() => {
     server.closeAllConnections?.();
   }, NETWORK_REBIND_FORCE_CLOSE_MS);
   forceCloseTimer.unref?.();
-  server.close(() => {
-    clearTimeout(forceCloseTimer);
-    process.exit(0);
+  await new Promise((resolve) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close(() => resolve());
+    server.closeIdleConnections?.();
   });
-  server.closeIdleConnections?.();
-  for (const tab of tabs.values()) {
-    stopAppRunnerForTab(tab, "server shutdown", { force: true });
-    tab.rpc.stop();
-  }
-  setTimeout(() => process.exit(0), 4000).unref();
+  clearTimeout(forceCloseTimer);
+  clearTimeout(forceExit);
+  process.exit(exitCode);
 }
 
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => { void shutdown("SIGINT", { preserveSessions: false }); });
+process.on("SIGTERM", () => { void shutdown("SIGTERM", { preserveSessions: true }); });

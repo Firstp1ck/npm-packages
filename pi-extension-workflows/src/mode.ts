@@ -17,7 +17,10 @@ The script must:
 - use top-level await and return one consolidated result;
 - avoid imports, Node globals, filesystem/network/shell APIs, eval, Function, and WebAssembly;
 - use stable, unique agent labels and conservative concurrency;
-- request only read-only tools unless the user explicitly approved broader capabilities and the runtime supports them.
+- declare broader global capabilities in \`meta.pi.permissions\` only when needed and explicitly approved, treating \`write\` and \`shell\` there only as workflow-wide upper bounds that user/project policy may further narrow;
+- request \`bash\`, \`write\`, \`edit\`, or \`apply_patch\` only in the \`tools\` array of the exact \`agent()\` call inside the phase that needs them, and keep every other call read-only;
+- never infer authority from phase names: phases provide lifecycle context, not permissions;
+- never create, edit, or relax \`workflow-policy.json\`; a missing effective user/project permission ceiling denies the broader capability.
 
 Call workflow_run with the generated script, structured args, and confirmRun=true. Do not merely print the script. If the request is trivial and fanout would add no value, answer directly and briefly explain that a workflow was unnecessary.
 `.trim();
