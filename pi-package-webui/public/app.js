@@ -13973,7 +13973,11 @@ function renderWorkspaceDashboard() {
     make("span", "workspace-dashboard-chip", `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`),
     make("span", `workspace-dashboard-chip ${queueCount ? "attention" : ""}`.trim(), queueCount ? `${queueCount} queued` : "queue clear"),
   );
-  title.append(make("span", "workspace-dashboard-kicker", "Workspace"), heading, cwd, meta);
+  const summary = make("div", "workspace-dashboard-summary-row");
+  summary.append(make("span", "workspace-dashboard-kicker", "Workspace"), meta);
+  const identity = make("div", "workspace-dashboard-identity");
+  identity.append(heading, cwd);
+  title.append(summary, identity);
   const actions = make("div", "workspace-dashboard-actions");
   actions.append(
     dashboardAction("Command palette", () => openCommandPalette(), "primary"),
