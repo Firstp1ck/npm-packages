@@ -94,19 +94,19 @@ await writeFile(asyncStatusFile, JSON.stringify({
   lastUpdate: Date.now(),
   steps: [
     { agent: "reviewer", status: "running", sessionFile: asyncSessionFile, recentOutput: [], currentTool: "bash", currentToolArgs: "sleep 5", model: "anthropic/claude-opus-4-8:high", thinking: "high" },
-    { agent: "scout", status: "running", model: "openai-codex/gpt-5.6-sol", thinking: "high" },
+    { agent: "reviewer", status: "running", model: "openai-codex/gpt-5.6-sol", thinking: "high" },
   ],
 }));
 
 const statusText = `Active async runs: 2
 
-- run-a | running | active | parallel | 2/2 running | ~/repo
-  1. reviewer | running | tool read
-  2. scout | running | tool grep
+- run-a | running | active | parallel [fresh] | 2/2 running | ~/repo
+  1. reviewer [fresh] | running | tool read
+  2. reviewer [fresh] | running | tool grep
 
-- run-b | running | active | chain | step 2/2 | ~/repo
-  1. planner | completed
-  2. [Implementation] Apply fixes (worker) | running | tool edit
+- run-b | running | active | chain [mixed] | step 2/2 | ~/repo
+  1. planner [fresh] | completed
+  2. [Implementation] Apply fixes (worker) [fork] | running | tool edit
     ↳ nested-oracle [nested-1] running | tool grep`;
 
 webuiRpcHelper(pi);
@@ -165,7 +165,8 @@ function latestPayload() {
 let payload = latestPayload();
 assert.equal(payload.available, true, "successful pi-subagents RPC should mark status available");
 assert.deepEqual(payload.runs.map((run) => run.id), ["run-a", "run-b"]);
-assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.name, agent.currentTool]), [["reviewer", "read"], ["scout", "grep"]]);
+assert.deepEqual(payload.runs.map((run) => run.mode), ["parallel", "chain"], "async overview should ignore fleet context badges when parsing run modes");
+assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.name, agent.currentTool]), [["reviewer", "read"], ["reviewer", "grep"]], "async overview should ignore fleet context badges while preserving same-role child indexes");
 assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "async overview should publish effective lifecycle model and reasoning metadata");
 assert.deepEqual(payload.runs[1].agents.map((agent) => [agent.name, agent.nested]), [["worker", false], ["nested-oracle", true]]);
 

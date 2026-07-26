@@ -9,6 +9,8 @@ import {
   buildRecoveryPiArgs,
   classifyAnthropicError,
   discoverRecoveryFiles,
+  formatRecoveryDiscoveryFailure,
+  inspectRecoveryFiles,
   postSecureWebuiRecovery,
   selectRecoveryModel,
   writeRecoveryPromptFile,
@@ -17,6 +19,13 @@ import {
 function writeResource(file, content = "resource") {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
+}
+
+function writePatchPackage(patch) {
+  const root = path.dirname(patch);
+  writeResource(patch, "# test patch");
+  writeResource(path.join(root, "patch.manifest.json"), JSON.stringify({ lifecycle: { handler: "./scripts/lifecycle.mjs" } }));
+  writeResource(path.join(root, "scripts", "lifecycle.mjs"), "export {};\n");
 }
 
 test("error classifiers are provider-scoped, normalized, and stable", () => {
@@ -73,13 +82,13 @@ test("recovery file discovery honors explicit environment paths", async () => {
   try {
     const patch = path.join(root, "PATCH.md");
     const runner = path.join(root, "patchctl.mjs");
-    writeResource(patch, "patch");
+    writePatchPackage(patch);
     writeResource(runner, "runner");
     const result = await discoverRecoveryFiles({
       PI_ANTHROPIC_PATCH_PATH: patch,
       PI_PATCHCTL_PATH: runner,
       PI_AGENT_DIR: path.join(root, "agent"),
-    }, root);
+    }, root, { moduleDirectory: path.join(root, "module"), packagedPatchctlPath: null });
     assert.deepEqual(result, { patchPath: patch, patchctlPath: runner });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -92,9 +101,12 @@ test("recovery file discovery supports standard agent paths", async () => {
     const agentDir = path.join(root, "agent");
     const patch = path.join(agentDir, "patches", "pi-anthropic-provider-dist-compat", "PATCH.md");
     const runner = path.join(agentDir, "skills", "patch-md", "scripts", "patchctl.mjs");
-    writeResource(patch, "patch");
+    writePatchPackage(patch);
     writeResource(runner, "runner");
-    const result = await discoverRecoveryFiles({ PI_CODING_AGENT_DIR: agentDir }, root);
+    const result = await discoverRecoveryFiles({ PI_CODING_AGENT_DIR: agentDir }, root, {
+      moduleDirectory: path.join(root, "module"),
+      packagedPatchctlPath: null,
+    });
     assert.deepEqual(result, { patchPath: patch, patchctlPath: runner });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -107,10 +119,48 @@ test("recovery file discovery supports a portable source-checkout ancestor", asy
     const cwd = path.join(root, "projects", "nested", "repo");
     const patch = path.join(root, "patches", "pi-anthropic-provider-dist-compat", "PATCH.md");
     const runner = path.join(root, "pi-skill-patch-md", "skills", "patch-md", "scripts", "patchctl.mjs");
-    writeResource(patch, "patch");
+    writePatchPackage(patch);
     writeResource(runner, "runner");
-    const result = await discoverRecoveryFiles({ PI_AGENT_DIR: path.join(root, "missing-agent") }, cwd);
+    const result = await discoverRecoveryFiles({ PI_AGENT_DIR: path.join(root, "missing-agent") }, cwd, {
+      moduleDirectory: path.join(root, "module"),
+      packagedPatchctlPath: null,
+    });
     assert.deepEqual(result, { patchPath: patch, patchctlPath: runner });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recovery discovery prefers self-contained packaged resources", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "recovery-discovery-packaged-"));
+  try {
+    const moduleDirectory = path.join(root, "node_modules", "@firstpick", "pi-extension-anthropic-auth-recovery");
+    const cwd = path.join(root, "unrelated", "project");
+    const patch = path.join(moduleDirectory, "resources", "pi-anthropic-provider-dist-compat", "PATCH.md");
+    const runner = path.join(root, "node_modules", "@firstpick", "pi-skill-patch-md", "skills", "patch-md", "scripts", "patchctl.mjs");
+    writePatchPackage(patch);
+    writeResource(runner, "runner");
+    const discovery = await inspectRecoveryFiles({ PI_AGENT_DIR: path.join(root, "missing-agent") }, cwd, {
+      moduleDirectory,
+      packagedPatchctlPath: runner,
+    });
+    assert.deepEqual(discovery.files, { patchPath: patch, patchctlPath: runner });
+    assert.deepEqual(discovery.missing, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recovery discovery reports the exact missing resources and durable remediation", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "recovery-discovery-missing-"));
+  try {
+    const discovery = await inspectRecoveryFiles({ PI_AGENT_DIR: path.join(root, "missing-agent") }, path.join(root, "project"), {
+      moduleDirectory: path.join(root, "module"),
+      packagedPatchctlPath: null,
+    });
+    assert.deepEqual(discovery.missing, ["compatibility PATCH.md package", "patchctl runner"]);
+    assert.match(formatRecoveryDiscoveryFailure(discovery), /Reinstall @firstpick\/pi-extension-anthropic-auth-recovery with dependencies/u);
+    assert.match(formatRecoveryDiscoveryFailure(discovery), /restart Pi\/WebUI/u);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

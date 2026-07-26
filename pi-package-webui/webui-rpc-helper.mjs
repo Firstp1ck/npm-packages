@@ -239,7 +239,9 @@ function subagentAgentName(value) {
 }
 
 function subagentAgentFromDisplay(value) {
-  const display = subagentText(value, 240).replace(/^\[[^\]]+\]\s*/, "");
+  const display = subagentText(value, 240)
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .replace(/\s+\[(?:fork|fresh|mixed)\]$/i, "");
   const labeled = display.match(/\(([^()]*)\)$/);
   return subagentAgentName(labeled?.[1] || display);
 }
@@ -490,7 +492,7 @@ function parseSubagentStatusText(text, previousRuns = new Map()) {
     if (runMatch) {
       const id = subagentText(runMatch[1], 160);
       const segments = rawLine.split(" | ").map((part) => part.trim());
-      const mode = segments.find((part) => ["single", "parallel", "chain"].includes(part));
+      const mode = segments.map((part) => part.match(/^(single|parallel|chain)\b/)?.[1]).find(Boolean);
       const previous = previousRuns.get(id);
       current = {
         id,

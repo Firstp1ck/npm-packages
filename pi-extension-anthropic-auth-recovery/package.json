@@ -24,15 +24,21 @@
     ]
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "check": "node --experimental-strip-types --check anthropic-subscription-auth-recovery.ts",
-    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./anthropic-subscription-auth-recovery.ts')\""
+    "test": "node --experimental-strip-types --test tests/recovery.test.mjs && node --experimental-strip-types --test tests/symlink-layout.test.mjs && node --experimental-strip-types --test tests/package-install.test.mjs",
+    "check": "node --experimental-strip-types --check anthropic-subscription-auth-recovery.ts && node --check scripts/stage-runtime-resources.mjs && npm test",
+    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./anthropic-subscription-auth-recovery.ts')\"",
+    "prepack": "node scripts/stage-runtime-resources.mjs",
+    "postpack": "node scripts/stage-runtime-resources.mjs --clean"
+  },
+  "dependencies": {
+    "@firstpick/pi-skill-patch-md": "^0.1.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
   "files": [
     "anthropic-subscription-auth-recovery.ts",
+    "resources",
     "README.md",
     "LICENSE"
   ],

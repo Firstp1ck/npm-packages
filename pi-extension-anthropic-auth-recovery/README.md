@@ -25,15 +25,23 @@ The extension:
 
 In a native TUI, the confirmed flow opens a separate terminal when a supported terminal launcher is available. In RPC mode, it posts only to an explicitly configured, authenticated recovery endpoint; otherwise it shows a manual local command.
 
-## Prerequisites and discovery
+## Packaged resources and discovery
 
-This package does not bundle a compatibility patch or the `patchctl` runner. Install and maintain those resources separately. Discovery uses the first readable candidate in this order:
+The npm package is self-contained for normal operation:
 
-1. Explicit `PI_ANTHROPIC_PATCH_PATH` and `PI_PATCHCTL_PATH` values.
-2. Standard agent paths: the configured agent directory's `patches/pi-anthropic-provider-dist-compat/PATCH.md` and `skills/patch-md/scripts/patchctl.mjs`.
-3. A current-working-directory or package-module ancestor containing `patches/pi-anthropic-provider-dist-compat/PATCH.md` and `pi-skill-patch-md/skills/patch-md/scripts/patchctl.mjs`.
+- it bundles the complete `pi-anthropic-provider-dist-compat` PATCH.md runtime package; and
+- it declares `@firstpick/pi-skill-patch-md` as a runtime dependency and resolves `patchctl.mjs` through Node package resolution.
 
-Set `PI_AGENT_DIR` or `PI_CODING_AGENT_DIR` to select an agent directory; otherwise Pi's usual `~/.pi/agent` location is used. Explicit paths are the most reliable choice for independently installed packages.
+Discovery uses the first complete, readable candidate in this order:
+
+1. Explicit `PI_ANTHROPIC_PATCH_PATH` and `PI_PATCHCTL_PATH` emergency overrides.
+2. The compatibility patch bundled with this extension and the dependency-resolved `patchctl.mjs` runner.
+3. Standard agent paths: the configured agent directory's `patches/pi-anthropic-provider-dist-compat/PATCH.md` and `skills/patch-md/scripts/patchctl.mjs`.
+4. Source-checkout ancestor paths for local development and backward compatibility. The extension canonicalizes its own real path first, so `dev/scripts/sync-pi-package-symlinks.sh` file links resolve back into the monorepo even when Pi's loader preserves symlink paths.
+
+A patch candidate is accepted only when its `PATCH.md`, manifest, and contained lifecycle handler are readable. Missing-resource diagnostics identify whether the patch package, runner, or both are unavailable. `PI_AGENT_DIR` and `PI_CODING_AGENT_DIR` still select the standard agent fallback, but ordinary npm installations should not need path configuration.
+
+After installing or upgrading the extension, restart long-running Pi/WebUI processes so they load the new module and packaged resources.
 
 ## Optional RPC/WebUI recovery
 
@@ -56,7 +64,7 @@ The endpoint must use HTTPS, except loopback HTTP (`localhost`, `127.0.0.0/8`, o
 
 ## Compatibility and limitations
 
-This package requires a Pi extension runtime with session, command, and agent-end hooks, plus a separately maintained compatibility patch and `patchctl` runner. It supports native TUI and RPC recovery paths; other Pi modes report that no recovery UI is available. Recovery model selection is limited to models already configured with authentication, and terminal auto-open depends on a supported local launcher.
+This package requires a Pi extension runtime with session, command, and agent-end hooks. It supports native TUI and RPC recovery paths; other Pi modes report that no recovery UI is available. Recovery model selection is limited to models already configured with authentication, and terminal auto-open depends on a supported local launcher.
 
 The classifier intentionally covers only the documented subscription/extra-usage compatibility messages. It is not a general Anthropic error repair system and does not guarantee that a generated plan is safe to apply.
 
@@ -69,7 +77,7 @@ npm run smoke
 npm pack --dry-run --json
 ```
 
-Tests run only against temporary directories and mocked fetch calls. They cover provider-scoped error classification, authenticated model selection, plan-only arguments, prompt-file permissions, portable discovery, and secure WebUI rules.
+Tests run only against temporary directories and mocked fetch calls. They cover provider-scoped error classification, authenticated model selection, plan-only arguments, prompt-file permissions, packaged and fallback discovery, secure WebUI rules, and an offline independent npm installation from locally built tarballs.
 
 ## License
 

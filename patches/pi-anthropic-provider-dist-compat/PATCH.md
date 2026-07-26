@@ -10,7 +10,7 @@ Installed Pi runtimes may retain a legacy Claude Code OAuth request identity. Pa
 
 ### Expected outcome
 
-Every discovered runtime is classified before mutation. Known legacy layouts through `@earendil-works/pi-ai` `0.81.x` are transformed transactionally, already-patched or upstreamed layouts are no-ops, and unknown versions/layouts fail without partial writes.
+Every discovered runtime is classified before mutation. Any package version retaining the complete known legacy semantic layout is transformed transactionally, already-patched or upstreamed layouts are no-ops, and unknown layouts fail without partial writes. Package versions remain visible in status and plan output but do not mask semantic diagnostics.
 
 ## Lifecycle
 
@@ -46,11 +46,11 @@ Absolute user paths and exhaustive `node_modules` searches become stale and can 
 
 ### What was changed
 
-For supported legacy layouts only, replace the legacy OAuth identity with a marked Agent SDK compatibility profile, deduplicated beta set, session header, long OAuth cache default, billing attribution block, and Agent SDK identity block. Every semantic anchor must match exactly once and every postcondition must hold exactly once.
+For semantically supported legacy layouts only, replace the legacy OAuth identity with a marked Agent SDK compatibility profile, deduplicated beta set, session header, long OAuth cache default, billing attribution block, and Agent SDK identity block. Every semantic anchor must match exactly once and every postcondition must hold exactly once.
 
 ### Why
 
-Version ranges are only a first gate. Semantic fingerprints prevent an apparently compatible but structurally changed future package from being modified.
+Package version boundaries become stale without proving layout incompatibility. Semantic fingerprints and exact-match transformations decide applicability; structurally changed packages remain blocked with actionable missing-anchor diagnostics for the reviewing agent.
 
 ## Change 3 — Make application transactional and rollback-safe
 

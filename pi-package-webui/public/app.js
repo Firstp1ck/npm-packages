@@ -5160,12 +5160,13 @@ function renderWorkflowModeControls() {
     elements.workflowModeButton.disabled = !commandName || pending;
     elements.workflowModeButton.classList.toggle("active", active);
     elements.workflowModeButton.setAttribute("aria-pressed", active ? "true" : "false");
-    const label = elements.workflowModeButton.querySelector("span");
-    if (label) label.textContent = pending ? "Workflow…" : active ? "Workflow On" : "Workflow";
-    const tooltip = commandName
-      ? `${active ? "Disable" : "Enable"} JavaScript Workflow Mode for this Pi tab via /${commandName} mode ${active ? "off" : "on"}.`
-      : "Workflow Mode is unavailable because the /workflow command is not loaded.";
-    applyStyledTooltip(elements.workflowModeButton, tooltip, { ariaLabel: true, align: "start" });
+    elements.workflowModeButton.toggleAttribute("aria-busy", pending);
+    const tooltip = pending
+      ? "Updating JavaScript Workflow Mode for this Pi tab."
+      : commandName
+        ? `${active ? "Disable" : "Enable"} JavaScript Workflow Mode for this Pi tab via /${commandName} mode ${active ? "off" : "on"}.`
+        : "Workflow Mode is unavailable because the /workflow command is not loaded.";
+    applyStyledTooltip(elements.workflowModeButton, tooltip, { ariaLabel: true, align: "start", floating: false });
   }
   renderWorkflowOverlayControls();
 
@@ -10682,7 +10683,7 @@ function applyStyledTooltip(node, tooltip, options = {}) {
     node.setAttribute("aria-label", ariaLabel);
   }
   if (options.align) node.setAttribute("data-tooltip-align", options.align);
-  bindStyledTooltipEvents(node);
+  if (options.floating !== false) bindStyledTooltipEvents(node);
   return node;
 }
 

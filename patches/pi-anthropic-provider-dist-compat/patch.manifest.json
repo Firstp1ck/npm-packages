@@ -1,9 +1,9 @@
 {
   "schemaVersion": "2.0",
   "id": "pi.anthropic-provider-dist-compat",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "title": "Pi Anthropic Agent SDK dist compatibility",
-  "description": "Version-gated, semantic fallback patch for the Anthropic OAuth request implementation actually resolved by native Pi and Pi WebUI RPC runtimes.",
+  "description": "Semantically gated fallback patch for the Anthropic OAuth request implementation actually resolved by native Pi and Pi WebUI RPC runtimes.",
   "risk": {
     "level": "high",
     "mutatesInstalledPackages": true,
@@ -12,7 +12,7 @@
     "notes": [
       "The copied Agent SDK request identity is an undocumented compatibility shim, not a public Anthropic protocol contract.",
       "Apply is offline and transactional; live Anthropic verification is excluded and requires separate approval.",
-      "Unknown package versions or layouts fail closed."
+      "Package versions are recorded for review but never authorize or block mutation; unknown semantic layouts fail closed."
     ]
   },
   "lifecycle": {
@@ -24,7 +24,7 @@
     "packages": [
       {
         "name": "@earendil-works/pi-ai",
-        "range": ">=0.78.0 <0.82.0",
+        "range": ">=0.0.0",
         "layouts": ["dist/providers/anthropic.js", "dist/api/anthropic-messages.js"]
       }
     ]

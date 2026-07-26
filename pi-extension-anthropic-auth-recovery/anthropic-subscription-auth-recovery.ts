@@ -1,16 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
-import { constants as fsConstants, existsSync } from "node:fs";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const execFileAsync = promisify(execFile);
-const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const MODULE_FILE = realpathSync(fileURLToPath(import.meta.url));
+const MODULE_DIRECTORY = dirname(MODULE_FILE);
+const MODULE_REQUIRE = createRequire(MODULE_FILE);
 const RECOVERY_TITLE = "Pi Anthropic compatibility recovery";
 const STATUS_KEY = "anthropic-dist-compat";
 const CLEANUP_DELAY_MS = 10 * 60 * 1000;
@@ -28,6 +31,15 @@ const ERROR_CLASSIFIERS = [
 type ModelRef = { provider: string; id: string; name?: string };
 type ErrorMatch = { classifier: string; normalized: string; fingerprint: string };
 type RecoveryFiles = { patchPath: string; patchctlPath: string };
+type RecoveryResourceDiscovery = {
+  files?: RecoveryFiles;
+  missing: Array<"compatibility PATCH.md package" | "patchctl runner">;
+  checked: { patch: string[]; patchctl: string[] };
+};
+type RecoveryDiscoveryOptions = {
+  moduleDirectory?: string;
+  packagedPatchctlPath?: string | null;
+};
 type SecureRecoveryResult = { ok: true; requestId?: string } | { ok: false; reason: string };
 
 type ModelRegistryLike = {
@@ -93,6 +105,23 @@ async function readable(file: string): Promise<boolean> {
   try { await access(file, fsConstants.R_OK); return true; } catch { return false; }
 }
 
+async function readablePatchPackage(patchPath: string): Promise<boolean> {
+  if (!(await readable(patchPath))) return false;
+  try {
+    const patchDirectory = dirname(patchPath);
+    const manifestPath = join(patchDirectory, "patch.manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { lifecycle?: { handler?: unknown } };
+    const handler = manifest.lifecycle?.handler;
+    if (typeof handler !== "string" || !handler.trim()) return false;
+    const handlerPath = resolve(patchDirectory, handler);
+    const handlerRelative = relative(patchDirectory, handlerPath);
+    if (handlerRelative.startsWith("..") || isAbsolute(handlerRelative)) return false;
+    return readable(handlerPath);
+  } catch {
+    return false;
+  }
+}
+
 function ancestorResourceCandidates(cwd: string, pathSegments: string[]): string[] {
   const candidates: string[] = [];
   let current = resolve(cwd);
@@ -105,28 +134,79 @@ function ancestorResourceCandidates(cwd: string, pathSegments: string[]): string
   return candidates;
 }
 
+function canonicalCandidate(value: string): string {
+  const resolved = resolve(value);
+  try { return realpathSync(resolved); } catch { return resolved; }
+}
+
+function uniqueCandidates(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)).map(canonicalCandidate))];
+}
+
+function resolvePackagedPatchctl(): string | undefined {
+  try {
+    return MODULE_REQUIRE.resolve("@firstpick/pi-skill-patch-md/skills/patch-md/scripts/patchctl.mjs");
+  } catch {
+    return undefined;
+  }
+}
+
+export async function inspectRecoveryFiles(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd = process.cwd(),
+  options: RecoveryDiscoveryOptions = {},
+): Promise<RecoveryResourceDiscovery> {
+  const resolvedCwd = resolve(cwd);
+  const moduleDirectory = resolve(options.moduleDirectory ?? MODULE_DIRECTORY);
+  const configuredAgentDir = env.PI_AGENT_DIR || env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+  const agentDir = resolve(resolvedCwd, configuredAgentDir);
+  const patchSegments = ["patches", "pi-anthropic-provider-dist-compat", "PATCH.md"];
+  const bundledPatchSegments = ["resources", "pi-anthropic-provider-dist-compat", "PATCH.md"];
+  const patchctlSegments = ["pi-skill-patch-md", "skills", "patch-md", "scripts", "patchctl.mjs"];
+  const explicitPatch = env.PI_ANTHROPIC_PATCH_PATH ? resolve(resolvedCwd, env.PI_ANTHROPIC_PATCH_PATH) : undefined;
+  const explicitPatchctl = env.PI_PATCHCTL_PATH ? resolve(resolvedCwd, env.PI_PATCHCTL_PATH) : undefined;
+  const packagedPatchctl = options.packagedPatchctlPath === undefined ? resolvePackagedPatchctl() : options.packagedPatchctlPath ?? undefined;
+  const patchCandidates = uniqueCandidates([
+    explicitPatch,
+    join(moduleDirectory, ...bundledPatchSegments),
+    join(agentDir, ...patchSegments),
+    ...ancestorResourceCandidates(resolvedCwd, patchSegments),
+    ...ancestorResourceCandidates(moduleDirectory, patchSegments),
+  ]);
+  const patchctlCandidates = uniqueCandidates([
+    explicitPatchctl,
+    packagedPatchctl,
+    join(agentDir, "skills", "patch-md", "scripts", "patchctl.mjs"),
+    ...ancestorResourceCandidates(resolvedCwd, patchctlSegments),
+    ...ancestorResourceCandidates(moduleDirectory, patchctlSegments),
+  ]);
+  const patchPath = (await Promise.all(patchCandidates.map(async (candidate) => ((await readablePatchPackage(candidate)) ? candidate : "")))).find(Boolean);
+  const patchctlPath = (await Promise.all(patchctlCandidates.map(async (candidate) => ((await readable(candidate)) ? candidate : "")))).find(Boolean);
+  const missing: RecoveryResourceDiscovery["missing"] = [];
+  if (!patchPath) missing.push("compatibility PATCH.md package");
+  if (!patchctlPath) missing.push("patchctl runner");
+  return {
+    ...(patchPath && patchctlPath ? { files: { patchPath, patchctlPath } } : {}),
+    missing,
+    checked: { patch: patchCandidates, patchctl: patchctlCandidates },
+  };
+}
+
 export async function discoverRecoveryFiles(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd(),
+  options: RecoveryDiscoveryOptions = {},
 ): Promise<RecoveryFiles | undefined> {
-  const agentDir = env.PI_AGENT_DIR || env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-  const patchSegments = ["patches", "pi-anthropic-provider-dist-compat", "PATCH.md"];
-  const patchctlSegments = ["pi-skill-patch-md", "skills", "patch-md", "scripts", "patchctl.mjs"];
-  const patchCandidates = [
-    env.PI_ANTHROPIC_PATCH_PATH,
-    join(agentDir, ...patchSegments),
-    ...ancestorResourceCandidates(cwd, patchSegments),
-    ...ancestorResourceCandidates(MODULE_DIRECTORY, patchSegments),
-  ].filter((value): value is string => Boolean(value));
-  const patchctlCandidates = [
-    env.PI_PATCHCTL_PATH,
-    join(agentDir, "skills", "patch-md", "scripts", "patchctl.mjs"),
-    ...ancestorResourceCandidates(cwd, patchctlSegments),
-    ...ancestorResourceCandidates(MODULE_DIRECTORY, patchctlSegments),
-  ].filter((value): value is string => Boolean(value));
-  const patchPath = (await Promise.all(patchCandidates.map(async (candidate) => ((await readable(candidate)) ? resolve(candidate) : "")))).find(Boolean);
-  const patchctlPath = (await Promise.all(patchctlCandidates.map(async (candidate) => ((await readable(candidate)) ? resolve(candidate) : "")))).find(Boolean);
-  return patchPath && patchctlPath ? { patchPath, patchctlPath } : undefined;
+  return (await inspectRecoveryFiles(env, cwd, options)).files;
+}
+
+export function formatRecoveryDiscoveryFailure(discovery: RecoveryResourceDiscovery): string {
+  const missing = discovery.missing.join(" and ") || "unknown recovery resources";
+  return [
+    `Recovery resources unavailable: missing or unreadable ${missing}.`,
+    "Reinstall @firstpick/pi-extension-anthropic-auth-recovery with dependencies,",
+    "or configure PI_ANTHROPIC_PATCH_PATH and PI_PATCHCTL_PATH explicitly, then restart Pi/WebUI.",
+  ].join(" ");
 }
 
 export function buildPlanOnlyPrompt(files: RecoveryFiles, previousModel: ModelRef | undefined): string {
@@ -298,9 +378,12 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (startupChecked || !ctx.hasUI) return;
     startupChecked = true;
-    const files = await discoverRecoveryFiles(process.env, ctx.cwd);
-    if (!files) return;
-    const status = await runPatchStatus(files);
+    const discovery = await inspectRecoveryFiles(process.env, ctx.cwd);
+    if (!discovery.files) {
+      ctx.ui.setStatus(STATUS_KEY, `Anthropic recovery unavailable: ${discovery.missing.join(" + ")}`);
+      return;
+    }
+    const status = await runPatchStatus(discovery.files);
     if (!status.ok) {
       ctx.ui.setStatus(STATUS_KEY, "Anthropic patch status unavailable");
       return;
@@ -312,12 +395,12 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
   pi.registerCommand("anthropic-auth-status", {
     description: "Show read-only Anthropic dist compatibility status",
     handler: async (_args, ctx) => {
-      const files = await discoverRecoveryFiles(process.env, ctx.cwd);
-      if (!files) {
-        ctx.ui.notify("Anthropic compatibility patch or patchctl was not found", "warning");
+      const discovery = await inspectRecoveryFiles(process.env, ctx.cwd);
+      if (!discovery.files) {
+        ctx.ui.notify(formatRecoveryDiscoveryFailure(discovery), "warning");
         return;
       }
-      const status = await runPatchStatus(files);
+      const status = await runPatchStatus(discovery.files);
       ctx.ui.notify(status.summary, status.ok ? "info" : "error");
     },
   });
@@ -334,8 +417,9 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
 
     promptOpen = true;
     try {
-      const files = await discoverRecoveryFiles(process.env, ctx.cwd);
-      if (!files) throw new Error("Provider compatibility PATCH.md or patchctl was not found");
+      const discovery = await inspectRecoveryFiles(process.env, ctx.cwd);
+      if (!discovery.files) throw new Error(formatRecoveryDiscoveryFailure(discovery));
+      const files = discovery.files;
       const model = selectRecoveryModel(ctx.modelRegistry as unknown as ModelRegistryLike);
       if (!model) throw new Error("No configured non-Anthropic recovery model is available");
       const confirmed = await ctx.ui.confirm(

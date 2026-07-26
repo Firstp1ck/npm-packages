@@ -8056,7 +8056,7 @@ button.composer-skill-tag:focus-visible {
   min-height: 1.95rem;
 }
 .composer-workflow-mode-button {
-  min-width: 6.8rem;
+  min-width: 2.9rem;
   color: var(--ctp-mauve);
   border-color: rgba(203, 166, 247, 0.42);
   background:
@@ -8464,7 +8464,14 @@ button.composer-skill-tag:focus-visible {
   transform: translateY(0.24rem);
 }
 .composer-row .composer-workflow-mode-button[data-tooltip]::after {
+  left: 0;
+  right: auto;
   max-width: min(18rem, calc(100vw - 2rem));
+}
+.composer-row .composer-workflow-mode-button[data-tooltip]::before {
+  left: 50%;
+  right: auto;
+  transform: translate(-50%, 0.24rem) rotate(45deg);
 }
 .composer-row button[data-tooltip]:hover::before,
 .composer-row button[data-tooltip]:hover::after,
@@ -8500,6 +8507,11 @@ button.composer-skill-tag:focus-visible {
 .composer-input-row button[data-tooltip]:focus-visible::before,
 .composer-input-row button[data-tooltip].tooltip-open::before {
   transform: translate(-1.2rem, 0) rotate(45deg);
+}
+.composer-row .composer-workflow-mode-button[data-tooltip]:hover::before,
+.composer-row .composer-workflow-mode-button[data-tooltip]:focus-visible::before,
+.composer-row .composer-workflow-mode-button[data-tooltip].tooltip-open::before {
+  transform: translate(-50%, 0) rotate(45deg);
 }
 .composer-row .composer-git-button[data-tooltip]::after {
   left: 0;
@@ -10921,6 +10933,281 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   border-radius: 999px;
 }
 ::selection { color: #11111b; background: var(--ctp-pink); }
+
+/* Compact high-density surfaces: keep component behavior intact while reducing chrome. */
+.app-runner-widget {
+  gap: 0.42rem;
+  margin-block: 0.18rem;
+  padding: 0.52rem;
+}
+.app-runner-widget .release-npm-title-wrap { gap: 0.06rem; }
+.app-runner-widget .release-npm-output-details { gap: 0.36rem; }
+.app-runner-widget .release-npm-terminal {
+  max-height: min(24rem, 34vh);
+  min-height: 4rem;
+  padding: 0.52rem 0.48rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.app-runner-live-widget .release-npm-output-details[open] .release-npm-terminal {
+  height: clamp(8rem, 26dvh, 18rem);
+  min-height: 0;
+}
+.app-runner-output-controls { gap: 0.35rem 0.42rem; }
+.app-runner-output-actions,
+.app-runner-output-pills { gap: 0.28rem; }
+.app-runner-context-form {
+  gap: 0.28rem;
+  min-width: min(100%, 16rem);
+}
+.app-runner-context-lines-label {
+  grid-template-columns: auto minmax(3.8rem, 5rem);
+  gap: 0.28rem;
+}
+.app-runner-context-lines-input {
+  min-height: 1.9rem;
+  padding: 0.22rem 0.42rem;
+}
+.app-runner-output-controls .release-npm-action {
+  min-height: 1.9rem;
+  padding: 0.28rem 0.52rem;
+  border-radius: 0.54rem;
+}
+.app-runner-stdin-form { gap: 0.32rem; }
+.app-runner-stdin-input {
+  min-height: 2rem;
+  max-height: min(14dvh, 6rem);
+  padding: 0.38rem 0.52rem;
+  line-height: 1.25;
+}
+.app-runner-stdin-send,
+.app-runner-stdin-eof { min-width: 5.5rem; }
+.app-runner-stdin-eof { min-width: 3.5rem; }
+
+.subagents-help {
+  margin-bottom: 0.4rem;
+  padding: 0.34rem 0.48rem;
+  line-height: 1.35;
+}
+.subagent-launch-slots {
+  margin-bottom: 0.4rem;
+  border-radius: 0.7rem;
+}
+.subagent-launch-slots-summary {
+  gap: 0.5rem;
+  min-height: 2.7rem;
+  padding: 0.46rem 0.58rem;
+}
+.subagent-launch-slots-body {
+  gap: 0.42rem;
+  padding: 0.48rem;
+}
+.subagent-launch-slot-roles { gap: 0.4rem; }
+.subagent-launch-slot-role {
+  gap: 0.36rem;
+  padding: 0.42rem;
+}
+.subagent-launch-slot-list { gap: 0.32rem; }
+.subagent-launch-slot-row {
+  gap: 0.3rem 0.4rem;
+  padding: 0.38rem;
+}
+.subagent-open-mode-field {
+  gap: 0.24rem 0.42rem;
+  margin-bottom: 0.4rem;
+  padding: 0.36rem 0.48rem;
+}
+.subagent-open-mode-field select {
+  min-width: 8rem;
+  min-height: 2rem;
+  padding-block: 0.24rem;
+}
+.subagents-status {
+  margin-bottom: 0.32rem;
+  line-height: 1.3;
+}
+.subagents-box {
+  gap: 0.38rem;
+  padding: 0.48rem;
+}
+.subagent-tab-header {
+  gap: 0.42rem;
+  min-height: 36px;
+  padding: 0.34rem 0.46rem;
+}
+.subagent-agent-list {
+  gap: 0.28rem;
+  padding: 0.36rem;
+}
+.subagent-agent-row {
+  gap: 0.38rem;
+  padding: 0.3rem 0.4rem;
+}
+.subagent-gate-card {
+  gap: 0.36rem;
+  padding: 0.42rem;
+}
+.subagent-gate-attempts { gap: 0.24rem; }
+.subagent-gate-attempt {
+  gap: 0.34rem;
+  padding: 0.3rem;
+}
+
+.git-side-panel {
+  gap: 0.42rem;
+  padding: 0.5rem;
+  border-radius: 0.76rem;
+}
+.git-side-panel-groups,
+.git-side-panel-terminal-body,
+.git-side-panel-repository-content,
+.git-side-panel-changes,
+.git-side-panel-history,
+.git-side-panel-tree,
+.git-side-panel-folder-body { gap: 0.28rem; }
+.git-side-panel-terminal-summary,
+.git-side-panel-repository-toggle {
+  gap: 0.38rem;
+  min-height: 36px;
+  padding: 0.34rem 0.44rem;
+}
+.git-side-panel-repository-content { padding: 0.36rem; }
+.git-side-panel-tab {
+  min-height: 30px;
+  padding: 0.2rem 0.36rem;
+}
+.git-side-panel-tree-section {
+  border-color: rgba(180, 190, 254, 0.14);
+  border-radius: 0.66rem;
+  background: rgba(var(--ctp-crust-rgb), 0.46);
+}
+.git-side-panel-tree-heading {
+  gap: 0.3rem;
+  padding: 0.18rem 0.32rem;
+}
+.git-side-panel-tree {
+  gap: 0;
+  padding: 0.14rem 0.18rem;
+}
+/* Keep the Files tree visual language while giving Git its denser data-list rhythm. */
+.git-side-panel-folder {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.git-side-panel-folder-summary,
+.git-side-panel-file {
+  min-height: 1.55rem;
+  padding: 0.08rem 0.26rem;
+  color: rgba(var(--ctp-text-rgb), 0.88);
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  background: transparent;
+}
+.git-side-panel-folder-summary {
+  gap: 0.18rem;
+  min-height: 1.25rem;
+  padding: 0 0.2rem;
+  line-height: 1.1;
+}
+.git-side-panel-folder-summary:hover,
+.git-side-panel-folder-summary:focus-visible,
+.git-side-panel-file:hover,
+.git-side-panel-file:focus-visible {
+  border-color: rgba(137, 180, 250, 0.30);
+  background: rgba(var(--ctp-surface-rgb), 0.34);
+  box-shadow: inset 2px 0 0 var(--ctp-blue);
+  outline: none;
+}
+.git-side-panel-folder-chevron {
+  color: var(--ctp-teal);
+  font-size: 0.78rem;
+  line-height: 1;
+}
+.git-side-panel-folder-body {
+  gap: 0;
+  margin: 0 0 0 0.48rem;
+  padding-left: 0.24rem;
+  border-left-color: rgba(148, 226, 213, 0.24);
+}
+.git-side-panel-file {
+  grid-template-columns: 1rem minmax(4rem, 1fr) auto;
+  gap: 0.24rem;
+}
+
+.git-workflow-panel {
+  gap: 0.48rem;
+  max-height: min(28rem, 40dvh);
+  padding: 0.62rem;
+}
+.git-workflow-header {
+  align-items: center;
+  gap: 0.65rem;
+}
+.git-workflow-header > div:first-child {
+  flex-basis: 16rem;
+  min-width: min(100%, 16rem);
+}
+.git-workflow-header strong {
+  margin-top: 0.04rem;
+  letter-spacing: 0.02em;
+}
+.git-workflow-header p {
+  margin-top: 0.12rem;
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+.git-workflow-kicker { letter-spacing: 0.13em; }
+.git-workflow-steps,
+.git-workflow-actions { gap: 0.35rem; }
+.git-workflow-step {
+  padding: 0.26rem 0.55rem 0.26rem 1.35rem;
+  font-size: var(--text-xs);
+  letter-spacing: 0.07em;
+}
+button.git-workflow-step { min-height: 1.9rem; }
+.git-workflow-step::before {
+  left: 0.46rem;
+  width: 0.42rem;
+  height: 0.42rem;
+}
+.git-workflow-output {
+  max-height: 10rem;
+  min-height: 3.5rem;
+  padding: 0.55rem;
+  border-radius: 0.68rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.git-workflow-message-input-row { gap: 0.35rem; }
+.git-workflow-message-input-field { gap: 0.18rem; }
+.git-workflow-message-input {
+  min-height: 1.95rem;
+  padding: 0.32rem 0.55rem;
+}
+.git-workflow-actions button {
+  min-height: 1.95rem;
+  padding: 0.32rem 0.56rem;
+}
+
+@media (pointer: coarse) {
+  .app-runner-output-controls .release-npm-action,
+  .app-runner-context-lines-input,
+  .app-runner-stdin-input,
+  .subagent-launch-slots-summary,
+  .subagent-open-mode-field select,
+  .subagent-tab-header,
+  .git-side-panel-repository-toggle,
+  .git-side-panel-tab,
+  .git-side-panel-folder-summary,
+  .git-side-panel-file,
+  button.git-workflow-step,
+  .git-workflow-message-input {
+    min-height: 44px;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

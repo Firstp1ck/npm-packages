@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Implementation, validation, and review-gate report for compact Pi WebUI App Runner, Subagents, Git changed-file, and Guided Git surfaces.">
+  <title>Compact WebUI Sections — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 10;
+      transform: translateY(-160%);
+      padding: 8px 12px;
+      color: #06111f;
+      background: var(--blue);
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, section {
+      margin: 18px 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    h1, h2, h3 { margin-top: 0; line-height: 1.25; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 5vw, 3rem); letter-spacing: -.025em; }
+    h2 { padding-bottom: 10px; font-size: 1.45rem; border-bottom: 1px solid var(--line); }
+    h3 { margin-bottom: 6px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code { padding: .12em .38em; color: #d9e6f7; background: var(--code); border-radius: 5px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .lead { max-width: 82ch; color: var(--muted); font-size: 1.1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .metric, .card, .finding {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel-2);
+    }
+    .metric strong { display: block; margin: 4px 0; font-size: 1.28rem; }
+    .muted, .card p, .finding p, li { color: var(--muted); }
+    .badge, .status {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+    }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    .badge.good, .status.good { border: 1px solid rgb(80 216 144 / 38%); background: rgb(80 216 144 / 14%); }
+    .badge.warn, .status.warn { border: 1px solid rgb(247 198 92 / 38%); background: rgb(247 198 92 / 14%); }
+    .badge.bad, .status.bad { border: 1px solid rgb(255 115 115 / 38%); background: rgb(255 115 115 / 14%); }
+    .badge.info, .status.info { border: 1px solid rgb(101 181 255 / 38%); background: rgb(101 181 255 / 14%); }
+    .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--yellow); border-radius: 8px; background: rgb(247 198 92 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .86rem; letter-spacing: .04em; text-transform: uppercase; }
+    tbody tr:last-child td { border-bottom: 0; }
+    .finding { margin-top: 10px; }
+    .finding h3 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    ul { margin: 10px 0 0; padding-left: 22px; }
+    li + li { margin-top: 6px; }
+    footer { margin-top: 24px; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, section { padding: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --panel: #fff; --panel-2: #fff; --text: #111827; --muted: #374151; --line: #aab5c4; --blue: #174ea6; --green: #166534; --yellow: #854d0e; --red: #b91c1c; --code: #f1f3f5; }
+      body { background: #fff; }
+      main { width: 100%; margin: 0; }
+      header, section, .metric, .card, .finding { box-shadow: none; break-inside: avoid; }
+      a { color: #174ea6; text-decoration: underline; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#report-content">Skip to report content</a>
+  <main id="report-content">
+    <header>
+      <span class="badge good">Lightweight feature · complete</span>
+      <h1>Compact WebUI sections</h1>
+      <p class="lead">Source-grounded implementation report for denser App Runner, Subagents, Git changed-file, and Guided Git surfaces in <code>pi-package-webui</code>. Evidence comes from the integrated local diff, focused contracts, the package suite, and independent read-only reviews.</p>
+      <div class="callout info-callout"><strong>Conclusion:</strong> the presentation changes are complete. The final directory-gap defect was traced to inherited generic <code>details</code> padding, removed with a component-scoped reset, and approved by two independent provider families.</div>
+      <p class="muted"><strong>Confidence:</strong> 96/100 for implementation correctness. Exact cascade contracts, 52 passing package test files, and independent OpenRouter/Anthropic approvals provide strong evidence; only a manual post-reload screenshot remains.</p>
+      <div class="grid" aria-label="Headline status">
+        <div class="metric"><span class="status good">Implemented</span><strong>4 surfaces</strong><span class="muted">Scoped CSS only; no behavior or API changes</span></div>
+        <div class="metric"><span class="status good">Validated</span><strong>52 / 53</strong><span class="muted">Package test files pass; one unchanged baseline failure</span></div>
+        <div class="metric"><span class="status good">Reviewed</span><strong>2 provider families</strong><span class="muted">OpenRouter Kimi K3 and direct Anthropic Opus 5 approved</span></div>
+      </div>
+    </header>
+
+    <section aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div class="table-wrap">
+        <table data-overview>
+          <thead><tr><th>Area</th><th>Delivered outcome</th><th>Evidence</th><th>Status / next action</th></tr></thead>
+          <tbody>
+            <tr><td>App Runner</td><td>Reduced widget chrome, control gaps, input sizing, and live terminal footprint.</td><td><code>.app-runner-widget</code> compact override and focused contract</td><td><span class="status good">Ready</span></td></tr>
+            <tr><td>Subagents</td><td>Denser help, launch-slot editor, monitor cards, agent rows, and gate attempts.</td><td>Scoped Subagents selectors; coarse-pointer 44px floor</td><td><span class="status good">Ready</span></td></tr>
+            <tr><td>Git changed files</td><td>Files retain the accepted 1.55rem rhythm; directory containers reset inherited card padding while summaries use a 1.25rem height, zero inter-row gap, and shallow nesting.</td><td>Generic-details and component-reset assertions plus visual-property comparisons</td><td><span class="status good">Ready</span></td></tr>
+            <tr><td>Guided Git</td><td>Smaller panel, steps, output region, fields, and actions on desktop; 44px controls retained for coarse pointers.</td><td>Source-order and selector-coverage assertions</td><td><span class="status good">Ready</span></td></tr>
+            <tr><td>Independent review</td><td>OpenRouter Kimi K3 and direct Anthropic Opus 5 independently approved the final inherited-padding reset with no blockers.</td><td>Run <code>073d4570…</code></td><td><span class="status good">Quorum satisfied</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="design-title">
+      <h2 id="design-title">Design decisions and architecture</h2>
+      <div class="grid">
+        <article class="card"><h3>One scoped density layer</h3><p>A localized block near the end of <code>public/styles.css</code> overrides existing component classes without changing markup, JavaScript, APIs, persistence, or execution behavior.</p></article>
+        <article class="card"><h3>Responsive rules remain authoritative</h3><p>The compact block precedes responsive rules. A dedicated post-compact <code>@media (pointer: coarse)</code> block restores 44px targets for every compacted interactive surface.</p></article>
+        <article class="card"><h3>Files tree is the Git visual source</h3><p>Git folders/files share the Files row palette, border geometry, and interaction values while intentionally using tighter dimensions. Git status letters, conflict/stage colors, and line statistics remain unchanged.</p></article>
+        <article class="card"><h3>Rollback stays trivial</h3><p>The change is presentation-only and additive. Reverting the CSS block and focused test restores the former layout; no data or settings migration exists.</p></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="density-title">
+      <h2 id="density-title">Implementation map and measured CSS changes</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Surface</th><th>Representative previous value</th><th>Compact value</th><th>Usability guard</th></tr></thead>
+          <tbody>
+            <tr><td>App Runner widget</td><td>Widget padding <code>0.72rem</code>; terminal max <code>min(34rem, 42vh)</code></td><td>Padding <code>0.52rem</code>; terminal max <code>min(24rem, 34vh)</code></td><td>Coarse-pointer buttons and inputs return to <code>44px</code></td></tr>
+            <tr><td>Subagents monitor</td><td>Launch summary <code>3.35rem</code>; monitor padding <code>0.64rem</code>; tab header <code>42px</code></td><td><code>2.7rem</code>, <code>0.48rem</code>, and <code>36px</code></td><td>Summary, select, and tab header use <code>44px</code> on coarse pointers</td></tr>
+            <tr><td>Git side panel</td><td>Generic <code>details</code> contributed <code>0.6rem</code> padding on every side; base rows were <code>30px</code>; nesting was <code>0.88rem</code> per level</td><td>Folder container padding <code>0</code>; files <code>1.55rem</code>; directories <code>1.25rem</code>; zero row gap; nesting <code>0.72rem</code> per level</td><td>Interactive disclosures, tabs, folders, and files return to <code>44px</code> on coarse pointers</td></tr>
+            <tr><td>Guided Git</td><td>Panel padding/gap <code>0.9rem / 0.72rem</code>; output <code>14rem / 4.5rem</code> max/min</td><td><code>0.62rem / 0.48rem</code>; output <code>10rem / 3.5rem</code></td><td>Steps, inputs, actions, and Cancel retain <code>44px</code> touch targets</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">Values are declarations from the current stylesheet, not rendered pixel measurements. At a 16px root size, removing <code>0.6rem</code> top and bottom padding eliminates approximately 19.2px of vertical separation per directory container—the gap visible in the second screenshot.</p>
+    </section>
+
+    <section aria-labelledby="validation-title">
+      <h2 id="validation-title">Testing and acceptance evidence</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Check</th><th>Result</th><th>Interpretation</th></tr></thead>
+          <tbody>
+            <tr><td><code>node tests/compact-sections-static.test.mjs</code></td><td><span class="status good">Pass</span></td><td>Locks all four density surfaces, actual Git/Files property equality, ordering, and coarse-pointer coverage.</td></tr>
+            <tr><td><code>node tests/subagent-launch-slots-static.test.mjs</code></td><td><span class="status good">Pass</span></td><td>Existing Subagents configuration contracts remain intact.</td></tr>
+            <tr><td>JavaScript and test syntax checks</td><td><span class="status good">Pass</span></td><td>No browser-script or focused-test syntax regression.</td></tr>
+            <tr><td>Scoped <code>git diff --check</code></td><td><span class="status good">Pass</span></td><td>No whitespace errors in feature files.</td></tr>
+            <tr><td><code>npm test</code></td><td><span class="status warn">52 / 53 pass</span></td><td>The only failure is the unchanged <code>styles.css:7343</code> 0.72rem typography value caught at <code>mobile-static.test.mjs:298</code>; the feature begins near line 10925.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="review-title">
+      <h2 id="review-title">Independent review findings and dispositions</h2>
+      <article class="finding"><h3><span class="status good">Accepted · fixed</span> Coarse-pointer shrink</h3><p>Reviewers identified that desktop compact values also won on touch devices for controls without later overrides. A dedicated coarse-pointer block now restores 44px targets across App Runner, Subagents, Git, and Guided Git.</p></article>
+      <article class="finding"><h3><span class="status good">Accepted · fixed</span> Guided Git step button</h3><p>The final OpenRouter review found <code>button.git-workflow-step</code> missing from the touch-floor selector. It was added to CSS and test coverage; follow-up run <code>0c963c3f</code> verified resolution with 95/100 confidence.</p></article>
+      <article class="finding"><h3><span class="status good">Accepted · fixed</span> Regression-contract strength</h3><p>The test compares actual visual declarations from the Git and Files blocks, asserts exact Git density values, and checks source-order relationships.</p></article>
+      <article class="finding"><h3><span class="status good">Accepted · fixed</span> Directory container padding</h3><p>The second screenshot revealed that tightening summaries alone could not remove the gap. The global <code>details</code> card rule still added <code>0.6rem</code> padding above and below each folder. A scoped `.git-side-panel-folder` reset now removes that padding, radius, border, and background in both open and closed states while leaving file rows untouched.</p></article>
+      <article class="finding"><h3><span class="status good">Accepted · fixed</span> Complete Git touch-floor contract</h3><p>The selector loop enumerates repository toggle, tab, folder summary, and file row; the coarse-pointer rule restores every one to <code>44px</code>.</p></article>
+      <article class="finding"><h3><span class="status info">Rejected as blocker</span> Git focus outline</h3><p>The Git rows retain a visible border, background, and inset accent on <code>:focus-visible</code>, matching the Files treatment. General forced-colors hardening for both trees is a separate low-priority concern, not introduced by this feature.</p></article>
+      <div class="callout info-callout"><strong>Review gate satisfied:</strong> in run <code>073d4570…</code>, OpenRouter Kimi K3 and direct Anthropic Opus 5 both reported their actual routes and approved the final integrated diff with no blockers.</div>
+    </section>
+
+    <section aria-labelledby="rollout-title">
+      <h2 id="rollout-title">Usage, rollout, and residual risk</h2>
+      <ul>
+        <li>Reload the WebUI to pick up the stylesheet and inspect App Runner, Subagents, Git, and Guided Git at desktop and touch widths.</li>
+        <li>No commands, settings, migrations, dependencies, or server restarts beyond normal WebUI asset reload are required.</li>
+        <li>Static evidence is strong, but no browser screenshot automation was available in the environment.</li>
+        <li>The required two-provider review quorum is satisfied; no waiver is needed.</li>
+      </ul>
+      <div class="callout info-callout"><strong>Manual confirmation:</strong> reload the WebUI and verify that adjacent closed directories now sit directly on the 1.25rem summary rhythm. Automated browser screenshots were not available.</div>
+      <p>Detailed evidence and run identities are recorded in <a href="../plans/compact-webui-sections.md">the linked implementation plan</a>.</p>
+    </section>
+
+    <footer>
+      <p>Generated from the integrated local diff and review artifacts. No external scripts, fonts, images, telemetry, or network assets are used.</p>
+    </footer>
+  </main>
+</body>
+</html>

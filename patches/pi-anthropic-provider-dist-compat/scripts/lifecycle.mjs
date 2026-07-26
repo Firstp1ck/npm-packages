@@ -22,33 +22,6 @@ function count(value, needle) {
   return value.split(needle).length - 1;
 }
 
-function parseVersion(value) {
-  const match = String(value || "").match(/^(\d+)\.(\d+)\.(\d+)/u);
-  return match ? match.slice(1).map(Number) : null;
-}
-
-function compareVersion(left, right) {
-  for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i];
-  return 0;
-}
-
-export function versionInRange(version, range) {
-  const parsed = parseVersion(version);
-  if (!parsed) return false;
-  for (const token of String(range || "").split(/\s+/u).filter(Boolean)) {
-    const match = token.match(/^(>=|>|<=|<|=)?(\d+\.\d+\.\d+)$/u);
-    if (!match) return false;
-    const comparison = compareVersion(parsed, parseVersion(match[2]));
-    const operator = match[1] || "=";
-    if (operator === ">=" && comparison < 0) return false;
-    if (operator === ">" && comparison <= 0) return false;
-    if (operator === "<=" && comparison > 0) return false;
-    if (operator === "<" && comparison >= 0) return false;
-    if (operator === "=" && comparison !== 0) return false;
-  }
-  return true;
-}
-
 function postconditionErrors(content, profile) {
   const errors = [];
   const requiredOnce = [
@@ -250,7 +223,6 @@ function assertContained(root, file) {
 
 export function discoverTargets(manifest, env = process.env) {
   const profile = manifest.profile;
-  const packageSupport = manifest.support.packages.find((entry) => entry.name === PI_AI_PACKAGE);
   const candidates = manifest.targets.flatMap((target) => target.fileCandidates);
   const targets = [];
   const roots = discoverCodingAgentRoots(manifest, env);
@@ -269,12 +241,8 @@ export function discoverTargets(manifest, env = process.env) {
     }
     const targetFile = assertContained(piAiRoot, mutation.file);
     const classification = classifyContent(mutation.content, profile);
-    let status = classification.status;
+    const status = classification.status;
     const errors = [...classification.errors];
-    if (!["already-applied", "upstreamed"].includes(status) && !versionInRange(packageVersion, packageSupport.range)) {
-      status = "unsupported-version";
-      errors.push(`Package ${PI_AI_PACKAGE} ${packageVersion} is outside ${packageSupport.range}`);
-    }
     const transformed = status === "applicable" ? transformContent(mutation.content, profile) : mutation.content;
     targets.push({
       id: `pi-ai-${sha256(targetFile).slice(0, 12)}`,
@@ -307,7 +275,7 @@ export function discoverTargets(manifest, env = process.env) {
 function buildPlan(manifest, env = process.env) {
   const targets = discoverTargets(manifest, env);
   const hasNative = targets.some((target) => target.roles?.includes("native-tui"));
-  const blockingStatuses = new Set(["drifted", "unsupported-layout", "unsupported-version", "missing-package"]);
+  const blockingStatuses = new Set(["drifted", "unsupported-layout", "missing-package"]);
   const blockedTargets = targets.filter((target) => blockingStatuses.has(target.status));
   const blocked = !hasNative || blockedTargets.length > 0;
   return {
