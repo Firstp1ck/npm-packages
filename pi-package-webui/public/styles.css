@@ -1554,7 +1554,7 @@ body.embedded-split .side-panel-backdrop {
   padding: 0.14rem 0.3rem;
   border-radius: 0.36rem;
   font-size: var(--text-xs);
-  cursor: context-menu;
+  cursor: pointer;
 }
 .git-side-panel-file:hover,
 .git-side-panel-file:focus-visible { background: rgba(137, 180, 250, 0.10); }

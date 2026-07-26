@@ -8890,9 +8890,18 @@ function renderGitPanelFolder(node, card, category, depth = 0) {
 function renderGitPanelFile(entry, card, category) {
   const row = make("div", `git-side-panel-file ${category}`);
   const fullPath = entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path;
-  row.title = `${fullPath} · Right-click for Git actions`;
+  row.title = `${fullPath} · Open in WebUI · Right-click for Git actions`;
   row.tabIndex = 0;
-  row.setAttribute("aria-label", `${entry.name || entry.path}, ${gitPanelStatsText(entry, category) || "no line statistics"}`);
+  row.setAttribute("role", "button");
+  row.setAttribute("aria-label", `Open ${entry.name || entry.path} in WebUI, ${gitPanelStatsText(entry, category) || "no line statistics"}`);
+  const open = () => openGitFileInViewer(entry.path, { root: card.root, candidates: card.candidates })
+    .catch((error) => addEvent(error.message || String(error), "error"));
+  row.addEventListener("click", open);
+  row.addEventListener("keydown", (event) => {
+    if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    open();
+  });
   const status = make("span", "git-side-panel-file-status", entry.status?.trim() || (entry.untracked ? "?" : "•"));
   const name = make("span", "git-side-panel-file-name", entry.name || entry.path);
   const statsText = gitPanelStatsText(entry, category);
@@ -11998,25 +12007,59 @@ function copyGitPathToClipboard(path) {
   copyGitTextToClipboard(path, "path");
 }
 
-// Git paths are repo-root-relative; the file viewer resolves against the tab
-// cwd. Translate when the tab sits at (or above within) the repo root.
+// Git paths are repo-root-relative; the file viewer resolves against a tab's
+// cwd. Prefer the active tab when it contains the file, otherwise use another
+// tab that exposes the repository path.
+function gitFileViewerTarget(repoRelPath, root, candidates = []) {
+  const path = normalizeFileTreePath(repoRelPath);
+  const normalizedRoot = String(root || "").trim().replace(/\\/g, "/");
+  const repoRoot = normalizedRoot === "/" ? "/" : normalizedRoot.replace(/\/+$/, "");
+  if (!path || !repoRoot) return null;
+  const absolute = `${repoRoot === "/" ? "/" : `${repoRoot}/`}${path}`;
+  const current = activeTab();
+  const ordered = [current ? { tabId: current.id, cwd: current.cwd } : null, ...candidates].filter(Boolean);
+  const seen = new Set();
+  for (const candidate of ordered) {
+    const tabId = String(candidate?.tabId || candidate?.id || "");
+    const normalizedCwd = String(candidate?.cwd || "").trim().replace(/\\/g, "/");
+    const cwd = normalizedCwd === "/" ? "/" : normalizedCwd.replace(/\/+$/, "");
+    if (!tabId || !cwd || seen.has(tabId)) continue;
+    seen.add(tabId);
+    const prefix = cwd === "/" ? "/" : `${cwd}/`;
+    const caseInsensitive = /^[a-z]:\//i.test(absolute) && /^[a-z]:\//i.test(prefix);
+    const comparableAbsolute = caseInsensitive ? absolute.toLowerCase() : absolute;
+    const comparablePrefix = caseInsensitive ? prefix.toLowerCase() : prefix;
+    if (!comparableAbsolute.startsWith(comparablePrefix)) continue;
+    const viewerPath = absolute.slice(prefix.length);
+    if (viewerPath) return { tabId, path: viewerPath };
+  }
+  return null;
+}
+
+async function openGitFileInViewer(repoRelPath, { root = "", candidates = [], closeChanges = false } = {}) {
+  const target = gitFileViewerTarget(repoRelPath, root, candidates);
+  if (!target) {
+    addEvent(`Cannot open ${repoRelPath}: it is outside the available tab working directories.`, "error");
+    return;
+  }
+  if (closeChanges) closeGitChangesDialog();
+  if (target.tabId !== activeTabId) await switchTab(target.tabId);
+  if (target.tabId !== activeTabId) {
+    addEvent(`Cannot open ${repoRelPath}: its terminal tab is no longer available.`, "error");
+    return;
+  }
+  setSidePanelCollapsed(false);
+  await openFileInViewer(target.path);
+}
+
 async function openGitFileFromChanges(repoRelPath) {
   const tabId = gitChangesState.tabId || activeTabId;
-  const root = gitChangesState.data?.root || "";
   const tab = tabs.find((item) => item.id === tabId);
-  let viewerPath = repoRelPath;
-  if (root && tab?.cwd) {
-    const absolute = `${root.replace(/\/+$/, "")}/${repoRelPath}`;
-    const cwd = tab.cwd.replace(/\/+$/, "");
-    if (absolute.startsWith(`${cwd}/`)) viewerPath = absolute.slice(cwd.length + 1);
-    else if (root !== cwd) {
-      addEvent(`Cannot open ${repoRelPath}: it is outside this tab's working directory.`, "error");
-      return;
-    }
-  }
-  closeGitChangesDialog();
-  setSidePanelCollapsed(false);
-  await openFileInViewer(viewerPath);
+  await openGitFileInViewer(repoRelPath, {
+    root: gitChangesState.data?.root || "",
+    candidates: tab ? [{ tabId: tab.id, cwd: tab.cwd }] : [],
+    closeChanges: true,
+  });
 }
 
 function gitChangesCommonFileActions(path) {
