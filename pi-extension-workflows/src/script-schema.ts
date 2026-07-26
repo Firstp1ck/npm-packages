@@ -45,8 +45,9 @@ export const WORKFLOW_SCRIPT_META_JSON_SCHEMA = {
         budgets: {
           type: "object", additionalProperties: false,
           properties: {
-            run: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "number", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, maxTimeMs: { type: "integer", minimum: 1 }, maxAgents: { type: "integer", minimum: 1 } } },
-            phase: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "number", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, maxTimeMs: { type: "integer", minimum: 1 }, maxAgents: { type: "integer", minimum: 1 } } },
+            run: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, maxTimeMs: { type: "integer", minimum: 1 }, maxAgents: { type: "integer", minimum: 1 } } },
+            phase: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "integer", minimum: 1 }, maxCostUsd: { type: "number", minimum: 0 }, maxTimeMs: { type: "integer", minimum: 1 }, maxAgents: { type: "integer", minimum: 1 } } },
+            agent: { type: "object", additionalProperties: false, properties: { maxTokens: { type: "integer", minimum: 1 }, maxTurns: { type: "integer", minimum: 1 } } },
           },
         },
         retry: { type: "object", additionalProperties: false, properties: { maxAttempts: { type: "integer", minimum: 1, maximum: 5 }, baseDelayMs: { type: "integer", minimum: 0 }, maxDelayMs: { type: "integer", minimum: 0 }, jitter: { type: "number", minimum: 0, maximum: 1 } } },
@@ -78,7 +79,7 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 function positiveInteger(value: unknown): value is number {
-  return Number.isInteger(value) && Number(value) > 0;
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 function rejectUnknownKeys(value: Record<string, unknown>, allowed: Set<string>, path: string, issues: string[]): void {
@@ -103,6 +104,18 @@ function normalizePermissions(value: unknown, issues: string[]): WorkflowScriptP
     else permissions[key as keyof WorkflowScriptPermissions] = requested;
   }
   return permissions;
+}
+
+function normalizeAgentBudgetLimits(value: unknown, path: string, issues: string[]): { maxTokens?: number; maxTurns?: number } | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) { issues.push(`${path} must be an object.`); return undefined; }
+  rejectUnknownKeys(value, new Set(["maxTokens", "maxTurns"]), path, issues);
+  const limits: { maxTokens?: number; maxTurns?: number } = {};
+  for (const key of ["maxTokens", "maxTurns"] as const) {
+    if (value[key] !== undefined && !positiveInteger(value[key])) issues.push(`${path}.${key} must be a positive integer.`);
+    else if (value[key] !== undefined) limits[key] = Number(value[key]);
+  }
+  return limits;
 }
 
 function normalizeBudgetLimits(value: unknown, path: string, issues: string[]): WorkflowBudgetLimits | undefined {
@@ -168,10 +181,15 @@ function normalizePolicy(value: unknown, issues: string[]): WorkflowScriptPolicy
   if (value.budgets !== undefined) {
     if (!isRecord(value.budgets)) issues.push("meta.pi.budgets must be an object.");
     else {
-      rejectUnknownKeys(value.budgets, new Set(["run", "phase"]), "meta.pi.budgets", issues);
+      rejectUnknownKeys(value.budgets, new Set(["run", "phase", "agent"]), "meta.pi.budgets", issues);
       const runBudget = normalizeBudgetLimits(value.budgets.run, "meta.pi.budgets.run", issues);
       const phaseBudget = normalizeBudgetLimits(value.budgets.phase, "meta.pi.budgets.phase", issues);
-      policy.budgets = { ...(runBudget ? { run: runBudget } : {}), ...(phaseBudget ? { phase: phaseBudget } : {}) };
+      const agentBudget = normalizeAgentBudgetLimits(value.budgets.agent, "meta.pi.budgets.agent", issues);
+      policy.budgets = {
+        ...(runBudget ? { run: runBudget } : {}),
+        ...(phaseBudget ? { phase: phaseBudget } : {}),
+        ...(agentBudget ? { agent: agentBudget } : {}),
+      };
     }
   }
   if (value.retry !== undefined) {
@@ -260,6 +278,7 @@ export function effectiveWorkflowPolicy(
     ...(requested.budgets ? { budgets: {
       ...(requested.budgets.run ? { run: { ...requested.budgets.run, maxAgents: Math.min(requested.budgets.run.maxAgents ?? requested.maxAgents, requested.maxAgents), maxTimeMs: Math.min(requested.budgets.run.maxTimeMs ?? requested.timeoutMs, requested.timeoutMs) } } : {}),
       ...(requested.budgets.phase ? { phase: { ...requested.budgets.phase, maxAgents: Math.min(requested.budgets.phase.maxAgents ?? requested.maxAgents, requested.maxAgents), maxTimeMs: Math.min(requested.budgets.phase.maxTimeMs ?? requested.timeoutMs, requested.timeoutMs) } } : {}),
+      ...(requested.budgets.agent ? { agent: { ...requested.budgets.agent } } : {}),
     } } : {}),
     ...(requested.retry ? { retry: structuredClone(requested.retry) } : {}),
   };

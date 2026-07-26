@@ -18,6 +18,8 @@ export type WorkflowAgentOptions = {
   cwd?: string;
   schema?: unknown;
   timeoutMs?: number;
+  maxTokens?: number;
+  maxTurns?: number;
 };
 
 export type WorkflowAgentRequest = {
@@ -89,7 +91,7 @@ type HostPipelinePayload = {
   error?: unknown;
 };
 
-const AGENT_OPTION_KEYS = new Set(["label", "model", "tools", "cwd", "schema", "timeoutMs"]);
+const AGENT_OPTION_KEYS = new Set(["label", "model", "tools", "cwd", "schema", "timeoutMs", "maxTokens", "maxTurns"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -139,6 +141,12 @@ function validateAgentOptions(value: unknown): WorkflowAgentOptions {
       throw new WorkflowValidationError(["agent option 'timeoutMs' must be a positive integer."]);
     }
     result.timeoutMs = value.timeoutMs as number;
+  }
+  for (const key of ["maxTokens", "maxTurns"] as const) {
+    if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) {
+      throw new WorkflowValidationError([`agent option '${key}' must be a positive integer.`]);
+    }
+    if (value[key] !== undefined) result[key] = Number(value[key]);
   }
   if (value.schema !== undefined) result.schema = value.schema;
   return result;

@@ -5118,6 +5118,7 @@ function workflowOverlayHasContent() {
   if (!isOptionalFeatureEnabled("workflows")) return false;
   const inspector = activeWorkflowInspectorPayload();
   if (inspector?.runs?.length) return true;
+  if (getWidgetLines("workflow").length) return true;
   return !!parseWorkflowSubprocessPayload(getWidgetLines("workflow:subprocess"));
 }
 
@@ -20041,6 +20042,7 @@ function renderWidgets() {
   for (const [key, value] of widgets) {
     const widgetFeatureId = optionalFeatureWidgetFeatureId(key);
     if (widgetFeatureId && !isOptionalFeatureEnabled(widgetFeatureId)) continue;
+    if (widgetFeatureId === "workflows" && workflowOverlayIsMinimized()) continue;
     if (widgetFeatureId && optionalFeatureWidgetHasSpecializedRenderer(key)) continue;
     const lines = Array.isArray(value.widgetLines) ? value.widgetLines : [];
     if (key === "pi-remote-webui") continue;

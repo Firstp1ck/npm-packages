@@ -17,6 +17,8 @@ export function normalizeWorkflowAgentOptions(options: WorkflowAgentOptions | Re
     ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
     ...(value.schema !== undefined ? { schema: value.schema } : {}),
     ...(typeof value.timeoutMs === "number" ? { timeoutMs: value.timeoutMs } : {}),
+    ...(typeof value.maxTokens === "number" ? { maxTokens: value.maxTokens } : {}),
+    ...(typeof value.maxTurns === "number" ? { maxTurns: value.maxTurns } : {}),
   };
 }
 

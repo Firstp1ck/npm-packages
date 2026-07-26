@@ -146,7 +146,7 @@ if (process.platform !== "win32") {
     });
     const runPromise = runner.runTask(
       { id: "tree", name: "Tree", prompt: pidFile },
-      { cwd: path.join(temp, "cwd"), input: {}, run: runA, phase: { id: "tree", name: "Tree", mode: "sequential", tasks: [] }, priorOutputs: "", signal: controller.signal },
+      { cwd: path.join(temp, "cwd"), input: {}, run: runA, phase: { id: "tree", name: "Tree", mode: "sequential", tasks: [] }, priorOutputs: "", signal: controller.signal, agentBudget: { maxTokens: 100, maxTurns: 4 } },
     );
     let childPid;
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -159,6 +159,24 @@ if (process.platform !== "win32") {
     assert.match(cancelledResult.error, /aborted/i);
     await delay(150);
     assert.throws(() => process.kill(childPid, 0), (error) => error?.code === "ESRCH", "cancel must terminate the complete subprocess process group");
+
+    const timeoutPidFile = path.join(temp, "timeout-child.pid");
+    const timeoutPromise = new WorkflowAgentScheduler(1).schedule(
+      { timeoutMs: 100, callId: "tree-timeout" },
+      async (signal) => await runner.runTask(
+        { id: "tree-timeout", name: "Tree timeout", prompt: timeoutPidFile },
+        { cwd: path.join(temp, "cwd"), input: {}, run: runA, phase: { id: "tree-timeout", name: "Tree timeout", mode: "sequential", tasks: [] }, priorOutputs: "", signal },
+      ),
+    );
+    const timeoutExpectation = assert.rejects(() => timeoutPromise, /Agent timeout for tree-timeout exceeded 100ms/);
+    let timeoutChildPid;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { timeoutChildPid = Number(await readFile(timeoutPidFile, "utf8")); break; } catch { await delay(5); }
+    }
+    assert.ok(Number.isInteger(timeoutChildPid) && timeoutChildPid > 0, "timeout fixture must publish its grandchild pid");
+    await timeoutExpectation;
+    await delay(150);
+    assert.throws(() => process.kill(timeoutChildPid, 0), (error) => error?.code === "ESRCH", "scheduler timeout must terminate the complete subprocess process group");
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

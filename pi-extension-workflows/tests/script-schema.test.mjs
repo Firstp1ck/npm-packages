@@ -76,4 +76,43 @@ assert.equal(effective.maxNestingDepth, 4);
 assert.equal(effective.timeoutMs, 30_000);
 assert.deepEqual(effective.permissions, { write: false, shell: true, network: false });
 
+const budgeted = validateWorkflowScriptMeta({
+  name: "budgeted",
+  description: "Budgeted",
+  pi: {
+    budgets: {
+      run: { maxTokens: 90 },
+      phase: { maxTokens: 45 },
+      agent: { maxTokens: 24, maxTurns: 8 },
+    },
+  },
+});
+assert.deepEqual(budgeted.pi.budgets, {
+  run: { maxTokens: 90 },
+  phase: { maxTokens: 45 },
+  agent: { maxTokens: 24, maxTurns: 8 },
+});
+assert.equal(WORKFLOW_SCRIPT_META_JSON_SCHEMA.properties.pi.properties.budgets.properties.agent.properties.maxTurns.minimum, 1);
+assert.equal(WORKFLOW_SCRIPT_META_JSON_SCHEMA.properties.pi.properties.budgets.properties.run.properties.maxTokens.type, "integer");
+assert.throws(
+  () => validateWorkflowScriptMeta({ name: "zero-agent-budget", description: "Bad", pi: { budgets: { agent: { maxTokens: 0 } } } }),
+  (error) => error instanceof WorkflowValidationError && error.issues.some((issue) => issue.includes("agent.maxTokens must be a positive integer")),
+);
+assert.throws(
+  () => validateWorkflowScriptMeta({ name: "fractional-agent-budget", description: "Bad", pi: { budgets: { agent: { maxTurns: 1.5 } } } }),
+  (error) => error instanceof WorkflowValidationError && error.issues.some((issue) => issue.includes("agent.maxTurns must be a positive integer")),
+);
+assert.throws(
+  () => validateWorkflowScriptMeta({ name: "unknown-agent-budget", description: "Bad", pi: { budgets: { agent: { maxCostUsd: 1 } } } }),
+  (error) => error instanceof WorkflowValidationError && error.issues.some((issue) => issue.includes("agent.maxCostUsd is not supported")),
+);
+assert.throws(
+  () => validateWorkflowScriptMeta({ name: "fractional-run-budget", description: "Bad", pi: { budgets: { run: { maxTokens: 1.5 } } } }),
+  (error) => error instanceof WorkflowValidationError && error.issues.some((issue) => issue.includes("run.maxTokens must be a positive integer")),
+);
+assert.deepEqual(
+  effectiveWorkflowPolicy(budgeted.pi).budgets?.agent,
+  { maxTokens: 24, maxTurns: 8 },
+  "effective policy must preserve validated agent ceilings",
+);
 console.log("script schema tests passed");

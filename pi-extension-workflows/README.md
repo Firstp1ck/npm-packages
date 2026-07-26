@@ -117,19 +117,43 @@ return phase("verify", () =>
 
 Runtime globals are `args`, `agent()`, `phase()`, `parallel()`, and `pipeline()`. Editor declarations are shipped in `workflow-runtime.d.ts`; deterministic whitespace formatting is available through `/workflow format`. Tested starter scripts live under `workflows/templates/` for audit, research, migration planning, and bounded verify loops.
 
-Policies can declare concurrency, total agents, nesting depth, run/phase token/cost/time budgets, and bounded transient retry:
+Policies can declare concurrency, total agents, nesting depth, run/phase token/cost/time budgets, per-agent token/turn limits, and bounded transient retry:
 
 ```js
 pi: {
+  maxConcurrency: 2,
   budgets: {
     run: { maxTokens: 100000, maxCostUsd: 2, maxTimeMs: 900000, maxAgents: 20 },
-    phase: { maxTokens: 30000, maxCostUsd: 0.75, maxTimeMs: 300000, maxAgents: 8 }
+    phase: { maxTokens: 30000, maxCostUsd: 0.75, maxTimeMs: 300000, maxAgents: 8 },
+    agent: { maxTokens: 12000, maxTurns: 6 }
   },
   retry: { maxAttempts: 3, baseDelayMs: 500, maxDelayMs: 5000, jitter: 0.2 }
 }
 ```
 
-Write actions are never retried automatically.
+An individual call can tighten, but cannot increase, its effective limits:
+
+```js
+await agent("Summarize the audit", {
+  label: "summary",
+  maxTokens: 6000,
+  maxTurns: 3
+})
+```
+
+`maxTokens` counts reported input, output, cache-read, and cache-write tokens. `maxTurns` counts assistant messages, including assistant messages without usage metadata; this also makes recorded `usage.turns` reflect every assistant turn for unbudgeted calls. Both policy and call values must be positive integers, and call values participate in replay fingerprints. A token-bounded call without an explicit `maxTurns` receives a default cap of 8 assistant turns.
+
+When a run or phase token budget is configured, each non-replay attempt reserves capacity synchronously before worktree setup or scheduler dispatch. For each applicable scope, the deterministic quantum is:
+
+```text
+max(1, floor(scope.maxTokens / max(2, effective maxConcurrency)))
+```
+
+The dispatched allowance is the minimum positive run/phase remaining capacity, applicable scope quanta, `budgets.agent.maxTokens`, and the call's `maxTokens`. Active reservations reduce remaining capacity, preventing concurrent calls from oversubscribing a scope; unused reservation is released when an attempt settles.
+
+Enforcement occurs when the subprocess reports an assistant `message_end`. Token enforcement therefore can stop only after one response has exceeded its allowance; that response's partial text and complete reported usage are retained, but no later turn is allowed. Each bounded attempt receives an internal instruction to use tools selectively and return its concise best answer before the final allowed turn. A model-authored final response at the turn limit completes normally; if the model instead continues, turn enforcement hard-stops the subprocess at that boundary. The hint improves useful-result behavior but is not a provider-level output guarantee.
+
+Every settled retry attempt is charged once to the task's cumulative usage, including transient failures. Agent budget stops are `budget_exhausted`, retain partial evidence, and are not retried. Write actions are never retried automatically. Replay hits neither reserve nor spawn a subprocess, but their cached usage is charged once to the current run and can exhaust its run or phase budget.
 
 ## Workflow Mode
 
@@ -159,7 +183,8 @@ The WebUI exposes the same extension-owned mode through its **Workflow** toggle.
 - Every accepted run persists immutable source and policy snapshots plus versioned run, event, call, usage, and result artifacts under `~/.pi/agent/workflow-runs/<session-id>/<run-id>/`.
 - Runs execute asynchronously through a global scheduler; cancellation terminates subprocess process groups.
 - Replay resume caches unchanged completed calls; changed, failed, running, and explicitly retried calls run again. Pause lets active calls finish but starts no new work.
-- Run/phase budgets produce `budget_exhausted`; transient read-only failures use bounded exponential backoff with jitter.
+- Run/phase admission and per-agent token/turn stops produce `budget_exhausted`; transient read-only failures use bounded exponential backoff with jitter.
+- Token/turn limits do not grant new tools or authority. Shell remains unavailable, and filesystem/network policy is unchanged.
 - Large agent/token policies are shown before launch and while running.
 
 ## Saving and JSON migration
@@ -213,4 +238,4 @@ Run tests:
 npm test
 ```
 
-The tests use Node's TypeScript stripping support, QuickJS/WASM, and fake task runners; they do not spawn Pi subprocesses. The runtime suite is also validated with Bun when available.
+The tests use Node's TypeScript stripping support, QuickJS/WASM, fake task runners, and a deterministic local Node JSONL subprocess fixture. They do not launch Pi or make provider/network calls. The runtime suite is also validated with Bun when available.

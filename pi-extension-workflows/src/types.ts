@@ -22,9 +22,15 @@ export type WorkflowBudgetLimits = {
   maxAgents?: number;
 };
 
+export type WorkflowAgentBudgetLimits = {
+  maxTokens?: number;
+  maxTurns?: number;
+};
+
 export type WorkflowBudgetPolicy = {
   run?: WorkflowBudgetLimits;
   phase?: WorkflowBudgetLimits;
+  agent?: WorkflowAgentBudgetLimits;
 };
 
 export type WorkflowRetryPolicy = {
@@ -251,6 +257,7 @@ export type TaskContext = {
   priorOutputs: string;
   signal?: AbortSignal;
   agentPolicy?: WorkflowAgentPolicy;
+  agentBudget?: WorkflowAgentBudgetLimits;
   onSubprocessEvent?: (event: WorkflowSubprocessEvent) => void;
 };
 

@@ -33,6 +33,14 @@ type SubprocessTaskRunnerOptions = {
   invocation?: { command: string; argsPrefix?: string[] };
 };
 
+type AgentBudgetStop = {
+  type: "workflow_agent_budget_stop";
+  reason: "max_tokens" | "max_turns";
+  limit: number;
+  observedTokens: number;
+  turns: number;
+};
+
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
   const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
@@ -59,6 +67,7 @@ function textFromMessage(message: GenericMessage): string {
 }
 
 function addUsage(target: WorkflowUsage, message: GenericMessage): void {
+  target.turns = (target.turns ?? 0) + 1;
   const usage = message.usage;
   if (!usage) return;
   target.input = (target.input ?? 0) + (usage.input ?? 0);
@@ -68,7 +77,24 @@ function addUsage(target: WorkflowUsage, message: GenericMessage): void {
   target.contextTokens = usage.totalTokens ?? target.contextTokens;
   if (typeof usage.cost === "number") target.cost = (target.cost ?? 0) + usage.cost;
   else target.cost = (target.cost ?? 0) + (usage.cost?.total ?? 0);
-  target.turns = (target.turns ?? 0) + 1;
+}
+
+function usageTokens(usage: WorkflowUsage): number {
+  return (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+}
+
+function agentBudgetStop(usage: WorkflowUsage, context: TaskContext, message: GenericMessage): AgentBudgetStop | undefined {
+  const observedTokens = usageTokens(usage);
+  const turns = usage.turns ?? 0;
+  const maxTokens = context.agentBudget?.maxTokens;
+  if (maxTokens !== undefined && observedTokens > maxTokens) {
+    return { type: "workflow_agent_budget_stop", reason: "max_tokens", limit: maxTokens, observedTokens, turns };
+  }
+  const maxTurns = context.agentBudget?.maxTurns;
+  if (maxTurns !== undefined && turns >= maxTurns && message.stopReason !== "stop" && message.stopReason !== "error" && !message.errorMessage) {
+    return { type: "workflow_agent_budget_stop", reason: "max_turns", limit: maxTurns, observedTokens, turns };
+  }
+  return undefined;
 }
 
 function safeTools(task: WorkflowTask, defaults: string[], context: TaskContext): string[] {
@@ -182,6 +208,7 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
       let stopReason: string | undefined;
       let errorMessage: string | undefined;
       let aborted = false;
+      let budgetStop: AgentBudgetStop | undefined;
       let stdoutBuffer = "";
       let stderrBuffer = "";
 
@@ -223,6 +250,8 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
               const text = textFromMessage(message);
               if (text) outputs.push(text);
               addUsage(usage, message);
+              const stopForBudget = agentBudgetStop(usage, context, message);
+              if (stopForBudget) terminateProcess(stopForBudget);
               if (message.stopReason) stopReason = message.stopReason;
               if (message.errorMessage) errorMessage = message.errorMessage;
             }
@@ -253,14 +282,18 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
 
         proc.on("close", (code) => {
           if (abortListener && context.signal) context.signal.removeEventListener("abort", abortListener);
-          if (aborted) signalProcessTree("SIGKILL");
-          if (forceKillTimer) clearTimeout(forceKillTimer);
           const finalCode = code ?? 0;
+          // Flush trailing records before force-kill cleanup: processing a final
+          // unterminated JSON line can itself detect a budget stop and arm the timer.
           if (stdoutBuffer.trim()) processLine(stdoutBuffer);
           if (stderrBuffer.trim()) processStderrLine(stderrBuffer);
+          if (aborted || budgetStop) signalProcessTree("SIGKILL");
+          if (forceKillTimer) clearTimeout(forceKillTimer);
           emitSubprocessEvent(context, task, "exit", {
             exitCode: finalCode,
-            line: aborted ? "subprocess cancelled" : finalCode === 0 ? "subprocess completed" : `subprocess exited with code ${finalCode}`,
+            line: budgetStop
+              ? `subprocess stopped at ${budgetStop.reason} boundary`
+              : aborted ? "subprocess cancelled" : finalCode === 0 ? "subprocess completed" : `subprocess exited with code ${finalCode}`,
           });
           resolve(finalCode);
         });
@@ -282,21 +315,40 @@ export function createSubprocessTaskRunner(options: SubprocessTaskRunnerOptions 
           }
         };
 
-        const killProc = () => {
-          if (aborted) return;
-          aborted = true;
+        const terminateProcess = (stopForBudget?: AgentBudgetStop) => {
+          if (aborted || budgetStop) return;
+          if (stopForBudget) {
+            budgetStop = stopForBudget;
+            rawEvents.push(stopForBudget);
+            emitSubprocessEvent(context, task, "event", {
+              eventType: stopForBudget.type,
+              line: `agent ${stopForBudget.reason} limit ${stopForBudget.limit} reached after ${stopForBudget.observedTokens} tokens across ${stopForBudget.turns} turns`,
+            });
+          } else {
+            aborted = true;
+          }
           signalProcessTree("SIGTERM");
           forceKillTimer = setTimeout(() => signalProcessTree("SIGKILL"), terminationGraceMs);
         };
 
         if (context.signal) {
-          abortListener = killProc;
-          if (context.signal.aborted) killProc();
+          abortListener = () => terminateProcess();
+          if (context.signal.aborted) terminateProcess();
           else context.signal.addEventListener("abort", abortListener, { once: true });
         }
       });
 
       const output = truncateText(outputs.join("\n\n").trim() || "(no output)", outputCapBytes);
+      if (budgetStop) {
+        const kind = budgetStop.reason === "max_tokens" ? "token" : "turn";
+        return {
+          ok: false,
+          output,
+          error: `Workflow agent ${kind} limit ${budgetStop.limit} reached after ${budgetStop.observedTokens} tokens across ${budgetStop.turns} turns.`,
+          usage,
+          raw: rawEvents,
+        };
+      }
       if (aborted) return { ok: false, output, error: "Task was aborted.", usage, raw: rawEvents };
       if (exitCode !== 0) {
         return {

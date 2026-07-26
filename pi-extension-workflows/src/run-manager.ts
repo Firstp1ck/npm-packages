@@ -98,7 +98,11 @@ function callRecord(run: WorkflowRun, phaseId: string, task: TaskRun): WorkflowC
     ...(task.pipelineKey ? { pipelineKey: task.pipelineKey } : {}),
     status: task.status,
     options: structuredClone(task.options ?? {}),
-    ...("result" in task ? { result: structuredClone(task.result) } : {}),
+    ...("result" in task
+      ? { result: structuredClone(task.result) }
+      : task.output !== undefined
+        ? { result: task.output }
+        : {}),
     ...(task.usage ? { usage: structuredClone(task.usage) } : {}),
     ...(task.recentEvents?.length ? { recentEvents: structuredClone(task.recentEvents) as Array<Record<string, unknown>> } : {}),
     ...(task.worktree ? { worktree: structuredClone(task.worktree) } : {}),

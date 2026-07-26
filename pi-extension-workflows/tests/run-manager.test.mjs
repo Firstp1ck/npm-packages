@@ -7,6 +7,9 @@ import { WorkflowRunManager } from "../src/run-manager.ts";
 import { createWorkflowRunStorage } from "../src/run-storage.ts";
 import { transitionWorkflowRun } from "../src/run-status.ts";
 import { WorkflowAgentScheduler } from "../src/scheduler.ts";
+import { parseWorkflowScript } from "../src/script-parser.ts";
+import { createJavaScriptRun, runJavaScriptWorkflow } from "../src/script-runner.ts";
+import { createWorkflowStateStore } from "../src/state.ts";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const temp = await mkdtemp(path.join(os.tmpdir(), "workflow-run-manager-test-"));
@@ -124,6 +127,108 @@ try {
   assert.equal(resultRecord.status, "completed");
   assert.deepEqual(resultRecord.result, { ok: true });
   assert.match(await readFile(path.join(runDir, "result.md"), "utf8"), /"ok": true/);
+
+  const budgetSourceText = `
+export const meta = {
+  name: "durable-budget",
+  description: "Durable budget evidence",
+  pi: {
+    maxConcurrency: 1,
+    maxAgents: 2,
+    timeoutMs: 5000,
+    budgets: { run: { maxTokens: 100 }, agent: { maxTokens: 10, maxTurns: 3 } },
+    retry: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0, jitter: 0 }
+  }
+}
+return await phase("audit", () => agent("inspect with retries", { label: "inspect-budget" }))
+`;
+  const budgetScript = parseWorkflowScript(budgetSourceText, { sourcePath: "durable-budget.js", enforceFilename: true });
+  const budgetSource = { path: "/tmp/durable-budget.js", scope: "inline", sourceType: "javascript", script: budgetScript };
+  const budgetRun = createJavaScriptRun(budgetSource, {});
+  budgetRun.runId = "run-durable-budget";
+  let budgetAttempts = 0;
+  const budgetReceipt = await manager.launch({
+    run: budgetRun,
+    storage,
+    projectId: "project-test",
+    scriptSnapshot: { source: budgetSourceText, hash: sha256(budgetSourceText) },
+    policySnapshot: budgetScript.meta.pi,
+    async execute(signal, onUpdate) {
+      return await runJavaScriptWorkflow(budgetSource, {}, { hasUI: false }, {
+        cwd: process.cwd(),
+        run: budgetRun,
+        signal,
+        state: createWorkflowStateStore(),
+        onRunUpdate: onUpdate,
+        taskRunner: {
+          async runTask(task, context) {
+            budgetAttempts++;
+            if (budgetAttempts === 1) {
+              return {
+                ok: false,
+                output: "failed attempt evidence",
+                error: "temporary network failure",
+                usage: { input: 2, output: 3, turns: 1 },
+              };
+            }
+            context.onSubprocessEvent?.({
+              type: "event",
+              timestamp: new Date().toISOString(),
+              phaseId: context.phase.id,
+              phaseName: context.phase.name,
+              taskId: task.id,
+              taskName: task.name,
+              eventType: "workflow_agent_budget_stop",
+              line: "agent max_tokens limit 10 reached after 11 tokens across 1 turn",
+            });
+            return {
+              ok: false,
+              output: "partial result before token stop",
+              error: "Workflow agent token limit reached.",
+              usage: { input: 6, output: 5, turns: 1 },
+              raw: [{ type: "workflow_agent_budget_stop", reason: "max_tokens", limit: 10, observedTokens: 11, turns: 1 }],
+            };
+          },
+        },
+      });
+    },
+  });
+  const budgetCompleted = await budgetReceipt.completion;
+  assert.equal(budgetAttempts, 2, "a transient failed attempt may retry before a non-transient budget stop");
+  assert.equal(budgetCompleted.status, "failed");
+  assert.equal(budgetCompleted.errorKind, "budget_exhausted");
+  assert.deepEqual(budgetCompleted.usage, { input: 8, output: 8, turns: 2 });
+  const budgetTask = budgetCompleted.phases[0].tasks[0];
+  assert.equal(budgetTask.output, "partial result before token stop");
+  assert.equal(budgetTask.errorKind, "budget_exhausted");
+  assert.deepEqual(budgetTask.usage, { input: 8, output: 8, turns: 2 }, "failed and stopped attempt usage must be cumulative");
+
+  const budgetDir = await storage.runDirectory(budgetRun.runId);
+  const budgetCallFiles = await readdir(path.join(budgetDir, "calls"));
+  assert.equal(budgetCallFiles.length, 1);
+  const budgetCall = JSON.parse(await readFile(path.join(budgetDir, "calls", budgetCallFiles[0]), "utf8"));
+  assert.equal(budgetCall.schemaVersion, 1);
+  assert.equal(budgetCall.status, "failed");
+  assert.equal(budgetCall.errorKind, "budget_exhausted");
+  assert.equal(budgetCall.result, "partial result before token stop", "schema-v1 call.result retains failed-call partial output");
+  assert.deepEqual(budgetCall.usage, { input: 8, output: 8, turns: 2 });
+  assert.ok(budgetCall.recentEvents.some((event) => event.eventType === "workflow_retry"));
+  assert.ok(budgetCall.recentEvents.some((event) => event.eventType === "workflow_agent_budget_stop"));
+
+  const budgetUsage = (await readFile(path.join(budgetDir, "usage.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(budgetUsage.length, 3, "cumulative usage must persist exactly once at agent, phase, and run scope");
+  for (const scope of ["agent", "phase", "run"]) {
+    const scoped = budgetUsage.filter((entry) => entry.scope === scope);
+    assert.equal(scoped.length, 1, `${scope} usage must be written exactly once`);
+    assert.equal(scoped[0].schemaVersion, 1);
+    assert.deepEqual(scoped[0].usage, { input: 8, output: 8, turns: 2 });
+  }
+  const budgetResult = JSON.parse(await readFile(path.join(budgetDir, "result.json"), "utf8"));
+  assert.equal(budgetResult.schemaVersion, 1);
+  assert.equal(budgetResult.status, "failed");
+  assert.equal(budgetResult.errorKind, "budget_exhausted");
+  assert.match(budgetResult.error, /Agent token limit reached/i);
+  assert.match(await readFile(path.join(budgetDir, "result.md"), "utf8"), /budget_exhausted|Agent token limit reached/i);
 
   let releaseParallelA;
   let releaseParallelB;

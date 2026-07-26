@@ -99,6 +99,28 @@ const validRecords = [
   { schemaVersion: 1, kind: "result", runId: "run-1", status: "completed", finishedAt: now, summary: "done", result: { ok: true } },
 ];
 for (const record of validRecords) assert.equal(validateWorkflowPersistenceRecord(record).kind, record.kind);
+
+const budgetEvidenceRecords = [
+  {
+    schemaVersion: 1, kind: "call", runId: "run-budget", callId: "call-budget", callIndex: 1, phasePath: ["audit"], label: "bounded-audit",
+    prompt: "Audit within a token cap", promptHash: hashA, fingerprint: hashB, status: "failed", options: { maxTokens: 10, maxTurns: 3 },
+    result: "partial output before stop", usage: { input: 8, output: 8, cacheRead: 1, turns: 2 },
+    recentEvents: [
+      { type: "event", eventType: "workflow_retry", line: "transient failure; retry 2/2" },
+      { type: "event", eventType: "workflow_agent_budget_stop", line: "agent max_tokens limit reached" },
+    ],
+    startedAt: now, finishedAt: now, error: "Agent token limit reached.", errorKind: "budget_exhausted",
+  },
+  {
+    schemaVersion: 1, kind: "result", runId: "run-budget", status: "failed", finishedAt: now,
+    error: "Agent token limit reached.", errorKind: "budget_exhausted",
+  },
+];
+for (const record of budgetEvidenceRecords) {
+  const validated = validateWorkflowPersistenceRecord(record);
+  assert.equal(validated.schemaVersion, 1, "budget diagnostics must remain valid under persistence schema v1");
+  assert.equal(migrateWorkflowPersistenceRecord(record).kind, record.kind);
+}
 assert.throws(() => validateWorkflowPersistenceRecord({ ...validRecords[2], sequence: -1 }), /sequence must be a non-negative/);
 assert.throws(() => validateWorkflowPersistenceRecord({ ...validRecords[3], usage: { cost: -1 } }), /finite non-negative/);
 

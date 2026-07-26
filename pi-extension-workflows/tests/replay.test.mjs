@@ -100,4 +100,33 @@ return { first, second, piped }
   await rm(temp, { recursive: true, force: true });
 }
 
+const fingerprintBudgeted = workflowCallFingerprint({
+  phasePath: ["audit"],
+  label: "a",
+  prompt: "inspect",
+  options: { tools: ["read"], maxTokens: 24, maxTurns: 3 },
+  pipelineKey: "pipeline-1:item",
+});
+assert.notEqual(
+  fingerprintBudgeted,
+  workflowCallFingerprint({
+    phasePath: ["audit"],
+    label: "a",
+    prompt: "inspect",
+    options: { tools: ["read"], maxTokens: 25, maxTurns: 3 },
+    pipelineKey: "pipeline-1:item",
+  }),
+  "per-call token ceilings must participate in replay fingerprints",
+);
+assert.notEqual(
+  fingerprintBudgeted,
+  workflowCallFingerprint({
+    phasePath: ["audit"],
+    label: "a",
+    prompt: "inspect",
+    options: { tools: ["read"], maxTokens: 24, maxTurns: 4 },
+    pipelineKey: "pipeline-1:item",
+  }),
+  "per-call turn ceilings must participate in replay fingerprints",
+);
 console.log("replay tests passed");

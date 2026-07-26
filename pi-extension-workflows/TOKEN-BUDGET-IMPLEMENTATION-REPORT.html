@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Workflow Token-Budget Enforcement — Implementation Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 3px;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      background: var(--blue);
+      color: #06111f;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section { padding: 24px; margin: 18px 0; scroll-margin-top: 16px; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    ul, ol { padding-left: 1.4rem; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .38em; border-radius: 5px; }
+    pre {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      overflow-x: auto;
+      color: #d9e6f7;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .lead { font-size: 1.1rem; max-width: 84ch; }
+    .nav-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .nav-tools a, .action-button {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 12px;
+      min-height: 42px;
+      font: inherit;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .action-button { cursor: pointer; }
+    .nav-tools a:hover, .action-button:hover { border-color: var(--blue); background: rgb(101 181 255 / 12%); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .metric, .finding, .step, .visual-card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .metric strong { display: block; font-size: 1.5rem; }
+    .badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .good { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .bad { color: var(--red); }
+    .info { color: var(--blue); }
+    .badge.good { background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.bad { background: rgb(255 115 115 / 14%); border: 1px solid rgb(255 115 115 / 38%); }
+    .badge.info { background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout {
+      border-left: 5px solid var(--green);
+      background: rgb(80 216 144 / 8%);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 14px 0;
+    }
+    .callout.warn-callout { border-left-color: var(--yellow); background: rgb(247 198 92 / 8%); }
+    .callout.info-callout { border-left-color: var(--blue); background: rgb(101 181 255 / 8%); }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    .status-pass { color: var(--green); font-weight: 750; }
+    .status-waived { color: var(--yellow); font-weight: 750; }
+    figure { margin: 18px 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    figcaption { color: var(--muted); margin-top: 8px; font-size: .92rem; }
+    .node { fill: #182b43; stroke: var(--blue); stroke-width: 2; }
+    .node.good-node { stroke: var(--green); }
+    .node.warn-node { stroke: var(--yellow); }
+    .node-text { fill: var(--text); font: 650 14px system-ui, sans-serif; text-anchor: middle; }
+    .node-subtext { fill: var(--muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .edge { fill: none; stroke: var(--muted); stroke-width: 2.5; marker-end: url(#arrow); }
+    .edge-label { fill: var(--muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+    details { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    .confidence { font-variant-numeric: tabular-nums; }
+    footer { color: var(--muted); margin-top: 24px; font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      .nav-tools > * { flex: 1 1 145px; text-align: center; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .metric, .finding, .step, .visual-card {
+        box-shadow: none;
+        background: white;
+        color: #111;
+        border-color: #bbb;
+        break-inside: avoid;
+      }
+      .skip-link, .nav-tools, .action-button { display: none !important; }
+      pre, code, figure svg { color: #111; background: #f1f3f5; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge good">Implementation complete</span>
+    <h1>Workflow Token-Budget Enforcement</h1>
+    <p class="lead">Final implementation report for <code>@firstpick/pi-extension-workflows</code>, grounded in the repository diff, deterministic JSONL fixtures, the canonical implementation plan, full package tests, and independent review artifacts.</p>
+    <div class="callout">
+      <strong>Conclusion:</strong> workflow agents now receive synchronous pre-spawn token reservations, bounded turns, message-boundary enforcement, cumulative retry/replay accounting, retained partial output, and actionable <code>budget_exhausted</code> diagnostics. The implementation and acceptance reviews passed; the unavailable distinct-provider review was explicitly waived by the user rather than represented as successful.
+    </div>
+    <p class="muted confidence"><strong>Confidence: 98/100.</strong> Source paths and deterministic Linux tests are verified. Confidence is reduced only by the intentionally non-gating absence of a live-provider smoke and Windows process-tree execution.</p>
+    <nav class="nav-tools" aria-label="Report sections">
+      <a href="#overview">Overview</a>
+      <a href="#design">Design &amp; implementation</a>
+      <a href="#review">Review</a>
+      <a href="#verification">Verification</a>
+      <a href="#release">Release notes</a>
+      <button class="action-button" type="button" onclick="window.print()">Print report</button>
+    </nav>
+  </header>
+
+  <section class="report-section" id="overview">
+    <h2>Overview</h2>
+    <div class="grid" aria-label="Headline metrics">
+      <div class="metric"><span class="badge good">Verified</span><strong>23 suites</strong><span class="muted">Full <code>npm test</code> pass after final review fixes.</span></div>
+      <div class="metric"><span class="badge good">Resolved</span><strong>4 / 4</strong><span class="muted">Accepted low-severity review findings fixed and directly tested.</span></div>
+      <div class="metric"><span class="badge info">Compatibility</span><strong>Schema v1</strong><span class="muted">No persistence migration or permission expansion.</span></div>
+      <div class="metric"><span class="badge warn">Transparent waiver</span><strong>1 gate</strong><span class="muted">Provider diversity explicitly waived after Anthropic and LM Studio availability failures.</span></div>
+    </div>
+    <h3 style="margin-top:22px">Implementation map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Problem addressed</th><th>Implemented behavior</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Admission</td><td>Parallel agents could all start against the same retrospective run/phase envelope.</td><td>Synchronous deterministic reservation occurs before worktree setup or scheduler dispatch.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Per-agent bounds</td><td>A single tool loop could consume the phase/run budget before useful output.</td><td>Optional token/turn caps, default eight-turn cap for token-bounded calls, and concise-final-answer instruction.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Accounting</td><td>Failed and retried usage was discarded; replay accounting was incomplete.</td><td>Every settled attempt reconciles once; replay charges cached usage once without reserving or spawning.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Diagnostics</td><td>Late aggregate errors discarded useful in-flight evidence.</td><td>Structured non-retryable budget stops retain partial output, cumulative usage, and raw events.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Compatibility</td><td>New controls could have changed persistence, cancellation, or authority.</td><td>Schema v1 retained; process groups still terminate; shell/network policy unchanged.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Review governance</td><td>Distinct-provider review was unavailable.</td><td>Repeated failures recorded; user explicitly waived this gate. Other correctness and acceptance reviews passed.</td><td class="status-waived">WAIVED</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="report-section" id="design">
+    <h2>Root cause, enforcement design, and implementation</h2>
+    <p>Earlier WebUI planning workflows failed with run and phase token-budget errors before returning completed scout output. The runtime checked aggregate budgets before dispatch and after a task returned, but it had no active reservation, no per-call enforcement, and no cumulative failed-attempt accounting. Parallel calls could therefore pass the same admission check, while one subprocess could continue consuming tokens until the aggregate envelope was already exhausted.</p>
+    <div class="callout info-callout"><strong>Design boundary:</strong> Pi reports authoritative usage at assistant <code>message_end</code>. The parent can stop future turns and terminate the process group, but cannot interrupt an already streaming response at an exact token. One-response overshoot is therefore documented and bounded rather than hidden.</div>
+    <figure class="visual-card" data-visual-kind="diagram" data-purpose="Show how an agent call is admitted, monitored, stopped, and reconciled">
+      <svg role="img" aria-labelledby="budget-flow-title budget-flow-desc" viewBox="0 0 1040 430">
+        <title id="budget-flow-title">Token-budget admission and enforcement flow</title>
+        <desc id="budget-flow-desc">An agent request receives a synchronous reservation before scheduling. The subprocess emits assistant message-end usage. It either returns a final answer within the limit or the parent stops the process group. Every outcome reconciles usage once and persists partial evidence.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb" /></marker>
+        </defs>
+        <rect class="node" x="35" y="62" width="160" height="82" rx="12" />
+        <text class="node-text" x="115" y="96">Agent request</text><text class="node-subtext" x="115" y="119">policy + per-call limits</text>
+        <path class="edge" d="M195 103 H250" />
+        <rect class="node good-node" x="250" y="62" width="185" height="82" rx="12" />
+        <text class="node-text" x="342" y="96">Reserve synchronously</text><text class="node-subtext" x="342" y="119">run / phase capacity</text>
+        <path class="edge" d="M435 103 H490" />
+        <rect class="node" x="490" y="62" width="160" height="82" rx="12" />
+        <text class="node-text" x="570" y="96">Schedule + spawn</text><text class="node-subtext" x="570" y="119">only after admission</text>
+        <path class="edge" d="M650 103 H705" />
+        <rect class="node" x="705" y="62" width="290" height="82" rx="12" />
+        <text class="node-text" x="850" y="96">Observe message_end</text><text class="node-subtext" x="850" y="119">tokens + assistant turns</text>
+        <path class="edge" d="M850 144 V215 H665" />
+        <text class="edge-label" x="774" y="203">within cap + final response</text>
+        <rect class="node good-node" x="490" y="215" width="175" height="82" rx="12" />
+        <text class="node-text" x="577" y="249">Useful completion</text><text class="node-subtext" x="577" y="272">exact equality allowed</text>
+        <path class="edge" d="M850 144 V345 H665" />
+        <text class="edge-label" x="778" y="333">over token cap / continued final turn</text>
+        <rect class="node warn-node" x="490" y="345" width="175" height="62" rx="12" />
+        <text class="node-text" x="577" y="374">SIGTERM → SIGKILL</text><text class="node-subtext" x="577" y="395">entire process group</text>
+        <path class="edge" d="M490 256 H370" />
+        <path class="edge" d="M490 376 H370" />
+        <rect class="node good-node" x="90" y="255" width="280" height="100" rx="12" />
+        <text class="node-text" x="230" y="289">Reconcile exactly once</text><text class="node-subtext" x="230" y="313">all attempt usage + unused release</text><text class="node-subtext" x="230" y="335">partial output persisted in schema v1</text>
+      </svg>
+      <figcaption>The controller reserves before any awaited setup, the subprocess enforces at authoritative assistant boundaries, and both success and budget termination converge on exactly-once reconciliation.</figcaption>
+    </figure>
+    <h3>Implemented contract and runtime behavior</h3>
+    <div class="grid">
+      <article class="finding"><span class="badge info">Contract</span><h3>Policy and call controls</h3><p><code>meta.pi.budgets.agent.maxTokens</code> and <code>maxTurns</code> are optional positive integers. Per-call values may tighten but never loosen the policy or derived allowance, and they participate in replay fingerprints.</p></article>
+      <article class="finding"><span class="badge info">Admission</span><h3>Deterministic quantum</h3><p>Each token scope derives <code>max(1, floor(maxTokens / max(2, maxConcurrency)))</code>. The reservation is the minimum positive run, phase, policy, and request allowance after measured usage and active reservations.</p></article>
+      <article class="finding"><span class="badge info">Finalization</span><h3>Useful answer before exhaustion</h3><p>A token-bounded call without an explicit turn cap receives eight turns. The prompt asks the agent to use tools selectively and return its concise best answer before the final allowed turn. A natural <code>stop</code> exactly at the boundary succeeds.</p></article>
+      <article class="finding"><span class="badge info">Evidence</span><h3>Failures retain value</h3><p>Budget termination is structured as <code>budget_exhausted</code>, never retried, and evaluated before structured-output validation. Partial text, raw events, cumulative usage, and failed-call result evidence survive.</p></article>
+      <article class="finding"><span class="badge info">Retries</span><h3>Every attempt charged</h3><p>Reservations are acquired per attempt and reconciled once. Failed-attempt usage is merged with later success, while <code>contextTokens</code> keeps its maximum rather than being summed.</p></article>
+      <article class="finding"><span class="badge info">Replay</span><h3>No duplicate work</h3><p>Replay resolves before admission, reserves nothing, starts no subprocess, and charges cached usage exactly once. A replay hit can legitimately exhaust the current logical budget.</p></article>
+    </div>
+    <details>
+      <summary>Key changed surfaces</summary>
+      <p>Core runtime changes are concentrated in <code>src/token-budget.ts</code>, <code>src/script-runner.ts</code>, and <code>src/task-runner.ts</code>. Contract/type changes span <code>src/types.ts</code>, <code>src/script-schema.ts</code>, <code>src/script-runtime.ts</code>, <code>src/call-fingerprint.ts</code>, and <code>workflow-runtime.d.ts</code>. Existing schema-v1 evidence is exposed through <code>src/run-manager.ts</code>. Documentation and deterministic fixtures/tests were added or expanded under <code>README.md</code> and <code>tests/</code>.</p>
+    </details>
+  </section>
+
+  <section class="report-section" id="review">
+    <h2>Independent review and finding dispositions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Finding or gate</th><th>Disposition</th><th>Implemented evidence</th><th>Residual impact</th></tr></thead>
+        <tbody>
+          <tr><td>Trailing unterminated stdout could arm a force-kill timer after close cleanup.</td><td class="status-pass">Accepted and fixed</td><td>Trailing JSONL flush now precedes final timer cleanup; no-newline budget fixture added.</td><td>None observed.</td></tr>
+          <tr><td><code>stopReason: "error"</code> exactly at <code>maxTurns</code> could be rewritten as a budget stop.</td><td class="status-pass">Accepted and fixed</td><td>Provider errors have precedence; exact-turn error test asserts no synthetic budget marker.</td><td>Token overage still remains an intentional hard-budget condition.</td></tr>
+          <tr><td><code>diagnostics(phaseId)</code> created phase state.</td><td class="status-pass">Accepted and fixed</td><td>Diagnostics uses <code>phases.get()</code>; unseen-phase purity is tested.</td><td>None observed.</td></tr>
+          <tr><td>Scheduler timeout and real process-tree termination were tested only separately.</td><td class="status-pass">Accepted and fixed</td><td>Linux scheduler test now times out the real child/grandchild fixture and verifies <code>ESRCH</code>.</td><td>Windows path remains platform-skipped.</td></tr>
+          <tr><td>Assistant-turn counting includes messages without usage metadata.</td><td class="status-pass">Accepted as intentional</td><td><code>README.md</code> now documents this for budgeted and unbudgeted usage recording.</td><td>Recorded turn counts may become more complete than legacy counts.</td></tr>
+          <tr><td>Distinct-provider correctness review.</td><td class="status-waived">Explicitly waived</td><td>Anthropic repeatedly returned account 429; LM Studio failed to connect; user replied “Waive distinct-provider review.”</td><td>No successful second-provider opinion exists and none is claimed.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warn-callout"><strong>Review integrity:</strong> the Anthropic child later fell back to OpenRouter and exceeded its turn budget. Its partial PASS text is not counted as a qualifying Anthropic result. Completion relies on the explicit waiver plus successful OpenRouter correctness and independent OpenAI acceptance reviews.</div>
+  </section>
+
+  <section class="report-section" id="verification">
+    <h2>Verification evidence</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Coverage</th><th>Observed result</th></tr></thead>
+        <tbody>
+          <tr><td>Focused controller/subprocess/scheduler suites</td><td>Admission, equality, default turns, final-stop, provider-error precedence, no-newline cleanup, real timeout process tree.</td><td class="status-pass">PASS</td></tr>
+          <tr><td><code>npm test</code></td><td>All 23 registered package suites, including legacy behavior, persistence, replay, policy/worktree, and the three new budget suites.</td><td class="status-pass">PASS</td></tr>
+          <tr><td><code>git diff --check</code></td><td>Working-tree whitespace integrity.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Persistence compatibility</td><td>Schema v1 validation and matching cumulative agent/phase/run usage.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Permission boundary</td><td>Policy guard unchanged; shell/network authority not widened; policy/worktree suite passed.</td><td class="status-pass">PASS</td></tr>
+          <tr><td>Live-provider bounded scout</td><td>Real subscription/provider behavior.</td><td class="status-waived">NOT RUN — non-gating</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 style="margin-top:20px">Reproduction command</h3>
+    <pre><code>cd /home/firstpick/npm-packages/pi-extension-workflows
+npm test
+git diff --check</code></pre>
+    <details>
+      <summary>Review artifacts</summary>
+      <ul>
+        <li><code>/tmp/pi-extension-workflows-PLAN-WF-BUDGET-review-openrouter.md</code> — initial correctness PASS.</li>
+        <li><code>/tmp/pi-extension-workflows-PLAN-WF-BUDGET-tests-acceptance.md</code> — initial acceptance PASS.</li>
+        <li><code>/tmp/pi-extension-workflows-PLAN-WF-BUDGET-low-findings-verifier.md</code> — accepted low findings.</li>
+        <li><code>/tmp/pi-extension-workflows-PLAN-WF-BUDGET-postfix-openrouter.md</code> — post-fix correctness PASS.</li>
+        <li><code>/tmp/pi-extension-workflows-PLAN-WF-BUDGET-postfix-acceptance.md</code> — post-fix acceptance PASS, 98/100 confidence.</li>
+      </ul>
+    </details>
+  </section>
+
+  <section class="report-section" id="release">
+    <h2>Release posture, limitations, and next actions</h2>
+    <ol>
+      <li><strong>Inspect and commit intentionally.</strong> The package changes, plan, tests, and this report remain unstaged and uncommitted. Sibling <code>pi-package-webui</code> changes are out of scope and must not be bundled accidentally.</li>
+      <li><strong>Optionally run a live bounded read-only smoke.</strong> This is useful evidence when a subscription provider is available, but it is not the deterministic release gate.</li>
+      <li><strong>Preserve the documented enforcement boundary.</strong> Usage is authoritative only at <code>message_end</code>; do not promise exact mid-response interruption.</li>
+      <li><strong>Keep rollback coupled.</strong> If enforcement is removed before release, token-budgeted calls should fail closed rather than silently returning to retrospective-only aggregate checks.</li>
+    </ol>
+    <div class="grid">
+      <article class="finding"><span class="badge warn">Residual risk</span><h3>One-response overshoot</h3><p>A single assistant response may cross the assigned token cap before the parent receives usage. Further turns and admissions stop after that boundary.</p></article>
+      <article class="finding"><span class="badge warn">Evidence limit</span><h3>Provider and Windows coverage</h3><p>No live-provider smoke was required or run, and process-group assertions execute on Linux rather than Windows.</p></article>
+      <article class="finding"><span class="badge good">Rollback safety</span><h3>No migration required</h3><p>Persistence remains schema version 1, so rollback does not require destructive data cleanup or migration.</p></article>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>Scope:</strong> <code>@firstpick/pi-extension-workflows</code> token-budget feature only. Canonical source: <code>TOKEN-BUDGET-IMPLEMENTATION-PLAN.md</code>. Generated 2026-07-26 from local repository and review evidence.</p>
+  </footer>
+</main>
+</body>
+</html>

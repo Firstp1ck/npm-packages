@@ -547,4 +547,36 @@ await assert.rejects(
   /cancel|abort/i,
 );
 
+const budgetOptionsScript = parseWorkflowScript(`
+export const meta = { name: "budget-options", description: "Budget options", pi: { timeoutMs: 5000 } }
+return await agent("bounded", { maxTokens: 24, maxTurns: 3 })
+`);
+let budgetOptionsRequest;
+await executeWorkflowScript(budgetOptionsScript, {}, {
+  async agent(request) {
+    budgetOptionsRequest = request;
+    return request.prompt;
+  },
+});
+assert.deepEqual(budgetOptionsRequest.options, { maxTokens: 24, maxTurns: 3 });
+
+const invalidBudgetOptionsScript = parseWorkflowScript(`
+export const meta = { name: "invalid-budget-options", description: "Invalid budget options", pi: { timeoutMs: 5000 } }
+return await agent("invalid", { maxTokens: 0, maxTurns: 1.5 })
+`);
+await assert.rejects(
+  () => executeWorkflowScript(invalidBudgetOptionsScript, {}, { async agent() { return "unexpected"; } }),
+  /maxTokens.*positive integer/i,
+  "per-call token budgets must reject non-positive controls before dispatch",
+);
+const invalidTurnBudgetOptionsScript = parseWorkflowScript(`
+export const meta = { name: "invalid-turn-budget-options", description: "Invalid turn budget options", pi: { timeoutMs: 5000 } }
+return await agent("invalid", { maxTurns: 1.5 })
+`);
+await assert.rejects(
+  () => executeWorkflowScript(invalidTurnBudgetOptionsScript, {}, { async agent() { return "unexpected"; } }),
+  /maxTurns.*positive integer/i,
+  "per-call turn budgets must reject fractional controls before dispatch",
+);
+
 console.log("script runtime tests passed");

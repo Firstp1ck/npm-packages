@@ -8,6 +8,7 @@ import { DEFAULT_ALLOWED_TOOLS } from "./schema.ts";
 import { globalWorkflowAgentScheduler, type WorkflowAgentScheduler } from "./scheduler.ts";
 import { effectiveWorkflowPolicy } from "./script-schema.ts";
 import { executeWorkflowScript, type WorkflowAgentRequest, type WorkflowPhaseEvent } from "./script-runtime.ts";
+import { createTokenBudgetController, tokenBudgetExceeded, type TokenBudgetDiagnostics } from "./token-budget.ts";
 import type {
   PhaseRun,
   TaskContext,
@@ -195,8 +196,6 @@ function enforceBudgets(run: WorkflowRun, phase: PhaseRun, policy: WorkflowScrip
   const checks: Array<[boolean, string]> = [
     [Boolean(runBudget?.maxAgents && allTasks.length > runBudget.maxAgents), `run agent budget exceeded ${runBudget?.maxAgents}`],
     [Boolean(phaseBudget?.maxAgents && phase.tasks.length > phaseBudget.maxAgents), `phase '${phase.name}' agent budget exceeded ${phaseBudget?.maxAgents}`],
-    [Boolean(runBudget?.maxTokens && runUsage.tokens > runBudget.maxTokens), `run token budget exceeded ${runBudget?.maxTokens}`],
-    [Boolean(phaseBudget?.maxTokens && currentUsage.tokens > phaseBudget.maxTokens), `phase '${phase.name}' token budget exceeded ${phaseBudget?.maxTokens}`],
     [Boolean(runBudget?.maxCostUsd !== undefined && runUsage.cost > runBudget.maxCostUsd), `run cost budget exceeded $${runBudget?.maxCostUsd}`],
     [Boolean(phaseBudget?.maxCostUsd !== undefined && currentUsage.cost > phaseBudget.maxCostUsd), `phase '${phase.name}' cost budget exceeded $${phaseBudget?.maxCostUsd}`],
     [Boolean(runBudget?.maxTimeMs && Date.now() - Date.parse(run.startedAt) > runBudget.maxTimeMs), `run time budget exceeded ${runBudget?.maxTimeMs}ms`],
@@ -204,6 +203,70 @@ function enforceBudgets(run: WorkflowRun, phase: PhaseRun, policy: WorkflowScrip
   ];
   const failure = checks.find(([exceeded]) => exceeded);
   if (failure) throw new WorkflowError("budget_exhausted", failure[1]);
+}
+
+function mergeUsage(total: WorkflowUsage | undefined, next: WorkflowUsage | undefined): WorkflowUsage | undefined {
+  if (!total && !next) return undefined;
+  const sum = (key: Exclude<keyof WorkflowUsage, "contextTokens">): number | undefined => {
+    const previous = total?.[key];
+    const current = next?.[key];
+    return previous === undefined && current === undefined ? undefined : (previous ?? 0) + (current ?? 0);
+  };
+  const input = sum("input");
+  const output = sum("output");
+  const cacheRead = sum("cacheRead");
+  const cacheWrite = sum("cacheWrite");
+  const cost = sum("cost");
+  const turns = sum("turns");
+  const contextTokens = total?.contextTokens === undefined && next?.contextTokens === undefined
+    ? undefined
+    : Math.max(total?.contextTokens ?? 0, next?.contextTokens ?? 0);
+  return {
+    ...(input === undefined ? {} : { input }),
+    ...(output === undefined ? {} : { output }),
+    ...(cacheRead === undefined ? {} : { cacheRead }),
+    ...(cacheWrite === undefined ? {} : { cacheWrite }),
+    ...(cost === undefined ? {} : { cost }),
+    ...(turns === undefined ? {} : { turns }),
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+  };
+}
+
+type AgentBudgetStop = {
+  type: "workflow_agent_budget_stop";
+  reason: "max_tokens" | "max_turns";
+  limit: number;
+  observedTokens: number;
+  turns: number;
+};
+
+function agentBudgetStop(result: { raw?: unknown }): AgentBudgetStop | undefined {
+  if (!Array.isArray(result.raw)) return undefined;
+  return result.raw.find((event): event is AgentBudgetStop => (
+    typeof event === "object" && event !== null
+    && (event as { type?: unknown }).type === "workflow_agent_budget_stop"
+    && ((event as { reason?: unknown }).reason === "max_tokens" || (event as { reason?: unknown }).reason === "max_turns")
+    && typeof (event as { limit?: unknown }).limit === "number"
+    && typeof (event as { observedTokens?: unknown }).observedTokens === "number"
+    && typeof (event as { turns?: unknown }).turns === "number"
+  ));
+}
+
+function tokenBudgetError(diagnostics: TokenBudgetDiagnostics, detail: string, phaseName?: string): WorkflowError {
+  const exceededScopes = [
+    diagnostics.run && diagnostics.run.measuredTokens > diagnostics.run.limit
+      ? `run token budget exceeded ${diagnostics.run.limit}`
+      : undefined,
+    diagnostics.phase && diagnostics.phase.measuredTokens > diagnostics.phase.limit
+      ? `phase '${phaseName ?? "current"}' token budget exceeded ${diagnostics.phase.limit}`
+      : undefined,
+  ].filter((value): value is string => value !== undefined);
+  const scopes = [
+    diagnostics.run ? `run ${diagnostics.run.measuredTokens}/${diagnostics.run.limit} tokens` : undefined,
+    diagnostics.phase ? `phase ${diagnostics.phase.measuredTokens}/${diagnostics.phase.limit} tokens` : undefined,
+  ].filter((value): value is string => value !== undefined);
+  const prefix = exceededScopes.length > 0 ? `${exceededScopes.join(", ")}: ` : "";
+  return new WorkflowError("budget_exhausted", `${prefix}${detail}${scopes.length > 0 ? ` (${scopes.join(", ")}).` : "."}`);
 }
 
 function transientTaskFailure(message: string): boolean {
@@ -270,6 +333,12 @@ export async function runJavaScriptWorkflow(
   const script = options.policy
     ? { ...source.script, meta: { ...source.script.meta, pi: structuredClone(options.policy) } }
     : effectiveScript(source.script);
+  // One synchronous controller is shared by all calls in this logical run so
+  // concurrent admissions observe active reservations before any awaited setup.
+  const tokenBudget = createTokenBudgetController({
+    budgets: script.meta.pi.budgets,
+    maxConcurrency: script.meta.pi.maxConcurrency,
+  });
   if (options.replay) run.resumedFromRunId = options.replay.sourceRunId;
   options.state.setActiveRun(run);
   transitionWorkflowRun(run, "validating");
@@ -372,80 +441,137 @@ export async function runJavaScriptWorkflow(
         };
         const phase = workflowPhase(phasePath);
         let taskRoot = options.cwd;
+        let worktreePrepared = false;
 
         try {
           if (deniedTool) throw new WorkflowTaskError(identity.taskId, `Workflow policy denied requested tool '${deniedTool}'.`);
           enforceBudgets(run, phaseRun, script.meta.pi);
+
+          // Replay is intentionally resolved before token admission: a cached
+          // result never reserves or spawns, but its historical usage is still
+          // charged once to the current logical run.
           const cached = options.replay?.take(fingerprint);
           if (cached) {
-            taskRun.status = "completed";
-            taskRun.result = structuredClone(cached.result);
             taskRun.output = typeof cached.result === "string" ? cached.result : JSON.stringify(cached.result);
             taskRun.usage = cached.usage ? structuredClone(cached.usage) : undefined;
+            const diagnostics = tokenBudget.charge(phase.id, cached.usage);
+            if (tokenBudgetExceeded(diagnostics)) {
+              throw tokenBudgetError(diagnostics, "Replay usage exhausted the token budget", phase.name);
+            }
             enforceBudgets(run, phaseRun, script.meta.pi);
+            taskRun.status = "completed";
+            taskRun.result = structuredClone(cached.result);
             return structuredClone(cached.result);
           }
-          if (needsWriteIsolation) {
-            if (!options.storage) throw new WorkflowTaskError(identity.taskId, "Write agents require durable run storage for isolated worktrees.");
-            const runDir = await options.storage.runDirectory(run.runId);
-            taskRun.worktree = await createWorkflowWorktree({ repoCwd: options.cwd, runDir, runId: run.runId, callId: `${identity.taskId}-${request.callIndex}` });
-            if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task setup.");
-            taskRoot = taskRun.worktree.worktreePath;
-            updateRun();
-          }
-          const taskContext: TaskContext = {
-            cwd: taskRoot,
-            input: run.input,
-            run,
-            phase,
-            priorOutputs: "",
-            signal,
-            agentPolicy: {
-              root: taskRoot,
-              permissions: script.meta.pi.permissions,
-              allowedTools: [...allowedTools],
-              shellAllowlist: script.meta.pi.shellAllowlist ?? [],
-              networkAllowlist: script.meta.pi.networkAllowlist ?? [],
-            },
-            onSubprocessEvent: (event) => {
-              if (finalized) return;
-              taskRun.recentEvents ??= [];
-              taskRun.recentEvents.push(structuredClone(event));
-              if (taskRun.recentEvents.length > 20) taskRun.recentEvents.splice(0, taskRun.recentEvents.length - 20);
-              updateRun();
-              renderWorkflowSubprocessEvent(ctx, run, event);
-            },
-          };
+
           const scheduler = options.scheduler ?? globalWorkflowAgentScheduler;
           const retry = script.meta.pi.retry ?? { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitter: 0 };
           const attempts = needsWriteIsolation ? 1 : retry.maxAttempts;
           let result: Awaited<ReturnType<TaskRunner["runTask"]>> | undefined;
           for (let attempt = 1; attempt <= attempts; attempt++) {
-            const runRemaining = script.meta.pi.budgets?.run?.maxTimeMs === undefined ? Number.POSITIVE_INFINITY : script.meta.pi.budgets.run.maxTimeMs - (Date.now() - Date.parse(run.startedAt));
-            const phaseRemaining = script.meta.pi.budgets?.phase?.maxTimeMs === undefined || !phaseRun.startedAt ? Number.POSITIVE_INFINITY : script.meta.pi.budgets.phase.maxTimeMs - (Date.now() - Date.parse(phaseRun.startedAt));
-            const timeoutMs = Math.max(1, Math.min(task.timeoutMs ?? script.meta.pi.timeoutMs, runRemaining, phaseRemaining));
-            result = await scheduler.schedule({
-              signal,
-              timeoutMs,
-              runId: run.runId,
-              callId: identity.taskId,
-            }, async (scheduledSignal) => await options.taskRunner.runTask(task, { ...taskContext, signal: scheduledSignal }));
-            if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task execution.");
-            if (result.ok) break;
-            const failure = result.error || "Agent task failed.";
-            if (attempt >= attempts || !transientTaskFailure(failure)) throw new WorkflowTaskError(identity.taskId, failure);
-            const exponential = Math.min(retry.maxDelayMs, retry.baseDelayMs * (2 ** (attempt - 1)));
-            const jitter = exponential * retry.jitter * ((Math.random() * 2) - 1);
-            const delayMs = Math.max(0, Math.round(exponential + jitter));
-            taskRun.recentEvents ??= [];
-            taskRun.recentEvents.push({ type: "event", timestamp: new Date().toISOString(), phaseId: phase.id, phaseName: phase.name, taskId: task.id, taskName: task.name, eventType: "workflow_retry", line: `transient failure; retry ${attempt + 1}/${attempts} in ${delayMs}ms: ${failure}` });
-            updateRun();
-            await retryDelay(delayMs, signal);
+            // reserve() is synchronous and occurs before either worktree setup
+            // or scheduler dispatch, making concurrent reservations visible.
+            const admission = tokenBudget.reserve({
+              phaseId: phase.id,
+              maxTokens: request.options.maxTokens,
+              maxTurns: request.options.maxTurns,
+            });
+            if (!admission.ok) {
+              throw tokenBudgetError(admission.diagnostics, "Token budget admission denied because no positive capacity remains", phase.name);
+            }
+            let reservationSettled = false;
+            try {
+              if (needsWriteIsolation && !worktreePrepared) {
+                if (!options.storage) throw new WorkflowTaskError(identity.taskId, "Write agents require durable run storage for isolated worktrees.");
+                const runDir = await options.storage.runDirectory(run.runId);
+                taskRun.worktree = await createWorkflowWorktree({ repoCwd: options.cwd, runDir, runId: run.runId, callId: `${identity.taskId}-${request.callIndex}` });
+                if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task setup.");
+                taskRoot = taskRun.worktree.worktreePath;
+                worktreePrepared = true;
+                updateRun();
+              }
+              const taskContext: TaskContext = {
+                cwd: taskRoot,
+                input: run.input,
+                run,
+                phase,
+                priorOutputs: "",
+                signal,
+                agentBudget: admission.limits,
+                agentPolicy: {
+                  root: taskRoot,
+                  permissions: script.meta.pi.permissions,
+                  allowedTools: [...allowedTools],
+                  shellAllowlist: script.meta.pi.shellAllowlist ?? [],
+                  networkAllowlist: script.meta.pi.networkAllowlist ?? [],
+                },
+                onSubprocessEvent: (event) => {
+                  if (finalized) return;
+                  taskRun.recentEvents ??= [];
+                  taskRun.recentEvents.push(structuredClone(event));
+                  if (taskRun.recentEvents.length > 20) taskRun.recentEvents.splice(0, taskRun.recentEvents.length - 20);
+                  updateRun();
+                  renderWorkflowSubprocessEvent(ctx, run, event);
+                },
+              };
+              const runRemaining = script.meta.pi.budgets?.run?.maxTimeMs === undefined ? Number.POSITIVE_INFINITY : script.meta.pi.budgets.run.maxTimeMs - (Date.now() - Date.parse(run.startedAt));
+              const phaseRemaining = script.meta.pi.budgets?.phase?.maxTimeMs === undefined || !phaseRun.startedAt ? Number.POSITIVE_INFINITY : script.meta.pi.budgets.phase.maxTimeMs - (Date.now() - Date.parse(phaseRun.startedAt));
+              const timeoutMs = Math.max(1, Math.min(task.timeoutMs ?? script.meta.pi.timeoutMs, runRemaining, phaseRemaining));
+              const budgetSummary = [
+                admission.limits.maxTokens === undefined ? undefined : `${admission.limits.maxTokens} reported tokens`,
+                admission.limits.maxTurns === undefined ? undefined : `${admission.limits.maxTurns} assistant turns`,
+              ].filter((value): value is string => value !== undefined).join(" and ");
+              const attemptTask = budgetSummary
+                ? {
+                  ...task,
+                  prompt: `${task.prompt}\n\nWorkflow execution budget: ${budgetSummary}. Use tools selectively and return your concise best answer before the final allowed turn; do not spend the final turn on more tool calls.`,
+                }
+                : task;
+              const attemptResult = await scheduler.schedule({
+                signal,
+                timeoutMs,
+                runId: run.runId,
+                callId: identity.taskId,
+              }, async (scheduledSignal) => await options.taskRunner.runTask(attemptTask, { ...taskContext, signal: scheduledSignal }));
+              if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task execution.");
+
+              // Persist attempt evidence before any error, retry, budget, or
+              // structured-output branch; failed attempts are cumulative.
+              taskRun.output = attemptResult.output;
+              taskRun.usage = mergeUsage(taskRun.usage, attemptResult.usage);
+              const diagnostics = admission.reservation
+                ? tokenBudget.reconcile(admission.reservation, attemptResult.usage)
+                : tokenBudget.diagnostics(phase.id);
+              reservationSettled = true;
+              result = attemptResult;
+
+              const stoppedForBudget = agentBudgetStop(attemptResult);
+              if (stoppedForBudget) {
+                const kind = stoppedForBudget.reason === "max_tokens" ? "token" : "turn";
+                throw tokenBudgetError(diagnostics, `Agent ${kind} limit reached (${stoppedForBudget.limit}; observed ${stoppedForBudget.observedTokens} tokens across ${stoppedForBudget.turns} turns)`, phase.name);
+              }
+              if (tokenBudgetExceeded(diagnostics)) {
+                throw tokenBudgetError(diagnostics, "Reported task usage exhausted the token budget", phase.name);
+              }
+              if (attemptResult.ok) break;
+              const failure = attemptResult.error || "Agent task failed.";
+              if (attempt >= attempts || !transientTaskFailure(failure)) throw new WorkflowTaskError(identity.taskId, failure);
+              const exponential = Math.min(retry.maxDelayMs, retry.baseDelayMs * (2 ** (attempt - 1)));
+              const jitter = exponential * retry.jitter * ((Math.random() * 2) - 1);
+              const delayMs = Math.max(0, Math.round(exponential + jitter));
+              taskRun.recentEvents ??= [];
+              taskRun.recentEvents.push({ type: "event", timestamp: new Date().toISOString(), phaseId: phase.id, phaseName: phase.name, taskId: task.id, taskName: task.name, eventType: "workflow_retry", line: `transient failure; retry ${attempt + 1}/${attempts} in ${delayMs}ms: ${failure}` });
+              updateRun();
+              await retryDelay(delayMs, signal);
+            } finally {
+              // A result reconciles its reservation exactly once. Setup,
+              // scheduler, cancellation, and late-finalization errors release
+              // their unmeasured reservation exactly once instead.
+              if (admission.reservation && !reservationSettled) tokenBudget.release(admission.reservation);
+            }
           }
           if (!result) throw new WorkflowTaskError(identity.taskId, "Agent task produced no result.");
           if (finalized) throw new WorkflowCancelledError("Workflow run finalized during task execution.");
-          taskRun.output = result.output;
-          taskRun.usage = result.usage;
           if (!result.ok) throw new WorkflowTaskError(identity.taskId, result.error || "Agent task failed.");
           const value = structuredOutput(result.output, request.options.schema);
           if (taskRun.worktree) taskRun.worktree = await captureWorkflowWorktree(taskRun.worktree);

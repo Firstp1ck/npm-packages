@@ -10,6 +10,8 @@ declare global {
     cwd?: string;
     schema?: unknown;
     timeoutMs?: number;
+    maxTokens?: number;
+    maxTurns?: number;
   };
 
   function agent<T = string>(prompt: string, options?: WorkflowAgentOptions): Promise<T>;
