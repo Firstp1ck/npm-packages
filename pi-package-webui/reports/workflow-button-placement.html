@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Zero-Height Workflow Mode Overlay — Pi WebUI</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1220; --panel:#121c2d; --panel2:#18253a; --text:#e8eef8; --muted:#a9b7cb; --line:#2b3b55; --green:#50d890; --yellow:#f7c65c; --blue:#65b5ff; --code:#07101c; --shadow:0 14px 36px rgb(0 0 0 / 22%); }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin:0; background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg); color:var(--text); font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    a { color:var(--blue); }
+    a:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+    main { width:min(1120px,calc(100% - 32px)); margin:36px auto 64px; }
+    header,section { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); }
+    header { padding:30px; margin-bottom:20px; }
+    section { padding:24px; margin:18px 0; }
+    h1,h2,h3 { line-height:1.25; margin-top:0; }
+    h1 { font-size:clamp(1.9rem,5vw,3rem); margin-bottom:8px; letter-spacing:-.025em; }
+    h2 { font-size:1.45rem; border-bottom:1px solid var(--line); padding-bottom:10px; }
+    h3 { font-size:1.08rem; margin-bottom:6px; }
+    p { margin:8px 0 14px; }
+    code { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; background:var(--code); padding:.12em .38em; border-radius:5px; }
+    .lead { font-size:1.1rem; max-width:82ch; }
+    .badge { display:inline-block; margin-bottom:8px; padding:3px 9px; border:1px solid rgb(80 216 144 / 38%); border-radius:999px; background:rgb(80 216 144 / 14%); color:var(--green); font-size:.78rem; font-weight:750; letter-spacing:.035em; text-transform:uppercase; }
+    .callout { margin:16px 0 0; padding:14px 16px; border-left:5px solid var(--green); border-radius:8px; background:rgb(80 216 144 / 8%); }
+    .callout.warning { border-left-color:var(--yellow); background:rgb(247 198 92 / 8%); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+    .card { padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--panel2); }
+    .card strong { display:block; margin-bottom:4px; font-size:1.08rem; }
+    .good { color:var(--green); } .warn { color:var(--yellow); }
+    .table-wrap { overflow-x:auto; border-radius:10px; }
+    table { width:100%; min-width:680px; border-collapse:collapse; }
+    th,td { padding:11px 9px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-size:.86rem; letter-spacing:.04em; text-transform:uppercase; }
+    ul { padding-left:1.25rem; } li+li { margin-top:.4rem; }
+    .sketch { position:relative; margin:18px 0; padding:34px 16px 16px; border:1px solid var(--line); border-radius:12px; background:var(--code); }
+    .dock { position:absolute; top:-8px; right:64px; padding:6px 8px 6px 12px; border:1px solid rgb(101 181 255 / 45%); border-radius:10px; background:var(--panel2); font-weight:750; }
+    .prompt,.actions { padding:12px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); }
+    .actions { margin-top:10px; }
+    footer { margin-top:22px; color:var(--muted); text-align:center; }
+    @media(max-width:620px){ main{width:min(100% - 20px,1120px);margin-top:16px} header,section{padding:18px;border-radius:13px} h1{font-size:2rem} .dock{right:50px;font-size:0} .dock::after{content:"◇";font-size:1rem} }
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+    @media print { :root{color-scheme:light} body{background:white;color:#152033} main{width:100%;margin:0} header,section,.card,.sketch,.dock{background:white;border-color:#b8c3d2;box-shadow:none;break-inside:avoid} a{color:#174f86} code{background:#eef2f7} footer,.prompt,.actions{color:#4b596d} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="badge">Screenshot correction · implemented · reviewed</span>
+    <h1>Workflow Mode no longer adds a row</h1>
+    <p class="lead">The direct Workflow Mode control is now a compact overlay on the prompt frame. It remains isolated from crowded action buttons while contributing zero normal-flow height.</p>
+    <div class="callout"><strong>Conclusion:</strong> the vertical-space issue shown in the screenshot is removed. Focused checks pass and two provider-diverse reviewers approved the zero-height design. Confidence: <strong>90/100</strong>.</div>
+  </header>
+
+  <section aria-labelledby="overview">
+    <h2 id="overview">Overview</h2>
+    <div class="table-wrap"><table data-overview><thead><tr><th>Requirement</th><th>Implementation</th><th>Verification</th><th>Status</th></tr></thead><tbody>
+      <tr><td>No vertical cost</td><td>Absolutely positioned inside <code>.composer-input-row</code>.</td><td>CSS geometry and focused assertion</td><td class="good">Complete</td></tr>
+      <tr><td>Direct but isolated</td><td>One-click control on the prompt frame, away from the bottom action row.</td><td>DOM and click-binding inspection</td><td class="good">Complete</td></tr>
+      <tr><td>No text collision</td><td>Conditional prompt and context-tag reservations apply only while visible and keyboard-closed.</td><td>Desktop/mobile selector assertions</td><td class="good">Complete</td></tr>
+      <tr><td>Compact mobile</td><td>Label hidden; dock hidden while the software keyboard is open.</td><td>Responsive CSS and JS state review</td><td class="good">Complete</td></tr>
+      <tr><td>Full static suite</td><td>Stops at an unrelated typography-floor assertion present at <code>HEAD</code>.</td><td><code>font-size:0.72rem</code></td><td class="warn">Pre-existing blocker</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <section aria-labelledby="layout">
+    <h2 id="layout">Final layout</h2>
+    <div class="sketch" aria-label="Zero-height prompt overlay sketch"><div class="dock">Workflow mode ◇</div><div class="prompt">Prompt input and attachment control</div><div class="actions">New · Compact · Guided Git · Publish · Options · App runner · Send</div></div>
+    <p>The dock overlays the prompt frame’s top-right border. Absolute positioning removes it from grid flow, so the composer keeps its original height.</p>
+  </section>
+
+  <section aria-labelledby="implementation">
+    <h2 id="implementation">Implementation map</h2>
+    <div class="grid">
+      <article class="card"><strong><code>public/index.html</code></strong><p>Nests the named Workflow control group as the first child of the prompt input row.</p></article>
+      <article class="card"><strong><code>public/styles.css</code></strong><p>Anchors the compact dock, reserves text/tag width, compacts mobile presentation, and reduces restore-badge overhang.</p></article>
+      <article class="card"><strong><code>public/app.js</code></strong><p>Preserves capability gating, valid pending/disclosure ARIA, floating tooltips, and overlay restore focus.</p></article>
+      <article class="card"><strong><code>tests/mobile-static.test.mjs</code></strong><p>Pins zero-height geometry, responsive reservations, compact sizing, ARIA, tooltips, and Options absence.</p></article>
+    </div>
+  </section>
+
+  <section aria-labelledby="validation">
+    <h2 id="validation">Validation and review</h2>
+    <ul>
+      <li><code>node --check public/app.js</code> — passed.</li>
+      <li><code>node --check tests/mobile-static.test.mjs</code> — passed.</li>
+      <li>Focused compact-overlay assertions — passed after review-driven geometry fixes.</li>
+      <li><code>git diff --check</code> for scoped files — passed.</li>
+      <li>Final review run <code>6bd33b19-6510-43eb-9e9a-f51bf90790fe</code>: OpenRouter/Moonshot and Anthropic/Claude both approved with no blockers.</li>
+    </ul>
+    <h3>Reviewer finding dispositions</h3>
+    <ul>
+      <li><strong>Fixed:</strong> keyboard-hidden prompt gutter now releases with the dock.</li>
+      <li><strong>Fixed:</strong> context tags reserve space from the visible dock.</li>
+      <li><strong>Fixed:</strong> mobile restore overhang reduced to avoid protruding above the composer.</li>
+      <li><strong>Fixed:</strong> desktop text reservation increased to provide margin around the dock.</li>
+      <li><strong>Intentional:</strong> compact 2.25rem target remains isolated and exceeds the WCAG 24px minimum.</li>
+    </ul>
+    <div class="callout warning"><strong>Residual gap:</strong> no live browser render was run after the screenshot-driven compaction. Geometry and overlap prevention were verified statically.</div>
+  </section>
+
+  <section aria-labelledby="artifacts">
+    <h2 id="artifacts">Artifacts</h2>
+    <ul><li>Plan: <a href="../plans/workflow-button-placement.md">plans/workflow-button-placement.md</a></li><li>Final review: <code>6bd33b19-6510-43eb-9e9a-f51bf90790fe</code></li></ul>
+  </section>
+  <footer>Pi WebUI · Zero-Height Workflow Mode Overlay · Source-grounded implementation report.</footer>
+</main>
+</body>
+</html>

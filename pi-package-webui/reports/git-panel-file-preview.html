@@ -4,128 +4,129 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="Implementation, verification, and independent-review report for opening Git side-panel files in the Pi WebUI previewer.">
-  <title>Git Panel File Preview — Reviewed Feature Report</title>
+  <meta name="description" content="Reviewed implementation report for showing staged, unstaged, conflicted, and untracked changes in the Pi WebUI file viewer.">
+  <title>Git File Changes in the WebUI Viewer — Reviewed Report</title>
   <style>
     :root{color-scheme:dark;--bg:#0b1220;--panel:#121c2d;--panel-2:#18253a;--text:#e8eef8;--muted:#a9b7cb;--line:#2b3b55;--green:#50d890;--yellow:#f7c65c;--red:#ff7373;--blue:#65b5ff;--code:#07101c;--radius-lg:16px;--radius-md:12px;--shadow:0 14px 36px rgb(0 0 0 / 22%)}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible{outline:3px solid var(--yellow);outline-offset:3px}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,section,figure{border:1px solid var(--line);border-radius:var(--radius-lg);background:color-mix(in srgb,var(--panel) 95%,transparent);box-shadow:var(--shadow)}header{padding:30px}section{margin-top:20px;padding:24px}h1,h2,h3{line-height:1.25;margin-top:0}h1{margin:.35rem 0 .6rem;font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.025em}h2{padding-bottom:.55rem;border-bottom:1px solid var(--line);font-size:1.45rem}h3{margin-bottom:.35rem;font-size:1.08rem}p{margin:.45rem 0 1rem}.lead{max-width:82ch;color:var(--muted);font-size:1.08rem}.badge{display:inline-block;padding:.2rem .58rem;border:1px solid rgb(80 216 144 / 38%);border-radius:999px;background:rgb(80 216 144 / 12%);color:var(--green);font-size:.78rem;font-weight:780;letter-spacing:.035em;text-transform:uppercase}.callout{margin-top:1rem;padding:14px 16px;border-left:5px solid var(--green);border-radius:8px;background:rgb(80 216 144 / 8%)}.meta{display:flex;flex-wrap:wrap;gap:.55rem 1rem;margin-top:1rem;color:var(--muted);font-size:.9rem}nav{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}nav a{padding:.32rem .62rem;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:14px}.card{padding:16px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--panel-2)}.card.good{border-left:4px solid var(--green)}.card.warn{border-left:4px solid var(--yellow)}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;min-width:680px;border-collapse:collapse}th,td{padding:.72rem .65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.86rem;letter-spacing:.04em;text-transform:uppercase}tbody tr:last-child td{border-bottom:0}.pass{color:var(--green);font-weight:760}.note{color:var(--yellow);font-weight:760}.info{color:var(--blue);font-weight:760}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.1em .34em;border-radius:5px;background:var(--code);color:#d9e6f7}pre{overflow-x:auto;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--code);white-space:pre-wrap}figure{margin:18px 0 0;padding:18px;background:var(--panel-2)}figure svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px;background:var(--code)}figcaption,.small,footer{color:var(--muted);font-size:.9rem}ul{padding-left:1.25rem}li+li{margin-top:.35rem}footer{margin-top:24px;text-align:center}.node{fill:#182b43;stroke:#65b5ff;stroke-width:2}.node-text{fill:#e8eef8;font:650 14px system-ui,sans-serif;text-anchor:middle}.node-sub{fill:#a9b7cb;font:12px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:#a9b7cb;stroke-width:2.5;marker-end:url(#arrow)}
-    @media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,section{padding:18px}th,td{padding:.58rem}.node-text{font-size:12px}.node-sub{font-size:10px}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0%,#142848 0,transparent 35rem),var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue)}a:focus-visible{outline:3px solid var(--yellow);outline-offset:3px}main{width:min(1120px,calc(100% - 32px));margin:36px auto 64px}header,.report-section,figure{border:1px solid var(--line);border-radius:var(--radius-lg);background:color-mix(in srgb,var(--panel) 95%,transparent);box-shadow:var(--shadow)}header{padding:30px}.report-section{margin-top:20px;padding:24px}h1,h2,h3{line-height:1.25;margin-top:0}h1{margin:.35rem 0 .6rem;font-size:clamp(1.9rem,5vw,3rem);letter-spacing:-.025em}h2{padding-bottom:.55rem;border-bottom:1px solid var(--line);font-size:1.45rem}h3{margin-bottom:.35rem;font-size:1.08rem}p{margin:.45rem 0 1rem}.lead{max-width:84ch;color:var(--muted);font-size:1.08rem}.badge{display:inline-block;padding:.2rem .58rem;border:1px solid rgb(80 216 144 / 38%);border-radius:999px;background:rgb(80 216 144 / 12%);color:var(--green);font-size:.78rem;font-weight:780;letter-spacing:.035em;text-transform:uppercase}.callout{margin-top:1rem;padding:14px 16px;border-left:5px solid var(--green);border-radius:8px;background:rgb(80 216 144 / 8%)}.meta{display:flex;flex-wrap:wrap;gap:.55rem 1rem;margin-top:1rem;color:var(--muted);font-size:.9rem}nav{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}nav a{padding:.32rem .62rem;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:14px}.card{padding:16px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--panel-2)}.card.good{border-left:4px solid var(--green)}.card.warn{border-left:4px solid var(--yellow)}.table-wrap{overflow-x:auto;border-radius:10px}table{width:100%;min-width:680px;border-collapse:collapse}th,td{padding:.72rem .65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.86rem;letter-spacing:.04em;text-transform:uppercase}tbody tr:last-child td{border-bottom:0}.pass{color:var(--green);font-weight:760}.note{color:var(--yellow);font-weight:760}.info{color:var(--blue);font-weight:760}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{padding:.1em .34em;border-radius:5px;background:var(--code);color:#d9e6f7}pre{overflow-x:auto;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--code);white-space:pre-wrap}figure{margin:18px 0 0;padding:18px;background:var(--panel-2)}figure svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px;background:var(--code)}figcaption,.small,footer{color:var(--muted);font-size:.9rem}ul{padding-left:1.25rem}li+li{margin-top:.35rem}footer{margin-top:24px;text-align:center}.node{fill:#182b43;stroke:#65b5ff;stroke-width:2}.node.good{stroke:#50d890}.node.warn{stroke:#f7c65c}.node-text{fill:#e8eef8;font:650 14px system-ui,sans-serif;text-anchor:middle}.node-sub{fill:#a9b7cb;font:12px system-ui,sans-serif;text-anchor:middle}.edge{fill:none;stroke:#a9b7cb;stroke-width:2.5;marker-end:url(#arrow)}
+    @media(max-width:620px){main{width:min(100% - 18px,1120px);margin-top:10px}header,.report-section{padding:18px}th,td{padding:.58rem}.node-text{font-size:12px}.node-sub{font-size:10px}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
-    @media print{:root{color-scheme:light}body{background:#fff;color:#111}main{width:100%;margin:0}header,section,figure,.card{break-inside:avoid;background:#fff;color:#111;border-color:#aaa;box-shadow:none}nav{display:none}a,code,.pass,.note,.info{color:#124f83}code,pre,figure svg{background:#f2f4f7;color:#111;border-color:#aaa}.lead,.meta,.small,figcaption,footer{color:#444}}
+    @media print{:root{color-scheme:light}body{background:#fff;color:#111}main{width:100%;margin:0}header,.report-section,figure,.card{break-inside:avoid;background:#fff;color:#111;border-color:#aaa;box-shadow:none}nav{display:none}a,code,.pass,.note,.info{color:#124f83}code,pre,figure svg{background:#f2f4f7;color:#111;border-color:#aaa}.lead,.meta,.small,figcaption,footer{color:#444}}
   </style>
 </head>
 <body>
 <main>
   <header>
-    <span class="badge">Reviewed implementation</span>
-    <h1>Git file rows now open the standard WebUI previewer</h1>
-    <p class="lead">This report covers the localized Pi WebUI change that makes Git side-panel file rows use the existing File-section preview flow, including repo-root-to-tab-cwd translation, multi-tab switching, keyboard activation, focused tests, and two fresh provider-diverse reviews.</p>
-    <div class="callout"><strong>Conclusion:</strong> the requested behavior is implemented and reviewed. Clicking, Enter, or Space on an existing Git file opens it through <code>openFileInViewer</code>; right-click Git actions remain available. Focused checks pass. The full suite remains baseline-limited by one unrelated typography assertion present in <code>HEAD</code>.</div>
-    <div class="meta"><span>Classification: lightweight</span><span>Implementation: OpenAI Codex</span><span>Review: Kimi + Anthropic</span><span>Confidence: 94/100</span></div>
-    <nav aria-label="Report sections"><a href="#overview">Overview</a><a href="#flow">Flow</a><a href="#implementation">Implementation</a><a href="#verification">Verification</a><a href="#reviews">Reviews</a><a href="#risks">Risks &amp; usage</a></nav>
+    <span class="badge">Complex feature · reviewed</span>
+    <h1>Git files now open directly on their relevant changes</h1>
+    <p class="lead">The Pi WebUI file viewer now has a Git-aware Changes mode. Activating a file in the side-panel Git tree opens the existing viewer and displays the exact staged, unstaged, conflicted, or untracked snapshot represented by that row, while preserving Source, Markdown Preview, editing, and Git context-menu behavior.</p>
+    <div class="callout"><strong>Conclusion:</strong> the requested changes-first workflow is implemented with a bounded read-only file-diff endpoint, category-aware viewer state, split and raw diff rendering, deleted-file fallback, request-race protection, real Git fixture tests, and two fresh independent reviews. No blocker remains.</div>
+    <div class="meta"><span>Initial feature: <code>0b5f219</code></span><span>Follow-up classification: complex</span><span>Workers: OpenAI + Anthropic</span><span>Review: Kimi + Anthropic</span><span>Confidence: 93/100</span></div>
+    <nav aria-label="Report sections"><a href="#overview">Overview</a><a href="#behavior">Behavior</a><a href="#architecture">Architecture</a><a href="#verification">Verification</a><a href="#reviews">Reviews</a><a href="#risks">Risks &amp; usage</a></nav>
   </header>
 
-  <section id="overview">
+  <section class="report-section" id="overview">
     <h2>Executive overview</h2>
-    <div class="table-wrap">
-      <table data-overview>
-        <thead><tr><th>Area</th><th>Decision or evidence</th><th>Status</th><th>Next action</th></tr></thead>
-        <tbody>
-          <tr><td>Primary behavior</td><td>Git rows call the same <code>openFileInViewer</code> function as File-section rows.</td><td class="pass">Complete</td><td>Use click, Enter, or Space.</td></tr>
-          <tr><td>Path context</td><td>Repo-relative paths resolve against an eligible open tab cwd; the active tab wins when it contains the file.</td><td class="pass">Verified</td><td>No user configuration required.</td></tr>
-          <tr><td>Security</td><td>The existing server workspace and realpath/symlink confinement remains authoritative and unchanged.</td><td class="pass">Preserved</td><td>Keep reads on <code>/api/files/content</code>.</td></tr>
-          <tr><td>Interaction</td><td>Right-click and keyboard context-menu actions remain; repeat keydown bursts are suppressed.</td><td class="pass">Verified</td><td>Use Context Menu or Shift+F10 for Git actions.</td></tr>
-          <tr><td>Validation</td><td>Focused syntax and three related test files pass; 53/54 full-suite files pass.</td><td class="note">Baseline-limited</td><td>Fix the unrelated 0.72rem typography rule separately.</td></tr>
-          <tr><td>Independent review</td><td>Fresh Kimi and Anthropic reviewers inspected correctness, security, UX, tests, and edge cases.</td><td class="pass">Quorum met</td><td>Accepted findings are fixed and rechecked.</td></tr>
-        </tbody>
-      </table>
+    <div class="table-wrap"><table data-overview>
+      <thead><tr><th>Area</th><th>Implemented behavior</th><th>Status</th><th>User result</th></tr></thead>
+      <tbody>
+        <tr><td>Default view</td><td>Git-originated opens select the new Changes mode; normal File-section opens keep Source/Markdown defaults.</td><td class="pass">Complete</td><td>The requested change is visible immediately.</td></tr>
+        <tr><td>Category isolation</td><td>Staged uses index-vs-HEAD, Changes uses worktree-vs-index, Conflicted uses combined diff, Untracked uses verified whole-file content.</td><td class="pass">Verified</td><td>Each row shows only its relevant Git state.</td></tr>
+        <tr><td>Read safety</td><td>One allowlisted, path-confined, file-scoped GET uses bounded Git commands with external diff and textconv disabled.</td><td class="pass">Preserved</td><td>No new mutation surface.</td></tr>
+        <tr><td>Deleted and special files</td><td>Deleted tracked files open read-only on their diff; conflicts use raw combined fallback; binary/oversized untracked files show notices.</td><td class="pass">Covered</td><td>No silent blank viewer.</td></tr>
+        <tr><td>Race safety</td><td>Tab generation, viewer-open identity, and changes-request identity reject late same-path or deleted-file responses.</td><td class="pass">Hardened</td><td>Rapid file/category changes keep the latest viewer.</td></tr>
+        <tr><td>Validation</td><td>Focused backend/frontend suites pass; full package run passes 54/55 files with one verified pre-existing typography failure.</td><td class="note">Baseline-limited</td><td>Feature checks are green.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="report-section" id="behavior">
+    <h2>Category behavior</h2>
+    <div class="grid">
+      <article class="card good"><h3>Staged</h3><p>Runs a file-scoped <code>git diff --cached</code> and renders index-vs-HEAD additions/deletions in the split grid.</p></article>
+      <article class="card good"><h3>Changes</h3><p>Runs a file-scoped unstaged diff and renders worktree-vs-index changes, even for a mixed staged/unstaged file.</p></article>
+      <article class="card warn"><h3>Conflicted</h3><p>Uses <code>git diff --cc</code>. Combined <code>@@@</code> hunks intentionally render as bounded raw text because the existing grid has only old/new columns.</p></article>
+      <article class="card good"><h3>Untracked</h3><p>Verifies the path through Git, then shows all text lines as additions. Binary, unreadable, missing, or over-500-KB content receives an explicit notice.</p></article>
+      <article class="card good"><h3>Deleted</h3><p>If live source is gone but Git still returns a diff, the viewer opens read-only in Changes mode and disables Source, Preview, Save, and default-editor actions.</p></article>
+      <article class="card"><h3>Source and Preview</h3><p>Existing files remain editable in Source. Markdown Preview remains available. Entering Changes clears any stale source selection bar.</p></article>
     </div>
   </section>
 
-  <section id="flow">
-    <h2>Preview sequence</h2>
-    <figure data-visual-kind="diagram" data-purpose="Explain how a Git row reaches the existing WebUI previewer without bypassing workspace confinement">
-      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1040 300">
-        <title id="flow-title">Git side-panel file preview flow</title>
-        <desc id="flow-desc">A file-row activation resolves the repository path against open terminal working directories, optionally switches tabs, calls the existing WebUI file viewer, and reads through the server's confined file-content endpoint. An unresolvable path fails with visible feedback.</desc>
+  <section class="report-section" id="architecture">
+    <h2>Architecture and request flow</h2>
+    <figure data-visual-kind="diagram" data-purpose="Show the category-aware, bounded path from a Git row to the existing file viewer">
+      <svg role="img" aria-labelledby="flow-title flow-desc" viewBox="0 0 1080 360">
+        <title id="flow-title">Git file Changes-mode sequence</title>
+        <desc id="flow-desc">The selected Git row provides a category and repository path. The browser resolves an eligible terminal tab, then requests live source and a bounded file-specific Git snapshot in parallel. The existing file viewer defaults to Changes and renders a split diff, raw conflict diff, or untracked additions. Late requests and failures are rejected or shown explicitly.</desc>
         <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker></defs>
-        <path class="edge" d="M200 105 H265"/><path class="edge" d="M465 105 H530"/><path class="edge" d="M730 105 H795"/><path class="edge" d="M365 145 V225 H495"/>
-        <rect class="node" x="20" y="62" width="180" height="86" rx="12"/><text class="node-text" x="110" y="96">Git file row</text><text class="node-sub" x="110" y="120">click · Enter · Space</text>
-        <rect class="node" x="265" y="62" width="200" height="86" rx="12"/><text class="node-text" x="365" y="96">Resolve viewer target</text><text class="node-sub" x="365" y="120">repo root → containing cwd</text>
-        <rect class="node" x="530" y="62" width="200" height="86" rx="12"/><text class="node-text" x="630" y="96">Switch tab if needed</text><text class="node-sub" x="630" y="120">verify active tab afterward</text>
-        <rect class="node" x="795" y="62" width="225" height="86" rx="12"/><text class="node-text" x="907" y="96">openFileInViewer</text><text class="node-sub" x="907" y="120">existing File-section flow</text>
-        <rect x="495" y="190" width="240" height="76" rx="12" fill="#302819" stroke="#f7c65c" stroke-width="2"/><text class="node-text" x="615" y="222">No eligible/stale tab</text><text class="node-sub" x="615" y="245">visible error · no guessed path</text>
+        <path class="edge" d="M210 102 H275"/><path class="edge" d="M475 102 H540"/><path class="edge" d="M640 145 V220 H760"/><path class="edge" d="M640 145 V300 H760"/><path class="edge" d="M940 258 H1010"/>
+        <rect class="node" x="20" y="58" width="190" height="88" rx="12"/><text class="node-text" x="115" y="92">Git file row</text><text class="node-sub" x="115" y="117">path + category</text>
+        <rect class="node" x="275" y="58" width="200" height="88" rx="12"/><text class="node-text" x="375" y="92">Resolve owning tab</text><text class="node-sub" x="375" y="117">cwd containment + switch</text>
+        <rect class="node good" x="540" y="58" width="200" height="88" rx="12"/><text class="node-text" x="640" y="88">Parallel reads</text><text class="node-sub" x="640" y="112">live source + Git snapshot</text>
+        <rect class="node" x="760" y="180" width="180" height="82" rx="12"/><text class="node-text" x="850" y="212">/api/files/content</text><text class="node-sub" x="850" y="237">editable source</text>
+        <rect class="node" x="760" y="276" width="180" height="64" rx="12"/><text class="node-text" x="850" y="303">/api/git-file-diff</text><text class="node-sub" x="850" y="326">bounded read-only GET</text>
+        <rect class="node good" x="1010" y="218" width="60" height="82" rx="12"/><text class="node-text" x="1040" y="250">UI</text><text class="node-sub" x="1040" y="274">Changes</text>
       </svg>
-      <figcaption>The browser reuses the existing viewer; it does not introduce a new read API. Server-side path and symlink containment still checks every file-content request.</figcaption>
+      <figcaption>The file viewer remains the single UI surface. Normal file opens omit Git context, so the new endpoint and Changes toggle do not affect the File section.</figcaption>
     </figure>
-  </section>
-
-  <section id="implementation">
-    <h2>Implementation map and decisions</h2>
-    <div class="grid">
-      <article class="card good"><h3><code>public/app.js</code></h3><p><code>renderGitPanelFile</code> adds preview activation and accessible button semantics while retaining the existing context-menu binding.</p></article>
-      <article class="card good"><h3>Shared resolver</h3><p><code>gitFileViewerTarget</code> covers active and fallback tabs, strict path prefixes, filesystem root, Windows separators, and drive-letter case differences.</p></article>
-      <article class="card good"><h3>Shared open helper</h3><p><code>openGitFileInViewer</code> switches tabs when required, reports stale switches, and invokes <code>openFileInViewer</code>. The Git Changes dialog now reuses it.</p></article>
-      <article class="card good"><h3><code>public/styles.css</code></h3><p>The Git file row cursor changes from context-menu to pointer so its primary open action is visible; right-click actions remain documented in the tooltip.</p></article>
-      <article class="card good"><h3>Focused contract test</h3><p>The new test executes production path-normalizer/resolver source and asserts the row wiring, stale-tab feedback, repeat suppression, and bounded CSS rule.</p></article>
-      <article class="card"><h3>Lightweight rationale</h3><p>No server, dependency, migration, persistence, deployment, or new trust-boundary change exists. One integration owner implemented and verified the cohesive slice.</p></article>
+    <div class="grid" style="margin-top:14px">
+      <article class="card"><h3>Backend</h3><p><code>readGitFileDiff</code> allowlists four categories, confines one repo-relative path, disables external diff/textconv, applies a five-second/500-KB bound, and returns raw snapshot metadata.</p></article>
+      <article class="card"><h3>Frontend</h3><p><code>activeFileViewer.gitChanges</code> carries the open-time snapshot. Existing parsers/renderers produce split rows; dedicated fallbacks cover loading, errors, empty output, truncation, conflicts, and untracked data.</p></article>
+      <article class="card"><h3>Race model</h3><p>One serial identifies the viewer open and another identifies its changes request. Closing the viewer invalidates pending opens; tab-generation checks reject cross-tab responses.</p></article>
     </div>
-    <p class="small">Canonical feature trace: <a href="../plans/git-panel-file-preview.md">plans/git-panel-file-preview.md</a>.</p>
+    <p class="small">Canonical plan, workstreams, checks, and dispositions: <a href="../plans/git-panel-file-preview.md">plans/git-panel-file-preview.md</a>.</p>
   </section>
 
-  <section id="verification">
+  <section class="report-section" id="verification">
     <h2>Testing and acceptance evidence</h2>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Check</th><th>Observed result</th><th>Status</th></tr></thead>
-        <tbody>
-          <tr><td><code>node --check public/app.js</code></td><td>Syntax check exited 0 after accepted fixes.</td><td class="pass">Pass</td></tr>
-          <tr><td><code>node tests/git-panel-file-preview-static.test.mjs</code></td><td>Active/fallback, Windows-case, root, fail-closed, wiring, repeat, stale-tab, and CSS contracts passed.</td><td class="pass">Pass</td></tr>
-          <tr><td><code>node tests/git-panel-render-stability-static.test.mjs</code></td><td>Existing Git render-stability contracts remain green.</td><td class="pass">Pass</td></tr>
-          <tr><td><code>node tests/side-panel-context-menu-static.test.mjs</code></td><td>Existing context-menu contracts remain green.</td><td class="pass">Pass</td></tr>
-          <tr><td><code>git diff --check</code></td><td>No whitespace errors.</td><td class="pass">Pass</td></tr>
-          <tr><td><code>npm test</code></td><td>53/54 test files passed. <code>mobile-static.test.mjs:298</code> rejects the pre-existing <code>public/styles.css:7343</code> value <code>0.72rem</code>, also present in <code>HEAD</code>.</td><td class="note">Unrelated baseline failure</td></tr>
-          <tr><td>Live DOM/browser run</td><td>No DOM/browser harness exists for this monolithic side-panel surface; interaction evidence is structural plus independent source review.</td><td class="note">Not run</td></tr>
-        </tbody>
-      </table>
-    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Check</th><th>Observed evidence</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Syntax</td><td><code>node --check bin/pi-webui.mjs</code> and <code>node --check public/app.js</code>.</td><td class="pass">Pass</td></tr>
+        <tr><td>Real HTTP/Git harness</td><td>Staged, unstaged, conflicted, untracked, oversized, empty, deleted, invalid-category, and escape cases pass against temporary repositories.</td><td class="pass">Pass</td></tr>
+        <tr><td>Viewer contract test</td><td>DOM controls, mode matrix, category map, request identities, source isolation, rendering states, selection cleanup, and CSS contracts pass.</td><td class="pass">Pass</td></tr>
+        <tr><td>Regression checks</td><td>Git render stability, side-panel context menu, Markdown links, and the unrelated numpad-decimal test pass.</td><td class="pass">Pass</td></tr>
+        <tr><td><code>npm test</code></td><td>54/55 test files pass. The only failure is <code>mobile-static.test.mjs:298</code> on a <code>0.72rem</code> declaration that is also present in <code>HEAD</code>.</td><td class="note">Unrelated baseline</td></tr>
+        <tr><td><code>git diff --check</code></td><td>No whitespace errors.</td><td class="pass">Pass</td></tr>
+        <tr><td>Live browser interaction</td><td>No repository DOM/browser harness exists for this monolithic viewer. Runtime layout remains a residual validation gap.</td><td class="note">Not run</td></tr>
+      </tbody>
+    </table></div>
   </section>
 
-  <section id="reviews">
-    <h2>Independent review and dispositions</h2>
+  <section class="report-section" id="reviews">
+    <h2>Implementation workers and independent review</h2>
     <div class="grid">
-      <article class="card good"><h3>Reviewer A · Moonshot Kimi</h3><p><strong>Run:</strong> <code>98ef99a0-1658-4931-8b41-b76c0a880605</code>, child 0.<br><strong>Runtime:</strong> <code>openrouter/moonshotai/kimi-k3:high</code>.<br><strong>Result:</strong> no blocker; architecture and acceptance compliant; confidence 88/100.</p></article>
-      <article class="card good"><h3>Reviewer B · Anthropic Opus</h3><p><strong>Run:</strong> <code>98ef99a0-1658-4931-8b41-b76c0a880605</code>, child 1.<br><strong>Runtime:</strong> <code>anthropic/claude-opus-5:high</code>.<br><strong>Result:</strong> no blocker; two medium fixes recommended; confidence 88/100.</p></article>
+      <article class="card good"><h3>WS-BE · OpenAI</h3><p><strong>Run:</strong> <code>d870b3a3-b943-47ca-88c5-60246c51d1c2</code>, step 1.<br><strong>Runtime:</strong> <code>openai-codex/gpt-5.6-terra:xhigh</code>.<br><strong>Delivery:</strong> endpoint, confinement, bounds, and real HTTP tests.</p></article>
+      <article class="card good"><h3>WS-FE · Anthropic</h3><p><strong>Run:</strong> same chain, step 2.<br><strong>Runtime:</strong> <code>anthropic/claude-opus-5:xhigh</code>.<br><strong>Delivery:</strong> Changes mode, rendering, races, DOM/CSS, and focused tests.</p></article>
+      <article class="card good"><h3>Reviewer A · Kimi</h3><p><strong>Run:</strong> <code>dc645da5-2074-4adc-b51b-107ba69ff7b8</code>, child 0.<br><strong>Runtime:</strong> <code>openrouter/moonshotai/kimi-k3:high</code>.<br><strong>Verdict:</strong> approve, no blocker; confidence 88/100.</p></article>
+      <article class="card good"><h3>Reviewer B · Anthropic</h3><p><strong>Run:</strong> same review, child 1.<br><strong>Runtime:</strong> <code>anthropic/claude-opus-4-8:high</code> (runtime fallback from requested Google route).<br><strong>Verdict:</strong> no blockers; confidence 88/100.</p></article>
     </div>
-    <h3 style="margin-top:1.2rem">Disposition summary</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Finding</th><th>Disposition</th><th>Evidence</th></tr></thead>
-        <tbody>
-          <tr><td>Unbounded CSS assertion</td><td class="pass">Accepted · fixed</td><td>Regex now stays inside one rule body.</td></tr>
-          <tr><td>Silent stale-tab return</td><td class="pass">Accepted · fixed</td><td>Post-switch mismatch emits a visible error.</td></tr>
-          <tr><td>Windows drive case mismatch</td><td class="pass">Accepted · fixed</td><td>Drive paths compare case-insensitively; focused coverage added.</td></tr>
-          <tr><td>Key-repeat request burst</td><td class="pass">Accepted · fixed</td><td>Repeated Enter/Space keydown is ignored.</td></tr>
-          <tr><td>Test normalizer drift</td><td class="pass">Accepted · fixed</td><td>Test evaluates the production normalizer source.</td></tr>
-          <tr><td>Deleted-file preview, popup semantics, native-button conversion, mobile overlay, DOM harness</td><td class="note">Deferred</td><td>These are existing/shared behavior or broader UX/test-infrastructure decisions; none blocks the requested preview flow.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section id="risks">
-    <h2>Residual risks, usage, and rollback</h2>
+    <h3 style="margin-top:1.2rem">Finding dispositions</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Finding</th><th>Disposition</th><th>Resolution</th></tr></thead>
+      <tbody>
+        <tr><td>Unbounded untracked preview; deleted Preview button; same-path diff race</td><td class="pass">Accepted · fixed pre-review</td><td>Size cap, source-availability disable, and per-changes-request identity added.</td></tr>
+        <tr><td>Slow deleted/source open could overwrite a newer viewer</td><td class="pass">Accepted · fixed</td><td>Per-open identity guards both success and fallback; close invalidates pending opens.</td></tr>
+        <tr><td>Selection bar survived entry into Changes</td><td class="pass">Accepted · fixed</td><td>Mode switch clears stale Source/Preview selection.</td></tr>
+        <tr><td>No real conflicted endpoint case</td><td class="pass">Accepted · fixed</td><td>Merge-conflict fixture now asserts <code>git diff --cc</code> and <code>@@@</code> output.</td></tr>
+        <tr><td>Unused deleted-viewer source error</td><td class="pass">Accepted · fixed</td><td>Dead field removed.</td></tr>
+        <tr><td>Non-ASCII untracked Git quoting</td><td class="note">Deferred</td><td>Pre-existing helper fails closed; shared quote-path correction is separate scope.</td></tr>
+        <tr><td>Open-time diff stale after save; no live browser harness</td><td class="note">Accepted/deferred</td><td>Reopen refreshes the snapshot; browser execution remains the stated evidence limitation.</td></tr>
+      </tbody>
+    </table></div>
+    <h3 id="risks" style="margin-top:1.4rem">Usage, residual risks, and rollback</h3>
     <div class="grid">
-      <article class="card warn"><h3>No live browser execution</h3><p>Pointer, focus, and mobile stacking behavior is inferred from source contracts and two reviews rather than observed in a browser.</p></article>
-      <article class="card warn"><h3>Deleted paths</h3><p>A deleted worktree file cannot be opened through the live-file viewer and produces the existing visible error. Historical/base preview needs separate product scope.</p></article>
-      <article class="card"><h3>Usage</h3><p>Expand a Git repository and activate an existing file row. The viewer opens on the current eligible tab or switches to another tab whose cwd contains the file.</p></article>
-      <article class="card"><h3>Git actions</h3><p>Right-click, Context Menu, or Shift+F10 still opens the Git action menu; primary click/Enter/Space now opens the file.</p></article>
-      <article class="card"><h3>Rollback</h3><p>Remove row activation, restore the context-menu cursor and old inline Changes-dialog translation, then remove the focused test file.</p></article>
-      <article class="card"><h3>Confidence</h3><p><strong>94/100.</strong> Strong repository, focused-test, full-suite, and independent-review evidence; reduced by the missing live DOM/browser run and unrelated red baseline.</p></article>
+      <article class="card"><h3>Usage</h3><p>Open Git, expand a repository, and activate a file row. The viewer starts on Changes. Use Source for the live editable file or Preview for Markdown.</p></article>
+      <article class="card"><h3>Refresh</h3><p>The diff is an open-time snapshot. After saving Source or after external Git changes, reopen the Git row to reload the relevant category.</p></article>
+      <article class="card warn"><h3>Conflict and large-file limits</h3><p>Combined conflict hunks show raw bounded text. Single-file diffs cap at 500 KB; oversized untracked files show an explicit notice.</p></article>
+      <article class="card warn"><h3>Residual validation gap</h3><p>No live browser run verified pointer focus, narrow-pane scrolling, or mobile stacking. Static/vm and real HTTP/Git evidence cover the code paths.</p></article>
+      <article class="card"><h3>Unrelated work preserved</h3><p>The existing numpad-decimal hunks and untracked test remain outside this feature and continue to pass their focused test.</p></article>
+      <article class="card"><h3>Rollback</h3><p>Remove Changes DOM/CSS/state, restore category-free Git opens, then remove <code>/api/git-file-diff</code> and its harness cases. The original click-to-open behavior remains independently revertible.</p></article>
     </div>
+    <p class="small"><strong>Confidence: 93/100.</strong> Strong source, real Git/HTTP, full-suite, workstream, and independent-review evidence; reduced by the missing live browser run and unrelated red baseline.</p>
   </section>
 
-  <footer>Generated for <code>@firstpick/pi-package-webui</code> · 2026-07-26 · Evidence: current diff, package tests, server confinement source, and fresh independent reviews.</footer>
+  <footer>Generated for <code>@firstpick/pi-package-webui</code> · 2026-07-26 · Evidence: current integrated diff, canonical plan, real Git fixtures, focused/full tests, worker handoffs, and fresh independent reviews.</footer>
 </main>
 </body>
 </html>

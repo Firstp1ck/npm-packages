@@ -223,10 +223,12 @@ const elements = {
   fileViewerSaveButton: $("#fileViewerSaveButton"),
   fileViewerCloseButton: $("#fileViewerCloseButton"),
   fileViewerHelp: $("#fileViewerHelp"),
+  fileViewerChangesModeButton: $("#fileViewerChangesModeButton"),
   fileViewerSourceModeButton: $("#fileViewerSourceModeButton"),
   fileViewerPreviewModeButton: $("#fileViewerPreviewModeButton"),
   fileViewerEditor: $("#fileViewerEditor"),
   fileViewerPreview: $("#fileViewerPreview"),
+  fileViewerChanges: $("#fileViewerChanges"),
   fileViewerStatus: $("#fileViewerStatus"),
   fileSelectionBar: $("#fileSelectionBar"),
   fileSelectionSummary: $("#fileSelectionSummary"),
@@ -386,6 +388,8 @@ let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
 let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0, gitStatusRoot: "", gitStatusByPath: new Map() };
 let activeFileViewer = null;
+let fileViewerOpenRequestSerial = 0;
+let fileViewerGitChangesRequestSerial = 0;
 let fileViewerSelection = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
@@ -5123,7 +5127,11 @@ function workflowOverlayIsMinimized() {
 
 function renderWorkflowOverlayControls() {
   const openAvailable = workflowOverlayHasContent() && workflowOverlayIsMinimized();
-  if (elements.workflowOverlayOpenButton) elements.workflowOverlayOpenButton.hidden = !openAvailable;
+  if (elements.workflowOverlayOpenButton) {
+    elements.workflowOverlayOpenButton.hidden = !openAvailable;
+    elements.workflowOverlayOpenButton.setAttribute("aria-expanded", openAvailable ? "false" : "true");
+    applyStyledTooltip(elements.workflowOverlayOpenButton, "Open the minimized workflow overlay.", { ariaLabel: true, align: "end" });
+  }
   if (elements.workflowModeControls) {
     elements.workflowModeControls.hidden = Boolean(elements.workflowModeButton?.hidden) && !openAvailable;
     elements.workflowModeControls.classList.toggle("has-open-control", openAvailable);
@@ -5160,13 +5168,14 @@ function renderWorkflowModeControls() {
     elements.workflowModeButton.disabled = !commandName || pending;
     elements.workflowModeButton.classList.toggle("active", active);
     elements.workflowModeButton.setAttribute("aria-pressed", active ? "true" : "false");
-    elements.workflowModeButton.toggleAttribute("aria-busy", pending);
+    if (pending) elements.workflowModeButton.setAttribute("aria-busy", "true");
+    else elements.workflowModeButton.removeAttribute("aria-busy");
     const tooltip = pending
       ? "Updating JavaScript Workflow Mode for this Pi tab."
       : commandName
         ? `${active ? "Disable" : "Enable"} JavaScript Workflow Mode for this Pi tab via /${commandName} mode ${active ? "off" : "on"}.`
         : "Workflow Mode is unavailable because the /workflow command is not loaded.";
-    applyStyledTooltip(elements.workflowModeButton, tooltip, { ariaLabel: true, align: "start", floating: false });
+    applyStyledTooltip(elements.workflowModeButton, tooltip, { ariaLabel: true, align: "end" });
   }
   renderWorkflowOverlayControls();
 
@@ -7189,6 +7198,8 @@ function updateActiveFileViewerAfterMove(sourcePath = "", destinationPath = "") 
     extension: fileExtensionForPath(nextPath),
     language,
     mode: activeFileViewer.mode === "preview" && language === "markdown" ? "preview" : "source",
+    // The open-time diff snapshot belongs to the previous path.
+    gitChanges: null,
   };
   if (fileViewerSelection) fileViewerSelection = { ...fileViewerSelection, path: nextPath, fileName: activeFileViewer.name };
   updateFileViewerUi();
@@ -7594,10 +7605,21 @@ async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
   await openFileInViewer(path);
 }
 
+// Changes mode only exists for Git-originated opens; every other viewer keeps
+// the original Source/Markdown-Preview behavior.
+function resolveFileViewerMode(viewer) {
+  if (!viewer) return "source";
+  const hasChanges = !!viewer.gitChanges;
+  if (viewer.mode === "changes") return hasChanges ? "changes" : "source";
+  if (viewer.sourceAvailable === false) return hasChanges ? "changes" : "source";
+  return viewer.mode === "preview" && viewer.language === "markdown" ? "preview" : "source";
+}
+
 function setFileViewerMode(mode = "source") {
   if (!activeFileViewer) return;
-  const nextMode = mode === "preview" && activeFileViewer.language === "markdown" ? "preview" : "source";
-  activeFileViewer.mode = nextMode;
+  const previousMode = activeFileViewer.mode;
+  activeFileViewer.mode = resolveFileViewerMode({ ...activeFileViewer, mode });
+  if (activeFileViewer.mode === "changes" && previousMode !== "changes") clearFileViewerSelection();
   updateFileViewerUi();
 }
 
@@ -7618,20 +7640,31 @@ function updateFileViewerUi() {
   if (!isSidePanelOverlayView()) applyFileViewerWidth(currentFileViewerWidth());
   const viewer = activeFileViewer;
   const isMarkdown = viewer.language === "markdown";
-  const mode = viewer.mode === "preview" && isMarkdown ? "preview" : "source";
+  const hasChanges = !!viewer.gitChanges;
+  const sourceAvailable = viewer.sourceAvailable !== false;
+  const mode = resolveFileViewerMode(viewer);
   viewer.mode = mode;
   if (elements.fileViewerTitle) elements.fileViewerTitle.textContent = viewer.name || fileDisplayName(viewer.path);
   if (elements.fileViewerMeta) {
     const lineCount = textLineCount(viewer.content || "");
-    elements.fileViewerMeta.textContent = [viewer.path, formatBytes(viewer.size), `${lineCount} ${lineCount === 1 ? "line" : "lines"}`].filter(Boolean).join(" · ");
+    const sourceMeta = sourceAvailable ? [formatBytes(viewer.size), `${lineCount} ${lineCount === 1 ? "line" : "lines"}`] : ["source unavailable"];
+    elements.fileViewerMeta.textContent = [viewer.path, ...sourceMeta].filter(Boolean).join(" · ");
+  }
+  if (elements.fileViewerChangesModeButton) {
+    elements.fileViewerChangesModeButton.hidden = !hasChanges;
+    elements.fileViewerChangesModeButton.disabled = !hasChanges;
+    elements.fileViewerChangesModeButton.setAttribute("aria-pressed", mode === "changes" ? "true" : "false");
+    elements.fileViewerChangesModeButton.classList.toggle("active", mode === "changes");
+    elements.fileViewerChangesModeButton.title = hasChanges ? `${viewer.gitChanges.label || "Git"} changes for this file` : "";
   }
   if (elements.fileViewerSourceModeButton) {
+    elements.fileViewerSourceModeButton.disabled = !sourceAvailable;
     elements.fileViewerSourceModeButton.setAttribute("aria-pressed", mode === "source" ? "true" : "false");
     elements.fileViewerSourceModeButton.classList.toggle("active", mode === "source");
   }
   if (elements.fileViewerPreviewModeButton) {
     elements.fileViewerPreviewModeButton.hidden = !isMarkdown;
-    elements.fileViewerPreviewModeButton.disabled = !isMarkdown;
+    elements.fileViewerPreviewModeButton.disabled = !isMarkdown || !sourceAvailable;
     elements.fileViewerPreviewModeButton.setAttribute("aria-pressed", mode === "preview" ? "true" : "false");
     elements.fileViewerPreviewModeButton.classList.toggle("active", mode === "preview");
   }
@@ -7644,6 +7677,11 @@ function updateFileViewerUi() {
     elements.fileViewerPreview.hidden = mode !== "preview";
     if (mode === "preview") renderMarkdown(elements.fileViewerPreview, viewer.content || "");
   }
+  if (elements.fileViewerChanges) {
+    elements.fileViewerChanges.hidden = mode !== "changes";
+    if (mode === "changes") renderFileViewerChanges(viewer.gitChanges);
+    else elements.fileViewerChanges.replaceChildren();
+  }
   if (elements.fileViewerSaveButton) elements.fileViewerSaveButton.disabled = viewer.readOnly === true || !viewer.dirty;
   if (elements.fileViewerOpenDefaultButton) {
     const viewerPath = normalizeFileTreePath(viewer.path || "");
@@ -7651,6 +7689,75 @@ function updateFileViewerUi() {
     elements.fileViewerOpenDefaultButton.disabled = viewer.readOnly === true || !viewerPath;
   }
   renderFileViewerSelectionBar();
+}
+
+function fileViewerChangesNotice(text, level = "") {
+  return make("p", `file-viewer-changes-notice ${level}`.trim(), text);
+}
+
+function fileViewerChangesHeading(snapshot) {
+  const heading = make("div", "git-diff-section-heading");
+  heading.append(
+    make("div", "git-diff-section-title", `${snapshot.label || "Git"} changes`),
+    make("div", "git-diff-section-meta", snapshot.command || "git diff"),
+  );
+  return heading;
+}
+
+// git diff --cc emits combined "@@@" hunks that the two-column parser cannot
+// represent, so those diffs fall back to readable raw text.
+function gitFileDiffUsesCombinedSyntax(diffText = "") {
+  return /^@@@+ /m.test(String(diffText || ""));
+}
+
+function renderFileViewerUntrackedChanges(snapshot) {
+  const entry = normalizeGitUntrackedEntry({
+    path: snapshot.path || "file",
+    size: snapshot.size,
+    binary: snapshot.binary,
+    error: snapshot.contentError,
+    ...(typeof snapshot.content === "string" ? { content: snapshot.content } : {}),
+  });
+  if (!entry) return fileViewerChangesNotice("Untracked file content is unavailable.", "error");
+  if (entry.contentMissing) return fileViewerChangesNotice("Untracked file content is unavailable.", "error");
+  if (entry.error || entry.binary) return renderGitUntrackedRawFile(entry);
+  return renderGitDiffFile(gitUntrackedEntryToDiffFile(entry));
+}
+
+function renderFileViewerTrackedChanges(snapshot) {
+  const diff = String(snapshot.diff || "");
+  if (!diff.trim()) return fileViewerChangesNotice(`No ${String(snapshot.label || "Git").toLowerCase()} changes for this file.`);
+  if (gitFileDiffUsesCombinedSyntax(diff)) return make("pre", "git-diff-raw", diff);
+  const files = parseGitUnifiedDiff(diff);
+  if (!files.length) return make("pre", "git-diff-raw", diff);
+  const fragment = document.createDocumentFragment();
+  for (const file of files) fragment.append(renderGitDiffFile(file));
+  return fragment;
+}
+
+function renderFileViewerChangesTruncation(snapshot) {
+  const notice = make("div", "git-diff-truncated-notice");
+  notice.append(make("span", undefined, `Diff truncated at ${formatBytes(snapshot.capBytes || 0)} — showing the bounded snapshot. Run the full command in a terminal for the complete diff:`));
+  notice.append(make("code", "git-tools-command", snapshot.command || "git diff"));
+  return notice;
+}
+
+function renderFileViewerChanges(snapshot = activeFileViewer?.gitChanges) {
+  const container = elements.fileViewerChanges;
+  if (!container) return;
+  if (!snapshot) {
+    container.replaceChildren();
+    return;
+  }
+  const wrapper = make("section", `git-diff-section file-viewer-changes-section ${snapshot.category || ""}`.trim());
+  wrapper.append(fileViewerChangesHeading(snapshot));
+  if (snapshot.loading) wrapper.append(fileViewerChangesNotice("Loading Git changes…"));
+  else if (snapshot.error) wrapper.append(fileViewerChangesNotice(snapshot.error, "error"));
+  else {
+    wrapper.append(snapshot.category === "untracked" ? renderFileViewerUntrackedChanges(snapshot) : renderFileViewerTrackedChanges(snapshot));
+    if (snapshot.truncated) wrapper.append(renderFileViewerChangesTruncation(snapshot));
+  }
+  container.replaceChildren(wrapper);
 }
 
 function clearFileViewerSelection() {
@@ -7774,6 +7881,7 @@ async function sendFileSelectionToSession() {
 }
 
 function closeFileViewer() {
+  fileViewerOpenRequestSerial += 1;
   activeFileViewer = null;
   clearFileViewerSelection();
   document.body.classList.remove("file-viewer-open");
@@ -7786,20 +7894,80 @@ function closeFileViewer() {
     elements.fileViewerEditor.readOnly = false;
   }
   if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
+  if (elements.fileViewerChanges) {
+    elements.fileViewerChanges.hidden = true;
+    elements.fileViewerChanges.replaceChildren();
+  }
   setFileViewerStatus("");
 }
 
-async function openFileInViewer(path = "") {
+// Side-panel Git categories are UI labels; the read API uses its own allowlist.
+const GIT_FILE_DIFF_CATEGORY_BY_PANEL = Object.freeze({
+  staged: "staged",
+  changes: "unstaged",
+  conflicted: "conflicted",
+  untracked: "untracked",
+});
+
+function gitFileDiffCategory(panelCategory = "") {
+  return GIT_FILE_DIFF_CATEGORY_BY_PANEL[String(panelCategory || "").trim()] || "";
+}
+
+// The changes view is the bounded snapshot loaded when the file was opened;
+// reopening the Git row refreshes it. Failures become a visible viewer state
+// instead of a rejected open.
+async function loadGitFileChangesSnapshot(repoRelPath, category, tabId) {
+  const snapshot = { category, path: repoRelPath, label: "", command: "", diff: "", truncated: false, capBytes: 0, error: "" };
+  try {
+    const params = new URLSearchParams({ path: repoRelPath, category });
+    const response = await api(`/api/git-file-diff?${params.toString()}`, { tabId });
+    if (!response.ok) throw new Error(response.error || "Failed to load Git changes for this file");
+    const data = response.data || {};
+    return {
+      ...snapshot,
+      ...data,
+      category,
+      path: data.path || repoRelPath,
+      diff: String(data.diff || ""),
+      truncated: data.truncated === true,
+      capBytes: Number(data.capBytes) || 0,
+      contentError: data.error ? String(data.error) : "",
+      error: "",
+    };
+  } catch (error) {
+    return { ...snapshot, error: error.message || String(error) };
+  }
+}
+
+function gitFileChangesPlaceholder(category, repoRelPath, requestSerial) {
+  return { category, path: repoRelPath, label: "", command: "", diff: "", truncated: false, capBytes: 0, loading: true, requestSerial, error: "" };
+}
+
+async function applyGitFileChangesSnapshot(request, tabContext, viewerPath, requestSerial) {
+  const snapshot = await request;
+  if (!isCurrentTabContext(tabContext)) return;
+  if (!activeFileViewer?.gitChanges?.loading || activeFileViewer.path !== viewerPath || activeFileViewer.gitChanges.requestSerial !== requestSerial) return;
+  activeFileViewer.gitChanges = snapshot;
+  updateFileViewerUi();
+}
+
+async function openFileInViewer(path = "", { gitCategory = "", gitPath = "" } = {}) {
   const normalized = normalizeFileTreePath(path);
   if (!normalized) return;
+  const openRequestSerial = ++fileViewerOpenRequestSerial;
   const tabContext = activeTabContext();
   fileTreeState.selectedPath = normalized;
   renderFileTree();
   setFileViewerStatus(`Opening ${normalized}…`);
+  const category = gitFileDiffCategory(gitCategory);
+  const changesPath = normalizeFileTreePath(gitPath) || normalized;
+  const changesRequestSerial = category ? ++fileViewerGitChangesRequestSerial : 0;
+  const changesRequest = category ? loadGitFileChangesSnapshot(changesPath, category, tabContext.tabId) : null;
   try {
     const response = await api(fileApiPath("/api/files/content", normalized), { tabId: tabContext.tabId });
-    if (!isCurrentTabContext(tabContext)) return;
+    if (!isCurrentTabContext(tabContext) || openRequestSerial !== fileViewerOpenRequestSerial) return;
     const data = response.data || {};
+    const gitChanges = changesRequest ? gitFileChangesPlaceholder(category, changesPath, changesRequestSerial) : null;
     activeFileViewer = {
       path: normalizeFileTreePath(data.path || normalized),
       name: data.name || fileDisplayName(normalized),
@@ -7808,19 +7976,45 @@ async function openFileInViewer(path = "") {
       mtimeMs: Number(data.mtimeMs) || 0,
       extension: data.extension || "",
       language: data.language || "text",
-      mode: data.language === "markdown" ? "preview" : "source",
+      mode: gitChanges ? "changes" : data.language === "markdown" ? "preview" : "source",
       dirty: false,
       readOnly: false,
+      sourceAvailable: true,
+      gitChanges,
     };
     if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
     clearFileViewerSelection();
     updateFileViewerUi();
     setFileViewerStatus("Opened in WebUI.", "success");
+    if (changesRequest) void applyGitFileChangesSnapshot(changesRequest, tabContext, activeFileViewer.path, changesRequestSerial);
   } catch (error) {
-    if (isCurrentTabContext(tabContext)) {
-      setFileViewerStatus(error.message || String(error), "error");
-      addEvent(`file open failed: ${error.message || String(error)}`, "error");
+    const message = error.message || String(error);
+    // A deleted tracked file has no live source but still has a diff worth showing.
+    const gitChanges = changesRequest ? await changesRequest : null;
+    if (!isCurrentTabContext(tabContext) || openRequestSerial !== fileViewerOpenRequestSerial) return;
+    if (gitChanges && !gitChanges.error) {
+      activeFileViewer = {
+        path: normalized,
+        name: fileDisplayName(normalized),
+        content: "",
+        size: 0,
+        mtimeMs: 0,
+        extension: fileExtensionForPath(normalized),
+        language: fileLanguageForPath(normalized),
+        mode: "changes",
+        dirty: false,
+        readOnly: true,
+        sourceAvailable: false,
+        gitChanges,
+      };
+      if (elements.fileViewerEditor) elements.fileViewerEditor.value = "";
+      clearFileViewerSelection();
+      updateFileViewerUi();
+      setFileViewerStatus("File content unavailable; showing Git changes (read-only).", "warn");
+      return;
     }
+    setFileViewerStatus(message, "error");
+    addEvent(`file open failed: ${message}`, "error");
   }
 }
 
@@ -8894,7 +9088,7 @@ function renderGitPanelFile(entry, card, category) {
   row.tabIndex = 0;
   row.setAttribute("role", "button");
   row.setAttribute("aria-label", `Open ${entry.name || entry.path} in WebUI, ${gitPanelStatsText(entry, category) || "no line statistics"}`);
-  const open = () => openGitFileInViewer(entry.path, { root: card.root, candidates: card.candidates })
+  const open = () => openGitFileInViewer(entry.path, { root: card.root, candidates: card.candidates, category })
     .catch((error) => addEvent(error.message || String(error), "error"));
   row.addEventListener("click", open);
   row.addEventListener("keydown", (event) => {
@@ -12036,7 +12230,7 @@ function gitFileViewerTarget(repoRelPath, root, candidates = []) {
   return null;
 }
 
-async function openGitFileInViewer(repoRelPath, { root = "", candidates = [], closeChanges = false } = {}) {
+async function openGitFileInViewer(repoRelPath, { root = "", candidates = [], closeChanges = false, category = "" } = {}) {
   const target = gitFileViewerTarget(repoRelPath, root, candidates);
   if (!target) {
     addEvent(`Cannot open ${repoRelPath}: it is outside the available tab working directories.`, "error");
@@ -12049,7 +12243,7 @@ async function openGitFileInViewer(repoRelPath, { root = "", candidates = [], cl
     return;
   }
   setSidePanelCollapsed(false);
-  await openFileInViewer(target.path);
+  await openFileInViewer(target.path, { gitCategory: category, gitPath: normalizeFileTreePath(repoRelPath) });
 }
 
 async function openGitFileFromChanges(repoRelPath) {
@@ -18632,6 +18826,7 @@ function renderAppRunnerInputForm(run) {
   input.setAttribute("aria-label", "Send input to app runner stdin");
   input.addEventListener("input", () => { appRunnerInputDraftByRun.set(key, input.value); });
   input.addEventListener("keydown", (event) => {
+    if (insertNumpadDecimal(event)) return;
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     form.requestSubmit();
@@ -28001,6 +28196,21 @@ function shouldSendPromptFromEnter(event) {
   return !isMobileView();
 }
 
+function insertNumpadDecimal(event) {
+  const isNumpadDecimal = event.code === "NumpadDecimal"
+    || event.keyCode === 110
+    || (event.location === 3 && [".", ",", "Decimal", "Delete"].includes(event.key));
+  if (event.defaultPrevented || !isNumpadDecimal || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return false;
+  const input = event.currentTarget;
+  if (!input || input.disabled || input.readOnly || typeof input.setRangeText !== "function") return false;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  event.preventDefault();
+  input.setRangeText(".", start, end, "end");
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, data: ".", inputType: "insertText" }));
+  return true;
+}
+
 function renderMessages(messages) {
   latestMessages = messages || [];
   cleanupLiveToolRunsForMessages(latestMessages);
@@ -32638,6 +32848,7 @@ elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewer
 elements.fileViewerResizeHandle?.addEventListener("keydown", handleFileViewerResizeKeydown);
 elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
 elements.fileViewerCloseButton?.addEventListener("click", closeFileViewer);
+elements.fileViewerChangesModeButton?.addEventListener("click", () => setFileViewerMode("changes"));
 elements.fileViewerSourceModeButton?.addEventListener("click", () => setFileViewerMode("source"));
 elements.fileViewerPreviewModeButton?.addEventListener("click", () => setFileViewerMode("preview"));
 elements.fileViewerEditor?.addEventListener("input", () => {
@@ -32706,7 +32917,7 @@ elements.composer.addEventListener("dragleave", handleComposerDragLeave);
 elements.composer.addEventListener("drop", handleComposerDrop);
 
 elements.promptInput.addEventListener("keydown", (event) => {
-  if (event.defaultPrevented) return;
+  if (event.defaultPrevented || insertNumpadDecimal(event)) return;
   if (shouldSendPromptFromEnter(event)) {
     event.preventDefault();
     hideCommandSuggestions();

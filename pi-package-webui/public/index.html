@@ -136,6 +136,27 @@
         <form id="composer" class="composer">
           <div id="commandSuggest" class="command-suggest" role="listbox" aria-label="Command and path suggestions" hidden></div>
           <div class="composer-input-row">
+            <div id="workflowModeControls" class="composer-workflow-mode-dock" role="group" aria-label="Workflow Mode controls" hidden>
+              <button
+                id="workflowOverlayOpenButton"
+                class="composer-icon-button composer-workflow-overlay-open-button"
+                type="button"
+                aria-label="Open workflow overlay"
+                aria-controls="widgetArea"
+                aria-expanded="false"
+                data-tooltip="Open the minimized workflow overlay."
+                hidden
+              ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button
+                id="workflowModeButton"
+                class="composer-icon-button composer-workflow-mode-button"
+                type="button"
+                aria-label="Enable Workflow Mode"
+                aria-pressed="false"
+                data-tooltip="Workflow Mode: generate and run reusable JavaScript orchestration for substantive prompts."
+                hidden
+              ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="13" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+            </div>
             <div class="composer-context-tags">
               <button
                 id="busyPromptBehaviorTag"
@@ -178,27 +199,6 @@
             <div id="composerActionsPanel" class="composer-actions-panel" aria-label="Composer actions">
               <button id="newSessionButton" class="composer-new-button" type="button">New</button>
               <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context">Compact</button>
-              <div id="workflowModeControls" class="composer-publish-menu composer-workflow-mode-controls" hidden>
-                <button
-                  id="workflowOverlayOpenButton"
-                  class="composer-icon-button composer-workflow-overlay-open-button"
-                  type="button"
-                  aria-label="Open workflow overlay"
-                  aria-controls="widgetArea"
-                  aria-expanded="false"
-                  data-tooltip="Open the minimized workflow overlay."
-                  hidden
-                ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-                <button
-                  id="workflowModeButton"
-                  class="composer-icon-button composer-workflow-mode-button"
-                  type="button"
-                  aria-label="Enable Workflow Mode"
-                  aria-pressed="false"
-                  data-tooltip="Workflow Mode: generate and run reusable JavaScript orchestration for substantive prompts."
-                  hidden
-                ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="13" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
-              </div>
               <button
                 id="gitWorkflowButton"
                 class="composer-icon-button composer-git-button"
@@ -400,7 +400,7 @@
             <button id="fileViewerCloseButton" type="button" aria-label="Close file viewer">Close</button>
           </div>
         </header>
-        <p id="fileViewerHelp" class="file-viewer-help muted">Markdown files can be viewed as Preview or Source. Select text in the file, add a one-line comment, then Send to include the selection and surrounding context in this Pi session.</p>
+        <p id="fileViewerHelp" class="file-viewer-help muted">Files opened from Git start in Changes mode. Markdown files can also be viewed as Preview or Source. Select text in Source or Preview, add a one-line comment, then Send to include the selection and surrounding context in this Pi session.</p>
         <div id="fileSelectionBar" class="file-selection-bar" hidden>
           <span id="fileSelectionSummary" class="file-selection-summary">No selection</span>
           <input id="fileSelectionCommentInput" class="file-selection-comment" type="text" placeholder="Comment for Pi about this selection…" autocomplete="off" />
@@ -408,6 +408,7 @@
         </div>
         <div class="file-viewer-mode-row">
           <div class="file-viewer-mode-toggle" role="group" aria-label="File view mode">
+            <button id="fileViewerChangesModeButton" type="button" aria-pressed="false" hidden>Changes</button>
             <button id="fileViewerSourceModeButton" type="button" aria-pressed="true">Source</button>
             <button id="fileViewerPreviewModeButton" type="button" aria-pressed="false">Preview</button>
           </div>
@@ -415,6 +416,7 @@
         <div class="file-viewer-content">
           <textarea id="fileViewerEditor" class="file-viewer-editor" wrap="soft" spellcheck="false" aria-label="File contents"></textarea>
           <div id="fileViewerPreview" class="file-viewer-preview markdown-body" tabindex="0" hidden></div>
+          <div id="fileViewerChanges" class="file-viewer-changes" tabindex="0" aria-label="Git changes for this file" hidden></div>
         </div>
         <p id="fileViewerStatus" class="file-viewer-status muted" role="status" aria-live="polite"></p>
       </section>

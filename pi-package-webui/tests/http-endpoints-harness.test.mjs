@@ -938,6 +938,82 @@ try {
       return id;
     };
 
+    // File-scoped Git diff endpoint: staged, unstaged, untracked, empty, deleted, and rejected inputs.
+    const fileDiffRepo = await makeFixtureRepo("file-diff");
+    const fileDiffTab = await openFixtureTab(fileDiffRepo, "file-diff-fixture");
+    await writeFile(path.join(fileDiffRepo, "unchanged.txt"), "unchanged\n");
+    await writeFile(path.join(fileDiffRepo, "deleted.txt"), "deleted\n");
+    runGitFixture(["add", "unchanged.txt", "deleted.txt"], fileDiffRepo, "file-diff fixture should stage unchanged and deleted bases");
+    runGitFixture(["commit", "-m", "additional file-diff bases"], fileDiffRepo, "file-diff fixture should commit unchanged and deleted bases");
+    await writeFile(path.join(fileDiffRepo, "file.txt"), "staged\n");
+    runGitFixture(["add", "file.txt"], fileDiffRepo, "file-diff fixture should stage a file-scoped change");
+
+    const gitFileDiffPath = (file, category) => `/api/git-file-diff?tab=${encodeURIComponent(fileDiffTab)}&path=${encodeURIComponent(file)}&category=${encodeURIComponent(category)}`;
+    const stagedFileDiff = await request("127.0.0.1", gitFileDiffPath("file.txt", "staged"));
+    assert.equal(stagedFileDiff.status, 200);
+    assert.equal(stagedFileDiff.body?.ok, true, "git-file-diff should read a staged file diff");
+    assert.equal(stagedFileDiff.body?.data?.root, fileDiffRepo);
+    assert.equal(stagedFileDiff.body?.data?.path, "file.txt");
+    assert.equal(stagedFileDiff.body?.data?.category, "staged");
+    assert.equal(stagedFileDiff.body?.data?.label, "Staged");
+    assert.match(stagedFileDiff.body?.data?.command || "", /^git diff --cached --no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a\/ --dst-prefix=b\/ -- file\.txt$/);
+    assert.match(stagedFileDiff.body?.data?.diff || "", /-base\n\+staged/, "staged diff should compare the index against HEAD for only the requested path");
+    assert.equal(stagedFileDiff.body?.data?.truncated, false);
+    assert.ok(Number(stagedFileDiff.body?.data?.capBytes) > 0, "staged file diff should expose its output cap");
+
+    await writeFile(path.join(fileDiffRepo, "file.txt"), "unstaged\n");
+    const unstagedFileDiff = await request("127.0.0.1", gitFileDiffPath("file.txt", "unstaged"));
+    assert.equal(unstagedFileDiff.status, 200);
+    assert.equal(unstagedFileDiff.body?.ok, true, "git-file-diff should read an unstaged file diff");
+    assert.equal(unstagedFileDiff.body?.data?.category, "unstaged");
+    assert.equal(unstagedFileDiff.body?.data?.label, "Unstaged");
+    assert.match(unstagedFileDiff.body?.data?.command || "", /^git diff --no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a\/ --dst-prefix=b\/ -- file\.txt$/);
+    assert.match(unstagedFileDiff.body?.data?.diff || "", /-staged\n\+unstaged/, "unstaged diff should compare the worktree against the index for only the requested path");
+
+    await writeFile(path.join(fileDiffRepo, "loose.txt"), "loose\n");
+    const untrackedFileDiff = await request("127.0.0.1", gitFileDiffPath("loose.txt", "untracked"));
+    assert.equal(untrackedFileDiff.status, 200);
+    assert.equal(untrackedFileDiff.body?.ok, true, "git-file-diff should return verified untracked content");
+    assert.equal(untrackedFileDiff.body?.data?.category, "untracked");
+    assert.equal(untrackedFileDiff.body?.data?.label, "Untracked");
+    assert.equal(untrackedFileDiff.body?.data?.command, "git ls-files --others --exclude-standard -- loose.txt");
+    assert.equal(untrackedFileDiff.body?.data?.diff, "");
+    assert.equal(untrackedFileDiff.body?.data?.path, "loose.txt");
+    assert.equal(untrackedFileDiff.body?.data?.binary, false);
+    assert.equal(untrackedFileDiff.body?.data?.size, 6);
+    assert.equal(untrackedFileDiff.body?.data?.content, "loose\n");
+    assert.equal(untrackedFileDiff.body?.data?.truncated, false);
+    assert.ok(Number(untrackedFileDiff.body?.data?.capBytes) > 0, "untracked file response should expose its output cap");
+
+    const fileDiffCap = Number(untrackedFileDiff.body?.data?.capBytes) || 500_000;
+    await writeFile(path.join(fileDiffRepo, "large-loose.txt"), "x".repeat(fileDiffCap + 1));
+    const largeUntrackedFileDiff = await request("127.0.0.1", gitFileDiffPath("large-loose.txt", "untracked"));
+    assert.equal(largeUntrackedFileDiff.status, 200);
+    assert.equal(largeUntrackedFileDiff.body?.ok, true, "oversized untracked previews should remain a structured response");
+    assert.equal(largeUntrackedFileDiff.body?.data?.size, fileDiffCap + 1);
+    assert.equal(largeUntrackedFileDiff.body?.data?.content, "", "oversized untracked previews must not read file content into the response");
+    assert.match(largeUntrackedFileDiff.body?.data?.error || "", /too large to preview/i, "oversized untracked previews should explain the output bound");
+
+    const emptyFileDiff = await request("127.0.0.1", gitFileDiffPath("unchanged.txt", "unstaged"));
+    assert.equal(emptyFileDiff.status, 200);
+    assert.equal(emptyFileDiff.body?.ok, true, "git-file-diff should return an empty diff for an unchanged file");
+    assert.equal(emptyFileDiff.body?.data?.diff, "");
+
+    await rm(path.join(fileDiffRepo, "deleted.txt"));
+    const deletedFileDiff = await request("127.0.0.1", gitFileDiffPath("deleted.txt", "unstaged"));
+    assert.equal(deletedFileDiff.status, 200);
+    assert.equal(deletedFileDiff.body?.ok, true, "git-file-diff should return a diff for a deleted tracked file");
+    assert.match(deletedFileDiff.body?.data?.diff || "", /deleted file mode/, "deleted tracked files should retain a readable diff");
+
+    const invalidGitFileDiffCategory = await request("127.0.0.1", gitFileDiffPath("file.txt", "modified"));
+    assert.equal(invalidGitFileDiffCategory.status, 200);
+    assert.equal(invalidGitFileDiffCategory.body?.ok, false, "git-file-diff must allowlist categories");
+    assert.match(String(invalidGitFileDiffCategory.body?.error || ""), /category must be staged, unstaged, conflicted, or untracked/i);
+    const escapedGitFileDiff = await request("127.0.0.1", gitFileDiffPath("../outside.txt", "unstaged"));
+    assert.equal(escapedGitFileDiff.status, 200);
+    assert.equal(escapedGitFileDiff.body?.ok, false, "git-file-diff must reject paths escaping the repository root");
+    assert.match(String(escapedGitFileDiff.body?.error || ""), /Git path escapes repository/i);
+
     // Staging endpoints
     const stagingRepo = await makeFixtureRepo("staging");
     const stagingTab = await openFixtureTab(stagingRepo, "staging-fixture");
@@ -1060,6 +1136,12 @@ try {
 
     const mergeRepo = await makeConflictRepo("merge-conflict");
     const mergeTab = await openFixtureTab(mergeRepo, "merge-conflict-fixture");
+    const conflictedFileDiff = await request("127.0.0.1", `/api/git-file-diff?tab=${encodeURIComponent(mergeTab)}&path=file.txt&category=conflicted`);
+    assert.equal(conflictedFileDiff.status, 200);
+    assert.equal(conflictedFileDiff.body?.ok, true, "git-file-diff should return a combined diff for an unmerged path");
+    assert.equal(conflictedFileDiff.body?.data?.category, "conflicted");
+    assert.match(conflictedFileDiff.body?.data?.command || "", /^git diff --cc --no-ext-diff --no-textconv --no-color --unified=3 /, "conflicted file diff should use the bounded combined-diff command");
+    assert.match(conflictedFileDiff.body?.data?.diff || "", /diff --cc file\.txt[\s\S]*@@@ /, "conflicted file diff should include combined hunk syntax for the raw viewer fallback");
     const operationSnapshot = await request("127.0.0.1", `/api/git-operation?tab=${encodeURIComponent(mergeTab)}`);
     assert.equal(operationSnapshot.status, 200);
     assert.equal(operationSnapshot.body?.ok, true, "operation endpoint should read a merging repo");

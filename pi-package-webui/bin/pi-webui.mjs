@@ -4778,6 +4778,13 @@ async function getWorkspaceInfo(cwd, startedAt) {
 let activeGitWorkflowProcess = null;
 const GIT_CHANGES_COMMAND_TIMEOUT_MS = 5000;
 const GIT_CHANGES_DIFF_MAX_OUTPUT = 500_000;
+const GIT_FILE_DIFF_CATEGORIES = new Set(["staged", "unstaged", "conflicted", "untracked"]);
+const GIT_FILE_DIFF_LABELS = Object.freeze({
+  staged: "Staged",
+  unstaged: "Unstaged",
+  conflicted: "Conflicted",
+  untracked: "Untracked",
+});
 const GIT_PULL_TIMEOUT_MS = 15 * 60 * 1000;
 // Must remain byte-for-byte aligned with pi-extension-aur-review/src/git.ts.
 const STAGED_CONTENT_HASH_DOMAIN = "firstpick/aur-review/staged-content/v1\0";
@@ -5088,11 +5095,14 @@ function normalizeGitRelativePath(root, relativePath) {
   return path.relative(root, resolved).split(path.sep).join("/");
 }
 
-async function readGitUntrackedEntry(root, file) {
+async function readGitUntrackedEntry(root, file, { maxBytes = Number.POSITIVE_INFINITY } = {}) {
   const normalized = normalizeGitRelativePath(root, file);
   const filePath = resolveGitRelativePath(root, normalized);
   const info = await stat(filePath);
   if (!info.isFile()) return { path: normalized, size: info.size, binary: false, content: "", error: "Not a regular file" };
+  if (Number.isFinite(maxBytes) && info.size > maxBytes) {
+    return { path: normalized, size: info.size, binary: false, content: "", error: `File is too large to preview (limit ${formatBytes(maxBytes)})` };
+  }
   const buffer = await readFile(filePath);
   const binary = isLikelyBinaryBuffer(buffer);
   return {
@@ -5115,13 +5125,64 @@ async function readGitUntrackedEntries(root, files) {
   return entries;
 }
 
-async function readGitUntrackedFile(cwd, requestedPath) {
+async function readGitUntrackedFile(cwd, requestedPath, options = {}) {
   const root = await getGitRoot(cwd);
   const normalized = normalizeGitRelativePath(root, requestedPath);
   const listed = await runGitReadCommand(root, ["ls-files", "--others", "--exclude-standard", "--", normalized], { maxOutputLength: 120_000 });
   const files = listed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (!files.includes(normalized)) throw new Error(`Not an untracked file: ${normalized}`);
-  return readGitUntrackedEntry(root, normalized);
+  return readGitUntrackedEntry(root, normalized, options);
+}
+
+function normalizeGitFileDiffCategory(requestedCategory) {
+  const category = String(requestedCategory || "").trim();
+  if (!GIT_FILE_DIFF_CATEGORIES.has(category)) {
+    throw new Error("Git file diff category must be staged, unstaged, conflicted, or untracked");
+  }
+  return category;
+}
+
+function gitFileDiffArgs(category, normalizedPath) {
+  const args = ["diff"];
+  if (category === "staged") args.push("--cached");
+  if (category === "conflicted") args.push("--cc");
+  args.push("--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", "--", normalizedPath);
+  return args;
+}
+
+async function readGitFileDiff(cwd, requestedPath, requestedCategory) {
+  const root = await getGitRoot(cwd);
+  const category = normalizeGitFileDiffCategory(requestedCategory);
+  const normalizedPath = normalizeGitRelativePath(root, requestedPath);
+  const label = GIT_FILE_DIFF_LABELS[category];
+
+  if (category === "untracked") {
+    const untracked = await readGitUntrackedFile(root, normalizedPath, { maxBytes: GIT_CHANGES_DIFF_MAX_OUTPUT });
+    return {
+      root,
+      path: normalizedPath,
+      category,
+      label,
+      command: formatGitCommand(["ls-files", "--others", "--exclude-standard", "--", normalizedPath]),
+      diff: "",
+      truncated: false,
+      capBytes: GIT_CHANGES_DIFF_MAX_OUTPUT,
+      ...untracked,
+    };
+  }
+
+  const args = gitFileDiffArgs(category, normalizedPath);
+  const result = await runGitReadCommandDetailed(root, args);
+  return {
+    root,
+    path: normalizedPath,
+    category,
+    label,
+    command: formatGitCommand(args),
+    diff: result.output.trimEnd(),
+    truncated: result.truncated,
+    capBytes: result.capBytes,
+  };
 }
 
 async function gitUpstreamRef(root) {
@@ -13114,6 +13175,18 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url);
       try {
         sendJson(res, 200, { ok: true, data: await readGitChanges(tab.cwd) });
+      } catch (error) {
+        sendJson(res, 200, { ok: false, error: sanitizeError(error) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/git-file-diff" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      try {
+        const data = await readGitFileDiff(tab.cwd, url.searchParams.get("path") || "", url.searchParams.get("category") || "");
+        trackGitRepositoryForTab(tab, data.root);
+        sendJson(res, 200, { ok: true, data });
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
       }
