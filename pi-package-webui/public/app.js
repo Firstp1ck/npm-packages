@@ -8375,6 +8375,7 @@ function normalizeTabActivity(activity = {}) {
     ...activity,
     status,
     isWorking: status === "working",
+    runStarted: activity.runStarted === true,
     completionSerial: Number.isFinite(completionSerial) ? completionSerial : 0,
   };
 }
@@ -8406,7 +8407,7 @@ function decrementTabPendingBlockerCount(tabId) {
 }
 
 function tabActivityStateChanged(previous, next) {
-  return !previous || previous.status !== next.status || previous.isWorking !== next.isWorking || previous.completionSerial !== next.completionSerial;
+  return !previous || previous.status !== next.status || previous.isWorking !== next.isWorking || previous.runStarted !== next.runStarted || previous.completionSerial !== next.completionSerial;
 }
 
 function setTabActivity(tabId, activity = {}) {
@@ -8550,12 +8551,20 @@ function syncTabPolling() {
   }
 }
 
-function markTabWorkingLocally(tabId = activeTabId) {
+function markTabWorkingLocally(tabId = activeTabId, { runStarted = false } = {}) {
   const tab = tabs.find((item) => item.id === tabId);
   if (!tab) return false;
+  suppressPendingAgentDoneNotificationsForTab(tabId);
   const previous = activityForTab(tab);
   const timestamp = new Date().toISOString();
-  const next = normalizeTabActivity({ ...previous, status: "working", isWorking: true, lastStartedAt: timestamp, lastChangedAt: timestamp });
+  const next = normalizeTabActivity({
+    ...previous,
+    status: "working",
+    isWorking: true,
+    runStarted: previous.runStarted === true || runStarted === true,
+    lastStartedAt: timestamp,
+    lastChangedAt: timestamp,
+  });
   tabActivities.set(tabId, next);
   if (tabActivityStateChanged(previous, next)) scheduleTabsRender();
   return true;
@@ -8565,7 +8574,7 @@ function markTabIdleLocally(tabId = activeTabId) {
   const tab = tabs.find((item) => item.id === tabId);
   if (!tab) return false;
   const previous = activityForTab(tab);
-  const next = normalizeTabActivity({ ...previous, status: "idle", isWorking: false });
+  const next = normalizeTabActivity({ ...previous, status: "idle", isWorking: false, runStarted: false });
   tabActivities.set(tabId, next);
   if (tabActivityStateChanged(previous, next)) scheduleTabsRender();
   return true;
@@ -8576,10 +8585,12 @@ function markTabDoneLocally(tabId = activeTabId) {
   const tab = tabs.find((item) => item.id === tabId);
   if (!tab) return false;
   const previous = activityForTab(tab);
+  if (!previous.runStarted) return markTabIdleLocally(tabId);
   const next = normalizeTabActivity({
     ...previous,
     status: "done",
     isWorking: false,
+    runStarted: false,
     completionSerial: (Number(previous.completionSerial) || 0) + 1,
     lastCompletedAt: new Date().toISOString(),
   });
@@ -8606,7 +8617,9 @@ function syncActiveTabActivityFromState(state = currentState) {
     return false;
   }
   if (stateHasVisibleWork(state)) {
-    if (!activity.isWorking) return markTabWorkingLocally(tab.id);
+    if (!activity.isWorking || (state.isStreaming && !activity.runStarted)) {
+      return markTabWorkingLocally(tab.id, { runStarted: state.isStreaming === true });
+    }
     return false;
   }
   if (activity.isWorking && !tabActivityRecentlyStarted(activity)) return markTabDoneLocally(tab.id);
@@ -10592,7 +10605,8 @@ function queueAgentDoneBrowserNotification({ key, tabId, title, body }) {
   clearPendingAgentDoneNotification(key);
   const timer = setTimeout(() => {
     pendingAgentDoneNotificationTimers.delete(key);
-    if (isAutoRetryingTab(tabId)) return;
+    const tab = tabs.find((item) => item.id === tabId);
+    if (isAutoRetryingTab(tabId) || promptRoutingTabs.has(tabId) || activityForTab(tab).isWorking) return;
     showAgentDoneBrowserNotification({ tabId, title, body });
   }, AGENT_DONE_NOTIFICATION_RETRY_GRACE_MS);
   pendingAgentDoneNotificationTimers.set(key, { tabId, timer });
@@ -32385,7 +32399,7 @@ function handleInactiveTabEvent(event) {
     setWidgetForTab(event.tabId, AUR_REVIEW_RPC_WIDGET_KEY, event);
     updateOptionalFeatureAvailability();
     renderTabs();
-  } else if (event.type === "agent_end") {
+  } else if (event.type === "agent_settled") {
     notifyAgentDone(event.tabId, { activity: event.tabActivity, tabTitle: event.tabTitle });
   }
 }
@@ -32567,6 +32581,7 @@ function handleEvent(event) {
       break;
     case "agent_start":
       assistantErrorSurfacedThisRun = false;
+      markTabWorkingLocally(event.tabId || activeTabId, { runStarted: true });
       if (currentState) currentState = { ...currentState, isStreaming: true };
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ streaming: true });
       setRunIndicatorActivity("Agent run started; waiting for first output or action…");
@@ -32585,34 +32600,11 @@ function handleEvent(event) {
           assistantErrorSurfacedThisRun = true;
         }
       }
-      addEvent("agent finished");
-      notifyAgentDone(event.tabId || activeTabId, { activity: event.tabActivity, tabTitle: event.tabTitle });
-      clearContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
-      if (currentState) currentState = { ...currentState, isStreaming: false };
-      // handleAssistantTurnEnd resets the controller's streaming/tool flags and
-      // flushes queued interruptions itself; calling setAssistantActivity here
-      // first would flush the queue and then speak the interrupted answer.
-      if (voiceConversationActiveFor(event.tabId || activeTabId)) void handleVoiceConversationTurnEnd(tabContext);
-      clearRunIndicatorActivity();
-      markTabOutputSeen();
-      requestGitFooterWebuiPayload(tabContext, { force: true });
-      scheduleRefreshState();
+      addEvent("agent run ended; waiting for settlement");
+      if (runIndicatorIsActive()) setRunIndicatorActivity("Agent run ended; checking for retry or continuation…", { scroll: false });
       scheduleRefreshMessages();
+      scheduleRefreshState();
       scheduleRefreshFooter();
-      scheduleRefreshCodexUsage(2200);
-      scheduleRefreshClaudeUsage(2200);
-      renderFeedbackTray();
-      {
-        const workflowTabId = event.tabId || activeTabId;
-        const workflow = gitWorkflowForTab(workflowTabId, { create: false });
-        if (workflow?.active && workflow.step === "generating") {
-          loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
-        } else if (workflow?.active && workflow.step === "branchNaming") {
-          loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
-        } else if (workflow?.active && workflow.step === "prGenerating") {
-          loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
-        }
-      }
       break;
     case "message_start":
       if (event.message?.role === "assistant") {
@@ -32698,6 +32690,35 @@ function handleEvent(event) {
       break;
     case "agent_settled":
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
+      streamMessageActive = false;
+      addEvent("agent finished");
+      notifyAgentDone(event.tabId || activeTabId, { activity: event.tabActivity, tabTitle: event.tabTitle });
+      clearContextUsageUnknownAfterCompaction(event.tabId || activeTabId);
+      if (currentState) currentState = { ...currentState, isStreaming: false };
+      // handleAssistantTurnEnd resets the controller's streaming/tool flags and
+      // flushes queued interruptions itself; calling setAssistantActivity here
+      // first would flush the queue and then speak the interrupted answer.
+      if (voiceConversationActiveFor(event.tabId || activeTabId)) void handleVoiceConversationTurnEnd(tabContext);
+      clearRunIndicatorActivity();
+      markTabOutputSeen();
+      requestGitFooterWebuiPayload(tabContext, { force: true });
+      scheduleRefreshState();
+      scheduleRefreshMessages();
+      scheduleRefreshFooter();
+      scheduleRefreshCodexUsage(2200);
+      scheduleRefreshClaudeUsage(2200);
+      renderFeedbackTray();
+      {
+        const workflowTabId = event.tabId || activeTabId;
+        const workflow = gitWorkflowForTab(workflowTabId, { create: false });
+        if (workflow?.active && workflow.step === "generating") {
+          loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
+        } else if (workflow?.active && workflow.step === "branchNaming") {
+          loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+        } else if (workflow?.active && workflow.step === "prGenerating") {
+          loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+        }
+      }
       break;
     case "auto_retry_start": {
       const seconds = Math.max(0, Math.ceil(Number(event.delayMs || 0) / 1000));

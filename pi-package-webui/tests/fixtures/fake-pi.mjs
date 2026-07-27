@@ -11,7 +11,7 @@
 //   ({direction:"event", type}), so browser-driver tests can assert ordering.
 // - FAKE_PI_VOICE_SCRIPTS=1: prompts containing "voice test say|question|tool|slow"
 //   respond success and then asynchronously emit a scripted agent event flow
-//   (agent_start/message_*/tool_execution_*/agent_end) over stdout; the scripted
+//   (agent_start/message_*/tool_execution_*/agent_end/agent_settled) over stdout; the scripted
 //   assistant turns are appended to a dynamic transcript returned by
 //   get_messages AFTER the three baseline messages, and get_state reports
 //   isStreaming=true while a scripted flow runs.
@@ -156,7 +156,7 @@ function cancelScriptedSteps() {
 }
 
 // Emits a full scripted assistant turn: agent_start, optional tool phase,
-// streamed assistant text, message_end, agent_end. The final assistant text is
+// streamed assistant text, message_end, agent_end, agent_settled. The final assistant text is
 // appended to the dynamic transcript so get_messages returns it afterwards.
 function runVoiceScriptFlow({ text, chunks, chunkSpacingMs = 60, toolPhase = false, toolDurationMs = 1500 }) {
   scriptedStreaming = true;
@@ -178,11 +178,12 @@ function runVoiceScriptFlow({ text, chunks, chunkSpacingMs = 60, toolPhase = fal
       emitScriptedEvent({ type: "message_end", message });
     },
   });
+  steps.push({ afterMs: 60, run: () => emitScriptedEvent({ type: "agent_end" }) });
   steps.push({
-    afterMs: 60,
+    afterMs: 10,
     run: () => {
       scriptedStreaming = false;
-      emitScriptedEvent({ type: "agent_end" });
+      emitScriptedEvent({ type: "agent_settled" });
     },
   });
   runScriptedSteps(steps);
@@ -204,9 +205,10 @@ function runContinuityDelayedStream() {
       appendDynamicMessage(message);
       emitScriptedEvent(tagged({ type: "message_end", continuityStep: "message-end", message }));
     } },
-    { afterMs: 80, run: () => {
+    { afterMs: 80, run: () => emitScriptedEvent(tagged({ type: "agent_end", continuityStep: "end" })) },
+    { afterMs: 10, run: () => {
       scriptedStreaming = false;
-      emitScriptedEvent(tagged({ type: "agent_end", continuityStep: "end" }));
+      emitScriptedEvent(tagged({ type: "agent_settled", continuityStep: "settled" }));
     } },
   ];
   runScriptedSteps(steps);
@@ -390,6 +392,7 @@ function runFastModeFixtureFlow({ barrierOnly = false } = {}) {
   const finish = () => {
     emitEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalText }] } });
     emitEvent({ type: "agent_end" });
+    emitEvent({ type: "agent_settled" });
   };
   emitEvent({ type: "agent_start" });
   emitEvent({ type: "message_start", message: { role: "assistant" } });
@@ -420,6 +423,7 @@ function runFastModeHistoryFlow() {
   }
   emitEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: accumulated }] } });
   emitEvent({ type: "agent_end" });
+  emitEvent({ type: "agent_settled" });
 }
 
 function handleFastModeFixturePrompt(command, base) {

@@ -8540,6 +8540,7 @@ function createTabActivity(now = new Date().toISOString()) {
   return {
     status: "idle",
     isWorking: false,
+    runStarted: false,
     completionSerial: 0,
     lastChangedAt: now,
     lastStartedAt: null,
@@ -9145,10 +9146,11 @@ async function cancelPendingExtensionUiRequests(tab) {
   return ids.length;
 }
 
-function markTabWorking(tab, timestamp = new Date().toISOString()) {
+function markTabWorking(tab, timestamp = new Date().toISOString(), { runStarted = false } = {}) {
   const activity = tab.activity || createTabActivity(timestamp);
   activity.status = "working";
   activity.isWorking = true;
+  activity.runStarted = activity.runStarted === true || runStarted === true;
   activity.lastStartedAt = timestamp;
   activity.lastChangedAt = timestamp;
   tab.activity = activity;
@@ -9158,6 +9160,7 @@ function markTabDone(tab, timestamp = new Date().toISOString()) {
   const activity = tab.activity || createTabActivity(timestamp);
   activity.status = "done";
   activity.isWorking = false;
+  activity.runStarted = false;
   activity.completionSerial = (Number(activity.completionSerial) || 0) + 1;
   activity.lastCompletedAt = timestamp;
   activity.lastChangedAt = timestamp;
@@ -9168,6 +9171,7 @@ function markTabIdle(tab, timestamp = new Date().toISOString()) {
   const activity = tab.activity || createTabActivity(timestamp);
   activity.status = "idle";
   activity.isWorking = false;
+  activity.runStarted = false;
   activity.lastChangedAt = timestamp;
   tab.activity = activity;
 }
@@ -9197,11 +9201,14 @@ function reconcileTabActivityFromState(tab, state, timestamp = new Date().toISOS
     return tabActivitySnapshot(tab);
   }
   if (stateHasVisibleWork(state)) {
-    if (!tab.activity?.isWorking) markTabWorking(tab, timestamp);
+    if (!tab.activity?.isWorking || (state.isStreaming && !tab.activity?.runStarted)) {
+      markTabWorking(tab, timestamp, { runStarted: state.isStreaming === true });
+    }
     return tabActivitySnapshot(tab);
   }
   if (tab.activity?.isWorking && !activityRecentlyStarted(tab.activity)) {
-    markTabDone(tab, timestamp);
+    if (tab.activity.runStarted) markTabDone(tab, timestamp);
+    else markTabIdle(tab, timestamp);
   }
   return tabActivitySnapshot(tab);
 }
@@ -9233,27 +9240,30 @@ function updateTabActivityFromEvent(tab, event) {
   switch (event?.type) {
     case "agent_start":
       patchTabState(tab, { isStreaming: true });
-      markTabWorking(tab, timestamp);
+      markTabWorking(tab, timestamp, { runStarted: true });
       break;
     case "compaction_start":
       patchTabState(tab, { isCompacting: true });
       markTabWorking(tab, timestamp);
       break;
     case "agent_end":
+      // A low-level run ended, but Pi may still retry, compact, or process a follow-up.
+      break;
+    case "agent_settled":
       patchTabState(tab, { isStreaming: false });
-      markTabDone(tab, timestamp);
+      if (tab.activity?.runStarted) markTabDone(tab, timestamp);
+      else if (tab.activity?.isWorking) markTabIdle(tab, timestamp);
       break;
     case "compaction_end":
       patchTabState(tab, { isCompacting: false });
-      markTabDone(tab, timestamp);
+      if (!tab.lastState?.isStreaming && !tab.activity?.runStarted) markTabIdle(tab, timestamp);
       break;
     case "queue_update":
       patchTabState(tab, { pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) });
       break;
     case "pi_process_exit":
     case "pi_process_error":
-      if (tab.activity?.isWorking) markTabDone(tab, timestamp);
-      else markTabIdle(tab, timestamp);
+      markTabIdle(tab, timestamp);
       break;
     case "response":
       if (event.command === "get_state" && event.success !== false) {

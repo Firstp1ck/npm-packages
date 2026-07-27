@@ -1178,7 +1178,7 @@ assert.match(app, /async function startVoiceConversationLoop\(tabId = activeTabI
 assert.match(app, /function isLocalhostWebui\(\)[\s\S]*127\.0\.0\.1/, "remote-consent detection should treat localhost as implicitly consented");
 assert.match(app, /function latestAssistantSpokenText\(\)[\s\S]*assistantDisplayMessages\(message\)\.find\(\(item\) => item\?\.title === "final output"\)/, "spoken text must come from final output only, never thinking or tool payloads");
 assert.match(app, /function speakableTextFromMarkdown\(text\)[\s\S]*Code block omitted/, "spoken text should strip code blocks and markdown syntax");
-assert.match(app, /case "agent_end":[\s\S]*handleVoiceConversationTurnEnd\(tabContext\)/, "agent_end should hand the finished turn to the voice loop");
+assert.match(app, /case "agent_settled":[\s\S]*handleVoiceConversationTurnEnd\(tabContext\)/, "agent_settled should hand the fully finished turn to the voice loop");
 assert.match(app, /case "tool_execution_start":[\s\S]*setAssistantActivity\(\{ toolRunning: true \}\)/, "tool execution start should mark the voice loop tool phase");
 assert.match(app, /case "tool_execution_end":[\s\S]*setAssistantActivity\(\{ toolRunning: false \}\)/, "tool execution end should clear the voice loop tool phase");
 assert.match(html, /id="remoteMicStreamingConsentButton"[^>]*disabled>Allow remote microphone streaming</, "remote mic consent button should exist, start disabled, and use action-specific copy");
@@ -1418,14 +1418,15 @@ assert.match(app, /case "tool_execution_update":[\s\S]*?handleToolExecutionUpdat
 assert.match(app, /case "auto_retry_start":[\s\S]*?addTransientMessage\(\{ role: "warn", title: "auto retry"/, "auto-retry starts should be transcript-visible warnings");
 assert.match(app, /function trackAutoRetryStateFromEvent\(event\)[\s\S]*?event\.type === "auto_retry_start"[\s\S]*?autoRetryingTabs\.add\(tabId\)[\s\S]*?suppressPendingAgentDoneNotificationsForTab\(tabId\)[\s\S]*?markTabWorkingLocally\(tabId\)/, "auto-retry starts should suppress misleading done notifications and keep the tab working");
 assert.match(app, /function notifyAgentDone[\s\S]*?agentDoneNotificationKeys\.add\(key\);\n\s+if \(isAutoRetryingTab\(tabId\)\) return;/, "agent-done notifications should be ignored while a tab is auto-retrying");
-assert.match(app, /function queueAgentDoneBrowserNotification[\s\S]*?setTimeout\([\s\S]*?if \(isAutoRetryingTab\(tabId\)\) return;[\s\S]*?AGENT_DONE_NOTIFICATION_RETRY_GRACE_MS/, "agent-done notifications should wait briefly so imminent auto-retry events can cancel them");
+assert.match(app, /function queueAgentDoneBrowserNotification[\s\S]*?setTimeout\([\s\S]*?isAutoRetryingTab\(tabId\)[\s\S]*?promptRoutingTabs\.has\(tabId\)[\s\S]*?activityForTab\(tab\)\.isWorking[\s\S]*?AGENT_DONE_NOTIFICATION_RETRY_GRACE_MS/, "agent-done notifications should wait briefly and suppress stale alerts when retry or new work starts");
 assert.match(app, /case "extension_error":[\s\S]*?addTransientMessage\(\{ role: "error", title: "extension error"/, "extension errors should be transcript-visible error cards");
 assert.match(app, /setRunIndicatorActivity\("Requesting context compaction…"\);\n\s+scrollChatToBottom\(\{ force: true \}\);/, "manual compaction should force-follow the transcript to the bottom status card");
 assert.match(app, /function markContextUsageUnknownAfterCompaction\(/, "compaction should have a dedicated context-usage invalidation helper");
 assert.match(app, /case "compaction_end":[\s\S]*?markContextUsageUnknownAfterCompaction\(event\.tabId \|\| activeTabId\)/, "finished compaction should make footer context usage unknown instead of showing stale pressure");
 assert.match(app, /function footerStatsContextDisplay[\s\S]*?contextUsageUnknownAfterCompaction\(\)[\s\S]*?unknownFooterContextText/, "fallback footer context should show an unknown value after compaction invalidates usage");
-assert.match(app, /case "agent_end":[\s\S]*?clearRunIndicatorActivity\(\)/, "agent completion should remove the active agent transcript indicator");
-assert.match(app, /case "agent_end":[\s\S]*?notifyAgentDone\(event\.tabId \|\| activeTabId/, "agent completion should trigger optional done notifications");
+assert.match(app, /case "agent_settled":[\s\S]*?clearRunIndicatorActivity\(\)/, "agent settlement should remove the active agent transcript indicator");
+assert.match(app, /case "agent_settled":[\s\S]*?notifyAgentDone\(event\.tabId \|\| activeTabId/, "agent settlement should trigger optional done notifications");
+assert.doesNotMatch(app.match(/case "agent_end":[\s\S]*?case "message_start":/)?.[0] || "", /notifyAgentDone\(/, "an intermediate low-level agent end must not trigger a done notification");
 assert.match(app, /function getPathTrigger\(\)/, "prompt composer should detect @ file\/path reference triggers");
 assert.match(app, /api\(`\/api\/path-suggestions\?query=\$\{encodeURIComponent\(trigger\.query\)\}`/, "@ reference suggestions should load from the server as the user types");
 assert.match(app, /async function api\([\s\S]*?if \(signal\?\.aborted \|\| error\?\.name === "AbortError"\) throw error;[\s\S]*?setBackendOffline\(true, offlineError\)/, "cancelled @ autocomplete requests should not mark the server offline");

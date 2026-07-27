@@ -32,12 +32,14 @@ vm.runInContext(`
   const promptRoutingTabs = new Set();
   let tabSeenCompletionSerials = new Map();
   function scheduleTabsRender() {}
+  function suppressPendingAgentDoneNotificationsForTab() {}
 
   ${functionSource("normalizeTabActivity")}
   ${functionSource("tabActivityStateChanged")}
   ${functionSource("setTabActivity")}
   ${functionSource("activityForTab")}
   ${functionSource("markTabWorkingLocally")}
+  ${functionSource("markTabIdleLocally")}
   ${functionSource("markTabDoneLocally")}
 
   globalThis.activityApi = {
@@ -86,6 +88,9 @@ assert.equal(api.markDone(), false, "idle state reconciliation must not synthesi
 assert.equal(api.current().completionSerial, 2, "routing must not create a false completion serial");
 
 api.finishRouting();
+assert.equal(api.markDone(), true, "idle reconciliation should leave a submitted-but-never-started prompt idle");
+assert.equal(api.current().status, "idle");
+assert.equal(api.current().completionSerial, 2, "a prompt that never emitted agent_start must not synthesize completion");
 assert.equal(api.ingest(staleDone).status, "done", "authoritative completion remains accepted after routing finishes");
 
 const sendSource = functionSource("sendPrompt");

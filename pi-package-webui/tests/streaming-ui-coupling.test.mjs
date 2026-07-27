@@ -178,7 +178,7 @@ futureInvariant("theory #6: output-seen tab refresh should remain out of the mes
 futureInvariant("theory #6: event-end output-seen refresh should not synchronously rebuild all tabs", () => {
   assert.doesNotMatch(markTabOutputSeen, /renderTabs\(\)/, "output-seen serial changes should schedule/coalesce tab chrome updates");
 });
-assert.match(findCaseBody(handleEvent, "agent_end"), /markTabOutputSeen\(\)/, "theory #6: output-seen marking should still happen when a run ends");
+assert.match(findCaseBody(handleEvent, "agent_settled"), /markTabOutputSeen\(\)/, "theory #6: output-seen marking should happen only when a logical run settles");
 assert.match(findCaseBody(handleEvent, "compaction_end"), /markTabOutputSeen\(\)/, "theory #6: output-seen marking should still happen when compaction ends");
 
 futureInvariant("theory #7: skill tracking must not inspect every message_update event", () => {
@@ -192,7 +192,8 @@ assert.match(trackAutoRetryStateFromEvent, /event\.type === "auto_retry_start"/,
 // Theory #8 is a correctness guard: the current design still uses a steer prompt,
 // but it must never run while the agent is active.
 assert.match(requestGitFooterWebuiPayload, /currentState\?\.isStreaming \|\| currentState\?\.isCompacting/, "theory #8: git-footer steer refresh must remain guarded during active streaming/compaction");
-assert.match(findCaseBody(handleEvent, "agent_end"), /currentState\) currentState = \{ \.\.\.currentState, isStreaming: false \};[\s\S]*?requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "theory #8: forced git-footer refresh should only happen after agent_end clears streaming state");
+assert.match(findCaseBody(handleEvent, "agent_settled"), /currentState\) currentState = \{ \.\.\.currentState, isStreaming: false \};[\s\S]*?requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "theory #8: forced git-footer refresh should only happen after agent settlement clears streaming state");
+assert.doesNotMatch(findCaseBody(handleEvent, "agent_end"), /isStreaming: false|requestGitFooterWebuiPayload/, "theory #8: low-level agent_end must not expose an idle window before retry or continuation");
 
 if (futureFailures.length) {
   assert.fail(`streaming/UI coupling invariants still failing (${futureFailures.length}):\n\n${futureFailures.map((failure, index) => `${index + 1}. ${failure}`).join("\n\n")}`);
