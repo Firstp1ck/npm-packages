@@ -4425,6 +4425,7 @@ button.footer-meta {
   z-index: 0;
   pointer-events: none;
   background: var(--context-card-gradient);
+  opacity: 0.34;
   clip-path: inset(0 calc(100% - var(--context-usage)) 0 0);
 }
 .footer-context-card > * {
