@@ -172,9 +172,9 @@ assert.match(server, /nativeExportDownloadPayload\(\{[\s\S]*localRequest: isLoca
 assert.match(server, /openUrl: record\.contentType === MIME_TYPES\.get\("\.html"\)/, "HTML native downloads should expose a browser-open URL");
 assert.match(server, /url\.searchParams\.get\("disposition"\) === "inline"/, "native download endpoint should support inline HTML rendering");
 assert.match(server, /copyFile\(sessionFile, targetPath\)/, "explicit .jsonl /export should copy the active session file");
-assert.match(app, /function triggerNativeDownload\(download\)/, "frontend should know how to trigger native command downloads");
+assert.match(app, /function triggerNativeDownload\(download\)[\s\S]*try \{[\s\S]*anchor\.click\(\)[\s\S]*finally \{[\s\S]*anchor\.remove\(\)/, "frontend should clean up download anchors even when browser opening throws");
 assert.match(app, /function applyNativeSlashCommandEffects\(response, message, tabContext/, "frontend should apply centralized native slash-command adapter effects");
-assert.match(app, /data\.download && handleNativeDownloadResponse\(data\.download, data\.command, data\.serverPath\)/, "frontend should route native downloads and their saved path through command-specific handling");
+assert.match(app, /if \(data\.download\) \{[\s\S]*handleNativeDownloadResponse\(data\.download, data\.command, data\.serverPath\)[\s\S]*could not open \$\{data\.command === "export" \? "HTML export" : "download"\}/, "frontend should catch and surface native HTML/download open failures");
 assert.match(app, /function openNativeExportDownloadPrompt\(download, serverPath = ""\)[\s\S]*Saved to:\\n[\s\S]*Copy path[\s\S]*copyText\(savedPath\)[\s\S]*Open in browser/, "frontend should show and copy the saved /export HTML path before offering browser open");
 assert.match(app, /function alternateLoopbackBrowserUrl\(value\)[\s\S]*hostname === "localhost"[\s\S]*127\.0\.0\.1/, "PWA export opens should escape same-origin app scope via alternate loopback host");
 assert.match(app, /for \(const warning of response\.warnings/, "frontend should surface remote bash trust warnings");

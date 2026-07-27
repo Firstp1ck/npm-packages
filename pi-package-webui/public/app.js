@@ -3901,9 +3901,12 @@ function triggerNativeDownload(download) {
   anchor.rel = "noopener";
   anchor.hidden = true;
   document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  return true;
+  try {
+    anchor.click();
+    return true;
+  } finally {
+    anchor.remove();
+  }
 }
 
 function isStandalonePwaWindow() {
@@ -3951,9 +3954,12 @@ function openNativeDownloadInBrowser(download) {
   anchor.rel = "noopener";
   anchor.hidden = true;
   document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  return true;
+  try {
+    anchor.click();
+    return true;
+  } finally {
+    anchor.remove();
+  }
 }
 
 function openNativeExportDownloadPrompt(download, serverPath = "") {
@@ -26349,8 +26355,19 @@ function applyNativeSlashCommandEffects(response, message, tabContext = activeTa
     });
   }
 
-  if (data.download && handleNativeDownloadResponse(data.download, data.command, data.serverPath)) {
-    addEvent(data.command === "export" ? `export ready: ${data.download.fileName || data.download.url}` : `download started: ${data.download.fileName || data.download.url}`, "info");
+  if (data.download) {
+    const downloadLabel = data.download.fileName || data.download.url || "unnamed download";
+    try {
+      const opened = handleNativeDownloadResponse(data.download, data.command, data.serverPath);
+      if (opened) {
+        addEvent(data.command === "export" ? `export ready: ${downloadLabel}` : `download started: ${downloadLabel}`, "info");
+      } else {
+        addEvent(`could not open ${data.command === "export" ? "HTML export" : "download"}: missing or invalid browser URL (${downloadLabel})`, "error");
+      }
+    } catch (error) {
+      const reason = error?.message || String(error);
+      addEvent(`could not open ${data.command === "export" ? "HTML export" : "download"} ${downloadLabel}: ${reason}`, "error");
+    }
   }
 
   const cards = Array.isArray(data.cards) && data.cards.length ? data.cards : null;
