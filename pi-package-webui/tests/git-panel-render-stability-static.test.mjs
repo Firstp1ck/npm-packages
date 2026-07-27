@@ -15,6 +15,8 @@ function functionBody(name) {
 
 const renderGitPanel = functionBody("renderGitPanel");
 const renderGitPanelFolder = functionBody("renderGitPanelFolder");
+const renderGitPanelRepositoryCard = functionBody("renderGitPanelRepositoryCard");
+const updateGitPanelRepositoryMeta = functionBody("updateGitPanelRepositoryMeta");
 const renderContextMeter = functionBody("renderContextMeter");
 const renderWorkspaceDashboard = functionBody("renderWorkspaceDashboard");
 
@@ -29,8 +31,16 @@ assert.doesNotMatch(renderGitPanel, /\bsectionExpanded\b/, "Git panel signature 
 const gitGuard = renderGitPanel.indexOf("signature === gitPanelRenderSignature");
 const gitRebuild = renderGitPanel.indexOf("elements.gitPanelGroups.replaceChildren");
 assert.ok(gitGuard > 0 && gitGuard < gitRebuild, "Git panel signature guard should precede its DOM rebuild");
-assert.match(renderGitPanel, /snapshot\?\.loadedAt/, "Git panel signature should include repository snapshot versions");
+assert.doesNotMatch(renderGitPanel, /snapshot\?\.loadedAt|data\?\.generatedAt/, "Git panel signature should ignore refresh timestamps");
+assert.match(renderGitPanel, /!data && !!snapshot\?\.loading/, "initial repository loads should still update their loading state");
+assert.match(renderGitPanel, /gitPanelDataRenderSignature\(data\)/, "Git panel signature should still track rendered repository data");
 assert.match(renderGitPanel, /gitPanelState\.activeViews\.get/, "Git panel signature should include active repository views");
+assert.match(renderGitPanelRepositoryCard, /section\.dataset\.gitRoot = card\.root;/, "repository cards should expose a stable root for targeted metadata updates");
+assert.match(updateGitPanelRepositoryMeta, /\.git-side-panel-repository-updated/, "refresh state should target only the update-time label");
+assert.match(updateGitPanelRepositoryMeta, /snapshot\.loading \? "Refreshing…" : `Updated /, "the targeted label should reflect refresh progress and completion time");
+
+const gitMetaUpdate = renderGitPanel.indexOf("updateGitPanelRepositoryMeta(cards)");
+assert.ok(gitMetaUpdate > gitGuard && gitMetaUpdate < gitRebuild, "unchanged Git content should update metadata before returning without a DOM rebuild");
 
 const contextGuard = renderContextMeter.indexOf("signature === contextMeterSignature");
 const contextRebuild = renderContextMeter.lastIndexOf("root.replaceChildren");

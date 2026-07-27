@@ -9162,6 +9162,26 @@ function gitPanelHistoryDate(value) {
   return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString();
 }
 
+function gitPanelDataRenderSignature(data) {
+  if (!data) return null;
+  return {
+    branch: data.branch || "",
+    changes: Array.isArray(data.changes) ? data.changes : [],
+    history: Array.isArray(data.history) ? data.history : [],
+  };
+}
+
+function updateGitPanelRepositoryMeta(cards = gitPanelRepositoryCards()) {
+  const sections = [...elements.gitPanelGroups?.querySelectorAll(".git-side-panel-repository[data-git-root]") || []];
+  for (const card of cards) {
+    const snapshot = gitPanelSnapshot(card.root);
+    if (!snapshot?.data) continue;
+    const section = sections.find((candidate) => candidate.dataset.gitRoot === card.root);
+    const status = section?.querySelector(".git-side-panel-repository-updated");
+    if (status) status.textContent = snapshot.loading ? "Refreshing…" : `Updated ${gitPanelHistoryDate(snapshot.data.generatedAt)}`;
+  }
+}
+
 function renderGitPanelHistory(card, data) {
   const wrapper = make("div", "git-side-panel-history");
   const history = Array.isArray(data?.history) ? data.history : [];
@@ -9233,7 +9253,7 @@ function renderGitPanelRepositoryContent(card, snapshot) {
   const meta = make("div", "git-side-panel-repository-meta");
   meta.append(
     make("strong", undefined, data.branch || "detached"),
-    make("span", undefined, snapshot.loading ? "Refreshing…" : `Updated ${gitPanelHistoryDate(data.generatedAt)}`),
+    make("span", "git-side-panel-repository-updated", snapshot.loading ? "Refreshing…" : `Updated ${gitPanelHistoryDate(data.generatedAt)}`),
   );
   const changesPanel = renderGitPanelChanges(card, data);
   changesPanel.id = "git-side-panel-changes-panel";
@@ -9263,6 +9283,7 @@ function renderGitPanelRepositoryCard(card) {
   const snapshot = gitPanelSnapshot(card.root);
   const expanded = gitPanelState.expandedCardKey === card.key;
   const section = make("section", `git-side-panel-repository${expanded ? " expanded" : ""}`);
+  section.dataset.gitRoot = card.root;
   const button = make("button", "git-side-panel-repository-toggle");
   button.type = "button";
   button.setAttribute("aria-expanded", expanded ? "true" : "false");
@@ -9309,12 +9330,13 @@ function renderGitPanel() {
     cards: cards.map((card) => {
       const snapshot = gitPanelSnapshot(card.root);
       const data = snapshot?.data;
-      return [card.key, card.root, card.cwd, card.tabId, snapshot?.loadedAt || 0, !!snapshot?.loading, snapshot?.error || "", gitPanelChangeCount(data), data?.history?.length || 0, data?.branch || "", data?.generatedAt || "", gitPanelState.activeViews.get(card.root) || "changes"];
+      return [card.key, card.root, card.cwd, card.tabId, snapshot?.error || "", !data && !!snapshot?.loading, gitPanelDataRenderSignature(data), gitPanelState.activeViews.get(card.root) || "changes"];
     }),
     repositoryCount,
     discovering,
   });
   if (signature === gitPanelRenderSignature && elements.gitPanelGroups.childElementCount === cards.length) {
+    updateGitPanelRepositoryMeta(cards);
     ensureGitPanelRepositoriesDiscovered();
     ensureGitPanelVisibleRepositoriesFresh(cards);
     return;
