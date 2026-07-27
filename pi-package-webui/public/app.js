@@ -5,6 +5,7 @@ import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiv
 import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
 import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
 import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
+import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState, submitIssueToGithubBot } from "./issue-wizard-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -244,6 +245,17 @@ const elements = {
   sidePanelExpandButton: $("#sidePanelExpandButton"),
   sidePanelBackdrop: $("#sidePanelBackdrop"),
   sidePanel: $("#sidePanel"),
+  openIssueButton: $("#openIssueButton"),
+  issueWizardDialog: $("#issueWizardDialog"),
+  issueWizardPages: $("#issueWizardPages"),
+  issueWizardProgress: $("#issueWizardProgress"),
+  issueWizardStatus: $("#issueWizardStatus"),
+  issueWizardCloseButton: $("#issueWizardCloseButton"),
+  issueWizardBackButton: $("#issueWizardBackButton"),
+  issueWizardContinueButton: $("#issueWizardContinueButton"),
+  issueWizardCopyButton: $("#issueWizardCopyButton"),
+  issueWizardBotButton: $("#issueWizardBotButton"),
+  issueWizardBotHint: $("#issueWizardBotHint"),
   stateDetails: $("#stateDetails"),
   subagentsStatus: $("#subagentsStatus"),
   subagentsBox: $("#subagentsBox"),
@@ -1067,6 +1079,253 @@ const OPTIONAL_FEATURES = [
   },
 ];
 const OPTIONAL_FEATURE_BY_ID = new Map(OPTIONAL_FEATURES.map((feature) => [feature.id, feature]));
+
+let issueWizardCatalog = null;
+let issueWizardState = createIssueWizardState();
+
+function setIssueWizardStatus(message) {
+  if (elements.issueWizardStatus) elements.issueWizardStatus.textContent = message;
+}
+
+function issueWizardPage(step) {
+  return elements.issueWizardPages?.querySelector(`[data-issue-wizard-page="${step}"]`) || null;
+}
+
+function issueWizardChoiceButton({ label, description = "", preview = "", selected, action, value, group }) {
+  const button = make("button", "issue-wizard-choice");
+  button.type = "button";
+  button.dataset.issueWizardAction = action;
+  button.dataset.issueWizardValue = value;
+  button.dataset.issueWizardGroup = group;
+  button.setAttribute("aria-pressed", selected ? "true" : "false");
+  button.classList.toggle("selected", selected);
+  button.append(make("strong", undefined, label));
+  if (description) button.append(make("span", "issue-wizard-choice-description", description));
+  if (preview) button.append(make("span", "issue-wizard-choice-preview", preview));
+  return button;
+}
+
+function focusIssueWizardChoice(action, value) {
+  queueMicrotask(() => {
+    const buttons = issueWizardPage(issueWizardState.step)?.querySelectorAll(`[data-issue-wizard-action="${action}"]`) || [];
+    const target = Array.from(buttons).find((button) => button.dataset.issueWizardValue === value);
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function focusIssueWizardPage() {
+  queueMicrotask(() => {
+    const page = issueWizardPage(issueWizardState.step);
+    const target = page?.querySelector('[aria-pressed="true"], button, select, textarea');
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function renderIssueWizardChoices(page, items, { selectedId, action, group, emptyMessage }) {
+  const choices = make("div", "issue-wizard-choice-grid");
+  choices.setAttribute("role", "group");
+  choices.setAttribute("aria-label", group);
+  if (!items.length) {
+    choices.append(make("p", "issue-wizard-empty muted", emptyMessage));
+  } else {
+    for (const item of items) {
+      const preview = action === "select-template" && item.fields?.length
+        ? `Includes: ${item.fields.map((field) => field.label).join(" · ")}`
+        : "";
+      const button = issueWizardChoiceButton({ label: item.label, description: item.description, preview, selected: item.id === selectedId, action, value: item.id, group });
+      button.addEventListener("click", () => {
+        issueWizardState = reduceIssueWizardState(issueWizardState, { type: action, [`${action.split("-")[1]}Id`]: item.id }, issueWizardCatalog);
+        renderIssueWizard();
+        focusIssueWizardChoice(action, item.id);
+      });
+      choices.append(button);
+    }
+  }
+  page.append(choices);
+}
+
+function renderIssueWizardDetails(page) {
+  const template = issueWizardCatalog.templates.find((item) => item.id === issueWizardState.templateId);
+  if (!template) {
+    page.append(make("p", "issue-wizard-empty muted", "Choose a compatible template before adding details."));
+    return;
+  }
+  const summary = make("textarea", "issue-wizard-textarea");
+  summary.id = "issueWizardSummary";
+  summary.rows = 2;
+  summary.maxLength = 160;
+  summary.value = issueWizardState.summary;
+  summary.placeholder = "Short summary";
+  summary.setAttribute("aria-describedby", "issueWizardSummaryHint");
+  summary.addEventListener("input", () => {
+    issueWizardState = reduceIssueWizardState(issueWizardState, { type: "set-summary", summary: summary.value }, issueWizardCatalog);
+    renderIssueWizardNavigation();
+  });
+  const summaryLabel = make("label", "issue-wizard-field");
+  summaryLabel.htmlFor = summary.id;
+  summaryLabel.append(make("span", "issue-wizard-field-label", "Short summary"), summary, make("small", "muted", "Required. This completes the GitHub issue title."));
+  summaryLabel.lastElementChild.id = "issueWizardSummaryHint";
+  page.append(summaryLabel);
+
+  for (const field of template.fields) {
+    const fieldWrap = make("div", "issue-wizard-field");
+    const label = make("span", "issue-wizard-field-label", field.label);
+    label.id = `issueWizardFieldLabel-${field.id}`;
+    fieldWrap.append(label);
+    if (field.kind === "textarea") {
+      const input = make("textarea", "issue-wizard-textarea");
+      input.rows = 4;
+      input.value = issueWizardState.fields[field.id] || "";
+      input.setAttribute("aria-labelledby", label.id);
+      input.addEventListener("input", () => {
+        issueWizardState = reduceIssueWizardState(issueWizardState, { type: "set-field", fieldId: field.id, value: input.value }, issueWizardCatalog);
+        renderIssueWizardNavigation();
+      });
+      fieldWrap.append(input);
+    } else if (field.kind === "select") {
+      const select = make("select", "issue-wizard-select");
+      select.setAttribute("aria-labelledby", label.id);
+      const placeholder = make("option", undefined, "Choose one…");
+      placeholder.value = "";
+      select.append(placeholder);
+      for (const option of field.options || []) {
+        const item = make("option", undefined, option.label);
+        item.value = option.id;
+        item.selected = issueWizardState.fields[field.id] === option.id;
+        select.append(item);
+      }
+      select.addEventListener("change", () => {
+        issueWizardState = reduceIssueWizardState(issueWizardState, { type: "set-field", fieldId: field.id, value: select.value }, issueWizardCatalog);
+        renderIssueWizardNavigation();
+      });
+      fieldWrap.append(select);
+    } else {
+      const choices = make("div", "issue-wizard-inline-choices");
+      choices.setAttribute("role", "group");
+      choices.setAttribute("aria-labelledby", label.id);
+      for (const option of field.options || []) {
+        const button = issueWizardChoiceButton({ label: option.label, selected: issueWizardState.fields[field.id] === option.id, action: "set-field", value: option.id, group: field.label });
+        button.addEventListener("click", () => {
+          issueWizardState = reduceIssueWizardState(issueWizardState, { type: "set-field", fieldId: field.id, value: option.id }, issueWizardCatalog);
+          renderIssueWizard();
+          focusIssueWizardChoice("set-field", option.id);
+        });
+        choices.append(button);
+      }
+      fieldWrap.append(choices);
+    }
+    page.append(fieldWrap);
+  }
+}
+
+function renderIssueWizardReview(page) {
+  let payload;
+  try {
+    payload = buildIssuePayload(issueWizardState, issueWizardCatalog);
+  } catch {
+    page.append(make("p", "issue-wizard-empty muted", "Complete the required details to preview the issue."));
+    return;
+  }
+  const title = make("textarea", "issue-wizard-preview-title");
+  title.readOnly = true;
+  title.rows = 2;
+  title.value = payload.title;
+  title.setAttribute("aria-label", "GitHub issue title preview");
+  const body = make("textarea", "issue-wizard-preview-body");
+  body.readOnly = true;
+  body.rows = 12;
+  body.value = payload.body;
+  body.setAttribute("aria-label", "GitHub issue Markdown body preview");
+  const titleWrap = make("label", "issue-wizard-preview");
+  titleWrap.append(make("span", "issue-wizard-field-label", "GitHub issue title"), title);
+  const bodyWrap = make("label", "issue-wizard-preview");
+  bodyWrap.append(make("span", "issue-wizard-field-label", "GitHub issue Markdown body"), body);
+  page.append(titleWrap, bodyWrap);
+}
+
+function renderIssueWizardNavigation() {
+  const step = issueWizardState.step;
+  if (elements.issueWizardProgress) elements.issueWizardProgress.textContent = `Step ${step} of 5`;
+  if (elements.issueWizardBackButton) elements.issueWizardBackButton.disabled = step === 1;
+  if (elements.issueWizardContinueButton) {
+    elements.issueWizardContinueButton.hidden = step === 5;
+    elements.issueWizardContinueButton.disabled = !isIssueWizardStepValid(issueWizardState, issueWizardCatalog, step);
+    elements.issueWizardContinueButton.textContent = step === 4 ? "Review issue" : "Continue";
+  }
+  if (elements.issueWizardCopyButton) elements.issueWizardCopyButton.hidden = step !== 5;
+  if (elements.issueWizardBotButton) elements.issueWizardBotButton.hidden = step !== 5;
+  if (elements.issueWizardBotHint) elements.issueWizardBotHint.hidden = step !== 5;
+  setIssueWizardStatus(`Step ${step} of 5.`);
+}
+
+function renderIssueWizard() {
+  if (!issueWizardCatalog || !elements.issueWizardPages) return;
+  for (let step = 1; step <= 5; step += 1) {
+    const page = issueWizardPage(step);
+    if (!page) continue;
+    page.hidden = step !== issueWizardState.step;
+    page.replaceChildren();
+  }
+  const page = issueWizardPage(issueWizardState.step);
+  if (!page) return;
+  if (issueWizardState.step === 1) {
+    page.append(make("p", "issue-wizard-intro", "What kind of issue would you like to report?"));
+    renderIssueWizardChoices(page, issueWizardCatalog.categories, { selectedId: issueWizardState.categoryId, action: "select-category", group: "Issue category", emptyMessage: "No categories are available." });
+  } else if (issueWizardState.step === 2) {
+    page.append(make("p", "issue-wizard-intro", "Which part of Pi Web UI is affected?"));
+    renderIssueWizardChoices(page, issueWizardCatalog.components, { selectedId: issueWizardState.componentId, action: "select-component", group: "Affected component", emptyMessage: "No components are available." });
+  } else if (issueWizardState.step === 3) {
+    page.append(make("p", "issue-wizard-intro", "Choose the structured template that best matches this issue."));
+    renderIssueWizardChoices(page, getCompatibleTemplates(issueWizardCatalog, issueWizardState.categoryId, issueWizardState.componentId), { selectedId: issueWizardState.templateId, action: "select-template", group: "Issue template", emptyMessage: "Choose a category and component first." });
+  } else if (issueWizardState.step === 4) {
+    page.append(make("p", "issue-wizard-intro", "Add the details needed for a clear, actionable issue."));
+    renderIssueWizardDetails(page);
+  } else {
+    page.append(make("p", "issue-wizard-intro", "Review the exact GitHub title and Markdown body before copying."));
+    renderIssueWizardReview(page);
+  }
+  renderIssueWizardNavigation();
+}
+
+async function copyIssueWizardPayload() {
+  try {
+    const payload = buildIssuePayload(issueWizardState, issueWizardCatalog);
+    await copyText(issueClipboardText(payload));
+    setIssueWizardStatus("Complete issue copied. Paste it into a new GitHub issue.");
+  } catch {
+    setIssueWizardStatus("Could not copy the issue. Select the preview text and copy it manually.");
+  }
+}
+
+async function sendIssueToGithubBot() {
+  const payload = buildIssuePayload(issueWizardState, issueWizardCatalog);
+  const result = await submitIssueToGithubBot(payload);
+  setIssueWizardStatus(result.message);
+}
+
+function initializeIssueWizard() {
+  if (!elements.openIssueButton || !elements.issueWizardDialog) return;
+  issueWizardCatalog = createIssueWizardCatalog(OPTIONAL_FEATURES.map((feature) => feature.label));
+  elements.openIssueButton.addEventListener("click", () => {
+    issueWizardState = createIssueWizardState();
+    renderIssueWizard();
+    if (!elements.issueWizardDialog.open) elements.issueWizardDialog.showModal();
+    queueMicrotask(() => issueWizardPage(1)?.querySelector("button")?.focus({ preventScroll: true }));
+  });
+  elements.issueWizardCloseButton?.addEventListener("click", () => elements.issueWizardDialog.close());
+  elements.issueWizardBackButton?.addEventListener("click", () => {
+    issueWizardState = reduceIssueWizardState(issueWizardState, { type: "back" }, issueWizardCatalog);
+    renderIssueWizard();
+    focusIssueWizardPage();
+  });
+  elements.issueWizardContinueButton?.addEventListener("click", () => {
+    issueWizardState = reduceIssueWizardState(issueWizardState, { type: "next" }, issueWizardCatalog);
+    renderIssueWizard();
+    focusIssueWizardPage();
+  });
+  elements.issueWizardCopyButton?.addEventListener("click", () => copyIssueWizardPayload());
+  elements.issueWizardBotButton?.addEventListener("click", () => sendIssueToGithubBot());
+}
 const OPTIONAL_FEATURE_SECTIONS = [
   {
     id: "composer-commands",
@@ -8443,7 +8702,7 @@ function restoreActiveDraft() {
 
 function focusPromptInput({ defer = false } = {}) {
   const focus = () => {
-    if (activeSubagentTerminalId || !elements.promptInput || elements.dialog.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.statsOverlayDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
+    if (activeSubagentTerminalId || !elements.promptInput || elements.dialog.open || elements.issueWizardDialog?.open || elements.pathPickerDialog.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open || elements.nativeCommandDialog.open || elements.remoteQrDialog?.open || elements.appRunnerInfoDialog?.open || elements.gitFooterVisibilityDialog?.open || elements.statsOverlayDialog?.open || elements.promptListDialog?.open || elements.attachmentTextDialog?.open || elements.skillEditorDialog?.open || document.visibilityState === "hidden") return;
     try {
       elements.promptInput.focus({ preventScroll: true });
     } catch {
@@ -33907,6 +34166,7 @@ elements.promptInput.addEventListener("blur", () => {
 });
 
 installModalPrimitives();
+initializeIssueWizard();
 resizePromptInput();
 restoreSidePanelWidthPreference();
 restoreFileViewerWidthPreference();

@@ -152,7 +152,7 @@ assert.match(helper, /FAST_OUTPUT_FLUSH_INTERVAL_MS = 100/, "the live scheduler 
 assert.match(worker, /pi-webui-pwa-v\d+[\s\S]*?"\/fast-output-live\.mjs"/, "PWA cache identity and app shell should include the compact helper");
 assert.match(html, /<label for="fastOutputModeSelect">Fast mode \(Experimental\)<\/label>/, "the sidebar should mark fast mode as experimental");
 assert.match(html, /Markdown final output; live thinking expanded; stored thinking grouped and collapsed/, "the sidebar should distinguish live and stored thinking defaults");
-assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=91"/, "the guarded PWA entry point should cache-bust browser wiring");
+assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=92"/, "the guarded PWA entry point should cache-bust browser wiring");
 assert.match(JSON.parse(packageRaw).scripts.check, /node --check public\/fast-output-live\.mjs/, "package checks should parse the compact helper");
 
 const events = createFastModeOutputEvents();

@@ -14019,3 +14019,165 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
     font-size: var(--text-sm);
   }
 }
+
+/* Open Issue wizard: kept outside the scrolling Control Deck body. */
+.side-panel {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.side-panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.72rem 0.95rem calc(0.72rem + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(180, 190, 254, 0.16);
+  background: linear-gradient(90deg, rgba(var(--ctp-crust-rgb), 0.96), rgba(var(--ctp-base-rgb), 0.82));
+}
+.open-issue-button {
+  width: auto;
+  min-width: 8.75rem;
+  min-height: 2.5rem;
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-blue));
+  font-weight: 850;
+}
+.open-issue-button:hover,
+.open-issue-button:focus-visible {
+  color: #11111b;
+  border-color: rgba(203, 166, 247, 0.72);
+  box-shadow: 0 0 0 3px rgba(148, 226, 213, 0.14), 0 0 1.1rem rgba(137, 180, 250, 0.25);
+}
+.issue-wizard-dialog {
+  width: min(54rem, calc(100vw - 1.5rem));
+  max-height: min(54rem, calc(var(--visual-viewport-height, 100dvh) - 1.5rem));
+  overflow: hidden;
+  border-color: rgba(148, 226, 213, 0.46);
+  box-shadow: 0 2rem 5rem var(--shadow), 0 0 2.25rem rgba(148, 226, 213, 0.16);
+}
+.issue-wizard-dialog form {
+  display: grid;
+  grid-template-rows: auto auto minmax(12rem, 1fr) auto auto;
+  gap: 0.78rem;
+  max-height: calc(min(54rem, var(--visual-viewport-height, 100dvh)) - 3rem);
+  min-height: 0;
+}
+.issue-wizard-header,
+.issue-wizard-progress-row,
+.issue-wizard-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.issue-wizard-header { align-items: flex-start; }
+.issue-wizard-header h2 { margin: 0.14rem 0 0; color: var(--ctp-teal); }
+.issue-wizard-header p { margin: 0.28rem 0 0; }
+.issue-wizard-kicker {
+  color: var(--ctp-blue);
+  font-size: var(--text-xs);
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.issue-wizard-progress-row {
+  flex-wrap: wrap;
+  padding: 0.6rem 0.72rem;
+  border: 1px solid rgba(180, 190, 254, 0.18);
+  border-radius: 0.7rem;
+  color: rgba(var(--ctp-subtext-rgb), 0.84);
+  background: rgba(var(--ctp-crust-rgb), 0.46);
+  font-size: var(--text-xs);
+}
+.issue-wizard-progress { color: var(--ctp-teal); font-weight: 900; }
+.issue-wizard-pages {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.1rem 0.15rem 0.25rem;
+}
+.issue-wizard-page { display: grid; gap: 0.76rem; }
+.issue-wizard-intro { margin: 0; color: rgba(var(--ctp-text-rgb), 0.9); line-height: 1.45; }
+.issue-wizard-choice-grid,
+.issue-wizard-inline-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.62rem;
+}
+.issue-wizard-inline-choices { grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
+.issue-wizard-choice {
+  display: grid;
+  gap: 0.28rem;
+  min-height: 3.15rem;
+  padding: 0.65rem 0.75rem;
+  border-color: rgba(180, 190, 254, 0.28);
+  color: var(--ctp-text);
+  background: rgba(var(--ctp-surface-rgb), 0.58);
+  font-weight: 750;
+  line-height: 1.25;
+  text-align: left;
+  white-space: normal;
+}
+.issue-wizard-choice strong { color: inherit; font-size: var(--text-sm); }
+.issue-wizard-choice-description,
+.issue-wizard-choice-preview { color: rgba(var(--ctp-subtext-rgb), 0.82); font-size: var(--text-xs); font-weight: 500; line-height: 1.4; }
+.issue-wizard-choice-preview { color: rgba(var(--ctp-teal-rgb), 0.82); }
+.issue-wizard-choice:hover,
+.issue-wizard-choice:focus-visible,
+.issue-wizard-choice.selected {
+  border-color: rgba(148, 226, 213, 0.7);
+  color: var(--ctp-teal);
+  background: rgba(148, 226, 213, 0.1);
+  box-shadow: 0 0 0 2px rgba(148, 226, 213, 0.1), 0 0 0.9rem rgba(148, 226, 213, 0.1);
+}
+.issue-wizard-field,
+.issue-wizard-preview {
+  display: grid;
+  gap: 0.42rem;
+  min-width: 0;
+}
+.issue-wizard-field-label { color: rgba(var(--ctp-text-rgb), 0.88); font-size: var(--text-xs); font-weight: 850; letter-spacing: 0.04em; }
+.issue-wizard-textarea,
+.issue-wizard-select,
+.issue-wizard-preview-title,
+.issue-wizard-preview-body {
+  width: 100%;
+  min-width: 0;
+  padding: 0.68rem 0.74rem;
+  border: 1px solid rgba(180, 190, 254, 0.3);
+  border-radius: 0.7rem;
+  color: var(--ctp-text);
+  background: rgba(var(--ctp-crust-rgb), 0.58);
+  font: inherit;
+  line-height: 1.42;
+}
+.issue-wizard-textarea,
+.issue-wizard-preview-title,
+.issue-wizard-preview-body { resize: vertical; }
+.issue-wizard-preview-title,
+.issue-wizard-preview-body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.issue-wizard-preview-body { min-height: 14rem; }
+.issue-wizard-status,
+.issue-wizard-bot-hint { min-height: 1.25rem; margin: 0; font-size: var(--text-xs); }
+.issue-wizard-bot-hint { color: var(--ctp-yellow); }
+.issue-wizard-actions { justify-content: flex-end; flex-wrap: wrap; margin: 0; padding: 0; }
+.issue-wizard-actions #issueWizardCopyButton { margin-left: auto; }
+.issue-wizard-actions #issueWizardBotButton:disabled {
+  color: rgba(var(--ctp-subtext-rgb), 0.82);
+  border-color: rgba(var(--ctp-overlay-rgb), 0.4);
+  background: rgba(var(--ctp-surface-rgb), 0.45);
+}
+
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .side-panel-footer { padding-inline: 0.75rem; }
+  .open-issue-button { width: 100%; }
+  .issue-wizard-dialog { max-height: calc(var(--visual-viewport-height, 100dvh) - env(safe-area-inset-top)); }
+  .issue-wizard-dialog form { max-height: calc(var(--visual-viewport-height, 100dvh) - 2rem); }
+  .issue-wizard-header,
+  .issue-wizard-progress-row { align-items: stretch; flex-direction: column; }
+  .issue-wizard-header > button { align-self: flex-end; }
+  .issue-wizard-choice-grid,
+  .issue-wizard-inline-choices { grid-template-columns: 1fr; }
+  .issue-wizard-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .issue-wizard-actions button { width: 100%; }
+  .issue-wizard-actions #issueWizardCopyButton { margin-left: 0; }
+  .issue-wizard-actions #issueWizardBotButton { grid-column: 1 / -1; }
+}

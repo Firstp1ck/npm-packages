@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Open Issue Wizard — Implementation and Verification Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 15% 0%, #142848 0, transparent 35rem), var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    a:focus-visible, summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+    .skip-link {
+      position: fixed; z-index: 10; top: 8px; left: 8px; transform: translateY(-160%);
+      padding: 8px 12px; border-radius: 8px; background: var(--blue); color: #06111f; font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 36px auto 64px; }
+    header, .report-section, .support-block {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow);
+    }
+    header { padding: 30px; margin-bottom: 20px; }
+    .report-section, .support-block { padding: 24px; margin: 18px 0; }
+    h1, h2, h3 { line-height: 1.25; margin-top: 0; }
+    h1 { font-size: clamp(1.9rem, 5vw, 3rem); margin-bottom: 8px; letter-spacing: -.025em; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    h3 { font-size: 1.08rem; margin-bottom: 6px; }
+    p { margin: 8px 0 14px; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--code); padding: .12em .38em; border-radius: 5px; }
+    pre { margin: 10px 0; padding: 14px; overflow-x: auto; white-space: pre-wrap; background: var(--code); border: 1px solid var(--line); border-radius: 10px; color: #d9e6f7; }
+    .lead { max-width: 82ch; font-size: 1.1rem; }
+    .muted { color: var(--muted); }
+    .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .78rem; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; }
+    .badge.good { color: var(--green); background: rgb(80 216 144 / 14%); border: 1px solid rgb(80 216 144 / 38%); }
+    .badge.warn { color: var(--yellow); background: rgb(247 198 92 / 14%); border: 1px solid rgb(247 198 92 / 38%); }
+    .badge.info { color: var(--blue); background: rgb(101 181 255 / 14%); border: 1px solid rgb(101 181 255 / 38%); }
+    .callout { margin: 14px 0; padding: 14px 16px; border-left: 5px solid var(--green); border-radius: 8px; background: rgb(80 216 144 / 8%); }
+    .callout.warn { border-left-color: var(--yellow); background: rgb(247 198 92 / 8%); color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .metric, .card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .metric strong { display: block; margin-top: 6px; font-size: 1.45rem; }
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; }
+    th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: .86rem; text-transform: uppercase; letter-spacing: .04em; }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    ul.compact { margin: 8px 0 0; padding-left: 1.2rem; }
+    ul.compact li { margin: 5px 0; }
+    figure { margin: 18px 0; }
+    figure svg { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--code); }
+    figcaption { margin-top: 8px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #182b43; stroke: #65b5ff; stroke-width: 2; }
+    .node-safe { fill: #163229; stroke: #50d890; stroke-width: 2; }
+    .node-future { fill: #332b18; stroke: #f7c65c; stroke-width: 2; stroke-dasharray: 8 5; }
+    .edge { fill: none; stroke: #a9b7cb; stroke-width: 2.4; marker-end: url(#arrow); }
+    .edge-future { fill: none; stroke: #f7c65c; stroke-width: 2.4; stroke-dasharray: 8 5; marker-end: url(#arrow-future); }
+    .node-title { fill: #e8eef8; font: 700 15px system-ui, sans-serif; text-anchor: middle; }
+    .node-copy { fill: #a9b7cb; font: 12px system-ui, sans-serif; text-anchor: middle; }
+    .steps { counter-reset: step; list-style: none; padding: 0; }
+    .steps li { counter-increment: step; position: relative; margin: 12px 0; padding: 14px 14px 14px 54px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2); }
+    .steps li::before { content: counter(step); position: absolute; left: 14px; top: 14px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--blue); color: #06111f; font-weight: 800; }
+    details { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    footer { margin-top: 24px; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section, .support-block { padding: 18px; }
+      table { min-width: 580px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .support-block, .metric, .card, .steps li { box-shadow: none; background: white; color: #111; border-color: #bbb; break-inside: avoid; }
+      .skip-link { display: none; }
+      code, pre, figure svg { background: #f1f3f5; color: #111; border-color: #bbb; }
+      .muted, figcaption, footer { color: #444; }
+      a { color: #111; text-decoration: underline; }
+      figure, table { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <span class="badge good">Implemented and independently reviewed</span>
+    <h1>Open Issue Wizard</h1>
+    <p class="lead">Implementation, verification, and rollout record for the five-step GitHub issue wizard added to the Pi WebUI Control Deck. Evidence comes from the integrated working-tree diff, focused tests, package checks, two implementation handoffs, and two fresh provider-diverse reviews.</p>
+    <div class="callout"><strong>Conclusion:</strong> The feature meets the approved behavior and safety contract. It is ready for use as a copy-first issue composer; automated GitHub submission remains deliberately unavailable until a separately reviewed bot/backend contract exists.</div>
+    <p class="muted"><strong>Confidence:</strong> High for domain behavior, runtime asset delivery, static accessibility contracts, and no-I/O submission gating. Live browser layout/focus automation was unavailable on this machine, and the package baseline remains red for seven unrelated existing Windows/environment failures.</p>
+  </header>
+
+  <section class="report-section" id="overview">
+    <h2>Executive overview</h2>
+    <div class="grid" aria-label="Headline evidence">
+      <div class="metric"><span class="badge info">Flow</span><strong>5 steps</strong><span class="muted">Category → component → template → details → review</span></div>
+      <div class="metric"><span class="badge good">Delivery</span><strong>2 workers</strong><span class="muted">Domain model and browser integration delivered sequentially</span></div>
+      <div class="metric"><span class="badge good">Quorum</span><strong>2 reviewers</strong><span class="muted">Anthropic and Google-family fresh read-only reviews</span></div>
+      <div class="metric"><span class="badge good">Safety</span><strong>0 requests</strong><span class="muted">The future bot adapter performs no network I/O</span></div>
+    </div>
+    <h3 style="margin-top:22px">Report map</h3>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead><tr><th>Area</th><th>Delivered outcome</th><th>Evidence</th><th>Status / next action</th></tr></thead>
+        <tbody>
+          <tr><td>Product flow</td><td>Bottom-right Control Deck action and one-page-at-a-time five-step wizard</td><td><code>public/index.html</code>, <code>public/app.js</code>, static test</td><td><span class="badge good">Ready</span></td></tr>
+          <tr><td>Issue contract</td><td>Deterministic title, structured templates, validated Markdown body, complete-copy payload</td><td><code>issue-wizard-state.mjs</code> and unit test</td><td><span class="badge good">Ready</span></td></tr>
+          <tr><td>Runtime delivery</td><td>Static allowlist, ESM syntax check, PWA app-shell caching, cache-buster alignment</td><td>Server, service worker, package script, boot/static tests</td><td><span class="badge good">Ready</span></td></tr>
+          <tr><td>Submission</td><td>Visible disabled bot button and explicit unavailable async seam</td><td>No-fetch assertions in pure and browser layers</td><td><span class="badge warn">Future phase</span> Design authenticated bot contract separately</td></tr>
+          <tr><td>Verification</td><td>Dedicated checks pass; full suite reached 66 files</td><td>59/66 package files pass; seven unrelated baseline failures recorded</td><td><span class="badge warn">Qualified</span> Do not claim a green package baseline</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="support-block" id="scope">
+    <h2>Scope and approved decisions</h2>
+    <div class="grid">
+      <article class="card">
+        <h3>Included</h3>
+        <ul class="compact">
+          <li>Feature, Bug, UX, Documentation, Performance, Compatibility, and Other categories.</li>
+          <li>Exactly one component: WebUI or a label derived from the existing optional-feature catalog.</li>
+          <li>Compatible template names with descriptions and field previews.</li>
+          <li>Structured dropdown/toggle controls plus minimal required prose inputs.</li>
+          <li>Exact GitHub title and Markdown body preview with complete-copy action.</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3>Intentionally excluded</h3>
+        <ul class="compact">
+          <li>GitHub tokens, OAuth, bot/backend endpoints, or any network submission.</li>
+          <li>Draft persistence, attachments, automatic log collection, and unrelated WebUI refactors.</li>
+          <li>A public Security category, to avoid steering sensitive disclosures into normal public issues.</li>
+          <li>Enabling the bot button before a separate security-reviewed contract exists.</li>
+        </ul>
+      </article>
+    </div>
+    <p>The title format is fixed as <code>[Category] [Component] [Template] Short summary</code>. Changing a category or component clears dependent template/form state while retaining the independent summary.</p>
+  </section>
+
+  <section class="report-section" id="architecture">
+    <h2>Architecture and interaction flow</h2>
+    <figure data-visual-kind="diagram" data-purpose="Explain how the five wizard pages feed a pure payload generator and copy-only delivery path">
+      <svg role="img" aria-labelledby="architecture-title architecture-desc" viewBox="0 0 980 410">
+        <title id="architecture-title">Open Issue Wizard component and data flow</title>
+        <desc id="architecture-desc">User selections move through five wizard steps. The existing optional-feature catalog supplies component labels to a pure state module. A validated title and Markdown body are copied locally. A dashed future path ends at a disabled bot boundary.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb"/></marker>
+          <marker id="arrow-future" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#f7c65c"/></marker>
+        </defs>
+        <rect class="node" x="28" y="55" width="150" height="70" rx="12"/><text class="node-title" x="103" y="84">1 Category</text><text class="node-copy" x="103" y="105">one choice</text>
+        <rect class="node" x="214" y="55" width="150" height="70" rx="12"/><text class="node-title" x="289" y="84">2 Component</text><text class="node-copy" x="289" y="105">WebUI or feature</text>
+        <rect class="node" x="400" y="55" width="150" height="70" rx="12"/><text class="node-title" x="475" y="84">3 Template</text><text class="node-copy" x="475" y="105">name + preview</text>
+        <rect class="node" x="586" y="55" width="150" height="70" rx="12"/><text class="node-title" x="661" y="84">4 Details</text><text class="node-copy" x="661" y="105">structured fields</text>
+        <rect class="node" x="772" y="55" width="180" height="70" rx="12"/><text class="node-title" x="862" y="84">5 Review</text><text class="node-copy" x="862" y="105">exact title + body</text>
+        <path class="edge" d="M178 90 H206"/><path class="edge" d="M364 90 H392"/><path class="edge" d="M550 90 H578"/><path class="edge" d="M736 90 H764"/>
+        <rect class="node" x="188" y="195" width="235" height="88" rx="12"/><text class="node-title" x="305" y="226">Existing OPTIONAL_FEATURES</text><text class="node-copy" x="305" y="250">single component source of truth</text><text class="node-copy" x="305" y="269">labels passed into the module</text>
+        <rect class="node-safe" x="485" y="195" width="255" height="88" rx="12"/><text class="node-title" x="612" y="226">Pure wizard state module</text><text class="node-copy" x="612" y="250">validation · reducer · serialization</text><text class="node-copy" x="612" y="269">no browser or network I/O</text>
+        <path class="edge" d="M423 239 H477"/><path class="edge" d="M612 187 V133"/>
+        <rect class="node-safe" x="355" y="332" width="220" height="58" rx="12"/><text class="node-title" x="465" y="357">Copy complete issue</text><text class="node-copy" x="465" y="377">working delivery path</text>
+        <rect class="node-future" x="650" y="332" width="245" height="58" rx="12"/><text class="node-title" x="772" y="357">GitHub bot — disabled</text><text class="node-copy" x="772" y="377">future authenticated phase</text>
+        <path class="edge" d="M810 133 C810 242 520 242 480 324"/><path class="edge-future" d="M862 133 C862 242 820 270 782 324"/>
+      </svg>
+      <figcaption>The working path ends at local clipboard copy. The dashed yellow path is intentionally unavailable and represents a separate future feature, not current behavior.</figcaption>
+    </figure>
+    <div class="grid">
+      <article class="card"><h3>Domain ownership</h3><p><code>issue-wizard-state.mjs</code> owns catalog generation, compatible templates, reducer transitions, validation, normalization, title/body construction, clipboard text, and the unavailable adapter.</p></article>
+      <article class="card"><h3>Browser ownership</h3><p><code>app.js</code> owns safe DOM rendering, one-page visibility, focus preservation, navigation, clipboard feedback, and passing existing optional-feature labels into the pure module.</p></article>
+      <article class="card"><h3>Presentation ownership</h3><p><code>index.html</code> provides the fixed footer and labelled dialog shell; <code>styles.css</code> provides desktop/mobile layout, readable template previews, and review controls.</p></article>
+    </div>
+  </section>
+
+  <section class="report-section" id="verification">
+    <h2>Testing and acceptance evidence</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>What it proves</th><th>Qualification</th></tr></thead>
+        <tbody>
+          <tr><td><code>node --check</code> for app, state module, and server</td><td><span class="badge good">Pass</span></td><td>Changed JavaScript/ESM parses</td><td>Also wired into <code>npm run check</code></td></tr>
+          <tr><td><code>issue-wizard-state.test.mjs</code></td><td><span class="badge good">Pass</span></td><td>Catalog, transitions, validation, normalization, serialization, no-I/O seam</td><td>Includes bracket-only summary regression</td></tr>
+          <tr><td><code>open-issue-wizard-static.test.mjs</code></td><td><span class="badge good">Pass</span></td><td>Control Deck placement, five pages, template previews, focus semantics, bot gating, runtime/PWA wiring</td><td>Static contract, not a live browser</td></tr>
+          <tr><td>Boot and fast-mode cache-buster tests</td><td><span class="badge good">Pass</span></td><td>Updated guarded app loader and asset revisions remain aligned</td><td>Targeted regression coverage</td></tr>
+          <tr><td><code>git diff --check</code></td><td><span class="badge good">Pass</span></td><td>No whitespace errors in the integrated diff</td><td>Working tree intentionally uncommitted</td></tr>
+          <tr><td><code>npm test</code> / <code>npm run check</code></td><td><span class="badge warn">59/66</span></td><td>The complete package suite was exercised; every wizard-specific test passed</td><td>Seven unrelated existing Windows/environment failures keep the baseline red</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warn"><strong>Verification limitation:</strong> No supported browser automation package or browser executable was available. Native dialog focus restoration, Escape behavior, responsive rules, and rerender focus handling were checked through existing modal primitives, source inspection, static assertions, and both independent reviews.</div>
+    <details>
+      <summary>Unrelated package-suite failures</summary>
+      <p>The full suite reported failures in Windows ConPTY availability, durable/RPC supervisor harnesses, temporary-directory cleanup locks, symlink privileges, a markerless temporary-path assertion, and an existing typography-floor assertion. The typography failure points to an unchanged <code>0.72rem</code> declaration present on the base revision. None of these failures involve the wizard files or dedicated tests.</p>
+    </details>
+  </section>
+
+  <section class="report-section" id="reviews">
+    <h2>Independent review quorum and dispositions</h2>
+    <p>Both reviewers used fresh, read-only contexts and providers distinct from the OpenAI implementation provider and from each other.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Reviewer</th><th>Runtime model</th><th>Finding</th><th>Disposition</th></tr></thead>
+        <tbody>
+          <tr><td>Anthropic A<br><code>f7f26ed6…</code></td><td>Claude Opus 4.8, high</td><td>Incomplete ARIA radio keyboard pattern</td><td><span class="badge good">Fixed</span> Toggle-button <code>aria-pressed</code> semantics</td></tr>
+          <tr><td>Anthropic A</td><td>Claude Opus 4.8, high</td><td>Bracket-only summary generated an empty suffix</td><td><span class="badge good">Fixed</span> Shared post-strip validation</td></tr>
+          <tr><td>Anthropic A</td><td>Claude Opus 4.8, high</td><td>Duplicate live step announcements</td><td><span class="badge good">Fixed</span> One live status region retained</td></tr>
+          <tr><td>Anthropic A</td><td>Claude Opus 4.8, high</td><td>GitHub autolinks are preserved</td><td><span class="badge warn">Deferred</span> Intentional references remain useful in copy-only output; reassess before bot enablement</td></tr>
+          <tr><td>Google B<br><code>bac5c395…</code></td><td>Gemini 3.5 Flash, high fallback</td><td>No feature-specific defects or blockers</td><td><span class="badge good">Accepted</span> Runtime model evidence overrides inaccurate self-identification in generated prose</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Post-fix targeted syntax, domain, static, boot, fast-mode, and whitespace checks all passed. Review records are saved at <a href="../plans/reviews/open-issue-wizard-anthropic.md">Anthropic review</a> and <a href="../plans/reviews/open-issue-wizard-google.md">Google-family review</a>.</p>
+  </section>
+
+  <section class="report-section" id="usage">
+    <h2>Usage and rollout guidance</h2>
+    <ol class="steps">
+      <li><h3>Open the composer</h3><p>Expand the Control Deck and select <strong>Open Issue</strong> in the fixed bottom-right footer.</p></li>
+      <li><h3>Choose structured context</h3><p>Select one category, one affected component, and one compatible template. Each template card previews its purpose and fields before selection.</p></li>
+      <li><h3>Complete the template</h3><p>Use dropdowns and toggle buttons where available, then add only the required prose. Continue becomes available only when the current page is valid.</p></li>
+      <li><h3>Review and copy</h3><p>Inspect the exact GitHub title and Markdown body, then choose <strong>Copy complete issue</strong>. The disabled bot button explains that automated submission is coming later.</p></li>
+    </ol>
+    <h3>Future bot phase</h3>
+    <p>Implementing real submission requires a separate design for authentication, authorization, server-side GitHub API access, rate/error handling, sensitive-data policy, auditability, and user confirmation. The current async adapter is the narrow integration seam, but enabling the control without that review would violate the approved safety boundary.</p>
+    <div class="callout"><strong>Rollback:</strong> The feature is file-local and introduces no persistent schema or backend state. Rollback removes the footer/dialog/controller/styles/tests/module and restores runtime asset/check entries.</div>
+  </section>
+
+  <section class="support-block" id="sources">
+    <h2>Sources, artifacts, and residual risks</h2>
+    <ul class="compact">
+      <li><a href="../plans/open-issue-wizard.md">Canonical implementation plan and decision/progress record</a></li>
+      <li><a href="../plans/handoffs/open-issue-wizard-domain.md">WS-1 domain handoff</a></li>
+      <li><a href="../plans/handoffs/open-issue-wizard-interface.md">WS-2 interface handoff</a></li>
+      <li><a href="../plans/reviews/open-issue-wizard-anthropic.md">Independent Anthropic review and dispositions</a></li>
+      <li><a href="../plans/reviews/open-issue-wizard-google.md">Independent Google-family review record</a></li>
+      <li>Integrated source and tests under <code>pi-package-webui/</code>, verified on 2026-07-27.</li>
+    </ul>
+    <div class="grid" style="margin-top:14px">
+      <article class="card"><h3>Residual: browser automation</h3><p>Live rendered focus and responsive behavior were not browser-automated because no compatible local browser/tooling was available.</p></article>
+      <article class="card"><h3>Residual: package baseline</h3><p>Seven unrelated existing failures prevent a green full-suite claim on this Windows environment.</p></article>
+      <article class="card"><h3>Residual: future submission</h3><p>The bot is intentionally unavailable. GitHub autolink behavior and all authenticated submission risks must be revisited before enabling it.</p></article>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>Scope:</strong> Pi WebUI Open Issue Wizard implementation, integration, verification, independent review, and rollout guidance. Generated from repository evidence on 2026-07-27.</p>
+  </footer>
+</main>
+</body>
+</html>
