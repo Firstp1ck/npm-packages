@@ -287,14 +287,45 @@ class SupervisorHost {
     catch (error) { this.sendError(client, request.requestId, error); }
   }
 
+  queueTabMutation(tabId, operation) {
+    const tab = this.requireTab(tabId);
+    const previous = tab.mutationTail || Promise.resolve();
+    const result = previous.catch(() => {}).then(() => {
+      if (this.tabs.get(tabId) !== tab) throw new Error(`Managed tab is no longer available: ${tabId}`);
+      return operation();
+    });
+    tab.mutationTail = result.catch(() => {});
+    return result;
+  }
+
+  queueTabCommand(tabId, operation) {
+    const tab = this.requireTab(tabId);
+    const previous = tab.mutationTail || Promise.resolve();
+    let response;
+    const admission = previous.catch(() => {}).then(() => {
+      if (this.tabs.get(tabId) !== tab) throw new Error(`Managed tab is no longer available: ${tabId}`);
+      // command() registers the pending response and writes to stdin
+      // synchronously before returning its response promise. Release the FIFO
+      // barrier at that point so extension-ui writes and later bounded probes
+      // are not blocked by the full Pi response lifetime.
+      response = operation();
+    });
+    tab.mutationTail = admission.catch(() => {});
+    return admission.then(() => response);
+  }
+
   async perform(request) {
     switch (request.type) {
       case "create": return this.create(request);
-      case "update": return this.update(request);
-      case "replace": return this.replace(request);
-      case "close": return this.closeTab(request.tabId);
-      case "command": return this.command(request);
-      case "write": return this.write(request);
+      case "update": return this.queueTabMutation(request.tabId, () => this.update(request));
+      case "replace": return this.queueTabMutation(request.tabId, () => this.replace(request));
+      case "close": return this.queueTabMutation(request.tabId, () => this.closeTab(request.tabId));
+      // Commands take a FIFO admission position, but their full response must
+      // not hold the queue: prompts can wait for extension-ui writes. Metadata
+      // refreshes can also arrive continuously, so chasing a moving tail would
+      // starve get_state and leave a CWD PATCH permanently in progress.
+      case "command": return this.queueTabCommand(request.tabId, () => this.command(request));
+      case "write": return this.queueTabMutation(request.tabId, () => this.write(request));
       case "ack": return { cursor: request.cursor };
       case "prepare_handoff": return { epoch: this.epoch, latestSeq: this.sequence.toString(), tabs: [...this.tabs.values()].map(tabSnapshot) };
       case "detach": return { detached: true };
@@ -308,10 +339,15 @@ class SupervisorHost {
   async create({ tabId, metadata, child }) {
     if (this.tabs.has(tabId)) throw new Error(`Managed tab already exists: ${tabId}`);
     if (this.tabs.size >= RPC_SUPERVISOR_TAB_LIMIT) throw new Error(`Managed tab limit is ${RPC_SUPERVISOR_TAB_LIMIT}`);
-    const tab = { id: tabId, metadata, child: null, pending: new Map(), startedAt: new Date().toISOString() };
+    const tab = { id: tabId, metadata, child: null, pending: new Map(), startedAt: new Date().toISOString(), mutationTail: Promise.resolve() };
     this.tabs.set(tabId, tab);
-    try { await this.spawnChild(tab, child); }
-    catch (error) { this.tabs.delete(tabId); throw error; }
+    try {
+      const candidate = await this.spawnChildCandidate(child);
+      this.commitChild(tab, candidate);
+    } catch (error) {
+      this.tabs.delete(tabId);
+      throw error;
+    }
     await this.persist("create");
     return tabSnapshot(tab);
   }
@@ -326,8 +362,9 @@ class SupervisorHost {
   async replace({ tabId, metadata, child }) {
     const tab = this.requireTab(tabId);
     await this.stopChild(tab, "replace");
+    const candidate = await this.spawnChildCandidate(child);
     if (metadata !== undefined) tab.metadata = metadata;
-    await this.spawnChild(tab, child);
+    this.commitChild(tab, candidate);
     await this.persist("replace");
     return tabSnapshot(tab);
   }
@@ -347,7 +384,7 @@ class SupervisorHost {
     return tab;
   }
 
-  async spawnChild(tab, child) {
+  async spawnChildCandidate(child) {
     const cwd = await realpath(child.cwd).catch(() => child.cwd);
     const processChild = spawn(child.command, child.args, {
       cwd,
@@ -356,19 +393,33 @@ class SupervisorHost {
       detached: process.platform !== "win32",
       windowsHide: true,
     });
+    await new Promise((resolve, reject) => {
+      processChild.once("spawn", resolve);
+      processChild.once("error", reject);
+    });
+    return { processChild, cwd, startedAt: new Date().toISOString() };
+  }
+
+  commitChild(tab, { processChild, cwd, startedAt }) {
     tab.child = processChild;
-    tab.startedAt = new Date().toISOString();
+    tab.startedAt = startedAt;
     processChild.on("error", (error) => {
+      if (tab.child !== processChild) return;
       this.emit(tab.id, { type: "pi_process_error", error: publicError(error) });
       this.rejectPending(tab, error);
     });
     processChild.on("exit", (code, signal) => {
+      if (tab.child !== processChild) return;
       this.emit(tab.id, { type: "pi_process_exit", code, signal });
       this.rejectPending(tab, new Error(`Pi RPC process exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`));
       if (!this.closing) this.persist("child exit").catch(() => {});
     });
-    this.readJsonl(processChild.stdout, (line) => this.handlePiLine(tab, line), tab.id);
-    this.readText(processChild.stderr, (text) => { if (text) this.emit(tab.id, { type: "pi_stderr", text }); });
+    this.readJsonl(processChild.stdout, (line) => {
+      if (tab.child === processChild) this.handlePiLine(tab, line);
+    }, tab.id);
+    this.readText(processChild.stderr, (text) => {
+      if (text && tab.child === processChild) this.emit(tab.id, { type: "pi_stderr", text });
+    });
     // The executable/arguments are launch details, not WebUI event data; never
     // publish them because command-line credentials must stay private.
     this.emit(tab.id, { type: "pi_process_start", pid: processChild.pid, cwd });
@@ -484,6 +535,11 @@ class SupervisorHost {
       terminateProcessTree(child, "SIGKILL");
       await exitPromise(child, 1_000);
     }
+    if (tabRunning(tab)) {
+      throw Object.assign(new Error(`Pi RPC process ${child.pid || "unknown"} did not stop for ${reason}`), {
+        code: "RPC_SUPERVISOR_CHILD_STOP_TIMEOUT",
+      });
+    }
     this.rejectPending(tab, new Error(`Pi RPC process stopped for ${reason}`));
   }
 
@@ -502,7 +558,14 @@ class SupervisorHost {
     if (this.closing) return;
     this.closing = true;
     this.cancelIdleExit();
-    await Promise.all([...this.tabs.values()].map((tab) => this.stopChild(tab, reason).catch(() => {})));
+    const stopResults = await Promise.allSettled([...this.tabs.values()].map((tab) => this.stopChild(tab, reason)));
+    const stopFailures = stopResults.filter((result) => result.status === "rejected");
+    if (stopFailures.length) {
+      this.closing = false;
+      await this.persist("shutdown blocked by live child").catch(() => {});
+      console.error(`RPC supervisor shutdown blocked: ${stopFailures.map((result) => publicError(result.reason)).join("; ")}`);
+      return false;
+    }
     await this.persistQueue.catch(() => {});
     this.tabs.clear();
     for (const client of this.clients) client.socket.destroy();

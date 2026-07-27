@@ -7,6 +7,8 @@ import {
   constantTimeTokenEqual,
   encodeFrame,
   frameReader,
+  protocolCompatible,
+  protocolCurrent,
   sanitizeSupervisorData,
   validateClientFrame,
 } from "../lib/rpc-supervisor-protocol.mjs";
@@ -17,6 +19,9 @@ const attach = validateClientFrame({
 assert.equal(attach.token, "private-token", "attach validation must retain the private token for authentication");
 assert.equal(constantTimeTokenEqual("same", "same"), true);
 assert.equal(constantTimeTokenEqual("same", "different"), false);
+assert.equal(protocolCompatible({ major: RPC_SUPERVISOR_PROTOCOL.major, minor: 0 }), true, "older minor versions remain attach-compatible for actionable recovery");
+assert.equal(protocolCurrent({ major: RPC_SUPERVISOR_PROTOCOL.major, minor: 0 }), false, "older detached supervisors must be detectable after a server-only restart");
+assert.equal(protocolCurrent(RPC_SUPERVISOR_PROTOCOL), true);
 
 const rawPiCommand = {
   type: "prompt",

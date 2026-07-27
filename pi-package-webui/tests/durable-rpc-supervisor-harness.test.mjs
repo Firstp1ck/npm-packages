@@ -110,6 +110,7 @@ async function readLog(logFile) {
 const work = await mkdtemp(path.join(tmpdir(), "pi-webui-continuity-harness-"));
 const agentDir = path.join(work, "agent");
 const cwd = path.join(work, "cwd");
+const changedCwd = path.join(work, "changed-cwd");
 const settingsFile = path.join(work, "settings.json");
 const sessionFile = path.join(work, "fixture-session.jsonl");
 const logFile = path.join(work, "fake-pi.jsonl");
@@ -132,6 +133,7 @@ let observedTabId;
 try {
   await writeFile(settingsFile, "{}\n");
   await mkdir(cwd, { recursive: true });
+  await mkdir(changedCwd, { recursive: true });
   initialServer = spawnServer({ cwd, env: environment, output });
 
   const initialHealth = await waitFor("initial supervised server health", health);
@@ -146,6 +148,27 @@ try {
   assert.ok(Number.isInteger(observedPiPid) && observedPiPid > 0, "initial tab must expose its fake Pi PID");
   assert.equal(initialTab.cwd, cwd, "tab metadata must retain the isolated cwd");
   assert.equal(initialTab.sessionFile, sessionFile, "fixture session metadata must be captured before restart");
+
+  const concurrentCwdChanges = await Promise.all([
+    request(`/api/tabs/${encodeURIComponent(observedTabId)}`, { method: "PATCH", body: { cwd: changedCwd }, timeoutMs: 12_000 }),
+    request(`/api/tabs/${encodeURIComponent(observedTabId)}`, { method: "PATCH", body: { cwd: changedCwd }, timeoutMs: 12_000 }),
+  ]);
+  assert.deepEqual(concurrentCwdChanges.map((response) => response.status).sort(), [200, 409], "overlapping existing-tab cwd changes should allow one restart and reject the duplicate deterministically");
+  const cwdChange = concurrentCwdChanges.find((response) => response.status === 200);
+  const rejectedCwdChange = concurrentCwdChanges.find((response) => response.status === 409);
+  assert.match(String(rejectedCwdChange.body?.error || ""), /already changing its working folder/i, "rejected overlapping cwd change should explain the active restart");
+  assert.equal(cwdChange.body?.data?.changed, true, "existing-tab cwd change should report a real restart");
+  assert.equal(cwdChange.body?.data?.tab?.cwd, changedCwd, "cwd change response should expose the replacement cwd");
+  assert.notEqual(cwdChange.body?.data?.tab?.pid, observedPiPid, "cwd change should replace the managed Pi child");
+  observedPiPid = cwdChange.body.data.tab.pid;
+  const cwdChangeState = await request(`/api/state?tab=${encodeURIComponent(observedTabId)}`);
+  assert.equal(cwdChangeState.status, 200, "replacement child should answer state requests before cwd PATCH resolves");
+  const cwdChangeCommands = await request(`/api/commands?tab=${encodeURIComponent(observedTabId)}`);
+  assert.equal(cwdChangeCommands.status, 200, "replacement child should answer command discovery after cwd change");
+  const replacementStartup = await waitFor("replacement cwd startup", async () => (
+    (await readLog(logFile)).find((entry) => entry.direction === "startup" && entry.pid === observedPiPid && entry.cwd === changedCwd)
+  ));
+  assert.equal(replacementStartup.cwd, changedCwd, "replacement child process should actually run in the requested cwd");
 
   const controlledPrompt = await request("/api/prompt", { method: "POST", body: { tab: observedTabId, message: streamPrompt } });
   assert.equal(controlledPrompt.status, 200, "controlled-restart prompt must be accepted once");
@@ -162,7 +185,7 @@ try {
   assert.equal(controlledTabs.length, 1, "controlled restart must hydrate instead of spawning duplicate tabs");
   assert.deepEqual(
     controlledTabs.map((tab) => ({ id: tab.id, pid: tab.pid, cwd: tab.cwd, sessionFile: tab.sessionFile, title: tab.title, index: tab.index })),
-    [{ id: preRestartTab.id, pid: observedPiPid, cwd, sessionFile, title: preRestartTab.title, index: preRestartTab.index }],
+    [{ id: preRestartTab.id, pid: observedPiPid, cwd: changedCwd, sessionFile, title: preRestartTab.title, index: preRestartTab.index }],
     "controlled restart must retain the same managed tab metadata and Pi PID",
   );
   assert.equal(restartedHealth.piPid, observedPiPid, "controlled restart must retain the active Pi process");
@@ -189,7 +212,7 @@ try {
   assert.equal(manualTabs.length, 1, "manual relaunch must not duplicate the supervised tab");
   assert.deepEqual(
     manualTabs.map((tab) => ({ id: tab.id, pid: tab.pid, cwd: tab.cwd, sessionFile: tab.sessionFile, title: tab.title, index: tab.index })),
-    [{ id: preRestartTab.id, pid: observedPiPid, cwd, sessionFile, title: preRestartTab.title, index: preRestartTab.index }],
+    [{ id: preRestartTab.id, pid: observedPiPid, cwd: changedCwd, sessionFile, title: preRestartTab.title, index: preRestartTab.index }],
     "manual relaunch must retain tab ID, PID, and persisted metadata",
   );
 

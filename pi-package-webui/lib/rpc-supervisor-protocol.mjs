@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
-export const RPC_SUPERVISOR_PROTOCOL = Object.freeze({ major: 1, minor: 0 });
+export const RPC_SUPERVISOR_PROTOCOL = Object.freeze({ major: 1, minor: 1 });
 // Pi permits one bounded JSONL record this large. IPC envelopes need a small
 // additional allowance so a single valid Pi record can always be forwarded.
 export const PI_RPC_JSONL_LINE_MAX_BYTES = 32 * 1024 * 1024;
@@ -79,6 +79,11 @@ function version(value) {
 export function protocolCompatible(remote) {
   const parsed = version(remote);
   return parsed.major === RPC_SUPERVISOR_PROTOCOL.major;
+}
+
+export function protocolCurrent(remote) {
+  const parsed = version(remote);
+  return parsed.major === RPC_SUPERVISOR_PROTOCOL.major && parsed.minor === RPC_SUPERVISOR_PROTOCOL.minor;
 }
 
 export function assertProtocolCompatible(remote) {

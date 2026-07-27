@@ -8410,13 +8410,13 @@ async function initializeRpcSupervisor() {
   });
 }
 
-function supervisedTabMetadata(tab) {
+function supervisedTabMetadata(tab, { cwd = tab.cwd } = {}) {
   return {
     index: tab.index,
     title: tab.title,
     titleSource: tab.titleSource,
     conversationStarted: tab.conversationStarted === true,
-    cwd: tab.cwd,
+    cwd,
     sessionFile: tabRestorableSessionFile(tab),
     gitWorkspace: tab.gitWorkspace || null,
     createdAt: tab.createdAt,
@@ -8424,7 +8424,9 @@ function supervisedTabMetadata(tab) {
 }
 
 function scheduleSupervisorMetadataUpdate(tab) {
-  if (!(tab?.rpc instanceof SupervisorPiRpcProcess) || tab.supervisorMetadataUpdateQueued) return;
+  if (!(tab?.rpc instanceof SupervisorPiRpcProcess)) return;
+  if (tab.cwdChangeInProgress) return;
+  if (tab.supervisorMetadataUpdateQueued) return;
   tab.supervisorMetadataUpdateQueued = true;
   queueMicrotask(() => {
     tab.supervisorMetadataUpdateQueued = false;
@@ -9338,6 +9340,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     bashQueueDraining: false,
     compactionQueue: [],
     compactionQueueDraining: false,
+    cwdChangeInProgress: false,
     rpc,
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
@@ -10264,9 +10267,23 @@ function responseWithTab(response, tab) {
 async function updateTabCwd(id, cwd) {
   const tab = tabs.get(id);
   if (!tab) throw makeHttpError(404, `Unknown Pi tab: ${id}`);
+  if (tab.cwdChangeInProgress) throw makeHttpError(409, `${tab.title} is already changing its working folder`);
 
+  tab.cwdChangeInProgress = true;
+  try {
+    return await performTabCwdUpdate(tab, cwd);
+  } finally {
+    tab.cwdChangeInProgress = false;
+    scheduleSupervisorMetadataUpdate(tab);
+  }
+}
+
+async function performTabCwdUpdate(tab, cwd) {
   const nextCwd = await resolveCwd(cwd, tab.cwd);
   if (nextCwd === tab.cwd) return { tab, changed: false };
+  if (tab.rpc instanceof SupervisorPiRpcProcess && !tab.rpc.supervisor.isCurrentVersion()) {
+    throw makeHttpError(503, "The detached Pi supervisor is from an older WebUI build. Fully shut down Pi WebUI (not Restart), then start it again before changing working folders.");
+  }
 
   // Capture the live session before stopping the old RPC so the conversation
   // survives the cwd restart, mirroring restartTabRpc. Best-effort: a dead RPC
@@ -10277,39 +10294,47 @@ async function updateTabCwd(id, cwd) {
   const piArgs = await buildPiArgsForTab(tab.index, tab.title, nextCwd);
   if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
-  gitLiveWatcher.unsubscribe(tab.id);
   const restartingEvent = { type: "webui_tab_restarting", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, sessionFile };
   broadcastTabEvent(tab, restartingEvent);
 
   const oldRpc = tab.rpc;
-  tab.rpcUnsubscribe?.();
-  tab.rpcUnsubscribe = undefined;
   rejectTabBashQueue(tab, new Error("Pi tab is restarting; queued bash commands were cancelled"));
   stopAppRunnerForTab(tab, "cwd changed", { force: true });
-
-  tab.cwd = nextCwd;
-  resetTabActivity(tab);
   clearPendingExtensionUiRequests(tab);
   clearExtensionStatuses(tab);
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
+
   let rpc;
-  if (oldRpc instanceof SupervisorPiRpcProcess) {
-    const snapshot = await oldRpc.replace({
-      child: { command: piCommand.command, args: piCommand.args, cwd: tab.cwd },
-      metadata: supervisedTabMetadata(tab),
-      displayCommand: piCommand.displayCommand,
-    });
-    oldRpc.dispose();
-    rpc = new SupervisorPiRpcProcess({ supervisor: rpcSupervisor, tabId: tab.id, displayCommand: piCommand.displayCommand, cwd: tab.cwd, snapshot });
-    attachRpcToTab(tab, rpc);
-  } else {
-    oldRpc.stop();
-    rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
-    attachRpcToTab(tab, rpc);
-    rpc.start();
+  let startDirectRpc = false;
+  try {
+    if (oldRpc instanceof SupervisorPiRpcProcess) {
+      const snapshot = await oldRpc.replace({
+        child: { command: piCommand.command, args: piCommand.args, cwd: nextCwd },
+        metadata: supervisedTabMetadata(tab, { cwd: nextCwd }),
+        displayCommand: piCommand.displayCommand,
+      });
+      oldRpc.dispose();
+      rpc = new SupervisorPiRpcProcess({ supervisor: rpcSupervisor, tabId: tab.id, displayCommand: piCommand.displayCommand, cwd: nextCwd, snapshot });
+    } else {
+      oldRpc.stop();
+      rpc = new PiRpcProcess({ ...piCommand, cwd: nextCwd, env: piRpcEnvironment() });
+      startDirectRpc = true;
+    }
+  } catch (error) {
+    const detail = sanitizeError(error);
+    broadcastTabEvent(tab, { type: "webui_cwd_change_failed", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, error: detail });
+    throw makeHttpError(502, `Could not restart ${tab.title} in ${displayPath(nextCwd)}: ${detail}`);
   }
+
+  tab.rpcUnsubscribe?.();
+  tab.rpcUnsubscribe = undefined;
+  tab.cwd = nextCwd;
+  resetTabActivity(tab);
+  attachRpcToTab(tab, rpc);
+  if (startDirectRpc) rpc.start();
+  gitLiveWatcher.unsubscribe(tab.id);
   // Non-fatal: a failed start surfaces through pi_process_error/exit events.
   await primeTabRpc(tab).catch(() => {});
 

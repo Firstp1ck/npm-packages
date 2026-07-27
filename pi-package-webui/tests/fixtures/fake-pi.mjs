@@ -101,6 +101,7 @@ function logJsonLine(entry) {
 
 logJsonLine({
   direction: "startup",
+  cwd: process.cwd(),
   recoveryUrl: String(process.env.PI_WEBUI_RECOVERY_URL || ""),
   recoveryTokenConfigured: Boolean(process.env.PI_WEBUI_RECOVERY_TOKEN),
   ...(continuityModeEnabled ? { pid: process.pid, continuityMode: true } : {}),

@@ -9,6 +9,7 @@ import {
   encodeFrame,
   frameReader,
   newRequestId,
+  protocolCurrent,
 } from "./rpc-supervisor-protocol.mjs";
 import {
   acquireStartupLock,
@@ -184,6 +185,7 @@ export class RpcSupervisorClient {
   }
 
   isConnected() { return this.connected && this.attached; }
+  isCurrentVersion() { return protocolCurrent(this.state.version); }
 
   request(type, payload = {}, { requestId = newRequestId() } = {}) {
     if (!this.attached) return Promise.reject(new Error("RPC supervisor client is not attached"));

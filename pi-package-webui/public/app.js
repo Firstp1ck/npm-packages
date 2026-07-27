@@ -725,6 +725,8 @@ const GIT_FOOTER_WEBUI_STATUS_KEY = "git-footer-webui";
 const GIT_FOOTER_WEBUI_PAYLOAD_TYPE = "firstpick.git-footer-status.footer";
 const GIT_FOOTER_WEBUI_PAYLOAD_VERSION = 1;
 const GIT_FOOTER_WEBUI_PAYLOAD_CACHE_KEY = "pi-webui-git-footer-webui-payload-cache";
+const GIT_FOOTER_PAYLOAD_REQUEST_TIMEOUT_MS = 10_000;
+const GIT_FOOTER_PAYLOAD_SETTLEMENT_TIMEOUT_MS = 2_000;
 const GIT_FOOTER_STATUS_SETUP_STORAGE_KEY = "pi-webui-git-footer-status-setup";
 const GIT_FOOTER_WEBUI_VISIBILITY_DEFAULTS = Object.freeze({
   tokens: true,
@@ -1421,6 +1423,9 @@ const optionalFeatureInstallStates = new Map();
 const optionalFeatureInstallProgressTimers = new Map();
 let optionalFeaturePackageStatusError = "";
 const gitFooterPayloadRefreshInFlightByTab = new Set();
+const gitFooterPayloadStateByTab = new Map();
+const gitFooterPayloadSettlementTimersByTab = new Map();
+const gitFooterPayloadRequestSerialByTab = new Map();
 const gitFooterSyncPushInFlightByTab = new Set();
 const gitFooterPiCalibrationInFlightByTab = new Set();
 let gitFooterVisibilityApplyInFlight = false;
@@ -6197,6 +6202,7 @@ function setOptionalFeatureDisabled(featureId, disabled) {
   if (featureId === "gitFooterStatus") {
     statusEntries.delete(GIT_FOOTER_WEBUI_STATUS_KEY);
     clearGitFooterWebuiPayloadCache();
+    for (const tabId of new Set([...gitFooterPayloadStateByTab.keys(), ...gitFooterPayloadSettlementTimersByTab.keys(), ...gitFooterPayloadRefreshInFlightByTab])) clearGitFooterPayloadState(tabId);
   }
   if (featureId === "btwCommand") {
     statusEntries.delete(BTW_WEBUI_STATUS_KEY);
@@ -8449,6 +8455,8 @@ function syncTabMetadata(nextTabs = []) {
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
       commandCatalogsByTab.delete(tabId);
+      clearGitFooterPayloadState(tabId);
+      gitFooterPayloadRequestSerialByTab.delete(tabId);
     }
   }
   for (const tabId of tabMessagesCache.keys()) {
@@ -13969,10 +13977,13 @@ function gitFooterFallbackMessage() {
   const tabContext = activeTabContext();
   const commandsStillLoading = availableCommands.length === 0 && rawAvailableCommands.length === 0;
   const footerRefreshPending = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
+  const payloadState = tabContext.tabId ? gitFooterPayloadStateByTab.get(tabContext.tabId) : null;
   const extensionDetected = hasAvailableCommand("git-footer-refresh") || optionalFeatureAvailability.gitFooterStatus;
-  return commandsStillLoading || footerRefreshPending || extensionDetected
-    ? "Loading git footer status…"
-    : "Git footer status extension unavailable";
+  if (commandsStillLoading || footerRefreshPending || payloadState?.phase === "waiting") return "Loading git footer status…";
+  if (payloadState?.phase === "failed") return payloadState.error || "Git footer status was not received — refresh to retry";
+  if (payloadState?.phase === "idle") return "Git footer status unavailable — refresh to retry";
+  if (extensionDetected) return "Loading git footer status…";
+  return "Git footer status extension unavailable";
 }
 
 function renderMinimalFooter() {
@@ -15685,7 +15696,12 @@ function closePathPicker(cwd) {
 }
 
 function pickCwd(tab, initialCwd, { title } = {}) {
-  if (pathPickerState) return Promise.resolve(null);
+  if (pathPickerState) {
+    addEvent("working-directory picker is already open", "warn");
+    elements.pathPickerDialog.focus();
+    elements.pathPickerSearchInput.focus({ preventScroll: true });
+    return Promise.resolve(null);
+  }
 
   return new Promise((resolve) => {
     const pickerTab = tab || { id: "path-picker", title: "tab" };
@@ -15726,27 +15742,46 @@ async function changeActiveTabCwd() {
   if (!(await appConfirmText(`Restart ${tab.title} in:\n${cwd}\n\nCurrent in-flight work in this tab will be stopped. The conversation continues in the new directory.`, { affected: tab.title, confirmLabel: "Change working folder" }))) return;
 
   saveActiveDraft();
-  try {
-    const response = await api(`/api/tabs/${encodeURIComponent(tab.id)}`, { method: "PATCH", body: { cwd }, scoped: false });
-    tabs = response.data?.tabs || tabs;
-    syncTabMetadata(tabs);
-    if (!isCurrentTabContext(tabContext)) {
-      renderTabs();
-      return;
-    }
-    const nextContext = setActiveTabId(response.data?.tab?.id || activeTabId);
-    resetGitWorkflowForTab(nextContext.tabId);
-    resetActiveTabUi();
-    renderTabs();
-    restoreActiveDraft();
-    connectEvents(nextContext);
-    await refreshAll(nextContext);
-    if (!isCurrentTabContext(nextContext)) return;
-    const changedCwd = response.data?.tab?.cwd || cwd;
-    addEvent(response.data?.changed === false ? `cwd unchanged: ${changedCwd}` : `changed ${tab.title} cwd to ${changedCwd}`, "info");
-  } catch (error) {
-    if (isCurrentTabContext(tabContext)) addEvent(error.message, "error");
+  if (isCurrentTabContext(tabContext)) {
+    addTransientMessage({
+      role: "native",
+      title: "Changing working folder…",
+      content: `Restarting ${tab.title} in ${cwd}. This can take a few seconds.`,
+      level: "info",
+    });
   }
+  let response;
+  try {
+    response = await api(`/api/tabs/${encodeURIComponent(tab.id)}`, { method: "PATCH", body: { cwd }, scoped: false });
+  } catch (error) {
+    const message = `Could not change ${tab.title} to ${cwd}. The existing working folder was kept.\n\n${error.message || String(error)}`;
+    if (isCurrentTabContext(tabContext)) surfaceRuntimeDiagnostic("Working folder change failed", message);
+    else addEvent(`working folder change failed for ${tab.title}: ${error.message || String(error)}`, "error");
+    return;
+  }
+
+  tabs = response.data?.tabs || tabs;
+  syncTabMetadata(tabs);
+  const changedTabId = response.data?.tab?.id || tab.id;
+  const changedCwd = response.data?.tab?.cwd || cwd;
+  resetGitWorkflowForTab(changedTabId);
+  clearGitFooterPayloadState(changedTabId);
+  if (!isCurrentTabContext(tabContext)) {
+    renderTabs();
+    addEvent(response.data?.changed === false ? `cwd unchanged: ${changedCwd}` : `changed ${tab.title} cwd to ${changedCwd}`, "info");
+    return;
+  }
+
+  const nextContext = setActiveTabId(response.data?.tab?.id || activeTabId);
+  resetActiveTabUi();
+  renderTabs();
+  restoreActiveDraft();
+  connectEvents(nextContext);
+  await refreshAll(nextContext);
+  if (!isCurrentTabContext(nextContext)) return;
+  const successMessage = response.data?.changed === false ? `cwd unchanged: ${changedCwd}` : `changed ${tab.title} cwd to ${changedCwd}`;
+  addEvent(successMessage, "info");
+  if (response.data?.changed !== false) addTransientMessage({ role: "native", title: "Working folder changed", content: `${tab.title} restarted in ${changedCwd}.`, level: "info" });
 }
 
 function renderFooter() {
@@ -26881,23 +26916,85 @@ async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) 
   }
 }
 
+function clearGitFooterPayloadState(tabId) {
+  if (!tabId) return;
+  gitFooterPayloadRequestSerialByTab.set(tabId, (gitFooterPayloadRequestSerialByTab.get(tabId) || 0) + 1);
+  clearTimeout(gitFooterPayloadSettlementTimersByTab.get(tabId));
+  gitFooterPayloadSettlementTimersByTab.delete(tabId);
+  gitFooterPayloadStateByTab.delete(tabId);
+  gitFooterPayloadRefreshInFlightByTab.delete(tabId);
+}
+
+function settleGitFooterPayload(tabId, phase, error = "") {
+  if (!tabId) return;
+  clearTimeout(gitFooterPayloadSettlementTimersByTab.get(tabId));
+  gitFooterPayloadSettlementTimersByTab.delete(tabId);
+  gitFooterPayloadStateByTab.set(tabId, { phase, error });
+}
+
+function waitForGitFooterPayloadSettlement(tabContext, requestSerial) {
+  clearTimeout(gitFooterPayloadSettlementTimersByTab.get(tabContext.tabId));
+  const timer = setTimeout(() => {
+    gitFooterPayloadSettlementTimersByTab.delete(tabContext.tabId);
+    if (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) !== requestSerial) return;
+    if (gitFooterPayloadStateByTab.get(tabContext.tabId)?.phase === "waiting") {
+      settleGitFooterPayload(tabContext.tabId, "failed", "Git footer status was not received — refresh to retry");
+    }
+    if (isCurrentTabContext(tabContext)) renderFooter();
+  }, GIT_FOOTER_PAYLOAD_SETTLEMENT_TIMEOUT_MS);
+  gitFooterPayloadSettlementTimersByTab.set(tabContext.tabId, timer);
+}
+
 function requestGitFooterWebuiPayload(tabContext = activeTabContext(), { force = false, silent = true, allowDuringRun = false } = {}) {
   if (!tabContext.tabId || isOptionalFeatureDisabled("gitFooterStatus")) return;
   if (!allowDuringRun && (currentState?.isStreaming || currentState?.isCompacting)) return;
   const refreshCommand = resolveAvailableCommandName("git-footer-refresh", { rpcOnly: true });
-  if (!refreshCommand || (!force && statusEntries.has(GIT_FOOTER_WEBUI_STATUS_KEY))) return;
+  if (!refreshCommand) {
+    if (hasAvailableCommand("git-footer-refresh") || optionalFeatureAvailability.gitFooterStatus) {
+      gitFooterPayloadRefreshInFlightByTab.delete(tabContext.tabId);
+      const requestSerial = (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) || 0) + 1;
+      gitFooterPayloadRequestSerialByTab.set(tabContext.tabId, requestSerial);
+      settleGitFooterPayload(tabContext.tabId, "waiting");
+      const timer = setTimeout(() => {
+        gitFooterPayloadSettlementTimersByTab.delete(tabContext.tabId);
+        if (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) !== requestSerial) return;
+        if (gitFooterPayloadStateByTab.get(tabContext.tabId)?.phase === "waiting") {
+          settleGitFooterPayload(tabContext.tabId, "failed", "Git footer refresh command is unavailable — reload to retry");
+        }
+        if (isCurrentTabContext(tabContext)) renderFooter();
+      }, GIT_FOOTER_PAYLOAD_SETTLEMENT_TIMEOUT_MS);
+      gitFooterPayloadSettlementTimersByTab.set(tabContext.tabId, timer);
+      if (isCurrentTabContext(tabContext)) renderFooter();
+    }
+    return;
+  }
+  if (!force && statusEntries.has(GIT_FOOTER_WEBUI_STATUS_KEY)) return;
   if (gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId)) return;
 
+  const requestSerial = (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) || 0) + 1;
+  gitFooterPayloadRequestSerialByTab.set(tabContext.tabId, requestSerial);
+  settleGitFooterPayload(tabContext.tabId, "waiting");
   gitFooterPayloadRefreshInFlightByTab.add(tabContext.tabId);
   if (isCurrentTabContext(tabContext)) renderFooter();
   return api("/api/prompt", {
     method: "POST",
     body: { message: `/${refreshCommand}${silent ? " --webui-silent" : ""}`, streamingBehavior: "steer" },
     tabId: tabContext.tabId,
+    signal: AbortSignal.timeout(GIT_FOOTER_PAYLOAD_REQUEST_TIMEOUT_MS),
+  }).then(() => {
+    if (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) !== requestSerial) return;
+    if (gitFooterPayloadStateByTab.get(tabContext.tabId)?.phase === "waiting") waitForGitFooterPayloadSettlement(tabContext, requestSerial);
   }).catch((error) => {
-    if (isCurrentTabContext(tabContext)) addEvent(`git footer payload refresh failed: ${error.message || String(error)}`, "warn");
+    if (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) !== requestSerial) return;
+    const message = `Git footer refresh failed: ${error.message || String(error)}`;
+    settleGitFooterPayload(tabContext.tabId, "failed", "Git footer refresh failed — refresh to retry");
+    if (isCurrentTabContext(tabContext)) {
+      if (silent) addEvent(message, "warn");
+      else surfaceRuntimeDiagnostic("Git footer refresh failed", message, "warn");
+    }
   }).finally(() => {
     gitFooterPayloadRefreshInFlightByTab.delete(tabContext.tabId);
+    if (gitFooterPayloadRequestSerialByTab.get(tabContext.tabId) !== requestSerial) return;
     if (isCurrentTabContext(tabContext)) renderFooter();
   });
 }
@@ -31799,9 +31896,18 @@ function handleExtensionUiRequest(request) {
       }
       if (request.statusText) {
         statusEntries.set(statusKey, request.statusText);
-        if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) cacheGitFooterWebuiPayload(request.statusText, request.tabId);
+        if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) {
+          const validPayload = !!parseGitFooterWebuiPayloadRaw(request.statusText);
+          cacheGitFooterWebuiPayload(request.statusText, request.tabId);
+          settleGitFooterPayload(
+            request.tabId || activeTabId,
+            validPayload ? "ready" : "failed",
+            validPayload ? "" : "Git footer returned invalid status data — refresh to retry",
+          );
+        }
       } else {
         statusEntries.delete(statusKey);
+        if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) settleGitFooterPayload(request.tabId || activeTabId, "idle");
       }
       if (statusKey === STATS_WEBUI_STATUS_KEY) handleStatsWebuiStatus(request.statusText);
       if (statusKey === BTW_WEBUI_STATUS_KEY) handleBtwWebuiStatus(request.statusText);

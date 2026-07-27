@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createConnection, createServer } from "node:net";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +39,7 @@ const rawPiScript = String.raw`
       setTimeout(() => process.exit(0), 2500).unref();
       return;
     }
-    if (command.type === "extension_ui_response") return;
+    if (command.type === "no_response" || command.type === "extension_ui_response") return;
     if (command.type === "flood") {
       send({ type: "response", id: command.id, data: { accepted: true } });
       for (let index = 0; index < 80; index += 1) send({ type: "large_event", index, tokens: { keep: index }, body: "r".repeat(72 * 1024) });
@@ -88,6 +88,16 @@ async function waitFor(label, predicate, timeoutMs = 5_000) {
     await delay(20);
   }
   throw new Error(`${label} did not happen within ${timeoutMs}ms`);
+}
+
+function pidIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
 }
 
 let client;
@@ -142,6 +152,79 @@ try {
   const written = await waitFor("raw write log", async () => (await rawLines()).find((line) => line.type === "extension_ui_response"));
   assert.deepEqual(written, rawWrite, "fire-and-forget writes must reach Pi unchanged and without an injected request ID");
 
+  const pendingCommand = client.command("raw-tab", { type: "no_response" }, { requestId: "pending-before-ui-write", timeoutMs: 700 });
+  await waitFor("pending command admission", async () => (await rawLines()).some((line) => line.type === "no_response"));
+  const queuedProbe = await Promise.race([
+    client.command("raw-tab", { type: "queued_behind_pending_response" }, { requestId: "queued-behind-pending-response", timeoutMs: 500 }),
+    delay(300).then(() => { throw new Error("a pending Pi response held the supervisor admission queue"); }),
+  ]);
+  assert.equal(queuedProbe.data.type, "queued_behind_pending_response", "later commands should be admitted without waiting for an earlier Pi response");
+  await Promise.race([
+    client.write("raw-tab", { type: "extension_ui_response", id: "ui-behind-pending-command" }, { requestId: "ui-behind-pending-command" }),
+    delay(300).then(() => { throw new Error("extension UI response deadlocked behind a pending Pi command"); }),
+  ]);
+  await waitFor("extension UI response behind pending command", async () => (await rawLines()).some((line) => line.id === "ui-behind-pending-command"));
+  await assert.rejects(pendingCommand, /Timed out waiting for RPC response/, "the deliberately unanswered command should retain its own response timeout");
+
+  const metadataUpdates = [];
+  let metadataSerial = 0;
+  const metadataFlood = setInterval(() => {
+    metadataSerial += 1;
+    metadataUpdates.push(client.updateTab("raw-tab", {
+      title: `Raw ${metadataSerial}`,
+      index: 1,
+      cwd: work,
+      sessionFile: path.join(work, "raw.jsonl"),
+    }));
+  }, 1);
+  try {
+    await delay(40);
+    const starvationProbe = await Promise.race([
+      client.command("raw-tab", { type: "metadata_starvation_probe" }, { requestId: "metadata-starvation-probe" }),
+      delay(3_000).then(() => { throw new Error("RPC command starved behind continuous metadata updates"); }),
+    ]);
+    assert.equal(starvationProbe.data.type, "metadata_starvation_probe", "commands should take a FIFO admission position instead of chasing a continuously moving metadata tail");
+  } finally {
+    clearInterval(metadataFlood);
+    const updateResults = await Promise.allSettled(metadataUpdates);
+    assert.ok(updateResults.length > 0 && updateResults.every((result) => result.status === "fulfilled"), "metadata flood must consist of successful updates");
+  }
+
+  const replacementCwd = path.join(work, "replacement-cwd");
+  await mkdir(replacementCwd);
+  const originalRawPid = client.snapshot.tabs.find((tab) => tab.id === "raw-tab")?.pid;
+  const replacedRawTab = await client.replaceTab({
+    tabId: "raw-tab",
+    metadata: { title: "Raw", index: 1, cwd: replacementCwd, sessionFile: path.join(work, "raw.jsonl") },
+    child: { command: process.execPath, args: ["-e", rawPiScript], cwd: replacementCwd },
+  });
+  assert.equal(replacedRawTab.metadata.cwd, replacementCwd, "successful replacement should publish the child cwd atomically");
+  assert.notEqual(replacedRawTab.pid, originalRawPid, "successful replacement should expose the replacement child PID");
+  const replacedRawResponse = await client.command("raw-tab", { type: "replacement_probe" }, { requestId: "replacement-probe" });
+  assert.equal(replacedRawResponse.data.type, "replacement_probe", "replacement child should accept RPC commands after replace resolves");
+
+  const concurrentCwdA = path.join(work, "concurrent-cwd-a");
+  const concurrentCwdB = path.join(work, "concurrent-cwd-b");
+  await Promise.all([mkdir(concurrentCwdA), mkdir(concurrentCwdB)]);
+  const [concurrentA, concurrentB] = await Promise.all([
+    client.replaceTab({
+      tabId: "raw-tab",
+      metadata: { title: "Raw A", index: 1, cwd: concurrentCwdA, sessionFile: path.join(work, "raw.jsonl") },
+      child: { command: process.execPath, args: ["-e", rawPiScript], cwd: concurrentCwdA },
+    }),
+    client.replaceTab({
+      tabId: "raw-tab",
+      metadata: { title: "Raw B", index: 1, cwd: concurrentCwdB, sessionFile: path.join(work, "raw.jsonl") },
+      child: { command: process.execPath, args: ["-e", rawPiScript], cwd: concurrentCwdB },
+    }),
+  ]);
+  assert.equal(concurrentA.metadata.cwd, concurrentCwdA, "first queued replacement should resolve with its own committed cwd");
+  assert.equal(concurrentB.metadata.cwd, concurrentCwdB, "second queued replacement should resolve with its own committed cwd");
+  assert.notEqual(concurrentA.pid, concurrentB.pid, "serialized replacements should use distinct child processes");
+  await waitFor("superseded replacement child exit", () => !pidIsAlive(concurrentA.pid));
+  const concurrentProbe = await client.command("raw-tab", { type: "concurrent_replacement_probe" }, { requestId: "concurrent-replacement-probe" });
+  assert.equal(concurrentProbe.data.type, "concurrent_replacement_probe", "commands arriving after queued replacements should reach the final child");
+
   const deliveredStartupEvents = [];
   const unsubscribe = client.onEvent((event) => deliveredStartupEvents.push(event));
   await client.command("raw-tab", { type: "emit_one" }, { requestId: "startup-buffer-event" });
@@ -156,6 +239,21 @@ try {
   const state = await readSupervisorState(paths);
   assert.equal(state.tabs.length, 2);
   assert.equal(state.tabs.find((tab) => tab.id === "tab-1").metadata.apiToken, undefined, "private metadata fields must not reach the state snapshot");
+
+  const failedReplacementCwd = path.join(work, "failed-replacement-cwd");
+  await mkdir(failedReplacementCwd);
+  await assert.rejects(
+    client.replaceTab({
+      tabId: "tab-1",
+      metadata: { title: "One", index: 0, cwd: failedReplacementCwd, sessionFile: path.join(work, "one.jsonl") },
+      child: { command: path.join(work, "missing-pi-executable"), args: [], cwd: failedReplacementCwd },
+    }),
+    /ENOENT|spawn/i,
+    "replace should reject when the replacement child cannot spawn",
+  );
+  await delay(50);
+  const stateAfterFailedReplacement = await readSupervisorState(paths);
+  assert.equal(stateAfterFailedReplacement.tabs.find((tab) => tab.id === "tab-1").metadata.cwd, work, "failed replacement must not persist the requested cwd");
 
   replacement = await discoverStartAttachRpcSupervisor({ agentDir, port, controllerId: "replacement-controller", startupTimeoutMs: 5_000 });
   await assert.rejects(client.command("tab-1", { type: "get_state" }), /fenced|closed|not attached/i, "newer attachment must fence prior controller writes");
