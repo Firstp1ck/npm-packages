@@ -367,8 +367,12 @@ export function reduceIssueWizardState(state = createIssueWizardState(), action 
   }
 }
 
+function neutralizeGithubReferences(value) {
+  return value.replace(/@(?=[A-Za-z0-9_-])/gu, "@\u200B").replace(/#(?=\d)/gu, "#\u200B");
+}
+
 function escapeMarkdown(value) {
-  return normalizedText(value)
+  return neutralizeGithubReferences(normalizedText(value))
     .replace(/\\/g, "\\\\")
     .replace(/([`*_{}\[\]<>()[\]|])/g, "\\$1")
     .replace(/^([>#]|[-+]|\d+\.)/gm, "\\$1");
@@ -397,7 +401,7 @@ export function buildIssuePayload(state, catalog) {
   const component = componentFor(catalog, state.componentId);
   const template = templateFor(catalog, state.templateId);
   const summary = normalizedTitleSummary(state.summary);
-  const title = `[${category.label}] [${component.label}] [${template.label}] ${summary}`;
+  const title = `[${category.label}] [${component.label}] [${template.label}] ${neutralizeGithubReferences(summary)}`;
   const details = template.fields.flatMap((field) => [
     `### ${field.label}`,
     fieldValueForBody(field, state.fields[field.id]),
@@ -434,6 +438,6 @@ export async function submitIssueToGithubBot(_payload) {
   return Object.freeze({
     ok: false,
     status: "unavailable",
-    message: "Send to GitHub bot is coming soon. Copy the issue instead.",
+    message: "Automatic submission is coming soon. Copy the issue instead.",
   });
 }

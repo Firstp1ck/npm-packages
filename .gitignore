@@ -17,3 +17,4 @@ pi-package-webui/plans/
 pi-extension-workflows/reports/
 reports/
 plans/
+services/issue-bot-gateway/.wrangler/

@@ -1,0 +1,29 @@
+{
+  "name": "@firstpick/issue-bot-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fail-closed public intake Worker for Pi WebUI issue submissions.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx --test test/shared-*.test.ts test/intake-*.test.ts test/consumer-*.test.ts test/d1-*.test.ts test/e2e-*.test.ts",
+    "test:shared": "tsx --test test/shared-*.test.ts",
+    "test:intake": "tsx --test test/intake-*.test.ts",
+    "test:consumer": "tsx --test test/consumer-*.test.ts",
+    "test:e2e": "tsx --test test/e2e-*.test.ts",
+    "canary:openai": "tsx scripts/openai-canary.ts",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "typebox": "^1.3.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.15.2"
+  }
+}

@@ -1,0 +1,77 @@
+# Copy this file into deployment-specific configuration. Do not put secret values in TOML.
+# Intake is the only HTTP-reachable Worker. Deploy the consumer explicitly with
+# `wrangler deploy --config wrangler.toml --env consumer --main consumer/index.ts`.
+name = "pi-webui-issue-bot-intake"
+main = "intake/index.ts"
+compatibility_date = "2025-04-01"
+workers_dev = false
+
+[vars]
+ISSUE_BOT_ADMISSION_ENABLED = "false"
+ISSUE_BOT_POLICY_VERSION = "1"
+# Comma-separated exact browser origins. An empty value denies browser admission.
+ISSUE_BOT_ALLOWED_ORIGINS = ""
+# Deployment-specific Turnstile hostname/action checks. Empty values do not bypass
+# verification; they merely omit optional response assertions.
+TURNSTILE_ALLOWED_HOSTNAMES = ""
+TURNSTILE_EXPECTED_ACTION = ""
+SUBMISSION_RETENTION_DAYS = "7"
+DUPLICATE_COOLDOWN_SECONDS = "86400"
+
+[triggers]
+# Mandatory: retries pending outbox rows and enforces retention/privacy cleanup.
+crons = ["*/5 * * * *"]
+
+[[d1_databases]]
+binding = "ISSUE_BOT_DB"
+database_name = "pi-webui-issue-bot"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[queues.producers]]
+binding = "ISSUE_BOT_QUEUE"
+queue = "pi-webui-issue-bot"
+
+# Deploy this private Queue-only Worker explicitly with:
+# wrangler deploy --config wrangler.toml --env consumer
+# Do not configure routes, workers.dev, or a fetch handler for this environment.
+[env.consumer]
+main = "consumer/index.ts"
+
+[[env.consumer.d1_databases]]
+binding = "ISSUE_BOT_DB"
+database_name = "pi-webui-issue-bot"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[env.consumer.vars]
+ISSUE_BOT_CREATE_ENABLED = "false"
+ISSUE_BOT_POLICY_VERSION = "1"
+ISSUE_BOT_MODEL = "gpt-5.6-terra"
+# Exact repository target and fixed labels are deployment-owned, not browser/model input.
+ISSUE_BOT_GITHUB_OWNER = "REPLACE_WITH_OWNER"
+ISSUE_BOT_GITHUB_REPOSITORY = "REPLACE_WITH_REPOSITORY"
+ISSUE_BOT_GITHUB_APP_SLUG = "REPLACE_WITH_APP_SLUG"
+ISSUE_BOT_LABELS = ""
+# Main queue and DLQ are both consumed by the private Worker. DLQ delivery marks a
+# submission unavailable without calling OpenAI or GitHub.
+ISSUE_BOT_MAIN_QUEUE_NAME = "pi-webui-issue-bot"
+ISSUE_BOT_DLQ_NAME = "pi-webui-issue-bot-dlq"
+ISSUE_BOT_RECONCILIATION_PAGES = "3"
+
+[[env.consumer.queues.consumers]]
+queue = "pi-webui-issue-bot"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "pi-webui-issue-bot-dlq"
+
+[[env.consumer.queues.consumers]]
+queue = "pi-webui-issue-bot-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+
+# Required intake secrets, set with `wrangler secret put`; never add values here:
+# TURNSTILE_SECRET_KEY, IP_HASH_KEY, STATUS_TOKEN_KEY
+# Consumer-only secrets (set only on the private consumer Worker):
+# OPENAI_API_KEY, GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY

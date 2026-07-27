@@ -12,7 +12,17 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=85" />
+    <link rel="stylesheet" href="/styles.css?v=86" />
+    <script>
+      // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
+      // Turnstile site key, exact CORS origin, and private-report destination are approved.
+      window.__PI_WEBUI_ISSUE_BOT_CONFIG__ ??= Object.freeze({
+        enabled: false,
+        gatewayBaseUrl: "",
+        turnstileSiteKey: "",
+        privateSecurityReportUrl: "",
+      });
+    </script>
     <style id="webuiBootFailureStyles">
       .webui-boot-failure[hidden] { display: none !important; }
       .webui-boot-failure {
@@ -947,13 +957,22 @@
           <section class="issue-wizard-page" data-issue-wizard-page="5" aria-label="Step 5: review GitHub issue" hidden></section>
         </div>
         <p id="issueWizardStatus" class="issue-wizard-status muted" role="status" aria-live="polite" aria-atomic="true">Start by choosing an issue category.</p>
+        <section id="issueWizardSubmissionStatus" class="issue-wizard-submission-status" role="status" aria-live="polite" aria-atomic="true" hidden>
+          <p id="issueWizardSubmissionMessage" class="issue-wizard-submission-message"></p>
+          <div class="issue-wizard-submission-actions">
+            <a id="issueWizardSubmissionLink" target="_blank" rel="noopener noreferrer" hidden></a>
+            <button id="issueWizardRefreshButton" type="button" hidden>Refresh status</button>
+          </div>
+          <p id="issueWizardSecurityGuidance" class="issue-wizard-security-guidance" hidden>Do not include security details or credentials in a public issue. <a id="issueWizardSecurityLink" target="_blank" rel="noopener noreferrer" hidden>Use private vulnerability reporting</a>.</p>
+        </section>
+        <div id="issueWizardTurnstile" class="issue-wizard-turnstile" aria-label="Bot protection challenge"></div>
         <menu class="issue-wizard-actions">
           <button id="issueWizardBackButton" type="button">Back</button>
           <button id="issueWizardContinueButton" class="primary" type="button" disabled>Continue</button>
           <button id="issueWizardCopyButton" type="button" hidden>Copy complete issue</button>
-          <button id="issueWizardBotButton" type="button" disabled hidden aria-describedby="issueWizardBotHint">Send to GitHub bot (coming soon)</button>
+          <button id="issueWizardBotButton" type="button" disabled hidden aria-describedby="issueWizardBotHint issueWizardSubmissionStatus">Send</button>
         </menu>
-        <p id="issueWizardBotHint" class="issue-wizard-bot-hint muted" hidden>The GitHub bot is not available yet. Copy the issue and create it manually instead.</p>
+        <p id="issueWizardBotHint" class="issue-wizard-bot-hint muted" hidden>Automated submission is not enabled. Copy the issue and create it manually instead.</p>
       </form>
     </dialog>
 

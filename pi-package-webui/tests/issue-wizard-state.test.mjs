@@ -120,7 +120,7 @@ const submission = await submitIssueToGithubBot(payload);
 assert.deepEqual(submission, {
   ok: false,
   status: "unavailable",
-  message: "Send to GitHub bot is coming soon. Copy the issue instead.",
+  message: "Automatic submission is coming soon. Copy the issue instead.",
 }, "the future submission seam must explicitly remain unavailable");
 
 console.log("issue-wizard-state.test.mjs passed");

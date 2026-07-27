@@ -471,6 +471,29 @@ Use the workflow process buttons to jump directly to **Initialize**, **Stage**, 
 
 This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; branch-name generation uses `/git-branch-name`. Creating the PR also requires an authenticated GitHub CLI (`gh`). Review the generated commit message, branch name, remote URL, and PR description before committing, pushing, or creating a PR.
 
+## Open Issue bot
+
+The **Open Issue** Control Deck action always keeps **Copy complete issue** available. Automated submission is intentionally disabled by default and sends no request unless a deployment supplies the public configuration below before `app.js` loads. These are public routing values only—never put a Cloudflare secret, OpenAI key, GitHub App credential, status capability, or repository-write token in this object.
+
+```html
+<script>
+  window.__PI_WEBUI_ISSUE_BOT_CONFIG__ = Object.freeze({
+    enabled: true,
+    gatewayBaseUrl: "https://issue-intake.example.com",
+    turnstileSiteKey: "public-turnstile-site-key",
+    privateSecurityReportUrl: "https://github.com/OWNER/REPOSITORY/security/advisories/new"
+  });
+</script>
+```
+
+Replace the disabled object in the deployed `public/index.html`, or inject the same object in the hosting HTML before the package's default configuration block. The client accepts only an HTTPS gateway/base URL without credentials, query, or fragment; a syntactically invalid or incomplete configuration fails closed and leaves the button disabled. `turnstileSiteKey` and the private-report URL are public values. The configured intake must allow the exact WebUI `Origin`; do not use a wildcard CORS policy. If a Content Security Policy is present, permit `https://challenges.cloudflare.com` for the Turnstile script/frame requests as documented by Turnstile.
+
+When enabled, each click obtains a fresh Turnstile token and UUID-v4, then posts only `{ schemaVersion, idempotencyKey, turnstileToken, issue }` to `POST /v1/submissions`. `issue` is the selected structured wizard state (`categoryId`, `componentId`, `templateId`, `summary`, and declared fields); editable canonical title/body, repository, labels, verdicts, callback URLs, and credentials are never sent. The returned status capability remains only in an opaque in-memory refresh handle for the open dialog. Nothing in this flow uses `localStorage`, `sessionStorage`, cookies, or draft persistence.
+
+The dialog shows queued/checking/created/rejected/review/unavailable/unknown status in a persistent live region. It polls the capability endpoint with bounded exponential delays (initial server delay, capped at 10 seconds) for at most two minutes, then offers **Refresh status** rather than continuing in the background. Closing the dialog aborts Turnstile, admission, or polling. A created result must be a validated `https://github.com/<owner>/<repo>/issues/<number>` link and opens with `noopener noreferrer`. Sensitive-content outcomes show only the configured private-report destination; the wizard never echoes the submitted security text. Rejection, review, unavailable, unknown, and polling-timeout paths retain the copy fallback.
+
+Keep this browser configuration disabled until the gateway's exact-origin CORS policy, Turnstile hostname/action checks, private reporting URL, staging canary, quotas, and both gateway kill-switch decisions have passed review. Browser enablement does not bypass `ISSUE_BOT_ADMISSION_ENABLED` or `ISSUE_BOT_CREATE_ENABLED`; production creation remains a separate operator approval.
+
 ## Mobile and PWA notes
 
 - The mobile composer starts as a compact `Ask Pi…` input and grows as you type.

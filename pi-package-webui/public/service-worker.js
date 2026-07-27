@@ -1,10 +1,11 @@
-const CACHE_NAME = "pi-webui-pwa-v47";
+const CACHE_NAME = "pi-webui-pwa-v48";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
   "/issue-wizard-state.mjs",
+  "/issue-bot-client.mjs",
   "/aur-review-payload.mjs",
   "/guided-git-command-state.mjs",
   "/guided-git-review-state.mjs",

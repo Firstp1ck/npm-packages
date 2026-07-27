@@ -5,7 +5,8 @@ import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiv
 import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
 import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
 import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
-import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState, submitIssueToGithubBot } from "./issue-wizard-state.mjs";
+import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
+import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -250,6 +251,13 @@ const elements = {
   issueWizardPages: $("#issueWizardPages"),
   issueWizardProgress: $("#issueWizardProgress"),
   issueWizardStatus: $("#issueWizardStatus"),
+  issueWizardSubmissionStatus: $("#issueWizardSubmissionStatus"),
+  issueWizardSubmissionMessage: $("#issueWizardSubmissionMessage"),
+  issueWizardSubmissionLink: $("#issueWizardSubmissionLink"),
+  issueWizardRefreshButton: $("#issueWizardRefreshButton"),
+  issueWizardSecurityGuidance: $("#issueWizardSecurityGuidance"),
+  issueWizardSecurityLink: $("#issueWizardSecurityLink"),
+  issueWizardTurnstile: $("#issueWizardTurnstile"),
   issueWizardCloseButton: $("#issueWizardCloseButton"),
   issueWizardBackButton: $("#issueWizardBackButton"),
   issueWizardContinueButton: $("#issueWizardContinueButton"),
@@ -1084,6 +1092,12 @@ const OPTIONAL_FEATURE_BY_ID = new Map(OPTIONAL_FEATURES.map((feature) => [featu
 
 let issueWizardCatalog = null;
 let issueWizardState = createIssueWizardState();
+const issueBotRuntimeConfig = readIssueBotRuntimeConfig();
+let issueBotClient = null;
+let issueBotAbortController = null;
+let issueBotSubmissionHandle = null;
+let issueBotSubmissionResult = null;
+let issueBotRequestActive = false;
 
 function setIssueWizardStatus(message) {
   if (elements.issueWizardStatus) elements.issueWizardStatus.textContent = message;
@@ -1245,18 +1259,66 @@ function renderIssueWizardReview(page) {
   page.append(titleWrap, bodyWrap);
 }
 
+function issueBotMessage(result) {
+  if (result?.phase === "admitting") return "Verifying bot protection and submitting the structured report…";
+  switch (result?.status) {
+    case "queued": return result.timedOut ? "The report is still queued. Refresh status when you are ready." : "The report is queued for automated checks…";
+    case "checking": return result.timedOut ? "The report is still being checked. Refresh status when you are ready." : "The report is being checked…";
+    case "created": return `GitHub issue #${result.issueNumber} was created.`;
+    case "rejected": return "This report was not accepted for automated public issue creation. You can still copy it and create an issue manually.";
+    case "review": return "This report needs manual review and was not published automatically. You can still copy it and create an issue manually.";
+    case "unknown": return "The creation result is unknown; no further automatic issue creation will be attempted. You can copy the issue instead.";
+    default: return "Automated submission is unavailable. You can still copy the complete issue.";
+  }
+}
+
+function renderIssueWizardSubmissionStatus() {
+  const result = issueBotSubmissionResult;
+  if (elements.issueWizardSubmissionStatus) elements.issueWizardSubmissionStatus.hidden = !result;
+  if (elements.issueWizardSubmissionMessage) elements.issueWizardSubmissionMessage.textContent = result ? issueBotMessage(result) : "";
+  const created = result?.status === "created" && typeof result.issueUrl === "string";
+  if (elements.issueWizardSubmissionLink) {
+    elements.issueWizardSubmissionLink.hidden = !created;
+    elements.issueWizardSubmissionLink.href = created ? result.issueUrl : "";
+    elements.issueWizardSubmissionLink.textContent = created ? "View confirmed GitHub issue" : "";
+  }
+  const showRefresh = !!result?.timedOut && !!issueBotSubmissionHandle;
+  if (elements.issueWizardRefreshButton) {
+    elements.issueWizardRefreshButton.hidden = !showRefresh;
+    elements.issueWizardRefreshButton.disabled = issueBotRequestActive;
+  }
+  const sensitive = result?.reasonCode === "sensitive_content";
+  const hasPrivateReportUrl = !!issueBotRuntimeConfig.privateSecurityReportUrl;
+  if (elements.issueWizardSecurityGuidance) elements.issueWizardSecurityGuidance.hidden = !sensitive || !hasPrivateReportUrl;
+  if (elements.issueWizardSecurityLink) {
+    elements.issueWizardSecurityLink.hidden = !sensitive || !hasPrivateReportUrl;
+    elements.issueWizardSecurityLink.href = sensitive && hasPrivateReportUrl ? issueBotRuntimeConfig.privateSecurityReportUrl : "";
+  }
+}
+
 function renderIssueWizardNavigation() {
   const step = issueWizardState.step;
+  const botAvailable = !!issueBotClient?.available;
   if (elements.issueWizardProgress) elements.issueWizardProgress.textContent = `Step ${step} of 5`;
-  if (elements.issueWizardBackButton) elements.issueWizardBackButton.disabled = step === 1;
+  if (elements.issueWizardBackButton) elements.issueWizardBackButton.disabled = step === 1 || issueBotRequestActive;
   if (elements.issueWizardContinueButton) {
     elements.issueWizardContinueButton.hidden = step === 5;
-    elements.issueWizardContinueButton.disabled = !isIssueWizardStepValid(issueWizardState, issueWizardCatalog, step);
+    elements.issueWizardContinueButton.disabled = issueBotRequestActive || !isIssueWizardStepValid(issueWizardState, issueWizardCatalog, step);
     elements.issueWizardContinueButton.textContent = step === 4 ? "Review issue" : "Continue";
   }
   if (elements.issueWizardCopyButton) elements.issueWizardCopyButton.hidden = step !== 5;
-  if (elements.issueWizardBotButton) elements.issueWizardBotButton.hidden = step !== 5;
-  if (elements.issueWizardBotHint) elements.issueWizardBotHint.hidden = step !== 5;
+  if (elements.issueWizardBotButton) {
+    elements.issueWizardBotButton.hidden = step !== 5;
+    elements.issueWizardBotButton.disabled = !botAvailable || issueBotRequestActive;
+    elements.issueWizardBotButton.textContent = issueBotRequestActive ? "Checking issue status…" : "Send";
+  }
+  if (elements.issueWizardBotHint) {
+    elements.issueWizardBotHint.hidden = step !== 5;
+    elements.issueWizardBotHint.textContent = botAvailable
+      ? "The bot submits only the structured wizard state. Keep private security details out of public reports."
+      : "Automated submission is not enabled. Copy the issue and create it manually instead.";
+  }
+  renderIssueWizardSubmissionStatus();
   setIssueWizardStatus(`Step ${step} of 5.`);
 }
 
@@ -1283,7 +1345,7 @@ function renderIssueWizard() {
     page.append(make("p", "issue-wizard-intro", "Add the details needed for a clear, actionable issue."));
     renderIssueWizardDetails(page);
   } else {
-    page.append(make("p", "issue-wizard-intro", "Review the exact GitHub title and Markdown body before copying."));
+    page.append(make("p", "issue-wizard-intro", "Review the exact GitHub title and Markdown body before copying or submitting."));
     renderIssueWizardReview(page);
   }
   renderIssueWizardNavigation();
@@ -1299,34 +1361,116 @@ async function copyIssueWizardPayload() {
   }
 }
 
+function structuredIssueWizardState() {
+  return {
+    categoryId: issueWizardState.categoryId,
+    componentId: issueWizardState.componentId,
+    templateId: issueWizardState.templateId,
+    summary: issueWizardState.summary,
+    fields: { ...issueWizardState.fields },
+  };
+}
+
+function reportIssueBotStatus(result) {
+  issueBotSubmissionResult = result;
+  renderIssueWizardSubmissionStatus();
+}
+
+function clearIssueBotSubmission({ abort = false } = {}) {
+  if (abort) issueBotAbortController?.abort();
+  issueBotAbortController = null;
+  issueBotSubmissionHandle = null;
+  issueBotSubmissionResult = null;
+  issueBotRequestActive = false;
+  elements.issueWizardTurnstile?.replaceChildren();
+  renderIssueWizardSubmissionStatus();
+}
+
 async function sendIssueToGithubBot() {
-  const payload = buildIssuePayload(issueWizardState, issueWizardCatalog);
-  const result = await submitIssueToGithubBot(payload);
-  setIssueWizardStatus(result.message);
+  if (!issueBotClient?.available || issueBotRequestActive) return;
+  try {
+    // Preserve the existing canonical builder as the review/copy authority, but never send title/body to the gateway.
+    buildIssuePayload(issueWizardState, issueWizardCatalog);
+  } catch {
+    setIssueWizardStatus("Complete the required wizard details before submitting.");
+    return;
+  }
+  const controller = new AbortController();
+  issueBotAbortController = controller;
+  issueBotRequestActive = true;
+  issueBotSubmissionHandle = null;
+  reportIssueBotStatus(Object.freeze({ status: "checking", phase: "admitting" }));
+  renderIssueWizardNavigation();
+  try {
+    const submission = await issueBotClient.submit({
+      issue: structuredIssueWizardState(),
+      signal: controller.signal,
+      onStatus: reportIssueBotStatus,
+    });
+    if (controller.signal.aborted || issueBotAbortController !== controller) return;
+    issueBotSubmissionHandle = submission.handle;
+    reportIssueBotStatus(submission.result);
+  } catch (error) {
+    if (error?.name !== "AbortError" && issueBotAbortController === controller) {
+      reportIssueBotStatus(Object.freeze({ ok: false, status: "unavailable", reasonCode: "unavailable" }));
+    }
+  } finally {
+    if (issueBotAbortController !== controller) return;
+    issueBotAbortController = null;
+    issueBotRequestActive = false;
+    renderIssueWizardNavigation();
+  }
+}
+
+async function refreshIssueBotStatus() {
+  if (!issueBotSubmissionHandle || issueBotRequestActive) return;
+  const controller = new AbortController();
+  issueBotAbortController = controller;
+  issueBotRequestActive = true;
+  renderIssueWizardNavigation();
+  try {
+    const result = await issueBotSubmissionHandle.refresh({ signal: controller.signal, onStatus: reportIssueBotStatus });
+    if (!controller.signal.aborted && issueBotAbortController === controller) reportIssueBotStatus(result);
+  } catch (error) {
+    if (error?.name !== "AbortError" && issueBotAbortController === controller) {
+      reportIssueBotStatus(Object.freeze({ ok: false, status: "unavailable", reasonCode: "unavailable" }));
+    }
+  } finally {
+    if (issueBotAbortController !== controller) return;
+    issueBotAbortController = null;
+    issueBotRequestActive = false;
+    renderIssueWizardNavigation();
+  }
 }
 
 function initializeIssueWizard() {
   if (!elements.openIssueButton || !elements.issueWizardDialog) return;
   issueWizardCatalog = createIssueWizardCatalog(OPTIONAL_FEATURES.map((feature) => feature.label));
+  issueBotClient = createIssueBotClient({ config: issueBotRuntimeConfig, turnstileContainer: elements.issueWizardTurnstile });
   elements.openIssueButton.addEventListener("click", () => {
+    clearIssueBotSubmission({ abort: true });
     issueWizardState = createIssueWizardState();
     renderIssueWizard();
     if (!elements.issueWizardDialog.open) elements.issueWizardDialog.showModal();
     queueMicrotask(() => issueWizardPage(1)?.querySelector("button")?.focus({ preventScroll: true }));
   });
   elements.issueWizardCloseButton?.addEventListener("click", () => elements.issueWizardDialog.close());
+  elements.issueWizardDialog.addEventListener("close", () => clearIssueBotSubmission({ abort: true }));
   elements.issueWizardBackButton?.addEventListener("click", () => {
+    if (issueBotRequestActive) return;
     issueWizardState = reduceIssueWizardState(issueWizardState, { type: "back" }, issueWizardCatalog);
     renderIssueWizard();
     focusIssueWizardPage();
   });
   elements.issueWizardContinueButton?.addEventListener("click", () => {
+    if (issueBotRequestActive) return;
     issueWizardState = reduceIssueWizardState(issueWizardState, { type: "next" }, issueWizardCatalog);
     renderIssueWizard();
     focusIssueWizardPage();
   });
   elements.issueWizardCopyButton?.addEventListener("click", () => copyIssueWizardPayload());
   elements.issueWizardBotButton?.addEventListener("click", () => sendIssueToGithubBot());
+  elements.issueWizardRefreshButton?.addEventListener("click", () => refreshIssueBotStatus());
 }
 const OPTIONAL_FEATURE_SECTIONS = [
   {
@@ -9666,10 +9810,6 @@ function terminalAppRunnerLabel(run) {
   return command && command !== "app runner" ? `app runner: ${command}` : "app runner running";
 }
 
-function terminalAppRunnerTooltip(run) {
-  return appRunnerIsRunning(run) ? ` · ${terminalAppRunnerLabel(run)}` : "";
-}
-
 function tabConversationMode(tab) {
   if (!tab?.id) return normalizeConversationModeState(tab?.conversationMode || {});
   return normalizeConversationModeState(conversationModeByTab.get(tab.id) || tab.conversationMode || {});
@@ -9679,22 +9819,16 @@ function tabConversationModeActive(tab) {
   return tabConversationMode(tab).enabled === true;
 }
 
-function terminalConversationModeTooltip(tab) {
-  const mode = tabConversationMode(tab);
-  return mode.enabled ? ` · natural conversation: ${mode.uiState || "listening"}` : "";
-}
-
 function tabWorkflowModeActive(tab) {
   return normalizeWorkflowModeState(workflowModeByTab.get(tab?.id) || {}).enabled === true;
 }
 
-function terminalWorkflowTooltip(tab) {
-  const count = workflowRunningCountForTab(tab?.id);
-  return `${tabWorkflowModeActive(tab) ? " · workflow mode active" : ""}${count ? ` · ${count} workflow run${count === 1 ? "" : "s"} active` : ""}`;
+function terminalTabWorkspaceName(tab) {
+  return tabGroupTitle(tab?.cwd, "workspace");
 }
 
 function terminalTabMeta(tab, indicator) {
-  const parts = [tab.running ? `${indicator.meta} · pid ${tab.pid || "…"}` : "stopped"];
+  const parts = [tab.running ? `${indicator.meta} · ${terminalTabWorkspaceName(tab)}` : "stopped"];
   if (tabAppRunnerRunningRun(tab)) parts.push("app runner");
   if (tabConversationModeActive(tab)) parts.push("voice");
   if (tabWorkflowModeActive(tab)) parts.push("workflow mode");
@@ -9702,6 +9836,86 @@ function terminalTabMeta(tab, indicator) {
   if (workflowCount) parts.push(`${workflowCount} workflow${workflowCount === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
+
+function terminalTabGitTooltip(tab) {
+  const workspace = normalizeGitWorkspaceInfo(tab?.gitWorkspace);
+  if (!workspace) return "";
+  const checkout = workspace.worktreePath ? (workspace.isMainWorktree ? "main worktree" : "worktree") : "";
+  return [workspace.branch || "detached", checkout].filter(Boolean).join(" · ");
+}
+
+function terminalTabActiveTooltip(tab) {
+  const active = [];
+  const appRunnerRun = tabAppRunnerRunningRun(tab);
+  if (appRunnerRun) active.push(terminalAppRunnerLabel(appRunnerRun));
+  const conversationMode = tabConversationMode(tab);
+  if (conversationMode.enabled) active.push(`voice: ${conversationMode.uiState || "listening"}`);
+  const workflowCount = workflowRunningCountForTab(tab?.id);
+  if (tabWorkflowModeActive(tab)) active.push(workflowCount ? `workflow: ${workflowCount} run${workflowCount === 1 ? "" : "s"}` : "workflow mode");
+  else if (workflowCount) active.push(`workflow: ${workflowCount} run${workflowCount === 1 ? "" : "s"}`);
+  return active.join(" · ");
+}
+
+function terminalTabTooltip(tab) {
+  const lines = [
+    `${tab?.title || "Terminal tab"} · ${tabIndicator(tab).label}`,
+    `Working folder: ${normalizeDisplayPath(tab?.cwd || "") || "Not set"}`,
+  ];
+  const git = terminalTabGitTooltip(tab);
+  if (git) lines.push(`Git: ${git}`);
+  const active = terminalTabActiveTooltip(tab);
+  if (active) lines.push(`Active: ${active}`);
+  lines.push("Click to switch · Drag to group");
+  return lines.join("\n");
+}
+
+function terminalTabGroupStatusTooltip(groupTabs = []) {
+  const counts = { blocked: 0, working: 0, done: 0, idle: 0, stopped: 0 };
+  for (const tab of groupTabs) {
+    const state = tab?.running ? tabIndicator(tab).state : "stopped";
+    counts[state] = (counts[state] || 0) + 1;
+  }
+  return ["blocked", "working", "done", "idle", "stopped"]
+    .filter((state) => counts[state])
+    .map((state) => `${counts[state]} ${state}`)
+    .join(" · ");
+}
+
+function terminalTabGroupWorkspaceTooltip(group) {
+  const paths = [...new Set((group?.tabs || []).map((tab) => normalizeDisplayPath(tab?.cwd || "")).filter(Boolean))];
+  if (!group?.custom || paths.length <= 1) return `Working folder: ${paths[0] || normalizeDisplayPath(group?.cwd || "") || "Not set"}`;
+  const names = paths.map((path) => path.split("/").filter(Boolean).slice(-2).join("/") || path);
+  const remainder = names.length - 2;
+  return `Workspaces: ${names.slice(0, 2).join(", ")}${remainder > 0 ? ` +${remainder} more` : ""}`;
+}
+
+function terminalTabGroupActiveTooltip(groupTabs = []) {
+  const appRunners = groupTabs.filter(tabAppRunnerRunningRun).length;
+  const voices = groupTabs.filter(tabConversationModeActive).length;
+  const workflowTabs = groupTabs.filter(tabWorkflowModeActive).length;
+  const workflowRuns = groupTabs.reduce((total, tab) => total + workflowRunningCountForTab(tab?.id), 0);
+  return [
+    appRunners ? `${appRunners} app runner${appRunners === 1 ? "" : "s"}` : "",
+    voices ? `${voices} voice` : "",
+    workflowTabs ? `${workflowTabs} workflow tab${workflowTabs === 1 ? "" : "s"}` : "",
+    workflowRuns ? `${workflowRuns} workflow run${workflowRuns === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function terminalTabGroupTooltip(group, groupTitle = terminalDisplayGroupTitle(group)) {
+  const groupTabs = group?.tabs || [];
+  const lines = [
+    `${groupTitle} · ${groupTabs.length} tab${groupTabs.length === 1 ? "" : "s"}`,
+    terminalTabGroupWorkspaceTooltip(group),
+    `Status: ${terminalTabGroupStatusTooltip(groupTabs) || "No tabs"}`,
+  ];
+  const active = terminalTabGroupActiveTooltip(groupTabs);
+  if (active) lines.push(`Active: ${active}`);
+  lines.push("Click to switch · Drop tabs here to add");
+  return lines.join("\n");
+}
+
+let terminalTabGroupSummarySerial = 0;
 
 function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0, subagent = false }) {
   const titleRow = make("span", "terminal-tab-title-row");
@@ -9734,8 +9948,7 @@ function renderTerminalTab(tab) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)}${terminalWorkflowTooltip(tab)} · drag onto another tab or group to group`;
-  applyStyledTooltip(button, tooltip, { ariaLabel: false });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace" });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button);
@@ -9774,8 +9987,7 @@ function renderTerminalTabGroupItem(tab, group) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  const tooltip = `${tab.title} · ${indicator.label}${tab.running ? ` · pid ${tab.pid || "starting"}` : " · stopped"}${terminalAppRunnerTooltip(appRunnerRun)}${terminalConversationModeTooltip(tab)}${terminalWorkflowTooltip(tab)} · drag onto another tab or group to group`;
-  applyStyledTooltip(button, tooltip, { ariaLabel: false });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace" });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -9818,7 +10030,6 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   const workflowModeActive = groupTabs.some(tabWorkflowModeActive);
   const groupTitle = terminalDisplayGroupTitle(group, activeGroupTab?.title || "group");
   const activeTitle = activeGroupTab?.title || groupTitle;
-  const groupDetail = terminalDisplayGroupDetail(group, groupTitle);
   const wrapper = make("div", `terminal-tab terminal-tab-group${group.custom ? " terminal-tab-custom-group" : ""} activity-${indicator.state}${isActive ? " active" : ""}${isStopped ? " stopped" : ""}${appRunnerRun ? " app-runner-running" : ""}${workflowModeActive ? " workflow-mode-running" : ""}${workflowCount ? " workflow-run-running" : ""}`);
   wrapper.dataset.groupKey = group.key;
   if (group.customGroupId) wrapper.dataset.customGroupId = group.customGroupId;
@@ -9839,8 +10050,6 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
   button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}`);
-  const tooltip = `${activeTitle} · ${groupTitle} · ${groupDetail} · ${groupTabs.length} tabs · ${indicator.label}${appRunnerSummary ? ` · ${appRunnerSummary}` : ""}${workflowModeActive ? " · workflow mode active" : ""}${workflowCount ? ` · ${workflowCount} workflow runs active` : ""} · drop tabs here to add to group`;
-  applyStyledTooltip(button, tooltip, { ariaLabel: false });
   appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(activeGroupTab.id));
   wrapper.append(button);
@@ -9861,6 +10070,10 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   const menu = make("div", "terminal-tab-group-menu");
   menu.setAttribute("role", "group");
   menu.setAttribute("aria-label", `${groupTitle} tabs`);
+  const summary = make("div", "terminal-tab-group-summary", terminalTabGroupTooltip(group, groupTitle));
+  summary.id = `terminalTabGroupSummary${++terminalTabGroupSummarySerial}`;
+  button.setAttribute("aria-describedby", summary.id);
+  menu.append(summary);
   for (const tab of groupTabs) menu.append(renderTerminalTabGroupItem(tab, group));
 
   const add = make("button", "terminal-tab-group-add", "+ Tab");
@@ -11117,6 +11330,8 @@ let footerTooltipPendingTarget = null;
 function ensureFooterTooltipNode() {
   if (!footerTooltipNode) {
     footerTooltipNode = make("div", "footer-floating-tooltip");
+    footerTooltipNode.id = "footerFloatingTooltip";
+    footerTooltipNode.setAttribute("role", "tooltip");
     footerTooltipNode.hidden = true;
     document.body.append(footerTooltipNode);
   }
@@ -11125,6 +11340,9 @@ function ensureFooterTooltipNode() {
     const update = () => positionFooterTooltip(footerTooltipTarget);
     window.addEventListener("resize", update, { passive: true });
     window.addEventListener("scroll", update, { passive: true, capture: true });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && footerTooltipTarget) hideFooterTooltip(footerTooltipTarget);
+    }, true);
   }
   return footerTooltipNode;
 }
@@ -11166,6 +11384,9 @@ function showFooterTooltip(target) {
   if (!text) return;
   footerTooltipTarget = target;
   const tooltip = ensureFooterTooltipNode();
+  const variant = target.getAttribute("data-tooltip-variant");
+  if (variant) tooltip.dataset.variant = variant;
+  else delete tooltip.dataset.variant;
   tooltip.textContent = text;
   tooltip.hidden = false;
   tooltip.classList.add("visible");
@@ -11192,6 +11413,7 @@ function hideFooterTooltip(target) {
   if (!footerTooltipNode) return;
   footerTooltipNode.hidden = true;
   footerTooltipNode.classList.remove("visible");
+  delete footerTooltipNode.dataset.variant;
 }
 
 function bindStyledTooltipEvents(node) {
@@ -11199,9 +11421,14 @@ function bindStyledTooltipEvents(node) {
   node._styledTooltipBound = true;
   node.addEventListener("mouseenter", () => scheduleFooterTooltip(node));
   node.addEventListener("mouseleave", () => hideFooterTooltip(node));
-  node.addEventListener("focus", () => showFooterTooltip(node));
+  node.addEventListener("focus", () => {
+    if (node.getAttribute("data-tooltip-variant") === "workspace" && !node.matches(":focus-visible")) return;
+    showFooterTooltip(node);
+  });
   node.addEventListener("blur", () => hideFooterTooltip(node));
 }
+
+let styledTooltipDescriptionSerial = 0;
 
 function applyStyledTooltip(node, tooltip, options = {}) {
   if (!node) return node;
@@ -11213,7 +11440,15 @@ function applyStyledTooltip(node, tooltip, options = {}) {
     const ariaLabel = typeof options.ariaLabel === "string" ? options.ariaLabel : text.replace(/\s+/g, " ");
     node.setAttribute("aria-label", ariaLabel);
   }
+  if (options.description === true) {
+    const description = make("span", "sr-only styled-tooltip-description", text);
+    description.id = `styledTooltipDescription${++styledTooltipDescriptionSerial}`;
+    node.append(description);
+    const describedBy = [node.getAttribute("aria-describedby"), description.id].filter(Boolean).join(" ");
+    node.setAttribute("aria-describedby", describedBy);
+  }
   if (options.align) node.setAttribute("data-tooltip-align", options.align);
+  if (options.variant) node.setAttribute("data-tooltip-variant", options.variant);
   if (options.floating !== false) bindStyledTooltipEvents(node);
   return node;
 }
