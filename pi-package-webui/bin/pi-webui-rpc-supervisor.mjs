@@ -35,6 +35,12 @@ import {
 const ATTACH_TIMEOUT_MS = 2_500;
 const EMPTY_IDLE_GRACE_MS = 1_500;
 const CHILD_STOP_GRACE_MS = 3_000;
+const CHILD_STDIN_WRITE_TIMEOUT_MS = 2_000;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function requestIdForErrorFrame(frame) {
+  return typeof frame?.requestId === "string" && REQUEST_ID_PATTERN.test(frame.requestId) ? frame.requestId : undefined;
+}
 
 function cliOptions(argv) {
   const options = { agentDir: defaultAgentDir(), port: undefined, runtimeDir: undefined };
@@ -161,7 +167,10 @@ class SupervisorHost {
     this.clients.add(client);
     this.cancelIdleExit();
     const consume = frameReader(
-      (frame) => this.handleFrame(client, frame).catch((error) => this.sendError(client, undefined, error)),
+      // Validation can fail before handleFrame has a normalized request. Echo a
+      // syntactically safe raw request ID so the client rejects the matching
+      // promise instead of leaving create/replace requests pending forever.
+      (frame) => this.handleFrame(client, frame).catch((error) => this.sendError(client, requestIdForErrorFrame(frame), error)),
       (error) => { this.sendError(client, undefined, error); socket.destroy(); },
     );
     socket.on("data", consume);
@@ -414,6 +423,14 @@ class SupervisorHost {
       this.rejectPending(tab, new Error(`Pi RPC process exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`));
       if (!this.closing) this.persist("child exit").catch(() => {});
     });
+    // ChildProcess does not forward stdin pipe errors to its own `error`
+    // event. A timed-out/backpressured one-way write followed by replacement
+    // can otherwise emit an unhandled EPIPE and crash the detached supervisor.
+    processChild.stdin.on("error", (error) => {
+      if (tab.child !== processChild || !tabRunning(tab)) return;
+      this.emit(tab.id, { type: "pi_stdin_error", error: publicError(error) });
+      this.rejectPending(tab, error);
+    });
     this.readJsonl(processChild.stdout, (line) => {
       if (tab.child === processChild) this.handlePiLine(tab, line);
     }, tab.id);
@@ -504,15 +521,29 @@ class SupervisorHost {
     const tab = this.requireTab(tabId);
     if (!tabRunning(tab) || !tab.child?.stdin?.writable) throw new Error("Pi RPC process is not running");
     // Unlike `command`, this preserves the supplied Pi RPC object exactly and
-    // resolves after stdin accepts it; no response ID is injected or awaited.
+    // never waits for a Pi response. Keep FIFO ordering until Node flushes the
+    // record, but bound that wait: a backpressured/unresponsive child must not
+    // poison the tab mutation queue and block reload, CWD changes, or startup
+    // probes for a forked tab forever.
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (error) reject(error);
+        else resolve({ written: true });
+      };
+      timer = setTimeout(() => finish(Object.assign(
+        new Error(`Timed out flushing a one-way Pi RPC write after ${CHILD_STDIN_WRITE_TIMEOUT_MS}ms`),
+        { code: "RPC_SUPERVISOR_CHILD_WRITE_TIMEOUT" },
+      )), CHILD_STDIN_WRITE_TIMEOUT_MS);
+      timer.unref?.();
       try {
-        tab.child.stdin.write(`${JSON.stringify(command)}\n`, (error) => {
-          if (error) reject(error);
-          else resolve({ written: true });
-        });
+        tab.child.stdin.write(`${JSON.stringify(command)}\n`, finish);
       } catch (error) {
-        reject(error);
+        finish(error);
       }
     });
   }

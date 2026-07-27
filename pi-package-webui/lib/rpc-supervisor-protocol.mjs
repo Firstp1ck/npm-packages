@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
-export const RPC_SUPERVISOR_PROTOCOL = Object.freeze({ major: 1, minor: 1 });
+export const RPC_SUPERVISOR_PROTOCOL = Object.freeze({ major: 1, minor: 2 });
 // Pi permits one bounded JSONL record this large. IPC envelopes need a small
 // additional allowance so a single valid Pi record can always be forwarded.
 export const PI_RPC_JSONL_LINE_MAX_BYTES = 32 * 1024 * 1024;
@@ -13,6 +13,10 @@ export const RPC_SUPERVISOR_EVENT_RING_LIMIT = 512;
 export const RPC_SUPERVISOR_EVENT_RING_MAX_BYTES = 4 * 1024 * 1024;
 export const RPC_SUPERVISOR_REQUEST_DEDUPE_LIMIT = 2048;
 export const RPC_SUPERVISOR_TAB_LIMIT = 64;
+// Each configured extension, skill, prompt, and theme contributes a flag/value
+// pair. Real WebUI profiles can exceed 256 arguments before a --session pair
+// is appended during reload, CWD changes, or forks.
+export const RPC_SUPERVISOR_CHILD_ARG_LIMIT = 1024;
 export const RPC_SUPERVISOR_METADATA_MAX_BYTES = 64 * 1024;
 export const RPC_SUPERVISOR_ID_MAX_LENGTH = 128;
 // This applies only to persisted metadata, state, and journals. Live Pi RPC
@@ -161,7 +165,7 @@ function validateChild(value, label = "child") {
   object(value, label);
   onlyKeys(value, new Set(["command", "args", "cwd"]), label);
   const command = string(value.command, `${label}.command`, { max: 4096 });
-  if (!Array.isArray(value.args) || value.args.length > 256) fail(`${label}.args must be an array with at most 256 entries`);
+  if (!Array.isArray(value.args) || value.args.length > RPC_SUPERVISOR_CHILD_ARG_LIMIT) fail(`${label}.args must be an array with at most ${RPC_SUPERVISOR_CHILD_ARG_LIMIT} entries`);
   const args = value.args.map((arg, index) => string(arg, `${label}.args[${index}]`, { min: 0, max: 64 * 1024 }));
   const cwd = string(value.cwd, `${label}.cwd`, { max: 16 * 1024 });
   return { command, args, cwd };

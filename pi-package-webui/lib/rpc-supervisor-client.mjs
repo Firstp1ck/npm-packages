@@ -48,6 +48,14 @@ function liveStateError(state) {
   });
 }
 
+function supervisorRestartRequiredError(state, operation) {
+  const version = state?.version;
+  const remote = Number.isInteger(version?.major) && Number.isInteger(version?.minor) ? `${version.major}.${version.minor}` : "unknown";
+  return Object.assign(new Error(`The detached RPC supervisor protocol ${remote} is older than this WebUI build and cannot ${operation}. Fully shut down Pi WebUI (not Restart), then start it again.`), {
+    code: "RPC_SUPERVISOR_RESTART_REQUIRED",
+  });
+}
+
 function openSocket(socketPath, timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
@@ -201,9 +209,15 @@ export class RpcSupervisorClient {
     return result.promise;
   }
 
-  createTab({ tabId, metadata, child }, options) { return this.request("create", { tabId, metadata, child }, options); }
+  createTab({ tabId, metadata, child }, options) {
+    if (!this.isCurrentVersion()) return Promise.reject(supervisorRestartRequiredError(this.state, "create a Pi tab"));
+    return this.request("create", { tabId, metadata, child }, options);
+  }
   updateTab(tabId, metadata, options) { return this.request("update", { tabId, metadata }, options); }
-  replaceTab({ tabId, metadata, child }, options) { return this.request("replace", { tabId, metadata, child }, options); }
+  replaceTab({ tabId, metadata, child }, options) {
+    if (!this.isCurrentVersion()) return Promise.reject(supervisorRestartRequiredError(this.state, "replace a Pi tab"));
+    return this.request("replace", { tabId, metadata, child }, options);
+  }
   closeTab(tabId, options) { return this.request("close", { tabId }, options); }
   command(tabId, command, { requestId = newRequestId(), timeoutMs } = {}) {
     return this.request("command", { tabId, command, ...(timeoutMs ? { timeoutMs } : {}) }, { requestId });

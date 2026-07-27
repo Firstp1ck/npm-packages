@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   PI_RPC_JSONL_LINE_MAX_BYTES,
+  RPC_SUPERVISOR_CHILD_ARG_LIMIT,
   RPC_SUPERVISOR_MAX_FRAME_BYTES,
   RPC_SUPERVISOR_PROTOCOL,
   RpcSupervisorProtocolError,
@@ -22,6 +23,26 @@ assert.equal(constantTimeTokenEqual("same", "different"), false);
 assert.equal(protocolCompatible({ major: RPC_SUPERVISOR_PROTOCOL.major, minor: 0 }), true, "older minor versions remain attach-compatible for actionable recovery");
 assert.equal(protocolCurrent({ major: RPC_SUPERVISOR_PROTOCOL.major, minor: 0 }), false, "older detached supervisors must be detectable after a server-only restart");
 assert.equal(protocolCurrent(RPC_SUPERVISOR_PROTOCOL), true);
+
+const resumedChildArgs = Array.from({ length: 257 }, (_, index) => index % 2 === 0 ? "--extension" : `/tmp/resource-${index}`);
+const resumedChild = validateClientFrame({
+  type: "create",
+  requestId: "create-resumed-tab",
+  tabId: "resumed-tab",
+  metadata: {},
+  child: { command: "pi", args: resumedChildArgs, cwd: "/tmp" },
+});
+assert.equal(resumedChild.child.args.length, 257, "resource-heavy resumed tabs must fit the supervisor launch contract");
+assert.throws(
+  () => validateClientFrame({
+    type: "create",
+    requestId: "create-too-many-args",
+    tabId: "oversized-tab",
+    metadata: {},
+    child: { command: "pi", args: Array.from({ length: RPC_SUPERVISOR_CHILD_ARG_LIMIT + 1 }, () => "x"), cwd: "/tmp" },
+  }),
+  /at most 1024 entries/,
+);
 
 const rawPiCommand = {
   type: "prompt",

@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  RPC_SUPERVISOR_CHILD_ARG_LIMIT,
   RPC_SUPERVISOR_EVENT_RING_MAX_BYTES,
   RPC_SUPERVISOR_REQUEST_DEDUPE_LIMIT,
 } from "../lib/rpc-supervisor-protocol.mjs";
@@ -37,6 +38,12 @@ const rawPiScript = String.raw`
     appendFileSync(log, line + "\n");
     if (command.type === "hold") {
       setTimeout(() => process.exit(0), 2500).unref();
+      return;
+    }
+    if (command.type === "pause_stdin") {
+      send({ type: "response", id: command.id, data: { paused: true } });
+      setInterval(() => {}, 1000);
+      process.stdin.pause();
       return;
     }
     if (command.type === "no_response" || command.type === "extension_ui_response") return;
@@ -122,6 +129,18 @@ try {
     metadata: { title: "Raw", index: 1, cwd: work, sessionFile: path.join(work, "raw.jsonl") },
     child: { command: process.execPath, args: ["-e", rawPiScript], cwd: work },
   });
+  await assert.rejects(
+    Promise.race([
+      client.createTab({
+        tabId: "invalid-arg-tab",
+        metadata: { title: "Invalid", index: 2, cwd: work },
+        child: { command: process.execPath, args: Array.from({ length: RPC_SUPERVISOR_CHILD_ARG_LIMIT + 1 }, () => "x"), cwd: work },
+      }),
+      delay(1_000).then(() => { throw new Error("validation failure was not correlated to the create request"); }),
+    ]),
+    /at most 1024 entries/,
+    "invalid create frames must reject their matching client request instead of hanging",
+  );
 
   const response = await Promise.all([
     client.command("tab-1", { type: "prompt", message: "dedupe me" }, { requestId: "prompt-once" }),
@@ -193,11 +212,27 @@ try {
   const replacementCwd = path.join(work, "replacement-cwd");
   await mkdir(replacementCwd);
   const originalRawPid = client.snapshot.tabs.find((tab) => tab.id === "raw-tab")?.pid;
-  const replacedRawTab = await client.replaceTab({
-    tabId: "raw-tab",
-    metadata: { title: "Raw", index: 1, cwd: replacementCwd, sessionFile: path.join(work, "raw.jsonl") },
-    child: { command: process.execPath, args: ["-e", rawPiScript], cwd: replacementCwd },
-  });
+  const paused = await client.command("raw-tab", { type: "pause_stdin" }, { requestId: "pause-stdin-before-replace" });
+  assert.equal(paused.data.paused, true);
+  const blockedWriteResult = client.write("raw-tab", {
+    type: "extension_ui_response",
+    id: "backpressured-before-replace",
+    body: "x".repeat(2 * 1024 * 1024),
+  }, { requestId: "backpressured-before-replace" }).then(
+    () => ({ status: "fulfilled" }),
+    (error) => ({ status: "rejected", error }),
+  );
+  const replacedRawTab = await Promise.race([
+    client.replaceTab({
+      tabId: "raw-tab",
+      metadata: { title: "Raw", index: 1, cwd: replacementCwd, sessionFile: path.join(work, "raw.jsonl") },
+      child: { command: process.execPath, args: ["-e", rawPiScript], cwd: replacementCwd },
+    }),
+    delay(5_000).then(() => { throw new Error("replacement remained blocked behind a backpressured one-way write"); }),
+  ]);
+  const blockedWrite = await blockedWriteResult;
+  assert.equal(blockedWrite.status, "rejected", "a backpressured one-way write must fail within a bounded interval");
+  assert.match(blockedWrite.error?.message || "", /Timed out flushing a one-way Pi RPC write/, "the bounded write failure should explain the queue blockage");
   assert.equal(replacedRawTab.metadata.cwd, replacementCwd, "successful replacement should publish the child cwd atomically");
   assert.notEqual(replacedRawTab.pid, originalRawPid, "successful replacement should expose the replacement child PID");
   const replacedRawResponse = await client.command("raw-tab", { type: "replacement_probe" }, { requestId: "replacement-probe" });
