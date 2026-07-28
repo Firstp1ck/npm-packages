@@ -88,12 +88,14 @@ assert.match(results.group, /^Tooltip group · 2 tabs\nWorkspaces: projects\/pi-
 assert.match(results.group, /Click to switch · Drop tabs here to add$/, "group hover summary should preserve the drop-target affordance");
 assert.doesNotMatch(terminalTabMetaSource, /\bpid\b/i, "compact tab metadata should not expose the process PID");
 assert.equal(app.match(/applyStyledTooltip\(button, terminalTabTooltip\(tab\)/g)?.length, 2, "single and grouped-item tabs should share one tooltip formatter");
-assert.match(renderTerminalTabGroupSource, /terminal-tab-group-summary[\s\S]*terminalTabGroupTooltip\(group, groupTitle\)[\s\S]*button\.setAttribute\("aria-describedby", summary\.id\)[\s\S]*menu\.append\(summary\)/, "group hover disclosure should expose its non-overlapping summary as an accessible description");
+assert.match(renderTerminalTabGroupSource, /applyStyledTooltip\(button, terminalTabGroupTooltip\(group, groupTitle\), \{ ariaLabel: false, description: true, placement: "right", variant: "workspace" \}\)/, "group hover disclosure should use the shared floating tooltip layer to the right of its trigger");
+assert.doesNotMatch(renderTerminalTabGroupSource, /terminal-tab-group-summary|menu\.append\(summary\)/, "group hover disclosure should not render an in-flow summary that shifts group menu items");
 assert.match(app, /footerTooltipNode\.setAttribute\("role", "tooltip"\)/, "the shared visual tooltip should expose tooltip semantics");
 assert.match(app, /document\.addEventListener\("keydown", \(event\) => \{[\s\S]*event\.key === "Escape" && footerTooltipTarget[\s\S]*hideFooterTooltip\(footerTooltipTarget\)[\s\S]*\}, true\)/, "Escape should dismiss both hover- and focus-triggered tooltips from the document capture phase");
 assert.match(app, /data-tooltip-variant"\) === "workspace" && !node\.matches\(":focus-visible"\)/, "touch focus should not flash the large workspace tooltip while keyboard focus remains supported");
 assert.match(app, /styled-tooltip-description[\s\S]*aria-describedby/, "detailed tab tooltip text should be available as an accessible description");
 assert.match(styles, /footer-floating-tooltip\[data-variant="workspace"\][\s\S]*line-height: 1\.52/, "workspace tooltips should use the readable visual variant");
-assert.match(styles, /terminal-tab-group-summary[\s\S]*white-space: pre-wrap/, "group summaries should preserve the readable multiline hierarchy");
+assert.doesNotMatch(styles, /terminal-tab-group-summary/, "group tooltip styling should not reserve in-flow menu space");
+assert.match(app, /placement === "right"[\s\S]*left = rect\.right \+ gap;[\s\S]*top = rect\.top;/, "right-placed tooltips should overlay beside and top-align with their trigger");
 
 console.log("terminal tab workspace static tests passed");

@@ -323,7 +323,14 @@ function applyPlan(manifest, plan, stateDir) {
   fs.mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
   for (const item of prepared) {
     item.backupPath = path.join(backupRoot, `${item.target.id}.bak`);
-    fs.writeFileSync(item.backupPath, item.beforeContent, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    if (!fs.existsSync(item.backupPath)) {
+      fs.writeFileSync(item.backupPath, item.beforeContent, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      continue;
+    }
+    const metadata = fs.lstatSync(item.backupPath);
+    if (!metadata.isFile() || metadata.nlink !== 1) throw new Error(`Existing backup is not a regular single-link file: ${item.backupPath}`);
+    const existingHash = sha256(fs.readFileSync(item.backupPath));
+    if (existingHash !== item.target.beforeHash) throw new Error(`Existing backup hash mismatch: ${item.backupPath}`);
   }
 
   const committed = [];

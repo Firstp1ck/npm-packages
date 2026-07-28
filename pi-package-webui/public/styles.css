@@ -3511,23 +3511,6 @@ body.embedded-split .side-panel-backdrop {
 .terminal-tab-group.menu-open .terminal-tab-group-menu {
   display: flex;
 }
-.terminal-tab-group-summary {
-  width: 100%;
-  padding: 0.56rem 0.62rem;
-  overflow-wrap: anywhere;
-  color: rgba(var(--ctp-text-rgb), 0.92);
-  border: 1px solid rgba(148, 226, 213, 0.24);
-  border-radius: 0.72rem;
-  background:
-    linear-gradient(135deg, rgba(148, 226, 213, 0.11), rgba(203, 166, 247, 0.08)),
-    rgba(var(--ctp-crust-rgb), 0.96);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), 0 0.65rem 1.25rem rgba(var(--ctp-crust-rgb), 0.28);
-  font-size: max(var(--text-xs), 0.76rem);
-  font-weight: 720;
-  line-height: 1.48;
-  text-align: left;
-  white-space: pre-wrap;
-}
 .terminal-tab-group-item {
   display: inline-flex;
   flex: 0 0 auto;

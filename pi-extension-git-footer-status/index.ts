@@ -672,7 +672,7 @@ type FooterTelemetry = {
   totalCacheRead: number;
   totalCacheWrite: number;
   totalCost: number;
-  liveOutputTokens: number;
+  speedOutputTokens: number;
   latestTokenSpeed: number | null;
   promptInjectionTokens: number | null;
   promptInjectionCalibrationSamples: number;
@@ -1375,7 +1375,7 @@ function buildWebuiVisibilityRecord(): Record<FooterVisibilityKey, boolean> {
 
 function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | null, telemetry: FooterTelemetry, fetchState: GitFetchState): WebuiFooterPayload {
   const speed = telemetry.latestTokenSpeed;
-  const speedPrefix = telemetry.liveOutputTokens > 0 ? `${footerMetricValue(telemetry.liveOutputTokens)} tok @ ` : "";
+  const speedValue = speed === null ? "— tok/s" : `${formatTokenSpeed(speed)} tok/s`;
   const providerPrefix = telemetry.showModelProvider && telemetry.modelProvider ? `(${telemetry.modelProvider}) ` : "";
   const thinkingSuffix = telemetry.thinkingLevel
     ? telemetry.thinkingLevel === "off"
@@ -1424,12 +1424,12 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       tone: "mauve",
     });
   }
-  if (webuiFooterItemVisible("speed") && speed !== null) {
+  if (webuiFooterItemVisible("speed")) {
     main.push({
       key: "speed",
       icon: "⚡",
       label: "speed",
-      value: `${speedPrefix}${formatTokenSpeed(speed)} tok/s`,
+      value: `${footerMetricValue(telemetry.speedOutputTokens)} tok @ ${speedValue}`,
       tone: "yellow",
     });
   }
@@ -1650,12 +1650,9 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       totalCost,
       historicalTokenSpeed,
     } = footerUsageSnapshot;
-    const liveOutputTokens = currentAssistantStartMs !== null ? currentAssistantEstimatedOutputTokens : 0;
-    let latestTokenSpeed: number | null = currentAssistantStartMs !== null ? currentAssistantLiveTokenSpeed : latestMeasuredTokenSpeed;
-
-    if (latestTokenSpeed === null && historicalTokenSpeed !== null) {
-      latestTokenSpeed = historicalTokenSpeed;
-    }
+    const activeOutputTokens = currentAssistantStartMs !== null ? currentAssistantEstimatedOutputTokens : 0;
+    const speedOutputTokens = totalOutput + activeOutputTokens;
+    const latestTokenSpeed = currentAssistantLiveTokenSpeed ?? latestMeasuredTokenSpeed ?? historicalTokenSpeed;
 
     const promptInjectionEstimate = getFooterPromptInjectionEstimate(ctx);
     const contextUsage = ctx.getContextUsage();
@@ -1671,7 +1668,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       totalCacheRead,
       totalCacheWrite,
       totalCost,
-      liveOutputTokens,
+      speedOutputTokens,
       latestTokenSpeed,
       promptInjectionTokens: promptInjectionEstimate?.total ?? null,
       promptInjectionCalibrationSamples: promptInjectionEstimate?.calibrationSamples ?? 0,
@@ -1845,6 +1842,12 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     const tokens = currentAssistantTokenSamples.reduce((sum, sample) => sum + sample.tokens, 0);
     const speed = tokens / elapsedSeconds;
     return isReasonableTokenSpeed(speed) ? speed : null;
+  };
+
+  const preserveLiveAssistantSpeed = () => {
+    if (currentAssistantLiveTokenSpeed !== null) {
+      latestMeasuredTokenSpeed = currentAssistantLiveTokenSpeed;
+    }
   };
 
   const resetLiveAssistantState = () => {
@@ -2041,9 +2044,11 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           if (ioItems.length > 0) segments.push(`${theme.fg("muted", "🪙")} ${ioItems.join(` ${itemSep} `)}`);
           if (cacheItems.length > 0) segments.push(`${theme.fg("muted", "💾")} ${cacheItems.join(` ${itemSep} `)}`);
           if (nativeFooterItemVisible("pi")) segments.push(telemetry.promptInjectionTokens === null ? "PI: …" : `PI: ${formatTokens(telemetry.promptInjectionTokens)} tok`);
-          if (nativeFooterItemVisible("speed") && telemetry.latestTokenSpeed !== null) {
-            const livePrefix = telemetry.liveOutputTokens > 0 ? `${formatTokens(telemetry.liveOutputTokens)} tok @ ` : "";
-            segments.push(`⚡ ${livePrefix}${formatTokenSpeed(telemetry.latestTokenSpeed)} tok/s`);
+          if (nativeFooterItemVisible("speed")) {
+            const speedValue = telemetry.latestTokenSpeed === null
+              ? "— tok/s"
+              : `${formatTokenSpeed(telemetry.latestTokenSpeed)} tok/s`;
+            segments.push(`⚡ ${formatTokens(telemetry.speedOutputTokens)} tok @ ${speedValue}`);
           }
 
           if (nativeFooterItemVisible("cost") && (telemetry.totalCost || telemetry.usingSubscription)) {
@@ -2138,6 +2143,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => {
     if (!backgroundWorkEnabled) return;
     rememberFooterContext(ctx);
+    preserveLiveAssistantSpeed();
     resetLiveAssistantState();
     requestFooterRender?.();
     schedulePromptInjectionEstimateRefresh(ctx);
@@ -2192,6 +2198,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     }
 
     currentAssistantLiveTokenSpeed = getRollingLiveTokenSpeed(nowMs);
+    preserveLiveAssistantSpeed();
     scheduleWebuiFooterPublish(ctx);
   });
 
@@ -2201,9 +2208,9 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     if (event.message.role === "assistant") {
       const assistantMessage = event.message as AssistantMessage;
       addAssistantUsageToSnapshot(assistantMessage);
-      if (recordAssistantSpeed(assistantMessage)) {
-        resetLiveAssistantState();
-      }
+      preserveLiveAssistantSpeed();
+      recordAssistantSpeed(assistantMessage);
+      resetLiveAssistantState();
       publishWebuiFooter(ctx);
     }
   });
@@ -2215,6 +2222,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     if (event.message.role === "assistant") {
       const assistantMessage = event.message as AssistantMessage;
       addAssistantUsageToSnapshot(assistantMessage);
+      preserveLiveAssistantSpeed();
       recordAssistantSpeed(assistantMessage);
       resetLiveAssistantState();
     }

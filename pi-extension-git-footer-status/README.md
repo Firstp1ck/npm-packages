@@ -9,7 +9,7 @@ Enhanced Pi footer with git health and model/token telemetry.
 - Shows compact runtime metrics in the footer:
   - input/output/cache tokens
   - export-backed initial prompt estimate (`PI: X tok`, same estimator as `/stats-pi`, compacted as `k` for thousands; falls back to live context data if Pi HTML export is unavailable)
-  - live output token counter + token output speed (`tok/s`) measured from assistant streaming lifecycle events, with a session-history fallback
+  - always-visible cumulative session output counter + token output speed (`tok/s`) measured from assistant streaming lifecycle events; the latest speed remains visible while idle and falls back to session history
   - cost + context-window usage
   - current model and reasoning level
 - Shows git status context on the path line:
@@ -64,7 +64,7 @@ None.
 ## Example view
 
 ```text
-🪙 ↑126k · ↓11k │ 💾 R1.4M │ PI: 6.8k tok │ ⚡ 48.6 tok/s │ 💸 $1.667 (sub) │ 🧠 19.0%/272k                                                                                                                (openai-codex) gpt-5.5 • low
+🪙 ↑126k · ↓11k │ 💾 R1.4M │ PI: 6.8k tok │ ⚡ 11k tok @ 48.6 tok/s │ 💸 $1.667 (sub) │ 🧠 19.0%/272k                                                                                                                (openai-codex) gpt-5.5 • low
 ~/pi-coding-agent-forge (main) │ ✎15 │ ⏱15m · Agent
 ```
 

@@ -10135,8 +10135,6 @@ function terminalTabGroupTooltip(group, groupTitle = terminalDisplayGroupTitle(g
   return lines.join("\n");
 }
 
-let terminalTabGroupSummarySerial = 0;
-
 function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0, subagent = false }) {
   const titleRow = make("span", "terminal-tab-title-row");
   const indicatorDot = make("span", "terminal-tab-activity-indicator");
@@ -10270,6 +10268,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
   button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}`);
+  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace" });
   appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(activeGroupTab.id));
   wrapper.append(button);
@@ -10290,10 +10289,6 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   const menu = make("div", "terminal-tab-group-menu");
   menu.setAttribute("role", "group");
   menu.setAttribute("aria-label", `${groupTitle} tabs`);
-  const summary = make("div", "terminal-tab-group-summary", terminalTabGroupTooltip(group, groupTitle));
-  summary.id = `terminalTabGroupSummary${++terminalTabGroupSummarySerial}`;
-  button.setAttribute("aria-describedby", summary.id);
-  menu.append(summary);
   for (const tab of groupTabs) menu.append(renderTerminalTabGroupItem(tab, group));
 
   const add = make("button", "terminal-tab-group-add", "+ Tab");
@@ -11584,13 +11579,21 @@ function positionFooterTooltip(target) {
   const width = footerTooltipNode.offsetWidth;
   const height = footerTooltipNode.offsetHeight;
   const align = target.getAttribute("data-tooltip-align") || "center";
-  let left = rect.left + rect.width / 2 - width / 2;
-  if (align === "start") left = rect.left;
-  if (align === "end") left = rect.right - width;
+  const placement = target.getAttribute("data-tooltip-placement") || "top";
+  let left;
+  let top;
+  if (placement === "right") {
+    left = rect.right + gap;
+    if (left + width > window.innerWidth - margin) left = rect.left - gap - width;
+    top = rect.top;
+  } else {
+    left = rect.left + rect.width / 2 - width / 2;
+    if (align === "start") left = rect.left;
+    if (align === "end") left = rect.right - width;
+    top = rect.top - gap - height;
+    if (top < margin) top = rect.bottom + gap;
+  }
   left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - margin - width));
-
-  let top = rect.top - gap - height;
-  if (top < margin) top = rect.bottom + gap;
   top = Math.min(Math.max(margin, top), window.innerHeight - margin - height);
 
   footerTooltipNode.style.left = `${Math.round(left)}px`;
@@ -11674,6 +11677,7 @@ function applyStyledTooltip(node, tooltip, options = {}) {
     node.setAttribute("aria-describedby", describedBy);
   }
   if (options.align) node.setAttribute("data-tooltip-align", options.align);
+  if (options.placement) node.setAttribute("data-tooltip-placement", options.placement);
   if (options.variant) node.setAttribute("data-tooltip-variant", options.variant);
   if (options.floating !== false) bindStyledTooltipEvents(node);
   return node;

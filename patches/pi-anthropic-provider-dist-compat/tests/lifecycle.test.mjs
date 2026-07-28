@@ -160,6 +160,32 @@ test("two-runtime apply is transactional, second apply is a no-op, and rollback 
   assert.equal(fs.readFileSync(webui.file, "utf8"), webuiSource);
 });
 
+test("reapply after a package reset reuses verified historical backups", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "anthropic-reapply-"));
+  const nativeSource = fixture("pi-ai-0.80.9/dist/api/anthropic-messages.js");
+  const webuiSource = fixture("pi-ai-0.79/dist/providers/anthropic.js");
+  const native = createRuntime(root, "0.80.9", nativeSource, "dist/api/anthropic-messages.js");
+  const webui = createRuntime(root, "0.79.2", webuiSource, "dist/providers/anthropic.js");
+  const env = isolatedEnv(native, webui.codingRoot);
+  const state = path.join(root, "state");
+  const common = ["--patch", path.join(patchRoot, "PATCH.md"), "--state-dir", state];
+
+  const firstPlan = runPatchctl(["plan", ...common], patchRoot, env);
+  assert.equal(firstPlan.status, 0, JSON.stringify(firstPlan.payload));
+  const firstApply = runPatchctl(["apply", ...common, "--plan-hash", firstPlan.payload.planHash], patchRoot, env);
+  assert.equal(firstApply.status, 0, JSON.stringify(firstApply.payload));
+
+  fs.writeFileSync(native.file, nativeSource);
+  fs.writeFileSync(webui.file, webuiSource);
+  const reapplyPlan = runPatchctl(["plan", ...common], patchRoot, env);
+  assert.equal(reapplyPlan.status, 0, JSON.stringify(reapplyPlan.payload));
+  assert.equal(reapplyPlan.payload.planHash, firstPlan.payload.planHash);
+  const reapply = runPatchctl(["apply", ...common, "--plan-hash", reapplyPlan.payload.planHash], patchRoot, env);
+  assert.equal(reapply.status, 0, JSON.stringify(reapply.payload));
+  assert.equal(classifyContent(fs.readFileSync(native.file, "utf8"), manifest.profile).status, "already-applied");
+  assert.equal(classifyContent(fs.readFileSync(webui.file, "utf8"), manifest.profile).status, "already-applied");
+});
+
 test("unknown semantic layout at any package version prevents partial writes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "anthropic-no-partial-"));
   const nativeSource = fixture("pi-ai-0.82.1/dist/api/anthropic-messages.js");
