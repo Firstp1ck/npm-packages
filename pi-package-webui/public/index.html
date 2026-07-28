@@ -158,6 +158,7 @@
               <span id="subagentTerminalMeta" class="subagent-terminal-meta muted"></span>
             </div>
             <div class="subagent-terminal-actions">
+              <button id="subagentTerminalCancelButton" class="danger" type="button" hidden>Cancel…</button>
               <button id="subagentTerminalCopyButton" type="button">Copy output</button>
               <button id="subagentTerminalRefreshButton" type="button">Refresh</button>
             </div>
@@ -1296,6 +1297,33 @@
         <menu>
           <button id="attachmentTextCancelButton" type="button">Cancel</button>
           <button id="attachmentTextSaveButton" class="primary" type="button">Save changes</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="subagentCancelDialog" class="extension-dialog subagent-cancel-dialog" aria-labelledby="subagentCancelDialogTitle" aria-describedby="subagentCancelDialogSubtitle">
+      <form method="dialog">
+        <h2 id="subagentCancelDialogTitle">Cancel subagent</h2>
+        <p id="subagentCancelDialogSubtitle" class="muted">Cancel this entire subagent run? Every agent in the run will be stopped and the parent agent will be notified.</p>
+        <label class="subagent-cancel-field" for="subagentCancelReason">Reason <span class="muted">(optional)</span>
+          <select id="subagentCancelReason">
+            <option value="" selected>No reason</option>
+            <option value="Wrong model/provider/thinking effort">Wrong model/provider/thinking effort</option>
+            <option value="Wrong agent or task">Wrong agent or task</option>
+            <option value="Taking too long">Taking too long</option>
+            <option value="Wrong approach or direction">Wrong approach or direction</option>
+            <option value="Output no longer needed">Output no longer needed</option>
+            <option value="Started by mistake">Started by mistake</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label class="subagent-cancel-field" for="subagentCancelNote">Note <span class="muted">(optional)</span>
+          <textarea id="subagentCancelNote" class="dialog-editor subagent-cancel-note" spellcheck="true" placeholder="Optional note for the parent agent"></textarea>
+        </label>
+        <p id="subagentCancelStatus" class="subagent-cancel-status muted" role="status" aria-live="polite" hidden></p>
+        <menu>
+          <button id="subagentCancelKeepRunningButton" type="button">Keep running</button>
+          <button id="subagentCancelSubmitButton" class="danger" type="submit">Cancel subagent</button>
         </menu>
       </form>
     </dialog>

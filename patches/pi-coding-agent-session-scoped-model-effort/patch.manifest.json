@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "2.0",
+  "id": "pi.coding-agent-session-scoped-model-effort",
+  "version": "1.0.0",
+  "title": "Pi session-scoped model and reasoning effort",
+  "description": "Removes only ordinary model and thinking default writes from the verified Pi coding-agent 0.82.1 compiled runtime, retaining session history and configured startup defaults.",
+  "risk": {
+    "level": "high",
+    "mutatesInstalledPackages": true,
+    "network": "none",
+    "billing": "none",
+    "notes": [
+      "Apply mutates installed compiled runtime files only after patchctl has bound a fresh reviewed plan hash.",
+      "The lifecycle fails closed on an unknown, partial, ambiguous, or drifted native/WebUI runtime layout.",
+      "No settings file, session file, credential, provider request, or network resource is read or written."
+    ]
+  },
+  "lifecycle": {
+    "handler": "./scripts/lifecycle.mjs",
+    "minimumPatchctlVersion": "2.0.0"
+  },
+  "support": {
+    "platforms": ["linux", "darwin", "win32"],
+    "packages": [
+      {
+        "name": "@earendil-works/pi-coding-agent",
+        "range": "=0.82.1",
+        "layouts": [
+          "dist/core/agent-session.js",
+          "dist/modes/interactive/components/model-selector.js"
+        ]
+      }
+    ]
+  },
+  "targets": [
+    {
+      "id": "agent-session",
+      "role": "session-runtime",
+      "required": true,
+      "discover": { "kind": "node-resolution-from-runtime-graphs" },
+      "package": "@earendil-works/pi-coding-agent",
+      "fileCandidates": ["dist/core/agent-session.js"],
+      "fingerprints": ["pi-coding-agent-0.82.1-session-default-writes"]
+    },
+    {
+      "id": "native-model-selector",
+      "role": "native-tui",
+      "required": true,
+      "discover": { "kind": "node-resolution-from-runtime-graphs" },
+      "package": "@earendil-works/pi-coding-agent",
+      "fileCandidates": ["dist/modes/interactive/components/model-selector.js"],
+      "fingerprints": ["pi-coding-agent-0.82.1-selector-default-write"]
+    }
+  ],
+  "discovery": {
+    "native": {
+      "kind": "node-resolution-from-executable",
+      "executable": "pi",
+      "environmentOverride": "PI_PATCH_NATIVE_ENTRY"
+    },
+    "webui": {
+      "kind": "node-resolution-from-webui-dependency-graph",
+      "package": "@firstpick/pi-package-webui",
+      "environmentRoots": "PI_PATCH_WEBUI_ROOTS",
+      "environmentEntries": "PI_PATCH_WEBUI_ENTRIES"
+    }
+  },
+  "verification": [
+    { "id": "syntax", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "semantic-postconditions", "phase": "post-apply", "runner": "handler", "network": false, "billing": false },
+    { "id": "receipt-hash-binding", "phase": "post-apply", "runner": "handler", "network": false, "billing": false }
+  ],
+  "rollback": {
+    "supported": true,
+    "strategy": "receipt-backup"
+  }
+}

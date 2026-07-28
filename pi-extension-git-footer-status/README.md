@@ -9,7 +9,7 @@ Enhanced Pi footer with git health and model/token telemetry.
 - Shows compact runtime metrics in the footer:
   - input/output/cache tokens
   - export-backed initial prompt estimate (`PI: X tok`, same estimator as `/stats-pi`, compacted as `k` for thousands; falls back to live context data if Pi HTML export is unavailable)
-  - always-visible cumulative session output counter + token output speed (`tok/s`) measured from assistant streaming lifecycle events; the latest speed remains visible while idle and falls back to session history
+  - always-visible cumulative session output counter + token output speed (`tok/s`) measured from assistant streaming lifecycle events; the latest speed remains visible while idle and falls back to session history. Optional session speed stats — average (`speed-avg`), 1% low (`speed-low`, mean of the slowest 1% of samples), and max spike (`speed-max`) — are hidden by default and shown only when enabled via `/git-footer-visibility` (e.g. `/git-footer-visibility show all speed-avg speed-low speed-max`)
   - cost + context-window usage
   - current model and reasoning level
 - Shows git status context on the path line:

@@ -36,21 +36,21 @@ function appFunctionSource(name, nextName) {
 }
 const nativeExportPayload = await readFile(join(root, "lib", "native-export-payload.mjs"), "utf8");
 const companionDependencies = {
-  "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.1",
-  "@firstpick/pi-extension-btw": "^0.1.3",
-  "@firstpick/pi-extension-fish-user-bash": "^0.2.1",
-  "@firstpick/pi-extension-git-footer-status": "^0.4.1",
-  "@firstpick/pi-extension-release-aur": "^0.1.7",
-  "@firstpick/pi-extension-release-npm": "^0.4.3",
-  "@firstpick/pi-extension-safety-guard": "^0.2.5",
-  "@firstpick/pi-extension-setup-skills": "^0.1.8",
-  "@firstpick/pi-extension-stats": "^0.2.8",
-  "@firstpick/pi-extension-todo-progress": "^0.2.8",
-  "@firstpick/pi-extension-tools": "^0.1.6",
-  "@firstpick/pi-extension-workflows": "^0.1.4",
-  "@firstpick/pi-package-remote-webui": "^0.1.6",
-  "@firstpick/pi-prompts-git-pr": "^0.1.4",
-  "@firstpick/pi-themes-bundle": "^0.1.4",
+  "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.2",
+  "@firstpick/pi-extension-btw": "^0.1.4",
+  "@firstpick/pi-extension-fish-user-bash": "^0.2.2",
+  "@firstpick/pi-extension-git-footer-status": "^0.4.3",
+  "@firstpick/pi-extension-release-aur": "^0.1.8",
+  "@firstpick/pi-extension-release-npm": "^0.4.4",
+  "@firstpick/pi-extension-safety-guard": "^0.2.6",
+  "@firstpick/pi-extension-setup-skills": "^0.1.9",
+  "@firstpick/pi-extension-stats": "^0.2.9",
+  "@firstpick/pi-extension-todo-progress": "^0.2.9",
+  "@firstpick/pi-extension-tools": "^0.1.7",
+  "@firstpick/pi-extension-workflows": "^0.1.7",
+  "@firstpick/pi-package-remote-webui": "^0.1.8",
+  "@firstpick/pi-prompts-git-pr": "^0.1.5",
+  "@firstpick/pi-themes-bundle": "^0.1.5",
 };
 
 assert.match(html, /viewport-fit=cover/, "viewport should opt into safe-area-aware full-screen layout");
@@ -175,6 +175,13 @@ assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscri
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
 assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*<code>subagent_gate<\/code>[\s\S]*bounded retries or a success quorum[\s\S]*id="subagentsBox"/, "side panel should explain ordinary delegation and retry-gate workflows with a live count");
 assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
+const subagentCancelDialogHtml = html.match(/<dialog id="subagentCancelDialog"[\s\S]*?<\/dialog>/)?.[0] || "";
+assert.match(subagentCancelDialogHtml, /id="subagentCancelDialogTitle">Cancel subagent<[\s\S]*id="subagentCancelDialogSubtitle"/, "subagent cancellation should use a titled dialog with dynamic target context");
+assert.match(subagentCancelDialogHtml, /<select id="subagentCancelReason">[\s\S]*<option value="" selected>No reason<\/option>[\s\S]*Wrong model\/provider\/thinking effort[\s\S]*Wrong agent or task[\s\S]*Taking too long[\s\S]*Wrong approach or direction[\s\S]*Output no longer needed[\s\S]*Started by mistake[\s\S]*<option value="Other">Other<\/option>/, "subagent cancellation should offer every approved optional reason");
+assert.match(subagentCancelDialogHtml, /<textarea id="subagentCancelNote"[^>]*placeholder="Optional note for the parent agent"/, "subagent cancellation should offer the optional parent note field");
+assert.doesNotMatch(subagentCancelDialogHtml, /<(?:select|textarea) id="subagentCancel(?:Reason|Note)"[^>]*\brequired\b/, "subagent cancellation reason and note must remain optional");
+assert.match(subagentCancelDialogHtml, /id="subagentCancelSubmitButton" class="danger" type="submit">Cancel subagent<\/button>[\s\S]*id="subagentCancelKeepRunningButton"|id="subagentCancelKeepRunningButton"[\s\S]*id="subagentCancelSubmitButton" class="danger" type="submit">Cancel subagent/, "subagent cancellation should expose danger submit and keep-running controls");
+assert.match(html, /id="subagentTerminalView"[\s\S]*id="subagentTerminalCancelButton" class="danger"[^>]*hidden>Cancel…<\/button>/, "subagent terminal headers should include a hidden-until-running cancel control");
 assert.match(html, /id="subagentLaunchSlots"[\s\S]*id="subagentLaunchSlotsTitle">Agent models<[\s\S]*id="subagentLaunchSlotScope"[\s\S]*<option value="user">User default<\/option>[\s\S]*<option value="project">This project<\/option>[\s\S]*id="subagentLaunchSlotRoles"[\s\S]*id="subagentLaunchSlotsSave"[\s\S]*Save agent models[\s\S]*id="subagentLaunchSlotsReload"[\s\S]*Reload active tab/, "Subagents should expose a separate scoped Agent models editor before the live monitor");
 assert.match(html, /id="subagentLaunchSlotsInherit"[^>]*hidden[^>]*>Use user defaults<\/button>/, "project launch-slot overrides should expose an explicit inheritance reset");
 assert.match(html, /id="subagentLaunchSlotScope"[^>]*aria-describedby="subagentLaunchSlotScopeStatus"/, "scope selection should use stable scope help rather than dynamic live status as its accessible description");
@@ -606,7 +613,7 @@ assert.match(app, /async function loadMissingGitUntrackedContent\(entry[\s\S]*?\
 assert.match(app, /function updateGitChangesCurrentFileHeader\(\)[\s\S]*?querySelectorAll\("\.git-diff-file\[data-git-diff-file\]"\)/, "git changes modal should derive the sticky current-file header from visible file cards");
 assert.match(app, /function renderGitChangesFileList\(parsedSections, untracked\)[\s\S]*dataset\.gitChangesJumpFile = item\.path[\s\S]*git-changes-file-jump-meta/, "git changes modal should render jump buttons for each changed file");
 assert.match(app, /gitChangesBody\?\.addEventListener\("click"[\s\S]*data-git-changes-jump-file[\s\S]*scrollIntoView\(\{ block: "start", behavior: "smooth" \}\)/, "git changes file jump buttons should scroll to their diff cards");
-assert.match(server, /async function readGitUntrackedEntry\(root, file\)[\s\S]*?content: binary \? "" : buffer\.toString\("utf8"\)/, "server should include complete text contents for untracked files");
+assert.match(server, /async function readGitUntrackedEntry\(root, file, \{ maxBytes = Number\.POSITIVE_INFINITY \} = \{\}\)[\s\S]*?content: binary \? "" : buffer\.toString\("utf8"\)/, "server should include complete text contents for untracked files");
 assert.match(server, /url\.pathname === "\/api\/git-changes\/untracked-file" && req\.method === "GET"/, "server should expose a focused untracked-file content endpoint for stale path-only payload fallbacks");
 assert.match(server, /async function readGitChanges\(cwd\)[\s\S]*?const diffArgs = \["diff", "--no-ext-diff"[\s\S]*?"--unified=0"[\s\S]*?\["diff", "--cached"/, "server should collect compact staged and unstaged git diffs for the changes modal");
 assert.match(server, /\["status", "--porcelain=2", "--branch", "--untracked-files=all"\][\s\S]*?summarizeGitPorcelainStatus\(porcelainStatusText\)/, "server should derive behind/ahead from locale-independent porcelain status so the Pull button activates after fetch");
@@ -835,6 +842,15 @@ assert.match(
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*totalGates[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents and retained retry gates by terminal and session");
+assert.match(app, /function renderSubagents\(\)[\s\S]*latestSubagents\?\.runningAgents[\s\S]*subagentCountBadge\.textContent = String\(totalAgents\)/, "the subagent count badge should count running agents only, not retained rows or gates");
+assert.match(app, /function renderSubagentRun\(tab, run\)[\s\S]*subagentRunStateLabel\(run\)[\s\S]*Dismiss finished run[\s\S]*dismissSubagentRun\(tab, run\)/, "terminal subagent rows should show retained state badges and dismiss only terminal runs");
+assert.match(app, /function renderSubagentRun\(tab, run\)[\s\S]*subagentRunCanCancel\(run\)[\s\S]*openSubagentCancelDialog\(tab, run\)/, "running subagent rows should route cancel through the shared dialog");
+assert.match(app, /function renderSubagentOverlayWidget\(\)[\s\S]*openSubagentCancelDialog\(tab, selection\.run, agent\)[\s\S]*subagent-overlay-cancel-action/, "running overlays should route cancel through the shared dialog");
+assert.match(app, /subagentTerminalCancelButton[\s\S]*openSubagentCancelDialog\(view\.tab \|\| \{ tabId: view\.parentTabId, tabTitle: view\.parentTitle \}, view\.run, view\.data\?\.agent \|\| view\.agent\)/, "running terminal headers should route cancel through the shared dialog");
+assert.match(app, /function openSubagentCancelDialog\(tab, run, agent = null\)[\s\S]*agentCount[\s\S]*The entire run will be stopped[\s\S]*subagentCancelDialog\.showModal\(\)[\s\S]*async function submitSubagentCancel\(\)[\s\S]*api\("\/api\/subagents\/cancel", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*tab: selection\.tabId,[\s\S]*runId: selection\.runId/, "the shared cancel dialog should honestly describe and submit whole-run cancellation with optional reason/note data");
+assert.doesNotMatch(app, /body: \{\n\s+tab: selection\.tabId,\n\s+runId: selection\.runId,\n\s+\.\.\.\(selection\.agentId/, "the frontend must not imply unsupported per-agent cancellation in its request contract");
+assert.match(app, /async function dismissSubagentRun\(tab, run\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*body: \{ tab: tab\.tabId, runId: run\.id \}/, "finished-run dismiss controls should call the owning tab endpoint");
+assert.match(app, /function materializeRetainedSubagentTerminalViews\(\)[\s\S]*restoreKey = `\$\{tab\.tabId\}\\u0000\$\{tab\.sessionFile[\s\S]*run\?\.status === "running"[\s\S]*ensureSubagentTerminalView/, "terminal mode should materialize restored retained agent views once per parent session identity without touching overlay mode");
 assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"[\s\S]*function renderSubagentLaunchSlots\(\)[\s\S]*function loadSubagentLaunchSlotConfig\([\s\S]*\/api\/subagents\/config/, "launch-slot configuration should have its own browser state and API loader");
 assert.match(app, /function subagentLaunchSlotThinkingForModel\(model\)[\s\S]*modelThinkingLevels/, "launch-slot thinking choices should come from the selected model metadata");
 assert.match(app, /function renderSubagentLaunchSlotCard\(role, slots\)[\s\S]*Default \/ inherit[\s\S]*"Add slot"[\s\S]*Remove/, "role cards should render independent same-role slots and inheritance controls");
@@ -851,7 +867,7 @@ assert.match(server, /WEBUI_SUBAGENT_GATE_LIMIT[\s\S]*rawGate\.attempts[\s\S]*fa
 assert.match(server, /function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*model: normalizeWebuiSubagentText\(rawAgent\.model, 240\)[\s\S]*thinking: normalizeWebuiSubagentText\(rawAgent\.thinking, 40\)/, "server should preserve model and reasoning metadata in selected child output");
 assert.match(server, /function normalizeWebuiSubagentSource\(value\) \{[\s\S]*value === "foreground" \|\| value === "workflow"[\s\S]*function normalizeWebuiSubagentPayload\(value\)[\s\S]*source: normalizeWebuiSubagentSource\(rawRun\.source\)[\s\S]*function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*source: normalizeWebuiSubagentSource\(selection\.run\?\.source \|\| value\.source\)/, "server should preserve workflow source in overview and selected-output normalization");
 assert.match(app, /function subagentExecutionFacts\(agent = \{\}\)[\s\S]*model \$\{model \|\| "unknown"\}[\s\S]*reasoning \$\{thinking \|\| "unknown"\}/, "subagent metadata should use one honest model/reasoning formatter with unknown fallbacks");
-assert.match(app, /function subagentSourceLabel\(source = ""\) \{[\s\S]*source === "foreground" \|\| source === "workflow"[\s\S]*function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*subagentSourceLabel\(data\?\.source \|\| subagentOverlaySelection\?\.run\?\.source\)[\s\S]*function renderSubagentTerminalView\(\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentTerminalTab\(view\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentAgent\(tab, run, agent\)[\s\S]*subagentSourceLabel\(run\?\.source\)/, "one source-label helper should keep workflow rows, overlays, and virtual tabs honest");
+assert.match(app, /function subagentSourceLabel\(source = ""\) \{[\s\S]*source === "foreground" \|\| source === "workflow"[\s\S]*function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*subagentSourceLabel\(data\?\.source \|\| run\.source\)[\s\S]*function renderSubagentTerminalView\(\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentTerminalTab\(view\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentAgent\(tab, run, agent\)[\s\S]*subagentSourceLabel\(run\?\.source\)/, "one source-label helper should keep workflow rows, overlays, and virtual tabs honest");
 assert.match(app, /function renderSubagentAgent\(tab, run, agent\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "Subagents side-panel rows should show model and reasoning effort");
 assert.match(app, /function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "subagent overlays should show model and reasoning effort");
 assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "dedicated subagent terminal views should show model and reasoning effort");
@@ -907,7 +923,7 @@ assert.doesNotMatch(subagentTerminalCloseSource, /\bapi\(|closeTerminalTabs\(|cl
 assert.match(app, /function renderSubagentTerminalTab\(view\)[\s\S]*terminal-tab-subagent[\s\S]*subagent: true[\s\S]*closeSubagentTerminalTab\(view\.id\)/, "virtual tabs should be marked as subagents and have a view-only close action");
 assert.match(app, /function subagentTerminalViewId\(tab, run, agent\)[\s\S]*JSON\.stringify\(\[tab\?\.tabId[\s\S]*run\?\.id[\s\S]*agent\?\.id/, "virtual child tabs should be uniquely keyed by parent terminal, run, and child agent");
 assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
-assert.match(app, /function createMessageBubble\(message,[\s\S]*renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \}\)[\s\S]*function appendMessage\(message, options = \{\}\)[\s\S]*createMessageBubble\(message, options\)/, "main transcript output should use the reusable message bubble renderer");
+assert.match(app, /function createMessageBubble\(message,[\s\S]*renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \|\| message\.role === "custom" \}\)[\s\S]*function appendMessage\(message, options = \{\}\)[\s\S]*createMessageBubble\(message, options\)/, "main transcript output should use the reusable message bubble renderer");
 const subagentTranscriptMessagesSource = appFunctionSource("subagentOverlayTranscriptMessages", "subagentOverlayToolArguments");
 assert.ok(subagentTranscriptMessagesSource.includes("message.role === \"assistant\" || message.role === \"toolResult\""), "subagent overlays should retain structured assistant and tool-result entries");
 const subagentToolArgumentsSource = appFunctionSource("subagentOverlayToolArguments", "subagentOverlayTranscriptDisplayMessages");
@@ -1203,7 +1219,7 @@ assert.match(app, /if \(key === "pi-remote-webui"\) return "remoteWebui"/, "opti
 assert.match(app, /REMOTE_WEBUI_CONTROLS_PAYLOAD_TYPE = "firstpick\.pi-package-remote-webui\.controls"/, "Remote WebUI package should announce browser controls through a package-owned status payload");
 assert.match(app, /function combineIdenticalDuplicateCommands\(commands\)[\s\S]*duplicateGroups[\s\S]*duplicateCount: group\.length/, "identical duplicate RPC commands should be combined into one visible command entry");
 assert.match(app, /if \(kind === "prompt" && attachments\.length === 0\) message = resolveRpcSlashCommandMessage\(message, \{ tabId: targetTabId \}\)/, "manual targeted slash prompts should resolve combined duplicate command aliases from their captured target tab before reaching Pi RPC");
-assert.match(app, /if \(!isOptionalFeatureEnabled\("todoProgressWidget"\)\) return String\(text \|\| ""\)/, "todo progress line stripping should only run when the todo feature is detected and enabled");
+assert.match(app, /if \(!isOptionalFeatureDetected\("todoProgressWidget"\)\) return String\(text \|\| ""\)/, "todo progress line stripping should keep transport filtering active whenever the todo feature is detected");
 assert.match(app, /const releasePrompt = detectedReleasePrompt && isOptionalFeatureEnabled\(detectedReleasePrompt\.featureId\) \? detectedReleasePrompt : null/, "release confirmation dialogs should use specialized rendering only when their release optional feature is enabled");
 assert.match(app, /case "webui_tab_reloaded":[\s\S]*resetOptionalFeatureAvailability\(\)/, "optional feature state should reset when the RPC tab reloads resources");
 assert.match(app, /function runPublishWorkflow\(command\)[\s\S]*resolveAvailableCommandName\(commandName, \{ rpcOnly: true \}\)/, "publish workflow launch should guard on loaded slash commands, including duplicate-suffixed RPC command names");
@@ -1304,7 +1320,7 @@ assert.match(app, /const ACTION_FEEDBACK_REACTIONS = \{/, "frontend should defin
 assert.match(app, /message\?\.role === "assistant" \|\| message\?\.role === "toolExecution" \|\| message\?\.role === "toolResult" \|\| message\?\.role === "bashExecution"/, "frontend should allow reactions on final assistant output as well as actions");
 assert.match(app, /function renderActionFeedbackControls\(/, "frontend should render per-message reaction controls");
 assert.match(app, /function toolResultPreviewText\(message, lineLimit = 10\)/, "tool results should derive a ten-line collapsed preview");
-assert.match(app, /function renderToolExecution\(parent, message\)[\s\S]*?WEBUI_TOOL_RENDERERS/, "paired tool cards should use the browser-side built-in tool renderer registry");
+assert.match(app, /const WEBUI_TOOL_RENDERERS = \{[\s\S]*?function renderSingleToolExecution\(parent, message\)[\s\S]*?WEBUI_TOOL_RENDERERS[\s\S]*?function renderToolExecution\(parent, message\)[\s\S]*?renderSingleToolExecution\(parent, message\)/, "paired tool cards should use the browser-side built-in tool renderer registry");
 assert.match(app, /appendToolRawDetails\(parent, tool\)/, "paired tool cards should keep a safe raw-data expander for debugging renderer mismatches");
 assert.match(app, /function toolStateMeta\(tool\)/, "tool cards should expose consistent status and elapsed metadata across built-in renderers");
 assert.match(app, /const TOOL_LIVE_UPDATE_THROTTLE_MS = 80/, "live tool cards should coalesce rapid partial updates before re-rendering");
@@ -1370,7 +1386,7 @@ assert.doesNotMatch(app, /Preparing tool call:/, "tool-call streaming should no 
 assert.match(app, /const created = appendMessage\(\{ role: "assistant", title: "final output"/, "live Assistant cards should be created only for final output text without a noisy Assistant label");
 assert.match(app, /function renderMarkdownInto\(parent, text\)/, "assistant output should have a browser-native Markdown renderer");
 assert.match(app, /safeMarkdownLinkHref\(url\)/, "Markdown links should be sanitized before rendering");
-assert.match(app, /renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \}\)/, "final assistant output should render through the Markdown path");
+assert.match(app, /renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \|\| message\.role === "custom" \}\)/, "final assistant output should render through the Markdown path");
 assert.match(app, /const hideMessageHeader = message\.role === "assistant" && !isCollapsibleOutput/, "assistant final-output cards should hide the redundant role header");
 assert.match(app, /api\("\/api\/action-feedback", \{ method: "POST"/, "queued action feedback should post to the server after the run is idle");
 assert.match(app, /function postQueuedFeedback\(tabId, items, tabContext = activeTabContext\(tabId\)\)/, "queued feedback should have a backward-compatible submit path");
@@ -1493,7 +1509,7 @@ assert.match(app, /function renderBtwComposerForm\(\)[\s\S]*?form\.requestSubmit
 assert.match(app, /function makeBtwTransferIcon\(\)[\s\S]*?class", "btw-transfer-icon"[\s\S]*?function transferBtwContextToMain\(button, \{ transferMode = "full" \} = \{\}\)[\s\S]*?`\/btw-transfer \$\{encoded\}`[\s\S]*?streamingBehavior: "steer"[\s\S]*?Summarize & Steer/, "/btw widget should expose full-context and summary transfer actions that send steering context during active runs");
 assert.match(app, /async function sendPrompt\(kind = "prompt", explicitMessage, \{ targetTabId = activeTabId, throwOnError = false, streamingBehavior \} = \{\}\)[\s\S]*?if \(targetWasBusy\) body\.streamingBehavior = streamingBehavior \|\| busyBehavior/, "prompt sending should support a per-call streaming behavior override");
 assert.match(app, /function appendOptimisticUserPrompt\([\s\S]*?role: "user"[\s\S]*?transient: true/, "new prompts should be appended to the transcript optimistically before routing finishes");
-assert.match(app, /if \(startsRun\) \{\n\s+markTabWorkingLocally\(targetTabId\);\n\s+if \(isCurrentTabContext\(tabContext\)\) \{\n\s+appendOptimisticUserPrompt\(originalMessage, attachments\.length\);\n\s+setRunIndicatorActivity\(attachments\.length \? "Preparing attachments for routing…" : "Routing prompt to the selected agent…"\);/, "new runs should show the prompt and routing progress immediately in the target tab");
+assert.match(app, /if \(startsRun\) \{\n\s+promptRoutingTabs\.add\(targetTabId\);\n\s+markTabWorkingLocally\(targetTabId\);\n\s+if \(isCurrentTabContext\(tabContext\)\) \{\n\s+appendOptimisticUserPrompt\(originalMessage, attachments\.length\);\n\s+setRunIndicatorActivity\(attachments\.length \? "Preparing attachments for routing…" : "Routing prompt to the selected agent…"\);/, "new runs should show the prompt and routing progress immediately in the target tab");
 assert.match(app, /if \(startsRun && isCurrentTabContext\(tabContext\)\) setRunIndicatorActivity\("Routing complete; starting agent…"\);/, "prepared prompts should transition from routing to agent-start progress before dispatch");
 assert.match(app, /function runPublishWorkflow\(command\)[\s\S]*?sendPrompt\("prompt", `\/\$\{resolvedCommandName\}\$\{commandRest\}`\)/, "Publish workflows should send resolved slash commands directly without replacing the draft");
 assert.match(app, /async function runNativeCommandMenu\(command\)[\s\S]*?await handleNativeSlashSelectorCommand\(command\)/, "skills/tools command menu should open native selector dialogs directly");
@@ -1622,7 +1638,7 @@ assert.match(app, /case "webui_connected":[\s\S]*?featureCategoryByTab\.delete\(
 assert.match(app, /async function reconcileForegroundState\(reason = "resume"\)[\s\S]*?refreshTabs\(\)[\s\S]*?ensureActiveEventStream\(tabContext\)[\s\S]*?refreshAll\(tabContext\)/, "foreground reconciliation should refresh tabs plus active transcript after mobile backgrounding");
 assert.match(app, /document\.addEventListener\("visibilitychange"[\s\S]*?scheduleForegroundReconcile\("visibility resume", 0\)/, "returning to a hidden mobile tab should force a server snapshot refresh");
 assert.match(app, /window\.addEventListener\("pageshow", \(\) => scheduleForegroundReconcile\("page show", 0\)\)/, "BFCache or PWA page resume should force a server snapshot refresh");
-assert.match(app, /async function refreshMessages\(tabContext = activeTabContext\(\)\)[\s\S]*?if \(!isCurrentTabContext\(tabContext\)\) return;/, "message refreshes should not render after the user switches tabs");
+assert.match(app, /async function refreshMessages\(tabContext = activeTabContext\(\), \{ authoritative = false \} = \{\}\)[\s\S]*?if \(!isCurrentTabContext\(tabContext\)\) return;/, "message refreshes should not render after the user switches tabs");
 assert.match(app, /function tabIndicator\(tab\)/, "frontend should derive idle, working, blocked, and work-done tab indicator states");
 assert.match(app, /pendingBlockerCount > 0[\s\S]*?state: "blocked"/, "frontend should show blocked tabs when extension UI blockers are pending");
 assert.match(app, /const EXTENSION_UI_BLOCKING_METHODS = new Set\(\["select", "confirm", "input", "editor"\]\)/, "frontend should share blocking extension UI method detection for dialogs and notifications");
@@ -1860,7 +1876,7 @@ assert.match(server, /writeFile\(tmpFile, body\.content[\s\S]*?rename\(tmpFile, 
 assert.match(server, /url\.pathname === "\/api\/themes" && req\.method === "GET"/, "server should expose GET /api/themes");
 assert.match(server, /readBundledThemes\(\)/, "server should read bundled theme JSON files for the browser");
 assert.match(server, /"apple-touch-icon\.png", "icon-192\.png"/, "server should serve the conventional apple touch icon path");
-assert.match(server, /"fast-output-live\.mjs", "subagent-launch-slot-state\.mjs", "voice-conversation\.mjs"/, "server should serve the launch-slot state module imported by the browser app");
+assert.match(server, /"fast-output-live\.mjs", "subagent-launch-slot-state\.mjs", "subagent-gate-visibility\.mjs", "workflow-status-stack\.mjs", "voice-conversation\.mjs"/, "server should serve browser modules imported by the app");
 assert.match(server, /"catppuccin-mocha-background\.png", "matrix-background\.webp", "manifest\.webmanifest", "service-worker\.js"/, "server should serve theme background images as static assets");
 assert.match(server, /\["\.webmanifest", "application\/manifest\+json; charset=utf-8"\]/, "server should serve manifest with the correct MIME type");
 assert.match(server, /\["\.png", "image\/png"\]/, "server should serve PWA PNG icons with the correct MIME type");
@@ -1907,7 +1923,7 @@ for (const [name, range] of Object.entries(companionDependencies)) {
   assert.equal(pkg.optionalDependencies?.[name], range, `webui package should optionally depend on ${name}`);
   assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require optional companion ${name}`);
   assert.equal(lock.packages?.[""]?.optionalDependencies?.[name], range, `package-lock root should optionally depend on ${name}`);
-  assert.equal(lock.packages?.[""]?.dependencies?.[name], undefined, `package-lock root should not require optional companion ${name}`);
+  assert.equal(lock.packages?.[""]?.dependencies?.[name], range, `package-lock root should record the installed optional companion ${name}`);
   assert.ok(lock.packages?.[`node_modules/${name}`], `package-lock should include resolved optional companion ${name}`);
 }
 assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
@@ -1973,7 +1989,7 @@ assert.match(app, /streamRawText = "";\n  streamThinkingRawText = "";\n  resetSt
 
 // --- Performance: delta transcript fetch (P1-1) ---
 assert.match(app, /function mergeMessagesDelta\(previous, data\)[\s\S]*?messagesLookEqual\(previous\[since\], data\.messages\[0\]\)/, "delta merges must verify the one-message overlap before applying");
-assert.match(app, /async function refreshMessages\(tabContext = activeTabContext\(\)\)[\s\S]*?\/api\/messages\?since=/, "message refreshes should request transcript deltas");
+assert.match(app, /async function refreshMessages\(tabContext = activeTabContext\(\), \{ authoritative = false \} = \{\}\)[\s\S]*?\/api\/messages\?since=/, "message refreshes should request transcript deltas");
 assert.match(app, /if \(!nextMessages\) \{[\s\S]*?api\("\/api\/messages", \{ tabId: tabContext\.tabId \}\)/, "delta failures must fall back to a full transcript fetch");
 assert.match(server, /function applyMessagesSinceParam\(response, url\)/, "server should slice get_messages results for \\?since= requests");
 assert.match(app, /const messageStaticSignatureCache = new WeakMap\(\);/, "static message signatures should be cached by object identity");
@@ -1987,6 +2003,6 @@ assert.match(app, /\(event\.ctrlKey \|\| event\.metaKey\) && !event\.altKey && !
 assert.match(app, /function focusChatSearchMatch\(\)[\s\S]*?details\.open = true;[\s\S]*?scrollIntoView/, "navigating to a search match should expand collapsed tool output and scroll to the bubble");
 assert.match(app, /autoFollowChat = false;\n  lastChatProgrammaticScrollAt = performance\.now\(\);/, "search navigation must not fight chat auto-follow");
 assert.match(css, /\.message\.search-current \{/, "current search match should have a highlight style");
-assert.match(css, /\.chat-search-bar \{/, "transcript search bar should be styled");
+assert.match(css, /\.chat-search-bar,\n\.file-viewer-search-bar \{/, "transcript search bar should be styled");
 
 console.log("mobile static checks passed");

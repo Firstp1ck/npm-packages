@@ -1,0 +1,8 @@
+{
+  "name": "pi-coding-agent-session-scoped-model-effort-patch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/lifecycle.test.mjs tests/session-isolation.test.mjs"
+  }
+}

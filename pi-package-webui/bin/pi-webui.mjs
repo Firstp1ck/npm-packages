@@ -8617,14 +8617,18 @@ function normalizeWebuiSubagentPayload(value) {
     if (!rawRun || typeof rawRun !== "object") continue;
     const id = normalizeWebuiSubagentText(rawRun.id, 160);
     if (!id) continue;
+    const status = ["running", "done", "failed", "cancelled"].includes(rawRun.status) ? rawRun.status : "running";
     const agents = [];
     for (const rawAgent of Array.isArray(rawRun.agents) ? rawRun.agents.slice(0, WEBUI_SUBAGENT_AGENT_LIMIT) : []) {
       const name = normalizeWebuiSubagentText(rawAgent?.name, 160);
-      if (!name || rawAgent?.status !== "running") continue;
+      const agentStatus = ["running", "done", "failed", "cancelled"].includes(rawAgent?.status)
+        ? rawAgent.status
+        : status === "cancelled" ? "cancelled" : status === "running" ? "running" : "done";
+      if (!name || (status === "running" && agentStatus !== "running")) continue;
       agents.push({
         id: normalizeWebuiSubagentText(rawAgent.id || `${id}:${agents.length}`, 240),
         name,
-        status: "running",
+        status: agentStatus,
         index: Number.isInteger(rawAgent.index) ? rawAgent.index : agents.length,
         currentTool: normalizeWebuiSubagentText(rawAgent.currentTool, 120) || undefined,
         activityState: normalizeWebuiSubagentText(rawAgent.activityState, 80) || undefined,
@@ -8633,13 +8637,17 @@ function normalizeWebuiSubagentPayload(value) {
         nested: rawAgent.nested === true,
       });
     }
-    if (!agents.length) continue;
+    if (status === "running" && !agents.length) continue;
     runs.push({
       id,
       source: normalizeWebuiSubagentSource(rawRun.source),
       mode: ["single", "parallel", "chain"].includes(rawRun.mode) ? rawRun.mode : "single",
-      status: "running",
+      status,
       startedAt: Number.isFinite(rawRun.startedAt) ? rawRun.startedAt : Date.now(),
+      endedAt: status === "running" ? undefined : Number.isFinite(rawRun.endedAt) ? rawRun.endedAt : undefined,
+      cancelReason: status === "cancelled" ? normalizeWebuiSubagentText(rawRun.cancelReason, 120) || undefined : undefined,
+      cancelNote: status === "cancelled" ? normalizeWebuiSubagentText(rawRun.cancelNote, 2000) || undefined : undefined,
+      cancelledBy: status === "cancelled" && rawRun.cancelledBy === "user" ? "user" : undefined,
       agents: agents.sort((a, b) => a.index - b.index || a.name.localeCompare(b.name)),
     });
   }
@@ -9641,6 +9649,8 @@ function webuiSubagentsData() {
       runs,
       gates,
       agentCount: runs.reduce((count, run) => count + run.agents.length, 0),
+      runningRuns: runs.filter((run) => run.status === "running").length,
+      runningAgents: runs.reduce((count, run) => count + run.agents.filter((agent) => agent.status === "running").length, 0),
       gateCount: gates.length,
     };
   });
@@ -9650,6 +9660,8 @@ function webuiSubagentsData() {
     available: tabSummaries.some((tab) => tab.available),
     totalRuns: tabSummaries.reduce((count, tab) => count + tab.runs.length, 0),
     totalAgents: tabSummaries.reduce((count, tab) => count + tab.agentCount, 0),
+    runningRuns: tabSummaries.reduce((count, tab) => count + tab.runningRuns, 0),
+    runningAgents: tabSummaries.reduce((count, tab) => count + tab.runningAgents, 0),
     totalGates: tabSummaries.reduce((count, tab) => count + tab.gateCount, 0),
     tabs: tabSummaries,
   };
@@ -9773,9 +9785,9 @@ function normalizeWebuiSubagentOutput(value, selection) {
 async function webuiSubagentOutputData(tab, runId, agentId) {
   const runs = Array.isArray(tab.webuiSubagents?.runs) ? tab.webuiSubagents.runs : [];
   const run = runs.find((candidate) => candidate.id === runId);
-  if (!run) throw makeHttpError(404, `Running subagent run not found: ${runId}`);
+  if (!run) throw makeHttpError(404, `Subagent run not found: ${runId}`);
   const agent = (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate.id === agentId);
-  if (!agent) throw makeHttpError(404, `Running subagent not found: ${agentId}`);
+  if (!agent) throw makeHttpError(404, `Subagent not found: ${agentId}`);
   const data = await sendWebuiHelperCommand(tab, "subagent-output", { runId, agentId });
   return normalizeWebuiSubagentOutput(data, { run, agent });
 }
@@ -13352,6 +13364,26 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       sendJson(res, 200, { ok: true, data: await saveSubagentLaunchSlotConfigData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/subagents/cancel" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-cancel", {
+        runId: body.runId,
+        reason: body.reason,
+        note: body.note,
+      }) });
+      return;
+    }
+
+    if (url.pathname === "/api/subagents/dismiss" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-dismiss", { runId: body.runId }) });
       return;
     }
 

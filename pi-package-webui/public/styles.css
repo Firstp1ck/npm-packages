@@ -2823,6 +2823,100 @@ body.embedded-split .side-panel-backdrop {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.subagent-run {
+  display: grid;
+  gap: 0.42rem;
+  min-width: 0;
+  padding: 0.5rem;
+  border: 1px solid rgba(180, 190, 254, 0.16);
+  border-radius: 0.68rem;
+  background: rgba(var(--ctp-surface-rgb), 0.12);
+}
+.subagent-run.done { border-color: rgba(166, 227, 161, 0.32); }
+.subagent-run.failed,
+.subagent-run.cancelled { border-color: rgba(243, 139, 168, 0.34); }
+.subagent-run-header,
+.subagent-run-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+.subagent-run-header { justify-content: space-between; }
+.subagent-run-title {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.subagent-run-title strong {
+  overflow: hidden;
+  color: rgba(var(--ctp-text-rgb), 0.94);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-run-meta {
+  color: rgba(var(--ctp-subtext-rgb), 0.68);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.subagent-run-actions { flex: 0 0 auto; }
+.subagent-run-cancel,
+.subagent-run-dismiss {
+  min-height: 2rem;
+  padding: 0.28rem 0.48rem;
+  font-size: var(--text-xs);
+}
+.subagent-run-cancel {
+  color: var(--ctp-red);
+  border-color: rgba(243, 139, 168, 0.38);
+}
+.subagent-run-dismiss {
+  min-width: 2rem;
+  color: var(--ctp-red);
+  border-color: rgba(243, 139, 168, 0.32);
+}
+.subagent-run-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid rgba(180, 190, 254, 0.24);
+  border-radius: 999px;
+  color: rgba(var(--ctp-subtext-rgb), 0.88);
+  background: rgba(var(--ctp-surface-rgb), 0.32);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  white-space: nowrap;
+}
+.subagent-run-state.done { color: var(--ctp-green); border-color: rgba(166, 227, 161, 0.38); background: rgba(166, 227, 161, 0.1); }
+.subagent-run-state.failed,
+.subagent-run-state.cancelled { color: var(--ctp-red); border-color: rgba(243, 139, 168, 0.4); background: rgba(243, 139, 168, 0.1); }
+.subagent-run-agents { display: grid; gap: 0.32rem; }
+.subagent-state-dot {
+  width: 0.52rem;
+  height: 0.52rem;
+  margin-top: 0.22rem;
+  border-radius: 999px;
+  background: var(--ctp-overlay);
+}
+.subagent-state-dot.done { background: var(--ctp-green); }
+.subagent-state-dot.failed,
+.subagent-state-dot.cancelled { background: var(--ctp-red); }
+.extension-dialog.subagent-cancel-dialog { width: min(34rem, calc(100vw - 2rem)); }
+.subagent-cancel-dialog form { display: grid; gap: 0.72rem; }
+.subagent-cancel-dialog h2,
+.subagent-cancel-dialog p { margin: 0; }
+.subagent-cancel-field {
+  display: grid;
+  gap: 0.32rem;
+  color: rgba(var(--ctp-text-rgb), 0.9);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+.subagent-cancel-note { min-height: 8rem; }
+.subagent-cancel-status { min-height: 1.25rem; font-size: var(--text-xs); }
+.subagent-cancel-status.error { color: var(--ctp-red); }
+.subagent-overlay-cancel-action { color: var(--button-primary-text); }
 .subagent-gate-card {
   display: grid;
   gap: 0.48rem;
@@ -7470,7 +7564,7 @@ button.git-workflow-step:hover:not(:disabled) {
 .compact-tool-shell .message-role {
   overflow: hidden;
   color: var(--ctp-yellow);
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.09em;
   text-overflow: ellipsis;
   text-transform: uppercase;

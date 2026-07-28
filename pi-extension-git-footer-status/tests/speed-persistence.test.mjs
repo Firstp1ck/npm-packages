@@ -81,6 +81,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const createHarness = () => {
   const handlers = new Map();
+  const commands = new Map();
   const statuses = [];
   const pi = {
     on(event, handler) {
@@ -88,7 +89,9 @@ const createHarness = () => {
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
-    registerCommand() {},
+    registerCommand(name, command) {
+      commands.set(name, command);
+    },
     registerShortcut() {},
     getThinkingLevel: () => "off",
     exec: async () => ({ code: 1, stdout: "", stderr: "not a git repository", killed: false }),
@@ -128,7 +131,13 @@ const createHarness = () => {
     return payload.main.find((chip) => chip.key === "speed");
   };
 
-  return { ctx, emit, latestSpeedCard };
+  const runVisibility = async (args) => {
+    const command = commands.get("git-footer-visibility");
+    assert.ok(command, "git-footer-visibility command should be registered");
+    await command.handler(args, ctx);
+  };
+
+  return { ctx, emit, latestSpeedCard, runVisibility };
 };
 
 const assistantMessage = (output, timestamp) => ({
@@ -177,6 +186,16 @@ test("Speed stays visible while idle and keeps cumulative output and the latest 
 
     const activeSpeed = harness.latestSpeedCard().value;
     assert.match(activeSpeed, /^12 tok @ (?!—)/, "a valid live speed should be published while the agent runs");
+    assert.doesNotMatch(activeSpeed, / · (?:avg|1%|max) /, "session speed stats should be hidden by default");
+
+    await harness.runVisibility("show webui speed-avg");
+    const avgOnlySpeed = harness.latestSpeedCard().value;
+    assert.match(avgOnlySpeed, / · avg \S+$/, "the selected average speed should be shown");
+    assert.doesNotMatch(avgOnlySpeed, / · 1% | · max /, "unselected speed stats should remain hidden");
+
+    await harness.runVisibility("show webui speed-low speed-max");
+    const allStatsSpeed = harness.latestSpeedCard().value;
+    assert.match(allStatsSpeed, / · avg \S+ · 1% \S+ · max \S+$/, "all selected speed stats should be shown");
 
     nowMs += 3_000;
     await harness.emit("message_update", {
@@ -190,8 +209,8 @@ test("Speed stays visible while idle and keeps cumulative output and the latest 
     await sleep(20);
     assert.equal(
       harness.latestSpeedCard().value,
-      activeSpeed,
-      "a streaming pause or tool transition must retain the last valid live speed",
+      allStatsSpeed,
+      "a streaming pause or tool transition must retain the last valid live speed and selected stats",
     );
 
     // Exercise the problematic ordering where agent_end clears live state before

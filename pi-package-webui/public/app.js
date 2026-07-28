@@ -57,7 +57,15 @@ const elements = {
   subagentTerminalStatus: $("#subagentTerminalStatus"),
   subagentTerminalCopyButton: $("#subagentTerminalCopyButton"),
   subagentTerminalRefreshButton: $("#subagentTerminalRefreshButton"),
+  subagentTerminalCancelButton: $("#subagentTerminalCancelButton"),
   subagentTerminalInput: $("#subagentTerminalInput"),
+  subagentCancelDialog: $("#subagentCancelDialog"),
+  subagentCancelDialogSubtitle: $("#subagentCancelDialogSubtitle"),
+  subagentCancelReason: $("#subagentCancelReason"),
+  subagentCancelNote: $("#subagentCancelNote"),
+  subagentCancelStatus: $("#subagentCancelStatus"),
+  subagentCancelKeepRunningButton: $("#subagentCancelKeepRunningButton"),
+  subagentCancelSubmitButton: $("#subagentCancelSubmitButton"),
   stickyUserPromptButton: $("#stickyUserPromptButton"),
   chat: $("#chat"),
   chatSearchBar: $("#chatSearchBar"),
@@ -607,7 +615,10 @@ let subagentOverlayLoading = false;
 let subagentOverlayRefreshTimer = null;
 let subagentOverlayRequestSerial = 0;
 let subagentOpenMode = "overlay";
+let subagentCancelSelection = null;
+let subagentCancelSubmitting = false;
 const subagentTerminalViews = new Map();
+const subagentTerminalRestoredParentTabs = new Set();
 let activeSubagentTerminalId = null;
 let subagentTerminalRefreshTimer = null;
 let subagentLaunchSlotConfig = null;
@@ -2389,7 +2400,9 @@ function setSubagentOpenMode(mode, { persist = true, announce = false } = {}) {
   subagentOpenMode = normalizeSubagentOpenMode(mode);
   if (persist) persistSubagentOpenMode(subagentOpenMode);
   renderSubagentOpenModeControl();
+  const materializedTerminalViews = subagentOpenMode === "tab" && materializeRetainedSubagentTerminalViews();
   renderSubagents();
+  if (materializedTerminalViews) renderTabs();
   if (announce) addEvent(`subagents now open in ${SUBAGENT_OPEN_MODE_LABELS[subagentOpenMode].toLowerCase()}`);
 }
 
@@ -16636,7 +16649,7 @@ function subagentTabsWithRunningAgents() {
       const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
       return { ...tab, gates, gateCount: gates.length };
     })
-    .filter((tab) => Number(tab?.agentCount || 0) > 0 || Number(tab?.gateCount || 0) > 0)
+    .filter((tab) => (Array.isArray(tab?.runs) && tab.runs.length > 0) || Number(tab?.gateCount || 0) > 0)
     .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
 }
 
@@ -16668,6 +16681,116 @@ function subagentExecutionFacts(agent = {}) {
     model = model.slice(0, suffixIndex);
   }
   return [`model ${model || "unknown"}`, `reasoning ${thinking || "unknown"}`];
+}
+
+function subagentRunIsRunning(run = {}, agent = null) {
+  if (run?.status && run.status !== "running") return false;
+  const status = String(agent?.status || "").trim();
+  return !status || ["running", "queued", "pending"].includes(status);
+}
+
+function subagentRunCanCancel(run = {}, agent = null) {
+  return run?.source !== "workflow" && subagentRunIsRunning(run, agent);
+}
+
+function subagentRunStateLabel(run = {}) {
+  if (run?.status === "cancelled") return "cancelled by you";
+  if (run?.status === "failed") return "failed";
+  if (run?.status === "done") return "done";
+  return "running";
+}
+
+function setSubagentCancelStatus(message = "", level = "muted") {
+  if (!elements.subagentCancelStatus) return;
+  elements.subagentCancelStatus.textContent = message;
+  elements.subagentCancelStatus.className = `subagent-cancel-status ${message ? level : "muted"}`;
+  elements.subagentCancelStatus.hidden = !message;
+}
+
+function setSubagentCancelSubmitting(submitting) {
+  subagentCancelSubmitting = !!submitting;
+  if (elements.subagentCancelSubmitButton) {
+    elements.subagentCancelSubmitButton.disabled = subagentCancelSubmitting;
+    elements.subagentCancelSubmitButton.textContent = subagentCancelSubmitting ? "Cancelling…" : "Cancel subagent";
+  }
+  if (elements.subagentCancelKeepRunningButton) elements.subagentCancelKeepRunningButton.disabled = subagentCancelSubmitting;
+}
+
+function subagentCancelTargetLabel(selection = subagentCancelSelection) {
+  if (!selection) return "subagent run";
+  return `run ${selection.runId}`;
+}
+
+function openSubagentCancelDialog(tab, run, agent = null) {
+  if (!tab?.tabId || !run?.id || !subagentRunCanCancel(run, agent) || !elements.subagentCancelDialog) return;
+  const agentCount = Array.isArray(run.agents) ? run.agents.length : 0;
+  subagentCancelSelection = {
+    tabId: tab.tabId,
+    runId: run.id,
+    agentCount,
+  };
+  if (elements.subagentCancelDialogSubtitle) {
+    const scope = agentCount > 1 ? ` and all ${agentCount} agents in it` : "";
+    elements.subagentCancelDialogSubtitle.textContent = `Cancel ${subagentCancelTargetLabel()}${scope}? The entire run will be stopped and the parent agent will be notified.`;
+  }
+  if (elements.subagentCancelReason) elements.subagentCancelReason.value = "";
+  if (elements.subagentCancelNote) elements.subagentCancelNote.value = "";
+  setSubagentCancelStatus();
+  setSubagentCancelSubmitting(false);
+  if (!elements.subagentCancelDialog.open) elements.subagentCancelDialog.showModal();
+  queueMicrotask(() => elements.subagentCancelReason?.focus());
+}
+
+function closeSubagentCancelDialog() {
+  if (subagentCancelSubmitting) return;
+  if (elements.subagentCancelDialog?.open) elements.subagentCancelDialog.close();
+}
+
+async function submitSubagentCancel() {
+  const selection = subagentCancelSelection;
+  if (!selection || subagentCancelSubmitting) return;
+  const reason = String(elements.subagentCancelReason?.value || "").trim();
+  const note = String(elements.subagentCancelNote?.value || "").trim();
+  setSubagentCancelSubmitting(true);
+  setSubagentCancelStatus("Cancelling subagent…");
+  try {
+    await api("/api/subagents/cancel", {
+      method: "POST",
+      scoped: false,
+      body: {
+        tab: selection.tabId,
+        runId: selection.runId,
+        ...(reason ? { reason } : {}),
+        ...(note ? { note } : {}),
+      },
+    });
+    if (elements.subagentCancelDialog?.open) elements.subagentCancelDialog.close();
+    addEvent(`cancelled ${subagentCancelTargetLabel(selection)}; the parent agent was notified`, "info");
+    await refreshSubagents();
+    scheduleRefreshSubagents();
+  } catch (error) {
+    const message = `subagent cancel failed: ${error.message || String(error)}`;
+    setSubagentCancelStatus(message, "error");
+    addEvent(message, "error");
+  } finally {
+    setSubagentCancelSubmitting(false);
+  }
+}
+
+async function dismissSubagentRun(tab, run) {
+  if (!tab?.tabId || !run?.id || subagentRunIsRunning(run)) return;
+  try {
+    await api("/api/subagents/dismiss", {
+      method: "POST",
+      scoped: false,
+      body: { tab: tab.tabId, runId: run.id },
+    });
+    addEvent(`dismissed finished subagent run ${run.id}`, "info");
+    await refreshSubagents();
+    scheduleRefreshSubagents();
+  } catch (error) {
+    addEvent(`subagent dismiss failed: ${error.message || String(error)}`, "error");
+  }
 }
 
 function subagentOverlayTranscriptMessages(data = subagentOverlayData) {
@@ -16798,10 +16921,11 @@ function appendSubagentOverlayTranscript(parent, messages) {
 
 function subagentOverlayStateFacts(data = subagentOverlayData) {
   const agent = data?.agent || subagentOverlaySelection?.agent || {};
+  const run = subagentOverlaySelection?.run || {};
   return [
-    agent.status || "running",
-    data?.mode || subagentOverlaySelection?.run?.mode,
-    subagentSourceLabel(data?.source || subagentOverlaySelection?.run?.source),
+    subagentRunIsRunning(run, agent) ? agent.status || "running" : subagentRunStateLabel(run),
+    data?.mode || run.mode,
+    subagentSourceLabel(data?.source || run.source),
     agent.nested ? "nested" : "",
     ...subagentExecutionFacts(agent),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
@@ -16857,7 +16981,7 @@ function renderSubagentOverlayWidget() {
   const data = subagentOverlayData;
   const agent = data?.agent || selection.agent || {};
   const tab = tabs.find((item) => item.id === selection.tabId) || selection.tab;
-  const running = !selection.finished && (agent.status === "running" || agent.status === "queued" || agent.status === "pending" || !agent.status);
+  const running = !selection.finished && subagentRunIsRunning(selection.run, agent);
   const transcriptMessages = subagentOverlayTranscriptMessages(data);
   const hasStructuredTranscript = transcriptMessages.length > 0;
   const outputText = subagentOverlayOutputText(data);
@@ -16902,6 +17026,9 @@ function renderSubagentOverlayWidget() {
     refreshSubagentOverlay().finally(() => scheduleSubagentOverlayRefresh());
   }, "subagent-overlay-refresh-action");
   refreshButton.disabled = subagentOverlayLoading || selection.finished;
+  if (subagentRunCanCancel(selection.run, agent)) {
+    actions.append(appRunnerActionButton("Cancel…", () => openSubagentCancelDialog(tab, selection.run, agent), "subagent-overlay-cancel-action danger"));
+  }
   actions.append(copyButton, refreshButton, appRunnerActionButton("Close", closeSubagentOverlay, "subagent-overlay-close-action"));
   const details = [
     `${tab?.title || `Terminal ${selection.tabIndex || "?"}`} · run ${selection.runId}`,
@@ -16919,7 +17046,8 @@ function renderSubagentOverlayWidget() {
 
 function scheduleSubagentOverlayRefresh(delay = SUBAGENT_OVERLAY_REFRESH_MS) {
   clearTimeout(subagentOverlayRefreshTimer);
-  if (!subagentOverlaySelection || subagentOverlaySelection.finished) return;
+  const agent = subagentOverlayData?.agent || subagentOverlaySelection?.agent || null;
+  if (!subagentOverlaySelection || subagentOverlaySelection.finished || !subagentRunIsRunning(subagentOverlaySelection.run, agent)) return;
   subagentOverlayRefreshTimer = setTimeout(() => {
     refreshSubagentOverlay().finally(() => scheduleSubagentOverlayRefresh());
   }, delay);
@@ -17015,8 +17143,8 @@ function subagentTerminalViewTitle(view) {
 }
 
 function subagentTerminalViewIsRunning(view) {
-  const status = view?.data?.agent?.status || view?.agent?.status || "running";
-  return view?.finished !== true && ["running", "queued", "pending"].includes(status);
+  const agent = view?.data?.agent || view?.agent || null;
+  return view?.finished !== true && subagentRunIsRunning(view?.run, agent);
 }
 
 function subagentTerminalViewMeaningfulSignature(view) {
@@ -17027,7 +17155,7 @@ function subagentTerminalViewMeaningfulSignature(view) {
 function updateSubagentTerminalRefreshState(view, { running = subagentTerminalViewIsRunning(view) } = {}) {
   if (!view || view.id !== activeSubagentTerminalId) return;
   const status = [
-    view.loading ? "Refreshing…" : running ? "Live view · refreshes automatically" : "View retained after the child stopped being tracked",
+    view.loading ? "Refreshing…" : running ? "Live view · refreshes automatically" : view.finished ? "View retained after the child stopped being tracked" : "View retained after the run finished",
     view.error,
   ].filter(Boolean).join(" · ");
   elements.subagentTerminalStatus.setAttribute("aria-live", view.error ? "polite" : "off");
@@ -17053,7 +17181,7 @@ function renderSubagentTerminalView() {
   const fallbackText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
   const parent = tabs.find((tab) => tab.id === view.parentTabId);
   const facts = [
-    view.finished ? "finished" : running ? "running" : agent.status || "finished",
+    view.finished ? "finished" : running ? "running" : subagentRunStateLabel(view.run),
     view.run?.mode,
     subagentSourceLabel(view.data?.source || view.run?.source),
     agent.nested ? "nested" : "",
@@ -17083,13 +17211,18 @@ function renderSubagentTerminalView() {
 
   updateSubagentTerminalRefreshState(view, { running });
   elements.subagentTerminalCopyButton.disabled = !outputText;
+  if (elements.subagentTerminalCancelButton) {
+    const cancellable = subagentRunCanCancel(view.run, agent);
+    elements.subagentTerminalCancelButton.hidden = !cancellable;
+    elements.subagentTerminalCancelButton.disabled = !cancellable;
+  }
   if (shouldFollowOutput) requestAnimationFrame(() => { elements.subagentTerminalTranscript.scrollTop = elements.subagentTerminalTranscript.scrollHeight; });
 }
 
 function scheduleSubagentTerminalRefresh(delay = SUBAGENT_OVERLAY_REFRESH_MS) {
   clearTimeout(subagentTerminalRefreshTimer);
   const view = activeSubagentTerminalView();
-  if (!view || view.finished) return;
+  if (!view || view.finished || !subagentTerminalViewIsRunning(view)) return;
   subagentTerminalRefreshTimer = setTimeout(() => {
     refreshSubagentTerminalView(view.id).finally(() => scheduleSubagentTerminalRefresh());
   }, delay);
@@ -17156,8 +17289,8 @@ async function activateSubagentTerminalView(viewId) {
   scheduleSubagentTerminalRefresh();
 }
 
-async function openSubagentTerminal(tab, run, agent) {
-  if (!tab?.tabId || !run?.id || !agent?.id) return;
+function ensureSubagentTerminalView(tab, run, agent) {
+  if (!tab?.tabId || !run?.id || !agent?.id) return null;
   const id = subagentTerminalViewId(tab, run, agent);
   const existing = subagentTerminalViews.get(id);
   if (existing) {
@@ -17165,27 +17298,34 @@ async function openSubagentTerminal(tab, run, agent) {
     existing.run = run;
     existing.agent = agent;
     existing.parentTitle = tab.tabTitle;
-  } else {
-    subagentTerminalViews.set(id, {
-      id,
-      parentTabId: tab.tabId,
-      parentTitle: tab.tabTitle,
-      tabIndex: tab.tabIndex,
-      tab,
-      run,
-      agent,
-      runId: run.id,
-      agentId: agent.id,
-      data: null,
-      error: "",
-      loading: false,
-      finished: false,
-      requestSerial: 0,
-      openedAt: Date.now(),
-    });
+    return existing;
   }
+  const view = {
+    id,
+    parentTabId: tab.tabId,
+    parentTitle: tab.tabTitle,
+    tabIndex: tab.tabIndex,
+    tab,
+    run,
+    agent,
+    runId: run.id,
+    agentId: agent.id,
+    data: null,
+    error: "",
+    loading: false,
+    finished: false,
+    requestSerial: 0,
+    openedAt: Date.now(),
+  };
+  subagentTerminalViews.set(id, view);
+  return view;
+}
+
+async function openSubagentTerminal(tab, run, agent) {
+  const view = ensureSubagentTerminalView(tab, run, agent);
+  if (!view) return;
   try {
-    await activateSubagentTerminalView(id);
+    await activateSubagentTerminalView(view.id);
   } catch (error) {
     addEvent(`could not open subagent terminal: ${error.message || String(error)}`, "error");
   }
@@ -17217,6 +17357,9 @@ async function copySubagentTerminalOutput() {
 }
 
 function removeSubagentTerminalViewsForParent(parentTabId) {
+  for (const key of subagentTerminalRestoredParentTabs) {
+    if (key.startsWith(`${parentTabId}\u0000`)) subagentTerminalRestoredParentTabs.delete(key);
+  }
   for (const [viewId, view] of subagentTerminalViews) {
     if (view.parentTabId !== parentTabId) continue;
     view.requestSerial += 1;
@@ -17226,17 +17369,64 @@ function removeSubagentTerminalViewsForParent(parentTabId) {
 }
 
 function syncSubagentTerminalViewsFromOverview() {
+  let changed = false;
+  const overviewTabs = Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [];
   for (const view of subagentTerminalViews.values()) {
-    const tab = (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : []).find((candidate) => candidate.tabId === view.parentTabId);
+    const tab = overviewTabs.find((candidate) => candidate.tabId === view.parentTabId);
     const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === view.runId);
     const agent = (Array.isArray(run?.agents) ? run.agents : []).find((candidate) => candidate.id === view.agentId);
     if (tab) {
       view.tab = tab;
       view.parentTitle = tab.tabTitle;
+      changed = true;
     }
-    if (run) view.run = run;
-    if (agent) view.agent = agent;
+    if (run) {
+      view.run = run;
+      changed = true;
+    }
+    if (agent) {
+      view.agent = agent;
+      if (view.data?.agent) view.data = { ...view.data, agent: { ...view.data.agent, ...agent } };
+      changed = true;
+    }
   }
+  const selection = subagentOverlaySelection;
+  if (selection) {
+    const tab = overviewTabs.find((candidate) => candidate.tabId === selection.tabId);
+    const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === selection.runId);
+    const agent = (Array.isArray(run?.agents) ? run.agents : []).find((candidate) => candidate.id === selection.agentId);
+    if (tab) selection.tab = tab;
+    if (run) {
+      selection.run = run;
+      changed = true;
+    }
+    if (agent) {
+      selection.agent = agent;
+      if (subagentOverlayData?.agent) subagentOverlayData = { ...subagentOverlayData, agent: { ...subagentOverlayData.agent, ...agent } };
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function materializeRetainedSubagentTerminalViews() {
+  if (subagentOpenMode !== "tab") return false;
+  let materialized = false;
+  for (const tab of Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : []) {
+    if (tab?.available !== true || !tab?.tabId) continue;
+    const restoreKey = `${tab.tabId}\u0000${tab.sessionFile || ""}`;
+    if (subagentTerminalRestoredParentTabs.has(restoreKey)) continue;
+    subagentTerminalRestoredParentTabs.add(restoreKey);
+    for (const run of Array.isArray(tab.runs) ? tab.runs : []) {
+      if (run?.status === "running" || run?.source === "workflow") continue;
+      for (const agent of Array.isArray(run.agents) ? run.agents : []) {
+        const id = subagentTerminalViewId(tab, run, agent);
+        if (subagentTerminalViews.has(id)) continue;
+        if (ensureSubagentTerminalView(tab, run, agent)) materialized = true;
+      }
+    }
+  }
+  return materialized;
 }
 
 function renderSubagentTerminalTab(view) {
@@ -17273,9 +17463,10 @@ function openSubagentOutput(tab, run, agent) {
 }
 
 function renderSubagentAgent(tab, run, agent) {
-  const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}`);
+  const running = subagentRunIsRunning(run, agent);
+  const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}`);
   row.type = "button";
-  const dot = make("span", "subagent-running-dot");
+  const dot = make("span", running ? "subagent-running-dot" : `subagent-state-dot ${agent?.status || "done"}`);
   dot.setAttribute("aria-hidden", "true");
   const content = make("div", "subagent-agent-content");
   content.append(make("strong", "subagent-agent-name", agent?.name || "subagent"));
@@ -17286,15 +17477,53 @@ function renderSubagentAgent(tab, run, agent) {
     subagentSourceLabel(run?.source),
     ...subagentExecutionFacts(agent),
     agent?.currentTool ? `tool: ${agent.currentTool}` : "",
-    elapsed ? `running ${elapsed}` : "",
+    running && elapsed ? `running ${elapsed}` : agent?.status || subagentRunStateLabel(run),
   ].filter(Boolean);
   content.append(make("span", "subagent-agent-meta", facts.join(" · ")));
   row.append(dot, content);
-  const destination = subagentOpenMode === "tab" ? "subagent tab" : "live output overlay";
+  const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
   row.title = `${agent?.name || "subagent"} · ${facts.join(" · ")} · run ${run?.id || "unknown"} · open ${destination}`;
   row.setAttribute("aria-label", `Open ${destination} for ${agent?.name || "subagent"} in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
   row.addEventListener("click", () => openSubagentOutput(tab, run, agent));
   return row;
+}
+
+function renderSubagentRun(tab, run) {
+  const running = subagentRunIsRunning(run);
+  const card = make("section", `subagent-run ${running ? "running" : run?.status || "done"}`);
+  const header = make("div", "subagent-run-header");
+  const title = make("div", "subagent-run-title");
+  const elapsed = subagentRunElapsed(run);
+  title.append(
+    make("strong", undefined, `Run ${run?.id || "unknown"}`),
+    make("span", "subagent-run-meta", [subagentSourceLabel(run?.source), run?.mode, running && elapsed ? `running ${elapsed}` : ""].filter(Boolean).join(" · ")),
+  );
+  const actions = make("div", "subagent-run-actions");
+  if (subagentRunCanCancel(run)) {
+    const cancel = make("button", "subagent-run-cancel", "Cancel…");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => openSubagentCancelDialog(tab, run));
+    actions.append(cancel);
+  } else if (!running) {
+    actions.append(make("span", `subagent-run-state ${run?.status || "done"}`, subagentRunStateLabel(run)));
+    if (run?.source !== "workflow") {
+      const dismiss = make("button", "subagent-run-dismiss", "×");
+      dismiss.type = "button";
+      applyStyledTooltip(dismiss, "Dismiss finished run", { ariaLabel: "Dismiss finished run" });
+      dismiss.addEventListener("click", () => dismissSubagentRun(tab, run));
+      actions.append(dismiss);
+    }
+  }
+  header.append(title, actions);
+  card.append(header);
+  const agents = (Array.isArray(run?.agents) ? run.agents : [])
+    .slice()
+    .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || String(a.name || "").localeCompare(String(b.name || "")));
+  const list = make("div", "subagent-run-agents");
+  for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
+  if (!list.childElementCount) list.append(make("div", "subagents-empty", "No agent details were captured for this run."));
+  card.append(list);
+  return card;
 }
 
 function subagentGateStatusLabel(status) {
@@ -17368,21 +17597,22 @@ function renderSubagentTabGroup(tab) {
     make("strong", undefined, tab.tabTitle || `Terminal ${tab.tabIndex || "?"}`),
     make("span", "subagent-tab-session", `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
   );
-  const countLabel = Number(tab.gateCount || 0) > 0 ? `${tab.agentCount || 0} agents · ${tab.gateCount} gates` : String(tab.agentCount || 0);
+  const runs = (Array.isArray(tab.runs) ? tab.runs : [])
+    .slice()
+    .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
+  const runningAgents = Number(tab.runningAgents || 0);
+  const retainedRuns = runs.filter((run) => run?.status !== "running").length;
+  const countLabel = [
+    `${runningAgents} running`,
+    retainedRuns ? `${retainedRuns} retained` : "",
+    Number(tab.gateCount || 0) ? `${tab.gateCount} gates` : "",
+  ].filter(Boolean).join(" · ");
   header.append(title, make("span", "subagent-tab-count", countLabel));
   header.addEventListener("click", () => switchTab(tab.tabId));
   group.append(header);
 
   const list = make("div", "subagent-agent-list");
-  const runs = (Array.isArray(tab.runs) ? tab.runs : [])
-    .slice()
-    .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
-  for (const run of runs) {
-    const agents = (Array.isArray(run.agents) ? run.agents : [])
-      .filter((agent) => agent?.status === "running")
-      .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || String(a.name || "").localeCompare(String(b.name || "")));
-    for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
-  }
+  for (const run of runs) list.append(renderSubagentRun(tab, run));
   for (const gate of (Array.isArray(tab.gates) ? tab.gates : []).slice().sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))) {
     list.append(renderSubagentGate(tab, gate));
   }
@@ -17394,26 +17624,29 @@ function renderSubagents() {
   const box = elements.subagentsBox;
   if (!box) return;
   const activeTabs = subagentTabsWithRunningAgents();
-  const totalAgents = activeTabs.reduce((count, tab) => count + Number(tab.agentCount || 0), 0);
+  const totalAgents = Number(latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
+  const totalRuns = Number(latestSubagents?.totalRuns || 0);
+  const runningRuns = Number(latestSubagents?.runningRuns || 0);
+  const retainedRuns = Math.max(0, totalRuns - runningRuns);
   const totalGates = activeTabs.reduce((count, tab) => count + Number(tab.gateCount || 0), 0);
-  const totalItems = totalAgents + totalGates;
+  const hasItems = activeTabs.length > 0;
   if (elements.subagentCountBadge) {
-    elements.subagentCountBadge.textContent = String(totalItems);
-    elements.subagentCountBadge.hidden = totalItems === 0;
+    elements.subagentCountBadge.textContent = String(totalAgents);
+    elements.subagentCountBadge.hidden = totalAgents === 0;
   }
   if (elements.subagentsStatus) {
-    elements.subagentsStatus.textContent = totalItems > 0
-      ? [`${totalAgents} running`, totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`].filter(Boolean).join(" · ")
+    elements.subagentsStatus.textContent = hasItems
+      ? [`${totalAgents} running`, retainedRuns ? `${retainedRuns} retained ${retainedRuns === 1 ? "run" : "runs"}` : "", totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`].filter(Boolean).join(" · ")
       : subagentsLoading && !latestSubagents
         ? "Checking subagents and retry gates…"
-        : "No running subagents or retained retry gates.";
+        : "No running subagents, retained runs, or retry gates.";
   }
 
   box.replaceChildren();
-  box.classList.toggle("muted", totalItems === 0);
-  box.classList.toggle("has-items", totalItems > 0);
-  if (totalItems === 0) {
-    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running subagents and retry-gate attempts will appear here, grouped by terminal and session."));
+  box.classList.toggle("muted", !hasItems);
+  box.classList.toggle("has-items", hasItems);
+  if (!hasItems) {
+    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running and retained subagents will appear here, grouped by terminal and session."));
     return;
   }
   for (const tab of activeTabs) box.append(renderSubagentTabGroup(tab));
@@ -17422,25 +17655,34 @@ function renderSubagents() {
 
 async function refreshSubagents() {
   if (subagentsLoading) return;
+  let subagentViewsChanged = false;
+  let materializedTerminalViews = false;
   subagentsLoading = true;
   renderSubagents();
   try {
     const response = await api("/api/subagents", { scoped: false });
     latestSubagents = response.data || null;
     pruneDismissedSubagentGateKeys(latestSubagents?.tabs, dismissedSubagentGateKeys);
-    syncSubagentTerminalViewsFromOverview();
+    subagentViewsChanged = syncSubagentTerminalViewsFromOverview();
+    materializedTerminalViews = materializeRetainedSubagentTerminalViews();
     subagentsError = null;
   } catch (error) {
     subagentsError = error;
   } finally {
     subagentsLoading = false;
     renderSubagents();
+    if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();
+    if (activeSubagentTerminalId) {
+      renderSubagentTerminalView();
+      scheduleSubagentTerminalRefresh();
+    }
+    if (subagentViewsChanged || materializedTerminalViews) renderTabs();
   }
 }
 
 function scheduleRefreshSubagents(delay) {
   clearTimeout(refreshSubagentsTimer);
-  const totalAgents = Number(latestSubagents?.totalAgents || 0);
+  const totalAgents = Number(latestSubagents?.runningAgents || 0);
   const hasRunningGate = (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : []).some((tab) => (Array.isArray(tab?.gates) ? tab.gates : []).some((gate) => gate?.status === "running"));
   const nextDelay = delay ?? (document.visibilityState === "hidden" ? SUBAGENTS_HIDDEN_REFRESH_MS : totalAgents > 0 || hasRunningGate ? SUBAGENTS_ACTIVE_REFRESH_MS : SUBAGENTS_IDLE_REFRESH_MS);
   refreshSubagentsTimer = setTimeout(() => {
@@ -34472,6 +34714,23 @@ elements.subagentLaunchSlotsLater?.addEventListener("click", () => {
 elements.subagentTerminalCopyButton?.addEventListener("click", () => copySubagentTerminalOutput());
 elements.subagentTerminalRefreshButton?.addEventListener("click", () => {
   refreshSubagentTerminalView(activeSubagentTerminalId, { showLoading: true }).finally(() => scheduleSubagentTerminalRefresh());
+});
+elements.subagentTerminalCancelButton?.addEventListener("click", () => {
+  const view = activeSubagentTerminalView();
+  if (view) openSubagentCancelDialog(view.tab || { tabId: view.parentTabId, tabTitle: view.parentTitle }, view.run, view.data?.agent || view.agent);
+});
+elements.subagentCancelKeepRunningButton?.addEventListener("click", closeSubagentCancelDialog);
+elements.subagentCancelDialog?.querySelector("form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitSubagentCancel();
+});
+elements.subagentCancelDialog?.addEventListener("cancel", (event) => {
+  if (subagentCancelSubmitting) event.preventDefault();
+});
+elements.subagentCancelDialog?.addEventListener("close", () => {
+  subagentCancelSelection = null;
+  setSubagentCancelSubmitting(false);
+  setSubagentCancelStatus();
 });
 elements.piVersionButton?.addEventListener("click", () => {
   openPiReleaseNotes().catch((error) => addEvent(error.message || String(error), "error"));

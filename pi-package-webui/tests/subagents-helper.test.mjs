@@ -30,7 +30,12 @@ const extensionHandlers = new Map();
 const registeredCommands = new Map();
 const statuses = [];
 const notifications = [];
+const sentMessages = [];
+const subagentRpcRequests = [];
+let branchEntries = [];
+let idle = true;
 let subagentStatusRequestCount = 0;
+let subagentRpcReplyHook = null;
 const pi = {
   events: bus,
   on(name, handler) {
@@ -42,7 +47,8 @@ const pi = {
   getAllTools() { return []; },
   getActiveTools() { return []; },
   setActiveTools() {},
-  appendEntry() {},
+  appendEntry(customType, data) { branchEntries.push({ type: "custom", customType, data }); },
+  sendMessage(message, options) { sentMessages.push({ message, options }); },
 };
 
 const ctx = {
@@ -50,8 +56,9 @@ const ctx = {
   hasUI: true,
   cwd: "/tmp/subagent-helper-test",
   sessionManager: {
-    getBranch() { return []; },
+    getBranch() { return branchEntries; },
   },
+  isIdle() { return idle; },
   getSystemPromptOptions() {
     return {
       skills: [
@@ -112,10 +119,12 @@ const statusText = `Active async runs: 2
 
 webuiRpcHelper(pi);
 const unsubscribeRpc = bus.on("subagents:rpc:v1:request", (request) => {
+  subagentRpcRequests.push(request);
   subagentStatusRequestCount += 1;
   const text = request.params?.id === "run-a"
     ? `Run: run-a\nState: running\nMode: parallel\nDir: ${asyncRunDir}`
     : statusText;
+  subagentRpcReplyHook?.(request);
   bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
     version: 1,
     requestId: request.requestId,
@@ -162,6 +171,13 @@ function latestPayload() {
   assert.ok(entry, "helper should publish the internal WebUI subagent status");
   assert.match(entry.text, /^PI_WEBUI_SUBAGENTS_V1 /);
   return JSON.parse(entry.text.slice("PI_WEBUI_SUBAGENTS_V1 ".length));
+}
+
+function helperResponse(requestId) {
+  const notice = notifications.findLast((entry) => entry.message.startsWith("__PI_WEBUI_HELPER_RESPONSE__:")
+    && JSON.parse(entry.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length)).requestId === requestId);
+  assert.ok(notice, `helper action ${requestId} should return a response notification`);
+  return JSON.parse(notice.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length));
 }
 
 let payload = latestPayload();
@@ -441,7 +457,17 @@ for (const handler of extensionHandlers.get("tool_execution_end") || []) {
   handler({ type: "tool_execution_end", toolCallId: "foreground-call", toolName: "subagent" }, ctx);
 }
 payload = latestPayload();
-assert.equal(payload.runs.some((run) => run.source === "foreground"), false, "foreground children should disappear when their tool finishes");
+foreground = payload.runs.find((run) => run.id === "foreground-call");
+assert.deepEqual(foreground && {
+  status: foreground.status,
+  endedAt: typeof foreground.endedAt,
+  agents: foreground.agents.map((agent) => [agent.name, agent.status]),
+}, {
+  status: "done",
+  endedAt: "number",
+  agents: [["reviewer", "done"], ["tester", "done"]],
+}, "foreground children should remain viewable with final statuses when their tool finishes");
+assert.equal(branchEntries.at(-1)?.customType, "webui-subagent-retained-runs-v1", "terminal runs should persist as parent-session custom snapshots");
 
 const boundedWorkflowSnapshot = {
   version: 1,
@@ -494,6 +520,193 @@ bus.emit("firstpick:workflow-subagents:v1", {
 payload = latestPayload();
 assert.equal(payload.runs.some((run) => run.source === "workflow"), false, "an empty workflow snapshot should clear only workflow rows");
 assert.ok(payload.runs.some((run) => run.id === "run-a") && payload.runs.some((run) => run.id === "run-b"), "workflow cleanup must preserve ordinary async rows");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "dismiss-finished-foreground",
+  action: "subagent-dismiss",
+  payload: { runId: "foreground-call" },
+}), ctx);
+assert.deepEqual(helperResponse("dismiss-finished-foreground"), {
+  requestId: "dismiss-finished-foreground",
+  ok: true,
+  data: { runId: "foreground-call", dismissed: true },
+}, "dismiss should remove only a retained finished run");
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "foreground-call"), false, "a dismissed finished run should disappear from the published snapshot");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "dismiss-running-async",
+  action: "subagent-dismiss",
+  payload: { runId: "run-a" },
+}), ctx);
+assert.equal(helperResponse("dismiss-running-async").ok, false, "dismiss should reject a still-running run");
+
+for (const handler of extensionHandlers.get("tool_execution_start") || []) {
+  handler({
+    type: "tool_execution_start",
+    toolCallId: "foreground-cancel",
+    toolName: "subagent",
+    args: { agent: "tester", model: "openai-codex/gpt-5.6-terra:xhigh" },
+  }, ctx);
+}
+await helperCommand.handler(JSON.stringify({
+  requestId: "cancel-foreground-not-ready",
+  action: "subagent-cancel",
+  payload: { runId: "foreground-cancel" },
+}), ctx);
+assert.equal(helperResponse("cancel-foreground-not-ready").ok, false, "foreground cancellation should wait until pi-subagents publishes its control run id");
+for (const handler of extensionHandlers.get("tool_execution_update") || []) {
+  handler({
+    type: "tool_execution_update",
+    toolCallId: "foreground-cancel",
+    toolName: "subagent",
+    partialResult: { details: { runId: "foreground-control", mode: "single", progress: [{ agent: "tester", status: "running", index: 0 }] } },
+  }, ctx);
+}
+const interruptRequestsBefore = subagentRpcRequests.length;
+idle = true;
+await helperCommand.handler(JSON.stringify({
+  requestId: "cancel-foreground",
+  action: "subagent-cancel",
+  payload: { runId: "foreground-control" },
+}), ctx);
+assert.deepEqual(helperResponse("cancel-foreground"), {
+  requestId: "cancel-foreground",
+  ok: true,
+  data: { runId: "foreground-control", state: "cancelled", delivery: "context", rpcMethod: "interrupt" },
+}, "foreground cancellation should report a context delivery after an interrupt RPC");
+assert.deepEqual(subagentRpcRequests.slice(interruptRequestsBefore).find((request) => request.method === "interrupt")?.params, { id: "foreground-control" }, "foreground cancellation should target pi-subagents' published control run id");
+assert.equal(sentMessages.at(-1)?.message?.customType, "webui-subagent-cancelled");
+assert.equal(sentMessages.at(-1)?.options, undefined, "idle parent sessions should receive cancellation notices as context");
+
+const longReason = "R".repeat(125);
+const longNote = "N".repeat(2_010);
+const stopRequestsBefore = subagentRpcRequests.length;
+idle = false;
+await helperCommand.handler(JSON.stringify({
+  requestId: "cancel-async",
+  action: "subagent-cancel",
+  payload: { runId: "run-a", agentId: "run-a:step:0:reviewer", reason: longReason, note: longNote },
+}), ctx);
+const asyncCancel = helperResponse("cancel-async");
+assert.deepEqual(asyncCancel, {
+  requestId: "cancel-async",
+  ok: true,
+  data: { runId: "run-a", state: "cancelled", delivery: "steer", rpcMethod: "stop" },
+}, "async cancellation should report a steer delivery after a stop RPC");
+assert.deepEqual(subagentRpcRequests.slice(stopRequestsBefore).find((request) => request.method === "stop")?.params, { id: "run-a" }, "async cancellation should target the tracked run with stop");
+const asyncCancelMessage = sentMessages.at(-1);
+assert.equal(asyncCancelMessage?.message?.customType, "webui-subagent-cancelled");
+assert.deepEqual(asyncCancelMessage?.options, { deliverAs: "steer" }, "busy parent sessions should receive cancellation notices as steer messages");
+assert.equal(asyncCancelMessage?.message?.display, true);
+assert.equal(asyncCancelMessage?.message?.details?.runId, "run-a");
+assert.deepEqual(asyncCancelMessage?.message?.details?.agentNames, ["reviewer", "reviewer"]);
+assert.equal(asyncCancelMessage?.message?.details?.reason.length, 120, "cancel reasons should retain the documented 120-character bound");
+assert.equal(asyncCancelMessage?.message?.details?.note.length, 2000, "cancel notes should retain the documented 2000-character bound");
+assert.match(asyncCancelMessage?.message?.content || "", /should not be automatically retried without asking/, "parent cancellation notices should prevent silent retries");
+payload = latestPayload();
+const cancelledAsync = payload.runs.find((run) => run.id === "run-a");
+assert.deepEqual(cancelledAsync && {
+  status: cancelledAsync.status,
+  cancelledBy: cancelledAsync.cancelledBy,
+  cancelReasonLength: cancelledAsync.cancelReason?.length,
+  cancelNoteLength: cancelledAsync.cancelNote?.length,
+  agentStatuses: cancelledAsync.agents.map((agent) => agent.status),
+}, {
+  status: "cancelled",
+  cancelledBy: "user",
+  cancelReasonLength: 120,
+  cancelNoteLength: 2000,
+  agentStatuses: ["cancelled", "cancelled"],
+}, "cancelled runs should remain published with bounded user cancellation metadata");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "cancel-finished-async",
+  action: "subagent-cancel",
+  payload: { runId: "run-a" },
+}), ctx);
+assert.equal(helperResponse("cancel-finished-async").ok, false, "cancel should reject a retained terminal run");
+
+bus.emit("subagent:async-started", { id: "run-race", mode: "single", agent: "tester" });
+subagentRpcReplyHook = (request) => {
+  if (request.method !== "stop" || request.params?.id !== "run-race") return;
+  subagentRpcReplyHook = null;
+  bus.emit("subagent:async-complete", { id: "run-race" });
+};
+await helperCommand.handler(JSON.stringify({
+  requestId: "cancel-complete-race",
+  action: "subagent-cancel",
+  payload: { runId: "run-race", reason: "Stopped by the user" },
+}), ctx);
+assert.equal(helperResponse("cancel-complete-race").ok, true);
+const racedCancel = latestPayload().runs.find((run) => run.id === "run-race");
+assert.equal(racedCancel?.status, "cancelled", "a successful user cancel should remain authoritative when completion races the RPC reply");
+assert.equal(racedCancel?.cancelledBy, "user");
+assert.equal(racedCancel?.cancelReason, "Stopped by the user");
+
+bus.emit("subagent:async-complete", { id: "run-b" });
+payload = latestPayload();
+const completedAsync = payload.runs.find((run) => run.id === "run-b");
+assert.deepEqual(completedAsync && {
+  status: completedAsync.status,
+  endedAt: typeof completedAsync.endedAt,
+  agentStatuses: completedAsync.agents.map((agent) => agent.status),
+}, {
+  status: "done",
+  endedAt: "number",
+  agentStatuses: ["done", "done"],
+}, "async completion should retain a final run rather than deleting it");
+
+const persistedSnapshot = branchEntries.at(-1);
+assert.equal(persistedSnapshot?.customType, "webui-subagent-retained-runs-v1", "the latest parent-session custom entry should own retained run state");
+assert.equal(persistedSnapshot?.data?.version, 1);
+assert.equal(persistedSnapshot?.data?.runs?.find((run) => run.id === "run-a")?.agents?.[0]?.transcript, undefined, "retained snapshots should store output locators rather than redundant transcripts");
+
+for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "resume" }, ctx);
+payload = latestPayload();
+assert.equal(payload.runs.find((run) => run.id === "run-a")?.status, "cancelled", "resuming the same parent session should restore retained cancellation state");
+assert.equal(payload.runs.find((run) => run.id === "run-b")?.status, "done", "resuming the same parent session should restore completed runs");
+await helperCommand.handler(JSON.stringify({
+  requestId: "restored-async-output",
+  action: "subagent-output",
+  payload: { runId: "run-a", agentId: "run-a:step:0:reviewer" },
+}), ctx);
+const restoredOutput = helperResponse("restored-async-output");
+assert.equal(restoredOutput.ok, true, "retained async output should remain accessible after a parent-session resume");
+assert.equal(restoredOutput.data.agent.status, "cancelled");
+
+const retainedParentBranch = branchEntries;
+branchEntries = [];
+for (const handler of extensionHandlers.get("session_tree") || []) await handler({ reason: "different-branch" }, ctx);
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => ["run-a", "run-b", "foreground-cancel"].includes(run.id)), false, "a different parent branch must not inherit retained runs");
+branchEntries = retainedParentBranch;
+for (const handler of extensionHandlers.get("session_tree") || []) await handler({ reason: "return-to-parent-branch" }, ctx);
+payload = latestPayload();
+assert.equal(payload.runs.find((run) => run.id === "run-a")?.status, "cancelled", "returning to the parent branch should restore its retained runs");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "dismiss-cancelled-async",
+  action: "subagent-dismiss",
+  payload: { runId: "run-a" },
+}), ctx);
+assert.equal(helperResponse("dismiss-cancelled-async").ok, true, "dismiss should accept a retained cancelled run");
+assert.equal(branchEntries.at(-1)?.data?.runs?.some((run) => run.id === "run-a"), false, "dismiss should persist a tombstone snapshot without the removed run");
+for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "resume" }, ctx);
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "run-a"), false, "a dismissed run must remain absent after resume");
+
+for (let index = 0; index < 17; index += 1) {
+  const runId = `retention-cap-${index}`;
+  for (const handler of extensionHandlers.get("tool_execution_start") || []) {
+    handler({ type: "tool_execution_start", toolCallId: runId, toolName: "subagent", args: { agent: "tester" } }, ctx);
+  }
+  for (const handler of extensionHandlers.get("tool_execution_end") || []) {
+    handler({ type: "tool_execution_end", toolCallId: runId, toolName: "subagent" }, ctx);
+  }
+}
+payload = latestPayload();
+assert.ok(payload.runs.filter((run) => run.source !== "workflow" && run.status !== "running").length <= 16, "ordinary retained runs should enforce the 16-run finished retention cap");
 
 for (const handler of extensionHandlers.get("session_shutdown") || []) await handler({ reason: "quit" }, ctx);
 unsubscribeRpc();

@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import subagentMinimumFanout, {
+	analyzeReviewerDiversity,
 	analyzeSubagentCall,
 	blocksForMinimumFanout,
 	countStaticChainChildren,
 	countStaticTasks,
 	countStaticWorkers,
 	MINIMUM_FANOUT_BLOCK_REASON,
+	normalizeReviewerRoute,
 	positiveTaskCount,
+	REVIEWER_DIVERSITY_BLOCK_REASON,
 } from "../subagent-minimum-fanout.ts";
 
 type ToolCallHandler = (event: ToolCallEvent) => ToolCallEventResult | undefined;
@@ -36,6 +39,11 @@ function assertBlocked(input: unknown) {
 
 function assertAllowed(input: Record<string, unknown>) {
 	assert.equal(createHarness().call("subagent", input), undefined);
+}
+
+function assertReviewerBlocked(input: Record<string, unknown>) {
+	const result = createHarness().call("subagent", input);
+	assert.deepEqual(result, { block: true, reason: REVIEWER_DIVERSITY_BLOCK_REASON });
 }
 
 test("positive task count defaults invalid values to one and sums top-level tasks", () => {
@@ -81,8 +89,8 @@ test("one-task and one-static-step workflows are blocked", () => {
 test("two declared children and two declared workers are allowed", () => {
 	assertAllowed({
 		tasks: [
-			{ agent: "reviewer", task: "Review correctness" },
-			{ agent: "reviewer", task: "Review tests" },
+			{ agent: "reviewer", task: "Review correctness", model: "anthropic/claude-opus-5:high" },
+			{ agent: "reviewer", task: "Review tests", model: "openai-codex/gpt-5.6-sol:high" },
 		],
 	});
 	assertAllowed({ tasks: [{ agent: "worker", task: "Implement the change", count: 2 }] });
@@ -222,8 +230,8 @@ test("execution-mode action aliases follow the same minimum case-insensitively",
 		assertAllowed({
 			action,
 			tasks: [
-				{ agent: "reviewer", task: "Review correctness" },
-				{ agent: "reviewer", task: "Review tests" },
+				{ agent: "reviewer", task: "Review correctness", model: "anthropic/claude-opus-5:high" },
+				{ agent: "reviewer", task: "Review tests", model: "openai-codex/gpt-5.6-sol:high" },
 			],
 		});
 	}
@@ -266,6 +274,120 @@ test("management, status, control, recovery, and non-schedule actions remain exe
 		assert.equal(blocksForMinimumFanout(analysis), false, action);
 		assertAllowed({ action, agent: "worker" });
 	}
+});
+
+test("reviewer routes normalize thinking suffixes and provider casing", () => {
+	assert.deepEqual(normalizeReviewerRoute(" OpenRouter/MoonshotAI/Kimi-K3:HIGH "), {
+		provider: "openrouter",
+		model: "openrouter/moonshotai/kimi-k3",
+	});
+	assert.equal(normalizeReviewerRoute("kimi-k3:high"), undefined);
+	assert.equal(normalizeReviewerRoute(undefined), undefined);
+});
+
+test("multiple reviewers require explicit pairwise-distinct providers and models", () => {
+	const duplicateModel = {
+		tasks: [
+			{ agent: "reviewer", task: "Review correctness", model: "openrouter/moonshotai/kimi-k3:high" },
+			{ agent: "reviewer", task: "Review tests", model: "OPENROUTER/MOONSHOTAI/KIMI-K3:medium" },
+		],
+	};
+	assert.equal(analyzeReviewerDiversity(duplicateModel).failure, "duplicate-reviewer-model");
+	assertReviewerBlocked(duplicateModel);
+
+	const duplicateProvider = {
+		tasks: [
+			{ agent: "reviewer", task: "Review correctness", model: "anthropic/claude-opus-5:high" },
+			{ agent: "reviewer", task: "Review tests", model: "anthropic/claude-fable-5:high" },
+		],
+	};
+	assert.equal(analyzeReviewerDiversity(duplicateProvider).failure, "duplicate-reviewer-provider");
+	assertReviewerBlocked(duplicateProvider);
+
+	for (const input of [
+		{
+			tasks: [
+				{ agent: "reviewer", task: "Review correctness" },
+				{ agent: "reviewer", task: "Review tests", model: "openai-codex/gpt-5.6-sol:high" },
+			],
+		},
+		{
+			tasks: [
+				{ agent: "reviewer", task: "Review correctness", model: "claude-opus-5:high" },
+				{ agent: "reviewer", task: "Review tests", model: "openai-codex/gpt-5.6-sol:high" },
+			],
+		},
+		{ tasks: [{ agent: "reviewer", task: "Review twice", model: "anthropic/claude-opus-5", count: 2 }] },
+	]) {
+		assert.equal(analyzeReviewerDiversity(input).violation, true);
+		assertReviewerBlocked(input);
+	}
+
+	assertAllowed({
+		tasks: [
+			{ agent: "reviewer", task: "Review correctness", model: "anthropic/claude-opus-5:high" },
+			{ agent: "reviewer", task: "Review tests", model: "openrouter/moonshotai/kimi-k3:high" },
+			{ agent: "scout", task: "Inspect test coverage" },
+		],
+	});
+	assertAllowed({
+		tasks: [
+			{ agent: "reviewer", task: "Review correctness" },
+			{ agent: "scout", task: "Inspect test coverage" },
+		],
+	});
+});
+
+test("reviewer diversity applies to static chains, schedules, aliases, and qualified reviewer names", () => {
+	for (const input of [
+		{
+			chain: [
+				{ agent: "reviewer", task: "Review correctness", model: "openrouter/moonshotai/kimi-k3" },
+				{ agent: "reviewer", task: "Review tests", model: "openrouter/moonshotai/kimi-k3:high" },
+			],
+		},
+		{
+			chain: [{ parallel: [
+				{ agent: "reviewer", task: "Review correctness", model: "anthropic/claude-opus-5" },
+				{ agent: "reviewer", task: "Review tests", model: "anthropic/claude-fable-5" },
+			] }],
+		},
+		{
+			action: "schedule",
+			tasks: [
+				{ agent: "reviewer", task: "Review correctness", model: "openai-codex/gpt-5.6-sol" },
+				{ agent: "reviewer", task: "Review tests", model: "openai-codex/gpt-5.6-terra" },
+			],
+			schedule: "+10m",
+		},
+		{
+			action: "parallel",
+			tasks: [
+				{ agent: "code-analysis.reviewer", task: "Review correctness", model: "anthropic/claude-opus-5" },
+				{ agent: "reviewer", task: "Review tests", model: "anthropic/claude-fable-5" },
+			],
+		},
+	]) {
+		assertReviewerBlocked(input);
+	}
+
+	const dynamic = {
+		chain: [
+			{ agent: "planner", task: "Identify review targets" },
+			{ agent: "scout", task: "Inspect coverage" },
+			{
+				expand: { from: { output: "targets", path: "/items" } },
+				parallel: { agent: "reviewer", task: "Review {item}", model: "anthropic/claude-opus-5" },
+			},
+		],
+	};
+	assert.equal(analyzeReviewerDiversity(dynamic).failure, "dynamic-reviewer-fanout");
+	assertReviewerBlocked(dynamic);
+});
+
+test("management calls remain exempt from reviewer diversity", () => {
+	assertAllowed({ action: "get", agent: "reviewer", model: "anthropic/claude-opus-5" });
+	assert.equal(analyzeReviewerDiversity({ action: "get", agent: "reviewer" }).violation, false);
 });
 
 test("each independent single-child call and malformed subagent input fail closed", () => {

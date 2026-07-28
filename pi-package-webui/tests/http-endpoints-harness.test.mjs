@@ -683,6 +683,10 @@ try {
   }
   assert.equal(subagentsResponse?.status, 200, "subagent overview endpoint should respond");
   assert.equal(subagentsResponse.body?.data?.totalAgents, 2, "subagent overview should count all running agents");
+  assert.equal(subagentsResponse.body?.data?.runningRuns, 1, "subagent overview should expose running run counts separately from retained totals");
+  assert.equal(subagentsResponse.body?.data?.runningAgents, 2, "subagent overview should expose running agent counts separately from retained totals");
+  assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.runningRuns, 1);
+  assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.runningAgents, 2);
   assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.tabId, tabId, "subagent overview should group agents under their terminal tab");
   assert.equal(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.source, "async", "ordinary async overview rows should retain their source");
   assert.deepEqual(subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.agents?.map((agent) => agent.name), ["reviewer", "scout"], "subagent overview should preserve agent order within the session run");
@@ -719,6 +723,104 @@ try {
   ], "subagent output endpoint should preserve normalized structured transcript roles, order, IDs, and tool metadata");
   const unknownSubagentOutput = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=missing&agent=missing`);
   assert.equal(unknownSubagentOutput.status, 404, "subagent output endpoint should reject untracked selections");
+
+  const dismissRunningSubagent = await request("127.0.0.1", "/api/subagents/dismiss", {
+    method: "POST",
+    body: { tab: tabId, runId: "fixture-run" },
+  });
+  assert.equal(dismissRunningSubagent.status, 400, "dismiss endpoint should reject running runs through the helper");
+  const cancelUnknownSubagent = await request("127.0.0.1", "/api/subagents/cancel", {
+    method: "POST",
+    body: { tab: tabId, runId: "missing" },
+  });
+  assert.equal(cancelUnknownSubagent.status, 400, "cancel endpoint should return helper errors for unknown runs");
+
+  const cancelledSubagent = await request("127.0.0.1", "/api/subagents/cancel", {
+    method: "POST",
+    body: { tab: tabId, runId: "fixture-run", reason: "Taking too long", note: "Use the existing result instead." },
+  });
+  assert.equal(cancelledSubagent.status, 200, `cancel endpoint should relay helper cancellation: ${cancelledSubagent.body?.error || ""}`);
+  assert.deepEqual(cancelledSubagent.body?.data, {
+    runId: "fixture-run",
+    state: "cancelled",
+    delivery: "context",
+    rpcMethod: "stop",
+  }, "cancel endpoint should preserve the helper cancellation response contract");
+  for (let attempt = 0; attempt < 20; attempt++) {
+    subagentsResponse = await request("127.0.0.1", "/api/subagents");
+    if (subagentsResponse.body?.data?.tabs?.[0]?.runs?.[0]?.status === "cancelled") break;
+    await delay(50);
+  }
+  const cancelledRun = subagentsResponse.body?.data?.tabs?.[0]?.runs?.find((run) => run.id === "fixture-run");
+  assert.deepEqual(cancelledRun && {
+    status: cancelledRun.status,
+    endedAt: typeof cancelledRun.endedAt,
+    cancelledBy: cancelledRun.cancelledBy,
+    cancelReason: cancelledRun.cancelReason,
+    cancelNote: cancelledRun.cancelNote,
+    agentStatuses: cancelledRun.agents.map((agent) => agent.status),
+  }, {
+    status: "cancelled",
+    endedAt: "number",
+    cancelledBy: "user",
+    cancelReason: "Taking too long",
+    cancelNote: "Use the existing result instead.",
+    agentStatuses: ["cancelled", "cancelled"],
+  }, "subagent normalization should retain cancelled run and agent metadata");
+  assert.equal(subagentsResponse.body?.data?.totalRuns, 1, "retained runs should remain included in total counts");
+  assert.equal(subagentsResponse.body?.data?.runningRuns, 0, "retained cancelled runs should not count as running");
+  assert.equal(subagentsResponse.body?.data?.runningAgents, 0, "retained cancelled agents should not count as running");
+  const retainedCancelledOutput = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=fixture-run&agent=fixture-run%3A0`);
+  assert.equal(retainedCancelledOutput.status, 200, "subagent output should remain accessible for retained cancelled runs");
+  assert.equal(retainedCancelledOutput.body?.data?.agent?.status, "cancelled");
+  const duplicateCancel = await request("127.0.0.1", "/api/subagents/cancel", {
+    method: "POST",
+    body: { tab: tabId, runId: "fixture-run" },
+  });
+  assert.equal(duplicateCancel.status, 400, "cancel endpoint should reject an already-finished run");
+
+  const dismissedSubagent = await request("127.0.0.1", "/api/subagents/dismiss", {
+    method: "POST",
+    body: { tab: tabId, runId: "fixture-run" },
+  });
+  assert.equal(dismissedSubagent.status, 200, `dismiss endpoint should relay helper dismissal: ${dismissedSubagent.body?.error || ""}`);
+  assert.deepEqual(dismissedSubagent.body?.data, { runId: "fixture-run", dismissed: true });
+  subagentsResponse = await request("127.0.0.1", "/api/subagents");
+  assert.equal(subagentsResponse.body?.data?.totalRuns, 0, "dismissed runs should be removed from the overview");
+
+  const retainedFixture = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents retained" } });
+  assert.equal(retainedFixture.status, 200, "retained subagent fixture should be accepted");
+  for (let attempt = 0; attempt < 20; attempt++) {
+    subagentsResponse = await request("127.0.0.1", "/api/subagents");
+    if (subagentsResponse.body?.data?.totalRuns === 2) break;
+    await delay(50);
+  }
+  assert.equal(subagentsResponse.body?.data?.totalRuns, 2, "finished runs should survive payload normalization");
+  assert.equal(subagentsResponse.body?.data?.totalAgents, 2, "finished agents should remain represented in retained totals");
+  assert.equal(subagentsResponse.body?.data?.runningRuns, 0);
+  assert.equal(subagentsResponse.body?.data?.runningAgents, 0);
+  const normalizedDoneRun = subagentsResponse.body?.data?.tabs?.[0]?.runs?.find((run) => run.id === "fixture-done");
+  const normalizedCancelledRun = subagentsResponse.body?.data?.tabs?.[0]?.runs?.find((run) => run.id === "fixture-cancelled");
+  assert.deepEqual(normalizedDoneRun && { status: normalizedDoneRun.status, endedAt: typeof normalizedDoneRun.endedAt, agentStatus: normalizedDoneRun.agents[0]?.status }, {
+    status: "done", endedAt: "number", agentStatus: "done",
+  }, "normalization should retain completed run state and final agent status");
+  assert.deepEqual(normalizedCancelledRun && {
+    status: normalizedCancelledRun.status,
+    cancelledBy: normalizedCancelledRun.cancelledBy,
+    cancelReason: normalizedCancelledRun.cancelReason,
+    cancelNote: normalizedCancelledRun.cancelNote,
+    agentStatus: normalizedCancelledRun.agents[0]?.status,
+  }, {
+    status: "cancelled",
+    cancelledBy: "user",
+    cancelReason: "Taking too long",
+    cancelNote: "Use the existing result instead.",
+    agentStatus: "cancelled",
+  }, "normalization should retain bounded user cancellation metadata");
+  const retainedDoneOutput = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=fixture-done&agent=fixture-done%3A0`);
+  assert.equal(retainedDoneOutput.status, 200, "subagent output should remain accessible for retained completed runs");
+  assert.equal(retainedDoneOutput.body?.data?.agent?.status, "done");
+
   const subagentFixtureClear = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents clear" } });
   assert.equal(subagentFixtureClear.status, 200, "subagent fixture clear should be accepted");
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -726,7 +828,7 @@ try {
     if (subagentsResponse.body?.data?.totalAgents === 0) break;
     await delay(50);
   }
-  assert.equal(subagentsResponse.body?.data?.totalAgents, 0, "completed subagents should disappear from the running overview");
+  assert.equal(subagentsResponse.body?.data?.totalAgents, 0, "an empty helper snapshot should clear retained subagent rows");
   assert.equal(subagentsResponse.body?.data?.totalGates, 0, "cleared retry gates should disappear from the overview");
 
   const state = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);

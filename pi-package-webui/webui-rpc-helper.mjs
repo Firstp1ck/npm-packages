@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
@@ -15,6 +15,7 @@ const RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
 const TOOLS_CONFIG_TYPE = "webui-tools-config";
 const SKILLS_CONFIG_TYPE = "webui-skills-config";
 const APP_RUNNER_CONTEXT_TYPE = "webui-app-runner-output";
+const RETAINED_SUBAGENT_RUNS_TYPE = "webui-subagent-retained-runs-v1";
 const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
 const SUBAGENT_RPC_VERSION = 1;
@@ -38,6 +39,7 @@ const WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS = {
 };
 const SUBAGENT_STATUS_POLL_MS = 1500;
 const SUBAGENT_STATUS_RPC_TIMEOUT_MS = 900;
+const FINISHED_SUBAGENT_RUN_LIMIT = 16;
 const SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
 const SUBAGENT_TRANSCRIPT_TAIL_BYTES = 512 * 1024;
@@ -645,34 +647,169 @@ export default function webuiRpcHelper(pi) {
   let subagentPollGeneration = 0;
   let subagentStatusRequestInFlight = false;
   let lastPublishedSubagentSignature = "";
+  let lastPersistedRetainedSubagentSignature = "";
   const asyncSubagentRuns = new Map();
   const foregroundSubagentRuns = new Map();
   const workflowSubagentRuns = new Map();
   const subagentGates = new Map();
 
-  function publicSubagentRuns() {
-    const ordinaryRuns = [...foregroundSubagentRuns.values(), ...asyncSubagentRuns.values()]
+  function ordinarySubagentRunEntries() {
+    return [
+      ...[...foregroundSubagentRuns.entries()].map(([key, run]) => ({ runs: foregroundSubagentRuns, key, run })),
+      ...[...asyncSubagentRuns.entries()].map(([key, run]) => ({ runs: asyncSubagentRuns, key, run })),
+    ];
+  }
+
+  function trimFinishedSubagentRuns() {
+    const finished = ordinarySubagentRunEntries()
+      .filter(({ run }) => run?.status && run.status !== "running")
+      .sort((left, right) => Number(left.run.endedAt || 0) - Number(right.run.endedAt || 0) || String(left.run.id).localeCompare(String(right.run.id)));
+    while (finished.length > FINISHED_SUBAGENT_RUN_LIMIT) {
+      const oldest = finished.shift();
+      oldest.runs.delete(oldest.key);
+    }
+  }
+
+  function retainedSubagentAgent(agent, run, index) {
+    const asyncDir = subagentText(agent?.asyncDir, 4096);
+    const sessionFile = subagentText(agent?.sessionFile, 4096);
+    const hasOutputLocator = (asyncDir && path.isAbsolute(asyncDir))
+      || (sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl");
+    return {
+      id: subagentText(agent?.id || `${run.id}:${index}`, 240),
+      name: subagentAgentName(agent?.name),
+      status: run.status === "cancelled" ? "cancelled" : "done",
+      index: Number.isInteger(agent?.index) ? agent.index : index,
+      currentTool: subagentText(agent?.currentTool, 120) || undefined,
+      currentToolArgs: subagentText(agent?.currentToolArgs, 500) || undefined,
+      currentPath: subagentText(agent?.currentPath, 1000) || undefined,
+      activityState: subagentText(agent?.activityState, 80) || undefined,
+      model: subagentModel(agent?.model) || undefined,
+      thinking: subagentThinking(agent?.thinking) || subagentThinkingFromModel(agent?.model) || undefined,
+      nested: agent?.nested === true,
+      targetRunId: subagentText(agent?.targetRunId, 160) || undefined,
+      asyncDir: asyncDir && path.isAbsolute(asyncDir) ? path.normalize(asyncDir) : undefined,
+      sessionFile: sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl" ? path.normalize(sessionFile) : undefined,
+      recentTools: hasOutputLocator ? [] : subagentRecentTools(agent?.recentTools),
+      recentOutput: hasOutputLocator ? [] : subagentOutputLines(agent?.recentOutput),
+      turnCount: Number.isFinite(agent?.turnCount) ? agent.turnCount : undefined,
+      toolCount: Number.isFinite(agent?.toolCount) ? agent.toolCount : undefined,
+      tokens: Number.isFinite(agent?.tokens) ? agent.tokens : undefined,
+    };
+  }
+
+  function retainedSubagentRunsSnapshot() {
+    return ordinarySubagentRunEntries()
+      .map(({ run }) => run)
+      .filter((run) => run?.status && run.status !== "running")
+      .sort((left, right) => Number(left.endedAt || 0) - Number(right.endedAt || 0) || String(left.id).localeCompare(String(right.id)))
+      .slice(-FINISHED_SUBAGENT_RUN_LIMIT)
       .map((run) => ({
         id: subagentText(run.id, 160),
         source: run.source === "foreground" ? "foreground" : "async",
         mode: subagentMode(run.mode),
-        status: "running",
+        status: run.status,
         startedAt: Number.isFinite(run.startedAt) ? run.startedAt : Date.now(),
+        endedAt: Number.isFinite(run.endedAt) ? run.endedAt : Date.now(),
+        cancelReason: run.status === "cancelled" ? subagentText(run.cancelReason, 120) || undefined : undefined,
+        cancelNote: run.status === "cancelled" ? subagentText(run.cancelNote, 2000) || undefined : undefined,
+        cancelledBy: run.status === "cancelled" && run.cancelledBy === "user" ? "user" : undefined,
         agents: (Array.isArray(run.agents) ? run.agents : [])
-          .filter((agent) => agent?.status === "running" && subagentAgentName(agent.name))
           .slice(0, 128)
-          .map((agent, index) => ({
-            id: subagentText(agent.id || `${run.id}:${index}`, 240),
-            name: subagentAgentName(agent.name),
-            status: "running",
-            index: Number.isInteger(agent.index) ? agent.index : index,
-            currentTool: subagentText(agent.currentTool, 120) || undefined,
-            activityState: subagentText(agent.activityState, 80) || undefined,
-            model: subagentModel(agent.model) || undefined,
-            thinking: subagentThinking(agent.thinking) || subagentThinkingFromModel(agent.model) || undefined,
-            nested: agent.nested === true,
-          })),
+          .map((agent, index) => retainedSubagentAgent(agent, run, index))
+          .filter((agent) => agent.name),
       }));
+  }
+
+  function persistRetainedSubagentRuns() {
+    const runs = retainedSubagentRunsSnapshot();
+    const snapshot = { version: 1, runs };
+    const signature = JSON.stringify(snapshot);
+    if (signature === lastPersistedRetainedSubagentSignature) return;
+    lastPersistedRetainedSubagentSignature = signature;
+    pi.appendEntry(RETAINED_SUBAGENT_RUNS_TYPE, snapshot);
+  }
+
+  function restoreRetainedSubagentRuns(ctx) {
+    const saved = lastBranchConfig(ctx, RETAINED_SUBAGENT_RUNS_TYPE);
+    const rawRuns = saved?.version === 1 && Array.isArray(saved.runs) ? saved.runs.slice(-FINISHED_SUBAGENT_RUN_LIMIT) : [];
+    for (const rawRun of rawRuns) {
+      if (!rawRun || typeof rawRun !== "object") continue;
+      const id = subagentText(rawRun.id, 160);
+      const status = ["done", "failed", "cancelled"].includes(rawRun.status) ? rawRun.status : "";
+      if (!id || !status) continue;
+      const source = rawRun.source === "foreground" ? "foreground" : "async";
+      const agents = (Array.isArray(rawRun.agents) ? rawRun.agents : []).slice(0, 128)
+        .map((agent, index) => retainedSubagentAgent(agent, { id, status }, index))
+        .filter((agent) => agent.name);
+      const run = {
+        id,
+        source,
+        mode: subagentMode(rawRun.mode),
+        status,
+        startedAt: Number.isFinite(rawRun.startedAt) ? rawRun.startedAt : Date.now(),
+        endedAt: Number.isFinite(rawRun.endedAt) ? rawRun.endedAt : Date.now(),
+        cancelReason: status === "cancelled" ? subagentText(rawRun.cancelReason, 120) || undefined : undefined,
+        cancelNote: status === "cancelled" ? subagentText(rawRun.cancelNote, 2000) || undefined : undefined,
+        cancelledBy: status === "cancelled" && rawRun.cancelledBy === "user" ? "user" : undefined,
+        agents,
+      };
+      (source === "foreground" ? foregroundSubagentRuns : asyncSubagentRuns).set(id, run);
+    }
+    trimFinishedSubagentRuns();
+    lastPersistedRetainedSubagentSignature = JSON.stringify({ version: 1, runs: retainedSubagentRunsSnapshot() });
+  }
+
+  function finishSubagentRun(run, status = "done", fields = {}) {
+    if (!run || (run.status !== "running" && fields.force !== true)) return false;
+    const finalStatus = ["done", "failed", "cancelled"].includes(status) ? status : "done";
+    run.status = finalStatus;
+    run.endedAt = Date.now();
+    if (finalStatus === "cancelled") {
+      run.cancelledBy = "user";
+      run.cancelReason = fields.reason || undefined;
+      run.cancelNote = fields.note || undefined;
+    }
+    run.agents = (Array.isArray(run.agents) ? run.agents : []).map((agent) => ({
+      ...agent,
+      status: finalStatus === "cancelled" ? "cancelled" : "done",
+    }));
+    trimFinishedSubagentRuns();
+    persistRetainedSubagentRuns();
+    return true;
+  }
+
+  function publicSubagentRuns() {
+    const ordinaryRuns = ordinarySubagentRunEntries()
+      .map(({ run }) => {
+        const status = ["running", "done", "failed", "cancelled"].includes(run.status) ? run.status : "running";
+        const finalAgentStatus = status === "cancelled" ? "cancelled" : "done";
+        return {
+          id: subagentText(run.id, 160),
+          source: run.source === "foreground" ? "foreground" : "async",
+          mode: subagentMode(run.mode),
+          status,
+          startedAt: Number.isFinite(run.startedAt) ? run.startedAt : Date.now(),
+          endedAt: status === "running" ? undefined : Number.isFinite(run.endedAt) ? run.endedAt : undefined,
+          cancelReason: status === "cancelled" ? subagentText(run.cancelReason, 120) || undefined : undefined,
+          cancelNote: status === "cancelled" ? subagentText(run.cancelNote, 2000) || undefined : undefined,
+          cancelledBy: status === "cancelled" && run.cancelledBy === "user" ? "user" : undefined,
+          agents: (Array.isArray(run.agents) ? run.agents : [])
+            .filter((agent) => (status === "running" ? agent?.status === "running" : true) && subagentAgentName(agent?.name))
+            .slice(0, 128)
+            .map((agent, index) => ({
+              id: subagentText(agent.id || `${run.id}:${index}`, 240),
+              name: subagentAgentName(agent.name),
+              status: status === "running" ? "running" : finalAgentStatus,
+              index: Number.isInteger(agent.index) ? agent.index : index,
+              currentTool: subagentText(agent.currentTool, 120) || undefined,
+              activityState: subagentText(agent.activityState, 80) || undefined,
+              model: subagentModel(agent.model) || undefined,
+              thinking: subagentThinking(agent.thinking) || subagentThinkingFromModel(agent.model) || undefined,
+              nested: agent.nested === true,
+            })),
+        };
+      });
     const workflowRuns = [...workflowSubagentRuns.values()]
       .map((run) => ({
         id: run.id,
@@ -694,7 +831,7 @@ export default function webuiRpcHelper(pi) {
         })),
       }));
     return [...ordinaryRuns, ...workflowRuns]
-      .filter((run) => run.id && run.agents.length > 0)
+      .filter((run) => run.id && (run.status !== "running" || run.agents.length > 0))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
@@ -750,35 +887,44 @@ export default function webuiRpcHelper(pi) {
     }
   }
 
-  function requestSubagentStatus(params = {}) {
+  function requestSubagentRpc(method, params = {}) {
     const requestId = `webui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     return new Promise((resolve, reject) => {
       let unsubscribe;
       const timeout = setTimeout(() => {
         if (typeof unsubscribe === "function") unsubscribe();
-        reject(new Error("Timed out waiting for pi-subagents status RPC"));
+        reject(new Error(`Timed out waiting for pi-subagents ${method} RPC`));
       }, SUBAGENT_STATUS_RPC_TIMEOUT_MS);
       unsubscribe = pi.events.on(`${SUBAGENT_RPC_REPLY_PREFIX}${requestId}`, (reply) => {
         clearTimeout(timeout);
         if (typeof unsubscribe === "function") unsubscribe();
-        if (reply?.success === false) reject(new Error(reply.error?.message || "pi-subagents status RPC failed"));
+        if (reply?.success === false) reject(new Error(reply.error?.message || `pi-subagents ${method} RPC failed`));
         else resolve(reply?.data || {});
       });
       pi.events.emit(SUBAGENT_RPC_REQUEST_EVENT, {
         version: SUBAGENT_RPC_VERSION,
         requestId,
-        method: "status",
+        method,
         params,
         source: { extension: "pi-package-webui" },
       });
     });
   }
 
+  function requestSubagentStatus(params = {}) {
+    return requestSubagentRpc("status", params);
+  }
+
+  function findTrackedSubagentRun(runId) {
+    const entry = ordinarySubagentRunEntries().find((candidate) => candidate.run?.id === runId);
+    if (!entry) throw new Error(`Subagent run not found: ${runId}`);
+    return entry;
+  }
+
   function findTrackedSubagent(runId, agentId) {
-    const run = [...foregroundSubagentRuns.values(), ...asyncSubagentRuns.values()].find((candidate) => candidate?.id === runId);
-    if (!run) throw new Error(`Running subagent run not found: ${runId}`);
+    const { run } = findTrackedSubagentRun(runId);
     const agent = (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate?.id === agentId);
-    if (!agent) throw new Error(`Running subagent not found: ${agentId}`);
+    if (!agent) throw new Error(`Subagent not found: ${agentId}`);
     return { run, agent };
   }
 
@@ -857,6 +1003,9 @@ export default function webuiRpcHelper(pi) {
     if (!step) return;
     agent.model = subagentModel(step.model) || agent.model;
     agent.thinking = subagentThinking(step.thinking) || subagentThinkingFromModel(step.model) || agent.thinking;
+    const steps = Array.isArray(status.steps) ? status.steps : [];
+    const sessionFile = subagentText(step.sessionFile || (steps.length === 1 ? status.sessionFile : ""), 4096);
+    if (sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl") agent.sessionFile = path.normalize(sessionFile);
   }
 
   async function enrichAsyncSubagentRun(run) {
@@ -909,7 +1058,33 @@ export default function webuiRpcHelper(pi) {
     const agentId = subagentText(payload.agentId, 240);
     if (!runId || !agentId) throw new Error("Subagent output requires runId and agentId");
     const { run, agent } = findTrackedSubagent(runId, agentId);
-    if (run.source === "foreground") return subagentOutputSnapshotFromAgent(run, agent);
+    if (run.source === "foreground") return subagentOutputSnapshotFromAgent(run, agent, { updatedAt: run.endedAt });
+    if (run.status !== "running") {
+      if (!agent.sessionFile && agent.asyncDir) {
+        try {
+          const status = JSON.parse(readFileSync(path.join(agent.asyncDir, "status.json"), "utf8"));
+          const targetRunId = subagentText(agent.targetRunId || run.id, 160);
+          if (!status?.runId || status.runId === targetRunId) {
+            const step = subagentStatusStepForAgent(status, agent);
+            const steps = Array.isArray(status?.steps) ? status.steps : [];
+            const sessionFile = subagentText(step?.sessionFile || (steps.length === 1 ? status.sessionFile : ""), 4096);
+            if (sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl") agent.sessionFile = path.normalize(sessionFile);
+          }
+        } catch {
+          // Retained metadata remains viewable even when its async status locator is stale.
+        }
+      }
+      const transcriptOutput = subagentTranscriptOutput(agent.sessionFile);
+      const hasLocator = !!(agent.sessionFile && existsSync(agent.sessionFile));
+      return subagentOutputSnapshotFromAgent(run, agent, {
+        recentOutput: transcriptOutput.recentOutput.length ? transcriptOutput.recentOutput : agent.recentOutput,
+        transcript: transcriptOutput.transcript,
+        updatedAt: run.endedAt,
+        error: !hasLocator && !(Array.isArray(agent.recentOutput) && agent.recentOutput.length)
+          ? "Retained subagent output is unavailable because its child output locator is missing."
+          : undefined,
+      });
+    }
 
     const targetRunId = subagentText(agent.targetRunId || run.id, 160);
     let asyncDir = subagentText(agent.asyncDir || (targetRunId === run.id ? run.asyncDir : ""), 4096);
@@ -929,7 +1104,9 @@ export default function webuiRpcHelper(pi) {
         ? steps.find((candidate) => candidate?.agent === agent.name && ["running", "queued", "pending"].includes(candidate?.status)) || steps[status.currentStep] || steps[0]
         : steps[agent.index] || steps.find((candidate) => candidate?.agent === agent.name && ["running", "queued", "pending"].includes(candidate?.status));
       if (!step) return subagentOutputSnapshotFromAgent(run, agent, { status: status?.state, updatedAt: status?.lastUpdate });
-      const transcriptOutput = subagentTranscriptOutput(step.sessionFile || (steps.length === 1 ? status.sessionFile : undefined));
+      const sessionFile = subagentText(step.sessionFile || (steps.length === 1 ? status.sessionFile : ""), 4096);
+      if (sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl") agent.sessionFile = path.normalize(sessionFile);
+      const transcriptOutput = subagentTranscriptOutput(agent.sessionFile);
       return subagentOutputSnapshotFromAgent(run, agent, {
         ...step,
         recentOutput: transcriptOutput.recentOutput.length ? transcriptOutput.recentOutput : step.recentOutput,
@@ -951,21 +1128,28 @@ export default function webuiRpcHelper(pi) {
       subagentBridgeAvailable = true;
       const parsedRuns = parseSubagentStatusText(data?.text, asyncSubagentRuns);
       const nextIds = new Set(parsedRuns.map((run) => run.id));
-      for (const id of asyncSubagentRuns.keys()) {
-        const run = asyncSubagentRuns.get(id);
-        if (!nextIds.has(id) && Date.now() - Number(run?.eventSeenAt || 0) > SUBAGENT_STATUS_POLL_MS * 2) asyncSubagentRuns.delete(id);
+      for (const run of asyncSubagentRuns.values()) {
+        if (run?.status === "running" && !nextIds.has(run.id) && Date.now() - Number(run.eventSeenAt || 0) > SUBAGENT_STATUS_POLL_MS * 2) {
+          finishSubagentRun(run, "done");
+        }
       }
       for (const run of parsedRuns) {
         const previous = asyncSubagentRuns.get(run.id);
+        if (previous?.status && previous.status !== "running") continue;
         const previousAgents = Array.isArray(previous?.agents) ? previous.agents : [];
+        const runningAgents = run.agents.map((agent) => ({
+          ...previousAgents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name),
+          ...agent,
+          status: "running",
+        }));
+        const completedAgents = previousAgents
+          .filter((candidate) => !runningAgents.some((agent) => agent.index === candidate.index && agent.name === candidate.name))
+          .map((agent) => ({ ...agent, status: agent.status === "running" ? "done" : agent.status }));
         const merged = {
           ...previous,
           ...run,
           eventSeenAt: previous?.eventSeenAt || Date.now(),
-          agents: run.agents.map((agent) => ({
-            ...previousAgents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name),
-            ...agent,
-          })),
+          agents: [...completedAgents, ...runningAgents],
         };
         await enrichAsyncSubagentRun(merged);
         asyncSubagentRuns.set(run.id, merged);
@@ -1020,7 +1204,6 @@ export default function webuiRpcHelper(pi) {
               : [];
         agents = names.map((name, index) => ({ id: `${id}:${index}:${subagentAgentName(name)}`, name: subagentAgentName(name), status: "running", index, nested: false })).filter((agent) => agent.name);
       }
-      foregroundSubagentRuns.clear();
       asyncSubagentRuns.set(id, {
         id,
         source: "async",
@@ -1036,7 +1219,8 @@ export default function webuiRpcHelper(pi) {
     }),
     pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (value) => {
       const id = subagentText(value?.id || value?.runId, 160);
-      if (id) asyncSubagentRuns.delete(id);
+      const run = id ? [...asyncSubagentRuns.values()].find((candidate) => candidate?.id === id) : undefined;
+      if (run) finishSubagentRun(run, value?.status === "failed" || value?.state === "failed" || value?.error ? "failed" : "done");
       publishSubagentStatus();
     }),
     pi.events.on(SUBAGENT_GATE_UPDATE_EVENT, (value) => {
@@ -1197,6 +1381,50 @@ export default function webuiRpcHelper(pi) {
     };
   }
 
+  function dismissSubagentRun(payload = {}) {
+    const runId = subagentText(payload.runId, 160);
+    if (!runId) throw new Error("Subagent dismiss requires runId");
+    const entry = findTrackedSubagentRun(runId);
+    if (entry.run.status === "running") throw new Error(`Cannot dismiss running subagent run: ${runId}`);
+    entry.runs.delete(entry.key);
+    persistRetainedSubagentRuns();
+    publishSubagentStatus();
+    return { runId, dismissed: true };
+  }
+
+  async function cancelSubagentRun(ctx, payload = {}) {
+    const runId = subagentText(payload.runId, 160);
+    if (!runId) throw new Error("Subagent cancel requires runId");
+    const { run } = findTrackedSubagentRun(runId);
+    if (run.status !== "running") throw new Error(`Subagent run is already finished: ${runId}`);
+    const reason = subagentText(payload.reason, 120) || undefined;
+    const note = subagentText(payload.note, 2000) || undefined;
+    const rpcMethod = run.source === "foreground" ? "interrupt" : "stop";
+    const controlRunId = run.source === "foreground" ? subagentText(run.controlRunId, 160) : run.id;
+    if (!controlRunId) throw new Error(`Subagent run is not ready to be cancelled yet: ${runId}`);
+    await requestSubagentRpc(rpcMethod, { id: controlRunId });
+    finishSubagentRun(run, "cancelled", { reason, note, force: true });
+    const agentNames = (Array.isArray(run.agents) ? run.agents : [])
+      .map((agent) => subagentAgentName(agent?.name))
+      .filter(Boolean)
+      .slice(0, 128);
+    const content = [
+      `The user cancelled subagent run ${run.id} (${agentNames.join(", ") || "subagent"}) from the Web UI.`,
+      ...(reason ? [`Reason: ${reason}`] : []),
+      ...(note ? [`Note: ${note}`] : []),
+      "The run was stopped or interrupted at the user's request and should not be automatically retried without asking.",
+    ].join("\n");
+    const isIdle = ctx.isIdle();
+    pi.sendMessage({
+      customType: "webui-subagent-cancelled",
+      content,
+      display: true,
+      details: { runId: run.id, agentNames, reason, note },
+    }, isIdle ? undefined : { deliverAs: "steer" });
+    publishSubagentStatus();
+    return { runId: run.id, state: "cancelled", delivery: isIdle ? "context" : "steer", rpcMethod };
+  }
+
   async function executeAction(action, payload, ctx) {
     switch (action) {
       case "tools-state":
@@ -1211,6 +1439,10 @@ export default function webuiRpcHelper(pi) {
         return transferAppRunnerContext(ctx, payload);
       case "subagent-output":
         return subagentOutputSnapshot(payload);
+      case "subagent-dismiss":
+        return dismissSubagentRun(payload);
+      case "subagent-cancel":
+        return cancelSubagentRun(ctx, payload);
       case "queue-remove":
         return removeQueuedPrompt(payload);
       case "queue-mutate":
@@ -1246,6 +1478,7 @@ export default function webuiRpcHelper(pi) {
     asyncSubagentRuns.clear();
     workflowSubagentRuns.clear();
     subagentGates.clear();
+    restoreRetainedSubagentRuns(ctx);
     lastPublishedSubagentSignature = "";
     publishSubagentStatus();
     scheduleSubagentStatusPoll(subagentPollGeneration, 0);
@@ -1256,6 +1489,11 @@ export default function webuiRpcHelper(pi) {
     restoreToolsFromBranch(ctx, globalDefaults);
     restoreSkillsFromBranch(ctx, globalDefaults);
     subagentContext = ctx;
+    foregroundSubagentRuns.clear();
+    asyncSubagentRuns.clear();
+    restoreRetainedSubagentRuns(ctx);
+    lastPublishedSubagentSignature = "";
+    publishSubagentStatus();
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -1279,6 +1517,7 @@ export default function webuiRpcHelper(pi) {
       mode: Array.isArray(event.args?.chain) ? "chain" : Array.isArray(event.args?.tasks) ? "parallel" : "single",
       status: "running",
       startedAt: Date.now(),
+      controlRunId: undefined,
       agents: initialAgents,
     });
     publishSubagentStatus();
@@ -1288,29 +1527,39 @@ export default function webuiRpcHelper(pi) {
     if (event.toolName !== "subagent") return;
     const id = subagentText(event.toolCallId, 160);
     const run = foregroundSubagentRuns.get(id);
-    if (!run) return;
+    if (!run || run.status !== "running") return;
     subagentContext = ctx;
     const details = event.partialResult?.details || event.result?.details;
     const agents = subagentRunningAgentsFromDetails(details, details?.runId || id);
     if (agents.length) {
-      run.agents = agents.map((agent) => {
+      const runningAgents = agents.map((agent) => {
         const previous = run.agents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name);
         return {
           ...previous,
           ...agent,
+          status: "running",
           model: agent.model || previous?.model,
           thinking: agent.thinking || previous?.thinking,
         };
       });
+      const completedAgents = run.agents
+        .filter((candidate) => !runningAgents.some((agent) => agent.index === candidate.index && agent.name === candidate.name))
+        .map((agent) => ({ ...agent, status: agent.status === "running" ? "done" : agent.status }));
+      run.agents = [...completedAgents, ...runningAgents];
     }
-    if (details?.runId) run.id = subagentText(details.runId, 160);
+    if (details?.runId) {
+      run.controlRunId = subagentText(details.runId, 160);
+      run.id = run.controlRunId;
+    }
     run.mode = subagentMode(details?.mode, run.mode);
     publishSubagentStatus();
   });
 
   pi.on("tool_execution_end", (event) => {
     if (event.toolName !== "subagent") return;
-    foregroundSubagentRuns.delete(subagentText(event.toolCallId, 160));
+    const toolCallId = subagentText(event.toolCallId, 160);
+    const run = [...foregroundSubagentRuns.values()].find((candidate) => candidate?.id === toolCallId) || foregroundSubagentRuns.get(toolCallId);
+    if (run) finishSubagentRun(run, event.isError === true || event.result?.isError === true ? "failed" : "done");
     publishSubagentStatus();
   });
 

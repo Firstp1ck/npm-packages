@@ -14,10 +14,31 @@ export interface SubagentFanoutAnalysis {
 	scheduledKind?: SubagentExecutionMode;
 }
 
+export type ReviewerDiversityFailure =
+	| "dynamic-reviewer-fanout"
+	| "implicit-reviewer-model"
+	| "duplicate-reviewer-provider"
+	| "duplicate-reviewer-model";
+
+export interface ReviewerDiversityAnalysis {
+	reviewerLaunches: number;
+	dynamicReviewerFanout: boolean;
+	providers: string[];
+	models: string[];
+	failure?: ReviewerDiversityFailure;
+	violation: boolean;
+}
+
 export const MINIMUM_FANOUT_BLOCK_REASON = [
 	"Blocked by the zero-or-multiple delegation policy: every execution needs at least two statically guaranteed child launches, and any workflow that launches the worker agent needs at least two statically guaranteed worker launches.",
 	"Do not retry a single child or hide one worker among non-worker children.",
 	"Either work directly in the main agent, or issue one statically compliant tasks or chain workflow with the required launches.",
+].join(" ");
+
+export const REVIEWER_DIVERSITY_BLOCK_REASON = [
+	"Blocked by the reviewer-diversity policy: multiple reviewer launches in one execution must each declare an explicit provider/model route.",
+	"Reviewer provider prefixes and normalized model routes must both be pairwise distinct; count-based or dynamic reviewer fanout cannot prove that and is not allowed.",
+	"Use separate reviewer task entries with different provider families and models.",
 ].join(" ");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,6 +52,31 @@ export function positiveTaskCount(value: unknown): number {
 
 function isWorkerTask(task: unknown): task is Record<string, unknown> & { agent: "worker" } {
 	return isRecord(task) && task.agent === "worker";
+}
+
+function isReviewerTask(task: unknown): task is Record<string, unknown> & { agent: string } {
+	return isRecord(task)
+		&& typeof task.agent === "string"
+		&& (task.agent === "reviewer" || task.agent.endsWith(".reviewer"));
+}
+
+interface ReviewerRoute {
+	provider: string;
+	model: string;
+}
+
+const THINKING_SUFFIX_PATTERN = /:(?:off|minimal|low|medium|high|xhigh|max)$/i;
+
+/** Returns a comparable explicit provider/model route, excluding thinking effort. */
+export function normalizeReviewerRoute(model: unknown): ReviewerRoute | undefined {
+	if (typeof model !== "string") return undefined;
+	const normalized = model.trim().replace(THINKING_SUFFIX_PATTERN, "").toLowerCase();
+	const separator = normalized.indexOf("/");
+	if (separator <= 0 || separator === normalized.length - 1) return undefined;
+	return {
+		provider: normalized.slice(0, separator),
+		model: normalized,
+	};
 }
 
 /** Sums the statically declared children in a top-level tasks workflow. */
@@ -207,6 +253,82 @@ export function blocksForMinimumFanout(analysis: SubagentFanoutAnalysis): boolea
 	);
 }
 
+interface CollectedReviewerRoutes {
+	routes: Array<ReviewerRoute | undefined>;
+	dynamicReviewerFanout: boolean;
+}
+
+function collectTaskReviewerRoutes(tasks: unknown): Array<ReviewerRoute | undefined> {
+	if (!Array.isArray(tasks)) return [];
+	return tasks.flatMap((task) => {
+		if (!isReviewerTask(task)) return [];
+		return Array.from({ length: positiveTaskCount(task.count) }, () => normalizeReviewerRoute(task.model));
+	});
+}
+
+function collectReviewerRoutes(input: Record<string, unknown>, mode: SubagentExecutionMode | undefined): CollectedReviewerRoutes {
+	if (mode === "tasks") {
+		return { routes: collectTaskReviewerRoutes(input.tasks), dynamicReviewerFanout: false };
+	}
+
+	if (mode === "chain" || mode === "indeterminate") {
+		const collected: CollectedReviewerRoutes = { routes: [], dynamicReviewerFanout: false };
+		if (!Array.isArray(input.chain)) return collected;
+		for (const step of input.chain) {
+			if (!isRecord(step)) continue;
+			if (Array.isArray(step.parallel)) {
+				collected.routes.push(...collectTaskReviewerRoutes(step.parallel));
+				continue;
+			}
+			if (isRecord(step.parallel) || step.expand !== undefined) {
+				if (isReviewerTask(step.parallel) || isReviewerTask(step)) collected.dynamicReviewerFanout = true;
+				continue;
+			}
+			if (isReviewerTask(step)) collected.routes.push(normalizeReviewerRoute(step.model));
+		}
+		return collected;
+	}
+
+	return {
+		routes: isReviewerTask(input) ? [normalizeReviewerRoute(input.model)] : [],
+		dynamicReviewerFanout: false,
+	};
+}
+
+/** Verifies that every same-call reviewer has a statically distinct provider and model route. */
+export function analyzeReviewerDiversity(input: unknown): ReviewerDiversityAnalysis {
+	const execution = analyzeSubagentCall(input);
+	if (!execution.execution || !isRecord(input)) {
+		return {
+			reviewerLaunches: 0,
+			dynamicReviewerFanout: false,
+			providers: [],
+			models: [],
+			violation: false,
+		};
+	}
+
+	const collected = collectReviewerRoutes(input, execution.mode);
+	const explicitRoutes = collected.routes.filter((route): route is ReviewerRoute => route !== undefined);
+	const providers = explicitRoutes.map((route) => route.provider);
+	const models = explicitRoutes.map((route) => route.model);
+	let failure: ReviewerDiversityFailure | undefined;
+
+	if (collected.dynamicReviewerFanout) failure = "dynamic-reviewer-fanout";
+	else if (collected.routes.length >= 2 && explicitRoutes.length !== collected.routes.length) failure = "implicit-reviewer-model";
+	else if (collected.routes.length >= 2 && new Set(models).size !== models.length) failure = "duplicate-reviewer-model";
+	else if (collected.routes.length >= 2 && new Set(providers).size !== providers.length) failure = "duplicate-reviewer-provider";
+
+	return {
+		reviewerLaunches: collected.routes.length,
+		dynamicReviewerFanout: collected.dynamicReviewerFanout,
+		providers,
+		models,
+		failure,
+		violation: failure !== undefined,
+	};
+}
+
 export default function subagentMinimumFanout(pi: ExtensionAPI): void {
 	pi.on("tool_call", (event) => {
 		if (!isToolCallEventType<"subagent", Record<string, unknown>>("subagent", event)) return;
@@ -215,6 +337,9 @@ export default function subagentMinimumFanout(pi: ExtensionAPI): void {
 			const analysis = analyzeSubagentCall(event.input);
 			if (blocksForMinimumFanout(analysis)) {
 				return { block: true, reason: MINIMUM_FANOUT_BLOCK_REASON };
+			}
+			if (analyzeReviewerDiversity(event.input).violation) {
+				return { block: true, reason: REVIEWER_DIVERSITY_BLOCK_REASON };
 			}
 		} catch {
 			return { block: true, reason: MINIMUM_FANOUT_BLOCK_REASON };

@@ -74,6 +74,8 @@ type SigningDiagnostics = {
 };
 
 const LIVE_TOKEN_SPEED_ROLLING_WINDOW_MS = 2000;
+const SESSION_SPEED_SAMPLE_MIN_INTERVAL_MS = 250;
+const SESSION_SPEED_SAMPLE_LIMIT = 20_000;
 const DEFAULT_GIT_AUTO_REFRESH_INTERVAL_MS = 10_000;
 const GIT_INITIAL_FETCH_TIMEOUT_MS = 30_000;
 const GIT_FETCH_MESSAGE_MAX_LENGTH = 240;
@@ -95,6 +97,9 @@ const FOOTER_VISIBILITY_KEYS = [
   "cache",
   "pi",
   "speed",
+  "speed-avg",
+  "speed-low",
+  "speed-max",
   "cost",
   "context",
   "model",
@@ -150,6 +155,9 @@ const FOOTER_VISIBILITY_DEFAULTS: Record<FooterVisibilityKey, boolean> = {
   cache: true,
   pi: true,
   speed: true,
+  "speed-avg": false,
+  "speed-low": false,
+  "speed-max": false,
   cost: true,
   context: true,
   model: true,
@@ -199,6 +207,13 @@ const FOOTER_VISIBILITY_DEFAULTS: Record<FooterVisibilityKey, boolean> = {
 };
 
 const FOOTER_VISIBILITY_ALIASES: Record<string, FooterVisibilityKey> = {
+  "avg-speed": "speed-avg",
+  "speed-average": "speed-avg",
+  "speed-1-low": "speed-low",
+  "speed-1%-low": "speed-low",
+  "speed-onepercent-low": "speed-low",
+  "max-speed": "speed-max",
+  "speed-spike": "speed-max",
   branch: "git",
   "branch-card": "git",
   "branch-indicator": "git-branch-indicator",
@@ -466,6 +481,7 @@ function footerVisibilityUsage(): string {
     "Examples: /git-footer-visibility select webui",
     "          /git-footer-visibility hide webui cost context model",
     "          /git-footer-visibility toggle native speed",
+    "          /git-footer-visibility show all speed-avg speed-low speed-max",
     `Saved globally: ${footerVisibilitySettingsFile()}`,
     "Env: PI_GIT_FOOTER_HIDE=cost,context or PI_GIT_FOOTER_WEBUI_COST=0",
   ].join("\n");
@@ -674,6 +690,7 @@ type FooterTelemetry = {
   totalCost: number;
   speedOutputTokens: number;
   latestTokenSpeed: number | null;
+  speedStats: SessionSpeedStats | null;
   promptInjectionTokens: number | null;
   promptInjectionCalibrationSamples: number;
   contextWindow: number;
@@ -749,6 +766,37 @@ type LiveTokenSample = {
   timestampMs: number;
   tokens: number;
 };
+
+type SessionSpeedStats = {
+  avg: number;
+  onePercentLow: number;
+  max: number;
+  sampleCount: number;
+};
+
+/**
+ * FPS-style stats over live speed samples: mean, mean of the lowest 1% of
+ * samples (at least one), and the maximum observed spike.
+ */
+function computeSessionSpeedStats(samples: number[]): SessionSpeedStats | null {
+  if (samples.length === 0) return null;
+  let sum = 0;
+  let max = 0;
+  for (const sample of samples) {
+    sum += sample;
+    if (sample > max) max = sample;
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const lowCount = Math.max(1, Math.floor(sorted.length / 100));
+  let lowSum = 0;
+  for (let i = 0; i < lowCount; i++) lowSum += sorted[i];
+  return {
+    avg: sum / samples.length,
+    onePercentLow: lowSum / lowCount,
+    max,
+    sampleCount: samples.length,
+  };
+}
 
 type FooterUsageSnapshot = {
   totalInput: number;
@@ -1376,6 +1424,17 @@ function buildWebuiVisibilityRecord(): Record<FooterVisibilityKey, boolean> {
 function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | null, telemetry: FooterTelemetry, fetchState: GitFetchState): WebuiFooterPayload {
   const speed = telemetry.latestTokenSpeed;
   const speedValue = speed === null ? "— tok/s" : `${formatTokenSpeed(speed)} tok/s`;
+  const speedStats = telemetry.speedStats;
+  const speedStatParts: string[] = [];
+  if (speedStats) {
+    if (webuiFooterItemVisible("speed-avg")) speedStatParts.push(`avg ${formatTokenSpeed(speedStats.avg)}`);
+    if (webuiFooterItemVisible("speed-low")) speedStatParts.push(`1% ${formatTokenSpeed(speedStats.onePercentLow)}`);
+    if (webuiFooterItemVisible("speed-max")) speedStatParts.push(`max ${formatTokenSpeed(speedStats.max)}`);
+  }
+  const speedStatsSuffix = speedStatParts.length > 0 ? ` · ${speedStatParts.join(" · ")}` : "";
+  const speedTitle = speedStats
+    ? `Session speed stats from ${speedStats.sampleCount} live sample${speedStats.sampleCount === 1 ? "" : "s"}: avg ${formatTokenSpeed(speedStats.avg)} tok/s · 1% low ${formatTokenSpeed(speedStats.onePercentLow)} tok/s · max spike ${formatTokenSpeed(speedStats.max)} tok/s. Toggle inline stats via /git-footer-visibility (speed-avg, speed-low, speed-max).`
+    : undefined;
   const providerPrefix = telemetry.showModelProvider && telemetry.modelProvider ? `(${telemetry.modelProvider}) ` : "";
   const thinkingSuffix = telemetry.thinkingLevel
     ? telemetry.thinkingLevel === "off"
@@ -1429,7 +1488,8 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       key: "speed",
       icon: "⚡",
       label: "speed",
-      value: `${footerMetricValue(telemetry.speedOutputTokens)} tok @ ${speedValue}`,
+      value: `${footerMetricValue(telemetry.speedOutputTokens)} tok @ ${speedValue}${speedStatsSuffix}`,
+      title: speedTitle,
       tone: "yellow",
     });
   }
@@ -1507,6 +1567,8 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   let currentAssistantLiveTokenSpeed: number | null = null;
   let currentAssistantTokenSamples: LiveTokenSample[] = [];
   let latestMeasuredTokenSpeed: number | null = null;
+  let sessionSpeedSamples: number[] = [];
+  let lastSessionSpeedSampleMs = 0;
   let footerUsageSnapshot: FooterUsageSnapshot = emptyFooterUsageSnapshot();
   let latestGitSnapshot: GitSnapshot | null = null;
   let latestGitSnapshotFingerprint: string | null = null;
@@ -1653,6 +1715,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     const activeOutputTokens = currentAssistantStartMs !== null ? currentAssistantEstimatedOutputTokens : 0;
     const speedOutputTokens = totalOutput + activeOutputTokens;
     const latestTokenSpeed = currentAssistantLiveTokenSpeed ?? latestMeasuredTokenSpeed ?? historicalTokenSpeed;
+    const speedStats = computeSessionSpeedStats(sessionSpeedSamples);
 
     const promptInjectionEstimate = getFooterPromptInjectionEstimate(ctx);
     const contextUsage = ctx.getContextUsage();
@@ -1670,6 +1733,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
       totalCost,
       speedOutputTokens,
       latestTokenSpeed,
+      speedStats,
       promptInjectionTokens: promptInjectionEstimate?.total ?? null,
       promptInjectionCalibrationSamples: promptInjectionEstimate?.calibrationSamples ?? 0,
       contextWindow,
@@ -1990,6 +2054,8 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     latestGitSnapshotFingerprint = null;
     footerUsageSnapshot = emptyFooterUsageSnapshot();
     accountedAssistantUsageKeys = new Set<string>();
+    sessionSpeedSamples = [];
+    lastSessionSpeedSampleMs = 0;
     promptCalibrationCache = null;
     stopGitAutoRefresh();
     scheduleFooterUsageRecompute(ctx);
@@ -2048,7 +2114,15 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
             const speedValue = telemetry.latestTokenSpeed === null
               ? "— tok/s"
               : `${formatTokenSpeed(telemetry.latestTokenSpeed)} tok/s`;
-            segments.push(`⚡ ${formatTokens(telemetry.speedOutputTokens)} tok @ ${speedValue}`);
+            const stats = telemetry.speedStats;
+            const statParts: string[] = [];
+            if (stats) {
+              if (nativeFooterItemVisible("speed-avg")) statParts.push(`avg ${formatTokenSpeed(stats.avg)}`);
+              if (nativeFooterItemVisible("speed-low")) statParts.push(`1% ${formatTokenSpeed(stats.onePercentLow)}`);
+              if (nativeFooterItemVisible("speed-max")) statParts.push(`max ${formatTokenSpeed(stats.max)}`);
+            }
+            const statsSuffix = statParts.length > 0 ? ` ${itemSep} ${statParts.join(` ${itemSep} `)}` : "";
+            segments.push(`⚡ ${formatTokens(telemetry.speedOutputTokens)} tok @ ${speedValue}${statsSuffix}`);
           }
 
           if (nativeFooterItemVisible("cost") && (telemetry.totalCost || telemetry.usingSubscription)) {
@@ -2198,6 +2272,16 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     }
 
     currentAssistantLiveTokenSpeed = getRollingLiveTokenSpeed(nowMs);
+    if (
+      currentAssistantLiveTokenSpeed !== null &&
+      nowMs - lastSessionSpeedSampleMs >= SESSION_SPEED_SAMPLE_MIN_INTERVAL_MS
+    ) {
+      lastSessionSpeedSampleMs = nowMs;
+      sessionSpeedSamples.push(currentAssistantLiveTokenSpeed);
+      if (sessionSpeedSamples.length > SESSION_SPEED_SAMPLE_LIMIT) {
+        sessionSpeedSamples.splice(0, sessionSpeedSamples.length - SESSION_SPEED_SAMPLE_LIMIT);
+      }
+    }
     preserveLiveAssistantSpeed();
     scheduleWebuiFooterPublish(ctx);
   });
