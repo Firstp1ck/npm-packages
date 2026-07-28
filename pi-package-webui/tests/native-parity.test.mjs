@@ -189,7 +189,7 @@ assert.match(server, /async function cycleTabModel\(tab, direction = "forward"\)
 assert.match(server, /url\.pathname === "\/api\/model-cycle" && req\.method === "POST"/, "server should expose model-cycle endpoint for shortcuts");
 assert.match(server, /case "\/api\/thinking-cycle":[\s\S]*?type: "cycle_thinking_level"/, "server should expose thinking-cycle endpoint for shortcuts");
 assert.match(server, /async function setThinkingLevelForTab\(tab, level, \{ allowPending = true \} = \{\}\)[\s\S]*?stateIsBusyForSettings\(stateResult\.data\)[\s\S]*?tab\.pendingThinkingLevel = level/, "server should queue side-panel thinking changes while a tab is running");
-assert.match(server, /function eventForTabClients\(tab, event\)[\s\S]*?responseWithPendingThinking\(tab, event\)[\s\S]*?tabId: tab\.id/, "server should decorate SSE state responses with pending thinking before broadcasting to clients");
+assert.match(server, /function eventForTabClients\(tab, event\)[\s\S]*?const decorated = event\?\.type === "queue_update"[\s\S]*?responseWithPendingThinking\(tab, decorated\)[\s\S]*?tabId: tab\.id/, "server should apply pending-thinking decoration to the source-decorated SSE event and retain its tab id");
 assert.match(server, /tab\.pendingThinkingLevel = level;\n\s+broadcastPendingThinkingState\(tab, stateResult\.data\)/, "server should broadcast queued thinking state after assigning the pending level");
 assert.match(server, /const pendingThinkingResponse = await applyPendingThinkingBeforePrompt\(tab\)/, "server should apply queued thinking level before the next prompt");
 assert.match(app, /pendingThinkingLevel[\s\S]*?next prompt/, "frontend should show queued thinking changes as applying on the next prompt");

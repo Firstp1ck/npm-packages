@@ -181,6 +181,7 @@ const FILE_SEARCH_MAX_SCANNED = 12_000;
 const FILE_SEARCH_MAX_DEPTH = 8;
 const FILE_SEARCH_EXCLUDED_DIRS = new Set([".git", "node_modules"]);
 const PROMPT_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
+const QUEUE_MUTATION_MAX_ITEMS = 512;
 const VOICE_AUDIO_BODY_LIMIT_BYTES = 24 * 1024 * 1024;
 const VOICE_AUDIO_JSON_BODY_LIMIT_BYTES = Math.ceil(VOICE_AUDIO_BODY_LIMIT_BYTES * 1.4) + 1024 * 1024;
 const VOICE_PROVIDER_TIMEOUT_MS = Math.max(1000, Number.parseInt(process.env.PI_VOICE_PROVIDER_TIMEOUT_MS || "120000", 10) || 120000);
@@ -7752,7 +7753,7 @@ async function serveStatic(req, res, url) {
 function requestBodyLimitForPath(pathname) {
   if (pathname === "/api/attachments") return UPLOAD_BODY_LIMIT_BYTES;
   if (pathname === "/api/files/content") return FILE_VIEWER_BODY_LIMIT_BYTES;
-  if (["/api/prompt", "/api/steer", "/api/follow-up"].includes(pathname)) return PROMPT_BODY_LIMIT_BYTES;
+  if (["/api/prompt", "/api/steer", "/api/follow-up", "/api/queue/mutate"].includes(pathname)) return PROMPT_BODY_LIMIT_BYTES;
   return BODY_LIMIT_BYTES;
 }
 
@@ -8508,8 +8509,9 @@ function responseWithPendingThinking(tab, response) {
 }
 
 function eventForTabClients(tab, event) {
+  const decorated = event?.type === "queue_update" ? { ...event, source: "pi-runtime" } : event;
   return {
-    ...rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, event)),
+    ...rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, decorated)),
     tabId: tab.id,
     tabTitle: tab.title,
     tabActivity: tabActivitySnapshot(tab),
@@ -8845,6 +8847,75 @@ function compactionQueueForTab(tab) {
   return tab.compactionQueue;
 }
 
+function compactionQueueRevision(tab) {
+  if (!Number.isSafeInteger(tab.compactionQueueRevision) || tab.compactionQueueRevision < 0) tab.compactionQueueRevision = 0;
+  return tab.compactionQueueRevision;
+}
+
+function advanceCompactionQueueRevision(tab) {
+  tab.compactionQueueRevision = compactionQueueRevision(tab) + 1;
+  return tab.compactionQueueRevision;
+}
+
+function queueMutationText(value, label, { allowBlank = false, normalize = true } = {}) {
+  if (typeof value !== "string") throw makeHttpError(400, `${label} must be a string`);
+  if (Buffer.byteLength(value, "utf8") > PROMPT_BODY_LIMIT_BYTES) throw makeHttpError(413, `${label} is too large`);
+  if (!allowBlank && !value.trim()) throw makeHttpError(400, `${label} is required`);
+  if (value.includes("\0")) throw makeHttpError(400, `${label} contains a NUL byte`);
+  return normalize ? value.trim() : value;
+}
+
+function queueMutationExpected(body) {
+  const expected = body?.expected;
+  if (!expected || typeof expected !== "object" || !Array.isArray(expected.steering) || !Array.isArray(expected.followUp)) {
+    throw makeHttpError(400, "Queue mutation requires complete expected steering and followUp arrays");
+  }
+  if (expected.steering.length > QUEUE_MUTATION_MAX_ITEMS || expected.followUp.length > QUEUE_MUTATION_MAX_ITEMS) {
+    throw makeHttpError(400, `Queue mutation expected arrays may contain at most ${QUEUE_MUTATION_MAX_ITEMS} items`);
+  }
+  return {
+    steering: expected.steering.map((item, index) => queueMutationText(item, `expected.steering[${index}]`, { normalize: false })),
+    followUp: expected.followUp.map((item, index) => queueMutationText(item, `expected.followUp[${index}]`, { normalize: false })),
+  };
+}
+
+function queueMutationIndex(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) throw makeHttpError(400, `${label} must be a non-negative integer`);
+  return value;
+}
+
+function queueMutationRequest(body) {
+  if (!body || typeof body !== "object") throw makeHttpError(400, "Queue mutation body must be an object");
+  const source = String(body.source || "");
+  if (source !== "pi-runtime" && source !== "webui-compaction") throw makeHttpError(400, "Queue mutation source must be pi-runtime or webui-compaction");
+  if (body.kind !== "followUp") throw makeHttpError(400, "Queue mutation kind must be followUp");
+  const operation = body.operation;
+  if (!operation || typeof operation !== "object") throw makeHttpError(400, "Queue mutation operation is required");
+  const expectedText = queueMutationText(operation.expectedText, "operation.expectedText", { normalize: false });
+  const request = {
+    source,
+    kind: "followUp",
+    expected: queueMutationExpected(body),
+    operation: { type: String(operation.type || ""), expectedText },
+  };
+  if (request.operation.type === "edit") {
+    request.operation.index = queueMutationIndex(operation.index, "operation.index");
+    request.operation.text = queueMutationText(operation.text, "operation.text");
+  } else if (request.operation.type === "move") {
+    request.operation.from = queueMutationIndex(operation.from, "operation.from");
+    request.operation.to = queueMutationIndex(operation.to, "operation.to");
+  } else {
+    throw makeHttpError(400, "Queue mutation operation type must be edit or move");
+  }
+  if (source === "webui-compaction") {
+    if (!Number.isSafeInteger(body.revision) || body.revision < 0) throw makeHttpError(400, "Compaction queue mutation requires a non-negative revision");
+    request.revision = body.revision;
+  } else if (Object.hasOwn(body, "revision")) {
+    throw makeHttpError(400, "Pi runtime queue mutation must not include a revision");
+  }
+  return request;
+}
+
 function queueableCompactionCommand(command) {
   return ["prompt", "steer", "follow_up"].includes(command?.type) && !!String(command.message || "").trim();
 }
@@ -8864,7 +8935,7 @@ function compactQueuedCommand(command) {
   return queued;
 }
 
-function compactionQueueEvent(tab, extra = {}) {
+function compactionQueueSnapshot(tab) {
   const queue = compactionQueueForTab(tab);
   const steering = [];
   const followUp = [];
@@ -8875,17 +8946,64 @@ function compactionQueueEvent(tab, extra = {}) {
     else steering.push(message);
   }
   return {
+    source: "webui-compaction",
+    revision: compactionQueueRevision(tab),
+    steering,
+    followUp,
+    draining: tab.compactionQueueDraining === true,
+  };
+}
+
+function compactionQueueEvent(tab, extra = {}) {
+  const queue = compactionQueueForTab(tab);
+  return {
     type: "webui_compaction_queue_update",
     tabId: tab.id,
     tabTitle: tab.title,
     queueLength: queue.length,
     pendingMessageCount: queue.length,
-    steering,
-    followUp,
-    draining: tab.compactionQueueDraining === true,
+    ...compactionQueueSnapshot(tab),
     tabActivity: tabActivitySnapshot(tab),
     ...extra,
   };
+}
+
+function sameQueueSnapshot(expected, current) {
+  return expected.steering.length === current.steering.length
+    && expected.followUp.length === current.followUp.length
+    && expected.steering.every((item, index) => item === current.steering[index])
+    && expected.followUp.every((item, index) => item === current.followUp[index]);
+}
+
+function compactionFollowUpSlots(queue) {
+  return queue.flatMap((item, index) => item?.command?.mode === "followUp" && String(item.command.message || "").trim() ? [index] : []);
+}
+
+function mutateCompactionFollowUpQueue(tab, request) {
+  const queue = compactionQueueForTab(tab);
+  const current = compactionQueueSnapshot(tab);
+  const failed = (reason) => ({ mutated: false, reason, source: "webui-compaction", queue: compactionQueueSnapshot(tab) });
+  if (current.draining) return failed("queue-draining");
+  if (request.revision !== current.revision || !sameQueueSnapshot(request.expected, current)) return failed("queue-changed");
+
+  const slots = compactionFollowUpSlots(queue);
+  const operation = request.operation;
+  if (operation.type === "edit") {
+    if (operation.index >= slots.length || current.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
+    queue[slots[operation.index]].command.message = operation.text;
+  } else {
+    if (operation.from >= slots.length || operation.to >= slots.length || operation.from === operation.to
+      || current.followUp[operation.from] !== operation.expectedText) return failed("invalid-request");
+    const followUps = slots.map((index) => queue[index]);
+    const [moved] = followUps.splice(operation.from, 1);
+    followUps.splice(operation.to, 0, moved);
+    slots.forEach((slot, index) => { queue[slot] = followUps[index]; });
+  }
+
+  advanceCompactionQueueRevision(tab);
+  const result = { mutated: true, source: "webui-compaction", queue: compactionQueueSnapshot(tab) };
+  broadcastTabEvent(tab, compactionQueueEvent(tab));
+  return result;
 }
 
 function enqueueCommandUntilCompactionEnds(tab, command) {
@@ -8896,6 +9014,7 @@ function enqueueCommandUntilCompactionEnds(tab, command) {
     enqueuedAt: new Date().toISOString(),
   };
   queue.push(item);
+  advanceCompactionQueueRevision(tab);
   broadcastTabEvent(tab, compactionQueueEvent(tab, { queuedId: item.id }));
   return rpcSuccess(command.type, {
     queued: true,
@@ -8940,6 +9059,7 @@ function requeueCompactionItems(tab, items) {
   if (!items?.length) return;
   const queue = compactionQueueForTab(tab);
   queue.unshift(...items);
+  advanceCompactionQueueRevision(tab);
   broadcastTabEvent(tab, compactionQueueEvent(tab));
 }
 
@@ -8956,6 +9076,7 @@ async function flushCompactionQueue(tab, event = {}) {
   if (!queue.length || tab.compactionQueueDraining) return;
   const items = queue.splice(0);
   tab.compactionQueueDraining = true;
+  advanceCompactionQueueRevision(tab);
   broadcastTabEvent(tab, compactionQueueEvent(tab));
   const remaining = [...items];
   try {
@@ -9349,6 +9470,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     bashQueue: [],
     bashQueueDraining: false,
     compactionQueue: [],
+    compactionQueueRevision: 0,
     compactionQueueDraining: false,
     cwdChangeInProgress: false,
     rpc,
@@ -13989,6 +14111,19 @@ const server = createServer(async (req, res) => {
         message: body.message,
       });
       sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/queue/mutate" && req.method === "POST") {
+      const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
+      const tab = getRequestedTab(req, url, body);
+      const request = queueMutationRequest(body);
+      const data = request.source === "webui-compaction"
+        ? mutateCompactionFollowUpQueue(tab, request)
+        : await sendWebuiHelperCommand(tab, "queue-mutate", request);
+      const conflict = data?.mutated === false && ["queue-changed", "queue-desynchronized", "queue-draining"].includes(data.reason);
+      const status = data?.mutated === true ? 200 : conflict ? 409 : 400;
+      sendJson(res, status, { ok: data?.mutated === true, data });
       return;
     }
 

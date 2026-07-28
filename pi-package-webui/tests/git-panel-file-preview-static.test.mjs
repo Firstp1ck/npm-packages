@@ -31,8 +31,11 @@ const combinedSyntaxSource = sourceBetween("function gitFileDiffUsesCombinedSynt
 const snapshotSource = sourceBetween("async function loadGitFileChangesSnapshot(", "\nfunction gitFileChangesPlaceholder(", "loadGitFileChangesSnapshot");
 const applySnapshotSource = sourceBetween("function gitFileChangesPlaceholder(", "\nasync function openFileInViewer(", "gitFileChangesPlaceholder");
 const openFileSource = sourceBetween("async function openFileInViewer(", "\nasync function openAurReviewReportInViewer(", "openFileInViewer");
-const closeSource = sourceBetween("function closeFileViewer(", "\n// Side-panel Git categories are UI labels", "closeFileViewer");
+const viewerPersistenceSource = sourceBetween("function cacheActiveFileViewerForTab(", "\n// Side-panel Git categories are UI labels", "file viewer tab persistence");
 const moveSource = sourceBetween("function updateActiveFileViewerAfterMove(", "\nfunction closeActiveFileViewerIfDeleted(", "updateActiveFileViewerAfterMove");
+const resetActiveTabUiSource = sourceBetween("function resetActiveTabUi(", "\nfunction tabGroupStatusRank(", "resetActiveTabUi");
+const switchTabSource = sourceBetween("async function switchTab(", "\nfunction currentDirectoryForNewTab(", "switchTab");
+const closeTabsSource = sourceBetween("async function closeTerminalTabs(", "\nasync function closeTerminalTab(", "closeTerminalTabs");
 
 const targets = JSON.parse(vm.runInNewContext(`${normalizePathSource}\n${targetSource}\nJSON.stringify([
   gitFileViewerTarget("sub/active.js", "/repo", [{ tabId: "repo-tab", cwd: "/repo" }]),
@@ -152,8 +155,8 @@ assert.match(app, /let fileViewerGitChangesRequestSerial = 0;/, "Git changes ope
 assert.match(applySnapshotSource, /loading: true, requestSerial/, "the viewer should show an identified loading snapshot until the bounded diff arrives");
 assert.match(
   applySnapshotSource,
-  /if \(!isCurrentTabContext\(tabContext\)\) return;\s*if \(!activeFileViewer\?\.gitChanges\?\.loading \|\| activeFileViewer\.path !== viewerPath \|\| activeFileViewer\.gitChanges\.requestSerial !== requestSerial\) return;/,
-  "a late diff response should be discarded when the tab, viewer, or same-path request identity changed",
+  /const viewer = tabContext\.tabId === activeTabId \? activeFileViewer : fileViewersByTab\.get\(tabContext\.tabId\);\s*if \(!viewer\?\.gitChanges\?\.loading \|\| viewer\.path !== viewerPath \|\| viewer\.gitChanges\.requestSerial !== requestSerial\) return;/,
+  "a late diff response should update the owning terminal's cached viewer while still rejecting stale viewer identities",
 );
 
 // --- Open flow: Git default, normal-open isolation, deleted files ---
@@ -180,9 +183,21 @@ assert.match(
 assert.match(openFileSource, /mode: "changes",\s*dirty: false,\s*readOnly: true,\s*sourceAvailable: false,/, "a deleted tracked file should open read-only in Changes mode");
 assert.match(openFileSource, /setFileViewerStatus\("File content unavailable; showing Git changes \(read-only\)\.", "warn"\)/, "the deleted-file fallback should explain itself in the viewer status");
 assert.match(openFileSource, /setFileViewerStatus\(message, "error"\);\s*addEvent\(`file open failed: \$\{message\}`, "error"\);/, "a total failure should still report the original open error");
-assert.match(closeSource, /fileViewerOpenRequestSerial \+= 1;\s*activeFileViewer = null;/, "closing the viewer should invalidate pending source and deleted-file opens");
-assert.match(closeSource, /elements\.fileViewerChanges\.hidden = true;\s*elements\.fileViewerChanges\.replaceChildren\(\);/, "closing the viewer should clear the changes surface");
+assert.match(viewerPersistenceSource, /function resetFileViewerUi\(\) \{\s*fileViewerOpenRequestSerial \+= 1;\s*activeFileViewer = null;/, "resetting the visible viewer should invalidate pending source and deleted-file opens");
+assert.match(viewerPersistenceSource, /elements\.fileViewerChanges\.hidden = true;\s*elements\.fileViewerChanges\.replaceChildren\(\);/, "resetting the visible viewer should clear the changes surface");
 assert.match(moveSource, /gitChanges: null,/, "renaming the open file should drop its stale open-time diff snapshot");
+
+// --- Per-terminal viewer persistence ---
+
+assert.match(app, /let fileViewersByTab = new Map\(\);/, "open file viewers should be stored per terminal tab");
+assert.match(app, /let fileViewerSelectionsByTab = new Map\(\);/, "viewer selections should be stored with their owning terminal tab");
+assert.match(viewerPersistenceSource, /fileViewersByTab\.set\(tabId, activeFileViewer\)/, "caching a terminal should retain its active viewer object, including dirty edits and mode");
+assert.match(viewerPersistenceSource, /fileViewerSelectionsByTab\.set\(tabId, fileViewerSelection\)/, "caching a terminal should retain its active file selection");
+assert.match(viewerPersistenceSource, /activeFileViewer = activeTabId \? fileViewersByTab\.get\(activeTabId\) \|\| null : null;\s*fileViewerSelection = activeTabId \? fileViewerSelectionsByTab\.get\(activeTabId\) \|\| null : null;\s*updateFileViewerUi\(\);/, "activating a terminal should restore its own viewer and selection");
+assert.match(viewerPersistenceSource, /function closeFileViewer\(\) \{\s*if \(activeTabId\) \{\s*fileViewersByTab\.delete\(activeTabId\);\s*fileViewerSelectionsByTab\.delete\(activeTabId\);/, "explicitly closing a viewer should remove only the active terminal's cached state");
+assert.match(switchTabSource, /cacheActiveFileViewerForTab\(activeTabId\);\s*const tabContext = setActiveTabId\(tabId, \{ remember: true \}\);/, "switching terminals should cache the outgoing viewer before changing the active tab identity");
+assert.match(resetActiveTabUiSource, /resetFileViewerUi\(\);\s*resetFileTreeState\(\);\s*restoreFileViewerForActiveTab\(\);/, "resetting tab UI should restore the incoming terminal's viewer instead of closing it");
+assert.match(closeTabsSource, /fileViewersByTab\.delete\(id\);\s*fileViewerSelectionsByTab\.delete\(id\);/, "closing terminal tabs should discard their cached viewers and selections");
 
 // --- Changes rendering contracts ---
 

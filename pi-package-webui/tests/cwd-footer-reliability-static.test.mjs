@@ -25,6 +25,11 @@ assert.match(
   /const changedTabId = response\.data\?\.tab\?\.id \|\| tab\.id;[\s\S]*?resetGitWorkflowForTab\(changedTabId\);[\s\S]*?clearGitFooterPayloadState\(changedTabId\);[\s\S]*?if \(!isCurrentTabContext\(tabContext\)\)/,
   "a cwd change that finishes after a tab switch should invalidate that tab's old footer state",
 );
+assert.match(
+  app,
+  /if \(response\.data\?\.changed !== false\) closeFileViewer\(\);\s*const nextContext = setActiveTabId\(response\.data\?\.tab\?\.id \|\| activeTabId\);\s*resetActiveTabUi\(\);/,
+  "a successful cwd change should discard the old workspace viewer instead of restoring its path in the replacement workspace",
+);
 
 assert.match(
   app,

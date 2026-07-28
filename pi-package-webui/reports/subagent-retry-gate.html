@@ -19,7 +19,7 @@
     <p class="lead">A source-grounded implementation report for bounded, failure-aware subagent retries, success quorums, limited read-only model fallbacks, and retained WebUI observability. Evidence comes from the local implementation, focused tests, package checks, and two independent cross-provider reviews.</p>
     <div class="callout"><strong>Conclusion:</strong> the requested retry policy, <code>subagent_gate</code> runtime, fallback configuration, and WebUI attempt history are implemented. Accepted review findings were fixed and re-tested. The only package-wide failure is an unrelated dirty-baseline lockfile invariant.</div>
     <p class="muted confidence"><strong>Confidence: 93/100.</strong> Runtime state transitions, RPC correlation, safety rules, payload bounds, and rendering are directly tested. Confidence is below 100 because no test launched a paid/live provider child through the real pi-subagents bridge.</p>
-    <p><a href="../plans/subagent-retry-gate.md">Open the canonical Markdown plan and review record</a></p>
+    <p><a href="../plans/archive/subagent-retry-gate.md">Open the canonical Markdown plan and review record</a></p>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Report sections">
@@ -177,7 +177,7 @@
     </ul></details>
     <details><summary>Fallback configuration</summary><p>The exact order is <code>anthropic/claude-opus-4-8</code> → <code>openrouter/moonshotai/kimi-k3</code> → <code>openai-codex/gpt-5.6-sol</code>. It is applied only to <code>reviewer</code>, <code>scout</code>, <code>planner</code>, <code>context-builder</code>, <code>researcher</code>, and <code>oracle</code>. Mutation-capable workers were intentionally excluded.</p></details>
     <details><summary>Source inventory</summary><ul>
-      <li><a href="../plans/subagent-retry-gate.md">Canonical plan, decisions, review identities, dispositions, and verification log</a></li>
+      <li><a href="../plans/archive/subagent-retry-gate.md">Canonical plan, decisions, review identities, dispositions, and verification log</a></li>
       <li><code>lib/subagent-gate.mjs</code> — runtime state machine and tool contract</li>
       <li><code>tests/subagent-gate.test.mjs</code> — safety and lifecycle unit coverage</li>
       <li><code>webui-rpc-helper.mjs</code>, <code>bin/pi-webui.mjs</code>, <code>public/app.js</code>, <code>public/styles.css</code> — observability pipeline</li>

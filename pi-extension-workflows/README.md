@@ -257,7 +257,7 @@ Direct `/<workflow-name>` aliases are intentionally not registered in v1 because
 
 See:
 
-- `docs/workflows/Workflow_js-runtime-implementation-plan.md`
+- `docs/planned/workflows/Workflow_js-runtime-implementation-plan.md`
 - `docs/workflows/Workflow_js-runtime-threat-model.md`
 - `docs/workflows/Workflow_js-runtime-architecture-decisions.md`
 

@@ -3,7 +3,7 @@
 // timers, and delivery callbacks all arrive through options so Node tests can
 // drive the full listen -> prompt -> speak -> listen loop without a browser.
 //
-// Turn-taking contract (see docs/webui/natural-conversation/NATURAL_CONVERSATION_MODE_PLAN.md):
+// Turn-taking contract (see docs/planned/webui/natural-conversation/NATURAL_CONVERSATION_MODE_PLAN.md):
 // - Final transcripts while Pi is idle are sent as normal prompts.
 // - Transcripts while the assistant streams final text are interruptions.
 // - Transcripts during a tool call/execution are queued until the tool phase

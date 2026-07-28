@@ -2,7 +2,7 @@
 
 **Status:** Accepted baseline  
 **Date:** 2026-07-15  
-**Plan:** `docs/workflows/Workflow_js-runtime-implementation-plan.md`
+**Plan:** `docs/planned/workflows/Workflow_js-runtime-implementation-plan.md`
 
 ## ADR-001 — JavaScript is the author-facing source of truth
 

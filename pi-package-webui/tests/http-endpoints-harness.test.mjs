@@ -391,6 +391,63 @@ try {
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
 
+  const runtimeQueueBefore = { steering: ["runtime steering"], followUp: ["runtime first", "runtime second", "runtime third"] };
+  const runtimeQueueEdit = await waitForSseEvent(
+    tabId,
+    (event) => event.type === "queue_update" && event.source === "pi-runtime" && event.followUp?.[0] === "runtime edited",
+    () => request("127.0.0.1", "/api/queue/mutate", {
+      method: "POST",
+      body: {
+        tab: tabId,
+        source: "pi-runtime",
+        kind: "followUp",
+        expected: runtimeQueueBefore,
+        operation: { type: "edit", index: 0, expectedText: "runtime first", text: " runtime edited " },
+      },
+    }),
+  );
+  assert.equal(runtimeQueueEdit.triggerResult.status, 200, `runtime queue edit should succeed: ${runtimeQueueEdit.triggerResult.body?.error || ""}`);
+  assert.deepEqual(runtimeQueueEdit.triggerResult.body?.data, {
+    mutated: true,
+    source: "pi-runtime",
+    queue: { source: "pi-runtime", steering: ["runtime steering"], followUp: ["runtime edited", "runtime second", "runtime third"] },
+  }, "queue mutation should return the authoritative normalized runtime snapshot");
+  assert.equal(runtimeQueueEdit.event.source, "pi-runtime", "runtime queue events must retain their source");
+
+  const staleRuntimeQueueEdit = await request("127.0.0.1", "/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "pi-runtime",
+      kind: "followUp",
+      expected: runtimeQueueBefore,
+      operation: { type: "move", from: 0, to: 2, expectedText: "runtime first" },
+    },
+  });
+  assert.equal(staleRuntimeQueueEdit.status, 409, "stale runtime queue snapshots must conflict");
+  assert.equal(staleRuntimeQueueEdit.body?.ok, false);
+  assert.equal(staleRuntimeQueueEdit.body?.data?.reason, "queue-changed");
+  assert.deepEqual(staleRuntimeQueueEdit.body?.data?.queue?.followUp, ["runtime edited", "runtime second", "runtime third"], "conflicts return the authoritative runtime queue");
+
+  const runtimeQueueMove = await request("127.0.0.1", "/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "pi-runtime",
+      kind: "followUp",
+      expected: { steering: ["runtime steering"], followUp: ["runtime edited", "runtime second", "runtime third"] },
+      operation: { type: "move", from: 0, to: 2, expectedText: "runtime edited" },
+    },
+  });
+  assert.equal(runtimeQueueMove.status, 200, "runtime queue moves should use final zero-based indices");
+  assert.deepEqual(runtimeQueueMove.body?.data?.queue?.followUp, ["runtime second", "runtime third", "runtime edited"]);
+
+  const invalidRuntimeQueueMutation = await request("127.0.0.1", "/api/queue/mutate", {
+    method: "POST",
+    body: { tab: tabId, source: "pi-runtime", kind: "steering", expected: { steering: [], followUp: [] }, operation: { type: "edit", index: 0, expectedText: "x", text: "y" } },
+  });
+  assert.equal(invalidRuntimeQueueMutation.status, 400, "queue mutation must stay follow-up-only and reject malformed source contracts");
+
   const extensionResponseId = `fixture-extension-response-${Date.now()}`;
   const extensionResponseStartedAt = Date.now();
   const extensionResponse = await request("127.0.0.1", "/api/extension-ui-response", {

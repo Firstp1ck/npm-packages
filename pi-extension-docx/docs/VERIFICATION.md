@@ -10,7 +10,7 @@ Date: 2026-07-14
 - `npm run test:pi-modes`: registration and non-interactive overwrite refusal pass in the print/JSON harness; the harness explicitly does not claim real TUI/RPC coverage.
 - `npm run pack:dry`: the npm tarball includes the extension, docs/notices, skill, TypeScript backends, and .NET source project.
 - `npm --prefix ../pi-package-webui run check`: all WebUI static/HTTP harness files pass, including document artifact registration, tab confinement, path stripping, manifests, pages, downloads, and byte ranges.
-- `git diff --check -- pi-extension-docx pi-package-webui docs/docx-agent/PLAN.md`: passes.
+- `git diff --check -- pi-extension-docx pi-package-webui docs/planned/docx-agent/PLAN.md`: passes.
 
 ## ONLYOFFICE renderer evidence
 

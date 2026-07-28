@@ -3,7 +3,7 @@
 Date: 2026-07-14
 Release posture: **declared bounded implementation complete; do not publish until the external signed-VBA fixture gate passes**
 
-`@firstpick/pi-extension-workbook` implements the cross-platform OOXML-safe P0-P3 scope and the P4 safety boundary. The canonical task tracker remains `docs/spreadsheet-agent/PLAN.md`; this file records evidence, constraints, and the one remaining externally gated fixture.
+`@firstpick/pi-extension-workbook` implements the cross-platform OOXML-safe P0-P3 scope and the P4 safety boundary. The canonical task tracker remains `docs/planned/spreadsheet-agent/PLAN.md`; this file records evidence, constraints, and the one remaining externally gated fixture.
 
 ## Implemented
 

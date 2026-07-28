@@ -22,7 +22,7 @@
     <p class="lead">This report audits the Pi Web UI change that turns the extension-owned <strong>PI token metric</strong> into an always-available calibration action. It is grounded in the current implementation, focused tests, Pi extension lifecycle documentation, and two qualifying independent reviews.</p>
     <div class="callout"><strong>Conclusion:</strong> clicking the PI metric dispatches exactly <code>/calibrate</code> through the active tab’s RPC path without using or changing the composer. The browser keeps a per-tab single-flight guard, exposes busy state, schedules bounded refresh attempts, and forces explicit git-footer refreshes to observe newly written calibration records.</div>
     <p class="muted"><strong>Confidence: 94/100.</strong> Source paths, exact command construction, cache invalidation, and 21 focused/extension tests were verified. Confidence is below 100 because no live browser/provider calibration probe was run and the full package suite has unrelated working-tree/baseline failures.</p>
-    <div class="links"><a href="../plans/webui-pi-footer-calibration.md">Canonical implementation plan</a><a href="#verification">Verification evidence</a><a href="#reviews">Independent reviews</a></div>
+    <div class="links"><a href="../plans/archive/webui-pi-footer-calibration.md">Canonical implementation plan</a><a href="#verification">Verification evidence</a><a href="#reviews">Independent reviews</a></div>
   </header>
 
   <section aria-labelledby="overview-title">
@@ -144,7 +144,7 @@
     <div class="callout"><strong>Release recommendation:</strong> ready for integration within the feature-owned paths. Preserve the documented unrelated full-suite failure separately; do not “fix” it as part of this calibration change without its own scope and evidence.</div>
   </section>
 
-  <footer><p><strong>Scope:</strong> implementation evidence captured 2026-07-21 from the local <code>/home/firstpick/pi-coding-agent-forge</code> worktree. Plan: <a href="../plans/webui-pi-footer-calibration.md">webui-pi-footer-calibration.md</a>.</p></footer>
+  <footer><p><strong>Scope:</strong> implementation evidence captured 2026-07-21 from the local <code>/home/firstpick/pi-coding-agent-forge</code> worktree. Plan: <a href="../plans/archive/webui-pi-footer-calibration.md">webui-pi-footer-calibration.md</a>.</p></footer>
 </main>
 </body>
 </html>

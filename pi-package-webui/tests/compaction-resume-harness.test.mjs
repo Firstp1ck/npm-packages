@@ -35,6 +35,36 @@ async function request(pathname, { method = "GET", body, timeoutMs = 5_000 } = {
   return { status: response.status, body: payload };
 }
 
+async function waitForSseEvent(tabId, predicate) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("timed out waiting for SSE event")), 8_000);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/events?tab=${encodeURIComponent(tabId)}`, { signal: controller.signal });
+    assert.equal(response.status, 200, "SSE connection should open");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+        if (!data) continue;
+        const event = JSON.parse(data);
+        if (predicate(event)) return { event };
+      }
+    }
+    throw new Error("SSE stream ended before the expected event");
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+  }
+}
+
 async function waitFor(description, probe, { attempts = 60, intervalMs = 100 } = {}) {
   let last;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -53,6 +83,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "12
   stdio: ["ignore", "pipe", "pipe"],
   env: { ...process.env, PI_WEBUI_SETTINGS_FILE: settingsFile },
 });
+const childClosed = new Promise((resolve) => child.once("close", resolve));
 let serverOutput = "";
 child.stdout.on("data", (chunk) => { serverOutput += String(chunk); });
 child.stderr.on("data", (chunk) => { serverOutput += String(chunk); });
@@ -113,6 +144,85 @@ try {
   assert.equal(queuedSlashPrompt.status, 202, "slash prompt sent during compaction should remain a prompt in the resume queue");
   assert.equal(queuedSlashPrompt.body?.data?.queueLength, 4);
 
+  const compactionQueueBeforeMutation = {
+    source: "webui-compaction",
+    revision: 4,
+    steering: [RESUME_PROMPT, STEER_PROMPT],
+    followUp: [FOLLOW_UP_PROMPT, QUEUED_SLASH_PROMPT],
+  };
+  const editedFollowUp = `${FOLLOW_UP_PROMPT} edited`;
+  const compactionEdit = await request("/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "webui-compaction",
+      kind: "followUp",
+      revision: compactionQueueBeforeMutation.revision,
+      expected: { steering: compactionQueueBeforeMutation.steering, followUp: compactionQueueBeforeMutation.followUp },
+      operation: { type: "edit", index: 0, expectedText: FOLLOW_UP_PROMPT, text: ` ${editedFollowUp} ` },
+    },
+  });
+  assert.equal(compactionEdit.status, 200, `compaction follow-up edits should succeed before draining: ${compactionEdit.body?.error || ""}`);
+  assert.deepEqual(compactionEdit.body?.data, {
+    mutated: true,
+    source: "webui-compaction",
+    queue: {
+      source: "webui-compaction",
+      revision: 5,
+      steering: [RESUME_PROMPT, STEER_PROMPT],
+      followUp: [editedFollowUp, QUEUED_SLASH_PROMPT],
+      draining: false,
+    },
+  }, "compaction edits return an authoritative source-tagged revisioned snapshot");
+
+  const staleCompactionMove = await request("/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "webui-compaction",
+      kind: "followUp",
+      revision: compactionQueueBeforeMutation.revision,
+      expected: { steering: compactionQueueBeforeMutation.steering, followUp: compactionQueueBeforeMutation.followUp },
+      operation: { type: "move", from: 1, to: 0, expectedText: QUEUED_SLASH_PROMPT },
+    },
+  });
+  assert.equal(staleCompactionMove.status, 409, "compaction mutations reject stale revisions and snapshots");
+  assert.equal(staleCompactionMove.body?.data?.reason, "queue-changed");
+
+  const compactionMove = await request("/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "webui-compaction",
+      kind: "followUp",
+      revision: 5,
+      expected: { steering: [RESUME_PROMPT, STEER_PROMPT], followUp: [editedFollowUp, QUEUED_SLASH_PROMPT] },
+      operation: { type: "move", from: 1, to: 0, expectedText: QUEUED_SLASH_PROMPT },
+    },
+  });
+  assert.equal(compactionMove.status, 200, "compaction follow-up moves should reorder among the fixed follow-up slots");
+  assert.deepEqual(compactionMove.body?.data?.queue?.followUp, [QUEUED_SLASH_PROMPT, editedFollowUp]);
+  assert.deepEqual(compactionMove.body?.data?.queue?.steering, [RESUME_PROMPT, STEER_PROMPT], "compaction reordering must leave steering slots fixed");
+
+  const drainingCompactionQueue = await waitForSseEvent(
+    tabId,
+    (event) => event.type === "webui_compaction_queue_update" && event.source === "webui-compaction" && event.draining === true,
+  );
+  const drainingMutation = await request("/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "webui-compaction",
+      kind: "followUp",
+      revision: 6,
+      expected: { steering: [RESUME_PROMPT, STEER_PROMPT], followUp: [QUEUED_SLASH_PROMPT, editedFollowUp] },
+      operation: { type: "edit", index: 0, expectedText: QUEUED_SLASH_PROMPT, text: "must not apply while draining" },
+    },
+  });
+  assert.equal(drainingCompactionQueue.event.revision, 7, "draining queue transition advances the monotonic queue revision");
+  assert.equal(drainingMutation.status, 409, "compaction mutations are rejected while draining");
+  assert.equal(drainingMutation.body?.data?.reason, "queue-draining");
+
   const messagesBeforeEnd = await request(`/api/messages?tab=${encodeURIComponent(tabId)}`);
   assert.equal(messagesBeforeEnd.status, 200);
   const queuedMessages = [RESUME_PROMPT, STEER_PROMPT, FOLLOW_UP_PROMPT, QUEUED_SLASH_PROMPT];
@@ -128,7 +238,7 @@ try {
   const resumedMessages = await waitFor("queued prompts to resume after compaction", async () => {
     const messages = await request(`/api/messages?tab=${encodeURIComponent(tabId)}`);
     const entries = messages.body?.data?.messages || [];
-    const expected = [`prompt:${RESUME_PROMPT}`, `steer:${STEER_PROMPT}`, `follow_up:${FOLLOW_UP_PROMPT}`, `prompt:${QUEUED_SLASH_PROMPT}`];
+    const expected = [`prompt:${RESUME_PROMPT}`, `steer:${STEER_PROMPT}`, `prompt:${QUEUED_SLASH_PROMPT}`, `follow_up:${editedFollowUp}`];
     return expected.every((content, index) => String(entries[index]?.content || "") === content) ? messages : false;
   }, { attempts: 80, intervalMs: 100 });
   assert.equal(resumedMessages.status, 200);
@@ -160,7 +270,8 @@ try {
   assert.notEqual(child.exitCode, null, "server should exit after /api/shutdown");
 } finally {
   if (child.exitCode === null) child.kill("SIGKILL");
-  await rm(cwd, { recursive: true, force: true });
+  await childClosed;
+  await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 
 console.log("compaction-resume-harness.test.mjs passed");

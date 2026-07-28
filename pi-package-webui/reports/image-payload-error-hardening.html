@@ -294,7 +294,7 @@ npm test</code></pre><p class="muted"><strong>Done when:</strong> the WebUI focu
     <div class="callout info"><strong>Residual risk:</strong> WebUI diagnostics cannot stop Pi core from immediately making the next provider call after a malformed tool result, nor can they repair old context. The practical prevention layers are the corrected producer and strict browser-input gate; runtime warnings and terminal fallback make remaining failures visible and actionable.</div>
     <h3>Sources and audit links</h3>
     <ul>
-      <li><a href="../plans/image-payload-error-hardening.md">Canonical implementation plan and decision record</a></li>
+      <li><a href="../plans/archive/image-payload-error-hardening.md">Canonical implementation plan and decision record</a></li>
       <li><code>pi-package-webui/bin/pi-webui.mjs</code> — server payload boundary</li>
       <li><code>pi-package-webui/public/app.js</code> — WebUI runtime diagnostics</li>
       <li><code>pi-package-webui/tests/image-payload-hardening-harness.test.mjs</code> — focused transport evidence</li>

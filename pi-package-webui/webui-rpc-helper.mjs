@@ -2,6 +2,7 @@ import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs"
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
+import { mutatePiRuntimeFollowUpQueue } from "./lib/queue-mutation.mjs";
 import {
   formatSubagentLaunchSlotGuidance,
   resolveSubagentLaunchSlotProjectKey,
@@ -147,8 +148,9 @@ function queueMessageText(message) {
 
 function queuedMessagesSnapshot(session) {
   return {
-    steering: Array.from(session?.getSteeringMessages?.() || []).map((item) => String(item || "")).filter((item) => item.trim()),
-    followUp: Array.from(session?.getFollowUpMessages?.() || []).map((item) => String(item || "")).filter((item) => item.trim()),
+    source: "pi-runtime",
+    steering: Array.isArray(session?._steeringMessages) ? [...session._steeringMessages] : [],
+    followUp: Array.isArray(session?._followUpMessages) ? [...session._followUpMessages] : [],
   };
 }
 
@@ -181,6 +183,12 @@ function removeQueuedPrompt(payload = {}) {
   agentQueue.messages.splice(index, 1);
   session._emitQueueUpdate?.();
   return { removed: true, kind, index, message: currentText, queue: queuedMessagesSnapshot(session) };
+}
+
+function mutateQueuedFollowUp(payload = {}) {
+  const session = activeCommandSession();
+  if (!session) throw new Error("Web UI queue mutation is unavailable in this Pi version; reload this tab and retry.");
+  return mutatePiRuntimeFollowUpQueue(session, payload);
 }
 
 function parseHelperArgs(args) {
@@ -1205,6 +1213,8 @@ export default function webuiRpcHelper(pi) {
         return subagentOutputSnapshot(payload);
       case "queue-remove":
         return removeQueuedPrompt(payload);
+      case "queue-mutate":
+        return mutateQueuedFollowUp(payload);
       default:
         throw new Error(`Unknown ${HELPER_COMMAND} action: ${action}`);
     }

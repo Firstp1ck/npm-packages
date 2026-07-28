@@ -58,6 +58,64 @@ let dynamicLeafId = "u0000002";
 let scriptedStreaming = false;
 let continuityRun = 0;
 let largeTranscriptEnabled = false;
+const runtimeQueue = {
+  steering: ["runtime steering"],
+  followUp: ["runtime first", "runtime second", "runtime third"],
+  steeringMessages: [],
+  followUpMessages: [],
+};
+
+function runtimeQueuedMessage(text, timestamp) {
+  return {
+    role: "user",
+    timestamp,
+    metadata: { fixture: "runtime-queue" },
+    content: [{ type: "text", text }, { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
+  };
+}
+
+runtimeQueue.steeringMessages = runtimeQueue.steering.map((text, index) => runtimeQueuedMessage(text, 100 + index));
+runtimeQueue.followUpMessages = runtimeQueue.followUp.map((text, index) => runtimeQueuedMessage(text, 200 + index));
+
+function runtimeQueueSnapshot() {
+  return { source: "pi-runtime", steering: [...runtimeQueue.steering], followUp: [...runtimeQueue.followUp] };
+}
+
+function sameRuntimeQueue(expected) {
+  return Array.isArray(expected?.steering) && Array.isArray(expected?.followUp)
+    && expected.steering.length === runtimeQueue.steering.length
+    && expected.followUp.length === runtimeQueue.followUp.length
+    && expected.steering.every((text, index) => text === runtimeQueue.steering[index])
+    && expected.followUp.every((text, index) => text === runtimeQueue.followUp[index]);
+}
+
+function mutateRuntimeQueue(payload = {}) {
+  const failed = (reason) => ({ mutated: false, reason, queue: runtimeQueueSnapshot() });
+  if (payload.source !== "pi-runtime" || payload.kind !== "followUp" || !sameRuntimeQueue(payload.expected)) return failed("queue-changed");
+  const operation = payload.operation;
+  if (!operation || typeof operation.expectedText !== "string") return failed("invalid-request");
+  if (operation.type === "edit") {
+    if (!Number.isInteger(operation.index) || operation.index < 0 || operation.index >= runtimeQueue.followUp.length
+      || runtimeQueue.followUp[operation.index] !== operation.expectedText || typeof operation.text !== "string" || !operation.text.trim()) return failed("invalid-request");
+    const message = runtimeQueue.followUpMessages[operation.index];
+    const textPartIndex = message.content.findIndex((part) => part?.type === "text");
+    if (textPartIndex < 0) return failed("queue-desynchronized");
+    runtimeQueue.followUp[operation.index] = operation.text;
+    runtimeQueue.followUpMessages[operation.index] = { ...message, content: message.content.map((part, index) => index === textPartIndex ? { ...part, text: operation.text } : part) };
+  } else if (operation.type === "move") {
+    if (!Number.isInteger(operation.from) || !Number.isInteger(operation.to) || operation.from < 0 || operation.to < 0
+      || operation.from >= runtimeQueue.followUp.length || operation.to >= runtimeQueue.followUp.length || operation.from === operation.to
+      || runtimeQueue.followUp[operation.from] !== operation.expectedText) return failed("invalid-request");
+    const [text] = runtimeQueue.followUp.splice(operation.from, 1);
+    const [message] = runtimeQueue.followUpMessages.splice(operation.from, 1);
+    runtimeQueue.followUp.splice(operation.to, 0, text);
+    runtimeQueue.followUpMessages.splice(operation.to, 0, message);
+  } else {
+    return failed("invalid-request");
+  }
+  emitEvent({ type: "queue_update", steering: [...runtimeQueue.steering], followUp: [...runtimeQueue.followUp] });
+  return { mutated: true, source: "pi-runtime", queue: runtimeQueueSnapshot() };
+}
 
 function allSessionEntries() {
   return [...staticEntries, ...dynamicEntries];
@@ -310,6 +368,9 @@ function handleWebuiHelperPrompt(command, base) {
       respondHelper({ requestId, ok: true, data: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) } });
       return true;
     }
+    case "queue-mutate":
+      respondHelper({ requestId, ok: true, data: mutateRuntimeQueue(request.payload) });
+      return true;
     case "subagent-output":
       respondHelper({
         requestId,

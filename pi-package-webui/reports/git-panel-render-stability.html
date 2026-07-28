@@ -197,7 +197,7 @@
             <text x="714" y="146" fill="#50d890" font-size="13">same</text>
             <path d="M875 102 V210" stroke="#f7c65c" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
             <text x="887" y="163" fill="#f7c65c" font-size="13">different</text>
-            <text x="20" y="331" fill="#a9b7cb" font-size="13">Evidence: plans/git-panel-render-stability.md and target functions in public/app.js. No synthetic timing or performance measurements are shown.</text>
+            <text x="20" y="331" fill="#a9b7cb" font-size="13">Evidence: plans/archive/git-panel-render-stability.md and target functions in public/app.js. No synthetic timing or performance measurements are shown.</text>
           </g>
         </svg>
         <figcaption>The guard interrupts only unnecessary DOM replacement. Legitimate state/data changes still rebuild, and Git folders restore a stored user override or their depth-based default.</figcaption>
@@ -311,7 +311,7 @@ python3 /home/firstpick/.pi/agent/skills/html-report/scripts/validate_report.py 
     <section aria-labelledby="sources-title">
       <h2 id="sources-title">Evidence sources</h2>
       <ul>
-        <li><a href="../plans/git-panel-render-stability.md">Canonical implementation plan and review trace</a></li>
+        <li><a href="../plans/archive/git-panel-render-stability.md">Canonical implementation plan and review trace</a></li>
         <li><code>public/app.js</code>: Git panel folder/panel renderers and sibling signature guards</li>
         <li><code>tests/git-panel-render-stability-static.test.mjs</code> and the targeted assertion in <code>tests/mobile-static.test.mjs</code></li>
         <li>Reviewer artifacts for the Anthropic, DeepSeek, and failed Google attempts</li>

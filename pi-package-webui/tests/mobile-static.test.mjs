@@ -383,6 +383,9 @@ assert.match(css, /\.file-viewer-editor \{[\s\S]*?overflow-x:\s*hidden;[\s\S]*?o
 assert.match(css, /\.composer-busy-mode-menu \{[\s\S]*?bottom:\s*calc\(100% \+ 0\.22rem\);[\s\S]*?background:\s*var\(--ctp-crust\)/, "busy prompt behavior dropdown should expand above the tag with an opaque background");
 assert.match(css, /\.sticky-user-prompt-button \{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto/, "last-user-prompt jump control should render as a fixed transcript header");
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?\.sticky-user-prompt-button \{\n\s+grid-template-columns:\s*minmax\(0, 1fr\) auto;\n\s+min-height:\s*36px;[\s\S]*?\.sticky-user-prompt-text \{[\s\S]*?font-size:\s*var\(--text-xs\)/, "mobile last-user-prompt card should preserve compact height while respecting the text floor");
+assert.match(html, /id="followUpQueueTrigger"[^>]*aria-controls="followUpQueueOverlay"[\s\S]*id="followUpQueueOverlay"[\s\S]*id="followUpQueueStatus"[^>]*aria-live="polite"/, "mobile composer should expose the accessible queued follow-up trigger and overlay");
+assert.match(css, /\.follow-up-queue-overlay \{[\s\S]*bottom:\s*calc\(100% \+ 0\.42rem\)[\s\S]*var\(--visual-viewport-height, 100dvh\)[\s\S]*body\.mobile-keyboard-open \.follow-up-queue-trigger:not\(\[hidden\]\) \{ display: inline-flex; \}/, "mobile queue overlay should float above the composer, fit the visual viewport, and keep its trigger usable with the keyboard open");
+assert.doesNotMatch(app, /nextQueuedFollowUpPrompt|sticky-user-follow-up-prompt|Next follow-up prompt:/, "the mobile sticky prompt control should not duplicate a queued follow-up preview");
 assert.match(css, /\.message\.extension,[\s\S]*?\.message\.native/, "extension and native command output should have visible transcript styling");
 assert.match(app, /const FEATURE_CATEGORY_STATUS_KEY = "feature-category";[\s\S]*const featureCategoryByTab = new Map\(\)/, "feature category status should use a dedicated per-tab transport key and state map");
 assert.match(app, /function normalizeFeatureCategory\(value\) \{\s+return value === "lightweight-feature" \|\| value === "complex-feature" \? value : "";/, "feature category normalization should accept only the two approved exact labels");
@@ -1575,10 +1578,6 @@ assert.match(app, /function updateStickyUserPromptButton\(/, "last user prompt h
 assert.match(app, /function jumpToStickyUserPrompt\(/, "last user prompt header should jump to its source message");
 assert.match(app, /data-user-prompt/, "user prompt messages should be marked for sticky prompt navigation");
 assert.match(app, /function resetChatOutput\(\)[\s\S]*?stickyUserPromptButton/, "chat rerenders should preserve the sticky user prompt control inside the transcript scroller");
-assert.match(app, /function nextQueuedFollowUpPrompt\(tabId = activeTabId\)/, "sticky prompt header should derive the next queued follow-up prompt for display");
-assert.match(app, /sticky-user-follow-up-prompt[\s\S]*Next follow-up/, "sticky prompt header should render the next follow-up under the last user prompt");
-assert.match(app, /function renderQueue\(event\)[\s\S]*updateStickyUserPromptButton\(\)/, "queue updates should refresh the sticky last-user-prompt header");
-assert.match(css, /\.sticky-user-follow-up-prompt \{[\s\S]*?grid-column:\s*1 \/ -1/, "next follow-up should render below the sticky last-user-prompt row");
 assert.match(app, /LAST_USER_PROMPT_STORAGE_KEY/, "last user prompt should be cached so compaction cannot remove the sticky prompt preview");
 assert.match(app, /function syncLastUserPromptFromMessages\(messages = latestMessages\)/, "message refresh should preserve the latest user prompt across compacted transcripts");
 assert.match(app, /dataset\.compacted/, "sticky prompt should expose a compacted fallback state when its source message was summarized away");

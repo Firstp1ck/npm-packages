@@ -75,6 +75,13 @@ const elements = {
   composerActionsButton: $("#composerActionsButton"),
   composerActionsPanel: $("#composerActionsPanel"),
   promptInput: $("#promptInput"),
+  followUpQueueTrigger: $("#followUpQueueTrigger"),
+  followUpQueueTriggerCount: $("#followUpQueueTriggerCount"),
+  followUpQueueOverlay: $("#followUpQueueOverlay"),
+  followUpQueueOverlayCount: $("#followUpQueueOverlayCount"),
+  followUpQueueRows: $("#followUpQueueRows"),
+  followUpQueueStatus: $("#followUpQueueStatus"),
+  followUpQueueCloseButton: $("#followUpQueueCloseButton"),
   busyPromptBehaviorTag: $("#busyPromptBehaviorTag"),
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
@@ -235,6 +242,12 @@ const elements = {
   fileViewerPreview: $("#fileViewerPreview"),
   fileViewerChanges: $("#fileViewerChanges"),
   fileViewerStatus: $("#fileViewerStatus"),
+  fileViewerSearchBar: $("#fileViewerSearchBar"),
+  fileViewerSearchInput: $("#fileViewerSearchInput"),
+  fileViewerSearchCount: $("#fileViewerSearchCount"),
+  fileViewerSearchPrevButton: $("#fileViewerSearchPrevButton"),
+  fileViewerSearchNextButton: $("#fileViewerSearchNextButton"),
+  fileViewerSearchCloseButton: $("#fileViewerSearchCloseButton"),
   fileSelectionBar: $("#fileSelectionBar"),
   fileSelectionSummary: $("#fileSelectionSummary"),
   fileSelectionCommentInput: $("#fileSelectionCommentInput"),
@@ -411,9 +424,16 @@ let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
 let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0, gitStatusRoot: "", gitStatusByPath: new Map() };
 let activeFileViewer = null;
+let fileViewersByTab = new Map();
 let fileViewerOpenRequestSerial = 0;
 let fileViewerGitChangesRequestSerial = 0;
 let fileViewerSelection = null;
+let fileViewerSelectionsByTab = new Map();
+let fileViewerSearchMatches = [];
+let fileViewerSearchIndex = -1;
+let fileViewerSearchTruncated = false;
+let fileViewerSearchTimer = null;
+let fileViewerSearchHighlightElement = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
 let fileTreeDragState = null;
@@ -679,6 +699,12 @@ let abortRequestInFlight = false;
 let userBashByTab = new Map();
 let userBashQueuesByTab = new Map();
 let latestQueuedMessagesByTab = new Map();
+let followUpQueueOpen = false;
+const followUpQueueMutationsInFlightByTab = new Set();
+let followUpQueueStatus = { text: "", level: "" };
+let followUpQueueRestoreFocus = null;
+let followUpQueueDrag = null;
+let followUpQueueSuppressBlurFor = null;
 let loadedPromptList = null;
 let promptListRunning = false;
 let workspaceDashboardCollapsed = false;
@@ -1869,6 +1895,7 @@ function isInteractiveDropdownOpen() {
       || optionsMenuOpen
       || conversationVoiceMenuOpen
       || busyPromptBehaviorMenuOpen
+      || followUpQueueOpen
       || newTabMenuOpen
       || isFooterPickerOpen()
       || elements.commandSuggest?.hidden === false
@@ -3096,6 +3123,7 @@ function renderBusyPromptBehaviorTag() {
 }
 
 function setBusyPromptBehaviorMenuOpen(open, { focusCurrent = false } = {}) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   busyPromptBehaviorMenuOpen = !!open;
   elements.busyPromptBehaviorTag?.setAttribute("aria-expanded", busyPromptBehaviorMenuOpen ? "true" : "false");
   elements.busyPromptBehaviorTag?.classList.toggle("menu-open", busyPromptBehaviorMenuOpen);
@@ -3164,6 +3192,7 @@ async function refreshNativeSettings(tabContext = activeTabContext()) {
 
 function setComposerActionsOpen(open) {
   const shouldOpen = open && isMobileView();
+  if (shouldOpen && followUpQueueOpen) setFollowUpQueueOpen(false);
   document.body.classList.toggle("composer-actions-open", shouldOpen);
   elements.composerActionsButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
   if (!shouldOpen) {
@@ -4925,17 +4954,18 @@ function isFileDrag(event) {
 }
 
 function handleComposerDragOver(event) {
-  if (!isFileDrag(event)) return;
+  if (event.target?.closest?.("#followUpQueueOverlay") || !isFileDrag(event)) return;
   event.preventDefault();
   elements.composer.classList.add("drag-over");
 }
 
 function handleComposerDragLeave(event) {
+  if (event.target?.closest?.("#followUpQueueOverlay")) return;
   if (!elements.composer.contains(event.relatedTarget)) elements.composer.classList.remove("drag-over");
 }
 
 function handleComposerDrop(event) {
-  if (!isFileDrag(event)) return;
+  if (event.target?.closest?.("#followUpQueueOverlay") || !isFileDrag(event)) return;
   event.preventDefault();
   elements.composer.classList.remove("drag-over");
   addAttachmentFiles(event.dataTransfer?.files, "drop");
@@ -5744,6 +5774,7 @@ let conversationVoicePending = null;
 // panel (hover/focus-within still work on desktop via CSS), so it also works
 // on touch devices where :hover never fires.
 function setConversationVoiceMenuOpen(open) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   conversationVoiceMenuOpen = !!open;
   elements.conversationVoiceButton?.setAttribute("aria-expanded", conversationVoiceMenuOpen ? "true" : "false");
   elements.conversationVoiceButton?.classList.toggle("menu-open", conversationVoiceMenuOpen);
@@ -7633,6 +7664,7 @@ function updateActiveFileViewerAfterMove(sourcePath = "", destinationPath = "") 
     gitChanges: null,
   };
   if (fileViewerSelection) fileViewerSelection = { ...fileViewerSelection, path: nextPath, fileName: activeFileViewer.name };
+  cacheActiveFileViewerForTab();
   updateFileViewerUi();
 }
 
@@ -8052,6 +8084,10 @@ function setFileViewerMode(mode = "source") {
   activeFileViewer.mode = resolveFileViewerMode({ ...activeFileViewer, mode });
   if (activeFileViewer.mode === "changes" && previousMode !== "changes") clearFileViewerSelection();
   updateFileViewerUi();
+  if (elements.fileViewerSearchBar && !elements.fileViewerSearchBar.hidden) {
+    fileViewerSearchIndex = -1;
+    runFileViewerSearch({ navigate: true });
+  }
 }
 
 function setFileViewerDirty(dirty) {
@@ -8067,7 +8103,10 @@ function updateFileViewerUi() {
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
   updateFileViewerResizeHandle();
-  if (!open) return;
+  if (!open) {
+    closeFileViewerSearch({ restoreFocus: false });
+    return;
+  }
   if (!isSidePanelOverlayView()) applyFileViewerWidth(currentFileViewerWidth());
   const viewer = activeFileViewer;
   const isMarkdown = viewer.language === "markdown";
@@ -8120,6 +8159,158 @@ function updateFileViewerUi() {
     elements.fileViewerOpenDefaultButton.disabled = viewer.readOnly === true || !viewerPath;
   }
   renderFileViewerSelectionBar();
+  if (elements.fileViewerSearchBar && !elements.fileViewerSearchBar.hidden) {
+    fileViewerSearchIndex = -1;
+    runFileViewerSearch({ navigate: false });
+  }
+}
+
+const FILE_VIEWER_SEARCH_MATCH_LIMIT = 10_000;
+
+function fileViewerSearchQueryText() {
+  return String(elements.fileViewerSearchInput?.value || "");
+}
+
+function fileViewerSearchSurface() {
+  const mode = resolveFileViewerMode(activeFileViewer);
+  if (mode === "preview") return elements.fileViewerPreview;
+  if (mode === "changes") return elements.fileViewerChanges;
+  return elements.fileViewerEditor;
+}
+
+function fileViewerSearchText() {
+  const surface = fileViewerSearchSurface();
+  if (surface === elements.fileViewerEditor) return String(surface?.value ?? activeFileViewer?.content ?? "");
+  return String(surface?.textContent || "");
+}
+
+function collectFileViewerSearchMatches(query = fileViewerSearchQueryText()) {
+  const haystack = fileViewerSearchText().toLowerCase();
+  const needle = String(query || "").toLowerCase();
+  if (!needle) return { matches: [], truncated: false };
+  const matches = [];
+  let offset = 0;
+  while (matches.length < FILE_VIEWER_SEARCH_MATCH_LIMIT) {
+    const index = haystack.indexOf(needle, offset);
+    if (index < 0) return { matches, truncated: false };
+    matches.push({ start: index, end: index + needle.length });
+    offset = index + needle.length;
+  }
+  return { matches, truncated: haystack.indexOf(needle, offset) >= 0 };
+}
+
+function updateFileViewerSearchCount() {
+  if (!elements.fileViewerSearchCount) return;
+  const query = fileViewerSearchQueryText();
+  if (!query) elements.fileViewerSearchCount.textContent = "";
+  else if (!fileViewerSearchMatches.length) elements.fileViewerSearchCount.textContent = "0/0";
+  else elements.fileViewerSearchCount.textContent = `${fileViewerSearchIndex + 1}/${fileViewerSearchMatches.length}${fileViewerSearchTruncated ? "+" : ""}`;
+}
+
+function textOffsetPosition(root, offset) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = Math.max(0, offset);
+  let node = walker.nextNode();
+  while (node) {
+    const length = node.nodeValue?.length || 0;
+    if (remaining <= length) return { node, offset: remaining };
+    remaining -= length;
+    node = walker.nextNode();
+  }
+  return null;
+}
+
+function clearFileViewerSearchHighlight() {
+  globalThis.CSS?.highlights?.delete("file-viewer-search-current");
+  fileViewerSearchHighlightElement?.classList.remove("file-viewer-search-current-fallback");
+  fileViewerSearchHighlightElement = null;
+}
+
+function focusFileViewerSearchMatch() {
+  const match = fileViewerSearchMatches[fileViewerSearchIndex];
+  const surface = fileViewerSearchSurface();
+  clearFileViewerSearchHighlight();
+  if (!match || !surface) return;
+  if (surface === elements.fileViewerEditor) {
+    surface.setSelectionRange(match.start, match.end);
+    const lineIndex = surface.value.slice(0, match.start).split("\n").length - 1;
+    const computedStyle = getComputedStyle(surface);
+    const parsedLineHeight = Number.parseFloat(computedStyle.lineHeight);
+    const fontSize = Number.parseFloat(computedStyle.fontSize) || 14;
+    const lineHeight = !parsedLineHeight ? fontSize * 1.45 : parsedLineHeight < 8 ? parsedLineHeight * fontSize : parsedLineHeight;
+    surface.scrollTop = Math.max(0, (lineIndex * lineHeight) - (surface.clientHeight / 2));
+  } else {
+    const start = textOffsetPosition(surface, match.start);
+    const end = textOffsetPosition(surface, match.end);
+    if (start && end) {
+      const range = document.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      const HighlightConstructor = globalThis.Highlight;
+      if (globalThis.CSS?.highlights && typeof HighlightConstructor === "function") {
+        globalThis.CSS.highlights.set("file-viewer-search-current", new HighlightConstructor(range));
+      } else {
+        fileViewerSearchHighlightElement = start.node.parentElement;
+        fileViewerSearchHighlightElement?.classList.add("file-viewer-search-current-fallback");
+      }
+      start.node.parentElement?.scrollIntoView({ block: "center", behavior: "instant" });
+    }
+  }
+  elements.fileViewerSearchInput?.focus({ preventScroll: true });
+  updateFileViewerSearchCount();
+}
+
+function runFileViewerSearch({ navigate = false } = {}) {
+  const surface = fileViewerSearchSurface();
+  if (surface?.id) elements.fileViewerSearchInput?.setAttribute("aria-controls", surface.id);
+  const result = collectFileViewerSearchMatches();
+  fileViewerSearchMatches = result.matches;
+  fileViewerSearchTruncated = result.truncated;
+  if (!fileViewerSearchMatches.length) fileViewerSearchIndex = -1;
+  else if (fileViewerSearchIndex < 0 || fileViewerSearchIndex >= fileViewerSearchMatches.length) fileViewerSearchIndex = 0;
+  updateFileViewerSearchCount();
+  if (navigate) focusFileViewerSearchMatch();
+}
+
+function stepFileViewerSearch(step) {
+  if (!fileViewerSearchMatches.length) runFileViewerSearch();
+  if (!fileViewerSearchMatches.length) return;
+  fileViewerSearchIndex = (fileViewerSearchIndex + step + fileViewerSearchMatches.length) % fileViewerSearchMatches.length;
+  focusFileViewerSearchMatch();
+}
+
+function openFileViewerSearch() {
+  if (!activeFileViewer || !elements.fileViewerSearchBar) return;
+  closeChatSearch();
+  const editor = fileViewerSearchSurface() === elements.fileViewerEditor ? elements.fileViewerEditor : null;
+  const selectedText = editor && editor.selectionEnd > editor.selectionStart
+    ? editor.value.slice(editor.selectionStart, editor.selectionEnd)
+    : "";
+  if (selectedText && !selectedText.includes("\n") && selectedText.length <= 200 && !fileViewerSearchQueryText()) {
+    elements.fileViewerSearchInput.value = selectedText;
+  }
+  elements.fileViewerSearchBar.hidden = false;
+  fileViewerSearchIndex = -1;
+  runFileViewerSearch({ navigate: !!fileViewerSearchQueryText() });
+  elements.fileViewerSearchInput?.focus({ preventScroll: true });
+  elements.fileViewerSearchInput?.select();
+}
+
+function closeFileViewerSearch({ restoreFocus = true } = {}) {
+  if (!elements.fileViewerSearchBar || elements.fileViewerSearchBar.hidden) return;
+  clearTimeout(fileViewerSearchTimer);
+  fileViewerSearchTimer = null;
+  clearFileViewerSearchHighlight();
+  elements.fileViewerSearchBar.hidden = true;
+  fileViewerSearchMatches = [];
+  fileViewerSearchIndex = -1;
+  fileViewerSearchTruncated = false;
+  updateFileViewerSearchCount();
+  if (!restoreFocus) return;
+  const mode = resolveFileViewerMode(activeFileViewer);
+  if (mode === "preview") elements.fileViewerPreview?.focus({ preventScroll: true });
+  else if (mode === "changes") elements.fileViewerChanges?.focus({ preventScroll: true });
+  else elements.fileViewerEditor?.focus({ preventScroll: true });
 }
 
 function fileViewerChangesNotice(text, level = "") {
@@ -8311,7 +8502,15 @@ async function sendFileSelectionToSession() {
   }
 }
 
-function closeFileViewer() {
+function cacheActiveFileViewerForTab(tabId = activeTabId) {
+  if (!tabId) return;
+  if (activeFileViewer) fileViewersByTab.set(tabId, activeFileViewer);
+  else fileViewersByTab.delete(tabId);
+  if (fileViewerSelection) fileViewerSelectionsByTab.set(tabId, fileViewerSelection);
+  else fileViewerSelectionsByTab.delete(tabId);
+}
+
+function resetFileViewerUi() {
   fileViewerOpenRequestSerial += 1;
   activeFileViewer = null;
   clearFileViewerSelection();
@@ -8330,6 +8529,22 @@ function closeFileViewer() {
     elements.fileViewerChanges.replaceChildren();
   }
   setFileViewerStatus("");
+}
+
+function restoreFileViewerForActiveTab() {
+  activeFileViewer = activeTabId ? fileViewersByTab.get(activeTabId) || null : null;
+  fileViewerSelection = activeTabId ? fileViewerSelectionsByTab.get(activeTabId) || null : null;
+  updateFileViewerUi();
+  if (activeFileViewer?.dirty) setFileViewerStatus("Unsaved file edits.", "warn");
+  else if (activeFileViewer) setFileViewerStatus("Restored for this terminal.", "success");
+}
+
+function closeFileViewer() {
+  if (activeTabId) {
+    fileViewersByTab.delete(activeTabId);
+    fileViewerSelectionsByTab.delete(activeTabId);
+  }
+  resetFileViewerUi();
 }
 
 // Side-panel Git categories are UI labels; the read API uses its own allowlist.
@@ -8376,10 +8591,10 @@ function gitFileChangesPlaceholder(category, repoRelPath, requestSerial) {
 
 async function applyGitFileChangesSnapshot(request, tabContext, viewerPath, requestSerial) {
   const snapshot = await request;
-  if (!isCurrentTabContext(tabContext)) return;
-  if (!activeFileViewer?.gitChanges?.loading || activeFileViewer.path !== viewerPath || activeFileViewer.gitChanges.requestSerial !== requestSerial) return;
-  activeFileViewer.gitChanges = snapshot;
-  updateFileViewerUi();
+  const viewer = tabContext.tabId === activeTabId ? activeFileViewer : fileViewersByTab.get(tabContext.tabId);
+  if (!viewer?.gitChanges?.loading || viewer.path !== viewerPath || viewer.gitChanges.requestSerial !== requestSerial) return;
+  viewer.gitChanges = snapshot;
+  if (viewer === activeFileViewer) updateFileViewerUi();
 }
 
 async function openFileInViewer(path = "", { gitCategory = "", gitPath = "" } = {}) {
@@ -8415,6 +8630,7 @@ async function openFileInViewer(path = "", { gitCategory = "", gitPath = "" } = 
     };
     if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
     clearFileViewerSelection();
+    cacheActiveFileViewerForTab();
     updateFileViewerUi();
     setFileViewerStatus("Opened in WebUI.", "success");
     if (changesRequest) void applyGitFileChangesSnapshot(changesRequest, tabContext, activeFileViewer.path, changesRequestSerial);
@@ -8440,6 +8656,7 @@ async function openFileInViewer(path = "", { gitCategory = "", gitPath = "" } = 
       };
       if (elements.fileViewerEditor) elements.fileViewerEditor.value = "";
       clearFileViewerSelection();
+      cacheActiveFileViewerForTab();
       updateFileViewerUi();
       setFileViewerStatus("File content unavailable; showing Git changes (read-only).", "warn");
       return;
@@ -8474,6 +8691,7 @@ async function openAurReviewReportInViewer(path = "", repoRoot = "") {
     };
     if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
     clearFileViewerSelection();
+    cacheActiveFileViewerForTab();
     updateFileViewerUi();
     setFileViewerStatus("Report opened in WebUI (read-only).", "success");
   } catch (error) {
@@ -8499,6 +8717,7 @@ async function saveActiveFileViewer() {
     if (!isCurrentTabContext(tabContext)) return;
     const data = response.data || {};
     activeFileViewer = { ...activeFileViewer, ...data, path: normalizeFileTreePath(data.path || activeFileViewer.path), content, dirty: false };
+    cacheActiveFileViewerForTab();
     updateFileViewerUi();
     await loadFileTreeDirectory(fileParentPath(activeFileViewer.path), { force: true });
     setFileViewerStatus("Saved.", "success");
@@ -9017,8 +9236,9 @@ function resetActiveTabUi() {
   latestWorkspace = null;
   latestMessages = [];
   latestMessagesSessionKey = "";
-  closeFileViewer();
+  resetFileViewerUi();
   resetFileTreeState();
+  restoreFileViewerForActiveTab();
   clearRunIndicatorActivity({ render: false });
   statusEntries.clear();
   restoreWidgetsForActiveTab();
@@ -10112,6 +10332,7 @@ function clearOpenTerminalTabGroup(groupKey, { force = false } = {}) {
 }
 
 function setNewTabMenuOpen(open) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   newTabMenuOpen = !!open;
   elements.newTabButton?.setAttribute("aria-expanded", newTabMenuOpen ? "true" : "false");
   elements.newTabButton?.classList.toggle("menu-open", newTabMenuOpen);
@@ -10231,6 +10452,8 @@ async function switchTab(tabId) {
   }
   if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
   clearOpenTerminalTabGroup(null, { force: true });
+  setFollowUpQueueOpen(false);
+  setFollowUpQueueStatus("");
   setMobileTabsExpanded(false);
   footerModelPickerOpen = false;
   footerThinkingPickerOpen = false;
@@ -10240,6 +10463,7 @@ async function switchTab(tabId) {
   saveActiveDraft();
   cacheMessagesForTab(activeTabId);
   cacheWidgetsForTab(activeTabId);
+  cacheActiveFileViewerForTab(activeTabId);
   const tabContext = setActiveTabId(tabId, { remember: true });
   if (voiceConversation && voiceConversationTabId !== tabId) stopVoiceConversationLoop();
   resetActiveTabUi();
@@ -10465,6 +10689,8 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
       commandCatalogsByTab.delete(id);
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
+      fileViewersByTab.delete(id);
+      fileViewerSelectionsByTab.delete(id);
       btwWidgetDismissedIdsByTab.delete(id);
       removeSubagentTerminalViewsForParent(id);
     }
@@ -16021,6 +16247,7 @@ async function changeActiveTabCwd() {
     return;
   }
 
+  if (response.data?.changed !== false) closeFileViewer();
   const nextContext = setActiveTabId(response.data?.tab?.id || activeTabId);
   resetActiveTabUi();
   renderTabs();
@@ -23050,10 +23277,18 @@ function resumeGitWorkflowForActiveTab(tabContext = activeTabContext()) {
 
 function normalizeQueuedMessages(event) {
   const normalize = (items) => (Array.isArray(items) ? items.map((item) => String(item || "")).filter((item) => item.trim()) : []);
+  const source = event?.source === "webui-compaction" ? "webui-compaction" : "pi-runtime";
   return {
+    source,
+    revision: source === "webui-compaction" && Number.isSafeInteger(event?.revision) && event.revision >= 0 ? event.revision : undefined,
+    draining: source === "webui-compaction" && event?.draining === true,
     steering: normalize(event?.steering),
     followUp: normalize(event?.followUp),
   };
+}
+
+function queuedSnapshotForTab(tabId = activeTabId) {
+  return tabId ? latestQueuedMessagesByTab.get(tabId) || normalizeQueuedMessages({}) : normalizeQueuedMessages({});
 }
 
 function queueMessageCount(snapshot) {
@@ -23073,13 +23308,331 @@ function queueSummaryPill(label, count, tone) {
   return pill;
 }
 
+function followUpQueueMutationInFlight(tabId = activeTabId) {
+  return !!tabId && followUpQueueMutationsInFlightByTab.has(tabId);
+}
+
+function setFollowUpQueueStatus(text = "", level = "") {
+  followUpQueueStatus = { text, level };
+  if (!elements.followUpQueueStatus) return;
+  elements.followUpQueueStatus.textContent = text;
+  elements.followUpQueueStatus.className = `follow-up-queue-status${level ? ` ${level}` : ""}`;
+}
+
+function syncFollowUpQueueMutationControls() {
+  const tabId = activeTabId;
+  const locked = followUpQueueMutationInFlight(tabId);
+  const draining = queuedSnapshotForTab(tabId).draining;
+  elements.followUpQueueOverlay?.classList.toggle("is-busy", locked);
+  elements.followUpQueueOverlay?.classList.toggle("is-draining", draining);
+  for (const textarea of elements.followUpQueueRows?.querySelectorAll("textarea") || []) textarea.disabled = locked || draining;
+  for (const control of elements.followUpQueueRows?.querySelectorAll("[data-follow-up-queue-mutation-control]") || []) control.disabled = locked || draining || control.dataset.queueBoundary === "true";
+  for (const row of elements.followUpQueueRows?.querySelectorAll(".follow-up-queue-row") || []) row.draggable = false;
+  for (const handle of elements.followUpQueueRows?.querySelectorAll(".follow-up-queue-drag-handle") || []) handle.draggable = !locked && !draining;
+}
+
+function setFollowUpQueueMutationInFlight(tabId, inFlight) {
+  if (!tabId) return;
+  if (inFlight) followUpQueueMutationsInFlightByTab.add(tabId);
+  else followUpQueueMutationsInFlightByTab.delete(tabId);
+  if (tabId === activeTabId) syncFollowUpQueueMutationControls();
+}
+
+function preservedFocusedFollowUpQueueDraft(draft, followUps) {
+  if (!draft || !Array.isArray(followUps) || !Number.isSafeInteger(draft.index) || draft.index < 0) return null;
+  const authoritativeText = String(draft.authoritativeText ?? "");
+  const value = String(draft.value ?? "");
+  if (value === authoritativeText || followUps[draft.index] !== authoritativeText) return null;
+  const selectionStart = Math.max(0, Math.min(value.length, Number.isSafeInteger(draft.selectionStart) ? draft.selectionStart : value.length));
+  const selectionEnd = Math.max(selectionStart, Math.min(value.length, Number.isSafeInteger(draft.selectionEnd) ? draft.selectionEnd : selectionStart));
+  return { index: draft.index, value, selectionStart, selectionEnd };
+}
+
+function focusedFollowUpQueueDraft() {
+  const textarea = document.activeElement;
+  if (!textarea?.matches?.("textarea.follow-up-queue-textarea") || !elements.followUpQueueRows?.contains(textarea)) return null;
+  const index = Number(textarea.closest(".follow-up-queue-row")?.dataset.followUpIndex);
+  if (!Number.isSafeInteger(index) || index < 0) return null;
+  const authoritativeText = String(textarea.dataset.followUpQueueAuthoritativeText ?? "");
+  if (textarea.value === authoritativeText) return null;
+  return {
+    textarea,
+    index,
+    authoritativeText,
+    value: textarea.value,
+    selectionStart: textarea.selectionStart,
+    selectionEnd: textarea.selectionEnd,
+  };
+}
+
+function queueTabContext(tabId = activeTabId) {
+  const tab = tabs.find((item) => item.id === tabId);
+  return {
+    ...activeTabContext(tabId),
+    sessionFile: typeof tab?.sessionFile === "string" && tab.sessionFile ? tab.sessionFile : null,
+    startedAt: typeof tab?.startedAt === "string" && tab.startedAt ? tab.startedAt : null,
+  };
+}
+
+function queuedSnapshotTargetsCurrentTab(tabContext, currentTabId = activeTabId, currentTabs = tabs) {
+  if (!tabContext?.tabId || tabContext.tabId !== currentTabId || !Array.isArray(currentTabs)) return false;
+  const currentTab = currentTabs.find((tab) => tab?.id === tabContext.tabId);
+  if (!currentTab) return false;
+  const sessionFile = typeof tabContext.sessionFile === "string" && tabContext.sessionFile ? tabContext.sessionFile : null;
+  const currentSessionFile = typeof currentTab.sessionFile === "string" && currentTab.sessionFile ? currentTab.sessionFile : null;
+  if (sessionFile && currentSessionFile && sessionFile !== currentSessionFile) return false;
+  const startedAt = typeof tabContext.startedAt === "string" && tabContext.startedAt ? tabContext.startedAt : null;
+  const currentStartedAt = typeof currentTab.startedAt === "string" && currentTab.startedAt ? currentTab.startedAt : null;
+  return !(startedAt && currentStartedAt && startedAt !== currentStartedAt);
+}
+
+function setFollowUpQueueOpen(open, { restoreFocus = false } = {}) {
+  const snapshot = queuedSnapshotForTab();
+  const shouldOpen = !!open && snapshot.followUp.length > 0;
+  if (shouldOpen && !followUpQueueOpen) {
+    followUpQueueRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : elements.followUpQueueTrigger;
+    setComposerActionsOpen(false);
+    setPublishMenuOpen(false);
+    setNativeCommandMenuOpen(false);
+    setAppRunnerMenuOpen(false);
+    setOptionsMenuOpen(false);
+    setConversationVoiceMenuOpen(false);
+    setBusyPromptBehaviorMenuOpen(false);
+    setNewTabMenuOpen(false);
+  }
+  followUpQueueOpen = shouldOpen;
+  elements.followUpQueueTrigger?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  if (elements.followUpQueueOverlay) elements.followUpQueueOverlay.hidden = !shouldOpen;
+  if (!shouldOpen) {
+    followUpQueueDrag = null;
+    scheduleDeferredUiFlushAfterDropdownClose();
+    if (restoreFocus) {
+      const focusTarget = followUpQueueRestoreFocus?.isConnected ? followUpQueueRestoreFocus : elements.followUpQueueTrigger;
+      requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+    }
+    followUpQueueRestoreFocus = null;
+    return;
+  }
+  renderFollowUpQueueOverlay();
+}
+
+function queueMutationBody(snapshot, operation) {
+  const body = {
+    source: snapshot.source,
+    kind: "followUp",
+    expected: { steering: [...snapshot.steering], followUp: [...snapshot.followUp] },
+    operation,
+  };
+  if (snapshot.source === "webui-compaction") body.revision = snapshot.revision;
+  return body;
+}
+
+function applyAuthoritativeQueuedSnapshot(tabContext, queue) {
+  if (!tabContext?.tabId || !queue) return;
+  const snapshot = normalizeQueuedMessages(queue);
+  latestQueuedMessagesByTab.set(tabContext.tabId, snapshot);
+  if (queuedSnapshotTargetsCurrentTab(tabContext)) renderQueue({ tabId: tabContext.tabId, ...snapshot });
+}
+
+async function mutateQueuedFollowUp(operation, tabId = activeTabId) {
+  if (!tabId || followUpQueueMutationInFlight(tabId)) return false;
+  const tabContext = queueTabContext(tabId);
+  const snapshot = queuedSnapshotForTab(tabId);
+  if (!snapshot.followUp.length || snapshot.draining) {
+    if (isCurrentTabContext(tabContext)) setFollowUpQueueStatus("Queue is draining; follow-ups can no longer be changed.", "warn");
+    return false;
+  }
+  setFollowUpQueueMutationInFlight(tabId, true);
+  if (isCurrentTabContext(tabContext)) setFollowUpQueueStatus(operation.type === "edit" ? "Saving queued follow-up…" : "Reordering queued follow-ups…");
+  try {
+    const response = await api("/api/queue/mutate", { method: "POST", body: queueMutationBody(snapshot, operation), tabId });
+    const result = response?.data || {};
+    if (result.queue) applyAuthoritativeQueuedSnapshot(tabContext, result.queue);
+    if (!result.mutated) {
+      if (isCurrentTabContext(tabContext)) setFollowUpQueueStatus("Queue changed before the update could be applied.", "warn");
+      return false;
+    }
+    if (isCurrentTabContext(tabContext)) {
+      const message = operation.type === "edit"
+        ? `Saved queued follow-up ${operation.index + 1}.`
+        : `Moved queued follow-up ${operation.from + 1} to position ${operation.to + 1}.`;
+      setFollowUpQueueStatus(message, "success");
+    }
+    return true;
+  } catch (error) {
+    const result = error?.data?.data || {};
+    if (result.queue) applyAuthoritativeQueuedSnapshot(tabContext, result.queue);
+    if (isCurrentTabContext(tabContext)) {
+      if (error?.statusCode === 409) setFollowUpQueueStatus(result.reason === "queue-draining" ? "Queue is draining; refreshed the authoritative queue." : "Queue changed elsewhere; refreshed the authoritative queue.", "warn");
+      else setFollowUpQueueStatus(error.message || "Unable to update the queued follow-up.", "error");
+    }
+    return false;
+  } finally {
+    setFollowUpQueueMutationInFlight(tabId, false);
+    if (isCurrentTabContext(tabContext)) renderFollowUpQueueOverlay();
+  }
+}
+
+function saveQueuedFollowUpText(index, expectedText, value) {
+  const text = String(value ?? "");
+  if (text === expectedText) return;
+  if (!text.trim()) {
+    setFollowUpQueueStatus("Queued follow-ups cannot be empty; restored the authoritative text.", "warn");
+    renderFollowUpQueueOverlay();
+    return;
+  }
+  void mutateQueuedFollowUp({ type: "edit", index, expectedText, text });
+}
+
+function clearFollowUpQueueDragVisuals() {
+  for (const row of elements.followUpQueueRows?.querySelectorAll(".follow-up-queue-row.is-dragging, .follow-up-queue-row.is-drop-target") || []) {
+    row.classList.remove("is-dragging", "is-drop-target");
+  }
+}
+
+function renderFollowUpQueueOverlay() {
+  if (deferUiRenderDuringPointerActivation("follow-up-queue", renderFollowUpQueueOverlay)) return;
+  const snapshot = queuedSnapshotForTab();
+  const followUps = snapshot.followUp;
+  const count = followUps.length;
+  const trigger = elements.followUpQueueTrigger;
+  if (trigger) {
+    trigger.hidden = count === 0;
+    trigger.setAttribute("aria-expanded", followUpQueueOpen && count ? "true" : "false");
+    trigger.setAttribute("aria-label", `${count} queued follow-up${count === 1 ? "" : "s"}`);
+  }
+  if (elements.followUpQueueTriggerCount) elements.followUpQueueTriggerCount.textContent = String(count);
+  if (elements.followUpQueueOverlayCount) elements.followUpQueueOverlayCount.textContent = String(count);
+  if (!count) {
+    if (followUpQueueOpen) setFollowUpQueueOpen(false);
+    if (elements.followUpQueueRows) elements.followUpQueueRows.replaceChildren();
+    return;
+  }
+  if (!followUpQueueOpen || !elements.followUpQueueRows) return;
+
+  const locked = followUpQueueMutationInFlight();
+  const unavailable = locked || snapshot.draining;
+  const focusedDraft = focusedFollowUpQueueDraft();
+  const preservedDraft = preservedFocusedFollowUpQueueDraft(focusedDraft, followUps);
+  const rows = followUps.map((item, index) => {
+    const row = make("article", "follow-up-queue-row");
+    row.dataset.followUpIndex = String(index);
+    row.draggable = false;
+    const dragHandle = make("span", "follow-up-queue-drag-handle", "⠿");
+    dragHandle.draggable = !unavailable;
+    dragHandle.setAttribute("aria-hidden", "true");
+    dragHandle.title = "Drag to reorder";
+    const textarea = make("textarea", "follow-up-queue-textarea");
+    const textareaDraft = preservedDraft?.index === index ? preservedDraft : null;
+    textarea.value = textareaDraft ? textareaDraft.value : item;
+    textarea.dataset.followUpQueueAuthoritativeText = item;
+    textarea.rows = Math.max(2, Math.min(6, item.split("\n").length + 1));
+    textarea.disabled = unavailable;
+    textarea.setAttribute("aria-label", `Queued follow-up ${index + 1}`);
+    textarea.dataset.followUpQueueMutationControl = "true";
+    textarea.addEventListener("blur", () => {
+      if (textarea === followUpQueueSuppressBlurFor) return;
+      saveQueuedFollowUpText(index, item, textarea.value);
+    });
+    textarea.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === "Enter") {
+        event.preventDefault();
+        saveQueuedFollowUpText(index, item, textarea.value);
+        return;
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (textarea.value !== item) {
+        textarea.value = item;
+        setFollowUpQueueStatus(`Restored queued follow-up ${index + 1}.`, "warn");
+      } else {
+        setFollowUpQueueOpen(false, { restoreFocus: true });
+      }
+    });
+    const controls = make("div", "follow-up-queue-row-controls");
+    const moveUp = make("button", "follow-up-queue-move-button", "↑");
+    moveUp.type = "button";
+    moveUp.dataset.followUpQueueMutationControl = "true";
+    moveUp.dataset.queueBoundary = index === 0 ? "true" : "false";
+    moveUp.disabled = unavailable || index === 0;
+    moveUp.title = `Move queued follow-up ${index + 1} up`;
+    moveUp.setAttribute("aria-label", `Move queued follow-up ${index + 1} up`);
+    moveUp.addEventListener("click", () => void mutateQueuedFollowUp({ type: "move", from: index, to: index - 1, expectedText: item }));
+    const moveDown = make("button", "follow-up-queue-move-button", "↓");
+    moveDown.type = "button";
+    moveDown.dataset.followUpQueueMutationControl = "true";
+    moveDown.dataset.queueBoundary = index === followUps.length - 1 ? "true" : "false";
+    moveDown.disabled = unavailable || index === followUps.length - 1;
+    moveDown.title = `Move queued follow-up ${index + 1} down`;
+    moveDown.setAttribute("aria-label", `Move queued follow-up ${index + 1} down`);
+    moveDown.addEventListener("click", () => void mutateQueuedFollowUp({ type: "move", from: index, to: index + 1, expectedText: item }));
+    controls.append(moveUp, moveDown);
+    row.append(dragHandle, textarea, controls);
+    row.addEventListener("dragstart", (event) => {
+      if (unavailable || event.target?.closest?.(".follow-up-queue-drag-handle") !== dragHandle) {
+        event.preventDefault();
+        return;
+      }
+      followUpQueueDrag = { tabId: activeTabId, index, expectedText: item };
+      event.dataTransfer?.setData("application/x-pi-webui-follow-up", JSON.stringify(followUpQueueDrag));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      row.classList.add("is-dragging");
+    });
+    row.addEventListener("dragover", (event) => {
+      if (!followUpQueueDrag || followUpQueueDrag.tabId !== activeTabId || unavailable || isFileDrag(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      clearFollowUpQueueDragVisuals();
+      row.classList.add("is-drop-target");
+    });
+    row.addEventListener("dragleave", (event) => {
+      if (!row.contains(event.relatedTarget)) row.classList.remove("is-drop-target");
+    });
+    row.addEventListener("drop", (event) => {
+      if (!followUpQueueDrag || followUpQueueDrag.tabId !== activeTabId || unavailable || isFileDrag(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const drag = followUpQueueDrag;
+      clearFollowUpQueueDragVisuals();
+      followUpQueueDrag = null;
+      if (drag.index !== index) void mutateQueuedFollowUp({ type: "move", from: drag.index, to: index, expectedText: drag.expectedText });
+    });
+    row.addEventListener("dragend", () => {
+      followUpQueueDrag = null;
+      clearFollowUpQueueDragVisuals();
+    });
+    return row;
+  });
+  followUpQueueSuppressBlurFor = focusedDraft?.textarea || null;
+  try {
+    elements.followUpQueueRows.replaceChildren(...rows);
+  } finally {
+    followUpQueueSuppressBlurFor = null;
+  }
+  if (preservedDraft && !unavailable) {
+    requestAnimationFrame(() => {
+      if (!followUpQueueOpen || activeTabId === null) return;
+      const activeElement = document.activeElement;
+      if (activeElement && activeElement !== document.body && activeElement !== document.documentElement) return;
+      const textarea = elements.followUpQueueRows?.querySelector(`.follow-up-queue-row[data-follow-up-index="${preservedDraft.index}"] textarea`);
+      if (!textarea) return;
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(preservedDraft.selectionStart, preservedDraft.selectionEnd);
+    });
+  }
+  setFollowUpQueueStatus(followUpQueueStatus.text, followUpQueueStatus.level);
+  syncFollowUpQueueMutationControls();
+}
+
 async function removeQueuedFollowUpPrompt(index, message, tabId = activeTabId) {
-  if (!tabId) return false;
-  const tabContext = activeTabContext(tabId);
+  if (!tabId || queuedSnapshotForTab(tabId).source !== "pi-runtime") return false;
+  const tabContext = queueTabContext(tabId);
   try {
     const response = await api("/api/queue/remove", { method: "POST", body: { kind: "followUp", index, message }, tabId });
     const data = response?.data || {};
-    if (data.queue && isCurrentTabContext(tabContext)) renderQueue({ tabId, ...data.queue });
+    if (data.queue) applyAuthoritativeQueuedSnapshot(tabContext, data.queue);
     if (data.removed) {
       if (isCurrentTabContext(tabContext)) addEvent(`removed queued follow-up #${index + 1}`);
       scheduleRefreshState(120, tabContext);
@@ -23129,6 +23682,7 @@ function renderQueue(event) {
   const snapshot = normalizeQueuedMessages(event);
   const tabId = event?.tabId || activeTabId;
   if (tabId) latestQueuedMessagesByTab.set(tabId, snapshot);
+  if (tabId && tabId !== activeTabId) return;
   const steering = snapshot.steering;
   const followUp = snapshot.followUp;
   const total = queueMessageCount(snapshot);
@@ -23138,6 +23692,7 @@ function renderQueue(event) {
   elements.queueBox.classList.toggle("has-items", total > 0);
   if (total === 0) {
     elements.queueBox.append(make("div", "queue-empty", "No queued messages."));
+    if (tabId === activeTabId) renderFollowUpQueueOverlay();
     updateStickyUserPromptButton();
     return;
   }
@@ -23151,19 +23706,16 @@ function renderQueue(event) {
 
   elements.queueBox.append(summary);
   if (steering.length) elements.queueBox.append(renderQueueGroup("Steering", steering, "steering", { tabId }));
-  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: true, tabId }));
-  elements.queueBox.append(make("div", "queue-hint", "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Use Remove beside follow-ups to drop them from the queue."));
+  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: snapshot.source === "pi-runtime", tabId }));
+  elements.queueBox.append(make("div", "queue-hint", snapshot.source === "pi-runtime"
+    ? "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Use Remove beside follow-ups to drop them from the queue."
+    : "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Edit and reorder compaction-held follow-ups with the composer Queue control."));
+  if (tabId === activeTabId) renderFollowUpQueueOverlay();
   updateStickyUserPromptButton();
 }
 
-function nextQueuedFollowUpPrompt(tabId = activeTabId) {
-  const snapshot = tabId ? latestQueuedMessagesByTab.get(tabId) : null;
-  const next = Array.isArray(snapshot?.followUp) ? snapshot.followUp.find((item) => String(item || "").trim()) : null;
-  return next ? stickyUserPromptPreviewText(next) : "";
-}
-
 function queuedMessagesForComposer(tabId = activeTabId) {
-  const snapshot = latestQueuedMessagesByTab.get(tabId) || { steering: [], followUp: [] };
+  const snapshot = queuedSnapshotForTab(tabId);
   return [...(snapshot.steering || []), ...(snapshot.followUp || [])].map((item) => String(item || "").trim()).filter(Boolean);
 }
 
@@ -25121,21 +25673,15 @@ function updateStickyUserPromptButton() {
   button.dataset.compacted = target.compacted ? "true" : "false";
   if (Number.isInteger(target.index) && target.index >= 0) button.dataset.messageIndex = String(target.index);
   else button.removeAttribute("data-message-index");
-  const nextFollowUp = nextQueuedFollowUpPrompt();
   const baseTitle = target.compacted ? `Prompt was compacted; jump to compaction summary: ${target.preview}` : `Jump to ${label.toLowerCase()}: ${target.preview}`;
   const baseAriaLabel = target.compacted ? `Prompt was compacted; jump to compaction summary: ${target.preview}` : `Jump to ${label.toLowerCase()} (${ordinal} of ${targets.length}): ${target.preview}`;
-  button.title = nextFollowUp ? `${baseTitle}\nNext follow-up prompt: ${nextFollowUp}` : baseTitle;
-  button.setAttribute("aria-label", nextFollowUp ? `${baseAriaLabel}. Next follow-up prompt: ${nextFollowUp}` : baseAriaLabel);
+  button.title = baseTitle;
+  button.setAttribute("aria-label", baseAriaLabel);
   const children = [
     make("span", "sticky-user-prompt-label", label),
     make("span", "sticky-user-prompt-text", target.preview),
     make("span", "sticky-user-prompt-meta", meta),
   ];
-  if (nextFollowUp) {
-    const followUp = make("span", "sticky-user-follow-up-prompt");
-    followUp.append(make("span", "sticky-user-follow-up-label", "Next follow-up"), make("span", "sticky-user-follow-up-text", nextFollowUp));
-    children.push(followUp);
-  }
   button.replaceChildren(...children);
 }
 
@@ -26924,6 +27470,7 @@ async function sendBtwPromptFromButton() {
 }
 
 function setPublishMenuOpen(open) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   publishMenuOpen = !!open;
   elements.publishButton.setAttribute("aria-expanded", publishMenuOpen ? "true" : "false");
   elements.publishButton.classList.toggle("menu-open", publishMenuOpen);
@@ -26933,6 +27480,7 @@ function setPublishMenuOpen(open) {
 }
 
 function setNativeCommandMenuOpen(open) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   nativeCommandMenuOpen = !!open;
   elements.nativeCommandMenuButton.setAttribute("aria-expanded", nativeCommandMenuOpen ? "true" : "false");
   elements.nativeCommandMenuButton.classList.toggle("menu-open", nativeCommandMenuOpen);
@@ -26942,6 +27490,7 @@ function setNativeCommandMenuOpen(open) {
 }
 
 function setAppRunnerMenuOpen(open) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   appRunnerMenuOpen = !!open;
   elements.appRunnerMenuButton?.setAttribute("aria-expanded", appRunnerMenuOpen ? "true" : "false");
   elements.appRunnerMenuButton?.classList.toggle("menu-open", appRunnerMenuOpen);
@@ -26951,6 +27500,7 @@ function setAppRunnerMenuOpen(open) {
 }
 
 function setOptionsMenuOpen(open) {
+  if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   optionsMenuOpen = !!open;
   elements.optionsMenuButton.setAttribute("aria-expanded", optionsMenuOpen ? "true" : "false");
   elements.optionsMenuButton.classList.toggle("menu-open", optionsMenuOpen);
@@ -33103,6 +33653,10 @@ elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   sendPrompt("prompt");
 });
+elements.followUpQueueTrigger?.addEventListener("click", () => {
+  setFollowUpQueueOpen(!followUpQueueOpen);
+});
+elements.followUpQueueCloseButton?.addEventListener("click", () => setFollowUpQueueOpen(false, { restoreFocus: true }));
 elements.composerActionsButton.addEventListener("click", () => {
   setComposerActionsOpen(!document.body.classList.contains("composer-actions-open"));
 });
@@ -33961,6 +34515,9 @@ document.addEventListener("pointerdown", (event) => {
   if (document.body.classList.contains("composer-actions-open") && !elements.composer.contains(event.target)) {
     setComposerActionsOpen(false);
   }
+  if (followUpQueueOpen && !event.target?.closest?.("#followUpQueueOverlay, #followUpQueueTrigger")) {
+    setFollowUpQueueOpen(false, { restoreFocus: true });
+  }
   if (publishMenuOpen && !event.target?.closest?.(".composer-publish-menu")) {
     setPublishMenuOpen(false);
   }
@@ -34138,6 +34695,7 @@ function stepChatSearch(step) {
 
 function openChatSearch() {
   if (!elements.chatSearchBar) return;
+  closeFileViewerSearch({ restoreFocus: false });
   elements.chatSearchBar.hidden = false;
   elements.chatSearchInput?.focus();
   elements.chatSearchInput?.select();
@@ -34176,7 +34734,8 @@ elements.chatSearchCloseButton?.addEventListener("click", closeChatSearch);
 window.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "f") {
     event.preventDefault();
-    openChatSearch();
+    if (activeFileViewer && elements.fileViewerPane?.contains(event.target)) openFileViewerSearch();
+    else openChatSearch();
   }
 });
 
@@ -34202,6 +34761,11 @@ window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (event.defaultPrevented) return;
   if (elements.dialog?.open || elements.pathPickerDialog?.open || elements.gitChangesDialog?.open || elements.commandPaletteDialog?.open || elements.editRetryDialog?.open) return;
+  if (followUpQueueOpen) {
+    event.preventDefault();
+    setFollowUpQueueOpen(false, { restoreFocus: true });
+    return;
+  }
   if (publishMenuOpen) {
     setPublishMenuOpen(false);
     return;
@@ -34412,12 +34976,33 @@ elements.fileViewerCloseButton?.addEventListener("click", closeFileViewer);
 elements.fileViewerChangesModeButton?.addEventListener("click", () => setFileViewerMode("changes"));
 elements.fileViewerSourceModeButton?.addEventListener("click", () => setFileViewerMode("source"));
 elements.fileViewerPreviewModeButton?.addEventListener("click", () => setFileViewerMode("preview"));
+elements.fileViewerSearchInput?.addEventListener("input", () => {
+  clearTimeout(fileViewerSearchTimer);
+  fileViewerSearchTimer = setTimeout(() => {
+    fileViewerSearchIndex = -1;
+    runFileViewerSearch({ navigate: true });
+  }, 150);
+});
+elements.fileViewerSearchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    stepFileViewerSearch(event.shiftKey ? -1 : 1);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeFileViewerSearch();
+  }
+});
+elements.fileViewerSearchPrevButton?.addEventListener("click", () => stepFileViewerSearch(-1));
+elements.fileViewerSearchNextButton?.addEventListener("click", () => stepFileViewerSearch(1));
+elements.fileViewerSearchCloseButton?.addEventListener("click", () => closeFileViewerSearch());
 elements.fileViewerEditor?.addEventListener("input", () => {
   if (!activeFileViewer) return;
   activeFileViewer.content = elements.fileViewerEditor.value || "";
   activeFileViewer.size = new Blob([activeFileViewer.content]).size;
   setFileViewerDirty(true);
   updateFileViewerSelectionFromEditor();
+  if (elements.fileViewerSearchBar && !elements.fileViewerSearchBar.hidden) runFileViewerSearch();
 });
 for (const eventName of ["select", "keyup", "mouseup"]) {
   elements.fileViewerEditor?.addEventListener(eventName, updateFileViewerSelectionFromEditor);

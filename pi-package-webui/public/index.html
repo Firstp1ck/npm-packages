@@ -250,6 +250,9 @@
               </button>
             </div>
             <textarea id="promptInput" rows="1" enterkeyhint="enter" placeholder="Ask Pi…" role="combobox" aria-autocomplete="list" aria-controls="commandSuggest" aria-expanded="false" autofocus></textarea>
+            <button id="followUpQueueTrigger" class="follow-up-queue-trigger" type="button" aria-controls="followUpQueueOverlay" aria-expanded="false" hidden>
+              <span>Queue</span><span id="followUpQueueTriggerCount" class="follow-up-queue-trigger-count">0</span>
+            </button>
             <button
               id="attachButton"
               class="composer-icon-button composer-attach-button"
@@ -260,6 +263,14 @@
             ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.82l8.48-8.49" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             <input id="attachmentInput" class="attachment-input" type="file" multiple accept="image/*,video/*,audio/*,text/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/json,application/xml,.md,.markdown,.csv,.ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.sh,.bash,.zsh,.fish,.yaml,.yml,.toml,.ini,.log" />
           </div>
+          <section id="followUpQueueOverlay" class="follow-up-queue-overlay" aria-label="Queued follow-ups" hidden>
+            <header class="follow-up-queue-overlay-header">
+              <div><strong>Queued follow-ups</strong><span id="followUpQueueOverlayCount" class="follow-up-queue-overlay-count">0</span></div>
+              <button id="followUpQueueCloseButton" class="follow-up-queue-close-button" type="button" aria-label="Close queued follow-ups">×</button>
+            </header>
+            <div id="followUpQueueRows" class="follow-up-queue-rows"></div>
+            <p id="followUpQueueStatus" class="follow-up-queue-status" role="status" aria-live="polite" aria-atomic="true"></p>
+          </section>
           <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
           <div class="composer-row">
             <button id="composerActionsButton" class="composer-actions-button" type="button" aria-controls="composerActionsPanel" aria-expanded="false" title="Open session, workflow, and follow-up actions">Actions</button>
@@ -475,6 +486,13 @@
           <span id="fileSelectionSummary" class="file-selection-summary">No selection</span>
           <input id="fileSelectionCommentInput" class="file-selection-comment" type="text" placeholder="Comment for Pi about this selection…" autocomplete="off" />
           <button id="fileSelectionSendButton" class="primary" type="button">Send</button>
+        </div>
+        <div id="fileViewerSearchBar" class="file-viewer-search-bar" role="search" hidden>
+          <input id="fileViewerSearchInput" class="file-viewer-search-input" type="search" placeholder="Search this file…" autocomplete="off" spellcheck="false" aria-label="Search this file" aria-controls="fileViewerEditor" />
+          <span id="fileViewerSearchCount" class="file-viewer-search-count muted" aria-live="polite"></span>
+          <button id="fileViewerSearchPrevButton" class="file-viewer-search-button" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">↑</button>
+          <button id="fileViewerSearchNextButton" class="file-viewer-search-button" type="button" aria-label="Next match" title="Next match (Enter)">↓</button>
+          <button id="fileViewerSearchCloseButton" class="file-viewer-search-button" type="button" aria-label="Close file search" title="Close (Escape)">✕</button>
         </div>
         <div class="file-viewer-mode-row">
           <div class="file-viewer-mode-toggle" role="group" aria-label="File view mode">
