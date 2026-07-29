@@ -10612,7 +10612,7 @@ function renderTabs() {
     elements.workspaceSaveButton.disabled = !canSave;
     applyStyledTooltip(elements.workspaceSaveButton, canSave
       ? "Save workspace:\n• Captures all open tabs, sessions, order, custom groups, and the active tab."
-      : "Save workspace is available after you open a tab.", { ariaLabel: canSave ? "Save workspace" : "Save workspace (no open tabs)" });
+      : "Save workspace is available after you open a tab.", { ariaLabel: canSave ? "Save workspace" : "Save workspace (no open tabs)", floating: false });
   }
   updateTerminalTabGroupOpenState();
   reconcileTerminalSplitState();

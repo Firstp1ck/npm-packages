@@ -16,6 +16,7 @@ const actionEnd = html.indexOf("</div>", actionStart);
 const saveButton = html.indexOf('id="workspaceSaveButton"', actionStart);
 assert.ok(actionStart >= 0 && saveButton > actionStart && saveButton < actionEnd, "Save workspace must be a header action");
 assert.match(html, /workspaceSaveButton[\s\S]*?aria-label="Save workspace"/, "Save workspace must be labelled");
+assert.match(app, /applyStyledTooltip\(elements\.workspaceSaveButton,[\s\S]*?floating: false/, "Save workspace must keep only its dedicated styled tooltip instead of also binding the shared floating tooltip");
 
 assert.match(app, /function saveWebuiWorkspace[\s\S]*?api\("\/api\/workspaces", \{ method: "POST", body, scoped: false \}\)/, "Save must use an unscoped workspace API call");
 assert.match(app, /function refreshSavedWorkspaces[\s\S]*?api\("\/api\/workspaces", \{ scoped: false \}\)/, "Workspace list must use an unscoped API call");
