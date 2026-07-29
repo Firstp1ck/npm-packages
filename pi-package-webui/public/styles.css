@@ -2606,7 +2606,11 @@ body.embedded-split .side-panel-backdrop {
   border-radius: 0.64rem;
   background: rgba(166, 227, 161, 0.08);
 }
-.subagent-launch-slots-reload-actions span { flex: 1 1 12rem; color: rgba(var(--ctp-text-rgb), 0.88); }
+.subagent-launch-slots-reload-actions span {
+  flex: 1 1 auto;
+  min-width: min(12rem, 100%);
+  color: rgba(var(--ctp-text-rgb), 0.88);
+}
 @container subagent-launch-slots (max-width: 30rem) {
   .subagent-launch-slots-intro,
   .subagent-launch-slot-row-header,
