@@ -14,6 +14,7 @@ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
+import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
 import {
   deleteWebuiWorkspace,
   getWebuiWorkspace,
@@ -4667,48 +4668,12 @@ async function configuredScopedModelPatterns(cwd = options.cwd) {
   return { patterns: [], source: "none" };
 }
 
-function stripThinkingSuffix(pattern) {
-  const text = String(pattern || "").trim();
-  const slashIndex = text.indexOf("/");
-  const colonIndex = text.lastIndexOf(":");
-  if (colonIndex > (slashIndex === -1 ? -1 : slashIndex)) return text.slice(0, colonIndex);
-  return text;
-}
-
-function globToRegExp(pattern) {
-  const escaped = pattern.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-  return new RegExp(`^${escaped}$`, "i");
-}
-
-function modelMatchesPattern(model, pattern) {
-  const clean = stripThinkingSuffix(pattern).toLowerCase();
-  if (!clean) return false;
-  const full = `${model.provider}/${model.id}`.toLowerCase();
-  const id = String(model.id || "").toLowerCase();
-  if (/[?*\[]/.test(clean)) return globToRegExp(clean).test(full) || globToRegExp(clean).test(id);
-  return full === clean || id === clean || full.includes(clean) || id.includes(clean);
-}
-
-function resolveScopedModelsFromPatterns(patterns, models) {
-  const scoped = [];
-  const seen = new Set();
-  for (const pattern of patterns || []) {
-    for (const model of models || []) {
-      const key = `${model.provider}/${model.id}`;
-      if (seen.has(key) || !modelMatchesPattern(model, pattern)) continue;
-      seen.add(key);
-      scoped.push(model);
-    }
-  }
-  return scoped;
-}
-
 async function getScopedModelData(tab) {
   const { patterns, source } = await configuredScopedModelPatterns(tab.cwd);
   if (!patterns.length) return { models: [], patterns, source };
   const response = await safeRpcResponse(tab, { type: "get_available_models" });
   if (response.success === false) throw makeHttpError(400, response.error || "failed to load available models");
-  return { models: resolveScopedModelsFromPatterns(patterns, response.data?.models || []), patterns, source, rpcRunning: response.rpcRunning !== false };
+  return { models: await resolveScopedModelsFromPatterns(patterns, response.data?.models || []), patterns, source, rpcRunning: response.rpcRunning !== false };
 }
 
 function modelKey(model) {
@@ -4720,7 +4685,7 @@ async function cycleTabModel(tab, direction = "forward") {
   if (availableResponse.success === false) return availableResponse;
   const allModels = Array.isArray(availableResponse.data?.models) ? availableResponse.data.models : [];
   const { patterns, source } = await configuredScopedModelPatterns(tab.cwd);
-  const scopedModels = patterns.length ? resolveScopedModelsFromPatterns(patterns, allModels) : [];
+  const scopedModels = patterns.length ? await resolveScopedModelsFromPatterns(patterns, allModels) : [];
   const candidates = scopedModels.length ? scopedModels : allModels;
   if (!candidates.length) throw makeHttpError(400, "No models are available to cycle.");
 
