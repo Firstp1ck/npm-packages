@@ -14,6 +14,12 @@ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
+import {
+  deleteWebuiWorkspace,
+  getWebuiWorkspace,
+  listWebuiWorkspaces,
+  saveWebuiWorkspace,
+} from "../lib/webui-workspaces.mjs";
 import { nativeExportDownloadPayload } from "../lib/native-export-payload.mjs";
 import { discoverStartAttachRpcSupervisor } from "../lib/rpc-supervisor-client.mjs";
 import { readSupervisorState, supervisorPaths } from "../lib/rpc-supervisor-state.mjs";
@@ -8276,6 +8282,7 @@ let rpcSupervisor = null;
 let rpcSupervisorSnapshot = null;
 let rpcSupervisorEventUnsubscribe = null;
 let rpcSupervisorSequenceState = null;
+let workspaceLoadInProgress = false;
 
 function markRpcSupervisorDiscontinuity(reason) {
   if (!rpcSupervisorSnapshot) return;
@@ -9838,6 +9845,66 @@ async function restorableTabsForRestart() {
     return restorableTabDescriptor(tab, state);
   }));
   return mergeRestorableTabDescriptors(liveDescriptors);
+}
+
+function workspaceLoadWarning(savedTabId, code, message) {
+  return { savedTabId, code, message };
+}
+
+async function workspaceLoadDescriptor(descriptor, warnings) {
+  const next = { ...descriptor };
+  if (next.sessionFile) {
+    const sessionInfo = await stat(next.sessionFile).catch(() => null);
+    if (!sessionInfo?.isFile()) {
+      delete next.sessionFile;
+      warnings.push(workspaceLoadWarning(descriptor.id, "missing_session_file", "The saved session file is unavailable; opened a fresh session instead."));
+    }
+  }
+  try {
+    next.cwd = await resolveCwd(next.cwd, options.cwd);
+  } catch {
+    next.cwd = options.cwd;
+    warnings.push(workspaceLoadWarning(descriptor.id, "missing_cwd", "The saved working directory is unavailable; opened in the default directory instead."));
+  }
+  return next;
+}
+
+async function loadWebuiWorkspace(id) {
+  if (tabs.size || workspaceLoadInProgress) throw makeHttpError(409, "A workspace can only be loaded when no tabs are open");
+  workspaceLoadInProgress = true;
+  try {
+    const workspace = await getWebuiWorkspace(id);
+    if (!workspace) throw makeHttpError(404, "Workspace not found");
+    if (tabs.size) throw makeHttpError(409, "A workspace can only be loaded when no tabs are open");
+
+    const warnings = [];
+    const idMap = {};
+    for (const descriptor of workspace.tabs) {
+      const preflighted = await workspaceLoadDescriptor(descriptor, warnings);
+      try {
+        const tab = await createTab(preflighted);
+        idMap[descriptor.id] = tab.id;
+      } catch (error) {
+        warnings.push(workspaceLoadWarning(descriptor.id, "tab_create_failed", `Could not restore this tab: ${sanitizeError(error)}`));
+      }
+    }
+    const groups = workspace.groups.map((group) => ({
+      title: group.title,
+      tabIds: group.tabIds.map((tabId) => idMap[tabId]).filter(Boolean),
+    })).filter((group) => group.tabIds.length);
+    const activeTabId = workspace.activeTabId ? idMap[workspace.activeTabId] || null : null;
+    const data = { tabs: listTabs(), idMap, groups, activeTabId, warnings };
+    broadcastServerEvent({
+      type: "webui_workspace_loaded",
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      tabCount: data.tabs.length,
+      warningCount: warnings.length,
+    });
+    return data;
+  } finally {
+    workspaceLoadInProgress = false;
+  }
 }
 
 function spawnRestartServer(restorableTabs, supervisorCursor) {
@@ -12624,10 +12691,10 @@ async function handleNativeSlashCommand(tab, body, req) {
   }
 }
 
-async function closeTab(id) {
+async function closeTab(id, { allowLast = false } = {}) {
   const tab = tabs.get(id);
   if (!tab) throw makeHttpError(404, `Unknown Pi tab: ${id}`);
-  if (tabs.size <= 1) throw makeHttpError(400, "Cannot close the last Pi tab");
+  if (!allowLast && tabs.size <= 1) throw makeHttpError(400, "Cannot close the last Pi tab");
 
   let restorableState = null;
   if (!options.noSession) {
@@ -12717,19 +12784,19 @@ async function openPlanRecovery(body = {}) {
   }
 }
 
-async function closeTabs(ids) {
+async function closeTabs(ids, { allowEmpty = false } = {}) {
   const uniqueIds = [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || "").trim()).filter(Boolean))];
   const targetTabs = uniqueIds.map((id) => tabs.get(id)).filter(Boolean);
   if (!targetTabs.length) return [];
 
-  if (targetTabs.length >= tabs.size) {
+  if (!allowEmpty && targetTabs.length >= tabs.size) {
     await createTab({ cwd: targetTabs[0]?.cwd || options.cwd });
   }
 
   const closed = [];
   for (const tab of targetTabs) {
     if (!tabs.has(tab.id)) continue;
-    closed.push(await closeTab(tab.id));
+    closed.push(await closeTab(tab.id, { allowLast: allowEmpty }));
   }
   return closed;
 }
@@ -13339,6 +13406,56 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/workspaces" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, data: { workspaces: await listWebuiWorkspaces() } });
+      return;
+    }
+
+    if (url.pathname === "/api/workspaces" && req.method === "POST") {
+      if (!tabs.size) throw makeHttpError(400, "A workspace requires at least one open tab");
+      const body = await readJsonBody(req);
+      const descriptors = await restorableTabsForRestart();
+      if (!descriptors.length) throw makeHttpError(400, "A workspace requires at least one open tab");
+      let data;
+      try {
+        data = await saveWebuiWorkspace({
+          name: body.name,
+          groups: body.groups,
+          activeTabId: body.activeTabId,
+          overwrite: body.overwrite === true,
+          tabs: descriptors,
+        });
+      } catch (error) {
+        if (error?.code === "WORKSPACE_NAME_CONFLICT") throw makeHttpError(409, error.message);
+        throw error;
+      }
+      broadcastServerEvent({
+        type: "webui_workspace_saved",
+        workspaceId: data.workspace.id,
+        workspaceName: data.workspace.name,
+        tabCount: data.workspace.tabCount,
+        evictedIds: data.evicted.map((workspace) => workspace.id),
+      });
+      sendJson(res, 201, { ok: true, data });
+      return;
+    }
+
+    const workspaceLoadRoute = /^\/api\/workspaces\/([^/]+)\/load$/.exec(url.pathname);
+    if (workspaceLoadRoute && req.method === "POST") {
+      sendJson(res, 200, { ok: true, data: await loadWebuiWorkspace(decodeURIComponent(workspaceLoadRoute[1])) });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/workspaces/") && req.method === "DELETE") {
+      const id = decodeURIComponent(url.pathname.slice("/api/workspaces/".length));
+      if (!id || id.includes("/")) throw makeHttpError(404, "Workspace not found");
+      const data = await deleteWebuiWorkspace(id);
+      if (!data) throw makeHttpError(404, "Workspace not found");
+      broadcastServerEvent({ type: "webui_workspace_deleted", workspaceId: data.deletedId });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
     if (url.pathname === "/api/subagents" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: webuiSubagentsData() });
       return;
@@ -13396,7 +13513,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/tabs/close" && req.method === "POST") {
       const body = await readJsonBody(req);
-      const closed = await closeTabs(body.ids || body.tabIds || []);
+      const closed = await closeTabs(body.ids || body.tabIds || [], { allowEmpty: body.allowEmpty === true });
       sendJson(res, 200, { ok: true, data: { closedIds: closed.map((tab) => tab.id), tabs: listTabs(), activeTabId: firstTab()?.id || null } });
       return;
     }

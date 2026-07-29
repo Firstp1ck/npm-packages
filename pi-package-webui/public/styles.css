@@ -3465,6 +3465,32 @@ body.embedded-split .side-panel-backdrop {
 .terminal-split-button[aria-pressed="true"] .terminal-split-icon-unsplit {
   display: block;
 }
+.terminal-workspace-save-button {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  min-width: 2.5rem;
+  min-height: 2.35rem;
+  padding: 0.38rem;
+  color: var(--ctp-green);
+  white-space: nowrap;
+  border-color: rgba(166, 227, 161, 0.36);
+  background:
+    linear-gradient(120deg, rgba(166, 227, 161, 0.13), rgba(148, 226, 213, 0.08)),
+    rgba(var(--ctp-crust-rgb), 0.62);
+}
+.terminal-workspace-save-button:hover,
+.terminal-workspace-save-button:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-green), var(--ctp-teal));
+}
+.terminal-workspace-save-icon {
+  display: block;
+  width: 1.18rem;
+  height: 1.18rem;
+}
 .terminal-close-all-button {
   flex: 0 0 auto;
   min-height: 2.35rem;
@@ -4074,7 +4100,7 @@ body.embedded-split .side-panel-backdrop {
   }
   body.terminal-tabs-left .terminal-sidebar-actions {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.42rem;
     width: 100%;
     padding: 0.42rem;
@@ -12816,6 +12842,8 @@ button.git-workflow-step { min-height: 1.9rem; }
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-blue));
 }
+.terminal-workspace-save-button[data-tooltip]::before,
+.terminal-workspace-save-button[data-tooltip]::after,
 .terminal-command-palette-button[data-tooltip]::before,
 .terminal-command-palette-button[data-tooltip]::after,
 .terminal-dashboard-button[data-tooltip]::before,
@@ -12826,6 +12854,7 @@ button.git-workflow-step { min-height: 1.9rem; }
   opacity: 0;
   transition: opacity var(--tooltip-blend-duration) var(--tooltip-blend-ease), transform var(--tooltip-blend-duration) var(--tooltip-blend-ease);
 }
+.terminal-workspace-save-button[data-tooltip]::before,
 .terminal-command-palette-button[data-tooltip]::before,
 .terminal-dashboard-button[data-tooltip]::before {
   content: "";
@@ -12839,6 +12868,7 @@ button.git-workflow-step { min-height: 1.9rem; }
   border-top: 1px solid rgba(166, 227, 161, 0.28);
   transform: translateY(-0.2rem) rotate(45deg);
 }
+.terminal-workspace-save-button[data-tooltip]::after,
 .terminal-command-palette-button[data-tooltip]::after,
 .terminal-dashboard-button[data-tooltip]::after {
   content: attr(data-tooltip);
@@ -12863,6 +12893,8 @@ button.git-workflow-step { min-height: 1.9rem; }
   letter-spacing: 0;
   transform: translateY(-0.2rem);
 }
+.terminal-workspace-save-button[data-tooltip]:hover::before,
+.terminal-workspace-save-button[data-tooltip]:hover::after,
 .terminal-command-palette-button[data-tooltip]:hover::before,
 .terminal-command-palette-button[data-tooltip]:hover::after,
 .terminal-dashboard-button[data-tooltip]:hover::before,
@@ -12871,6 +12903,8 @@ button.git-workflow-step { min-height: 1.9rem; }
   transform: translateY(0);
   transition-delay: var(--tooltip-hover-delay);
 }
+.terminal-workspace-save-button[data-tooltip]:focus-visible::before,
+.terminal-workspace-save-button[data-tooltip]:focus-visible::after,
 .terminal-command-palette-button[data-tooltip]:focus-visible::before,
 .terminal-command-palette-button[data-tooltip]:focus-visible::after,
 .terminal-dashboard-button[data-tooltip]:focus-visible::before,
@@ -12878,6 +12912,8 @@ button.git-workflow-step { min-height: 1.9rem; }
   opacity: 1;
   transform: translateY(0);
 }
+.terminal-workspace-save-button[data-tooltip]:hover::before,
+.terminal-workspace-save-button[data-tooltip]:focus-visible::before,
 .terminal-command-palette-button[data-tooltip]:hover::before,
 .terminal-command-palette-button[data-tooltip]:focus-visible::before,
 .terminal-dashboard-button[data-tooltip]:hover::before,
@@ -12894,26 +12930,33 @@ button.git-workflow-step { min-height: 1.9rem; }
   body.terminal-tabs-left .terminal-sidebar-actions:hover {
     z-index: 140;
   }
+  body.terminal-tabs-left .terminal-workspace-save-button[data-tooltip]::before,
   body.terminal-tabs-left .terminal-command-palette-button[data-tooltip]::before,
   body.terminal-tabs-left .terminal-dashboard-button[data-tooltip]::before {
     display: none;
   }
+  body.terminal-tabs-left .terminal-workspace-save-button[data-tooltip]::after,
   body.terminal-tabs-left .terminal-command-palette-button[data-tooltip]::after,
   body.terminal-tabs-left .terminal-dashboard-button[data-tooltip]::after {
     top: auto;
     right: auto;
     bottom: calc(100% + 0.62rem);
     z-index: 220;
-    width: calc(300% + 0.84rem);
+    width: calc(400% + 1.26rem);
     max-width: none;
     transform: translateY(0.2rem);
   }
-  body.terminal-tabs-left .terminal-command-palette-button[data-tooltip]::after {
+  body.terminal-tabs-left .terminal-workspace-save-button[data-tooltip]::after {
     left: calc(-100% - 0.42rem);
   }
-  body.terminal-tabs-left .terminal-dashboard-button[data-tooltip]::after {
+  body.terminal-tabs-left .terminal-command-palette-button[data-tooltip]::after {
     left: calc(-200% - 0.84rem);
   }
+  body.terminal-tabs-left .terminal-dashboard-button[data-tooltip]::after {
+    left: calc(-300% - 1.26rem);
+  }
+  body.terminal-tabs-left .terminal-workspace-save-button[data-tooltip]:hover::after,
+  body.terminal-tabs-left .terminal-workspace-save-button[data-tooltip]:focus-visible::after,
   body.terminal-tabs-left .terminal-command-palette-button[data-tooltip]:hover::after,
   body.terminal-tabs-left .terminal-command-palette-button[data-tooltip]:focus-visible::after,
   body.terminal-tabs-left .terminal-dashboard-button[data-tooltip]:hover::after,
@@ -13229,6 +13272,92 @@ button.workspace-dashboard-chip {
   align-self: center;
   color: rgba(var(--ctp-subtext-rgb), 0.72);
   font-size: var(--text-xs);
+}
+.workspace-saved-workspaces {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 0.42rem;
+  min-width: 0;
+  padding: 0.56rem;
+  border: 1px solid rgba(166, 227, 161, 0.22);
+  border-radius: 0.78rem;
+  background: rgba(var(--ctp-crust-rgb), 0.42);
+}
+.workspace-saved-workspaces-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.workspace-saved-workspaces-hint,
+.workspace-saved-workspaces-empty,
+.workspace-saved-workspace-detail {
+  color: rgba(var(--ctp-subtext-rgb), 0.74);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+}
+.workspace-saved-workspaces-empty {
+  margin: 0;
+}
+.workspace-saved-workspaces-empty.error { color: var(--ctp-red); }
+.workspace-saved-workspaces-list {
+  display: grid;
+  gap: 0.34rem;
+}
+.workspace-saved-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.46rem 0.5rem;
+  border: 1px solid rgba(180, 190, 254, 0.16);
+  border-radius: 0.64rem;
+  background: rgba(var(--ctp-mantle-rgb), 0.46);
+}
+.workspace-saved-workspace-copy {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.workspace-saved-workspace-name,
+.workspace-saved-workspace-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-saved-workspace-name { color: var(--ctp-text); font-size: 0.82rem; }
+.workspace-saved-workspace-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.34rem;
+}
+.workspace-saved-workspace-actions button {
+  min-height: 2rem;
+  padding: 0.28rem 0.54rem;
+  font-size: var(--text-xs);
+}
+.workspace-saved-workspace-delete {
+  color: var(--ctp-red);
+  border-color: rgba(243, 139, 168, 0.32);
+}
+.workspace-saved-workspace-delete:hover,
+.workspace-saved-workspace-delete:focus-visible {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-red), var(--ctp-peach));
+}
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .workspace-saved-workspaces-heading,
+  .workspace-saved-workspace {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-saved-workspaces-heading { flex-direction: column; }
+  .workspace-saved-workspace-actions { justify-content: stretch; }
+  .workspace-saved-workspace-actions button { flex: 1 1 7rem; min-height: 44px; }
 }
 .context-meter-bar {
   display: grid;

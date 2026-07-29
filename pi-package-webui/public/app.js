@@ -17,6 +17,7 @@ const elements = {
   tabBar: $("#tabBar"),
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
   splitTabButton: $("#splitTabButton"),
+  workspaceSaveButton: $("#workspaceSaveButton"),
   newTabMenu: $("#newTabMenu"),
   newTabButton: $("#newTabButton"),
   newTabMenuPanel: $("#newTabMenuPanel"),
@@ -543,6 +544,11 @@ let mobileTabsExpanded = false;
 let openTerminalTabGroupKey = null;
 let terminalCustomGroups = new Map();
 let terminalCustomGroupSerial = 1;
+let savedWorkspaces = [];
+let savedWorkspacesLoaded = false;
+let savedWorkspacesLoading = false;
+let savedWorkspacesError = "";
+let savedWorkspacesRefreshPromise = null;
 let terminalTabDragId = null;
 let splitTabId = null;
 let newTabMenuOpen = false;
@@ -2470,6 +2476,188 @@ function persistTerminalCustomGroups() {
     localStorage.setItem(TERMINAL_CUSTOM_GROUPS_STORAGE_KEY, JSON.stringify({ version: 1, groups }));
   } catch {
     // Ignore storage failures; custom tab groups still work for this page load.
+  }
+}
+
+function workspaceGroupsForSave() {
+  const liveTabIds = new Set(tabs.map((tab) => tab.id).filter(Boolean));
+  return [...terminalCustomGroups.values()].map((group) => ({
+    title: normalizeTerminalCustomGroupTitle(group.title),
+    tabIds: normalizeTerminalCustomGroupTabIds(group.tabIds).filter((tabId) => liveTabIds.has(tabId)),
+  })).filter((group) => group.tabIds.length >= 2);
+}
+
+function workspaceDefaultName() {
+  const cwd = String(activeTab()?.cwd || tabs[0]?.cwd || "workspace").replace(/[\\/]+$/, "");
+  const base = cwd.split(/[\\/]/).pop() || "workspace";
+  return `${base} ${new Date().toISOString().slice(0, 10)}`;
+}
+
+function setSavedWorkspaces(workspaces) {
+  savedWorkspaces = Array.isArray(workspaces) ? workspaces.filter((workspace) => workspace?.id && workspace?.name) : [];
+  savedWorkspacesLoaded = true;
+  savedWorkspacesError = "";
+}
+
+async function refreshSavedWorkspaces({ force = false } = {}) {
+  if (!force && savedWorkspacesLoaded) return savedWorkspaces;
+  if (savedWorkspacesRefreshPromise) return savedWorkspacesRefreshPromise;
+  savedWorkspacesLoading = true;
+  savedWorkspacesError = "";
+  renderWorkspaceDashboard();
+  savedWorkspacesRefreshPromise = api("/api/workspaces", { scoped: false })
+    .then((response) => {
+      setSavedWorkspaces(response.data?.workspaces);
+      return savedWorkspaces;
+    })
+    .catch((error) => {
+      savedWorkspacesError = error.message || String(error);
+      throw error;
+    })
+    .finally(() => {
+      savedWorkspacesLoading = false;
+      savedWorkspacesRefreshPromise = null;
+      renderWorkspaceDashboard();
+    });
+  return savedWorkspacesRefreshPromise;
+}
+
+function installLoadedWorkspaceGroups(groups, idMap = {}) {
+  const liveTabIds = new Set(tabs.map((tab) => tab.id).filter(Boolean));
+  const claimedTabIds = new Set();
+  terminalCustomGroups = new Map();
+  terminalCustomGroupSerial = 1;
+  for (const savedGroup of Array.isArray(groups) ? groups : []) {
+    const tabIds = normalizeTerminalCustomGroupTabIds(savedGroup?.tabIds)
+      .map((tabId) => idMap?.[tabId] || tabId)
+      .filter((tabId) => liveTabIds.has(tabId) && !claimedTabIds.has(tabId));
+    if (tabIds.length < 2) continue;
+    for (const tabId of tabIds) claimedTabIds.add(tabId);
+    let id = nextTerminalCustomGroupId();
+    while (terminalCustomGroups.has(id)) id = nextTerminalCustomGroupId();
+    terminalCustomGroups.set(id, {
+      id,
+      title: normalizeTerminalCustomGroupTitle(savedGroup?.title, `Group ${terminalCustomGroups.size + 1}`),
+      tabIds,
+    });
+  }
+  persistTerminalCustomGroups();
+}
+
+function workspaceRestoreSummary(restoredCount, warnings) {
+  const restored = `${restoredCount} tab${restoredCount === 1 ? "" : "s"} restored`;
+  if (!warnings.length) return restored;
+  return `${restored}; ${warnings.length} warning${warnings.length === 1 ? "" : "s"}`;
+}
+
+async function hydrateLoadedWorkspaceActiveTab(requestedTabId) {
+  const targetTabId = requestedTabId && tabs.some((tab) => tab.id === requestedTabId) ? requestedTabId : tabs[0]?.id || null;
+  if (!targetTabId) return;
+  if (targetTabId !== activeTabId) {
+    await switchTab(targetTabId);
+    return;
+  }
+  const tabContext = setActiveTabId(targetTabId, { remember: true });
+  resetActiveTabUi();
+  renderTabs();
+  restoreActiveDraft();
+  focusPromptInput({ defer: true });
+  connectEvents(tabContext);
+  await refreshAll(tabContext);
+  if (isCurrentTabContext(tabContext)) markTabOutputSeen();
+}
+
+async function saveWebuiWorkspace({ triggerButton = elements.workspaceSaveButton } = {}) {
+  if (!tabs.length) return;
+  const promptedName = window.prompt("Save workspace as:", workspaceDefaultName());
+  if (promptedName === null) return;
+  const body = {
+    name: promptedName.trim() || workspaceDefaultName(),
+    groups: workspaceGroupsForSave(),
+    activeTabId,
+  };
+  const controls = new Set([elements.workspaceSaveButton, triggerButton].filter(Boolean));
+  for (const control of controls) control.disabled = true;
+  try {
+    let response;
+    try {
+      response = await api("/api/workspaces", { method: "POST", body, scoped: false });
+    } catch (error) {
+      if (error.statusCode !== 409) throw error;
+      const overwrite = await appConfirm({
+        title: "Overwrite saved workspace?",
+        summary: `A workspace named “${body.name || workspaceDefaultName()}” already exists.`,
+        affected: "The existing saved workspace will be replaced with the current tabs and groups.",
+        confirmLabel: "Overwrite",
+      });
+      if (!overwrite) return;
+      response = await api("/api/workspaces", { method: "POST", body: { ...body, overwrite: true }, scoped: false });
+    }
+    const data = response.data || {};
+    setSavedWorkspaces(data.workspaces);
+    const saved = data.workspace;
+    const evicted = Array.isArray(data.evicted) ? data.evicted : [];
+    const message = `Saved workspace ${saved?.name || "workspace"} (${saved?.tabCount || tabs.length} tabs).`;
+    settleUndoToast(evicted.length ? `${message} Oldest saved workspace removed.` : message);
+    addEvent(message, "success");
+    if (evicted.length) addEvent(`Removed ${evicted.length} oldest saved workspace${evicted.length === 1 ? "" : "s"} to keep the saved-workspace limit.`, "warn");
+  } catch (error) {
+    const message = `Could not save workspace: ${error.message || String(error)}`;
+    settleUndoToast(message, { error: true, timeoutMs: 7000 });
+    addEvent(message, "error");
+  } finally {
+    for (const control of controls) control.disabled = control === elements.workspaceSaveButton ? tabs.length === 0 : false;
+  }
+}
+
+async function loadWebuiWorkspace(workspaceId, { triggerButton = null } = {}) {
+  if (tabs.length) {
+    const message = "A workspace can only be loaded when no tabs are open.";
+    settleUndoToast(message, { error: true });
+    addEvent(message, "warn");
+    return;
+  }
+  const controls = new Set([triggerButton].filter(Boolean));
+  for (const control of controls) control.disabled = true;
+  try {
+    const response = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/load`, { method: "POST", scoped: false });
+    const data = response.data || {};
+    await refreshTabs();
+    installLoadedWorkspaceGroups(data.groups, data.idMap);
+    await hydrateLoadedWorkspaceActiveTab(data.activeTabId);
+    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    const message = workspaceRestoreSummary(Array.isArray(data.tabs) ? data.tabs.length : tabs.length, warnings);
+    settleUndoToast(message, { error: warnings.length > 0, timeoutMs: warnings.length ? 7000 : 3500 });
+    addEvent(message, warnings.length ? "warn" : "success");
+    for (const warning of warnings) addEvent(`Workspace restore: ${warning.message || "A saved tab could not be fully restored."}`, "warn");
+  } catch (error) {
+    const message = `Could not load workspace: ${error.message || String(error)}`;
+    settleUndoToast(message, { error: true, timeoutMs: 7000 });
+    addEvent(message, "error");
+  } finally {
+    for (const control of controls) control.disabled = false;
+  }
+}
+
+async function deleteWebuiWorkspace(workspace) {
+  if (!workspace?.id) return;
+  const confirmed = await appConfirm({
+    title: "Delete saved workspace?",
+    summary: `Delete “${workspace.name}” from the saved workspace list?`,
+    affected: "The saved tab constellation will be permanently removed; open tabs are unchanged.",
+    confirmLabel: "Delete",
+  });
+  if (!confirmed) return;
+  try {
+    const response = await api(`/api/workspaces/${encodeURIComponent(workspace.id)}`, { method: "DELETE", scoped: false });
+    setSavedWorkspaces(response.data?.workspaces);
+    const message = `Deleted saved workspace ${workspace.name}.`;
+    settleUndoToast(message);
+    addEvent(message, "success");
+  } catch (error) {
+    const message = `Could not delete workspace: ${error.message || String(error)}`;
+    settleUndoToast(message, { error: true, timeoutMs: 7000 });
+    addEvent(message, "error");
   }
 }
 
@@ -10419,6 +10607,13 @@ function renderTabs() {
   }
   elements.tabBar.append(elements.newTabMenu);
   elements.closeAllTabsButton.disabled = tabs.length === 0;
+  if (elements.workspaceSaveButton) {
+    const canSave = tabs.length > 0;
+    elements.workspaceSaveButton.disabled = !canSave;
+    applyStyledTooltip(elements.workspaceSaveButton, canSave
+      ? "Save workspace:\n• Captures all open tabs, sessions, order, custom groups, and the active tab."
+      : "Save workspace is available after you open a tab.", { ariaLabel: canSave ? "Save workspace" : "Save workspace (no open tabs)" });
+  }
   updateTerminalTabGroupOpenState();
   reconcileTerminalSplitState();
   setMobileTabsExpanded(mobileTabsExpanded);
@@ -10447,6 +10642,11 @@ async function refreshTabs({ selectStored = false } = {}) {
     setActiveTabId((requested && tabs.some((tab) => tab.id === requested) ? requested : stored && tabs.some((tab) => tab.id === stored) ? stored : tabs[0]?.id) || null, { remember: true });
   }
   rememberServerStartCwd(tabs.find((tab) => tab.id === activeTabId)?.cwd || tabs[0]?.cwd);
+  if (!tabs.length && previousTabs.length) {
+    savedWorkspacesLoaded = false;
+    savedWorkspacesError = "";
+    setWorkspaceDashboardCollapsed(false, { persist: false });
+  }
   renderSessionSkillTags(activeTabId);
   renderTabs();
   return tabs;
@@ -10675,7 +10875,7 @@ async function confirmCloseTerminalTabs(targetTabs, label) {
   });
 }
 
-async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = {}) {
+async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", allowEmpty = false } = {}) {
   const targetIds = [...new Set(tabIds.filter(Boolean))];
   const targetTabs = targetIds.map((id) => tabs.find((item) => item.id === id)).filter(Boolean);
   if (!targetTabs.length) return;
@@ -10685,7 +10885,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
   const fallbackTabId = tabs.find((item) => !targetIds.includes(item.id))?.id || null;
   try {
     if (closedActiveTab) eventSource?.close();
-    const response = await api("/api/tabs/close", { method: "POST", body: { ids: targetIds }, scoped: false });
+    const response = await api("/api/tabs/close", { method: "POST", body: { ids: targetIds, allowEmpty }, scoped: false });
     const closedIds = response.data?.closedIds || targetIds;
     tabs = response.data?.tabs || tabs.filter((item) => !closedIds.includes(item.id));
     syncTabMetadata(tabs);
@@ -10704,6 +10904,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs" } = 
     }
     syncTerminalCustomGroupsWithTabs(tabs);
     clearOpenTerminalTabGroup(null, { force: true });
+    if (!tabs.length) setWorkspaceDashboardCollapsed(false, { persist: false });
 
     const activeTabNeedsFallback = closedIds.includes(activeTabId) || !tabs.some((item) => item.id === activeTabId);
     if (activeTabNeedsFallback) {
@@ -10740,7 +10941,7 @@ async function closeTerminalTabGroup(group) {
 }
 
 async function closeAllTerminalTabs() {
-  await closeTerminalTabs(tabs.map((tab) => tab.id), { label: "all terminal tabs" });
+  await closeTerminalTabs(tabs.map((tab) => tab.id), { label: "all terminal tabs", allowEmpty: true });
 }
 
 async function initializeTabs() {
@@ -10749,7 +10950,12 @@ async function initializeTabs() {
   renderTabs();
   restoreActiveDraft();
   if (!loadedTabs.length) {
-    await createFirstTerminalTabFromChosenDirectory();
+    setWorkspaceDashboardCollapsed(false, { persist: false });
+    const saved = await refreshSavedWorkspaces().catch((error) => {
+      addEvent(`Could not list saved workspaces: ${error.message || String(error)}`, "error");
+      return [];
+    });
+    if (!saved.length) await createFirstTerminalTabFromChosenDirectory();
     return;
   }
   focusPromptInput({ defer: true });
@@ -14753,6 +14959,9 @@ function renderWorkspaceDashboard() {
     activeTabId,
     tabs: tabs.slice(0, 8).map((item) => ({ id: item.id, title: item.title, indicator: tabIndicator(item), active: item.id === activeTabId, cwd: item.cwd ? normalizeDisplayPath(item.cwd) : "" })),
     overflow: tabs.length > 8 ? tabs.length - 8 : 0,
+    savedWorkspaces: !tabs.length ? savedWorkspaces.map((workspace) => ({ id: workspace.id, name: workspace.name, savedAt: workspace.savedAt, tabCount: workspace.tabCount, groupCount: workspace.groupCount, cwds: workspace.cwds })) : [],
+    savedWorkspacesLoading,
+    savedWorkspacesError,
   });
   if (signature === workspaceDashboardSignature && root.childElementCount > 0) return;
   workspaceDashboardSignature = signature;
@@ -14791,11 +15000,15 @@ function renderWorkspaceDashboard() {
   actions.append(
     dashboardAction("Command palette", () => openCommandPalette(), "primary"),
     dashboardAction("New tab", () => createTerminalTab()),
-    dashboardAction("Branch worktree", () => openBranchWorktreePicker(), "worktree"),
-    dashboardAction("Resume", () => runNativeCommandMenu("/resume")),
-    dashboardAction("Model", () => runNativeCommandMenu("/model")),
-    dashboardAction("Settings", () => runNativeCommandMenu("/settings")),
   );
+  if (tabs.length) {
+    actions.append(
+      dashboardAction("Branch worktree", () => openBranchWorktreePicker(), "worktree"),
+      dashboardAction("Resume", () => runNativeCommandMenu("/resume")),
+      dashboardAction("Model", () => runNativeCommandMenu("/model")),
+      dashboardAction("Settings", () => runNativeCommandMenu("/settings")),
+    );
+  }
   header.append(title, actions);
 
   const metrics = make("div", "workspace-dashboard-metrics");
@@ -14842,7 +15055,70 @@ function renderWorkspaceDashboard() {
   if (tabs.length > 8) tabList.append(make("span", "workspace-dashboard-tab-more", `+${tabs.length - 8} more`));
   tabsPanel.append(tabList);
 
+  const savedWorkspacePanel = !tabs.length ? renderSavedWorkspacePicker() : null;
   root.append(header, metrics, tabsPanel);
+  if (savedWorkspacePanel) root.append(savedWorkspacePanel);
+}
+
+function renderSavedWorkspacePicker() {
+  if (!savedWorkspacesLoaded && !savedWorkspacesLoading && !savedWorkspacesError) {
+    queueMicrotask(() => refreshSavedWorkspaces().catch((error) => addEvent(`Could not list saved workspaces: ${error.message || String(error)}`, "error")));
+  }
+  const panel = make("section", "workspace-saved-workspaces");
+  panel.setAttribute("aria-label", "Saved workspaces");
+  const heading = make("div", "workspace-saved-workspaces-heading");
+  heading.append(
+    make("span", "workspace-dashboard-kicker", "Saved workspaces"),
+    make("span", "workspace-saved-workspaces-hint", "Load a complete saved tab constellation"),
+  );
+  panel.append(heading);
+  if (savedWorkspacesLoading) {
+    const status = make("p", "workspace-saved-workspaces-empty muted", "Loading saved workspaces…");
+    status.setAttribute("role", "status");
+    panel.append(status);
+    return panel;
+  }
+  if (savedWorkspacesError) {
+    const status = make("p", "workspace-saved-workspaces-empty error", `Could not load saved workspaces: ${savedWorkspacesError}`);
+    status.setAttribute("role", "status");
+    const retry = make("button", "workspace-saved-workspaces-retry", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", () => refreshSavedWorkspaces({ force: true }).catch((error) => addEvent(`Could not list saved workspaces: ${error.message || String(error)}`, "error")));
+    panel.append(status, retry);
+    return panel;
+  }
+  if (!savedWorkspaces.length) {
+    panel.append(make("p", "workspace-saved-workspaces-empty muted", "No saved workspaces yet. Open tabs, then use Save workspace."));
+    return panel;
+  }
+  const list = make("div", "workspace-saved-workspaces-list");
+  for (const workspace of savedWorkspaces) {
+    const row = make("article", "workspace-saved-workspace");
+    const copy = make("div", "workspace-saved-workspace-copy");
+    const title = make("strong", "workspace-saved-workspace-name", workspace.name);
+    title.title = workspace.name;
+    const detail = [
+      formatDate(workspace.savedAt),
+      `${workspace.tabCount || 0} tab${workspace.tabCount === 1 ? "" : "s"}`,
+      workspace.groupCount ? `${workspace.groupCount} group${workspace.groupCount === 1 ? "" : "s"}` : "",
+      Array.isArray(workspace.cwds) && workspace.cwds.length ? normalizeDisplayPath(workspace.cwds[0]) : "",
+    ].filter(Boolean).join(" · ");
+    copy.append(title, make("span", "workspace-saved-workspace-detail", detail));
+    const actions = make("div", "workspace-saved-workspace-actions");
+    const load = make("button", "workspace-saved-workspace-load primary", "Load");
+    load.type = "button";
+    load.setAttribute("aria-label", `Load workspace ${workspace.name}`);
+    load.addEventListener("click", () => loadWebuiWorkspace(workspace.id, { triggerButton: load }));
+    const remove = make("button", "workspace-saved-workspace-delete", "Delete");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Delete workspace ${workspace.name}`);
+    remove.addEventListener("click", () => deleteWebuiWorkspace(workspace));
+    actions.append(load, remove);
+    row.append(copy, actions);
+    list.append(row);
+  }
+  panel.append(list);
+  return panel;
 }
 
 function setFooterModelPickerOpen(open) {
@@ -32209,6 +32485,14 @@ function commandPaletteCoreItems() {
     { kind: "Pi", label: "/tools", description: "Manage active tools", keywords: "capabilities", run: () => runNativeCommandMenu("/tools") },
     { kind: "Pi", label: "/skills", description: "Manage active skills", keywords: "system prompt", run: () => runNativeCommandMenu("/skills") },
   ];
+  if (tabs.length) {
+    items.push({ kind: "Workspace", label: "Workspace: Save", description: "Capture all open tabs, sessions, groups, and the active tab", keywords: "workspace snapshot save sessions groups", run: () => saveWebuiWorkspace({ triggerButton: elements.commandPaletteButton }) });
+  } else {
+    items.push({ kind: "Workspace", label: "Workspace: Load…", description: "Show saved workspaces to restore when no tabs are open", keywords: "workspace restore saved sessions groups", run: async () => {
+      setWorkspaceDashboardCollapsed(false, { persist: false });
+      await refreshSavedWorkspaces({ force: true });
+    } });
+  }
   if (isOptionalFeatureEnabled("statsCommand")) items.push({ kind: "Pi", label: "/stats-webui", description: "Open usage dashboard", keywords: "tokens cost budget", run: () => openStatsOverlay({ refresh: true }) });
   return items;
 }
@@ -34005,6 +34289,7 @@ elements.newTabCurrentDirectoryButton?.addEventListener("click", () => createTer
 elements.newTabChooseDirectoryButton?.addEventListener("click", () => createTerminalTabFromChosenDirectory({ triggerButton: elements.newTabChooseDirectoryButton }));
 elements.newTabWorktreeButton?.addEventListener("click", () => openBranchWorktreePicker());
 elements.splitTabButton?.addEventListener("click", () => splitActiveTerminalTab());
+elements.workspaceSaveButton?.addEventListener("click", () => saveWebuiWorkspace());
 elements.terminalSplitCloseButton?.addEventListener("click", () => closeTerminalSplitView());
 elements.closeAllTabsButton.addEventListener("click", () => closeAllTerminalTabs());
 elements.commandPaletteButton?.addEventListener("click", () => openCommandPalette());
