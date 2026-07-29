@@ -108,18 +108,75 @@ try {
 
   const duplicate = await request(port, "/api/workspaces", { method: "POST", body: { name: "Harness workspace" } });
   assert.equal(duplicate.status, 409, "duplicate save must require overwrite");
-  const loadWithTabs = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, { method: "POST" });
-  assert.equal(loadWithTabs.status, 409, "load must reject while any tab is open");
+  const originalTabIds = [firstTab.id, secondTab.id].sort();
+
+  const loadWithoutDecision = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, { method: "POST" });
+  assert.equal(loadWithoutDecision.status, 400, "open tabs must reject a load without explicit replacement intent");
+  assert.deepEqual((await request(port, "/api/tabs")).body.data.tabs.map((tab) => tab.id).sort(), originalTabIds, "rejected loads must leave every open tab intact");
+  const ambiguousLoad = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, {
+    method: "POST",
+    body: { replaceOpenTabs: true, discardCurrent: true, saveCurrent: { name: "Ambiguous workspace" } },
+  });
+  assert.equal(ambiguousLoad.status, 400, "open tabs must reject ambiguous save-and-discard replacement decisions");
+  assert.deepEqual((await request(port, "/api/tabs")).body.data.tabs.map((tab) => tab.id).sort(), originalTabIds, "ambiguous loads must leave every open tab intact");
+
+  const conflictingSaveAndLoad = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, {
+    method: "POST",
+    body: {
+      replaceOpenTabs: true,
+      saveCurrent: {
+        name: "Harness workspace",
+        groups: [{ title: "Current group", tabIds: [firstTab.id, secondTab.id] }],
+        activeTabId: secondTab.id,
+      },
+    },
+  });
+  assert.equal(conflictingSaveAndLoad.status, 409, "duplicate save-and-load names must conflict before tabs close");
+  assert.deepEqual((await request(port, "/api/tabs")).body.data.tabs.map((tab) => tab.id).sort(), originalTabIds, "duplicate save conflicts must leave every open tab intact");
+
+  const saveAndLoad = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, {
+    method: "POST",
+    body: {
+      replaceOpenTabs: true,
+      saveCurrent: {
+        name: "Current workspace",
+        groups: [{ title: "Current group", tabIds: [firstTab.id, secondTab.id] }],
+        activeTabId: secondTab.id,
+      },
+    },
+  });
+  assert.equal(saveAndLoad.status, 200, `save-and-load should succeed: ${saveAndLoad.body?.error || ""}`);
+  assert.deepEqual(saveAndLoad.body.data.closedIds.slice().sort(), originalTabIds, "save-and-load must report every tab it replaced");
+  assert.equal(saveAndLoad.body.data.savedCurrent.workspace.name, "Current workspace", "save-and-load must return saved-current metadata");
+  assert.equal(saveAndLoad.body.data.tabs.length, 2, "save-and-load must restore the target workspace after replacement");
+  const currentDocument = JSON.parse(await readFile(workspacesFile, "utf8"));
+  const savedCurrent = currentDocument.workspaces.find((workspace) => workspace.id === saveAndLoad.body.data.savedCurrent.workspace.id);
+  assert.deepEqual(savedCurrent?.groups, [{ title: "Current group", tabIds: [firstTab.id, secondTab.id] }], "save-and-load must persist current groups before replacement");
+  assert.equal(savedCurrent?.activeTabId, secondTab.id, "save-and-load must persist the current active tab before replacement");
+
+  const discardOnlyTab = await request(port, "/api/tabs", { method: "POST", body: { cwd, title: "Discard this tab" } });
+  assert.equal(discardOnlyTab.status, 201);
+  const tabsBeforeDiscard = (await request(port, "/api/tabs")).body.data.tabs.map((tab) => tab.id).sort();
+  const discardAndLoad = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, {
+    method: "POST",
+    body: { replaceOpenTabs: true, discardCurrent: true },
+  });
+  assert.equal(discardAndLoad.status, 200, `discard-and-load should succeed: ${discardAndLoad.body?.error || ""}`);
+  assert.deepEqual(discardAndLoad.body.data.closedIds.slice().sort(), tabsBeforeDiscard, "discard-and-load must report every tab it replaced");
+  assert.equal(Object.hasOwn(discardAndLoad.body.data, "savedCurrent"), false, "discard-and-load must not report a saved current workspace");
+  assert.equal(discardAndLoad.body.data.tabs.length, 2, "discard-and-load must replace current tabs with the target workspace");
+  assert.equal(discardAndLoad.body.data.tabs.some((tab) => tab.id === discardOnlyTab.body.data.tab.id), false, "discard-and-load must remove tabs outside the target workspace");
 
   const closedForLoad = await request(port, "/api/tabs/close", {
     method: "POST",
-    body: { ids: [firstTab.id, secondTab.id], allowEmpty: true },
+    body: { ids: (await request(port, "/api/tabs")).body.data.tabs.map((tab) => tab.id), allowEmpty: true },
   });
   assert.equal(closedForLoad.status, 200);
   assert.deepEqual(closedForLoad.body.data.tabs, [], "explicit close-all must expose the planned zero-tab load state");
   assert.equal(closedForLoad.body.data.activeTabId, null);
   const loadedAfterCloseAll = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}/load`, { method: "POST" });
-  assert.equal(loadedAfterCloseAll.status, 200, "the primary close-all then load journey must be reachable");
+  assert.equal(loadedAfterCloseAll.status, 200, "the existing zero-tab load journey must remain reachable");
+  assert.deepEqual(loadedAfterCloseAll.body.data.closedIds, [], "zero-tab loads must report no replacements");
   assert.equal(loadedAfterCloseAll.body.data.tabs.length, 2);
 
   await stopServer(firstServer.child);
@@ -151,7 +208,11 @@ try {
 
   const deleted = await request(port, `/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
   assert.equal(deleted.status, 200);
-  assert.deepEqual(deleted.body.data, { deletedId: workspaceId, workspaces: [] }, "delete must use the frozen response envelope");
+  assert.equal(deleted.body.data.deletedId, workspaceId, "delete must return the removed target id");
+  assert.deepEqual(deleted.body.data.workspaces.map((workspace) => workspace.id), [saveAndLoad.body.data.savedCurrent.workspace.id], "delete must retain the workspace saved by save-and-load");
+  const deletedCurrent = await request(port, `/api/workspaces/${encodeURIComponent(saveAndLoad.body.data.savedCurrent.workspace.id)}`, { method: "DELETE" });
+  assert.equal(deletedCurrent.status, 200);
+  assert.deepEqual(deletedCurrent.body.data, { deletedId: saveAndLoad.body.data.savedCurrent.workspace.id, workspaces: [] }, "delete must use the frozen response envelope");
   assert.deepEqual((await request(port, "/api/workspaces")).body.data.workspaces, []);
 
   console.log("webui-workspaces-harness.test.mjs passed");

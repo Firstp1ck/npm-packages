@@ -1029,6 +1029,46 @@
       </form>
     </dialog>
 
+    <dialog id="workspaceLoadDialog" class="extension-dialog workspace-load-dialog" aria-labelledby="workspaceLoadDialogTitle" aria-describedby="workspaceLoadDialogDescription">
+      <form method="dialog">
+        <header class="workspace-load-dialog-header">
+          <div>
+            <span class="workspace-load-dialog-kicker">Saved workspaces</span>
+            <h2 id="workspaceLoadDialogTitle">Load workspace</h2>
+          </div>
+          <button id="workspaceLoadDialogCloseButton" type="button" aria-label="Close saved workspace picker">Close</button>
+        </header>
+        <p id="workspaceLoadDialogDescription" class="muted">Choose a saved tab constellation to restore.</p>
+        <p id="workspaceLoadDialogStatus" class="workspace-load-dialog-status muted" role="status" aria-live="polite"></p>
+        <div id="workspaceLoadDialogList" class="workspace-load-dialog-list" aria-label="Saved workspaces"></div>
+      </form>
+    </dialog>
+
+    <dialog id="workspaceReplaceDialog" class="extension-dialog workspace-replace-dialog" aria-labelledby="workspaceReplaceDialogTitle" aria-describedby="workspaceReplaceDialogDescription">
+      <form method="dialog">
+        <span class="workspace-replace-dialog-kicker">Replace open tabs</span>
+        <h2 id="workspaceReplaceDialogTitle">Load saved workspace</h2>
+        <p id="workspaceReplaceDialogDescription">Loading <strong id="workspaceReplaceTargetName"></strong> will terminate the current Pi processes. Choose whether to save the open tabs first.</p>
+        <section class="workspace-replace-current-tabs" aria-labelledby="workspaceReplaceCurrentTabsTitle">
+          <div class="workspace-replace-current-tabs-heading">
+            <strong id="workspaceReplaceCurrentTabsTitle">Current tabs</strong>
+            <span id="workspaceReplaceCurrentTabsCount" class="muted"></span>
+          </div>
+          <ul id="workspaceReplaceCurrentTabsList" class="workspace-replace-current-tabs-list"></ul>
+        </section>
+        <label class="workspace-replace-save-name" for="workspaceReplaceSaveName">
+          <span>Save current workspace as</span>
+          <input id="workspaceReplaceSaveName" class="dialog-input" type="text" maxlength="160" autocomplete="off" />
+        </label>
+        <p id="workspaceReplaceDialogStatus" class="workspace-replace-dialog-status muted" role="status" aria-live="polite">Cancel leaves every current tab unchanged.</p>
+        <menu>
+          <button id="workspaceReplaceCancelButton" type="button">Cancel</button>
+          <button id="workspaceReplaceDiscardButton" class="danger" type="button">Load without saving</button>
+          <button id="workspaceReplaceSaveButton" class="primary" type="button">Save &amp; load</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="gitWorktreeBaseDialog" class="extension-dialog git-worktree-base-dialog">
       <form method="dialog">
         <h2>Choose branch starting point</h2>

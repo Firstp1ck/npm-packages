@@ -9834,13 +9834,77 @@ async function workspaceLoadDescriptor(descriptor, warnings) {
   return next;
 }
 
-async function loadWebuiWorkspace(id) {
-  if (tabs.size || workspaceLoadInProgress) throw makeHttpError(409, "A workspace can only be loaded when no tabs are open");
+function workspaceReplacementIntent(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || body.replaceOpenTabs !== true) {
+    throw makeHttpError(400, "Replacing open tabs requires replaceOpenTabs: true and one save or discard decision");
+  }
+  const hasDiscard = Object.hasOwn(body, "discardCurrent");
+  const hasSave = Object.hasOwn(body, "saveCurrent");
+  if (hasDiscard === hasSave) {
+    throw makeHttpError(400, "Choose exactly one of discardCurrent or saveCurrent when replacing open tabs");
+  }
+  if (hasDiscard) {
+    if (body.discardCurrent !== true) throw makeHttpError(400, "discardCurrent must be true when replacing open tabs");
+    return { discardCurrent: true };
+  }
+  if (!body.saveCurrent || typeof body.saveCurrent !== "object" || Array.isArray(body.saveCurrent)) {
+    throw makeHttpError(400, "saveCurrent must be an object when replacing open tabs");
+  }
+  return { saveCurrent: body.saveCurrent };
+}
+
+function openTabsUnchanged(tabIds) {
+  return tabs.size === tabIds.length && tabIds.every((id) => tabs.has(id));
+}
+
+async function saveCurrentWorkspaceForReplacement(saveCurrent, tabIds) {
+  const descriptors = await restorableTabsForRestart();
+  const descriptorIds = new Set(descriptors.map((descriptor) => descriptor.id));
+  if (descriptors.length !== tabIds.length || tabIds.some((id) => !descriptorIds.has(id))) {
+    throw makeHttpError(400, `Only ${RESTORE_TAB_LIMIT} open tabs can be saved; close some tabs or choose Load without saving`);
+  }
+  try {
+    return await saveWebuiWorkspace({
+      name: saveCurrent.name,
+      groups: saveCurrent.groups,
+      activeTabId: saveCurrent.activeTabId,
+      overwrite: saveCurrent.overwrite === true,
+      tabs: descriptors,
+    });
+  } catch (error) {
+    if (error?.code === "WORKSPACE_NAME_CONFLICT") throw makeHttpError(409, error.message);
+    throw error;
+  }
+}
+
+async function loadWebuiWorkspace(id, body = {}) {
+  if (workspaceLoadInProgress) throw makeHttpError(409, "A workspace load is already in progress");
   workspaceLoadInProgress = true;
   try {
     const workspace = await getWebuiWorkspace(id);
     if (!workspace) throw makeHttpError(404, "Workspace not found");
-    if (tabs.size) throw makeHttpError(409, "A workspace can only be loaded when no tabs are open");
+
+    const openTabIds = [...tabs.keys()];
+    let closedIds = [];
+    let savedCurrent;
+    if (openTabIds.length) {
+      const intent = workspaceReplacementIntent(body);
+      if (intent.saveCurrent) {
+        savedCurrent = await saveCurrentWorkspaceForReplacement(intent.saveCurrent, openTabIds);
+        broadcastServerEvent({
+          type: "webui_workspace_saved",
+          workspaceId: savedCurrent.workspace.id,
+          workspaceName: savedCurrent.workspace.name,
+          tabCount: savedCurrent.workspace.tabCount,
+          evictedIds: savedCurrent.evicted.map((workspace) => workspace.id),
+        });
+      }
+      if (!openTabsUnchanged(openTabIds)) {
+        const savedNote = savedCurrent ? "The current workspace was saved, but " : "";
+        throw makeHttpError(409, `${savedNote}open tabs changed before the workspace could be replaced`);
+      }
+      closedIds = (await closeTabs(openTabIds, { allowEmpty: true })).map((tab) => tab.id);
+    }
 
     const warnings = [];
     const idMap = {};
@@ -9858,13 +9922,23 @@ async function loadWebuiWorkspace(id) {
       tabIds: group.tabIds.map((tabId) => idMap[tabId]).filter(Boolean),
     })).filter((group) => group.tabIds.length);
     const activeTabId = workspace.activeTabId ? idMap[workspace.activeTabId] || null : null;
-    const data = { tabs: listTabs(), idMap, groups, activeTabId, warnings };
+    const data = {
+      tabs: listTabs(),
+      idMap,
+      groups,
+      activeTabId,
+      warnings,
+      closedIds,
+      ...(savedCurrent ? { savedCurrent } : {}),
+    };
     broadcastServerEvent({
       type: "webui_workspace_loaded",
       workspaceId: workspace.id,
       workspaceName: workspace.name,
       tabCount: data.tabs.length,
       warningCount: warnings.length,
+      closedIds,
+      ...(savedCurrent ? { savedCurrentId: savedCurrent.workspace.id } : {}),
     });
     return data;
   } finally {
@@ -13407,7 +13481,8 @@ const server = createServer(async (req, res) => {
 
     const workspaceLoadRoute = /^\/api\/workspaces\/([^/]+)\/load$/.exec(url.pathname);
     if (workspaceLoadRoute && req.method === "POST") {
-      sendJson(res, 200, { ok: true, data: await loadWebuiWorkspace(decodeURIComponent(workspaceLoadRoute[1])) });
+      const body = await readJsonBody(req);
+      sendJson(res, 200, { ok: true, data: await loadWebuiWorkspace(decodeURIComponent(workspaceLoadRoute[1]), body) });
       return;
     }
 

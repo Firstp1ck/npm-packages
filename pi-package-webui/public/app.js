@@ -348,6 +348,19 @@ const elements = {
   confirmationUndo: $("#confirmationUndo"),
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
+  workspaceLoadDialog: $("#workspaceLoadDialog"),
+  workspaceLoadDialogCloseButton: $("#workspaceLoadDialogCloseButton"),
+  workspaceLoadDialogStatus: $("#workspaceLoadDialogStatus"),
+  workspaceLoadDialogList: $("#workspaceLoadDialogList"),
+  workspaceReplaceDialog: $("#workspaceReplaceDialog"),
+  workspaceReplaceTargetName: $("#workspaceReplaceTargetName"),
+  workspaceReplaceCurrentTabsCount: $("#workspaceReplaceCurrentTabsCount"),
+  workspaceReplaceCurrentTabsList: $("#workspaceReplaceCurrentTabsList"),
+  workspaceReplaceSaveName: $("#workspaceReplaceSaveName"),
+  workspaceReplaceDialogStatus: $("#workspaceReplaceDialogStatus"),
+  workspaceReplaceCancelButton: $("#workspaceReplaceCancelButton"),
+  workspaceReplaceDiscardButton: $("#workspaceReplaceDiscardButton"),
+  workspaceReplaceSaveButton: $("#workspaceReplaceSaveButton"),
   gitWorktreeBaseDialog: $("#gitWorktreeBaseDialog"),
   gitWorktreeBaseBranch: $("#gitWorktreeBaseBranch"),
   gitWorktreeBaseOriginMain: $("#gitWorktreeBaseOriginMain"),
@@ -511,6 +524,8 @@ const supervisorContinuityRefreshes = new Map();
 const supervisorEnvelopeWarnings = new Set();
 let activeDialog = null;
 let activeConfirmationResolve = null;
+let activeWorkspaceReplacementResolve = null;
+let workspaceLoadPickerFocusReturn = null;
 let activeGitWorktreeBaseResolve = null;
 let activeUndoAction = null;
 let undoToastTimer = null;
@@ -2610,54 +2625,250 @@ async function saveWebuiWorkspace({ triggerButton = elements.workspaceSaveButton
   }
 }
 
-async function loadWebuiWorkspace(workspaceId, { triggerButton = null } = {}) {
-  if (tabs.length) {
-    const message = "A workspace can only be loaded when no tabs are open.";
-    settleUndoToast(message, { error: true });
-    addEvent(message, "warn");
+function renderWorkspaceLoadDialog() {
+  const list = elements.workspaceLoadDialogList;
+  const status = elements.workspaceLoadDialogStatus;
+  if (!list || !status) return;
+  list.replaceChildren();
+  if (savedWorkspacesLoading) {
+    status.textContent = "Loading saved workspaces…";
     return;
   }
+  if (savedWorkspacesError) {
+    status.textContent = `Could not load saved workspaces: ${savedWorkspacesError}`;
+    const retry = make("button", "workspace-load-dialog-retry", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", () => refreshWorkspaceLoadDialog());
+    list.append(retry);
+    return;
+  }
+  if (!savedWorkspaces.length) {
+    status.textContent = tabs.length
+      ? "No saved workspaces yet. Use Save workspace to capture the current tabs."
+      : "No saved workspaces yet. Open tabs, then use Save workspace.";
+    return;
+  }
+  status.textContent = `${savedWorkspaces.length} saved workspace${savedWorkspaces.length === 1 ? "" : "s"} available.`;
+  for (const workspace of savedWorkspaces) {
+    const row = make("article", "workspace-load-dialog-item");
+    const copy = make("div", "workspace-load-dialog-item-copy");
+    const title = make("strong", "workspace-load-dialog-item-name", workspace.name);
+    title.title = workspace.name;
+    const detail = [
+      formatDate(workspace.savedAt),
+      `${workspace.tabCount || 0} tab${workspace.tabCount === 1 ? "" : "s"}`,
+      workspace.groupCount ? `${workspace.groupCount} group${workspace.groupCount === 1 ? "" : "s"}` : "",
+      Array.isArray(workspace.cwds) && workspace.cwds.length ? normalizeDisplayPath(workspace.cwds[0]) : "",
+    ].filter(Boolean).join(" · ");
+    copy.append(title, make("span", "workspace-load-dialog-item-detail", detail));
+    const actions = make("div", "workspace-load-dialog-item-actions");
+    const load = make("button", "workspace-load-dialog-item-load primary", "Load");
+    load.type = "button";
+    load.setAttribute("aria-label", `Load workspace ${workspace.name}`);
+    load.addEventListener("click", async () => {
+      const focusReturn = workspaceLoadPickerFocusReturn;
+      closeWorkspaceLoadDialog({ restoreFocus: false });
+      const result = await loadWebuiWorkspace(workspace.id, { triggerButton: load });
+      if (result === "cancelled") await openWorkspaceLoadPicker({ triggerButton: focusReturn });
+      else if (result === "error" && focusReturn instanceof HTMLElement && focusReturn.isConnected) focusReturn.focus({ preventScroll: true });
+    });
+    const remove = make("button", "workspace-load-dialog-item-delete danger", "Delete");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Delete workspace ${workspace.name}`);
+    remove.addEventListener("click", async () => {
+      if (!(await deleteWebuiWorkspace(workspace))) return;
+      renderWorkspaceLoadDialog();
+      queueMicrotask(() => elements.workspaceLoadDialogCloseButton?.focus({ preventScroll: true }));
+    });
+    actions.append(load, remove);
+    row.append(copy, actions);
+    list.append(row);
+  }
+}
+
+async function refreshWorkspaceLoadDialog() {
+  const refresh = refreshSavedWorkspaces({ force: true });
+  renderWorkspaceLoadDialog();
+  try {
+    await refresh;
+  } catch {
+    // The picker renders the saved error state from refreshSavedWorkspaces.
+  }
+  renderWorkspaceLoadDialog();
+}
+
+function closeWorkspaceLoadDialog({ restoreFocus = true } = {}) {
+  const dialog = elements.workspaceLoadDialog;
+  if (!restoreFocus) workspaceLoadPickerFocusReturn = null;
+  if (dialog?.open) dialog.close();
+  const target = workspaceLoadPickerFocusReturn;
+  workspaceLoadPickerFocusReturn = null;
+  if (restoreFocus && target instanceof HTMLElement && target.isConnected) queueMicrotask(() => target.focus());
+}
+
+async function openWorkspaceLoadPicker({ triggerButton = null } = {}) {
+  const dialog = elements.workspaceLoadDialog;
+  if (!dialog?.showModal) {
+    setWorkspaceDashboardCollapsed(false, { persist: false });
+    await refreshSavedWorkspaces({ force: true }).catch(() => {});
+    return;
+  }
+  workspaceLoadPickerFocusReturn = triggerButton instanceof HTMLElement ? triggerButton : document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  renderWorkspaceLoadDialog();
+  if (!dialog.open) dialog.showModal();
+  queueMicrotask(() => elements.workspaceLoadDialogCloseButton?.focus());
+  await refreshWorkspaceLoadDialog();
+}
+
+function finishWorkspaceReplacement(choice = null) {
+  const resolve = activeWorkspaceReplacementResolve;
+  activeWorkspaceReplacementResolve = null;
+  if (elements.workspaceReplaceDialog?.open) elements.workspaceReplaceDialog.close();
+  resolve?.(choice);
+}
+
+function workspaceReplacementTabRow(tab) {
+  const indicator = tabIndicator(tab);
+  const item = make("li", `workspace-replace-current-tab activity-${indicator.state}`);
+  const title = make("strong", "workspace-replace-current-tab-title", tab.title || "Untitled tab");
+  const detail = [
+    tab.id === activeTabId ? "Active" : "",
+    indicator.label,
+    normalizeDisplayPath(tab.cwd || ""),
+  ].filter(Boolean).join(" · ");
+  item.append(title, make("span", "workspace-replace-current-tab-detail", detail));
+  return item;
+}
+
+function workspaceSaveCurrentDecision(name = elements.workspaceReplaceSaveName?.value) {
+  return {
+    replaceOpenTabs: true,
+    saveCurrent: {
+      name: String(name || "").trim() || workspaceDefaultName(),
+      groups: workspaceGroupsForSave(),
+      activeTabId,
+    },
+  };
+}
+
+function chooseWorkspaceReplacement(workspace) {
+  if (!tabs.length) return Promise.resolve({});
+  const dialog = elements.workspaceReplaceDialog;
+  if (!dialog?.showModal) {
+    const discard = window.confirm(`Loading ${workspace?.name || "this workspace"} will terminate ${tabs.length} current Pi process${tabs.length === 1 ? "" : "es"}. Choose OK to load without saving, or Cancel to save first.`);
+    if (discard) return Promise.resolve({ replaceOpenTabs: true, discardCurrent: true });
+    const name = window.prompt("Save current workspace as:", workspaceDefaultName());
+    if (name === null) return Promise.resolve(null);
+    return Promise.resolve(workspaceSaveCurrentDecision(name));
+  }
+  if (activeWorkspaceReplacementResolve) finishWorkspaceReplacement(null);
+  if (elements.workspaceReplaceTargetName) elements.workspaceReplaceTargetName.textContent = workspace?.name || "this workspace";
+  if (elements.workspaceReplaceCurrentTabsCount) elements.workspaceReplaceCurrentTabsCount.textContent = `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`;
+  elements.workspaceReplaceCurrentTabsList?.replaceChildren(...tabs.map(workspaceReplacementTabRow));
+  if (elements.workspaceReplaceSaveName) elements.workspaceReplaceSaveName.value = workspaceDefaultName();
+  if (elements.workspaceReplaceDialogStatus) elements.workspaceReplaceDialogStatus.textContent = "Cancel leaves every current tab unchanged.";
+  return new Promise((resolve) => {
+    activeWorkspaceReplacementResolve = resolve;
+    dialog.showModal();
+    queueMicrotask(() => elements.workspaceReplaceCancelButton?.focus());
+  });
+}
+
+function retireClosedWorkspaceTabContexts(closedIds) {
+  const closed = new Set(Array.isArray(closedIds) ? closedIds.filter((id) => typeof id === "string" && id) : []);
+  if (!closed.size) return;
+  tabs = tabs.filter((tab) => !closed.has(tab.id));
+  syncTabMetadata(tabs);
+  for (const id of closed) {
+    tabDrafts.delete(id);
+    clearAttachments(id);
+    fileViewersByTab.delete(id);
+    fileViewerSelectionsByTab.delete(id);
+    btwWidgetDismissedIdsByTab.delete(id);
+    removeSubagentTerminalViewsForParent(id);
+  }
+  syncTerminalCustomGroupsWithTabs(tabs);
+  clearOpenTerminalTabGroup(null, { force: true });
+  if (closed.has(activeTabId)) setActiveTabId(null, { remember: true });
+}
+
+async function loadWebuiWorkspace(workspaceId, { triggerButton = null } = {}) {
+  const decision = await chooseWorkspaceReplacement(savedWorkspaces.find((workspace) => workspace.id === workspaceId));
+  if (decision === null) return "cancelled";
   const controls = new Set([triggerButton].filter(Boolean));
   for (const control of controls) control.disabled = true;
   try {
-    const response = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/load`, { method: "POST", scoped: false });
+    let response;
+    try {
+      response = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/load`, {
+        method: "POST",
+        ...(Object.keys(decision).length ? { body: decision } : {}),
+        scoped: false,
+      });
+    } catch (error) {
+      const saveCurrent = decision.saveCurrent;
+      if (!saveCurrent || error.statusCode !== 409 || !/workspace with that name already exists/i.test(error.message || "")) throw error;
+      const overwrite = await appConfirm({
+        title: "Overwrite saved workspace?",
+        summary: `A workspace named “${saveCurrent.name || workspaceDefaultName()}” already exists.`,
+        affected: "The existing saved workspace will be replaced before the current tabs are closed.",
+        confirmLabel: "Overwrite & load",
+      });
+      if (!overwrite) return "cancelled";
+      response = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/load`, {
+        method: "POST",
+        body: { ...decision, saveCurrent: { ...saveCurrent, overwrite: true } },
+        scoped: false,
+      });
+    }
     const data = response.data || {};
+    const closedIds = Array.isArray(data.closedIds) ? data.closedIds : [];
+    retireClosedWorkspaceTabContexts(closedIds);
+    if (Array.isArray(data.savedCurrent?.workspaces)) setSavedWorkspaces(data.savedCurrent.workspaces);
+    const evicted = Array.isArray(data.savedCurrent?.evicted) ? data.savedCurrent.evicted : [];
+    if (evicted.length) addEvent(`Removed ${evicted.length} oldest saved workspace${evicted.length === 1 ? "" : "s"} to keep the saved-workspace limit.`, "warn");
     await refreshTabs();
     installLoadedWorkspaceGroups(data.groups, data.idMap);
     await hydrateLoadedWorkspaceActiveTab(data.activeTabId);
     const warnings = Array.isArray(data.warnings) ? data.warnings : [];
-    const message = workspaceRestoreSummary(Array.isArray(data.tabs) ? data.tabs.length : tabs.length, warnings);
+    const restoredCount = Array.isArray(data.tabs) ? data.tabs.length : tabs.length;
+    const replacement = closedIds.length ? `Replaced ${closedIds.length} current tab${closedIds.length === 1 ? "" : "s"}; ` : "";
+    const message = `${replacement}${workspaceRestoreSummary(restoredCount, warnings)}`;
     settleUndoToast(message, { error: warnings.length > 0, timeoutMs: warnings.length ? 7000 : 3500 });
     addEvent(message, warnings.length ? "warn" : "success");
     for (const warning of warnings) addEvent(`Workspace restore: ${warning.message || "A saved tab could not be fully restored."}`, "warn");
+    return "loaded";
   } catch (error) {
     const message = `Could not load workspace: ${error.message || String(error)}`;
     settleUndoToast(message, { error: true, timeoutMs: 7000 });
     addEvent(message, "error");
+    return "error";
   } finally {
     for (const control of controls) control.disabled = false;
   }
 }
 
 async function deleteWebuiWorkspace(workspace) {
-  if (!workspace?.id) return;
+  if (!workspace?.id) return false;
   const confirmed = await appConfirm({
     title: "Delete saved workspace?",
     summary: `Delete “${workspace.name}” from the saved workspace list?`,
     affected: "The saved tab constellation will be permanently removed; open tabs are unchanged.",
     confirmLabel: "Delete",
   });
-  if (!confirmed) return;
+  if (!confirmed) return false;
   try {
     const response = await api(`/api/workspaces/${encodeURIComponent(workspace.id)}`, { method: "DELETE", scoped: false });
     setSavedWorkspaces(response.data?.workspaces);
     const message = `Deleted saved workspace ${workspace.name}.`;
     settleUndoToast(message);
     addEvent(message, "success");
+    return true;
   } catch (error) {
     const message = `Could not delete workspace: ${error.message || String(error)}`;
     settleUndoToast(message, { error: true, timeoutMs: 7000 });
     addEvent(message, "error");
+    return false;
   }
 }
 
@@ -15003,6 +15214,7 @@ function renderWorkspaceDashboard() {
   );
   if (tabs.length) {
     actions.append(
+      dashboardAction("Load workspace", () => openWorkspaceLoadPicker(), "primary"),
       dashboardAction("Branch worktree", () => openBranchWorktreePicker(), "worktree"),
       dashboardAction("Resume", () => runNativeCommandMenu("/resume")),
       dashboardAction("Model", () => runNativeCommandMenu("/model")),
@@ -26094,6 +26306,12 @@ function renderEmptyStartState() {
       onClick: (button) => createTerminalTabFromChosenDirectory({ triggerButton: button }),
     }),
     emptyStartAction({
+      title: "Load workspace",
+      description: "Restore a saved tab constellation",
+      symbol: "⇱",
+      onClick: (button) => openWorkspaceLoadPicker({ triggerButton: button }),
+    }),
+    emptyStartAction({
       title: "Resume session",
       description: "Continue previous work and context",
       symbol: "↶",
@@ -32487,12 +32705,8 @@ function commandPaletteCoreItems() {
   ];
   if (tabs.length) {
     items.push({ kind: "Workspace", label: "Workspace: Save", description: "Capture all open tabs, sessions, groups, and the active tab", keywords: "workspace snapshot save sessions groups", run: () => saveWebuiWorkspace({ triggerButton: elements.commandPaletteButton }) });
-  } else {
-    items.push({ kind: "Workspace", label: "Workspace: Load…", description: "Show saved workspaces to restore when no tabs are open", keywords: "workspace restore saved sessions groups", run: async () => {
-      setWorkspaceDashboardCollapsed(false, { persist: false });
-      await refreshSavedWorkspaces({ force: true });
-    } });
   }
+  items.push({ kind: "Workspace", label: "Workspace: Load…", description: tabs.length ? "Choose a saved workspace and decide whether to save current tabs" : "Show saved workspaces to restore", keywords: "workspace restore saved sessions groups", run: () => openWorkspaceLoadPicker({ triggerButton: elements.commandPaletteButton }) });
   if (isOptionalFeatureEnabled("statsCommand")) items.push({ kind: "Pi", label: "/stats-webui", description: "Open usage dashboard", keywords: "tokens cost budget", run: () => openStatsOverlay({ refresh: true }) });
   return items;
 }
@@ -34533,6 +34747,30 @@ elements.confirmationDialog?.addEventListener("cancel", (event) => {
 });
 elements.confirmationDialog?.addEventListener("close", () => {
   if (activeConfirmationResolve) finishApplicationConfirmation(false);
+});
+elements.workspaceLoadDialogCloseButton?.addEventListener("click", () => closeWorkspaceLoadDialog());
+elements.workspaceLoadDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeWorkspaceLoadDialog();
+});
+elements.workspaceLoadDialog?.addEventListener("close", () => {
+  const target = workspaceLoadPickerFocusReturn;
+  workspaceLoadPickerFocusReturn = null;
+  if (target instanceof HTMLElement && target.isConnected) queueMicrotask(() => target.focus());
+});
+elements.workspaceReplaceCancelButton?.addEventListener("click", () => finishWorkspaceReplacement(null));
+elements.workspaceReplaceDiscardButton?.addEventListener("click", () => finishWorkspaceReplacement({ replaceOpenTabs: true, discardCurrent: true }));
+elements.workspaceReplaceSaveButton?.addEventListener("click", () => finishWorkspaceReplacement(workspaceSaveCurrentDecision()));
+elements.workspaceReplaceDialog?.querySelector("form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  finishWorkspaceReplacement(workspaceSaveCurrentDecision());
+});
+elements.workspaceReplaceDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishWorkspaceReplacement(null);
+});
+elements.workspaceReplaceDialog?.addEventListener("close", () => {
+  if (activeWorkspaceReplacementResolve) finishWorkspaceReplacement(null);
 });
 elements.gitWorktreeBaseCancelButton?.addEventListener("click", () => finishGitWorktreeBaseChoice(null));
 elements.gitWorktreeBaseCreateButton?.addEventListener("click", () => finishGitWorktreeBaseChoice(elements.gitWorktreeBaseCurrentHead?.checked ? "HEAD" : "origin/main"));

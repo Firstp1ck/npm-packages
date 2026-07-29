@@ -3963,6 +3963,9 @@ body.embedded-split .side-panel-backdrop {
   max-height: none;
   overflow: visible;
 }
+.terminal-tabs > .terminal-new-tab-menu:only-child .composer-publish-menu-panel {
+  inset: 100% auto auto 0;
+}
 .terminal-new-tab-menu .composer-publish-menu-item {
   color: var(--ctp-pink);
   border-color: rgba(245, 194, 231, 0.32);
@@ -13362,6 +13365,143 @@ button.workspace-dashboard-chip {
   .workspace-saved-workspaces-heading { flex-direction: column; }
   .workspace-saved-workspace-actions { justify-content: stretch; }
   .workspace-saved-workspace-actions button { flex: 1 1 7rem; min-height: 44px; }
+}
+.workspace-load-dialog,
+.workspace-replace-dialog {
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: min(44rem, calc(var(--visual-viewport-height, 100dvh) - 2rem));
+  overflow: auto;
+}
+.workspace-load-dialog form,
+.workspace-replace-dialog form {
+  display: grid;
+  gap: 0.8rem;
+  padding: clamp(0.9rem, 2vw, 1.35rem);
+}
+.workspace-load-dialog-header,
+.workspace-replace-current-tabs-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.workspace-load-dialog-header h2,
+.workspace-replace-dialog h2 {
+  margin: 0.18rem 0 0;
+}
+.workspace-load-dialog-kicker,
+.workspace-replace-dialog-kicker {
+  color: var(--ctp-teal);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.workspace-load-dialog-status,
+.workspace-replace-dialog-status {
+  min-height: 1.35em;
+  margin: 0;
+  color: rgba(var(--ctp-subtext-rgb), 0.88);
+}
+.workspace-load-dialog-list {
+  display: grid;
+  gap: 0.5rem;
+  min-height: 2.4rem;
+}
+.workspace-load-dialog-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.62rem;
+  border: 1px solid rgba(180, 190, 254, 0.2);
+  border-radius: 0.72rem;
+  background: rgba(var(--ctp-mantle-rgb), 0.5);
+}
+.workspace-load-dialog-item-copy,
+.workspace-replace-current-tab {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+}
+.workspace-load-dialog-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+.workspace-load-dialog-item-name,
+.workspace-load-dialog-item-detail,
+.workspace-replace-current-tab-title,
+.workspace-replace-current-tab-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-load-dialog-item-detail,
+.workspace-replace-current-tab-detail {
+  color: rgba(var(--ctp-subtext-rgb), 0.8);
+  font-size: var(--text-xs);
+}
+.workspace-load-dialog-item-load,
+.workspace-load-dialog-retry {
+  min-height: 2.35rem;
+}
+.workspace-replace-dialog > form > p {
+  margin: 0;
+  line-height: 1.45;
+}
+.workspace-replace-current-tabs {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.68rem;
+  border: 1px solid rgba(243, 139, 168, 0.3);
+  border-radius: 0.78rem;
+  background: rgba(243, 139, 168, 0.07);
+}
+.workspace-replace-current-tabs-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: min(16rem, 34vh);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.workspace-replace-current-tab {
+  padding: 0.42rem 0.48rem;
+  border-left: 0.2rem solid rgba(180, 190, 254, 0.34);
+  background: rgba(var(--ctp-crust-rgb), 0.28);
+}
+.workspace-replace-current-tab.activity-working { border-left-color: var(--ctp-yellow); }
+.workspace-replace-current-tab.activity-blocked { border-left-color: var(--ctp-red); }
+.workspace-replace-current-tab.activity-done { border-left-color: var(--ctp-teal); }
+.workspace-replace-save-name {
+  display: grid;
+  gap: 0.32rem;
+  color: var(--ctp-text);
+  font-weight: 700;
+}
+.workspace-replace-save-name span { font-size: var(--text-sm); }
+.workspace-load-dialog menu,
+.workspace-replace-dialog menu {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+}
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .workspace-load-dialog,
+  .workspace-replace-dialog { width: min(100vw - 1rem, 42rem); }
+  .workspace-load-dialog-item { grid-template-columns: minmax(0, 1fr); }
+  .workspace-load-dialog-item-actions { justify-content: stretch; }
+  .workspace-load-dialog-item-actions button { flex: 1 1 7rem; min-height: 44px; }
+  .workspace-load-dialog menu,
+  .workspace-replace-dialog menu { justify-content: stretch; }
+  .workspace-replace-dialog menu button { flex: 1 1 9rem; min-height: 44px; }
 }
 .context-meter-bar {
   display: grid;
