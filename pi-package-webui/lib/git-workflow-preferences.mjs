@@ -26,6 +26,8 @@ export function supportedGitWorkflowThinkingLevels(model) {
 
 const WEBUI_SETTINGS_VERSION = 4;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
+export const WEBUI_SIDE_PANEL_WIDTH_MIN_PX = 320;
+export const WEBUI_SIDE_PANEL_WIDTH_MAX_PX = 4096;
 const webuiSettingsUpdateQueues = new Map();
 
 function cleanBoundedString(value, maxLength = 512) {
@@ -138,6 +140,16 @@ export function normalizeResourceDefaults(value) {
   };
 }
 
+export function normalizeInterfacePreferences(value) {
+  const rawSidePanelWidth = value?.sidePanelWidth;
+  const sidePanelWidth = rawSidePanelWidth === null || rawSidePanelWidth === undefined ? Number.NaN : Number(rawSidePanelWidth);
+  return {
+    sidePanelWidth: Number.isFinite(sidePanelWidth)
+      ? Math.max(WEBUI_SIDE_PANEL_WIDTH_MIN_PX, Math.min(WEBUI_SIDE_PANEL_WIDTH_MAX_PX, Math.round(sidePanelWidth)))
+      : null,
+  };
+}
+
 function settingsObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -156,6 +168,7 @@ export function normalizeWebuiSettings(value) {
     outputModeDefault: normalizeOutputMode(source.outputModeDefault, OUTPUT_MODE_NORMAL),
     gitWorkflow: normalizeGitWorkflowPreferences(source.gitWorkflow),
     resourceDefaults: normalizeResourceDefaults(source.resourceDefaults),
+    interfacePreferences: normalizeInterfacePreferences(source.interfacePreferences),
     subagentLaunchSlots: normalizeSubagentLaunchSlots(source.subagentLaunchSlots),
   };
 }
@@ -198,6 +211,9 @@ function mergeWebuiSettings(rawCurrent, patch) {
           skills: { ...current.resourceDefaults.skills, ...(patchValue.resourceDefaults.skills || {}) },
         }
       : current.resourceDefaults,
+    interfacePreferences: patchValue.interfacePreferences
+      ? { ...current.interfacePreferences, ...patchValue.interfacePreferences }
+      : current.interfacePreferences,
   };
   if (persistLaunchSlots) {
     source.subagentLaunchSlots = hasLaunchSlotPatch

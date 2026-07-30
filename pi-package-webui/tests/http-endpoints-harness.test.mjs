@@ -228,6 +228,26 @@ try {
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
   assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
 
+  const initialInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
+  assert.equal(initialInterfacePreferences.status, 200);
+  assert.equal(initialInterfacePreferences.body?.data?.preferences?.sidePanelWidth, null, "a user without a saved width should receive the default preference");
+  assert.equal(Object.hasOwn(initialInterfacePreferences.body?.data || {}, "path"), false, "preference responses must not disclose the user's settings-file path");
+  const savedInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences", {
+    method: "PUT",
+    body: { sidePanelWidth: 612.4 },
+  });
+  assert.equal(savedInterfacePreferences.status, 200);
+  assert.equal(savedInterfacePreferences.body?.data?.preferences?.sidePanelWidth, 612, "saved side-panel widths should be normalized to whole pixels");
+  assert.equal(JSON.parse(await readFile(settingsFile, "utf8")).interfacePreferences?.sidePanelWidth, 612, "the side-panel width should be saved in the private user settings file");
+  const reloadedInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
+  assert.equal(reloadedInterfacePreferences.body?.data?.preferences?.sidePanelWidth, 612, "the saved width should survive subsequent user preference reads");
+  const invalidInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences", {
+    method: "PUT",
+    body: { sidePanelWidth: 100 },
+  });
+  assert.equal(invalidInterfacePreferences.status, 400, "out-of-range side-panel widths should be rejected");
+  assert.equal((await request("127.0.0.1", "/api/interface-preferences")).body?.data?.preferences?.sidePanelWidth, 612, "invalid saves must preserve the last valid user width");
+
   // Workflow policy setup is server-scoped: missing policy reads as canonical
   // deny-default state without creating PI_CODING_AGENT_DIR or its policy file.
   const missingWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy");
@@ -920,6 +940,39 @@ try {
     const gitMain = await request("127.0.0.1", "/api/git-workflow/main-branch", { method: "POST", body: { tab: tabId } });
     assert.equal(gitMain.status, 200);
     assert.equal(gitMain.body?.ok, true, "main branch endpoint should rename the branch");
+
+    const bypassPublish = await request("127.0.0.1", `/api/git-workflow/publish?tab=${encodeURIComponent(tabId)}`);
+    assert.equal(bypassPublish.status, 405, "GET /api/git-workflow/publish should be refused with 405");
+
+    const pushWithoutRemote = await request("127.0.0.1", "/api/git-workflow/push", { method: "POST", body: { tab: tabId } });
+    assert.equal(pushWithoutRemote.status, 200);
+    assert.equal(pushWithoutRemote.body?.ok, false, "push without a configured destination should fail closed");
+    assert.equal(pushWithoutRemote.body?.code, "NO_REMOTE", "remote-less push should have a stable recovery code");
+    assert.match(String(pushWithoutRemote.body?.hint || ""), /publish this repository|add a Git remote/i);
+    assert.match(String(pushWithoutRemote.body?.data?.stderr || ""), /No configured push destination/i, "classified failures should preserve process output");
+
+    const unconfirmedPublish = await request("127.0.0.1", "/api/git-workflow/publish", {
+      method: "POST",
+      body: { tab: tabId, repoName: "pi-webui-http-harness", visibility: "private" },
+    });
+    assert.equal(unconfirmedPublish.status, 200);
+    assert.equal(unconfirmedPublish.body?.ok, false, "publication should require exact server-side confirmation");
+    assert.match(String(unconfirmedPublish.body?.error || ""), /confirmed: true/);
+
+    const invalidVisibilityPublish = await request("127.0.0.1", "/api/git-workflow/publish", {
+      method: "POST",
+      body: { tab: tabId, repoName: "pi-webui-http-harness", visibility: "internal", confirmed: true },
+    });
+    assert.equal(invalidVisibilityPublish.body?.ok, false, "publication should reject visibility outside public/private");
+    assert.match(String(invalidVisibilityPublish.body?.error || ""), /visibility must be 'public' or 'private'/);
+
+    const invalidNamePublish = await request("127.0.0.1", "/api/git-workflow/publish", {
+      method: "POST",
+      body: { tab: tabId, repoName: "invalid repository name", visibility: "public", confirmed: true },
+    });
+    assert.equal(invalidNamePublish.body?.ok, false, "publication should reuse GitHub repository-name validation");
+    assert.match(String(invalidNamePublish.body?.error || ""), /Invalid GitHub repository name/);
+    assert.equal(runGitFixture(["remote"], cwd, "guarded publication requests must not configure a remote"), "");
 
     const initialWorktrees = await request("127.0.0.1", `/api/git-worktrees?tab=${encodeURIComponent(tabId)}`);
     assert.equal(initialWorktrees.status, 200);

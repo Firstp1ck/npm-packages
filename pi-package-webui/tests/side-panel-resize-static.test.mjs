@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const html = fs.readFileSync(path.join(root, "public/index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "public/styles.css"), "utf8");
 const app = fs.readFileSync(path.join(root, "public/app.js"), "utf8");
+const server = fs.readFileSync(path.join(root, "bin/pi-webui.mjs"), "utf8");
 
 test("Control Deck exposes an accessible resize separator", () => {
   assert.match(html, /id="sidePanelResizeHandle"[^>]*role="separator"[^>]*aria-orientation="vertical"[^>]*aria-label="Resize Control Deck width"[^>]*tabindex="0"/);
@@ -22,8 +23,14 @@ test("desktop layouts and Control Deck content follow the selected width", () =>
   assert.match(css, /\.side-panel \{[\s\S]*width:\s*100%;[\s\S]*min-width:\s*0/);
 });
 
-test("Control Deck width is clamped, persisted, pointer-resizable, and keyboard-resizable", () => {
+test("Control Deck width is clamped, user-persisted, pointer-resizable, and keyboard-resizable", () => {
   assert.match(app, /const SIDE_PANEL_WIDTH_STORAGE_KEY = "pi-webui-side-panel-width"/);
+  assert.match(app, /const SIDE_PANEL_WIDTH_MAX_PX = 4096/);
+  assert.match(app, /width >= SIDE_PANEL_WIDTH_MIN_PX && width <= SIDE_PANEL_WIDTH_MAX_PX/);
+  assert.match(app, /function persistSidePanelWidth\(width\)[\s\S]*\/api\/interface-preferences[\s\S]*sidePanelWidth: rounded[\s\S]*scoped: false/);
+  assert.match(app, /async function restoreSidePanelWidthPreference\(\)[\s\S]*\/api\/interface-preferences[\s\S]*response\.data\?\.preferences\?\.sidePanelWidth[\s\S]*cacheSidePanelWidth/);
+  assert.match(server, /url\.pathname === "\/api\/interface-preferences" && req\.method === "GET"/);
+  assert.match(server, /url\.pathname === "\/api\/interface-preferences" && req\.method === "PUT"/);
   assert.match(app, /function sidePanelMaxWidth\(\)[\s\S]*fileViewerVisible[\s\S]*splitOpen[\s\S]*primaryMinWidth[\s\S]*available/);
   assert.match(app, /function applySidePanelWidth\(width, \{ persist = false \} = \{\}\)[\s\S]*--side-panel-width[\s\S]*persistSidePanelWidth/);
   assert.match(app, /function beginSidePanelResize\(event\)[\s\S]*setPointerCapture[\s\S]*pointermove[\s\S]*pointercancel/);

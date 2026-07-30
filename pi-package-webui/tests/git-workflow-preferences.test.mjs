@@ -6,6 +6,7 @@ import {
   GIT_WORKFLOW_SETUP_VERSION,
   gitWorkflowPreferencesSummary,
   isGitWorkflowSetupComplete,
+  normalizeInterfacePreferences,
   readGitWorkflowPreferences,
   readWebuiSettings,
   supportedGitWorkflowThinkingLevels,
@@ -24,6 +25,10 @@ assert.deepEqual(
   ["off", "low", "medium", "high", "max"],
   "null map entries should be hidden while explicit extended levels remain available",
 );
+assert.deepEqual(normalizeInterfacePreferences({}), { sidePanelWidth: null });
+assert.deepEqual(normalizeInterfacePreferences({ sidePanelWidth: 617.6 }), { sidePanelWidth: 618 });
+assert.deepEqual(normalizeInterfacePreferences({ sidePanelWidth: 10 }), { sidePanelWidth: 320 });
+assert.deepEqual(normalizeInterfacePreferences({ sidePanelWidth: 9000 }), { sidePanelWidth: 4096 });
 
 const root = await mkdtemp(path.join(tmpdir(), "pi-webui-git-preferences-"));
 const settingsFile = path.join(root, "settings.json");
@@ -62,6 +67,7 @@ try {
       tools: { enabledTools: ["read", " write ", "read", ""] },
       skills: { enabledSkills: ["repo-explorer", "code-security"] },
     },
+    interfacePreferences: { sidePanelWidth: 612 },
   }, settingsFile);
 
   const partiallyUpdated = await writeGitWorkflowPreferences({ deliveryMode: "current" }, settingsFile);
@@ -76,6 +82,8 @@ try {
   assert.equal(persisted.gitWorkflow.generation.provider, "fake");
   assert.deepEqual(persisted.resourceDefaults.tools.enabledTools, ["read", "write"], "global tool defaults should be normalized and deduplicated");
   assert.deepEqual(persisted.resourceDefaults.skills.enabledSkills, ["repo-explorer", "code-security"], "global skill defaults should persist beside other Web UI settings");
+  assert.equal(persisted.interfacePreferences.sidePanelWidth, 612, "the user-scoped Control Deck width should persist beside other Web UI settings");
+  assert.equal((await readWebuiSettings(settingsFile)).interfacePreferences.sidePanelWidth, 612);
   assert.match(gitWorkflowPreferencesSummary(await readGitWorkflowPreferences(settingsFile)), /fake\/fake-model/);
   if (process.platform !== "win32") assert.equal((await stat(settingsFile)).mode & 0o777, 0o600);
 

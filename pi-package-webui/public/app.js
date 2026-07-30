@@ -461,6 +461,7 @@ let sidePanelContextMenuState = null;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let sidePanelResizeState = null;
+let sidePanelWidthPreferenceRevision = 0;
 let fileTreeSearchTimer = null;
 let fileTreeSearchRequestSerial = 0;
 let tabActivities = new Map();
@@ -890,6 +891,7 @@ const FILE_VIEWER_WIDTH_MIN_PX = 384;
 const SIDE_PANEL_WIDTH_STORAGE_KEY = "pi-webui-side-panel-width";
 const SIDE_PANEL_WIDTH_DEFAULT_PX = 384;
 const SIDE_PANEL_WIDTH_MIN_PX = 320;
+const SIDE_PANEL_WIDTH_MAX_PX = 4096;
 const FILE_VIEWER_CONTEXT_RADIUS_LINES = 6;
 const FILE_TREE_ROOT_PATH = "";
 const FILE_TREE_DRAG_MIME = "application/x-pi-webui-file-path";
@@ -8211,18 +8213,29 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
 function readStoredSidePanelWidth() {
   try {
     const width = Number.parseFloat(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY) || "");
-    return Number.isFinite(width) && width >= SIDE_PANEL_WIDTH_MIN_PX ? width : null;
+    return Number.isFinite(width) && width >= SIDE_PANEL_WIDTH_MIN_PX && width <= SIDE_PANEL_WIDTH_MAX_PX ? width : null;
   } catch {
     return null;
   }
 }
 
-function persistSidePanelWidth(width) {
+function cacheSidePanelWidth(width) {
   try {
     localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, String(Math.round(width)));
   } catch {
-    // Ignore storage failures; resizing should still work for this page load.
+    // Browser storage is only a local fallback for the user-scoped preference.
   }
+}
+
+function persistSidePanelWidth(width) {
+  const rounded = Math.round(width);
+  sidePanelWidthPreferenceRevision += 1;
+  cacheSidePanelWidth(rounded);
+  api("/api/interface-preferences", {
+    method: "PUT",
+    body: { sidePanelWidth: rounded },
+    scoped: false,
+  }).catch((error) => addEvent(`Could not save Control Deck width for this user: ${error.message || String(error)}`, "warn"));
 }
 
 function sidePanelMaxWidth() {
@@ -8273,11 +8286,28 @@ function applySidePanelWidth(width, { persist = false } = {}) {
   return clamped;
 }
 
-function restoreSidePanelWidthPreference() {
-  const width = readStoredSidePanelWidth();
-  if (width) document.documentElement.style.setProperty("--side-panel-width", `${Math.round(width)}px`);
-  if (!isSidePanelOverlayView()) applySidePanelWidth(width || SIDE_PANEL_WIDTH_DEFAULT_PX);
-  else updateSidePanelResizeHandle(width || SIDE_PANEL_WIDTH_DEFAULT_PX);
+async function restoreSidePanelWidthPreference() {
+  const localWidth = readStoredSidePanelWidth();
+  if (localWidth) document.documentElement.style.setProperty("--side-panel-width", `${Math.round(localWidth)}px`);
+  if (!isSidePanelOverlayView()) applySidePanelWidth(localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX);
+  else updateSidePanelResizeHandle(localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX);
+
+  const restoreRevision = sidePanelWidthPreferenceRevision;
+  try {
+    const response = await api("/api/interface-preferences", { scoped: false });
+    if (restoreRevision !== sidePanelWidthPreferenceRevision) return;
+    const userWidth = Number(response.data?.preferences?.sidePanelWidth);
+    if (Number.isFinite(userWidth) && userWidth >= SIDE_PANEL_WIDTH_MIN_PX) {
+      cacheSidePanelWidth(userWidth);
+      document.documentElement.style.setProperty("--side-panel-width", `${Math.round(userWidth)}px`);
+      if (!isSidePanelOverlayView()) applySidePanelWidth(userWidth);
+      else updateSidePanelResizeHandle(userWidth);
+    } else if (localWidth) {
+      persistSidePanelWidth(localWidth);
+    }
+  } catch {
+    // Keep the browser-local fallback when user settings cannot be loaded.
+  }
 }
 
 function beginSidePanelResize(event) {
@@ -22718,7 +22748,11 @@ async function gitWorkflowRequest(path, { method = "POST", body = {}, runId, tab
   if (!response.ok) {
     const hint = response.hint ? `\n\nHint: ${response.hint}` : "";
     const detail = response.data ? `\n\n${formatGitCommandResult(response.data)}` : "";
-    throw new Error(`${response.error || "Git workflow request failed"}${hint}${detail}`);
+    const failure = new Error(`${response.error || "Git workflow request failed"}${hint}${detail}`);
+    if (response.code) failure.code = response.code;
+    if (response.hint) failure.hint = response.hint;
+    if (response.data) failure.data = response.data;
+    throw failure;
   }
   return response.data;
 }
@@ -23828,6 +23862,82 @@ async function commitGitWorkflow(variant, tabId = gitWorkflowActionTabId()) {
   }
 }
 
+function cleanGitPublishVisibilityInput(value) {
+  const visibility = String(value ?? "").trim().toLowerCase();
+  if (visibility !== "public" && visibility !== "private") {
+    throw new Error("Repository visibility must be typed as exactly 'public' or 'private'. There is no default; nothing was published.");
+  }
+  return visibility;
+}
+
+function promptGitPublishRepoName(tabId = activeTabId) {
+  const targetTab = tabs.find((tab) => tab.id === tabId) || activeTab();
+  const value = window.prompt("GitHub repository name to create", defaultGitInitRepoName(targetTab));
+  if (value === null) return null;
+  return cleanGitHubRepoNameInput(value);
+}
+
+function promptGitPublishVisibility(repoName) {
+  const value = window.prompt(`Visibility for GitHub repository ${repoName} — type public or private (no default)`, "");
+  if (value === null) return null;
+  return cleanGitPublishVisibilityInput(value);
+}
+
+async function publishGitWorkflowRepository(tabId, failure) {
+  const tabContext = activeTabContext(tabId);
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (!workflow) return false;
+  const runId = workflow.runId;
+  const branch = failure?.data?.branch || gitFooterCurrentBranch() || "the current branch";
+  const publishRequested = await appConfirmText([
+    failure?.message || "git push found no configured push destination.",
+    "",
+    "Publish this repository to GitHub with the authenticated GitHub CLI (gh) account instead?",
+    "Nothing is created until you choose a name, choose visibility explicitly, and confirm the final summary.",
+  ].join("\n"), { affected: "A new GitHub repository and the origin remote", confirmLabel: "Choose publication details", danger: false });
+  if (!publishRequested) return false;
+  let repoName;
+  let visibility;
+  try {
+    repoName = promptGitPublishRepoName(tabId);
+    if (!repoName) return false;
+    visibility = promptGitPublishVisibility(repoName);
+    if (!visibility) return false;
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    return false;
+  }
+  const confirmed = await appConfirmText([
+    "Publish this repository to GitHub?",
+    "",
+    `Repository name: ${repoName}`,
+    `Visibility: ${visibility}`,
+    `Branch to push: ${branch}`,
+    "Resulting remote: origin",
+    "",
+    "This creates a new GitHub repository owned by the authenticated gh account, configures origin, and pushes the current branch. Guided Git never force-pushes.",
+  ].join("\n"), { affected: `New ${visibility} GitHub repository ${repoName}`, confirmLabel: "Publish repository" });
+  if (!confirmed) return false;
+  setGitWorkflow({ step: "pushing", busy: true, error: "", output: `Creating ${visibility} GitHub repository ${repoName} and pushing ${branch}…` }, { tabId });
+  const result = await gitWorkflowRequest("/api/git-workflow/publish", { body: { repoName, visibility, confirmed: true }, runId, tabId });
+  if (!result) return true;
+  setGitWorkflow({
+    step: "done",
+    busy: false,
+    ...gitWorkflowActionDonePatch(workflow, "push"),
+    output: [
+      `Published ${result.repoName || repoName} as ${result.visibility || visibility}.`,
+      `Remote: ${result.remote || "origin"}`,
+      `Branch: ${result.branch || branch}`,
+      ...(result.protectedBranch ? [`Note: ${result.branch || branch} is usually a protected/shared branch name.`] : []),
+      "",
+      formatGitCommandResult(result) || "gh repo create finished.",
+    ].join("\n"),
+  }, { tabId });
+  if (isCurrentTabContext(tabContext)) scheduleRefreshFooter();
+  return true;
+}
+
 async function pushGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
@@ -23841,6 +23951,15 @@ async function pushGitWorkflow(tabId = gitWorkflowActionTabId()) {
     setGitWorkflow({ step: "done", busy: false, ...gitWorkflowActionDonePatch(workflow, "push"), output: formatGitCommandResult(result) || "git push finished." }, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshFooter();
   } catch (error) {
+    if (!isCurrentGitWorkflowRun(runId, tabId)) return;
+    if (error?.code === "NO_REMOTE") {
+      try {
+        if (await publishGitWorkflowRepository(tabId, error)) return;
+      } catch (publishError) {
+        if (isCurrentGitWorkflowRun(runId, tabId)) failGitWorkflow(publishError, "push", { tabId });
+        return;
+      }
+    }
     if (isCurrentGitWorkflowRun(runId, tabId)) failGitWorkflow(error, "push", { tabId });
   }
 }
@@ -35541,6 +35660,10 @@ window.addEventListener("online", () => scheduleForegroundReconcile("network onl
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
+  if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
+    const width = readStoredSidePanelWidth();
+    if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
+  }
 });
 window.addEventListener("resize", syncResizablePanelWidthsForViewport, { passive: true });
 window.addEventListener("keydown", (event) => {

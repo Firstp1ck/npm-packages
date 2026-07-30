@@ -48,6 +48,8 @@ import {
   GIT_WORKFLOW_STAGING_POLICIES,
   GIT_WORKFLOW_THINKING_LEVELS,
   GIT_WORKFLOW_VERIFICATION_POLICIES,
+  WEBUI_SIDE_PANEL_WIDTH_MAX_PX,
+  WEBUI_SIDE_PANEL_WIDTH_MIN_PX,
   isGitWorkflowSetupComplete,
   mergeGitWorkflowPreferences,
   readGitWorkflowPreferences,
@@ -5819,6 +5821,7 @@ const GIT_FETCH_TIMEOUT_MS = 2 * 60 * 1000;
 const GIT_CONFLICT_PREVIEW_MAX_BYTES = 200_000;
 const GIT_STASH_PATCH_MAX_OUTPUT = 200_000;
 const PROTECTED_GIT_BRANCHES = new Set(["main", "master"]);
+const NO_REMOTE_HINT = "No push destination is configured. Publish this repository or add a Git remote, then retry.";
 
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -5888,6 +5891,9 @@ function classifyGitSyncFailure(result, { push = false } = {}) {
   }
   if (/could not resolve host|failed to connect|connection (?:refused|reset|timed out)|network is unreachable|operation timed out/.test(text)) {
     return { code: "NETWORK", hint: "The remote could not be reached. Check connectivity and retry." };
+  }
+  if (push && /fatal:\s+no configured push destination\./.test(text)) {
+    return { code: "NO_REMOTE", hint: NO_REMOTE_HINT };
   }
   if (push && /protected branch|gh006/.test(text)) {
     return { code: "PROTECTED_BRANCH", hint: "The remote refused the push because the branch is protected. Push to a feature branch and open a PR instead." };
@@ -7263,10 +7269,14 @@ function sendGitWorktreeFailure(res, error) {
   sendJson(res, 200, gitWorktreeErrorPayload(error));
 }
 
-async function defaultGitRemote(root) {
+async function gitRemoteNames(root) {
   const result = await runGitWorkflowCommand(["remote"], { cwd: root, timeoutMs: 5000 });
   if (result.exitCode !== 0) throw new Error((result.stderr || result.stdout || "Cannot list git remotes").trim());
-  const remotes = result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+async function defaultGitRemote(root) {
+  const remotes = await gitRemoteNames(root);
   if (!remotes.length) throw new Error("No git remote is configured for this repository");
   return remotes.includes("origin") ? "origin" : remotes[0];
 }
@@ -7381,6 +7391,20 @@ function gitWorkflowCommandPayload(result) {
   };
 }
 
+function applyGitHubPublicationFailure(payload) {
+  if (payload.ok) return payload;
+  const text = `${payload.data?.stderr || ""}\n${payload.data?.stdout || ""}\n${payload.data?.error || ""}`.toLowerCase();
+  if (payload.data?.errorCode === "ENOENT") {
+    payload.hint = "Install GitHub CLI (gh), ensure it is on PATH, then retry.";
+  } else if (/not logged into any github hosts|gh auth login|http 401|bad credentials/.test(text)) {
+    payload.code = "AUTH";
+    payload.hint = "GitHub CLI is not authenticated. Run 'gh auth login' in a terminal, then retry.";
+  } else if (/name already exists on this account|repository .+ already exists/.test(text)) {
+    payload.hint = "A GitHub repository with this name already exists for the authenticated account. Choose another repository name and retry.";
+  }
+  return payload;
+}
+
 // Read-only workflow lookups are safe over GET; everything else mutates the
 // repository (or process state, for cancel) and must be POST. Method + access
 // guard are enforced at the router before dispatch — never dispatch on path
@@ -7405,6 +7429,7 @@ const GIT_WORKFLOW_MUTATING_PATHS = new Set([
   "/api/git-workflow/branch",
   "/api/git-workflow/commit",
   "/api/git-workflow/push",
+  "/api/git-workflow/publish",
   "/api/git-workflow/create-pr",
   "/api/git-workflow/cancel",
 ]);
@@ -7516,6 +7541,23 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
           payload.data.forceWithLease = forceWithLease;
         }
         return applyGitSyncFailure(payload, { push: true });
+      }
+      case "/api/git-workflow/publish": {
+        const repoName = cleanGitHubRepoName(body.repoName);
+        const visibility = String(body.visibility || "").trim();
+        if (visibility !== "public" && visibility !== "private") throw makeHttpError(400, "visibility must be 'public' or 'private'");
+        requireConfirmed(body, `Publishing GitHub repository ${repoName} as ${visibility}`);
+        const root = await getGitRoot(cwd);
+        const remotes = await gitRemoteNames(root);
+        if (remotes.length) throw makeHttpError(409, "GitHub publication requires a repository with no configured remotes. Existing remotes are not changed or repaired.");
+        const branch = await currentGitBranch(root);
+        const protectedBranch = PROTECTED_GIT_BRANCHES.has(branch);
+        const payload = applyGitHubPublicationFailure(gitWorkflowCommandPayload(await runGitHubWorkflowCommand(
+          ["repo", "create", repoName, `--${visibility}`, "--source", root, "--remote", "origin", "--push"],
+          { cwd: root, timeoutMs: 15 * 60 * 1000 },
+        )));
+        if (payload.ok) Object.assign(payload.data, { repoName, visibility, remote: "origin", branch, protectedBranch });
+        return payload;
       }
       case "/api/git-workflow/create-pr": {
         const root = await getGitRoot(cwd);
@@ -12969,6 +13011,20 @@ async function saveOutputModeDefault(value) {
   return outputModeMetadata();
 }
 
+async function interfacePreferencesData() {
+  const settings = await readWebuiSettings();
+  return { preferences: settings.interfacePreferences };
+}
+
+async function saveInterfacePreferences(body = {}) {
+  const sidePanelWidth = Number(body.sidePanelWidth);
+  if (!Number.isFinite(sidePanelWidth) || sidePanelWidth < WEBUI_SIDE_PANEL_WIDTH_MIN_PX || sidePanelWidth > WEBUI_SIDE_PANEL_WIDTH_MAX_PX) {
+    throw makeHttpError(400, `sidePanelWidth must be between ${WEBUI_SIDE_PANEL_WIDTH_MIN_PX} and ${WEBUI_SIDE_PANEL_WIDTH_MAX_PX} pixels`);
+  }
+  const settings = await writeWebuiSettings({ interfacePreferences: { sidePanelWidth: Math.round(sidePanelWidth) } });
+  return { preferences: settings.interfacePreferences };
+}
+
 const remoteAuth = {
   pin: undefined,
   token: undefined,
@@ -13437,6 +13493,16 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/webui-output-mode" && req.method === "PUT") {
       const body = await readJsonBody(req);
       sendJson(res, 200, { ok: true, data: await saveOutputModeDefault(body.outputModeDefault) });
+      return;
+    }
+
+    if (url.pathname === "/api/interface-preferences" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, data: await interfacePreferencesData() });
+      return;
+    }
+
+    if (url.pathname === "/api/interface-preferences" && req.method === "PUT") {
+      sendJson(res, 200, { ok: true, data: await saveInterfacePreferences(await readJsonBody(req)) });
       return;
     }
 
