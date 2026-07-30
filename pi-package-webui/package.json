@@ -26,6 +26,7 @@
       "node_modules/@firstpick/pi-extension-bang-command-autocomplete/index.ts",
       "node_modules/@firstpick/pi-extension-fish-user-bash/index.ts",
       "node_modules/@firstpick/pi-extension-btw/index.ts",
+      "node_modules/@firstpick/pi-extension-codex-fast-mode/index.ts",
       "node_modules/@firstpick/pi-extension-git-footer-status/index.ts",
       "node_modules/@firstpick/pi-extension-release-aur/index.ts",
       "node_modules/@firstpick/pi-extension-release-npm/index.ts",
@@ -63,6 +64,7 @@
   "optionalDependencies": {
     "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.2",
     "@firstpick/pi-extension-btw": "^0.1.4",
+    "@firstpick/pi-extension-codex-fast-mode": "^0.1.0",
     "@firstpick/pi-extension-fish-user-bash": "^0.2.2",
     "@firstpick/pi-extension-git-footer-status": "^0.4.3",
     "@firstpick/pi-extension-release-aur": "^0.1.8",

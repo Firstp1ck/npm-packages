@@ -1148,12 +1148,156 @@ try {
     await writeFile(path.join(remoteWork, "incoming.txt"), "base\nremote one\nremote two\n");
     runGitFixture(["commit", "-am", "remote two"], remoteWork, "remote worktree should commit second incoming change");
     runGitFixture(["push", "origin", "main"], remoteWork, "remote worktree should push incoming commits");
-    runGitFixture(["fetch", "origin"], localRepo, "local repo should fetch incoming commits");
+
+    const remoteOnlySwitchBranch = "feature/remote-only-switch";
+    runGitFixture(["switch", "-c", remoteOnlySwitchBranch], remoteWork, "remote worktree should create the switch fixture branch");
+    await writeFile(path.join(remoteWork, "remote-switch.txt"), "switch fixture\n");
+    runGitFixture(["add", "remote-switch.txt"], remoteWork, "remote switch fixture should stage its marker");
+    runGitFixture(["commit", "-m", "remote switch fixture"], remoteWork, "remote switch fixture should commit its marker");
+    runGitFixture(["push", "-u", "origin", remoteOnlySwitchBranch], remoteWork, "remote switch fixture should push its branch");
+    runGitFixture(["switch", "main"], remoteWork, "remote worktree should return to main after the switch fixture");
+
+    const remoteOnlyWorktreeBranch = "feature/remote-only-worktree";
+    runGitFixture(["switch", "-c", remoteOnlyWorktreeBranch], remoteWork, "remote worktree should create the worktree fixture branch");
+    await writeFile(path.join(remoteWork, "remote-worktree.txt"), "worktree fixture\n");
+    runGitFixture(["add", "remote-worktree.txt"], remoteWork, "remote worktree fixture should stage its marker");
+    runGitFixture(["commit", "-m", "remote worktree fixture"], remoteWork, "remote worktree fixture should commit its marker");
+    runGitFixture(["push", "-u", "origin", remoteOnlyWorktreeBranch], remoteWork, "remote worktree fixture should push its branch");
+    runGitFixture(["switch", "main"], remoteWork, "remote worktree should return to main after the worktree fixture");
+
+    const remoteOnlyCreateBranch = "feature/remote-only-create";
+    runGitFixture(["branch", remoteOnlyCreateBranch], remoteWork, "remote worktree should create the local-create compatibility fixture branch");
+    runGitFixture(["push", "origin", remoteOnlyCreateBranch], remoteWork, "remote create fixture should push its branch");
+    const staleRemoteBranch = "feature/remote-only-stale";
+    runGitFixture(["branch", staleRemoteBranch], remoteWork, "remote worktree should create the stale fixture branch");
+    runGitFixture(["push", "origin", staleRemoteBranch], remoteWork, "remote stale fixture should push its branch");
+
+    runGitFixture(["remote", "add", "mirror", remoteBare], localRepo, "local repo should add a second configured remote for exact-ref coverage");
+    runGitFixture(["remote", "add", "team/mirror", remoteBare], localRepo, "local repo should add a slash-named remote for exact local-name derivation coverage");
 
     const remoteTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: localRepo, title: "remote-behind-fixture" } });
     assert.equal(remoteTab.status, 201);
     const remoteTabId = remoteTab.body?.data?.tab?.id;
     assert.ok(remoteTabId, "remote fixture tab should have an id");
+
+    const fetchedRemoteBranches = await request("127.0.0.1", "/api/git-fetch", { method: "POST", body: { tab: remoteTabId }, timeoutMs: 20_000 });
+    assert.equal(fetchedRemoteBranches.status, 200);
+    assert.equal(fetchedRemoteBranches.body?.ok, true, `git fetch --prune should reveal remote-only branches: ${fetchedRemoteBranches.body?.error || ""}`);
+    runGitFixture(["fetch", "mirror"], localRepo, "remote fixture should fetch the second remote for exact-ref collision coverage");
+    runGitFixture(["fetch", "team/mirror"], localRepo, "remote fixture should fetch the slash-named remote for prefix matching coverage");
+    runGitFixture(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], localRepo, "remote fixture should create a symbolic remote HEAD alias");
+    runGitFixture(["branch", "origin/main", "main"], localRepo, "remote fixture should create a local ref that makes refname:short ambiguous");
+
+    const listedRemoteBranches = await request("127.0.0.1", `/api/git-branches?tab=${encodeURIComponent(remoteTabId)}`);
+    assert.equal(listedRemoteBranches.status, 200);
+    assert.equal(listedRemoteBranches.body?.ok, true, "branch listing should include fetched remote-only branches");
+    const branchRecords = listedRemoteBranches.body?.data?.branches || [];
+    const originRemoteSwitch = branchRecords.find((branch) => branch.remote === true && branch.remoteRef === `origin/${remoteOnlySwitchBranch}`);
+    assert.deepEqual(originRemoteSwitch, {
+      name: remoteOnlySwitchBranch,
+      current: false,
+      remote: true,
+      remoteRef: `origin/${remoteOnlySwitchBranch}`,
+      remoteName: "origin",
+      displayName: `origin/${remoteOnlySwitchBranch}`,
+    }, "remote-only rows should carry explicit local and exact remote metadata");
+    const sameNameRemoteRefs = branchRecords
+      .filter((branch) => branch.remote === true && branch.name === remoteOnlySwitchBranch)
+      .map((branch) => branch.remoteRef)
+      .sort();
+    assert.deepEqual(sameNameRemoteRefs, [`mirror/${remoteOnlySwitchBranch}`, `origin/${remoteOnlySwitchBranch}`, `team/mirror/${remoteOnlySwitchBranch}`], "same-name remote-only branches should remain distinct by exact ref even when a remote name contains a slash");
+    assert.equal(branchRecords.some((branch) => branch.remote === true && branch.remoteRef === "origin/HEAD"), false, "symbolic remote HEAD aliases must not be listed");
+    assert.equal(branchRecords.some((branch) => branch.remote === true && branch.name === "main"), false, "a local branch should hide same-named remote rows");
+    assert.ok(branchRecords.some((branch) => branch.remote !== true && branch.name === "origin/main"), "local branch names must not change when refname shortening would be ambiguous");
+    assert.equal(listedRemoteBranches.body?.data?.remoteBranchesTruncated, false, "complete remote branch output should not be marked truncated");
+
+    const implicitRemoteSwitch = await request("127.0.0.1", "/api/git-branch", {
+      method: "POST",
+      body: { tab: remoteTabId, branch: remoteOnlySwitchBranch },
+    });
+    assert.equal(implicitRemoteSwitch.body?.ok, false, "remote-only names without an exact remoteRef must not trigger Git DWIM tracking creation");
+    assert.match(String(implicitRemoteSwitch.body?.error || ""), /Unknown local git branch/, "implicit remote selection should retain the local-only API guard");
+    assert.equal(runGitFixture(["branch", "--list", remoteOnlySwitchBranch], localRepo, "implicit remote switch should not create a local branch"), "");
+
+    const localCreateOverRemote = await request("127.0.0.1", "/api/git-branch", {
+      method: "POST",
+      body: { tab: remoteTabId, branch: remoteOnlyCreateBranch, create: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(localCreateOverRemote.body?.ok, true, "explicit local branch creation should remain available when a same-named remote-only branch exists");
+    assert.equal(runGitFixture(["branch", "--show-current"], localRepo, "local create compatibility path should switch to its new branch"), remoteOnlyCreateBranch);
+    const createdUpstream = spawnSync("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: localRepo, encoding: "utf8" });
+    assert.notEqual(createdUpstream.status, 0, "explicit local creation should not silently track the same-named remote branch");
+    runGitFixture(["switch", "main"], localRepo, "local repo should return to main after local-create compatibility coverage");
+
+    runGitFixture(["push", "origin", "--delete", staleRemoteBranch], remoteWork, "remote fixture should delete the stale branch upstream");
+    const prunedRemoteBranches = await request("127.0.0.1", "/api/git-fetch", { method: "POST", body: { tab: remoteTabId }, timeoutMs: 20_000 });
+    assert.equal(prunedRemoteBranches.body?.ok, true, "git fetch --prune should remove the deleted origin tracking ref");
+    const staleRemoteSwitch = await request("127.0.0.1", "/api/git-branch", {
+      method: "POST",
+      body: { tab: remoteTabId, branch: staleRemoteBranch, remoteRef: `origin/${staleRemoteBranch}` },
+    });
+    assert.equal(staleRemoteSwitch.body?.ok, false, "acting on a remote ref removed by prune must fail closed");
+    assert.match(String(staleRemoteSwitch.body?.error || ""), /Unknown remote git branch/, "stale remote actions should explain that the advertised ref no longer exists");
+    assert.equal(runGitFixture(["branch", "--list", staleRemoteBranch], localRepo, "stale remote action should not create a local branch"), "");
+
+    const mismatchedRemoteSwitch = await request("127.0.0.1", "/api/git-branch", {
+      method: "POST",
+      body: { tab: remoteTabId, branch: remoteOnlySwitchBranch, remoteRef: `origin/${remoteOnlyWorktreeBranch}` },
+    });
+    assert.equal(mismatchedRemoteSwitch.status, 200);
+    assert.equal(mismatchedRemoteSwitch.body?.ok, false, "a remote ref must match its submitted local branch name");
+    assert.equal(runGitFixture(["branch", "--list", remoteOnlySwitchBranch], localRepo, "mismatched remote switch should not create a local branch"), "");
+
+    const switchedRemoteBranch = await request("127.0.0.1", "/api/git-branch", {
+      method: "POST",
+      body: { tab: remoteTabId, branch: remoteOnlySwitchBranch, remoteRef: `origin/${remoteOnlySwitchBranch}` },
+      timeoutMs: 20_000,
+    });
+    assert.equal(switchedRemoteBranch.status, 200);
+    assert.equal(switchedRemoteBranch.body?.ok, true, `remote-only switch should create a tracking branch: ${switchedRemoteBranch.body?.error || ""}`);
+    assert.equal(runGitFixture(["branch", "--show-current"], localRepo, "remote-only switch should remain attached"), remoteOnlySwitchBranch);
+    assert.equal(runGitFixture(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], localRepo, "remote-only switch should configure its upstream"), `origin/${remoteOnlySwitchBranch}`);
+
+    const collisionRemoteSwitch = await request("127.0.0.1", "/api/git-branch", {
+      method: "POST",
+      body: { tab: remoteTabId, branch: remoteOnlySwitchBranch, remoteRef: `mirror/${remoteOnlySwitchBranch}` },
+    });
+    assert.equal(collisionRemoteSwitch.status, 200);
+    assert.equal(collisionRemoteSwitch.body?.ok, false, "a newly materialized local branch should reject a same-name remote selection");
+    assert.equal(runGitFixture(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], localRepo, "collision rejection must preserve the original upstream"), `origin/${remoteOnlySwitchBranch}`);
+
+    const switchedBackToMain = await request("127.0.0.1", "/api/git-branch", { method: "POST", body: { tab: remoteTabId, branch: "main" }, timeoutMs: 20_000 });
+    assert.equal(switchedBackToMain.status, 200);
+    assert.equal(switchedBackToMain.body?.ok, true, "local branch switching should remain unchanged after remote switching");
+
+    const mismatchedRemoteWorktree = await request("127.0.0.1", "/api/git-worktrees", {
+      method: "POST",
+      body: { tab: remoteTabId, branchName: remoteOnlyWorktreeBranch, remoteRef: `origin/${remoteOnlySwitchBranch}`, sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(mismatchedRemoteWorktree.status, 200);
+    assert.equal(mismatchedRemoteWorktree.body?.ok, false, "a worktree remote ref must match its submitted local branch name");
+    assert.equal(runGitFixture(["branch", "--list", remoteOnlyWorktreeBranch], localRepo, "mismatched remote worktree should not create a local branch"), "");
+
+    const remoteTrackingWorktree = await request("127.0.0.1", "/api/git-worktrees", {
+      method: "POST",
+      body: { tab: remoteTabId, branchName: remoteOnlyWorktreeBranch, remoteRef: `team/mirror/${remoteOnlyWorktreeBranch}`, sessionMode: "empty", openTab: true },
+      timeoutMs: 20_000,
+    });
+    assert.equal(remoteTrackingWorktree.status, 200);
+    assert.equal(remoteTrackingWorktree.body?.ok, true, `remote-only worktree should create a tracking branch: ${remoteTrackingWorktree.body?.error || ""}`);
+    const remoteTrackingWorktreePath = remoteTrackingWorktree.body?.data?.worktree?.path || remoteTrackingWorktree.body?.data?.path;
+    const remoteTrackingWorktreeTabId = remoteTrackingWorktree.body?.data?.tab?.id;
+    assert.ok(remoteTrackingWorktreePath, "remote-only worktree response should include its path");
+    assert.ok(remoteTrackingWorktreeTabId, "remote-only worktree should open a tab");
+    assert.equal(runGitFixture(["branch", "--show-current"], remoteTrackingWorktreePath, "remote-only worktree should remain attached"), remoteOnlyWorktreeBranch);
+    assert.equal(runGitFixture(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], remoteTrackingWorktreePath, "remote-only worktree should configure its upstream"), `team/mirror/${remoteOnlyWorktreeBranch}`);
+    const closeRemoteTrackingWorktreeTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [remoteTrackingWorktreeTabId] }, timeoutMs: 10_000 });
+    assert.equal(closeRemoteTrackingWorktreeTab.body?.ok, true, "remote-only worktree tab should close before cleanup");
+    const removeRemoteTrackingWorktree = await request("127.0.0.1", "/api/git-worktrees", { method: "DELETE", body: { tab: remoteTabId, path: remoteTrackingWorktreePath, confirmed: true }, timeoutMs: 20_000 });
+    assert.equal(removeRemoteTrackingWorktree.body?.ok, true, "remote-only tracking worktree should be removable after the tab closes");
+
     const incomingChanges = await request("127.0.0.1", `/api/git-changes?tab=${encodeURIComponent(remoteTabId)}`);
     assert.equal(incomingChanges.status, 200);
     assert.equal(incomingChanges.body?.ok, true, "git changes endpoint should load a fetched-behind repo");
@@ -2397,6 +2541,70 @@ try {
   assert.equal(wrongTabContent.status, 404, "file paths should not bleed across tab cwd scopes");
   const closeFilesTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [filesTabId] }, timeoutMs: 10_000 });
   assert.equal(closeFilesTab.status, 200, "file fixture tab should close after scoped file checks");
+
+  // Codex subscription Fast mode: exact status is extension-owned and every mutation must be
+  // idle, explicit, tab-scoped, and confirmed by the extension status event.
+  const initialCodexFastMode = await request("127.0.0.1", `/api/codex-fast-mode?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(initialCodexFastMode.status, 200);
+  assert.equal(initialCodexFastMode.body?.data?.available, true, "fake /fast-mode command should make Codex Fast mode available");
+  assert.equal(initialCodexFastMode.body?.data?.statusKnown, false, "server must not infer Fast mode before the extension publishes status");
+
+  const invalidCodexFastMode = await request("127.0.0.1", "/api/codex-fast-mode", {
+    method: "PUT",
+    body: { enabled: "yes", tab: tabId },
+  });
+  assert.equal(invalidCodexFastMode.status, 400, "Codex Fast mode should require an explicit boolean");
+
+  const codexFastModeOn = await request("127.0.0.1", "/api/codex-fast-mode", {
+    method: "PUT",
+    body: { enabled: true, tab: tabId },
+  });
+  assert.equal(codexFastModeOn.status, 200, `Codex Fast mode on should succeed: ${codexFastModeOn.body?.error || ""}`);
+  assert.equal(codexFastModeOn.body?.data?.statusKnown, true);
+  assert.equal(codexFastModeOn.body?.data?.enabled, true, "PUT should return only extension-confirmed on state");
+
+  const rejectNextCodexFastMode = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { message: "fixture reject next codex fast mode mutation", tab: tabId },
+  });
+  assert.equal(rejectNextCodexFastMode.status, 200);
+  const rejectedCodexFastModeOff = await request("127.0.0.1", "/api/codex-fast-mode", {
+    method: "PUT",
+    body: { enabled: false, tab: tabId },
+    timeoutMs: 5_000,
+  });
+  assert.equal(rejectedCodexFastModeOff.status, 409, "RPC success without matching extension status should fail closed");
+  assert.match(String(rejectedCodexFastModeOff.body?.error || ""), /did not confirm off/i);
+  const codexFastModeStillOn = await request("127.0.0.1", `/api/codex-fast-mode?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(codexFastModeStillOn.body?.data?.enabled, true, "a rejected mutation must not become optimistic off state");
+
+  const busyFixturePrompt = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { message: "voice test slow", tab: tabId },
+  });
+  assert.equal(busyFixturePrompt.status, 200);
+  await delay(80);
+  const busyCodexFastModeOff = await request("127.0.0.1", "/api/codex-fast-mode", {
+    method: "PUT",
+    body: { enabled: false, tab: tabId },
+  });
+  assert.equal(busyCodexFastModeOff.status, 409, "Codex Fast mode changes should be rejected during a running turn");
+  assert.match(String(busyCodexFastModeOff.body?.error || ""), /busy|running turn/i);
+  let settledCodexFastMode;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    settledCodexFastMode = await request("127.0.0.1", `/api/codex-fast-mode?tab=${encodeURIComponent(tabId)}`);
+    if (settledCodexFastMode.body?.data?.busy === false) break;
+    await delay(150);
+  }
+  assert.equal(settledCodexFastMode?.body?.data?.busy, false, "fake running turn should settle before the retry");
+
+  const codexFastModeOff = await request("127.0.0.1", "/api/codex-fast-mode", {
+    method: "PUT",
+    body: { enabled: false, tab: tabId },
+  });
+  assert.equal(codexFastModeOff.status, 200, `Codex Fast mode off should succeed after the tab settles: ${codexFastModeOff.body?.error || ""}`);
+  assert.equal(codexFastModeOff.body?.data?.enabled, false);
+  assert.equal(codexFastModeOff.body?.data?.statusKnown, true, "off response should be extension-confirmed");
 
   // Natural Conversation shell: /talk availability drives per-tab status and safety guards.
   const conversationFeature = await request("127.0.0.1", `/api/features/natural-conversation?tab=${encodeURIComponent(tabId)}`);

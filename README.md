@@ -229,6 +229,13 @@ Plan-only recovery assistance for narrowly classified Anthropic compatibility er
 - runs external compatibility-patch status and planning without automatic apply
 - supports explicit authenticated RPC/WebUI recovery endpoints and secure local fallback
 
+### `@firstpick/pi-extension-codex-fast-mode`
+Session-scoped Fast mode for subscription-backed Codex requests.
+
+- `/fast-mode` toggle with `on`, `off`, and `status` forms
+- applies `service_tier: "priority"` only to `openai-codex` / `openai-codex-responses` requests
+- defaults off, persists per session branch, and rejects mutations while busy
+
 ### `@firstpick/pi-extension-conditional-system-prompts`
 Conditionally appends the local Windows policy and a governance-skill routing bridge.
 

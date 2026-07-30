@@ -3070,6 +3070,20 @@ body.embedded-split .side-panel-backdrop {
   display: grid;
   gap: 0.48rem;
 }
+.codex-fast-mode-control {
+  margin-bottom: 0.72rem;
+  padding: 0.72rem;
+  border: 1px solid rgba(148, 226, 213, 0.20);
+  border-radius: 0.85rem;
+  background: rgba(var(--ctp-crust-rgb), 0.50);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 0 1rem rgba(148, 226, 213, 0.05);
+}
+.codex-fast-mode-control .control-field-context {
+  color: rgba(var(--ctp-subtext-rgb), 0.74);
+}
+.codex-fast-mode-control .toggle-control-hint {
+  margin-top: 0.48rem;
+}
 .codex-usage-actions,
 .claude-usage-actions {
   display: flex;

@@ -342,6 +342,33 @@ async function branchExists(repoRoot, branch) {
   throw makeGitWorktreeError(WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED, gitFailureMessage(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], result), { branch });
 }
 
+function configuredRemoteForRef(remoteRef, remoteNames = []) {
+  return remoteNames
+    .filter((remoteName) => remoteRef.startsWith(`${remoteName}/`))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0] || "";
+}
+
+async function verifyTrackingRemoteRef(repo, branch, value) {
+  if (typeof value !== "string" || !value || value !== value.trim() || value.includes("\0")) {
+    throw makeGitWorktreeError(WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED, "remoteRef must be a non-empty exact remote-tracking ref", { branch });
+  }
+  const remoteNames = (await runGit(["remote"], { cwd: repo.repoRoot, timeoutMs: 5000, maxOutputLength: 20_000 }))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const remoteName = configuredRemoteForRef(value, remoteNames);
+  if (!remoteName || value.slice(remoteName.length + 1) !== branch) {
+    throw makeGitWorktreeError(WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED, `Remote git branch ${value} does not match local branch ${branch}`, { branch, remoteRef: value });
+  }
+  const fullRef = `refs/remotes/${value}`;
+  const output = await runGit(["for-each-ref", "--format=%(refname)%09%(symref)", fullRef], { cwd: repo.repoRoot, timeoutMs: 5000, maxOutputLength: 20_000 });
+  const exactRef = output.split(/\r?\n/).map((line) => line.split("\t", 2)).find(([ref]) => ref === fullRef);
+  if (!exactRef || exactRef[1]) {
+    throw makeGitWorktreeError(WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED, `Unknown remote git branch: ${value}`, { branch, remoteRef: value });
+  }
+  return value;
+}
+
 export function slugifyWorktreeBranch(branch) {
   const slug = String(branch || "")
     .toLowerCase()
@@ -416,6 +443,7 @@ function occupiedBranch(worktrees, branch) {
 
 export async function createGitWorktree(cwd, request = {}) {
   const branch = cleanBranchName(request.branchName || request.branch);
+  const trackingRemoteRequested = Object.hasOwn(request, "remoteRef");
   let data = await readWorktreeData(cwd);
   await validateBranchName(data, branch);
 
@@ -423,6 +451,9 @@ export async function createGitWorktree(cwd, request = {}) {
     data = await readWorktreeData(cwd);
     const existing = occupiedBranch(data.worktrees, branch);
     if (existing) {
+      if (trackingRemoteRequested) {
+        throw makeGitWorktreeError(WORKTREE_ERROR_CODES.BRANCH_CHECKED_OUT_ELSEWHERE, `Branch ${branch} is already checked out at ${existing.path}. Refresh the picker and open that worktree instead.`, { branch, remoteRef: request.remoteRef, worktreePath: existing.path });
+      }
       return {
         ok: true,
         created: false,
@@ -434,12 +465,20 @@ export async function createGitWorktree(cwd, request = {}) {
       };
     }
 
-    const targetPath = await resolveCreateTarget(data, branch, data.worktrees, request.path);
     const exists = await branchExists(data.repoRoot, branch);
+    if (trackingRemoteRequested && exists) {
+      throw makeGitWorktreeError(WORKTREE_ERROR_CODES.GIT_COMMAND_FAILED, `Local git branch already exists: ${branch}`, { branch, remoteRef: request.remoteRef });
+    }
+    const targetPath = await resolveCreateTarget(data, branch, data.worktrees, request.path);
+    // Re-read the exact remote ref under the mutation lock immediately before
+    // `worktree add`; symbolic, stale, and colliding selections fail closed.
+    const trackingRemoteRef = trackingRemoteRequested ? await verifyTrackingRemoteRef(data, branch, request.remoteRef) : "";
     const baseRef = String(request.baseRef || "").trim();
-    const args = exists
-      ? ["worktree", "add", targetPath, branch]
-      : ["worktree", "add", "-b", branch, targetPath, ...(baseRef ? [baseRef] : [])];
+    const args = trackingRemoteRef
+      ? ["worktree", "add", "--track", "-b", branch, targetPath, trackingRemoteRef]
+      : exists
+        ? ["worktree", "add", targetPath, branch]
+        : ["worktree", "add", "-b", branch, targetPath, ...(baseRef ? [baseRef] : [])];
     const worktreeAddCwd = data.currentWorktreePath || data.repoRoot;
 
     try {

@@ -380,6 +380,7 @@ const OPTIONAL_FEATURE_PACKAGES = new Map([
   ["naturalConversation", "@firstpick/pi-package-natural-conversation"],
   ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status"],
   ["statsCommand", "@firstpick/pi-extension-stats"],
+  ["codexFastMode", "@firstpick/pi-extension-codex-fast-mode"],
   ["themeBundle", "@firstpick/pi-themes-bundle"],
 ]);
 const WEBUI_CONTROLLED_PACKAGES = new Set([
@@ -395,6 +396,15 @@ const UPDATE_PACKAGE_NAMES = [...new Set([
 ])].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
+// Codex subscription Fast mode is owned by the optional @firstpick/pi-extension-codex-fast-mode
+// package. The Web UI never inspects ChatGPT credentials or request payloads; it only mirrors the
+// extension-published status key and drives the package-owned /fast-mode command over RPC.
+const CODEX_FAST_MODE_FEATURE_ID = "codexFastMode";
+const CODEX_FAST_MODE_STATUS_KEY = "codex-fast-mode";
+const CODEX_FAST_MODE_COMMAND_NAME = "fast-mode";
+const CODEX_FAST_MODE_PROVIDER = "openai-codex";
+const CODEX_FAST_MODE_STATUS_TIMEOUT_MS = 1000;
+const CODEX_FAST_MODE_CREDIT_NOTICE = "Fast mode asks Codex for about 1.5x faster responses and spends 2x Standard credits on GPT-5.4 and 2.5x on GPT-5.5/5.6. It only marks subscription-backed openai-codex requests; upstream account and model eligibility stays authoritative.";
 const PACKAGE_NAME_CACHE = new Map();
 
 function usage() {
@@ -6938,18 +6948,71 @@ function normalizeGitBranchList(branchText, current = "") {
   });
 }
 
+function configuredRemoteForRef(remoteRef, remoteNames = []) {
+  return remoteNames
+    .filter((remoteName) => remoteRef.startsWith(`${remoteName}/`))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0] || "";
+}
+
+function remoteBranchRecord(fullRef, symref = "", remoteNames = []) {
+  const prefix = "refs/remotes/";
+  const ref = String(fullRef || "");
+  if (!ref.startsWith(prefix) || symref) return null;
+  const remoteRef = ref.slice(prefix.length);
+  const remoteName = configuredRemoteForRef(remoteRef, remoteNames);
+  if (!remoteName) return null;
+  const name = remoteRef.slice(remoteName.length + 1);
+  if (!name) return null;
+  return { name, current: false, remote: true, remoteRef, remoteName, displayName: remoteRef };
+}
+
+async function readRemoteGitBranchData(root) {
+  const [remoteNamesText, refs] = await Promise.all([
+    runGitReadCommand(root, ["remote"], { timeoutMs: 5000, maxOutputLength: 120_000 }),
+    runGitReadCommandDetailed(root, ["for-each-ref", "--format=%(refname)%09%(symref)", "refs/remotes"], { timeoutMs: 5000, maxOutputLength: 120_000 }),
+  ]);
+  return {
+    remoteNames: remoteNamesText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+    refText: refs.output,
+    truncated: refs.truncated === true,
+    unavailable: false,
+  };
+}
+
+function normalizeRemoteGitBranches(remoteData, localBranchNames) {
+  // Never parse tail-truncated output: the first retained line may be a partial
+  // ref. Local branches and worktrees remain available while the UI can expose
+  // the truncation flag.
+  if (!remoteData || remoteData.truncated) return [];
+  const remoteBranches = [];
+  for (const line of String(remoteData.refText || "").split(/\r?\n/)) {
+    const [fullRef = "", symref = ""] = line.split("\t", 2);
+    const branch = remoteBranchRecord(fullRef, symref, remoteData.remoteNames);
+    // A local branch takes precedence over every same-named remote ref. Until
+    // then, retain each exact remote ref so multiple remotes stay unambiguous.
+    if (branch && !localBranchNames.has(branch.name)) remoteBranches.push(branch);
+  }
+  return remoteBranches.sort((left, right) => left.displayName.localeCompare(right.displayName));
+}
+
 async function readGitBranches(cwd) {
   const root = await getGitRoot(cwd);
-  const [current, branchText, worktreeData] = await Promise.all([
+  const [current, branchText, worktreeData, remoteData] = await Promise.all([
     currentGitBranchForPicker(root),
-    runGitReadCommand(root, ["branch", "--format=%(refname:short)"], { timeoutMs: 5000, maxOutputLength: 120_000 }),
+    runGitReadCommand(root, ["branch", "--format=%(refname:lstrip=2)"], { timeoutMs: 5000, maxOutputLength: 120_000 }),
     listGitWorktrees(cwd).catch(() => null),
+    readRemoteGitBranchData(root).catch(() => ({ remoteNames: [], refText: "", truncated: false, unavailable: true })),
   ]);
   const occupiedByBranch = new Map();
   for (const item of worktreeData?.occupiedBranches || []) {
     if (!item?.branch || occupiedByBranch.has(item.branch)) continue;
     occupiedByBranch.set(item.branch, item);
   }
+  const localBranches = normalizeGitBranchList(branchText, current).map((branch) => {
+    const occupied = occupiedByBranch.get(branch.name);
+    return occupied ? { ...branch, occupied: true, worktreePath: occupied.path, worktreeCurrent: occupied.current === true, mainWorktree: occupied.isMainWorktree === true } : branch;
+  });
+  const remoteBranches = normalizeRemoteGitBranches(remoteData, new Set(localBranches.map((branch) => branch.name)));
   return {
     cwd,
     root,
@@ -6959,24 +7022,60 @@ async function readGitBranches(cwd) {
     defaultWorktreesRoot: worktreeData?.defaultWorktreesRoot || "",
     current,
     generatedAt: new Date().toISOString(),
-    branches: normalizeGitBranchList(branchText, current).map((branch) => {
-      const occupied = occupiedByBranch.get(branch.name);
-      return occupied ? { ...branch, occupied: true, worktreePath: occupied.path, worktreeCurrent: occupied.current === true, mainWorktree: occupied.isMainWorktree === true } : branch;
-    }),
+    branches: [...localBranches, ...remoteBranches],
+    remoteBranchesTruncated: remoteData.truncated === true,
+    remoteBranchesUnavailable: remoteData.unavailable === true,
     worktrees: worktreeData?.worktrees || [],
     occupiedBranches: worktreeData?.occupiedBranches || [],
   };
 }
 
-async function switchGitBranch(cwd, branch, { create = false } = {}) {
+function requestedRemoteRef(body = {}) {
+  if (!Object.hasOwn(body, "remoteRef")) return null;
+  if (typeof body.remoteRef !== "string" || !body.remoteRef || body.remoteRef.trim() !== body.remoteRef) {
+    throw new Error("remoteRef must be a non-empty exact remote-tracking ref");
+  }
+  return body.remoteRef;
+}
+
+async function verifyRemoteGitBranchIntent(cwd, branch, remoteRef) {
+  const targetBranch = cleanGitBranchName(branch);
+  const branches = await readGitBranches(cwd);
+  const localBranch = branches.branches.find((item) => item.remote !== true && item.name === targetBranch);
+  if (localBranch) throw new Error(`Local git branch already exists: ${targetBranch}. Refresh the picker and use the local branch instead.`);
+  const remoteBranch = branches.branches.find((item) => item.remote === true && item.remoteRef === remoteRef);
+  if (!remoteBranch) throw new Error(`Unknown remote git branch: ${remoteRef}`);
+  if (remoteBranch.name !== targetBranch) {
+    throw new Error(`Remote git branch ${remoteRef} does not match local branch ${targetBranch}`);
+  }
+  return { root: branches.root, branch: targetBranch, remoteRef: remoteBranch.remoteRef };
+}
+
+async function switchGitBranch(cwd, branch, { create = false, remoteRef = null } = {}) {
+  if (remoteRef !== null) {
+    // Re-read the advertised remote-only record immediately before creating a
+    // tracking branch. This rejects stale refs and local-name collisions.
+    const intent = await verifyRemoteGitBranchIntent(cwd, branch, remoteRef);
+    const payload = gitMutationPayload(await runGitMutationCommand(["switch", "--track", "-c", intent.branch, intent.remoteRef], { cwd: intent.root, timeoutMs: 10 * 60 * 1000 }));
+    if (payload.ok) {
+      payload.data.branch = intent.branch;
+      payload.data.root = intent.root;
+      payload.data.switched = true;
+      payload.data.created = true;
+    } else {
+      payload.error = (payload.data?.stderr || payload.data?.stdout || payload.error || `Failed to create and switch to ${intent.branch}`).trim();
+    }
+    return payload;
+  }
+
   const root = await getGitRoot(cwd);
   const targetBranch = cleanGitBranchName(branch);
   await validateGitBranchName(root, targetBranch);
   const branches = await readGitBranches(cwd);
-  const branchExists = branches.branches.some((item) => item.name === targetBranch);
+  const branchExists = branches.branches.some((item) => item.remote !== true && item.name === targetBranch);
   if (create && branchExists) throw new Error(`Local git branch already exists: ${targetBranch}`);
   if (!create && !branchExists) throw new Error(`Unknown local git branch: ${targetBranch}`);
-  const occupied = branches.branches.find((item) => item.name === targetBranch && item.occupied && !item.worktreeCurrent);
+  const occupied = branches.branches.find((item) => item.remote !== true && item.name === targetBranch && item.occupied && !item.worktreeCurrent);
   if (!create && occupied?.worktreePath) {
     return {
       ok: false,
@@ -7221,9 +7320,13 @@ async function createGitWorkflowBranchWorktree(tab, body = {}) {
 }
 
 async function createGitWorktreeTab(tab, body = {}) {
+  const remoteRef = requestedRemoteRef(body);
+  const worktreeRequest = remoteRef === null
+    ? body
+    : { ...body, branchName: (await verifyRemoteGitBranchIntent(tab.cwd, body.branchName || body.branch, remoteRef)).branch, remoteRef };
   let createdResult = null;
   try {
-    createdResult = await createGitWorktree(tab.cwd, body);
+    createdResult = await createGitWorktree(tab.cwd, worktreeRequest);
     const opened = await openWorktreeResultForTab(tab, createdResult, { openTab: body.openTab !== false, ...body });
     if (createdResult.created) {
       recordEvent({ type: "webui_worktree_created", tabId: opened.tab?.id || tab.id, cwd: opened.worktree?.path || opened.path, branch: opened.branch || body.branchName || "" });
@@ -9453,6 +9556,7 @@ function attachRpcToTab(tab, rpc) {
       clearExtensionWidgets(tab);
       clearWebuiSubagents(tab);
       resetNaturalConversationMode(tab);
+      resetCodexFastMode(tab);
     } else {
       rememberExtensionStatusEvent(tab, scopedEvent);
       rememberNaturalConversationStatusEvent(tab, scopedEvent);
@@ -9500,6 +9604,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     sseClients: new Set(),
   };
   resetNaturalConversationMode(tab);
+  resetCodexFastMode(tab);
   return tab;
 }
 
@@ -10597,6 +10702,7 @@ async function performTabCwdUpdate(tab, cwd) {
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
+  resetCodexFastMode(tab);
 
   let rpc;
   let startDirectRpc = false;
@@ -10659,6 +10765,7 @@ async function restartTabRpc(tab, reason = "reload") {
   clearExtensionWidgets(tab);
   clearWebuiSubagents(tab);
   resetNaturalConversationMode(tab);
+  resetCodexFastMode(tab);
   let rpc;
   if (oldRpc instanceof SupervisorPiRpcProcess) {
     const snapshot = await oldRpc.replace({
@@ -11364,6 +11471,120 @@ async function setNaturalConversationMode(tab, body = {}) {
     await setThinkingLevelForTab(tab, "off", { allowPending: false }).catch(() => null);
   }
   return { ...(await naturalConversationFeatureData(tab, { refreshCommands: false })), response };
+}
+
+function codexFastModeCommandBaseName(name) {
+  return String(name || "").trim().toLowerCase().replace(/:\d+$/, "");
+}
+
+// The extension publishes exactly "on" or "off"; anything else is treated as unknown so the
+// browser can render an explicit unknown state instead of silently claiming Fast mode is off.
+function codexFastModeStatusState(statusText) {
+  const text = stripAnsi(statusText).replace(/\s+/g, " ").trim().toLowerCase();
+  if (text !== "on" && text !== "off") return { known: false, enabled: false };
+  return { known: true, enabled: text === "on" };
+}
+
+function codexFastModeSnapshot(tab, patch = {}) {
+  const previous = tab?.codexFastMode && typeof tab.codexFastMode === "object" ? tab.codexFastMode : {};
+  const status = codexFastModeStatusState(extensionStatusMap(tab).get(CODEX_FAST_MODE_STATUS_KEY) || "");
+  const known = patch.statusKnown ?? (status.known || previous.statusKnown === true);
+  return {
+    featureId: CODEX_FAST_MODE_FEATURE_ID,
+    enabled: patch.enabled ?? (status.known ? status.enabled : previous.enabled === true),
+    statusKnown: known,
+    updatedAt: patch.updatedAt || new Date().toISOString(),
+  };
+}
+
+function resetCodexFastMode(tab) {
+  if (!tab) return;
+  tab.codexFastMode = null;
+  tab.codexFastModeCommandName = "";
+}
+
+async function codexFastModePackageStatus() {
+  try {
+    return await optionalFeaturePackageStatus(CODEX_FAST_MODE_FEATURE_ID);
+  } catch (error) {
+    return { featureId: CODEX_FAST_MODE_FEATURE_ID, packageName: OPTIONAL_FEATURE_PACKAGES.get(CODEX_FAST_MODE_FEATURE_ID), installed: false, error: sanitizeError(error) };
+  }
+}
+
+async function codexFastModeCommandState(tab, { refreshCommands = true } = {}) {
+  if (!refreshCommands) return { commandName: String(tab?.codexFastModeCommandName || ""), rpcRunning: true, error: "" };
+  try {
+    const data = await getCommandData(tab, { annotateSkills: false });
+    const match = (data.commands || []).find((command) => codexFastModeCommandBaseName(command?.name) === CODEX_FAST_MODE_COMMAND_NAME);
+    tab.codexFastModeCommandName = match?.name ? String(match.name) : "";
+    return { commandName: tab.codexFastModeCommandName, rpcRunning: data.rpcRunning !== false, error: data.error || "" };
+  } catch (error) {
+    tab.codexFastModeCommandName = "";
+    return { commandName: "", rpcRunning: false, error: sanitizeError(error) };
+  }
+}
+
+async function codexFastModeFeatureData(tab, { refreshCommands = true } = {}) {
+  const packageStatus = await codexFastModePackageStatus();
+  const command = await codexFastModeCommandState(tab, { refreshCommands });
+  const state = await currentSessionState(tab).catch(() => tab?.lastState || {});
+  const model = state?.model?.provider && state?.model?.id
+    ? { provider: String(state.model.provider), id: String(state.model.id) }
+    : null;
+  const mode = codexFastModeSnapshot(tab);
+  tab.codexFastMode = mode;
+  const available = !!command.commandName;
+  return {
+    featureId: CODEX_FAST_MODE_FEATURE_ID,
+    packageName: OPTIONAL_FEATURE_PACKAGES.get(CODEX_FAST_MODE_FEATURE_ID),
+    available,
+    packageInstalled: packageStatus.installed === true,
+    packageStatus,
+    commandName: command.commandName,
+    enabled: mode.enabled,
+    statusKnown: mode.statusKnown,
+    busy: tabHasActiveOutput(tab),
+    model,
+    modelEligible: model?.provider === CODEX_FAST_MODE_PROVIDER,
+    creditNotice: CODEX_FAST_MODE_CREDIT_NOTICE,
+    rpcRunning: command.rpcRunning,
+    unavailableReason: available
+      ? ""
+      : packageStatus.installed
+        ? "Codex Fast mode package is installed, but /fast-mode is not loaded in the active Pi tab. Reload the tab or enable the package extension."
+        : "Codex Fast mode package is not installed or not visible from the Web UI package root.",
+    error: command.error || undefined,
+  };
+}
+
+async function waitForCodexFastModeStatus(tab, desired) {
+  const deadline = Date.now() + CODEX_FAST_MODE_STATUS_TIMEOUT_MS;
+  do {
+    const snapshot = codexFastModeSnapshot(tab);
+    if (snapshot.statusKnown && snapshot.enabled === desired) {
+      tab.codexFastMode = snapshot;
+      return snapshot;
+    }
+    if (Date.now() >= deadline) break;
+    await sleepMs(25);
+  } while (true);
+  throw makeHttpError(409, `Codex Fast mode did not confirm ${desired ? "on" : "off"}. The session may have become busy; inspect /fast-mode status and retry when idle.`);
+}
+
+async function setCodexFastMode(tab, body = {}) {
+  if (typeof body?.enabled !== "boolean") throw makeHttpError(400, "Codex Fast mode requires an explicit enabled boolean");
+  const desired = body.enabled === true;
+  const feature = await codexFastModeFeatureData(tab);
+  if (!feature.available) throw makeHttpError(404, feature.unavailableReason);
+  // A mid-turn tier change would produce a mixed-tier tool loop, so mutations are rejected while
+  // the tab is working. Reading status stays available.
+  if (feature.busy) throw makeHttpError(409, "This tab is busy; Codex Fast mode cannot change during a running turn. Wait for the turn to finish, then retry.");
+  const response = await tab.rpc.send({ type: "prompt", message: `/${feature.commandName} ${desired ? "on" : "off"}` }, REQUEST_TIMEOUT_MS);
+  if (response.success === false) throw makeHttpError(400, response.error || `Failed to turn Codex Fast mode ${desired ? "on" : "off"}`);
+  // RPC success only means the extension command returned. Require its authoritative status event
+  // to confirm the requested state so a busy-transition rejection cannot become false success.
+  await waitForCodexFastModeStatus(tab, desired);
+  return { ...(await codexFastModeFeatureData(tab, { refreshCommands: false })), requested: desired };
 }
 
 // Piper voice switching for the native /talk audio loop. The WebUI never
@@ -12693,6 +12914,7 @@ async function handleNativeSlashCommand(tab, body, req) {
       clearExtensionWidgets(tab);
       clearWebuiSubagents(tab);
       resetNaturalConversationMode(tab);
+      resetCodexFastMode(tab);
       return respondNative("new", {
         status: "succeeded",
         message: "Started a new session.",
@@ -14197,6 +14419,19 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/codex-fast-mode" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await codexFastModeFeatureData(tab), tab: tabMeta(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/codex-fast-mode" && req.method === "PUT") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await setCodexFastMode(tab, body), tab: tabMeta(tab) });
+      return;
+    }
+
     if (url.pathname === "/api/conversation-voices" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await conversationVoicesData(), tab: tabMeta(tab) });
@@ -14561,7 +14796,8 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "git branch changes are blocked");
       try {
-        sendJson(res, 200, await switchGitBranch(tab.cwd, body.branch, { create: body.create === true }));
+        const remoteRef = requestedRemoteRef(body);
+        sendJson(res, 200, await switchGitBranch(tab.cwd, body.branch, { create: body.create === true, remoteRef }));
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
       }
@@ -14728,6 +14964,7 @@ const server = createServer(async (req, res) => {
           clearExtensionWidgets(tab);
           clearWebuiSubagents(tab);
           resetNaturalConversationMode(tab);
+          resetCodexFastMode(tab);
         }
         sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
         return;
