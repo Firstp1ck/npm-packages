@@ -31,6 +31,7 @@ Extension-bundled skills kept as direct Pi config includes instead of duplicate 
 - `@firstpick/pi-skill-deployment-automation` (`pi-skill-deployment-automation`) — Use automatically for Docker Compose deployments, container updates, stack health checks, rollbacks, compose-file changes, image upgrades, failed deploys, or service restart planning. Provides safe deployment and rollback workflows.
 - `@firstpick/pi-skill-design-patterns` (`pi-skill-design-patterns`) — Use automatically when choosing patterns, designing traits/interfaces/components, deciding abstraction boundaries, evaluating dependency injection/callbacks, or comparing implementation approaches in Rust, TypeScript/React, or Django/Python.
 - `@firstpick/pi-skill-dolt-database-version-control` (`pi-skill-dolt-database-version-control`) — Use automatically when evaluating or applying Dolt, the Git-like version-controlled SQL database, for database branching, merging, diffs, audit history, rollback, or versioned MySQL replica workflows.
+- `@firstpick/pi-skill-feature-development-workflow` (`pi-skill-feature-development-workflow`) — Use for authorized new-capability implementation to classify lightweight versus complex features and govern planning, implementation, integration, review, reporting, and completion gates.
 - `@firstpick/pi-skill-network-diagnostics` (`pi-skill-network-diagnostics`) — Use automatically for connectivity, DNS, Pi-hole, port reachability, routing, firewall reachability, TLS/network timeouts, or service access failures. Provides structured network troubleshooting commands and interpretation.
 - `@firstpick/pi-skill-paper-summarizer` (`pi-skill-paper-summarizer`) — Use automatically for academic or technical papers, arXiv/PubMed/IEEE/ACM links, PDFs, methodology review, limitations, practical implications, or extracting findings for engineering decisions.
 - `@firstpick/pi-skill-performance-optimizer` (`pi-skill-performance-optimizer`) — Use automatically for slow code, high CPU/memory, latency, large data processing, algorithmic complexity, profiling plans, benchmarks, or optimization requests. Profiles first and weighs trade-offs before changing code.
@@ -39,6 +40,7 @@ Extension-bundled skills kept as direct Pi config includes instead of duplicate 
 - `@firstpick/pi-skill-research-orchestration` (`pi-skill-research-orchestration`) — Use automatically for broad multi-claim research projects needing planning, parallel investigation, source merging, gap closure, citation audit, and final synthesis when narrower research skills are insufficient.
 - `@firstpick/pi-skill-server-audit` (`pi-skill-server-audit`) — Use automatically for Linux server security reviews, SSH hardening, firewall/open-port audits, user/permission checks, exposed services, or host hardening requests. Produces severity-rated findings and practical remediation steps.
 - `@firstpick/pi-skill-spec-vs-impl-checker` (`pi-skill-spec-vs-impl-checker`) — Use automatically when a spec, plan, README, issue, or requirement must be verified against implementation. Traces requirements to code, checks interface contracts, and reports gaps or mismatches.
+- `@firstpick/pi-skill-subagent-governance` (`pi-skill-subagent-governance`) — Use when a parent orchestrator must decide delegation admissibility, role-fit, writer isolation, retry safety, integration acceptance, or reviewer-finding dispositions without duplicating runtime mechanics.
 - `@firstpick/pi-skill-tauri-django-react` (`pi-skill-tauri-django-react`) — Use automatically for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.
 - `@firstpick/pi-skill-tech-debt-tracker` (`pi-skill-tech-debt-tracker`) — Use automatically when identifying, categorizing, prioritizing, or planning technical debt work, debt sprints, cleanup backlogs, TODO consolidation, or long-term maintainability risks. Tracks debt with severity/effort.
 - `@firstpick/pi-skill-tech-deep-dive` (`pi-skill-tech-deep-dive`) — Use automatically when choosing or evaluating libraries, frameworks, tools, platforms, models, databases, APIs, or architectures for a use case. Produces criteria scoring, ecosystem assessment, and recommendations.
@@ -228,18 +230,18 @@ Plan-only recovery assistance for narrowly classified Anthropic compatibility er
 - supports explicit authenticated RPC/WebUI recovery endpoints and secure local fallback
 
 ### `@firstpick/pi-extension-conditional-system-prompts`
-Conditionally appends trusted local policy files to Pi's system prompt.
+Conditionally appends the local Windows policy and a governance-skill routing bridge.
 
 - loads `APPEND_WINDOWS.md` on Windows
-- loads `APPEND_SUBAGENTS.md` when the `subagent` tool is selected
-- preserves existing prompt content and documents fail-fast missing-file behavior
+- routes turns with the `subagent` tool to the enabled `subagent-governance` skill
+- preserves Windows-first ordering and fail-closed missing-skill guidance
 
 ### `@firstpick/pi-extension-feature-system-prompt`
-Routes feature requests to an external feature-development policy.
+Routes feature requests to the enabled `feature-development-workflow` skill.
 
 - classifies requests with the active conversation model in an isolated tool-free session
 - distinguishes lightweight and complex features
-- bounds continuation context and uses safe local fallbacks when classification is unavailable
+- injects a short fail-closed skill bridge while preserving bounded continuation context and safe classifier fallbacks
 
 ### `@firstpick/pi-extension-subagent-minimum-fanout`
 Enforces zero-or-multiple model delegation for Pi subagent tool calls.

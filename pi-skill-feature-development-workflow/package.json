@@ -1,0 +1,38 @@
+{
+  "name": "@firstpick/pi-skill-feature-development-workflow",
+  "version": "0.1.0",
+  "description": "Portable Agent Skill for governing lightweight and complex feature-development workflows, including planning, delegated implementation, integration, review, reporting, and completion gates.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-feature-development-workflow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-skill-feature-development-workflow"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "skill",
+    "agent-skill",
+    "feature-development",
+    "implementation-workflow",
+    "independent-review"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "python3 -B -m unittest discover -s skills/feature-development-workflow/tests -p 'test_*.py'"
+  },
+  "files": [
+    "skills/feature-development-workflow/SKILL.md",
+    "skills/feature-development-workflow/references/COMPLEX-FEATURE-CONTRACT.md",
+    "skills/feature-development-workflow/tests/test_skill_contract.py",
+    "tests/routing/feature-development-workflow.json",
+    "README.md",
+    "LICENSE"
+  ]
+}

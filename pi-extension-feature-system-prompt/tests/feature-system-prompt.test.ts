@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import featureSystemPrompt, {
@@ -9,7 +12,10 @@ import featureSystemPrompt, {
 	createFeatureSystemPrompt,
 	FEATURE_CATEGORY_STATUS_KEY,
 	FEATURE_CLASSIFICATION_FALLBACK,
-	FEATURE_PROMPT_LOAD_FAILURE_FALLBACK,
+	FEATURE_SKILL_CONFIGURATION_ERROR,
+	FEATURE_SKILL_NAME,
+	FEATURE_SKILL_ROUTING_BRIDGE,
+	featureSkillIsAvailable,
 	getFeatureComplexity,
 	isLikelyContinuation,
 	MAX_CLASSIFIER_PROMPT_CHARS,
@@ -45,7 +51,7 @@ function createFeaturePromptHarness(dependencies: FeatureSystemPromptDependencie
 			},
 		} as ExtensionContext["ui"],
 	});
-	createFeatureSystemPrompt(dependencies)({
+	createFeatureSystemPrompt({ validateFeatureSkill: () => true, ...dependencies })({
 		on(name: string, candidate: unknown) {
 			if (name === "before_agent_start") beforeAgentStart = candidate as BeforeAgentStartHandler;
 			else lifecycleHandlers.set(name, candidate as LifecycleHandler);
@@ -74,8 +80,8 @@ function createFeaturePromptHarness(dependencies: FeatureSystemPromptDependencie
 	};
 }
 
-function injectedFeaturePrompt(kind: "feature_lightweight" | "feature_complex", prompt = "FEATURE INSTRUCTIONS") {
-	return `BASE\n\n${buildFeatureClassificationContext(kind)}\n\n${prompt}`;
+function injectedFeaturePrompt(kind: "feature_lightweight" | "feature_complex") {
+	return `BASE\n\n${buildFeatureClassificationContext(kind)}\n\n${FEATURE_SKILL_ROUTING_BRIDGE}`;
 }
 
 test("the taxonomy has every approved label and parses only exact labels", () => {
@@ -177,7 +183,6 @@ test("the handler model-routes ambiguous work but locally resolves obvious non-f
 			classifierModels.push(model);
 			return "feature_complex";
 		},
-		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 	});
 
 	assert.deepEqual(await harness.run("Add a command palette"), { systemPrompt: injectedFeaturePrompt("feature_complex") });
@@ -205,7 +210,6 @@ test("successful feature and non-feature routing injects only the appropriate po
 	const classifications: RequestKind[] = ["feature_lightweight", "review"];
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async () => classifications.shift(),
-		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 	});
 
 	assert.deepEqual(await harness.run("Add a focused command"), { systemPrompt: injectedFeaturePrompt("feature_lightweight") });
@@ -216,7 +220,6 @@ test("RPC mode emits the effective feature category and clears it for non-featur
 	const classifications: RequestKind[] = ["feature_lightweight", "feature_lightweight", "feature_complex"];
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async () => classifications.shift(),
-		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 	});
 
 	await harness.run("Add a focused command");
@@ -261,13 +264,8 @@ test("RPC mode clears the feature category after unavailable classification and 
 });
 
 test("classifier invalid output, throw, and no active model inject only the short fallback", async () => {
-	let featurePromptLoads = 0;
 	const invalidHarness = createFeaturePromptHarness({
 		classifyRequest: async () => undefined,
-		loadFeaturePrompt: () => {
-			featurePromptLoads += 1;
-			return "FEATURE INSTRUCTIONS";
-		},
 	});
 	assert.deepEqual(await invalidHarness.run("Do some work"), { systemPrompt: `BASE\n\n${FEATURE_CLASSIFICATION_FALLBACK}` });
 
@@ -286,23 +284,50 @@ test("classifier invalid output, throw, and no active model inject only the shor
 		},
 	});
 	assert.deepEqual(await noModelHarness.runWithoutModel("Do some work"), { systemPrompt: `BASE\n\n${FEATURE_CLASSIFICATION_FALLBACK}` });
-	assert.equal(featurePromptLoads, 0);
 	assert.equal(classifierCalls, 0);
 	assert.ok(!FEATURE_CLASSIFICATION_FALLBACK.includes("## Feature Request Classification"));
-	assert.ok(!FEATURE_CLASSIFICATION_FALLBACK.includes("FEATURE INSTRUCTIONS"));
+	assert.ok(FEATURE_CLASSIFICATION_FALLBACK.includes(`load and follow the enabled \`${FEATURE_SKILL_NAME}\` skill`));
+	assert.match(FEATURE_CLASSIFICATION_FALLBACK, /stop feature implementation and report the configuration error/);
 });
 
-test("a successful classified feature retains the missing feature-prompt safety fallback", async () => {
+test("a successful classified feature injects a fail-closed skill-routing bridge", async () => {
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async () => "feature_lightweight",
-		loadFeaturePrompt: () => {
-			throw new Error("APPEND_FEATURE.md is missing");
-		},
 	});
 	assert.deepEqual(await harness.run("Add a command palette"), {
-		systemPrompt: injectedFeaturePrompt("feature_lightweight", FEATURE_PROMPT_LOAD_FAILURE_FALLBACK),
+		systemPrompt: injectedFeaturePrompt("feature_lightweight"),
 	});
-	assert.match(FEATURE_PROMPT_LOAD_FAILURE_FALLBACK, /Do not implement feature work until APPEND_FEATURE\.md is restored\./);
+	assert.ok(FEATURE_SKILL_ROUTING_BRIDGE.includes(`read to load and follow the enabled \`${FEATURE_SKILL_NAME}\` skill`));
+	assert.match(FEATURE_SKILL_ROUTING_BRIDGE, /references\/COMPLEX-FEATURE-CONTRACT\.md/);
+	assert.match(FEATURE_SKILL_ROUTING_BRIDGE, /stop feature implementation and report the configuration error/);
+	assert.match(FEATURE_SKILL_ROUTING_BRIDGE, /do not silently weaken a required gate/);
+
+	const unavailableHarness = createFeaturePromptHarness({
+		classifyRequest: async () => "feature_complex",
+		validateFeatureSkill: () => false,
+	});
+	assert.deepEqual(await unavailableHarness.run("Add a command palette"), {
+		systemPrompt: `BASE\n\n${buildFeatureClassificationContext("feature_complex")}\n\n${FEATURE_SKILL_CONFIGURATION_ERROR}`,
+	});
+	assert.match(FEATURE_SKILL_CONFIGURATION_ERROR, /Do not implement feature work until the skill configuration is restored/);
+});
+
+test("feature skill availability checks prompt discovery and required files", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-feature-skill-check-"));
+	try {
+		const skillDir = join(agentDir, "skills", FEATURE_SKILL_NAME);
+		mkdirSync(join(skillDir, "references"), { recursive: true });
+		writeFileSync(join(skillDir, "SKILL.md"), "# Feature workflow\n", "utf8");
+		const skillPath = join(skillDir, "SKILL.md");
+		const systemPrompt = `<available_skills><skill><name>${FEATURE_SKILL_NAME}</name><location>${skillPath}</location></skill></available_skills>`;
+		assert.equal(featureSkillIsAvailable(systemPrompt, "lightweight"), true);
+		assert.equal(featureSkillIsAvailable(systemPrompt, "complex"), false);
+		writeFileSync(join(skillDir, "references", "COMPLEX-FEATURE-CONTRACT.md"), "# Contract\n", "utf8");
+		assert.equal(featureSkillIsAvailable(systemPrompt, "complex"), true);
+		assert.equal(featureSkillIsAvailable("<available_skills></available_skills>", "lightweight"), false);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
 });
 
 test("session starts reset continuation state for startup, new, resume, fork, and reload", async () => {
@@ -310,7 +335,6 @@ test("session starts reset continuation state for startup, new, resume, fork, an
 		const classifications: RequestKind[] = ["feature_complex", "continuation"];
 		const harness = createFeaturePromptHarness({
 			classifyRequest: async () => classifications.shift(),
-			loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 		});
 		assert.deepEqual(await harness.run("Add a command palette"), { systemPrompt: injectedFeaturePrompt("feature_complex") }, reason);
 		harness.runLifecycle("session_start");
@@ -322,7 +346,6 @@ test("tree navigation resets branch-local continuation state", async () => {
 	const classifications: RequestKind[] = ["feature_lightweight", "continuation"];
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async () => classifications.shift(),
-		loadFeaturePrompt: () => "FEATURE INSTRUCTIONS",
 	});
 	assert.deepEqual(await harness.run("Add a command palette"), { systemPrompt: injectedFeaturePrompt("feature_lightweight") });
 	harness.runLifecycle("session_tree");

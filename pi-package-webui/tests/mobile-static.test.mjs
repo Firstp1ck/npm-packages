@@ -379,8 +379,14 @@ assert.match(css, /body\.pi-run-active:not\(\.mobile-keyboard-open\) \.composer-
 assert.match(css, /#promptInput \{[\s\S]*?min-height:\s*calc\(1\.5em \+ 1\.8rem\)/, "prompt input should default to a compact single-line height");
 assert.match(css, /#promptInput \{[\s\S]*?overflow-y:\s*hidden/, "prompt input should be JS-resized instead of showing a scrollbar by default");
 assert.match(css, /\.composer-context-tags \{[\s\S]*?top:\s*-0\.48rem;[\s\S]*?left:\s*0\.75rem;/, "busy prompt behavior and skill tags should sit at the top-left of the input frame");
+assert.match(css, /\.composer-context-tags \{[^}]*width:\s*calc\(100% - 4\.5rem\);[^}]*min-width:\s*0;[^}]*pointer-events:\s*none;/, "context tags should claim the available prompt-frame width while leaving empty overlay space clickable through to the prompt");
+assert.match(css, /\.composer-busy-mode-tag,[\s\S]*?\.composer-workflow-mode-chip \{\s*pointer-events:\s*auto;/, "interactive context chips should remain clickable through the pointer-transparent full-width overlay");
+assert.match(css, /\.composer-skill-tags \{[^}]*flex:\s*1 1 0;[^}]*overflow:\s*hidden;/, "skill tag strips should use the true leftover context-tag width without squeezing sibling chips");
 assert.match(css, /\.composer-busy-mode-tag \{[\s\S]*?var\(--ctp-crust\)/, "busy prompt behavior tag should use an opaque base background");
-assert.match(css, /\.composer-skill-tag \{[\s\S]*?var\(--ctp-crust\)/, "skill tags should use an opaque base background");
+assert.match(css, /\.composer-skill-tag \{[^}]*flex:\s*0 0 auto;[\s\S]*?var\(--ctp-crust\)/, "skill tags should preserve their natural chip widths inside the responsive strip");
+assert.doesNotMatch(app, /SKILL_TAG_MAX_VISIBLE/, "skill tag visibility should not remain capped at a fixed count");
+assert.match(app, /function fitSessionSkillTags\(\)[\s\S]*?availableWidth = container\.clientWidth[\s\S]*?maxOverflowDigits = String\(tags\.length\)\.length[\s\S]*?requiredWidth <= availableWidth \+ 0\.5/, "skill tags should fit their visible count to the measured input width with bounded overflow-chip measurements");
+assert.match(app, /function installSessionSkillTagResizeHandling\(\)[\s\S]*?new ResizeObserver\(scheduleSessionSkillTagLayout\)[\s\S]*?observe\(container\.parentElement\)/, "skill tag fitting should rerun when the composer tag strip changes width");
 assert.match(css, /\.composer-feature-category-tag \{[\s\S]*?var\(--ctp-crust\)[\s\S]*?\.composer-feature-category-tag\.complex-feature \{[\s\S]*?var\(--ctp-mauve\)[\s\S]*?\.composer-feature-category-tag\[hidden\]/, "feature category tags should use the existing composer-tag frame with a distinct complex state and hidden default");
 assert.match(css, /button\.composer-skill-tag:hover,[\s\S]*?button\.composer-skill-tag:focus-visible/, "skill tags should be styled as clickable controls");
 assert.match(css, /\.extension-dialog\.skill-editor-dialog \{[\s\S]*?--skill-editor-size:\s*min\(152rem[\s\S]*?width:\s*var\(--skill-editor-size\);[\s\S]*?height:\s*var\(--skill-editor-size\);[\s\S]*?aspect-ratio:\s*1 \/ 1/, "skill editor should use a square viewport-bounded modal layout");

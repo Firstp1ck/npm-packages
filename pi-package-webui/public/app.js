@@ -925,7 +925,6 @@ const SUBAGENT_OPEN_MODES = new Set(["overlay", "tab"]);
 const SUBAGENT_OPEN_MODE_LABELS = { overlay: "Overlay", tab: "Tab / terminal" };
 const BUSY_PROMPT_BEHAVIOR_VALUES = new Set(["followUp", "steer"]);
 const BUSY_PROMPT_BEHAVIOR_LABELS = { followUp: "Follow-up", steer: "Steer" };
-const SKILL_TAG_MAX_VISIBLE = 6;
 const SKILL_USAGE_LIMIT_PER_TAB = 32;
 const MOBILE_VIEW_QUERY = "(max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none)";
 const SIDE_PANEL_OVERLAY_QUERY = "(max-width: 1050px), (max-device-width: 720px), (pointer: coarse) and (hover: none)";
@@ -3263,6 +3262,74 @@ function skillKindsLabel(entry) {
   return entry?.kinds?.has("read") ? "context read" : "tracked";
 }
 
+let sessionSkillTagLayoutFrame = 0;
+let sessionSkillTagResizeObserver = null;
+
+function fitSessionSkillTags() {
+  const container = elements.sessionSkillTags;
+  if (!container || container.hidden) return;
+  const tags = [...container.querySelectorAll("button.composer-skill-tag")];
+  const overflow = container.querySelector(".composer-skill-tag.overflow");
+  if (!tags.length || !overflow) return;
+
+  const availableWidth = container.clientWidth;
+  if (availableWidth <= 0) return;
+
+  for (const tag of tags) tag.hidden = false;
+  overflow.hidden = false;
+
+  const containerStyle = getComputedStyle(container);
+  const gap = Number.parseFloat(containerStyle.columnGap || containerStyle.gap) || 0;
+  const tagWidths = tags.map((tag) => tag.getBoundingClientRect().width);
+  const overflowWidths = new Map();
+  const maxOverflowDigits = String(tags.length).length;
+  for (let digits = 1; digits <= maxOverflowDigits; digits += 1) {
+    overflow.textContent = `+${"0".repeat(digits)}`;
+    overflowWidths.set(digits, overflow.getBoundingClientRect().width);
+  }
+  let visibleCount = 0;
+
+  for (let count = tags.length; count >= 0; count -= 1) {
+    const hiddenCount = tags.length - count;
+    const itemCount = count + (hiddenCount ? 1 : 0);
+    const tagsWidth = tagWidths.slice(0, count).reduce((total, width) => total + width, 0);
+    const overflowWidth = hiddenCount ? overflowWidths.get(String(hiddenCount).length) || 0 : 0;
+    const requiredWidth = tagsWidth + overflowWidth + Math.max(0, itemCount - 1) * gap;
+    if (requiredWidth <= availableWidth + 0.5) {
+      visibleCount = count;
+      break;
+    }
+  }
+
+  tags.forEach((tag, index) => { tag.hidden = index >= visibleCount; });
+  const hiddenCount = tags.length - visibleCount;
+  overflow.hidden = hiddenCount === 0;
+  if (hiddenCount) {
+    overflow.textContent = `+${hiddenCount}`;
+    overflow.title = `${hiddenCount} more tracked skill${hiddenCount === 1 ? "" : "s"}.`;
+  }
+}
+
+function scheduleSessionSkillTagLayout() {
+  if (sessionSkillTagLayoutFrame) return;
+  sessionSkillTagLayoutFrame = requestAnimationFrame(() => {
+    sessionSkillTagLayoutFrame = 0;
+    fitSessionSkillTags();
+  });
+}
+
+function installSessionSkillTagResizeHandling() {
+  const container = elements.sessionSkillTags;
+  if (!container) return;
+  if (typeof ResizeObserver === "function") {
+    sessionSkillTagResizeObserver = new ResizeObserver(scheduleSessionSkillTagLayout);
+    sessionSkillTagResizeObserver.observe(container);
+    if (container.parentElement) sessionSkillTagResizeObserver.observe(container.parentElement);
+  } else {
+    window.addEventListener("resize", scheduleSessionSkillTagLayout, { passive: true });
+  }
+}
+
 function renderSessionSkillTags(tabId = activeTabId) {
   const container = elements.sessionSkillTags;
   if (!container) return;
@@ -3272,8 +3339,7 @@ function renderSessionSkillTags(tabId = activeTabId) {
     container.hidden = true;
     return;
   }
-  const visible = entries.slice(0, SKILL_TAG_MAX_VISIBLE);
-  for (const entry of visible) {
+  for (const entry of entries) {
     const classes = ["composer-skill-tag", "read"];
     const tag = make("button", classes.join(" "), entry.name);
     tag.type = "button";
@@ -3284,12 +3350,11 @@ function renderSessionSkillTags(tabId = activeTabId) {
     tag.addEventListener("click", () => openSkillEditor(entry));
     container.append(tag);
   }
-  if (entries.length > visible.length) {
-    const overflow = make("span", "composer-skill-tag overflow", `+${entries.length - visible.length}`);
-    overflow.title = `${entries.length - visible.length} more tracked skill${entries.length - visible.length === 1 ? "" : "s"}.`;
-    container.append(overflow);
-  }
+  const overflow = make("span", "composer-skill-tag overflow", `+${entries.length}`);
+  overflow.hidden = true;
+  container.append(overflow);
   container.hidden = false;
+  scheduleSessionSkillTagLayout();
 }
 
 function normalizeFeatureCategory(value) {
@@ -36047,6 +36112,7 @@ focusPromptInput({ defer: true });
 restoreStoredSkillUsage();
 restoreBusyPromptBehaviorSetting();
 updateComposerModeButtons();
+installSessionSkillTagResizeHandling();
 updateOptionalFeatureAvailability();
 refreshOptionalFeaturePackageStatuses({ announce: true });
 renderAppRunnerControls();
