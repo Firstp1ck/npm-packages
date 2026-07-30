@@ -1936,10 +1936,14 @@ for (const [name, range] of Object.entries(companionDependencies)) {
   assert.equal(pkg.optionalDependencies?.[name], range, `webui package should optionally depend on ${name}`);
   assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require optional companion ${name}`);
   assert.equal(lock.packages?.[""]?.optionalDependencies?.[name], range, `package-lock root should optionally depend on ${name}`);
-  assert.equal(lock.packages?.[""]?.dependencies?.[name], range, `package-lock root should record the installed optional companion ${name}`);
   assert.ok(lock.packages?.[`node_modules/${name}`], `package-lock should include resolved optional companion ${name}`);
+  assert.equal(lock.packages?.[`node_modules/${name}`]?.inBundle, true, `package-lock should mark bundled companion ${name}`);
 }
-assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
+assert.deepEqual(
+  [...(pkg.bundledDependencies || [])].sort(),
+  Object.keys(companionDependencies).sort(),
+  "webui Pi resources should be bundled so manifest-relative node_modules paths survive npm hoisting",
+);
 assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-natural-conversation"], undefined, "webui package should not optionally depend on the standalone Natural Conversation package");
 assert.equal(pkg.optionalDependencies?.["@firstpick/pi-extension-aur-review"], undefined, "webui package should not reference the unpublished aur-review extension");
 assert.equal(lock.packages?.["node_modules/@firstpick/pi-extension-aur-review"], undefined, "package lock should not retain an unpublished aur-review tarball");

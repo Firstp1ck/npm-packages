@@ -78,6 +78,23 @@
     "@firstpick/pi-themes-bundle": "^0.1.5",
     "node-pty": "^1.1.0"
   },
+  "bundledDependencies": [
+    "@firstpick/pi-extension-bang-command-autocomplete",
+    "@firstpick/pi-extension-btw",
+    "@firstpick/pi-extension-fish-user-bash",
+    "@firstpick/pi-extension-git-footer-status",
+    "@firstpick/pi-extension-release-aur",
+    "@firstpick/pi-extension-release-npm",
+    "@firstpick/pi-extension-safety-guard",
+    "@firstpick/pi-extension-setup-skills",
+    "@firstpick/pi-extension-stats",
+    "@firstpick/pi-extension-todo-progress",
+    "@firstpick/pi-extension-tools",
+    "@firstpick/pi-extension-workflows",
+    "@firstpick/pi-package-remote-webui",
+    "@firstpick/pi-prompts-git-pr",
+    "@firstpick/pi-themes-bundle"
+  ],
   "files": [
     "index.ts",
     "lib",
