@@ -68,7 +68,7 @@ assert.match(server, /"issue-wizard-state\.mjs"/, "the static allowlist must con
 assert.match(server, /"issue-bot-client\.mjs"/, "the static allowlist must serve the browser client module");
 assert.match(serviceWorker, /"\/issue-wizard-state\.mjs"/, "the PWA shell must keep caching the pure wizard module");
 assert.match(serviceWorker, /"\/issue-bot-client\.mjs"/, "the PWA shell must cache the browser client module");
-assert.match(serviceWorker, /pi-webui-pwa-v49/, "the PWA cache name must change with browser wiring updates");
+assert.match(serviceWorker, /pi-webui-pwa-v50/, "the PWA cache name must change with browser wiring updates");
 assert.match(packageJson, /node --check public\/issue-wizard-state\.mjs/, "the package check must keep syntax-checking the pure wizard module");
 assert.match(packageJson, /node --check public\/issue-bot-client\.mjs/, "the package check must syntax-check the browser client module");
 

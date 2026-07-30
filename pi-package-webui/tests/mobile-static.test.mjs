@@ -1026,6 +1026,30 @@ assert.match(app, /chip\.key === "worktree"[\s\S]*setFooterBranchPickerOpen\(!fo
 assert.match(app, /function footerPayloadWithLiveModel\(payload\)[\s\S]*const worktreeLabel = gitWorkspaceBadgeLabel\(workspace\)[\s\S]*key: "worktree"/, "git footer payload should inject a live worktree chip from tab metadata");
 assert.match(app, /function renderFooterBranchPicker\(\)[\s\S]*Git branches & worktrees[\s\S]*renderFooterWorktreeList\(state\)[\s\S]*renderFooterBranchOption\(branch, state\)/, "git branch picker should render branch worktree controls and local branch choices");
 assert.match(app, /function renderFooterBranchOption\(branch, state = footerBranchPickerState\)[\s\S]*openFooterBranchOption\(branch, state\)[\s\S]*footer-branch-advanced-action[\s\S]*applyFooterGitBranch\(branch\.name, \{ switchingKey: branch\.key \}\)/, "branch rows should prefer worktree open/create while keeping an advanced in-place switch action");
+const branchPickerRenderKeySource = appFunctionSource("footerBranchPickerRenderKey", "gitFooterPickerStateKey");
+const branchPickerKeySandbox = { footerBranchPickerOpen: true, footerBranchPickerState: { loading: true, branches: [] } };
+const loadingBranchPickerKey = vm.runInNewContext(`${branchPickerRenderKeySource}\nfooterBranchPickerRenderKey()`, branchPickerKeySandbox);
+branchPickerKeySandbox.footerBranchPickerState = { loading: false, branches: [{ name: "main" }] };
+const loadedBranchPickerKey = vm.runInNewContext("footerBranchPickerRenderKey()", branchPickerKeySandbox);
+assert.notEqual(loadingBranchPickerKey, loadedBranchPickerKey, "branch picker render key should change when asynchronous branch data replaces loading state");
+assert.match(appFunctionSource("gitFooterPickerStateKey", "updateGitFooterChipNodeValue"), /footerBranchPickerRenderKey\(\)/, "git footer cache identity should include live branch picker state so the first opening rerenders when loading finishes");
+const branchSwitchAvailabilitySource = appFunctionSource("footerBranchSwitchAvailability", "renderFooterBranchOption");
+const branchSwitchAvailability = JSON.parse(vm.runInNewContext(`${branchSwitchAvailabilitySource}\nJSON.stringify({
+  switching: footerBranchSwitchAvailability({ name: "feat/demo" }, { loading: true, switching: "origin/main" }, ""),
+  loading: footerBranchSwitchAvailability({ name: "feat/demo" }, { loading: true, switching: "" }, ""),
+  mainWorktree: footerBranchSwitchAvailability({ name: "feat/demo", mainWorktree: true }, {}, "/repo"),
+  otherWorktree: footerBranchSwitchAvailability({ name: "feat/demo", mainWorktree: false }, {}, "/repo-worktrees/demo"),
+  available: footerBranchSwitchAvailability({ name: "feat/demo" }, {}, ""),
+})`));
+assert.equal(branchSwitchAvailability.switching.label, "Action running…", "running branch mutations should expose their exact disabled category");
+assert.match(branchSwitchAvailability.switching.reason, /origin\/main is still running/, "running branch mutations should name the active branch action");
+assert.equal(branchSwitchAvailability.loading.label, "Refreshing…", "branch metadata loading should expose a distinct disabled category");
+assert.match(branchSwitchAvailability.loading.reason, /information finishes loading/, "branch metadata loading should explain when switching becomes available");
+assert.equal(branchSwitchAvailability.mainWorktree.label, "In main worktree", "main-worktree occupancy should expose a distinct disabled category");
+assert.match(branchSwitchAvailability.mainWorktree.reason, /main worktree at \/repo/, "main-worktree occupancy should identify the exact checkout path");
+assert.equal(branchSwitchAvailability.otherWorktree.label, "In another worktree", "secondary-worktree occupancy should expose a distinct disabled category");
+assert.match(branchSwitchAvailability.otherWorktree.reason, /another worktree at \/repo-worktrees\/demo/, "secondary-worktree occupancy should identify the exact checkout path");
+assert.deepEqual(branchSwitchAvailability.available, { disabled: false, label: "Switch here", reason: "" }, "unoccupied idle branches should keep Switch here enabled");
 assert.match(app, /function footerGitBranchKey\(item = \{\}\)[\s\S]*return item\.remote \? `remote:\$\{item\.remoteRef\}` : `local:\$\{item\.name\}`/, "remote branch rows should use their exact remote ref, not local name, as their deduplication identity");
 assert.match(app, /function normalizeFooterGitBranches\(data = \{\}\)[\s\S]*const remoteRef = cleanFooterPayloadText\(item\?\.remoteRef, "", 4000\);[\s\S]*if \(remote && !remoteRef\) continue;[\s\S]*remoteRef: remote \? remoteRef : "",[\s\S]*remoteName: remote \? cleanStatusText\(item\?\.remoteName\) : "",[\s\S]*displayName: remote \? cleanFooterPayloadText\(item\?\.displayName, remoteRef, 4000\) : name,[\s\S]*const key = footerGitBranchKey\(branch\);[\s\S]*if \(seen\.has\(key\)\) continue;/, "branch normalization should sanitize and retain explicit remote metadata while deduplicating by remote identity");
 assert.match(app, /function footerBranchOptionLabel\(branch = \{\}\)[\s\S]*cleanStatusText\(branch\.displayName\) \|\| cleanStatusText\(branch\.name\)/, "remote branch rows should visibly prefer the advertised exact remote ref label");

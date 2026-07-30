@@ -13203,13 +13203,20 @@ function gitFooterChipShapeKey(chip) {
   return JSON.stringify(shape);
 }
 
+function footerBranchPickerRenderKey() {
+  // Branch data arrives asynchronously after the picker opens. Include its full
+  // serializable state so the footer fast path cannot leave the initial loading
+  // card mounted after fresher branch/worktree data has arrived.
+  return footerBranchPickerOpen ? JSON.stringify(footerBranchPickerState) : "";
+}
+
 function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
   const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
   const piCalibrationInFlight = tabContext.tabId ? gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -16089,6 +16096,32 @@ function openFooterBranchOption(branch, state = footerBranchPickerState) {
   return createFooterGitBranchWorktree(branch.name, { skipConfirm: true, chooseBase: false, switchingKey: branch.key });
 }
 
+function footerBranchSwitchAvailability(branch = {}, state = {}, worktreePath = "") {
+  if (state.switching) {
+    return {
+      disabled: true,
+      label: "Action running…",
+      reason: `Cannot switch this checkout while the branch action for ${state.switching} is still running.`,
+    };
+  }
+  if (state.loading) {
+    return {
+      disabled: true,
+      label: "Refreshing…",
+      reason: "Cannot switch this checkout until the latest branch and worktree information finishes loading.",
+    };
+  }
+  if (worktreePath) {
+    const location = branch.mainWorktree ? "the main worktree" : "another worktree";
+    return {
+      disabled: true,
+      label: branch.mainWorktree ? "In main worktree" : "In another worktree",
+      reason: `Cannot switch this checkout because ${branch.name} is already checked out in ${location} at ${worktreePath}. Open that worktree instead.`,
+    };
+  }
+  return { disabled: false, label: "Switch here", reason: "" };
+}
+
 function renderFooterBranchOption(branch, state = footerBranchPickerState) {
   const selected = !branch.remote && (branch.current || (!!state.current && branch.name === state.current));
   const worktreePath = footerBranchWorktreePath(branch, state);
@@ -16114,17 +16147,21 @@ function renderFooterBranchOption(branch, state = footerBranchPickerState) {
   row.append(primary);
 
   if (!selected) {
-    const advanced = make("button", "footer-branch-advanced-action", "Switch here");
+    const availability = footerBranchSwitchAvailability(branch, state, worktreePath);
+    const advanced = make("button", "footer-branch-advanced-action", availability.label);
     advanced.type = "button";
-    advanced.disabled = busy || !!worktreePath;
-    advanced.title = worktreePath
-      ? "This branch is already checked out elsewhere; use the primary worktree action instead of switching this checkout."
-      : branch.remote
-        ? `Advanced: git switch --track -c ${branch.name} ${branch.remoteRef} in this checkout`
-        : `Advanced: git switch ${branch.name} in this checkout`;
-    advanced.addEventListener("click", () => branch.remote
-      ? applyFooterGitBranch(branch.name, { remoteRef: branch.remoteRef, switchingLabel: footerBranchOptionLabel(branch), switchingKey: branch.key })
-      : applyFooterGitBranch(branch.name, { switchingKey: branch.key }));
+    advanced.disabled = availability.disabled;
+    advanced.title = availability.reason || (branch.remote
+      ? `Advanced: git switch --track -c ${branch.name} ${branch.remoteRef} in this checkout`
+      : `Advanced: git switch ${branch.name} in this checkout`);
+    if (availability.reason) {
+      advanced.dataset.disabledReason = availability.reason;
+      advanced.setAttribute("aria-label", `${availability.label}. ${availability.reason}`);
+    } else {
+      advanced.addEventListener("click", () => branch.remote
+        ? applyFooterGitBranch(branch.name, { remoteRef: branch.remoteRef, switchingLabel: footerBranchOptionLabel(branch), switchingKey: branch.key })
+        : applyFooterGitBranch(branch.name, { switchingKey: branch.key }));
+    }
     row.append(advanced);
   }
   return row;
