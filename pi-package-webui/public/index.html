@@ -664,13 +664,13 @@
                   </div>
                   <div class="control-field">
                     <div class="control-field-header">
-                      <label for="fastOutputModeSelect">Fast mode (Experimental)</label>
-                      <span class="control-field-context">Markdown final output; live thinking expanded; stored thinking grouped and collapsed</span>
+                      <label for="fastOutputModeSelect">Compact mode (Experimental)</label>
+                      <span class="control-field-context">Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed</span>
                     </div>
                     <div class="control-action-row">
                       <select id="fastOutputModeSelect" title="Output processing mode" aria-describedby="fastOutputModeStatus">
                         <option value="normal">Normal</option>
-                        <option value="compact-v1">Fast</option>
+                        <option value="compact-v1">Compact</option>
                       </select>
                       <button id="setFastOutputModeButton" class="control-apply-button" type="button" aria-label="Apply selected output processing mode" disabled>Apply</button>
                     </div>
@@ -795,6 +795,20 @@
               </button>
             </h2>
             <div id="sidePanelSectionCodexUsage" class="side-panel-section-content" hidden>
+              <div class="control-field codex-fast-mode-control" aria-labelledby="codexFastModeLabel">
+                <div class="control-field-header">
+                  <label id="codexFastModeLabel" for="codexFastModeSelect">Fast mode</label>
+                  <span class="control-field-context">Subscription-backed Codex requests · This tab</span>
+                </div>
+                <div class="control-action-row">
+                  <select id="codexFastModeSelect" title="Codex subscription request tier" aria-describedby="codexFastModeStatus" disabled>
+                    <option value="normal">Normal</option>
+                    <option value="fast">Fast</option>
+                  </select>
+                  <button id="setCodexFastModeButton" class="control-apply-button" type="button" aria-label="Apply selected Codex Fast mode" disabled>Apply</button>
+                </div>
+                <div id="codexFastModeStatus" class="toggle-control-hint" role="status" aria-live="polite">Checking Codex Fast mode…</div>
+              </div>
               <div class="codex-usage-actions">
                 <button id="refreshCodexUsageButton" type="button">Refresh usage</button>
               </div>
@@ -1369,7 +1383,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=92">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=94">
       (() => {
         "use strict";
 

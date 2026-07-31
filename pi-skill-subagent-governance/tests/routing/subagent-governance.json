@@ -1,0 +1,51 @@
+{
+  "skill": "subagent-governance",
+  "should_trigger": [
+    "Split this migration across several agents and set up the delegation before anyone starts writing.",
+    "One of the delegated runs failed mid-call; decide what to relaunch without touching the runs that are still going.",
+    "Two implementation runs finished, so decide how to integrate their work and what review it still needs.",
+    "The reviewers disagree about this integrated change; decide which findings to accept before a fix pass.",
+    "Launch one agent for the API now and a second one later in a separate request; check whether that split delegation is allowed.",
+    "Use one implementation worker plus two reviewers for this feature; decide whether that satisfies the static worker minimum."
+  ],
+  "should_not_trigger": [
+    "What arguments does the delegation tool accept for a scheduled run?",
+    "Create a new custom agent file with a different model and thinking level.",
+    "Show the token cost and status of the last background runs.",
+    "Fix the missing null check in the auth module.",
+    "Write the final HTML report for the finished feature.",
+    "Explain what this stack trace means."
+  ],
+  "ambiguous": [
+    {
+      "prompt": "Run three reviewers on this diff.",
+      "candidate_skills": [
+        "subagent-governance",
+        "pi-subagents"
+      ],
+      "decision": "Use this skill to decide whether the review fanout is admissible, who may write, and how findings are dispositioned; use the mechanics skill for the launch call, execution mode, and context options.",
+      "reason": "A fanout request mixes an admissibility decision with an execution-syntax question, and the two are owned by different skills.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "Just delegate this to one agent and let it work.",
+      "candidate_skills": [
+        "subagent-governance",
+        "pi-subagents"
+      ],
+      "decision": "Use this skill, because a single-child delegation request is an admissibility question: either declare at least two necessary children or keep the work in the parent.",
+      "reason": "The request looks like a mechanics request but is decided by the zero-or-multiple invariant before any launch syntax matters.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "How many implementation agents and reviewers does this feature need before it counts as done?",
+      "candidate_skills": [
+        "subagent-governance",
+        "feature-development-workflow"
+      ],
+      "decision": "Use the feature workflow skill for the required feature outcomes, quorum size, and completion gate; use this skill for whether the delegation shape that produces them is admissible and how each finding is dispositioned.",
+      "reason": "Feature completion gates and delegation admissibility are separate contracts that meet in the same request.",
+      "review_status": "reviewed"
+    }
+  ]
+}

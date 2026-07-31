@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-anthropic-auth-recovery",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Offer a plan-only Pi recovery flow for classified Anthropic compatibility errors.",
   "type": "module",
   "license": "MIT",

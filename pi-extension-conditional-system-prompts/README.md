@@ -1,6 +1,6 @@
 # @firstpick/pi-extension-conditional-system-prompts
 
-Conditionally appends local system-prompt files to a Pi agent turn.
+Conditionally appends the local Windows policy and a short, fail-closed routing bridge to the enabled `subagent-governance` skill.
 
 ## Install
 
@@ -8,37 +8,43 @@ Conditionally appends local system-prompt files to a Pi agent turn.
 pi install npm:@firstpick/pi-extension-conditional-system-prompts
 ```
 
-Pi discovers `conditional-system-prompts.ts` through the package manifest.
+Pi discovers `conditional-system-prompts.ts` through the package manifest. The `subagent-governance` skill must also be enabled when the `subagent` tool is available.
 
 ## Behavior
 
-Before an agent starts, the extension appends the following files from Pi's agent directory when their conditions match:
+Before an agent starts, the extension applies these conditions:
 
-| Condition | Required external file |
+| Condition | Appended content |
 | --- | --- |
-| Pi is running on Windows | `APPEND_WINDOWS.md` |
-| The selected tools include `subagent` | `APPEND_SUBAGENTS.md` |
+| Pi is running on Windows | Local `APPEND_WINDOWS.md` from the configured agent directory |
+| Selected tools include `subagent` | Built-in bridge requiring the parent to load `subagent-governance` with `read` |
 
-When both conditions apply, the Windows prompt is appended first, followed by the subagent prompt. Existing system-prompt content is retained, and loaded prompt text is cached for the extension lifetime.
+When both conditions apply, the Windows prompt is appended first, followed by the governance bridge. Existing system-prompt content is retained. Only the Windows file is read and cached.
+
+The governance bridge preserves progressive disclosure rather than duplicating policy text. Before injecting it, the extension resolves the advertised `<location>` for `subagent-governance` from `<available_skills>` and verifies that both its `SKILL.md` and Pi adapter are readable and non-empty. The bridge directs the parent to that adapter and keeps the installed `pi-subagents` skill authoritative for runtime mechanics.
 
 ## Configuration and requirements
 
-This package intentionally does not publish either `APPEND_*.md` file. Create and maintain the required files in Pi's agent directory using your own policy content. Pi normally uses its standard agent directory; `PI_CODING_AGENT_DIR` can select a different agent directory when supported by Pi.
+- Maintain `APPEND_WINDOWS.md` only when Windows routing is needed.
+- Enable `subagent-governance` through Pi settings or a package entry.
+- Reload Pi after changing the extension, settings, skill, or Windows prompt.
 
-After changing a required prompt file, reload Pi so the extension cache is rebuilt. No additional package configuration is provided.
+No external subagent-policy prompt file is required or read.
 
 ## Security and privacy
 
-- Prompt files stay local; this package does not send their contents anywhere.
-- The extension reads only the two filenames listed above from Pi's configured agent directory.
-- Treat those files as trusted configuration: their content is appended to the agent's system prompt and can influence tool use and runtime behavior.
-- Do not store credentials or other secrets in prompt files unless that exposure is intentional for the Pi session.
+- The Windows prompt stays local; this package does not send its contents anywhere.
+- The extension reads only `APPEND_WINDOWS.md` and only when Pi is running on Windows.
+- Treat that file as trusted configuration because its content is appended to the system prompt.
+- The governance bridge contains no private data and does not read the skill body itself.
 
 ## Failure behavior and limitations
 
-A matching condition requires its corresponding file. If the file is missing or unreadable, Pi receives the underlying file-read error during `before_agent_start`; this preserves the extension's fail-fast behavior rather than silently running without the configured policy. Non-Windows sessions without `subagent` selected do not read either file.
+A Windows turn requires `APPEND_WINDOWS.md`; a missing or unreadable file propagates the file-read error. Non-Windows turns never read it.
 
-The extension does not validate prompt content, manage file permissions, watch for changes, or decide which tools Pi should enable.
+A turn with `subagent` selected receives the skill bridge without reading an external prompt. If the enabled governance skill is missing from the current system prompt, or its advertised `SKILL.md` or Pi adapter is unavailable, unreadable, or empty, the extension injects a model-visible configuration-error policy requiring delegation to stop until configuration is restored.
+
+The extension validates availability, not policy semantics. It does not manage settings or replace hard fanout enforcement; runtime fanout guards remain separate.
 
 ## Development
 
@@ -49,7 +55,7 @@ npm run smoke
 npm pack --dry-run --json
 ```
 
-The focused tests cover platform and selected-tool routing, prompt composition order, per-instance caching, and missing-file behavior.
+Tests cover selected-tool routing, Windows ordering, Windows caching, fail-closed bridge language, and Windows-only missing-file behavior.
 
 ## License
 

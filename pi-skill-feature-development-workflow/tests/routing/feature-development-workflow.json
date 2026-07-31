@@ -1,0 +1,41 @@
+{
+  "skill": "feature-development-workflow",
+  "should_trigger": [
+    "Implement a new workspace export feature with permissions, CSV generation, and integration tests.",
+    "Add a user-facing notification channel and migrate existing preference defaults safely.",
+    "Build this new third-party integration endpoint and deliver the implementation with verification.",
+    "Create a small display toggle that adds the requested behavior to the settings screen."
+  ],
+  "should_not_trigger": [
+    "Fix the existing upload crash when the file is empty.",
+    "Refactor the cache module without changing observable behavior.",
+    "Write documentation and tests for the current endpoint only.",
+    "Research notification providers and recommend one before implementation.",
+    "Review this pull request for security vulnerabilities.",
+    "Restart the failed deployment and inspect the service logs.",
+    "How would a workspace export feature work if we built one someday?"
+  ],
+  "ambiguous": [
+    {
+      "prompt": "Add a tiny flag for compact mode.",
+      "candidate_skills": [
+        "feature-development-workflow",
+        "bug-reporter",
+        "deployment-automation"
+      ],
+      "decision": "Inspect the requested behavior and user intent. Use this skill only when the flag adds a new authorized capability; route a restoration defect or a runtime configuration operation to its dedicated workflow instead.",
+      "reason": "The short request does not establish whether the work is feature delivery, a bug correction, or an operational change.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "Plan a new audit-log export feature but do not implement it yet.",
+      "candidate_skills": [
+        "feature-development-workflow",
+        "tech-deep-dive"
+      ],
+      "decision": "Use a planning or research workflow until the user authorizes implementation. Invoke this skill when delivery of the new capability is requested.",
+      "reason": "Feature planning and feature delivery have different side effects and completion criteria.",
+      "review_status": "reviewed"
+    }
+  ]
+}

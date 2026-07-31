@@ -3070,6 +3070,20 @@ body.embedded-split .side-panel-backdrop {
   display: grid;
   gap: 0.48rem;
 }
+.codex-fast-mode-control {
+  margin-bottom: 0.72rem;
+  padding: 0.72rem;
+  border: 1px solid rgba(148, 226, 213, 0.20);
+  border-radius: 0.85rem;
+  background: rgba(var(--ctp-crust-rgb), 0.50);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 0 1rem rgba(148, 226, 213, 0.05);
+}
+.codex-fast-mode-control .control-field-context {
+  color: rgba(var(--ctp-subtext-rgb), 0.74);
+}
+.codex-fast-mode-control .toggle-control-hint {
+  margin-top: 0.48rem;
+}
 .codex-usage-actions,
 .claude-usage-actions {
   display: flex;
@@ -7886,7 +7900,16 @@ summary { cursor: pointer; color: var(--warning); }
   display: inline-flex;
   align-items: center;
   gap: 0.32rem;
+  width: calc(100% - 4.5rem);
   max-width: calc(100% - 4.5rem);
+  min-width: 0;
+  pointer-events: none;
+}
+.composer-busy-mode-tag,
+.composer-skill-tag,
+.composer-conversation-mode-chip,
+.composer-workflow-mode-chip {
+  pointer-events: auto;
 }
 .composer-busy-mode-tag {
   position: relative;
@@ -7942,6 +7965,7 @@ summary { cursor: pointer; color: var(--warning); }
 }
 .composer-skill-tags {
   display: inline-flex;
+  flex: 1 1 0;
   align-items: center;
   gap: 0.28rem;
   min-width: 0;
@@ -8144,6 +8168,7 @@ body.conversation-mode-active .composer::before {
 }
 .composer-skill-tag {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   min-width: 0;
   min-height: 0;
@@ -8182,6 +8207,7 @@ button.composer-skill-tag:focus-visible {
 }
 .composer-skill-tag.overflow {
   color: var(--ctp-subtext0);
+  font-variant-numeric: tabular-nums;
   border-color: rgba(166, 173, 200, 0.30);
   background: linear-gradient(120deg, rgba(166, 173, 200, 0.22), rgba(166, 173, 200, 0.08)), var(--ctp-crust);
 }

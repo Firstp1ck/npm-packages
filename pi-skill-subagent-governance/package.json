@@ -1,0 +1,40 @@
+{
+  "name": "@firstpick/pi-skill-subagent-governance",
+  "version": "0.1.0",
+  "description": "Portable Agent Skill that governs delegation admissibility for a parent orchestrator, covering zero-or-multiple fanout, the static two-worker minimum, role-fit balance, one-writer isolation, worker handoffs, bounded retry safety, and reviewer finding disposition.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-subagent-governance#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-skill-subagent-governance"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "skill",
+    "agent-skill",
+    "subagent-governance",
+    "delegation-policy",
+    "orchestration-safety"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "python3 -B -m unittest discover -s skills/subagent-governance/tests -p 'test_*.py'"
+  },
+  "files": [
+    "skills/subagent-governance/SKILL.md",
+    "skills/subagent-governance/references/PI-EXECUTION-ADAPTER.md",
+    "skills/subagent-governance/references/RETRY-AND-RECOVERY.md",
+    "skills/subagent-governance/references/WORKER-AND-REVIEW-CONTRACTS.md",
+    "skills/subagent-governance/tests/test_skill_contract.py",
+    "tests/routing/subagent-governance.json",
+    "README.md",
+    "LICENSE"
+  ]
+}

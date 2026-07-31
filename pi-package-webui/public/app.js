@@ -224,6 +224,9 @@ const elements = {
   optionalFeaturesBox: $("#optionalFeaturesBox"),
   codexUsageBox: $("#codexUsageBox"),
   refreshCodexUsageButton: $("#refreshCodexUsageButton"),
+  codexFastModeSelect: $("#codexFastModeSelect"),
+  setCodexFastModeButton: $("#setCodexFastModeButton"),
+  codexFastModeStatus: $("#codexFastModeStatus"),
   claudeUsageBox: $("#claudeUsageBox"),
   refreshClaudeUsageButton: $("#refreshClaudeUsageButton"),
   fileTreeCwd: $("#fileTreeCwd"),
@@ -719,7 +722,7 @@ let footerModelPickerOpen = false;
 let footerThinkingPickerOpen = false;
 let footerAutoCompactionToggleInFlight = false;
 let footerBranchPickerOpen = false;
-let footerBranchPickerState = { loading: false, error: "", branches: [], current: "", root: "", repoRoot: "", currentWorktreePath: "", defaultWorktreesRoot: "", worktrees: [], occupiedBranches: [], switching: "", tabId: null };
+let footerBranchPickerState = { loading: false, error: "", branches: [], current: "", root: "", repoRoot: "", currentWorktreePath: "", defaultWorktreesRoot: "", worktrees: [], occupiedBranches: [], switching: "", switchingKey: "", tabId: null };
 let footerBranchCreateDraft = { type: "", name: "" };
 let footerBranchPickerRequestSerial = 0;
 let footerScopedModelDragKey = "";
@@ -853,6 +856,7 @@ const STATS_WEBUI_PAYLOAD_TYPE = "firstpick.pi-extension-stats.overlay";
 const STATS_WEBUI_PAYLOAD_VERSION = 1;
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
+const CODEX_FAST_MODE_STATUS_KEY = "codex-fast-mode";
 const REMOTE_WEBUI_CONTROLS_STATUS_KEY = "pi-remote-webui:controls";
 const REMOTE_WEBUI_CONTROLS_PAYLOAD_TYPE = "firstpick.pi-package-remote-webui.controls";
 const REMOTE_WEBUI_CONTROLS_PAYLOAD_VERSION = 1;
@@ -925,7 +929,6 @@ const SUBAGENT_OPEN_MODES = new Set(["overlay", "tab"]);
 const SUBAGENT_OPEN_MODE_LABELS = { overlay: "Overlay", tab: "Tab / terminal" };
 const BUSY_PROMPT_BEHAVIOR_VALUES = new Set(["followUp", "steer"]);
 const BUSY_PROMPT_BEHAVIOR_LABELS = { followUp: "Follow-up", steer: "Steer" };
-const SKILL_TAG_MAX_VISIBLE = 6;
 const SKILL_USAGE_LIMIT_PER_TAB = 32;
 const MOBILE_VIEW_QUERY = "(max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none)";
 const SIDE_PANEL_OVERLAY_QUERY = "(max-width: 1050px), (max-device-width: 720px), (pointer: coarse) and (hover: none)";
@@ -1022,6 +1025,7 @@ const optionalFeatureAvailability = {
   tuiToolsCommand: false,
   remoteWebui: false,
   naturalConversation: false,
+  codexFastMode: false,
   themeBundle: false,
 };
 const APP_RUNNER_CONTEXT_DEFAULT_LINES = 80;
@@ -1141,6 +1145,13 @@ const OPTIONAL_FEATURES = [
     description: "Token and cost usage analytics commands plus the browser dashboard overlay.",
   },
   {
+    id: "codexFastMode",
+    label: "Codex Fast mode",
+    packageName: "@firstpick/pi-extension-codex-fast-mode",
+    capabilityLabel: "/fast-mode",
+    description: "Session-scoped Codex subscription Fast mode selector in the Codex Usage panel. Spends extra subscription credits while enabled.",
+  },
+  {
     id: "themeBundle",
     label: "Theme bundle",
     packageName: "@firstpick/pi-themes-bundle",
@@ -1149,6 +1160,11 @@ const OPTIONAL_FEATURES = [
   },
 ];
 const OPTIONAL_FEATURE_BY_ID = new Map(OPTIONAL_FEATURES.map((feature) => [feature.id, feature]));
+// Optional features that arm a paid or stateful runtime mode must turn it off before the browser
+// stops managing them, so a stale mode can never keep spending credits after a Disable click.
+const OPTIONAL_FEATURE_DISABLE_PREREQUISITES = new Map([
+  ["codexFastMode", () => disableCodexFastModeIntegration()],
+]);
 
 let issueWizardCatalog = null;
 let issueWizardState = createIssueWizardState();
@@ -1592,6 +1608,7 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["git-footer-refresh", "gitFooterStatus"],
   ["git-footer-visibility", "gitFooterStatus"],
   ["todo-progress-status", "todoProgressWidget"],
+  ["fast-mode", "codexFastMode"],
 ]);
 const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
 HIDDEN_COMMAND_NAMES.add("stats-webui");
@@ -3263,6 +3280,74 @@ function skillKindsLabel(entry) {
   return entry?.kinds?.has("read") ? "context read" : "tracked";
 }
 
+let sessionSkillTagLayoutFrame = 0;
+let sessionSkillTagResizeObserver = null;
+
+function fitSessionSkillTags() {
+  const container = elements.sessionSkillTags;
+  if (!container || container.hidden) return;
+  const tags = [...container.querySelectorAll("button.composer-skill-tag")];
+  const overflow = container.querySelector(".composer-skill-tag.overflow");
+  if (!tags.length || !overflow) return;
+
+  const availableWidth = container.clientWidth;
+  if (availableWidth <= 0) return;
+
+  for (const tag of tags) tag.hidden = false;
+  overflow.hidden = false;
+
+  const containerStyle = getComputedStyle(container);
+  const gap = Number.parseFloat(containerStyle.columnGap || containerStyle.gap) || 0;
+  const tagWidths = tags.map((tag) => tag.getBoundingClientRect().width);
+  const overflowWidths = new Map();
+  const maxOverflowDigits = String(tags.length).length;
+  for (let digits = 1; digits <= maxOverflowDigits; digits += 1) {
+    overflow.textContent = `+${"0".repeat(digits)}`;
+    overflowWidths.set(digits, overflow.getBoundingClientRect().width);
+  }
+  let visibleCount = 0;
+
+  for (let count = tags.length; count >= 0; count -= 1) {
+    const hiddenCount = tags.length - count;
+    const itemCount = count + (hiddenCount ? 1 : 0);
+    const tagsWidth = tagWidths.slice(0, count).reduce((total, width) => total + width, 0);
+    const overflowWidth = hiddenCount ? overflowWidths.get(String(hiddenCount).length) || 0 : 0;
+    const requiredWidth = tagsWidth + overflowWidth + Math.max(0, itemCount - 1) * gap;
+    if (requiredWidth <= availableWidth + 0.5) {
+      visibleCount = count;
+      break;
+    }
+  }
+
+  tags.forEach((tag, index) => { tag.hidden = index >= visibleCount; });
+  const hiddenCount = tags.length - visibleCount;
+  overflow.hidden = hiddenCount === 0;
+  if (hiddenCount) {
+    overflow.textContent = `+${hiddenCount}`;
+    overflow.title = `${hiddenCount} more tracked skill${hiddenCount === 1 ? "" : "s"}.`;
+  }
+}
+
+function scheduleSessionSkillTagLayout() {
+  if (sessionSkillTagLayoutFrame) return;
+  sessionSkillTagLayoutFrame = requestAnimationFrame(() => {
+    sessionSkillTagLayoutFrame = 0;
+    fitSessionSkillTags();
+  });
+}
+
+function installSessionSkillTagResizeHandling() {
+  const container = elements.sessionSkillTags;
+  if (!container) return;
+  if (typeof ResizeObserver === "function") {
+    sessionSkillTagResizeObserver = new ResizeObserver(scheduleSessionSkillTagLayout);
+    sessionSkillTagResizeObserver.observe(container);
+    if (container.parentElement) sessionSkillTagResizeObserver.observe(container.parentElement);
+  } else {
+    window.addEventListener("resize", scheduleSessionSkillTagLayout, { passive: true });
+  }
+}
+
 function renderSessionSkillTags(tabId = activeTabId) {
   const container = elements.sessionSkillTags;
   if (!container) return;
@@ -3272,8 +3357,7 @@ function renderSessionSkillTags(tabId = activeTabId) {
     container.hidden = true;
     return;
   }
-  const visible = entries.slice(0, SKILL_TAG_MAX_VISIBLE);
-  for (const entry of visible) {
+  for (const entry of entries) {
     const classes = ["composer-skill-tag", "read"];
     const tag = make("button", classes.join(" "), entry.name);
     tag.type = "button";
@@ -3284,12 +3368,11 @@ function renderSessionSkillTags(tabId = activeTabId) {
     tag.addEventListener("click", () => openSkillEditor(entry));
     container.append(tag);
   }
-  if (entries.length > visible.length) {
-    const overflow = make("span", "composer-skill-tag overflow", `+${entries.length - visible.length}`);
-    overflow.title = `${entries.length - visible.length} more tracked skill${entries.length - visible.length === 1 ? "" : "s"}.`;
-    container.append(overflow);
-  }
+  const overflow = make("span", "composer-skill-tag overflow", `+${entries.length}`);
+  overflow.hidden = true;
+  container.append(overflow);
   container.hidden = false;
+  scheduleSessionSkillTagLayout();
 }
 
 function normalizeFeatureCategory(value) {
@@ -6810,6 +6893,16 @@ function setOptionalFeatureDisabled(featureId, disabled) {
   if (featureId === "naturalConversation" && disabled && !activeConversationMode().enabled) {
     statusEntries.delete(NATURAL_CONVERSATION_STATUS_KEY);
     updateConversationModeForTab(activeTabId, { available: false, enabled: false, uiState: "off", statusText: "" }, { render: false });
+  }
+  if (featureId === "codexFastMode") {
+    if (disabled) {
+      statusEntries.delete(CODEX_FAST_MODE_STATUS_KEY);
+      codexFastModeState = { ...codexFastModeState, available: false, enabled: false, statusKnown: false, busy: false };
+      codexFastModeNotice = "";
+      renderCodexFastModeControl();
+    } else {
+      refreshCodexFastMode().catch(() => null);
+    }
   }
   storeDisabledOptionalFeatures();
   renderOptionalFeatureDependentDisplays();
@@ -13110,13 +13203,20 @@ function gitFooterChipShapeKey(chip) {
   return JSON.stringify(shape);
 }
 
+function footerBranchPickerRenderKey() {
+  // Branch data arrives asynchronously after the picker opens. Include its full
+  // serializable state so the footer fast path cannot leave the initial loading
+  // card mounted after fresher branch/worktree data has arrived.
+  return footerBranchPickerOpen ? JSON.stringify(footerBranchPickerState) : "";
+}
+
 function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
   const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
   const piCalibrationInFlight = tabContext.tabId ? gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -15403,22 +15503,54 @@ function setFooterThinkingPickerOpen(open) {
   if (wasOpen && !footerThinkingPickerOpen) scheduleDeferredUiFlushAfterDropdownClose();
 }
 
+function footerGitBranchKey(item = {}) {
+  // Remote-only rows stay distinct per exact remote ref so same-named branches
+  // from different remotes never collapse into a single row.
+  return item.remote ? `remote:${item.remoteRef}` : `local:${item.name}`;
+}
+
+function footerBranchOptionLabel(branch = {}) {
+  return cleanStatusText(branch.displayName) || cleanStatusText(branch.name);
+}
+
 function normalizeFooterGitBranches(data = {}) {
   const current = cleanStatusText(data.current || data.currentBranch || "");
+  const rawBranches = Array.isArray(data.branches) ? data.branches : [];
+  const localNames = new Set(
+    rawBranches
+      .filter((item) => typeof item === "string" || item?.remote !== true)
+      .map((item) => cleanStatusText(typeof item === "string" ? item : item?.name))
+      .filter(Boolean),
+  );
   const seen = new Set();
   const branches = [];
-  for (const item of Array.isArray(data.branches) ? data.branches : []) {
+  for (const item of rawBranches) {
     const name = cleanStatusText(typeof item === "string" ? item : item?.name);
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    branches.push({
+    if (!name) continue;
+    const remoteRef = cleanFooterPayloadText(item?.remoteRef, "", 4000);
+    const remote = item?.remote === true;
+    // Never downgrade a remote record without an exact ref into a local row: the
+    // browser must not infer a Git command from display text alone.
+    if (remote && !remoteRef) continue;
+    // A local branch always represents the local name; remote rows for that
+    // same name stay hidden until they are materialized locally.
+    if (remote && localNames.has(name)) continue;
+    const branch = {
       name,
-      current: Boolean(item?.current) || (!!current && name === current),
-      occupied: Boolean(item?.occupied),
-      worktreePath: cleanFooterPayloadText(item?.worktreePath, "", 4000),
-      worktreeCurrent: Boolean(item?.worktreeCurrent),
-      mainWorktree: Boolean(item?.mainWorktree),
-    });
+      remote,
+      remoteRef: remote ? remoteRef : "",
+      remoteName: remote ? cleanStatusText(item?.remoteName) : "",
+      displayName: remote ? cleanFooterPayloadText(item?.displayName, remoteRef, 4000) : name,
+      current: !remote && (Boolean(item?.current) || (!!current && name === current)),
+      occupied: !remote && Boolean(item?.occupied),
+      worktreePath: remote ? "" : cleanFooterPayloadText(item?.worktreePath, "", 4000),
+      worktreeCurrent: !remote && Boolean(item?.worktreeCurrent),
+      mainWorktree: !remote && Boolean(item?.mainWorktree),
+    };
+    const key = footerGitBranchKey(branch);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    branches.push({ key, ...branch });
   }
   const worktrees = (Array.isArray(data.worktrees) ? data.worktrees : [])
     .map((item) => ({
@@ -15487,6 +15619,7 @@ async function loadFooterBranchPicker(tabContext = activeTabContext()) {
     worktrees: preserveState.worktrees || [],
     occupiedBranches: preserveState.occupiedBranches || [],
     switching: "",
+    switchingKey: "",
     tabId,
   };
   if (isCurrentTabContext(tabContext)) {
@@ -15497,10 +15630,10 @@ async function loadFooterBranchPicker(tabContext = activeTabContext()) {
     const response = await api("/api/git-branches", { tabId });
     if (requestSerial !== footerBranchPickerRequestSerial || !footerBranchPickerOpen || !isCurrentTabContext(tabContext)) return;
     if (!response.ok) throw new Error(response.error || "Failed to load git branches");
-    footerBranchPickerState = { loading: false, error: "", switching: "", tabId, ...normalizeFooterGitBranches(response.data || {}) };
+    footerBranchPickerState = { loading: false, error: "", switching: "", switchingKey: "", tabId, ...normalizeFooterGitBranches(response.data || {}) };
   } catch (error) {
     if (requestSerial !== footerBranchPickerRequestSerial || !footerBranchPickerOpen || !isCurrentTabContext(tabContext)) return;
-    footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", error: error.message || String(error) };
+    footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", error: error.message || String(error) };
   }
   if (isCurrentTabContext(tabContext)) {
     renderFooter();
@@ -15578,32 +15711,36 @@ function footerBranchDirtySummaryLines() {
   ];
 }
 
-async function confirmFooterGitBranchAction(branch, { create = false, requireConfirm = false, tabContext = activeTabContext() } = {}) {
+async function confirmFooterGitBranchAction(branch, { create = false, requireConfirm = false, tabContext = activeTabContext(), remoteRef = "" } = {}) {
   const branchName = cleanStatusText(branch);
+  const trackedRemoteRef = cleanStatusText(remoteRef);
   const warningLines = footerBranchAgentWarningLines(tabContext);
   const dirtyLines = footerBranchDirtySummaryLines();
   if (!requireConfirm && warningLines.length === 0 && dirtyLines.length === 0) return true;
-  const action = create ? "Create and switch to new git branch" : "Switch git branch";
+  const action = trackedRemoteRef ? "Create local tracking branch and switch to it" : create ? "Create and switch to new git branch" : "Switch git branch";
   const message = [
     `${action}: ${branchName}?`,
     "",
     `Repository: ${footerBranchPickerState.root || currentGitFooterCacheCwd(tabContext.tabId) || "current tab"}`,
+    ...(trackedRemoteRef ? [`Remote ref: ${trackedRemoteRef}`, `Command: git switch --track -c ${branchName} ${trackedRemoteRef}`] : []),
     ...dirtyLines,
     ...warningLines,
     "",
     "Continue?",
   ].join("\n");
-  return appConfirmText(message, { affected: branchName || "the current branch", confirmLabel: create ? "Create branch" : "Switch branch" });
+  return appConfirmText(message, { affected: branchName || "the current branch", confirmLabel: trackedRemoteRef ? "Create tracking branch" : create ? "Create branch" : "Switch branch" });
 }
 
-async function confirmFooterGitWorktreeAction(branch, { path = "", create = false, requireConfirm = false } = {}) {
+async function confirmFooterGitWorktreeAction(branch, { path = "", create = false, requireConfirm = false, remoteRef = "" } = {}) {
   const branchName = cleanStatusText(branch);
   if (!requireConfirm) return true;
+  const trackedRemoteRef = cleanStatusText(remoteRef);
   const targetPath = cleanFooterPayloadText(path, "", 4000);
   const message = [
     `${create ? "Create" : "Open"} branch worktree: ${branchName || targetPath}?`,
     "",
     `Repository: ${footerBranchPickerState.repoRoot || footerBranchPickerState.root || currentGitFooterCacheCwd() || "current tab"}`,
+    ...(trackedRemoteRef ? [`Remote ref: ${trackedRemoteRef}`, `Creates local branch ${branchName} tracking ${trackedRemoteRef}.`] : []),
     targetPath ? `Worktree: ${targetPath}` : `Default location: ${footerBranchPickerState.defaultWorktreesRoot || "repo sibling .worktrees directory"}`,
     "",
     "This opens a separate checkout in a separate Pi tab and does not switch this tab's branch.",
@@ -15716,7 +15853,7 @@ async function openWorktreeResponseTab(response, { branchName = "", action = "op
   if (payload.tab) applyTabMetadata(payload.tab);
   footerBranchPickerOpen = false;
   footerBranchPickerRequestSerial += 1;
-  footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "" };
+  footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "" };
   renderTabs();
   const targetTab = payload.tab;
   if (targetTab?.id) await switchTab(targetTab.id);
@@ -15729,24 +15866,29 @@ async function openWorktreeResponseTab(response, { branchName = "", action = "op
   requestGitFooterWebuiPayload(activeTabContext(), { force: true });
 }
 
-async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), { tabContext = activeTabContext(), skipConfirm = false, chooseBase = true } = {}) {
+async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), { tabContext = activeTabContext(), skipConfirm = false, chooseBase = true, remoteRef = "", switchingLabel = "", switchingKey = "" } = {}) {
   const branchName = cleanStatusText(branch);
   if (!branchName) {
     addEvent("Enter a branch name before creating a branch worktree.", "warn");
     return;
   }
-  if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { create: true, requireConfirm: true }))) return;
-  const baseRef = chooseBase ? await chooseGitWorktreeBase(branchName) : "HEAD";
+  const trackedRemoteRef = cleanFooterPayloadText(remoteRef, "", 4000);
+  if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { create: true, requireConfirm: true, remoteRef: trackedRemoteRef }))) return;
+  const baseRef = trackedRemoteRef ? "" : chooseBase ? await chooseGitWorktreeBase(branchName) : "HEAD";
   if (baseRef === null) return;
   const tabId = tabContext.tabId || activeTabId;
   try {
-    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName, tabId };
+    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: switchingLabel || branchName, switchingKey, tabId };
     renderFooter();
-    const response = await api("/api/git-worktrees", { method: "POST", body: { branchName, baseRef, sessionMode: "fork-current", openTab: true }, tabId });
+    // Remote-only creation submits the exact advertised remote ref instead of a
+    // base ref; the server re-verifies it and creates a local tracking branch.
+    const response = trackedRemoteRef
+      ? await api("/api/git-worktrees", { method: "POST", body: { branchName, remoteRef: trackedRemoteRef, sessionMode: "fork-current", openTab: true }, tabId })
+      : await api("/api/git-worktrees", { method: "POST", body: { branchName, baseRef, sessionMode: "fork-current", openTab: true }, tabId });
     await openWorktreeResponseTab(response, { branchName, action: "create" });
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
-      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", error: error.message || String(error) };
+      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", error: error.message || String(error) };
       renderFooter();
       updateFooterModelPickerPosition();
     }
@@ -15754,19 +15896,19 @@ async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), 
   }
 }
 
-async function openFooterGitWorktree(path, { branchName = "", tabContext = activeTabContext(), skipConfirm = false } = {}) {
+async function openFooterGitWorktree(path, { branchName = "", tabContext = activeTabContext(), skipConfirm = false, switchingKey = "" } = {}) {
   const worktreePath = cleanFooterPayloadText(path, "", 4000);
   if (!worktreePath) return;
   if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { path: worktreePath, requireConfirm: false }))) return;
   const tabId = tabContext.tabId || activeTabId;
   try {
-    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName || worktreePath, tabId };
+    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName || worktreePath, switchingKey, tabId };
     renderFooter();
     const response = await api("/api/git-worktrees/open", { method: "POST", body: { path: worktreePath, sessionMode: "fork-current", openTab: true }, tabId });
     await openWorktreeResponseTab(response, { branchName, action: "open" });
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
-      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", error: error.message || String(error) };
+      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", error: error.message || String(error) };
       renderFooter();
       updateFooterModelPickerPosition();
     }
@@ -15774,28 +15916,33 @@ async function openFooterGitWorktree(path, { branchName = "", tabContext = activ
   }
 }
 
-async function applyFooterGitBranch(branch, { create = false, tabContext = activeTabContext(), skipConfirm = false } = {}) {
+async function applyFooterGitBranch(branch, { create = false, tabContext = activeTabContext(), skipConfirm = false, remoteRef = "", switchingLabel = "", switchingKey = "" } = {}) {
   const branchName = cleanStatusText(branch);
   if (!branchName) return;
   const tabId = tabContext.tabId || activeTabId;
-  if (!skipConfirm && !(await confirmFooterGitBranchAction(branchName, { create, tabContext }))) return;
+  const trackedRemoteRef = cleanFooterPayloadText(remoteRef, "", 4000);
+  if (!skipConfirm && !(await confirmFooterGitBranchAction(branchName, { create, tabContext, remoteRef: trackedRemoteRef }))) return;
   try {
-    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName, tabId };
+    footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: switchingLabel || branchName, switchingKey, tabId };
     renderFooter();
-    const response = await api("/api/git-branch", { method: "POST", body: { branch: branchName, create }, tabId });
+    // Remote-only switching sends the exact remote ref plus the intended local
+    // branch; the server creates a tracking branch instead of detaching HEAD.
+    const response = trackedRemoteRef
+      ? await api("/api/git-branch", { method: "POST", body: { branch: branchName, create, remoteRef: trackedRemoteRef }, tabId })
+      : await api("/api/git-branch", { method: "POST", body: { branch: branchName, create }, tabId });
     if (!isCurrentTabContext(tabContext)) return;
-    if (!response.ok) throw new Error(response.error || `Failed to ${create ? "create and switch to" : "switch to"} ${branchName}`);
+    if (!response.ok) throw new Error(response.error || (trackedRemoteRef ? `Failed to create local branch ${branchName} tracking ${trackedRemoteRef}` : `Failed to ${create ? "create and switch to" : "switch to"} ${branchName}`));
     const switchedBranch = cleanStatusText(response.data?.branch || branchName);
     footerBranchPickerOpen = false;
     footerBranchPickerRequestSerial += 1;
-    footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", current: switchedBranch };
+    footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", current: switchedBranch };
     if (create) updateFooterBranchCreateDraft({ name: "" });
     applyOptimisticGitFooterBranch(switchedBranch, tabContext);
-    addEvent(response.data?.created ? `Created and switched to git branch ${switchedBranch}.` : response.data?.switched === false ? `Already on git branch ${switchedBranch}.` : `Switched git branch to ${switchedBranch}.`, "info");
+    addEvent(trackedRemoteRef ? `Created local branch ${switchedBranch} tracking ${trackedRemoteRef} and switched this checkout.` : response.data?.created ? `Created and switched to git branch ${switchedBranch}.` : response.data?.switched === false ? `Already on git branch ${switchedBranch}.` : `Switched git branch to ${switchedBranch}.`, "info");
     requestGitFooterWebuiPayload(tabContext, { force: true });
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
-      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", error: error.message || String(error) };
+      footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", error: error.message || String(error) };
       addEvent(error.message || String(error), "error");
     }
   } finally {
@@ -15926,52 +16073,95 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
 }
 
 function footerBranchWorktreePath(branch, state = footerBranchPickerState) {
+  // Remote-only rows have no checkout yet and must never inherit the worktree
+  // of an unrelated same-named local branch.
+  if (branch?.remote) return "";
   const direct = cleanFooterPayloadText(branch?.worktreePath, "", 4000);
   if (direct) return direct;
   return cleanFooterPayloadText(state.occupiedBranches?.find((item) => item.branch === branch?.name)?.path, "", 4000);
 }
 
 function footerBranchOptionDetail(branch, state, { selected, worktreePath } = {}) {
-  if (state.switching === branch.name) return "opening…";
+  if (state.switchingKey ? state.switchingKey === branch.key : state.switching === footerBranchOptionLabel(branch)) return "opening…";
   if (selected) return branch.worktreeCurrent ? "current branch in this worktree" : "current branch";
+  if (branch.remote) return `remote-only · creates local branch ${branch.name} tracking ${branch.remoteRef}`;
   if (worktreePath) return branch.mainWorktree ? "checked out in main worktree · open tab" : "checked out in another worktree · open tab";
   return "open branch in a new worktree tab";
 }
 
 function openFooterBranchOption(branch, state = footerBranchPickerState) {
+  if (branch.remote) return createFooterGitBranchWorktree(branch.name, { skipConfirm: true, chooseBase: false, remoteRef: branch.remoteRef, switchingLabel: footerBranchOptionLabel(branch), switchingKey: branch.key });
   const worktreePath = footerBranchWorktreePath(branch, state);
-  if (worktreePath && !branch.worktreeCurrent) return openFooterGitWorktree(worktreePath, { branchName: branch.name, skipConfirm: true });
-  return createFooterGitBranchWorktree(branch.name, { skipConfirm: true, chooseBase: false });
+  if (worktreePath && !branch.worktreeCurrent) return openFooterGitWorktree(worktreePath, { branchName: branch.name, skipConfirm: true, switchingKey: branch.key });
+  return createFooterGitBranchWorktree(branch.name, { skipConfirm: true, chooseBase: false, switchingKey: branch.key });
+}
+
+function footerBranchSwitchAvailability(branch = {}, state = {}, worktreePath = "") {
+  if (state.switching) {
+    return {
+      disabled: true,
+      label: "Action running…",
+      reason: `Cannot switch this checkout while the branch action for ${state.switching} is still running.`,
+    };
+  }
+  if (state.loading) {
+    return {
+      disabled: true,
+      label: "Refreshing…",
+      reason: "Cannot switch this checkout until the latest branch and worktree information finishes loading.",
+    };
+  }
+  if (worktreePath) {
+    const location = branch.mainWorktree ? "the main worktree" : "another worktree";
+    return {
+      disabled: true,
+      label: branch.mainWorktree ? "In main worktree" : "In another worktree",
+      reason: `Cannot switch this checkout because ${branch.name} is already checked out in ${location} at ${worktreePath}. Open that worktree instead.`,
+    };
+  }
+  return { disabled: false, label: "Switch here", reason: "" };
 }
 
 function renderFooterBranchOption(branch, state = footerBranchPickerState) {
-  const selected = branch.current || (!!state.current && branch.name === state.current);
+  const selected = !branch.remote && (branch.current || (!!state.current && branch.name === state.current));
   const worktreePath = footerBranchWorktreePath(branch, state);
   const busy = state.loading || !!state.switching;
   const primaryDisabled = busy || selected;
-  const row = make("div", `footer-branch-option-row${selected ? " active" : ""}${worktreePath && !branch.worktreeCurrent ? " worktree-occupied" : ""}`);
+  const row = make("div", `footer-branch-option-row${selected ? " active" : ""}${branch.remote ? " remote-only" : ""}${worktreePath && !branch.worktreeCurrent ? " worktree-occupied" : ""}`);
   row.setAttribute("role", "option");
   row.setAttribute("aria-selected", selected ? "true" : "false");
 
   const primary = make("button", "footer-model-option footer-branch-option footer-branch-primary-action");
   primary.type = "button";
   primary.disabled = primaryDisabled;
-  primary.title = selected ? `Current branch: ${branch.name}` : worktreePath ? `Open existing worktree: ${worktreePath}` : `Open ${branch.name} in a new Git worktree tab`;
+  primary.title = selected
+    ? `Current branch: ${branch.name}`
+    : branch.remote
+      ? `Remote-only branch ${branch.remoteRef}: create local branch ${branch.name} tracking it and open a new Git worktree tab`
+      : worktreePath ? `Open existing worktree: ${worktreePath}` : `Open ${branch.name} in a new Git worktree tab`;
   primary.append(
-    make("span", "footer-model-option-main", branch.name),
+    make("span", "footer-model-option-main", footerBranchOptionLabel(branch)),
     make("span", "footer-model-option-name", footerBranchOptionDetail(branch, state, { selected, worktreePath })),
   );
   if (!primaryDisabled) primary.addEventListener("click", () => openFooterBranchOption(branch, state));
   row.append(primary);
 
   if (!selected) {
-    const advanced = make("button", "footer-branch-advanced-action", "Switch here");
+    const availability = footerBranchSwitchAvailability(branch, state, worktreePath);
+    const advanced = make("button", "footer-branch-advanced-action", availability.label);
     advanced.type = "button";
-    advanced.disabled = busy || !!worktreePath;
-    advanced.title = worktreePath
-      ? "This branch is already checked out elsewhere; use the primary worktree action instead of switching this checkout."
-      : `Advanced: git switch ${branch.name} in this checkout`;
-    advanced.addEventListener("click", () => applyFooterGitBranch(branch.name));
+    advanced.disabled = availability.disabled;
+    advanced.title = availability.reason || (branch.remote
+      ? `Advanced: git switch --track -c ${branch.name} ${branch.remoteRef} in this checkout`
+      : `Advanced: git switch ${branch.name} in this checkout`);
+    if (availability.reason) {
+      advanced.dataset.disabledReason = availability.reason;
+      advanced.setAttribute("aria-label", `${availability.label}. ${availability.reason}`);
+    } else {
+      advanced.addEventListener("click", () => branch.remote
+        ? applyFooterGitBranch(branch.name, { remoteRef: branch.remoteRef, switchingLabel: footerBranchOptionLabel(branch), switchingKey: branch.key })
+        : applyFooterGitBranch(branch.name, { switchingKey: branch.key }));
+    }
     row.append(advanced);
   }
   return row;
@@ -16089,14 +16279,14 @@ function renderFooterBranchPicker() {
     return picker;
   }
   if (state.loading && state.branches.length === 0) {
-    picker.append(make("div", "footer-model-picker-empty muted", "Loading existing local branches and worktrees… Worktree creation is available once branch data loads."), renderFooterBranchCreateForm(state));
+    picker.append(make("div", "footer-model-picker-empty muted", "Loading local and fetched remote branches and worktrees… Worktree creation is available once branch data loads."), renderFooterBranchCreateForm(state));
     return picker;
   }
 
-  const hasOtherBranches = state.branches.some((branch) => !branch.current && branch.name !== state.current);
+  const hasOtherBranches = state.branches.some((branch) => branch.remote || (!branch.current && branch.name !== state.current));
   if (!state.loading && !hasOtherBranches) {
     const empty = make("div", "footer-model-picker-empty muted");
-    empty.append(make("strong", undefined, "No other local branches available."), make("span", undefined, " Create a branch worktree from origin/main or the current workspace HEAD to continue."));
+    empty.append(make("strong", undefined, "No other local or fetched remote branches available."), make("span", undefined, " Fetch to list remote branches, or create a branch worktree from origin/main or the current workspace HEAD to continue."));
     picker.append(empty);
   }
 
@@ -17011,6 +17201,180 @@ async function refreshCodexUsage({ forceAuthRefresh = false } = {}) {
   } finally {
     codexUsageLoading = false;
     renderCodexUsage();
+  }
+}
+
+// Codex subscription Fast mode is owned by the optional pi-extension-codex-fast-mode package. The
+// browser only reads the sanitized tab-scoped server snapshot and asks the server to run the
+// package-owned /fast-mode command; it never sees ChatGPT credentials or request payloads.
+let codexFastModeState = { available: false, enabled: false, statusKnown: false, busy: false, model: null, modelEligible: false, unavailableReason: "", creditNotice: "" };
+let codexFastModeLoaded = false;
+let codexFastModeBusy = false;
+let codexFastModeNotice = "";
+let codexFastModeSelection = "normal";
+
+function codexFastModeControlDisabled() {
+  return !codexFastModeLoaded
+    || !codexFastModeState.available
+    || !isOptionalFeatureEnabled("codexFastMode")
+    || codexFastModeBusy
+    || codexFastModeState.busy === true;
+}
+
+function codexFastModeStatusText() {
+  if (codexFastModeNotice) return codexFastModeNotice;
+  if (!isOptionalFeatureEnabled("codexFastMode")) return optionalFeatureUnavailableMessage("codexFastMode");
+  if (!codexFastModeLoaded) return "Checking Codex Fast mode…";
+  if (!codexFastModeState.available) return codexFastModeState.unavailableReason || optionalFeatureUnavailableMessage("codexFastMode");
+  const parts = [];
+  parts.push(codexFastModeState.statusKnown
+    ? `Session mode: ${codexFastModeState.enabled ? "Fast" : "Normal"}.`
+    : "Session mode: unknown until /fast-mode reports status.");
+  if (codexFastModeState.busy) parts.push("This tab is busy; the mode cannot change during a running turn.");
+  if (codexFastModeState.model && !codexFastModeState.modelEligible) {
+    parts.push(`Active model ${codexFastModeState.model.provider}/${codexFastModeState.model.id} is not a subscription-backed openai-codex model, so Fast mode stays armed but unused.`);
+  }
+  if (codexFastModeState.creditNotice) parts.push(codexFastModeState.creditNotice);
+  return parts.join(" ");
+}
+
+function renderCodexFastModeControl({ syncSelection = true } = {}) {
+  if (!elements.codexFastModeSelect || !elements.setCodexFastModeButton || !elements.codexFastModeStatus) return;
+  if (syncSelection) {
+    codexFastModeSelection = codexFastModeState.enabled ? "fast" : "normal";
+    elements.codexFastModeSelect.value = codexFastModeSelection;
+  }
+  const controlDisabled = codexFastModeControlDisabled();
+  elements.codexFastModeSelect.disabled = controlDisabled;
+  elements.setCodexFastModeButton.disabled = controlDisabled
+    || elements.codexFastModeSelect.value === (codexFastModeState.enabled ? "fast" : "normal");
+  elements.setCodexFastModeButton.textContent = codexFastModeBusy ? "Applying…" : "Apply";
+  elements.codexFastModeStatus.textContent = codexFastModeStatusText();
+  const warn = !!codexFastModeNotice
+    || (codexFastModeLoaded && !codexFastModeState.available)
+    || codexFastModeState.busy === true
+    || !isOptionalFeatureEnabled("codexFastMode");
+  elements.codexFastModeStatus.classList.toggle("warning", warn);
+}
+
+function applyCodexFastModeData(data) {
+  codexFastModeState = {
+    available: data?.available === true,
+    enabled: data?.enabled === true,
+    statusKnown: data?.statusKnown === true,
+    busy: data?.busy === true,
+    model: data?.model || null,
+    modelEligible: data?.modelEligible === true,
+    unavailableReason: data?.unavailableReason || "",
+    creditNotice: data?.creditNotice || "",
+  };
+  if (codexFastModeState.available) optionalFeatureAvailability.codexFastMode = true;
+}
+
+function codexFastModeConfirmedOff(data) {
+  return data?.statusKnown === true && data?.enabled !== true;
+}
+
+function applyCodexFastModeStatus(statusText) {
+  const status = String(statusText || "").trim().toLowerCase();
+  if (status !== "on" && status !== "off") return false;
+  codexFastModeState = {
+    ...codexFastModeState,
+    available: true,
+    enabled: status === "on",
+    statusKnown: true,
+  };
+  codexFastModeLoaded = true;
+  codexFastModeNotice = "";
+  renderCodexFastModeControl();
+  if (status === "on" && !isOptionalFeatureEnabled("codexFastMode")) {
+    const tabContext = activeTabContext();
+    queueMicrotask(() => refreshCodexFastMode(tabContext).catch((error) => {
+      if (isCurrentTabContext(tabContext)) addEvent(`Disabled Codex Fast mode could not be disarmed: ${error.message || String(error)}`, "error");
+    }));
+  }
+  return true;
+}
+
+async function refreshCodexFastMode(tabContext = activeTabContext()) {
+  if (!elements.codexFastModeSelect || !tabContext.tabId) return codexFastModeState;
+  const featureEnabled = isOptionalFeatureEnabled("codexFastMode");
+  try {
+    let response = await api("/api/codex-fast-mode", { tabId: tabContext.tabId });
+    let data = response.data || {};
+    // Browser disable is global while extension state is session/branch local. Keep querying even
+    // when hidden and disarm a restored branch before it can silently remain on.
+    if (!featureEnabled && data.available && !codexFastModeConfirmedOff(data)) {
+      if (data.busy) throw new Error("this tab is busy; Fast mode will be disarmed when it becomes idle");
+      response = await api("/api/codex-fast-mode", { method: "PUT", body: { enabled: false }, tabId: tabContext.tabId });
+      data = response.data || {};
+      if (!codexFastModeConfirmedOff(data)) throw new Error("the extension did not confirm Fast mode off");
+    }
+    if (!isCurrentTabContext(tabContext)) return codexFastModeState;
+    applyCodexFastModeData(data);
+    codexFastModeNotice = "";
+  } catch (error) {
+    if (!isCurrentTabContext(tabContext)) return codexFastModeState;
+    codexFastModeState = { ...codexFastModeState, available: false, busy: false, unavailableReason: `Codex Fast mode unavailable: ${error.message || String(error)}.` };
+    if (!featureEnabled) throw error;
+  } finally {
+    if (isCurrentTabContext(tabContext)) {
+      codexFastModeLoaded = true;
+      renderCodexFastModeControl();
+    }
+  }
+  return codexFastModeState;
+}
+
+async function applyCodexFastMode() {
+  if (!elements.codexFastModeSelect || codexFastModeBusy) return;
+  const tabContext = activeTabContext();
+  if (!tabContext.tabId) return;
+  const enabled = elements.codexFastModeSelect.value === "fast";
+  if (enabled === codexFastModeState.enabled) return;
+  codexFastModeBusy = true;
+  codexFastModeNotice = "";
+  renderCodexFastModeControl({ syncSelection: false });
+  try {
+    const response = await api("/api/codex-fast-mode", { method: "PUT", body: { enabled }, tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    applyCodexFastModeData(response.data);
+    addEvent(enabled
+      ? "Codex Fast mode requested for this session. It asks supported Codex models for about 1.5x faster responses and may spend 2x credits on GPT-5.4 or 2.5x on GPT-5.5/5.6."
+      : "Codex Fast mode turned off for this session; requests return to the standard tier.", "info");
+  } catch (error) {
+    if (!isCurrentTabContext(tabContext)) return;
+    codexFastModeNotice = `Failed to change Codex Fast mode: ${error.message || String(error)}. You can retry.`;
+    addEvent(codexFastModeNotice, "error");
+  } finally {
+    codexFastModeBusy = false;
+    if (isCurrentTabContext(tabContext)) renderCodexFastModeControl();
+  }
+}
+
+// Optional-features Disable is browser-global while Fast mode is tab/session scoped. Disarm every
+// live tab first and abort the browser-side disable if any armed or unknown instance cannot confirm
+// off. Future branch restores are handled by refreshCodexFastMode even while the control is hidden.
+async function disableCodexFastModeIntegration() {
+  const tabIds = [...new Set(tabs.filter((tab) => tab?.id && tab.running !== false).map((tab) => tab.id))];
+  const snapshots = await Promise.all(tabIds.map(async (tabId) => {
+    const response = await api("/api/codex-fast-mode", { tabId });
+    return { tabId, data: response.data || {} };
+  }));
+
+  for (const { tabId, data } of snapshots) {
+    if (!data.available) {
+      if (data.statusKnown && data.enabled) throw new Error(`tab ${tabId} still reports Fast mode on but /fast-mode is unavailable`);
+      continue;
+    }
+    if (data.busy && !codexFastModeConfirmedOff(data)) throw new Error(`tab ${tabId} is busy; wait for it to finish before disabling Codex Fast mode`);
+  }
+
+  for (const { tabId, data } of snapshots) {
+    if (!data.available || codexFastModeConfirmedOff(data)) continue;
+    const response = await api("/api/codex-fast-mode", { method: "PUT", body: { enabled: false }, tabId });
+    if (!codexFastModeConfirmedOff(response.data)) throw new Error(`tab ${tabId} did not confirm Codex Fast mode off`);
+    if (tabId === activeTabId) applyCodexFastModeData(response.data);
   }
 }
 
@@ -27283,7 +27647,7 @@ function jumpToStickyUserPrompt() {
 function renderCompactTranscriptBody(body, message) {
   if (message.role !== "assistant") return false;
   const output = stripTodoProgressLines(textFromContent(message.content));
-  const block = appendMarkdown(body, output || "_[non-text output omitted in fast mode]_");
+  const block = appendMarkdown(body, output || "_[non-text output omitted in compact mode]_");
   block.classList.add("compact-transcript-text");
   return true;
 }
@@ -27341,7 +27705,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   const body = make("div", "message-body");
 
   if (compactTranscript && renderCompactTranscriptBody(body, message)) {
-    // Fast mode preserves final Markdown while omitting reconciled tool history.
+    // Compact mode preserves final Markdown while omitting reconciled tool history.
   } else if (message.role === "bashExecution") {
     appendText(body, `$ ${message.command || ""}\n\n${message.output || ""}`, "code-block");
   } else if (message.role === "compactionSummary") {
@@ -28674,6 +29038,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.tuiToolsCommand = hasLoadedRpcCommand("tools");
   optionalFeatureAvailability.remoteWebui = hasAvailableCommand("remote") || optionalFeatureAvailability.remoteWebui || statusEntries.has("pi-remote-webui") || statusEntries.has(REMOTE_WEBUI_CONTROLS_STATUS_KEY) || widgets.has("pi-remote-webui");
   optionalFeatureAvailability.naturalConversation = NATURAL_CONVERSATION_COMMAND_NAMES.some((name) => hasAvailableCommand(name)) || optionalFeatureAvailability.naturalConversation || statusEntries.has(NATURAL_CONVERSATION_STATUS_KEY) || activeConversationMode().available;
+  optionalFeatureAvailability.codexFastMode = hasAvailableCommand("fast-mode") || optionalFeatureAvailability.codexFastMode || statusEntries.has(CODEX_FAST_MODE_STATUS_KEY) || codexFastModeState.available === true;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   requestGitFooterWebuiPayload();
   renderOptionalFeatureControls();
@@ -28856,8 +29221,25 @@ function renderOptionalFeatureRow(feature) {
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
   } else if (detected) {
     action.textContent = enabled ? "Disable" : "Enable";
-    action.addEventListener("click", () => {
+    action.addEventListener("click", async () => {
       const disabled = enabled;
+      // Features that arm a paid or stateful runtime mode must turn that mode off before the
+      // browser stops managing them; a failed turn-off aborts the disable instead of hiding it.
+      if (disabled) {
+        const turnOff = OPTIONAL_FEATURE_DISABLE_PREREQUISITES.get(feature.id);
+        if (turnOff) {
+          action.disabled = true;
+          try {
+            await turnOff();
+          } catch (error) {
+            action.disabled = false;
+            addEvent(`${feature.label} was not disabled: ${error.message || String(error)}. Turn the mode off manually, then retry.`, "error");
+            renderOptionalFeatureControls();
+            return;
+          }
+          action.disabled = false;
+        }
+      }
       setOptionalFeatureDisabled(feature.id, disabled);
       offerUndo({
         message: `${feature.label} was ${disabled ? "disabled" : "enabled"}.`,
@@ -29502,7 +29884,7 @@ async function refreshSidebarOutputMode() {
     sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata(response.data);
   } catch (error) {
     sidebarOutputModeMetadata = normalizeWebuiOutputModeMetadata();
-    sidebarOutputModeDiagnostic = `Fast-mode control unavailable: ${error.message || String(error)}. Using the normal default.`;
+    sidebarOutputModeDiagnostic = `Compact-mode control unavailable: ${error.message || String(error)}. Using the normal default.`;
   } finally {
     sidebarOutputModeLoaded = true;
     renderSidebarOutputModeControl();
@@ -29523,10 +29905,10 @@ async function applySidebarOutputMode() {
       scoped: false,
     });
     await refreshSidebarOutputMode();
-    addEvent(outputModeDefault === "compact-v1" ? "Fast output mode enabled for auto-negotiated Web UI connections." : "Normal output processing restored for auto-negotiated Web UI connections.", "info");
+    addEvent(outputModeDefault === "compact-v1" ? "Compact output mode enabled for auto-negotiated Web UI connections." : "Normal output processing restored for auto-negotiated Web UI connections.", "info");
   } catch (error) {
     sidebarOutputModeDiagnostic = "";
-    sidebarOutputModeNotice = `Failed to update fast mode: ${error.message || String(error)}. You can retry.`;
+    sidebarOutputModeNotice = `Failed to update compact mode: ${error.message || String(error)}. You can retry.`;
     sidebarOutputModeLoaded = true;
     addEvent(sidebarOutputModeNotice, "error");
   } finally {
@@ -29620,7 +30002,7 @@ async function openNativeSettingsDialog() {
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
     doubleEscape: nativeSettingSelect("Double-escape action", settings.doubleEscapeAction || doubleEscapeAction, SETTINGS_DOUBLE_ESCAPE_OPTIONS, "Action when pressing Escape twice with an empty composer.", { label: "browser", tone: "browser" }),
     treeFilter: nativeSettingSelect("Tree filter mode", settings.treeFilterMode || treeFilterMode, SETTINGS_TREE_FILTER_OPTIONS, "Default filter when opening /tree.", { label: "browser", tone: "browser" }),
-    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Fast mode preserves Markdown final output, keeps live thinking expanded, groups stored thinking in one collapsed disclosure per turn, shows only the current tool status transiently, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
+    outputMode: nativeSettingSelect("Output processing", outputModeMetadata.persistedDefault, SETTINGS_OUTPUT_MODE_OPTIONS, "Server default for new and auto-negotiated Web UI connections. Compact mode preserves Markdown final output, keeps live thinking expanded, groups stored thinking in one collapsed disclosure per turn, shows only the current tool status transiently, and does not change model inference or token generation. Changes use server barriers without restarting Pi.", { label: "server", tone: "startup" }),
     autoResizeImages: nativeSettingToggle("Auto-resize images", settings.autoResizeImages !== false, "Resize large images to 2000x2000 max for better model compatibility.", { label: "reload", tone: "reload" }),
     blockImages: nativeSettingToggle("Block images", settings.blockImages === true, "Prevent images from being sent to LLM providers.", { label: "reload", tone: "reload" }),
     showImages: nativeSettingToggle("Show terminal images", settings.showImages !== false, "Native TUI inline image rendering preference.", { label: "TUI", tone: "tui" }),
@@ -32969,6 +33351,7 @@ async function refreshAll(tabContext = activeTabContext()) {
     refreshModels(tabContext),
     refreshCommands(tabContext),
     refreshNaturalConversationMode(tabContext),
+    refreshCodexFastMode(tabContext),
     refreshStats(tabContext),
     refreshWorkspace(tabContext),
     refreshFileTreeRoot(tabContext),
@@ -33574,6 +33957,7 @@ function handleExtensionUiRequest(request) {
       if (statusKey === STATS_WEBUI_STATUS_KEY) handleStatsWebuiStatus(request.statusText);
       if (statusKey === BTW_WEBUI_STATUS_KEY) handleBtwWebuiStatus(request.statusText);
       if (statusKey === NATURAL_CONVERSATION_STATUS_KEY) handleNaturalConversationStatus(request.statusText, request.tabId || activeTabId);
+      if (statusKey === CODEX_FAST_MODE_STATUS_KEY && (request.tabId || activeTabId) === activeTabId) applyCodexFastModeStatus(request.statusText);
       if (statusKey === WORKFLOW_MODE_STATUS_KEY) handleWorkflowModeStatus(request.statusText, request.tabId || activeTabId);
       if (statusKey === "pi-remote-webui") handleRemoteWebuiStatus(request.statusText);
       updateOptionalFeatureAvailability();
@@ -34355,6 +34739,7 @@ function handleEvent(event) {
       scheduleRefreshFooter();
       scheduleRefreshCodexUsage(2200);
       scheduleRefreshClaudeUsage(2200);
+      refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
       renderFeedbackTray();
       {
         const workflowTabId = event.tabId || activeTabId;
@@ -35308,6 +35693,11 @@ elements.fastOutputModeSelect?.addEventListener("change", () => {
   renderSidebarOutputModeControl({ syncSelection: false });
 });
 elements.setFastOutputModeButton?.addEventListener("click", () => applySidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error")));
+elements.codexFastModeSelect?.addEventListener("change", () => {
+  codexFastModeNotice = "";
+  renderCodexFastModeControl({ syncSelection: false });
+});
+elements.setCodexFastModeButton?.addEventListener("click", () => applyCodexFastMode().catch((error) => addEvent(error.message || String(error), "error")));
 if (elements.terminalTabsLayoutSelect) {
   elements.terminalTabsLayoutSelect.addEventListener("change", () => {
     setTerminalTabsLayout(elements.terminalTabsLayoutSelect.value, { announce: true });
@@ -36047,6 +36437,7 @@ focusPromptInput({ defer: true });
 restoreStoredSkillUsage();
 restoreBusyPromptBehaviorSetting();
 updateComposerModeButtons();
+installSessionSkillTagResizeHandling();
 updateOptionalFeatureAvailability();
 refreshOptionalFeaturePackageStatuses({ announce: true });
 renderAppRunnerControls();
@@ -36084,4 +36475,5 @@ bindSidePanelOverlayViewChanges();
 registerPwaServiceWorker();
 renderServerOfflinePanel();
 refreshSidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error"));
+refreshCodexFastMode().catch((error) => addEvent(error.message || String(error), "error"));
 initializeTabs().catch((error) => addEvent(error.message, "error"));

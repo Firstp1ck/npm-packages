@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	createAgentSession,
 	createExtensionRuntime,
-	getAgentDir,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -153,10 +152,57 @@ export function buildFeatureClassificationContext(result: RequestKind): string {
 	].join("\n\n");
 }
 
+export const FEATURE_SKILL_NAME = "feature-development-workflow";
+
+export const FEATURE_SKILL_ROUTING_BRIDGE = [
+	`Before feature implementation, use read to load and follow the enabled \`${FEATURE_SKILL_NAME}\` skill from its path in <available_skills>.`,
+	"For a complex feature, also read its references/COMPLEX-FEATURE-CONTRACT.md before implementation.",
+	"If the skill or required reference is unavailable or unreadable, stop feature implementation and report the configuration error; do not silently weaken a required gate.",
+].join(" ");
+
+export const FEATURE_SKILL_CONFIGURATION_ERROR = [
+	`Configuration error: the enabled \`${FEATURE_SKILL_NAME}\` skill or a required reference is unavailable or unreadable.`,
+	"Do not implement feature work until the skill configuration is restored.",
+	"Report this configuration error.",
+].join(" ");
+
+function decodeXmlText(value: string): string {
+	return value
+		.replaceAll("&lt;", "<")
+		.replaceAll("&gt;", ">")
+		.replaceAll("&quot;", "\"")
+		.replaceAll("&apos;", "'")
+		.replaceAll("&amp;", "&");
+}
+
+function findSkillLocation(systemPrompt: string, skillName: string): string | undefined {
+	for (const match of systemPrompt.matchAll(/<skill>([\s\S]*?)<\/skill>/gu)) {
+		const block = match[1];
+		if (!block.includes(`<name>${skillName}</name>`)) continue;
+		const location = block.match(/<location>([\s\S]*?)<\/location>/u)?.[1].trim();
+		return location ? decodeXmlText(location) : undefined;
+	}
+	return undefined;
+}
+
+export function featureSkillIsAvailable(systemPrompt: string, complexity: FeatureComplexity): boolean {
+	const skillPath = findSkillLocation(systemPrompt, FEATURE_SKILL_NAME);
+	if (!skillPath) return false;
+	const skillDir = dirname(skillPath);
+	const requiredPaths = [skillPath];
+	if (complexity === "complex") requiredPaths.push(join(skillDir, "references", "COMPLEX-FEATURE-CONTRACT.md"));
+	try {
+		return requiredPaths.every((path) => readFileSync(path, "utf8").trim().length > 0);
+	} catch {
+		return false;
+	}
+}
+
 export const FEATURE_CLASSIFICATION_FALLBACK = [
 	"Feature classification was unavailable for this turn.",
 	"Classify the request from the request and repository evidence before acting.",
-	"Only if it is feature work, read and follow APPEND_FEATURE.md before implementation.",
+	`Only if it is feature work, load and follow the enabled \`${FEATURE_SKILL_NAME}\` skill before implementation.`,
+	"If that skill is unavailable or unreadable, stop feature implementation and report the configuration error.",
 ].join(" ");
 
 export function buildClassifierPrompt(input: ClassifierPromptInput): string {
@@ -223,22 +269,15 @@ async function classifyRequest(input: ClassifierPromptInput, model: ActiveClassi
 }
 
 export type RequestClassifier = (input: ClassifierPromptInput, model: ActiveClassifierModel) => Promise<RequestKind | undefined>;
-export type FeaturePromptLoader = () => string;
+export type FeatureSkillValidator = (systemPrompt: string, complexity: FeatureComplexity) => boolean;
 
 export interface FeatureSystemPromptDependencies {
 	classifyRequest?: RequestClassifier;
-	loadFeaturePrompt?: FeaturePromptLoader;
+	validateFeatureSkill?: FeatureSkillValidator;
 }
-
-export const FEATURE_PROMPT_LOAD_FAILURE_FALLBACK = [
-	"Configuration error: APPEND_FEATURE.md could not be loaded.",
-	"Do not implement feature work until APPEND_FEATURE.md is restored.",
-	"Report this configuration error.",
-].join(" ");
 
 export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDependencies = {}) {
 	return (pi: ExtensionAPI) => {
-		let featurePrompt: string | undefined;
 		let previousPrompt: string | undefined;
 		let previousEffectiveKind: EffectiveRequestKind | undefined;
 
@@ -246,13 +285,8 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 			previousPrompt = undefined;
 			previousEffectiveKind = undefined;
 		};
-		const loadFeaturePrompt = dependencies.loadFeaturePrompt ?? (() => {
-			if (featurePrompt !== undefined) return featurePrompt;
-			featurePrompt = readFileSync(join(getAgentDir(), "APPEND_FEATURE.md"), "utf8").trim();
-			if (!featurePrompt) throw new Error("APPEND_FEATURE.md is empty");
-			return featurePrompt;
-		});
 		const requestClassifier = dependencies.classifyRequest ?? classifyRequest;
+		const validateFeatureSkill = dependencies.validateFeatureSkill ?? featureSkillIsAvailable;
 
 		const resetSessionState = (_event: unknown, ctx: ExtensionContext) => {
 			resetContinuationState();
@@ -304,17 +338,14 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 			previousEffectiveKind = resolvedKind;
 			setFeatureCategoryStatus(ctx, resolvedKind);
 
-			if (!shouldInjectFeaturePrompt(resolvedKind)) return;
+			const complexity = getFeatureComplexity(resolvedKind);
+			if (complexity === undefined) return;
 
 			const classificationContext = buildFeatureClassificationContext(resolvedKind);
-			let promptToInject: string;
-			try {
-				promptToInject = loadFeaturePrompt();
-				if (!promptToInject.trim()) throw new Error("APPEND_FEATURE.md is empty");
-			} catch {
-				promptToInject = FEATURE_PROMPT_LOAD_FAILURE_FALLBACK;
-			}
-			return { systemPrompt: `${event.systemPrompt}\n\n${classificationContext}\n\n${promptToInject}` };
+			const routedPolicy = validateFeatureSkill(event.systemPrompt, complexity)
+				? FEATURE_SKILL_ROUTING_BRIDGE
+				: FEATURE_SKILL_CONFIGURATION_ERROR;
+			return { systemPrompt: `${event.systemPrompt}\n\n${classificationContext}\n\n${routedPolicy}` };
 		});
 	};
 }
