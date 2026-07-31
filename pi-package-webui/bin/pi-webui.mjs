@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
+import { constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { access, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -5511,6 +5511,106 @@ function normalizeGitRelativePath(root, relativePath) {
   return path.relative(root, resolved).split(path.sep).join("/");
 }
 
+const gitignoreMutationQueues = new Map();
+
+function serializeGitignoreMutation(root, mutation) {
+  const previous = gitignoreMutationQueues.get(root) || Promise.resolve();
+  const current = previous.catch(() => {}).then(mutation);
+  gitignoreMutationQueues.set(root, current);
+  return current.finally(() => {
+    if (gitignoreMutationQueues.get(root) === current) gitignoreMutationQueues.delete(root);
+  });
+}
+
+function gitignoreEntryForTarget(root, requestedPath, kind) {
+  if (kind !== "file" && kind !== "folder") throw makeHttpError(400, "Gitignore target kind must be file or folder");
+  if (typeof requestedPath !== "string" || requestedPath.length === 0) throw makeHttpError(400, "Gitignore target path is required");
+  if (/[\0-\x1f\x7f]/.test(requestedPath)) throw makeHttpError(400, "Gitignore target path cannot contain control characters");
+
+  const slashPath = requestedPath.replace(/\\/g, "/");
+  if (path.posix.isAbsolute(slashPath) || path.win32.isAbsolute(requestedPath) || /^[A-Za-z]:/.test(requestedPath)) {
+    throw makeHttpError(400, "Gitignore target path must be repository-relative");
+  }
+  const segments = slashPath.split("/").filter(Boolean);
+  if (!segments.length || segments.some((segment) => segment === "." || segment === "..")) {
+    throw makeHttpError(400, "Gitignore target path cannot be the repository root or contain traversal segments");
+  }
+
+  const normalized = segments.join("/");
+  const target = path.resolve(root, ...segments);
+  const relative = path.relative(root, target);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw makeHttpError(400, "Gitignore target path must stay inside the repository");
+  }
+  const escaped = normalized.replace(/\\/g, "\\\\").replace(/([*?\[\] ])/g, "\\$1");
+  return { path: normalized, kind, entry: `/${escaped}${kind === "folder" ? "/" : ""}` };
+}
+
+function sameFileIdentity(first, second) {
+  return first?.dev === second?.dev && first?.ino === second?.ino;
+}
+
+function gitignoreHasExactEntry(content, entry) {
+  const existing = content.toString("latin1").split(/\r\n|\n|\r/);
+  return existing.includes(Buffer.from(entry, "utf8").toString("latin1"));
+}
+
+async function appendGitignoreEntry(root, entry) {
+  const target = path.join(root, ".gitignore");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let before;
+    try {
+      before = await lstat(target);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      before = null;
+    }
+
+    if (!before) {
+      let handle;
+      try {
+        handle = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW || 0), 0o666);
+        await handle.writeFile(`${entry}\n`, "utf8");
+        return true;
+      } catch (error) {
+        if (error?.code === "EEXIST" && attempt === 0) continue;
+        throw error;
+      } finally {
+        await handle?.close();
+      }
+    }
+
+    if (before.isSymbolicLink() || !before.isFile()) throw makeHttpError(409, "Repository .gitignore must be a regular file and cannot be a symbolic link");
+
+    let handle;
+    try {
+      handle = await open(target, fsConstants.O_RDWR | fsConstants.O_APPEND | (fsConstants.O_NOFOLLOW || 0));
+      const opened = await handle.stat();
+      if (!opened.isFile() || !sameFileIdentity(before, opened)) throw makeHttpError(409, "Repository .gitignore changed while it was being opened");
+      const content = await handle.readFile();
+      if (gitignoreHasExactEntry(content, entry)) return false;
+      const newline = content.includes(Buffer.from("\r\n")) ? "\r\n" : "\n";
+      const lastByte = content.length ? content[content.length - 1] : null;
+      const separator = content.length && lastByte !== 0x0a && lastByte !== 0x0d ? newline : "";
+      await handle.writeFile(`${separator}${entry}${newline}`, "utf8");
+      return true;
+    } catch (error) {
+      if (error?.code === "ELOOP") throw makeHttpError(409, "Repository .gitignore cannot be a symbolic link");
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+  }
+  throw makeHttpError(409, "Repository .gitignore changed during mutation");
+}
+
+async function addGitignoreEntry(cwd, body = {}) {
+  const root = await realpath(await getGitRoot(cwd));
+  const target = gitignoreEntryForTarget(root, body.path, body.kind);
+  const added = await serializeGitignoreMutation(root, () => appendGitignoreEntry(root, target.entry));
+  return { root, ...target, added, changes: await readGitChanges(root) };
+}
+
 async function readGitUntrackedEntry(root, file, { maxBytes = Number.POSITIVE_INFINITY } = {}) {
   const normalized = normalizeGitRelativePath(root, file);
   const filePath = resolveGitRelativePath(root, normalized);
@@ -9029,8 +9129,10 @@ function queueMutationRequest(body) {
   } else if (request.operation.type === "move") {
     request.operation.from = queueMutationIndex(operation.from, "operation.from");
     request.operation.to = queueMutationIndex(operation.to, "operation.to");
+  } else if (request.operation.type === "delete") {
+    request.operation.index = queueMutationIndex(operation.index, "operation.index");
   } else {
-    throw makeHttpError(400, "Queue mutation operation type must be edit or move");
+    throw makeHttpError(400, "Queue mutation operation type must be edit, move, or delete");
   }
   if (source === "webui-compaction") {
     if (!Number.isSafeInteger(body.revision) || body.revision < 0) throw makeHttpError(400, "Compaction queue mutation requires a non-negative revision");
@@ -9116,13 +9218,18 @@ function mutateCompactionFollowUpQueue(tab, request) {
   if (operation.type === "edit") {
     if (operation.index >= slots.length || current.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
     queue[slots[operation.index]].command.message = operation.text;
-  } else {
+  } else if (operation.type === "move") {
     if (operation.from >= slots.length || operation.to >= slots.length || operation.from === operation.to
       || current.followUp[operation.from] !== operation.expectedText) return failed("invalid-request");
     const followUps = slots.map((index) => queue[index]);
     const [moved] = followUps.splice(operation.from, 1);
     followUps.splice(operation.to, 0, moved);
     slots.forEach((slot, index) => { queue[slot] = followUps[index]; });
+  } else if (operation.type === "delete") {
+    if (operation.index >= slots.length || current.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
+    queue.splice(slots[operation.index], 1);
+  } else {
+    return failed("invalid-request");
   }
 
   advanceCompactionQueueRevision(tab);
@@ -14848,6 +14955,7 @@ const server = createServer(async (req, res) => {
         "/api/git-changes/unstage-all": (cwd) => unstageAllGitChanges(cwd),
         "/api/git-changes/discard-file": (cwd, body) => discardGitFile(cwd, body),
         "/api/git-changes/delete-untracked": (cwd, body) => deleteGitUntrackedFile(cwd, body),
+        "/api/git-changes/add-to-gitignore": (cwd, body) => addGitignoreEntry(cwd, body),
         "/api/git-operation/continue": (cwd, body) => gitOperationAction(cwd, "continue", body),
         "/api/git-operation/skip": (cwd, body) => gitOperationAction(cwd, "skip", body),
         "/api/git-operation/abort": (cwd, body) => gitOperationAction(cwd, "abort", body),

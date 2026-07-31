@@ -98,6 +98,12 @@ export function mutatePiRuntimeFollowUpQueue(session, payload = {}) {
     // `to` is the final zero-based index after the item has been removed.
     nextTracked.splice(operation.to, 0, tracked);
     nextMessages.splice(operation.to, 0, message);
+  } else if (operation.type === "delete") {
+    if (!validIndex(operation.index, followUp.length) || followUp[operation.index] !== operation.expectedText) {
+      return mutationFailure("invalid-request", steering, followUp);
+    }
+    nextTracked.splice(operation.index, 1);
+    nextMessages.splice(operation.index, 1);
   } else {
     return mutationFailure("invalid-request", steering, followUp);
   }

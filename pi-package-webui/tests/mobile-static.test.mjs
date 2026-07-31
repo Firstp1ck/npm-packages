@@ -175,6 +175,7 @@ assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscri
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
 assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*<code>subagent_gate<\/code>[\s\S]*bounded retries or a success quorum[\s\S]*id="subagentsBox"/, "side panel should explain ordinary delegation and retry-gate workflows with a live count");
 assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
+assert.match(html, /class="subagents-status-row"[\s\S]*id="subagentsStatus"[\s\S]*id="subagentsClearFinishedButton"[^>]*disabled[^>]*>Clear finished<\/button>/, "Subagents should expose a clear-finished control beside its live status");
 const subagentCancelDialogHtml = html.match(/<dialog id="subagentCancelDialog"[\s\S]*?<\/dialog>/)?.[0] || "";
 assert.match(subagentCancelDialogHtml, /id="subagentCancelDialogTitle">Cancel subagent<[\s\S]*id="subagentCancelDialogSubtitle"/, "subagent cancellation should use a titled dialog with dynamic target context");
 assert.match(subagentCancelDialogHtml, /<select id="subagentCancelReason">[\s\S]*<option value="" selected>No reason<\/option>[\s\S]*Wrong model\/provider\/thinking effort[\s\S]*Wrong agent or task[\s\S]*Taking too long[\s\S]*Wrong approach or direction[\s\S]*Output no longer needed[\s\S]*Started by mistake[\s\S]*<option value="Other">Other<\/option>/, "subagent cancellation should offer every approved optional reason");
@@ -859,6 +860,42 @@ assert.match(app, /subagentTerminalCancelButton[\s\S]*openSubagentCancelDialog\(
 assert.match(app, /function openSubagentCancelDialog\(tab, run, agent = null\)[\s\S]*agentCount[\s\S]*The entire run will be stopped[\s\S]*subagentCancelDialog\.showModal\(\)[\s\S]*async function submitSubagentCancel\(\)[\s\S]*api\("\/api\/subagents\/cancel", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*tab: selection\.tabId,[\s\S]*runId: selection\.runId/, "the shared cancel dialog should honestly describe and submit whole-run cancellation with optional reason/note data");
 assert.doesNotMatch(app, /body: \{\n\s+tab: selection\.tabId,\n\s+runId: selection\.runId,\n\s+\.\.\.\(selection\.agentId/, "the frontend must not imply unsupported per-agent cancellation in its request contract");
 assert.match(app, /async function dismissSubagentRun\(tab, run\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*body: \{ tab: tab\.tabId, runId: run\.id \}/, "finished-run dismiss controls should call the owning tab endpoint");
+assert.match(app, /function finishedSubagentRunSelections\(data = latestSubagents\)[\s\S]*run\.status !== "running" && run\.source !== "workflow"[\s\S]*async function clearFinishedSubagentRuns\(\)[\s\S]*for \(const selection of selections\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*body: \{ tab: selection\.tabId, runId: selection\.runId \}[\s\S]*subagentsClearFinishedButton\.disabled = subagentsLoading \|\| subagentsClearingFinished \|\| finishedRuns\.length === 0/, "clear-finished should dismiss every terminal ordinary run through its owning tab while preserving active and workflow runs");
+assert.match(app, /subagentsClearFinishedButton\?\.addEventListener\("click", \(\) => \{[\s\S]*clearFinishedSubagentRuns\(\)/, "the clear-finished button should invoke the guarded bulk dismissal action");
+assert.match(css, /\.subagents-status-row \{[\s\S]*display: flex;[\s\S]*\.subagents-clear-finished-button \{[\s\S]*min-height: 2rem;/, "the clear-finished control should share a compact responsive status row");
+const clearFinishedSourceStart = app.indexOf("function finishedSubagentRunSelections(");
+const clearFinishedSourceEnd = app.indexOf("\nfunction subagentOverlayTranscriptMessages(", clearFinishedSourceStart);
+assert.ok(clearFinishedSourceStart >= 0 && clearFinishedSourceEnd > clearFinishedSourceStart, "clear-finished helpers should remain independently testable");
+const clearFinishedCalls = [];
+const clearFinishedEvents = [];
+let clearFinishedRefreshes = 0;
+const clearFinishedContext = {
+  latestSubagents: {
+    tabs: [
+      { tabId: "tab-a", runs: [{ id: "done-a", status: "done", source: "async" }, { id: "running-a", status: "running", source: "async" }, { id: "workflow-a", status: "done", source: "workflow" }] },
+      { tabId: "tab-b", runs: [{ id: "failed-b", status: "failed", source: "foreground" }, { id: "cancelled-b", status: "cancelled", source: "async" }] },
+    ],
+  },
+  subagentsClearingFinished: false,
+  subagentsLoading: false,
+  refreshSubagentsTimer: null,
+  clearTimeout() {},
+  renderSubagents() {},
+  async api(path, options) { clearFinishedCalls.push({ path, options }); },
+  async refreshSubagents() { clearFinishedRefreshes += 1; },
+  scheduleRefreshSubagents() {},
+  addEvent(message, level) { clearFinishedEvents.push({ message, level }); },
+};
+vm.runInNewContext(`${app.slice(clearFinishedSourceStart, clearFinishedSourceEnd)}\nthis.runClearFinishedSubagentRuns = clearFinishedSubagentRuns;`, clearFinishedContext);
+await clearFinishedContext.runClearFinishedSubagentRuns();
+assert.deepEqual(JSON.parse(JSON.stringify(clearFinishedCalls)), [
+  { path: "/api/subagents/dismiss", options: { method: "POST", scoped: false, body: { tab: "tab-a", runId: "done-a" } } },
+  { path: "/api/subagents/dismiss", options: { method: "POST", scoped: false, body: { tab: "tab-b", runId: "failed-b" } } },
+  { path: "/api/subagents/dismiss", options: { method: "POST", scoped: false, body: { tab: "tab-b", runId: "cancelled-b" } } },
+], "clear-finished should call the existing dismiss endpoint only for terminal ordinary runs");
+assert.equal(clearFinishedRefreshes, 1, "clear-finished should refresh the overview once after all dismissals");
+assert.equal(clearFinishedContext.subagentsClearingFinished, false, "clear-finished should always release its in-flight guard");
+assert.deepEqual(clearFinishedEvents, [{ message: "cleared 3 finished subagent runs", level: "info" }]);
 assert.match(app, /function materializeRetainedSubagentTerminalViews\(\)[\s\S]*restoreKey = `\$\{tab\.tabId\}\\u0000\$\{tab\.sessionFile[\s\S]*run\?\.status === "running"[\s\S]*ensureSubagentTerminalView/, "terminal mode should materialize restored retained agent views once per parent session identity without touching overlay mode");
 assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"[\s\S]*function renderSubagentLaunchSlots\(\)[\s\S]*function loadSubagentLaunchSlotConfig\([\s\S]*\/api\/subagents\/config/, "launch-slot configuration should have its own browser state and API loader");
 assert.match(app, /function subagentLaunchSlotThinkingForModel\(model\)[\s\S]*modelThinkingLevels/, "launch-slot thinking choices should come from the selected model metadata");

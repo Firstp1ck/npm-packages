@@ -114,6 +114,11 @@ function mutateRuntimeQueue(payload = {}) {
     const [message] = runtimeQueue.followUpMessages.splice(operation.from, 1);
     runtimeQueue.followUp.splice(operation.to, 0, text);
     runtimeQueue.followUpMessages.splice(operation.to, 0, message);
+  } else if (operation.type === "delete") {
+    if (!Number.isInteger(operation.index) || operation.index < 0 || operation.index >= runtimeQueue.followUp.length
+      || runtimeQueue.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
+    runtimeQueue.followUp.splice(operation.index, 1);
+    runtimeQueue.followUpMessages.splice(operation.index, 1);
   } else {
     return failed("invalid-request");
   }

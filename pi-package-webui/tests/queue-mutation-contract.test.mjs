@@ -47,6 +47,15 @@ function moveRequest(session, from, to, expectedText = session._followUpMessages
   };
 }
 
+function deleteRequest(session, index, expectedText = session._followUpMessages[index]) {
+  return {
+    source: "pi-runtime",
+    kind: "followUp",
+    expected: expected(session),
+    operation: { type: "delete", index, expectedText },
+  };
+}
+
 {
   const { session, eventCount } = fixture();
   const beforeMessage = session.agent.followUpQueue.messages[1];
@@ -74,6 +83,17 @@ function moveRequest(session, from, to, expectedText = session._followUpMessages
   assert.deepEqual(session._followUpMessages, ["second", "third", "first"], "move uses the final post-removal index");
   assert.strictEqual(session.agent.followUpQueue.messages[2], firstMessage, "move keeps the message object paired with its tracking string");
   assert.equal(eventCount(), 1, "successful move emits exactly one queue update");
+}
+
+{
+  const { session, eventCount } = fixture();
+  const removedMessage = session.agent.followUpQueue.messages[1];
+  const result = mutatePiRuntimeFollowUpQueue(session, deleteRequest(session, 1));
+  assert.equal(result.mutated, true);
+  assert.deepEqual(session._followUpMessages, ["first", "third"], "delete removes the selected tracked follow-up");
+  assert.deepEqual(session.agent.followUpQueue.messages.map((message) => message.content[0].text), ["first", "third"], "delete keeps the remaining message objects paired with their tracking strings");
+  assert.equal(session.agent.followUpQueue.messages.includes(removedMessage), false, "delete removes the matching queued message object");
+  assert.equal(eventCount(), 1, "successful delete emits exactly one queue update");
 }
 
 {
@@ -115,6 +135,8 @@ for (const requestFor of [
   (session) => editRequest(session, 99, "edited"),
   (session) => moveRequest(session, 0, 0),
   (session) => moveRequest(session, 0, 99),
+  (session) => deleteRequest(session, 99),
+  (session) => deleteRequest(session, 1, "different"),
   (session) => ({ ...editRequest(session, 1, "edited"), source: "webui-compaction" }),
   (session) => ({ ...editRequest(session, 1, "edited"), kind: "steering" }),
 ]) {

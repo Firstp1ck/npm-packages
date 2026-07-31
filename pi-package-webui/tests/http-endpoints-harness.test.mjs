@@ -462,6 +462,19 @@ try {
   assert.equal(runtimeQueueMove.status, 200, "runtime queue moves should use final zero-based indices");
   assert.deepEqual(runtimeQueueMove.body?.data?.queue?.followUp, ["runtime second", "runtime third", "runtime edited"]);
 
+  const runtimeQueueDelete = await request("127.0.0.1", "/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "pi-runtime",
+      kind: "followUp",
+      expected: { steering: ["runtime steering"], followUp: ["runtime second", "runtime third", "runtime edited"] },
+      operation: { type: "delete", index: 1, expectedText: "runtime third" },
+    },
+  });
+  assert.equal(runtimeQueueDelete.status, 200, "runtime queue deletion should remove the selected follow-up");
+  assert.deepEqual(runtimeQueueDelete.body?.data?.queue?.followUp, ["runtime second", "runtime edited"]);
+
   const invalidRuntimeQueueMutation = await request("127.0.0.1", "/api/queue/mutate", {
     method: "POST",
     body: { tab: tabId, source: "pi-runtime", kind: "steering", expected: { steering: [], followUp: [] }, operation: { type: "edit", index: 0, expectedText: "x", text: "y" } },
@@ -1397,6 +1410,136 @@ try {
       assert.ok(id, `${title} tab should have an id`);
       return id;
     };
+    const addToGitignore = (tab, targetPath, kind) => request("127.0.0.1", "/api/git-changes/add-to-gitignore", {
+      method: "POST",
+      body: { tab, path: targetPath, kind },
+    });
+
+    // Add-to-gitignore mutation: literal entries, idempotence, line endings, validation, and target safety.
+    const gitignoreRepo = await makeFixtureRepo("add-to-gitignore");
+    const gitignoreTab = await openFixtureTab(gitignoreRepo, "add-to-gitignore-fixture");
+    await mkdir(path.join(gitignoreRepo, "generated"), { recursive: true });
+    await writeFile(path.join(gitignoreRepo, "generated", "output.log"), "generated\n");
+    await mkdir(path.join(gitignoreRepo, "build"), { recursive: true });
+    await writeFile(path.join(gitignoreRepo, "build", "bundle.js"), "bundle\n");
+    const indexBeforeGitignore = runGitFixture(["diff", "--cached", "--raw"], gitignoreRepo, "gitignore fixture should start with an unchanged index");
+
+    const addIgnoredFile = await addToGitignore(gitignoreTab, "generated/output.log", "file");
+    assert.equal(addIgnoredFile.status, 200);
+    assert.equal(addIgnoredFile.body?.ok, true, `adding a file to .gitignore should succeed: ${addIgnoredFile.body?.error || ""}`);
+    assert.deepEqual({
+      root: addIgnoredFile.body?.data?.root,
+      path: addIgnoredFile.body?.data?.path,
+      kind: addIgnoredFile.body?.data?.kind,
+      entry: addIgnoredFile.body?.data?.entry,
+      added: addIgnoredFile.body?.data?.added,
+    }, {
+      root: gitignoreRepo,
+      path: "generated/output.log",
+      kind: "file",
+      entry: "/generated/output.log",
+      added: true,
+    }, "file mutations should return the approved normalized contract");
+    assert.equal((await readFile(path.join(gitignoreRepo, ".gitignore"), "utf8")), "/generated/output.log\n", "a missing root .gitignore should be created with one LF-terminated entry");
+    assert.equal(addIgnoredFile.body?.data?.changes?.untracked?.some((entry) => entry.path === ".gitignore"), true, "the mutation response should contain refreshed Git status including .gitignore");
+    assert.equal(addIgnoredFile.body?.data?.changes?.untracked?.some((entry) => entry.path === "generated/output.log"), false, "the refreshed snapshot should no longer list the newly ignored file");
+
+    const bytesBeforeRepeat = await readFile(path.join(gitignoreRepo, ".gitignore"));
+    const repeatIgnoredFile = await addToGitignore(gitignoreTab, "generated/output.log", "file");
+    assert.equal(repeatIgnoredFile.body?.data?.added, false, "an exact repeated entry should report a no-op");
+    assert.deepEqual(await readFile(path.join(gitignoreRepo, ".gitignore")), bytesBeforeRepeat, "an exact repeated entry must be byte-idempotent");
+
+    const addIgnoredFolder = await addToGitignore(gitignoreTab, "build", "folder");
+    assert.equal(addIgnoredFolder.body?.data?.entry, "/build/", "folder entries should receive exactly one trailing slash");
+    assert.equal(await readFile(path.join(gitignoreRepo, ".gitignore"), "utf8"), "/generated/output.log\n/build/\n", "folder entries should append without rewriting existing content");
+
+    const concurrentResults = await Promise.all([
+      addToGitignore(gitignoreTab, "concurrent/cache.bin", "file"),
+      addToGitignore(gitignoreTab, "concurrent/cache.bin", "file"),
+    ]);
+    assert.deepEqual(concurrentResults.map((result) => result.body?.data?.added).sort(), [false, true], "per-repository serialization should add one copy under concurrent requests");
+    assert.equal((await readFile(path.join(gitignoreRepo, ".gitignore"), "utf8")).split("/concurrent/cache.bin").length - 1, 1, "serialized concurrent requests should leave one exact line");
+
+    const normalizedSeparators = await addToGitignore(gitignoreTab, "nested\\windows.log", "file");
+    assert.equal(normalizedSeparators.body?.data?.path, "nested/windows.log", "backslash separators should normalize to repository-style slashes");
+    assert.equal(normalizedSeparators.body?.data?.entry, "/nested/windows.log");
+    assert.equal(runGitFixture(["diff", "--cached", "--raw"], gitignoreRepo, "gitignore mutation must not change the index"), indexBeforeGitignore, "add-to-gitignore must not stage any files");
+    assert.equal(runGitFixture(["ls-files", "--stage", "--", ".gitignore"], gitignoreRepo, "gitignore mutation must leave .gitignore untracked"), "", ".gitignore must remain unstaged and untracked");
+
+    const lfRepo = await makeFixtureRepo("gitignore-lf");
+    const lfTab = await openFixtureTab(lfRepo, "gitignore-lf-fixture");
+    await writeFile(path.join(lfRepo, ".gitignore"), "# existing\n", "utf8");
+    assert.equal((await addToGitignore(lfTab, "lf-output.txt", "file")).body?.data?.added, true);
+    assert.equal(await readFile(path.join(lfRepo, ".gitignore"), "utf8"), "# existing\n/lf-output.txt\n", "LF files should retain LF when appending");
+
+    const noFinalNewlineRepo = await makeFixtureRepo("gitignore-no-final-newline");
+    const noFinalNewlineTab = await openFixtureTab(noFinalNewlineRepo, "gitignore-no-final-newline-fixture");
+    await writeFile(path.join(noFinalNewlineRepo, ".gitignore"), "# existing", "utf8");
+    await addToGitignore(noFinalNewlineTab, "separated.txt", "file");
+    assert.equal(await readFile(path.join(noFinalNewlineRepo, ".gitignore"), "utf8"), "# existing\n/separated.txt\n", "append should add a separator when existing content has no final newline");
+
+    const crlfRepo = await makeFixtureRepo("gitignore-crlf");
+    const crlfTab = await openFixtureTab(crlfRepo, "gitignore-crlf-fixture");
+    await writeFile(path.join(crlfRepo, ".gitignore"), Buffer.from("# existing\r\n", "utf8"));
+    await addToGitignore(crlfTab, "crlf-output.txt", "file");
+    assert.deepEqual(await readFile(path.join(crlfRepo, ".gitignore")), Buffer.from("# existing\r\n/crlf-output.txt\r\n", "utf8"), "CRLF files should retain CRLF when appending");
+
+    const literalRepo = await makeFixtureRepo("gitignore-literal-pattern");
+    const literalTab = await openFixtureTab(literalRepo, "gitignore-literal-pattern-fixture");
+    const literalPath = "literal [x] *?.txt";
+    const addLiteral = await addToGitignore(literalTab, literalPath, "file");
+    assert.equal(addLiteral.body?.data?.entry, "/literal\\ \\[x\\]\\ \\*\\?.txt", "spaces and Git pattern metacharacters should be escaped literally");
+    assert.equal(await readFile(path.join(literalRepo, ".gitignore"), "utf8"), "/literal\\ \\[x\\]\\ \\*\\?.txt\n");
+    const intendedLiteralCheck = spawnSync("git", ["check-ignore", "-q", "--no-index", "--", literalPath], { cwd: literalRepo });
+    assert.equal(intendedLiteralCheck.status, 0, "the escaped entry should ignore the intended special-character path");
+    const broaderLiteralCheck = spawnSync("git", ["check-ignore", "-q", "--no-index", "--", "literal x anything.txt"], { cwd: literalRepo });
+    assert.notEqual(broaderLiteralCheck.status, 0, "the escaped entry must not broaden into wildcard or character-class matching");
+
+    const outsideMarker = path.join(gitFixturesRoot, "outside-gitignore-marker.txt");
+    await writeFile(outsideMarker, "outside unchanged\n");
+    const validationBytesBefore = await readFile(path.join(gitignoreRepo, ".gitignore"));
+    const rejectedGitignoreInputs = [
+      { path: "", kind: "file", label: "empty path" },
+      { path: ".", kind: "folder", label: "repository root" },
+      { path: "/absolute.txt", kind: "file", label: "POSIX absolute path" },
+      { path: "C:\\absolute.txt", kind: "file", label: "Windows absolute path" },
+      { path: "../outside-gitignore-marker.txt", kind: "file", label: "traversal" },
+      { path: "nested/../outside.txt", kind: "file", label: "embedded traversal" },
+      { path: "bad\npath.txt", kind: "file", label: "newline control character" },
+      { path: "bad\0path.txt", kind: "file", label: "NUL control character" },
+      { path: "valid.txt", kind: "directory", label: "invalid kind" },
+      { path: "valid.txt", kind: "", label: "empty kind" },
+    ];
+    for (const invalid of rejectedGitignoreInputs) {
+      const rejected = await addToGitignore(gitignoreTab, invalid.path, invalid.kind);
+      assert.equal(rejected.status, 400, `${invalid.label} should be rejected`);
+      assert.equal(rejected.body?.ok, false, `${invalid.label} should return a structured failure`);
+    }
+    assert.deepEqual(await readFile(path.join(gitignoreRepo, ".gitignore")), validationBytesBefore, "validation failures must leave .gitignore byte-for-byte unchanged");
+    assert.equal(await readFile(outsideMarker, "utf8"), "outside unchanged\n", "traversal attempts must not write outside the repository");
+
+    const unsafeRepo = await makeFixtureRepo("gitignore-unsafe-target");
+    const unsafeTab = await openFixtureTab(unsafeRepo, "gitignore-unsafe-target-fixture");
+    const unsafeGitignore = path.join(unsafeRepo, ".gitignore");
+    await mkdir(unsafeGitignore);
+    const directoryTarget = await addToGitignore(unsafeTab, "blocked.txt", "file");
+    assert.equal(directoryTarget.status, 409, "a non-regular root .gitignore target should fail closed");
+    await rm(unsafeGitignore, { recursive: true, force: true });
+
+    const symlinkTarget = path.join(gitFixturesRoot, "outside-symlink-target.txt");
+    await writeFile(symlinkTarget, "symlink target unchanged\n");
+    let symlinkSupported = true;
+    try {
+      await symlink(symlinkTarget, unsafeGitignore, "file");
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "ENOSYS") symlinkSupported = false;
+      else throw error;
+    }
+    if (symlinkSupported) {
+      const symlinkResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
+      assert.equal(symlinkResponse.status, 409, "a root .gitignore symlink should fail closed");
+      assert.equal(await readFile(symlinkTarget, "utf8"), "symlink target unchanged\n", "a rejected .gitignore symlink must not be followed");
+    }
 
     // File-scoped Git diff endpoint: staged, unstaged, untracked, empty, deleted, and rejected inputs.
     const fileDiffRepo = await makeFixtureRepo("file-diff");
@@ -1820,7 +1963,7 @@ try {
     const pruneConfirmed = await request("127.0.0.1", "/api/git-worktrees/prune", { method: "POST", body: { tab: undoTab, confirmed: true }, timeoutMs: 20_000 });
     assert.equal(pruneConfirmed.body?.ok, true, `confirmed prune should succeed: ${pruneConfirmed.body?.error || ""}`);
 
-    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [stagingTab, truncationTab, mergeTab, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
+    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [gitignoreTab, lfTab, noFinalNewlineTab, crlfTab, literalTab, unsafeTab, fileDiffTab, stagingTab, truncationTab, mergeTab, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
     assert.equal(closeGitActionTabs.status, 200, "git action fixture tabs should close");
     await rmWithRetry(gitFixturesRoot);
 

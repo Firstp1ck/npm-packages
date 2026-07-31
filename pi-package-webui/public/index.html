@@ -896,7 +896,10 @@
                 </select>
                 <span id="subagentOpenModeStatus" class="muted">Overlay · saved in this browser</span>
               </div>
-              <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
+              <div class="subagents-status-row">
+                <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
+                <button id="subagentsClearFinishedButton" class="subagents-clear-finished-button" type="button" aria-describedby="subagentsStatus" disabled>Clear finished</button>
+              </div>
               <div id="subagentsBox" class="subagents-box muted">Checking running subagents…</div>
             </div>
           </section>

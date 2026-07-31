@@ -150,17 +150,31 @@ assert.strictEqual(movedCommand.images[0], secondImage, "move retains the moved 
 assert.deepEqual(movedCommand.metadata, { origin: "fixture", sequence: 2 }, "move retains moved command metadata");
 assert.equal(events.length, 2, "a successful compaction move emits exactly one additional queue update");
 
-tab.compactionQueueDraining = true;
-const draining = context.mutate(tab, {
+const remove = context.mutate(tab, {
   source: "webui-compaction",
   kind: "followUp",
   revision: 2,
   expected: { steering: ["fixed steering"], followUp: ["second follow-up", "edited follow-up"] },
-  operation: { type: "edit", index: 0, expectedText: "second follow-up", text: "must not apply" },
+  operation: { type: "delete", index: 1, expectedText: "edited follow-up" },
+});
+assert.equal(remove.mutated, true, "a current delete is accepted");
+assert.deepEqual([...remove.queue.followUp], ["second follow-up"], "delete removes only the selected follow-up while preserving steering");
+assert.deepEqual([...remove.queue.steering], ["fixed steering"]);
+assert.equal(tab.compactionQueue.length, 2, "delete removes the complete queued command record");
+assert.strictEqual(tab.compactionQueue[1].command, movedCommand, "delete preserves the remaining command identity");
+assert.equal(events.length, 3, "a successful compaction delete emits exactly one additional queue update");
+
+tab.compactionQueueDraining = true;
+const draining = context.mutate(tab, {
+  source: "webui-compaction",
+  kind: "followUp",
+  revision: 3,
+  expected: { steering: ["fixed steering"], followUp: ["second follow-up"] },
+  operation: { type: "delete", index: 0, expectedText: "second follow-up" },
 });
 assert.equal(draining.mutated, false, "a draining compaction queue rejects mutation");
 assert.equal(draining.reason, "queue-draining");
-assert.equal(events.length, 2, "a rejected draining mutation emits no queue update");
+assert.equal(events.length, 3, "a rejected draining mutation emits no queue update");
 assert.strictEqual(tab.compactionQueue[1].command, movedCommand, "a rejected draining mutation leaves the moved command untouched");
 
 console.log("compaction-mutation-contract.test.mjs passed");

@@ -291,6 +291,7 @@ const elements = {
   issueWizardBotHint: $("#issueWizardBotHint"),
   stateDetails: $("#stateDetails"),
   subagentsStatus: $("#subagentsStatus"),
+  subagentsClearFinishedButton: $("#subagentsClearFinishedButton"),
   subagentsBox: $("#subagentsBox"),
   subagentCountBadge: $("#subagentCountBadge"),
   subagentOpenModeSelect: $("#subagentOpenModeSelect"),
@@ -631,6 +632,7 @@ let claudeUsageRenderTimer = null;
 let latestSubagents = null;
 let subagentsError = null;
 let subagentsLoading = false;
+let subagentsClearingFinished = false;
 let refreshSubagentsTimer = null;
 const dismissedSubagentGateKeys = new Set();
 let subagentOverlaySelection = null;
@@ -10143,11 +10145,16 @@ function gitPanelContextMenuItems(context) {
     ];
   }
   const target = kind === "folder" ? "folder" : "file";
+  const ignoreAction = target === "folder" ? "ignore-folder" : "ignore-file";
+  const ignoreItem = { label: "Add to .gitignore", disabled: gitPanelActionBusy(card, ignoreAction, path), run: () => runGitPanelAction(card, ignoreAction, path) };
   if (category === "staged") {
-    return [{ label: `Unstage ${target}`, disabled: gitPanelActionBusy(card, "unstage", path), run: () => runGitPanelAction(card, "unstage", path) }];
+    return [
+      { label: `Unstage ${target}`, disabled: gitPanelActionBusy(card, "unstage", path), run: () => runGitPanelAction(card, "unstage", path) },
+      ignoreItem,
+    ];
   }
   const stageLabel = category === "conflicted" ? `Stage ${target} / mark resolved` : `Stage ${target}`;
-  const items = [{ label: stageLabel, disabled: gitPanelActionBusy(card, "stage", path), run: () => runGitPanelAction(card, "stage", path) }];
+  const items = [{ label: stageLabel, disabled: gitPanelActionBusy(card, "stage", path), run: () => runGitPanelAction(card, "stage", path) }, ignoreItem];
   if (kind === "file" && category === "changes") {
     items.push({ label: "Discard changes…", danger: true, disabled: gitPanelActionBusy(card, "discard", path), run: () => runGitPanelAction(card, "discard", path) });
   }
@@ -10213,6 +10220,14 @@ function gitPanelActionBusy(card, action, path = "") {
 }
 
 async function runGitPanelAction(card, action, path = "") {
+  const gitignoreAction = (kind) => ({
+    url: "/api/git-changes/add-to-gitignore",
+    body: { path, kind },
+    past: `Added ${path} to .gitignore.`,
+    done: (data) => (data?.added
+      ? `Added ${data?.entry || path} to .gitignore.`
+      : `${data?.entry || path} is already in .gitignore.`),
+  });
   const config = {
     stage: { url: "/api/git-changes/stage-file", body: { path }, past: `Staged ${path}.` },
     unstage: { url: "/api/git-changes/unstage-file", body: { path }, past: `Unstaged ${path}.` },
@@ -10232,6 +10247,8 @@ async function runGitPanelAction(card, action, path = "") {
       confirm: `Delete untracked file ${path}?\n\nRepository: ${card.root}\n\nThis permanently removes the file from disk.`,
       confirmLabel: "Delete file",
     },
+    "ignore-file": gitignoreAction("file"),
+    "ignore-folder": gitignoreAction("folder"),
   }[action];
   if (!config || !card?.root || !card.tabId) return;
   if (config.confirm && !(await appConfirmText(config.confirm, { affected: path || card.root, confirmLabel: config.confirmLabel }))) return;
@@ -10242,7 +10259,7 @@ async function runGitPanelAction(card, action, path = "") {
   try {
     const response = await api(config.url, { method: "POST", body: config.body, tabId: card.tabId });
     if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || `Git ${action} failed`);
-    addEvent(config.past, "success");
+    addEvent(typeof config.done === "function" ? config.done(response.data) : config.past, "success");
     await loadGitPanelRepository(card, { force: true });
     requestGitFooterWebuiPayload({ tabId: card.tabId }, { force: true });
   } catch (error) {
@@ -17675,6 +17692,47 @@ async function dismissSubagentRun(tab, run) {
   }
 }
 
+function finishedSubagentRunSelections(data = latestSubagents) {
+  return (Array.isArray(data?.tabs) ? data.tabs : []).flatMap((tab) => (
+    Array.isArray(tab?.runs) ? tab.runs : []
+  )
+    .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow")
+    .map((run) => ({ tabId: tab.tabId, runId: run.id }))
+    .filter((selection) => selection.tabId && selection.runId));
+}
+
+async function clearFinishedSubagentRuns() {
+  if (subagentsClearingFinished || subagentsLoading) return;
+  const selections = finishedSubagentRunSelections();
+  if (!selections.length) return;
+  clearTimeout(refreshSubagentsTimer);
+  subagentsClearingFinished = true;
+  renderSubagents();
+  let dismissed = 0;
+  const failures = [];
+  try {
+    for (const selection of selections) {
+      try {
+        await api("/api/subagents/dismiss", {
+          method: "POST",
+          scoped: false,
+          body: { tab: selection.tabId, runId: selection.runId },
+        });
+        dismissed += 1;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    await refreshSubagents();
+  } finally {
+    subagentsClearingFinished = false;
+    renderSubagents();
+    scheduleRefreshSubagents();
+  }
+  if (dismissed) addEvent(`cleared ${dismissed} finished subagent ${dismissed === 1 ? "run" : "runs"}`, "info");
+  if (failures.length) addEvent(`could not clear ${failures.length} finished subagent ${failures.length === 1 ? "run" : "runs"}`, "warn");
+}
+
 function subagentOverlayTranscriptMessages(data = subagentOverlayData) {
   const agent = data?.agent || subagentOverlaySelection?.agent || {};
   return (Array.isArray(agent.transcript) ? agent.transcript : [])
@@ -18506,6 +18564,7 @@ function renderSubagents() {
   const box = elements.subagentsBox;
   if (!box) return;
   const activeTabs = subagentTabsWithRunningAgents();
+  const finishedRuns = finishedSubagentRunSelections();
   const totalAgents = Number(latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
   const totalRuns = Number(latestSubagents?.totalRuns || 0);
   const runningRuns = Number(latestSubagents?.runningRuns || 0);
@@ -18515,6 +18574,13 @@ function renderSubagents() {
   if (elements.subagentCountBadge) {
     elements.subagentCountBadge.textContent = String(totalAgents);
     elements.subagentCountBadge.hidden = totalAgents === 0;
+  }
+  if (elements.subagentsClearFinishedButton) {
+    elements.subagentsClearFinishedButton.disabled = subagentsLoading || subagentsClearingFinished || finishedRuns.length === 0;
+    elements.subagentsClearFinishedButton.textContent = subagentsClearingFinished ? "Clearing…" : "Clear finished";
+    elements.subagentsClearFinishedButton.title = finishedRuns.length
+      ? `Clear ${finishedRuns.length} finished subagent ${finishedRuns.length === 1 ? "run" : "runs"}`
+      : "No finished subagent runs to clear";
   }
   if (elements.subagentsStatus) {
     elements.subagentsStatus.textContent = hasItems
@@ -24670,7 +24736,14 @@ async function mutateQueuedFollowUp(operation, tabId = activeTabId) {
     return false;
   }
   setFollowUpQueueMutationInFlight(tabId, true);
-  if (isCurrentTabContext(tabContext)) setFollowUpQueueStatus(operation.type === "edit" ? "Saving queued follow-up…" : "Reordering queued follow-ups…");
+  if (isCurrentTabContext(tabContext)) {
+    const pendingStatus = operation.type === "edit"
+      ? "Saving queued follow-up…"
+      : operation.type === "delete"
+        ? "Removing queued follow-up…"
+        : "Reordering queued follow-ups…";
+    setFollowUpQueueStatus(pendingStatus);
+  }
   try {
     const response = await api("/api/queue/mutate", { method: "POST", body: queueMutationBody(snapshot, operation), tabId });
     const result = response?.data || {};
@@ -24682,7 +24755,9 @@ async function mutateQueuedFollowUp(operation, tabId = activeTabId) {
     if (isCurrentTabContext(tabContext)) {
       const message = operation.type === "edit"
         ? `Saved queued follow-up ${operation.index + 1}.`
-        : `Moved queued follow-up ${operation.from + 1} to position ${operation.to + 1}.`;
+        : operation.type === "delete"
+          ? `Removed queued follow-up ${operation.index + 1}.`
+          : `Moved queued follow-up ${operation.from + 1} to position ${operation.to + 1}.`;
       setFollowUpQueueStatus(message, "success");
     }
     return true;
@@ -24794,7 +24869,20 @@ function renderFollowUpQueueOverlay() {
     moveDown.title = `Move queued follow-up ${index + 1} down`;
     moveDown.setAttribute("aria-label", `Move queued follow-up ${index + 1} down`);
     moveDown.addEventListener("click", () => void mutateQueuedFollowUp({ type: "move", from: index, to: index + 1, expectedText: item }));
-    controls.append(moveUp, moveDown);
+    const remove = make("button", "follow-up-queue-remove-button", "Remove");
+    remove.type = "button";
+    remove.dataset.followUpQueueMutationControl = "true";
+    remove.title = `Remove queued follow-up ${index + 1}`;
+    remove.setAttribute("aria-label", `Remove queued follow-up ${index + 1}`);
+    remove.addEventListener("pointerdown", () => { followUpQueueSuppressBlurFor = textarea; });
+    remove.addEventListener("pointercancel", () => {
+      if (followUpQueueSuppressBlurFor === textarea) followUpQueueSuppressBlurFor = null;
+    });
+    remove.addEventListener("click", () => {
+      if (followUpQueueSuppressBlurFor === textarea) followUpQueueSuppressBlurFor = null;
+      void removeQueuedFollowUpPrompt(index, item);
+    });
+    controls.append(moveUp, moveDown, remove);
     row.append(dragHandle, textarea, controls);
     row.addEventListener("dragstart", (event) => {
       if (unavailable || event.target?.closest?.(".follow-up-queue-drag-handle") !== dragHandle) {
@@ -24854,24 +24942,11 @@ function renderFollowUpQueueOverlay() {
 }
 
 async function removeQueuedFollowUpPrompt(index, message, tabId = activeTabId) {
-  if (!tabId || queuedSnapshotForTab(tabId).source !== "pi-runtime") return false;
+  if (!tabId) return false;
   const tabContext = queueTabContext(tabId);
-  try {
-    const response = await api("/api/queue/remove", { method: "POST", body: { kind: "followUp", index, message }, tabId });
-    const data = response?.data || {};
-    if (data.queue) applyAuthoritativeQueuedSnapshot(tabContext, data.queue);
-    if (data.removed) {
-      if (isCurrentTabContext(tabContext)) addEvent(`removed queued follow-up #${index + 1}`);
-      scheduleRefreshState(120, tabContext);
-      return true;
-    }
-    if (isCurrentTabContext(tabContext)) addEvent("queued follow-up changed before it could be removed; refreshed queue", "warn");
-    scheduleRefreshState(120, tabContext);
-    return false;
-  } catch (error) {
-    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
-    return false;
-  }
+  const removed = await mutateQueuedFollowUp({ type: "delete", index, expectedText: message }, tabId);
+  if (removed && isCurrentTabContext(tabContext)) addEvent(`removed queued follow-up #${index + 1}`);
+  return removed;
 }
 
 function renderQueueGroup(label, items, tone, { removable = false, tabId } = {}) {
@@ -24933,10 +25008,10 @@ function renderQueue(event) {
 
   elements.queueBox.append(summary);
   if (steering.length) elements.queueBox.append(renderQueueGroup("Steering", steering, "steering", { tabId }));
-  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: snapshot.source === "pi-runtime", tabId }));
+  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: !snapshot.draining, tabId }));
   elements.queueBox.append(make("div", "queue-hint", snapshot.source === "pi-runtime"
     ? "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Use Remove beside follow-ups to drop them from the queue."
-    : "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Edit and reorder compaction-held follow-ups with the composer Queue control."));
+    : "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Edit, reorder, or remove compaction-held follow-ups with the composer Queue control."));
   if (tabId === activeTabId) renderFollowUpQueueOverlay();
   updateStickyUserPromptButton();
 }
@@ -35718,6 +35793,9 @@ if (elements.subagentOpenModeSelect) {
     setSubagentOpenMode(elements.subagentOpenModeSelect.value, { announce: true });
   });
 }
+elements.subagentsClearFinishedButton?.addEventListener("click", () => {
+  void clearFinishedSubagentRuns();
+});
 elements.subagentLaunchSlotScope?.addEventListener("change", () => {
   selectSubagentLaunchSlotScope(elements.subagentLaunchSlotScope.value).catch((error) => {
     subagentLaunchSlotError = error.message || String(error);
