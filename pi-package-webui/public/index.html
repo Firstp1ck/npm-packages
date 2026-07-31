@@ -877,8 +877,8 @@
                   <p id="subagentLaunchSlotsStatus" class="subagent-launch-slots-status muted" role="status" aria-live="polite">Loading agent models…</p>
                   <div id="subagentLaunchSlotRoles" class="subagent-launch-slot-roles" aria-busy="true"></div>
                   <div class="subagent-launch-slots-actions">
-                    <button id="subagentLaunchSlotsSave" class="primary" type="button" disabled>Save agent models</button>
-                    <span id="subagentLaunchSlotsDirty" class="muted">No unsaved changes</span>
+                    <button id="subagentLaunchSlotsSave" class="primary" type="button" aria-describedby="subagentLaunchSlotsDirty" disabled>Save agent models</button>
+                    <span id="subagentLaunchSlotsDirty" class="muted" role="status" aria-live="polite">Agent model configuration is not available for this tab.</span>
                   </div>
                   <div id="subagentLaunchSlotsReloadActions" class="subagent-launch-slots-reload-actions" hidden>
                     <span>Saved changes apply to future launches after this tab reloads.</span>
@@ -1383,7 +1383,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=94">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=95">
       (() => {
         "use strict";
 

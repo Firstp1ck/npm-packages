@@ -2,7 +2,7 @@ import { aurReviewSafePath as parsedAurReviewSafePath, parseAurReviewPayload as 
 import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
 import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
-import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
+import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, subagentLaunchSlotSaveState, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
 import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
 import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
@@ -18787,6 +18787,14 @@ function renderSubagentLaunchSlots() {
   const config = subagentLaunchSlotConfig;
   const dirty = subagentLaunchSlotDraftIsDirty();
   const activeConfigTab = !!subagentLaunchSlotConfigTabId && subagentLaunchSlotConfigTabId === activeTabId;
+  const saveState = subagentLaunchSlotSaveState({
+    hasConfig: !!config,
+    hasDraft: !!subagentLaunchSlotDraft,
+    dirty,
+    loading: subagentLaunchSlotLoading,
+    saving: subagentLaunchSlotSaving,
+    activeConfigTab,
+  });
   if (elements.subagentLaunchSlotsSummaryStatus) {
     const roleCount = Array.isArray(config?.roleMetadata) ? config.roleMetadata.length : 8;
     elements.subagentLaunchSlotsSummaryStatus.textContent = subagentLaunchSlotError
@@ -18836,11 +18844,13 @@ function renderSubagentLaunchSlots() {
     elements.subagentLaunchSlotsStatus.classList.toggle("error", !!subagentLaunchSlotError);
   }
   if (elements.subagentLaunchSlotsSave) {
-    elements.subagentLaunchSlotsSave.disabled = !config || !subagentLaunchSlotDraft || !dirty || subagentLaunchSlotLoading || subagentLaunchSlotSaving || !activeConfigTab;
+    elements.subagentLaunchSlotsSave.disabled = saveState.disabled;
     elements.subagentLaunchSlotsSave.textContent = subagentLaunchSlotSaving ? "Saving…" : "Save agent models";
   }
   if (elements.subagentLaunchSlotsDirty) {
-    elements.subagentLaunchSlotsDirty.textContent = dirty ? "Unsaved changes" : "No unsaved changes";
+    elements.subagentLaunchSlotsDirty.textContent = dirty
+      ? `Unsaved changes · ${saveState.reason}`
+      : saveState.reason;
   }
   if (elements.subagentLaunchSlotsReloadActions) {
     elements.subagentLaunchSlotsReloadActions.hidden = !(subagentLaunchSlotReloadRequired && activeConfigTab);

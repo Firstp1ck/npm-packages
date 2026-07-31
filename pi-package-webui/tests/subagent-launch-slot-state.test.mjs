@@ -4,8 +4,40 @@ import {
   cloneLaunchSlotRoles,
   launchSlotRolesEqual,
   removeLaunchSlot,
+  subagentLaunchSlotSaveState,
   updateLaunchSlot,
 } from "../public/subagent-launch-slot-state.mjs";
+
+assert.deepEqual(
+  subagentLaunchSlotSaveState({ hasConfig: true, hasDraft: true, dirty: true, activeConfigTab: true }),
+  { disabled: false, reason: "Ready to save." },
+  "a dirty draft owned by the active tab should be saveable",
+);
+assert.deepEqual(
+  subagentLaunchSlotSaveState({ hasConfig: true, hasDraft: true, dirty: true, activeConfigTab: false }),
+  { disabled: true, reason: "Switch back to the tab where these changes were made to save them." },
+  "a dirty draft should explain that its owning tab must be active",
+);
+assert.deepEqual(
+  subagentLaunchSlotSaveState({ hasConfig: true, hasDraft: true, dirty: true, loading: true, activeConfigTab: true }),
+  { disabled: true, reason: "Wait for agent models to finish loading." },
+  "loading should temporarily block saving with an explanation",
+);
+assert.deepEqual(
+  subagentLaunchSlotSaveState({ hasConfig: true, hasDraft: true, dirty: true, saving: true, activeConfigTab: true }),
+  { disabled: true, reason: "Saving agent models…" },
+  "saving should remain disabled while the request is in progress",
+);
+assert.deepEqual(
+  subagentLaunchSlotSaveState({ hasConfig: true, hasDraft: true, activeConfigTab: true }),
+  { disabled: true, reason: "Change a model or thinking preset to enable saving." },
+  "a clean draft should explain how saving becomes available",
+);
+assert.deepEqual(
+  subagentLaunchSlotSaveState(),
+  { disabled: true, reason: "Agent model configuration is not available for this tab." },
+  "missing configuration should explain why saving is unavailable",
+);
 
 const initial = {
   reviewer: [{ id: "reviewer:base", model: "anthropic/reviewer", thinking: "high" }],

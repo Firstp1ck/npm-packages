@@ -16,10 +16,12 @@ const [html, app, css, server, serviceWorker, pkg] = await Promise.all([
 assert.match(html, /<details id="subagentLaunchSlots" class="subagent-launch-slots">[\s\S]*<summary class="subagent-launch-slots-summary">[\s\S]*id="subagentLaunchSlotsTitle">Agent models<[\s\S]*id="subagentLaunchSlotRoles"[\s\S]*id="subagentsStatus"[\s\S]*id="subagentsBox"/, "launch-slot configuration should be a native collapsible surface separate from the live monitor");
 assert.doesNotMatch(html, /<details id="subagentLaunchSlots"[^>]*\sopen(?:\s|>)/, "Agent models should start collapsed to keep the Subagents panel compact");
 assert.match(html, /id="subagentLaunchSlotScope"[^>]*aria-describedby="subagentLaunchSlotScopeStatus"/, "scope selection should use stable accessible help");
+assert.match(html, /id="subagentLaunchSlotsSave"[^>]*aria-describedby="subagentLaunchSlotsDirty"[^>]*disabled[\s\S]*id="subagentLaunchSlotsDirty"[^>]*role="status"[^>]*aria-live="polite"/, "save availability explanations should be visible and associated with the disabled control");
 assert.match(html, /id="subagentLaunchSlotsAnnouncer"[^>]*aria-live="polite"[^>]*aria-atomic="true"/, "slot changes should be announced accessibly");
 assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"/, "the browser should use the pure launch-slot state helper");
 assert.match(app, /const subagentLaunchSlotReloadTabs = new Set\(\)[\s\S]*subagentLaunchSlotReloadTabs\.add\(activeTabId\)[\s\S]*subagentLaunchSlotReloadTabs\.delete\(activeTabId\)/, "reload reminders should be tracked per tab until reload");
 assert.match(app, /subagentLaunchSlotsSummaryStatus\.textContent[\s\S]*"Unsaved changes"[\s\S]*"Saved · reload this tab"[\s\S]*subagentLaunchSlots\.open = true/, "the collapsed summary should surface state and reopen for errors or required reloads");
+assert.match(app, /const saveState = subagentLaunchSlotSaveState\([\s\S]*subagentLaunchSlotsSave\.disabled = saveState\.disabled[\s\S]*`Unsaved changes · \$\{saveState\.reason\}`/, "save eligibility and its adjacent explanation should come from one canonical state");
 assert.doesNotMatch(app, /`(?:Model|Thinking) · \$\{slotLabel\}`/, "visible field labels should stay compact while aria-labels retain slot context");
 assert.match(app, /api\(`\/api\/subagents\/config\?\$\{query\}`/, "the editor should load configuration through the tab-scoped API");
 assert.match(app, /api\("\/api\/subagents\/config", \{ method: "POST", body, scoped: false \}\)/, "the editor should save through the localhost-scoped configuration API");
