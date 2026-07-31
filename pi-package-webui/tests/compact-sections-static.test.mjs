@@ -31,8 +31,8 @@ assert.match(
 );
 assert.match(
   css,
-  /\/\* Compact high-density surfaces:[\s\S]*\.subagent-launch-slots-summary \{[\s\S]*min-height:\s*2\.7rem;[\s\S]*\.subagents-box \{[\s\S]*padding:\s*0\.48rem;[\s\S]*\.subagent-tab-header \{[\s\S]*min-height:\s*36px;/,
-  "Subagents side-panel chrome should use the scoped compact density treatment",
+  /\/\* Compact high-density surfaces:[\s\S]*\.subagent-launch-slots-summary \{[\s\S]*min-height:\s*2\.35rem;[\s\S]*\.subagents-box \{[\s\S]*padding:\s*0\.48rem;[\s\S]*\.subagent-tab-header \{[\s\S]*min-height:\s*36px;/,
+  "Subagents side-panel chrome should use the minimal scoped density treatment",
 );
 assert.match(
   css,

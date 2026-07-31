@@ -55,6 +55,14 @@ const ctx = {
   mode: "rpc",
   hasUI: true,
   cwd: "/tmp/subagent-helper-test",
+  modelRegistry: {
+    getAvailable() {
+      return [
+        { provider: "anthropic", id: "claude-opus-4-8", contextWindow: 200_000 },
+        { provider: "openai-codex", id: "gpt-5.6-terra", contextWindow: 128_000 },
+      ];
+    },
+  },
   sessionManager: {
     getBranch() { return branchEntries; },
   },
@@ -89,8 +97,11 @@ await writeFile(settingsFile, `${JSON.stringify({
 process.env.PI_WEBUI_SETTINGS_FILE = settingsFile;
 const asyncSessionFile = path.join(asyncRunDir, "reviewer-session.jsonl");
 await writeFile(asyncSessionFile, [
+  JSON.stringify({ type: "custom", customType: "stats_initial_prompt_estimate", timestamp: "2026-07-19T11:59:59.000Z", data: { actualInjectedTokens: 1234, privatePrompt: "must not leave the child session" } }),
   JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:00.000Z", message: { role: "assistant", content: [{ type: "thinking", thinking: "Checking structured transcript extraction" }, { type: "text", text: "REVIEWER STREAM 1 OF 18" }, { type: "toolCall", id: "review-call", name: "bash", arguments: { command: "sleep 5" } }, { type: "text", text: "Review complete." }] } }),
   JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:01.000Z", message: { role: "toolResult", toolCallId: "review-call", toolName: "bash", isError: false, content: [{ type: "text", text: "(no output)\nreviewer tool output line" }] } }),
+  JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:02.000Z", message: { role: "assistant", timestamp: "2026-07-19T12:00:00.000Z", provider: "anthropic", model: "claude-opus-4-8", usage: { input: 100, output: 40, cacheRead: 20, cacheWrite: 5 }, content: [] } }),
+  JSON.stringify({ type: "message", timestamp: "2026-07-19T12:00:06.000Z", message: { role: "assistant", timestamp: "2026-07-19T12:00:03.000Z", provider: "anthropic", model: "claude-opus-4-8", usage: { input: 200, output: 60, cacheRead: 30, cacheWrite: 10 }, content: [] } }),
   "",
 ].join("\n"));
 const asyncStatusFile = path.join(asyncRunDir, "status.json");
@@ -281,6 +292,16 @@ assert.deepEqual(workflowOutputResponse.data, {
     status: "running",
     activityState: "stdout",
     model: "openai-codex/gpt-5.6-terra:xhigh",
+    telemetry: {
+      promptInjectionTokens: null,
+      inputTokens: null,
+      outputTokens: null,
+      tokenSpeed: null,
+      contextTokens: null,
+      contextWindow: null,
+      model: null,
+      effort: null,
+    },
     recentTools: [],
     recentOutput: ["Inspecting helper contract", "Implementing local output route"],
     transcript: [],
@@ -302,6 +323,17 @@ const asyncOutputResponse = JSON.parse(asyncOutputNotice.message.slice("__PI_WEB
 assert.equal(asyncOutputResponse.ok, true);
 assert.equal(asyncOutputResponse.data.agent.model, "anthropic/claude-opus-4-8:high");
 assert.equal(asyncOutputResponse.data.agent.thinking, "high");
+assert.deepEqual(asyncOutputResponse.data.agent.telemetry, {
+  promptInjectionTokens: 1234,
+  inputTokens: 300,
+  outputTokens: 100,
+  tokenSpeed: 20,
+  contextTokens: 240,
+  contextWindow: 200_000,
+  model: "anthropic/claude-opus-4-8:high",
+  effort: "high",
+}, "ordinary live output should expose only derived bounded child-session telemetry");
+assert.doesNotMatch(JSON.stringify(asyncOutputResponse.data.agent.telemetry), /must not leave the child session/, "selected telemetry must not leak custom-entry payloads");
 assert.deepEqual(asyncOutputResponse.data.agent.recentOutput, [
   "REVIEWER STREAM 1 OF 18",
   "▶ bash {\"command\":\"sleep 5\"}",
@@ -385,6 +417,53 @@ assert.deepEqual(incompleteToolResponse.data.agent.transcript, [{
   content: [{ type: "toolCall", id: "tail-call", name: "read", arguments: "{\"path\":\"README.md\"}" }],
 }], "a live or truncated session tail should retain an unpaired tool call for a pending tool card");
 
+const malformedTelemetrySessionFile = path.join(asyncRunDir, "malformed-telemetry-session.jsonl");
+await writeFile(malformedTelemetrySessionFile, [
+  "{not json}",
+  JSON.stringify({ type: "custom", customType: "stats_initial_prompt_estimate", data: { actualInjectedTokens: "invalid", privatePrompt: "malformed custom payload" } }),
+  JSON.stringify({ type: "message", timestamp: "2026-07-19T12:03:01.000Z", message: { role: "assistant", timestamp: "2026-07-19T12:03:00.000Z", usage: { input: -1, output: Number.MAX_VALUE }, content: [] } }),
+].join("\n"));
+await writeFile(asyncStatusFile, JSON.stringify({
+  runId: "run-a",
+  mode: "parallel",
+  state: "running",
+  startedAt: Date.now() - 1000,
+  lastUpdate: Date.now(),
+  steps: [{ agent: "reviewer", status: "running", sessionFile: malformedTelemetrySessionFile, model: "anthropic/claude-opus-4-8:high", thinking: "high" }],
+}));
+await helperCommand.handler(JSON.stringify({
+  requestId: "malformed-telemetry-subagent-output-test",
+  action: "subagent-output",
+  payload: { runId: "run-a", agentId: "run-a:step:0:reviewer" },
+}), ctx);
+const malformedTelemetryResponse = helperResponse("malformed-telemetry-subagent-output-test");
+assert.deepEqual(malformedTelemetryResponse.data.agent.telemetry, {
+  promptInjectionTokens: null,
+  inputTokens: null,
+  outputTokens: null,
+  tokenSpeed: null,
+  contextTokens: null,
+  contextWindow: 200_000,
+  model: "anthropic/claude-opus-4-8:high",
+  effort: "high",
+}, "malformed child-session telemetry should fail closed while preserving authoritative model metadata");
+assert.doesNotMatch(JSON.stringify(malformedTelemetryResponse.data.agent.telemetry), /malformed custom payload/, "malformed custom-entry payloads must not reach selected output");
+
+await writeFile(asyncStatusFile, JSON.stringify({
+  runId: "run-a",
+  mode: "parallel",
+  state: "running",
+  startedAt: Date.now() - 1000,
+  lastUpdate: Date.now(),
+  steps: [{ agent: "reviewer", status: "running", sessionFile: asyncSessionFile, recentOutput: [], currentTool: "bash", currentToolArgs: "sleep 5", model: "anthropic/claude-opus-4-8:high", thinking: "high" }],
+}));
+await helperCommand.handler(JSON.stringify({
+  requestId: "restored-telemetry-subagent-output-test",
+  action: "subagent-output",
+  payload: { runId: "run-a", agentId: "run-a:step:0:reviewer" },
+}), ctx);
+assert.equal(helperResponse("restored-telemetry-subagent-output-test").data.agent.telemetry.inputTokens, 300, "a valid retained locator should replace an earlier malformed live locator");
+
 for (const handler of extensionHandlers.get("tool_execution_start") || []) {
   handler({
     type: "tool_execution_start",
@@ -449,6 +528,16 @@ assert.equal(outputResponse.data.agent.currentTool, "bash");
 assert.equal(outputResponse.data.agent.currentToolArgs, "npm test");
 assert.equal(outputResponse.data.agent.model, "openai-codex/gpt-5.6-terra:xhigh");
 assert.equal(outputResponse.data.agent.thinking, "xhigh");
+assert.deepEqual(outputResponse.data.agent.telemetry, {
+  promptInjectionTokens: null,
+  inputTokens: null,
+  outputTokens: null,
+  tokenSpeed: null,
+  contextTokens: null,
+  contextWindow: 128_000,
+  model: "openai-codex/gpt-5.6-terra:xhigh",
+  effort: "xhigh",
+}, "foreground snapshots without child-session locators should retain explicit unknown measurements");
 assert.deepEqual(outputResponse.data.agent.recentOutput, ["Running focused tests", "12 assertions passed"]);
 assert.deepEqual(outputResponse.data.agent.transcript, [], "foreground snapshots without a child session transcript should retain the recentOutput-only fallback");
 assert.deepEqual(outputResponse.data.agent.recentTools, [{ tool: "read", args: "package.json", endMs: 1000 }]);
@@ -674,6 +763,7 @@ await helperCommand.handler(JSON.stringify({
 const restoredOutput = helperResponse("restored-async-output");
 assert.equal(restoredOutput.ok, true, "retained async output should remain accessible after a parent-session resume");
 assert.equal(restoredOutput.data.agent.status, "cancelled");
+assert.equal(restoredOutput.data.agent.telemetry.inputTokens, 300, "retained runs should re-read bounded telemetry from a still-available child session locator");
 
 const retainedParentBranch = branchEntries;
 branchEntries = [];

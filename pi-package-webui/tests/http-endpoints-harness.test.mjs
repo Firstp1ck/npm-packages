@@ -735,6 +735,17 @@ try {
   assert.equal(subagentOutputResponse.body?.data?.agent?.currentToolArgs, "README.md", "subagent output should include current tool state");
   assert.equal(subagentOutputResponse.body?.data?.agent?.model, "anthropic/claude-opus-4-8:high", "subagent output should preserve the effective model");
   assert.equal(subagentOutputResponse.body?.data?.agent?.thinking, "high", "subagent output should preserve the effective reasoning effort");
+  assert.deepEqual(subagentOutputResponse.body?.data?.agent?.telemetry, {
+    promptInjectionTokens: 1234,
+    inputTokens: 300,
+    outputTokens: 100,
+    tokenSpeed: 20,
+    contextTokens: 240,
+    contextWindow: 200_000,
+    model: "anthropic/claude-opus-4-8:high",
+    effort: "high",
+  }, "selected output should preserve only the normalized additive telemetry contract");
+  assert.equal(Object.hasOwn(subagentOutputResponse.body?.data?.agent?.telemetry || {}, "rawSessionPayload"), false, "selected output must not leak raw child-session/custom payloads");
   assert.deepEqual(subagentOutputResponse.body?.data?.agent?.transcript, [
     {
       role: "assistant",
@@ -867,6 +878,29 @@ try {
   const state = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);
   assert.equal(state.status, 200);
   assert.equal(state.body?.data?.model?.provider, "fake", "state should come from the fake pi RPC");
+
+  const newSessionTitleTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd } });
+  assert.equal(newSessionTitleTab.status, 201, `new-session title test tab should open: ${newSessionTitleTab.body?.error || ""}`);
+  const newSessionTitleTabId = newSessionTitleTab.body?.data?.tab?.id;
+  const defaultNewSessionTabTitle = newSessionTitleTab.body?.data?.tab?.title;
+  assert.ok(newSessionTitleTabId && defaultNewSessionTabTitle, "new-session title test tab should include default metadata");
+  const autoNamedTab = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { tab: newSessionTitleTabId, message: "verify new session terminal title refresh" },
+  });
+  assert.equal(autoNamedTab.status, 200, "the title test prompt should be accepted");
+  assert.notEqual(autoNamedTab.body?.tab?.title, defaultNewSessionTabTitle, "the first prompt should auto-name the test tab");
+  assert.equal(autoNamedTab.body?.tab?.titleSource, "auto", "the generated title should be marked automatic");
+  const freshSession = await request("127.0.0.1", "/api/new-session", {
+    method: "POST",
+    body: { tab: newSessionTitleTabId },
+  });
+  assert.equal(freshSession.status, 200, `new session should succeed: ${freshSession.body?.error || ""}`);
+  assert.equal(freshSession.body?.tab?.title, defaultNewSessionTabTitle, "new-session responses should immediately reset automatic terminal-tab titles");
+  assert.equal(freshSession.body?.tab?.titleSource, "default", "a reset title should be eligible for the new session's first-prompt naming");
+  assert.equal(freshSession.body?.tab?.conversationStarted, false, "the new session should reset conversation-title tracking");
+  const closeNewSessionTitleTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [newSessionTitleTabId] } });
+  assert.equal(closeNewSessionTitleTab.status, 200, "new-session title test tab should close before later endpoint checks");
 
   const forkSourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "fork-running-source" } });
   assert.equal(forkSourceTab.status, 201, `fork source tab should open: ${forkSourceTab.body?.error || ""}`);

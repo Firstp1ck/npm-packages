@@ -21,7 +21,8 @@ const packageName = "@firstpick/pi-extension-codex-fast-mode";
 assert.equal(pkg.optionalDependencies?.[packageName], "^0.1.0", "WebUI should declare the Fast-mode companion as optional");
 assert.ok(pkg.pi?.extensions?.includes(`node_modules/${packageName}/index.ts`), "WebUI should load the optional Fast-mode extension when installed");
 assert.equal(lock.packages?.[""]?.optionalDependencies?.[packageName], "^0.1.0", "lock root should mirror the unpublished optional requirement without inventing a resolved artifact");
-assert.equal(lock.packages?.[`node_modules/${packageName}`], undefined, "lockfile must not fabricate a registry resolution before the package is published");
+assert.equal(lock.packages?.[`node_modules/${packageName}`]?.version, "0.1.0", "lockfile should resolve the published Fast-mode companion");
+assert.equal(lock.packages?.[`node_modules/${packageName}`]?.optional, true, "resolved Fast-mode companion should remain optional");
 
 assert.match(server, /\["codexFastMode", "@firstpick\/pi-extension-codex-fast-mode"\]/, "server should register the package in Optional Features");
 assert.match(server, /CODEX_FAST_MODE_STATUS_KEY = "codex-fast-mode"[\s\S]*?CODEX_FAST_MODE_COMMAND_NAME = "fast-mode"/, "server should use the extension-owned status and command contracts");
@@ -35,8 +36,9 @@ assert.match(server, /url\.pathname === "\/api\/codex-fast-mode" && req\.method 
 
 assert.match(html, /<label for="fastOutputModeSelect">Compact mode \(Experimental\)<\/label>[\s\S]*?<option value="compact-v1">Compact<\/option>/, "legacy output processing should be presented as Compact mode while retaining compact-v1");
 assert.doesNotMatch(html, /<label for="fastOutputModeSelect">Fast mode/, "legacy output processing should no longer be presented as Fast mode");
-assert.match(html, /data-side-panel-section="codex-usage"[\s\S]*?id="codexFastModeSelect"[\s\S]*?<option value="normal">Normal<\/option>[\s\S]*?<option value="fast">Fast<\/option>[\s\S]*?id="setCodexFastModeButton"[\s\S]*?id="codexFastModeStatus"/, "Codex Usage should contain the distinct session Fast-mode control");
-assert.match(styles, /\.codex-fast-mode-control \{[\s\S]*?border:[\s\S]*?background:/, "Codex Fast mode should have a visible control surface");
+assert.match(html, /data-side-panel-section="codex-usage"[\s\S]*?id="codexUsageBox"[\s\S]*?class="control-field codex-fast-mode-control"[\s\S]*?class="codex-fast-mode-row"[\s\S]*?id="codexFastModeLabel"[\s\S]*?id="codexFastModeSelect"[\s\S]*?<option value="normal">Normal<\/option>[\s\S]*?<option value="fast">Fast<\/option>[\s\S]*?id="setCodexFastModeButton"[\s\S]*?id="codexFastModeStatus"/, "Codex Usage should render before the compact session Fast-mode row");
+assert.match(styles, /\.codex-fast-mode-control \{[\s\S]*?margin-top: 0\.58rem[\s\S]*?padding: 0\.48rem 0\.55rem[\s\S]*?\.codex-fast-mode-row \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) minmax\(6\.5rem, 8rem\) auto/, "Codex Fast mode should use a compact horizontal control surface");
+assert.match(app, /function codexFastModeStatusText\(\)[\s\S]*?return `\$\{codexFastModeState\.enabled \? "Fast" : "Normal"\} · This tab`;/, "ordinary Fast-mode status should stay concise");
 
 assert.match(app, /id: "codexFastMode"[\s\S]*?packageName: "@firstpick\/pi-extension-codex-fast-mode"[\s\S]*?capabilityLabel: "\/fast-mode"/, "browser Optional Features should catalog Fast mode");
 assert.match(app, /OPTIONAL_FEATURE_DISABLE_PREREQUISITES = new Map\([\s\S]*?\["codexFastMode", \(\) => disableCodexFastModeIntegration\(\)\]/, "browser should register disable-off-first behavior");
@@ -50,7 +52,7 @@ assert.match(app, /statusKey === CODEX_FAST_MODE_STATUS_KEY[\s\S]*?applyCodexFas
 
 assert.match(readme, /### Compact live output mode[\s\S]*?select \*\*Compact\*\*[\s\S]*?`compact-v1`/, "README should document Compact mode with the stable wire identifier");
 assert.match(readme, /### Codex subscription Fast mode[\s\S]*?service_tier: "priority"[\s\S]*?1\.5× faster[\s\S]*?2× Standard credits[\s\S]*?2\.5×/, "README should separately document subscription Fast mode and its cost semantics");
-assert.match(serviceWorker, /pi-webui-pwa-v51/, "PWA cache identity should be bumped for changed browser assets");
-assert.match(html, /data-app-src="\/app\.js\?v=95"/, "browser module URL should be cache-busted for Fast-mode wiring");
+assert.match(serviceWorker, /pi-webui-pwa-v52/, "PWA cache identity should be bumped for changed browser assets");
+assert.match(html, /data-app-src="\/app\.js\?v=96"/, "browser module URL should be cache-busted for Fast-mode wiring");
 
 console.log("codex-fast-mode-static.test.mjs passed");

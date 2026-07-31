@@ -154,6 +154,9 @@ const WEBUI_SUBAGENT_GATE_LIMIT = 32;
 const WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT = 100;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
+const WEBUI_SUBAGENT_TELEMETRY_TOKEN_LIMIT = 1_000_000_000;
+const WEBUI_SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT = 16_000_000;
+const WEBUI_SUBAGENT_TELEMETRY_SPEED_LIMIT = 1_000_000;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const WEBUI_PACKAGE = packageJson.name || "@firstpick/pi-package-webui";
 const PI_LATEST_VERSION_URL = process.env.PI_WEBUI_PI_LATEST_VERSION_URL || "https://pi.dev/api/latest-version";
@@ -9977,6 +9980,29 @@ function normalizeWebuiSubagentTranscript(value) {
   return messages;
 }
 
+function normalizeWebuiSubagentTelemetry(value, fallback = {}) {
+  const telemetry = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const number = (candidate, limit = WEBUI_SUBAGENT_TELEMETRY_TOKEN_LIMIT) => (
+    typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 && candidate <= limit ? candidate : null
+  );
+  const model = normalizeWebuiSubagentText(telemetry?.model, 240)
+    || normalizeWebuiSubagentText(fallback.model, 240)
+    || null;
+  const effort = normalizeWebuiSubagentText(telemetry?.effort, 40)
+    || normalizeWebuiSubagentText(fallback.effort, 40)
+    || null;
+  return {
+    promptInjectionTokens: number(telemetry?.promptInjectionTokens),
+    inputTokens: number(telemetry?.inputTokens),
+    outputTokens: number(telemetry?.outputTokens),
+    tokenSpeed: number(telemetry?.tokenSpeed, WEBUI_SUBAGENT_TELEMETRY_SPEED_LIMIT),
+    contextTokens: number(telemetry?.contextTokens),
+    contextWindow: number(telemetry?.contextWindow, WEBUI_SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT),
+    model,
+    effort,
+  };
+}
+
 function normalizeWebuiSubagentOutput(value, selection) {
   if (!value || typeof value !== "object" || value.version !== 1) throw makeHttpError(502, "Invalid subagent output response from Web UI helper");
   const rawAgent = value.agent && typeof value.agent === "object" ? value.agent : {};
@@ -10011,6 +10037,10 @@ function normalizeWebuiSubagentOutput(value, selection) {
       tokens: Number.isFinite(rawAgent.tokens) ? rawAgent.tokens : undefined,
       model: normalizeWebuiSubagentText(rawAgent.model, 240) || selection.agent.model || undefined,
       thinking: normalizeWebuiSubagentText(rawAgent.thinking, 40) || selection.agent.thinking || undefined,
+      telemetry: normalizeWebuiSubagentTelemetry(rawAgent.telemetry, {
+        model: normalizeWebuiSubagentText(rawAgent.model, 240) || selection.agent.model,
+        effort: normalizeWebuiSubagentText(rawAgent.thinking, 40) || selection.agent.thinking,
+      }),
       recentTools,
       recentOutput,
       transcript,
@@ -10782,6 +10812,11 @@ function maybeNameTabForConversation(tab, command) {
   if (!shouldRename) return false;
   const title = generatedTabTitleFromPrompt(command.message) || `Conversation ${tab.index}`;
   return renameTab(tab, title, { source: "auto", maxLength: AUTO_TAB_TITLE_MAX_LENGTH });
+}
+
+function resetAutomaticTabTitleForNewSession(tab) {
+  if (!tab || tab.titleSource === "explicit") return false;
+  return renameTab(tab, defaultTabTitle(tab.index), { source: "default", unique: false });
 }
 
 function responseWithTab(response, tab) {
@@ -13035,6 +13070,7 @@ async function handleNativeSlashCommand(tab, body, req) {
       const response = await tab.rpc.send({ type: "new_session" });
       if (response.success === false) return response;
       tab.conversationStarted = false;
+      resetAutomaticTabTitleForNewSession(tab);
       forgetTabState(tab);
       rememberTabState(tab, response.data);
       clearPendingExtensionUiRequests(tab);
@@ -15086,6 +15122,7 @@ const server = createServer(async (req, res) => {
         if (response.success === false && startsVisibleWork) markTabIdle(tab);
         if (response.success !== false && command.type === "new_session") {
           tab.conversationStarted = false;
+          resetAutomaticTabTitleForNewSession(tab);
           forgetTabState(tab);
           rememberTabState(tab, response.data);
           clearPendingExtensionUiRequests(tab);

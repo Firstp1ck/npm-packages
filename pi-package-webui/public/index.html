@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=86" />
+    <link rel="stylesheet" href="/styles.css?v=87" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -166,6 +166,40 @@
           </header>
           <div id="subagentTerminalTranscript" class="subagent-terminal-transcript" role="log" aria-live="polite"></div>
           <p id="subagentTerminalStatus" class="subagent-terminal-status muted" aria-live="off"></p>
+          <footer id="subagentTerminalCards" class="subagent-terminal-cards" aria-label="Subagent session telemetry">
+            <dl class="subagent-terminal-card-list">
+              <div class="subagent-terminal-card" data-subagent-card="pi" title="Initial Pi prompt tokens injected into this child session.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">π</span>
+                <dt class="subagent-terminal-card-label">PI</dt>
+                <dd id="subagentTerminalCardPi" class="subagent-terminal-card-value">—</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="speed" title="Output tokens per second across completed child responses.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">⚡</span>
+                <dt class="subagent-terminal-card-label">Speed</dt>
+                <dd id="subagentTerminalCardSpeed" class="subagent-terminal-card-value">—</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="context" title="Latest child context load over its model context window.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">🧠</span>
+                <dt class="subagent-terminal-card-label">Context</dt>
+                <dd id="subagentTerminalCardContext" class="subagent-terminal-card-value">—</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="model" title="Effective model for this child run.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">🤖</span>
+                <dt class="subagent-terminal-card-label">Model</dt>
+                <dd id="subagentTerminalCardModel" class="subagent-terminal-card-value">unknown</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="effort" title="Effective reasoning effort for this child run.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">⚙</span>
+                <dt class="subagent-terminal-card-label">Effort</dt>
+                <dd id="subagentTerminalCardEffort" class="subagent-terminal-card-value">unknown</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="tokens" title="Input and output tokens found in the bounded recent child-session scan.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">🪙</span>
+                <dt class="subagent-terminal-card-label">Tokens</dt>
+                <dd id="subagentTerminalCardTokens" class="subagent-terminal-card-value">—</dd>
+              </div>
+            </dl>
+          </footer>
           <div class="subagent-terminal-composer" aria-label="Subagent input unavailable">
             <textarea id="subagentTerminalInput" rows="1" placeholder="View only — send messages from the parent terminal" aria-describedby="subagentTerminalInputHint" disabled></textarea>
             <button type="button" disabled>View only</button>
@@ -795,13 +829,14 @@
               </button>
             </h2>
             <div id="sidePanelSectionCodexUsage" class="side-panel-section-content" hidden>
+              <div class="codex-usage-actions">
+                <button id="refreshCodexUsageButton" type="button">Refresh usage</button>
+              </div>
+              <div id="codexUsageBox" class="codex-usage-box muted">Checking Codex usage…</div>
               <div class="control-field codex-fast-mode-control" aria-labelledby="codexFastModeLabel">
-                <div class="control-field-header">
-                  <label id="codexFastModeLabel" for="codexFastModeSelect">Fast mode</label>
-                  <span class="control-field-context">Subscription-backed Codex requests · This tab</span>
-                </div>
-                <div class="control-action-row">
-                  <select id="codexFastModeSelect" title="Codex subscription request tier" aria-describedby="codexFastModeStatus" disabled>
+                <div class="codex-fast-mode-row">
+                  <label id="codexFastModeLabel" for="codexFastModeSelect" title="Fast mode for subscription-backed Codex requests on this tab">Fast mode</label>
+                  <select id="codexFastModeSelect" title="Codex subscription request tier for this tab" aria-describedby="codexFastModeStatus" disabled>
                     <option value="normal">Normal</option>
                     <option value="fast">Fast</option>
                   </select>
@@ -809,10 +844,6 @@
                 </div>
                 <div id="codexFastModeStatus" class="toggle-control-hint" role="status" aria-live="polite">Checking Codex Fast mode…</div>
               </div>
-              <div class="codex-usage-actions">
-                <button id="refreshCodexUsageButton" type="button">Refresh usage</button>
-              </div>
-              <div id="codexUsageBox" class="codex-usage-box muted">Checking Codex usage…</div>
             </div>
           </section>
           <section class="side-panel-section collapsed" data-side-panel-section="claude-usage">
@@ -862,8 +893,8 @@
                 </summary>
                 <div class="subagent-launch-slots-body">
                   <div class="subagent-launch-slots-intro">
-                    <p>Choose model and thinking presets for future same-role launches. Running children are not changed.</p>
-                    <button id="subagentLaunchSlotsRefresh" type="button">Refresh models</button>
+                    <p>Presets for future launches; running children stay unchanged.</p>
+                    <button id="subagentLaunchSlotsRefresh" type="button" aria-label="Refresh available agent models">Refresh</button>
                   </div>
                   <div class="subagent-launch-slot-scope">
                     <label for="subagentLaunchSlotScope">Apply to</label>
@@ -1386,7 +1417,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=95">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=96">
       (() => {
         "use strict";
 

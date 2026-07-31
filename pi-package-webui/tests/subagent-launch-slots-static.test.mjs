@@ -23,10 +23,14 @@ assert.match(app, /const subagentLaunchSlotReloadTabs = new Set\(\)[\s\S]*subage
 assert.match(app, /subagentLaunchSlotsSummaryStatus\.textContent[\s\S]*"Unsaved changes"[\s\S]*"Saved · reload this tab"[\s\S]*subagentLaunchSlots\.open = true/, "the collapsed summary should surface state and reopen for errors or required reloads");
 assert.match(app, /const saveState = subagentLaunchSlotSaveState\([\s\S]*subagentLaunchSlotsSave\.disabled = saveState\.disabled[\s\S]*`Unsaved changes · \$\{saveState\.reason\}`/, "save eligibility and its adjacent explanation should come from one canonical state");
 assert.doesNotMatch(app, /`(?:Model|Thinking) · \$\{slotLabel\}`/, "visible field labels should stay compact while aria-labels retain slot context");
+assert.doesNotMatch(app, /make\("(?:p|span)", "subagent-launch-slot-(?:meta|id)"/, "redundant assignment summaries and internal slot IDs should stay out of the compact editor");
+assert.match(app, /if \(slots\.length > 1\)[\s\S]*`Slot \$\{ordinal\}`/, "slot headings should appear only when a role has multiple slots");
 assert.match(app, /api\(`\/api\/subagents\/config\?\$\{query\}`/, "the editor should load configuration through the tab-scoped API");
 assert.match(app, /api\("\/api\/subagents\/config", \{ method: "POST", body, scoped: false \}\)/, "the editor should save through the localhost-scoped configuration API");
-assert.match(css, /\.subagent-launch-slots \{[\s\S]*container: subagent-launch-slots \/ inline-size[\s\S]*@container subagent-launch-slots \(max-width: 30rem\)[\s\S]*\.subagent-launch-slot-controls \{ grid-template-columns: minmax\(0, 1fr\); \}/, "launch-slot controls should respond to the narrow side-panel container rather than only the viewport");
-assert.match(css, /\.subagent-launch-slot-controls \{[\s\S]*grid-column: 1 \/ -1/, "model and thinking controls should own the full slot-row width before responsive stacking");
+assert.match(css, /\.subagent-launch-slots \{[\s\S]*container: subagent-launch-slots \/ inline-size[\s\S]*@container subagent-launch-slots \(max-width: 22rem\)[\s\S]*\.subagent-launch-slot-controls \{ grid-template-columns: minmax\(0, 1fr\); \}/, "launch-slot controls should stack only in genuinely narrow side-panel containers");
+assert.match(css, /\.subagent-launch-slots-summary \{[^}]*min-height: 2\.35rem/, "the summary should retain the compact density contract");
+assert.match(css, /\.subagent-launch-slot-role \{[^}]*padding: 0\.34rem/, "role surfaces should retain the compact density contract");
+assert.match(css, /\.subagent-launch-slot-controls \{[\s\S]*grid-column: 1 \/ -1[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/, "model and thinking controls should remain paired where side-panel space permits");
 assert.match(css, /\.sr-only \{[\s\S]*clip-path: inset\(50%\)[\s\S]*white-space: nowrap/, "screen-reader announcements should stay visually hidden without leaving the accessibility tree");
 assert.match(css, /\.subagent-launch-slot-remove \{[^}]*color: var\(--ctp-red\)/, "destructive slot removal should have a textual control and warning color");
 assert.match(server, /"subagent-launch-slot-state\.mjs"/, "the pure browser module should be on the static allowlist");

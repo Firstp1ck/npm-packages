@@ -43,6 +43,13 @@ const FINISHED_SUBAGENT_RUN_LIMIT = 16;
 const SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
 const SUBAGENT_TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+const SUBAGENT_TELEMETRY_SCAN_BYTES = 2 * 1024 * 1024;
+const SUBAGENT_TELEMETRY_ENTRY_LIMIT = 4096;
+const SUBAGENT_TELEMETRY_TOKEN_LIMIT = 1_000_000_000;
+const SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT = 16_000_000;
+const SUBAGENT_TELEMETRY_RESPONSE_DURATION_MS = 15 * 60 * 1000;
+const SUBAGENT_TELEMETRY_SPEED_LIMIT = 1_000_000;
+const STATS_INITIAL_PROMPT_ESTIMATE_TYPE = "stats_initial_prompt_estimate";
 
 const ACTIVE_COMMAND_SESSION_KEY = Symbol.for("pi.webui.helper.activeCommandSession");
 
@@ -493,6 +500,156 @@ function subagentTranscriptOutput(sessionFile) {
   } finally {
     if (fd !== undefined) {
       try { closeSync(fd); } catch { /* Best-effort close for live session tails. */ }
+    }
+  }
+}
+
+function subagentTelemetryNumber(value, limit = SUBAGENT_TELEMETRY_TOKEN_LIMIT) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= limit ? value : null;
+}
+
+function subagentTelemetryTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value !== "string" || value.length > 128) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
+}
+
+function subagentAssistantModel(message) {
+  const model = subagentModel(message?.responseModel || message?.model);
+  if (!model) return "";
+  const provider = subagentText(message?.provider, 80);
+  return provider && !model.startsWith(`${provider}/`) ? subagentModel(`${provider}/${model}`) : model;
+}
+
+function subagentContextWindow(model, context) {
+  const effectiveModel = subagentModel(model);
+  const match = effectiveModel.match(/^([^/]+)\/(.+)$/);
+  if (!match || typeof context?.modelRegistry?.getAvailable !== "function") return null;
+  const provider = match[1];
+  const modelId = match[2].replace(/:(off|minimal|low|medium|high|xhigh|max)$/i, "");
+  try {
+    const available = context.modelRegistry.getAvailable();
+    const entry = (Array.isArray(available) ? available : []).find((candidate) => candidate?.provider === provider && candidate?.id === modelId);
+    return subagentTelemetryNumber(entry?.contextWindow, SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT);
+  } catch {
+    return null;
+  }
+}
+
+function subagentEmptyTelemetry({ model, effort, context } = {}) {
+  const effectiveModel = subagentModel(model) || null;
+  return {
+    promptInjectionTokens: null,
+    inputTokens: null,
+    outputTokens: null,
+    tokenSpeed: null,
+    contextTokens: null,
+    contextWindow: subagentContextWindow(effectiveModel, context),
+    model: effectiveModel,
+    effort: subagentThinking(effort) || subagentThinkingFromModel(effectiveModel) || null,
+  };
+}
+
+function subagentSessionTelemetry(sessionFile, { model, effort, context } = {}) {
+  const empty = subagentEmptyTelemetry({ model, effort, context });
+  const file = String(sessionFile || "");
+  if (!file || !path.isAbsolute(file) || path.extname(file) !== ".jsonl") return empty;
+
+  let fd;
+  try {
+    fd = openSync(file, "r");
+    const size = fstatSync(fd).size;
+    if (size <= 0) return empty;
+    const length = Math.min(size, SUBAGENT_TELEMETRY_SCAN_BYTES);
+    const start = size - length;
+    const buffer = Buffer.alloc(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    const rawLines = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/);
+    if (start > 0) rawLines.shift();
+
+    let promptInjectionTokens = null;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let inputSeen = false;
+    let outputSeen = false;
+    let inputOverflow = false;
+    let outputOverflow = false;
+    let speedOutputTokens = 0;
+    let speedDurationMs = 0;
+    let speedOverflow = false;
+    let contextTokens = null;
+    let latestAssistantModel = "";
+
+    for (const rawLine of rawLines.slice(-SUBAGENT_TELEMETRY_ENTRY_LIMIT)) {
+      if (!rawLine.trim()) continue;
+      let entry;
+      try {
+        entry = JSON.parse(rawLine);
+      } catch {
+        continue;
+      }
+      if (entry?.type === "custom" && entry?.customType === STATS_INITIAL_PROMPT_ESTIMATE_TYPE) {
+        const value = subagentTelemetryNumber(entry?.data?.actualInjectedTokens);
+        if (value !== null) promptInjectionTokens = value;
+        continue;
+      }
+
+      const message = entry?.type === "message" ? entry.message : entry?.message?.role ? entry.message : null;
+      if (message?.role !== "assistant") continue;
+      latestAssistantModel = subagentAssistantModel(message) || latestAssistantModel;
+      const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
+      if (!usage) continue;
+      const input = subagentTelemetryNumber(usage.input);
+      const output = subagentTelemetryNumber(usage.output);
+      if (input !== null) {
+        inputSeen = true;
+        if (inputTokens > SUBAGENT_TELEMETRY_TOKEN_LIMIT - input) inputOverflow = true;
+        else inputTokens += input;
+        const cacheRead = subagentTelemetryNumber(usage.cacheRead);
+        const cacheWrite = subagentTelemetryNumber(usage.cacheWrite);
+        contextTokens = cacheRead !== null && cacheWrite !== null && input <= SUBAGENT_TELEMETRY_TOKEN_LIMIT - cacheRead - cacheWrite
+          ? input + cacheRead + cacheWrite
+          : input;
+      } else {
+        contextTokens = null;
+      }
+      if (output !== null) {
+        outputSeen = true;
+        if (outputTokens > SUBAGENT_TELEMETRY_TOKEN_LIMIT - output) outputOverflow = true;
+        else outputTokens += output;
+        const startedAt = subagentTelemetryTimestamp(message.timestamp);
+        const completedAt = subagentTelemetryTimestamp(entry.timestamp);
+        const durationMs = startedAt !== null && completedAt !== null ? completedAt - startedAt : 0;
+        if (output > 0 && durationMs > 0 && durationMs <= SUBAGENT_TELEMETRY_RESPONSE_DURATION_MS) {
+          if (speedOutputTokens > SUBAGENT_TELEMETRY_TOKEN_LIMIT - output || speedDurationMs > SUBAGENT_TELEMETRY_RESPONSE_DURATION_MS * SUBAGENT_TELEMETRY_ENTRY_LIMIT - durationMs) speedOverflow = true;
+          else {
+            speedOutputTokens += output;
+            speedDurationMs += durationMs;
+          }
+        }
+      }
+    }
+
+    const effectiveModel = subagentModel(model) || latestAssistantModel || null;
+    const tokenSpeed = !speedOverflow && speedOutputTokens > 0 && speedDurationMs > 0
+      ? subagentTelemetryNumber((speedOutputTokens * 1000) / speedDurationMs, SUBAGENT_TELEMETRY_SPEED_LIMIT)
+      : null;
+    return {
+      promptInjectionTokens,
+      inputTokens: inputSeen && !inputOverflow ? inputTokens : null,
+      outputTokens: outputSeen && !outputOverflow ? outputTokens : null,
+      tokenSpeed,
+      contextTokens,
+      contextWindow: subagentContextWindow(effectiveModel, context),
+      model: effectiveModel,
+      effort: subagentThinking(effort) || subagentThinkingFromModel(effectiveModel) || null,
+    };
+  } catch {
+    return empty;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* Best-effort close for bounded session telemetry. */ }
     }
   }
 }
@@ -952,8 +1109,9 @@ export default function webuiRpcHelper(pi) {
         status: "running",
         activityState: agent.activityState,
         model: agent.model,
-        // Workflow snapshots do not carry reasoning data.
+        // Workflow snapshots do not carry child-session telemetry or reasoning data.
         thinking: undefined,
+        telemetry: subagentEmptyTelemetry(),
         recentTools: [],
         recentOutput: agent.recentOutput,
         transcript: [],
@@ -1016,6 +1174,11 @@ export default function webuiRpcHelper(pi) {
   }
 
   function subagentOutputSnapshotFromAgent(run, agent, patch = {}) {
+    const model = subagentModel(patch.model || agent.model) || undefined;
+    const thinking = subagentThinking(patch.thinking || agent.thinking) || undefined;
+    const telemetry = patch.telemetry && typeof patch.telemetry === "object"
+      ? patch.telemetry
+      : subagentEmptyTelemetry({ model, effort: thinking, context: subagentContext });
     return {
       version: 1,
       runId: run.id,
@@ -1036,8 +1199,9 @@ export default function webuiRpcHelper(pi) {
         turnCount: Number.isFinite(patch.turnCount) ? patch.turnCount : Number.isFinite(agent.turnCount) ? agent.turnCount : undefined,
         toolCount: Number.isFinite(patch.toolCount) ? patch.toolCount : Number.isFinite(agent.toolCount) ? agent.toolCount : undefined,
         tokens: Number.isFinite(patch.tokens) ? patch.tokens : Number.isFinite(agent.tokens) ? agent.tokens : undefined,
-        model: subagentModel(patch.model || agent.model) || undefined,
-        thinking: subagentThinking(patch.thinking || agent.thinking) || undefined,
+        model,
+        thinking,
+        telemetry,
         recentTools: subagentRecentTools(patch.recentTools || agent.recentTools),
         recentOutput: subagentOutputLines(patch.recentOutput || agent.recentOutput),
         transcript: Array.isArray(patch.transcript) ? patch.transcript : [],
@@ -1075,10 +1239,12 @@ export default function webuiRpcHelper(pi) {
         }
       }
       const transcriptOutput = subagentTranscriptOutput(agent.sessionFile);
+      const telemetry = subagentSessionTelemetry(agent.sessionFile, { model: agent.model, effort: agent.thinking, context: subagentContext });
       const hasLocator = !!(agent.sessionFile && existsSync(agent.sessionFile));
       return subagentOutputSnapshotFromAgent(run, agent, {
         recentOutput: transcriptOutput.recentOutput.length ? transcriptOutput.recentOutput : agent.recentOutput,
         transcript: transcriptOutput.transcript,
+        telemetry,
         updatedAt: run.endedAt,
         error: !hasLocator && !(Array.isArray(agent.recentOutput) && agent.recentOutput.length)
           ? "Retained subagent output is unavailable because its child output locator is missing."
@@ -1107,10 +1273,16 @@ export default function webuiRpcHelper(pi) {
       const sessionFile = subagentText(step.sessionFile || (steps.length === 1 ? status.sessionFile : ""), 4096);
       if (sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl") agent.sessionFile = path.normalize(sessionFile);
       const transcriptOutput = subagentTranscriptOutput(agent.sessionFile);
+      const telemetry = subagentSessionTelemetry(agent.sessionFile, {
+        model: subagentModel(step.model) || agent.model,
+        effort: subagentThinking(step.thinking) || subagentThinkingFromModel(step.model) || agent.thinking,
+        context: subagentContext,
+      });
       return subagentOutputSnapshotFromAgent(run, agent, {
         ...step,
         recentOutput: transcriptOutput.recentOutput.length ? transcriptOutput.recentOutput : step.recentOutput,
         transcript: transcriptOutput.transcript,
+        telemetry,
         status: step.status || status.state,
         updatedAt: step.lastActivityAt || status.lastUpdate,
         tokens: Number.isFinite(step.tokens?.total) ? step.tokens.total : step.tokens,

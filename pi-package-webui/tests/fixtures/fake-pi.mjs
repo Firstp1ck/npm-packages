@@ -443,6 +443,17 @@ function handleWebuiHelperPrompt(command, base) {
             currentToolArgs: "README.md",
             model: agent.model || "anthropic/claude-opus-4-8:high",
             thinking: agent.thinking || "high",
+            telemetry: {
+              promptInjectionTokens: 1234,
+              inputTokens: 300,
+              outputTokens: 100,
+              tokenSpeed: 20,
+              contextTokens: 240,
+              contextWindow: 200_000,
+              model: null,
+              effort: null,
+              rawSessionPayload: "must not leave fake helper telemetry",
+            },
             recentTools: [{ tool: "grep", args: "Subagents", endMs: Date.now() - 200 }],
             recentOutput: ["Inspecting current implementation", "Waiting for the next tool result"],
             transcript: [

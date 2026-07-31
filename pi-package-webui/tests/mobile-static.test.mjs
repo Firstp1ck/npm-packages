@@ -189,6 +189,56 @@ assert.match(html, /id="subagentLaunchSlotScope"[^>]*aria-describedby="subagentL
 assert.match(html, /id="subagentLaunchSlotsAnnouncer"[^>]*aria-live="polite"[^>]*aria-atomic="true"/, "launch-slot additions and removals should have a dedicated live announcement");
 assert.match(css, /\.subagent-launch-slots-reload-actions span \{\s*flex: 1 1 auto;\s*min-width: min\(12rem, 100%\);/, "narrow launch-slot reload prompts should size from their content instead of reserving a tall fixed flex basis");
 assert.match(html, /id="subagentTerminalView"[\s\S]*Subagent · view only[\s\S]*id="subagentTerminalTranscript"[\s\S]*id="subagentTerminalStatus"[^>]*aria-live="off"[\s\S]*id="subagentTerminalInput"[^>]*placeholder="View only — send messages from the parent terminal"[^>]*disabled[\s\S]*Use its parent terminal to interact with the run/, "dedicated subagent tabs should expose a view-only transcript, non-announcing routine status, and disabled input");
+const subagentTerminalCardsHtml = html.match(/<footer id="subagentTerminalCards"[\s\S]*?<\/footer>/)?.[0] || "";
+assert.match(subagentTerminalCardsHtml, /^<footer id="subagentTerminalCards"[^>]*class="subagent-terminal-cards"[^>]*aria-label="Subagent session telemetry"[^>]*>[\s\S]*<dl class="subagent-terminal-card-list">/, "dedicated subagent telemetry should use a labelled footer and definition list");
+const subagentTerminalCards = [
+  ["pi", "subagentTerminalCardPi", "PI", "—"],
+  ["speed", "subagentTerminalCardSpeed", "Speed", "—"],
+  ["context", "subagentTerminalCardContext", "Context", "—"],
+  ["model", "subagentTerminalCardModel", "Model", "unknown"],
+  ["effort", "subagentTerminalCardEffort", "Effort", "unknown"],
+  ["tokens", "subagentTerminalCardTokens", "Tokens", "—"],
+];
+assert.equal((subagentTerminalCardsHtml.match(/\bdata-subagent-card=/g) || []).length, 6, "dedicated subagent telemetry should retain exactly six card slots");
+for (const [slot, id, label, fallback] of subagentTerminalCards) {
+  assert.equal((subagentTerminalCardsHtml.match(new RegExp(`data-subagent-card="${slot}"`, "g")) || []).length, 1, `${slot} telemetry card should have one stable slot`);
+  assert.match(subagentTerminalCardsHtml, new RegExp(`<div[^>]*data-subagent-card="${slot}"[^>]*>[\\s\\S]*?<dt[^>]*>${label}<\\/dt>[\\s\\S]*?<dd id="${id}"[^>]*>${fallback}<\\/dd>`), `${slot} telemetry card should expose a labelled definition with an honest initial fallback`);
+}
+assert.match(subagentTerminalCardsHtml, /data-subagent-card="tokens"[^>]*title="[^"]*bounded recent child-session scan/, "token totals should disclose their bounded recent-session scope");
+const subagentTerminalTelemetryNumberSource = appFunctionSource("subagentTerminalTelemetryNumber", "formatSubagentTerminalTelemetryTokens");
+const formatSubagentTerminalTelemetryTokensSource = appFunctionSource("formatSubagentTerminalTelemetryTokens", "formatSubagentTerminalTelemetryText");
+const formatSubagentTerminalTelemetryTextSource = appFunctionSource("formatSubagentTerminalTelemetryText", "renderSubagentTerminalCards");
+const renderSubagentTerminalCardsSource = appFunctionSource("renderSubagentTerminalCards", "renderSubagentTerminalView");
+assert.match(renderSubagentTerminalCardsSource, /agent\?\.telemetry/, "terminal telemetry cards should consume the normalized telemetry object");
+assert.doesNotMatch(renderSubagentTerminalCardsSource, /\b(?:transcript|recentOutput|messages|content)\b/i, "terminal telemetry cards must not derive metrics from transcript output");
+const telemetryCardElements = Object.fromEntries(subagentTerminalCards.map(([, id]) => [id, { textContent: "" }]));
+vm.runInNewContext(`${subagentTerminalTelemetryNumberSource}\n${formatSubagentTerminalTelemetryTokensSource}\n${formatSubagentTerminalTelemetryTextSource}\n${renderSubagentTerminalCardsSource}\nrenderSubagentTerminalCards({ telemetry: [] });`, {
+  elements: telemetryCardElements,
+  formatFooterTokenCount: (value) => String(value),
+});
+assert.deepEqual(Object.fromEntries(Object.entries(telemetryCardElements).map(([id, element]) => [id, element.textContent])), {
+  subagentTerminalCardPi: "—",
+  subagentTerminalCardSpeed: "—",
+  subagentTerminalCardContext: "— / unknown",
+  subagentTerminalCardModel: "unknown",
+  subagentTerminalCardEffort: "unknown",
+  subagentTerminalCardTokens: "↑— · ↓—",
+}, "missing or invalid telemetry should keep every card visible with explicit unknown fallbacks");
+vm.runInNewContext(`${subagentTerminalTelemetryNumberSource}\n${formatSubagentTerminalTelemetryTokensSource}\n${formatSubagentTerminalTelemetryTextSource}\n${renderSubagentTerminalCardsSource}\nrenderSubagentTerminalCards({ telemetry: { promptInjectionTokens: 1200, tokenSpeed: 42.5, contextTokens: 1234, contextWindow: 9999, model: "provider/model", effort: "high", inputTokens: 12, outputTokens: 34 } });`, {
+  elements: telemetryCardElements,
+  formatFooterTokenCount: (value) => String(value),
+});
+assert.deepEqual(Object.fromEntries(Object.entries(telemetryCardElements).map(([id, element]) => [id, element.textContent])), {
+  subagentTerminalCardPi: "1200",
+  subagentTerminalCardSpeed: "42.5 tok/s",
+  subagentTerminalCardContext: "1234 / 9999",
+  subagentTerminalCardModel: "provider/model",
+  subagentTerminalCardEffort: "high",
+  subagentTerminalCardTokens: "↑12 · ↓34",
+}, "terminal telemetry cards should render only normalized telemetry values");
+assert.match(css, /\.subagent-terminal-card-list\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(/, "telemetry cards should wrap responsively through a grid rather than require a fixed row");
+assert.match(css, /@media\s*\([^)]*max-width[^)]*\)\s*\{[\s\S]*?\.subagent-terminal-card-list\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/, "narrow viewports should collapse telemetry cards without horizontal overflow");
+assert.match(readme, /exactly six telemetry cards: PI, measured token speed, context, model, effort, and input\/output tokens from a bounded recent session scan; unavailable or legacy evidence remains `—` or `unknown` rather than an estimate/, "README should document each subagent telemetry card, bounded scan scope, and honest unknown behavior");
 assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
 assert.match(html, /data-side-panel-section="session"[\s\S]*data-side-panel-section="subagents"[\s\S]*data-side-panel-section="queue"/, "Subagents should appear between Session and Queue in the side panel");
 assert.match(html, /data-side-panel-section="queue"[\s\S]*id="createPromptListButton"[\s\S]*>Create prompt list<\/button>/, "Queue section should expose prompt-list creation");
@@ -463,7 +513,7 @@ assert.match(css, /\.subagents-help \{[\s\S]*border-left:[\s\S]*font-size:\s*0\.
 assert.match(css, /\.subagent-launch-slots \{[\s\S]*\.subagent-launch-slot-role \{[\s\S]*\.subagent-launch-slot-controls \{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/, "launch-slot cards should group role slots with paired model and thinking controls");
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\) \{[\s\S]*min-height: 44px[\s\S]*\.subagent-launch-slot-scope,[\s\S]*\.subagent-launch-slot-row,[\s\S]*\.subagent-launch-slot-controls \{ grid-template-columns: minmax\(0, 1fr\); \}/, "launch-slot controls should stack with coarse-pointer touch targets");
 assert.match(css, /\.subagents-box\.has-items[\s\S]*\.subagent-tab-group[\s\S]*\.subagent-agent-row/, "running subagents should render as grouped terminal/session cards");
-assert.match(css, /\.subagent-gate-card[\s\S]*\.subagent-gate-status[\s\S]*\.subagent-gate-attempt[\s\S]*\.subagent-gate-attempt-error/, "retry gates should render quorum, attempt status, and failure details");
+assert.match(css, /\.subagent-gate-card \{[\s\S]*gap: 0\.12rem;[\s\S]*background: transparent;[\s\S]*\.subagent-gate-title \{[\s\S]*display: flex;[\s\S]*\.subagent-gate-attempt \{[\s\S]*min-height: 1\.68rem;[\s\S]*background: transparent;[\s\S]*\.subagent-gate-attempt-identity \{[\s\S]*white-space: nowrap;/, "retry gates should use compact, flat, single-line attempt rows");
 assert.match(css, /\.subagent-agent-row:hover,[\s\S]*\.subagent-agent-row:focus-visible/, "subagent rows should expose clickable hover and keyboard focus states");
 assert.match(css, /\.subagent-overlay-widget[\s\S]*\.subagent-overlay-transcript[\s\S]*\.subagent-overlay-message[\s\S]*\.subagent-overlay-close-action/, "subagent output should combine the non-blocking widget shell with the main transcript message styling");
 assert.match(css, /\.terminal-tab-subagent-indicator[\s\S]*\.terminal-tab-subagent[\s\S]*\.subagent-terminal-view[\s\S]*\.subagent-terminal-composer textarea:disabled/, "subagent terminal tabs should be visibly marked and retain an explicit disabled composer");
@@ -471,7 +521,8 @@ assert.match(css, /body\.subagent-terminal-active \.workspace-dashboard,[\s\S]*b
 assert.match(css, /\.subagent-run-indicator[\s\S]*\.subagent-run-indicator \.run-indicator-meta/, "subagent output should reuse the main live run-indicator treatment with wrapping activity metadata");
 assert.match(css, /\.subagent-terminal-transcript > \.message \{[\s\S]*width: 100%;[\s\S]*max-width: none;/, "dedicated subagent transcript cards should fill the available tab width");
 assert.doesNotMatch(css, /\.extension-dialog\.subagent-overlay-dialog/, "subagent output should not retain blocking dialog styles");
-assert.match(css, /@keyframes subagent-running-pulse/, "running subagents should expose a live activity indicator");
+assert.match(css, /\.subagent-running-dot \{[\s\S]*background: var\(--ctp-yellow\);[\s\S]*animation: subagent-running-pulse/, "running subagents should expose a blinking yellow activity indicator");
+assert.match(css, /@keyframes subagent-running-pulse/, "running subagents should expose a live activity animation");
 assert.match(css, /\.optional-feature-pill\.enabled/, "optional features should visually distinguish enabled state");
 assert.match(css, /\.todo-widget \{[\s\S]*?display:\s*grid/, "todo-progress widget should render as a styled checklist card");
 assert.match(css, /\.todo-widget-summary \{[\s\S]*?cursor:\s*pointer/, "todo-progress widget should expose a compact expandable summary");
@@ -853,8 +904,16 @@ assert.match(
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*totalGates[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents and retained retry gates by terminal and session");
 assert.match(app, /function renderSubagents\(\)[\s\S]*latestSubagents\?\.runningAgents[\s\S]*subagentCountBadge\.textContent = String\(totalAgents\)/, "the subagent count badge should count running agents only, not retained rows or gates");
-assert.match(app, /function renderSubagentRun\(tab, run\)[\s\S]*subagentRunStateLabel\(run\)[\s\S]*Dismiss finished run[\s\S]*dismissSubagentRun\(tab, run\)/, "terminal subagent rows should show retained state badges and dismiss only terminal runs");
-assert.match(app, /function renderSubagentRun\(tab, run\)[\s\S]*subagentRunCanCancel\(run\)[\s\S]*openSubagentCancelDialog\(tab, run\)/, "running subagent rows should route cancel through the shared dialog");
+const compactSubagentAgentSource = appFunctionSource("renderSubagentAgent", "renderSubagentRun");
+const compactSubagentRunSource = appFunctionSource("renderSubagentRun", "subagentGateStatusLabel");
+assert.match(compactSubagentAgentSource, /const \[model, thinking\] = subagentExecutionValues\(agent\)[\s\S]*identity\.append\([\s\S]*"subagent-agent-name", name[\s\S]*"subagent-agent-inline-meta", `· \$\{model\} · \$\{thinking\}`[\s\S]*row\.append\(dot, identity, open\)/, "side-panel agent rows should show type, provider\/model, and thinking effort on one compact line");
+assert.doesNotMatch(compactSubagentAgentSource, /subagent-agent-meta|subagentExecutionFacts|subagentSourceLabel|subagentRunElapsed|currentTool/, "side-panel agent rows should leave all other execution metadata to the selected subagent view");
+assert.doesNotMatch(compactSubagentRunSource, /subagent-run-(?:header|title|meta|state)|`Run \$\{/, "side-panel run groups should not repeat IDs, metadata headers, or state badges");
+assert.match(compactSubagentRunSource, /Dismiss finished run[\s\S]*dismissSubagentRun\(tab, run\)/, "compact terminal subagent runs should retain their dismiss action");
+assert.match(compactSubagentRunSource, /subagentRunCanCancel\(run\)[\s\S]*Cancel entire subagent run[\s\S]*openSubagentCancelDialog\(tab, run\)/, "compact running subagent runs should retain whole-run cancellation through the shared dialog");
+assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*subagentRunElapsed\(view\.run\)[\s\S]*subagentExecutionFacts\(agent\)[\s\S]*parent \$\{parent\?\.title[\s\S]*run \$\{view\.runId\}/, "the dedicated subagent view should own elapsed, execution, parent, and run details removed from the side panel");
+assert.match(css, /\.subagent-tab-title \{[\s\S]*min-width: 0;[\s\S]*\.subagent-tab-count \{[\s\S]*flex: 0 0 auto;[\s\S]*white-space: nowrap;/, "subagent summary badges should stay on one line while the title and session text truncate first");
+assert.match(css, /\.subagent-agent-list \{[\s\S]*gap: 0\.16rem;[\s\S]*\.subagent-agent-row \{[\s\S]*min-height: 1\.75rem;[\s\S]*background: transparent;[\s\S]*\.subagent-agent-identity \{[\s\S]*display: flex;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-agent-inline-meta \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-run \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*border: 0;/, "the inline subagent monitor should keep type, model, and effort in compact flat rows without overflow");
 assert.match(app, /function renderSubagentOverlayWidget\(\)[\s\S]*openSubagentCancelDialog\(tab, selection\.run, agent\)[\s\S]*subagent-overlay-cancel-action/, "running overlays should route cancel through the shared dialog");
 assert.match(app, /subagentTerminalCancelButton[\s\S]*openSubagentCancelDialog\(view\.tab \|\| \{ tabId: view\.parentTabId, tabTitle: view\.parentTitle \}, view\.run, view\.data\?\.agent \|\| view\.agent\)/, "running terminal headers should route cancel through the shared dialog");
 assert.match(app, /function openSubagentCancelDialog\(tab, run, agent = null\)[\s\S]*agentCount[\s\S]*The entire run will be stopped[\s\S]*subagentCancelDialog\.showModal\(\)[\s\S]*async function submitSubagentCancel\(\)[\s\S]*api\("\/api\/subagents\/cancel", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*tab: selection\.tabId,[\s\S]*runId: selection\.runId/, "the shared cancel dialog should honestly describe and submit whole-run cancellation with optional reason/note data");
@@ -904,7 +963,36 @@ assert.match(app, /async function saveSubagentLaunchSlotConfig[\s\S]*scope: suba
 assert.match(app, /const subagentLaunchSlotReloadTabs = new Set\(\)[\s\S]*subagentLaunchSlotReloadTabs\.add\(activeTabId\)[\s\S]*subagentLaunchSlotReloadTabs\.delete\(activeTabId\)/, "reload-required reminders should survive tab switches until that tab is actually reloaded");
 const subagentOverviewRefreshSource = appFunctionSource("refreshSubagents", "scheduleRefreshSubagents");
 assert.doesNotMatch(subagentOverviewRefreshSource, /subagentLaunchSlot/, "live subagent polling must not recreate or reset the launch-slot editor");
-assert.match(app, /function renderSubagentGateAttempt\(attempt\)[\s\S]*failureKind[\s\S]*function renderSubagentGate\(tab, gate\)[\s\S]*qualifyingSuccesses/, "frontend should render failure-classified attempts and gate quorum");
+assert.match(app, /function renderSubagentGateAttempt\(tab, attempt\)[\s\S]*subagent-gate-attempt-name[\s\S]*subagent-gate-attempt-meta[\s\S]*function renderSubagentGate\(tab, gate\)[\s\S]*"Retry gate"[\s\S]*qualifyingSuccesses/, "frontend should render compact gate identity rows and a minimal quorum summary");
+const subagentGateTargetSource = appFunctionSource("subagentGateAttemptTarget", "subagentGateAttemptExecutionValues");
+const subagentGateExecutionSource = appFunctionSource("subagentGateAttemptExecutionValues", "openSubagentGateAttemptOutput");
+const subagentGateOpenSource = appFunctionSource("openSubagentGateAttemptOutput", "renderSubagentGateAttempt");
+const subagentGateAttemptSource = appFunctionSource("renderSubagentGateAttempt", "renderSubagentGate");
+assert.match(subagentGateTargetSource, /candidate\?\.id === attempt\.runId[\s\S]*candidate\?\.name === attempt\.agent[\s\S]*agents\.length === 1[\s\S]*return agent\?\.id \? \{ run, agent \} : null/, "retry-gate attempts should resolve their ordinary tracked child run and agent");
+assert.match(subagentGateExecutionSource, /SETTINGS_THINKING_OPTIONS\.includes\(suffix\)[\s\S]*model = model\.slice\(0, suffixIndex\)[\s\S]*model = `\$\{provider\}\/\$\{model\}`/, "compact gate rows should normalize provider, model, and thinking effort");
+assert.match(subagentGateAttemptSource, /const target = subagentGateAttemptTarget\(tab, attempt\)[\s\S]*subagentGateAttemptExecutionValues\(attempt\)[\s\S]*attempt\?\.status[\s\S]*retrySafety[\s\S]*subagent-gate-attempt-open/, "compact gate rows should retain title, state, provider\/model, thinking effort, type, and open affordance");
+assert.doesNotMatch(subagentGateAttemptSource, /attempt\?\.phase|failureKind|attempt\?\.error|`run \$\{attempt/, "compact gate rows should move verbose diagnostics out of the side panel");
+assert.match(subagentGateOpenSource, /openSubagentOutput\(tab, \{ \.\.\.target\.run, gateAttempt: attempt \}, target\.agent\)/, "opening a gate child should hand its detailed attempt metadata to the standard child output path");
+assert.match(app, /function subagentGateAttemptViewFacts\(attempt\)[\s\S]*gate attempt[\s\S]*phase[\s\S]*failure[\s\S]*gate error[\s\S]*function subagentOverlayStateFacts[\s\S]*subagentGateAttemptViewFacts\(subagentOverlaySelection\?\.gateAttempt\)[\s\S]*function renderSubagentTerminalView[\s\S]*subagentGateAttemptViewFacts\(view\.gateAttempt\)/, "attempt number, phase, failure class, and error should appear only inside the opened child view");
+assert.match(app, /function openSubagentOverlay\(tab, run, agent\)[\s\S]*gateAttempt: run\.gateAttempt \|\| null[\s\S]*function ensureSubagentTerminalView\(tab, run, agent\)[\s\S]*gateAttempt: run\.gateAttempt \|\| null/, "overlay and terminal child views should retain gate diagnostics");
+assert.match(app, /function renderSubagentGate\(tab, gate\)[\s\S]*renderSubagentGateAttempt\(tab, attempt\)/, "retry-gate rendering should retain the owning parent tab needed to open child output");
+assert.match(css, /button\.subagent-gate-attempt \{ cursor: pointer; \}[\s\S]*button\.subagent-gate-attempt:hover,[\s\S]*button\.subagent-gate-attempt:focus-visible[\s\S]*\.subagent-gate-attempt-open/, "openable retry-gate attempts should expose button hover, keyboard-focus, and arrow affordances");
+const subagentGateTargetContext = {};
+vm.runInNewContext(`${subagentGateTargetSource}\nthis.resolveSubagentGateAttempt = subagentGateAttemptTarget;`, subagentGateTargetContext);
+const gateTargetTab = {
+  tabId: "parent-tab",
+  runs: [
+    { id: "review-run", agents: [{ id: "review-agent", name: "reviewer" }, { id: "scout-agent", name: "scout" }] },
+    { id: "single-run", agents: [{ id: "single-agent", name: "delegate" }] },
+  ],
+};
+assert.equal(subagentGateTargetContext.resolveSubagentGateAttempt(gateTargetTab, { runId: "review-run", agent: "reviewer" })?.agent?.id, "review-agent", "gate attempts should select the matching agent in their tracked run");
+assert.equal(subagentGateTargetContext.resolveSubagentGateAttempt(gateTargetTab, { runId: "single-run", agent: "reviewer" })?.agent?.id, "single-agent", "single-child gate runs should remain openable if display names differ");
+assert.equal(subagentGateTargetContext.resolveSubagentGateAttempt(gateTargetTab, { runId: "missing-run", agent: "reviewer" }), null, "a gate attempt should remain non-interactive until its tracked run is available");
+const subagentGateExecutionContext = { SETTINGS_THINKING_OPTIONS: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] };
+vm.runInNewContext(`${subagentGateExecutionSource}\nthis.resolveSubagentGateExecution = subagentGateAttemptExecutionValues;`, subagentGateExecutionContext);
+assert.deepEqual(JSON.parse(JSON.stringify(subagentGateExecutionContext.resolveSubagentGateExecution({ provider: "openrouter", model: "openrouter/moonshotai/kimi-k3:high" }))), ["openrouter/moonshotai/kimi-k3", "high"], "gate rows should split a thinking suffix from a fully qualified model");
+assert.deepEqual(JSON.parse(JSON.stringify(subagentGateExecutionContext.resolveSubagentGateExecution({ provider: "openrouter", model: "moonshotai/kimi-k3:medium" }))), ["openrouter/moonshotai/kimi-k3", "medium"], "gate rows should add a separately reported provider without duplicating it");
 assert.match(helper, /async function enrichAsyncSubagentAgent\(run, agent, statusByDir\)[\s\S]*status\.json[\s\S]*agent\.model = subagentModel\(step\.model\)[\s\S]*agent\.thinking = subagentThinking\(step\.thinking\)/, "WebUI helper should enrich async children from effective lifecycle model and reasoning metadata");
 assert.match(helper, /SUBAGENT_GATE_UPDATE_EVENT[\s\S]*function publicSubagentGates\(\)[\s\S]*failureKind[\s\S]*gates = publicSubagentGates\(\)/, "WebUI helper should publish bounded retry-gate lifecycle data");
 assert.match(extension, /registerSubagentGate\(pi\)[\s\S]*session_shutdown[\s\S]*subagentGate\.dispose\(\)/, "the WebUI package extension should own the retry-gate tool lifecycle without another extension package");
@@ -912,9 +1000,9 @@ assert.match(server, /function normalizeWebuiSubagentPayload\(value\)[\s\S]*mode
 assert.match(server, /WEBUI_SUBAGENT_GATE_LIMIT[\s\S]*rawGate\.attempts[\s\S]*failureKind: normalizeWebuiSubagentText\(rawAttempt\.failureKind, 80\)[\s\S]*totalGates/, "server should bound retry gates and expose their cross-tab total");
 assert.match(server, /function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*model: normalizeWebuiSubagentText\(rawAgent\.model, 240\)[\s\S]*thinking: normalizeWebuiSubagentText\(rawAgent\.thinking, 40\)/, "server should preserve model and reasoning metadata in selected child output");
 assert.match(server, /function normalizeWebuiSubagentSource\(value\) \{[\s\S]*value === "foreground" \|\| value === "workflow"[\s\S]*function normalizeWebuiSubagentPayload\(value\)[\s\S]*source: normalizeWebuiSubagentSource\(rawRun\.source\)[\s\S]*function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*source: normalizeWebuiSubagentSource\(selection\.run\?\.source \|\| value\.source\)/, "server should preserve workflow source in overview and selected-output normalization");
-assert.match(app, /function subagentExecutionFacts\(agent = \{\}\)[\s\S]*model \$\{model \|\| "unknown"\}[\s\S]*reasoning \$\{thinking \|\| "unknown"\}/, "subagent metadata should use one honest model/reasoning formatter with unknown fallbacks");
-assert.match(app, /function subagentSourceLabel\(source = ""\) \{[\s\S]*source === "foreground" \|\| source === "workflow"[\s\S]*function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*subagentSourceLabel\(data\?\.source \|\| run\.source\)[\s\S]*function renderSubagentTerminalView\(\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentTerminalTab\(view\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentAgent\(tab, run, agent\)[\s\S]*subagentSourceLabel\(run\?\.source\)/, "one source-label helper should keep workflow rows, overlays, and virtual tabs honest");
-assert.match(app, /function renderSubagentAgent\(tab, run, agent\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "Subagents side-panel rows should show model and reasoning effort");
+assert.match(app, /function subagentExecutionValues\(agent = \{\}\)[\s\S]*model\.slice\(suffixIndex \+ 1\)\.toLowerCase\(\) === thinking\.toLowerCase\(\)[\s\S]*return \[model \|\| "unknown", thinking \|\| "unknown"\][\s\S]*function subagentExecutionFacts\(agent = \{\}\)[\s\S]*model \$\{model\}[\s\S]*reasoning \$\{thinking\}/, "subagent metadata should share honest model\/reasoning values, strip duplicate effort suffixes, and retain unknown fallbacks");
+assert.match(app, /function subagentSourceLabel\(source = ""\) \{[\s\S]*source === "foreground" \|\| source === "workflow"[\s\S]*function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*subagentSourceLabel\(data\?\.source \|\| run\.source\)[\s\S]*function renderSubagentTerminalView\(\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentTerminalTab\(view\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)/, "one source-label helper should keep overlays and virtual tabs honest after inline metadata is removed");
+assert.match(compactSubagentAgentSource, /subagentExecutionValues\(agent\)/, "Subagents side-panel rows should reuse the normalized model and reasoning values shown in selected output views");
 assert.match(app, /function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "subagent overlays should show model and reasoning effort");
 assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "dedicated subagent terminal views should show model and reasoning effort");
 assert.match(app, /SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode"[\s\S]*function normalizeSubagentOpenMode\(value\)[\s\S]*function restoreSubagentOpenModeSetting\(\)/, "subagent opening mode should default safely and persist in this browser");
@@ -924,7 +1012,7 @@ assert.match(app, /function renderWidgets\(\)[\s\S]*renderAppRunnerWidget\(\)[\s
 assert.doesNotMatch(app, /subagentOverlayDialog\.showModal|elements\.subagentOverlayDialog/, "subagent output should not open or depend on a modal dialog");
 assert.match(app, /api\(`\/api\/subagents\/output\?\$\{query\}`, \{ scoped: false \}\)/, "subagent overlay should fetch selected live output from the owning tab");
 assert.match(app, /function subagentRunIndicatorActivity\(agent = \{\}\)[\s\S]*currentToolArgs[\s\S]*activityState[\s\S]*function appendSubagentRunIndicator\(parent,[\s\S]*run-indicator-pulse[\s\S]*Agent is running:[\s\S]*subagent-run-indicator-elapsed[\s\S]*updateSubagentRunIndicatorElapsed\(parent, run\)/, "running child output should show the main-style pulse, current tool or activity, and separately refreshed elapsed runtime");
-assert.match(app, /const facts = \[[\s\S]*view\.finished \? "finished" : running \? "running"/, "retained completed child views should not keep contradictory running header metadata");
+assert.match(app, /const facts = \[[\s\S]*view\.finished \? "finished" : running \? `running\$\{elapsed/, "retained completed child views should not keep contradictory running header metadata and live views should include elapsed time");
 assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*if \(running\) appendSubagentRunIndicator\(elements\.subagentTerminalTranscript, \{ agent, run: view\.run \}\)/, "the dedicated child tab should append a live run indicator whenever the selected child is running");
 const subagentTerminalSignatureSource = appFunctionSource("subagentTerminalViewMeaningfulSignature", "updateSubagentTerminalRefreshState");
 const subagentTerminalRefreshSource = appFunctionSource("refreshSubagentTerminalView", "deactivateSubagentTerminalView");
@@ -1749,6 +1837,7 @@ assert.match(app, /function markTabDoneLocally\(/, "frontend should locally reco
 assert.match(app, /function syncActiveTabActivityFromState\(state = currentState\)/, "frontend should reconcile active-tab indicators from authoritative state snapshots");
 assert.match(app, /event\.command === "get_state" && event\.tabId === activeTabId[\s\S]*?syncActiveTabActivityFromState\(currentState\)/, "get_state response events should update stale active-tab activity");
 assert.match(app, /function applyResponseTab\(response\)/, "frontend should merge tab metadata returned by prompt responses");
+assert.match(app, /newSessionButton\.addEventListener\("click", async \(\) => \{[\s\S]*?api\("\/api\/new-session"[\s\S]*?applyResponseTab\(response\)[\s\S]*?refreshAll\(tabContext\)/, "the New button should apply returned terminal-tab metadata before the full session refresh");
 assert.match(app, /case "webui_tab_renamed":/, "frontend should update tab labels from backend rename events");
 assert.match(app, /case "webui_recovery_opened":[\s\S]*?refreshTabs\(\)[\s\S]*?switchTab\(event\.recoveryTabId\)/, "recovery events should refresh tabs and activate the new recovery session");
 assert.match(app, /terminalTabsToggleButton\.addEventListener\("click"/, "terminal tabs trigger should be wired in JS");
