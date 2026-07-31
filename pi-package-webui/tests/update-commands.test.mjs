@@ -37,6 +37,10 @@ const [server, app, readme] = await Promise.all([
 assert.match(server, /async function piUpdateCommandSupportsAll\(command\)[\s\S]*piUpdateHelpSupportsAll/, "server should inspect update help from the selected Pi command");
 assert.match(server, /resolveCommand\(\["update", "--help"\]\)[\s\S]*piUpdateCommandSteps\(\{ all, supportsAll \}\)/, "server should plan commands from the capability result");
 assert.match(server, /const piTasks = await resolvePiUpdateCommands\(\{ all \}\)/, "all-mode task resolution should preserve the selected Pi update plan");
+assert.match(server, /function resolveSelectedPiCommand\(piArgs\)[\s\S]*resolvePiCommandInvocation\(options\.piBin, piArgs\)/, "selected Windows Pi shims should be normalized to an executable Node and CLI invocation");
+assert.match(server, /resolveCommandDirectory\(options\.piBin\)[\s\S]*piInstallDirectory[\s\S]*env: piInstallDirectory \? prependedPathEnvironment\(piInstallDirectory\)/, "Pi update tasks should put the selected Pi installation first on PATH");
+assert.match(server, /preferredDirectories: \[\.\.\.new Set\(piTasks\.map\(\(task\) => task\.piInstallDirectory\)/, "package-root updates should prefer npm from the selected Pi installation");
+assert.match(server, /async function runUpdateTask\(task\)[\s\S]*env: task\.env/, "update task execution should apply its install-aware environment");
 assert.match(server, /allCommand: piUpdateCommandText\(\{ all: true, supportsAll: true \}\)[\s\S]*allFallbackCommand: piUpdateCommandText\(\{ all: true \}\)/, "update status should expose preferred and fallback command text");
 assert.match(app, /"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"/, "update confirmation should describe capability selection and fallback");
 assert.match(readme, /first checks the selected Pi executable's `pi update --help`[\s\S]*uses `pi update --all` when advertised[\s\S]*otherwise falls back/, "documentation should explain the checked fallback behavior");

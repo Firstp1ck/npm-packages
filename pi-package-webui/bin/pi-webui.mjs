@@ -39,7 +39,7 @@ import {
   windowsReservedGitPathFailure,
 } from "../lib/git-command-errors.mjs";
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
-import { resolveNpmCommandInvocation } from "../lib/npm-command.mjs";
+import { prependedPathEnvironment, resolveCommandDirectory, resolveNpmCommandInvocation, resolvePiCommandInvocation } from "../lib/npm-command.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
   GIT_WORKFLOW_DELIVERY_MODES,
@@ -8361,17 +8361,17 @@ async function resolvedPiCliScript() {
   return "";
 }
 
+function resolveSelectedPiCommand(piArgs) {
+  const invocation = resolvePiCommandInvocation(options.piBin, piArgs);
+  return {
+    command: invocation.command,
+    args: invocation.args,
+    displayCommand: formatCommandForDisplay(invocation.command, invocation.args),
+  };
+}
+
 async function resolvePiCommand(piArgs) {
-  if (options.piBinExplicit) {
-    if (isNodeScriptCommand(options.piBin)) {
-      return {
-        command: process.execPath,
-        args: [options.piBin, ...piArgs],
-        displayCommand: `${process.execPath} ${options.piBin} ${piArgs.join(" ")}`,
-      };
-    }
-    return { command: options.piBin, args: piArgs, displayCommand: `${options.piBin} ${piArgs.join(" ")}` };
-  }
+  if (options.piBinExplicit) return resolveSelectedPiCommand(piArgs);
 
   const bundledCli = await resolvedPiCliScript();
   if (bundledCli) {
@@ -8382,7 +8382,7 @@ async function resolvePiCommand(piArgs) {
     };
   }
 
-  return { command: options.piBin, args: piArgs, displayCommand: `${options.piBin} ${piArgs.join(" ")}` };
+  return resolveSelectedPiCommand(piArgs);
 }
 
 const tabs = new Map();
@@ -10243,31 +10243,37 @@ async function piUpdateCommandSupportsAll(command) {
 async function resolvePiUpdateCommands({ all = false } = {}) {
   let resolveCommand;
   let labelPrefix = "";
+  let useBundledPi = false;
 
   if (options.piBinExplicit) {
     resolveCommand = (args) => resolvePiCommand(args);
   } else {
-    const pathPi = await runCommand(options.piBin, ["--version"], { timeoutMs: 3000, maxOutputLength: 4000 });
+    const selectedPi = resolveSelectedPiCommand(["--version"]);
+    const pathPi = await runCommand(selectedPi.command, selectedPi.args, { timeoutMs: 3000, maxOutputLength: 4000 });
     if (pathPi.exitCode === 0 && !pathPi.timedOut && !pathPi.error) {
-      resolveCommand = async (args) => ({
-        command: options.piBin,
-        args,
-        displayCommand: formatCommandForDisplay(options.piBin, args),
-      });
+      resolveCommand = async (args) => resolveSelectedPiCommand(args);
     } else {
       resolveCommand = (args) => resolvePiCommand(args);
       labelPrefix = "bundled ";
+      useBundledPi = true;
     }
   }
 
   const supportsAll = all && await piUpdateCommandSupportsAll(await resolveCommand(["update", "--help"]));
   const steps = piUpdateCommandSteps({ all, supportsAll });
-  return Promise.all(steps.map(async (step) => ({
-    ...(await resolveCommand(step.args)),
-    label: `${labelPrefix}${step.label}`,
-    timeoutMs: PI_UPDATE_TIMEOUT_MS,
-    maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS,
-  })));
+  return Promise.all(steps.map(async (step) => {
+    const command = await resolveCommand(step.args);
+    const selectedPiDirectory = useBundledPi || isNodeScriptCommand(options.piBin) ? "" : resolveCommandDirectory(options.piBin);
+    const piInstallDirectory = selectedPiDirectory || resolveCommandDirectory(command.command);
+    return {
+      ...command,
+      label: `${labelPrefix}${step.label}`,
+      timeoutMs: PI_UPDATE_TIMEOUT_MS,
+      maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS,
+      piInstallDirectory,
+      env: piInstallDirectory ? prependedPathEnvironment(piInstallDirectory) : undefined,
+    };
+  }));
 }
 
 function packageNodeModulesPath(nodeModulesRoot, packageName) {
@@ -10345,8 +10351,8 @@ function packageInstallSpecs(packageNames) {
   return packageNames.map((packageName) => `${packageName}@latest`);
 }
 
-function resolvedNpmCommand(args) {
-  const invocation = resolveNpmCommandInvocation(args);
+function resolvedNpmCommand(args, runtime = {}) {
+  const invocation = resolveNpmCommandInvocation(args, runtime);
   return {
     command: invocation.command,
     args: invocation.args,
@@ -10354,9 +10360,9 @@ function resolvedNpmCommand(args) {
   };
 }
 
-function npmPrefixUpdateTask(label, installRoot, packageNames) {
+function npmPrefixUpdateTask(label, installRoot, packageNames, npmRuntime = {}) {
   if (!packageNames.length) return null;
-  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packageNames)]);
+  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packageNames)], npmRuntime);
   return {
     label,
     command: npmCommand.command,
@@ -10366,31 +10372,31 @@ function npmPrefixUpdateTask(label, installRoot, packageNames) {
   };
 }
 
-async function currentWebuiPackageUpdateTask() {
+async function currentWebuiPackageUpdateTask(npmRuntime = {}) {
   const sourceCheckout = webuiDevServer || !String(packageRoot).split(path.sep).includes("node_modules");
   if (sourceCheckout) {
     const manifest = await readJsonFileIfExists(path.join(packageRoot, "package.json"));
     const packages = declaredWebuiPiPackageNames(manifest);
-    return npmPrefixUpdateTask("current Web UI checkout package dependencies", packageRoot, packages);
+    return npmPrefixUpdateTask("current Web UI checkout package dependencies", packageRoot, packages, npmRuntime);
   }
 
   const installRoot = nodeModulesParentForPackageRoot(packageRoot);
   const packages = await packagesPresentInInstallPrefix(installRoot);
-  return npmPrefixUpdateTask("current Web UI install root", installRoot, packages);
+  return npmPrefixUpdateTask("current Web UI install root", installRoot, packages, npmRuntime);
 }
 
-async function agentPackageRootUpdateTask() {
+async function agentPackageRootUpdateTask(npmRuntime = {}) {
   const installRoot = configuredAgentNpmRoot();
   const packages = await packagesPresentInInstallPrefix(installRoot);
-  return npmPrefixUpdateTask("Pi agent npm package root", installRoot, packages);
+  return npmPrefixUpdateTask("Pi agent npm package root", installRoot, packages, npmRuntime);
 }
 
-async function optionalFeatureInstallRootUpdateTask() {
+async function optionalFeatureInstallRootUpdateTask(npmRuntime = {}) {
   const configuredRoot = process.env[OPTIONAL_FEATURE_INSTALL_ROOT_ENV];
   if (!configuredRoot) return null;
   const installRoot = path.resolve(expandUserPath(configuredRoot));
   const packages = await packagesPresentInInstallPrefix(installRoot);
-  return npmPrefixUpdateTask("configured optional-feature npm root", installRoot, packages);
+  return npmPrefixUpdateTask("configured optional-feature npm root", installRoot, packages, npmRuntime);
 }
 
 function activeProjectPackageRoots() {
@@ -10405,28 +10411,28 @@ function activeProjectPackageRoots() {
   return [...roots].sort();
 }
 
-async function projectPackageRootUpdateTasks() {
+async function projectPackageRootUpdateTasks(npmRuntime = {}) {
   const tasks = [];
   for (const installRoot of activeProjectPackageRoots()) {
     const packages = await packagesPresentInInstallPrefix(installRoot);
-    const task = npmPrefixUpdateTask(`project Pi package root (${displayPath(path.dirname(installRoot))})`, installRoot, packages);
+    const task = npmPrefixUpdateTask(`project Pi package root (${displayPath(path.dirname(installRoot))})`, installRoot, packages, npmRuntime);
     if (task) tasks.push(task);
   }
   return tasks;
 }
 
-async function npmGlobalNodeModulesRoot() {
-  const npmCommand = resolvedNpmCommand(["root", "-g"]);
+async function npmGlobalNodeModulesRoot(npmRuntime = {}) {
+  const npmCommand = resolvedNpmCommand(["root", "-g"], npmRuntime);
   const result = await runCommand(npmCommand.command, npmCommand.args, { timeoutMs: 5000, maxOutputLength: 8000 });
   if (result.exitCode !== 0 || result.timedOut || result.error) return null;
   return result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || null;
 }
 
-async function npmGlobalPackageRootUpdateTask() {
-  const nodeModulesRoot = await npmGlobalNodeModulesRoot();
+async function npmGlobalPackageRootUpdateTask(npmRuntime = {}) {
+  const nodeModulesRoot = await npmGlobalNodeModulesRoot(npmRuntime);
   const packages = await packagesPresentInNodeModulesRoot(nodeModulesRoot);
   if (!packages.length) return null;
-  const npmCommand = resolvedNpmCommand(["install", "-g", "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packages)]);
+  const npmCommand = resolvedNpmCommand(["install", "-g", "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packages)], npmRuntime);
   return {
     label: "global npm package root",
     command: npmCommand.command,
@@ -10483,6 +10489,9 @@ async function resolveUpdateTasks({ all = false } = {}) {
   const piTasks = await resolvePiUpdateCommands({ all });
   if (!all) return uniqueUpdateTasks(piTasks);
 
+  const npmRuntime = {
+    preferredDirectories: [...new Set(piTasks.map((task) => task.piInstallDirectory).filter(Boolean))],
+  };
   const [
     currentWebuiTask,
     agentTask,
@@ -10491,11 +10500,11 @@ async function resolveUpdateTasks({ all = false } = {}) {
     globalNpmTask,
     globalBunTask,
   ] = await Promise.all([
-    currentWebuiPackageUpdateTask(),
-    agentPackageRootUpdateTask(),
-    optionalFeatureInstallRootUpdateTask(),
-    projectPackageRootUpdateTasks(),
-    npmGlobalPackageRootUpdateTask(),
+    currentWebuiPackageUpdateTask(npmRuntime),
+    agentPackageRootUpdateTask(npmRuntime),
+    optionalFeatureInstallRootUpdateTask(npmRuntime),
+    projectPackageRootUpdateTasks(npmRuntime),
+    npmGlobalPackageRootUpdateTask(npmRuntime),
     bunGlobalPackageRootUpdateTask(),
   ]);
 
@@ -10521,6 +10530,7 @@ async function runUpdateTask(task) {
     cwd: task.cwd || process.cwd(),
     timeoutMs: task.timeoutMs || PACKAGE_UPDATE_TIMEOUT_MS,
     maxOutputLength: task.maxOutputLength || PACKAGE_UPDATE_OUTPUT_MAX_CHARS,
+    env: task.env,
   });
   const ok = result.exitCode === 0 && !result.timedOut && !result.error;
   if (!ok) {
