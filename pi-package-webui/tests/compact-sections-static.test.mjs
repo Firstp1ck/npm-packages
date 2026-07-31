@@ -34,6 +34,20 @@ assert.match(
   /\/\* Compact high-density surfaces:[\s\S]*\.subagent-launch-slots-summary \{[\s\S]*min-height:\s*2\.35rem;[\s\S]*\.subagents-box \{[\s\S]*padding:\s*0\.48rem;[\s\S]*\.subagent-tab-header \{[\s\S]*min-height:\s*36px;/,
   "Subagents side-panel chrome should use the minimal scoped density treatment",
 );
+
+const controls = ruleBlock(".side-panel-controls");
+assert.equal(propertyValue(controls, "gap"), "0.55rem", "Controls sections should keep compact spacing");
+const controlGroup = ruleBlock(".control-group");
+assert.equal(propertyValue(controlGroup, "gap"), "0.5rem", "Controls groups should keep compact internal spacing");
+assert.equal(propertyValue(controlGroup, "padding"), "0.58rem", "Controls groups should use compact padding");
+assert.equal(propertyValue(controlGroup, "box-shadow"), "none", "Controls groups should use flat minimal surfaces");
+const controlElements = ruleBlock('.side-panel-controls select,\n.side-panel-controls button,\n.side-panel-controls input:not([type="checkbox"]):not([type="file"])');
+assert.equal(propertyValue(controlElements, "min-height"), "2.25rem", "Desktop Controls inputs should use the compact height floor");
+assert.equal(propertyValue(controlElements, "border-radius"), "0.55rem", "Controls inputs should use restrained corner geometry");
+const controlsToggle = ruleBlock(".toggle-control");
+assert.equal(propertyValue(controlsToggle, "min-height"), "2.25rem", "Desktop Controls toggles should match compact form rows");
+assert.equal(propertyValue(controlsToggle, "padding"), "0.34rem 0.48rem", "Controls toggles should avoid nested-card padding");
+assert.match(css, /\.side-panel-controls \.toggle-control > span \{[\s\S]*display:\s*flex;[\s\S]*justify-content:\s*space-between;/, "Controls toggle labels and statuses should share one compact row");
 assert.match(
   css,
   /\/\* Keep the Files tree visual language while giving Git its denser data-list rhythm\. \*\/[\s\S]*\.git-side-panel-folder-summary,[\s\S]*\.git-side-panel-file \{[\s\S]*min-height:\s*1\.55rem;[\s\S]*padding:\s*0\.08rem 0\.26rem;[\s\S]*border:\s*1px solid transparent;[\s\S]*border-radius:\s*0\.5rem;[\s\S]*\.git-side-panel-file:focus-visible \{[\s\S]*box-shadow:\s*inset 2px 0 0 var\(--ctp-blue\)/,
@@ -101,6 +115,10 @@ for (const selector of [
   ".git-side-panel-file",
   "button.git-workflow-step",
   ".git-workflow-message-input",
+  ".side-panel-controls select",
+  ".side-panel-controls button",
+  ".side-panel-controls input:not([type=\"checkbox\"]):not([type=\"file\"])",
+  ".side-panel-controls .toggle-control",
 ]) {
   assert.ok(coarseBlock.includes(selector), `${selector} should retain a coarse-pointer target floor`);
 }

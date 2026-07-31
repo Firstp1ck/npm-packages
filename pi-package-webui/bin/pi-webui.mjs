@@ -110,6 +110,7 @@ import {
   removeGitWorktree,
 } from "../lib/git-worktrees.mjs";
 import { createGitLiveWatcher } from "../lib/git-live-watcher.mjs";
+import { createWorkspaceFilesLiveWatcher } from "../lib/workspace-files-live-watcher.mjs";
 import {
   gitMessageArtifactPairReadiness,
   readStableGitMessageArtifactPair,
@@ -253,6 +254,7 @@ const UPLOAD_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
 const NATIVE_EXPORT_TEMP_TTL_MS = 60 * 60 * 1000;
 const TEMP_ARTIFACT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const AUTO_TAB_TITLE_MAX_LENGTH = 44;
+const AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH = 160;
 const AUTO_TAB_TITLE_WORD_LIMIT = 8;
 const AUTO_TAB_TITLE_STOP_WORDS = new Set([
   "a",
@@ -1624,7 +1626,7 @@ function generatedTabTitleFromPrompt(message) {
   const words = cleaned.split(/\s+/).map((word) => word.replace(/^[^\w]+|[^\w]+$/g, "")).filter(Boolean);
   const meaningfulWords = words.filter((word) => !AUTO_TAB_TITLE_STOP_WORDS.has(word.toLowerCase()));
   const selectedWords = (meaningfulWords.length >= 3 ? meaningfulWords : words).slice(0, AUTO_TAB_TITLE_WORD_LIMIT);
-  return truncateTabTitle(titleCaseTabTitle(selectedWords.join(" ")));
+  return truncateTabTitle(titleCaseTabTitle(selectedWords.join(" ")), AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH);
 }
 
 function uniqueTabTitle(title, currentTab, maxLength = AUTO_TAB_TITLE_MAX_LENGTH) {
@@ -9712,6 +9714,8 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     extensionStatuses: new Map(),
     extensionWidgets: new Map(),
     webuiSubagents: null,
+    subagentDisplayTitle: undefined,
+    subagentDisplayTitlePromise: undefined,
     webuiHelperRequests: new Map(),
     webuiHelperResponseIds: new Set(),
     bashQueue: [],
@@ -9760,6 +9764,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
 
   attachRpcToTab(tab, rpc);
   tabs.set(id, tab);
+  workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
   try {
     if (rpc instanceof SupervisorPiRpcProcess) {
       const snapshot = await rpcSupervisor.createTab({
@@ -9777,6 +9782,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
       tab.rpcUnsubscribe?.();
       rpc.dispose?.();
       gitLiveWatcher.unsubscribe(id);
+      workspaceFilesLiveWatcher.unsubscribe(id);
       tabs.delete(id);
       throw new Error(`Pi RPC process failed while starting ${tabTitle}: ${sanitizeError(error)}`);
     }
@@ -9822,12 +9828,14 @@ async function hydrateManagedTabs(snapshot) {
       });
       attachRpcToTab(tab, rpc);
       tabs.set(tab.id, tab);
+      workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
       hydrated.push(tab);
     }
   } catch (error) {
     for (const tab of hydrated) {
       tab.rpcUnsubscribe?.();
       tab.rpc.dispose?.();
+      workspaceFilesLiveWatcher.unsubscribe(tab.id);
       tabs.delete(tab.id);
     }
     throw error;
@@ -9869,16 +9877,37 @@ function listTabs() {
   return [...tabs.values()].map(tabMeta);
 }
 
-function webuiSubagentsData() {
+async function resolveSubagentDisplayTitle(tab) {
+  const fallback = tab?.title || "";
+  if (!tab || tab.titleSource !== "auto") return fallback;
+  if (tab.subagentDisplayTitle) return tab.subagentDisplayTitle;
+  if (!tab.subagentDisplayTitlePromise) {
+    tab.subagentDisplayTitlePromise = safeRpcResponse(tab, { type: "get_messages" }, TAB_ACTIVITY_STATE_RECONCILE_TIMEOUT_MS)
+      .then((response) => {
+        const firstUserMessage = (Array.isArray(response.data?.messages) ? response.data.messages : []).find((message) => message?.role === "user");
+        const title = generatedTabTitleFromPrompt(extractSessionTextContent(firstUserMessage?.content)) || fallback;
+        tab.subagentDisplayTitle = title;
+        return title;
+      })
+      .catch(() => {
+        tab.subagentDisplayTitle = fallback;
+        return fallback;
+      });
+  }
+  return tab.subagentDisplayTitlePromise;
+}
+
+async function webuiSubagentsData() {
   const sortedTabs = [...tabs.values()].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title));
-  const tabSummaries = sortedTabs.map((tab) => {
+  const tabSummaries = await Promise.all(sortedTabs.map(async (tab) => {
     const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [], gates: [] };
     const runs = Array.isArray(status.runs) ? status.runs : [];
     const gates = Array.isArray(status.gates) ? status.gates : [];
+    const tabTitle = runs.length || gates.length ? await resolveSubagentDisplayTitle(tab) : tab.title;
     return {
       tabId: tab.id,
       tabIndex: tab.index,
-      tabTitle: tab.title,
+      tabTitle,
       cwd: tab.cwd,
       sessionName: normalizeWebuiSubagentText(tab.lastState?.sessionName || tab.title, 160),
       sessionFile: tabRestorableSessionFile(tab) || null,
@@ -9893,7 +9922,7 @@ function webuiSubagentsData() {
       runningAgents: runs.reduce((count, run) => count + run.agents.filter((agent) => agent.status === "running").length, 0),
       gateCount: gates.length,
     };
-  });
+  }));
   return {
     version: 1,
     updatedAt: Date.now(),
@@ -10775,6 +10804,21 @@ const gitLiveWatcher = createGitLiveWatcher({
   },
 });
 
+const workspaceFilesLiveWatcher = createWorkspaceFilesLiveWatcher({
+  onChange: ({ root, tabIds, changedAt }) => {
+    for (const tabId of tabIds) {
+      const tab = tabs.get(tabId);
+      if (!tab || workspaceFilesLiveWatcher.subscribedRootForTab(tab.id) !== root) continue;
+      broadcastTabEvent(tab, { type: "webui_workspace_files_changed", tabId: tab.id, root, changedAt });
+    }
+  },
+  onError: ({ root, error }) => {
+    const message = sanitizeError(error);
+    recordEvent({ type: "webui_workspace_files_watch_error", root, error: message });
+    console.warn(`Workspace files live watcher disabled for ${root}: ${message}`);
+  },
+});
+
 function trackGitRepositoryForTab(tab, root) {
   if (tab?.id && root) gitLiveWatcher.subscribe(tab.id, root);
   return root;
@@ -10789,6 +10833,8 @@ function renameTab(tab, title, { source = "explicit", maxLength, unique = source
   const previousTitle = tab.title;
   tab.title = nextTitle;
   tab.titleSource = source;
+  tab.subagentDisplayTitle = source === "auto" ? truncateTabTitle(title, AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH) : undefined;
+  tab.subagentDisplayTitlePromise = undefined;
   if (previousTitle === nextTitle) return false;
   scheduleSupervisorMetadataUpdate(tab);
 
@@ -10896,6 +10942,8 @@ async function performTabCwdUpdate(tab, cwd) {
   attachRpcToTab(tab, rpc);
   if (startDirectRpc) rpc.start();
   gitLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
   // Non-fatal: a failed start surfaces through pi_process_error/exit events.
   await primeTabRpc(tab).catch(() => {});
 
@@ -13170,6 +13218,7 @@ async function closeTab(id, { allowLast = false } = {}) {
   }
   rememberClosedRestorableTab(tab, restorableState);
   gitLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.unsubscribe(tab.id);
 
   const closingEvent = { type: "webui_tab_closing", tabId: tab.id, tabTitle: tab.title };
   recordEvent(closingEvent);
@@ -13190,6 +13239,7 @@ async function closeTab(id, { allowLast = false } = {}) {
 async function discardTab(tab) {
   if (!tab || !tabs.has(tab.id)) return;
   gitLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.unsubscribe(tab.id);
   tab.rpcUnsubscribe?.();
   rejectTabBashQueue(tab, new Error("Pi recovery tab initialization failed"));
   stopAppRunnerForTab(tab, "recovery initialization failed", { force: true });
@@ -13949,7 +13999,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/subagents" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: webuiSubagentsData() });
+      sendJson(res, 200, { ok: true, data: await webuiSubagentsData() });
       return;
     }
 
@@ -15181,6 +15231,7 @@ async function shutdown(signal, { preserveSessions = false, exitCode = 0 } = {})
   shutdownInProgress = true;
   console.log(`\n${signal}: shutting down Pi Web UI...`);
   gitLiveWatcher.closeAll();
+  workspaceFilesLiveWatcher.closeAll();
   for (const tab of tabs.values()) stopAppRunnerForTab(tab, "server shutdown", { force: true });
 
   const forceExit = setTimeout(() => process.exit(exitCode), 4000);

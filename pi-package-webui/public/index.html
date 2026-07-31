@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=87" />
+    <link rel="stylesheet" href="/styles.css?v=88" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -578,13 +578,13 @@
             </h2>
             <div id="sidePanelSectionControls" class="side-panel-section-content" hidden>
               <div class="side-panel-controls">
-                <p class="controls-intro">Session controls affect the active Pi tab. Interface preferences are saved in this browser. Output processing is a shared server default.</p>
+                <p class="controls-intro">Settings apply to this tab, this browser, or the server.</p>
 
                 <section class="control-group" aria-labelledby="sessionControlsTitle">
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="sessionControlsTitle">Active session</h3>
-                      <p>Choose how Pi responds in the current tab.</p>
+                      <p>Model, effort, and transcript.</p>
                     </div>
                     <span class="control-scope-badge">This tab</span>
                   </div>
@@ -637,7 +637,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="interfaceControlsTitle">Interface</h3>
-                      <p>Personalise layout, appearance, and alerts.</p>
+                      <p>Layout, theme, and alerts.</p>
                     </div>
                     <span class="control-scope-badge">This browser</span>
                   </div>
@@ -692,7 +692,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="outputProcessingControlsTitle">Output processing</h3>
-                      <p>Choose the default live-output path for auto-negotiated Web UI connections.</p>
+                      <p>Default rendering for new Web UI connections.</p>
                     </div>
                     <span class="control-scope-badge">Server</span>
                   </div>
@@ -716,7 +716,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="remoteAccessControlsTitle">Remote access</h3>
-                      <p>Control trusted-LAN access and PIN protection.</p>
+                      <p>LAN access and PIN protection.</p>
                     </div>
                     <span class="control-scope-badge warning">Network</span>
                   </div>
@@ -738,7 +738,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="serverControlsTitle">Server</h3>
-                      <p>Maintenance actions may interrupt every open tab.</p>
+                      <p>Maintenance actions affect every open tab.</p>
                     </div>
                     <span class="control-scope-badge danger">System</span>
                   </div>

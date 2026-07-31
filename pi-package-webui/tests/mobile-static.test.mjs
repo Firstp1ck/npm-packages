@@ -903,7 +903,7 @@ assert.match(
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*totalGates[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents and retained retry gates by terminal and session");
-assert.match(app, /function renderSubagents\(\)[\s\S]*latestSubagents\?\.runningAgents[\s\S]*subagentCountBadge\.textContent = String\(totalAgents\)/, "the subagent count badge should count running agents only, not retained rows or gates");
+assert.match(app, /function renderSubagents\(\)[\s\S]*latestSubagents\?\.runningAgents[\s\S]*subagentCountBadge\.textContent = String\(totalAgents\)/, "the subagent count badge should count running agents once while retry-gated attempts render only inside their gate");
 const compactSubagentAgentSource = appFunctionSource("renderSubagentAgent", "renderSubagentRun");
 const compactSubagentRunSource = appFunctionSource("renderSubagentRun", "subagentGateStatusLabel");
 assert.match(compactSubagentAgentSource, /const \[model, thinking\] = subagentExecutionValues\(agent\)[\s\S]*identity\.append\([\s\S]*"subagent-agent-name", name[\s\S]*"subagent-agent-inline-meta", `· \$\{model\} · \$\{thinking\}`[\s\S]*row\.append\(dot, identity, open\)/, "side-panel agent rows should show type, provider\/model, and thinking effort on one compact line");
@@ -912,14 +912,38 @@ assert.doesNotMatch(compactSubagentRunSource, /subagent-run-(?:header|title|meta
 assert.match(compactSubagentRunSource, /Dismiss finished run[\s\S]*dismissSubagentRun\(tab, run\)/, "compact terminal subagent runs should retain their dismiss action");
 assert.match(compactSubagentRunSource, /subagentRunCanCancel\(run\)[\s\S]*Cancel entire subagent run[\s\S]*openSubagentCancelDialog\(tab, run\)/, "compact running subagent runs should retain whole-run cancellation through the shared dialog");
 assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*subagentRunElapsed\(view\.run\)[\s\S]*subagentExecutionFacts\(agent\)[\s\S]*parent \$\{parent\?\.title[\s\S]*run \$\{view\.runId\}/, "the dedicated subagent view should own elapsed, execution, parent, and run details removed from the side panel");
-assert.match(css, /\.subagent-tab-title \{[\s\S]*min-width: 0;[\s\S]*\.subagent-tab-count \{[\s\S]*flex: 0 0 auto;[\s\S]*white-space: nowrap;/, "subagent summary badges should stay on one line while the title and session text truncate first");
+const subagentTerminalViewGroupsSource = appFunctionSource("subagentTerminalViewGroups", "renderSubagentTerminalTab");
+const subagentTerminalGroupingContext = vm.createContext({
+  subagentTerminalViews: new Map([
+    ["a-1", { id: "a-1", parentTabId: "workspace-a", parentTitle: "Workspace A", openedAt: 1 }],
+    ["b-1", { id: "b-1", parentTabId: "workspace-b", parentTitle: "Workspace B", openedAt: 2 }],
+    ["a-2", { id: "a-2", parentTabId: "workspace-a", parentTitle: "Workspace A", openedAt: 3 }],
+  ]),
+});
+vm.runInContext(`${subagentTerminalViewGroupsSource}\nthis.groupedSubagentViews = subagentTerminalViewGroups();`, subagentTerminalGroupingContext);
+assert.deepEqual(JSON.parse(JSON.stringify(subagentTerminalGroupingContext.groupedSubagentViews.map((group) => ({ key: group.key, parentTabId: group.parentTabId, viewIds: group.views.map((view) => view.id) })))), [
+  { key: "subagents:workspace-a", parentTabId: "workspace-a", viewIds: ["a-1", "a-2"] },
+  { key: "subagents:workspace-b", parentTabId: "workspace-b", viewIds: ["b-1"] },
+], "dedicated subagent views should group only with siblings spawned by the same parent workspace");
+assert.match(app, /function renderTabs\(\)[\s\S]*const subagentGroups = subagentTerminalViewGroups\(\)[\s\S]*group\.views\.length > 1[\s\S]*renderSubagentTerminalTabGroup\(group\)[\s\S]*renderSubagentTerminalTab\(group\.views\[0\]\)/, "the tab strip should collapse same-workspace subagent siblings while leaving a single view standalone");
+const renderSubagentTerminalTabSource = appFunctionSource("renderSubagentTerminalTab", "renderSubagentTerminalTabGroup");
+assert.match(renderSubagentTerminalTabSource, /groupItem = false[\s\S]*terminal-tab-group-item[\s\S]*terminal-tab-group-item-button[\s\S]*activateSubagentTerminalView\(view\.id\)/, "subagent tabs should remain individually activatable inside a workspace group menu");
+const renderSubagentTerminalTabGroupSource = appFunctionSource("renderSubagentTerminalTabGroup", "openSubagentOutput");
+assert.match(renderSubagentTerminalTabGroupSource, /groupViews\.filter\(subagentTerminalViewIsRunning\)[\s\S]*group\.parentTitle[\s\S]*terminal-tab-subagent-group[\s\S]*count: groupViews\.length[\s\S]*renderSubagentTerminalTab\(view, \{ groupItem: true \}\)/, "workspace subagent groups should expose their parent title, aggregate state, count, and child-view menu");
+const closeSubagentTerminalGroupStart = app.indexOf("function closeSubagentTerminalGroup(");
+const closeSubagentTerminalGroupEnd = app.indexOf("\nasync function copySubagentTerminalOutput(", closeSubagentTerminalGroupStart);
+assert.ok(closeSubagentTerminalGroupStart >= 0 && closeSubagentTerminalGroupEnd > closeSubagentTerminalGroupStart, "closeSubagentTerminalGroup should remain a standalone frontend helper");
+const closeSubagentTerminalGroupSource = app.slice(closeSubagentTerminalGroupStart, closeSubagentTerminalGroupEnd);
+assert.match(closeSubagentTerminalGroupSource, /subagentTerminalViews\.delete\(view\.id\)[\s\S]*renderTabs\(\)/, "closing a workspace subagent group should remove its view tabs as one UI operation");
+assert.doesNotMatch(closeSubagentTerminalGroupSource, /cancel|\/api\/subagents/, "closing a workspace subagent group must not stop its child runs");
+assert.match(css, /\.subagent-tab-title \{[\s\S]*container-type: inline-size;[\s\S]*flex: 1 1 0;[\s\S]*min-width: 0;[\s\S]*\.subagent-tab-title strong \{[\s\S]*font-size: clamp\(0\.64rem, calc\(0\.5rem \+ 0\.65cqi\), 0\.78rem\);[\s\S]*\.subagent-tab-count \{[\s\S]*flex: 0 0 auto;[\s\S]*white-space: nowrap;/, "subagent titles should scale with their available inline width while summary badges stay fixed and text can still truncate");
 assert.match(css, /\.subagent-agent-list \{[\s\S]*gap: 0\.16rem;[\s\S]*\.subagent-agent-row \{[\s\S]*min-height: 1\.75rem;[\s\S]*background: transparent;[\s\S]*\.subagent-agent-identity \{[\s\S]*display: flex;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-agent-inline-meta \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-run \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*border: 0;/, "the inline subagent monitor should keep type, model, and effort in compact flat rows without overflow");
 assert.match(app, /function renderSubagentOverlayWidget\(\)[\s\S]*openSubagentCancelDialog\(tab, selection\.run, agent\)[\s\S]*subagent-overlay-cancel-action/, "running overlays should route cancel through the shared dialog");
 assert.match(app, /subagentTerminalCancelButton[\s\S]*openSubagentCancelDialog\(view\.tab \|\| \{ tabId: view\.parentTabId, tabTitle: view\.parentTitle \}, view\.run, view\.data\?\.agent \|\| view\.agent\)/, "running terminal headers should route cancel through the shared dialog");
 assert.match(app, /function openSubagentCancelDialog\(tab, run, agent = null\)[\s\S]*agentCount[\s\S]*The entire run will be stopped[\s\S]*subagentCancelDialog\.showModal\(\)[\s\S]*async function submitSubagentCancel\(\)[\s\S]*api\("\/api\/subagents\/cancel", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*tab: selection\.tabId,[\s\S]*runId: selection\.runId/, "the shared cancel dialog should honestly describe and submit whole-run cancellation with optional reason/note data");
 assert.doesNotMatch(app, /body: \{\n\s+tab: selection\.tabId,\n\s+runId: selection\.runId,\n\s+\.\.\.\(selection\.agentId/, "the frontend must not imply unsupported per-agent cancellation in its request contract");
 assert.match(app, /async function dismissSubagentRun\(tab, run\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*body: \{ tab: tab\.tabId, runId: run\.id \}/, "finished-run dismiss controls should call the owning tab endpoint");
-assert.match(app, /function finishedSubagentRunSelections\(data = latestSubagents\)[\s\S]*run\.status !== "running" && run\.source !== "workflow"[\s\S]*async function clearFinishedSubagentRuns\(\)[\s\S]*for \(const selection of selections\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*body: \{ tab: selection\.tabId, runId: selection\.runId \}[\s\S]*subagentsClearFinishedButton\.disabled = subagentsLoading \|\| subagentsClearingFinished \|\| finishedRuns\.length === 0/, "clear-finished should dismiss every terminal ordinary run through its owning tab while preserving active and workflow runs");
+assert.match(app, /function finishedSubagentRunSelections\(data = latestSubagents\)[\s\S]*ungatedSubagentRuns\(tab\)[\s\S]*run\.status !== "running" && run\.source !== "workflow"[\s\S]*async function clearFinishedSubagentRuns\(\)[\s\S]*for \(const selection of selections\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*body: \{ tab: selection\.tabId, runId: selection\.runId \}[\s\S]*subagentsClearFinishedButton\.disabled = subagentsLoading \|\| subagentsClearingFinished \|\| finishedRuns\.length === 0/, "clear-finished should dismiss visible terminal ordinary runs while preserving retry-gated, active, and workflow runs");
 assert.match(app, /subagentsClearFinishedButton\?\.addEventListener\("click", \(\) => \{[\s\S]*clearFinishedSubagentRuns\(\)/, "the clear-finished button should invoke the guarded bulk dismissal action");
 assert.match(css, /\.subagents-status-row \{[\s\S]*display: flex;[\s\S]*\.subagents-clear-finished-button \{[\s\S]*min-height: 2rem;/, "the clear-finished control should share a compact responsive status row");
 const clearFinishedSourceStart = app.indexOf("function finishedSubagentRunSelections(");
@@ -931,9 +955,13 @@ let clearFinishedRefreshes = 0;
 const clearFinishedContext = {
   latestSubagents: {
     tabs: [
-      { tabId: "tab-a", runs: [{ id: "done-a", status: "done", source: "async" }, { id: "running-a", status: "running", source: "async" }, { id: "workflow-a", status: "done", source: "workflow" }] },
+      { tabId: "tab-a", runs: [{ id: "done-a", status: "done", source: "async" }, { id: "running-a", status: "running", source: "async" }, { id: "workflow-a", status: "done", source: "workflow" }, { id: "gated-a", status: "done", source: "async" }], gates: [{ attempts: [{ runId: "gated-a" }] }] },
       { tabId: "tab-b", runs: [{ id: "failed-b", status: "failed", source: "foreground" }, { id: "cancelled-b", status: "cancelled", source: "async" }] },
     ],
+  },
+  ungatedSubagentRuns(tab) {
+    const gatedRunIds = new Set((tab.gates || []).flatMap((gate) => (gate.attempts || []).map((attempt) => attempt.runId)));
+    return (tab.runs || []).filter((run) => !gatedRunIds.has(run.id));
   },
   subagentsClearingFinished: false,
   subagentsLoading: false,
@@ -951,11 +979,11 @@ assert.deepEqual(JSON.parse(JSON.stringify(clearFinishedCalls)), [
   { path: "/api/subagents/dismiss", options: { method: "POST", scoped: false, body: { tab: "tab-a", runId: "done-a" } } },
   { path: "/api/subagents/dismiss", options: { method: "POST", scoped: false, body: { tab: "tab-b", runId: "failed-b" } } },
   { path: "/api/subagents/dismiss", options: { method: "POST", scoped: false, body: { tab: "tab-b", runId: "cancelled-b" } } },
-], "clear-finished should call the existing dismiss endpoint only for terminal ordinary runs");
+], "clear-finished should call the existing dismiss endpoint only for visible terminal ordinary runs");
 assert.equal(clearFinishedRefreshes, 1, "clear-finished should refresh the overview once after all dismissals");
 assert.equal(clearFinishedContext.subagentsClearingFinished, false, "clear-finished should always release its in-flight guard");
 assert.deepEqual(clearFinishedEvents, [{ message: "cleared 3 finished subagent runs", level: "info" }]);
-assert.match(app, /function materializeRetainedSubagentTerminalViews\(\)[\s\S]*restoreKey = `\$\{tab\.tabId\}\\u0000\$\{tab\.sessionFile[\s\S]*run\?\.status === "running"[\s\S]*ensureSubagentTerminalView/, "terminal mode should materialize restored retained agent views once per parent session identity without touching overlay mode");
+assert.match(app, /function materializeRetainedSubagentTerminalViews\(\)[\s\S]*restoreKey = `\$\{tab\.tabId\}\\u0000\$\{tab\.sessionFile[\s\S]*ungatedSubagentRuns\(tab\)[\s\S]*run\?\.status === "running"[\s\S]*ensureSubagentTerminalView/, "terminal mode should materialize only ungated restored retained agent views once per parent session identity without touching overlay mode");
 assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"[\s\S]*function renderSubagentLaunchSlots\(\)[\s\S]*function loadSubagentLaunchSlotConfig\([\s\S]*\/api\/subagents\/config/, "launch-slot configuration should have its own browser state and API loader");
 assert.match(app, /function subagentLaunchSlotThinkingForModel\(model\)[\s\S]*modelThinkingLevels/, "launch-slot thinking choices should come from the selected model metadata");
 assert.match(app, /function renderSubagentLaunchSlotCard\(role, slots\)[\s\S]*Default \/ inherit[\s\S]*"Add slot"[\s\S]*Remove/, "role cards should render independent same-role slots and inheritance controls");
@@ -1001,7 +1029,7 @@ assert.match(server, /WEBUI_SUBAGENT_GATE_LIMIT[\s\S]*rawGate\.attempts[\s\S]*fa
 assert.match(server, /function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*model: normalizeWebuiSubagentText\(rawAgent\.model, 240\)[\s\S]*thinking: normalizeWebuiSubagentText\(rawAgent\.thinking, 40\)/, "server should preserve model and reasoning metadata in selected child output");
 assert.match(server, /function normalizeWebuiSubagentSource\(value\) \{[\s\S]*value === "foreground" \|\| value === "workflow"[\s\S]*function normalizeWebuiSubagentPayload\(value\)[\s\S]*source: normalizeWebuiSubagentSource\(rawRun\.source\)[\s\S]*function normalizeWebuiSubagentOutput\(value, selection\)[\s\S]*source: normalizeWebuiSubagentSource\(selection\.run\?\.source \|\| value\.source\)/, "server should preserve workflow source in overview and selected-output normalization");
 assert.match(app, /function subagentExecutionValues\(agent = \{\}\)[\s\S]*model\.slice\(suffixIndex \+ 1\)\.toLowerCase\(\) === thinking\.toLowerCase\(\)[\s\S]*return \[model \|\| "unknown", thinking \|\| "unknown"\][\s\S]*function subagentExecutionFacts\(agent = \{\}\)[\s\S]*model \$\{model\}[\s\S]*reasoning \$\{thinking\}/, "subagent metadata should share honest model\/reasoning values, strip duplicate effort suffixes, and retain unknown fallbacks");
-assert.match(app, /function subagentSourceLabel\(source = ""\) \{[\s\S]*source === "foreground" \|\| source === "workflow"[\s\S]*function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*subagentSourceLabel\(data\?\.source \|\| run\.source\)[\s\S]*function renderSubagentTerminalView\(\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentTerminalTab\(view\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)/, "one source-label helper should keep overlays and virtual tabs honest after inline metadata is removed");
+assert.match(app, /function subagentSourceLabel\(source = ""\) \{[\s\S]*source === "foreground" \|\| source === "workflow"[\s\S]*function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*subagentSourceLabel\(data\?\.source \|\| run\.source\)[\s\S]*function renderSubagentTerminalView\(\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)[\s\S]*function renderSubagentTerminalTab\(view, \{ groupItem = false \} = \{\}\)[\s\S]*subagentSourceLabel\(view\.data\?\.source \|\| view\.run\?\.source\)/, "one source-label helper should keep overlays and virtual tabs honest after inline metadata is removed");
 assert.match(compactSubagentAgentSource, /subagentExecutionValues\(agent\)/, "Subagents side-panel rows should reuse the normalized model and reasoning values shown in selected output views");
 assert.match(app, /function subagentOverlayStateFacts\(data = subagentOverlayData\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "subagent overlays should show model and reasoning effort");
 assert.match(app, /function renderSubagentTerminalView\(\)[\s\S]*\.\.\.subagentExecutionFacts\(agent\)/, "dedicated subagent terminal views should show model and reasoning effort");
@@ -1049,12 +1077,12 @@ assert.equal(unchangedSubagentTabRenderCount, 0, "an unchanged background poll s
 assert.equal(unchangedSubagentElapsedUpdateCount, 1, "an unchanged background poll should refresh only the existing visual elapsed-time node");
 assert.equal(unchangedSubagentView.loading, false, "an unchanged background poll should still clear its internal loading flag");
 const subagentTerminalCloseStart = app.indexOf("function closeSubagentTerminalTab(");
-const subagentTerminalCloseEnd = app.indexOf("\nasync function copySubagentTerminalOutput(", subagentTerminalCloseStart);
+const subagentTerminalCloseEnd = app.indexOf("\nfunction closeSubagentTerminalGroup(", subagentTerminalCloseStart);
 assert.ok(subagentTerminalCloseStart >= 0 && subagentTerminalCloseEnd > subagentTerminalCloseStart, "closeSubagentTerminalTab should remain a standalone frontend helper");
 const subagentTerminalCloseSource = app.slice(subagentTerminalCloseStart, subagentTerminalCloseEnd);
 assert.ok(subagentTerminalCloseSource.includes("subagentTerminalViews.delete(viewId)"), "closing a subagent tab should remove only its client-side view record");
 assert.doesNotMatch(subagentTerminalCloseSource, /\bapi\(|closeTerminalTabs\(|closeSubagentOverlay\(/, "closing a subagent tab must not call backend terminal or subagent lifecycle APIs");
-assert.match(app, /function renderSubagentTerminalTab\(view\)[\s\S]*terminal-tab-subagent[\s\S]*subagent: true[\s\S]*closeSubagentTerminalTab\(view\.id\)/, "virtual tabs should be marked as subagents and have a view-only close action");
+assert.match(app, /function renderSubagentTerminalTab\(view, \{ groupItem = false \} = \{\}\)[\s\S]*terminal-tab-subagent[\s\S]*subagent: true[\s\S]*closeSubagentTerminalTab\(view\.id\)/, "standalone and grouped virtual tabs should be marked as subagents and retain a view-only close action");
 assert.match(app, /function subagentTerminalViewId\(tab, run, agent\)[\s\S]*JSON\.stringify\(\[tab\?\.tabId[\s\S]*run\?\.id[\s\S]*agent\?\.id/, "virtual child tabs should be uniquely keyed by parent terminal, run, and child agent");
 assert.match(app, /SUBAGENT_OVERLAY_REFRESH_MS = 1000/, "subagent overlay should poll selected live output at a fast cadence");
 assert.match(app, /function createMessageBubble\(message,[\s\S]*renderContent\(body, message\.content, \{ markdown: message\.role === "assistant" \|\| message\.role === "custom" \}\)[\s\S]*function appendMessage\(message, options = \{\}\)[\s\S]*createMessageBubble\(message, options\)/, "main transcript output should use the reusable message bubble renderer");
@@ -1097,7 +1125,28 @@ assert.ok(subagentWidgetSource.includes("if (visibleFallbackText) {"), "the widg
 assert.ok(subagentWidgetSource.includes("if (running) appendSubagentRunIndicator(output, { agent, run: selection.run });"), "running subagent widgets should append the shared live activity indicator");
 assert.match(app, /api\("\/api\/subagents", \{ scoped: false \}\)/, "frontend should refresh the cross-tab subagent overview");
 assert.match(app, /SUBAGENTS_ACTIVE_REFRESH_MS = 1500/, "running subagents should receive a fast live refresh cadence");
-assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*webuiSubagentsData\(\)/, "server should expose a cross-tab running-subagent endpoint");
+assert.match(server, /url\.pathname === "\/api\/subagents" && req\.method === "GET"[\s\S]*await webuiSubagentsData\(\)/, "server should await enriched cross-tab running-subagent titles");
+assert.match(server, /async function resolveSubagentDisplayTitle\(tab\)[\s\S]*tab\.titleSource !== "auto"[\s\S]*get_messages[\s\S]*message\?\.role === "user"[\s\S]*generatedTabTitleFromPrompt\(extractSessionTextContent\(firstUserMessage\?\.content\)\)/, "existing auto-named subagent groups should recover their longer title from the first user message without relaunching children");
+assert.match(server, /const tabSummaries = await Promise\.all\([\s\S]*runs\.length \|\| gates\.length \? await resolveSubagentDisplayTitle\(tab\) : tab\.title/, "subagent title recovery should run once for visible run and retry-gate groups");
+const resolveSubagentDisplayTitleStart = server.indexOf("async function resolveSubagentDisplayTitle(");
+const resolveSubagentDisplayTitleEnd = server.indexOf("\nasync function webuiSubagentsData(", resolveSubagentDisplayTitleStart);
+assert.ok(resolveSubagentDisplayTitleStart >= 0 && resolveSubagentDisplayTitleEnd > resolveSubagentDisplayTitleStart, "subagent display-title recovery should remain independently testable");
+const recoveredSubagentTitle = "Workspace files webui files section sidepanel dynamically adjusted";
+let subagentTitleMessageReads = 0;
+const resolveSubagentDisplayTitleContext = vm.createContext({
+  TAB_ACTIVITY_STATE_RECONCILE_TIMEOUT_MS: 1200,
+  safeRpcResponse: async () => {
+    subagentTitleMessageReads += 1;
+    return { data: { messages: [{ role: "user", content: recoveredSubagentTitle }] } };
+  },
+  extractSessionTextContent: (content) => String(content || ""),
+  generatedTabTitleFromPrompt: (message) => message,
+});
+vm.runInContext(`${server.slice(resolveSubagentDisplayTitleStart, resolveSubagentDisplayTitleEnd)}\nthis.runResolveSubagentDisplayTitle = resolveSubagentDisplayTitle;`, resolveSubagentDisplayTitleContext);
+const legacyAutoNamedTab = { title: "Workspace files webui files section sidepan…", titleSource: "auto" };
+assert.equal(await resolveSubagentDisplayTitleContext.runResolveSubagentDisplayTitle(legacyAutoNamedTab), recoveredSubagentTitle, "existing auto-named rows should recover the wider title from their parent conversation");
+assert.equal(await resolveSubagentDisplayTitleContext.runResolveSubagentDisplayTitle(legacyAutoNamedTab), recoveredSubagentTitle, "recovered titles should remain available to later panel refreshes");
+assert.equal(subagentTitleMessageReads, 1, "title recovery should read the existing parent conversation once and must not require spawning another subagent");
 assert.match(server, /url\.pathname === "\/api\/subagents\/output" && req\.method === "GET"[\s\S]*webuiSubagentOutputData\(tab, runId, agentId\)/, "server should expose selected running subagent output only through its owning tab");
 assert.match(server, /rememberWebuiSubagentsStatusEvent\(tab, event\)/, "server should ingest the helper's structured subagent status without forwarding internal JSON to the browser footer");
 assert.match(server, /PI_RPC_JSONL_LINE_MAX_BYTES = 32 \* 1024 \* 1024/, "Pi RPC JSONL parsing should use an explicit line-size limit with inline-image headroom");
@@ -1806,7 +1855,7 @@ assert.match(app, /function closeAllTerminalTabs\(\)[\s\S]*?closeTerminalTabs\(t
 assert.match(app, /WARNING: \$\{activeAgentTabs\.length\}[\s\S]*?still running or waiting for input/, "tab close confirmations should warn when agents are still running");
 assert.match(app, /elements\.closeAllTabsButton\.addEventListener\("click", \(\) => closeAllTerminalTabs\(\)\)/, "close-all tabs button should be wired in JS");
 assert.match(app, /const groups = tabCwdGroups\(\);[\s\S]*?for \(const group of groups\) \{\n\s+if \(shouldRenderTerminalTabGroup\(group, groups\.length\)\)[\s\S]*?renderTerminalTabGroup\(group, groups\.length\)[\s\S]*?for \(const tab of group\.tabs\) elements\.tabBar\.append\(renderTerminalTab\(tab\)\);/, "terminal tabs should render groups with group count and ungrouped tabs when grouping is skipped");
-assert.match(app, /for \(const view of \[\.\.\.subagentTerminalViews\.values\(\)\][\s\S]*renderSubagentTerminalTab\(view\)/, "open subagent views should render as first-class virtual terminal tabs");
+assert.match(app, /const subagentGroups = subagentTerminalViewGroups\(\)[\s\S]*renderSubagentTerminalTabGroup\(group\)[\s\S]*renderSubagentTerminalTab\(group\.views\[0\]\)/, "open subagent views should render as first-class virtual tabs, grouped by parent workspace when siblings exist");
 assert.match(readme, /Tracked subagent output[\s\S]*dedicated \*\*Subagent\*\* terminal tab[\s\S]*view-only[\s\S]*close without stopping or interrupting/, "README should document the selectable view-only child terminal behavior");
 assert.match(app, /let tabSeenCompletionSerials = new Map\(\)/, "frontend should track which tab completions have been seen");
 assert.match(app, /let activeTabGeneration = 0/, "frontend should version active-tab UI state to reject stale async work");
@@ -1901,7 +1950,9 @@ assert.match(server, /OPENAI_CODEX_USAGE_ENDPOINT/, "server should query Codex u
 assert.match(server, /const NATIVE_SLASH_COMMANDS = nativeSlashCommandEntries\(nativeParityMatrix\)/, "server should define Pi native slash commands for autocomplete from the parity matrix");
 assert.match(server, /WEBUI_TUI_NATIVE_PARITY\.json/, "native command descriptions should come from the parity matrix source of truth");
 assert.match(server, /function parseSlashCommand\(message\)/, "server should parse native slash commands before prompt forwarding");
-assert.match(server, /function generatedTabTitleFromPrompt\(message\)/, "server should derive concise automatic tab titles from first prompts");
+assert.match(server, /AUTO_TAB_TITLE_MAX_LENGTH = 44;[\s\S]*AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH = 160;/, "compact terminal labels and wider subagent display titles should use separate length limits");
+assert.match(server, /function generatedTabTitleFromPrompt\(message\)[\s\S]*truncateTabTitle\(titleCaseTabTitle\(selectedWords\.join\(" "\)\), AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH\)/, "server should preserve a longer automatic title before compact terminal truncation");
+assert.match(server, /function renameTab\(tab, title,[\s\S]*tab\.subagentDisplayTitle = source === "auto" \? truncateTabTitle\(title, AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH\) : undefined;/, "new auto-named tabs should cache their wider subagent display title immediately");
 assert.match(server, /function maybeNameTabForConversation\(tab, command\)/, "server should auto-name default tabs when a conversation starts");
 assert.match(server, /function maybeNameTabForConversation\(tab, command\) \{[\s\S]*const shouldRename = !tab\.conversationStarted && tab\.titleSource !== "explicit";[\s\S]*tab\.conversationStarted = true;[\s\S]*if \(!shouldRename\) return false;/, "server should mark conversations as started even when an explicit title prevents auto-renaming");
 assert.match(server, /function createTabActivity\(/, "server should track per-tab activity for idle, working, and completed work");

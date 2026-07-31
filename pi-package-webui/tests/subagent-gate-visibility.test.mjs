@@ -7,6 +7,8 @@ import {
   pruneDismissedSubagentGateKeys,
   subagentGateIsTerminal,
   subagentGateKey,
+  subagentGateRunIds,
+  ungatedSubagentRuns,
   visibleSubagentGates,
 } from "../public/subagent-gate-visibility.mjs";
 
@@ -27,6 +29,20 @@ assert.equal(subagentGateKey("tab-a", "gate-a"), "tab-a:gate-a");
 assert.equal(subagentGateKey("", "gate-a"), "");
 assert.equal(subagentGateIsTerminal({ status: "running" }), false);
 assert.equal(subagentGateIsTerminal({ status: "failed" }), true);
+
+const mixedRunsTab = {
+  runs: [
+    { id: "direct-run", agents: [{ name: "scout" }] },
+    { id: "gate-run-1", agents: [{ name: "reviewer" }] },
+    { id: "gate-run-2", agents: [{ name: "planner" }] },
+  ],
+  gates: [
+    { attempts: [{ runId: "gate-run-1" }, { runId: " gate-run-2 " }, { runId: "" }] },
+  ],
+};
+assert.deepEqual([...subagentGateRunIds(mixedRunsTab)], ["gate-run-1", "gate-run-2"], "retry gates should identify every spawned run they own");
+assert.deepEqual(ungatedSubagentRuns(mixedRunsTab).map((run) => run.id), ["direct-run"], "retry-gated runs should be omitted while direct subagent spawns remain visible");
+assert.deepEqual(ungatedSubagentRuns({ runs: mixedRunsTab.runs, gates: [] }).map((run) => run.id), ["direct-run", "gate-run-1", "gate-run-2"], "ordinary spawns should remain visible when no retry gate owns them");
 
 assert.deepEqual(
   visibleSubagentGates(tab, new Set(), now).map((gate) => gate.id),
@@ -55,7 +71,7 @@ const [app, css, serviceWorker, server, pkgRaw] = await Promise.all([
 const pkg = JSON.parse(pkgRaw);
 
 assert.match(app, /from "\.\/subagent-gate-visibility\.mjs"/, "the browser should load the retry-gate visibility policy");
-assert.match(app, /function subagentTabsWithRunningAgents\(\)[\s\S]*latestSubagents\?\.updatedAt[\s\S]*visibleSubagentGates\(tab, dismissedSubagentGateKeys, now\)/, "the side panel should use server time and filter expired or dismissed gates before deriving counts");
+assert.match(app, /function subagentTabsWithRunningAgents\(\)[\s\S]*latestSubagents\?\.updatedAt[\s\S]*visibleSubagentGates\(tab, dismissedSubagentGateKeys, now\)[\s\S]*ungatedSubagentRuns\(tab\)[\s\S]*displayRuns/, "the side panel should filter retry-gated runs while retaining the gate attempts as their only rows");
 assert.match(app, /function renderSubagentGate\(tab, gate\)[\s\S]*subagentGateIsTerminal\(gate\)[\s\S]*Hide finished retry gate[\s\S]*dismissedSubagentGateKeys\.add\(key\)[\s\S]*renderSubagents\(\)[\s\S]*event\.detail === 0[\s\S]*focusTarget\?\.focus/, "terminal gate cards should expose an accessible hide button and preserve keyboard focus after rerendering");
 assert.match(app, /pruneDismissedSubagentGateKeys\(latestSubagents\?\.tabs, dismissedSubagentGateKeys\)/, "polling should prune stale dismissal keys");
 assert.match(css, /\.subagent-gate-actions[\s\S]*\.subagent-gate-close[\s\S]*min-width:\s*1\.45rem[\s\S]*background:\s*transparent[\s\S]*\.subagent-gate-close:hover,[\s\S]*\.subagent-gate-close:focus-visible/, "the close control should remain minimal, compact, and keyboard-visible");

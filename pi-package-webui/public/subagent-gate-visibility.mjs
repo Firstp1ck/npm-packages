@@ -10,6 +10,22 @@ export function subagentGateIsTerminal(gate) {
   return gate?.status !== "running";
 }
 
+export function subagentGateRunIds(tab) {
+  const runIds = new Set();
+  for (const gate of Array.isArray(tab?.gates) ? tab.gates : []) {
+    for (const attempt of Array.isArray(gate?.attempts) ? gate.attempts : []) {
+      const runId = String(attempt?.runId || "").trim();
+      if (runId) runIds.add(runId);
+    }
+  }
+  return runIds;
+}
+
+export function ungatedSubagentRuns(tab) {
+  const gatedRunIds = subagentGateRunIds(tab);
+  return (Array.isArray(tab?.runs) ? tab.runs : []).filter((run) => !gatedRunIds.has(String(run?.id || "").trim()));
+}
+
 export function visibleSubagentGates(tab, dismissedGateKeys, now = Date.now(), retentionMs = SUBAGENT_GATE_RETENTION_MS) {
   const gates = Array.isArray(tab?.gates) ? tab.gates : [];
   return gates.filter((gate) => {

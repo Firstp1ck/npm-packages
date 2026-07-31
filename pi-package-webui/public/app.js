@@ -3,7 +3,7 @@ import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, res
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
 import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
 import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, subagentLaunchSlotSaveState, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
-import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
+import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, ungatedSubagentRuns, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
 import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
@@ -7841,6 +7841,83 @@ async function refreshFileTreeRoot(tabContext = activeTabContext()) {
   else await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
 }
 
+let fileTreeLiveRefreshInProgress = false;
+let fileTreeLiveRefreshPendingContext = null;
+let fileTreeLiveRefreshRetryTimer = null;
+
+async function refreshLoadedFileTreeDirectories(tabContext = activeTabContext()) {
+  const knownDirectories = new Set();
+  const collectDirectories = (path) => {
+    for (const entry of fileTreeState.entriesByPath.get(path) || []) {
+      if (entry.type === "directory" || entry.directory === true) knownDirectories.add(normalizeFileTreePath(entry.path || ""));
+    }
+  };
+  if (fileTreeState.loading.has(FILE_TREE_ROOT_PATH)) return true;
+  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
+  if (!isCurrentTabContext(tabContext)) return false;
+  collectDirectories(FILE_TREE_ROOT_PATH);
+  const cachedDirectories = [...fileTreeState.entriesByPath.keys()]
+    .filter((path) => path !== FILE_TREE_ROOT_PATH)
+    .sort((a, b) => a.split("/").length - b.split("/").length || (a < b ? -1 : a > b ? 1 : 0));
+  let skippedLoadingDirectory = false;
+  for (const path of cachedDirectories) {
+    if (!isCurrentTabContext(tabContext)) return false;
+    if (!knownDirectories.has(path)) {
+      clearFileTreeEntryCache(path);
+      continue;
+    }
+    if (fileTreeState.loading.has(path)) {
+      skippedLoadingDirectory = true;
+      collectDirectories(path);
+      continue;
+    }
+    await loadFileTreeDirectory(path, { force: true });
+    if (!isCurrentTabContext(tabContext)) return false;
+    collectDirectories(path);
+  }
+  renderFileTree();
+  return skippedLoadingDirectory;
+}
+
+async function refreshFileTreeLive(tabContext = activeTabContext()) {
+  if (!tabContext.tabId || !elements.fileTreeRoot) return;
+  if (!isCurrentTabContext(tabContext)) return;
+  clearTimeout(fileTreeLiveRefreshRetryTimer);
+  fileTreeLiveRefreshRetryTimer = null;
+  if (fileTreeLiveRefreshInProgress) {
+    fileTreeLiveRefreshPendingContext = tabContext;
+    return;
+  }
+  fileTreeLiveRefreshInProgress = true;
+  let retryContext = null;
+  try {
+    let refreshContext = tabContext;
+    while (refreshContext && isCurrentTabContext(refreshContext)) {
+      fileTreeLiveRefreshPendingContext = null;
+      let skippedLoadingDirectory = false;
+      if (fileTreeSearchQueryText()) await runFileTreeSearch();
+      else skippedLoadingDirectory = await refreshLoadedFileTreeDirectories(refreshContext);
+      if (skippedLoadingDirectory && isCurrentTabContext(refreshContext)) retryContext = refreshContext;
+      refreshContext = fileTreeLiveRefreshPendingContext;
+    }
+  } finally {
+    fileTreeLiveRefreshInProgress = false;
+    const pendingContext = fileTreeLiveRefreshPendingContext;
+    fileTreeLiveRefreshPendingContext = null;
+    const nextContext = pendingContext && isCurrentTabContext(pendingContext)
+      ? pendingContext
+      : retryContext && isCurrentTabContext(retryContext)
+        ? retryContext
+        : null;
+    if (nextContext) {
+      fileTreeLiveRefreshRetryTimer = setTimeout(() => {
+        fileTreeLiveRefreshRetryTimer = null;
+        refreshFileTreeLive(nextContext).catch((error) => addEvent(error.message || String(error), "error"));
+      }, 50);
+    }
+  }
+}
+
 async function toggleFileTreeDirectory(path = "", { force = false } = {}) {
   const normalized = normalizeFileTreePath(path);
   if (!normalized && normalized !== FILE_TREE_ROOT_PATH) return;
@@ -10949,7 +11026,11 @@ function renderTabs() {
   elements.tabBar.dataset.tabCount = String(totalTabCount);
   elements.tabBar.classList.toggle("terminal-tabs-dense", totalTabCount >= 10);
   const groups = tabCwdGroups();
-  const renderedGroupKeys = new Set(groups.filter((group) => shouldRenderTerminalTabGroup(group, groups.length)).map((group) => group.key));
+  const subagentGroups = subagentTerminalViewGroups();
+  const renderedGroupKeys = new Set([
+    ...groups.filter((group) => shouldRenderTerminalTabGroup(group, groups.length)).map((group) => group.key),
+    ...subagentGroups.filter((group) => group.views.length > 1).map((group) => group.key),
+  ]);
   if (openTerminalTabGroupKey && !renderedGroupKeys.has(openTerminalTabGroupKey)) openTerminalTabGroupKey = null;
   for (const group of groups) {
     if (shouldRenderTerminalTabGroup(group, groups.length)) {
@@ -10958,8 +11039,9 @@ function renderTabs() {
       for (const tab of group.tabs) elements.tabBar.append(renderTerminalTab(tab));
     }
   }
-  for (const view of [...subagentTerminalViews.values()].sort((a, b) => a.openedAt - b.openedAt)) {
-    elements.tabBar.append(renderSubagentTerminalTab(view));
+  for (const group of subagentGroups) {
+    if (group.views.length > 1) elements.tabBar.append(renderSubagentTerminalTabGroup(group));
+    else elements.tabBar.append(renderSubagentTerminalTab(group.views[0]));
   }
   elements.tabBar.append(elements.newTabMenu);
   elements.closeAllTabsButton.disabled = tabs.length === 0;
@@ -17547,9 +17629,10 @@ function subagentTabsWithRunningAgents() {
   return (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [])
     .map((tab) => {
       const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
-      return { ...tab, gates, gateCount: gates.length };
+      const displayRuns = ungatedSubagentRuns(tab);
+      return { ...tab, gates, gateCount: gates.length, displayRuns };
     })
-    .filter((tab) => (Array.isArray(tab?.runs) && tab.runs.length > 0) || Number(tab?.gateCount || 0) > 0)
+    .filter((tab) => tab.displayRuns.length > 0 || Number(tab?.gateCount || 0) > 0)
     .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
 }
 
@@ -17710,11 +17793,11 @@ async function dismissSubagentRun(tab, run) {
 
 function finishedSubagentRunSelections(data = latestSubagents) {
   return (Array.isArray(data?.tabs) ? data.tabs : []).flatMap((tab) => (
-    Array.isArray(tab?.runs) ? tab.runs : []
-  )
-    .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow")
-    .map((run) => ({ tabId: tab.tabId, runId: run.id }))
-    .filter((selection) => selection.tabId && selection.runId));
+    ungatedSubagentRuns(tab)
+      .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow")
+      .map((run) => ({ tabId: tab.tabId, runId: run.id }))
+      .filter((selection) => selection.tabId && selection.runId)
+  ));
 }
 
 async function clearFinishedSubagentRuns() {
@@ -18337,6 +18420,19 @@ function closeSubagentTerminalTab(viewId) {
   addEvent(`closed subagent view for ${subagentTerminalViewTitle(view)}; the child run was not stopped`, "info");
 }
 
+function closeSubagentTerminalGroup(group) {
+  const groupViews = Array.isArray(group?.views) ? group.views : [];
+  if (!groupViews.length) return;
+  const viewIds = new Set(groupViews.map((view) => view.id));
+  for (const view of groupViews) {
+    view.requestSerial += 1;
+    subagentTerminalViews.delete(view.id);
+  }
+  if (viewIds.has(activeSubagentTerminalId)) deactivateSubagentTerminalView({ render: false, focusParent: true });
+  renderTabs();
+  addEvent(`closed ${groupViews.length} subagent views for ${group.parentTitle || "workspace"}; the child runs were not stopped`, "info");
+}
+
 async function copySubagentTerminalOutput() {
   const view = activeSubagentTerminalView();
   const text = view ? subagentOverlayOutputText(view.data || { agent: view.agent }) : "";
@@ -18413,7 +18509,7 @@ function materializeRetainedSubagentTerminalViews() {
     const restoreKey = `${tab.tabId}\u0000${tab.sessionFile || ""}`;
     if (subagentTerminalRestoredParentTabs.has(restoreKey)) continue;
     subagentTerminalRestoredParentTabs.add(restoreKey);
-    for (const run of Array.isArray(tab.runs) ? tab.runs : []) {
+    for (const run of ungatedSubagentRuns(tab)) {
       if (run?.status === "running" || run?.source === "workflow") continue;
       for (const agent of Array.isArray(run.agents) ? run.agents : []) {
         const id = subagentTerminalViewId(tab, run, agent);
@@ -18425,13 +18521,36 @@ function materializeRetainedSubagentTerminalViews() {
   return materialized;
 }
 
-function renderSubagentTerminalTab(view) {
+function subagentTerminalViewGroups() {
+  const groups = [];
+  const byParent = new Map();
+  const views = [...subagentTerminalViews.values()].sort((a, b) => a.openedAt - b.openedAt || String(a.id).localeCompare(String(b.id)));
+  for (const view of views) {
+    const parentTabId = view.parentTabId || view.id;
+    let group = byParent.get(parentTabId);
+    if (!group) {
+      group = {
+        key: `subagents:${parentTabId}`,
+        parentTabId,
+        parentTitle: view.parentTitle || "workspace",
+        views: [],
+      };
+      byParent.set(parentTabId, group);
+      groups.push(group);
+    }
+    group.parentTitle = view.parentTitle || group.parentTitle;
+    group.views.push(view);
+  }
+  return groups;
+}
+
+function renderSubagentTerminalTab(view, { groupItem = false } = {}) {
   const active = view.id === activeSubagentTerminalId;
   const running = subagentTerminalViewIsRunning(view);
   const stateClass = running ? "activity-working" : view.error && !view.data ? "stopped" : "activity-done";
-  const wrapper = make("div", `terminal-tab terminal-tab-subagent ${stateClass}${active ? " active" : ""}`);
+  const wrapper = make("div", `${groupItem ? "terminal-tab-group-item" : "terminal-tab"} terminal-tab-subagent ${stateClass}${active ? " active" : ""}`);
   wrapper.dataset.subagentViewId = view.id;
-  const button = make("button", "terminal-tab-button");
+  const button = make("button", `terminal-tab-button${groupItem ? " terminal-tab-group-item-button" : ""}`);
   button.type = "button";
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", active ? "true" : "false");
@@ -18442,8 +18561,11 @@ function renderSubagentTerminalTab(view) {
     meta: ["Subagent", subagentSourceLabel(view.data?.source || view.run?.source), ...subagentExecutionFacts(view.data?.agent || view.agent), view.parentTitle || "parent terminal"].join(" · "),
     subagent: true,
   });
-  button.addEventListener("click", () => activateSubagentTerminalView(view.id));
-  const close = make("button", "terminal-tab-close", "×");
+  button.addEventListener("click", (event) => {
+    if (groupItem) event.stopPropagation();
+    activateSubagentTerminalView(view.id);
+  });
+  const close = make("button", `terminal-tab-close${groupItem ? " terminal-tab-group-item-close" : ""}`, "×");
   close.type = "button";
   applyStyledTooltip(close, `Close ${subagentTerminalViewTitle(view)} view without stopping the subagent`, { ariaLabel: `Close ${subagentTerminalViewTitle(view)} subagent view` });
   close.addEventListener("click", (event) => {
@@ -18451,6 +18573,59 @@ function renderSubagentTerminalTab(view) {
     closeSubagentTerminalTab(view.id);
   });
   wrapper.append(button, close);
+  return wrapper;
+}
+
+function renderSubagentTerminalTabGroup(group) {
+  const groupViews = group.views;
+  const activeView = groupViews.find((view) => view.id === activeSubagentTerminalId) || groupViews.at(-1);
+  const active = groupViews.some((view) => view.id === activeSubagentTerminalId);
+  const runningCount = groupViews.filter(subagentTerminalViewIsRunning).length;
+  const stateClass = runningCount ? "activity-working" : "activity-done";
+  const groupTitle = group.parentTitle || "workspace";
+  const wrapper = make("div", `terminal-tab terminal-tab-group terminal-tab-subagent terminal-tab-subagent-group ${stateClass}${active ? " active" : ""}`);
+  wrapper.dataset.groupKey = group.key;
+  wrapper.addEventListener("pointerenter", () => setOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("pointerleave", () => clearOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("focusin", () => setOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!wrapper.contains(document.activeElement)) clearOpenTerminalTabGroup(group.key);
+    }, 0);
+  });
+
+  const button = make("button", "terminal-tab-button terminal-tab-group-button");
+  button.type = "button";
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-selected", active ? "true" : "false");
+  button.setAttribute("aria-haspopup", "true");
+  button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
+  button.setAttribute("aria-label", `${groupTitle} workspace subagents: ${groupViews.length} views, ${runningCount} running. Active ${subagentTerminalViewTitle(activeView)}`);
+  applyStyledTooltip(button, `${groupTitle} · ${groupViews.length} subagent views\n${runningCount ? `${runningCount} running` : "All finished"}\nActive: ${subagentTerminalViewTitle(activeView)}`, { ariaLabel: false, description: true, placement: "right", variant: "workspace" });
+  appendTerminalTabContent(button, {
+    title: groupTitle,
+    indicator: { state: runningCount ? "working" : "done" },
+    meta: `${groupViews.length} subagents · ${runningCount ? `${runningCount} running` : "finished"}`,
+    count: groupViews.length,
+    subagent: true,
+  });
+  button.addEventListener("click", () => activateSubagentTerminalView(activeView.id));
+  wrapper.append(button);
+
+  const close = make("button", "terminal-tab-close terminal-tab-group-close", "×");
+  close.type = "button";
+  applyStyledTooltip(close, `Close all ${groupViews.length} ${groupTitle} subagent views without stopping them`, { ariaLabel: `Close ${groupTitle} subagent view group` });
+  close.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeSubagentTerminalGroup(group);
+  });
+  wrapper.append(close);
+
+  const menu = make("div", "terminal-tab-group-menu");
+  menu.setAttribute("role", "group");
+  menu.setAttribute("aria-label", `${groupTitle} subagent views`);
+  for (const view of groupViews) menu.append(renderSubagentTerminalTab(view, { groupItem: true }));
+  wrapper.append(menu);
   return wrapper;
 }
 
@@ -18610,7 +18785,7 @@ function renderSubagentTabGroup(tab) {
     make("strong", undefined, tab.tabTitle || `Terminal ${tab.tabIndex || "?"}`),
     make("span", "subagent-tab-session", `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
   );
-  const runs = (Array.isArray(tab.runs) ? tab.runs : [])
+  const runs = (Array.isArray(tab.displayRuns) ? tab.displayRuns : ungatedSubagentRuns(tab))
     .slice()
     .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
   const runningAgents = Number(tab.runningAgents || 0);
@@ -18639,8 +18814,8 @@ function renderSubagents() {
   const activeTabs = subagentTabsWithRunningAgents();
   const finishedRuns = finishedSubagentRunSelections();
   const totalAgents = Number(latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
-  const totalRuns = Number(latestSubagents?.totalRuns || 0);
-  const runningRuns = Number(latestSubagents?.runningRuns || 0);
+  const totalRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.length, 0);
+  const runningRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.filter((run) => run?.status === "running").length, 0);
   const retainedRuns = Math.max(0, totalRuns - runningRuns);
   const totalGates = activeTabs.reduce((count, tab) => count + Number(tab.gateCount || 0), 0);
   const hasItems = activeTabs.length > 0;
@@ -34688,6 +34863,10 @@ function handleEvent(event) {
       break;
     case "webui_git_changed":
       invalidateGitPanelRepository(event.root);
+      break;
+    case "webui_workspace_files_changed":
+      if (event.tabId && event.tabId !== activeTabId) break;
+      refreshFileTreeLive(tabContext).catch((error) => addEvent(error.message || String(error), "error"));
       break;
     case "webui_cwd_changed":
       addEvent(`${event.tabTitle || "terminal"} cwd changed to ${event.cwd}`);
