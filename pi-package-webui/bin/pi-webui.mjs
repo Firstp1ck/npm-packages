@@ -5511,6 +5511,7 @@ function normalizeGitRelativePath(root, relativePath) {
   return path.relative(root, resolved).split(path.sep).join("/");
 }
 
+const GITIGNORE_MAX_BYTES = 5 * 1024 * 1024;
 const gitignoreMutationQueues = new Map();
 
 function serializeGitignoreMutation(root, mutation) {
@@ -5542,7 +5543,7 @@ function gitignoreEntryForTarget(root, requestedPath, kind) {
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw makeHttpError(400, "Gitignore target path must stay inside the repository");
   }
-  const escaped = normalized.replace(/\\/g, "\\\\").replace(/([*?\[\] ])/g, "\\$1");
+  const escaped = normalized.replace(/([*?\[\] ])/g, "\\$1");
   return { path: normalized, kind, entry: `/${escaped}${kind === "folder" ? "/" : ""}` };
 }
 
@@ -5581,12 +5582,15 @@ async function appendGitignoreEntry(root, entry) {
     }
 
     if (before.isSymbolicLink() || !before.isFile()) throw makeHttpError(409, "Repository .gitignore must be a regular file and cannot be a symbolic link");
+    if (before.nlink !== 1) throw makeHttpError(409, "Repository .gitignore must have exactly one hard link; replace linked copies with a regular file before retrying");
 
     let handle;
     try {
       handle = await open(target, fsConstants.O_RDWR | fsConstants.O_APPEND | (fsConstants.O_NOFOLLOW || 0));
       const opened = await handle.stat();
       if (!opened.isFile() || !sameFileIdentity(before, opened)) throw makeHttpError(409, "Repository .gitignore changed while it was being opened");
+      if (opened.nlink !== 1) throw makeHttpError(409, "Repository .gitignore must have exactly one hard link; replace linked copies with a regular file before retrying");
+      if (opened.size > GITIGNORE_MAX_BYTES) throw makeHttpError(409, `Repository .gitignore exceeds the ${formatBytes(GITIGNORE_MAX_BYTES)} safe modification limit`);
       const content = await handle.readFile();
       if (gitignoreHasExactEntry(content, entry)) return false;
       const newline = content.includes(Buffer.from("\r\n")) ? "\r\n" : "\n";
@@ -5595,20 +5599,27 @@ async function appendGitignoreEntry(root, entry) {
       await handle.writeFile(`${separator}${entry}${newline}`, "utf8");
       return true;
     } catch (error) {
+      if (error?.code === "ENOENT" && attempt === 0) continue;
       if (error?.code === "ELOOP") throw makeHttpError(409, "Repository .gitignore cannot be a symbolic link");
       throw error;
     } finally {
       await handle?.close();
     }
   }
-  throw makeHttpError(409, "Repository .gitignore changed during mutation");
 }
 
 async function addGitignoreEntry(cwd, body = {}) {
-  const root = await realpath(await getGitRoot(cwd));
-  const target = gitignoreEntryForTarget(root, body.path, body.kind);
-  const added = await serializeGitignoreMutation(root, () => appendGitignoreEntry(root, target.entry));
-  return { root, ...target, added, changes: await readGitChanges(root) };
+  try {
+    const root = await realpath(await getGitRoot(cwd));
+    const target = gitignoreEntryForTarget(root, body.path, body.kind);
+    const added = await serializeGitignoreMutation(root, () => appendGitignoreEntry(root, target.entry));
+    return { root, ...target, added, changes: await readGitChanges(root) };
+  } catch (error) {
+    if (error?.statusCode) throw error;
+    const wrapped = makeHttpError(500, formatCliError(error));
+    if (error?.code) wrapped.code = error.code;
+    throw wrapped;
+  }
 }
 
 async function readGitUntrackedEntry(root, file, { maxBytes = Number.POSITIVE_INFINITY } = {}) {

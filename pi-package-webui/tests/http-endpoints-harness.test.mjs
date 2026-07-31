@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -1463,6 +1463,13 @@ try {
     const normalizedSeparators = await addToGitignore(gitignoreTab, "nested\\windows.log", "file");
     assert.equal(normalizedSeparators.body?.data?.path, "nested/windows.log", "backslash separators should normalize to repository-style slashes");
     assert.equal(normalizedSeparators.body?.data?.entry, "/nested/windows.log");
+
+    await writeFile(path.join(gitignoreRepo, "file.txt"), "tracked modification\n");
+    const addTrackedFile = await addToGitignore(gitignoreTab, "file.txt", "file");
+    assert.equal(addTrackedFile.body?.data?.added, true, "a tracked path may receive an ignore entry");
+    assert.equal(runGitFixture(["ls-files", "--error-unmatch", "--", "file.txt"], gitignoreRepo, "tracked file must remain in the index"), "file.txt", "adding a tracked path to .gitignore must not untrack it");
+    assert.match(addTrackedFile.body?.data?.changes?.status || "", /(^|\n) M file\.txt(?=\n|$)/, "the refreshed snapshot should keep a modified tracked file visible after adding its ignore entry");
+
     assert.equal(runGitFixture(["diff", "--cached", "--raw"], gitignoreRepo, "gitignore mutation must not change the index"), indexBeforeGitignore, "add-to-gitignore must not stage any files");
     assert.equal(runGitFixture(["ls-files", "--stage", "--", ".gitignore"], gitignoreRepo, "gitignore mutation must leave .gitignore untracked"), "", ".gitignore must remain unstaged and untracked");
 
@@ -1526,6 +1533,22 @@ try {
     assert.equal(directoryTarget.status, 409, "a non-regular root .gitignore target should fail closed");
     await rm(unsafeGitignore, { recursive: true, force: true });
 
+    const hardlinkTarget = path.join(gitFixturesRoot, "outside-hardlink-target.txt");
+    await writeFile(hardlinkTarget, "hard-link target unchanged\n");
+    let hardlinkSupported = true;
+    try {
+      await link(hardlinkTarget, unsafeGitignore);
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "ENOSYS" || error?.code === "EXDEV") hardlinkSupported = false;
+      else throw error;
+    }
+    if (hardlinkSupported) {
+      const hardlinkResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
+      assert.equal(hardlinkResponse.status, 409, "a root .gitignore hard link should fail closed");
+      assert.equal(await readFile(hardlinkTarget, "utf8"), "hard-link target unchanged\n", "a rejected .gitignore hard link must not modify its outside target");
+      await rm(unsafeGitignore, { force: true });
+    }
+
     const symlinkTarget = path.join(gitFixturesRoot, "outside-symlink-target.txt");
     await writeFile(symlinkTarget, "symlink target unchanged\n");
     let symlinkSupported = true;
@@ -1539,7 +1562,13 @@ try {
       const symlinkResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
       assert.equal(symlinkResponse.status, 409, "a root .gitignore symlink should fail closed");
       assert.equal(await readFile(symlinkTarget, "utf8"), "symlink target unchanged\n", "a rejected .gitignore symlink must not be followed");
+      await rm(unsafeGitignore, { force: true });
     }
+
+    await writeFile(unsafeGitignore, Buffer.alloc(5 * 1024 * 1024 + 1, 0x23));
+    const oversizedResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
+    assert.equal(oversizedResponse.status, 409, "an oversized root .gitignore should be rejected as an unsafe server-side file state before it is read into memory");
+    assert.equal((await stat(unsafeGitignore)).size, 5 * 1024 * 1024 + 1, "oversized refusal must leave .gitignore unchanged");
 
     // File-scoped Git diff endpoint: staged, unstaged, untracked, empty, deleted, and rejected inputs.
     const fileDiffRepo = await makeFixtureRepo("file-diff");

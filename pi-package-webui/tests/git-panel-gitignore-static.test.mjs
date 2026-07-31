@@ -78,6 +78,7 @@ assert.match(ignoreConfig, /data\?\.added/, "success feedback should read the re
 assert.match(ignoreConfig, /data\?\.entry \|\| path/, "success feedback should prefer the normalized response entry");
 assert.match(ignoreConfig, /Added \$\{data\?\.entry \|\| path\} to \.gitignore\./, "newly added entries should report an addition");
 assert.match(ignoreConfig, /\$\{data\?\.entry \|\| path\} is already in \.gitignore\./, "already-present entries should not claim an addition");
+assert.match(ignoreConfig, /Tracked files stay tracked until removed from the index\./, "success feedback should clarify that .gitignore does not untrack indexed files");
 assert.doesNotMatch(ignoreConfig, /confirm/, "the ignore action should not introduce confirmation UI");
 assert.match(
   runAction,

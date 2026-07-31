@@ -10223,10 +10223,9 @@ async function runGitPanelAction(card, action, path = "") {
   const gitignoreAction = (kind) => ({
     url: "/api/git-changes/add-to-gitignore",
     body: { path, kind },
-    past: `Added ${path} to .gitignore.`,
-    done: (data) => (data?.added
+    done: (data) => `${data?.added
       ? `Added ${data?.entry || path} to .gitignore.`
-      : `${data?.entry || path} is already in .gitignore.`),
+      : `${data?.entry || path} is already in .gitignore.`} Tracked files stay tracked until removed from the index.`,
   });
   const config = {
     stage: { url: "/api/git-changes/stage-file", body: { path }, past: `Staged ${path}.` },
