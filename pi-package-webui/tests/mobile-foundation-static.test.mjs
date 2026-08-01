@@ -35,10 +35,10 @@ assert.match(app, /from "\.\/mobile-shell-state\.mjs"/, "app boot must import th
 assert.match(pkg.scripts.check, /node --check public\/mobile-shell-state\.mjs/, "package checks must syntax-check every public module in the startup graph");
 assert.match(server, /"mobile-shell-state\.mjs"/, "the server allowlist must serve the new public module");
 assert.match(serviceWorker, /"\/mobile-shell-state\.mjs"/, "the PWA shell must cache the new startup module");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v59"/, "the cache identity must change with the startup graph");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v60"/, "the cache identity must change with the startup graph");
 assert.match(html, /styles\.css\?v=92/, "the stylesheet revision must change with mobile/tablet CSS fixes");
 assert.match(html, /app\.js\?v=102/, "the app revision must change with continuity/tablet wiring");
-assert.match(serviceWorker, /return caches\.open\(CACHE_NAME\)[\s\S]*?\.then\(\(cache\) => cache\.put\(request, response\.clone\(\)\)\)[\s\S]*?\.then\(\(\) => response, \(\) => response\)/, "runtime cache writes must remain inside the fetch promise and preserve online responses");
+assert.match(serviceWorker, /const APP_SHELL_NETWORK_TIMEOUT_MS = 8_000;[\s\S]*?event\.waitUntil\([\s\S]*?cache\.put\(request, response\.clone\(\)\)[\s\S]*?return networkResponse;/, "runtime cache writes must extend the event lifetime without blocking bounded network responses");
 assert.match(serviceWorker, /MOBILE_NAVIGATION_MESSAGE_TYPE = "pi-webui:navigate:v1"/, "the service worker must use a versioned active-client navigation message");
 assert.match(serviceWorker, /client\.postMessage\(\{ type: MOBILE_NAVIGATION_MESSAGE_TYPE, target \}\)/, "existing clients must receive only a validated target message");
 assert.match(app, /function installMobileShellNavigationBridge\([\s\S]*?pi-webui:navigate:v1/, "the app must accept the service-worker navigation contract");

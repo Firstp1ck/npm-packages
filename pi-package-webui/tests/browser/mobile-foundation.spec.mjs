@@ -195,6 +195,24 @@ test("mobile continuity preserves drafts, restores metadata honestly, and retrie
   await expect(page.getByRole("heading", { name: "Add Context" })).toBeVisible();
   for (const name of ["Camera", "Photos", "Files"]) await expect(page.locator("#mobileSurfaceRoot").getByRole("button", { name, exact: true })).toBeVisible();
   await expect(page.locator("#mobileSurfaceRoot").getByText("Paste text", { exact: true })).toBeVisible();
+  const pasteInput = page.locator(".mobile-paste-context-text");
+  const pasteDraft = Array.from({ length: 18 }, (_, index) => `pasted context line ${index}`).join("\n");
+  await pasteInput.fill(pasteDraft);
+  const pasteBefore = await pasteInput.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(14, 41, "backward");
+    node.scrollTop = 48;
+    return { value: node.value, selectionStart: node.selectionStart, selectionEnd: node.selectionEnd, selectionDirection: node.selectionDirection, scrollTop: node.scrollTop };
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(pasteInput).toBeFocused();
+  await expect.poll(() => pasteInput.evaluate((node) => ({
+    value: node.value,
+    selectionStart: node.selectionStart,
+    selectionEnd: node.selectionEnd,
+    selectionDirection: node.selectionDirection,
+    scrollTop: node.scrollTop,
+  }))).toEqual(pasteBefore);
   await page.locator("#mobileSurfaceCloseButton").click();
   await page.locator(".attachment-remove-button").click();
 

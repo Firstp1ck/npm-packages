@@ -634,11 +634,13 @@ let codexUsageError = null;
 let codexUsageLoading = false;
 let refreshCodexUsageTimer = null;
 let codexUsageRenderTimer = null;
+let codexUsageRenderSignature = "";
 let latestClaudeUsage = null;
 let claudeUsageError = null;
 let claudeUsageLoading = false;
 let refreshClaudeUsageTimer = null;
 let claudeUsageRenderTimer = null;
+let claudeUsageRenderSignature = "";
 let latestSubagents = null;
 let subagentsError = null;
 let subagentsLoading = false;
@@ -762,6 +764,7 @@ let commandPaletteItems = [];
 let activeEditRetry = null;
 let activePointerActivation = null;
 let pointerActivationTimeout = null;
+let deferredUiRenderSafetyTimeout = null;
 let deferredChatFollowScroll = false;
 const deferredUiRenderCallbacks = new Map();
 let abortLongPressTimer = null;
@@ -919,6 +922,9 @@ const FILE_TREE_ROOT_PATH = "";
 const FILE_TREE_DRAG_MIME = "application/x-pi-webui-file-path";
 const POINTER_ACTIVATION_SELECTOR = "button, a[href], input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])";
 const POINTER_ACTIVATION_RENDER_DEFER_MAX_MS = 1200;
+const INTERACTIVE_SURFACE_RENDER_DEFER_MAX_MS = 1200;
+const SCOPED_SCROLL_CONTINUITY_LIMIT = 96;
+const SCOPED_SCROLL_USER_INTENT_MS = 350;
 const PROMPT_HISTORY_LIMIT_PER_TAB = 50;
 const ATTACHMENT_MAX_FILES = 12;
 const ATTACHMENT_MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -1284,9 +1290,10 @@ function mobileCanonicalMountContent(host, contentIds, key) {
   mobileCanonicalMount = { host, key, records };
 }
 
-function mobileButton(label, className = "", onClick = null) {
+function mobileButton(label, className = "", onClick = null, { continuityKey = "" } = {}) {
   const button = make("button", className, label);
   button.type = "button";
+  if (continuityKey) button.dataset.mobileContinuityKey = continuityKey;
   if (onClick) button.addEventListener("click", onClick);
   return button;
 }
@@ -1548,20 +1555,20 @@ function mobileRenderMore() {
     presentation.append(make("h2", undefined, "Presentation"), make("p", "muted", "Essential keeps final answers and consequential warnings visible while reducing process chrome. Detailed restores process detail. This does not enable compact-v1 or change transcript content."));
     const choices = make("div", "mobile-presentation-choices");
     for (const value of ["essential", "detailed"]) {
-      const choice = mobileButton(value === "essential" ? "Essential" : "Detailed", value === mobilePresentation ? "primary" : "", () => setMobilePresentation(value));
+      const choice = mobileButton(value === "essential" ? "Essential" : "Detailed", value === mobilePresentation ? "primary" : "", () => setMobilePresentation(value), { continuityKey: `presentation:${value}` });
       choice.setAttribute("aria-pressed", value === mobilePresentation ? "true" : "false");
       choices.append(choice);
     }
     presentation.append(choices);
     root.append(presentation);
-    for (const [id, [label]] of Object.entries(topics)) root.append(mobileButton(label, "mobile-more-topic", () => mobileSetSurfacePage(id)));
+    for (const [id, [label]] of Object.entries(topics)) root.append(mobileButton(label, "mobile-more-topic", () => mobileSetSurfacePage(id), { continuityKey: `more:${id}` }));
     root.append(
-      mobileButton("Install app", "mobile-more-topic", () => mobileSetSurfacePage("install")),
-      mobileButton("Continuity & diagnostics", "mobile-more-topic", () => mobileSetSurfacePage("continuity")),
+      mobileButton("Install app", "mobile-more-topic", () => mobileSetSurfacePage("install"), { continuityKey: "more:install" }),
+      mobileButton("Continuity & diagnostics", "mobile-more-topic", () => mobileSetSurfacePage("continuity"), { continuityKey: "more:continuity" }),
     );
     if (!mobileInstallEducation.dismissed && mobileInstallEducation.visits >= 3 && !isStandalonePwaWindow()) {
       const education = make("section", "mobile-more-presentation mobile-install-education");
-      education.append(make("h2", undefined, "Use Pi Web UI like an app"), make("p", "muted", mobileInstallGuidanceText()), mobileButton("Learn how", "primary", () => mobileSetSurfacePage("install")));
+      education.append(make("h2", undefined, "Use Pi Web UI like an app"), make("p", "muted", mobileInstallGuidanceText()), mobileButton("Learn how", "primary", () => mobileSetSurfacePage("install"), { continuityKey: "more:learn-install" }));
       root.prepend(education);
     }
     return;
@@ -1645,13 +1652,13 @@ function renderMobileInstallPage(root, title, back) {
   const card = make("section", "mobile-more-presentation");
   card.append(make("h2", undefined, "Install education"), make("p", "muted", mobileInstallGuidanceText()));
   const actions = make("div", "mobile-presentation-choices");
-  const install = mobileButton("Install when available", "primary", requestMobileInstall);
+  const install = mobileButton("Install when available", "primary", requestMobileInstall, { continuityKey: "install:request" });
   install.disabled = !mobileInstallPrompt || isStandalonePwaWindow();
   actions.append(install, mobileButton("Dismiss guidance", "", () => {
     mobileInstallEducation.dismissed = true;
     persistMobileInstallEducation();
     mobileBack();
-  }));
+  }, { continuityKey: "install:dismiss" }));
   card.append(actions);
   root.append(card);
 }
@@ -1670,11 +1677,11 @@ function renderMobileDiagnosticsPage(root, title, back) {
     mobileButton("Copy diagnostics", "primary", async () => {
       try { await copyText(mobileDiagnosticsText()); addEvent("copied local mobile diagnostics", "info"); }
       catch (error) { addEvent(`diagnostics copy failed: ${error.message || String(error)}`, "warn"); }
-    }),
+    }, { continuityKey: "continuity:copy" }),
     mobileButton("Clear diagnostics", "", () => {
       mobileDiagnosticEvents.length = 0;
       renderMobileMore();
-    }),
+    }, { continuityKey: "continuity:clear" }),
   );
   card.append(actions);
   root.append(card);
@@ -1695,30 +1702,30 @@ function mobileRenderActionSheet() {
   back.hidden = page === "root";
   if (page === "root") {
     root.append(
-      mobileButton("Add Context", "primary mobile-more-topic", () => mobileSetSurfacePage("context")),
-      mobileButton("Session actions", "mobile-more-topic", () => mobileSetSurfacePage("session")),
-      mobileButton("Voice", "mobile-more-topic", () => mobileSetSurfacePage("voice")),
-      mobileButton("Queue", "mobile-more-topic", () => mobileSetSurfacePage("queue")),
+      mobileButton("Add Context", "primary mobile-more-topic", () => mobileSetSurfacePage("context"), { continuityKey: "actions:context" }),
+      mobileButton("Session actions", "mobile-more-topic", () => mobileSetSurfacePage("session"), { continuityKey: "actions:session" }),
+      mobileButton("Voice", "mobile-more-topic", () => mobileSetSurfacePage("voice"), { continuityKey: "actions:voice" }),
+      mobileButton("Queue", "mobile-more-topic", () => mobileSetSurfacePage("queue"), { continuityKey: "actions:queue" }),
     );
     if (isAbortAvailable()) root.append(mobileButton("Abort active run…", "danger mobile-abort-confirm", async () => {
       const confirmed = await appConfirm({ title: "Abort active run?", summary: "Pi will be told to stop the active run. Any partial answer remains in the canonical transcript.", affected: "This active tab only", undoable: false, confirmLabel: "Abort run" });
       if (confirmed) abortActiveRun({ source: "mobile confirm" });
-    }));
+    }, { continuityKey: "actions:abort" }));
     return;
   }
   if (page === "session") {
     root.append(
-      mobileButton("New session", "primary", () => elements.newSessionButton?.click()),
-      mobileButton("Compact context", "", () => elements.compactButton?.click()),
-      mobileButton("Command palette", "", () => openCommandPalette()),
-      mobileButton("Guided Git workflow", "", () => elements.gitWorkflowButton?.click()),
+      mobileButton("New session", "primary", () => elements.newSessionButton?.click(), { continuityKey: "session:new" }),
+      mobileButton("Compact context", "", () => elements.compactButton?.click(), { continuityKey: "session:compact" }),
+      mobileButton("Command palette", "", () => openCommandPalette(), { continuityKey: "session:command-palette" }),
+      mobileButton("Guided Git workflow", "", () => elements.gitWorkflowButton?.click(), { continuityKey: "session:guided-git" }),
     );
     return;
   }
   if (page === "voice") {
     root.append(
-      mobileButton("Start or end conversation", "primary", () => elements.optionsConversationModeButton?.click()),
-      mobileButton("Choose voice", "", () => elements.conversationVoiceButton?.click()),
+      mobileButton("Start or end conversation", "primary", () => elements.optionsConversationModeButton?.click(), { continuityKey: "voice:toggle" }),
+      mobileButton("Choose voice", "", () => elements.conversationVoiceButton?.click(), { continuityKey: "voice:choose" }),
       make("p", "mobile-route-status muted", "Voice uses the existing browser voice controls and keeps its transcript in this session. Remote microphone warnings remain visible before audio is sent."),
     );
     return;
@@ -1727,16 +1734,18 @@ function mobileRenderActionSheet() {
     root.append(make("p", "mobile-route-status muted", "Choose a source. Camera and photo access are requested by your browser only after you select them; Pi Web UI uses the selected files as context for this session. Denied or unavailable sources can be replaced with Files or Paste text."));
     const actions = make("div", "mobile-context-actions");
     actions.append(
-      mobileButton("Camera", "", () => openMobileAttachmentPicker("camera")),
-      mobileButton("Photos", "", () => openMobileAttachmentPicker("photos")),
-      mobileButton("Files", "", () => openMobileAttachmentPicker("files")),
+      mobileButton("Camera", "", () => openMobileAttachmentPicker("camera"), { continuityKey: "context:camera" }),
+      mobileButton("Photos", "", () => openMobileAttachmentPicker("photos"), { continuityKey: "context:photos" }),
+      mobileButton("Files", "", () => openMobileAttachmentPicker("files"), { continuityKey: "context:files" }),
     );
     const pasteLabel = make("label", "mobile-paste-context-label", "Paste text");
     const textarea = make("textarea", "mobile-paste-context-text");
     textarea.rows = 7;
     textarea.placeholder = "Paste text to attach without changing the prompt";
+    textarea.dataset.mobileContinuityKey = "context:paste-text";
+    textarea.dataset.mobileDraftAuthority = "dom";
     pasteLabel.append(textarea);
-    root.append(actions, pasteLabel, mobileButton("Add pasted text", "primary", () => addMobilePastedText(textarea)));
+    root.append(actions, pasteLabel, mobileButton("Add pasted text", "primary", () => addMobilePastedText(textarea), { continuityKey: "context:add-paste" }));
     return;
   }
   mobileCanonicalMountContent(host, ["sidePanelSectionQueue"], "sheet:queue");
@@ -1785,11 +1794,29 @@ function restoreMobileSurfaceFocus() {
   requestAnimationFrame(() => target?.focus?.({ preventScroll: true }));
 }
 
+function mobileSurfaceFocusKey(node) {
+  if (node?.id) return `id:${node.id}`;
+  return node?.dataset?.mobileContinuityKey ? `mobile:${node.dataset.mobileContinuityKey}` : "";
+}
+
 function captureMobileSurfaceRenderFocus(surface) {
   const active = document.activeElement;
   const userDirected = Date.now() <= mobileSurfaceUserFocusIntentUntil;
-  if (active instanceof HTMLElement && surface?.contains(active) && (!mobileSurfaceRenderFocus || active === mobileSurfaceRenderFocus.element || userDirected)) {
-    mobileSurfaceRenderFocus = { element: active, id: active.id, text: String(active.textContent || "").trim(), tagName: active.tagName };
+  const targetKey = mobileSurfaceFocusKey(active);
+  if (active instanceof HTMLElement && targetKey && surface?.contains(active) && (!mobileSurfaceRenderFocus || active === mobileSurfaceRenderFocus.element || userDirected)) {
+    const domDraft = active.dataset.mobileDraftAuthority === "dom" && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
+    mobileSurfaceRenderFocus = {
+      element: active,
+      targetKey,
+      ...(domDraft ? {
+        value: active.value,
+        selectionStart: active.selectionStart ?? active.value.length,
+        selectionEnd: active.selectionEnd ?? active.value.length,
+        selectionDirection: active.selectionDirection,
+        scrollTop: active.scrollTop,
+        scrollLeft: active.scrollLeft,
+      } : {}),
+    };
   }
   return mobileSurfaceRenderFocus;
 }
@@ -1797,13 +1824,26 @@ function captureMobileSurfaceRenderFocus(surface) {
 function restoreMobileSurfaceRenderFocus(surface, snapshot) {
   if (!snapshot || mobileShellState.surface === "none" || document.activeElement === snapshot.element) return;
   let target = snapshot.element?.isConnected && surface?.contains(snapshot.element) ? snapshot.element : null;
-  if (!target && snapshot.id) target = document.getElementById(snapshot.id);
-  if (!target && snapshot.text) {
-    target = [...(surface?.querySelectorAll(snapshot.tagName === "BUTTON" ? "button" : "button, input, select, textarea, [tabindex]") || [])]
-      .find((node) => String(node.textContent || "").trim() === snapshot.text) || null;
+  if (!target && snapshot.targetKey.startsWith("id:")) {
+    const candidate = document.getElementById(snapshot.targetKey.slice(3));
+    target = candidate && surface?.contains(candidate) ? candidate : null;
   }
-  target?.focus?.({ preventScroll: true });
-  if (target) mobileSurfaceRenderFocus = { element: target, id: target.id, text: String(target.textContent || "").trim(), tagName: target.tagName };
+  if (!target && snapshot.targetKey.startsWith("mobile:")) {
+    const key = snapshot.targetKey.slice(7);
+    target = [...(surface?.querySelectorAll("[data-mobile-continuity-key]") || [])]
+      .find((node) => node.dataset.mobileContinuityKey === key) || null;
+  }
+  if (!target) return;
+  if (typeof snapshot.value === "string" && target.dataset.mobileDraftAuthority === "dom" && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+    target.value = snapshot.value;
+    const start = Math.min(Math.max(0, snapshot.selectionStart ?? target.value.length), target.value.length);
+    const end = Math.min(Math.max(0, snapshot.selectionEnd ?? target.value.length), target.value.length);
+    target.setSelectionRange(start, end, snapshot.selectionDirection || "none");
+    target.scrollTop = Math.max(0, snapshot.scrollTop || 0);
+    target.scrollLeft = Math.max(0, snapshot.scrollLeft || 0);
+  }
+  target.focus({ preventScroll: true });
+  mobileSurfaceRenderFocus = { ...snapshot, element: target };
 }
 
 function mobileRenderLifecycle() {
@@ -2085,6 +2125,7 @@ const workflowInspectorSelectionByTab = new Map();
 const workflowInspectorMinimizedByTab = new Set();
 const appRunnerInputDraftByRun = new Map();
 const appRunnerContextLineDraftByRun = new Map();
+const scopedScrollContinuityByKey = new Map();
 const liveToolRuns = new Map();
 const liveToolCards = new Map();
 const liveToolRenderQueue = new Map();
@@ -3015,6 +3056,13 @@ function deferUiRenderDuringPointerActivation(key, callback) {
   return true;
 }
 
+function deferUiRenderDuringInteractiveSurface(key, callback) {
+  if (!isInteractiveDropdownOpen()) return false;
+  deferredUiRenderCallbacks.set(key, callback);
+  scheduleDeferredUiFlushAfterDropdownClose();
+  return true;
+}
+
 function deferChatFollowScrollDuringPointerActivation({ force = false } = {}) {
   if (force || !shouldDeferUiRenderForPointerActivation()) return false;
   deferredChatFollowScroll = true;
@@ -3052,9 +3100,13 @@ function scheduleDeferredUiFlushAfterDropdownClose() {
   };
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
   else setTimeout(flush, 0);
+  clearTimeout(deferredUiRenderSafetyTimeout);
+  deferredUiRenderSafetyTimeout = setTimeout(flushDeferredUiRenders, INTERACTIVE_SURFACE_RENDER_DEFER_MAX_MS);
 }
 
 function flushDeferredUiRenders() {
+  clearTimeout(deferredUiRenderSafetyTimeout);
+  deferredUiRenderSafetyTimeout = null;
   const callbacks = [...deferredUiRenderCallbacks.values()];
   deferredUiRenderCallbacks.clear();
   const shouldScroll = deferredChatFollowScroll;
@@ -3068,6 +3120,128 @@ function flushDeferredUiRenders() {
     }
   }
   if (shouldScroll) scrollChatToBottom();
+}
+
+function isMeaningfulConnectedFocus(node) {
+  return node instanceof HTMLElement
+    && node.isConnected
+    && node !== document.body
+    && node !== document.documentElement;
+}
+
+function captureScopedControlContinuity(root, contextKey, targetKeyFor) {
+  const source = document.activeElement;
+  if (!(source instanceof HTMLElement) || !root?.contains(source)) return null;
+  const targetKey = targetKeyFor?.(source);
+  if (!targetKey) return null;
+  const textControl = source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement;
+  return {
+    source,
+    contextKey,
+    targetKey,
+    selectionStart: textControl ? source.selectionStart : null,
+    selectionEnd: textControl ? source.selectionEnd : null,
+    selectionDirection: textControl ? source.selectionDirection : null,
+    scrollTop: source.scrollTop,
+    scrollLeft: source.scrollLeft,
+  };
+}
+
+function restoreScopedControlContinuity(root, contextKey, snapshot, targetForKey) {
+  if (!snapshot || snapshot.contextKey !== contextKey || document.activeElement === snapshot.source) return;
+  if (isMeaningfulConnectedFocus(document.activeElement)) return;
+  const target = snapshot.source.isConnected && root?.contains(snapshot.source)
+    ? snapshot.source
+    : targetForKey?.(snapshot.targetKey);
+  if (!(target instanceof HTMLElement) || !root?.contains(target) || target.disabled) return;
+  try {
+    target.focus({ preventScroll: true });
+  } catch {
+    target.focus();
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    const length = target.value.length;
+    const start = Math.min(Math.max(0, snapshot.selectionStart ?? length), length);
+    const end = Math.min(Math.max(0, snapshot.selectionEnd ?? start), length);
+    try {
+      target.setSelectionRange(start, end, snapshot.selectionDirection || "none");
+    } catch {
+      // Non-text input types do not support a selection range.
+    }
+  }
+  target.scrollTop = Math.min(Math.max(0, snapshot.scrollTop || 0), Math.max(0, target.scrollHeight - target.clientHeight));
+  target.scrollLeft = Math.min(Math.max(0, snapshot.scrollLeft || 0), Math.max(0, target.scrollWidth - target.clientWidth));
+}
+
+function setScopedScrollContinuity(key, state) {
+  scopedScrollContinuityByKey.delete(key);
+  scopedScrollContinuityByKey.set(key, state);
+  while (scopedScrollContinuityByKey.size > SCOPED_SCROLL_CONTINUITY_LIMIT) {
+    scopedScrollContinuityByKey.delete(scopedScrollContinuityByKey.keys().next().value);
+  }
+}
+
+function rememberScopedScrollContinuity(node, key = node?.dataset?.continuityScrollKey, { allowPendingRestore = false, preserveMode = false } = {}) {
+  if (!node?.isConnected || !key || (node._scopedScrollContinuityPendingRestore && !allowPendingRestore)) return;
+  if (node._scopedScrollContinuityPendingRestore) {
+    node._scopedScrollContinuityRestoreToken = (node._scopedScrollContinuityRestoreToken || 0) + 1;
+    node._scopedScrollContinuityPendingRestore = false;
+  }
+  const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+  const previous = scopedScrollContinuityByKey.get(key);
+  const mode = preserveMode && previous ? previous.mode : maxScrollTop - node.scrollTop <= 24 ? "follow-end" : "position";
+  node.dataset.continuityScrollMode = mode;
+  setScopedScrollContinuity(key, {
+    mode,
+    scrollTop: node.scrollTop,
+    scrollLeft: node.scrollLeft,
+  });
+}
+
+function captureScopedScrollContinuity(root) {
+  for (const node of root?.querySelectorAll?.("[data-continuity-scroll-key]") || []) {
+    rememberScopedScrollContinuity(node, undefined, { preserveMode: true });
+  }
+}
+
+function bindScopedScrollContinuity(node, key) {
+  if (!node || !key) return;
+  node.dataset.continuityScrollKey = key;
+  node.dataset.preserveScrollOnToggle = "true";
+  if (node._scopedScrollContinuityBound) return;
+  node._scopedScrollContinuityBound = true;
+  const noteUserIntent = (event) => {
+    if (event.type === "keydown" && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+    node._scopedScrollContinuityUserIntentUntil = performance.now() + SCOPED_SCROLL_USER_INTENT_MS;
+  };
+  node.addEventListener("wheel", noteUserIntent, { passive: true });
+  node.addEventListener("touchstart", noteUserIntent, { passive: true });
+  node.addEventListener("pointerdown", noteUserIntent, { passive: true });
+  node.addEventListener("keydown", noteUserIntent);
+  node.addEventListener("scroll", () => {
+    const userInitiated = performance.now() <= (node._scopedScrollContinuityUserIntentUntil || 0);
+    rememberScopedScrollContinuity(node, undefined, { allowPendingRestore: userInitiated, preserveMode: !userInitiated });
+  }, { passive: true });
+}
+
+function restoreScopedScrollContinuity(node, key) {
+  if (!node || !scopedScrollContinuityByKey.has(key)) return;
+  const restoreToken = (node._scopedScrollContinuityRestoreToken || 0) + 1;
+  node._scopedScrollContinuityRestoreToken = restoreToken;
+  node._scopedScrollContinuityPendingRestore = true;
+  requestAnimationFrame(() => {
+    try {
+      if (node._scopedScrollContinuityRestoreToken !== restoreToken || !node.isConnected || node.dataset.continuityScrollKey !== key) return;
+      const state = scopedScrollContinuityByKey.get(key);
+      if (!state) return;
+      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.dataset.continuityScrollMode = state.mode;
+      node.scrollTop = state.mode === "follow-end" ? maxScrollTop : Math.min(Math.max(0, state.scrollTop), maxScrollTop);
+      node.scrollLeft = Math.min(Math.max(0, state.scrollLeft), Math.max(0, node.scrollWidth - node.clientWidth));
+    } finally {
+      if (node._scopedScrollContinuityRestoreToken === restoreToken) node._scopedScrollContinuityPendingRestore = false;
+    }
+  });
 }
 
 function beginPointerActivation(event) {
@@ -3101,6 +3275,41 @@ function cancelPointerActivation() {
   pointerActivationTimeout = null;
   activePointerActivation = null;
   flushDeferredUiRenders();
+}
+
+function tooltipTargetKey(target) {
+  return target?.dataset?.tooltipTargetKey || (target?.id ? `id:${target.id}` : "");
+}
+
+function captureTooltipContinuity(root) {
+  const pending = !footerTooltipTarget && !!footerTooltipPendingTarget;
+  const target = footerTooltipTarget || footerTooltipPendingTarget;
+  if (!target || !root?.contains(target)) return null;
+  const key = tooltipTargetKey(target);
+  if (!key) return null;
+  const hovered = target.matches?.(":hover") === true;
+  const focused = document.activeElement === target;
+  return hovered || focused ? {
+    target,
+    key,
+    hovered,
+    focused,
+    pending,
+    remainingDelay: pending ? Math.max(0, footerTooltipHoverDeadline - performance.now()) : 0,
+  } : null;
+}
+
+function restoreTooltipContinuity(root, snapshot) {
+  if (!snapshot) return;
+  const target = [...(root?.querySelectorAll?.("[data-tooltip-target-key]") || [])]
+    .find((node) => tooltipTargetKey(node) === snapshot.key) || null;
+  if (!target || !target.hasAttribute("data-tooltip") || (snapshot.hovered && !snapshot.focused && !target.matches(":hover"))) {
+    hideFooterTooltip(snapshot.target);
+    return;
+  }
+  if (!snapshot.hovered && !snapshot.focused) return;
+  if (snapshot.pending) scheduleFooterTooltip(target, snapshot.remainingDelay);
+  else showFooterTooltip(target);
 }
 
 function isMobileView() {
@@ -8642,9 +8851,18 @@ function fileEntryByPath(filePath = "") {
   return null;
 }
 
+function fileTreeControlKey(node) {
+  const path = normalizeFileTreePath(node?.dataset?.path || "");
+  return node?.classList?.contains("file-tree-item") && path ? `file-tree:${path}` : "";
+}
+
 function renderFileTree() {
+  if (deferUiRenderDuringPointerActivation("file-tree", renderFileTree)) return;
   const root = elements.fileTreeRoot;
   if (!root) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${fileTreeState.root || ""}`;
+  const focusSnapshot = captureScopedControlContinuity(root, continuityContextKey, fileTreeControlKey);
+  const restoreFocus = () => restoreScopedControlContinuity(root, continuityContextKey, focusSnapshot, (key) => [...root.querySelectorAll(".file-tree-item[data-path]")].find((node) => fileTreeControlKey(node) === key));
   root.replaceChildren();
   updateFileTreeSearchControls();
   if (elements.fileTreeCwd) elements.fileTreeCwd.textContent = fileTreeState.root || latestWorkspace?.displayCwd || activeTab()?.cwd || "";
@@ -8653,10 +8871,12 @@ function renderFileTree() {
   if (searchQuery) {
     if (fileTreeState.searchLoading) {
       root.append(make("div", "file-tree-loading muted", `Searching for “${searchQuery}”…`));
+      restoreFocus();
       return;
     }
     if (!fileTreeState.searchEntries.length) {
       root.append(make("div", "file-tree-empty muted", `No files or folders match “${searchQuery}”.`));
+      restoreFocus();
       return;
     }
     const list = make("ul", "file-tree-list root search-results");
@@ -8664,11 +8884,13 @@ function renderFileTree() {
     for (const entry of fileTreeState.searchEntries) appendFileSearchEntry(list, entry);
     root.append(list);
     syncFileTreeRovingTabindex();
+    restoreFocus();
     return;
   }
   const entries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
   if (!entries.length) {
     root.append(make("div", "file-tree-empty muted", fileTreeState.loading.has(FILE_TREE_ROOT_PATH) ? "Loading files…" : "No files loaded."));
+    restoreFocus();
     return;
   }
   const list = make("ul", "file-tree-list root");
@@ -8676,6 +8898,7 @@ function renderFileTree() {
   for (const entry of entries) appendFileTreeEntry(list, entry, 0);
   root.append(list);
   syncFileTreeRovingTabindex();
+  restoreFocus();
 }
 
 function visibleFileTreeItems() {
@@ -9845,6 +10068,7 @@ function updateFileViewerUi() {
   }
   if (!isSidePanelOverlayView()) applyFileViewerWidth(currentFileViewerWidth());
   const viewer = activeFileViewer;
+  captureFileViewerEditorContinuity(viewer);
   const isMarkdown = viewer.language === "markdown";
   const hasChanges = !!viewer.gitChanges;
   const sourceAvailable = viewer.sourceAvailable !== false;
@@ -9878,6 +10102,8 @@ function updateFileViewerUi() {
     elements.fileViewerEditor.hidden = mode !== "source";
     elements.fileViewerEditor.readOnly = viewer.readOnly === true;
     if (elements.fileViewerEditor.value !== viewer.content) elements.fileViewerEditor.value = viewer.content || "";
+    elements.fileViewerEditor.dataset.fileViewerPath = viewer.path || "";
+    if (mode === "source") restoreFileViewerEditorContinuity(viewer);
   }
   if (elements.fileViewerPreview) {
     elements.fileViewerPreview.hidden = mode !== "preview";
@@ -10238,8 +10464,43 @@ async function sendFileSelectionToSession() {
   }
 }
 
+function captureFileViewerEditorContinuity(viewer = activeFileViewer) {
+  const editor = elements.fileViewerEditor;
+  if (!viewer || !editor || editor.hidden || editor.dataset.fileViewerPath !== viewer.path) return;
+  viewer.editorContinuity = {
+    path: viewer.path,
+    content: viewer.content,
+    selectionStart: editor.selectionStart ?? editor.value.length,
+    selectionEnd: editor.selectionEnd ?? editor.value.length,
+    selectionDirection: editor.selectionDirection,
+    scrollTop: editor.scrollTop,
+    scrollLeft: editor.scrollLeft,
+    focused: document.activeElement === editor,
+  };
+}
+
+function restoreFileViewerEditorContinuity(viewer = activeFileViewer) {
+  const editor = elements.fileViewerEditor;
+  const state = viewer?.editorContinuity;
+  if (!editor || !state || state.path !== viewer.path || state.content !== viewer.content || editor.dataset.fileViewerPath !== viewer.path) return;
+  const length = editor.value.length;
+  const start = Math.min(Math.max(0, state.selectionStart), length);
+  const end = Math.min(Math.max(0, state.selectionEnd), length);
+  try {
+    editor.setSelectionRange(start, end, state.selectionDirection || "none");
+  } catch {
+    // A stale browser selection should not block the validated file restore.
+  }
+  editor.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), Math.max(0, editor.scrollHeight - editor.clientHeight));
+  editor.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), Math.max(0, editor.scrollWidth - editor.clientWidth));
+  if (state.focused && !isMeaningfulConnectedFocus(document.activeElement)) {
+    editor.focus({ preventScroll: true });
+  }
+}
+
 function cacheActiveFileViewerForTab(tabId = activeTabId) {
   if (!tabId) return;
+  captureFileViewerEditorContinuity();
   if (activeFileViewer) fileViewersByTab.set(tabId, activeFileViewer);
   else fileViewersByTab.delete(tabId);
   if (fileViewerSelection) fileViewerSelectionsByTab.set(tabId, fileViewerSelection);
@@ -10258,6 +10519,7 @@ function resetFileViewerUi() {
   if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.dataset.path = "";
   if (elements.fileViewerEditor) {
     elements.fileViewerEditor.value = "";
+    delete elements.fileViewerEditor.dataset.fileViewerPath;
     elements.fileViewerEditor.readOnly = false;
   }
   if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
@@ -11482,6 +11744,7 @@ function renderGitPanelFolder(node, card, category, depth = 0) {
     else gitPanelState.openFolders.set(folderKey, details.open);
   });
   const summary = make("summary", "git-side-panel-folder-summary");
+  summary.dataset.gitPanelContinuityKey = `folder:${card.root}:${category}:${node.path}`;
   summary.title = `${node.path} · Right-click for Git actions`;
   const chevron = make("span", "git-side-panel-folder-chevron", "›");
   chevron.setAttribute("aria-hidden", "true");
@@ -11504,6 +11767,7 @@ function renderGitPanelFolder(node, card, category, depth = 0) {
 
 function renderGitPanelFile(entry, card, category) {
   const row = make("div", `git-side-panel-file ${category}`);
+  row.dataset.gitPanelContinuityKey = `file:${card.root}:${category}:${entry.path}`;
   const fullPath = entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path;
   row.title = `${fullPath} · Open in WebUI · Right-click for Git actions`;
   row.tabIndex = 0;
@@ -11594,6 +11858,7 @@ function renderGitPanelHistory(card, data) {
   for (const commit of history) {
     const button = make("button", "git-side-panel-commit");
     button.type = "button";
+    button.dataset.gitPanelContinuityKey = `commit:${card.root}:${commit.hash}`;
     button.title = `View commit ${commit.hash}`;
     button.append(
       make("code", "git-side-panel-commit-hash", commit.shortHash || String(commit.hash || "").slice(0, 12)),
@@ -11628,6 +11893,7 @@ function renderGitPanelRepositoryContent(card, snapshot) {
     const button = make("button", "git-side-panel-tab", label);
     button.id = `git-side-panel-${view}-tab`;
     button.type = "button";
+    button.dataset.gitPanelContinuityKey = `view:${card.root}:${view}`;
     button.setAttribute("role", "tab");
     button.setAttribute("aria-controls", `git-side-panel-${view}-panel`);
     button.setAttribute("aria-selected", activeView === view ? "true" : "false");
@@ -11688,6 +11954,7 @@ function renderGitPanelRepositoryCard(card) {
   section.dataset.gitRoot = card.root;
   const button = make("button", "git-side-panel-repository-toggle");
   button.type = "button";
+  button.dataset.gitPanelContinuityKey = `repository:${card.root}`;
   button.setAttribute("aria-expanded", expanded ? "true" : "false");
   button.title = `${expanded ? "Collapse" : "Expand"} ${card.root} · Right-click for repository actions`;
   const count = gitPanelChangeCount(snapshot?.data);
@@ -11707,6 +11974,7 @@ function renderGitPanelRepositoryCard(card) {
 
 function renderGitPanel() {
   if (!elements.gitPanelGroups || !gitPanelSectionExpanded()) return;
+  if (deferUiRenderDuringPointerActivation("git-panel", renderGitPanel)) return;
   if (gitPanelContextMenuState && !elements.gitPanelContextMenu?.hidden) return;
   const groups = gitPanelTerminalGroups();
   const candidates = gitPanelCandidates(groups);
@@ -11743,8 +12011,16 @@ function renderGitPanel() {
     ensureGitPanelVisibleRepositoriesFresh(cards);
     return;
   }
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:git-panel`;
+  const focusSnapshot = captureScopedControlContinuity(elements.gitPanelGroups, continuityContextKey, (node) => node?.dataset?.gitPanelContinuityKey || "");
+  const scrollTop = elements.gitPanelGroups.scrollTop;
+  const scrollLeft = elements.gitPanelGroups.scrollLeft;
   gitPanelRenderSignature = signature;
   elements.gitPanelGroups.replaceChildren(...cards.map(renderGitPanelRepositoryCard));
+  restoreScopedControlContinuity(elements.gitPanelGroups, continuityContextKey, focusSnapshot, (key) => [...elements.gitPanelGroups.querySelectorAll("[data-git-panel-continuity-key]")]
+    .find((node) => node.dataset.gitPanelContinuityKey === key));
+  elements.gitPanelGroups.scrollTop = scrollTop;
+  elements.gitPanelGroups.scrollLeft = scrollLeft;
   if (elements.gitPanelCountBadge) {
     elements.gitPanelCountBadge.textContent = String(repositoryCount);
     elements.gitPanelCountBadge.hidden = repositoryCount === 0;
@@ -11918,7 +12194,7 @@ function renderTerminalTab(tab) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace" });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button);
@@ -11928,7 +12204,7 @@ function renderTerminalTab(tab) {
     close.type = "button";
     close.draggable = false;
     const closeTooltip = `Close ${tab.title}`;
-    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip, targetKey: `terminal-tab:${tab.id}:close` });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTab(tab.id);
@@ -11957,7 +12233,7 @@ function renderTerminalTabGroupItem(tab, group) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace" });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -11970,7 +12246,7 @@ function renderTerminalTabGroupItem(tab, group) {
     close.type = "button";
     close.draggable = false;
     const closeTooltip = `Close ${tab.title}`;
-    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip, targetKey: `terminal-tab:${tab.id}:close` });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTab(tab.id);
@@ -12020,7 +12296,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
   button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}`);
-  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace" });
+  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace", targetKey: `terminal-group:${group.key}:switch` });
   appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(activeGroupTab.id));
   wrapper.append(button);
@@ -12030,7 +12306,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
     close.type = "button";
     close.draggable = false;
     const closeTooltip = `Close ${groupTitle} group`;
-    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip, targetKey: `terminal-group:${group.key}:close` });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTabGroup(group);
@@ -12047,7 +12323,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   add.type = "button";
   add.draggable = false;
   const addTooltip = `Add tab in ${groupTitle}`;
-  applyStyledTooltip(add, addTooltip, { ariaLabel: addTooltip });
+  applyStyledTooltip(add, addTooltip, { ariaLabel: addTooltip, targetKey: `terminal-group:${group.key}:add` });
   add.addEventListener("click", (event) => {
     event.stopPropagation();
     createTerminalTab(activeGroupTab?.cwd || group.cwd || currentDirectoryForNewTab(), { triggerButton: add, customGroupId: group.customGroupId || null });
@@ -12129,8 +12405,26 @@ function scheduleTabsRender() {
   else tabsRenderFrame = setTimeout(flush, 0);
 }
 
+function terminalTabControlKey(node) {
+  if (node?.id && elements.newTabMenu?.contains(node)) return `terminal-new-tab:${node.id}`;
+  const tabId = node?.closest?.("[data-tab-id]")?.dataset?.tabId;
+  if (tabId) {
+    if (node.classList.contains("terminal-tab-close")) return `terminal-tab:${tabId}:close`;
+    if (node.classList.contains("terminal-tab-button")) return `terminal-tab:${tabId}:switch`;
+  }
+  const groupKey = node?.closest?.("[data-group-key]")?.dataset?.groupKey;
+  if (!groupKey) return "";
+  if (node.classList.contains("terminal-tab-group-close")) return `terminal-group:${groupKey}:close`;
+  if (node.classList.contains("terminal-tab-group-add")) return `terminal-group:${groupKey}:add`;
+  if (node.classList.contains("terminal-tab-group-button")) return `terminal-group:${groupKey}:switch`;
+  return "";
+}
+
 function renderTabs() {
   if (deferUiRenderDuringPointerActivation("tabs", renderTabs)) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${activeSubagentTerminalId || ""}`;
+  const focusSnapshot = captureScopedControlContinuity(elements.tabBar, continuityContextKey, terminalTabControlKey);
+  const tooltipSnapshot = captureTooltipContinuity(elements.tabBar);
   const activeSubagent = activeSubagentTerminalView();
   const active = activeSubagent || activeTab();
   const activeIndicator = activeSubagent ? { glyph: "◉", label: "Subagent view" } : active ? tabIndicator(active) : null;
@@ -12138,8 +12432,8 @@ function renderTabs() {
   const totalTabCount = tabs.length + subagentTerminalViews.size;
   elements.terminalTabsToggleButton.textContent = active ? `${activeIndicator.glyph} ${activeTitle}${totalTabCount > 1 ? ` · ${totalTabCount}` : ""}` : "Tabs";
   const toggleTooltip = active ? `Show terminal tabs · active: ${activeTitle} · ${activeIndicator.label}` : "Show terminal tabs";
-  applyStyledTooltip(elements.terminalTabsToggleButton, toggleTooltip, { ariaLabel: toggleTooltip });
-  if (footerTooltipTarget && elements.tabBar.contains(footerTooltipTarget)) hideFooterTooltip();
+  applyStyledTooltip(elements.terminalTabsToggleButton, toggleTooltip, { ariaLabel: toggleTooltip, targetKey: "terminal-tabs-toggle" });
+  if (footerTooltipTarget && elements.tabBar.contains(footerTooltipTarget) && !tooltipSnapshot) hideFooterTooltip();
   elements.tabBar.replaceChildren();
   elements.tabBar.dataset.tabCount = String(totalTabCount);
   elements.tabBar.classList.toggle("terminal-tabs-dense", totalTabCount >= 10);
@@ -12162,6 +12456,8 @@ function renderTabs() {
     else elements.tabBar.append(renderSubagentTerminalTab(group.views[0]));
   }
   elements.tabBar.append(elements.newTabMenu);
+  restoreScopedControlContinuity(elements.tabBar, continuityContextKey, focusSnapshot, (key) => [...elements.tabBar.querySelectorAll("button")].find((node) => terminalTabControlKey(node) === key));
+  restoreTooltipContinuity(elements.tabBar, tooltipSnapshot);
   elements.closeAllTabsButton.disabled = tabs.length === 0;
   if (elements.workspaceSaveButton) {
     const canSave = tabs.length > 0;
@@ -13332,6 +13628,7 @@ let footerTooltipTarget = null;
 let footerTooltipEventsBound = false;
 let footerTooltipHoverTimer = null;
 let footerTooltipPendingTarget = null;
+let footerTooltipHoverDeadline = 0;
 
 function ensureFooterTooltipNode() {
   if (!footerTooltipNode) {
@@ -13390,6 +13687,7 @@ function clearFooterTooltipHoverTimer(target) {
   if (footerTooltipHoverTimer) clearTimeout(footerTooltipHoverTimer);
   footerTooltipHoverTimer = null;
   footerTooltipPendingTarget = null;
+  footerTooltipHoverDeadline = 0;
 }
 
 function showFooterTooltip(target) {
@@ -13407,17 +13705,19 @@ function showFooterTooltip(target) {
   positionFooterTooltip(target);
 }
 
-function scheduleFooterTooltip(target) {
+function scheduleFooterTooltip(target, delay = TOOLTIP_HOVER_DELAY_MS) {
   const text = target?.getAttribute("data-tooltip");
   if (!text) return;
   clearFooterTooltipHoverTimer();
+  const boundedDelay = Math.max(0, Math.min(TOOLTIP_HOVER_DELAY_MS, Number(delay) || 0));
   footerTooltipPendingTarget = target;
+  footerTooltipHoverDeadline = performance.now() + boundedDelay;
   footerTooltipHoverTimer = setTimeout(() => {
     const pendingTarget = footerTooltipPendingTarget;
     clearFooterTooltipHoverTimer();
     if (!pendingTarget?.isConnected || !pendingTarget.matches?.(":hover")) return;
     showFooterTooltip(pendingTarget);
-  }, TOOLTIP_HOVER_DELAY_MS);
+  }, boundedDelay);
 }
 
 function hideFooterTooltip(target) {
@@ -13461,6 +13761,9 @@ function applyStyledTooltip(node, tooltip, options = {}) {
     const describedBy = [node.getAttribute("aria-describedby"), description.id].filter(Boolean).join(" ");
     node.setAttribute("aria-describedby", describedBy);
   }
+  const targetKey = String(options.targetKey || (node.id ? `id:${node.id}` : "")).trim();
+  if (targetKey) node.dataset.tooltipTargetKey = targetKey;
+  else delete node.dataset.tooltipTargetKey;
   if (options.align) node.setAttribute("data-tooltip-align", options.align);
   if (options.placement) node.setAttribute("data-tooltip-placement", options.placement);
   if (options.variant) node.setAttribute("data-tooltip-variant", options.variant);
@@ -13482,7 +13785,7 @@ function footerMetric(icon, label, value, tone = "", options = {}) {
     if (options.ariaBusy) node.setAttribute("aria-busy", "true");
   }
   node.append(make("span", "footer-metric-icon", icon), make("span", "footer-metric-label", label), make("span", "footer-metric-value", value));
-  return applyFooterTooltip(node, options.title || `${label}: ${value}`, { align: options.tooltipAlign });
+  return applyFooterTooltip(node, options.title || `${label}: ${value}`, { align: options.tooltipAlign, targetKey: options.targetKey });
 }
 
 function contextUsageActiveColor(percent) {
@@ -14281,7 +14584,7 @@ function applyFooterChangedFilesDropdown(node, chip, payload) {
 }
 
 function renderGitFooterPayloadMetric(chip, payload) {
-  const options = { tooltipAlign: gitFooterTooltipAlign(chip) };
+  const options = { tooltipAlign: gitFooterTooltipAlign(chip), targetKey: `git-footer:metric:${chip.key}` };
   const piAction = gitFooterPayloadVisible(payload, "webui-pi-calibration") ? applyGitFooterPiCalibrationOptions(chip, options) : "";
   const contextAction = gitFooterPayloadVisible(payload, "webui-context-auto-compaction") ? applyGitFooterContextToggleOptions(chip, options) : "";
   const action = piAction || contextAction;
@@ -14367,7 +14670,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
 }
 
 function renderGitFooterPayloadMeta(chip, tab, payload) {
-  const options = {};
+  const options = { targetKey: `git-footer:meta:${chip.key}` };
   const visible = (key) => gitFooterPayloadVisible(payload, key);
   let action = "";
   if (chip.key === "cwd" && tab && visible("webui-cwd-picker")) {
@@ -14464,6 +14767,17 @@ function updateGitFooterChipNodeValue(node, chip, valueSelector) {
       valueNode.textContent = nextValue;
     }
   }
+  const previousTooltip = node.getAttribute("data-tooltip");
+  if (previousTooltip) {
+    const nextTooltip = previousTooltip.replace(/Current: [^\n]*/u, `Current: ${cleanFooterPayloadText(chip.value, "—")}`);
+    if (nextTooltip !== previousTooltip) {
+      node.setAttribute("data-tooltip", nextTooltip);
+      if (footerTooltipTarget === node && footerTooltipNode && !footerTooltipNode.hidden) {
+        footerTooltipNode.textContent = nextTooltip;
+        positionFooterTooltip(node);
+      }
+    }
+  }
   if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
 }
 
@@ -14538,7 +14852,6 @@ function renderGitFooterPayload(payload) {
     return;
   }
 
-  hideFooterTooltip();
   elements.statusBar.replaceChildren();
   elements.statusBar.classList.remove("statusbar-tui-footer");
   elements.statusBar.classList.add("statusbar-git-footer");
@@ -16259,7 +16572,6 @@ function gitFooterFallbackMessage() {
 
 function renderMinimalFooter() {
   invalidateGitFooterRenderCache();
-  hideFooterTooltip();
   const tab = activeTab();
   const workspaceLabel = latestWorkspace?.displayCwd || (tab?.cwd ? normalizeDisplayPath(tab.cwd) : "loading…");
   const modelLine = footerModelLine();
@@ -17196,6 +17508,7 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   const fields = make("div", "footer-branch-create-fields");
   const typeField = make("div", "footer-branch-create-type-field");
   const typeInput = make("input", "footer-branch-create-dropdown-inputfield");
+  typeInput.id = "footerBranchCreateType";
   typeInput.type = "text";
   typeInput.value = footerBranchCreateType();
   typeInput.placeholder = "type";
@@ -17232,6 +17545,7 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   const slash = make("span", "footer-branch-create-slash", "/");
 
   const nameInput = make("input", "footer-branch-create-input-field");
+  nameInput.id = "footerBranchCreateName";
   nameInput.type = "text";
   nameInput.value = footerBranchCreateDraft.name;
   nameInput.placeholder = "short-feature-name";
@@ -18217,14 +18531,23 @@ async function changeActiveTabCwd() {
   if (response.data?.changed !== false) addTransientMessage({ role: "native", title: "Working folder changed", content: `${tab.title} restarted in ${changedCwd}.`, level: "info" });
 }
 
+function footerControlKey(node) {
+  if (node?.id) return `footer:id:${node.id}`;
+  if (node?.dataset?.footerModelKey) return `footer:model:${node.dataset.footerModelKey}`;
+  return "";
+}
+
 function renderFooter() {
   if (deferUiRenderDuringPointerActivation("footer", renderFooter)) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${footerBranchPickerOpen ? footerBranchPickerState.tabId || activeTabId || "" : ""}`;
+  const focusSnapshot = captureScopedControlContinuity(elements.statusBar, continuityContextKey, footerControlKey);
+  const tooltipSnapshot = captureTooltipContinuity(elements.statusBar);
   const gitFooterPayload = parseGitFooterWebuiPayload();
-  if (gitFooterPayload) {
-    renderGitFooterPayload(footerPayloadWithLiveModel(gitFooterPayload));
-    return;
-  }
-  renderMinimalFooter();
+  if (gitFooterPayload) renderGitFooterPayload(footerPayloadWithLiveModel(gitFooterPayload));
+  else renderMinimalFooter();
+  if (!tooltipSnapshot && footerTooltipTarget && !footerTooltipTarget.isConnected) hideFooterTooltip();
+  restoreScopedControlContinuity(elements.statusBar, continuityContextKey, focusSnapshot, (key) => [...elements.statusBar.querySelectorAll("input, textarea, select, button")].find((node) => footerControlKey(node) === key));
+  restoreTooltipContinuity(elements.statusBar, tooltipSnapshot);
 }
 
 function scheduleRefreshMessages(delay = 120, tabContext = activeTabContext()) {
@@ -18356,6 +18679,39 @@ function codexUsageBuckets(data) {
   return buckets.slice(0, 6);
 }
 
+function codexUsageStructureSignature() {
+  if (!latestCodexUsage) return JSON.stringify({ state: codexUsageLoading ? "loading" : codexUsageError ? "error" : "empty", error: codexUsageError?.message || String(codexUsageError || "") });
+  return JSON.stringify({
+    state: "data",
+    plan: formatCodexPlanType(latestCodexUsage.planType),
+    buckets: codexUsageBuckets(latestCodexUsage).map((bucket) => [bucket.key, bucket.label]),
+    rateLimitReachedType: latestCodexUsage.rateLimitReachedType || "",
+    error: codexUsageError?.message || String(codexUsageError || ""),
+  });
+}
+
+function updateCodexUsageValues(box, buckets) {
+  if (!latestCodexUsage || !box.querySelector(".codex-usage-summary")) return false;
+  const fetched = box.querySelector(".codex-usage-fetched");
+  if (fetched) fetched.textContent = latestCodexUsage.fetchedAt ? `updated ${formatDurationParts(Date.now() - new Date(latestCodexUsage.fetchedAt).getTime())} ago` : "updated now";
+  const rendered = [...box.querySelectorAll(".codex-usage-bucket[data-codex-usage-key]")];
+  if (rendered.length !== buckets.length) return false;
+  for (const bucket of buckets) {
+    const item = rendered.find((node) => node.dataset.codexUsageKey === bucket.key);
+    if (!item) return false;
+    const usedPercent = Number(bucket.window?.usedPercent);
+    const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
+    const percent = item.querySelector(".codex-usage-percent");
+    const fill = item.querySelector(".codex-usage-meter-fill");
+    const reset = item.querySelector(".codex-usage-reset");
+    if (!percent || !fill || !reset) return false;
+    percent.textContent = formatCodexPercent(usedPercent);
+    fill.style.width = `${fillPercent}%`;
+    reset.textContent = formatCodexReset(bucket.window);
+  }
+  return true;
+}
+
 function renderCodexUsage() {
   const box = elements.codexUsageBox;
   if (!box) return;
@@ -18364,6 +18720,13 @@ function renderCodexUsage() {
     elements.refreshCodexUsageButton.textContent = codexUsageLoading ? "Refreshing…" : "Refresh usage";
   }
 
+  const buckets = codexUsageBuckets(latestCodexUsage);
+  const structureSignature = codexUsageStructureSignature();
+  if (structureSignature === codexUsageRenderSignature && updateCodexUsageValues(box, buckets)) {
+    box.classList.toggle("muted", !latestCodexUsage);
+    return;
+  }
+  codexUsageRenderSignature = structureSignature;
   box.replaceChildren();
   box.classList.toggle("muted", !latestCodexUsage);
 
@@ -18389,7 +18752,6 @@ function renderCodexUsage() {
   );
   box.append(header);
 
-  const buckets = codexUsageBuckets(latestCodexUsage);
   if (buckets.length === 0) {
     box.append(make("div", "codex-usage-detail", "No Codex rate-limit windows were returned."));
   } else {
@@ -18397,6 +18759,7 @@ function renderCodexUsage() {
       const usedPercent = Number(bucket.window?.usedPercent);
       const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
       const item = make("div", "codex-usage-bucket");
+      item.dataset.codexUsageKey = bucket.key;
       const row = make("div", "codex-usage-row");
       row.append(
         make("span", "codex-usage-label", bucket.label),
@@ -18638,10 +19001,11 @@ function formatClaudeUsageReset(window) {
   return window?.resetText ? `resets ${window.resetText}` : "reset unknown";
 }
 
-function renderClaudeUsageWindow(box, window) {
+function renderClaudeUsageWindow(box, window, key = "") {
   const usedPercent = Number(window?.usedPercent);
   const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
   const item = make("div", "claude-usage-bucket");
+  if (key) item.dataset.claudeUsageKey = key;
   const row = make("div", "claude-usage-row");
   row.append(
     make("span", "claude-usage-label", window?.label || "Usage window"),
@@ -18674,6 +19038,42 @@ function renderClaudeUsageActivity(box, activity) {
   }
 }
 
+function claudeUsageStructureSignature() {
+  if (!latestClaudeUsage) return JSON.stringify({ state: claudeUsageLoading ? "loading" : claudeUsageError ? "error" : "empty", error: claudeUsageError?.message || String(claudeUsageError || "") });
+  const windows = Array.isArray(latestClaudeUsage.windows) ? latestClaudeUsage.windows : [];
+  return JSON.stringify({
+    state: "data",
+    summary: latestClaudeUsage.summary || "",
+    windows: windows.slice(0, 6).map((window, index) => [String(window?.id || index), window?.label || "Usage window"]),
+    activityTitle: latestClaudeUsage.activityTitle || "",
+    activity: latestClaudeUsage.activity || [],
+    error: claudeUsageError?.message || String(claudeUsageError || ""),
+  });
+}
+
+function updateClaudeUsageValues(box, windows) {
+  if (!latestClaudeUsage || !box.querySelector(".claude-usage-summary")) return false;
+  const fetched = box.querySelector(".claude-usage-fetched");
+  if (fetched) fetched.textContent = latestClaudeUsage.fetchedAt ? `updated ${formatDurationParts(Date.now() - new Date(latestClaudeUsage.fetchedAt).getTime())} ago` : "updated now";
+  const rendered = [...box.querySelectorAll(".claude-usage-bucket[data-claude-usage-key]")];
+  if (rendered.length !== windows.length) return false;
+  for (const [index, window] of windows.entries()) {
+    const key = String(window?.id || index);
+    const item = rendered.find((node) => node.dataset.claudeUsageKey === key);
+    if (!item) return false;
+    const usedPercent = Number(window?.usedPercent);
+    const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
+    const percent = item.querySelector(".claude-usage-percent");
+    const fill = item.querySelector(".claude-usage-meter-fill");
+    const reset = item.querySelector(".claude-usage-reset");
+    if (!percent || !fill || !reset) return false;
+    percent.textContent = formatCodexPercent(usedPercent);
+    fill.style.width = `${fillPercent}%`;
+    reset.textContent = formatClaudeUsageReset(window);
+  }
+  return true;
+}
+
 function renderClaudeUsage() {
   const box = elements.claudeUsageBox;
   if (!box) return;
@@ -18682,6 +19082,13 @@ function renderClaudeUsage() {
     elements.refreshClaudeUsageButton.textContent = claudeUsageLoading ? "Refreshing…" : "Refresh usage";
   }
 
+  const windows = Array.isArray(latestClaudeUsage?.windows) ? latestClaudeUsage.windows.slice(0, 6) : [];
+  const structureSignature = claudeUsageStructureSignature();
+  if (structureSignature === claudeUsageRenderSignature && updateClaudeUsageValues(box, windows)) {
+    box.classList.toggle("muted", !latestClaudeUsage);
+    return;
+  }
+  claudeUsageRenderSignature = structureSignature;
   box.replaceChildren();
   box.classList.toggle("muted", !latestClaudeUsage);
 
@@ -18708,11 +19115,10 @@ function renderClaudeUsage() {
   box.append(header);
 
   if (latestClaudeUsage.summary) box.append(make("div", "claude-usage-detail", latestClaudeUsage.summary));
-  const windows = Array.isArray(latestClaudeUsage.windows) ? latestClaudeUsage.windows : [];
   if (windows.length === 0) {
     box.append(make("div", "claude-usage-detail", "No Claude usage windows were returned."));
   } else {
-    for (const window of windows.slice(0, 6)) renderClaudeUsageWindow(box, window);
+    for (const [index, window] of windows.entries()) renderClaudeUsageWindow(box, window, String(window?.id || index));
   }
 
   renderClaudeUsageActivity(box, latestClaudeUsage.activity);
@@ -19207,8 +19613,10 @@ function renderSubagentOverlayWidget() {
   ].filter(Boolean);
   controls.append(actions, make("span", `app-runner-output-meta${subagentOverlayError ? " warning" : ""}`, details.join(" · ")));
   const outputDetails = renderReleaseNpmOutputDetails(`subagent:${selection.tabId}:${selection.agentId}`, streamHeader, output, controls);
+  const scrollKey = `subagent-overlay:${selection.tabId}:${selection.runId}:${selection.agentId}`;
+  bindScopedScrollContinuity(output, scrollKey);
   widget.append(header, outputDetails);
-  requestAnimationFrame(() => { if (outputDetails.open) output.scrollTop = output.scrollHeight; });
+  restoreScopedScrollContinuity(output, scrollKey);
   return widget;
 }
 
@@ -19393,13 +19801,16 @@ function renderSubagentTerminalView() {
     agent.currentTool ? `tool ${agent.currentTool}` : "",
   ].filter(Boolean);
 
+  const transcript = elements.subagentTerminalTranscript;
+  const scrollKey = `subagent-terminal:${view.id}`;
+  if (transcript.dataset.continuityScrollKey === scrollKey) rememberScopedScrollContinuity(transcript, scrollKey);
+  else if (!scopedScrollContinuityByKey.has(scrollKey)) scopedScrollContinuityByKey.set(scrollKey, { mode: "follow-end", scrollTop: 0, scrollLeft: 0 });
   elements.subagentTerminalTitle.textContent = subagentTerminalViewTitle(view);
   elements.subagentTerminalMeta.textContent = `${facts.join(" · ")} · parent ${parent?.title || view.parentTitle || "terminal"} · run ${view.runId}`;
   renderSubagentTerminalCards(agent);
-  const shouldFollowOutput = elements.subagentTerminalTranscript.scrollHeight - elements.subagentTerminalTranscript.clientHeight - elements.subagentTerminalTranscript.scrollTop < CHAT_BOTTOM_THRESHOLD_PX;
-  elements.subagentTerminalTranscript.replaceChildren();
-  elements.subagentTerminalTranscript.setAttribute("aria-live", running ? "polite" : "off");
-  const rendered = appendSubagentOverlayTranscript(elements.subagentTerminalTranscript, transcriptMessages);
+  transcript.replaceChildren();
+  transcript.setAttribute("aria-live", running ? "polite" : "off");
+  const rendered = appendSubagentOverlayTranscript(transcript, transcriptMessages);
   const emptyTranscriptFallback = hasStructuredTranscript && rendered === 0 ? subagentOverlayEmptyTranscriptText(transcriptMessages) : "";
   const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;
   if (visibleFallbackText) {
@@ -19410,7 +19821,7 @@ function renderSubagentTerminalView() {
       content: visibleFallbackText,
     }, { streaming: running && !hasStructuredTranscript, transient: true });
     bubble.classList.add("subagent-overlay-message", "subagent-overlay-empty-fallback");
-    elements.subagentTerminalTranscript.append(bubble);
+    transcript.append(bubble);
   }
   if (running) appendSubagentRunIndicator(elements.subagentTerminalTranscript, { agent, run: view.run });
 
@@ -19421,7 +19832,8 @@ function renderSubagentTerminalView() {
     elements.subagentTerminalCancelButton.hidden = !cancellable;
     elements.subagentTerminalCancelButton.disabled = !cancellable;
   }
-  if (shouldFollowOutput) requestAnimationFrame(() => { elements.subagentTerminalTranscript.scrollTop = elements.subagentTerminalTranscript.scrollHeight; });
+  bindScopedScrollContinuity(transcript, scrollKey);
+  restoreScopedScrollContinuity(transcript, scrollKey);
 }
 
 function scheduleSubagentTerminalRefresh(delay = SUBAGENT_OVERLAY_REFRESH_MS) {
@@ -19767,6 +20179,7 @@ function renderSubagentAgent(tab, run, agent) {
   const [model, thinking] = subagentExecutionValues(agent);
   const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}`);
   row.type = "button";
+  row.dataset.subagentContinuityKey = `agent:${tab?.tabId || ""}:${run?.id || ""}:${agent?.id || ""}`;
   const dot = make("span", running ? "subagent-running-dot" : `subagent-state-dot ${agent?.status || "done"}`);
   dot.setAttribute("aria-hidden", "true");
   const identity = make("span", "subagent-agent-identity");
@@ -19800,12 +20213,14 @@ function renderSubagentRun(tab, run) {
   if (subagentRunCanCancel(run)) {
     const cancel = make("button", "subagent-run-cancel", "■");
     cancel.type = "button";
+    cancel.dataset.subagentContinuityKey = `run:${tab?.tabId || ""}:${run?.id || ""}:cancel`;
     applyStyledTooltip(cancel, "Cancel entire subagent run…", { ariaLabel: "Cancel entire subagent run" });
     cancel.addEventListener("click", () => openSubagentCancelDialog(tab, run));
     actions.append(cancel);
   } else if (!running && run?.source !== "workflow") {
     const dismiss = make("button", "subagent-run-dismiss", "×");
     dismiss.type = "button";
+    dismiss.dataset.subagentContinuityKey = `run:${tab?.tabId || ""}:${run?.id || ""}:dismiss`;
     applyStyledTooltip(dismiss, "Dismiss finished run", { ariaLabel: "Dismiss finished run" });
     dismiss.addEventListener("click", () => dismissSubagentRun(tab, run));
     actions.append(dismiss);
@@ -19850,6 +20265,7 @@ function renderSubagentGateAttempt(tab, attempt) {
   const title = attempt?.label || attempt?.agent || "subagent";
   if (target) {
     row.type = "button";
+    row.dataset.subagentContinuityKey = `gate:${tab?.tabId || ""}:${attempt?.runId || ""}:${target.agent?.id || ""}`;
     const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
     row.title = `${title} · open ${destination}`;
     row.setAttribute("aria-label", `Open ${destination} for ${title}, ${attempt?.status || "unknown"}, ${attempt?.retrySafety || "may-write"}`);
@@ -19907,6 +20323,7 @@ function renderSubagentTabGroup(tab) {
   const group = make("section", `subagent-tab-group${tab.tabId === activeTabId ? " active" : ""}`);
   const header = make("button", "subagent-tab-header");
   header.type = "button";
+  header.dataset.subagentContinuityKey = `tab:${tab?.tabId || ""}`;
   header.setAttribute("aria-label", `Open ${tab.tabTitle || `Terminal ${tab.tabIndex || ""}`}`);
   const title = make("span", "subagent-tab-title");
   title.append(
@@ -19936,9 +20353,17 @@ function renderSubagentTabGroup(tab) {
   return group;
 }
 
+function subagentPanelControlKey(node) {
+  return node?.dataset?.subagentContinuityKey || "";
+}
+
 function renderSubagents() {
+  if (deferUiRenderDuringPointerActivation("subagents", renderSubagents)) return;
   const box = elements.subagentsBox;
   if (!box) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}`;
+  const focusSnapshot = captureScopedControlContinuity(box, continuityContextKey, subagentPanelControlKey);
+  const restoreFocus = () => restoreScopedControlContinuity(box, continuityContextKey, focusSnapshot, (key) => [...box.querySelectorAll("[data-subagent-continuity-key]")].find((node) => subagentPanelControlKey(node) === key));
   const activeTabs = subagentTabsWithRunningAgents();
   const finishedRuns = finishedSubagentRunSelections();
   const totalAgents = Number(latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
@@ -19971,10 +20396,12 @@ function renderSubagents() {
   box.classList.toggle("has-items", hasItems);
   if (!hasItems) {
     box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running and retained subagents will appear here, grouped by terminal and session."));
+    restoreFocus();
     return;
   }
   for (const tab of activeTabs) box.append(renderSubagentTabGroup(tab));
   if (subagentsError) box.append(make("div", "subagents-stale muted", `Latest refresh failed: ${subagentsError.message || subagentsError}`));
+  restoreFocus();
 }
 
 async function refreshSubagents() {
@@ -21796,27 +22223,38 @@ function renderAppRunnerContextForm(run) {
 
 function captureAppRunnerInputFocus() {
   const input = document.activeElement;
-  if (!input?.classList?.contains("app-runner-stdin-input")) return null;
+  if (!input?.classList?.contains("app-runner-stdin-input") || !elements.widgetArea?.contains(input)) return null;
   return {
+    source: input,
+    context: activeTabContext(),
     runId: input.dataset.runId || "",
     value: input.value || "",
     selectionStart: input.selectionStart ?? input.value.length,
     selectionEnd: input.selectionEnd ?? input.value.length,
+    selectionDirection: input.selectionDirection,
+    scrollTop: input.scrollTop,
+    scrollLeft: input.scrollLeft,
   };
 }
 
 function restoreAppRunnerInputFocus(state) {
-  if (!state?.runId) return;
-  const input = document.querySelector(".app-runner-stdin-input");
-  if (!input || input.dataset.runId !== state.runId) return;
+  if (!state?.runId || !isCurrentTabContext(state.context) || state.source?.isConnected) return;
+  if (isMeaningfulConnectedFocus(document.activeElement)) return;
+  const input = [...elements.widgetArea.querySelectorAll(".app-runner-stdin-input")]
+    .find((candidate) => candidate.dataset.runId === state.runId);
+  if (!input) return;
   appRunnerInputDraftByRun.set(state.runId, state.value);
   input.value = state.value;
+  const selectionStart = Math.min(Math.max(0, state.selectionStart), input.value.length);
+  const selectionEnd = Math.min(Math.max(0, state.selectionEnd), input.value.length);
   try {
     input.focus({ preventScroll: true });
-    input.setSelectionRange(state.selectionStart, state.selectionEnd);
+    input.setSelectionRange(selectionStart, selectionEnd, state.selectionDirection || "none");
   } catch {
     input.focus();
   }
+  input.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), Math.max(0, input.scrollHeight - input.clientHeight));
+  input.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), Math.max(0, input.scrollWidth - input.clientWidth));
 }
 
 async function copyAppRunnerOutput(run) {
@@ -22610,8 +23048,10 @@ function renderAppRunnerWidget() {
   if (inputForm) controls.append(inputForm);
   controls.append(pills, make("span", "app-runner-output-meta", controlParts.join(" · ")));
   const outputDetails = renderReleaseNpmOutputDetails(`app-runner:${run.id || run.runnerId || "active"}`, streamHeader, terminal, controls);
+  const scrollKey = `app-runner:${activeTabId || ""}:${run.id || run.runnerId || "active"}`;
+  bindScopedScrollContinuity(terminal, scrollKey);
   node.append(header, outputDetails);
-  requestAnimationFrame(() => { if (outputDetails.open) terminal.scrollTop = terminal.scrollHeight; });
+  restoreScopedScrollContinuity(terminal, scrollKey);
   return node;
 }
 
@@ -23720,6 +24160,7 @@ function attachWorkflowOverlayCloseButton(widget) {
 function renderWidgets() {
   if (deferUiRenderDuringPointerActivation("widgets", renderWidgets)) return;
   const appRunnerInputFocus = captureAppRunnerInputFocus();
+  captureScopedScrollContinuity(elements.widgetArea);
   elements.widgetArea.replaceChildren();
   const releaseOutput = renderReleaseNpmOutputWidget();
   if (releaseOutput) elements.widgetArea.append(releaseOutput);
@@ -24433,7 +24874,42 @@ function renderGitInitWorkflowActions() {
   }
 }
 
+function captureGitWorkflowInputFocus() {
+  const input = document.activeElement;
+  if (input?.id !== "gitWorkflowManualCommitMessage" || !elements.gitWorkflowActions?.contains(input)) return null;
+  return {
+    source: input,
+    context: activeTabContext(),
+    tabId: activeTabId,
+    runId: gitWorkflow?.runId,
+    selectionStart: input.selectionStart ?? input.value.length,
+    selectionEnd: input.selectionEnd ?? input.value.length,
+    selectionDirection: input.selectionDirection,
+    scrollTop: input.scrollTop,
+    scrollLeft: input.scrollLeft,
+  };
+}
+
+function restoreGitWorkflowInputFocus(state) {
+  if (!state || state.tabId !== activeTabId || state.runId !== gitWorkflow?.runId || !isCurrentTabContext(state.context) || state.source?.isConnected) return;
+  if (isMeaningfulConnectedFocus(document.activeElement)) return;
+  const input = document.getElementById("gitWorkflowManualCommitMessage");
+  if (!input || !elements.gitWorkflowActions?.contains(input)) return;
+  const selectionStart = Math.min(Math.max(0, state.selectionStart), input.value.length);
+  const selectionEnd = Math.min(Math.max(0, state.selectionEnd), input.value.length);
+  try {
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(selectionStart, selectionEnd, state.selectionDirection || "none");
+  } catch {
+    input.focus();
+  }
+  input.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), Math.max(0, input.scrollHeight - input.clientHeight));
+  input.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), Math.max(0, input.scrollWidth - input.clientWidth));
+}
+
 function renderGitWorkflow() {
+  const inputFocus = captureGitWorkflowInputFocus();
+  if (deferUiRenderDuringPointerActivation("git-workflow", renderGitWorkflow)) return;
   elements.gitWorkflowPanel.hidden = !gitWorkflow.active;
   if (!gitWorkflow.active) return;
 
@@ -24471,6 +24947,7 @@ function renderGitWorkflow() {
 
   if (gitWorkflow.mode === "initRepo") {
     renderGitInitWorkflowActions();
+    restoreGitWorkflowInputFocus(inputFocus);
     return;
   }
 
@@ -24541,6 +25018,7 @@ function renderGitWorkflow() {
     addGitWorkflowAction("Close", () => setGitWorkflow({ active: false }), "primary", false);
     addGitWorkflowAction("Restart", () => startGitWorkflow(), "", false);
   }
+  restoreGitWorkflowInputFocus(inputFocus);
 }
 
 async function gitWorkflowRequest(path, { method = "POST", body = {}, runId, tabId = activeTabId } = {}) {
@@ -26331,6 +26809,7 @@ function renderQueueGroup(label, items, tone, { removable = false, tabId } = {})
     if (removable) {
       const removeButton = make("button", "queue-remove-button", "Remove");
       removeButton.type = "button";
+      removeButton.dataset.queueContinuityKey = `remove:${tabId || ""}:${index}:${item}`;
       removeButton.title = `Remove queued follow-up #${index + 1}`;
       removeButton.setAttribute("aria-label", `Remove queued follow-up #${index + 1}`);
       removeButton.addEventListener("click", async () => {
@@ -26356,6 +26835,16 @@ function renderQueue(event) {
   const tabId = event?.tabId || activeTabId;
   if (tabId) latestQueuedMessagesByTab.set(tabId, snapshot);
   if (tabId && tabId !== activeTabId) return;
+  const continuityContextKey = `${tabId || activeTabId || ""}:${activeTabGeneration}:queue`;
+  const focusSnapshot = captureScopedControlContinuity(elements.queueBox, continuityContextKey, (node) => node?.dataset?.queueContinuityKey || "");
+  const scrollTop = elements.queueBox.scrollTop;
+  const scrollLeft = elements.queueBox.scrollLeft;
+  const restoreContinuity = () => {
+    restoreScopedControlContinuity(elements.queueBox, continuityContextKey, focusSnapshot, (key) => [...elements.queueBox.querySelectorAll("[data-queue-continuity-key]")]
+      .find((node) => node.dataset.queueContinuityKey === key));
+    elements.queueBox.scrollTop = scrollTop;
+    elements.queueBox.scrollLeft = scrollLeft;
+  };
   const steering = snapshot.steering;
   const followUp = snapshot.followUp;
   const total = queueMessageCount(snapshot);
@@ -26367,6 +26856,7 @@ function renderQueue(event) {
     elements.queueBox.append(make("div", "queue-empty", "No queued messages."));
     if (tabId === activeTabId) renderFollowUpQueueOverlay();
     updateStickyUserPromptButton();
+    restoreContinuity();
     return;
   }
 
@@ -26386,6 +26876,7 @@ function renderQueue(event) {
   if (tabId === activeTabId) renderFollowUpQueueOverlay();
   updateStickyUserPromptButton();
   if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
+  restoreContinuity();
 }
 
 function queuedMessagesForComposer(tabId = activeTabId) {
@@ -27358,6 +27849,7 @@ function clearStreamingMarkdownBlock(block) {
 }
 
 function renderStreamingMarkdown(block, text) {
+  const selectionSnapshot = captureChatTextSelection(block);
   let state = streamMarkdownState;
   if (!state || state.block !== block) {
     clearStreamingMarkdownBlock(block);
@@ -27385,6 +27877,7 @@ function renderStreamingMarkdown(block, text) {
     state.tailNodes = [...fragment.childNodes];
     block.append(fragment);
   }
+  restoreChatTextSelection(selectionSnapshot);
 }
 
 function appendImage(parent, part) {
@@ -29783,6 +30276,123 @@ function transcriptItemSignature(item) {
   return sig.join("|");
 }
 
+function chatTextSelectionContextKey() {
+  return `${activeTabId || ""}:${activeTabGeneration}:${transcriptRenderEpoch()}`;
+}
+
+function chatTextSelectionSurface(node) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  const surface = element?.closest?.(".message .markdown-body, .message .compact-live-text") || null;
+  return surface && elements.chat.contains(surface) ? surface : null;
+}
+
+function chatTextSelectionOffset(surface, node, offset) {
+  if (!surface || !node || (node !== surface && !surface.contains(node))) return null;
+  const range = document.createRange();
+  try {
+    range.selectNodeContents(surface);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
+function chatTextSelectionPoint(surface, offset) {
+  const targetOffset = Math.max(0, Number(offset) || 0);
+  const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  let last = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const next = consumed + node.data.length;
+    if (targetOffset <= next) return { node, offset: Math.max(0, targetOffset - consumed) };
+    consumed = next;
+    last = node;
+  }
+  return last ? { node: last, offset: last.data.length } : { node: surface, offset: 0 };
+}
+
+function captureChatTextSelection(expectedSurface = null) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const anchorSurface = chatTextSelectionSurface(selection.anchorNode);
+  const focusSurface = chatTextSelectionSurface(selection.focusNode);
+  if (!anchorSurface || anchorSurface !== focusSurface || (expectedSurface && anchorSurface !== expectedSurface)) return null;
+  const anchorOffset = chatTextSelectionOffset(anchorSurface, selection.anchorNode, selection.anchorOffset);
+  const focusOffset = chatTextSelectionOffset(anchorSurface, selection.focusNode, selection.focusOffset);
+  const text = selection.toString();
+  if (anchorOffset === null || focusOffset === null || !text) return null;
+  const bubble = anchorSurface.closest(".message");
+  return {
+    contextKey: chatTextSelectionContextKey(),
+    source: anchorSurface,
+    itemKey: bubble?.dataset?.itemKey || "",
+    streaming: bubble?.classList?.contains("streaming") === true || bubble?.classList?.contains("compact-live-output") === true,
+    anchorOffset,
+    focusOffset,
+    text,
+  };
+}
+
+function chatTextSelectionMatch(surface, snapshot) {
+  const anchor = chatTextSelectionPoint(surface, snapshot.anchorOffset);
+  const focus = chatTextSelectionPoint(surface, snapshot.focusOffset);
+  const range = document.createRange();
+  const anchorFirst = snapshot.anchorOffset <= snapshot.focusOffset;
+  try {
+    range.setStart(anchorFirst ? anchor.node : focus.node, anchorFirst ? anchor.offset : focus.offset);
+    range.setEnd(anchorFirst ? focus.node : anchor.node, anchorFirst ? focus.offset : anchor.offset);
+  } catch {
+    return null;
+  }
+  return range.toString() === snapshot.text ? { anchor, focus, range } : null;
+}
+
+function chatTextSelectionCandidates(snapshot) {
+  const candidates = [];
+  const add = (surface) => {
+    if (surface && elements.chat.contains(surface) && !candidates.includes(surface)) candidates.push(surface);
+  };
+  add(snapshot.source?.isConnected ? snapshot.source : null);
+  if (snapshot.itemKey) {
+    const bubble = elements.chat.querySelector(`.message[data-item-key="${CSS.escape(snapshot.itemKey)}"]`);
+    for (const surface of bubble?.querySelectorAll?.(".markdown-body, .compact-live-text") || []) add(surface);
+  }
+  if (snapshot.streaming) {
+    const liveReplacement = [...elements.chat.querySelectorAll(".message.assistant .markdown-body, .message.assistant .compact-live-text")].reverse();
+    for (const surface of liveReplacement) add(surface);
+  }
+  return candidates;
+}
+
+function restoreChatTextSelection(snapshot) {
+  if (!snapshot || snapshot.contextKey !== chatTextSelectionContextKey()) return;
+  const selection = window.getSelection?.();
+  if (!selection) return;
+  const currentText = selection.rangeCount && !selection.isCollapsed ? selection.toString() : "";
+  const currentAnchorSurface = chatTextSelectionSurface(selection.anchorNode);
+  const currentFocusSurface = chatTextSelectionSurface(selection.focusNode);
+  const candidates = chatTextSelectionCandidates(snapshot);
+  if (currentText === snapshot.text && currentAnchorSurface === currentFocusSurface && candidates.includes(currentAnchorSurface)) return;
+  if (currentText && currentAnchorSurface && currentFocusSurface) return;
+  for (const surface of candidates) {
+    const match = chatTextSelectionMatch(surface, snapshot);
+    if (!match) continue;
+    try {
+      selection.removeAllRanges();
+      if (typeof selection.setBaseAndExtent === "function") {
+        selection.setBaseAndExtent(match.anchor.node, match.anchor.offset, match.focus.node, match.focus.offset);
+      } else {
+        selection.addRange(match.range);
+      }
+    } catch {
+      // A stale DOM range should not interfere with the authoritative transcript render.
+    }
+    return;
+  }
+}
+
 function removeChatBubblesAfterPrefix(keptKeys) {
   for (const child of [...elements.chat.children]) {
     if (child === elements.stickyUserPromptButton || child === runIndicatorBubble) continue;
@@ -29800,6 +30410,7 @@ function pruneDisconnectedLiveToolCards() {
 
 function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}) {
   if (deferUiRenderDuringPointerActivation("messages", () => renderAllMessages({ preserveScroll, forceRebuild }))) return;
+  const selectionSnapshot = captureChatTextSelection();
   const shouldFollow = !preserveScroll && (autoFollowChat || isChatNearBottom());
   const previousScrollTop = elements.chat.scrollTop;
   const transcriptItems = orderedTranscriptItems();
@@ -29841,6 +30452,7 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
     updateJumpToLatestButton();
   }
   updateStickyUserPromptButton();
+  restoreChatTextSelection(selectionSnapshot);
 }
 
 function applyNativeSlashCommandEffects(response, message, tabContext = activeTabContext()) {
@@ -33824,12 +34436,14 @@ async function refreshMessages(tabContext = activeTabContext(), { authoritative 
   latestMessages = nextMessages;
   latestMessagesSessionKey = sessionKey;
   cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);
+  const selectionSnapshot = captureChatTextSelection();
   const preserveCompactStream = compactLiveStreamRenderActive();
   const preserveNormalStream = !preserveCompactStream && liveStreamRenderActive();
   if (!preserveCompactStream && !preserveNormalStream) resetStreamBubble();
   renderMessages(latestMessages);
   if (preserveCompactStream) restoreCompactLiveOutputAfterChatRebuild();
   else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
+  restoreChatTextSelection(selectionSnapshot);
   markTabOutputSeen();
   renderFooter();
 }
@@ -35506,10 +36120,7 @@ function handleExtensionUiRequest(request) {
       updateOptionalFeatureAvailability();
       if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) {
         if (currentState?.isStreaming || runIndicatorLocallyActive) return;
-        if (isInteractiveDropdownOpen()) {
-          deferredUiRenderCallbacks.set("footer", renderFooter);
-          return;
-        }
+        if (deferUiRenderDuringInteractiveSurface("footer", renderFooter)) return;
         renderFooter();
         return;
       }

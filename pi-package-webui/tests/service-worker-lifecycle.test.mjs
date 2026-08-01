@@ -5,11 +5,17 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const source = await readFile(join(root, "public", "service-worker.js"), "utf8");
+const rawSource = await readFile(join(root, "public", "service-worker.js"), "utf8");
+assert.match(rawSource, /const APP_SHELL_NETWORK_TIMEOUT_MS = 8_000;/, "app-shell requests need a bounded network timeout");
+const source = rawSource.replace(
+  "const APP_SHELL_NETWORK_TIMEOUT_MS = 8_000;",
+  "const APP_SHELL_NETWORK_TIMEOUT_MS = 20;",
+);
 const handlers = new Map();
 let releaseCacheWrite;
 const cacheWrite = new Promise((resolve) => { releaseCacheWrite = resolve; });
 let cachePutCount = 0;
+let cacheMatchResult;
 const cache = {
   async addAll() {},
   put: async () => {
@@ -17,6 +23,8 @@ const cache = {
     await cacheWrite;
   },
 };
+const networkResponse = { ok: true, source: "network", clone() { return this; } };
+let fetchImpl = async () => networkResponse;
 const focusedMessages = [];
 const client = {
   url: "https://webui.test/",
@@ -38,9 +46,12 @@ const context = {
     async open() { return cache; },
     async keys() { return []; },
     async delete() { return true; },
-    async match() { return undefined; },
+    async match() { return cacheMatchResult; },
   },
-  fetch: async () => ({ ok: true, clone() { return this; } }),
+  fetch: (...args) => fetchImpl(...args),
+  AbortController,
+  setTimeout,
+  clearTimeout,
   URL,
   Promise,
   RegExp,
@@ -51,19 +62,45 @@ const context = {
 vm.runInNewContext(source, context, { filename: "service-worker.js" });
 
 let fetchResponse;
+let fetchLifetime;
 const fetchEvent = {
   request: { method: "GET", url: "https://webui.test/app.js", mode: "cors" },
   respondWith(promise) { fetchResponse = promise; },
+  waitUntil(promise) { fetchLifetime = promise; },
 };
 handlers.get("fetch")(fetchEvent);
 assert.ok(fetchResponse, "app-shell fetch should be intercepted");
-let settled = false;
-fetchResponse.then(() => { settled = true; });
+assert.ok(fetchLifetime, "runtime cache writes should extend the fetch-event lifetime");
+assert.equal(await fetchResponse, networkResponse, "a usable network response must not wait for CacheStorage");
 await new Promise((resolve) => setImmediate(resolve));
 assert.equal(cachePutCount, 1, "network responses should begin a cache write");
-assert.equal(settled, false, "fetch completion must await the cache write lifetime");
+let lifetimeSettled = false;
+fetchLifetime.then(() => { lifetimeSettled = true; });
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(lifetimeSettled, false, "the event lifetime should still track an unfinished cache write");
 releaseCacheWrite();
-assert.equal((await fetchResponse).ok, true, "a completed cache write must preserve the network response");
+await fetchLifetime;
+assert.equal(lifetimeSettled, true, "the event lifetime should settle after the cache write");
+
+const cachedResponse = { ok: true, source: "cache" };
+cacheMatchResult = cachedResponse;
+fetchImpl = (_request, { signal }) => new Promise((_resolve, reject) => {
+  signal.addEventListener("abort", () => {
+    const error = new Error("network request timed out");
+    error.name = "AbortError";
+    reject(error);
+  }, { once: true });
+});
+let timeoutResponse;
+let timeoutLifetime;
+const timeoutEvent = {
+  request: { method: "GET", url: "https://webui.test/styles.css", mode: "cors" },
+  respondWith(promise) { timeoutResponse = promise; },
+  waitUntil(promise) { timeoutLifetime = promise; },
+};
+handlers.get("fetch")(timeoutEvent);
+assert.equal(await timeoutResponse, cachedResponse, "a timed-out app-shell request should use the offline cache");
+await timeoutLifetime;
 
 let notificationWork;
 const notificationEvent = {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "pi-webui-pwa-v59";
+const CACHE_NAME = "pi-webui-pwa-v60";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -80,16 +80,29 @@ self.addEventListener("notificationclick", (event) => {
 
 // Network-first keeps the app shell fresh after deploys regardless of
 // CACHE_NAME or ?v= cache-buster drift; the cache only serves offline clients.
-// The returned promise owns cache.put so the fetch event cannot be terminated
-// before its cache write settles. A failed cache write never hides a usable
-// network response.
-function fetchThenCache(request) {
-  return fetch(request).then((response) => {
-    if (!response.ok) return response;
-    return caches.open(CACHE_NAME)
-      .then((cache) => cache.put(request, response.clone()))
-      .then(() => response, () => response);
-  });
+// A bounded request prevents a stalled browser network service from blocking
+// startup forever. Cache writes extend the event lifetime without delaying a
+// usable network response, so a stalled CacheStorage service cannot block boot.
+const APP_SHELL_NETWORK_TIMEOUT_MS = 8_000;
+
+function fetchWithTimeout(request) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), APP_SHELL_NETWORK_TIMEOUT_MS);
+  return fetch(request, { signal: controller.signal }).finally(() => clearTimeout(timeout));
+}
+
+function fetchThenCache(event) {
+  const { request } = event;
+  const networkResponse = fetchWithTimeout(request);
+  event.waitUntil(
+    networkResponse
+      .then((response) => {
+        if (!response.ok) return undefined;
+        return caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+      })
+      .catch(() => undefined),
+  );
+  return networkResponse;
 }
 
 // ignoreSearch lets precached bare paths satisfy ?v= cache-busted requests offline.
@@ -108,10 +121,10 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
-    event.respondWith(fetchThenCache(request).catch(() => cachedAppShell(request, "/index.html")));
+    event.respondWith(fetchThenCache(event).catch(() => cachedAppShell(request, "/index.html")));
     return;
   }
 
   if (!APP_SHELL.includes(url.pathname)) return;
-  event.respondWith(fetchThenCache(request).catch(() => cachedAppShell(request)));
+  event.respondWith(fetchThenCache(event).catch(() => cachedAppShell(request)));
 });
