@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = await readFile(join(root, "public", "app.js"), "utf8");
+const transcriptRenderer = await readFile(join(root, "public", "transcript-renderer.mjs"), "utf8");
 
 const SELF_CONTAINED_THEORY_TITLES = new Map([
   [0, "Live todo-progress widget rebuild"],
@@ -155,7 +156,12 @@ futureInvariant("theory #2: streaming assistant render must not derive all views
 });
 
 futureInvariant("theory #3: streaming markdown must not full-rebuild when earlier derived text changes", () => {
-  assert.doesNotMatch(renderStreamingMarkdown, /!text\.startsWith\(state\.stableText\)[\s\S]*?block\.replaceChildren\(\)/, "retroactive todo/thinking rewrites should be confined to an unstable tail, not block.replaceChildren()");
+  const reconcileMarkdownSurface = findFunctionBody(transcriptRenderer, "reconcileMarkdownSurface");
+  assert.match(renderStreamingMarkdown, /transcriptRenderer\.reconcileMarkdownSurface\(\{[\s\S]*?stableBoundary: streamingMarkdownStableBoundary[\s\S]*?renderInto: renderMarkdownInto/, "streaming markdown must route through the coordinator's committed-block/mutable-tail reconciler");
+  assert.doesNotMatch(renderStreamingMarkdown, /block\.replaceChildren\(\)/, "streaming markdown must not replace the whole block directly");
+  assert.match(reconcileMarkdownSurface, /!value\.startsWith\(state\.stableText\)[\s\S]*?invalidateSelection: diverged/, "retroactive todo/thinking rewrites must be explicit invalidations, not silent full rebuilds");
+  assert.match(reconcileMarkdownSurface, /if \(boundary > state\.stableText\.length\)/, "committed blocks must stay mounted for append-only updates");
+  assert.match(reconcileMarkdownSurface, /for \(const node of state\.tailNodes\) node\.remove\(\)/, "only the mutable tail may be re-parsed per delta batch");
 });
 
 futureInvariant("theory #4: run-indicator activity changes must not render/scroll synchronously from token paths", () => {

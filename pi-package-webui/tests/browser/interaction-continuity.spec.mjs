@@ -74,30 +74,90 @@ async function triggerDelayedStream(page, tabId = "") {
   await expect.poll(async () => ((await page.locator("#chat").textContent() || "").length > beforeLength)).toBe(true);
 }
 
-async function selectRenderedText(locator, expected) {
-  return locator.evaluate((root, text) => {
+async function triggerTranscriptContinuity(page, scenario, tabId = "") {
+  const targetTabId = tabId || await activeTabId(page);
+  assert.ok(targetTabId, `an active terminal tab is required for the ${scenario} fixture`);
+  await api(page, `/api/prompt?tab=${encodeURIComponent(targetTabId)}`, {
+    method: "POST",
+    data: { message: `fixture transcript continuity ${scenario}`, requestId: `transcript-${scenario}-${Date.now()}-${Math.random().toString(36).slice(2)}` },
+  });
+}
+
+async function waitForFixtureSettlement(page, tabId = "") {
+  const targetTabId = tabId || await activeTabId(page);
+  await expect.poll(async () => (await api(page, `/api/state?tab=${encodeURIComponent(targetTabId)}`)).data?.isStreaming === false).toBe(true);
+}
+
+async function selectRenderedText(locator, expected, { backward = false } = {}) {
+  return locator.evaluate((root, { text, backwardSelection }) => {
     const fullText = root.textContent || "";
     const start = fullText.indexOf(text);
-    if (start < 0) return "";
+    if (start < 0) return { text: "", anchorOffset: -1, focusOffset: -1 };
     const point = (targetOffset) => {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       let consumed = 0;
+      let last = null;
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (targetOffset <= consumed + node.data.length) return { node, offset: targetOffset - consumed };
-        consumed += node.data.length;
+        const next = consumed + node.data.length;
+        if (targetOffset < next) return { node, offset: targetOffset - consumed };
+        consumed = next;
+        last = node;
       }
-      return { node: root, offset: root.childNodes.length };
+      return last ? { node: last, offset: last.data.length } : { node: root, offset: root.childNodes.length };
+    };
+    const offsetFromRoot = (node, offset) => {
+      const range = document.createRange();
+      range.selectNodeContents(root);
+      range.setEnd(node, offset);
+      return range.toString().length;
     };
     const from = point(start);
     const to = point(start + text.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    if (backwardSelection && typeof selection.setBaseAndExtent === "function") {
+      selection.setBaseAndExtent(to.node, to.offset, from.node, from.offset);
+    } else {
+      const range = document.createRange();
+      range.setStart(from.node, from.offset);
+      range.setEnd(to.node, to.offset);
+      selection.addRange(range);
+    }
+    return {
+      text: selection.toString(),
+      anchorOffset: offsetFromRoot(selection.anchorNode, selection.anchorOffset),
+      focusOffset: offsetFromRoot(selection.focusNode, selection.focusOffset),
+    };
+  }, { text: expected, backwardSelection: backward });
+}
+
+async function textRangeBox(locator, expected) {
+  return locator.evaluate((root, text) => {
+    const fullText = root.textContent || "";
+    const start = fullText.indexOf(text);
+    if (start < 0) return null;
+    const point = (targetOffset) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let consumed = 0;
+      let last = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const next = consumed + node.data.length;
+        if (targetOffset < next) return { node, offset: targetOffset - consumed };
+        consumed = next;
+        last = node;
+      }
+      return last ? { node: last, offset: last.data.length } : null;
+    };
+    const from = point(start);
+    const to = point(start + text.length);
+    if (!from || !to) return null;
     const range = document.createRange();
     range.setStart(from.node, from.offset);
     range.setEnd(to.node, to.offset);
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-    return selection.toString();
+    const box = range.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null;
   }, expected);
 }
 
@@ -217,6 +277,10 @@ test("same-context app-runner refresh preserves directional selection, control s
   await page.getByRole("button", { name: "Send input", exact: true }).click();
   await expect.poll(async () => (await terminal.textContent() || "").includes("# stdin sent (13 chars)")).toBe(true);
   await expect.poll(() => terminal.evaluate((node) => Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 1)).toBe(true);
+  const runnerTabId = await activeTabId(page);
+  await api(page, "/api/tabs", { method: "POST", data: {} });
+  await api(page, `/api/tabs/${encodeURIComponent(runnerTabId)}`, { method: "DELETE" });
+  await expect.poll(async () => (await tabIds(page)).length).toBe(1);
 });
 
 test("main output text selection survives streaming-tail and settlement rerenders", async ({ page }) => {
@@ -231,14 +295,300 @@ test("main output text selection survives streaming-tail and settlement rerender
   const streamingOutput = page.locator(".message.assistant.streaming .streaming-markdown").last();
   await expect(streamingOutput).toContainText("continuity stream");
   const selectedText = "continuity stream";
-  assert.equal(await selectRenderedText(streamingOutput, selectedText), selectedText, "the fixture must create a real browser Range inside the streaming main output");
+  assert.equal((await selectRenderedText(streamingOutput, selectedText)).text, selectedText, "the fixture must create a real browser Range inside the streaming main output");
   const originalSurface = await streamingOutput.elementHandle();
-  assert.ok(originalSurface, "the streaming selection needs an inspectable source surface");
+  const originalBubble = await streamingOutput.evaluateHandle((node) => node.closest(".message"));
+  assert.ok(originalSurface && originalBubble, "the streaming selection needs inspectable source surface and bubble nodes");
 
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
-  await expect.poll(() => originalSurface.evaluate((node) => node.isConnected), { timeout: 8_000 }).toBe(false);
   await expect(page.locator(".message.assistant:not(.streaming)").last()).toContainText("continuity stream complete");
+  await expect.poll(() => originalSurface.evaluate((node) => node.isConnected), { timeout: 8_000 }).toBe(true);
+  await expect.poll(() => originalBubble.evaluate((node) => ({ connected: node.isConnected, streaming: node.classList.contains("streaming"), itemKey: node.dataset.itemKey, messageKey: node.dataset.transcriptMessageKey })), { timeout: 8_000 }).toEqual({ connected: true, streaming: false, itemKey: "m:4", messageKey: "m:4" });
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || ""), { timeout: 8_000 }).toBe(selectedText);
+});
+
+test("backward normal-output selection keeps its direction through streaming and exact settlement", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "reverse");
+
+  const output = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  const selectedText = "backward selection literal";
+  await expect(output).toContainText(selectedText);
+  const selection = await selectRenderedText(output, selectedText, { backward: true });
+  assert.equal(selection.text, selectedText, "the browser should create a backward main-output Range");
+  assert.ok(selection.anchorOffset > selection.focusOffset, `the fixture requires a backward selection: ${JSON.stringify(selection)}`);
+  const originalSurface = await output.elementHandle();
+  assert.ok(originalSurface, "the backward Range needs an inspectable streaming surface");
+
+  await expect(output).toContainText("survives");
+  await expect.poll(() => originalSurface.evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  await expect.poll(() => page.evaluate(() => {
+    const selection = window.getSelection();
+    const root = document.querySelector(".message.assistant:not(.streaming) .streaming-markdown:last-child");
+    if (!selection || !root || !selection.anchorNode || !selection.focusNode) return false;
+    const offset = (node, value) => {
+      const range = document.createRange();
+      range.selectNodeContents(root);
+      range.setEnd(node, value);
+      return range.toString().length;
+    };
+    return offset(selection.anchorNode, selection.anchorOffset) > offset(selection.focusNode, selection.focusOffset);
+  })).toBe(true);
+});
+
+test("duplicate assistant text remains selected in its original keyed bubble during suffix reconciliation", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const text = "duplicate keyed selection literal";
+  await triggerTranscriptContinuity(page, "duplicate");
+  const bubbles = page.locator(".message.assistant:not(.streaming)", { hasText: text });
+  await expect.poll(() => bubbles.count()).toBeGreaterThan(0);
+  await waitForFixtureSettlement(page);
+  const originalBubble = bubbles.last();
+  const originalSurface = originalBubble.locator(".streaming-markdown");
+  const beforeCount = await bubbles.count();
+  const key = await originalBubble.getAttribute("data-transcript-message-key");
+  assert.ok(key, "duplicate text needs a semantic message key before suffix reconciliation");
+  assert.equal((await selectRenderedText(originalSurface, text)).text, text);
+  const originalHandle = await originalBubble.elementHandle();
+  assert.ok(originalHandle, "the original duplicate-text bubble needs an inspectable DOM identity");
+
+  await triggerTranscriptContinuity(page, "duplicate");
+  await expect.poll(() => bubbles.count()).toBeGreaterThan(beforeCount);
+  await expect.poll(() => originalHandle.evaluate((node, expectedKey) => node.isConnected && node.dataset.transcriptMessageKey === expectedKey, key)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(text);
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(text);
+});
+
+test("real pointer drag keeps the selected tail nodes connected until the drag ends", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const previousTabId = await activeTabId(page);
+  const created = await api(page, "/api/tabs", { method: "POST", data: {} });
+  const pointerTabId = created.data?.tab?.id;
+  assert.ok(pointerTabId, "pointer fixture requires an isolated replacement terminal tab");
+  await api(page, `/api/tabs/${encodeURIComponent(previousTabId)}`, { method: "DELETE" });
+  await expect.poll(async () => (await tabIds(page)).length).toBe(1);
+  await page.reload();
+  await expect.poll(() => activeTabId(page)).toBe(pointerTabId);
+  await triggerTranscriptContinuity(page, "pointer", pointerTabId);
+
+  const output = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  const selectedText = "pointer drag selection literal";
+  await expect(output).toContainText(selectedText);
+  const outputHandle = await output.elementHandle();
+  assert.ok(outputHandle, "the pointer-drag fixture requires an inspectable streaming surface");
+  await output.scrollIntoViewIfNeeded();
+  const box = await textRangeBox(output, selectedText);
+  assert.ok(box, "the pointer-drag fixture needs visible text geometry");
+  await page.mouse.move(box.left + 2, (box.top + box.bottom) / 2);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(box.right - 2, (box.top + box.bottom) / 2, { steps: 12 });
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toContain("pointer drag selection");
+    const anchor = await page.evaluateHandle(() => window.getSelection()?.anchorNode || null);
+    const focus = await page.evaluateHandle(() => window.getSelection()?.focusNode || null);
+    // The fixture sends its next destructive tail update while this native pointer gesture is held.
+    await delay(1_100);
+    await expect.poll(() => anchor.evaluate((node) => node?.isConnected === true)).toBe(true);
+    await expect.poll(() => focus.evaluate((node) => node?.isConnected === true)).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toContain("pointer drag selection");
+  } finally {
+    // Release outside #chat to prove the window-level gesture cleanup flushes
+    // deferred transcript work instead of wedging the live renderer.
+    await page.mouse.move(12, 790);
+    await page.mouse.up();
+  }
+  await expect.poll(() => outputHandle.evaluate((node) => node.isConnected && node.textContent?.includes("remains after update") === true)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toContain("pointer drag selection");
+  await waitForFixtureSettlement(page, pointerTabId);
+});
+
+test("streaming thinking selection survives a later thinking delta", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "thinking");
+
+  const thinking = page.locator(".message.thinking.streaming .thinking-text").last();
+  const selectedText = "thinking selection literal";
+  await expect(thinking).toContainText(selectedText);
+  assert.equal((await selectRenderedText(thinking, selectedText)).text, selectedText);
+  const originalSurface = await thinking.elementHandle();
+  assert.ok(originalSurface, "thinking continuity needs an inspectable streaming surface");
+  await expect(thinking).toContainText("survives");
+  await expect.poll(() => originalSurface.evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => originalSurface.evaluate((node) => node.isConnected)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+});
+
+test("thinking visibility change explicitly invalidates a live thinking selection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "thinking");
+  const thinking = page.locator(".message.thinking.streaming .thinking-text").last();
+  const selectedText = "thinking selection literal";
+  await expect(thinking).toContainText(selectedText);
+  assert.equal((await selectRenderedText(thinking, selectedText)).text, selectedText);
+  const originalSurface = await thinking.elementHandle();
+  try {
+    await page.keyboard.press("Control+t");
+    await expect(page.locator("#thinkingVisibilityToggle")).not.toBeChecked();
+    await expect.poll(() => originalSurface.evaluate((node) => node.isConnected)).toBe(false);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+  } finally {
+    if (!(await page.locator("#thinkingVisibilityToggle").isChecked())) await page.keyboard.press("Control+t");
+    await expect(page.locator("#thinkingVisibilityToggle")).toBeChecked();
+    await waitForFixtureSettlement(page);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+  }
+});
+
+test("selectable live tool output restores an unchanged range across body reconciliation", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "tool");
+
+  const toolBody = page.locator(".message.toolExecution .message-body").last();
+  const selectedText = "tool selection literal";
+  await expect(toolBody).toContainText("unselected revision one");
+  assert.equal((await selectRenderedText(toolBody, selectedText)).text, selectedText);
+  const bodyHandle = await toolBody.elementHandle();
+  assert.ok(bodyHandle, "tool selection continuity needs an inspectable semantic surface");
+  await expect(toolBody).toContainText("unselected revision two");
+  await expect.poll(() => bodyHandle.evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  await waitForFixtureSettlement(page);
+});
+
+test("authoritative divergence clears a stale live-output selection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "authoritative");
+
+  const output = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  const selectedText = "authoritative selection literal";
+  await expect(output).toContainText(selectedText);
+  assert.equal((await selectRenderedText(output, selectedText)).text, selectedText);
+  await expect(page.locator(".message.assistant:not(.streaming)").last()).toContainText("authoritative replacement text");
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+  await waitForFixtureSettlement(page);
+});
+
+test("high-cadence output preserves the selected committed block through burst updates and settlement", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "cadence");
+
+  const output = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  const selectedText = "high cadence selection literal";
+  await expect(output).toContainText(selectedText);
+  const committedBlock = output.locator('[data-transcript-block="committed"]').first();
+  await expect(committedBlock).toBeVisible();
+  const committedHandle = await committedBlock.elementHandle();
+  assert.ok(committedHandle, "the cadence fixture requires a committed keyed block");
+  assert.equal((await selectRenderedText(output, selectedText)).text, selectedText);
+  await expect(output).toContainText("c95");
+  await expect.poll(() => committedHandle.evaluate((node) => node.isConnected && node.dataset.transcriptBlock === "committed")).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => committedHandle.evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+});
+
+test("30-second polling and sustained cadence preserve one committed selection", async ({ page }) => {
+  test.setTimeout(50_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "dwell");
+
+  const output = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  const selectedText = "thirty second selection literal";
+  await expect(output).toContainText(selectedText);
+  const committedBlock = output.locator('[data-transcript-block="committed"]').first();
+  await expect(committedBlock).toBeVisible();
+  const outputHandle = await output.elementHandle();
+  const committedHandle = await committedBlock.elementHandle();
+  assert.ok(outputHandle && committedHandle, "the dwell fixture requires stable surface and committed-block identities");
+  assert.equal((await selectRenderedText(output, selectedText)).text, selectedText);
+  for (let checkpoint = 0; checkpoint < 6; checkpoint += 1) {
+    await delay(5_000);
+    await expect.poll(() => committedHandle.evaluate((node) => node.isConnected && node.dataset.transcriptBlock === "committed")).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  }
+  await expect.poll(() => outputHandle.evaluate((node) => node.isConnected && node.textContent?.includes("d299") === true)).toBe(true);
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => committedHandle.evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+});
+
+test("output-mode transition explicitly invalidates the prior normal-output selection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "mode");
+  const normalOutput = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  const selectedText = "output mode transition literal";
+  await expect(normalOutput).toContainText(selectedText);
+  assert.equal((await selectRenderedText(normalOutput, selectedText)).text, selectedText);
+  const originalSurface = await normalOutput.elementHandle();
+  await expect(page.locator(".message.compact-live-output .compact-live-text").last()).toContainText(selectedText);
+  await expect.poll(() => originalSurface.evaluate((node) => node.isConnected)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+});
+
+test("Mermaid async rendering leaves selected source nodes connected", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  let delayedMermaidRequest = false;
+  await page.route("**/vendor/mermaid/**", async (route) => {
+    if (!delayedMermaidRequest) {
+      delayedMermaidRequest = true;
+      await delay(600);
+    }
+    await route.continue();
+  });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "mermaid");
+
+  const source = page.locator(".markdown-mermaid-source code").last();
+  await expect(source).toContainText("graph TD");
+  await source.evaluate((node) => { node.closest("details").open = true; });
+  assert.equal((await selectRenderedText(source, "graph TD")).text, "graph TD");
+  const sourceHandle = await source.elementHandle();
+  assert.ok(sourceHandle, "Mermaid source selection needs an inspectable source node");
+  const diagram = page.locator(".markdown-mermaid-diagram").last();
+  await expect(diagram).toHaveClass(/rendered/, { timeout: 15_000 });
+  await expect.poll(() => sourceHandle.evaluate((node) => node.isConnected)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("graph TD");
+  await waitForFixtureSettlement(page);
+});
+
+test("tab navigation clears transcript selection and never restores it into another context", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const initialOutput = page.locator(".message.assistant .markdown-body").first();
+  await expect(initialOutput).toContainText("fake answer");
+  assert.equal((await selectRenderedText(initialOutput, "fake answer")).text, "fake answer");
+  await page.locator("#newTabButton").click();
+  await page.locator("#newTabCurrentDirectoryButton").click();
+  await expect.poll(async () => (await tabIds(page)).length).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+  const originalTab = page.locator("#tabBar [role=\"tab\"]").first();
+  const originalTabId = await originalTab.evaluate((node) => node.closest("[data-tab-id]")?.dataset.tabId || "");
+  await originalTab.click();
+  await expect(page.locator("#promptInput")).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
+  const extraTabId = (await tabIds(page)).find((id) => id !== originalTabId);
+  assert.ok(extraTabId, "navigation fixture should create a distinct tab to clean up");
+  await api(page, `/api/tabs/${encodeURIComponent(extraTabId)}`, { method: "DELETE" });
+  await expect.poll(async () => (await tabIds(page)).length).toBe(1);
 });
 
 test("semantic tooltip, held pointer, open dropdown, and stale tab contexts survive only when valid", async ({ page }) => {
@@ -311,4 +661,31 @@ test("semantic tooltip, held pointer, open dropdown, and stale tab contexts surv
   await otherTabButton.click();
   await expect(page.locator("#promptInput")).toBeFocused();
   await expect(page.locator(".app-runner-stdin-input")).toHaveCount(0);
+});
+
+test("compact live output keeps the selected Text node through repeated flushes", async ({ page }) => {
+  await api(page, "/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "compact-v1" } });
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(baseURL);
+    await triggerDelayedStream(page);
+
+    const compactOutput = page.locator(".message.compact-live-output .compact-live-text").last();
+    const selectedText = "continuity";
+    await expect(compactOutput).toContainText(selectedText);
+    assert.equal((await selectRenderedText(compactOutput, selectedText)).text, selectedText);
+    const textNode = await compactOutput.evaluateHandle((node) => node.firstChild);
+    const surfaceHandle = await compactOutput.elementHandle();
+    const bubbleHandle = await compactOutput.locator("xpath=ancestor::article[1]").elementHandle();
+    assert.ok(surfaceHandle && bubbleHandle, "compact settlement needs stable surface and bubble identities");
+    await expect(compactOutput).toContainText("continuity stream");
+    await expect.poll(() => textNode.evaluate((node) => node?.isConnected === true)).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+    await waitForFixtureSettlement(page);
+    await expect.poll(() => surfaceHandle.evaluate((node) => node.isConnected && node.classList.contains("markdown-body"))).toBe(true);
+    await expect.poll(() => bubbleHandle.evaluate((node) => node.isConnected && !node.classList.contains("streaming") && /^m:\d+$/.test(node.dataset.itemKey || ""))).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  } finally {
+    await api(page, "/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
+  }
 });

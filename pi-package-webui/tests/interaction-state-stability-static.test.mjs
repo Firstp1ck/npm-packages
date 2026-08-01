@@ -5,15 +5,16 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = await readFile(join(root, "public", "app.js"), "utf8");
+const renderer = await readFile(join(root, "public", "transcript-renderer.mjs"), "utf8");
 
-function functionBody(name) {
+function functionBody(name, source = app) {
   const signature = new RegExp(`function\\s+${name}\\s*\\(`, "m");
-  const match = signature.exec(app);
+  const match = signature.exec(source);
   assert.ok(match, `${name} should remain a standalone frontend helper`);
   let parenDepth = 0;
   let openBrace = -1;
-  for (let index = match.index + match[0].length - 1; index < app.length; index += 1) {
-    const char = app[index];
+  for (let index = match.index + match[0].length - 1; index < source.length; index += 1) {
+    const char = source[index];
     if (char === "(") parenDepth += 1;
     else if (char === ")") parenDepth -= 1;
     else if (char === "{" && parenDepth === 0) {
@@ -23,12 +24,12 @@ function functionBody(name) {
   }
   assert.notEqual(openBrace, -1, `${name} body should open`);
   let depth = 0;
-  for (let index = openBrace; index < app.length; index += 1) {
-    const char = app[index];
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index];
     if (char === "{") depth += 1;
     else if (char === "}") {
       depth -= 1;
-      if (depth === 0) return app.slice(openBrace + 1, index);
+      if (depth === 0) return source.slice(openBrace + 1, index);
     }
   }
   assert.fail(`${name} body should close`);
@@ -125,6 +126,129 @@ assert.match(matchChatText, /range\.toString\(\) === snapshot\.text/, "main-outp
 assert.match(restoreChatText, /snapshot\.contextKey !== chatTextSelectionContextKey\(\)[\s\S]*chatTextSelectionCandidates\(snapshot\)[\s\S]*candidates\.includes\(currentAnchorSurface\)[\s\S]*currentText && currentAnchorSurface && currentFocusSurface[\s\S]*setBaseAndExtent/, "main-output selection restoration must reject stale contexts and meaningful newer selections while preserving anchor direction");
 assert.match(renderStreamingMarkdown, /captureChatTextSelection\(block\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "streaming Markdown tail replacement must preserve a still-valid browser Range");
 assert.match(renderAllMessages, /captureChatTextSelection\(\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "authoritative transcript rerenders must preserve a still-valid main-output Range");
-assert.match(refreshMessages, /const selectionSnapshot = captureChatTextSelection\(\);[\s\S]*resetStreamBubble\(\)[\s\S]*restoreStreamRenderAfterChatRebuild\(\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "stream settlement must carry selection from the live output into the matching authoritative message");
+assert.match(refreshMessages, /const selectionSnapshot = captureChatTextSelection\(\);[\s\S]*adoptedOutput = adoptLiveAssistantBubble\(latestMessages\)[\s\S]*resetStreamBubble\(\{ preserveCompact: adoptedOutput === "compact" \}\)[\s\S]*restoreStreamRenderAfterChatRebuild\(\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "stream settlement must adopt matching normal or compact output before reset and retain exact fallback selection");
+
+// --- Transcript mutation coordinator contracts (keyed DOM ownership) ---
+
+const renderThinkingMarkdown = functionBody("renderThinkingMarkdown");
+const flushCompactLiveOutput = functionBody("flushCompactLiveOutput");
+const updateLiveToolCard = functionBody("updateLiveToolCard");
+const renderLiveToolRun = functionBody("renderLiveToolRun");
+const renderMermaidDiagram = functionBody("renderMermaidDiagram");
+const renderStreamingToolCallCard = functionBody("renderStreamingToolCallCard");
+const adoptLiveAssistantBubble = functionBody("adoptLiveAssistantBubble");
+const authoritativeAssistantTextForAdoption = functionBody("authoritativeAssistantTextForAdoption");
+const resetChatOutput = functionBody("resetChatOutput");
+const ownTranscriptBubble = functionBody("ownTranscriptBubble");
+const transcriptSurfaceKind = functionBody("transcriptSurfaceKind");
+const ensureStreamBubble = functionBody("ensureStreamBubble");
+const ensureStreamingThinkingBubble = functionBody("ensureStreamingThinkingBubble");
+const ensureCompactTextBubble = functionBody("ensureCompactTextBubble");
+const ensureCompactThinkingBubble = functionBody("ensureCompactThinkingBubble");
+const renderCompactToolShell = functionBody("renderCompactToolShell");
+const removeLiveTranscriptBubble = functionBody("removeLiveTranscriptBubble");
+const removeStreamingThinkingBubble = functionBody("removeStreamingThinkingBubble");
+const removeStreamBubble = functionBody("removeStreamBubble");
+const removeCompactLiveBubble = functionBody("removeCompactLiveBubble");
+const finalizeAdoptedAssistantBubble = functionBody("finalizeAdoptedAssistantBubble");
+const prunePendingTranscriptAdoptions = functionBody("prunePendingTranscriptAdoptions");
+
+const commitTranscriptMutation = functionBody("commitTranscriptMutation", renderer);
+const applyMutation = functionBody("applyMutation", renderer);
+const reconcileMarkdownSurface = functionBody("reconcileMarkdownSurface", renderer);
+const updateTextSurface = functionBody("updateTextSurface", renderer);
+const ownMessage = functionBody("ownMessage", renderer);
+const ownSurface = functionBody("ownSurface", renderer);
+const ownBlocks = functionBody("ownBlocks", renderer);
+const restoreCoordinatedSelection = functionBody("restoreSelection", renderer);
+const rangeForSnapshot = functionBody("rangeForSnapshot", renderer);
+const coordinatedTextPoint = functionBody("textPoint", renderer);
+const logMutation = functionBody("logMutation", renderer);
+
+// Coordinator import and initialization.
+assert.match(app, /import \{ createTranscriptRenderer \} from "\.\/transcript-renderer\.mjs";/, "app must import the transcript mutation coordinator module");
+assert.match(app, /const transcriptRenderer = createTranscriptRenderer\(\{[\s\S]*?chat: elements\.chat[\s\S]*?contextKey: \(\) => chatTextSelectionContextKey\(\)[\s\S]*?\}\);/, "the coordinator must be initialized once against #chat with the transcript context key");
+assert.doesNotMatch(renderer, /^\s*import\s/m, "the transcript renderer must stay dependency-free");
+assert.match(renderer, /export function createTranscriptRenderer\(/, "the coordinator must be the module's exported factory");
+assert.match(renderer, /if \(!chat\) throw new Error/, "the coordinator must require the transcript root");
+
+// Semantic message/surface/block ownership.
+assert.match(ownMessage, /dataset\.transcriptMessageKey[\s\S]*dataset\.transcriptRole/, "messages must receive durable semantic keys and roles");
+assert.match(ownSurface, /dataset\.transcriptSurface = kind[\s\S]*dataset\.transcriptSurfaceKey/, "surfaces must receive durable semantic kind and identity keys");
+assert.match(ownBlocks, /dataset\.transcriptBlockKey[\s\S]*dataset\.transcriptBlock = tail \? "mutable-tail" : "committed"/, "streamed Markdown blocks must carry stable committed-block versus mutable-tail identity");
+assert.match(transcriptSurfaceKind, /role === "thinking"[\s\S]*"assistant-thinking"[\s\S]*role === "toolExecution"[\s\S]*"tool-execution"[\s\S]*role === "toolResult"[\s\S]*"tool-result"[\s\S]*role === "compactionSummary"[\s\S]*"compaction-summary"[\s\S]*return "assistant-final"/, "surface kinds must cover assistant, thinking, tool execution/result, and compaction surfaces");
+assert.match(ownTranscriptBubble, /transcriptRenderer\.ownMessage\(bubble, \{ key: itemKey \|\| bubble\.dataset\.itemKey \|\| fallbackKey, role \}\)[\s\S]*surfaces\.forEach\(\(surface, index\) => transcriptRenderer\.ownSurface/, "every transcript bubble and its selectable surfaces must receive semantic ownership");
+assert.match(ensureStreamBubble, /transcriptRenderer\.ownSurface\(streamText, \{ messageKey: "live:assistant", kind: "assistant-final", segment: "0" \}\)/, "the live assistant surface must be semantically owned");
+assert.match(ensureStreamingThinkingBubble, /transcriptRenderer\.ownSurface\(streamThinking, \{ messageKey: "live:thinking", kind: "assistant-thinking", segment: "0" \}\)/, "the live thinking surface must be semantically owned");
+assert.match(ensureCompactTextBubble, /transcriptRenderer\.ownSurface\(compactTextNode, \{ messageKey: "live:compact-output", kind: "compact-output", segment: "0" \}\)/, "the compact live-output surface must be semantically owned");
+assert.match(ensureCompactThinkingBubble, /transcriptRenderer\.ownSurface\(compactThinkingNode, \{ messageKey: "live:compact-thinking", kind: "assistant-thinking", segment: "0" \}\)/, "the compact thinking surface must be semantically owned");
+assert.match(renderCompactToolShell, /transcriptRenderer\.ownMessage\(bubble, \{ key: `live:compact-tool:\$\{id\}`, role: "toolExecution" \}\)[\s\S]*transcriptRenderer\.ownSurface\(body, \{ messageKey: `live:compact-tool:\$\{id\}`, kind: "tool-execution"/, "compact tool shells must receive semantic message and surface ownership");
+
+// Normal/compact/thinking/tool/Mermaid routing through the coordinator.
+assert.match(renderStreamingMarkdown, /transcriptRenderer\.reconcileMarkdownSurface\(\{[\s\S]*?kind: "assistant-final"[\s\S]*?stableBoundary: streamingMarkdownStableBoundary[\s\S]*?renderInto: renderMarkdownInto/, "normal streaming output must route through the coordinator committed-block reconciler");
+assert.match(renderThinkingMarkdown, /transcriptRenderer\.reconcileMarkdownSurface\(\{[\s\S]*?kind: "assistant-thinking"[\s\S]*?stableBoundary: streamingMarkdownStableBoundary[\s\S]*?renderInto: renderMarkdownInto/, "streaming thinking must share the same committed-block reconciler");
+assert.match(flushCompactLiveOutput, /transcriptRenderer\.updateTextSurface\(\{[\s\S]*?surface: compactTextNode[\s\S]*?kind: "compact-output"/, "compact live output must update a stable text surface through the coordinator");
+assert.match(flushCompactLiveOutput, /renderThinkingMarkdown\(compactThinkingNode, compactLiveState\.thinking\)/, "compact thinking must share the thinking reconciler path");
+assert.match(updateLiveToolCard, /transcriptRenderer\.ownMessage\(bubble, \{ key: messageKey, role: "toolExecution" \}\)[\s\S]*transcriptRenderer\.ownSurface\(body, \{ messageKey, kind: "tool-execution"[\s\S]*transcriptRenderer\.commitTranscriptMutation\(\{[\s\S]*?kind: "reconcile"[\s\S]*?transcriptRenderer\.replaceChildren\(body\)[\s\S]*?transcriptRenderer\.ownSurface\(body, \{ messageKey, kind: "tool-execution"/, "live tool body must have semantic ownership before selection capture and remain inside one coordinator-owned transaction");
+assert.match(renderLiveToolRun, /key: `tool-replace:\$\{id\}`[\s\S]*kind: "reconcile"[\s\S]*mutate: \(\) => existing\.replaceWith\(created\.bubble\)/, "live tool card replacement must be a coordinator transaction");
+assert.match(renderMermaidDiagram, /transcriptRenderer\.commitTranscriptMutation\(\{[\s\S]*?kind: "destructive"[\s\S]*?transcriptRenderer\.replaceHtml\(diagram, svg\)/, "async Mermaid completion must register its destructive mutation with the coordinator");
+assert.match(renderStreamingToolCallCard, /transcriptRenderer\.updateTextSurface\(\{[\s\S]*?surface: streamToolCallText[\s\S]*?kind: "tool-execution"/, "streaming tool-call text must update through the coordinator text surface");
+assert.match(removeLiveTranscriptBubble, /transcriptRenderer\.commitTranscriptMutation\(\{[\s\S]*kind: "authoritative"[\s\S]*invalidateSelection: true[\s\S]*mutate: \(\) => bubble\.remove\(\)/, "presentation removals must be explicit coordinator-owned invalidations rather than raw transcript mutation");
+assert.match(removeCompactLiveBubble, /removeLiveTranscriptBubble\(bubble, messageKey\)/, "compact removals must share the authoritative live-output removal gateway");
+assert.match(removeStreamingThinkingBubble, /removeLiveTranscriptBubble\(streamThinkingBubble, "thinking"\)/, "thinking visibility changes must use the authoritative removal gateway");
+assert.match(removeStreamBubble, /removeLiveTranscriptBubble\(streamBubble, "assistant"\)/, "normal-to-compact transitions must use the authoritative removal gateway");
+for (const [name, source] of [["compact", removeCompactLiveBubble], ["thinking", removeStreamingThinkingBubble], ["assistant", removeStreamBubble]]) {
+  assert.doesNotMatch(source, /\.remove\(\)/, `${name} presentation removal must not bypass the coordinator helper`);
+}
+
+// Stable compact text-node updates.
+assert.match(updateTextSurface, /_transcriptTextNode[\s\S]*node\.appendData\(value\.slice\(node\.data\.length\)\)[\s\S]*else node\.data = value/, "text surfaces must reuse one stable Text node and append in place instead of replacing it");
+
+// Stable committed blocks and a bounded mutable tail.
+assert.match(reconcileMarkdownSurface, /if \(boundary > state\.stableText\.length\)/, "committed blocks must never be re-rendered for append-only input");
+assert.match(reconcileMarkdownSurface, /for \(const node of state\.tailNodes\) node\.remove\(\)/, "only the mutable tail may be detached during streaming");
+assert.match(reconcileMarkdownSurface, /const diverged = !!state && !value\.startsWith\(state\.stableText\);[\s\S]*invalidateSelection: diverged/, "authoritative divergence must explicitly invalidate selection rather than silently rebuilding");
+
+// Live settlement adoption.
+assert.match(authoritativeAssistantTextForAdoption, /if \(finalParts\.length !== 1\) return null;/, "multi-part settlement must not be fuzzy-adopted onto a single live surface");
+assert.match(adoptLiveAssistantBubble, /compactCandidate[\s\S]*normalCandidate[\s\S]*authoritativeText !== candidate\.text[\s\S]*transcriptRenderer\.ownMessage\(candidate\.bubble, \{ key, role: "assistant" \}\)[\s\S]*transcriptRenderer\.ownSurface\(candidate\.surface[\s\S]*pendingTranscriptAdoptions\.set\(key, candidate\.bubble\)/, "live settlement adoption requires exact authoritative agreement and re-keys the same normal or compact bubble");
+assert.match(renderAllMessages, /const commit = transcriptRenderer\.commitTranscriptMutation\(\{[\s\S]*?kind: forceRebuild \? "authoritative" : "reconcile"[\s\S]*?invalidateSelection: forceRebuild[\s\S]*?pendingTranscriptAdoptions\.get\(entry\.key\)/, "authoritative reconciliation must be one coordinator transaction that adopts matching live bubbles");
+assert.match(renderAllMessages, /if \(commit\.deferred\) return;/, "a deferred transcript commit must not run post-mutation restore work");
+assert.match(refreshMessages, /adoptedOutput = adoptLiveAssistantBubble\(latestMessages\);[\s\S]*resetStreamBubble\(\{ preserveCompact: adoptedOutput === "compact" \}\)/, "settlement must try exact live-bubble adoption and preserve a matching compact owner through reset");
+assert.match(finalizeAdoptedAssistantBubble, /compact-live-text[\s\S]*classList\.add\("markdown-body", "compact-transcript-text"\)[\s\S]*transcriptRenderer\.reconcileMarkdownSurface\(\{[\s\S]*stableBoundary: \(value\) => value\.length/, "an adopted compact surface must retain its DOM owner while final Markdown reconciles in place");
+assert.match(prunePendingTranscriptAdoptions, /for \(const \[key, bubble\] of pendingTranscriptAdoptions\)[\s\S]*!bubble\?\.isConnected[\s\S]*pendingTranscriptAdoptions\.delete\(key\)/, "disconnected unconsumed adoptions must not retain detached transcript trees");
+
+// Bounded mutation logging.
+assert.match(renderer, /MUTATION_LOG_LIMIT = \d+/, "the coordinator must bound its mutation log");
+assert.match(logMutation, /mutationLog\.push\([\s\S]*mutationLog\.length > MUTATION_LOG_LIMIT[\s\S]*mutationLog\.splice/, "the mutation log must drop oldest entries once the bound is exceeded");
+
+// Pointer-selection sessions and destructive-mutation coalescing.
+assert.match(renderer, /document\.addEventListener\("pointerdown"[\s\S]*chat\.addEventListener\("pointerdown"[\s\S]*window\.addEventListener\("pointerup"[\s\S]*window\.addEventListener\("pointercancel"[\s\S]*window\.addEventListener\("blur"[\s\S]*document\.addEventListener\("selectionchange"[\s\S]*chat\.addEventListener\("copy"/, "the coordinator must track transcript pointer selection while ending gestures released outside #chat or the window");
+assert.match(commitTranscriptMutation, /DESTRUCTIVE_KINDS\.has\(kind\)[\s\S]*!invalidateSelection[\s\S]*pointerSession[\s\S]*selectedSurfaceIntersects\(surfaces\)[\s\S]*deferredMutations\.set\(key, entry\)/, "destructive commits intersecting an active pointer drag must coalesce latest-wins until the gesture ends");
+
+// Exact single-surface fallback and explicit invalidation.
+assert.match(applyMutation, /if \(context !== contextKey\(\)\) return \{ applied: false, stale: true \}/, "stale-context mutations must be rejected");
+assert.match(applyMutation, /selectionSnapshot\(\) \|\| selectionSession\?\.snapshot \|\| null/, "coordinator mutations must retain the last exact semantic bookmark when an adjacent render step already detached the native range");
+assert.match(rangeForSnapshot, /range\.toString\(\) === snapshot\.text/, "fallback restoration must require exact text evidence");
+assert.match(rangeForSnapshot, /surfaceText\.indexOf\(snapshot\.text\)[\s\S]*surfaceText\.indexOf\(snapshot\.text, exactStart \+ 1\) !== -1[\s\S]*anchorOffset = backward \? exactEnd : exactStart/, "structurally shifted selections may remap only to one exact occurrence in the same semantic surface while preserving direction");
+assert.match(coordinatedTextPoint, /target < next \|\| \(target === next && !forwardAffinity\)/, "selection starts at text-node boundaries must bind to the next node while ends retain backward affinity, avoiding implicit block newlines");
+assert.match(restoreCoordinatedSelection, /snapshot\.context !== contextKey\(\)[\s\S]*!forceRemap && currentText === snapshot\.text[\s\S]*currentText && currentAnchor && currentFocus[\s\S]*snapshot\.anchorOffset > snapshot\.focusOffset[\s\S]*setBaseAndExtent[\s\S]*selection\.addRange\(match\.range\)/, "fallback restoration must reject stale contexts, preserve backward direction, and use the exact validated Range for forward selection");
+assert.match(applyMutation, /intersectsSelection = selectedSurfaceIntersects\(surfaces\)[\s\S]*forceRemap = DESTRUCTIVE_KINDS\.has\(kind\) && intersectsSelection[\s\S]*restoreSelection\(snapshot, \{ forceRemap \}\)/, "destructive mutations intersecting a captured selection must remap a fresh semantic Range instead of trusting transient browser boundaries");
+assert.match(applyMutation, /restoredSelection && forceRemap && typeof requestAnimationFrame[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*selectionIntentRevision !== restoreIntentRevision[\s\S]*restoreSelection\(snapshot, \{ forceRemap: true \}\)/, "destructive selection restoration must survive the browser's deferred Range adjustment without clobbering a newer pointer or keyboard selection");
+assert.match(renderer, /function invalidateSelection\(\{ surfaces = \[\] \} = \{\}\) \{[\s\S]*clearSelectionFor\(surfaces\)/, "explicit invalidation must be a first-class coordinator operation");
+
+// Prevention of unapproved direct destructive transcript mutations.
+assert.doesNotMatch(app, /elements\.chat\.(?:replaceChildren|replaceWith)\(|elements\.chat\.innerHTML\s*=/, "no direct destructive #chat mutation may bypass the coordinator");
+assert.match(resetChatOutput, /transcriptRenderer\.replaceChildren\(elements\.chat/, "full chat resets must go through the coordinator");
+for (const [name, source] of [
+  ["streaming markdown", renderStreamingMarkdown],
+  ["streaming thinking", renderThinkingMarkdown],
+  ["compact live output", flushCompactLiveOutput],
+  ["authoritative reconciliation", renderAllMessages],
+  ["live tool card", updateLiveToolCard],
+  ["mermaid renderer", renderMermaidDiagram],
+]) {
+  assert.doesNotMatch(source, /(?<!transcriptRenderer)\.(?:replaceChildren|replaceWith|replaceHtml)\(|\.innerHTML\s*=/, `${name} must not perform unapproved direct destructive transcript mutations`);
+}
 
 console.log("interaction-state-stability-static.test.mjs passed");

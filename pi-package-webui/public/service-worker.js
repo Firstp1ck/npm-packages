@@ -1,4 +1,4 @@
-const CACHE_NAME = "pi-webui-pwa-v60";
+const CACHE_NAME = "pi-webui-pwa-v61";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -11,6 +11,7 @@ const APP_SHELL = [
   "/guided-git-command-state.mjs",
   "/guided-git-review-state.mjs",
   "/fast-output-live.mjs",
+  "/transcript-renderer.mjs",
   "/subagent-launch-slot-state.mjs",
   "/subagent-gate-visibility.mjs",
   "/workflow-status-stack.mjs",

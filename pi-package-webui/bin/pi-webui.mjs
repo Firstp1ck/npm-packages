@@ -7908,7 +7908,7 @@ async function readBundledThemes() {
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "mobile-shell-state.mjs", "issue-wizard-state.mjs", "issue-bot-client.mjs", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  if (!["index.html", "app.js", "mobile-shell-state.mjs", "issue-wizard-state.mjs", "issue-bot-client.mjs", "fast-output-live.mjs", "transcript-renderer.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
   return name;
 }
 

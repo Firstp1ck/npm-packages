@@ -282,6 +282,128 @@ function runContinuityDelayedStream() {
   runScriptedSteps(steps);
 }
 
+function runTranscriptContinuityScenario(scenario) {
+  scriptedStreaming = true;
+  const run = ++continuityRun;
+  const tagged = (payload) => ({ ...payload, continuityRun: run, continuityScenario: scenario });
+  const steps = [];
+  const start = () => steps.push(
+    { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "agent_start" })) },
+    { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } })) },
+  );
+  const finish = (message, afterMs = 160) => {
+    if (message) {
+      steps.push({ afterMs, run: () => {
+        const settledMessage = typeof message === "function" ? message() : message;
+        appendDynamicMessage(settledMessage);
+        emitScriptedEvent(tagged({ type: "message_end", message: settledMessage }));
+      } });
+    }
+    steps.push(
+      { afterMs: message ? 60 : afterMs, run: () => emitScriptedEvent(tagged({ type: "agent_end" })) },
+      { afterMs: 20, run: () => {
+        scriptedStreaming = false;
+        emitScriptedEvent(tagged({ type: "agent_settled" }));
+      } },
+    );
+  };
+  const assistant = (text) => ({ role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() });
+
+  if (scenario === "reverse") {
+    const text = "backward selection literal survives";
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "backward selection literal" } })) },
+      { afterMs: 650, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " survives" } })) },
+    );
+    finish(assistant(text), 400);
+  } else if (scenario === "duplicate") {
+    const text = "duplicate keyed selection literal";
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })) });
+    finish(assistant(text), 400);
+  } else if (scenario === "pointer") {
+    const text = "pointer drag selection literal remains after update";
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "pointer drag selection literal" } })) },
+      { afterMs: 900, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " remains after update" } })) },
+    );
+    finish(assistant(text), 1_000);
+  } else if (scenario === "thinking") {
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "thinking selection literal" } })) },
+      { afterMs: 650, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: " survives" } })) },
+    );
+    finish({ role: "assistant", content: [{ type: "thinking", thinking: "thinking selection literal survives" }, { type: "text", text: "thinking final answer" }], timestamp: Date.now() }, 450);
+  } else if (scenario === "tool") {
+    const toolCallId = `continuity-tool-${run}`;
+    steps.push(
+      { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "agent_start" })) },
+      { afterMs: 70, run: () => emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "continuity.txt" } })) },
+      { afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: "tool selection literal\nunselected revision one" }] } })) },
+      { afterMs: 700, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: "tool selection literal\nunselected revision two" }] } })) },
+      { afterMs: 600, run: () => emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "tool selection literal\nunselected revision two" }] } })) },
+    );
+    finish(null, 120);
+  } else if (scenario === "authoritative") {
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "authoritative selection literal" } })) });
+    finish(assistant("authoritative replacement text"), 700);
+  } else if (scenario === "cadence") {
+    const prefix = "high cadence selection literal\n\n";
+    let finalText = prefix;
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: prefix } })) });
+    steps.push({ afterMs: 800, run: () => {
+      for (let index = 0; index < 96; index += 1) {
+        const delta = `c${String(index).padStart(2, "0")} `;
+        finalText += delta;
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } }));
+      }
+    } });
+    finish(() => assistant(finalText), 500);
+  } else if (scenario === "dwell") {
+    const prefix = "thirty second selection literal anchor\n\n";
+    let finalText = prefix;
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: prefix } })) });
+    for (let index = 0; index < 300; index += 1) {
+      const delta = `d${String(index).padStart(3, "0")} `;
+      finalText += delta;
+      steps.push({ afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } })) });
+    }
+    finish(() => assistant(finalText), 200);
+  } else if (scenario === "mode") {
+    const text = "output mode transition literal";
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })) },
+      { afterMs: 3_000, run: () => emitScriptedEvent(tagged({ type: "webui_output_mode", protocolVersion: 1, activeMode: "compact-v1" })) },
+    );
+    finish(assistant(text), 1_200);
+  } else if (scenario === "mermaid") {
+    const text = "Mermaid source selection literal\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n";
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })) });
+    finish(assistant(text), 1800);
+  } else {
+    return false;
+  }
+  runScriptedSteps(steps);
+  return true;
+}
+
+function handleTranscriptContinuityPrompt(command, base) {
+  if (!continuityModeEnabled) return false;
+  const match = String(command.message || "").trim().match(/^fixture transcript continuity (reverse|duplicate|pointer|thinking|tool|authoritative|cadence|dwell|mode|mermaid)$/);
+  if (!match) return false;
+  appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
+  respond({ ...base, data: { output: `fake transcript continuity ${match[1]} accepted`, pid: process.pid } });
+  return runTranscriptContinuityScenario(match[1]);
+}
+
 function handleMobileBlockerPrompt(command, base) {
   if (String(command.message || "").trim() !== "fixture mobile blocker") return false;
   respond({ ...base, data: { output: "mobile blocker fixture accepted" } });
@@ -861,6 +983,7 @@ rl.on("line", (line) => {
       if (handleCodexFastModePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
       if (handleMobileBlockerPrompt(command, base)) return;
+      if (handleTranscriptContinuityPrompt(command, base)) return;
       if (handleContinuityPrompt(command, base)) return;
       if (handleLargePayloadPrompt(command, base)) return;
       if (handleSseFloodPrompt(command, base)) return;

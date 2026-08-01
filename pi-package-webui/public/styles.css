@@ -2136,8 +2136,9 @@ body.embedded-split .side-panel-backdrop {
   border-radius: 0.78rem;
   background: rgba(var(--ctp-crust-rgb), 0.42);
 }
-.model-search-result {
+.side-panel-controls .model-search-result {
   display: grid;
+  align-content: center;
   gap: 0.12rem;
   width: 100%;
   min-height: 3.2rem;
@@ -2157,7 +2158,7 @@ body.embedded-split .side-panel-backdrop {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: 1.3;
+  line-height: 1.4;
 }
 .model-search-result-main {
   font-weight: 900;
@@ -4207,18 +4208,24 @@ button.subagent-gate-attempt:focus-visible {
     width: 100%;
     min-width: 0;
     min-height: 3.55rem;
-    padding: 0.46rem 0.2rem;
+    padding: 0.46rem 0.05rem;
   }
   body.terminal-tabs-left .terminal-sidebar-action-label {
     display: block;
+    width: 122%;
+    max-width: none;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
     color: currentColor;
     font-size: var(--text-xs);
     font-weight: 800;
     line-height: 1.1;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: normal;
+    text-align: center;
+    text-overflow: clip;
+    transform: scaleX(0.82);
+    transform-origin: center;
+    white-space: normal;
   }
   body.terminal-tabs-left .terminal-sidebar-action-label-unsplit,
   body.terminal-tabs-left .terminal-split-button[aria-pressed="true"] .terminal-sidebar-action-label-split {

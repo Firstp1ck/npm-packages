@@ -8,6 +8,7 @@ import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
+import { createTranscriptRenderer } from "./transcript-renderer.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -447,6 +448,13 @@ const elements = {
   statsOverlayBody: $("#statsOverlayBody"),
   statsOverlayCloseButton: $("#statsOverlayCloseButton"),
 };
+
+// Transcript content keeps its own DOM ownership and selection policy. The
+// controller below continues to own data, scroll/follow, and visual rendering.
+const transcriptRenderer = createTranscriptRenderer({
+  chat: elements.chat,
+  contextKey: () => chatTextSelectionContextKey(),
+});
 
 const PI_WEBUI_NPM_URL = "https://www.npmjs.com/package/@firstpick/pi-package-webui";
 
@@ -4367,8 +4375,19 @@ function handleTerminalTabDrop(sourceTabId, target) {
   addEvent(`added ${sourceTab.title || "tab"} to ${normalizeTerminalCustomGroupTitle(group.title).toLowerCase()}`, "info");
 }
 
+function removeLiveTranscriptBubble(bubble, key = "live-output") {
+  if (!bubble?.isConnected) return;
+  transcriptRenderer.commitTranscriptMutation({
+    key: `live-remove:${key}`,
+    kind: "authoritative",
+    surfaces: [bubble],
+    invalidateSelection: true,
+    mutate: () => bubble.remove(),
+  });
+}
+
 function removeStreamingThinkingBubble() {
-  streamThinkingBubble?.remove();
+  removeLiveTranscriptBubble(streamThinkingBubble, "thinking");
   streamThinkingBubble = null;
   streamThinking = null;
   renderRunIndicator({ scroll: false });
@@ -27593,17 +27612,33 @@ async function renderMermaidDiagram(diagram, status, source) {
     const id = `mermaid-${token.replace(/[^a-z0-9_-]/gi, "-")}`;
     const { svg, bindFunctions } = await mermaid.render(id, source);
     if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
-    diagram.innerHTML = svg;
-    bindFunctions?.(diagram);
-    diagram.classList.add("rendered");
-    status.textContent = "";
-    status.hidden = true;
+    transcriptRenderer.commitTranscriptMutation({
+      key: `mermaid:${token}`,
+      kind: "destructive",
+      surfaces: [diagram],
+      mutate: () => {
+        if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
+        transcriptRenderer.replaceHtml(diagram, svg);
+        bindFunctions?.(diagram);
+        diagram.classList.add("rendered");
+        status.textContent = "";
+        status.hidden = true;
+      },
+    });
   } catch (error) {
     if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
-    diagram.classList.add("render-error");
-    status.hidden = false;
-    status.classList.add("error");
-    status.textContent = `Mermaid render failed: ${mermaidRenderErrorMessage(error)}`;
+    transcriptRenderer.commitTranscriptMutation({
+      key: `mermaid:${token}`,
+      kind: "destructive",
+      surfaces: [diagram, status],
+      mutate: () => {
+        if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
+        diagram.classList.add("render-error");
+        status.hidden = false;
+        status.classList.add("error");
+        status.textContent = `Mermaid render failed: ${mermaidRenderErrorMessage(error)}`;
+      },
+    });
   }
 }
 
@@ -27612,6 +27647,7 @@ function appendMarkdownMermaidBlock(parent, code) {
   const wrapper = make("div", "markdown-code-block markdown-mermaid-block");
   wrapper.append(make("div", "markdown-code-language", "mermaid"));
   const diagram = make("div", "markdown-mermaid-diagram");
+  transcriptRenderer.ownSurface(diagram, { kind: "diagram-rendered", segment: "0" });
   diagram.setAttribute("role", "img");
   diagram.setAttribute("aria-label", "Mermaid diagram");
   const status = make("div", "markdown-mermaid-status muted", "Rendering Mermaid diagram…");
@@ -27850,33 +27886,16 @@ function clearStreamingMarkdownBlock(block) {
 
 function renderStreamingMarkdown(block, text) {
   const selectionSnapshot = captureChatTextSelection(block);
-  let state = streamMarkdownState;
-  if (!state || state.block !== block) {
-    clearStreamingMarkdownBlock(block);
-    state = streamMarkdownState = { block, stableText: "", tailNodes: [] };
-  }
-  if (!text.startsWith(state.stableText)) {
-    // Derived streaming text should be append-only; if a provider still sends a
-    // retroactive rewrite, reset the streaming renderer without replaceChildren
-    // so this path cannot tear down external chrome or widget nodes.
-    clearStreamingMarkdownBlock(block);
-    state.stableText = "";
-    state.tailNodes = [];
-  }
-  for (const node of state.tailNodes) node.remove();
-  state.tailNodes = [];
-  const boundary = streamingMarkdownStableBoundary(text);
-  if (boundary > state.stableText.length) {
-    renderMarkdownInto(block, text.slice(state.stableText.length, boundary));
-    state.stableText = text.slice(0, boundary);
-  }
-  const tail = text.slice(state.stableText.length);
-  if (tail.trim()) {
-    const fragment = document.createDocumentFragment();
-    renderMarkdownInto(fragment, tail);
-    state.tailNodes = [...fragment.childNodes];
-    block.append(fragment);
-  }
+  const bubble = block?.closest(".message");
+  transcriptRenderer.reconcileMarkdownSurface({
+    key: `stream:${bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "assistant"}`,
+    surface: block,
+    messageKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live:assistant",
+    kind: "assistant-final",
+    text,
+    stableBoundary: streamingMarkdownStableBoundary,
+    renderInto: renderMarkdownInto,
+  });
   restoreChatTextSelection(selectionSnapshot);
 }
 
@@ -28225,7 +28244,18 @@ function visibleThinkingText(text) {
 function renderThinkingMarkdown(block, text) {
   if (!block) return;
   block._rawThinkingText = String(text || "");
-  renderMarkdown(block, block._rawThinkingText);
+  const selectionSnapshot = captureChatTextSelection(block);
+  const bubble = block.closest(".message");
+  transcriptRenderer.reconcileMarkdownSurface({
+    key: `thinking:${bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live"}`,
+    surface: block,
+    messageKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live:thinking",
+    kind: "assistant-thinking",
+    text: block._rawThinkingText,
+    stableBoundary: streamingMarkdownStableBoundary,
+    renderInto: renderMarkdownInto,
+  });
+  restoreChatTextSelection(selectionSnapshot);
 }
 
 function appendThinkingMarkdown(parent, text) {
@@ -28672,7 +28702,7 @@ function resetChatOutput() {
   const preservedNodes = [];
   if (elements.stickyUserPromptButton) preservedNodes.push(elements.stickyUserPromptButton);
   if (runIndicatorBubble?.parentElement === elements.chat) preservedNodes.push(runIndicatorBubble);
-  elements.chat.replaceChildren(...preservedNodes);
+  transcriptRenderer.replaceChildren(elements.chat, ...preservedNodes);
 }
 
 function appendChatMessageBubble(bubble) {
@@ -29472,11 +29502,22 @@ function updateLiveToolCard(bubble, message) {
   if (timestamp) timestamp.textContent = formatDate(message.timestamp);
   const nextRenderSignature = toolExecutionRenderSignature(message);
   if (bubble._toolRenderSignature === nextRenderSignature && body.childElementCount > 0) return true;
-  const detailsOpenState = captureToolDetailsOpenState(body);
-  body.replaceChildren();
-  renderToolExecution(body, message);
-  restoreToolDetailsOpenState(body, detailsOpenState);
-  bubble._toolRenderSignature = nextRenderSignature;
+  const messageKey = bubble.dataset.transcriptMessageKey || bubble.dataset.itemKey || `live:tool:${message.toolCallId || "output"}`;
+  transcriptRenderer.ownMessage(bubble, { key: messageKey, role: "toolExecution" });
+  transcriptRenderer.ownSurface(body, { messageKey, kind: "tool-execution", segment: "0" });
+  transcriptRenderer.commitTranscriptMutation({
+    key: `tool:${message.toolCallId || messageKey}`,
+    kind: "reconcile",
+    surfaces: [body],
+    mutate: () => {
+      const detailsOpenState = captureToolDetailsOpenState(body);
+      transcriptRenderer.replaceChildren(body);
+      renderToolExecution(body, message);
+      restoreToolDetailsOpenState(body, detailsOpenState);
+      transcriptRenderer.ownSurface(body, { messageKey, kind: "tool-execution", segment: "0" });
+      bubble._toolRenderSignature = nextRenderSignature;
+    },
+  });
   return true;
 }
 
@@ -29527,8 +29568,15 @@ function renderLiveToolRun(run, { scroll = true } = {}) {
     if (shouldFollow) scrollChatToBottom();
     return;
   }
-  const created = appendMessage(message, { transient: true, animateEntry: !existingConnected });
-  if (existingConnected && existing !== created.bubble) existing.replaceWith(created.bubble);
+  const created = appendMessage(message, { transient: true, animateEntry: !existingConnected, itemKey: `live:tool:${id}` });
+  if (existingConnected && existing !== created.bubble) {
+    transcriptRenderer.commitTranscriptMutation({
+      key: `tool-replace:${id}`,
+      kind: "reconcile",
+      surfaces: [existing],
+      mutate: () => existing.replaceWith(created.bubble),
+    });
+  }
   renderRunIndicator({ scroll: false });
   if (shouldFollow) scrollChatToBottom();
 }
@@ -29632,7 +29680,36 @@ function clearCompactThinkingDisclosureState(key) {
   if (disclosureState?.size === 0) compactThinkingDisclosureStateByTab.delete(tabId);
 }
 
-function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "" } = {}) {
+function transcriptSurfaceKind(message) {
+  if (message?.role === "thinking") return "assistant-thinking";
+  if (message?.role === "toolCall") return "tool-execution";
+  if (message?.role === "toolExecution") return "tool-execution";
+  if (message?.role === "toolResult") return "tool-result";
+  if (message?.role === "bashExecution") return "tool-result";
+  if (message?.role === "compactionSummary") return "compaction-summary";
+  return "assistant-final";
+}
+
+function ownTranscriptBubble(bubble, body, message, { itemKey = "", streaming = false, transient = false, segmentId = "0" } = {}) {
+  if (!bubble || !body) return "";
+  const role = String(message?.role || "message");
+  const fallbackKey = streaming || transient
+    ? `live:${role}:${message?.toolCallId || segmentId}`
+    : `message:${role}:${segmentId}`;
+  const messageKey = transcriptRenderer.ownMessage(bubble, { key: itemKey || bubble.dataset.itemKey || fallbackKey, role });
+  const markdownSurfaces = [...body.querySelectorAll(".markdown-body, .compact-live-text")];
+  const selectableBodyRoles = new Set(["toolCall", "toolExecution", "toolResult", "bashExecution", "compactionSummary"]);
+  const surfaces = markdownSurfaces.length || !selectableBodyRoles.has(role) ? markdownSurfaces : [body];
+  const kind = transcriptSurfaceKind(message);
+  surfaces.forEach((surface, index) => transcriptRenderer.ownSurface(surface, {
+    messageKey,
+    kind,
+    segment: `${segmentId}:${index}`,
+  }));
+  return messageKey;
+}
+
+function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "", segmentId = "0" } = {}) {
   const role = String(message.role || "message");
   const safeRole = role.replace(/[^a-z0-9_-]/gi, "");
   const compactTranscript = compactOutputActive() && !streaming;
@@ -29699,6 +29776,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   } else {
     bubble.append(header, body);
   }
+  ownTranscriptBubble(bubble, body, message, { itemKey, streaming, transient, segmentId });
   if (message.role !== "workflowStatusStack") attachMessageCopyButton(bubble, message, body);
   attachMessageEditRetryButton(bubble, message, messageIndex, { streaming, transient });
   if (!streaming && !transient) renderActionFeedbackControls(bubble, message, messageIndex);
@@ -29712,13 +29790,14 @@ function appendMessage(message, options = {}) {
     transient = false,
     reusableToolCards = null,
     itemKey = "",
+    segmentId = "0",
   } = options;
   const reused = reuseToolExecutionBubble(reusableToolCards, message, { streaming, messageIndex, transient });
   if (reused) {
     if (itemKey) reused.bubble.dataset.itemKey = itemKey;
     return reused;
   }
-  const created = createMessageBubble(message, options);
+  const created = createMessageBubble(message, { ...options, segmentId });
   appendChatMessageBubble(created.bubble);
   return created;
 }
@@ -29752,7 +29831,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
   let finalOutput = null;
   const compactTranscript = compactOutputActive();
   const displayMessages = assistantDisplayMessages(message);
-  displayMessages.forEach((displayMessage) => {
+  displayMessages.forEach((displayMessage, segmentIndex) => {
     let transcriptMessage = displayMessage;
     if (displayMessage.role === "toolCall" && displayMessage.toolCallId) {
       transcriptMessage = toolExecutionMessageFromCall(displayMessage);
@@ -29766,6 +29845,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
       animateEntry: animateEntry && isActionTranscriptMessage(transcriptMessage),
       reusableToolCards,
       itemKey,
+      segmentId: String(segmentIndex),
     });
     if (transcriptMessage.role === "assistant") finalOutput = created;
   });
@@ -30161,6 +30241,13 @@ function orderedTranscriptItems() {
  * (typically the last one or two items), instead of rebuilding every bubble.
  */
 let renderedTranscriptState = { epoch: "", entries: [] };
+const pendingTranscriptAdoptions = new Map();
+
+function prunePendingTranscriptAdoptions() {
+  for (const [key, bubble] of pendingTranscriptAdoptions) {
+    if (!bubble?.isConnected || bubble.parentElement !== elements.chat) pendingTranscriptAdoptions.delete(key);
+  }
+}
 
 function transcriptRenderEpoch() {
   return `${activeTabId || ""}|${thinkingOutputVisible ? 1 : 0}|${compactOutputActive() ? "compact" : "normal"}`;
@@ -30282,7 +30369,7 @@ function chatTextSelectionContextKey() {
 
 function chatTextSelectionSurface(node) {
   const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-  const surface = element?.closest?.(".message .markdown-body, .message .compact-live-text") || null;
+  const surface = element?.closest?.(".message [data-transcript-surface], .message .markdown-body, .message .compact-live-text") || null;
   return surface && elements.chat.contains(surface) ? surface : null;
 }
 
@@ -30327,7 +30414,7 @@ function captureChatTextSelection(expectedSurface = null) {
   return {
     contextKey: chatTextSelectionContextKey(),
     source: anchorSurface,
-    itemKey: bubble?.dataset?.itemKey || "",
+    itemKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "",
     streaming: bubble?.classList?.contains("streaming") === true || bubble?.classList?.contains("compact-live-output") === true,
     anchorOffset,
     focusOffset,
@@ -30357,10 +30444,10 @@ function chatTextSelectionCandidates(snapshot) {
   add(snapshot.source?.isConnected ? snapshot.source : null);
   if (snapshot.itemKey) {
     const bubble = elements.chat.querySelector(`.message[data-item-key="${CSS.escape(snapshot.itemKey)}"]`);
-    for (const surface of bubble?.querySelectorAll?.(".markdown-body, .compact-live-text") || []) add(surface);
+    for (const surface of bubble?.querySelectorAll?.("[data-transcript-surface], .markdown-body, .compact-live-text") || []) add(surface);
   }
   if (snapshot.streaming) {
-    const liveReplacement = [...elements.chat.querySelectorAll(".message.assistant .markdown-body, .message.assistant .compact-live-text")].reverse();
+    const liveReplacement = [...elements.chat.querySelectorAll(".message.assistant [data-transcript-surface], .message.assistant .markdown-body, .message.assistant .compact-live-text")].reverse();
     for (const surface of liveReplacement) add(surface);
   }
   return candidates;
@@ -30396,7 +30483,7 @@ function restoreChatTextSelection(snapshot) {
 function removeChatBubblesAfterPrefix(keptKeys) {
   for (const child of [...elements.chat.children]) {
     if (child === elements.stickyUserPromptButton || child === runIndicatorBubble) continue;
-    const key = child.dataset?.itemKey;
+    const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
     if (key && keptKeys.has(key)) continue;
     child.remove();
   }
@@ -30409,13 +30496,14 @@ function pruneDisconnectedLiveToolCards() {
 }
 
 function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}) {
-  if (deferUiRenderDuringPointerActivation("messages", () => renderAllMessages({ preserveScroll, forceRebuild }))) return;
   const selectionSnapshot = captureChatTextSelection();
   const shouldFollow = !preserveScroll && (autoFollowChat || isChatNearBottom());
   const previousScrollTop = elements.chat.scrollTop;
   const transcriptItems = orderedTranscriptItems();
   const epoch = transcriptRenderEpoch();
   const nextEntries = transcriptItems.map((item) => ({ item, key: transcriptItemKey(item), sig: transcriptItemSignature(item) }));
+  if (forceRebuild) pendingTranscriptAdoptions.clear();
+  else prunePendingTranscriptAdoptions();
   let prefixLength = 0;
   if (!forceRebuild && epoch === renderedTranscriptState.epoch) {
     const previous = renderedTranscriptState.entries;
@@ -30424,34 +30512,70 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
       prefixLength += 1;
     }
   }
-  const reusableToolCards = captureReusableToolCards();
-  if (prefixLength === 0) resetChatOutput();
-  else removeChatBubblesAfterPrefix(new Set(nextEntries.slice(0, prefixLength).map((entry) => entry.key)));
-  for (let index = prefixLength; index < nextEntries.length; index += 1) {
-    const entry = nextEntries[index];
-    appendTranscriptMessage(entry.item.message, {
-      messageIndex: entry.item.messageIndex,
-      transient: entry.item.transient,
-      animateEntry: shouldAnimateActionEntry(entry.item),
-      reusableToolCards,
-      itemKey: entry.key,
+  const prefixKeys = new Set(nextEntries.slice(0, prefixLength).map((entry) => entry.key));
+  const adoptedKeys = new Set([...pendingTranscriptAdoptions.entries()]
+    .filter(([, bubble]) => bubble?.isConnected && bubble.parentElement === elements.chat)
+    .map(([key]) => key));
+  const affectedSurfaces = prefixLength === 0 && adoptedKeys.size === 0
+    ? [elements.chat]
+    : [...elements.chat.children].filter((child) => {
+      if (child === elements.stickyUserPromptButton || child === runIndicatorBubble) return false;
+      const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
+      return !prefixKeys.has(key) && !adoptedKeys.has(key);
     });
-  }
-  pruneDisconnectedLiveToolCards();
-  if (nextEntries.length === 0 && !runIndicatorIsActive()) renderEmptyStartState();
-  else if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = workspaceDashboardCollapsed;
-  renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
-  rememberActionEntries(transcriptItems);
-  applyToolOutputExpansionToDom();
-  renderRunIndicator({ scroll: false });
-  updateStickyUserPromptButton();
-  if (shouldFollow) scrollChatToBottom({ force: true });
-  else {
-    elements.chat.scrollTop = Math.min(previousScrollTop, elements.chat.scrollHeight);
-    autoFollowChat = isChatNearBottom();
-    updateJumpToLatestButton();
-  }
-  updateStickyUserPromptButton();
+  const reusableToolCards = captureReusableToolCards();
+  const commit = transcriptRenderer.commitTranscriptMutation({
+    key: "messages",
+    kind: forceRebuild ? "authoritative" : "reconcile",
+    surfaces: affectedSurfaces,
+    invalidateSelection: forceRebuild,
+    mutate: () => {
+      if (prefixLength === 0) {
+        if (adoptedKeys.size) removeChatBubblesAfterPrefix(adoptedKeys);
+        else resetChatOutput();
+      } else {
+        removeChatBubblesAfterPrefix(new Set([...prefixKeys, ...adoptedKeys]));
+      }
+      for (let index = prefixLength; index < nextEntries.length; index += 1) {
+        const entry = nextEntries[index];
+        const adoptedBubble = pendingTranscriptAdoptions.get(entry.key);
+        if (adoptedBubble?.isConnected && adoptedBubble.parentElement === elements.chat) {
+          adoptedBubble.classList.remove("streaming");
+          adoptedBubble.dataset.itemKey = entry.key;
+          if (entry.item.messageIndex >= 0) adoptedBubble.dataset.messageIndex = String(entry.item.messageIndex);
+          finalizeAdoptedAssistantBubble(adoptedBubble, entry.item.message, entry.key);
+          ownTranscriptBubble(adoptedBubble, adoptedBubble.querySelector(":scope > .message-body"), entry.item.message, { itemKey: entry.key });
+          if (!entry.item.transient && entry.item.messageIndex >= 0) renderActionFeedbackControls(adoptedBubble, entry.item.message, entry.item.messageIndex);
+          appendChatMessageBubble(adoptedBubble);
+          pendingTranscriptAdoptions.delete(entry.key);
+          continue;
+        }
+        appendTranscriptMessage(entry.item.message, {
+          messageIndex: entry.item.messageIndex,
+          transient: entry.item.transient,
+          animateEntry: shouldAnimateActionEntry(entry.item),
+          reusableToolCards,
+          itemKey: entry.key,
+        });
+      }
+      pruneDisconnectedLiveToolCards();
+      if (nextEntries.length === 0 && !runIndicatorIsActive()) renderEmptyStartState();
+      else if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = workspaceDashboardCollapsed;
+      renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
+      rememberActionEntries(transcriptItems);
+      applyToolOutputExpansionToDom();
+      renderRunIndicator({ scroll: false });
+      updateStickyUserPromptButton();
+      if (shouldFollow) scrollChatToBottom({ force: true });
+      else {
+        elements.chat.scrollTop = Math.min(previousScrollTop, elements.chat.scrollHeight);
+        autoFollowChat = isChatNearBottom();
+        updateJumpToLatestButton();
+      }
+      updateStickyUserPromptButton();
+    },
+  });
+  if (commit.deferred) return;
   restoreChatTextSelection(selectionSnapshot);
 }
 
@@ -33517,7 +33641,8 @@ function outputModeAcknowledgement(event) {
 }
 
 function removeCompactLiveBubble(bubble) {
-  bubble?.remove();
+  const messageKey = bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "compact-live";
+  removeLiveTranscriptBubble(bubble, messageKey);
 }
 
 function clearCompactToolShells() {
@@ -33544,22 +33669,24 @@ function resetCompactLiveOutput({ remove = true } = {}) {
 
 function ensureCompactTextBubble() {
   if (compactTextBubble?.parentElement === elements.chat && compactTextNode) return;
-  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true, itemKey: "live:compact-output" });
   compactTextBubble = created.bubble;
   compactTextBubble.classList.add("compact-live-output");
   compactTextNode = make("div", "compact-live-text");
   created.body.append(compactTextNode);
+  transcriptRenderer.ownSurface(compactTextNode, { messageKey: "live:compact-output", kind: "compact-output", segment: "0" });
   renderRunIndicator({ scroll: false });
 }
 
 function ensureCompactThinkingBubble() {
   if (!thinkingOutputVisible) return false;
   if (compactThinkingBubble?.parentElement === elements.chat && compactThinkingNode) return true;
-  const created = appendMessage({ role: "thinking", title: "thinking (live)", timestamp: Date.now(), content: "", compactThinkingAggregate: true, compactThinkingKey: "live", compactThinkingDefaultExpanded: true }, { streaming: true });
+  const created = appendMessage({ role: "thinking", title: "thinking (live)", timestamp: Date.now(), content: "", compactThinkingAggregate: true, compactThinkingKey: "live", compactThinkingDefaultExpanded: true }, { streaming: true, itemKey: "live:compact-thinking" });
   compactThinkingBubble = created.bubble;
   compactThinkingBubble.classList.add("compact-live-output");
   compactThinkingNode = make("div", "markdown-body thinking-text compact-live-thinking");
   created.body.append(compactThinkingNode);
+  transcriptRenderer.ownSurface(compactThinkingNode, { messageKey: "live:compact-thinking", kind: "assistant-thinking", segment: "0" });
   renderRunIndicator({ scroll: false });
   return true;
 }
@@ -33584,15 +33711,24 @@ function renderCompactToolShell(event, { complete = false } = {}) {
     body.append(status);
     bubble.append(header, body);
     bubble.dataset.toolCallId = id;
+    transcriptRenderer.ownMessage(bubble, { key: `live:compact-tool:${id}`, role: "toolExecution" });
+    transcriptRenderer.ownSurface(body, { messageKey: `live:compact-tool:${id}`, kind: "tool-execution", segment: "0" });
+    transcriptRenderer.ownSurface(status, { messageKey: `live:compact-tool:${id}`, kind: "tool-execution", segment: "status" });
     appendChatMessageBubble(bubble);
     shell = { bubble, role, status };
     compactToolShells.set(id, shell);
   }
   const name = String(event?.toolName || event?.name || "tool");
   shell.role.textContent = `tool: ${name}`;
-  shell.status.textContent = complete
-    ? event?.isError ? "failed" : "done"
-    : "running";
+  transcriptRenderer.updateTextSurface({
+    key: `compact-tool:${id}`,
+    surface: shell.status,
+    messageKey: `live:compact-tool:${id}`,
+    kind: "tool-execution",
+    text: complete
+      ? event?.isError ? "failed" : "done"
+      : "running",
+  });
   shell.bubble.classList.toggle("tool-error", !!event?.isError);
   shell.bubble.classList.toggle("tool-running", !complete);
   shell.bubble.classList.toggle("tool-success", complete && !event?.isError);
@@ -33602,7 +33738,17 @@ function renderCompactToolShell(event, { complete = false } = {}) {
 function flushCompactLiveOutput() {
   if (compactLiveState.text) {
     ensureCompactTextBubble();
-    if (compactTextNode?.textContent !== compactLiveState.text) compactTextNode.textContent = compactLiveState.text;
+    if (compactTextNode?.textContent !== compactLiveState.text) {
+      const selectionSnapshot = captureChatTextSelection(compactTextNode);
+      transcriptRenderer.updateTextSurface({
+        key: "compact-output",
+        surface: compactTextNode,
+        messageKey: "live:compact-output",
+        kind: "compact-output",
+        text: compactLiveState.text,
+      });
+      restoreChatTextSelection(selectionSnapshot);
+    }
   }
   if (compactLiveState.thinking && ensureCompactThinkingBubble()) {
     if (compactThinkingNode?._rawThinkingText !== compactLiveState.thinking) renderThinkingMarkdown(compactThinkingNode, compactLiveState.thinking);
@@ -33694,7 +33840,7 @@ function cancelStreamingAssistantTextRender() {
 function removeStreamBubble() {
   cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
-  streamBubble?.remove();
+  removeLiveTranscriptBubble(streamBubble, "assistant");
   streamBubble = null;
   streamText = null;
   streamBubbleVisibleSince = 0;
@@ -33749,6 +33895,62 @@ function streamDerivedText() {
 
 function streamRenderableAssistantText() {
   return streamDerivedText().finalText;
+}
+
+function authoritativeAssistantTextForAdoption(message) {
+  if (message?.role !== "assistant") return null;
+  const finalParts = assistantDisplayMessages(message).filter((part) => part?.role === "assistant");
+  // A live bubble can only be adopted without a structural map when the
+  // authoritative message has exactly one final-output surface. Multi-part
+  // settlement remains an explicit invalidation/mapping follow-up.
+  if (finalParts.length !== 1) return null;
+  return stripTodoProgressLines(textFromContent(finalParts[0].content), { streaming: false });
+}
+
+function adoptLiveAssistantBubble(messages) {
+  const compactCandidate = compactTextBubble?.isConnected && compactTextBubble.parentElement === elements.chat && compactTextNode
+    ? {
+        bubble: compactTextBubble,
+        surface: compactTextNode,
+        text: stripTodoProgressLines(compactLiveState.text, { streaming: true }),
+        kind: "compact",
+      }
+    : null;
+  const normalCandidate = streamBubble?.isConnected && streamBubble.parentElement === elements.chat && streamText
+    ? { bubble: streamBubble, surface: streamText, text: streamRenderableAssistantText(), kind: "normal" }
+    : null;
+  const candidate = compactCandidate?.text ? compactCandidate : normalCandidate?.text ? normalCandidate : null;
+  if (!candidate) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const authoritativeText = authoritativeAssistantTextForAdoption(messages[index]);
+    if (authoritativeText !== candidate.text) continue;
+    const key = `m:${index}`;
+    candidate.bubble.dataset.itemKey = key;
+    transcriptRenderer.ownMessage(candidate.bubble, { key, role: "assistant" });
+    transcriptRenderer.ownSurface(candidate.surface, { messageKey: key, kind: "assistant-final", segment: "0" });
+    pendingTranscriptAdoptions.set(key, candidate.bubble);
+    return candidate.kind;
+  }
+  return "";
+}
+
+function finalizeAdoptedAssistantBubble(bubble, message, key) {
+  const compactSurface = bubble?.querySelector?.(".compact-live-text");
+  if (!compactSurface) return;
+  const authoritativeText = authoritativeAssistantTextForAdoption(message);
+  if (authoritativeText === null) return;
+  bubble.classList.remove("compact-live-output");
+  compactSurface.classList.remove("compact-live-text");
+  compactSurface.classList.add("markdown-body", "compact-transcript-text");
+  transcriptRenderer.reconcileMarkdownSurface({
+    key: `compact-settlement:${key}`,
+    surface: compactSurface,
+    messageKey: key,
+    kind: "assistant-final",
+    text: authoritativeText,
+    stableBoundary: (value) => value.length,
+    renderInto: renderMarkdownInto,
+  });
 }
 
 function scheduleStreamBubbleHide() {
@@ -33832,14 +34034,23 @@ function renderStreamingToolCallCard({ scroll = false } = {}) {
   const message = streamingToolCallMessage();
   const displayText = streamToolCallRawArguments || (streamToolCallComplete ? "{}" : "(waiting for argument stream…)");
   if (!streamToolCallBubble?.parentElement || !streamToolCallText) {
-    const created = appendMessage(message, { streaming: true });
+    const created = appendMessage(message, { streaming: true, itemKey: `live:tool-call:${streamToolCallId || "pending"}` });
     streamToolCallBubble = created.bubble;
     streamToolCallText = created.body.querySelector(".tool-call-arguments") || created.body.querySelector(".code-block");
+    transcriptRenderer.ownSurface(streamToolCallText, { messageKey: streamToolCallBubble.dataset.transcriptMessageKey, kind: "tool-execution", segment: "0" });
   }
   streamToolCallBubble._copyMessage = message;
   const role = streamToolCallBubble.querySelector(":scope > .message-header .message-role");
   if (role && role.textContent !== message.title) role.textContent = message.title;
-  if (streamToolCallText && streamToolCallText.textContent !== displayText) streamToolCallText.textContent = displayText;
+  if (streamToolCallText && streamToolCallText.textContent !== displayText) {
+    transcriptRenderer.updateTextSurface({
+      key: `tool-call:${streamToolCallId || "pending"}`,
+      surface: streamToolCallText,
+      messageKey: streamToolCallBubble.dataset.transcriptMessageKey,
+      kind: "tool-execution",
+      text: displayText,
+    });
+  }
   renderRunIndicator({ scroll: false });
   if (scroll) scrollChatToBottom();
 }
@@ -33852,10 +34063,11 @@ function removeStreamingToolCallCard() {
 function ensureStreamBubble() {
   cancelStreamBubbleHide();
   if (streamBubble?.parentElement === elements.chat) return;
-  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true, itemKey: "live:assistant" });
   streamBubble = created.bubble;
   streamText = make("div", "markdown-body streaming-markdown");
   created.body.append(streamText);
+  transcriptRenderer.ownSurface(streamText, { messageKey: "live:assistant", kind: "assistant-final", segment: "0" });
   streamBubbleVisibleSince = performance.now();
   renderRunIndicator({ scroll: false });
   scrollChatToBottom();
@@ -33864,10 +34076,11 @@ function ensureStreamBubble() {
 function ensureStreamingThinkingBubble() {
   if (!thinkingOutputVisible) return false;
   if (streamThinkingBubble?.parentElement === elements.chat) return true;
-  const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true, itemKey: "live:thinking" });
   streamThinkingBubble = created.bubble;
   streamThinking = make("div", "markdown-body thinking-text");
   created.body.append(streamThinking);
+  transcriptRenderer.ownSurface(streamThinking, { messageKey: "live:thinking", kind: "assistant-thinking", segment: "0" });
   renderRunIndicator({ scroll: false });
   scrollChatToBottom();
   return true;
@@ -33878,8 +34091,8 @@ function showStreamingThinking(initialText = "") {
   if (initialText && !streamThinking.textContent) renderThinkingMarkdown(streamThinking, initialText);
 }
 
-function resetStreamBubble() {
-  resetCompactLiveOutput();
+function resetStreamBubble({ preserveCompact = false } = {}) {
+  resetCompactLiveOutput({ remove: !preserveCompact });
   cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
   streamBubble = null;
@@ -34439,7 +34652,10 @@ async function refreshMessages(tabContext = activeTabContext(), { authoritative 
   const selectionSnapshot = captureChatTextSelection();
   const preserveCompactStream = compactLiveStreamRenderActive();
   const preserveNormalStream = !preserveCompactStream && liveStreamRenderActive();
-  if (!preserveCompactStream && !preserveNormalStream) resetStreamBubble();
+  if (!preserveCompactStream && !preserveNormalStream) {
+    const adoptedOutput = adoptLiveAssistantBubble(latestMessages);
+    resetStreamBubble({ preserveCompact: adoptedOutput === "compact" });
+  }
   renderMessages(latestMessages);
   if (preserveCompactStream) restoreCompactLiveOutputAfterChatRebuild();
   else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
