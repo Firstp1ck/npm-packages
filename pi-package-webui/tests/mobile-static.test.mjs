@@ -422,7 +422,8 @@ assert.match(css, /@media \(max-width: 1050px\)[\s\S]*?body:not\(\.side-panel-co
 assert.match(css, /@media \(max-width: 1050px\)[\s\S]*?\.side-panel-backdrop \{[\s\S]*?z-index:\s*110;[\s\S]*?\.side-panel \{[\s\S]*?z-index:\s*111;[\s\S]*?body\.side-panel-collapsed \.terminal-tabs-shell \{[\s\S]*?padding-right:\s*4\.85rem;[\s\S]*?\.side-panel-expand-button \{[\s\S]*?z-index:\s*120/, "narrow side-panel overlay and expand button should stay above and reserve space from terminal header controls");
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?body\.side-panel-collapsed \.terminal-tabs-shell \{ padding-right:\s*calc\(44px \+ 0\.8rem\); \}[\s\S]*?\.side-panel-expand-button \{[\s\S]*?z-index:\s*120[\s\S]*?\.side-panel-backdrop \{[\s\S]*?z-index:\s*110;[\s\S]*?\.side-panel \{[\s\S]*?z-index:\s*111;/, "mobile side-panel controls should not hide behind terminal header buttons");
 assert.match(css, /button, select, input \{ min-height: 44px; \}/, "base controls should meet 44px touch-target height");
-assert.match(css, /\.composer-row button \{\n\s+width:\s*100%;\n\s+min-height:\s*40px/, "mobile composer buttons should use compact 40px footer controls");
+// Intent superseded: Phase 0 raises all phone/coarse composer hit areas to 44px.
+assert.match(css, /\.composer-row button \{\n\s+width:\s*100%;\n\s+min-height:\s*44px/, "mobile composer buttons should retain compact layout with 44px footer hit areas");
 assert.match(css, /\.composer-abort-button,\n\.composer-row button\.primary \{[\s\S]*?min-width:/, "Abort and Send should share stable bottom-row sizing");
 assert.match(css, /\.composer-abort-button\.long-pressing::after[\s\S]*?animation:\s*abort-long-press-fill var\(--abort-long-press-duration, 3000ms\) linear forwards/, "Abort should expose a visible 3-second long-press progress affordance");
 assert.match(css, /body\.pi-run-active:not\(\.mobile-keyboard-open\) \.composer-abort-button:not\(\[hidden\]\) \{\n\s+order:\s*1;\n\s+grid-column:\s*span 2;/, "active mobile runs should move Abort to the top row");
@@ -731,7 +732,8 @@ assert.match(app, /const MOBILE_VIEW_QUERY = "\(max-width: 720px\), \(max-device
 assert.match(app, /const SIDE_PANEL_OVERLAY_QUERY = "\(max-width: 1050px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)"/, "side-panel overlay mode should also activate at the stacked narrow layout breakpoint");
 assert.match(app, /function isSidePanelOverlayView\(\)[\s\S]*sidePanelOverlayMedia\?\.matches/, "side-panel overlay detection should be separate from full mobile mode");
 assert.match(app, /const showBackdrop = !collapsed && isSidePanelOverlayView\(\)/, "side-panel backdrop should show for the overlay breakpoint, not only phone layouts");
-assert.match(app, /function restoreSidePanelState\(\) \{\n\s+if \(isSidePanelOverlayView\(\)\) \{\n\s+setSidePanelCollapsed\(true, \{ persist: false \}\);/, "side-panel should start collapsed in narrow overlay mode");
+// Intent preserved for legacy; v2 suppresses this legacy surface writer.
+assert.match(app, /function restoreSidePanelState\(\) \{\n\s+if \(isMobileShellV2Active\(\)\) return;\n\s+if \(isSidePanelOverlayView\(\)\) \{\n\s+setSidePanelCollapsed\(true, \{ persist: false \}\);/, "legacy side-panel should start collapsed in narrow overlay mode");
 assert.match(app, /function bindSidePanelOverlayViewChanges\(\)/, "side-panel overlay breakpoint changes should be monitored separately from full mobile changes");
 assert.match(app, /if \(isSidePanelOverlayView\(\) && !document\.body\.classList\.contains\("side-panel-collapsed"\)\)/, "Escape should close the side-panel overlay at narrow widths");
 assert.match(app, /const THEME_STORAGE_KEY = "pi-webui-theme"/, "theme selection should be persisted in browser storage");
@@ -1906,7 +1908,8 @@ assert.match(app, /api\("\/api\/thinking", \{ method: "POST", body: \{ level: ne
 assert.match(app, /function isFooterPickerOpen\(\)[\s\S]*?footerModelPickerOpen \|\| footerThinkingPickerOpen/, "footer picker overlay state should cover model and thinking pickers");
 assert.doesNotMatch(app.match(/function renderMinimalFooter\(\)[\s\S]*?\n\}/)?.[0] || "", /footer-details-toggle/, "minimal default footer should not render a details toggle chip");
 assert.match(app, /bindMobileViewChanges\(/, "side panel state should react to mobile breakpoint changes");
-assert.match(app, /function restoreSidePanelState\(\) \{\n\s+if \(isSidePanelOverlayView\(\)\)/, "mobile and narrow overlay layouts should start with side panel collapsed even if desktop state was expanded");
+// Intent preserved for legacy; v2 leaves mobile surface ownership to its reducer.
+assert.match(app, /function restoreSidePanelState\(\) \{\n\s+if \(isMobileShellV2Active\(\)\) return;\n\s+if \(isSidePanelOverlayView\(\)\)/, "legacy mobile and narrow overlay layouts should start with the side panel collapsed");
 assert.match(app, /case "webui_tab_reloaded":/, "frontend should handle native /reload tab restart events");
 assert.match(app, /addTransientMessage\(\{ role: "native", title: "\/reload"/, "native /reload should produce visible transcript output");
 assert.match(app, /copyText\(data\.copyText\)\.catch/, "native /copy should use the shared browser clipboard helper when available");
@@ -1924,7 +1927,9 @@ assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v\d+"/, "PWA servi
 assert.match(serviceWorker, /fetchThenCache\(request\)\.catch\(/, "PWA service worker should serve the app shell network-first with offline cache fallback");
 assert.match(serviceWorker, /ignoreSearch: true/, "PWA service worker offline fallback should ignore ?v= cache busters");
 assert.match(serviceWorker, /self\.addEventListener\("notificationclick"/, "PWA service worker should focus Web UI when blocked-tab notifications are clicked");
-assert.match(serviceWorker, /event\.notification\.data\?\.url/, "blocked-tab notifications should carry a URL for service-worker click handling");
+// Intent superseded: notification URLs are now generated only from validated opaque targets; invalid payloads fall back to the app root.
+assert.match(serviceWorker, /function notificationTargetUrl\(data\)[\s\S]*?if \(!target\) return `\$\{self\.location\.origin\}\/`/, "notification clicks should use a bounded root fallback instead of accepting an arbitrary URL");
+assert.doesNotMatch(serviceWorker, /data\?\.url/, "notification payloads must not inject arbitrary fallback URLs");
 assert.match(serviceWorker, /"\/subagent-launch-slot-state\.mjs"/, "PWA service worker should cache the launch-slot state module imported by the app shell");
 assert.match(serviceWorker, /"\/apple-touch-icon\.png"/, "PWA service worker should cache the apple touch icon");
 assert.match(serviceWorker, /"\/matrix-background\.webp"/, "PWA service worker should cache the Matrix background image");
@@ -2046,7 +2051,8 @@ assert.match(server, /specific Web UI action or final-output cards/, "server fee
 assert.match(server, /function formatActionFeedbackLearningPrompt\(items\)/, "server should convert feedback into a LEARNING prompt");
 assert.match(server, /url\.pathname === "\/api\/action-feedback" && req\.method === "POST"[\s\S]*?handleActionFeedback\(tab, body\)/, "POST /api/action-feedback should trigger the feedback-learning prompt");
 assert.match(server, /Wait for the current agent run or compaction to finish before sending feedback\./, "server should only accept post-run feedback submissions");
-assert.match(server, /url\.pathname === "\/api\/prompt" && req\.method === "POST"[\s\S]*?handleNativeSlashCommand\(tab, body, req\)/, "POST /api/prompt should intercept native slash commands before normal prompt forwarding with request context");
+// Intent preserved: request deduplication wraps, but does not bypass, native slash handling.
+assert.match(server, /async function handlePromptRequest\(tab, body, req\)[\s\S]*?handleNativeSlashCommand\(tab, body, req\)[\s\S]*?url\.pathname === "\/api\/prompt" && req\.method === "POST"[\s\S]*?deduplicateBrowserPromptRequest\(tab, body, \(\) => handlePromptRequest\(tab, body, req\)\)/, "POST /api/prompt should retain native slash handling under browser request deduplication");
 assert.match(server, /function fastPicksStorageFile\(/, "server should define a persistent fast-picks storage file");
 assert.match(server, /PI_WEBUI_FAST_PICKS_FILE/, "server should allow overriding the fast-picks storage path");
 assert.match(server, /async function getPathSuggestionData\(tab, rawQuery\)/, "server should compute @ file\/path reference suggestions for the active tab cwd");
@@ -2107,7 +2113,8 @@ assert.match(server, /writeFile\(tmpFile, body\.content[\s\S]*?rename\(tmpFile, 
 assert.match(server, /url\.pathname === "\/api\/themes" && req\.method === "GET"/, "server should expose GET /api/themes");
 assert.match(server, /readBundledThemes\(\)/, "server should read bundled theme JSON files for the browser");
 assert.match(server, /"apple-touch-icon\.png", "icon-192\.png"/, "server should serve the conventional apple touch icon path");
-assert.match(server, /"fast-output-live\.mjs", "subagent-launch-slot-state\.mjs", "subagent-gate-visibility\.mjs", "workflow-status-stack\.mjs", "voice-conversation\.mjs"/, "server should serve browser modules imported by the app");
+// Intent preserved: the static allowlist must include every app startup module, including the Phase 1 shell state.
+assert.match(server, /"mobile-shell-state\.mjs", "issue-wizard-state\.mjs", "issue-bot-client\.mjs", "fast-output-live\.mjs"/, "server should serve browser modules imported by the app");
 assert.match(server, /"catppuccin-mocha-background\.png", "matrix-background\.webp", "manifest\.webmanifest", "service-worker\.js"/, "server should serve theme background images as static assets");
 assert.match(server, /\["\.webmanifest", "application\/manifest\+json; charset=utf-8"\]/, "server should serve manifest with the correct MIME type");
 assert.match(server, /\["\.png", "image\/png"\]/, "server should serve PWA PNG icons with the correct MIME type");

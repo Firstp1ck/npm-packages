@@ -406,6 +406,17 @@ For local development, run the checkout helper directly, for example:
 
 The `--dev` helper checks this checkout's local npm dependencies before launch, applies available local updates, and force-refreshes `@earendil-works/pi-coding-agent` to the latest npm version so stale bundled Pi runtime packages do not break extension loading. Set `PI_WEBUI_DEV_SKIP_UPDATE=1` to skip this preflight for offline or intentionally pinned local testing.
 
+### Browser checks
+
+The package-owned Playwright/axe harness starts the real `pi-webui` server with the hermetic fake-Pi fixture. Provision the pinned engines once, then run the suite:
+
+```bash
+npx playwright install chromium
+npm run test:browser
+```
+
+On hosts with WebKit's system libraries installed, provision it and include its project explicitly with `npx playwright install webkit && PI_WEBUI_TEST_WEBKIT=1 npm run test:browser`. The browser suite is intentionally separate from `npm test`; it covers browser-only geometry, flag/rollback, and scoped axe checks without making ordinary Node/static tests download browser engines.
+
 Run `../dev/scripts/sync-pi-package-symlinks.sh` first when developing companion packages from this workspace. The Web UI manifest loads companions through `node_modules/` paths, and the sync script links those paths to the top-level dev packages so only one copy is loaded.
 
 ## Optional companion packages
@@ -503,8 +514,14 @@ Keep this browser configuration disabled until the gateway's exact-origin CORS p
 ## Mobile and PWA notes
 
 - The mobile composer starts as a compact `Ask Pi…` input and grows as you type.
-- Installable PWA support, blocked-tab browser notifications, and optional agent-done notifications require browser service-worker/notification support and usually require `localhost` or HTTPS.
-- Plain `http://<LAN-IP>` can show the app, but some browsers disable PWA install and notifications there.
+- The flagged phone experience is opt-in with `?mobileShell=v2`; use `?mobileShell=legacy` for the immediate rollback. It provides labelled **Chat**, **Sessions**, **Activity**, and **Project** destinations, plus a full-height **More** surface. Sessions preserve the existing tab switch/draft/SSE behavior; Activity and Project reuse the existing blocker, workflow, file, Git, queue, and settings actions rather than creating mobile copies.
+- **Essential** and **Detailed** in More only change phone presentation and progressive disclosures. They never truncate final answers, remove safety/scope/remote warnings, enable `compact-v1`, or change stored transcript/model output. The phone action sheet keeps attachments, queue, session actions, voice entry, and a tap-confirm Abort path available without nested menus.
+- Continuity is browser-scoped: text drafts, the selected destination, and bounded attachment metadata survive reloads. Attachment bytes are never persisted; restored chips say **Reselect required**. A send that the server did not confirm is never replayed automatically and exposes only manual **Retry** (with the original request identity) or **Discard**.
+- **Add Context** unifies Camera, Photos, Files, and Paste text over the existing attachment path. Camera/photo permissions remain browser-controlled and are requested only after the user chooses that source; Files and Paste text remain fallbacks.
+- Browser notifications cover blockers, completion, and failure only while a Web UI client/service worker is active. They carry versioned opaque tab/run/blocker targets and reconcile server state before navigation. This is not Web Push after every client closes; Activity is the in-app fallback.
+- Tablet adaptation is independently opt-in at 721–1050 CSS px with `?tabletShell=v2`; use `?tabletShell=legacy` to roll it back without changing the phone flag. It uses a destination rail, a bounded right inspector, pointer-aware targets, and full-screen files by default.
+- Installable PWA support, blocked-tab browser notifications, and optional agent-done notifications require browser service-worker/notification support and usually require `localhost` or HTTPS. Install education is contextual and dismissible; browser/PWA use is never blocked.
+- Plain `http://<LAN-IP>` can show the app, but some browsers disable PWA install and notifications there. None of these features changes the existing remote-access/authentication model.
 
 ## Network safety
 

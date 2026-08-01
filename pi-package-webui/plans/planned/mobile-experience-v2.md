@@ -1,15 +1,53 @@
 # Mobile Experience v2 — Research and Implementation Plan
 
-Status: planned; implementation not started  
-Classification: complex future feature; this artifact is research and planning only  
-Integration owner: primary Pi session  
-Date: 2026-07-31  
-Target package: `@firstpick/pi-package-webui` v0.8.0  
+Status: implementation active
+Classification: complex feature; validated against repository evidence on 2026-08-01
+Integration owner: primary Pi session
+Date: 2026-07-31; implementation baseline refreshed 2026-08-01 at `5f359b3ffa2a8110428676242e801a34ccd7fe10`
+Target package: `@firstpick/pi-package-webui` v0.8.0
 Primary constraint: improve phone and tablet UX without changing the existing desktop experience
+Final report: [`../../reports/mobile-experience-v2.html`](../../reports/mobile-experience-v2.html)
 
 ## Goal
 
 Make Pi Web UI excellent for on-the-go agent work: capture a request, switch sessions, monitor progress, answer blockers, steer or stop work, inspect project state, and return through notifications—without turning the phone into a miniature desktop IDE and without changing desktop behavior.
+
+## Active implementation record
+
+### Classification rationale
+
+The preliminary `complex` classification is confirmed. The implementation has multiple independently verifiable slices and crosses the browser shell reducer, canonical DOM/action wiring, shared responsive CSS, service-worker/static-asset contracts, server lifecycle identity, browser automation, accessibility, and desktop-isolation checks. The repository currently centralizes browser behavior in `public/app.js` and `public/styles.css`, so integration must remain sequential even where analysis and review fan out.
+
+### Baseline and approved implementation decisions
+
+- Baseline revision: `5f359b3ffa2a8110428676242e801a34ccd7fe10`; worktree clean immediately before implementation-worker launch.
+- Baseline validation: all 86 Node/static test files pass. Playwright/axe and physical-device evidence are absent at baseline and are Phase 0/WS6 obligations.
+- Parent work identity: introduce a server-issued opaque parent-turn `runId`; Activity and notification targets may use only validated opaque IDs. Existing subagent/workflow IDs remain separate namespaces.
+- Browser mutation identity: prompt submission gains a browser-generated opaque request identity bound to the tab; the server deduplicates known requests. Ambiguous disconnects reconcile before any retry, and v1 never auto-replays a mutation.
+- Cache/version oracle: retain the explicit per-file HTML revisions plus service-worker cache revision, but enforce their startup-asset closure and cache-lifetime behavior in tests. Every startup-graph change must update the affected file revision and service-worker cache identity in the same integration wave.
+- SSE backpressure: use a bounded slow-client policy that evicts a client rather than dropping or reordering semantic events; reconnect remains authoritative.
+- Transcript memory: characterize the existing multi-tab cache. A bounded in-memory cache may be introduced only without truncating the authoritative server transcript or visible final answer; otherwise record a measured defer threshold.
+- Physical iOS/Android/PWA/VoiceOver/TalkBack checks remain explicit manual preview/default-on gates and cannot be represented as automated passes.
+
+### Mandatory sequential worker outcomes
+
+| Worker outcome | Ownership and prerequisites | Required handoff |
+|---|---|---|
+| `mobile-v2-foundation` | Completed by replacement attempt 2; Phase 0 correctness/harness plus Phase 1 reducer, flags, deep-link primitives, static closure, and desktop-isolation infrastructure. | `plans/handoffs/mobile-v2-foundation.md` |
+| `mobile-v2-phone-experience` | GPT writer after foundation; Phases 2–4 phone destinations, app bar/navigation, Sessions, Chat/composer presentation, Activity/Project parity, accessibility, and integrated browser/static coverage. | `plans/handoffs/mobile-v2-phone-experience.md` |
+| `mobile-v2-continuity-tablet` | GPT writer after phone experience; Phase 5 continuity/notifications/capture/install UX, separate Phase 6 tablet adaptation, cross-workstream hardening, and final automated acceptance coverage. | `plans/handoffs/mobile-v2-continuity-tablet.md` |
+
+All writers run sequentially in the same worktree. They may overlap shared files only through that dependency order. No worker edits this canonical plan or the final report. The integration owner inspects every change and handoff, runs cross-workstream validation, dispositions reviewer findings here, and performs final plan/report linking and archival.
+
+### Delegation and retry record
+
+- Run `c545eaf7-7d84-4b27-876c-6a68ae5143c7`: both original worker attempts stopped before source changes because a child routing bridge falsely reported the feature workflow unavailable; artifacts are preserved as `*-attempt1-blocked.md`.
+- Run `d587fef8-cb96-424f-bd8d-3839a3714370`: foundation replacement succeeded; the experience replacement failed before source changes with OpenRouter HTTP 402 credit exhaustion.
+- On 2026-08-01 the user explicitly approved an additional GPT-only implementation wave. The remaining experience scope is redesigned into the two distinct sequential outcomes above, satisfying static writer fanout without duplicating the completed foundation outcome.
+
+### Implementation stop rules
+
+Workers stop and escalate rather than inventing any new authentication, unsafe remote-exposure, credential, destructive-action, transcript-truncation, semantic-event-dropping, settings-scope, or server-lifecycle contract. Missing physical-device access is recorded as an unverified manual gate, not silently waived.
 
 ## Executive recommendation
 
@@ -87,7 +125,7 @@ Research evidence is **high overall** for documented capabilities and platform g
 7. **The browser harness is insufficient for a redesign.** `tests/mobile-static.test.mjs` is extensive but mostly source/VM contracts; there is no package-owned Playwright/axe/device flow.
 8. **Static assets are manually coupled.** New imported browser modules must be added to the server allowlist and service-worker app shell, and cache identity must remain coherent.
 9. **Mobile is commonly remote.** The product binds to loopback by default; trusted-LAN/PIN access has explicit security limits. Mobile features must not encourage unsafe exposure or imply hosted-cloud durability.
-10. **The worktree is currently dirty in shared frontend files.** Future implementation must establish and preserve the pre-existing baseline; this plan does not authorize staging, rewriting, or reverting it.
+10. **The shared frontend is integration-sensitive.** The worktree was clean at implementation baseline `5f359b3`; re-record status immediately before every writer and never stage, rewrite, or revert unrelated work.
 
 Line references reflect the current 2026-07-31 working tree and may shift when existing changes land.
 

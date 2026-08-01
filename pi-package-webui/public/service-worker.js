@@ -1,4 +1,4 @@
-const CACHE_NAME = "pi-webui-pwa-v53";
+const CACHE_NAME = "pi-webui-pwa-v59";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -6,6 +6,7 @@ const APP_SHELL = [
   "/app.js",
   "/issue-wizard-state.mjs",
   "/issue-bot-client.mjs",
+  "/mobile-shell-state.mjs",
   "/aur-review-payload.mjs",
   "/guided-git-command-state.mjs",
   "/guided-git-review-state.mjs",
@@ -35,13 +36,43 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+const OPAQUE_TARGET_ID = /^[A-Za-z0-9_-]{8,128}$/;
+const MOBILE_NAVIGATION_MESSAGE_TYPE = "pi-webui:navigate:v1";
+
+function notificationTarget(data) {
+  const target = data?.target;
+  if (!target || target.v !== 1 || !["chat", "sessions", "activity", "project"].includes(target.route)) return null;
+  const normalized = { v: 1, route: target.route };
+  for (const key of ["tabId", "runId", "blockerId"]) {
+    if (typeof target[key] === "string" && OPAQUE_TARGET_ID.test(target[key])) normalized[key] = target[key];
+  }
+  return Object.keys(normalized).length > 2 ? normalized : null;
+}
+
+function notificationTargetUrl(data) {
+  const target = notificationTarget(data);
+  if (!target) return `${self.location.origin}/`;
+  const url = new URL("/", self.location.origin);
+  url.searchParams.set("mobileRoute", target.route);
+  if (target.tabId) url.searchParams.set("tab", target.tabId);
+  if (target.runId) url.searchParams.set("run", target.runId);
+  if (target.blockerId) url.searchParams.set("blocker", target.blockerId);
+  return url.href;
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || `${self.location.origin}/`;
+  const target = notificationTarget(event.notification.data);
+  const targetUrl = notificationTargetUrl(event.notification.data);
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       const webuiClient = clients.find((client) => client.url.startsWith(self.location.origin));
-      if (webuiClient) return webuiClient.focus();
+      if (webuiClient) {
+        return webuiClient.focus().then((client) => {
+          if (target) client.postMessage({ type: MOBILE_NAVIGATION_MESSAGE_TYPE, target });
+          return client;
+        });
+      }
       return self.clients.openWindow?.(targetUrl);
     }),
   );
@@ -49,13 +80,15 @@ self.addEventListener("notificationclick", (event) => {
 
 // Network-first keeps the app shell fresh after deploys regardless of
 // CACHE_NAME or ?v= cache-buster drift; the cache only serves offline clients.
+// The returned promise owns cache.put so the fetch event cannot be terminated
+// before its cache write settles. A failed cache write never hides a usable
+// network response.
 function fetchThenCache(request) {
   return fetch(request).then((response) => {
-    if (response.ok) {
-      const copy = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-    }
-    return response;
+    if (!response.ok) return response;
+    return caches.open(CACHE_NAME)
+      .then((cache) => cache.put(request, response.clone()))
+      .then(() => response, () => response);
   });
 }
 

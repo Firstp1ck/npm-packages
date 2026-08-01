@@ -19,6 +19,9 @@ function functionSource(source, name) {
 const context = vm.createContext({ console });
 vm.runInContext(`
   const TAB_ACTIVITY_IDLE_RECONCILE_GRACE_MS = 1200;
+  // The production server imports randomUUID from node:crypto; keep the
+  // extracted lifecycle contract deterministic while exercising run creation.
+  function randomUUID() { return "run_12345678"; }
   function pendingExtensionUiRequests() { return []; }
   function patchTabState(tab, patch) { tab.lastState = { ...(tab.lastState || {}), ...patch }; }
   function rememberTabState(tab, state) { tab.lastState = state; }
@@ -27,6 +30,7 @@ vm.runInContext(`
   ${functionSource(server, "tabActivitySnapshot")}
   ${functionSource(server, "markTabWorking")}
   ${functionSource(server, "markTabDone")}
+  ${functionSource(server, "markTabFailed")}
   ${functionSource(server, "markTabIdle")}
   ${functionSource(server, "stateHasVisibleWork")}
   ${functionSource(server, "activityRecentlyStarted")}
@@ -84,11 +88,18 @@ contract.event(compactionTab, { type: "compaction_end" });
 assert.equal(compactionTab.activity.status, "idle");
 assert.equal(compactionTab.activity.completionSerial, 0, "standalone compaction must not emit agent completion");
 
+const failedTurnTab = contract.createTab();
+contract.event(failedTurnTab, { type: "agent_start" });
+contract.event(failedTurnTab, { type: "message_end", message: { role: "assistant", stopReason: "error" } });
+contract.event(failedTurnTab, { type: "agent_settled" });
+assert.equal(failedTurnTab.activity.status, "failed", "a terminal assistant error must remain distinct from successful completion");
+assert.equal(failedTurnTab.activity.completionSerial, 1);
+
 const failedProcessTab = contract.createTab();
 contract.event(failedProcessTab, { type: "agent_start" });
 contract.event(failedProcessTab, { type: "pi_process_error" });
-assert.equal(failedProcessTab.activity.status, "idle");
-assert.equal(failedProcessTab.activity.completionSerial, 0, "a failed process must not masquerade as successful completion");
+assert.equal(failedProcessTab.activity.status, "failed");
+assert.equal(failedProcessTab.activity.completionSerial, 1, "a failed process must create one failed completion, not a successful one");
 
 assert.match(app, /case "agent_settled":[\s\S]*?notifyAgentDone\(/, "the browser should notify only from settlement");
 assert.doesNotMatch(functionSource(app, "handleInactiveTabEvent"), /event\.type === "agent_end"[\s\S]*?notifyAgentDone/, "background low-level run ends must not notify");

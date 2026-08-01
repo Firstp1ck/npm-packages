@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=88" />
+    <link rel="stylesheet" href="/styles.css?v=92" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -126,6 +126,52 @@
       </div>
     </section>
 
+    <!-- Flagged phone/tablet shell: route content reuses the canonical nodes below. -->
+    <div id="mobileShellV2" class="mobile-shell-v2" hidden>
+      <p id="mobileLifecycleAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+      <p id="mobileContinuityNotice" class="mobile-continuity-notice" role="status" hidden></p>
+      <header class="mobile-shell-appbar" aria-label="Phone app bar">
+        <button id="mobileSessionButton" class="mobile-shell-session-button" type="button" aria-label="Open Sessions"><span id="mobileSessionStatus" aria-hidden="true">○</span><span id="mobileSessionTitle">Session</span></button>
+        <div id="mobileShellIndicators" class="mobile-shell-indicators" role="group" aria-label="Connection and attention status"></div>
+        <button id="mobileSearchButton" class="mobile-shell-icon-button" type="button" aria-label="Open command palette">Search</button>
+        <button id="mobileMoreButton" class="mobile-shell-icon-button" type="button" aria-expanded="false" aria-controls="mobileShellSurface">More</button>
+      </header>
+      <div id="mobileShellDestination" class="mobile-shell-destination" tabindex="-1">
+        <section id="mobileSessionsRoute" class="mobile-route" data-mobile-route="sessions" aria-labelledby="mobileSessionsTitle" hidden>
+          <header class="mobile-route-header"><h1 id="mobileSessionsTitle" tabindex="-1">Sessions</h1><button id="mobileSessionsCloseAllButton" type="button">Close all</button></header>
+          <div class="mobile-session-actions" aria-label="New session actions">
+            <button id="mobileNewCurrentDirectoryButton" class="primary" type="button">New here</button><button id="mobileNewDirectoryButton" type="button">Choose folder</button><button id="mobileNewWorktreeButton" type="button">Worktree</button><button id="mobileResumeSessionButton" type="button">Resume</button>
+          </div>
+          <label class="mobile-search-field" for="mobileSessionsSearchInput">Search sessions<input id="mobileSessionsSearchInput" type="search" placeholder="Search sessions" autocomplete="off" /></label>
+          <p id="mobileSessionsStatus" class="mobile-route-status muted" role="status"></p>
+          <div id="mobileSessionsList" class="mobile-session-list"></div>
+        </section>
+        <section id="mobileActivityRoute" class="mobile-route" data-mobile-route="activity" aria-labelledby="mobileActivityTitle" hidden>
+          <header class="mobile-route-header"><h1 id="mobileActivityTitle" tabindex="-1">Activity</h1><button id="mobileActivityRefreshButton" type="button">Refresh</button></header>
+          <p id="mobileActivityStatus" class="mobile-route-status muted" role="status"></p>
+          <div id="mobileActivityList" class="mobile-activity-list"></div>
+        </section>
+        <section id="mobileProjectRoute" class="mobile-route" data-mobile-route="project" aria-labelledby="mobileProjectTitle" hidden>
+          <header class="mobile-route-header"><h1 id="mobileProjectTitle" tabindex="-1">Project</h1><span id="mobileProjectName" class="muted"></span></header>
+          <div id="mobileProjectTopics" class="mobile-topic-tabs" role="tablist" aria-label="Project topics">
+            <button type="button" role="tab" data-mobile-project-topic="files">Files</button><button type="button" role="tab" data-mobile-project-topic="git">Git</button><button type="button" role="tab" data-mobile-project-topic="queue">Queue</button><button type="button" role="tab" data-mobile-project-topic="workflows">Workflows</button>
+          </div>
+          <section id="mobileProjectContent" class="mobile-canonical-host" aria-live="off"></section>
+        </section>
+      </div>
+      <nav class="mobile-shell-nav" aria-label="Phone destinations">
+        <button type="button" data-mobile-route-button="chat"><span aria-hidden="true">●</span>Chat</button>
+        <button type="button" data-mobile-route-button="sessions"><span aria-hidden="true">▤</span>Sessions<span id="mobileSessionsBadge" class="mobile-nav-badge" hidden></span></button>
+        <button type="button" data-mobile-route-button="activity"><span aria-hidden="true">◌</span>Activity<span id="mobileActivityBadge" class="mobile-nav-badge" hidden></span></button>
+        <button type="button" data-mobile-route-button="project"><span aria-hidden="true">▣</span>Project<span id="mobileProjectBadge" class="mobile-nav-badge" hidden></span></button>
+      </nav>
+      <section id="mobileShellSurface" class="mobile-shell-surface" aria-label="Mobile actions" hidden>
+        <header class="mobile-surface-header"><button id="mobileSurfaceBackButton" type="button" hidden>Back</button><h1 id="mobileSurfaceTitle" tabindex="-1">More</h1><button id="mobileSurfaceCloseButton" type="button">Close</button></header>
+        <div id="mobileSurfaceRoot" class="mobile-surface-root"></div>
+        <section id="mobileSurfaceContent" class="mobile-canonical-host" aria-live="off"></section>
+      </section>
+    </div>
+
     <main class="layout">
       <section class="chat-panel">
         <header class="terminal-tabs-shell">
@@ -237,6 +283,11 @@
           <div id="gitWorkflowActions" class="git-workflow-actions"></div>
         </section>
         <form id="composer" class="composer">
+          <section id="mobileFailedSendRecovery" class="mobile-failed-send-recovery" role="status" hidden>
+            <span><strong>Not sent.</strong> Pi did not confirm this request. It will never retry automatically.</span>
+            <button id="mobileFailedSendRetryButton" type="button">Retry</button>
+            <button id="mobileFailedSendDiscardButton" type="button">Discard</button>
+          </section>
           <div id="commandSuggest" class="command-suggest" role="listbox" aria-label="Command and path suggestions" hidden></div>
           <div class="composer-input-row">
             <div id="workflowModeControls" class="composer-workflow-mode-dock" role="group" aria-label="Workflow Mode controls" hidden>
@@ -1417,7 +1468,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=96">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=102">
       (() => {
         "use strict";
 

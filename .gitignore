@@ -18,3 +18,4 @@ pi-extension-workflows/reports/
 reports/
 plans/archive/
 services/issue-bot-gateway/.wrangler/
+/pi-package-webui/plans/handoffs/

@@ -46,6 +46,7 @@ const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
 // consumers retain their current timing and log shapes.
 const continuityModeEnabled = process.env.FAKE_PI_CONTINUITY_MODE === "1";
 const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
+const sseFloodEnabled = process.env.FAKE_PI_SSE_FLOOD === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
 const largeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
 const largeTokenSamples = Array.from({ length: 300 }, (_, index) => ({ index, input: index + 1, output: index + 2 }));
@@ -281,6 +282,20 @@ function runContinuityDelayedStream() {
   runScriptedSteps(steps);
 }
 
+function handleMobileBlockerPrompt(command, base) {
+  if (String(command.message || "").trim() !== "fixture mobile blocker") return false;
+  respond({ ...base, data: { output: "mobile blocker fixture accepted" } });
+  emitEvent({ type: "agent_start" });
+  emitEvent({
+    type: "extension_ui_request",
+    id: "fixture_blocker_12345678",
+    method: "confirm",
+    title: "Fixture blocker",
+    message: "Confirm the background-tab blocker.",
+  });
+  return true;
+}
+
 function handleContinuityPrompt(command, base) {
   if (!continuityModeEnabled || String(command.message || "").trim() !== "fixture continuity delayed stream") return false;
   appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
@@ -293,6 +308,16 @@ function handleLargePayloadPrompt(command, base) {
   if (!largePayloadsEnabled || String(command.message || "").trim() !== "fixture large rpc payload") return false;
   largeTranscriptEnabled = true;
   respond({ ...base, data: { output: largeRpcText, tokens: { input: 123456, output: 654321 }, samples: largeTokenSamples } });
+  return true;
+}
+
+function handleSseFloodPrompt(command, base) {
+  if (!sseFloodEnabled || String(command.message || "").trim() !== "fixture sse flood") return false;
+  respond({ ...base, data: { output: "fake SSE flood accepted" } });
+  const payload = "s".repeat(8192);
+  for (let index = 0; index < 256; index += 1) {
+    emitEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${index}:${payload}` } });
+  }
   return true;
 }
 
@@ -835,8 +860,10 @@ rl.on("line", (line) => {
       if (handleWorkflowFixturePrompt(command, base)) return;
       if (handleCodexFastModePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
+      if (handleMobileBlockerPrompt(command, base)) return;
       if (handleContinuityPrompt(command, base)) return;
       if (handleLargePayloadPrompt(command, base)) return;
+      if (handleSseFloodPrompt(command, base)) return;
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });
       return;

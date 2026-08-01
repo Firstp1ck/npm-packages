@@ -411,6 +411,26 @@ try {
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
 
+  const dedupTabResponse = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "mobile-request-dedup" } });
+  assert.equal(dedupTabResponse.status, 201, "mobile request deduplication test tab should open");
+  const dedupTabId = dedupTabResponse.body?.data?.tab?.id;
+  const requestId = "mobile_request_1234567890";
+  const requestBody = { tab: dedupTabId, message: "mobile request dedup fixture", requestId };
+  const [firstPrompt, duplicatePrompt] = await Promise.all([
+    request("127.0.0.1", "/api/prompt", { method: "POST", body: requestBody }),
+    request("127.0.0.1", "/api/prompt", { method: "POST", body: requestBody }),
+  ]);
+  assert.equal(firstPrompt.status, 200, "the first browser-identified prompt should dispatch");
+  assert.equal(duplicatePrompt.status, 200, "a known browser request should return the retained result");
+  const duplicateReuse = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { ...requestBody, message: "different prompt" } });
+  assert.equal(duplicateReuse.status, 409, "a request ID cannot be reused for a different mutation");
+  const dedupCommands = (await readJsonLines(fakePiCommandLog)).filter((entry) => entry.direction === "command" && entry.message === "mobile request dedup fixture");
+  assert.equal(dedupCommands.length, 1, "duplicate browser prompt identities must reach Pi exactly once");
+  const dedupTabs = await request("127.0.0.1", "/api/tabs");
+  const dedupActivity = dedupTabs.body?.data?.tabs?.find((tab) => tab.id === dedupTabId)?.activity;
+  assert.match(dedupActivity?.runId || "", /^[0-9a-f-]{36}$/i, "active parent work must expose a server-issued opaque run ID");
+  assert.equal((await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [dedupTabId] } })).status, 200, "mobile request deduplication test tab should close");
+
   const runtimeQueueBefore = { steering: ["runtime steering"], followUp: ["runtime first", "runtime second", "runtime third"] };
   const runtimeQueueEdit = await waitForSseEvent(
     tabId,

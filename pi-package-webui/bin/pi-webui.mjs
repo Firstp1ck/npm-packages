@@ -1274,12 +1274,33 @@ function sendRemoteAuthRequired(req, res, url) {
   sendJson(res, 401, { ok: false, error: "Remote PIN required", remoteAuthRequired: true }, { "www-authenticate": "PiRemotePin" });
 }
 
+// Browser SSE does not have a replay queue. A client that stops draining is
+// therefore removed on the first backpressure signal instead of accumulating
+// an unbounded queue or selectively dropping/reordering semantic events.
+// Reconnection remains authoritative through the existing tab/state refresh.
+function evictSlowSseClient(client) {
+  if (!client || client.evicted) return;
+  client.evicted = true;
+  client.tab?.sseClients?.delete(client);
+  try {
+    client.res?.destroy();
+  } catch {
+    // A closed browser socket needs no further cleanup.
+  }
+}
+
 function sendSse(client, event) {
   const res = client?.res || client;
   const payload = encodeBrowserSseEvent(event, { outputMode: client?.activeMode || OUTPUT_MODE_NORMAL });
-  if (payload === undefined) return false;
-  res.write(`data: ${payload}\n\n`);
-  return true;
+  if (payload === undefined || !res || res.destroyed || client?.evicted) return false;
+  try {
+    const accepted = res.write(`data: ${payload}\n\n`);
+    if (!accepted && client?.res) evictSlowSseClient(client);
+    return accepted;
+  } catch {
+    if (client?.res) evictSlowSseClient(client);
+    return false;
+  }
 }
 
 function rpcSuccess(command, data = {}) {
@@ -7887,7 +7908,7 @@ async function readBundledThemes() {
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "issue-wizard-state.mjs", "issue-bot-client.mjs", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  if (!["index.html", "app.js", "mobile-shell-state.mjs", "issue-wizard-state.mjs", "issue-bot-client.mjs", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
   return name;
 }
 
@@ -8776,6 +8797,10 @@ function createTabActivity(now = new Date().toISOString()) {
     status: "idle",
     isWorking: false,
     runStarted: false,
+    // Opaque server-issued identity for the current/recent parent turn. It is
+    // deliberately separate from subagent/workflow IDs and contains no prompt,
+    // title, cwd, or user-derived data.
+    runId: null,
     completionSerial: 0,
     lastChangedAt: now,
     lastStartedAt: null,
@@ -9517,6 +9542,7 @@ async function cancelPendingExtensionUiRequests(tab) {
 
 function markTabWorking(tab, timestamp = new Date().toISOString(), { runStarted = false } = {}) {
   const activity = tab.activity || createTabActivity(timestamp);
+  if (!activity.isWorking || !activity.runId) activity.runId = randomUUID();
   activity.status = "working";
   activity.isWorking = true;
   activity.runStarted = activity.runStarted === true || runStarted === true;
@@ -9536,10 +9562,24 @@ function markTabDone(tab, timestamp = new Date().toISOString()) {
   tab.activity = activity;
 }
 
+function markTabFailed(tab, timestamp = new Date().toISOString()) {
+  const activity = tab.activity || createTabActivity(timestamp);
+  activity.status = "failed";
+  activity.isWorking = false;
+  activity.runStarted = false;
+  activity.completionSerial = (Number(activity.completionSerial) || 0) + 1;
+  activity.lastCompletedAt = timestamp;
+  activity.lastChangedAt = timestamp;
+  tab.activity = activity;
+}
+
 function markTabIdle(tab, timestamp = new Date().toISOString()) {
   const activity = tab.activity || createTabActivity(timestamp);
   activity.status = "idle";
   activity.isWorking = false;
+  // An idle pre-start operation never became a parent turn. Completed turns
+  // retain their opaque ID so a later Activity view can resolve recent work.
+  if (!activity.runStarted) activity.runId = null;
   activity.runStarted = false;
   activity.lastChangedAt = timestamp;
   tab.activity = activity;
@@ -9609,19 +9649,30 @@ function updateTabActivityFromEvent(tab, event) {
   switch (event?.type) {
     case "agent_start":
       patchTabState(tab, { isStreaming: true });
+      tab.pendingTurnFailure = false;
       markTabWorking(tab, timestamp, { runStarted: true });
       break;
     case "compaction_start":
       patchTabState(tab, { isCompacting: true });
       markTabWorking(tab, timestamp);
       break;
-    case "agent_end":
+    case "agent_end": {
       // A low-level run ended, but Pi may still retry, compact, or process a follow-up.
+      const assistant = Array.isArray(event.messages) ? event.messages.findLast((item) => item?.role === "assistant") : null;
+      if (event.willRetry === true) tab.pendingTurnFailure = false;
+      else if (assistant?.stopReason === "error") tab.pendingTurnFailure = true;
+      break;
+    }
+    case "message_end":
+      if (event.message?.role === "assistant" && event.message.stopReason === "error") tab.pendingTurnFailure = true;
       break;
     case "agent_settled":
       patchTabState(tab, { isStreaming: false });
-      if (tab.activity?.runStarted) markTabDone(tab, timestamp);
-      else if (tab.activity?.isWorking) markTabIdle(tab, timestamp);
+      if (tab.activity?.runStarted) {
+        if (tab.pendingTurnFailure) markTabFailed(tab, timestamp);
+        else markTabDone(tab, timestamp);
+      } else if (tab.activity?.isWorking) markTabIdle(tab, timestamp);
+      tab.pendingTurnFailure = false;
       break;
     case "compaction_end":
       patchTabState(tab, { isCompacting: false });
@@ -9631,8 +9682,14 @@ function updateTabActivityFromEvent(tab, event) {
       patchTabState(tab, { pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) });
       break;
     case "pi_process_exit":
+      if (tab.activity?.runStarted && (Number(event.code) !== 0 || event.signal)) markTabFailed(tab, timestamp);
+      else markTabIdle(tab, timestamp);
+      tab.pendingTurnFailure = false;
+      break;
     case "pi_process_error":
-      markTabIdle(tab, timestamp);
+      if (tab.activity?.runStarted) markTabFailed(tab, timestamp);
+      else markTabIdle(tab, timestamp);
+      tab.pendingTurnFailure = false;
       break;
     case "response":
       if (event.command === "get_state" && event.success !== false) {
@@ -9727,6 +9784,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     rpc,
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
+    browserPromptRequests: new Map(),
   };
   resetNaturalConversationMode(tab);
   resetCodexFastMode(tab);
@@ -13413,8 +13471,9 @@ function activateOutputMode(client, activeMode, reason = "server-default-change"
 }
 
 function sendSseToClient(client, event) {
-  sendSse(client, event);
-  if (client?.pendingMode && isOutputModeSemanticBarrier(event)) activateOutputMode(client, client.pendingMode);
+  const sent = sendSse(client, event);
+  if (sent && client?.pendingMode && isOutputModeSemanticBarrier(event)) activateOutputMode(client, client.pendingMode);
+  return sent;
 }
 
 function refreshAutoOutputModes() {
@@ -13432,6 +13491,58 @@ function refreshAutoOutputModes() {
       }
     }
   }
+}
+
+const BROWSER_PROMPT_REQUEST_ID = /^[A-Za-z0-9_-]{16,128}$/;
+const BROWSER_PROMPT_REQUEST_TTL_MS = 10 * 60 * 1000;
+const BROWSER_PROMPT_REQUEST_LIMIT = 256;
+
+function browserPromptRequestId(value) {
+  if (value === undefined) return null;
+  const id = String(value || "");
+  if (!BROWSER_PROMPT_REQUEST_ID.test(id)) throw makeHttpError(400, "requestId must be an opaque 16-128 character identifier");
+  return id;
+}
+
+function browserPromptFingerprint(body) {
+  return createHash("sha256").update(JSON.stringify({
+    message: String(body?.message || ""),
+    streamingBehavior: body?.streamingBehavior === "steer" || body?.streamingBehavior === "followUp" ? body.streamingBehavior : "",
+    images: Array.isArray(body?.images) ? body.images : [],
+  })).digest("base64url");
+}
+
+function pruneBrowserPromptRequests(tab, now = Date.now()) {
+  const requests = tab?.browserPromptRequests;
+  if (!requests) return;
+  for (const [id, entry] of requests) {
+    if (entry.settledAt && entry.settledAt + BROWSER_PROMPT_REQUEST_TTL_MS <= now) requests.delete(id);
+  }
+}
+
+async function deduplicateBrowserPromptRequest(tab, body, dispatch) {
+  const requestId = browserPromptRequestId(body?.requestId);
+  if (!requestId) return dispatch();
+  const requests = tab.browserPromptRequests || (tab.browserPromptRequests = new Map());
+  const fingerprint = browserPromptFingerprint(body);
+  pruneBrowserPromptRequests(tab);
+  const known = requests.get(requestId);
+  if (known) {
+    if (known.fingerprint !== fingerprint) throw makeHttpError(409, "requestId was already used for a different prompt");
+    return known.promise;
+  }
+  while (requests.size >= BROWSER_PROMPT_REQUEST_LIMIT) {
+    const settled = [...requests.entries()].find(([, entry]) => entry.settledAt);
+    if (!settled) throw makeHttpError(429, "too many in-flight prompt requests for this tab");
+    requests.delete(settled[0]);
+  }
+  const entry = { fingerprint, settledAt: 0, promise: null };
+  entry.promise = Promise.resolve().then(dispatch).finally(() => {
+    entry.settledAt = Date.now();
+    pruneBrowserPromptRequests(tab, entry.settledAt);
+  });
+  requests.set(requestId, entry);
+  return entry.promise;
 }
 
 async function saveOutputModeDefault(value) {
@@ -13839,6 +13950,36 @@ async function webuiStatus({ detailed = false, eventLimit = 40, includeAuthPin =
   return data;
 }
 
+async function handlePromptRequest(tab, body, req) {
+  if (isNaturalConversationActive(tab) && naturalConversationSlashCommandName(body.message) && !isNaturalConversationSlashCommand(body.message)) {
+    blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
+  }
+  const nativeResponse = await handleNativeSlashCommand(tab, body, req);
+  if (nativeResponse) {
+    return { status: nativeResponse.success === false ? 400 : 200, payload: responseWithTab(nativeResponse, tab) };
+  }
+  const command = commandFromPost("/api/prompt", body);
+  enforceNaturalConversationCommandAllowed(tab, command);
+  const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
+  if (queuedForCompaction) return { status: 202, payload: responseWithTab(queuedForCompaction, tab) };
+  const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
+  if (naturalConversationSafetyResponse?.success === false) {
+    return { status: 400, payload: responseWithTab(naturalConversationSafetyResponse, tab) };
+  }
+  const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
+  if (pendingThinkingResponse?.success === false) {
+    return { status: 400, payload: responseWithTab(pendingThinkingResponse, tab) };
+  }
+  const startsVisibleWork = commandStartsVisibleWork(command);
+  if (startsVisibleWork) {
+    maybeNameTabForConversation(tab, command);
+    markTabWorking(tab);
+  }
+  const response = await tab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
+  if (response.success === false && startsVisibleWork) markTabIdle(tab);
+  return { status: response.success === false ? 400 : 200, payload: responseWithTab(response, tab) };
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -14085,6 +14226,7 @@ const server = createServer(async (req, res) => {
       });
       const client = {
         res,
+        tab,
         requestedMode: negotiated.requestedMode,
         protocolVersion: negotiated.protocolVersion,
         activeMode: negotiated.activeMode,
@@ -14141,7 +14283,13 @@ const server = createServer(async (req, res) => {
       replayExtensionStatuses(tab, client);
       replayExtensionWidgets(tab, client);
       replayPendingExtensionUiRequests(tab, client);
-      const keepAlive = setInterval(() => res.write(": keepalive\n\n"), 15000);
+      const keepAlive = setInterval(() => {
+        try {
+          if (!res.write(": keepalive\n\n")) evictSlowSseClient(client);
+        } catch {
+          evictSlowSseClient(client);
+        }
+      }, 15000);
       req.on("close", () => {
         clearInterval(keepAlive);
         tab.sseClients.delete(client);
@@ -14834,39 +14982,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/prompt" && req.method === "POST") {
       const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
       const tab = getRequestedTab(req, url, body);
-      if (isNaturalConversationActive(tab) && naturalConversationSlashCommandName(body.message) && !isNaturalConversationSlashCommand(body.message)) {
-        blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
-      }
-      const nativeResponse = await handleNativeSlashCommand(tab, body, req);
-      if (nativeResponse) {
-        sendJson(res, nativeResponse.success === false ? 400 : 200, responseWithTab(nativeResponse, tab));
-        return;
-      }
-      const command = commandFromPost(url.pathname, body);
-      enforceNaturalConversationCommandAllowed(tab, command);
-      const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
-      if (queuedForCompaction) {
-        sendJson(res, 202, responseWithTab(queuedForCompaction, tab));
-        return;
-      }
-      const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
-      if (naturalConversationSafetyResponse?.success === false) {
-        sendJson(res, 400, responseWithTab(naturalConversationSafetyResponse, tab));
-        return;
-      }
-      const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
-      if (pendingThinkingResponse?.success === false) {
-        sendJson(res, 400, responseWithTab(pendingThinkingResponse, tab));
-        return;
-      }
-      const startsVisibleWork = commandStartsVisibleWork(command);
-      if (startsVisibleWork) {
-        maybeNameTabForConversation(tab, command);
-        markTabWorking(tab);
-      }
-      const response = await tab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
-      if (response.success === false && startsVisibleWork) markTabIdle(tab);
-      sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
+      const result = await deduplicateBrowserPromptRequest(tab, body, () => handlePromptRequest(tab, body, req));
+      sendJson(res, result.status, result.payload);
       return;
     }
 

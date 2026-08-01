@@ -7,6 +7,7 @@ import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey
 import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
+import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -90,6 +91,9 @@ const elements = {
   composerActionsButton: $("#composerActionsButton"),
   composerActionsPanel: $("#composerActionsPanel"),
   promptInput: $("#promptInput"),
+  mobileFailedSendRecovery: $("#mobileFailedSendRecovery"),
+  mobileFailedSendRetryButton: $("#mobileFailedSendRetryButton"),
+  mobileFailedSendDiscardButton: $("#mobileFailedSendDiscardButton"),
   followUpQueueTrigger: $("#followUpQueueTrigger"),
   followUpQueueTriggerCount: $("#followUpQueueTriggerCount"),
   followUpQueueOverlay: $("#followUpQueueOverlay"),
@@ -779,6 +783,12 @@ const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
 const AGENT_DONE_NOTIFICATIONS_STORAGE_KEY = "pi-webui-agent-done-notifications";
 const UPDATE_NOTIFICATION_DISMISS_STORAGE_KEY = "pi-webui-update-notification-dismissed";
+const MOBILE_CONTINUITY_STORAGE_KEY = "pi-webui-mobile-continuity-v1";
+const MOBILE_INSTALL_EDUCATION_STORAGE_KEY = "pi-webui-mobile-install-education-v1";
+const MOBILE_CONTINUITY_MAX_SESSIONS = 24;
+const MOBILE_CONTINUITY_PERSIST_DEBOUNCE_MS = 400;
+const MOBILE_FAILED_SEND_RECOVERY_TTL_MS = 10 * 60 * 1000;
+const MOBILE_DIAGNOSTIC_EVENT_LIMIT = 40;
 const THINKING_VISIBILITY_STORAGE_KEY = "pi-webui-thinking-visible";
 const BUSY_PROMPT_BEHAVIOR_STORAGE_KEY = "pi-webui-busy-prompt-behavior";
 const SKILL_USAGE_STORAGE_KEY = "pi-webui-skill-usage-v1";
@@ -988,6 +998,1072 @@ const colorSchemeMedia = window.matchMedia?.("(prefers-color-scheme: dark)") || 
 const initialUrlParams = new URLSearchParams(window.location.search);
 const embeddedSplitMode = initialUrlParams.get("embed") === "split";
 document.body.classList.toggle("embedded-split", embeddedSplitMode);
+
+function readMobileShellPreference() {
+  try {
+    return localStorage.getItem(MOBILE_SHELL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function mobileShellViewport() {
+  return {
+    width: window.innerWidth || document.documentElement.clientWidth || 0,
+    height: window.innerHeight || document.documentElement.clientHeight || 0,
+    coarsePointer: window.matchMedia?.("(pointer: coarse)")?.matches === true,
+    hover: window.matchMedia?.("(hover: hover)")?.matches === true,
+  };
+}
+
+function readTabletShellPreference() {
+  try {
+    return localStorage.getItem(TABLET_SHELL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+let mobileShellState = createMobileShellState({
+  viewport: mobileShellViewport(),
+  featureMode: resolveMobileShellFeatureMode({ urlValue: initialUrlParams.get("mobileShell"), storedValue: readMobileShellPreference() }),
+  tabletFeatureMode: resolveTabletShellFeatureMode({ urlValue: initialUrlParams.get("tabletShell"), storedValue: readTabletShellPreference() }),
+});
+
+function isMobileShellV2Active() {
+  return isMobileShellV2Enabled(mobileShellState.featureMode, mobileShellState.viewportMode, mobileShellState.tabletFeatureMode);
+}
+
+function isTabletShellV2Active() {
+  return isMobileShellV2Active() && mobileShellState.viewportMode === "tablet";
+}
+
+function syncMobileShellRoot() {
+  const root = document.documentElement;
+  if (mobileShellState.featureMode === "legacy") root.removeAttribute("data-mobile-shell");
+  else root.dataset.mobileShell = "v2";
+  if (mobileShellState.tabletFeatureMode === "legacy") root.removeAttribute("data-tablet-shell");
+  else root.dataset.tabletShell = "v2";
+  root.dataset.mobileShellRoute = mobileShellState.route;
+}
+
+let mobilePhoneExperienceInstalled = false;
+let mobilePresentation = "essential";
+let mobileProjectTopic = "files";
+let mobileCanonicalMount = null;
+let mobileWidgetAreaMount = null;
+let mobileLifecycleSignature = "";
+let mobileLifecycleInitialized = false;
+let mobileConnectionState = navigator.onLine === false ? "offline" : "online";
+let mobileConnectionLabel = mobileConnectionState === "offline" ? "Paused/offline" : "Online";
+let mobileConnectionLabelResetTimer = null;
+let mobileContinuityPersistTimer = null;
+let mobileSurfaceFocusReturn = null;
+let mobileSurfaceRenderFocus = null;
+let mobileSurfaceUserFocusIntentUntil = 0;
+let pendingMobileNavigationTarget = null;
+let mobileFailedSend = null;
+let mobileInstallPrompt = null;
+let mobileInstallEducation = { visits: 0, dismissed: false };
+const mobileDiagnosticEvents = [];
+const mobileDismissedActivityKeys = new Set();
+
+function applyMobileShellEvent(event) {
+  mobileShellState = reduceMobileShellState(mobileShellState, event);
+  syncMobileShellRoot();
+  if (mobilePhoneExperienceInstalled) renderMobilePhoneExperience();
+  return mobileShellState;
+}
+
+function mobileShellElement(id) {
+  return document.getElementById(id);
+}
+
+function readMobilePresentation() {
+  try {
+    const value = localStorage.getItem("pi-webui-mobile-presentation-v1");
+    return value === "detailed" ? "detailed" : "essential";
+  } catch {
+    return "essential";
+  }
+}
+
+function setMobilePresentation(value) {
+  mobilePresentation = value === "detailed" ? "detailed" : "essential";
+  document.documentElement.dataset.mobilePresentation = mobilePresentation;
+  try { localStorage.setItem("pi-webui-mobile-presentation-v1", mobilePresentation); } catch {}
+  renderMobilePhoneExperience();
+}
+
+function readMobileContinuityState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MOBILE_CONTINUITY_STORAGE_KEY) || "null");
+    return parsed && parsed.v === 1 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function mobileAttachmentMetadata(attachment) {
+  return {
+    name: String(attachment?.name || "attachment").slice(0, 180),
+    mimeType: String(attachment?.mimeType || "application/octet-stream").slice(0, 120),
+    size: Math.max(0, Number(attachment?.size) || 0),
+    kind: ["image", "video", "audio", "doc", "file"].includes(attachment?.kind) ? attachment.kind : "file",
+  };
+}
+
+function persistMobileContinuityState() {
+  clearTimeout(mobileContinuityPersistTimer);
+  mobileContinuityPersistTimer = null;
+  if (!isMobileShellV2Active()) return;
+  if (activeTabId) tabDrafts.set(activeTabId, elements.promptInput?.value || "");
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  const orderedIds = [activeTabId, ...tabs.map((tab) => tab.id)].filter((id, index, values) => id && liveIds.has(id) && values.indexOf(id) === index).slice(0, MOBILE_CONTINUITY_MAX_SESSIONS);
+  const drafts = {};
+  const attachments = {};
+  for (const tabId of orderedIds) {
+    const draft = String(tabDrafts.get(tabId) || "");
+    if (draft) drafts[tabId] = draft.slice(0, 200_000);
+    const metadata = attachmentsForTab(tabId).map(mobileAttachmentMetadata).slice(0, ATTACHMENT_MAX_FILES);
+    if (metadata.length) attachments[tabId] = metadata;
+  }
+  const failedSend = mobileFailedSend && (!Array.isArray(mobileFailedSend.body?.images) || mobileFailedSend.body.images.length === 0) ? {
+    kind: mobileFailedSend.kind,
+    tabId: mobileFailedSend.tabId,
+    inputMessage: String(mobileFailedSend.inputMessage || "").slice(0, 200_000),
+    body: { ...mobileFailedSend.body },
+  } : null;
+  try {
+    localStorage.setItem(MOBILE_CONTINUITY_STORAGE_KEY, JSON.stringify({ v: 1, route: mobileShellState.route, drafts, attachments, failedSend, savedAt: Date.now() }));
+  } catch (error) {
+    recordMobileDiagnostic("continuity storage unavailable", error?.message || String(error));
+  }
+}
+
+function scheduleMobileContinuityPersist() {
+  clearTimeout(mobileContinuityPersistTimer);
+  mobileContinuityPersistTimer = setTimeout(persistMobileContinuityState, MOBILE_CONTINUITY_PERSIST_DEBOUNCE_MS);
+}
+
+function restoreMobileContinuityState() {
+  const stored = readMobileContinuityState();
+  if (!stored) return;
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  for (const [tabId, draft] of Object.entries(stored.drafts || {})) {
+    if (liveIds.has(tabId) && !tabDrafts.has(tabId) && typeof draft === "string") tabDrafts.set(tabId, draft);
+  }
+  for (const [tabId, metadata] of Object.entries(stored.attachments || {})) {
+    if (!liveIds.has(tabId) || tabAttachments.has(tabId) || !Array.isArray(metadata)) continue;
+    const restored = metadata.slice(0, ATTACHMENT_MAX_FILES).map((item, index) => ({
+      id: `restored-${index}-${Date.now()}`,
+      ...mobileAttachmentMetadata(item),
+      source: "restored metadata",
+      requiresReselect: true,
+      file: null,
+    }));
+    if (restored.length) tabAttachments.set(tabId, restored);
+  }
+  if (!initialUrlParams.has("mobileRoute") && !pendingMobileNavigationTarget && ["chat", "sessions", "activity", "project"].includes(stored.route)) {
+    mobileShellState = reduceMobileShellState(mobileShellState, { type: "route", route: stored.route, replace: true });
+  }
+  const failed = stored.failedSend;
+  const recoveryAgeMs = Date.now() - Number(stored.savedAt || 0);
+  if (failed && recoveryAgeMs >= 0 && recoveryAgeMs <= MOBILE_FAILED_SEND_RECOVERY_TTL_MS && liveIds.has(failed.tabId) && failed.kind === "prompt" && failed.body && typeof failed.body === "object" && (!Array.isArray(failed.body.images) || failed.body.images.length === 0)) {
+    mobileFailedSend = { kind: failed.kind, tabId: failed.tabId, inputMessage: String(failed.inputMessage || ""), body: failed.body, retrying: false };
+  }
+}
+
+function scrubMobileDiagnosticDetail(detail = "") {
+  const text = String(detail || "").slice(0, 240);
+  if (!text) return "";
+  if (/(?:https?:\/\/|file:\/\/|[A-Za-z]:[\\/]|(?:^|\s)[/~.]?[^\s]*[\\/][^\s]*|token|password|credential|authorization)/i.test(text)) return "[redacted potentially sensitive detail]";
+  return text;
+}
+
+function recordMobileDiagnostic(event, detail = "") {
+  mobileDiagnosticEvents.push({ at: new Date().toISOString(), event: String(event || "event").slice(0, 120), detail: scrubMobileDiagnosticDetail(detail) });
+  if (mobileDiagnosticEvents.length > MOBILE_DIAGNOSTIC_EVENT_LIMIT) mobileDiagnosticEvents.splice(0, mobileDiagnosticEvents.length - MOBILE_DIAGNOSTIC_EVENT_LIMIT);
+}
+
+function mobileDiagnosticsText() {
+  const permission = browserNotificationPermission();
+  const lines = [
+    "Pi Web UI local mobile diagnostics v1",
+    `captured=${new Date().toISOString()}`,
+    `viewport=${mobileShellState.viewportMode}/${mobileShellState.posture}`,
+    `route=${mobileShellState.route}`,
+    `connection=${mobileConnectionState}`,
+    `notification=${permission}`,
+    `standalone=${isStandalonePwaWindow()}`,
+    `serviceWorker=${navigator.serviceWorker?.controller ? "controlled" : "not-controlled"}`,
+    `failedSend=${mobileFailedSend ? "awaiting-manual-action" : "none"}`,
+    "events:",
+    ...mobileDiagnosticEvents.map((item) => `${item.at} ${item.event}${item.detail ? ` (${item.detail})` : ""}`),
+  ];
+  return lines.join("\n");
+}
+
+function readMobileInstallEducation() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MOBILE_INSTALL_EDUCATION_STORAGE_KEY) || "null");
+    return parsed && typeof parsed === "object" ? { visits: Math.max(0, Number(parsed.visits) || 0), dismissed: parsed.dismissed === true } : { visits: 0, dismissed: false };
+  } catch {
+    return { visits: 0, dismissed: false };
+  }
+}
+
+function persistMobileInstallEducation() {
+  try { localStorage.setItem(MOBILE_INSTALL_EDUCATION_STORAGE_KEY, JSON.stringify(mobileInstallEducation)); } catch {}
+}
+
+function renderMobileFailedSendRecovery() {
+  if (!elements.mobileFailedSendRecovery) return;
+  const visible = isMobileShellV2Active() && !!mobileFailedSend;
+  elements.mobileFailedSendRecovery.hidden = !visible;
+  if (elements.mobileFailedSendRetryButton) elements.mobileFailedSendRetryButton.disabled = mobileFailedSend?.retrying === true;
+  if (elements.mobileFailedSendDiscardButton) elements.mobileFailedSendDiscardButton.disabled = mobileFailedSend?.retrying === true;
+}
+
+function mobileCanonicalUnmount() {
+  if (!mobileCanonicalMount) return;
+  for (const record of mobileCanonicalMount.records) {
+    record.content.hidden = record.contentHidden;
+    record.section.hidden = record.sectionHidden;
+    record.section.className = record.sectionClassName;
+    record.button?.setAttribute("aria-expanded", record.ariaExpanded);
+    if (record.nextSibling?.parentNode === record.parent) record.parent.insertBefore(record.content, record.nextSibling);
+    else record.parent.append(record.content);
+  }
+  mobileCanonicalMount = null;
+}
+
+function mobileWidgetAreaUnmount() {
+  if (!mobileWidgetAreaMount) return;
+  const { node, parent, nextSibling } = mobileWidgetAreaMount;
+  if (nextSibling?.parentNode === parent) parent.insertBefore(node, nextSibling);
+  else parent.append(node);
+  mobileWidgetAreaMount = null;
+}
+
+function mobileWidgetAreaMountContent(host, prefix) {
+  const node = elements.widgetArea;
+  if (!host || !node) return;
+  if (!mobileWidgetAreaMount) mobileWidgetAreaMount = { node, parent: node.parentNode, nextSibling: node.nextSibling };
+  host.replaceChildren(prefix, node);
+}
+
+function mobileCanonicalMountContent(host, contentIds, key) {
+  if (!host) return;
+  if (mobileCanonicalMount?.host === host && mobileCanonicalMount.key === key) return;
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  const records = [];
+  for (const id of contentIds) {
+    const content = mobileShellElement(id);
+    const section = content?.closest?.("[data-side-panel-section]");
+    if (!content || !section || !content.parentNode) continue;
+    const button = section.querySelector("[data-side-panel-section-toggle]");
+    records.push({
+      content,
+      parent: content.parentNode,
+      nextSibling: content.nextSibling,
+      contentHidden: content.hidden,
+      section,
+      sectionHidden: section.hidden,
+      sectionClassName: section.className,
+      button,
+      ariaExpanded: button?.getAttribute("aria-expanded") || "false",
+    });
+    section.hidden = false;
+    section.classList.remove("collapsed");
+    content.hidden = false;
+    button?.setAttribute("aria-expanded", "true");
+    host.append(content);
+  }
+  mobileCanonicalMount = { host, key, records };
+}
+
+function mobileButton(label, className = "", onClick = null) {
+  const button = make("button", className, label);
+  button.type = "button";
+  if (onClick) button.addEventListener("click", onClick);
+  return button;
+}
+
+function mobileSetBadge(id, count, label) {
+  const badge = mobileShellElement(id);
+  const safeCount = Math.max(0, Number(count) || 0);
+  if (badge) {
+    badge.hidden = safeCount === 0;
+    badge.textContent = safeCount ? String(safeCount) : "";
+    badge.removeAttribute("aria-label");
+  }
+  return safeCount ? label(safeCount) : "";
+}
+
+function mobileSetText(node, text) {
+  const value = String(text || "");
+  if (node && node.textContent !== value) node.textContent = value;
+}
+
+function mobileTabActivityState(tab) {
+  const indicator = tabIndicator(tab);
+  const activity = activityForTab(tab);
+  if (indicator.state === "blocked") return "blocked";
+  if (activity.status === "failed" || tab?.failed === true) return "failed";
+  if (indicator.state === "working" || tabAppRunnerRunningRun(tab) || workflowRunningCountForTab(tab?.id)) return "running";
+  if (indicator.state === "done" || activity.completionSerial > 0) return "completed";
+  return "idle";
+}
+
+function mobileTabCwdLabel(tab) {
+  const cwd = String(tab?.cwd || "").replace(/\\\\/g, "/").replace(/\/+$/, "");
+  return cwd.split("/").filter(Boolean).pop() || "No folder";
+}
+
+function mobileSwitchToTab(tabId, { route = "chat", focus = false } = {}) {
+  if (!tabId) return;
+  Promise.resolve(switchTab(tabId)).then(() => {
+    mobileNavigate(route);
+    if (focus && route === "chat") focusPromptInput({ defer: true });
+  }).catch((error) => addEvent(error.message || String(error), "error"));
+}
+
+function mobileShellHistoryState() {
+  const { route, surface, surfacePage, routeHistory } = mobileShellState;
+  return { route, surface, surfacePage, routeHistory };
+}
+
+function mobileNavigate(route, { replace = false, focus = true } = {}) {
+  if (!isMobileShellV2Active()) return;
+  const current = mobileShellState;
+  const next = reduceMobileShellState(current, { type: "route", route, replace });
+  if (next.route === current.route && current.surface === "none") return;
+  mobileShellState = next;
+  syncMobileShellRoot();
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  persistMobileContinuityState();
+  renderMobilePhoneExperience({ focus });
+}
+
+function mobileOpenSurface(surface, page = "root", { focus = true } = {}) {
+  if (!isMobileShellV2Active()) return;
+  const openSurface = mobileShellElement("mobileShellSurface");
+  if (mobileShellState.surface === "none" && document.activeElement instanceof HTMLElement && !openSurface?.contains(document.activeElement)) {
+    mobileSurfaceFocusReturn = document.activeElement;
+  }
+  mobileShellState = reduceMobileShellState(mobileShellState, { type: "surface", surface, page });
+  syncMobileShellRoot();
+  window.history.pushState({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  renderMobilePhoneExperience({ focus });
+}
+
+function mobileSetSurfacePage(page) {
+  mobileShellState = reduceMobileShellState(mobileShellState, { type: "surface-page", page });
+  syncMobileShellRoot();
+  window.history.pushState({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  renderMobilePhoneExperience({ focus: true });
+}
+
+function mobileBack() {
+  if (!isMobileShellV2Active()) return false;
+  if (mobileShellState.surface !== "none" || mobileShellState.routeHistory.length) {
+    window.history.back();
+    return true;
+  }
+  return false;
+}
+
+function mobileRenderSessions() {
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  const list = mobileShellElement("mobileSessionsList");
+  const status = mobileShellElement("mobileSessionsStatus");
+  if (!list || !status) return;
+  const query = String(mobileShellElement("mobileSessionsSearchInput")?.value || "").trim().toLocaleLowerCase();
+  const ordered = [...tabs].sort((a, b) => {
+    const priority = { blocked: 0, running: 1, failed: 2, completed: 3, idle: 4 };
+    return (priority[mobileTabActivityState(a)] ?? 5) - (priority[mobileTabActivityState(b)] ?? 5);
+  });
+  const visible = ordered.filter((tab) => !query || [tab.title, tab.cwd, tab.model, mobileTabCwdLabel(tab)].filter(Boolean).join(" ").toLocaleLowerCase().includes(query));
+  list.replaceChildren();
+  if (!visible.length) {
+    mobileSetText(status, tabs.length ? "No sessions match this search." : "No sessions are open. Start one in the current folder or choose a folder.");
+    return;
+  }
+  const priorityTabs = visible.filter((tab) => ["blocked", "running"].includes(mobileTabActivityState(tab)));
+  const priorityIds = new Set(priorityTabs.map((tab) => tab.id));
+  const groups = new Map();
+  for (const tab of visible) {
+    if (priorityIds.has(tab.id)) continue;
+    const key = mobileTabCwdLabel(tab);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(tab);
+  }
+  mobileSetText(status, `${visible.length} session${visible.length === 1 ? "" : "s"}. Needs-input and running sessions are in Priority.`);
+  const renderGroup = (group, groupTabs) => {
+    const section = make("section", "mobile-session-group");
+    const heading = make("h2", "mobile-session-group-heading", group);
+    section.append(heading);
+    for (const tab of groupTabs) {
+      const state = mobileTabActivityState(tab);
+      const row = make("article", `mobile-session-row is-${state}${tab.id === activeTabId ? " is-active" : ""}`);
+      const select = mobileButton("", "mobile-session-select", () => mobileSwitchToTab(tab.id, { focus: true }));
+      select.setAttribute("aria-current", tab.id === activeTabId ? "page" : "false");
+      select.setAttribute("aria-label", `${tab.title || "Untitled session"}, ${state}${tab.id === activeTabId ? ", current session" : ""}`);
+      select.append(
+        make("span", "mobile-state-glyph", state === "blocked" ? "!" : state === "running" ? "●" : state === "failed" ? "×" : state === "completed" ? "✓" : "○"),
+        make("span", "mobile-session-copy", ""),
+      );
+      const copy = select.querySelector(".mobile-session-copy");
+      copy.append(make("strong", undefined, tab.title || "Untitled session"), make("span", "muted", `${mobileTabCwdLabel(tab)} · ${state}`));
+      const more = mobileButton("Close", "mobile-row-action", (event) => {
+        event.stopPropagation();
+        void closeTerminalTab(tab.id);
+      });
+      more.setAttribute("aria-label", `Close ${tab.title || "session"}`);
+      row.append(select, more);
+      section.append(row);
+    }
+    list.append(section);
+  };
+  if (priorityTabs.length) renderGroup("Priority", priorityTabs);
+  for (const [group, groupTabs] of groups) renderGroup(group, groupTabs);
+}
+
+function mobileRenderActivity() {
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  const list = mobileShellElement("mobileActivityList");
+  const status = mobileShellElement("mobileActivityStatus");
+  if (!list || !status) return;
+  const grouped = new Map([["Needs input", []], ["Running", []], ["Failed", []], ["Completed", []]]);
+  for (const tab of tabs) {
+    const state = mobileTabActivityState(tab);
+    const key = state === "blocked" ? "Needs input" : state === "running" ? "Running" : state === "failed" ? "Failed" : state === "completed" ? "Completed" : "";
+    const itemKey = `${tab.id}:${state}:${activityForTab(tab).completionSerial || 0}`;
+    if (key && !mobileDismissedActivityKeys.has(itemKey)) grouped.get(key).push({ tab, state, itemKey });
+    if (tabAppRunnerRunningRun(tab) && !mobileDismissedActivityKeys.has(`${tab.id}:app`)) grouped.get("Running").push({ tab, state: "running", itemKey: `${tab.id}:app`, kind: "app" });
+    if (workflowRunningCountForTab(tab.id) && !mobileDismissedActivityKeys.has(`${tab.id}:workflow`)) grouped.get("Running").push({ tab, state: "running", itemKey: `${tab.id}:workflow`, kind: "workflow" });
+  }
+  list.replaceChildren();
+  let total = 0;
+  for (const [label, items] of grouped) {
+    if (!items.length) continue;
+    total += items.length;
+    const section = make("section", `mobile-activity-group ${label.toLowerCase().replaceAll(" ", "-")}`);
+    section.append(make("h2", "mobile-session-group-heading", `${label} (${items.length})`));
+    for (const item of items) {
+      const { tab, state, itemKey, kind } = item;
+      const row = make("article", `mobile-activity-item is-${state}`);
+      const heading = kind === "workflow" ? "Workflow run" : kind === "app" ? "App runner" : tab.title || "Untitled session";
+      const detail = kind === "workflow" ? `${workflowRunningCountForTab(tab.id)} workflow run${workflowRunningCountForTab(tab.id) === 1 ? "" : "s"} active` : kind === "app" ? "App runner is active" : state === "blocked" ? `${tabPendingBlockerCount(tab)} decision${tabPendingBlockerCount(tab) === 1 ? "" : "s"} need attention` : `${mobileTabCwdLabel(tab)} · ${state}`;
+      row.append(make("strong", undefined, heading), make("p", "muted", detail));
+      const actions = make("div", "mobile-activity-actions");
+      const open = mobileButton(state === "blocked" ? "Review" : kind ? "Open" : "View", "primary", () => {
+        if (kind) {
+          mobileProjectTopic = "workflows";
+          mobileSwitchToTab(tab.id, { route: "project" });
+        } else {
+          mobileSwitchToTab(tab.id, { route: "chat", focus: state !== "blocked" });
+          if (state === "blocked") requestAnimationFrame(() => elements.widgetArea?.scrollIntoView({ block: "start" }));
+        }
+      });
+      actions.append(open);
+      if (state === "completed" || state === "failed") actions.append(mobileButton("Dismiss", "mobile-row-action", () => {
+        mobileDismissedActivityKeys.add(itemKey);
+        mobileRenderActivity();
+      }));
+      row.append(actions);
+      section.append(row);
+    }
+    list.append(section);
+  }
+  mobileSetText(status, total ? `${total} work item${total === 1 ? "" : "s"}; opening an item uses its existing tab, blocker, workflow, or app-runner action.` : "No current, failed, or recently completed work. Sessions stay available in Sessions.");
+}
+
+function mobileRenderProject() {
+  const host = mobileShellElement("mobileProjectContent");
+  const projectName = mobileShellElement("mobileProjectName");
+  if (!host) return;
+  if (projectName) projectName.textContent = mobileTabCwdLabel(activeTab());
+  for (const button of document.querySelectorAll("[data-mobile-project-topic]")) {
+    const selected = button.dataset.mobileProjectTopic === mobileProjectTopic;
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+    button.tabIndex = selected ? 0 : -1;
+  }
+  if (mobileProjectTopic === "files") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalMountContent(host, ["sidePanelSectionFiles"], "project:files");
+    return;
+  }
+  if (mobileProjectTopic === "git") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalMountContent(host, ["sidePanelSectionGit"], "project:git");
+    renderGitPanel();
+    return;
+  }
+  if (mobileProjectTopic === "queue") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalMountContent(host, ["sidePanelSectionQueue"], "project:queue");
+    return;
+  }
+  mobileCanonicalUnmount();
+  const actions = make("div", "mobile-project-workflow-actions");
+  actions.append(
+    mobileButton("Workflow Mode", "primary", () => elements.workflowModeButton?.click()),
+    mobileButton("App runners", "", () => elements.appRunnerMenuButton?.click()),
+    mobileButton("Guided Git workflow", "", () => elements.gitWorkflowButton?.click()),
+  );
+  mobileWidgetAreaMountContent(host, actions);
+  if (!elements.widgetArea.childElementCount) host.append(make("p", "mobile-route-status muted", "No workflow or app-runner output is active. Start a workflow, app runner, or guided Git workflow from the existing actions above."));
+}
+
+function mobileRenderMore() {
+  const root = mobileShellElement("mobileSurfaceRoot");
+  const host = mobileShellElement("mobileSurfaceContent");
+  const title = mobileShellElement("mobileSurfaceTitle");
+  const back = mobileShellElement("mobileSurfaceBackButton");
+  if (!root || !host || !title || !back) return;
+  const page = mobileShellState.surfacePage || "root";
+  const topics = {
+    session: ["Session", ["sidePanelSectionSession"]],
+    usage: ["Usage", ["sidePanelSectionCodexUsage", "sidePanelSectionClaudeUsage"]],
+    extensions: ["Extensions", ["sidePanelSectionOptionalFeatures"]],
+    settings: ["Settings", ["sidePanelSectionControls"]],
+    commands: ["Commands", ["sidePanelSectionCommands"]],
+    diagnostics: ["Diagnostics", ["sidePanelSectionEvents"]],
+    agents: ["Subagents", ["sidePanelSectionSubagents"]],
+  };
+  root.replaceChildren();
+  host.replaceChildren();
+  if (page === "root") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalUnmount();
+    title.textContent = "More";
+    back.hidden = true;
+    const presentation = make("section", "mobile-more-presentation");
+    presentation.append(make("h2", undefined, "Presentation"), make("p", "muted", "Essential keeps final answers and consequential warnings visible while reducing process chrome. Detailed restores process detail. This does not enable compact-v1 or change transcript content."));
+    const choices = make("div", "mobile-presentation-choices");
+    for (const value of ["essential", "detailed"]) {
+      const choice = mobileButton(value === "essential" ? "Essential" : "Detailed", value === mobilePresentation ? "primary" : "", () => setMobilePresentation(value));
+      choice.setAttribute("aria-pressed", value === mobilePresentation ? "true" : "false");
+      choices.append(choice);
+    }
+    presentation.append(choices);
+    root.append(presentation);
+    for (const [id, [label]] of Object.entries(topics)) root.append(mobileButton(label, "mobile-more-topic", () => mobileSetSurfacePage(id)));
+    root.append(
+      mobileButton("Install app", "mobile-more-topic", () => mobileSetSurfacePage("install")),
+      mobileButton("Continuity & diagnostics", "mobile-more-topic", () => mobileSetSurfacePage("continuity")),
+    );
+    if (!mobileInstallEducation.dismissed && mobileInstallEducation.visits >= 3 && !isStandalonePwaWindow()) {
+      const education = make("section", "mobile-more-presentation mobile-install-education");
+      education.append(make("h2", undefined, "Use Pi Web UI like an app"), make("p", "muted", mobileInstallGuidanceText()), mobileButton("Learn how", "primary", () => mobileSetSurfacePage("install")));
+      root.prepend(education);
+    }
+    return;
+  }
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  if (page === "install") {
+    renderMobileInstallPage(root, title, back);
+    return;
+  }
+  if (page === "continuity") {
+    renderMobileDiagnosticsPage(root, title, back);
+    return;
+  }
+  const topic = topics[page] || topics.settings;
+  title.textContent = topic[0];
+  back.hidden = false;
+  mobileCanonicalMountContent(host, topic[1], `more:${page}`);
+  if (page === "commands") mobileShellElement("commandSearchInput")?.focus({ preventScroll: true });
+}
+
+function openMobileAttachmentPicker(kind = "files") {
+  if (!elements.attachmentInput) return;
+  const config = kind === "camera"
+    ? { accept: "image/*", capture: "environment", source: "camera" }
+    : kind === "photos"
+      ? { accept: "image/*", capture: "", source: "photo library" }
+      : { accept: "image/*,video/*,audio/*,text/*,application/pdf,application/json,application/xml,.md,.csv,.ts,.tsx,.js,.mjs,.py,.rs,.go,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.log", capture: "", source: "file picker" };
+  elements.attachmentInput.accept = config.accept;
+  elements.attachmentInput.dataset.mobileAttachmentSource = config.source;
+  if (config.capture) elements.attachmentInput.setAttribute("capture", config.capture);
+  else elements.attachmentInput.removeAttribute("capture");
+  try {
+    elements.attachmentInput.click();
+  } catch (error) {
+    addEvent(`${kind} is unavailable in this browser: ${error.message || String(error)}`, "warn");
+  }
+}
+
+function addMobilePastedText(textarea) {
+  const text = normalizeTextAttachmentContent(textarea?.value || "");
+  if (!text.trim()) {
+    textarea?.focus();
+    return;
+  }
+  const result = addAttachmentFiles([makeTextAttachmentFile(text)], "pasted text");
+  if (result.added) {
+    textarea.value = "";
+    mobileBack();
+  }
+}
+
+function mobileInstallGuidanceText() {
+  if (isStandalonePwaWindow()) return "Pi Web UI is already running as an installed app on this device.";
+  if (mobileInstallPrompt) return "Install this local Web UI for a dedicated window and offline shell. Agent work still depends on the Pi Web UI server, and notifications are active-client only.";
+  const ua = navigator.userAgent || "";
+  if (/iPad|iPhone|iPod/.test(ua)) return "In Safari, use Share → Add to Home Screen. Installation does not enable notifications after all Web UI clients close.";
+  return "Use your browser menu’s Install app or Add to Home screen action when available. Browser support varies; core Web UI use does not require installation.";
+}
+
+async function requestMobileInstall() {
+  if (!mobileInstallPrompt) {
+    addEvent("Install prompt is not available; use the browser menu guidance shown here.", "warn");
+    return;
+  }
+  try {
+    mobileInstallPrompt.prompt();
+    const choice = await mobileInstallPrompt.userChoice;
+    recordMobileDiagnostic("install prompt", choice?.outcome || "unknown");
+  } catch (error) {
+    addEvent(`Install prompt failed: ${error.message || String(error)}`, "warn");
+  } finally {
+    mobileInstallPrompt = null;
+    renderMobilePhoneExperience();
+  }
+}
+
+function renderMobileInstallPage(root, title, back) {
+  title.textContent = "Install app";
+  back.hidden = false;
+  const card = make("section", "mobile-more-presentation");
+  card.append(make("h2", undefined, "Install education"), make("p", "muted", mobileInstallGuidanceText()));
+  const actions = make("div", "mobile-presentation-choices");
+  const install = mobileButton("Install when available", "primary", requestMobileInstall);
+  install.disabled = !mobileInstallPrompt || isStandalonePwaWindow();
+  actions.append(install, mobileButton("Dismiss guidance", "", () => {
+    mobileInstallEducation.dismissed = true;
+    persistMobileInstallEducation();
+    mobileBack();
+  }));
+  card.append(actions);
+  root.append(card);
+}
+
+function renderMobileDiagnosticsPage(root, title, back) {
+  title.textContent = "Continuity & diagnostics";
+  back.hidden = false;
+  const card = make("section", "mobile-more-presentation");
+  card.append(
+    make("h2", undefined, "Local diagnostics"),
+    make("p", "muted", "This report contains local shell, connection, permission, and feature state only. It excludes prompts, transcript text, paths, filenames, and credentials."),
+    make("pre", "mobile-diagnostics-preview", mobileDiagnosticsText()),
+  );
+  const actions = make("div", "mobile-presentation-choices");
+  actions.append(
+    mobileButton("Copy diagnostics", "primary", async () => {
+      try { await copyText(mobileDiagnosticsText()); addEvent("copied local mobile diagnostics", "info"); }
+      catch (error) { addEvent(`diagnostics copy failed: ${error.message || String(error)}`, "warn"); }
+    }),
+    mobileButton("Clear diagnostics", "", () => {
+      mobileDiagnosticEvents.length = 0;
+      renderMobileMore();
+    }),
+  );
+  card.append(actions);
+  root.append(card);
+}
+
+function mobileRenderActionSheet() {
+  const root = mobileShellElement("mobileSurfaceRoot");
+  const host = mobileShellElement("mobileSurfaceContent");
+  const title = mobileShellElement("mobileSurfaceTitle");
+  const back = mobileShellElement("mobileSurfaceBackButton");
+  if (!root || !host || !title || !back) return;
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  root.replaceChildren();
+  host.replaceChildren();
+  const page = mobileShellState.surfacePage || "root";
+  title.textContent = page === "voice" ? "Voice" : page === "session" ? "Session actions" : page === "queue" ? "Queue" : page === "context" ? "Add Context" : "Actions";
+  back.hidden = page === "root";
+  if (page === "root") {
+    root.append(
+      mobileButton("Add Context", "primary mobile-more-topic", () => mobileSetSurfacePage("context")),
+      mobileButton("Session actions", "mobile-more-topic", () => mobileSetSurfacePage("session")),
+      mobileButton("Voice", "mobile-more-topic", () => mobileSetSurfacePage("voice")),
+      mobileButton("Queue", "mobile-more-topic", () => mobileSetSurfacePage("queue")),
+    );
+    if (isAbortAvailable()) root.append(mobileButton("Abort active run…", "danger mobile-abort-confirm", async () => {
+      const confirmed = await appConfirm({ title: "Abort active run?", summary: "Pi will be told to stop the active run. Any partial answer remains in the canonical transcript.", affected: "This active tab only", undoable: false, confirmLabel: "Abort run" });
+      if (confirmed) abortActiveRun({ source: "mobile confirm" });
+    }));
+    return;
+  }
+  if (page === "session") {
+    root.append(
+      mobileButton("New session", "primary", () => elements.newSessionButton?.click()),
+      mobileButton("Compact context", "", () => elements.compactButton?.click()),
+      mobileButton("Command palette", "", () => openCommandPalette()),
+      mobileButton("Guided Git workflow", "", () => elements.gitWorkflowButton?.click()),
+    );
+    return;
+  }
+  if (page === "voice") {
+    root.append(
+      mobileButton("Start or end conversation", "primary", () => elements.optionsConversationModeButton?.click()),
+      mobileButton("Choose voice", "", () => elements.conversationVoiceButton?.click()),
+      make("p", "mobile-route-status muted", "Voice uses the existing browser voice controls and keeps its transcript in this session. Remote microphone warnings remain visible before audio is sent."),
+    );
+    return;
+  }
+  if (page === "context") {
+    root.append(make("p", "mobile-route-status muted", "Choose a source. Camera and photo access are requested by your browser only after you select them; Pi Web UI uses the selected files as context for this session. Denied or unavailable sources can be replaced with Files or Paste text."));
+    const actions = make("div", "mobile-context-actions");
+    actions.append(
+      mobileButton("Camera", "", () => openMobileAttachmentPicker("camera")),
+      mobileButton("Photos", "", () => openMobileAttachmentPicker("photos")),
+      mobileButton("Files", "", () => openMobileAttachmentPicker("files")),
+    );
+    const pasteLabel = make("label", "mobile-paste-context-label", "Paste text");
+    const textarea = make("textarea", "mobile-paste-context-text");
+    textarea.rows = 7;
+    textarea.placeholder = "Paste text to attach without changing the prompt";
+    pasteLabel.append(textarea);
+    root.append(actions, pasteLabel, mobileButton("Add pasted text", "primary", () => addMobilePastedText(textarea)));
+    return;
+  }
+  mobileCanonicalMountContent(host, ["sidePanelSectionQueue"], "sheet:queue");
+}
+
+function syncMobileShellInteractivity() {
+  const active = isMobileShellV2Active();
+  const layout = document.querySelector(".layout");
+  const destination = mobileShellElement("mobileShellDestination");
+  const surface = mobileShellElement("mobileShellSurface");
+  const fileViewerOpen = document.body.classList.contains("file-viewer-open");
+  const surfaceOpen = active && mobileShellState.surface !== "none";
+  const routeOwnsMain = active && mobileShellState.route !== "chat" && !surfaceOpen && !fileViewerOpen;
+  const layoutObscured = active && !fileViewerOpen && (mobileShellState.route !== "chat" || surfaceOpen);
+  if (layout) {
+    layout.inert = layoutObscured;
+    if (layoutObscured) layout.setAttribute("aria-hidden", "true");
+    else layout.removeAttribute("aria-hidden");
+  }
+  if (destination) {
+    destination.inert = active && (surfaceOpen || fileViewerOpen);
+    if (routeOwnsMain) destination.setAttribute("role", "main");
+    else destination.removeAttribute("role");
+    if (destination.inert) destination.setAttribute("aria-hidden", "true");
+    else destination.removeAttribute("aria-hidden");
+  }
+  if (surface) {
+    if (surfaceOpen) {
+      surface.setAttribute("role", "dialog");
+      surface.setAttribute("aria-modal", "true");
+    } else {
+      surface.removeAttribute("role");
+      surface.removeAttribute("aria-modal");
+    }
+  }
+  if (elements.chat) {
+    if (active) elements.chat.removeAttribute("aria-live");
+    else elements.chat.setAttribute("aria-live", "polite");
+  }
+}
+
+function restoreMobileSurfaceFocus() {
+  const fallback = document.querySelector(`[data-mobile-route-button="${mobileShellState.route}"]`);
+  const target = mobileSurfaceFocusReturn?.isConnected && !mobileSurfaceFocusReturn.closest?.("[inert]") ? mobileSurfaceFocusReturn : fallback;
+  mobileSurfaceFocusReturn = null;
+  requestAnimationFrame(() => target?.focus?.({ preventScroll: true }));
+}
+
+function captureMobileSurfaceRenderFocus(surface) {
+  const active = document.activeElement;
+  const userDirected = Date.now() <= mobileSurfaceUserFocusIntentUntil;
+  if (active instanceof HTMLElement && surface?.contains(active) && (!mobileSurfaceRenderFocus || active === mobileSurfaceRenderFocus.element || userDirected)) {
+    mobileSurfaceRenderFocus = { element: active, id: active.id, text: String(active.textContent || "").trim(), tagName: active.tagName };
+  }
+  return mobileSurfaceRenderFocus;
+}
+
+function restoreMobileSurfaceRenderFocus(surface, snapshot) {
+  if (!snapshot || mobileShellState.surface === "none" || document.activeElement === snapshot.element) return;
+  let target = snapshot.element?.isConnected && surface?.contains(snapshot.element) ? snapshot.element : null;
+  if (!target && snapshot.id) target = document.getElementById(snapshot.id);
+  if (!target && snapshot.text) {
+    target = [...(surface?.querySelectorAll(snapshot.tagName === "BUTTON" ? "button" : "button, input, select, textarea, [tabindex]") || [])]
+      .find((node) => String(node.textContent || "").trim() === snapshot.text) || null;
+  }
+  target?.focus?.({ preventScroll: true });
+  if (target) mobileSurfaceRenderFocus = { element: target, id: target.id, text: String(target.textContent || "").trim(), tagName: target.tagName };
+}
+
+function mobileRenderLifecycle() {
+  const announcer = mobileShellElement("mobileLifecycleAnnouncer");
+  if (!announcer) return;
+  const active = activeTab();
+  const state = active ? mobileTabActivityState(active) : "idle";
+  const offline = elements.serverOfflinePanel && !elements.serverOfflinePanel.hidden;
+  const signature = `${active?.id || "none"}:${state}:${offline ? "offline" : "online"}`;
+  if (!mobileLifecycleInitialized) {
+    mobileLifecycleInitialized = true;
+    mobileLifecycleSignature = signature;
+    return;
+  }
+  if (signature === mobileLifecycleSignature) return;
+  mobileLifecycleSignature = signature;
+  const session = active?.title || "Current session";
+  announcer.textContent = offline ? "Pi Web UI is offline; your draft remains in the composer." : state === "blocked" ? `${session} needs your decision.` : state === "running" ? `${session} is running.` : state === "completed" ? `${session} completed.` : state === "failed" ? `${session} failed. Review the session for details.` : `${session} is idle.`;
+}
+
+function renderMobilePhoneExperience({ focus = false } = {}) {
+  const shell = mobileShellElement("mobileShellV2");
+  if (!shell) return;
+  const active = isMobileShellV2Active();
+  shell.hidden = !active;
+  if (!active) {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalUnmount();
+    document.documentElement.removeAttribute("data-mobile-presentation");
+    syncMobileShellInteractivity();
+    return;
+  }
+  document.documentElement.dataset.mobilePresentation = mobilePresentation;
+  const route = mobileShellState.route;
+  const activeTabRecord = activeTab();
+  const activeState = activeTabRecord ? mobileTabActivityState(activeTabRecord) : "idle";
+  const title = mobileShellElement("mobileSessionTitle");
+  const state = mobileShellElement("mobileSessionStatus");
+  if (title) title.textContent = activeTabRecord?.title || "Choose a session";
+  if (state) state.textContent = activeState === "blocked" ? "!" : activeState === "running" ? "●" : activeState === "failed" ? "×" : activeState === "completed" ? "✓" : "○";
+  const sessionButton = mobileShellElement("mobileSessionButton");
+  if (sessionButton) sessionButton.setAttribute("aria-label", `${title?.textContent || "Choose a session"}, ${activeState}. Open Sessions.`);
+  const attention = tabs.filter((tab) => mobileTabActivityState(tab) === "blocked").length;
+  const activity = tabs.filter((tab) => ["blocked", "running", "failed"].includes(mobileTabActivityState(tab))).length;
+  const projectErrors = tabs.filter((tab) => mobileTabActivityState(tab) === "failed").length;
+  const badgeLabels = {
+    sessions: mobileSetBadge("mobileSessionsBadge", attention, (count) => `${count} session${count === 1 ? "" : "s"} need attention`),
+    activity: mobileSetBadge("mobileActivityBadge", activity, (count) => `${count} active or failed work item${count === 1 ? "" : "s"}`),
+    project: mobileSetBadge("mobileProjectBadge", projectErrors, (count) => `${count} project error${count === 1 ? "" : "s"}`),
+  };
+  for (const button of document.querySelectorAll("[data-mobile-route-button]")) {
+    const selected = button.dataset.mobileRouteButton === route;
+    const base = button.dataset.mobileRouteButton?.replace(/^./, (value) => value.toUpperCase()) || "Destination";
+    const badgeLabel = badgeLabels[button.dataset.mobileRouteButton] || "";
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-current", selected ? "page" : "false");
+    button.setAttribute("aria-label", badgeLabel ? `${base}, ${badgeLabel}` : base);
+  }
+  const indicators = mobileShellElement("mobileShellIndicators");
+  if (indicators) {
+    const remoteOpen = elements.remoteAccessIndicator && !elements.remoteAccessIndicator.hidden;
+    const indicatorSignature = JSON.stringify([remoteOpen, mobileConnectionState, mobileConnectionLabel, attention]);
+    if (indicators.dataset.signature !== indicatorSignature) {
+      indicators.dataset.signature = indicatorSignature;
+      indicators.replaceChildren();
+      if (remoteOpen) indicators.append(make("span", "mobile-indicator warning", "Remote access open"));
+      indicators.append(make("span", `mobile-indicator ${mobileConnectionState === "offline" ? "error" : mobileConnectionState === "reconnecting" ? "warning" : ""}`.trim(), mobileConnectionLabel));
+      if (attention) indicators.append(make("span", "mobile-indicator warning", `${attention} needs input`));
+    }
+  }
+  for (const node of shell.querySelectorAll("[data-mobile-route]")) node.hidden = node.dataset.mobileRoute !== route;
+  const destination = mobileShellElement("mobileShellDestination");
+  destination?.classList.toggle("mobile-chat-route", route === "chat");
+  if (route === "sessions") mobileRenderSessions();
+  else if (route === "activity") mobileRenderActivity();
+  else if (route === "project") mobileRenderProject();
+  else {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalUnmount();
+  }
+  const surface = mobileShellElement("mobileShellSurface");
+  const surfaceFocusSnapshot = captureMobileSurfaceRenderFocus(surface);
+  if (mobileShellState.surface === "none") mobileSurfaceRenderFocus = null;
+  if (surface) {
+    surface.hidden = mobileShellState.surface === "none";
+    if (mobileShellState.surface === "more") mobileRenderMore();
+    else if (mobileShellState.surface === "actionSheet") mobileRenderActionSheet();
+  }
+  if (!focus) restoreMobileSurfaceRenderFocus(surface, surfaceFocusSnapshot);
+  mobileShellElement("mobileMoreButton")?.setAttribute("aria-expanded", mobileShellState.surface === "more" ? "true" : "false");
+  const nav = shell.querySelector(".mobile-shell-nav");
+  nav?.setAttribute("aria-label", isTabletShellV2Active() ? "Tablet destinations" : "Phone destinations");
+  shell.querySelector(".mobile-shell-appbar")?.setAttribute("aria-label", isTabletShellV2Active() ? "Tablet app bar" : "Phone app bar");
+  renderMobileFailedSendRecovery();
+  mobileRenderLifecycle();
+  syncMobileShellInteractivity();
+  if (focus) requestAnimationFrame(() => {
+    const heading = mobileShellState.surface !== "none"
+      ? shell.querySelector(".mobile-surface-header h1")
+      : shell.querySelector(`[data-mobile-route="${route}"] h1`);
+    const fallback = route === "chat" ? document.querySelector('[data-mobile-route-button="chat"]') : destination;
+    (heading || fallback)?.focus?.({ preventScroll: true });
+  });
+}
+
+function installMobilePhoneExperience() {
+  mobilePhoneExperienceInstalled = true;
+  mobilePresentation = readMobilePresentation();
+  const shell = mobileShellElement("mobileShellV2");
+  if (!shell) return;
+  const routeButtons = [...shell.querySelectorAll("[data-mobile-route-button]")];
+  for (const button of routeButtons) {
+    button.addEventListener("click", () => mobileNavigate(button.dataset.mobileRouteButton));
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const current = routeButtons.indexOf(button);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? routeButtons.length - 1 : (current + (["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1) + routeButtons.length) % routeButtons.length;
+      routeButtons[next]?.focus({ preventScroll: true });
+    });
+  }
+  const mobileSurface = mobileShellElement("mobileShellSurface");
+  const noteMobileSurfaceFocusIntent = () => { mobileSurfaceUserFocusIntentUntil = Date.now() + 750; };
+  mobileSurface?.addEventListener("pointerdown", noteMobileSurfaceFocusIntent, { capture: true });
+  mobileSurface?.addEventListener("keydown", noteMobileSurfaceFocusIntent, { capture: true });
+  mobileSurface?.addEventListener("focusin", () => {
+    if (Date.now() <= mobileSurfaceUserFocusIntentUntil) captureMobileSurfaceRenderFocus(mobileSurface);
+  });
+  mobileSurface?.addEventListener("focusout", () => requestAnimationFrame(() => {
+    if (mobileShellState.surface === "none" || Date.now() <= mobileSurfaceUserFocusIntentUntil || document.querySelector("dialog[open]") || document.body.classList.contains("file-viewer-open") || document.activeElement === mobileSurfaceRenderFocus?.element) return;
+    restoreMobileSurfaceRenderFocus(mobileSurface, mobileSurfaceRenderFocus);
+  }));
+  mobileShellElement("mobileSessionButton")?.addEventListener("click", () => mobileNavigate("sessions"));
+  mobileShellElement("mobileSearchButton")?.addEventListener("click", () => openCommandPalette());
+  mobileShellElement("mobileMoreButton")?.addEventListener("click", () => mobileOpenSurface("more"));
+  mobileShellElement("mobileSurfaceCloseButton")?.addEventListener("click", mobileBack);
+  mobileShellElement("mobileSurfaceBackButton")?.addEventListener("click", mobileBack);
+  mobileShellElement("mobileSessionsSearchInput")?.addEventListener("input", mobileRenderSessions);
+  mobileShellElement("mobileSessionsCloseAllButton")?.addEventListener("click", () => elements.closeAllTabsButton?.click());
+  mobileShellElement("mobileNewCurrentDirectoryButton")?.addEventListener("click", () => createTerminalTab());
+  mobileShellElement("mobileNewDirectoryButton")?.addEventListener("click", () => createTerminalTabFromChosenDirectory());
+  mobileShellElement("mobileNewWorktreeButton")?.addEventListener("click", () => elements.newTabWorktreeButton?.click());
+  mobileShellElement("mobileResumeSessionButton")?.addEventListener("click", () => elements.optionsResumeButton?.click());
+  mobileShellElement("mobileActivityRefreshButton")?.addEventListener("click", () => reconcileForegroundState("mobile activity").catch((error) => addEvent(error.message || String(error), "error")));
+  const projectTopics = mobileShellElement("mobileProjectTopics");
+  const projectTopicButtons = [...(projectTopics?.querySelectorAll("[data-mobile-project-topic]") || [])];
+  const activateProjectTopic = (button, { focus = false } = {}) => {
+    if (!button) return;
+    mobileProjectTopic = button.dataset.mobileProjectTopic || "files";
+    mobileRenderProject();
+    if (focus) button.focus({ preventScroll: true });
+  };
+  projectTopics?.addEventListener("click", (event) => activateProjectTopic(event.target.closest?.("[data-mobile-project-topic]")));
+  projectTopics?.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "].includes(event.key)) return;
+    const button = event.target.closest?.("[data-mobile-project-topic]");
+    if (!button) return;
+    event.preventDefault();
+    if (event.key === "Enter" || event.key === " ") {
+      activateProjectTopic(button, { focus: true });
+      return;
+    }
+    const current = projectTopicButtons.indexOf(button);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? projectTopicButtons.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + projectTopicButtons.length) % projectTopicButtons.length;
+    activateProjectTopic(projectTopicButtons[next], { focus: true });
+  });
+  elements.composerActionsButton?.addEventListener("click", (event) => {
+    if (!isMobileShellV2Active()) return;
+    event.preventDefault();
+    mobileOpenSurface("actionSheet");
+  });
+  window.addEventListener("popstate", (event) => {
+    const state = event.state?.mobileShellState;
+    if (!event.state?.piMobileShellV2 || !state || !isMobileShellV2Active()) return;
+    const previousSurface = mobileShellState.surface;
+    let restored = createMobileShellState({ viewport: mobileShellViewport(), featureMode: mobileShellState.featureMode, tabletFeatureMode: mobileShellState.tabletFeatureMode, route: state.route });
+    restored = reduceMobileShellState({ ...restored, routeHistory: state.routeHistory }, {});
+    if (state.surface && state.surface !== "none") restored = reduceMobileShellState(restored, { type: "surface", surface: state.surface, page: state.surfacePage });
+    mobileShellState = restored;
+    syncMobileShellRoot();
+    renderMobilePhoneExperience({ focus: previousSurface === "none" });
+    if (previousSurface !== "none" && mobileShellState.surface === "none") restoreMobileSurfaceFocus();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!isMobileShellV2Active() || event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    if (mobileShellState.surface !== "none") {
+      event.preventDefault();
+      event.stopPropagation();
+      mobileBack();
+    }
+  }, { capture: true });
+  history.replaceState({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  renderMobilePhoneExperience();
+}
+
+function applyMobileShellViewport() {
+  const wasActive = isMobileShellV2Active();
+  applyMobileShellEvent({ type: "viewport", viewport: mobileShellViewport() });
+  if (wasActive !== isMobileShellV2Active() && isMobileShellV2Active()) {
+    document.body.classList.remove("composer-actions-open", "footer-details-expanded", "mobile-tabs-expanded", "mobile-keyboard-open");
+  }
+}
+
+function setMobileContinuityNotice(message = "", level = "info") {
+  const notice = mobileShellElement("mobileContinuityNotice");
+  if (!notice) return;
+  notice.textContent = message;
+  notice.className = `mobile-continuity-notice ${level}`;
+  notice.hidden = !message;
+}
+
+function mobileTargetBlockerExists(blockerId) {
+  if (!blockerId) return true;
+  return String(activeDialog?.id || "") === blockerId || dialogQueue.some((request) => String(request?.id || "") === blockerId);
+}
+
+async function applyPendingMobileNavigationTarget() {
+  const target = pendingMobileNavigationTarget;
+  if (!target) return;
+  pendingMobileNavigationTarget = null;
+  const targetTab = target.tabId ? tabs.find((tab) => tab.id === target.tabId) : target.runId ? tabs.find((tab) => activityForTab(tab).runId === target.runId) : null;
+  const runValid = !target.runId || (targetTab && activityForTab(targetTab).runId === target.runId);
+  const showStaleTargetFallback = () => {
+    const fallback = target.runId || target.blockerId ? "activity" : "sessions";
+    applyMobileShellEvent({ type: "route", route: fallback });
+    const message = `That notification target is no longer available. Showing ${fallback === "activity" ? "current Activity" : "available Sessions"} instead.`;
+    setMobileContinuityNotice(message, "warning");
+    if (!isMobileShellV2Active()) addEvent(message, "warn");
+    recordMobileDiagnostic("stale navigation target", fallback);
+  };
+  if (!targetTab || !runValid) {
+    showStaleTargetFallback();
+    return;
+  }
+  if (targetTab.id !== activeTabId) await switchTab(targetTab.id);
+  if (target.blockerId && !mobileTargetBlockerExists(target.blockerId)) {
+    // Pending blocker dialogs for a background tab are replayed only after the
+    // tab switch. A live, reconciled tab target is therefore authoritative;
+    // do not mislabel it stale while its exact dialog is still arriving.
+    recordMobileDiagnostic("blocker target awaiting replay");
+  }
+  applyMobileShellEvent({ type: "route", route: target.route });
+  setMobileContinuityNotice("Opened after reconnecting and checking current server state.", "success");
+  document.documentElement.dataset.mobileNavigationTarget = JSON.stringify(target);
+  recordMobileDiagnostic("navigation target reconciled", target.route);
+}
+
+function receiveMobileNavigationTarget(value) {
+  const target = normalizeMobileNavigationTarget(value);
+  if (!target) return false;
+  pendingMobileNavigationTarget = target;
+  setMobileContinuityNotice("Reconnecting and checking this notification target…", "info");
+  mobileConnectionState = "reconnecting";
+  mobileConnectionLabel = "Reconnecting";
+  renderMobilePhoneExperience();
+  scheduleForegroundReconcile("mobile navigation target", 0);
+  return true;
+}
+
+syncMobileShellRoot();
 const statusEntries = new Map();
 const featureCategoryByTab = new Map();
 const widgets = new Map();
@@ -2281,11 +3357,11 @@ function persistAgentDoneNotificationsEnabled(enabled) {
 }
 
 function agentDoneNotificationsStatusText() {
-  if (!browserNotificationSupported()) return "Unavailable here";
+  if (!browserNotificationSupported()) return "Unavailable here · Activity remains available";
   const permission = browserNotificationPermission();
-  if (permission === "denied") return "Permission denied";
-  if (agentDoneNotificationsEnabled) return permission === "granted" ? "On" : "Permission needed";
-  return permission === "granted" ? "Off · permission granted" : "Off";
+  if (permission === "denied") return "Permission denied · Activity remains available";
+  if (agentDoneNotificationsEnabled) return permission === "granted" ? "On · active Web UI clients only" : "Permission needed";
+  return permission === "granted" ? "Off · permission granted · active clients only" : "Off · active clients only";
 }
 
 function renderAgentDoneNotificationsToggle() {
@@ -3696,6 +4772,7 @@ async function refreshNativeSettings(tabContext = activeTabContext()) {
 }
 
 function setComposerActionsOpen(open) {
+  if (isMobileShellV2Active()) return;
   const shouldOpen = open && isMobileView();
   if (shouldOpen && followUpQueueOpen) setFollowUpQueueOpen(false);
   document.body.classList.toggle("composer-actions-open", shouldOpen);
@@ -3817,6 +4894,10 @@ function clearFooterPickerPosition() {
 }
 
 function updateFooterModelPickerPosition() {
+  if (isMobileShellV2Active()) {
+    clearFooterPickerPosition();
+    return;
+  }
   if (!isFooterPickerOpen()) {
     clearFooterPickerPosition();
     return;
@@ -3851,6 +4932,7 @@ function updateFooterModelPickerPosition() {
 }
 
 function setMobileFooterExpanded(expanded) {
+  if (isMobileShellV2Active()) return;
   mobileFooterExpanded = expanded && isMobileView();
   if (mobileFooterExpanded && isFooterPickerOpen()) {
     footerModelPickerOpen = false;
@@ -3869,6 +4951,7 @@ function setMobileFooterExpanded(expanded) {
 }
 
 function setMobileTabsExpanded(expanded) {
+  if (isMobileShellV2Active()) return;
   mobileTabsExpanded = expanded && isMobileView();
   document.body.classList.toggle("mobile-tabs-expanded", mobileTabsExpanded);
   elements.terminalTabsToggleButton.setAttribute("aria-expanded", mobileTabsExpanded ? "true" : "false");
@@ -4109,6 +5192,7 @@ function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false }
 }
 
 function restoreSidePanelState() {
+  if (isMobileShellV2Active()) return;
   if (isSidePanelOverlayView()) {
     setSidePanelCollapsed(true, { persist: false });
     return;
@@ -4181,6 +5265,8 @@ function restoreInterfaceDensity() {
 function bindMobileViewChanges() {
   if (!mobileViewMedia) return;
   const syncForViewport = (event) => {
+    applyMobileShellViewport();
+    if (isMobileShellV2Active()) return;
     setComposerActionsOpen(false);
     setMobileFooterExpanded(false);
     setMobileTabsExpanded(false);
@@ -4198,6 +5284,8 @@ function bindMobileViewChanges() {
 function bindSidePanelOverlayViewChanges() {
   if (!sidePanelOverlayMedia || sidePanelOverlayMedia === mobileViewMedia) return;
   const syncForViewport = (event) => {
+    applyMobileShellViewport();
+    if (isMobileShellV2Active()) return;
     if (event.matches) {
       setSidePanelCollapsed(true, { persist: false });
       updateTerminalSplitUi();
@@ -4224,7 +5312,7 @@ function updateVisualViewportVars() {
   document.documentElement.style.setProperty("--visual-viewport-offset-top", `${Math.round(offsetTop)}px`);
   document.documentElement.style.setProperty("--keyboard-inset-bottom", `${keyboardInset}px`);
   document.body.classList.toggle("mobile-keyboard-open", keyboardOpen);
-  if (keyboardOpen) {
+  if (keyboardOpen && !isMobileShellV2Active()) {
     setComposerActionsOpen(false);
     setMobileTabsExpanded(false);
     setMobileFooterExpanded(false);
@@ -4243,6 +5331,14 @@ function installViewportHandlers() {
   window.visualViewport?.addEventListener("scroll", update, { passive: true });
   window.addEventListener("resize", update, { passive: true });
   window.addEventListener("orientationchange", () => setTimeout(update, 80));
+}
+
+function installMobileShellNavigationBridge() {
+  const urlTarget = mobileNavigationTargetFromSearch(window.location.search);
+  if (urlTarget) receiveMobileNavigationTarget(urlTarget);
+  navigator.serviceWorker?.addEventListener("message", (event) => {
+    if (event.data?.type === "pi-webui:navigate:v1") receiveMobileNavigationTarget(event.data.target);
+  });
 }
 
 function registerPwaServiceWorker() {
@@ -4311,6 +5407,9 @@ function setServerRestartOverlay(active, message = "Waiting for the server to co
 
 function setBackendOffline(offline, error) {
   backendOffline = !!offline;
+  mobileConnectionState = backendOffline ? "offline" : mobileConnectionState === "reconnecting" ? "reconnecting" : "online";
+  mobileConnectionLabel = backendOffline ? "Paused/offline" : mobileConnectionState === "reconnecting" ? "Reconnecting" : "Online";
+  recordMobileDiagnostic(backendOffline ? "backend offline" : "backend online", error?.message || "");
   const showOfflinePanel = backendOffline && !serverRestartInProgress;
   document.body.classList.toggle("server-offline", showOfflinePanel);
   if (elements.serverOfflinePanel) elements.serverOfflinePanel.hidden = !showOfflinePanel;
@@ -4321,10 +5420,12 @@ function setBackendOffline(offline, error) {
       backendOfflineNoticeShown = true;
       addEvent(`Pi Web UI server is offline${error?.message ? `: ${error.message}` : ""}`, "warn");
     }
+    renderMobilePhoneExperience();
     return;
   }
   if (backendOfflineNoticeShown) addEvent("Pi Web UI server is back online", "info");
   backendOfflineNoticeShown = false;
+  renderMobilePhoneExperience();
 }
 
 async function copyText(text) {
@@ -5196,7 +6297,7 @@ function ensureAttachmentsForTab(tabId = activeTabId) {
 }
 
 function hasComposerPayload() {
-  return !!elements.promptInput.value.trim() || attachmentsForTab().length > 0;
+  return !!elements.promptInput.value.trim() || attachmentsForTab().some((attachment) => !attachment.requiresReselect);
 }
 
 function renderAttachmentTray() {
@@ -5209,11 +6310,12 @@ function renderAttachmentTray() {
 
   for (const attachment of attachments) {
     const pill = make("span", "attachment-pill");
-    pill.title = `${attachment.name}\n${attachment.mimeType}\n${formatBytes(attachment.size)}`;
+    pill.title = attachment.requiresReselect ? `${attachment.name}\nReselect required; only metadata was restored.` : `${attachment.name}\n${attachment.mimeType}\n${formatBytes(attachment.size)}`;
+    pill.classList.toggle("requires-reselect", attachment.requiresReselect === true);
     const icon = make("span", "attachment-pill-icon", attachmentIcon(attachment.kind));
     const name = make("span", "attachment-pill-name", attachment.name);
-    const meta = make("span", "attachment-pill-meta", `${attachment.kind} · ${formatBytes(attachment.size)}`);
-    const edit = isEditableTextAttachment(attachment) ? make("button", "attachment-edit-button", "Edit") : null;
+    const meta = make("span", "attachment-pill-meta", attachment.requiresReselect ? `${attachment.kind} · ${formatBytes(attachment.size)} · Reselect required` : `${attachment.kind} · ${formatBytes(attachment.size)}`);
+    const edit = !attachment.requiresReselect && isEditableTextAttachment(attachment) ? make("button", "attachment-edit-button", "Edit") : null;
     if (edit) {
       edit.type = "button";
       edit.setAttribute("aria-label", `Open and edit ${attachment.name}`);
@@ -5225,6 +6327,13 @@ function renderAttachmentTray() {
     remove.addEventListener("click", () => removeAttachment(attachment.id));
     pill.append(icon, name, meta);
     if (edit) pill.append(edit);
+    if (attachment.requiresReselect) {
+      const reselect = make("button", "attachment-edit-button", "Reselect");
+      reselect.type = "button";
+      reselect.setAttribute("aria-label", `Reselect ${attachment.name}`);
+      reselect.addEventListener("click", () => openMobileAttachmentPicker("files"));
+      pill.append(reselect);
+    }
     pill.append(remove);
     tray.append(pill);
   }
@@ -5239,6 +6348,7 @@ function removeAttachment(id, tabId = activeTabId) {
   if (activeTextAttachmentEditor?.tabId === tabId && activeTextAttachmentEditor?.attachmentId === id) closeTextAttachmentEditor();
   if (attachments.length === 0) tabAttachments.delete(tabId);
   if (tabId === activeTabId) renderAttachmentTray();
+  persistMobileContinuityState();
 }
 
 function clearAttachments(tabId = activeTabId) {
@@ -5249,6 +6359,7 @@ function clearAttachments(tabId = activeTabId) {
   if (activeTextAttachmentEditor?.tabId === tabId) closeTextAttachmentEditor();
   if (tabId) tabAttachments.delete(tabId);
   if (tabId === activeTabId) renderAttachmentTray();
+  persistMobileContinuityState();
 }
 
 function addAttachmentFiles(fileList, source = "picker") {
@@ -5256,6 +6367,9 @@ function addAttachmentFiles(fileList, source = "picker") {
   if (!files.length) return { added: 0, skipped: [] };
   const attachments = ensureAttachmentsForTab();
   if (!attachments.length && !activeTabId) return { added: 0, skipped: ["no active tab"] };
+  if (attachments.some((attachment) => attachment.requiresReselect)) {
+    attachments.splice(0, attachments.length, ...attachments.filter((attachment) => !attachment.requiresReselect));
+  }
   let totalBytes = attachments.reduce((sum, attachment) => sum + attachment.size, 0);
   let added = 0;
   const skipped = [];
@@ -5291,6 +6405,7 @@ function addAttachmentFiles(fileList, source = "picker") {
   }
 
   renderAttachmentTray();
+  persistMobileContinuityState();
   if (added) addEvent(`attached ${added} ${added === 1 ? "file" : "files"} from ${source}`, "info");
   if (skipped.length) addEvent(`skipped attachments: ${skipped.join("; ")}`, "warn");
   return { added, skipped };
@@ -8720,6 +9835,7 @@ function setFileViewerDirty(dirty) {
 function updateFileViewerUi() {
   const open = !!activeFileViewer;
   document.body.classList.toggle("file-viewer-open", open);
+  syncMobileShellInteractivity();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
   updateFileViewerResizeHandle();
@@ -9135,6 +10251,7 @@ function resetFileViewerUi() {
   activeFileViewer = null;
   clearFileViewerSelection();
   document.body.classList.remove("file-viewer-open");
+  syncMobileShellInteractivity();
   updateFileViewerResizeHandle();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
@@ -9352,7 +10469,7 @@ function eventTargetsActiveTab(event) {
 }
 
 function normalizeTabActivity(activity = {}) {
-  const status = activity.status === "working" || activity.isWorking ? "working" : activity.status === "done" ? "done" : "idle";
+  const status = activity.status === "working" || activity.isWorking ? "working" : activity.status === "failed" ? "failed" : activity.status === "done" ? "done" : "idle";
   const completionSerial = Number(activity.completionSerial);
   return {
     ...activity,
@@ -9700,6 +10817,7 @@ function updateDocumentTitle() {
 
 function saveActiveDraft() {
   if (activeTabId) tabDrafts.set(activeTabId, elements.promptInput.value || "");
+  persistMobileContinuityState();
 }
 
 function restoreActiveDraft() {
@@ -11061,6 +12179,7 @@ function renderTabs() {
   renderGitPanel();
   if (elements.commandPaletteDialog?.open) renderCommandPalette({ preserveScroll: true });
   syncTabPolling();
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
 }
 
 async function refreshTabs({ selectStored = false } = {}) {
@@ -11384,6 +12503,7 @@ async function closeAllTerminalTabs() {
 
 async function initializeTabs() {
   const loadedTabs = await refreshTabs({ selectStored: true });
+  restoreMobileContinuityState();
   resetActiveTabUi();
   renderTabs();
   restoreActiveDraft();
@@ -11542,13 +12662,17 @@ function blockedTabNotificationKey(tabId, request) {
   return request?.id ? `${tabId}:${request.id}` : `${tabId}:blocked`;
 }
 
+function mobileNotificationTarget({ route = "activity", tabId, runId, blockerId } = {}) {
+  return normalizeMobileNavigationTarget({ v: 1, route, tabId, runId, blockerId });
+}
+
 function clearBlockedTabNotificationKeys(tabId) {
   if (!tabId) return;
   const prefix = `${tabId}:`;
   blockedTabNotificationKeys = new Set([...blockedTabNotificationKeys].filter((key) => !key.startsWith(prefix)));
 }
 
-async function showBlockedTabBrowserNotification({ tabId, title, body, method, count }) {
+async function showBlockedTabBrowserNotification({ tabId, title, body, method, count, blockerId }) {
   if (!blockedTabNotificationSupported()) {
     noteBlockedTabNotificationFallback("requires HTTPS or localhost");
     return false;
@@ -11566,7 +12690,7 @@ async function showBlockedTabBrowserNotification({ tabId, title, body, method, c
     requireInteraction: true,
     icon: BLOCKED_TAB_NOTIFICATION_ICON,
     badge: BLOCKED_TAB_NOTIFICATION_ICON,
-    data: { tabId, method, count, url: location.href },
+    data: { target: mobileNotificationTarget({ route: "activity", tabId, blockerId }) },
   };
 
   try {
@@ -11582,7 +12706,8 @@ async function showBlockedTabBrowserNotification({ tabId, title, body, method, c
     const notification = new Notification(title, options);
     notification.onclick = () => {
       window.focus();
-      if (tabId && tabId !== activeTabId) switchTab(tabId).catch((error) => addEvent(error.message, "error"));
+      const target = mobileNotificationTarget({ route: "activity", tabId, blockerId });
+      if (target) receiveMobileNavigationTarget(target);
       notification.close();
     };
     return true;
@@ -11607,7 +12732,7 @@ function notifyBlockedTab(tabOrId, { request = null, count } = {}) {
   const title = "Pi needs your response";
   const body = `${tabTitle} is blocked, ${detail}.`;
   addEvent(`${tabTitle} blocked: ${detail}`, "warn");
-  showBlockedTabBrowserNotification({ tabId, title, body, method, count: pendingCount });
+  showBlockedTabBrowserNotification({ tabId, title, body, method, count: pendingCount, blockerId: request?.id });
 }
 
 function noteAgentDoneNotificationFallback(reason) {
@@ -11616,7 +12741,7 @@ function noteAgentDoneNotificationFallback(reason) {
   addEvent(`browser notifications unavailable for completed agent work: ${reason}`, "warn");
 }
 
-async function showAgentDoneBrowserNotification({ tabId, title, body }) {
+async function showAgentDoneBrowserNotification({ tabId, title, body, runId }) {
   if (!agentDoneNotificationsEnabled) return false;
   if (!browserNotificationSupported()) {
     noteAgentDoneNotificationFallback("requires HTTPS or localhost");
@@ -11641,7 +12766,7 @@ async function showAgentDoneBrowserNotification({ tabId, title, body }) {
     requireInteraction: false,
     icon: BLOCKED_TAB_NOTIFICATION_ICON,
     badge: BLOCKED_TAB_NOTIFICATION_ICON,
-    data: { tabId, url: location.href },
+    data: { target: mobileNotificationTarget({ route: "activity", tabId, runId }) },
   };
 
   try {
@@ -11657,7 +12782,8 @@ async function showAgentDoneBrowserNotification({ tabId, title, body }) {
     const notification = new Notification(title, options);
     notification.onclick = () => {
       window.focus();
-      if (tabId && tabId !== activeTabId) switchTab(tabId).catch((error) => addEvent(error.message, "error"));
+      const target = mobileNotificationTarget({ route: "activity", tabId, runId });
+      if (target) receiveMobileNavigationTarget(target);
       notification.close();
     };
     return true;
@@ -11692,13 +12818,13 @@ function suppressPendingAgentDoneNotificationsForTab(tabId, { markSeen = true } 
   }
 }
 
-function queueAgentDoneBrowserNotification({ key, tabId, title, body }) {
+function queueAgentDoneBrowserNotification({ key, tabId, title, body, runId }) {
   clearPendingAgentDoneNotification(key);
   const timer = setTimeout(() => {
     pendingAgentDoneNotificationTimers.delete(key);
     const tab = tabs.find((item) => item.id === tabId);
     if (isAutoRetryingTab(tabId) || promptRoutingTabs.has(tabId) || activityForTab(tab).isWorking) return;
-    showAgentDoneBrowserNotification({ tabId, title, body });
+    showAgentDoneBrowserNotification({ tabId, title, body, runId });
   }, AGENT_DONE_NOTIFICATION_RETRY_GRACE_MS);
   pendingAgentDoneNotificationTimers.set(key, { tabId, timer });
 }
@@ -11716,11 +12842,13 @@ function notifyAgentDone(tabOrId, { activity = null, tabTitle = "" } = {}) {
   if (isAutoRetryingTab(tabId)) return;
 
   const displayTitle = tabTitle || tab?.title || "terminal";
+  const failed = normalizedActivity.status === "failed" || normalizedActivity.failed === true || tab?.failed === true;
   queueAgentDoneBrowserNotification({
     key,
     tabId,
-    title: "Pi finished work",
-    body: `${displayTitle} finished its agent run.`,
+    title: failed ? "Pi work failed" : "Pi finished work",
+    body: failed ? `${displayTitle} failed. Open Activity to review.` : `${displayTitle} finished its agent run.`,
+    runId: normalizedActivity.runId,
   });
 }
 
@@ -11730,7 +12858,7 @@ function syncAgentDoneNotificationsFromTabs(nextTabs = [], previousTabs = []) {
   for (const tab of nextTabs) {
     if (!tab?.id || !previousSerials.has(tab.id)) continue;
     const activity = normalizeTabActivity(tab.activity);
-    if (!activity.isWorking && activity.completionSerial > previousSerials.get(tab.id)) notifyAgentDone(tab, { activity });
+    if (!activity.isWorking && activity.completionSerial > previousSerials.get(tab.id)) notifyAgentDone(tab, { activity: tab.failed === true ? { ...activity, failed: true } : activity });
   }
 }
 
@@ -22637,6 +23765,7 @@ function renderWidgets() {
     elements.widgetArea.append(node);
   }
   restoreAppRunnerInputFocus(appRunnerInputFocus);
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
 }
 
 function setGitWorkflow(patch, { tabId = activeTabId } = {}) {
@@ -25256,6 +26385,7 @@ function renderQueue(event) {
     : "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Edit, reorder, or remove compaction-held follow-ups with the composer Queue control."));
   if (tabId === activeTabId) renderFollowUpQueueOverlay();
   updateStickyUserPromptButton();
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
 }
 
 function queuedMessagesForComposer(tabId = activeTabId) {
@@ -28961,7 +30091,7 @@ function jumpToLatest() {
 }
 
 function syncMobileChatToBottomForInput() {
-  if (!isMobileView()) return;
+  if (!isMobileView() || isMobileShellV2Active()) return;
   scrollChatToBottom({ force: true });
   requestAnimationFrame(() => scrollChatToBottom({ force: true }));
   setTimeout(() => scrollChatToBottom({ force: true }), 140);
@@ -30325,7 +31455,7 @@ async function openNativeSettingsDialog() {
       { value: "compact", label: "Compact" },
     ], "Compact reduces spacing while preserving the 12 px text floor.", { label: "browser", tone: "browser" }),
     thinkingOutput: nativeSettingToggle("Show thinking output", settings.hideThinkingBlock !== true, "Browser transcript visibility; also writes Pi's hide-thinking setting.", { label: "browser", tone: "browser" }),
-    doneNotifications: nativeSettingToggle("Agent done notifications", agentDoneNotificationsEnabled, "Browser notification after background tab work completes.", { label: "browser", tone: "browser" }),
+    doneNotifications: nativeSettingToggle("Agent done notifications", agentDoneNotificationsEnabled, "Active-client-only browser notification after background tab work completes or fails. Activity remains the fallback; this is not Web Push after every client closes.", { label: "browser", tone: "browser" }),
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
     doubleEscape: nativeSettingSelect("Double-escape action", settings.doubleEscapeAction || doubleEscapeAction, SETTINGS_DOUBLE_ESCAPE_OPTIONS, "Action when pressing Escape twice with an empty composer.", { label: "browser", tone: "browser" }),
     treeFilter: nativeSettingSelect("Tree filter mode", settings.treeFilterMode || treeFilterMode, SETTINGS_TREE_FILTER_OPTIONS, "Default filter when opening /tree.", { label: "browser", tone: "browser" }),
@@ -32437,6 +33567,7 @@ async function refreshState(tabContext = activeTabContext()) {
   syncActiveTabActivityFromState(currentState);
   syncRunIndicatorFromState(currentState);
   renderStatus();
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
   requestGitFooterWebuiPayload(tabContext, { force: shouldRefreshGitFooter });
 }
 
@@ -33702,6 +34833,11 @@ function ensureActiveEventStream(tabContext = activeTabContext()) {
 async function reconcileForegroundState(reason = "resume") {
   if (document.visibilityState === "hidden") return;
 
+  const wasAway = mobileConnectionState === "away";
+  mobileConnectionState = navigator.onLine === false ? "offline" : "reconnecting";
+  mobileConnectionLabel = mobileConnectionState === "offline" ? "Paused/offline" : "Reconnecting";
+  recordMobileDiagnostic("foreground reconcile", reason);
+  renderMobilePhoneExperience();
   const tabResult = await Promise.allSettled([refreshTabs()]);
   const tabContext = activeTabContext();
   ensureActiveEventStream(tabContext);
@@ -33710,9 +34846,25 @@ async function reconcileForegroundState(reason = "resume") {
   if (tabContext.tabId) results.push(...(await Promise.allSettled([refreshAll(tabContext)])));
   if (!isCurrentTabContext(tabContext)) return;
 
+  const failed = results.some((result) => result.status === "rejected");
   for (const result of results) {
     if (result.status === "rejected") addEvent(`foreground refresh failed after ${reason}: ${result.reason?.message || String(result.reason)}`, "error");
   }
+  if (failed || backendOffline || navigator.onLine === false) {
+    mobileConnectionState = "offline";
+    mobileConnectionLabel = "Paused/offline";
+  } else {
+    mobileConnectionState = "online";
+    mobileConnectionLabel = wasAway ? "Continued while away · reconciled" : "Online · reconciled";
+    clearTimeout(mobileConnectionLabelResetTimer);
+    mobileConnectionLabelResetTimer = setTimeout(() => {
+      if (mobileConnectionState !== "online") return;
+      mobileConnectionLabel = "Online";
+      renderMobilePhoneExperience();
+    }, 45_000);
+    await applyPendingMobileNavigationTarget();
+  }
+  renderMobilePhoneExperience();
 }
 
 function scheduleForegroundReconcile(reason = "resume", delay = FOREGROUND_RECONCILE_DELAY_MS) {
@@ -34129,6 +35281,51 @@ function restorePromptInputAfterRoutingError(message, { usesPromptInput, targetT
   if (!tabDrafts.get(targetTabId)) tabDrafts.set(targetTabId, message);
 }
 
+function createBrowserPromptRequestId() {
+  const generated = globalThis.crypto?.randomUUID?.();
+  if (generated) return generated;
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function retryMobileFailedSend() {
+  const pending = mobileFailedSend;
+  if (!pending || pending.retrying) return;
+  pending.retrying = true;
+  renderMobileFailedSendRecovery();
+  recordMobileDiagnostic("manual send retry", pending.kind);
+  try {
+    const path = pending.kind === "steer" ? "/api/steer" : pending.kind === "follow-up" ? "/api/follow-up" : "/api/prompt";
+    const response = await api(path, { method: "POST", body: pending.body, tabId: pending.tabId });
+    applyResponseTab(response);
+    if (pending.tabId === activeTabId && elements.promptInput.value.trim() === pending.inputMessage.trim()) {
+      elements.promptInput.value = "";
+      tabDrafts.set(pending.tabId, "");
+      resizePromptInput();
+    }
+    clearAttachments(pending.tabId);
+    mobileFailedSend = null;
+    renderMobileFailedSendRecovery();
+    persistMobileContinuityState();
+    addEvent("failed send retried manually with the original request identity", "info");
+    scheduleForegroundReconcile("manual failed-send retry", 0);
+  } catch (error) {
+    pending.retrying = false;
+    renderMobileFailedSendRecovery();
+    addEvent(`manual retry was not confirmed: ${error.message || String(error)}`, "error");
+  }
+}
+
+function discardMobileFailedSend() {
+  if (!mobileFailedSend) return;
+  mobileFailedSend = null;
+  renderMobileFailedSendRecovery();
+  persistMobileContinuityState();
+  addEvent("discarded failed-send recovery; the composer draft remains available", "warn");
+  recordMobileDiagnostic("failed send discarded");
+}
+
 async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = activeTabId, throwOnError = false, streamingBehavior } = {}) {
   const usesPromptInput = explicitMessage === undefined;
   const rawMessage = usesPromptInput ? elements.promptInput.value : explicitMessage;
@@ -34138,6 +35335,12 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   if (voiceConversationActiveFor(targetTabId)) voiceConversation.handleUserActivity();
   const tabContext = activeTabContext(targetTabId);
   const attachments = usesPromptInput ? [...attachmentsForTab(targetTabId)] : [];
+  const unavailableAttachments = attachments.filter((attachment) => attachment.requiresReselect);
+  if (unavailableAttachments.length) {
+    addEvent(`${unavailableAttachments.length} restored attachment${unavailableAttachments.length === 1 ? " requires" : "s require"} reselection before sending.`, "warn");
+    if (isMobileShellV2Active()) mobileOpenSurface("actionSheet", "context");
+    return;
+  }
   if (!originalMessage && attachments.length === 0) return;
   if (kind === "prompt" && attachments.length === 0 && await handleNativeSlashSelectorCommand(originalMessage, { usesPromptInput })) return;
   const userBash = kind === "prompt" && attachments.length === 0 ? parseUserBashInput(originalMessage) : null;
@@ -34165,6 +35368,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   }
 
   let message = originalMessage;
+  let dispatchedRequest = null;
   try {
     const prepared = attachments.length ? await prepareAttachmentsForPrompt(attachments, targetTabId) : { images: [], uploadedFiles: [], inlineImageIds: new Set() };
     message = composeMessageWithAttachments(originalMessage, prepared.uploadedFiles, prepared.inlineImageIds);
@@ -34172,6 +35376,10 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     // to become active while attachments/requests were resolving.
     if (kind === "prompt" && attachments.length === 0) message = resolveRpcSlashCommandMessage(message, { tabId: targetTabId });
     const bodyBase = { message };
+    // The ID is generated once per browser dispatch and scoped by the server to
+    // targetTabId. This implementation intentionally never retries an
+    // ambiguous mutation automatically.
+    if (kind === "prompt") bodyBase.requestId = createBrowserPromptRequestId();
     if (prepared.images.length) bodyBase.images = prepared.images;
     if (!message.startsWith("/")) {
       rememberPromptHistory(message, { tabId: targetTabId });
@@ -34187,6 +35395,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     } else {
       const body = { ...bodyBase };
       if (targetWasBusy) body.streamingBehavior = streamingBehavior || busyBehavior;
+      dispatchedRequest = { kind, body, tabId: targetTabId, inputMessage };
       response = await api("/api/prompt", { method: "POST", body, tabId: targetTabId });
     }
     applyResponseTab(response);
@@ -34208,6 +35417,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       applyNativeSlashCommandEffects(response, message, tabContext);
     }
     if (usesPromptInput) clearAttachments(targetTabId);
+    persistMobileContinuityState();
     if (targetStillActive) {
       hideCommandSuggestions();
       if (response?.command !== "native_slash_command") scheduleRefreshState(120, tabContext);
@@ -34216,6 +35426,12 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     }
   } catch (error) {
     restorePromptInputAfterRoutingError(inputMessage, { usesPromptInput, targetTabId, tabContext });
+    if (dispatchedRequest?.kind === "prompt" && dispatchedRequest.body?.requestId && error?.backendOffline === true && isMobileShellV2Active()) {
+      mobileFailedSend = { ...dispatchedRequest, retrying: false };
+      renderMobileFailedSendRecovery();
+      recordMobileDiagnostic("send not confirmed", kind);
+      persistMobileContinuityState();
+    }
     if (startsRun) {
       promptRoutingTabs.delete(targetTabId);
       markTabIdleLocally(targetTabId);
@@ -35232,6 +36448,8 @@ elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   sendPrompt("prompt");
 });
+elements.mobileFailedSendRetryButton?.addEventListener("click", retryMobileFailedSend);
+elements.mobileFailedSendDiscardButton?.addEventListener("click", discardMobileFailedSend);
 elements.followUpQueueTrigger?.addEventListener("click", () => {
   setFollowUpQueueOpen(!followUpQueueOpen);
 });
@@ -36374,6 +37592,11 @@ document.addEventListener("visibilitychange", () => {
     scheduleForegroundReconcile("visibility resume", 0);
     refreshSubagents().finally(() => scheduleRefreshSubagents());
   } else {
+    mobileConnectionState = "away";
+    mobileConnectionLabel = "Backgrounded · run state unverified";
+    persistMobileContinuityState();
+    recordMobileDiagnostic("page backgrounded");
+    renderMobilePhoneExperience();
     resetAbortLongPressAffordance();
     scheduleRefreshSubagents();
   }
@@ -36381,6 +37604,13 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pageshow", () => scheduleForegroundReconcile("page show", 0));
 window.addEventListener("focus", () => scheduleForegroundReconcile("window focus"));
 window.addEventListener("online", () => scheduleForegroundReconcile("network online", 0));
+window.addEventListener("offline", () => {
+  mobileConnectionState = "offline";
+  mobileConnectionLabel = "Paused/offline";
+  recordMobileDiagnostic("browser offline");
+  renderMobilePhoneExperience();
+});
+window.addEventListener("beforeunload", persistMobileContinuityState);
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
@@ -36684,10 +37914,20 @@ elements.pathPickerDialog.addEventListener("close", () => {
 });
 
 if (elements.attachButton && elements.attachmentInput) {
-  elements.attachButton.addEventListener("click", () => elements.attachmentInput.click());
+  elements.attachButton.addEventListener("click", (event) => {
+    if (isMobileShellV2Active()) {
+      event.preventDefault();
+      mobileOpenSurface("actionSheet", "context");
+      return;
+    }
+    elements.attachmentInput.click();
+  });
   elements.attachmentInput.addEventListener("change", () => {
-    addAttachmentFiles(elements.attachmentInput.files, "picker");
+    const source = elements.attachmentInput.dataset.mobileAttachmentSource || "picker";
+    addAttachmentFiles(elements.attachmentInput.files, source);
     elements.attachmentInput.value = "";
+    elements.attachmentInput.removeAttribute("capture");
+    delete elements.attachmentInput.dataset.mobileAttachmentSource;
   });
 }
 elements.promptInput.addEventListener("paste", handleAttachmentPaste);
@@ -36740,6 +37980,7 @@ elements.promptInput.addEventListener("input", () => {
   if (moveLongPromptInputToAttachment()) return;
   resizePromptInput();
   renderCommandSuggestions();
+  scheduleMobileContinuityPersist();
 });
 elements.promptInput.addEventListener("focus", () => {
   syncMobileChatToBottomForInput();
@@ -36806,6 +38047,26 @@ initializeSubagentLaunchSlots();
 initializeUpdateNotifications();
 bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();
+mobileInstallEducation = readMobileInstallEducation();
+if (isMobileShellV2Active()) {
+  mobileInstallEducation.visits += 1;
+  persistMobileInstallEducation();
+}
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  mobileInstallPrompt = event;
+  recordMobileDiagnostic("install prompt available");
+  renderMobilePhoneExperience();
+});
+window.addEventListener("appinstalled", () => {
+  mobileInstallPrompt = null;
+  mobileInstallEducation.dismissed = true;
+  persistMobileInstallEducation();
+  recordMobileDiagnostic("app installed");
+  renderMobilePhoneExperience();
+});
+installMobileShellNavigationBridge();
+installMobilePhoneExperience();
 registerPwaServiceWorker();
 renderServerOfflinePanel();
 refreshSidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error"));
