@@ -663,6 +663,54 @@ test("semantic tooltip, held pointer, open dropdown, and stale tab contexts surv
   await expect(page.locator(".app-runner-stdin-input")).toHaveCount(0);
 });
 
+test("scrolled transcript stays pixel-stable while the live tail grows", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 420 });
+  await page.goto(baseURL);
+  await expect.poll(() => page.locator("#chat .message.user").count()).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => page.locator("#chat .message.assistant").count()).toBeGreaterThanOrEqual(1);
+  await page.addStyleTag({ content: "#chat .message { min-height: 11rem; }" });
+  await triggerTranscriptContinuity(page, "cadence");
+
+  const output = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  await expect(output).toContainText("high cadence selection literal");
+  const chat = page.locator("#chat");
+  const baseline = await chat.evaluate((node) => {
+    node.style.scrollBehavior = "auto";
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+    node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight - 120);
+    node.dispatchEvent(new Event("scroll"));
+    const value = node.scrollTop;
+    node.style.removeProperty("scroll-behavior");
+    return value;
+  });
+  assert.ok(baseline > 0, `scroll stability fixture needs a nonzero reader position, got ${baseline}`);
+
+  const samples = await chat.evaluate(async (node) => {
+    const values = [];
+    setTimeout(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", ctrlKey: true, bubbles: true })), 100);
+    const deadline = performance.now() + 1200;
+    while (performance.now() < deadline) {
+      await new Promise(requestAnimationFrame);
+      const sticky = document.querySelector("#stickyUserPromptButton");
+      values.push({
+        top: node.scrollTop,
+        remaining: node.scrollHeight - node.clientHeight - node.scrollTop,
+        autoFollow: document.querySelector("#jumpToLatestButton")?.hidden === true,
+        stickyHidden: sticky?.hidden !== false,
+        stickyHeight: sticky?.getBoundingClientRect().height || 0,
+        children: [...node.children].map((child) => `${child.className}:${Math.round(child.getBoundingClientRect().height)}`),
+      });
+    }
+    return values;
+  });
+  assert.ok(samples.length > 10, "scroll stability fixture should observe multiple rendered frames");
+  const tops = samples.map((sample) => sample.top);
+  const drift = Math.max(...tops) - Math.min(...tops);
+  assert.ok(drift <= 1, `reader scrollTop must stay stable while output grows; observed ${drift}px drift from ${Math.min(...tops)} to ${Math.max(...tops)}; states ${JSON.stringify(samples.filter((sample, index) => index === 0 || sample.top !== samples[index - 1].top))}`);
+  await waitForFixtureSettlement(page);
+});
+
 test("compact live output keeps the selected Text node through repeated flushes", async ({ page }) => {
   await api(page, "/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "compact-v1" } });
   try {

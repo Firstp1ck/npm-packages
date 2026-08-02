@@ -329,3 +329,24 @@ test("desktop remains equivalent at required viewport fixtures", async ({ page }
     await expect(page.locator(".side-panel")).toBeVisible();
   }
 });
+
+test("desktop left-sidebar actions are compact accessible icon buttons", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(baseURL);
+  await page.locator("body").evaluate((body) => body.classList.add("terminal-tabs-left"));
+
+  const actions = page.locator(".terminal-sidebar-actions > button");
+  await expect(actions).toHaveCount(4);
+  const snapshots = await actions.evaluateAll((buttons) => buttons.map((button) => ({
+    text: button.textContent.trim(),
+    ariaLabel: button.getAttribute("aria-label"),
+    width: button.getBoundingClientRect().width,
+    height: button.getBoundingClientRect().height,
+  })));
+  for (const action of snapshots) {
+    assert.equal(action.text, "", "left-sidebar action buttons should not render visible text");
+    assert.ok(action.ariaLabel, "each icon-only action must retain an accessible name");
+    assert.ok(action.width >= 44 && action.height >= 44, `icon action must retain a 44px target, got ${action.width}×${action.height}`);
+  }
+  assert.ok(Math.max(...snapshots.map((action) => action.width)) - Math.min(...snapshots.map((action) => action.width)) <= 1, "icon actions should remain equal width");
+});

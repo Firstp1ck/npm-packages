@@ -282,6 +282,15 @@ function runContinuityDelayedStream() {
   runScriptedSteps(steps);
 }
 
+function runContinuityDelayedStart() {
+  runScriptedSteps([{ afterMs: 3500, run: runContinuityDelayedStream }]);
+}
+
+function runContinuityConfirmedBeforeTool() {
+  scriptedStreaming = true;
+  runScriptedSteps([{ afterMs: 1500, run: () => runTranscriptContinuityScenario("tool") }]);
+}
+
 function runTranscriptContinuityScenario(scenario) {
   scriptedStreaming = true;
   const run = ++continuityRun;
@@ -419,10 +428,14 @@ function handleMobileBlockerPrompt(command, base) {
 }
 
 function handleContinuityPrompt(command, base) {
-  if (!continuityModeEnabled || String(command.message || "").trim() !== "fixture continuity delayed stream") return false;
+  if (!continuityModeEnabled) return false;
+  const message = String(command.message || "").trim();
+  if (!["fixture continuity delayed stream", "fixture continuity delayed start", "fixture continuity confirmed before tool"].includes(message)) return false;
   appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
   respond({ ...base, data: { output: "fake continuity stream accepted", pid: process.pid } });
-  runContinuityDelayedStream();
+  if (message === "fixture continuity delayed start") runContinuityDelayedStart();
+  else if (message === "fixture continuity confirmed before tool") runContinuityConfirmedBeforeTool();
+  else runContinuityDelayedStream();
   return true;
 }
 

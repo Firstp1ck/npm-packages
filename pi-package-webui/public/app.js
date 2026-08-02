@@ -531,6 +531,7 @@ let runIndicatorRenderScroll = false;
 let runIndicatorGraceCheckTimer = null;
 let runIndicatorLastStateCheckAt = 0;
 let runIndicatorLocallyActive = false;
+let runIndicatorRemovalDeferred = false;
 let runIndicatorStartedAt = null;
 let runIndicatorActivity = "Waiting for output or action…";
 let refreshMessagesTimer = null;
@@ -738,6 +739,7 @@ let liveTodoProgressPendingTabId = null;
 let lastChatProgrammaticScrollAt = 0;
 let chatUserScrollIntentUntil = 0;
 let chatUserScrollAwayIntentUntil = 0;
+let chatPausedScrollRestoreUntil = 0;
 let chatLastTouchClientY = null;
 let mobileFooterExpanded = false;
 let footerModelPickerOpen = false;
@@ -9081,8 +9083,9 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
   const tabContext = activeTabContext();
   if (!tabContext.tabId || fileTreeState.loading.has(normalized)) return [];
   const serial = ++fileTreeState.requestSerial;
+  const hadCachedEntries = fileTreeState.entriesByPath.has(normalized);
   fileTreeState.loading.add(normalized);
-  setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
+  if (!hadCachedEntries) setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
   renderFileTree();
   try {
     const response = await api(fileApiPath("/api/files", normalized), { tabId: tabContext.tabId });
@@ -9096,7 +9099,9 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
     const entries = Array.isArray(data.entries) ? data.entries : [];
     updateFileTreeGitStatus(data.gitStatus, entries);
     fileTreeState.entriesByPath.set(normalized, entries);
-    setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length }));
+    if (!normalized || !hadCachedEntries) {
+      setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length }));
+    }
     return entries;
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
@@ -10998,6 +11003,7 @@ function syncActiveTabActivityFromState(state = currentState) {
     return false;
   }
   if (stateHasVisibleWork(state)) {
+    if (state.isStreaming) promptRoutingTabs.delete(tab.id);
     if (!activity.isWorking || (state.isStreaming && !activity.runStarted)) {
       return markTabWorkingLocally(tab.id, { runStarted: state.isStreaming === true });
     }
@@ -28696,21 +28702,35 @@ function stickyUserPromptViewportGap() {
   return Math.ceil(button.getBoundingClientRect().height) + STICKY_USER_PROMPT_TOP_GAP_PX;
 }
 
+function standaloneLiveTranscriptBubbles() {
+  const bubbles = new Set([
+    streamThinkingBubble,
+    streamToolCallBubble,
+    streamBubble,
+    compactThinkingBubble,
+    compactTextBubble,
+  ].filter(Boolean));
+  for (const shell of compactToolShells.values()) {
+    if (shell?.bubble) bubbles.add(shell.bubble);
+  }
+  return bubbles;
+}
+
 function resetChatOutput() {
   liveToolCards.clear();
   renderedTranscriptState = { epoch: "", entries: [] };
-  const preservedNodes = [];
-  if (elements.stickyUserPromptButton) preservedNodes.push(elements.stickyUserPromptButton);
-  if (runIndicatorBubble?.parentElement === elements.chat) preservedNodes.push(runIndicatorBubble);
+  const liveBubbles = standaloneLiveTranscriptBubbles();
+  const preservedNodes = [...elements.chat.children]
+    .filter((child) => child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child));
   transcriptRenderer.replaceChildren(elements.chat, ...preservedNodes);
 }
 
 function appendChatMessageBubble(bubble) {
-  if (runIndicatorBubble?.parentElement === elements.chat && bubble !== runIndicatorBubble) {
-    elements.chat.insertBefore(bubble, runIndicatorBubble);
-  } else {
-    elements.chat.append(bubble);
-  }
+  const liveBubbles = standaloneLiveTranscriptBubbles();
+  const tailAnchor = [...elements.chat.children]
+    .find((child) => child !== bubble && (child === runIndicatorBubble || liveBubbles.has(child)));
+  if (tailAnchor) elements.chat.insertBefore(bubble, tailAnchor);
+  else elements.chat.append(bubble);
 }
 
 function emptyStartRecentWorkspaces() {
@@ -29802,10 +29822,42 @@ function appendMessage(message, options = {}) {
   return created;
 }
 
+function persistedUserMessageCount(messages = latestMessages) {
+  return (messages || []).reduce((count, message) => count + (message?.role === "user" ? 1 : 0), 0);
+}
+
+function discardOptimisticUserPrompt(promptId, { render = true } = {}) {
+  if (!promptId) return false;
+  const next = transientMessages.filter((message) => message?.optimisticPromptId !== promptId);
+  if (next.length === transientMessages.length) return false;
+  transientMessages = next;
+  if (render) renderAllMessages({ preserveScroll: true });
+  return true;
+}
+
+function reconcileOptimisticUserPrompts(messages = latestMessages) {
+  const persistedUserCount = persistedUserMessageCount(messages);
+  transientMessages = transientMessages.filter((message) => {
+    if (!message?.optimisticPromptId) return true;
+    return persistedUserCount <= Number(message.optimisticBaselineUserCount || 0);
+  });
+}
+
 function appendOptimisticUserPrompt(message, attachmentCount = 0) {
   const text = String(message || "").trim() || `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
-  appendMessage({ role: "user", title: "you", timestamp: Date.now(), content: text }, { transient: true, animateEntry: true });
+  const optimisticPromptId = createBrowserPromptRequestId();
+  transientMessages.push({
+    role: "user",
+    title: "you",
+    timestamp: Date.now(),
+    content: text,
+    optimisticPromptId,
+    optimisticBaselineUserCount: persistedUserMessageCount(),
+  });
+  if (transientMessages.length > 80) transientMessages.splice(0, transientMessages.length - 80);
+  renderAllMessages();
   if (autoFollowChat || isChatNearBottom()) scrollChatToBottom({ force: true });
+  return optimisticPromptId;
 }
 
 function toolExecutionMessageFromCall(displayMessage, { result = toolResultForCallId(displayMessage?.toolCallId), liveRun = liveToolRuns.get(displayMessage?.toolCallId) } = {}) {
@@ -29857,7 +29909,7 @@ function stateHasRunIndicatorActivity(state = currentState) {
 }
 
 function runIndicatorIsActive() {
-  return runIndicatorLocallyActive || stateHasRunIndicatorActivity(currentState) || isUserBashActive();
+  return promptRoutingTabs.has(activeTabId) || runIndicatorLocallyActive || stateHasRunIndicatorActivity(currentState) || isUserBashActive();
 }
 
 function clearRunIndicatorGraceCheck() {
@@ -29905,6 +29957,10 @@ function runIndicatorHeadline() {
 
 function runIndicatorShowsElapsed() {
   return !/^Abort requested/i.test(runIndicatorActivity || "");
+}
+
+function runIndicatorActivityIsRouting(activity = runIndicatorActivity) {
+  return /^(?:Preparing attachments for routing|Routing prompt|Routing complete)/i.test(String(activity || "").trim());
 }
 
 function runIndicatorDetail() {
@@ -29972,6 +30028,7 @@ function removeRunIndicatorBubble() {
 
 function renderRunIndicator({ scroll = false } = {}) {
   if (!runIndicatorIsActive()) {
+    if (runIndicatorRemovalDeferred && runIndicatorBubble?.parentElement === elements.chat) return;
     removeRunIndicatorBubble();
     return;
   }
@@ -30000,6 +30057,7 @@ function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}
   const hadRunIndicatorBubble = runIndicatorBubble?.parentElement === elements.chat;
   if (active) {
     runIndicatorLocallyActive = true;
+    runIndicatorRemovalDeferred = false;
     if (!runIndicatorStartedAt) runIndicatorStartedAt = performance.now();
   }
   runIndicatorActivity = activity || runIndicatorActivity || "Waiting for output or action…";
@@ -30010,13 +30068,15 @@ function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}
   if (active) scheduleRunIndicatorGraceCheck();
 }
 
-function clearRunIndicatorActivity({ render = true } = {}) {
+function clearRunIndicatorActivity({ render = true, deferRemoval = false } = {}) {
   clearRunIndicatorGraceCheck();
   runIndicatorLastStateCheckAt = 0;
   runIndicatorLocallyActive = false;
   runIndicatorStartedAt = null;
   runIndicatorActivity = "Waiting for output or action…";
-  if (render) renderRunIndicator();
+  runIndicatorRemovalDeferred = deferRemoval && runIndicatorBubble?.parentElement === elements.chat;
+  if (runIndicatorRemovalDeferred) stopRunIndicatorTicker();
+  else if (render) renderRunIndicator();
   updateComposerModeButtons();
 }
 
@@ -30025,10 +30085,15 @@ function syncRunIndicatorFromState(state = currentState) {
     clearRunIndicatorGraceCheck();
     runIndicatorLocallyActive = true;
     if (!runIndicatorStartedAt) runIndicatorStartedAt = performance.now();
-    if (state.isCompacting && !state.isStreaming && runIndicatorActivity === "Waiting for output or action…") {
+    if (state.isStreaming && runIndicatorActivityIsRouting()) {
+      runIndicatorActivity = "Agent run confirmed; waiting for first output or action…";
+    } else if (state.isCompacting && !state.isStreaming && (runIndicatorActivity === "Waiting for output or action…" || runIndicatorActivityIsRouting())) {
       runIndicatorActivity = "Compacting context…";
     }
     renderRunIndicator({ scroll: true });
+  } else if (promptRoutingTabs.has(activeTabId)) {
+    renderRunIndicator({ scroll: true });
+    scheduleRunIndicatorGraceCheck();
   } else if (runIndicatorLocallyActive && runIndicatorStartedAt && performance.now() - runIndicatorStartedAt < RUN_INDICATOR_START_GRACE_MS) {
     renderRunIndicator({ scroll: true });
     scheduleRunIndicatorGraceCheck();
@@ -30481,8 +30546,9 @@ function restoreChatTextSelection(snapshot) {
 }
 
 function removeChatBubblesAfterPrefix(keptKeys) {
+  const liveBubbles = standaloneLiveTranscriptBubbles();
   for (const child of [...elements.chat.children]) {
-    if (child === elements.stickyUserPromptButton || child === runIndicatorBubble) continue;
+    if (child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child)) continue;
     const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
     if (key && keptKeys.has(key)) continue;
     child.remove();
@@ -30499,6 +30565,7 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
   const selectionSnapshot = captureChatTextSelection();
   const shouldFollow = !preserveScroll && (autoFollowChat || isChatNearBottom());
   const previousScrollTop = elements.chat.scrollTop;
+  if (!autoFollowChat) chatPausedScrollRestoreUntil = performance.now() + CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
   const transcriptItems = orderedTranscriptItems();
   const epoch = transcriptRenderEpoch();
   const nextEntries = transcriptItems.map((item) => ({ item, key: transcriptItemKey(item), sig: transcriptItemSignature(item) }));
@@ -30516,10 +30583,11 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
   const adoptedKeys = new Set([...pendingTranscriptAdoptions.entries()]
     .filter(([, bubble]) => bubble?.isConnected && bubble.parentElement === elements.chat)
     .map(([key]) => key));
+  const liveBubbles = standaloneLiveTranscriptBubbles();
   const affectedSurfaces = prefixLength === 0 && adoptedKeys.size === 0
     ? [elements.chat]
     : [...elements.chat.children].filter((child) => {
-      if (child === elements.stickyUserPromptButton || child === runIndicatorBubble) return false;
+      if (child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child)) return false;
       const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
       return !prefixKeys.has(key) && !adoptedKeys.has(key);
     });
@@ -30564,12 +30632,13 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
       renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
       rememberActionEntries(transcriptItems);
       applyToolOutputExpansionToDom();
+      runIndicatorRemovalDeferred = false;
       renderRunIndicator({ scroll: false });
       updateStickyUserPromptButton();
       if (shouldFollow) scrollChatToBottom({ force: true });
       else {
-        elements.chat.scrollTop = Math.min(previousScrollTop, elements.chat.scrollHeight);
-        autoFollowChat = isChatNearBottom();
+        lastChatProgrammaticScrollAt = performance.now();
+        setChatScrollTopInstant(Math.min(previousScrollTop, elements.chat.scrollHeight));
         updateJumpToLatestButton();
       }
       updateStickyUserPromptButton();
@@ -30746,6 +30815,7 @@ function noteChatUserScrollIntent(event) {
   chatUserScrollIntentUntil = now + CHAT_USER_SCROLL_INTENT_MS;
   if (!isChatScrollAwayIntent(event)) {
     chatUserScrollAwayIntentUntil = 0;
+    chatPausedScrollRestoreUntil = 0;
     return;
   }
   chatUserScrollAwayIntentUntil = now + CHAT_USER_SCROLL_INTENT_MS;
@@ -30810,9 +30880,13 @@ function scrollChatToBottom({ force = false } = {}) {
 function syncAutoFollowFromChatScroll() {
   const nearBottom = isChatNearBottom();
   const recentProgrammaticScroll = performance.now() - lastChatProgrammaticScrollAt <= CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
-  if (isChatUserScrollAwayIntentActive()) {
+  if (performance.now() <= chatPausedScrollRestoreUntil) {
     autoFollowChat = false;
-  } else if (nearBottom || isChatUserScrollIntentActive() || !autoFollowChat || !recentProgrammaticScroll) {
+  } else if (isChatUserScrollAwayIntentActive()) {
+    autoFollowChat = false;
+  } else if (!autoFollowChat) {
+    if (nearBottom && (isChatUserScrollIntentActive() || !recentProgrammaticScroll)) autoFollowChat = true;
+  } else if (nearBottom || isChatUserScrollIntentActive() || !recentProgrammaticScroll) {
     autoFollowChat = nearBottom;
   } else {
     scheduleChatFollowScroll();
@@ -33616,6 +33690,7 @@ function insertNumpadDecimal(event) {
 
 function renderMessages(messages) {
   latestMessages = messages || [];
+  reconcileOptimisticUserPrompts(latestMessages);
   cleanupLiveToolRunsForMessages(latestMessages);
   syncLastUserPromptFromMessages(latestMessages);
   syncPromptHistoryFromMessages(latestMessages);
@@ -36184,6 +36259,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   const targetWasBusy = targetWasStreaming || targetWasCompacting;
   const busyBehavior = normalizeBusyPromptBehavior(busyPromptBehavior);
   const startsRun = kind === "prompt" && !targetWasBusy;
+  let optimisticPromptId = "";
   clearPromptInputForRouting({ usesPromptInput, targetTabId, tabContext });
   resumeChatAutoFollow();
   updateJumpToLatestButton();
@@ -36192,7 +36268,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     promptRoutingTabs.add(targetTabId);
     markTabWorkingLocally(targetTabId);
     if (isCurrentTabContext(tabContext)) {
-      appendOptimisticUserPrompt(originalMessage, attachments.length);
+      optimisticPromptId = appendOptimisticUserPrompt(originalMessage, attachments.length);
       setRunIndicatorActivity(attachments.length ? "Preparing attachments for routing…" : "Routing prompt to the selected agent…");
     }
   }
@@ -36229,10 +36305,11 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       response = await api("/api/prompt", { method: "POST", body, tabId: targetTabId });
     }
     applyResponseTab(response);
-    if (startsRun) promptRoutingTabs.delete(targetTabId);
     if (response?.command === "native_slash_command" && /^\/new(?:\s|$)/.test(message)) forgetLastUserPrompt(targetTabId);
     const targetStillActive = isCurrentTabContext(tabContext);
     if (startsRun && response?.command === "native_slash_command") {
+      promptRoutingTabs.delete(targetTabId);
+      discardOptimisticUserPrompt(optimisticPromptId);
       markTabIdleLocally(targetTabId);
       if (targetStillActive) clearRunIndicatorActivity();
     } else if (targetStillActive && response?.data?.queuedFor === "compaction") {
@@ -36264,6 +36341,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     }
     if (startsRun) {
       promptRoutingTabs.delete(targetTabId);
+      discardOptimisticUserPrompt(optimisticPromptId, { render: false });
       markTabIdleLocally(targetTabId);
       if (isCurrentTabContext(tabContext)) clearRunIndicatorActivity();
     }
@@ -36986,6 +37064,7 @@ function handleEvent(event) {
       scheduleRefreshState();
       break;
     case "agent_start":
+      promptRoutingTabs.delete(event.tabId || activeTabId);
       assistantErrorSurfacedThisRun = false;
       markTabWorkingLocally(event.tabId || activeTabId, { runStarted: true });
       if (currentState) currentState = { ...currentState, isStreaming: true };
@@ -37095,6 +37174,7 @@ function handleEvent(event) {
       scheduleRefreshFooter();
       break;
     case "agent_settled":
+      promptRoutingTabs.delete(event.tabId || activeTabId);
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       streamMessageActive = false;
       addEvent("agent finished");
@@ -37105,7 +37185,7 @@ function handleEvent(event) {
       // flushes queued interruptions itself; calling setAssistantActivity here
       // first would flush the queue and then speak the interrupted answer.
       if (voiceConversationActiveFor(event.tabId || activeTabId)) void handleVoiceConversationTurnEnd(tabContext);
-      clearRunIndicatorActivity();
+      clearRunIndicatorActivity({ deferRemoval: !autoFollowChat || !isChatNearBottom() });
       markTabOutputSeen();
       requestGitFooterWebuiPayload(tabContext, { force: true });
       scheduleRefreshState();

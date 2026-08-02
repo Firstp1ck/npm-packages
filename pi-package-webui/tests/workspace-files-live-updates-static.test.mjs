@@ -52,10 +52,13 @@ assert.match(shutdown, /workspaceFilesLiveWatcher\.closeAll\(\)/, "server shutdo
 
 // WS2 client-side contract assertions.
 const handleEvent = functionBody(app, "handleEvent");
+const loadDirectory = functionBody(app, "loadFileTreeDirectory");
 const liveRefresh = functionBody(app, "refreshFileTreeLive");
 const liveDirectories = functionBody(app, "refreshLoadedFileTreeDirectories");
 
 assert.match(handleEvent, /case "webui_workspace_files_changed":\s*if \(event\.tabId && event\.tabId !== activeTabId\) break;\s*refreshFileTreeLive\(tabContext\)\.catch/, "workspace file changes should refresh only the matching active tab");
+assert.match(loadDirectory, /const hadCachedEntries = fileTreeState\.entriesByPath\.has\(normalized\);[\s\S]*?if \(!hadCachedEntries\) setFileTreeStatus\(normalized \? `Loading \$\{normalized\}…` : "Loading workspace files…"\);/, "cached directories should preserve the current item-count status while background refreshes are in flight");
+assert.match(loadDirectory, /fileTreeState\.entriesByPath\.set\(normalized, entries\);\s*if \(!normalized \|\| !hadCachedEntries\) \{\s*setFileTreeStatus\(fileTreeEntriesStatus\(entries,/, "root refreshes should publish the updated item count while cached child refreshes leave it stable");
 
 assert.match(liveRefresh, /fileTreeSearchQueryText\(\)[\s\S]*?await runFileTreeSearch\(\)[\s\S]*?await refreshLoadedFileTreeDirectories\(refreshContext\)/, "live refresh should rerun an active search or refresh loaded directories");
 assert.match(liveRefresh, /if \(fileTreeLiveRefreshInProgress\) \{\s*fileTreeLiveRefreshPendingContext = tabContext;\s*return;\s*\}/, "events arriving during a refresh should retain the pending tab context");
