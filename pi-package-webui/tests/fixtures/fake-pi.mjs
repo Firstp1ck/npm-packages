@@ -348,12 +348,17 @@ function runTranscriptContinuityScenario(scenario) {
     finish({ role: "assistant", content: [{ type: "thinking", thinking: "thinking selection literal survives" }, { type: "text", text: "thinking final answer" }], timestamp: Date.now() }, 450);
   } else if (scenario === "tool") {
     const toolCallId = `continuity-tool-${run}`;
+    const toolOutput = (revision) => [
+      "tool selection literal",
+      `unselected revision ${revision}`,
+      ...Array.from({ length: 64 }, (_, index) => `continuity output line ${String(index + 1).padStart(2, "0")} ${"x".repeat(160)}`),
+    ].join("\n");
     steps.push(
       { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "agent_start" })) },
       { afterMs: 70, run: () => emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "continuity.txt" } })) },
-      { afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: "tool selection literal\nunselected revision one" }] } })) },
-      { afterMs: 700, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: "tool selection literal\nunselected revision two" }] } })) },
-      { afterMs: 600, run: () => emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "tool selection literal\nunselected revision two" }] } })) },
+      { afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: toolOutput("one") }] } })) },
+      { afterMs: 700, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: toolOutput("two") }] } })) },
+      { afterMs: 600, run: () => emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: toolOutput("two") }] } })) },
     );
     finish(null, 120);
   } else if (scenario === "authoritative") {

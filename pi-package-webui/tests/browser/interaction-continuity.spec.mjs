@@ -305,6 +305,9 @@ test("main output text selection survives streaming-tail and settlement rerender
   await expect.poll(() => originalSurface.evaluate((node) => node.isConnected), { timeout: 8_000 }).toBe(true);
   await expect.poll(() => originalBubble.evaluate((node) => ({ connected: node.isConnected, streaming: node.classList.contains("streaming"), itemKey: node.dataset.itemKey, messageKey: node.dataset.transcriptMessageKey })), { timeout: 8_000 }).toEqual({ connected: true, streaming: false, itemKey: "m:4", messageKey: "m:4" });
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || ""), { timeout: 8_000 }).toBe(selectedText);
+  await waitForFixtureSettlement(page, tabId);
+  await delay(4_000);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
 });
 
 test("backward normal-output selection keeps its direction through streaming and exact settlement", async ({ page }) => {
@@ -458,12 +461,39 @@ test("selectable live tool output restores an unchanged range across body reconc
   const toolBody = page.locator(".message.toolExecution .message-body").last();
   const selectedText = "tool selection literal";
   await expect(toolBody).toContainText("unselected revision one");
+  await toolBody.locator(".tool-output-details").evaluate((node) => { node.open = true; });
   assert.equal((await selectRenderedText(toolBody, selectedText)).text, selectedText);
   const bodyHandle = await toolBody.elementHandle();
   assert.ok(bodyHandle, "tool selection continuity needs an inspectable semantic surface");
   await expect(toolBody).toContainText("unselected revision two");
   await expect.poll(() => bodyHandle.evaluate((node) => node.isConnected)).toBe(true);
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
+  await waitForFixtureSettlement(page);
+});
+
+test("expanded live tool output preserves reader scroll and summary focus across updates", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "tool");
+
+  const toolBody = page.locator(".message.toolExecution .message-body").last();
+  const details = toolBody.locator(".tool-output-details");
+  const output = details.locator(".tool-output-code");
+  const summary = details.locator("summary");
+  await expect(toolBody).toContainText("unselected revision one");
+  await summary.click();
+  const scrollState = await output.evaluate((node) => {
+    node.scrollTop = Math.min(180, node.scrollHeight - node.clientHeight);
+    return { top: node.scrollTop };
+  });
+  assert.ok(scrollState.top > 0, "the tool fixture must create vertical reader scroll");
+  await summary.focus();
+  await expect(summary).toBeFocused();
+
+  await expect(toolBody).toContainText("unselected revision two");
+  await expect.poll(() => details.evaluate((node) => node.open)).toBe(true);
+  await expect.poll(() => output.evaluate((node) => node.scrollTop)).toBe(scrollState.top);
+  await expect(summary).toBeFocused();
   await waitForFixtureSettlement(page);
 });
 
@@ -568,6 +598,134 @@ test("Mermaid async rendering leaves selected source nodes connected", async ({ 
   await expect.poll(() => sourceHandle.evaluate((node) => node.isConnected)).toBe(true);
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("graph TD");
   await waitForFixtureSettlement(page);
+});
+
+test("cross-message selection survives a whole transcript rebuild", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "duplicate");
+  await waitForFixtureSettlement(page);
+  const surfaces = page.locator(".message.assistant:not(.streaming) .markdown-body");
+  await expect.poll(() => surfaces.count()).toBeGreaterThanOrEqual(2);
+  const selectedLength = await page.locator("#chat").evaluate((chat) => {
+    const outputs = [...chat.querySelectorAll(".message.assistant:not(.streaming) .markdown-body")];
+    const textNodes = (root) => {
+      const nodes = [];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        if ((walker.currentNode.data || "").trim()) nodes.push(walker.currentNode);
+      }
+      return nodes;
+    };
+    const startNodes = textNodes(outputs[0]);
+    const endNodes = textNodes(outputs.at(-1));
+    const startNode = startNodes.at(-1);
+    const endNode = endNodes[0];
+    const range = document.createRange();
+    range.setStart(startNode, Math.max(0, startNode.data.length - 8));
+    range.setEnd(endNode, Math.min(18, endNode.data.length));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const textOffset = (surface, node, offset) => {
+      const prefix = document.createRange();
+      prefix.selectNodeContents(surface);
+      prefix.setEnd(node, offset);
+      return prefix.toString().length;
+    };
+    const endpoint = (surface, node, offset) => ({
+      itemKey: surface.closest(".message")?.dataset.transcriptMessageKey || surface.closest(".message")?.dataset.itemKey || "",
+      surfaceKey: surface.dataset.transcriptSurfaceKey || "",
+      offset: textOffset(surface, node, offset),
+    });
+    window.__crossMessageSelectionText = selection.toString();
+    window.__crossMessageSelectionBoundary = {
+      start: window.__crossMessageSelectionText.slice(0, 8),
+      end: window.__crossMessageSelectionText.slice(-18),
+    };
+    window.__crossMessageSelectionEndpoints = {
+      anchor: endpoint(outputs[0], selection.anchorNode, selection.anchorOffset),
+      focus: endpoint(outputs.at(-1), selection.focusNode, selection.focusOffset),
+    };
+    return window.__crossMessageSelectionText.length;
+  });
+  assert.ok(selectedLength > 20, "the fixture must create a real cross-message browser Range");
+
+  await page.evaluate(() => {
+    const key = "pi-webui-optional-features-disabled";
+    const current = JSON.parse(localStorage.getItem(key) || "[]");
+    const next = current.includes("bangCommandAutocomplete")
+      ? current.filter((id) => id !== "bangCommandAutocomplete")
+      : [...current, "bangCommandAutocomplete"];
+    localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  });
+
+  await expect.poll(() => page.evaluate(() => {
+    const selection = window.getSelection();
+    const current = selection?.toString() || "";
+    const anchorSurface = selection?.anchorNode?.parentElement?.closest?.("[data-transcript-surface-key]");
+    const focusSurface = selection?.focusNode?.parentElement?.closest?.("[data-transcript-surface-key]");
+    const anchorBubble = anchorSurface?.closest(".message");
+    const focusBubble = focusSurface?.closest(".message");
+    const anchorItemKey = anchorBubble?.dataset.transcriptMessageKey || anchorBubble?.dataset.itemKey || "";
+    const focusItemKey = focusBubble?.dataset.transcriptMessageKey || focusBubble?.dataset.itemKey || "";
+    return current.length > 20
+      && current.startsWith(window.__crossMessageSelectionBoundary.start)
+      && current.endsWith(window.__crossMessageSelectionBoundary.end)
+      && anchorItemKey === window.__crossMessageSelectionEndpoints.anchor.itemKey
+      && focusItemKey === window.__crossMessageSelectionEndpoints.focus.itemKey;
+  })).toBe(true);
+});
+
+test("individually expanded tool details stay open through transcript rerenders", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "tool");
+  const details = page.locator(".message.toolExecution .tool-raw-details").last();
+  await expect(details).toBeAttached();
+  await expect.poll(() => details.evaluate((node) => node.open)).toBe(false);
+  const summary = details.locator("summary");
+  await summary.click();
+  await expect.poll(() => details.evaluate((node) => node.open)).toBe(true);
+  await waitForFixtureSettlement(page);
+  const rawOutput = details.locator(".tool-raw-code");
+  const scrollTop = await rawOutput.evaluate((node) => {
+    node.scrollTop = Math.min(140, node.scrollHeight - node.clientHeight);
+    return node.scrollTop;
+  });
+  assert.ok(scrollTop > 0, "the settled raw-tool fixture must create reader scroll");
+  await summary.focus();
+  await expect(summary).toBeFocused();
+
+  await page.evaluate(() => {
+    const key = "pi-webui-optional-features-disabled";
+    const current = JSON.parse(localStorage.getItem(key) || "[]");
+    const next = current.includes("bangCommandAutocomplete")
+      ? current.filter((id) => id !== "bangCommandAutocomplete")
+      : [...current, "bangCommandAutocomplete"];
+    localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  });
+
+  await delay(4_000);
+  await expect.poll(() => details.evaluate((node) => node.open)).toBe(true);
+  await expect.poll(() => rawOutput.evaluate((node) => node.scrollTop)).toBe(scrollTop);
+  await expect(summary).toBeFocused();
+});
+
+test("same-mode output control preserves settled output selection", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const output = page.locator(".message.assistant .markdown-body").first();
+  const selectedText = "fake answer";
+  await expect(output).toContainText(selectedText);
+  await waitForFixtureSettlement(page);
+  assert.equal((await selectRenderedText(output, selectedText)).text, selectedText);
+
+  await api(page, "/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
+
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe(selectedText);
 });
 
 test("tab navigation clears transcript selection and never restores it into another context", async ({ page }) => {

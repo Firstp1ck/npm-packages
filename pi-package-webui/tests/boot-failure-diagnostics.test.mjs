@@ -48,7 +48,15 @@ class FakeResponse {
   async json() { return this._json; }
 }
 
-function makeEnvironment({ importApp, stylesheetLoaded = true, stylesheetStatus = 200, workflowModuleStatus = 404 } = {}) {
+function makeEnvironment({
+  importApp,
+  stylesheetLoaded = true,
+  stylesheetStatus = 200,
+  workflowModuleStatus = 404,
+  manifestStatus = 200,
+  manifestText = '{"name":"Pi Web UI"}',
+  hangingHealth = false,
+} = {}) {
   const elements = {
     panel: new FakeElement({ hidden: true }),
     reason: new FakeElement(),
@@ -94,10 +102,14 @@ function makeEnvironment({ importApp, stylesheetLoaded = true, stylesheetStatus 
 
   async function fetch(input) {
     const url = String(input);
-    if (url.includes("/api/health")) return new FakeResponse(url, 200, { type: "application/json", json: { ok: true, webuiVersion: "0.7.6", remoteAuthPin: "1234" } });
+    if (url.includes("/api/health")) {
+      if (hangingHealth) return new Promise(() => {});
+      return new FakeResponse(url, 200, { type: "application/json", json: { ok: true, webuiVersion: "0.7.6", remoteAuthPin: "1234" } });
+    }
     if (url.includes("/app.js")) return new FakeResponse(url, 200, { type: "text/javascript", text: 'import "./workflow-status-stack.mjs";\nimport "./fast-output-live.mjs";' });
     if (url.includes("workflow-status-stack.mjs")) return new FakeResponse(url, workflowModuleStatus, { type: workflowModuleStatus === 200 ? "text/javascript" : "application/json" });
     if (url.includes("fast-output-live.mjs")) return new FakeResponse(url, 200, { type: "text/javascript" });
+    if (url.includes("manifest.webmanifest")) return new FakeResponse(url, manifestStatus, { type: manifestStatus === 200 ? "application/manifest+json" : "text/html", text: manifestText });
     if (url.includes("styles.css")) return new FakeResponse(url, stylesheetStatus, { type: "text/css" });
     return new FakeResponse(url, 404);
   }
@@ -124,6 +136,12 @@ function makeEnvironment({ importApp, stylesheetLoaded = true, stylesheetStatus 
     elements,
     listeners,
     timers,
+    fireTimers() {
+      for (const [id, callback] of [...timers]) {
+        timers.delete(id);
+        callback();
+      }
+    },
     copied: () => copied,
     reloaded: () => reloaded,
   };
@@ -167,6 +185,46 @@ vm.runInNewContext(loaderSource, stylesheetFailure.context, { filename: "webui-b
 await settleAsyncWork();
 assert.equal(stylesheetFailure.elements.panel.hidden, false, "a missing critical stylesheet should expose the boot-failure panel");
 assert.match(stylesheetFailure.elements.report.value, /Critical stylesheet returned HTTP 404/);
+
+const syntaxFailureWithManifestNoise = makeEnvironment({
+  importApp: async () => {
+    const error = new Error("Unexpected token '}'");
+    error.name = "SyntaxError";
+    throw error;
+  },
+  workflowModuleStatus: 200,
+  manifestText: "<!doctype html><title>wrong response</title>",
+});
+vm.runInNewContext(loaderSource, syntaxFailureWithManifestNoise.context, { filename: "webui-boot-loader.js" });
+await settleAsyncWork();
+assert.match(syntaxFailureWithManifestNoise.elements.reason.textContent, /JavaScript failed during startup: SyntaxError: Unexpected token/);
+assert.match(syntaxFailureWithManifestNoise.elements.report.value, /entry module: HTTP 200 text\/javascript/);
+assert.match(syntaxFailureWithManifestNoise.elements.report.value, /optional web manifest: HTTP 200 application\/manifest\+json.*invalid JSON/);
+assert.match(syntaxFailureWithManifestNoise.elements.report.value, /web manifest has a separate problem.*does not execute or block app\.js startup/i, "manifest parse noise should be identified as non-blocking");
+
+const stalledBoot = makeEnvironment({
+  importApp: async () => new Promise(() => {}),
+  workflowModuleStatus: 200,
+});
+vm.runInNewContext(loaderSource, stalledBoot.context, { filename: "webui-boot-loader.js" });
+stalledBoot.fireTimers();
+await settleAsyncWork();
+assert.match(stalledBoot.elements.reason.textContent, /WebUI startup stalled even though the current HTTP checks succeeded/);
+assert.match(stalledBoot.elements.report.value, /Error: Error: Startup watchdog timed out/);
+
+const hangingDiagnostic = makeEnvironment({
+  importApp: async () => { throw new Error("Startup module failed before diagnostics"); },
+  workflowModuleStatus: 200,
+  hangingHealth: true,
+});
+vm.runInNewContext(loaderSource, hangingDiagnostic.context, { filename: "webui-boot-loader.js" });
+await settleAsyncWork();
+hangingDiagnostic.fireTimers();
+await settleAsyncWork();
+assert.equal(hangingDiagnostic.elements.panel.hidden, false, "the failure panel should remain usable while a diagnostic request hangs");
+assert.doesNotMatch(hangingDiagnostic.elements.report.value, /Collecting diagnostics/, "bounded probes must always replace the collecting placeholder");
+assert.match(hangingDiagnostic.elements.reason.textContent, /diagnostic check timed out while probing \/api\/health/i);
+assert.match(hangingDiagnostic.elements.report.value, /backend health: diagnostic timed out after 3 seconds/);
 
 const startupModuleNames = [...new Set([...app.matchAll(/(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']\.\/([^"'?]+)(?:\?[^"']*)?["']/g)].map((match) => match[1]))];
 assert.ok(startupModuleNames.length >= 1, "the startup-module invariant should discover app.js imports");

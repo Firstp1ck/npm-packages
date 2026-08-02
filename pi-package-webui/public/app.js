@@ -29203,7 +29203,8 @@ function appendToolOutput(parent, text, { label = "output", previewLines = 10, p
     const details = make("details", "tool-output-details");
     details.open = open || toolOutputGloballyExpanded;
     details.append(make("summary", "tool-output-summary", `${label} (${lines.length} lines; expand)`));
-    appendText(details, clean, "code-block tool-output-code");
+    const output = appendText(details, clean, "code-block tool-output-code");
+    bindToolDetailsScrollMode(output);
     parent.append(details);
 
     const preview = make("div", "tool-output-preview");
@@ -29306,8 +29307,10 @@ function toolRawDetailsReplacer(key, value) {
 function appendToolRawDetails(parent, tool) {
   const raw = JSON.stringify({ arguments: tool.args ?? {}, result: tool.result ?? null, details: tool.details ?? {} }, toolRawDetailsReplacer, 2);
   const details = make("details", "tool-raw-details");
+  details.open = toolOutputGloballyExpanded;
   details.append(make("summary", "tool-raw-summary", "raw tool data"));
-  appendText(details, raw, "code-block tool-raw-code");
+  const output = appendText(details, raw, "code-block tool-raw-code");
+  bindToolDetailsScrollMode(output);
   parent.append(details);
 }
 
@@ -29510,7 +29513,7 @@ function renderWorkflowStatusStack(parent, message) {
     : `latest ${snapshot.fallback}`;
 
   const details = make("details", "workflow-status-stack-details");
-  details.open = !!message.isError;
+  details.open = !!message.isError || toolOutputGloballyExpanded;
   const summary = make("summary", "workflow-status-stack-summary");
   summary.setAttribute("aria-label", `Workflow status updates, ${countLabel}; ${latestLabel}${message.isError ? "; contains an error" : ""}`);
   const heading = make("span", "workflow-status-stack-heading");
@@ -29600,21 +29603,166 @@ function toolDetailsStateKey(details, counts) {
   return `${base}|${index}`;
 }
 
-function captureToolDetailsOpenState(root) {
-  const state = new Set();
+function toolDetailsScrollStateKey(node, counts) {
+  const classKey = Array.from(node.classList || []).sort().join(".") || node.tagName.toLowerCase();
+  const index = counts.get(classKey) || 0;
+  counts.set(classKey, index + 1);
+  return `${classKey}|${index}`;
+}
+
+function bindToolDetailsScrollMode(node) {
+  if (!node) return;
+  node.dataset.toolScrollMode ||= "position";
+  ensureToolInteractionDelegation();
+}
+
+function captureToolDetailsInteractionState(root) {
+  const state = new Map();
   const counts = new Map();
   for (const details of root.querySelectorAll("details")) {
     const key = toolDetailsStateKey(details, counts);
-    if (details.open) state.add(key);
+    const summary = details.querySelector(":scope > summary");
+    const scroll = new Map();
+    const scrollCounts = new Map();
+    if (details.open) {
+      for (const node of details.querySelectorAll(".tool-output-code, .tool-raw-code, :scope > .message-body")) {
+        bindToolDetailsScrollMode(node);
+        scroll.set(toolDetailsScrollStateKey(node, scrollCounts), {
+          source: node,
+          mode: node.dataset.toolScrollMode || "position",
+          scrollTop: node.scrollTop,
+          scrollLeft: node.scrollLeft,
+        });
+      }
+    }
+    state.set(key, {
+      open: details.open,
+      summarySource: summary,
+      summaryFocused: document.activeElement === summary,
+      scroll,
+    });
   }
   return state;
 }
 
-function restoreToolDetailsOpenState(root, state) {
+function restoreToolDetailsInteractionState(root, state) {
   if (!state?.size) return;
   const counts = new Map();
   for (const details of root.querySelectorAll("details")) {
-    if (state.has(toolDetailsStateKey(details, counts))) details.open = true;
+    const snapshot = state.get(toolDetailsStateKey(details, counts));
+    if (!snapshot) continue;
+    details.open = snapshot.open;
+    const summary = details.querySelector(":scope > summary");
+    if (snapshot.summaryFocused && document.activeElement !== summary && !isMeaningfulConnectedFocus(document.activeElement)) {
+      try {
+        summary?.focus({ preventScroll: true });
+      } catch {
+        summary?.focus();
+      }
+    }
+    const scrollCounts = new Map();
+    for (const node of details.querySelectorAll(".tool-output-code, .tool-raw-code, :scope > .message-body")) {
+      bindToolDetailsScrollMode(node);
+      const scrollSnapshot = snapshot.scroll.get(toolDetailsScrollStateKey(node, scrollCounts));
+      if (!scrollSnapshot || (node === scrollSnapshot.source && node.scrollTop === scrollSnapshot.scrollTop && node.scrollLeft === scrollSnapshot.scrollLeft)) continue;
+      node.dataset.toolScrollMode = scrollSnapshot.mode;
+      requestAnimationFrame(() => {
+        if (!node.isConnected) return;
+        const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
+        node.scrollTop = scrollSnapshot.mode === "follow-end"
+          ? maxScrollTop
+          : Math.min(Math.max(0, scrollSnapshot.scrollTop), maxScrollTop);
+        node.scrollLeft = Math.min(Math.max(0, scrollSnapshot.scrollLeft), maxScrollLeft);
+      });
+    }
+  }
+}
+
+const INTERACTED_TOOL_BUBBLE_LIMIT = 16;
+const TOOL_INTERACTION_BUBBLE_SELECTOR = ".message.toolCall, .message.toolExecution, .message.toolResult, .message.bashExecution, .message.workflowStatusStack, .message.compactionSummary";
+const TOOL_INTERACTION_SCROLL_SELECTOR = ".tool-output-code, .tool-raw-code, .message-collapse > .message-body";
+const interactedToolBubbles = new Set();
+let toolInteractionDelegationBound = false;
+
+function markInteractedToolBubble(bubble) {
+  if (!bubble?.matches?.(TOOL_INTERACTION_BUBBLE_SELECTOR)) return;
+  interactedToolBubbles.delete(bubble);
+  interactedToolBubbles.add(bubble);
+  while (interactedToolBubbles.size > INTERACTED_TOOL_BUBBLE_LIMIT) {
+    interactedToolBubbles.delete(interactedToolBubbles.values().next().value);
+  }
+}
+
+function ensureToolInteractionDelegation() {
+  if (toolInteractionDelegationBound || !elements.chat) return;
+  toolInteractionDelegationBound = true;
+  const markFromEvent = (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const bubble = target?.closest?.(TOOL_INTERACTION_BUBBLE_SELECTOR);
+    if (bubble && elements.chat.contains(bubble)) markInteractedToolBubble(bubble);
+  };
+  elements.chat.addEventListener("toggle", markFromEvent, true);
+  elements.chat.addEventListener("focusin", markFromEvent);
+  elements.chat.addEventListener("scroll", (event) => {
+    const node = event.target instanceof HTMLElement ? event.target : null;
+    if (node?.matches?.(TOOL_INTERACTION_SCROLL_SELECTOR)) {
+      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.dataset.toolScrollMode = maxScrollTop > 0 && maxScrollTop - node.scrollTop <= 24 ? "follow-end" : "position";
+    }
+    markFromEvent(event);
+  }, true);
+}
+
+function toolInteractionBubbleIdentity(bubble) {
+  const role = ["toolCall", "toolExecution", "toolResult", "bashExecution", "workflowStatusStack", "compactionSummary"]
+    .find((candidate) => bubble.classList.contains(candidate)) || "tool";
+  return {
+    role,
+    toolCallId: bubble.dataset.toolCallId || "",
+    itemKey: bubble.dataset.itemKey || "",
+    transcriptMessageKey: bubble.dataset.transcriptMessageKey || "",
+    messageIndex: bubble.dataset.messageIndex || "",
+  };
+}
+
+function captureInteractedToolInteractionState() {
+  const snapshots = [];
+  for (const bubble of [...interactedToolBubbles]) {
+    if (!bubble.isConnected || !elements.chat.contains(bubble)) {
+      interactedToolBubbles.delete(bubble);
+      continue;
+    }
+    snapshots.push({
+      source: bubble,
+      identity: toolInteractionBubbleIdentity(bubble),
+      details: captureToolDetailsInteractionState(bubble),
+    });
+  }
+  return snapshots;
+}
+
+function toolInteractionBubbleForSnapshot(snapshot) {
+  if (snapshot.source?.isConnected && elements.chat.contains(snapshot.source)) return snapshot.source;
+  const { role, toolCallId, itemKey, transcriptMessageKey, messageIndex } = snapshot.identity || {};
+  const selector = `.message.${CSS.escape(role || "tool")}`;
+  for (const bubble of elements.chat.querySelectorAll(selector)) {
+    if (toolCallId && bubble.dataset.toolCallId === toolCallId) return bubble;
+    if (!toolCallId && itemKey && bubble.dataset.itemKey === itemKey) return bubble;
+    if (!toolCallId && !itemKey && transcriptMessageKey && bubble.dataset.transcriptMessageKey === transcriptMessageKey) return bubble;
+    if (!toolCallId && !itemKey && !transcriptMessageKey && messageIndex && bubble.dataset.messageIndex === messageIndex) return bubble;
+  }
+  return null;
+}
+
+function restoreInteractedToolInteractionState(snapshots) {
+  for (const snapshot of snapshots || []) {
+    const bubble = toolInteractionBubbleForSnapshot(snapshot);
+    if (!bubble) continue;
+    ensureToolInteractionDelegation();
+    restoreToolDetailsInteractionState(bubble, snapshot.details);
+    interactedToolBubbles.delete(snapshot.source);
+    markInteractedToolBubble(bubble);
   }
 }
 
@@ -29670,10 +29818,10 @@ function updateLiveToolCard(bubble, message) {
     kind: "reconcile",
     surfaces: [body],
     mutate: () => {
-      const detailsOpenState = captureToolDetailsOpenState(body);
+      const detailsInteractionState = captureToolDetailsInteractionState(body);
       transcriptRenderer.replaceChildren(body);
       renderToolExecution(body, message);
-      restoreToolDetailsOpenState(body, detailsOpenState);
+      restoreToolDetailsInteractionState(body, detailsInteractionState);
       transcriptRenderer.ownSurface(body, { messageKey, kind: "tool-execution", segment: "0" });
       bubble._toolRenderSignature = nextRenderSignature;
     },
@@ -29919,6 +30067,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
 
   if (isCollapsibleOutput) {
     const details = make("details", `message-collapse${compactThinkingAggregate ? " compact-thinking-disclosure" : ""}`);
+    bindToolDetailsScrollMode(body);
     if (compactThinkingAggregate) {
       const defaultExpanded = message.compactThinkingDefaultExpanded === true;
       details.open = compactThinkingDisclosureExpanded(message.compactThinkingKey, defaultExpanded);
@@ -29937,6 +30086,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
     bubble.append(header, body);
   }
   ownTranscriptBubble(bubble, body, message, { itemKey, streaming, transient, segmentId });
+  ensureToolInteractionDelegation();
   if (message.role !== "workflowStatusStack") attachMessageCopyButton(bubble, message, body);
   attachMessageEditRetryButton(bubble, message, messageIndex, { streaming, transient });
   if (!streaming && !transient) renderActionFeedbackControls(bubble, message, messageIndex);
@@ -30605,53 +30755,107 @@ function chatTextSelectionPoint(surface, offset) {
   return last ? { node: last, offset: last.data.length } : { node: surface, offset: 0 };
 }
 
+function chatTextSelectionEndpoint(surface, node, offset) {
+  const textOffset = chatTextSelectionOffset(surface, node, offset);
+  if (textOffset === null) return null;
+  const bubble = surface.closest(".message");
+  const surfaceText = surface.textContent || "";
+  const contextRadius = 48;
+  return {
+    source: surface,
+    itemKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "",
+    surfaceKey: surface.dataset?.transcriptSurfaceKey || "",
+    streaming: bubble?.classList?.contains("streaming") === true || bubble?.classList?.contains("compact-live-output") === true,
+    offset: textOffset,
+    before: surfaceText.slice(Math.max(0, textOffset - contextRadius), textOffset),
+    after: surfaceText.slice(textOffset, textOffset + contextRadius),
+  };
+}
+
 function captureChatTextSelection(expectedSurface = null) {
   const selection = window.getSelection?.();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
   const anchorSurface = chatTextSelectionSurface(selection.anchorNode);
   const focusSurface = chatTextSelectionSurface(selection.focusNode);
-  if (!anchorSurface || anchorSurface !== focusSurface || (expectedSurface && anchorSurface !== expectedSurface)) return null;
-  const anchorOffset = chatTextSelectionOffset(anchorSurface, selection.anchorNode, selection.anchorOffset);
-  const focusOffset = chatTextSelectionOffset(anchorSurface, selection.focusNode, selection.focusOffset);
+  if (!anchorSurface || !focusSurface || (expectedSurface && (anchorSurface !== expectedSurface || focusSurface !== expectedSurface))) return null;
+  const anchor = chatTextSelectionEndpoint(anchorSurface, selection.anchorNode, selection.anchorOffset);
+  const focus = chatTextSelectionEndpoint(focusSurface, selection.focusNode, selection.focusOffset);
   const text = selection.toString();
-  if (anchorOffset === null || focusOffset === null || !text) return null;
-  const bubble = anchorSurface.closest(".message");
+  if (!anchor || !focus || !text) return null;
   return {
     contextKey: chatTextSelectionContextKey(),
-    source: anchorSurface,
-    itemKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "",
-    streaming: bubble?.classList?.contains("streaming") === true || bubble?.classList?.contains("compact-live-output") === true,
-    anchorOffset,
-    focusOffset,
+    source: anchor.source,
+    itemKey: anchor.itemKey === focus.itemKey ? anchor.itemKey : "",
+    streaming: anchor.streaming || focus.streaming,
+    anchorOffset: anchor.offset,
+    focusOffset: focus.offset,
+    anchor,
+    focus,
     text,
   };
 }
 
-function chatTextSelectionMatch(surface, snapshot) {
-  const anchor = chatTextSelectionPoint(surface, snapshot.anchorOffset);
-  const focus = chatTextSelectionPoint(surface, snapshot.focusOffset);
+function chatTextSelectionEndpointPoint(surface, endpoint) {
+  const surfaceText = surface.textContent || "";
+  const contextMatches = (offset) => surfaceText.slice(Math.max(0, offset - endpoint.before.length), offset) === endpoint.before
+    && surfaceText.slice(offset, offset + endpoint.after.length) === endpoint.after;
+  let offset = endpoint.offset;
+  if (!contextMatches(offset)) {
+    const context = `${endpoint.before}${endpoint.after}`;
+    const index = context ? surfaceText.indexOf(context) : -1;
+    if (index < 0 || surfaceText.indexOf(context, index + 1) !== -1) return null;
+    offset = index + endpoint.before.length;
+    if (!contextMatches(offset)) return null;
+  }
+  return chatTextSelectionPoint(surface, offset);
+}
+
+function chatTextSelectionPointPrecedes(anchor, focus) {
+  if (anchor.node === focus.node) return anchor.offset <= focus.offset;
+  return !!(anchor.node.compareDocumentPosition(focus.node) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function chatTextSelectionSpansSurfaces(snapshot) {
+  return snapshot.anchor.itemKey !== snapshot.focus.itemKey || snapshot.anchor.surfaceKey !== snapshot.focus.surfaceKey;
+}
+
+function chatTextSelectionMatch(anchorSurface, focusSurface, snapshot) {
+  const anchor = chatTextSelectionEndpointPoint(anchorSurface, snapshot.anchor);
+  const focus = chatTextSelectionEndpointPoint(focusSurface, snapshot.focus);
+  if (!anchor || !focus) return null;
   const range = document.createRange();
-  const anchorFirst = snapshot.anchorOffset <= snapshot.focusOffset;
+  const anchorFirst = chatTextSelectionPointPrecedes(anchor, focus);
   try {
     range.setStart(anchorFirst ? anchor.node : focus.node, anchorFirst ? anchor.offset : focus.offset);
     range.setEnd(anchorFirst ? focus.node : anchor.node, anchorFirst ? focus.offset : anchor.offset);
   } catch {
     return null;
   }
-  return range.toString() === snapshot.text ? { anchor, focus, range } : null;
+  const text = range.toString();
+  return text && (chatTextSelectionSpansSurfaces(snapshot) || text === snapshot.text) ? { anchor, focus, range } : null;
 }
 
-function chatTextSelectionCandidates(snapshot) {
+function chatTextSelectionCandidates(snapshot, endpointName) {
+  const endpoint = snapshot?.[endpointName];
+  if (!endpoint) return [];
   const candidates = [];
   const add = (surface) => {
     if (surface && elements.chat.contains(surface) && !candidates.includes(surface)) candidates.push(surface);
   };
-  add(snapshot.source?.isConnected ? snapshot.source : null);
-  if (snapshot.itemKey) {
-    const bubble = elements.chat.querySelector(`.message[data-item-key="${CSS.escape(snapshot.itemKey)}"]`);
-    for (const surface of bubble?.querySelectorAll?.("[data-transcript-surface], .markdown-body, .compact-live-text") || []) add(surface);
+  add(endpoint.source?.isConnected ? endpoint.source : null);
+  if (endpoint.surfaceKey) {
+    for (const surface of elements.chat.querySelectorAll("[data-transcript-surface-key]")) {
+      if (surface.dataset.transcriptSurfaceKey === endpoint.surfaceKey) add(surface);
+    }
   }
-  if (snapshot.streaming) {
+  if (endpoint.itemKey) {
+    for (const bubble of elements.chat.querySelectorAll(".message[data-item-key], .message[data-transcript-message-key]")) {
+      const key = bubble.dataset.transcriptMessageKey || bubble.dataset.itemKey || "";
+      if (key !== endpoint.itemKey) continue;
+      for (const surface of bubble.querySelectorAll("[data-transcript-surface], .markdown-body, .compact-live-text")) add(surface);
+    }
+  }
+  if (endpoint.streaming) {
     const liveReplacement = [...elements.chat.querySelectorAll(".message.assistant [data-transcript-surface], .message.assistant .markdown-body, .message.assistant .compact-live-text")].reverse();
     for (const surface of liveReplacement) add(surface);
   }
@@ -30665,23 +30869,27 @@ function restoreChatTextSelection(snapshot) {
   const currentText = selection.rangeCount && !selection.isCollapsed ? selection.toString() : "";
   const currentAnchorSurface = chatTextSelectionSurface(selection.anchorNode);
   const currentFocusSurface = chatTextSelectionSurface(selection.focusNode);
-  const candidates = chatTextSelectionCandidates(snapshot);
-  if (currentText === snapshot.text && currentAnchorSurface === currentFocusSurface && candidates.includes(currentAnchorSurface)) return;
+  const anchorCandidates = chatTextSelectionCandidates(snapshot, "anchor");
+  const focusCandidates = chatTextSelectionCandidates(snapshot, "focus");
+  const currentEndpointsMatch = anchorCandidates.includes(currentAnchorSurface) && focusCandidates.includes(currentFocusSurface);
+  if (currentEndpointsMatch && (chatTextSelectionSpansSurfaces(snapshot) ? !!currentText : currentText === snapshot.text)) return;
   if (currentText && currentAnchorSurface && currentFocusSurface) return;
-  for (const surface of candidates) {
-    const match = chatTextSelectionMatch(surface, snapshot);
-    if (!match) continue;
-    try {
-      selection.removeAllRanges();
-      if (typeof selection.setBaseAndExtent === "function") {
-        selection.setBaseAndExtent(match.anchor.node, match.anchor.offset, match.focus.node, match.focus.offset);
-      } else {
-        selection.addRange(match.range);
+  for (const anchorSurface of anchorCandidates) {
+    for (const focusSurface of focusCandidates) {
+      const match = chatTextSelectionMatch(anchorSurface, focusSurface, snapshot);
+      if (!match) continue;
+      try {
+        selection.removeAllRanges();
+        if (typeof selection.setBaseAndExtent === "function") {
+          selection.setBaseAndExtent(match.anchor.node, match.anchor.offset, match.focus.node, match.focus.offset);
+        } else {
+          selection.addRange(match.range);
+        }
+      } catch {
+        // A stale DOM range should not interfere with the authoritative transcript render.
       }
-    } catch {
-      // A stale DOM range should not interfere with the authoritative transcript render.
+      return;
     }
-    return;
   }
 }
 
@@ -30703,6 +30911,7 @@ function pruneDisconnectedLiveToolCards() {
 
 function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}) {
   const selectionSnapshot = captureChatTextSelection();
+  const toolInteractionSnapshots = captureInteractedToolInteractionState();
   const shouldFollow = !preserveScroll && (autoFollowChat || isChatNearBottom());
   const previousScrollTop = elements.chat.scrollTop;
   if (!autoFollowChat) chatPausedScrollRestoreUntil = performance.now() + CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
@@ -30771,7 +30980,7 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
       else if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = workspaceDashboardCollapsed;
       renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
       rememberActionEntries(transcriptItems);
-      applyToolOutputExpansionToDom();
+      restoreInteractedToolInteractionState(toolInteractionSnapshots);
       runIndicatorRemovalDeferred = false;
       renderRunIndicator({ scroll: false });
       updateStickyUserPromptButton();

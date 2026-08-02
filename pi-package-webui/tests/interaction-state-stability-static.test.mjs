@@ -58,6 +58,13 @@ const captureChatText = functionBody("captureChatTextSelection");
 const matchChatText = functionBody("chatTextSelectionMatch");
 const restoreChatText = functionBody("restoreChatTextSelection");
 const renderAllMessages = functionBody("renderAllMessages");
+const bindToolDetailsScrollMode = functionBody("bindToolDetailsScrollMode");
+const markInteractedToolBubble = functionBody("markInteractedToolBubble");
+const ensureToolInteractionDelegation = functionBody("ensureToolInteractionDelegation");
+const captureInteractedToolInteraction = functionBody("captureInteractedToolInteractionState");
+const captureToolDetailsInteraction = functionBody("captureToolDetailsInteractionState");
+const restoreToolDetailsInteraction = functionBody("restoreToolDetailsInteractionState");
+const updateLiveToolCard = functionBody("updateLiveToolCard");
 const renderStreamingMarkdown = functionBody("renderStreamingMarkdown");
 const refreshMessages = functionBody("refreshMessages");
 const captureMobileSurface = functionBody("captureMobileSurfaceRenderFocus");
@@ -121,18 +128,28 @@ assert.match(app, /dataset\.mobileContinuityKey = "context:paste-text"[\s\S]*dat
 assert.match(captureMobileSurface, /mobileDraftAuthority === "dom"[\s\S]*selectionDirection:[\s\S]*scrollTop:[\s\S]*scrollLeft:/, "mobile DOM drafts must capture selection and scroll state");
 assert.match(restoreMobileSurface, /target\.dataset\.mobileDraftAuthority === "dom"[\s\S]*target\.value = snapshot\.value[\s\S]*setSelectionRange[\s\S]*target\.focus\(\{ preventScroll: true \}\)/, "mobile DOM drafts must restore value, selection, scroll, and focus");
 
-assert.match(captureChatText, /selection\.isCollapsed[\s\S]*anchorSurface !== focusSurface[\s\S]*chatTextSelectionContextKey\(\)[\s\S]*itemKey:[\s\S]*streaming:[\s\S]*anchorOffset,[\s\S]*focusOffset,[\s\S]*text,/, "main-output selection capture must require one semantic text surface and retain context, identity, direction, and exact text");
-assert.match(matchChatText, /range\.toString\(\) === snapshot\.text/, "main-output selection restoration must reject offsets whose rendered text changed");
-assert.match(restoreChatText, /snapshot\.contextKey !== chatTextSelectionContextKey\(\)[\s\S]*chatTextSelectionCandidates\(snapshot\)[\s\S]*candidates\.includes\(currentAnchorSurface\)[\s\S]*currentText && currentAnchorSurface && currentFocusSurface[\s\S]*setBaseAndExtent/, "main-output selection restoration must reject stale contexts and meaningful newer selections while preserving anchor direction");
+assert.match(captureChatText, /selection\.isCollapsed[\s\S]*!anchorSurface \|\| !focusSurface[\s\S]*chatTextSelectionEndpoint\(anchorSurface[\s\S]*chatTextSelectionEndpoint\(focusSurface[\s\S]*chatTextSelectionContextKey\(\)[\s\S]*anchor,[\s\S]*focus,[\s\S]*text,/, "main-output selection capture must retain distinct semantic anchor/focus endpoints, context, direction, and exact text");
+assert.match(matchChatText, /chatTextSelectionEndpointPoint\(anchorSurface, snapshot\.anchor\)[\s\S]*chatTextSelectionEndpointPoint\(focusSurface, snapshot\.focus\)[\s\S]*chatTextSelectionSpansSurfaces\(snapshot\) \|\| text === snapshot\.text/, "main-output selection restoration must validate exact semantic endpoints while allowing harmless intermediate UI text changes across surfaces");
+assert.match(restoreChatText, /snapshot\.contextKey !== chatTextSelectionContextKey\(\)[\s\S]*chatTextSelectionCandidates\(snapshot, "anchor"\)[\s\S]*chatTextSelectionCandidates\(snapshot, "focus"\)[\s\S]*anchorCandidates\.includes\(currentAnchorSurface\)[\s\S]*focusCandidates\.includes\(currentFocusSurface\)[\s\S]*currentText && currentAnchorSurface && currentFocusSurface[\s\S]*setBaseAndExtent/, "main-output selection restoration must reject stale contexts and meaningful newer selections while preserving cross-surface anchor direction");
 assert.match(renderStreamingMarkdown, /captureChatTextSelection\(block\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "streaming Markdown tail replacement must preserve a still-valid browser Range");
 assert.match(renderAllMessages, /captureChatTextSelection\(\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "authoritative transcript rerenders must preserve a still-valid main-output Range");
+assert.doesNotMatch(renderAllMessages, /applyToolOutputExpansionToDom\(|captureTranscriptToolInteractionState\(|restoreTranscriptToolInteractionState\(/, "routine transcript rerenders must not scan or overwrite every historical tool disclosure");
+assert.match(app, /const INTERACTED_TOOL_BUBBLE_LIMIT = 16;/, "interacted tool continuity must stay tightly bounded");
+assert.match(markInteractedToolBubble, /interactedToolBubbles\.delete\(bubble\)[\s\S]*interactedToolBubbles\.add\(bubble\)[\s\S]*size > INTERACTED_TOOL_BUBBLE_LIMIT/, "interacted tool continuity must use a bounded recency set");
+assert.match(ensureToolInteractionDelegation, /toolInteractionDelegationBound[\s\S]*elements\.chat\.addEventListener\("toggle"[\s\S]*elements\.chat\.addEventListener\("focusin"[\s\S]*elements\.chat\.addEventListener\("scroll"[\s\S]*scrollHeight - node\.clientHeight/, "tool interaction tracking must use one delegated listener set and measure layout only on actual scroll events");
+assert.match(captureInteractedToolInteraction, /for \(const bubble of \[\.\.\.interactedToolBubbles\]\)[\s\S]*!bubble\.isConnected[\s\S]*captureToolDetailsInteractionState\(bubble\)/, "transcript reconciliation must inspect only bounded, previously interacted tool cards");
+assert.match(renderAllMessages, /captureInteractedToolInteractionState\(\)[\s\S]*restoreInteractedToolInteractionState\(toolInteractionSnapshots\)/, "routine transcript renders must restore only explicitly interacted tool cards");
+assert.match(bindToolDetailsScrollMode, /dataset\.toolScrollMode \|\|= "position"[\s\S]*ensureToolInteractionDelegation\(\)/, "tool scroll surfaces must use delegated reader-mode tracking rather than per-node listeners");
+assert.match(captureToolDetailsInteraction, /if \(details\.open\)[\s\S]*mode: node\.dataset\.toolScrollMode \|\| "position"[\s\S]*scrollTop:[\s\S]*scrollLeft:[\s\S]*open: details\.open[\s\S]*summaryFocused:/, "one live tool snapshot must retain open state, summary focus, reader mode, and both scroll axes without reading layout");
+assert.doesNotMatch(captureToolDetailsInteraction, /scrollHeight|clientHeight|getBoundingClientRect/, "live tool state capture must avoid synchronous layout reads");
+assert.match(restoreToolDetailsInteraction, /details\.open = snapshot\.open[\s\S]*focus\(\{ preventScroll: true \}\)[\s\S]*requestAnimationFrame[\s\S]*scrollSnapshot\.mode === "follow-end"[\s\S]*node\.scrollLeft = Math\.min/, "tool disclosure restoration must preserve keyboard focus and bounded reader scroll after layout");
+assert.match(updateLiveToolCard, /captureToolDetailsInteractionState\(body\)[\s\S]*transcriptRenderer\.replaceChildren\(body\)[\s\S]*restoreToolDetailsInteractionState\(body, detailsInteractionState\)/, "live tool updates must restore only their local disclosure interaction state around body replacement");
 assert.match(refreshMessages, /const selectionSnapshot = captureChatTextSelection\(\);[\s\S]*adoptedOutput = adoptLiveAssistantBubble\(latestMessages\)[\s\S]*resetStreamBubble\(\{ preserveCompact: adoptedOutput === "compact" \}\)[\s\S]*restoreStreamRenderAfterChatRebuild\(\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "stream settlement must adopt matching normal or compact output before reset and retain exact fallback selection");
 
 // --- Transcript mutation coordinator contracts (keyed DOM ownership) ---
 
 const renderThinkingMarkdown = functionBody("renderThinkingMarkdown");
 const flushCompactLiveOutput = functionBody("flushCompactLiveOutput");
-const updateLiveToolCard = functionBody("updateLiveToolCard");
 const renderLiveToolRun = functionBody("renderLiveToolRun");
 const renderMermaidDiagram = functionBody("renderMermaidDiagram");
 const renderStreamingToolCallCard = functionBody("renderStreamingToolCallCard");

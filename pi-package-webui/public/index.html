@@ -1481,6 +1481,8 @@
         const copyStatus = document.querySelector("#webuiBootFailureCopyStatus");
         const appSource = loader?.dataset?.appSrc || "/app.js";
         const bootStartedAt = new Date();
+        const DIAGNOSTIC_REQUEST_TIMEOUT_MS = 3_000;
+        const JAVASCRIPT_CONTENT_TYPES = ["text/javascript", "application/javascript"];
         let bootSettled = false;
         let bootFailed = false;
         let watchdog = null;
@@ -1507,29 +1509,64 @@
           return boundedSafeText(error);
         }
 
-        async function responseSummary(url, label, { parseHealth = false, readSource = false } = {}) {
+        async function responseSummary(url, label, { parseHealth = false, readSource = false, expectedTypes = [] } = {}) {
           const safeUrl = sanitizedUrl(url);
+          const controller = typeof AbortController === "function" ? new AbortController() : null;
+          let timedOut = false;
+          let timeoutId = null;
           try {
-            const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
-            const type = String(response.headers?.get?.("content-type") || "unknown").split(";", 1)[0];
-            let suffix = "";
-            let source = "";
-            if (parseHealth && response.ok) {
-              const data = await response.clone().json().catch(() => null);
-              const fields = [data?.ok === true ? "ok=true" : "", data?.webuiVersion ? `webuiVersion=${boundedSafeText(data.webuiVersion, 80)}` : ""].filter(Boolean);
-              if (fields.length) suffix = ` (${fields.join(", ")})`;
-            }
-            if (readSource && response.ok) source = await response.text();
-            else response.body?.cancel?.().catch?.(() => {});
-            return { ok: response.ok, status: response.status, type, safeUrl, label, line: `- ${label}: HTTP ${response.status} ${type}${suffix} — ${safeUrl}`, source };
+            const request = (async () => {
+              const response = await fetch(url, { cache: "no-store", credentials: "same-origin", ...(controller ? { signal: controller.signal } : {}) });
+              const type = String(response.headers?.get?.("content-type") || "unknown").split(";", 1)[0].trim().toLowerCase();
+              const contentTypeMismatch = response.ok && expectedTypes.length > 0 && !expectedTypes.includes(type);
+              let suffix = contentTypeMismatch ? ` (expected ${expectedTypes.join(" or ")})` : "";
+              let source = "";
+              let invalidJson = false;
+              if (parseHealth && response.ok) {
+                const data = await response.clone().json().catch(() => null);
+                invalidJson = !data || typeof data !== "object";
+                const fields = [data?.ok === true ? "ok=true" : "", data?.webuiVersion ? `webuiVersion=${boundedSafeText(data.webuiVersion, 80)}` : ""].filter(Boolean);
+                if (fields.length) suffix += ` (${fields.join(", ")})`;
+                if (invalidJson) suffix += " (invalid JSON)";
+              }
+              if (readSource && response.ok) source = await response.text();
+              else response.body?.cancel?.().catch?.(() => {});
+              return {
+                ok: response.ok && !contentTypeMismatch && !invalidJson,
+                status: response.status,
+                type,
+                safeUrl,
+                label,
+                contentTypeMismatch,
+                invalidJson,
+                timedOut: false,
+                line: `- ${label}: HTTP ${response.status} ${type}${suffix} — ${safeUrl}`,
+                source,
+              };
+            })();
+            const timeout = new Promise((_, reject) => {
+              timeoutId = setTimeout(() => {
+                timedOut = true;
+                controller?.abort();
+                const timeoutError = new Error(`Diagnostic request timed out after ${DIAGNOSTIC_REQUEST_TIMEOUT_MS / 1_000} seconds`);
+                timeoutError.name = "DiagnosticTimeoutError";
+                reject(timeoutError);
+              }, DIAGNOSTIC_REQUEST_TIMEOUT_MS);
+            });
+            return await Promise.race([request, timeout]);
           } catch (error) {
-            return { ok: false, status: null, type: "unknown", safeUrl, label, line: `- ${label}: request failed (${boundedSafeText(errorText(error), 240)}) — ${safeUrl}`, source: "" };
+            const detail = timedOut
+              ? `diagnostic timed out after ${DIAGNOSTIC_REQUEST_TIMEOUT_MS / 1_000} seconds`
+              : `request failed (${boundedSafeText(errorText(error), 240)})`;
+            return { ok: false, status: null, type: "unknown", safeUrl, label, timedOut, contentTypeMismatch: false, invalidJson: false, line: `- ${label}: ${detail} — ${safeUrl}`, source: "" };
+          } finally {
+            clearTimeout(timeoutId);
           }
         }
 
         async function startupAssetReport() {
           const appUrl = new URL(appSource, window.location.href);
-          const app = await responseSummary(appUrl.href, "entry module", { readSource: true });
+          const app = await responseSummary(appUrl.href, "entry module", { readSource: true, expectedTypes: JAVASCRIPT_CONTENT_TYPES });
           if (!app.source) return { probes: [app], lines: [app.line], failures: app.ok ? [] : [app] };
 
           const imported = [];
@@ -1542,15 +1579,30 @@
             if (imported.length >= 24) break;
           }
 
-          const importedProbes = await Promise.all(imported.map((item) => responseSummary(item.url, "imported module")));
+          const importedProbes = await Promise.all(imported.map((item) => responseSummary(item.url, "imported module", { expectedTypes: JAVASCRIPT_CONTENT_TYPES })));
           const probes = [app, ...importedProbes];
           return { probes, lines: probes.map((probe) => probe.line), failures: probes.filter((probe) => !probe.ok) };
         }
 
-        function startupAssessment(health, assets, error) {
+        async function webManifestReport() {
+          const probe = await responseSummary(new URL("/manifest.webmanifest", window.location.href).href, "optional web manifest", {
+            readSource: true,
+            expectedTypes: ["application/manifest+json", "application/json"],
+          });
+          if (!probe.ok || !probe.source) return { ...probe, validJson: false };
+          try {
+            JSON.parse(probe.source);
+            return { ...probe, validJson: true };
+          } catch (error) {
+            return { ...probe, validJson: false, line: `${probe.line} (invalid JSON: ${boundedSafeText(errorText(error), 160)})` };
+          }
+        }
+
+        function startupAssessment(health, assets, reason, error) {
           const missingImports = assets.failures.filter((probe) => probe.label === "imported module" && probe.status === 404);
           const firstFailure = assets.failures[0] || (!health.ok ? health : null);
           const originalError = boundedSafeText(errorText(error));
+          const failureText = `${boundedSafeText(reason)}\n${originalError}`;
           if (missingImports.length) {
             const paths = missingImports.map((probe) => new URL(probe.safeUrl).pathname);
             return {
@@ -1562,8 +1614,25 @@
             };
           }
           if (firstFailure) {
+            const path = new URL(firstFailure.safeUrl).pathname;
+            if (firstFailure.timedOut) {
+              return {
+                summary: `A diagnostic check timed out while probing ${path}.`,
+                likelyCause: firstFailure.label === "backend health"
+                  ? "The browser shell loaded, but the backend or browser network service did not answer the bounded health check."
+                  : "The startup asset request remained pending; check the backend, service worker, or browser network state.",
+                failingUrls: [firstFailure.safeUrl],
+              };
+            }
+            if (firstFailure.contentTypeMismatch) {
+              return {
+                summary: `Wrong content type for startup asset ${path}: ${firstFailure.type}.`,
+                likelyCause: "The URL responded, but it did not serve JavaScript with an executable MIME type; a fallback HTML/error response or stale server route is likely.",
+                failingUrls: [firstFailure.safeUrl],
+              };
+            }
             return {
-              summary: `Startup request failed: ${new URL(firstFailure.safeUrl).pathname}${firstFailure.status ? ` (HTTP ${firstFailure.status})` : ""}.`,
+              summary: `Startup request failed: ${path}${firstFailure.status ? ` (HTTP ${firstFailure.status})` : ""}.`,
               likelyCause: firstFailure.label === "backend health"
                 ? "The browser shell loaded, but the WebUI backend is unavailable or unreachable."
                 : "A startup asset is unavailable, blocked, or served with an unsuccessful response.",
@@ -1572,6 +1641,20 @@
           }
           if (/critical stylesheet/i.test(originalError)) {
             return { summary: "The critical stylesheet failed to load.", likelyCause: "The stylesheet request failed even though the startup-module probes succeeded.", failingUrls: [] };
+          }
+          if (/\bSyntaxError\b|unexpected token|unexpected identifier|already been declared|invalid or unexpected token|missing[ )\]}]/i.test(failureText)) {
+            return {
+              summary: `JavaScript failed during startup: ${boundedSafeText(originalError, 180)}.`,
+              likelyCause: "The entry module is reachable, but the browser could not parse or evaluate it. During development this commonly means a source file was briefly incomplete while being edited; otherwise check for stale mixed-version assets.",
+              failingUrls: [],
+            };
+          }
+          if (/watchdog timed out|startup did not finish/i.test(failureText)) {
+            return {
+              summary: "WebUI startup stalled even though the current HTTP checks succeeded.",
+              likelyCause: "The entry-module import, stylesheet, or top-level module evaluation remained pending. During development, a file changing while the browser loads it can cause a transient mixed-version startup.",
+              failingUrls: [],
+            };
           }
           return {
             summary: "All probed startup URLs currently respond successfully, but module evaluation still failed.",
@@ -1582,9 +1665,16 @@
 
         async function troubleshootingReport(reason, error) {
           const pageUrl = sanitizedUrl(window.location.href);
-          const health = await responseSummary(new URL("/api/health", window.location.href).href, "backend health", { parseHealth: true });
-          const assets = await startupAssetReport();
-          const assessment = startupAssessment(health, assets, error);
+          const [health, assets, manifest] = await Promise.all([
+            responseSummary(new URL("/api/health", window.location.href).href, "backend health", { parseHealth: true, expectedTypes: ["application/json"] }),
+            startupAssetReport(),
+            webManifestReport(),
+          ]);
+          const assessment = startupAssessment(health, assets, reason, error);
+          const manifestHasIssue = !manifest.ok || !manifest.validJson;
+          const manifestImpact = manifestHasIssue
+            ? "The web manifest has a separate problem that can produce DevTools console errors, but it does not execute or block app.js startup."
+            : "The optional web manifest is valid and is not the startup blocker.";
           const failedProbes = [...(!health.ok ? [health] : []), ...assets.failures];
           const failingChecks = failedProbes.length
             ? failedProbes.map((probe) => probe.line)
@@ -1617,14 +1707,20 @@
             health.line,
             ...assets.lines,
             "",
+            "Related browser checks",
+            "----------------------",
+            manifest.line,
+            `- manifest impact: ${manifestImpact}`,
+            "",
             "Suggested troubleshooting",
             "-------------------------",
             "1. In Pi, run: /webui-status detailed",
             `2. Check the backend: curl -i ${new URL("/api/health", pageUrl).href}`,
             failingAssetCommand,
             "4. For an imported-module 404, synchronize the WebUI static allowlist and PWA app shell with app.js imports.",
-            "5. After correcting files, run /webui-start again to restart the server and restore tabs.",
-            "6. Share this complete report with your troubleshooting assistant.",
+            "5. For a JavaScript syntax/evaluation error during development, finish or revert the incomplete edit and run the package syntax check before reloading.",
+            "6. After correcting files, run /webui-start again to restart the server and restore tabs.",
+            "7. Share this complete report with your troubleshooting assistant.",
           ].join("\n");
           return { text, summary: assessment.summary };
         }
