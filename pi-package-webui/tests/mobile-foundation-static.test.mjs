@@ -58,8 +58,10 @@ assert.match(server, /requestId was already used for a different prompt/, "reque
 assert.match(server, /runId: null/, "tab activity must expose an opaque parent-run field");
 assert.match(server, /activity\.runId = randomUUID\(\)/, "parent-run IDs must be server-issued opaque values");
 assert.match(server, /function markTabFailed\([\s\S]*?activity\.status = "failed"[\s\S]*?activity\.completionSerial/, "failed parent turns must be represented distinctly from successful completion");
-assert.match(server, /if \(!accepted && client\?\.res\) evictSlowSseClient\(client\)/, "a slow SSE client must be evicted at backpressure instead of queued indefinitely");
+assert.match(server, /SSE_BACKPRESSURE_MAX_PENDING_BYTES = 512 \* 1024/, "SSE backpressure buffering must remain explicitly bounded");
+assert.match(server, /res\.once\("drain", \(\) => flushSseClient\(client\)\)/, "healthy SSE clients must resume after transient write backpressure");
 assert.match(server, /client\.tab\?\.sseClients\?\.delete\(client\)/, "eviction must remove only the slow client");
+assert.match(server, /client\.res\?\.end\(\)/, "slow-client eviction must finish chunked SSE responses gracefully");
 assert.match(css, /\.terminal-tabs-toggle-button \{[\s\S]*?min-height: 44px/, "phone tab targets must meet the 44px floor");
 assert.match(css, /\.composer-attach-button \{[\s\S]*?width: 44px;[\s\S]*?min-height: 44px/, "phone attachment target must meet the 44px floor");
 assert.match(css, /\.composer-row button \{\n    width: 100%;\n    min-height: 44px/, "phone composer controls must meet the 44px floor");

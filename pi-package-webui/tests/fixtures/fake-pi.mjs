@@ -452,10 +452,12 @@ function handleLargePayloadPrompt(command, base) {
 }
 
 function handleSseFloodPrompt(command, base) {
-  if (!sseFloodEnabled || String(command.message || "").trim() !== "fixture sse flood") return false;
+  const message = String(command.message || "").trim();
+  if (!sseFloodEnabled || !["fixture sse flood", "fixture sse stall flood"].includes(message)) return false;
   respond({ ...base, data: { output: "fake SSE flood accepted" } });
   const payload = "s".repeat(8192);
-  for (let index = 0; index < 256; index += 1) {
+  const eventCount = message === "fixture sse stall flood" ? 4096 : 256;
+  for (let index = 0; index < eventCount; index += 1) {
     emitEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${index}:${payload}` } });
   }
   return true;

@@ -1274,33 +1274,104 @@ function sendRemoteAuthRequired(req, res, url) {
   sendJson(res, 401, { ok: false, error: "Remote PIN required", remoteAuthRequired: true }, { "www-authenticate": "PiRemotePin" });
 }
 
-// Browser SSE does not have a replay queue. A client that stops draining is
-// therefore removed on the first backpressure signal instead of accumulating
-// an unbounded queue or selectively dropping/reordering semantic events.
-// Reconnection remains authoritative through the existing tab/state refresh.
+// A false ServerResponse.write() result means the frame was accepted but the
+// writable buffer crossed its high-water mark. Treating that as a dead client
+// disconnects healthy Chromium EventSource streams as soon as a frame exceeds
+// roughly 16 KiB. Queue subsequent frames until "drain", with strict bounds so
+// a client that truly stops reading cannot grow server memory indefinitely.
+const SSE_BACKPRESSURE_MAX_PENDING_BYTES = 512 * 1024;
+const SSE_BACKPRESSURE_MAX_PENDING_FRAMES = 256;
+const SSE_BACKPRESSURE_TIMEOUT_MS = 10_000;
+
+function clearSseBackpressureTimer(client) {
+  if (!client?.backpressureTimer) return;
+  clearTimeout(client.backpressureTimer);
+  client.backpressureTimer = undefined;
+}
+
 function evictSlowSseClient(client) {
   if (!client || client.evicted) return;
   client.evicted = true;
+  client.backpressured = false;
+  clearSseBackpressureTimer(client);
+  client.pendingFrames = [];
+  client.pendingFrameBytes = 0;
   client.tab?.sseClients?.delete(client);
   try {
-    client.res?.destroy();
+    // Complete the chunked response so Chromium can reconnect without
+    // ERR_INCOMPLETE_CHUNKED_ENCODING.
+    client.res?.end();
   } catch {
     // A closed browser socket needs no further cleanup.
   }
 }
 
-function sendSse(client, event) {
+function scheduleSseBackpressureTimeout(client) {
+  clearSseBackpressureTimer(client);
+  client.backpressureTimer = setTimeout(() => evictSlowSseClient(client), SSE_BACKPRESSURE_TIMEOUT_MS);
+  client.backpressureTimer.unref?.();
+}
+
+function flushSseClient(client) {
+  const res = client?.res;
+  if (!client || client.evicted) return;
+  if (!res || res.destroyed || res.writableEnded) {
+    evictSlowSseClient(client);
+    return;
+  }
+  client.backpressured = false;
+  clearSseBackpressureTimer(client);
+  while (client.pendingFrames?.length) {
+    const frame = client.pendingFrames.shift();
+    client.pendingFrameBytes -= Buffer.byteLength(frame);
+    try {
+      if (!res.write(frame)) {
+        client.backpressured = true;
+        scheduleSseBackpressureTimeout(client);
+        res.once("drain", () => flushSseClient(client));
+        return;
+      }
+    } catch {
+      evictSlowSseClient(client);
+      return;
+    }
+  }
+  client.pendingFrameBytes = 0;
+}
+
+function writeSseFrame(client, frame) {
   const res = client?.res || client;
-  const payload = encodeBrowserSseEvent(event, { outputMode: client?.activeMode || OUTPUT_MODE_NORMAL });
-  if (payload === undefined || !res || res.destroyed || client?.evicted) return false;
+  if (!res || res.destroyed || res.writableEnded || client?.evicted) return false;
+  if (client?.res && client.backpressured) {
+    const frameBytes = Buffer.byteLength(frame);
+    const pendingFrames = client.pendingFrames || (client.pendingFrames = []);
+    const pendingBytes = Number(client.pendingFrameBytes) || 0;
+    if (pendingFrames.length >= SSE_BACKPRESSURE_MAX_PENDING_FRAMES || pendingBytes + frameBytes > SSE_BACKPRESSURE_MAX_PENDING_BYTES) {
+      evictSlowSseClient(client);
+      return false;
+    }
+    pendingFrames.push(frame);
+    client.pendingFrameBytes = pendingBytes + frameBytes;
+    return true;
+  }
   try {
-    const accepted = res.write(`data: ${payload}\n\n`);
-    if (!accepted && client?.res) evictSlowSseClient(client);
-    return accepted;
+    if (!res.write(frame) && client?.res) {
+      client.backpressured = true;
+      scheduleSseBackpressureTimeout(client);
+      res.once("drain", () => flushSseClient(client));
+    }
+    // write() returning false still accepted this frame.
+    return true;
   } catch {
     if (client?.res) evictSlowSseClient(client);
     return false;
   }
+}
+
+function sendSse(client, event) {
+  const payload = encodeBrowserSseEvent(event, { outputMode: client?.activeMode || OUTPUT_MODE_NORMAL });
+  if (payload === undefined) return false;
+  return writeSseFrame(client, `data: ${payload}\n\n`);
 }
 
 function rpcSuccess(command, data = {}) {
@@ -14283,16 +14354,10 @@ const server = createServer(async (req, res) => {
       replayExtensionStatuses(tab, client);
       replayExtensionWidgets(tab, client);
       replayPendingExtensionUiRequests(tab, client);
-      const keepAlive = setInterval(() => {
-        try {
-          if (!res.write(": keepalive\n\n")) evictSlowSseClient(client);
-        } catch {
-          evictSlowSseClient(client);
-        }
-      }, 15000);
+      const keepAlive = setInterval(() => writeSseFrame(client, ": keepalive\n\n"), 15000);
       req.on("close", () => {
         clearInterval(keepAlive);
-        tab.sseClients.delete(client);
+        evictSlowSseClient(client);
       });
       return;
     }

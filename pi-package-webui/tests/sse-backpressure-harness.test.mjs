@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -63,31 +63,70 @@ try {
   const tabId = tabs.body?.data?.tabs?.[0]?.id;
   assert.ok(tabId, "fixture server should expose an initial tab");
 
-  // Deliberately never consume this body. The fixture emits >2MiB of semantic
-  // events, exercising Node's write-backpressure path rather than a synthetic
-  // mocked response object.
-  const stalled = await fetch(`http://127.0.0.1:${port}/api/events?tab=${encodeURIComponent(tabId)}`, { signal: AbortSignal.timeout(15_000) });
-  assert.equal(stalled.status, 200);
-  const flood = await json("/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture sse flood" } });
-  assert.equal(flood.status, 200, "flood fixture should dispatch through the real server");
+  // Undici continues draining the transport even when application code has not
+  // consumed response.body. A >2MiB burst must therefore survive transient
+  // ServerResponse backpressure instead of being mistaken for a dead client.
+  const flowing = await fetch(`http://127.0.0.1:${port}/api/events?tab=${encodeURIComponent(tabId)}`, { signal: AbortSignal.timeout(15_000) });
+  assert.equal(flowing.status, 200);
+  const flowingFlood = await json("/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture sse flood" } });
+  assert.equal(flowingFlood.status, 200, "flood fixture should dispatch through the real server");
+  await delay(500);
+  const flowingTabs = await json("/api/tabs");
+  assert.equal(flowingTabs.body?.data?.tabs?.find((tab) => tab.id === tabId)?.clientCount, 1, "a transport-draining SSE client must survive transient backpressure");
+  await flowing.body?.cancel();
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const refreshed = await json("/api/tabs");
+    if (refreshed.body?.data?.tabs?.find((tab) => tab.id === tabId)?.clientCount === 0) break;
+    await delay(50);
+  }
+
+  // A paused raw socket does not drain the HTTP transport. It must be evicted
+  // within the bounded queue/timeout policy, but with a complete final chunk so
+  // Chromium does not surface ERR_INCOMPLETE_CHUNKED_ENCODING on reconnection.
+  const stalled = connect({ host: "127.0.0.1", port });
+  let stalledResponse = "";
+  stalled.on("data", (chunk) => { stalledResponse += String(chunk); });
+  stalled.pause();
+  await new Promise((resolve, reject) => {
+    stalled.once("connect", resolve);
+    stalled.once("error", reject);
+  });
+  stalled.write(`GET /api/events?tab=${encodeURIComponent(tabId)} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: keep-alive\r\n\r\n`);
+
+  let connected = false;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const refreshed = await json("/api/tabs");
+    if (refreshed.body?.data?.tabs?.find((tab) => tab.id === tabId)?.clientCount === 1) {
+      connected = true;
+      break;
+    }
+    await delay(50);
+  }
+  assert.equal(connected, true, "the paused raw SSE client should connect before the flood");
+  const stalledFlood = await json("/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture sse stall flood" } });
+  assert.equal(stalledFlood.status, 200, "stalled-client flood should dispatch through the real server");
 
   let evicted = false;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
     const refreshed = await json("/api/tabs");
     const clientCount = refreshed.body?.data?.tabs?.find((tab) => tab.id === tabId)?.clientCount;
     if (clientCount === 0) {
       evicted = true;
       break;
     }
-    await delay(100);
+    await delay(50);
   }
-  assert.equal(evicted, true, "the stalled SSE client must be evicted instead of accumulating an unbounded semantic-event queue");
+  assert.equal(evicted, true, "a transport-stalled SSE client must be evicted instead of accumulating an unbounded semantic-event queue");
+  stalled.resume();
+  for (let attempt = 0; attempt < 100 && !stalledResponse.includes("\r\n0\r\n\r\n"); attempt += 1) await delay(50);
+  assert.match(stalledResponse, /\r\n0\r\n\r\n/, "backpressure eviction must complete the chunked SSE response without truncating it");
+  stalled.destroy();
 
   const reconnected = await fetch(`http://127.0.0.1:${port}/api/events?tab=${encodeURIComponent(tabId)}`, { signal: AbortSignal.timeout(5_000) });
   const firstFrame = await reconnected.body.getReader().read();
   assert.equal(firstFrame.done, false, "a client can reconnect after slow-client eviction");
   assert.match(new TextDecoder().decode(firstFrame.value), /webui_connected/, "reconnection should receive an authoritative connection snapshot");
-  await stalled.body?.cancel().catch(() => {});
   await reconnected.body?.cancel().catch(() => {});
 } finally {
   child.kill("SIGTERM");
