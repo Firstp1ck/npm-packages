@@ -1244,6 +1244,7 @@ body.embedded-split .side-panel-backdrop {
 }
 .side-panel-section + .side-panel-section { margin-top: 0.78rem; }
 .side-panel-section h2 {
+  position: relative;
   margin: 0;
   font-size: inherit;
 }
@@ -1287,6 +1288,31 @@ body.embedded-split .side-panel-backdrop {
 .side-panel-section-toggle[aria-expanded="true"] {
   border-color: rgba(245, 194, 231, 0.32);
 }
+.side-panel-section-toggle[data-side-panel-section-toggle] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.side-panel-section.dragging > h2 > .side-panel-section-toggle {
+  cursor: grabbing;
+  border-color: rgba(148, 226, 213, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(148, 226, 213, 0.46), inset 4px 0 0 var(--ctp-teal), 0 0 1.1rem rgba(148, 226, 213, 0.24);
+}
+.side-panel-section.drag-over-before > h2::before,
+.side-panel-section.drag-over-after > h2::after {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  left: 0.62rem;
+  right: 0.62rem;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ctp-teal);
+  box-shadow: 0 0 0.7rem rgba(148, 226, 213, 0.72);
+  pointer-events: none;
+}
+.side-panel-section.drag-over-before > h2::before { top: -0.28rem; }
+.side-panel-section.drag-over-after > h2::after { bottom: -0.28rem; }
 .side-panel-section-trailing {
   display: inline-flex;
   flex: 0 0 auto;

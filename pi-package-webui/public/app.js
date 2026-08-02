@@ -480,6 +480,9 @@ let fileViewerSearchTimer = null;
 let fileViewerSearchHighlightElement = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
+let sidePanelSectionPointerDrag = null;
+let sidePanelSectionLastDragOverKey = "";
+let sidePanelSectionSuppressClickUntil = 0;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let sidePanelResizeState = null;
@@ -792,6 +795,8 @@ const SIDE_PANEL_STORAGE_KEY = "pi-webui-side-panel-collapsed";
 const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
+const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
+const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
 const AGENT_DONE_NOTIFICATIONS_STORAGE_KEY = "pi-webui-agent-done-notifications";
@@ -3382,6 +3387,131 @@ function sidePanelSectionRecords() {
     .filter((record) => record.id && record.button && record.content);
 }
 
+function readStoredSidePanelSectionOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? [...new Set(parsed.filter((id) => typeof id === "string" && id.trim()))] : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSidePanelSectionOrder() {
+  try {
+    localStorage.setItem(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(sidePanelSectionRecords().map(({ id }) => id)));
+  } catch {
+    // Ignore storage failures; ordering should still work for this page load.
+  }
+}
+
+function restoreSidePanelSectionOrder() {
+  if (sidePanelSectionPointerDrag?.active) return;
+  const records = sidePanelSectionRecords();
+  const parent = records[0]?.section.parentElement;
+  if (!parent || records.some(({ section }) => section.parentElement !== parent)) return;
+  const rank = new Map(readStoredSidePanelSectionOrder().map((id, index) => [id, index]));
+  records.sort((a, b) => {
+    const aRank = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER;
+    const bRank = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER;
+    return aRank - bRank;
+  });
+  for (const { section } of records) parent.append(section);
+}
+
+function visibleSidePanelSectionRecords() {
+  return sidePanelSectionRecords().filter(({ section }) => !section.hidden);
+}
+
+function clearSidePanelSectionDragMarkers() {
+  for (const { section } of sidePanelSectionRecords()) {
+    section.classList.remove("drag-over-before", "drag-over-after");
+  }
+}
+
+function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
+  const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === fromId);
+  if (!sourceRecord || !targetRecord || sourceRecord.section === targetRecord.section) return false;
+  const parent = sourceRecord.section.parentElement;
+  if (!parent || targetRecord.section.parentElement !== parent) return false;
+  clearSidePanelSectionDragMarkers();
+  targetRecord.section.classList.add(insertBefore ? "drag-over-before" : "drag-over-after");
+  sidePanelSectionLastDragOverKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  if (insertBefore) parent.insertBefore(sourceRecord.section, targetRecord.section);
+  else parent.insertBefore(sourceRecord.section, targetRecord.section.nextSibling);
+  persistSidePanelSectionOrder();
+  return true;
+}
+
+function moveSidePanelSectionByOffset(sectionId, offset) {
+  const records = visibleSidePanelSectionRecords();
+  const fromIndex = records.findIndex(({ id }) => id === sectionId);
+  const toIndex = fromIndex + offset;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= records.length) return false;
+  const targetRecord = records[toIndex];
+  const moved = moveSidePanelSectionRelative(sectionId, targetRecord, offset < 0);
+  clearSidePanelSectionDragMarkers();
+  if (moved) queueMicrotask(() => sidePanelSectionRecords().find(({ id }) => id === sectionId)?.button.focus({ preventScroll: true }));
+  return moved;
+}
+
+function sidePanelSectionToggleFromPoint(clientX, clientY) {
+  return document.elementFromPoint(clientX, clientY)?.closest?.("[data-side-panel-section-toggle]") || null;
+}
+
+function beginSidePanelSectionPointerDrag(event, sectionId) {
+  if (event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
+  sidePanelSectionPointerDrag = { sectionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
+  window.addEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
+  window.addEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
+  window.addEventListener("pointercancel", endSidePanelSectionPointerDrag, { capture: true });
+}
+
+function updateSidePanelSectionPointerDrag(event) {
+  const drag = sidePanelSectionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+  if (!drag.active && distance < SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX) return;
+  event.preventDefault();
+  if (!drag.active) {
+    drag.active = true;
+    sidePanelSectionLastDragOverKey = "";
+    clearTimeout(pointerActivationTimeout);
+    pointerActivationTimeout = null;
+    activePointerActivation = null;
+    const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === drag.sectionId);
+    sourceRecord?.section.classList.add("dragging");
+  }
+  const targetToggle = sidePanelSectionToggleFromPoint(event.clientX, event.clientY);
+  const targetRecord = targetToggle
+    ? sidePanelSectionRecords().find(({ button }) => button === targetToggle)
+    : null;
+  if (!targetRecord || targetRecord.id === drag.sectionId || targetRecord.section.hidden) return;
+  const rect = targetToggle.getBoundingClientRect();
+  const insertBefore = event.clientY < rect.top + rect.height / 2;
+  const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  if (markerKey === sidePanelSectionLastDragOverKey) return;
+  moveSidePanelSectionRelative(drag.sectionId, targetRecord, insertBefore);
+}
+
+function endSidePanelSectionPointerDrag(event) {
+  const drag = sidePanelSectionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  window.removeEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
+  window.removeEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
+  window.removeEventListener("pointercancel", endSidePanelSectionPointerDrag, { capture: true });
+  const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === drag.sectionId);
+  sidePanelSectionPointerDrag = null;
+  sidePanelSectionLastDragOverKey = "";
+  clearSidePanelSectionDragMarkers();
+  sourceRecord?.section.classList.remove("dragging");
+  if (drag.active) {
+    sidePanelSectionSuppressClickUntil = Date.now() + 250;
+    event.preventDefault();
+    persistSidePanelSectionOrder();
+    queueMicrotask(() => sourceRecord?.button.focus({ preventScroll: true }));
+  }
+}
+
 function readStoredSidePanelSectionCollapsedIds() {
   try {
     const stored = localStorage.getItem(SIDE_PANEL_SECTION_STORAGE_KEY);
@@ -3450,7 +3580,7 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
   record.content.hidden = collapsed;
   record.button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   record.button.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
-  record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
+  record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section · drag to reorder · Alt+↑/↓ moves`);
   if (!collapsed && record.id === "git" && !record.section.hidden) {
     queueMicrotask(() => {
       renderGitPanel();
@@ -3532,13 +3662,23 @@ function showSidePanelContextMenu(event) {
 
 function bindSidePanelSectionToggles() {
   for (const record of sidePanelSectionRecords()) {
-    record.button.addEventListener("click", () => {
+    record.button.addEventListener("click", (event) => {
+      if (Date.now() < sidePanelSectionSuppressClickUntil) {
+        event.preventDefault();
+        return;
+      }
       if (record.section.classList.contains("collapsed")) {
         setOnlySidePanelSectionExpanded(record);
       } else {
         setSidePanelSectionCollapsed(record, true);
       }
     });
+    record.button.addEventListener("keydown", (event) => {
+      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      event.preventDefault();
+      moveSidePanelSectionByOffset(record.id, event.key === "ArrowUp" ? -1 : 1);
+    });
+    record.button.addEventListener("pointerdown", (event) => beginSidePanelSectionPointerDrag(event, record.id));
   }
 }
 
@@ -38527,6 +38667,7 @@ window.addEventListener("beforeunload", persistMobileContinuityState);
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
+  if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
     const width = readStoredSidePanelWidth();
     if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
@@ -38949,6 +39090,7 @@ restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
 restoreInterfaceDensity();
 initializeTerminalHeaderTooltips();
+restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
