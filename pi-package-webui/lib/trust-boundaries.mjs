@@ -18,6 +18,7 @@ export const LOCALHOST_ONLY_POST_ROUTES = new Map([
   ["/api/recovery/plan", "Opening recovery plans is only allowed from localhost"],
   ["/api/restart", "Restart is only allowed from localhost"],
   ["/api/update", "Updating Pi from the Web UI is only allowed from localhost"],
+  ["/api/component-update", "Component updates are only allowed from localhost"],
   ["/api/shutdown", "Shutdown is only allowed from localhost"],
   ["/api/optional-feature-install", "Installing optional Web UI features is only allowed from localhost"],
   ["/api/skill-file", "Saving skill files is only allowed from localhost"],

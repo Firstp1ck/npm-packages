@@ -70,6 +70,14 @@ const CALIBRATION_PROMPT = "Calibration probe: reply with exactly `calibration-o
 const WEBUI_STATS_STATUS_KEY = "stats-webui";
 const WEBUI_STATS_PAYLOAD_TYPE = "firstpick.pi-extension-stats.overlay";
 const WEBUI_STATS_PAYLOAD_VERSION = 1;
+const PROMPT_SOURCE_LIMIT = 24;
+const TOOL_SCHEMA_LIMIT = 12;
+const TOOL_PROMPT_ENTRY_LIMIT = 24;
+const SKILL_LIMIT = 10;
+const CONTEXT_FILE_LIMIT = 8;
+const STRUCTURED_LABEL_LIMIT = 120;
+const STRUCTURED_DESCRIPTION_LIMIT = 160;
+const STRUCTURED_WARNING_LIMIT = 240;
 
 function addPromptSource(sources: PromptInjectionSource[], label: string, content: string | undefined): number {
   if (!content) return 0;
@@ -221,35 +229,140 @@ function distributeCalibratedTokens<T extends { tokens: number }>(sources: T[], 
   return sources.map((source, index) => ({ ...source, tokens: exact[index]?.tokens ?? 0 }));
 }
 
+type CalibratedInitialPromptComponent = InitialPromptCompositionComponent & {
+  legacyLabel: string;
+};
+
+function buildCalibratedInitialPromptComponents(
+  systemPrompt: string,
+  options: BuildSystemPromptOptions | null,
+  estimate: InitialPromptInputEstimate,
+): CalibratedInitialPromptComponent[] {
+  const cwd = extractPromptLineValue(systemPrompt, "Current working directory");
+  const rawPromptSources = buildPromptInjectionSources(systemPrompt, options);
+  const promptIdentities = buildSourceIdentities(rawPromptSources, cwd);
+  const promptSources = rawPromptSources.map((source, index) => ({
+    ...promptIdentities[index]!,
+    legacyLabel: source.label,
+    chars: source.chars,
+    uncalibratedTokens: systemPrompt.length > 0
+      ? Math.round((source.chars / systemPrompt.length) * estimate.promptText)
+      : estimateTokensFromCharCount(source.chars),
+    tokens: 0,
+    percent: null,
+  }));
+  const uncalibratedComponents: CalibratedInitialPromptComponent[] = [
+    estimate.toolSchemas > 0
+      ? {
+          id: "tool-schemas-1",
+          kind: "tool-schemas",
+          label: `Active tool schemas (${estimate.toolCount})`,
+          legacyLabel: `Active tool schemas (${estimate.toolCount})`,
+          chars: null,
+          uncalibratedTokens: estimate.toolSchemas,
+          tokens: 0,
+          percent: null,
+        }
+      : null,
+    estimate.framing > 0
+      ? {
+          id: "framing-1",
+          kind: "framing",
+          label: "Provider/request framing",
+          legacyLabel: "Provider/request framing",
+          chars: null,
+          uncalibratedTokens: estimate.framing,
+          tokens: 0,
+          percent: null,
+        }
+      : null,
+    ...promptSources,
+  ].filter((component): component is CalibratedInitialPromptComponent => !!component && component.uncalibratedTokens !== 0);
+
+  if (uncalibratedComponents.length === 0 && estimate.total > 0) {
+    uncalibratedComponents.push({
+      id: "other-1",
+      kind: "other",
+      label: "Unattributed prompt input",
+      legacyLabel: "Unattributed prompt input",
+      chars: null,
+      uncalibratedTokens: estimate.total,
+      tokens: 0,
+      percent: null,
+    });
+  }
+
+  return distributeCalibratedTokens(
+    uncalibratedComponents.map((component) => ({ ...component, tokens: component.uncalibratedTokens })),
+    estimate.total,
+  )
+    .filter((component) => component.tokens !== 0)
+    .map((component) => ({
+      ...component,
+      percent: estimate.total > 0 ? (component.tokens / estimate.total) * 100 : null,
+    }))
+    .sort((a, b) => Math.abs(b.tokens) - Math.abs(a.tokens) || (b.chars ?? 0) - (a.chars ?? 0) || a.id.localeCompare(b.id));
+}
+
+function capInitialPromptComponents(components: CalibratedInitialPromptComponent[]): InitialPromptCompositionComponent[] {
+  if (components.length <= PROMPT_SOURCE_LIMIT) {
+    return components.map(({ legacyLabel: _legacyLabel, ...component }) => component);
+  }
+
+  const shown = components.slice(0, PROMPT_SOURCE_LIMIT - 1);
+  const omitted = components.slice(PROMPT_SOURCE_LIMIT - 1);
+  const totalTokens = components.reduce((sum, component) => sum + component.tokens, 0);
+  const otherTokens = omitted.reduce((sum, component) => sum + component.tokens, 0);
+  const otherChars = omitted.every((component) => component.chars !== null)
+    ? omitted.reduce((sum, component) => sum + (component.chars ?? 0), 0)
+    : null;
+  return [
+    ...shown.map(({ legacyLabel: _legacyLabel, ...component }) => component),
+    {
+      id: "other-omitted",
+      kind: "other",
+      label: `Other prompt sources (${omitted.length})`,
+      chars: otherChars,
+      uncalibratedTokens: omitted.reduce((sum, component) => sum + component.uncalibratedTokens, 0),
+      tokens: otherTokens,
+      percent: totalTokens > 0 ? (otherTokens / totalTokens) * 100 : null,
+    },
+  ];
+}
+
+function buildInitialPromptComposition(
+  promptSnapshot: InitialPromptEstimateSnapshot,
+  options: BuildSystemPromptOptions | null,
+) {
+  const estimate = promptSnapshot.estimate;
+  return {
+    totalTokens: estimate.total,
+    lowTokens: estimate.low,
+    highTokens: estimate.high,
+    confidence: estimate.confidence,
+    source: promptSnapshot.source,
+    warning: promptSnapshot.warning ? boundedText(promptSnapshot.warning, STRUCTURED_WARNING_LIMIT) : null,
+    estimateMethod: "weighted-character-estimate-with-largest-remainder-calibration",
+    components: capInitialPromptComponents(
+      buildCalibratedInitialPromptComponents(promptSnapshot.systemPrompt, options, estimate),
+    ),
+  };
+}
+
 function formatPromptInjectionLines(
   systemPrompt: string,
   options: BuildSystemPromptOptions | null,
   estimate: InitialPromptInputEstimate,
   metadata?: { source?: string; warning?: string },
 ): string[] {
-  const promptSources = buildPromptInjectionSources(systemPrompt, options)
-    .map((source) => ({
-      ...source,
-      tokens: systemPrompt.length > 0 ? Math.round((source.chars / systemPrompt.length) * estimate.promptText) : estimateTokensFromCharCount(source.chars),
-    }))
-    .sort((a, b) => b.tokens - a.tokens || b.chars - a.chars);
-  const uncalibratedSources = [
-    estimate.toolSchemas > 0
-      ? { label: `Active tool schemas (${estimate.toolCount})`, chars: 0, tokens: estimate.toolSchemas }
-      : null,
-    estimate.framing > 0 ? { label: "Provider/request framing", chars: 0, tokens: estimate.framing } : null,
-    ...promptSources,
-  ].filter((source): source is { label: string; chars: number; tokens: number } => !!source && source.tokens !== 0);
-  const sources = distributeCalibratedTokens(uncalibratedSources, estimate.total)
-    .filter((source) => source.tokens !== 0)
-    .sort((a, b) => Math.abs(b.tokens) - Math.abs(a.tokens) || b.chars - a.chars);
-  const labelWidth = Math.max("Source".length, ...sources.map((source) => source.label.length));
+  const sources = buildCalibratedInitialPromptComponents(systemPrompt, options, estimate);
+  const labelWidth = Math.max("Source".length, ...sources.map((source) => source.legacyLabel.length));
   const tokenWidth = Math.max("Tokens".length, ...sources.map((source) => formatTokenCell(source.tokens).length));
   const percentWidth = "%".length;
   const separator = `├${"─".repeat(labelWidth + 2)}┼${"─".repeat(tokenWidth + 2)}┼${"─".repeat(percentWidth + 6)}┤`;
   const rows = sources.map((source) => {
     const percent = estimate.total > 0 ? `${((source.tokens / estimate.total) * 100).toFixed(1)}%` : "0.0%";
-    return `│ ${source.label.padEnd(labelWidth)} │ ${formatTokenCell(source.tokens).padStart(tokenWidth)} │ ${percent.padStart(percentWidth + 4)} │`;
+    return `│ ${source.legacyLabel.padEnd(labelWidth)} │ ${formatTokenCell(source.tokens).padStart(tokenWidth)} │ ${percent.padStart(percentWidth + 4)} │`;
   });
   const range = estimate.low !== estimate.high ? ` · range ${formatTokens(estimate.low)}–${formatTokens(estimate.high)}` : "";
 
@@ -287,6 +400,115 @@ type ContextFileDetail = {
   path: string;
   chars?: number;
 };
+
+type PromptContextSourceKind =
+  | "system-prompt"
+  | "tools-prompt"
+  | "custom-prompt"
+  | "append-system"
+  | "context-file"
+  | "skills"
+  | "tool-schemas"
+  | "framing"
+  | "user-messages"
+  | "assistant-messages"
+  | "assistant-tool-calls"
+  | "tool-results"
+  | "other";
+
+type PromptContextSourceIdentity = {
+  id: string;
+  kind: PromptContextSourceKind;
+  label: string;
+};
+
+type InitialPromptCompositionComponent = PromptContextSourceIdentity & {
+  chars: number | null;
+  uncalibratedTokens: number;
+  tokens: number;
+  percent: number | null;
+};
+
+type CurrentContextSource = PromptContextSourceIdentity & {
+  chars: number;
+  estimatedTokens: number;
+  percent: number | null;
+};
+
+function boundedText(value: unknown, limit: number): string {
+  return truncate(String(value ?? "").replace(/\s+/g, " ").trim(), limit);
+}
+
+function nullableNonNegativeNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
+function portablePathApi(filePath: string): typeof path.posix | typeof path.win32 {
+  return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(filePath) || filePath.includes("\\") ? path.win32 : path.posix;
+}
+
+function portableBasename(filePath: string): string {
+  return portablePathApi(filePath).basename(filePath);
+}
+
+function displayStructuredContextPath(filePath: string, cwd: string | undefined): string {
+  const cleanPath = filePath.trim();
+  if (!cleanPath) return "unknown";
+
+  const pathApi = portablePathApi(cleanPath);
+  if (!pathApi.isAbsolute(cleanPath)) {
+    const normalized = pathApi.normalize(cleanPath);
+    if (normalized !== ".." && !normalized.startsWith(`..${pathApi.sep}`)) {
+      return boundedText(normalized, STRUCTURED_LABEL_LIMIT);
+    }
+  }
+
+  if (cwd && portablePathApi(cwd) === pathApi && pathApi.isAbsolute(cleanPath) && pathApi.isAbsolute(cwd)) {
+    const relative = pathApi.relative(cwd, cleanPath);
+    if (relative && relative !== ".." && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative)) {
+      return boundedText(relative, STRUCTURED_LABEL_LIMIT);
+    }
+  }
+
+  return boundedText(portableBasename(cleanPath) || "unknown", STRUCTURED_LABEL_LIMIT);
+}
+
+function classifyPromptSource(label: string, cwd: string | undefined): { kind: PromptContextSourceKind; label: string } {
+  if (label === "Tools") return { kind: "tools-prompt", label: "Available tools prompt" };
+  if (/^Skills(?: \(\d+\))?$/.test(label)) return { kind: "skills", label };
+  if (label === "Custom system prompt") return { kind: "custom-prompt", label };
+  if (label === "APPEND_SYSTEM.md / append-system" || label === "APPEND_SYSTEM.md file") {
+    return { kind: "append-system", label: "APPEND_SYSTEM.md / append-system" };
+  }
+  if (/^(AGENTS\.md|CLAUDE\.md|Context file):\s*/i.test(label)) {
+    const separator = label.indexOf(":");
+    const prefix = label.slice(0, separator);
+    const filePath = label.slice(separator + 1);
+    return { kind: "context-file", label: `${prefix}: ${displayStructuredContextPath(filePath, cwd)}` };
+  }
+  if (label === "Project context files") return { kind: "context-file", label };
+  if (label === "User messages / working context") return { kind: "user-messages", label };
+  if (label === "Assistant messages + tool calls") return { kind: "assistant-tool-calls", label };
+  if (label === "Assistant messages") return { kind: "assistant-messages", label };
+  if (label === "Tool results / command output") return { kind: "tool-results", label };
+  if (/^(System prompt|Pi prompt|Current system prompt)/.test(label)) return { kind: "system-prompt", label };
+  return { kind: "other", label: boundedText(label, STRUCTURED_LABEL_LIMIT) || "Other prompt source" };
+}
+
+function buildSourceIdentities(sources: Array<{ label: string }>, cwd: string | undefined): PromptContextSourceIdentity[] {
+  const occurrences = new Map<PromptContextSourceKind, number>();
+  return sources.map((source) => {
+    const classified = classifyPromptSource(source.label, cwd);
+    const occurrence = (occurrences.get(classified.kind) ?? 0) + 1;
+    occurrences.set(classified.kind, occurrence);
+    return {
+      id: `${classified.kind}-${occurrence}`,
+      kind: classified.kind,
+      label: boundedText(classified.label, STRUCTURED_LABEL_LIMIT),
+    };
+  });
+}
 
 function formatCountedNames(names: string[], limit = 18): string {
   if (names.length === 0) return "none";
@@ -385,6 +607,81 @@ function estimateToolSchemaTokens(tool: InitialPromptToolInfo): number {
       parameters: tool.parameters ?? {},
     }),
   );
+}
+
+function buildInitialPromptSnapshot(
+  promptSnapshot: InitialPromptEstimateSnapshot,
+  options: BuildSystemPromptOptions | null,
+) {
+  const systemPrompt = promptSnapshot.systemPrompt;
+  const estimate = promptSnapshot.estimate;
+  const currentDate = extractPromptLineValue(systemPrompt, "Current date");
+  const cwd = extractPromptLineValue(systemPrompt, "Current working directory");
+  const tools = promptSnapshot.tools
+    .map((tool) => ({
+      name: boundedText(tool.name, 80),
+      description: tool.description ? boundedText(tool.description, STRUCTURED_DESCRIPTION_LIMIT) : null,
+      parameterSummary: getToolParameterSummary(tool.parameters),
+      estimatedTokens: estimateToolSchemaTokens(tool),
+    }))
+    .sort((a, b) => b.estimatedTokens - a.estimatedTokens || a.name.localeCompare(b.name));
+  const toolPromptEntries = extractAvailableToolPromptEntries(systemPrompt)
+    .map((entry) => boundedText(entry.name, 80))
+    .sort((a, b) => a.localeCompare(b));
+  const skills = extractPromptSkills(systemPrompt, options)
+    .map((skill) => ({
+      name: boundedText(skill.name, 80),
+      description: skill.description ? boundedText(skill.description, STRUCTURED_DESCRIPTION_LIMIT) : null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const contextFiles = extractPromptContextFiles(systemPrompt, options)
+    .map((file) => ({
+      displayPath: displayStructuredContextPath(file.path, cwd),
+      chars: typeof file.chars === "number" && Number.isFinite(file.chars) && file.chars >= 0 ? file.chars : null,
+    }))
+    .sort((a, b) => a.displayPath.localeCompare(b.displayPath));
+
+  return {
+    source: promptSnapshot.source,
+    settled: promptSnapshot.settled,
+    attempts: promptSnapshot.attempts,
+    warning: promptSnapshot.warning ? boundedText(promptSnapshot.warning, STRUCTURED_WARNING_LIMIT) : null,
+    systemPromptChars: systemPrompt.length,
+    estimateComponents: {
+      promptText: estimate.promptText,
+      toolSchemas: estimate.toolSchemas,
+      framing: estimate.framing,
+      calibration: {
+        multiplier: estimate.calibrationMultiplier,
+        samples: estimate.calibrationSamples,
+      },
+    },
+    metadata: {
+      currentDate: currentDate ? boundedText(currentDate, 80) : null,
+      cwdDisplay: cwd ? boundedText(portableBasename(cwd), 80) : null,
+      extraGuidelineCount: options?.promptGuidelines?.length ?? 0,
+    },
+    tools: {
+      totalCount: tools.length,
+      omittedCount: Math.max(0, tools.length - TOOL_SCHEMA_LIMIT),
+      items: tools.slice(0, TOOL_SCHEMA_LIMIT),
+    },
+    toolPromptEntries: {
+      totalCount: toolPromptEntries.length,
+      omittedCount: Math.max(0, toolPromptEntries.length - TOOL_PROMPT_ENTRY_LIMIT),
+      names: toolPromptEntries.slice(0, TOOL_PROMPT_ENTRY_LIMIT),
+    },
+    skills: {
+      totalCount: skills.length,
+      omittedCount: Math.max(0, skills.length - SKILL_LIMIT),
+      items: skills.slice(0, SKILL_LIMIT),
+    },
+    contextFiles: {
+      totalCount: contextFiles.length,
+      omittedCount: Math.max(0, contextFiles.length - CONTEXT_FILE_LIMIT),
+      items: contextFiles.slice(0, CONTEXT_FILE_LIMIT),
+    },
+  };
 }
 
 function pushDetailSection(lines: string[], title: string, body: string[]): void {
@@ -517,7 +814,15 @@ function summarizeMessageForTokenBreakdown(message: unknown): { label: string; c
   return { label: "Other session context", chars: stringifyContextValue(record).length };
 }
 
-function buildCurrentContextTokenSources(systemPrompt: string, options: BuildSystemPromptOptions | null, ctx: { sessionManager: { getBranch(): unknown[]; getLeafId(): string | null } }): TokenBreakdownSource[] {
+type CurrentContextBuildContext = {
+  sessionManager: { getBranch(): unknown[]; getLeafId(): string | null };
+};
+
+function buildCurrentContextTokenSources(
+  systemPrompt: string,
+  options: BuildSystemPromptOptions | null,
+  ctx: CurrentContextBuildContext,
+): { sources: TokenBreakdownSource[]; reconstruction: "complete" | "unavailable" } {
   const sources = new Map<string, TokenBreakdownSource>();
   const add = (label: string, chars: number) => {
     if (chars <= 0) return;
@@ -533,6 +838,7 @@ function buildCurrentContextTokenSources(systemPrompt: string, options: BuildSys
     add(source.label, source.chars);
   }
 
+  let reconstruction: "complete" | "unavailable" = "complete";
   try {
     const branch = ctx.sessionManager.getBranch() as never[];
     const sessionContext = buildSessionContext(branch, ctx.sessionManager.getLeafId());
@@ -541,10 +847,67 @@ function buildCurrentContextTokenSources(systemPrompt: string, options: BuildSys
       add(summary.label, summary.chars);
     }
   } catch {
+    reconstruction = "unavailable";
     // Keep /stats tokens useful even if the session branch cannot be reconstructed.
   }
 
-  return Array.from(sources.values());
+  return { sources: Array.from(sources.values()), reconstruction };
+}
+
+function buildCurrentContextPromptData(
+  systemPrompt: string,
+  options: BuildSystemPromptOptions | null,
+  ctx: CurrentContextBuildContext,
+  contextUsage: { tokens?: number | null; contextWindow?: number | null; percent?: number | null } | null | undefined,
+) {
+  const cwd = extractPromptLineValue(systemPrompt, "Current working directory");
+  const built = buildCurrentContextTokenSources(systemPrompt, options, ctx);
+  const identities = buildSourceIdentities(built.sources, cwd);
+  const allSources = built.sources
+    .map((source, index): CurrentContextSource => ({
+      ...identities[index]!,
+      chars: source.chars,
+      estimatedTokens: estimateTokensFromCharCount(source.chars),
+      percent: null,
+    }))
+    .sort((a, b) => b.estimatedTokens - a.estimatedTokens || b.chars - a.chars || a.id.localeCompare(b.id));
+  const estimatedTotalTokens = allSources.reduce((sum, source) => sum + source.estimatedTokens, 0);
+  const withPercents = allSources.map((source) => ({
+    ...source,
+    percent: estimatedTotalTokens > 0 ? (source.estimatedTokens / estimatedTotalTokens) * 100 : null,
+  }));
+  const sources = withPercents.length <= PROMPT_SOURCE_LIMIT
+    ? withPercents
+    : [
+        ...withPercents.slice(0, PROMPT_SOURCE_LIMIT - 1),
+        (() => {
+          const omitted = withPercents.slice(PROMPT_SOURCE_LIMIT - 1);
+          const estimatedTokens = omitted.reduce((sum, source) => sum + source.estimatedTokens, 0);
+          return {
+            id: "other-omitted",
+            kind: "other" as const,
+            label: `Other context sources (${omitted.length})`,
+            chars: omitted.reduce((sum, source) => sum + source.chars, 0),
+            estimatedTokens,
+            percent: estimatedTotalTokens > 0 ? (estimatedTokens / estimatedTotalTokens) * 100 : null,
+          };
+        })(),
+      ];
+  const tokens = nullableNonNegativeNumber(contextUsage?.tokens);
+  const contextWindow = nullableNonNegativeNumber(contextUsage?.contextWindow);
+  const percent = nullableNonNegativeNumber(contextUsage?.percent);
+
+  return {
+    legacySources: built.sources,
+    usage: { tokens, contextWindow, percent },
+    breakdown: {
+      estimateMethod: "weighted-character-estimate",
+      reconstruction: built.reconstruction,
+      estimatedTotalTokens,
+      actualMinusEstimatedTokens: tokens === null ? null : tokens - estimatedTotalTokens,
+      sources,
+    },
+  };
 }
 
 function formatTokenBreakdownTable(title: string, sources: TokenBreakdownSource[], actualTotalTokens?: number | null): string[] {
@@ -581,6 +944,29 @@ function formatCost(cost: number): string {
 
 function emptyUsage(): DayUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, messages: 0 };
+}
+
+function finiteNumberOrZero(value: unknown): number {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function nullableRatio(numerator: number, denominator: number, multiplier = 1): number | null {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return null;
+  const value = (numerator / denominator) * multiplier;
+  return Number.isFinite(value) ? value : null;
+}
+
+function shiftDayKey(day: string, offset: number): string {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildInclusiveDayRange(firstDay: string, lastDay: string): string[] {
+  const keys: string[] = [];
+  for (let day = firstDay; day <= lastDay; day = shiftDayKey(day, 1)) keys.push(day);
+  return keys;
 }
 
 function getDayKey(timestamp: string): string | null {
@@ -703,12 +1089,12 @@ function collectUsageRecords(sessionFiles: string[]): UsageRecord[] {
       const day = getDayKey(entry?.timestamp ?? "");
       if (!day) continue;
 
-      const input = Number(usage.input ?? 0) || 0;
-      const output = Number(usage.output ?? 0) || 0;
-      const cacheRead = Number(usage.cacheRead ?? 0) || 0;
-      const cacheWrite = Number(usage.cacheWrite ?? 0) || 0;
-      const total = Number(usage.totalTokens ?? input + output + cacheRead + cacheWrite) || 0;
-      const cost = Number(usage?.cost?.total ?? 0) || 0;
+      const input = finiteNumberOrZero(usage.input);
+      const output = finiteNumberOrZero(usage.output);
+      const cacheRead = finiteNumberOrZero(usage.cacheRead);
+      const cacheWrite = finiteNumberOrZero(usage.cacheWrite);
+      const total = finiteNumberOrZero(usage.totalTokens ?? input + output + cacheRead + cacheWrite);
+      const cost = finiteNumberOrZero(usage?.cost?.total);
       const provider = String(entry?.message?.provider ?? "unknown");
       const model = String(entry?.message?.responseModel ?? entry?.message?.model ?? "unknown");
 
@@ -763,9 +1149,14 @@ function buildDayRange(days: number): string[] {
 }
 
 function getScopeDayKeys(byDay: Map<string, DayUsage>, args: { mode: "range"; days: number } | { mode: "all" }): string[] {
-  return args.mode === "all"
-    ? Array.from(byDay.keys()).sort((a, b) => a.localeCompare(b))
-    : buildDayRange(args.days);
+  if (args.mode === "range") return buildDayRange(args.days);
+
+  const recordedDays = Array.from(byDay.keys()).sort((a, b) => a.localeCompare(b));
+  const firstDay = recordedDays[0];
+  const lastDay = recordedDays.at(-1);
+  const today = new Date().toISOString().slice(0, 10);
+  const boundedLastDay = lastDay && lastDay > today ? today : lastDay;
+  return firstDay && boundedLastDay && firstDay <= boundedLastDay ? buildInclusiveDayRange(firstDay, boundedLastDay) : [];
 }
 
 function sumUsage(byDay: Map<string, DayUsage>, dayKeys: string[]): Totals {
@@ -785,6 +1176,47 @@ function sumUsage(byDay: Map<string, DayUsage>, dayKeys: string[]): Totals {
 function scopedRecords(records: UsageRecord[], dayKeys: string[]): UsageRecord[] {
   const daySet = new Set(dayKeys);
   return records.filter((r) => daySet.has(r.day));
+}
+
+function countScopedSessions(records: UsageRecord[], dayKeys: string[]): number {
+  return new Set(scopedRecords(records, dayKeys).map((record) => record.sessionFile)).size;
+}
+
+function buildSpendComparison(byDay: Map<string, DayUsage>, dayKeys: string[]) {
+  const recentEndDay = dayKeys.at(-1) ?? null;
+  const windowDays = Math.min(7, dayKeys.length);
+  if (!recentEndDay || windowDays <= 0) {
+    return {
+      windowDays: 0,
+      recentStartDay: null,
+      recentEndDay: null,
+      recentCost: 0,
+      priorStartDay: null,
+      priorEndDay: null,
+      priorCost: 0,
+      changeCost: 0,
+      changePercent: null,
+    };
+  }
+
+  const recentStartDay = shiftDayKey(recentEndDay, -(windowDays - 1));
+  const priorEndDay = shiftDayKey(recentStartDay, -1);
+  const priorStartDay = shiftDayKey(priorEndDay, -(windowDays - 1));
+  const recentCost = sumUsage(byDay, buildInclusiveDayRange(recentStartDay, recentEndDay)).cost;
+  const priorCost = sumUsage(byDay, buildInclusiveDayRange(priorStartDay, priorEndDay)).cost;
+  const changeCost = recentCost - priorCost;
+
+  return {
+    windowDays,
+    recentStartDay,
+    recentEndDay,
+    recentCost,
+    priorStartDay,
+    priorEndDay,
+    priorCost,
+    changeCost,
+    changePercent: nullableRatio(changeCost, priorCost, 100),
+  };
 }
 
 function aggregateModelUsage(records: UsageRecord[], dayKeys: string[], limit = 10): Array<{ model: string; tokens: number; percent: number; cost: number; costPercent: number; avgCostPerMillion: number; avgOutputTokens: number; messages: number }> {
@@ -903,16 +1335,15 @@ function buildCostTrendLines(byDay: Map<string, DayUsage>, dayKeys: string[]): s
 }
 
 function buildCacheEfficiencyLines(totals: Totals): string[] {
-  const hitRate = totals.total > 0 ? (totals.cacheRead / totals.total) * 100 : 0;
+  const promptSideTokens = totals.input + totals.cacheRead + totals.cacheWrite;
+  const cachedInputShare = nullableRatio(totals.cacheRead, promptSideTokens, 100);
   const nonCacheTokens = totals.input + totals.output + totals.cacheWrite;
-  const inputShare = totals.total > 0 ? (totals.input / totals.total) * 100 : 0;
-  const outputShare = totals.total > 0 ? (totals.output / totals.total) * 100 : 0;
-  const avgCostPerNonCacheToken = nonCacheTokens > 0 && totals.cost > 0 ? totals.cost / nonCacheTokens : 0;
-  const estimatedSavings = totals.cacheRead * avgCostPerNonCacheToken;
-  const savingsPart = estimatedSavings > 0 ? ` · est. cache savings ${formatCost(estimatedSavings)}` : "";
+  const inputShare = nullableRatio(totals.input, totals.total, 100) ?? 0;
+  const outputShare = nullableRatio(totals.output, totals.total, 100) ?? 0;
+  const cachedInputLabel = cachedInputShare === null ? "n/a" : `${cachedInputShare.toFixed(1)}%`;
 
   return [
-    `Cache hit: ${hitRate.toFixed(1)}% · reads ${formatTokens(totals.cacheRead)} · writes ${formatTokens(totals.cacheWrite)}${savingsPart}`,
+    `Cached-input share: ${cachedInputLabel} · reads ${formatTokens(totals.cacheRead)} · writes ${formatTokens(totals.cacheWrite)} · prompt-side ${formatTokens(promptSideTokens)}`,
     `Token mix: input ${formatTokens(totals.input)} (${inputShare.toFixed(1)}%) · output ${formatTokens(totals.output)} (${outputShare.toFixed(1)}%) · non-cache ${formatTokens(nonCacheTokens)} · total ${formatTokens(totals.total)}`,
   ];
 }
@@ -1003,6 +1434,7 @@ export default function statsExtension(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async () => {
+    latestSystemPromptOptions = null;
     pendingInitialPromptMeasurement = null;
   });
 
@@ -1045,11 +1477,16 @@ export default function statsExtension(pi: ExtensionAPI) {
   });
 
   const showCurrentContextTokens = (ctx: ExtensionCommandContext) => {
-    const usage = ctx.getContextUsage();
-    const contextSources = buildCurrentContextTokenSources(ctx.getSystemPrompt(), latestSystemPromptOptions, ctx);
-    const contextWindow = usage?.contextWindow ? ` / ${formatTokens(usage.contextWindow)} window` : "";
-    const percent = usage?.percent !== null && usage?.percent !== undefined ? ` (${usage.percent.toFixed(1)}%)` : "";
-    ctx.ui.notify(`${formatTokenBreakdownTable("Current context", contextSources, usage?.tokens).join("\n")}\nContext usage: ${usage?.tokens ? formatTokens(usage.tokens) : "?"}${contextWindow}${percent}`, "info");
+    const currentContext = buildCurrentContextPromptData(
+      ctx.getSystemPrompt(),
+      latestSystemPromptOptions,
+      ctx,
+      ctx.getContextUsage(),
+    );
+    const usage = currentContext.usage;
+    const contextWindow = usage.contextWindow ? ` / ${formatTokens(usage.contextWindow)} window` : "";
+    const percent = usage.percent !== null ? ` (${usage.percent.toFixed(1)}%)` : "";
+    ctx.ui.notify(`${formatTokenBreakdownTable("Current context", currentContext.legacySources, usage.tokens).join("\n")}\nContext usage: ${usage.tokens ? formatTokens(usage.tokens) : "?"}${contextWindow}${percent}`, "info");
   };
 
   pi.registerCommand("stats-tokens", {
@@ -1117,15 +1554,29 @@ export default function statsExtension(pi: ExtensionAPI) {
     const highestDay = daily
       .filter((day) => day.total > 0 || day.cost > 0)
       .sort((a, b) => b.cost - a.cost || b.total - a.total)[0] ?? null;
+    const scopedSessionCount = countScopedSessions(data.records, data.dayKeys);
+    const models = aggregateModelUsage(data.records, data.dayKeys, 20);
+    const expensiveSessions = aggregateExpensiveSessions(data.records, data.dayKeys, 20);
+    const topModel = models[0] ?? null;
+    const topSession = expensiveSessions[0] ?? null;
+    const promptSideTokens = data.totals.input + data.totals.cacheRead + data.totals.cacheWrite;
     const cacheHitRate = data.totals.total > 0 ? (data.totals.cacheRead / data.totals.total) * 100 : 0;
+    const cachedInputShare = nullableRatio(data.totals.cacheRead, promptSideTokens, 100);
     const nonCacheTokens = data.totals.input + data.totals.output + data.totals.cacheWrite;
     const calendarAvgCost = data.totals.cost / Math.max(data.dayKeys.length, 1);
     const activeAvgCost = data.totals.cost / Math.max(activeDays.length, 1);
+    const effectiveCostPerMillionTokens = nullableRatio(data.totals.cost, data.totals.total, 1_000_000);
+    const averageCostPerSession = nullableRatio(data.totals.cost, scopedSessionCount);
+    const averageTokensPerSession = nullableRatio(data.totals.total, scopedSessionCount);
+    const spendComparison = buildSpendComparison(data.byDay, data.dayKeys);
+    const topModelCostShare = topModel ? nullableRatio(topModel.cost, data.totals.cost, 100) : null;
+    const topSessionCostShare = topSession ? nullableRatio(topSession.cost, data.totals.cost, 100) : null;
     const contextUsage = ctx.getContextUsage();
-    const contextSources = buildCurrentContextTokenSources(systemPrompt, latestSystemPromptOptions, ctx);
-    const contextWindow = contextUsage?.contextWindow ? ` / ${formatTokens(contextUsage.contextWindow)} window` : "";
-    const contextPercent = contextUsage?.percent !== null && contextUsage?.percent !== undefined ? ` (${contextUsage.percent.toFixed(1)}%)` : "";
-    const contextUsageLine = `Context usage: ${contextUsage?.tokens ? formatTokens(contextUsage.tokens) : "?"}${contextWindow}${contextPercent}`;
+    const currentContextData = buildCurrentContextPromptData(systemPrompt, latestSystemPromptOptions, ctx, contextUsage);
+    const { legacySources: contextSources, ...currentContext } = currentContextData;
+    const contextWindow = currentContext.usage.contextWindow ? ` / ${formatTokens(currentContext.usage.contextWindow)} window` : "";
+    const contextPercent = currentContext.usage.percent !== null ? ` (${currentContext.usage.percent.toFixed(1)}%)` : "";
+    const contextUsageLine = `Context usage: ${currentContext.usage.tokens ? formatTokens(currentContext.usage.tokens) : "?"}${contextWindow}${contextPercent}`;
 
     return {
       type: WEBUI_STATS_PAYLOAD_TYPE,
@@ -1135,6 +1586,7 @@ export default function statsExtension(pi: ExtensionAPI) {
       scopeLabel: data.scopeLabel,
       scope: data.scope,
       sessionCount: data.files.length,
+      scopedSessionCount,
       dayCount: data.dayKeys.length,
       activeDayCount: activeDays.length,
       totals: data.totals,
@@ -1152,17 +1604,37 @@ export default function statsExtension(pi: ExtensionAPI) {
         systemPromptChars: promptSnapshot.systemPrompt.length,
         activeToolSchemas: promptSnapshot.tools.length,
       },
+      promptContext: {
+        initialPrompt: buildInitialPromptComposition(promptSnapshot, latestSystemPromptOptions),
+        snapshot: buildInitialPromptSnapshot(promptSnapshot, latestSystemPromptOptions),
+        currentContext,
+      },
       summary: {
+        // Legacy fields remain additive-v1 compatible; prefer the accurately named fields below.
         cacheHitRate,
         nonCacheTokens,
         calendarAvgCost,
         activeAvgCost,
         projected30DayCost: calendarAvgCost * 30,
         highestDay,
+        promptSideTokens,
+        cachedInputShare,
+        effectiveCostPerMillionTokens,
+        averageCostPerSession,
+        averageTokensPerSession,
+        spendComparison,
+        topModelCostShare,
+        topSessionCostShare,
+        driverConcentration: {
+          topModel: topModel ? { model: topModel.model, cost: topModel.cost, costShare: topModelCostShare } : null,
+          topSession: topSession
+            ? { sessionId: topSession.sessionId, displayName: topSession.displayName, cost: topSession.cost, costShare: topSessionCostShare }
+            : null,
+        },
       },
       daily,
-      models: aggregateModelUsage(data.records, data.dayKeys, 20),
-      expensiveSessions: aggregateExpensiveSessions(data.records, data.dayKeys, 20),
+      models,
+      expensiveSessions,
       lines: {
         graph: buildGraphLines(data.byDay, data.dayKeys, true),
         promptInjection: formatPromptInjectionLines(systemPrompt, latestSystemPromptOptions, promptEstimate, {
@@ -1174,7 +1646,7 @@ export default function statsExtension(pi: ExtensionAPI) {
         cache: buildCacheEfficiencyLines(data.totals),
         modelComparison: formatModelComparisonLines(data.records, data.dayKeys, data.totals),
         expensiveSessions: formatExpensiveSessionLines(data.records, data.dayKeys),
-        tokenBreakdown: [...formatTokenBreakdownTable("Current context", contextSources, contextUsage?.tokens), contextUsageLine],
+        tokenBreakdown: [...formatTokenBreakdownTable("Current context", contextSources, currentContext.usage.tokens), contextUsageLine],
       },
     };
   };

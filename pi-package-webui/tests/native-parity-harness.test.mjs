@@ -42,7 +42,9 @@ assert.equal(isLocalRequest(remoteReq), false);
 
 assert.throws(() => requireLocalhost(remoteReq, "blocked"), (error) => error.statusCode === 403);
 assert.throws(() => requireLocalhostRoute(remoteReq, "/api/update"), (error) => error.statusCode === 403);
+assert.throws(() => requireLocalhostRoute(remoteReq, "/api/component-update"), (error) => error.statusCode === 403);
 assert.doesNotThrow(() => requireLocalhostRoute(localReq, "/api/update"));
+assert.doesNotThrow(() => requireLocalhostRoute(localReq, "/api/component-update"));
 assert.ok(LOCALHOST_ONLY_POST_ROUTES.has("/api/workflow-policy"), "workflow policy mutation must stay in the canonical localhost route registry");
 
 for (const pathname of LOCALHOST_ONLY_POST_ROUTES.keys()) {

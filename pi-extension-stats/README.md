@@ -9,8 +9,8 @@ Token and cost analytics for Pi session history.
 - Parses local Pi session `.jsonl` files for the current workspace.
 - Aggregates usage by UTC day.
 - Displays compact daily token bars and cost bars with totals.
-- Shows input/output/cache breakdown, estimated initial prompt input (`PI: X tok`) with source split-up, cache hit rate, estimated cache savings, cost burn rate, and top model usage.
-- Highlights highest-cost day, projected 30-day cost, most expensive sessions, and model cost efficiency.
+- Shows input/output/cache breakdown, estimated initial prompt input (`PI: X tok`) with source split-up, cached-input token share, cost burn rate, and top model usage.
+- Highlights highest-cost day, projected 30-day cost, scoped session averages, recent-vs-prior spend, most expensive sessions, and model/session cost concentration.
 
 ## Install
 
@@ -33,7 +33,7 @@ No required configuration.
 - `/stats-most-expense [days|all]` — show most expensive sessions.
 - `/stats-model-compare [days|all]` — show model token/cost comparison.
 - `/stats-cost-trend [days|all]` — show cost trend and projections.
-- `/stats-cache [days|all]` — show cache efficiency and token mix.
+- `/stats-cache [days|all]` — show cached-input share and token mix. Cached-input share is `cacheRead / (input + cacheRead + cacheWrite)`; it is not a request-level cache hit rate or a monetary savings estimate.
 
 ## Prompt input estimate
 
@@ -51,6 +51,8 @@ estimatedInitialInput = baseEstimate × historicalCalibrationMultiplier
 
 The historical multiplier is learned opportunistically from future sessions by comparing the pre-call estimate with the provider-reported first assistant `usage.input + usage.cacheRead + usage.cacheWrite` after subtracting the first user prompt estimate. `/calibrate` performs the same calculation on demand by opening an isolated session and sending a fixed probe prompt; `/calibrate current` can reuse the current branch once its first assistant response has usage data. Without samples, `/stats-pi` reports an uncalibrated estimate and a conservative range. Provider-reported usage in Pi session JSONL remains the authoritative post-call value.
 
+The version-1 Web UI payload also includes an optional `promptContext` object with independently consumable `initialPrompt`, `snapshot`, and `currentContext` sections. Initial-prompt components are calibrated to sum exactly to the reported estimate. Current-context provider usage remains separate from heuristic character-derived source composition. Structured inventories are deterministic and capped, omit tool parameter schemas and skill locations, and reduce context-file paths to workspace-relative or basename-only display values. Existing `promptEstimate`, `lines.*`, and command text remain available for compatibility.
+
 ## Tools
 
 None.
@@ -66,7 +68,7 @@ May 07  in 42k  out 9k   $0.29  █████████
 May 08  in 12k  out 2k   $0.06  ██
 
 Total: 72k input, 15k output, $0.46
-Cache hit rate: 38%
+Cached-input share: 38%
 ```
 
 Use it to understand which days, sessions, and models are driving token volume and cost.

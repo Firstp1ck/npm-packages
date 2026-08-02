@@ -15,6 +15,8 @@
 //   assistant turns are appended to a dynamic transcript returned by
 //   get_messages AFTER the three baseline messages, and get_state reports
 //   isStreaming=true while a scripted flow runs.
+// - FAKE_PI_STATS_PROMPT_CONTEXT=1: advertise /stats-webui and publish deterministic
+//   structured or malformed-subsection Prompt/context dashboard payloads.
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -47,6 +49,7 @@ const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
 const continuityModeEnabled = process.env.FAKE_PI_CONTINUITY_MODE === "1";
 const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
 const sseFloodEnabled = process.env.FAKE_PI_SSE_FLOOD === "1";
+const statsPromptContextEnabled = process.env.FAKE_PI_STATS_PROMPT_CONTEXT === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
 const largeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
 const largeTokenSamples = Array.from({ length: 300 }, (_, index) => ({ index, input: index + 1, output: index + 2 }));
@@ -906,6 +909,118 @@ function handleTalkPrompt(command, base) {
   return true;
 }
 
+function statsPromptContextFixturePayload({ malformedSnapshot = false } = {}) {
+  const hostileLabel = `System <img src=x onerror="globalThis.fixturePwned=true"> & "quoted" ${"long-label-".repeat(16)}`;
+  const payload = {
+    type: "firstpick.pi-extension-stats.overlay",
+    version: 1,
+    generatedAt: Date.now(),
+    open: true,
+    scopeLabel: "fixture prompt context",
+    scope: { mode: "range", days: 14 },
+    sessionCount: 0,
+    scopedSessionCount: 0,
+    dayCount: 14,
+    activeDayCount: 0,
+    totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 },
+    promptEstimate: {
+      total: 300, low: 270, high: 330, confidence: "fixture", calibrationMultiplier: 1,
+      calibrationSamples: 0, source: "export-html", settled: true, attempts: 0,
+      warning: null, systemPromptChars: 0, activeToolSchemas: 2,
+    },
+    promptContext: {
+      initialPrompt: {
+        totalTokens: 300,
+        lowTokens: 270,
+        highTokens: 330,
+        confidence: "fixture",
+        source: "export-html",
+        warning: null,
+        estimateMethod: "weighted-character-estimate-with-largest-remainder-calibration",
+        components: [
+          { id: "system-prompt-1", kind: "system-prompt", label: hostileLabel, chars: null, uncalibratedTokens: 300, tokens: 300, percent: 100 },
+          { id: "framing-1", kind: "framing", label: "Zero-token framing", chars: 0, uncalibratedTokens: 0, tokens: 0, percent: 0 },
+        ],
+      },
+      snapshot: {
+        source: "export-html",
+        settled: true,
+        attempts: 0,
+        warning: null,
+        systemPromptChars: 0,
+        estimateComponents: {
+          promptText: malformedSnapshot ? "not-a-number" : 0,
+          toolSchemas: 25,
+          framing: 0,
+          calibration: { multiplier: 1, samples: 0 },
+        },
+        metadata: { currentDate: null, cwdDisplay: null, extraGuidelineCount: 0 },
+        tools: {
+          totalCount: 3,
+          omittedCount: 1,
+          items: [
+            { name: "<script>fixture-tool</script>", description: "Text-safe <b>description</b> & symbols", parameterSummary: "0 params", estimatedTokens: 0 },
+            { name: "read", description: null, parameterSummary: "1 param, 1 required", estimatedTokens: 25 },
+          ],
+        },
+        toolPromptEntries: { totalCount: 2, omittedCount: 0, names: ["<unsafe-entry>", "read"] },
+        skills: { totalCount: 2, omittedCount: 1, items: [{ name: "fixture-skill", description: "Hostile </details> stays text" }] },
+        contextFiles: {
+          totalCount: 2,
+          omittedCount: 0,
+          items: [
+            { displayPath: `nested/${"overflow-segment-".repeat(18)}context.md`, chars: null },
+            { displayPath: "zero.md", chars: 0 },
+          ],
+        },
+      },
+      currentContext: {
+        usage: { tokens: 0, contextWindow: null, percent: 0 },
+        breakdown: {
+          estimateMethod: "weighted-character-estimate",
+          reconstruction: "complete",
+          estimatedTotalTokens: 200,
+          actualMinusEstimatedTokens: -200,
+          sources: [
+            { id: "user-messages-1", kind: "user-messages", label: `User ${"overflow-source-".repeat(18)}`, chars: 800, estimatedTokens: 200, percent: 100 },
+          ],
+        },
+      },
+    },
+    summary: {},
+    daily: [],
+    models: [],
+    expensiveSessions: [],
+    lines: {
+      graph: ["RAW_GRAPH_FIXTURE"],
+      promptInjection: ["RAW_PROMPT_INJECTION <keep>& exact"],
+      promptDetailed: ["RAW_PROMPT_DETAILED </pre> exact"],
+      tokenBreakdown: ["RAW_CONTEXT_BREAKDOWN <raw> exact"],
+      costTrend: ["RAW_COST_TREND"],
+      cache: ["RAW_CACHE"],
+      modelComparison: ["RAW_MODEL_COMPARISON"],
+      expensiveSessions: ["RAW_EXPENSIVE_SESSIONS"],
+    },
+  };
+  return payload;
+}
+
+function handleStatsPromptContextFixturePrompt(command, base) {
+  if (!statsPromptContextEnabled) return false;
+  const message = String(command.message || "").trim();
+  const malformedSnapshot = message === "fixture stats prompt malformed";
+  if (!malformedSnapshot && !/^\/stats-webui(?:\s|$)/.test(message)) return false;
+  respond({ ...base, data: { output: malformedSnapshot ? "malformed stats prompt fixture emitted" : "structured stats prompt fixture emitted" } });
+  emitEvent({
+    type: "extension_ui_request",
+    id: randomUUID(),
+    method: "setStatus",
+    statusKey: "stats-webui",
+    statusText: JSON.stringify(statsPromptContextFixturePayload({ malformedSnapshot })),
+  });
+  return true;
+}
+
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -972,6 +1087,7 @@ rl.on("line", (line) => {
             { name: "conversation", source: "extension", description: "Natural Conversation Mode alias" },
             { name: "fast-mode", source: "extension", description: "Toggle Codex subscription Fast mode" },
             { name: "workflow", source: "extension", description: "Run and inspect JavaScript workflows" },
+            ...(statsPromptContextEnabled ? [{ name: "stats-webui", source: "extension", description: "Publish fixture stats dashboard" }] : []),
           ],
         },
       });
@@ -994,6 +1110,7 @@ rl.on("line", (line) => {
       return;
     }
     case "prompt":
+      if (handleStatsPromptContextFixturePrompt(command, base)) return;
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleFastModeFixturePrompt(command, base)) return;
       if (handleTransportFixturePrompt(command, base)) return;

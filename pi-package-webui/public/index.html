@@ -608,7 +608,7 @@
             <strong class="side-panel-title">Control Deck</strong>
             <div class="side-panel-version-row" aria-label="Version and build information">
               <button id="piVersionButton" class="pi-version-button" type="button" aria-label="View Pi release notes" aria-haspopup="dialog" aria-controls="piReleaseNotesDialog" hidden></button>
-              <button id="webuiVersionButton" class="webui-version-button" type="button" aria-label="Open Pi Web UI package page" aria-haspopup="dialog" aria-controls="confirmationDialog" hidden></button>
+              <button id="webuiVersionButton" class="webui-version-button" type="button" aria-label="Open Pi Web UI package and update details" aria-haspopup="dialog" aria-controls="webuiPackageDialog" hidden></button>
               <span id="webuiDevBadge" class="webui-dev-badge" aria-label="Pi Web UI dev server" hidden>DEV</span>
             </div>
           </div>
@@ -1105,9 +1105,41 @@
           <button id="piReleaseNotesCloseButton" type="button" aria-label="Close Pi release notes">Close</button>
         </div>
         <p id="piReleaseNotesStatus" class="pi-release-notes-status muted" role="status" aria-live="polite"></p>
+        <section class="component-update-panel" aria-label="Pi background update">
+          <p id="piComponentUpdateStatus" class="component-update-status muted" role="status" aria-live="polite"></p>
+          <button id="piComponentUpdateButton" class="component-update-button primary" type="button">Update Pi</button>
+        </section>
         <div id="piReleaseNotesBody" class="pi-release-notes-body markdown-body"></div>
         <menu>
           <a id="piReleaseNotesGithubLink" class="pi-release-notes-link" target="_blank" rel="noopener noreferrer" hidden>View on GitHub</a>
+          <button value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="webuiPackageDialog" class="extension-dialog webui-package-dialog" aria-labelledby="webuiPackageTitle">
+      <form method="dialog">
+        <div class="webui-package-header">
+          <div>
+            <span class="webui-package-kicker">Web UI package</span>
+            <h2 id="webuiPackageTitle">Pi Web UI package</h2>
+          </div>
+          <button id="webuiPackageCloseButton" type="button" aria-label="Close Web UI package details">Close</button>
+        </div>
+        <dl class="webui-package-versions">
+          <div class="webui-package-version-row">
+            <dt>Installed</dt>
+            <dd id="webuiPackageCurrentVersion">Unknown</dd>
+          </div>
+          <div class="webui-package-version-row">
+            <dt>Latest on npm</dt>
+            <dd id="webuiPackageLatestVersion">Not checked</dd>
+          </div>
+        </dl>
+        <p id="webuiComponentUpdateStatus" class="component-update-status muted" role="status" aria-live="polite"></p>
+        <menu>
+          <button id="webuiPackageNpmButton" class="webui-package-npm-link" type="button">View on npm</button>
+          <button id="webuiComponentUpdateButton" class="component-update-button primary" type="button">Update Web UI</button>
           <button value="close">Close</button>
         </menu>
       </form>
@@ -1265,7 +1297,7 @@
         </div>
         <p id="statsOverlayStatus" class="stats-overlay-status muted" role="status" aria-live="polite" hidden></p>
         <div id="statsOverlayTabs" class="stats-overlay-tabs" role="tablist" aria-label="Stats dashboard views"></div>
-        <div id="statsOverlayBody" class="stats-overlay-body"></div>
+        <div id="statsOverlayBody" class="stats-overlay-body" role="tabpanel" tabindex="0"></div>
       </form>
     </dialog>
 

@@ -79,6 +79,18 @@ Running `/webui-start` again on the same URL restarts the HTTP server. By defaul
 
 `/webui-status` reports the URL, online state, network exposure, and Remote PIN auth state. `detailed` adds tabs, sessions, models/providers, and recent backend events.
 
+### Control Deck component updates
+
+The **Pi** and **Web UI** version tags in the Control Deck show component-specific `available`, `running`, `succeeded`, or `failed` status. Open the Pi tag for release notes and its Pi update action. Open the Web UI tag for installed/latest versions, the npm package link, and its Web UI update action.
+
+Tag actions run one target in the background and do not replace the existing **Update & restart** controls:
+
+- **Update Pi** uses the selected Pi installation's `pi update --self` path. It does not restart the Web UI or interrupt managed Pi tabs. New or explicitly reloaded Pi sessions use the updated Pi; already-running tabs keep their loaded runtime.
+- **Update Web UI** updates only `@firstpick/pi-package-webui` in the installation that started the server. It does not restart the server automatically; restart the Web UI after success to activate the new version.
+- Only one privileged component or legacy update runs at a time. Buttons remain disabled while work is running, and a bounded failure remains visible with a retry action.
+
+For security, starting either component update is allowed only from localhost, even when Remote PIN access is enabled. Automatic Web UI self-update is disabled for source/development checkouts so it cannot overwrite a working tree; update that checkout with its normal source or package-manager workflow instead. Background job status is process-local, so if the server exits during an update, verify the installed version before retrying. The top-right update notification and existing update-and-restart actions retain their broader legacy behavior.
+
 ## Standalone CLI
 
 Use the CLI when you want to start the Web UI without first opening terminal Pi:

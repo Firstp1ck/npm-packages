@@ -388,6 +388,16 @@ const elements = {
   piReleaseNotesBody: $("#piReleaseNotesBody"),
   piReleaseNotesGithubLink: $("#piReleaseNotesGithubLink"),
   piReleaseNotesCloseButton: $("#piReleaseNotesCloseButton"),
+  piComponentUpdateStatus: $("#piComponentUpdateStatus"),
+  piComponentUpdateButton: $("#piComponentUpdateButton"),
+  webuiPackageDialog: $("#webuiPackageDialog"),
+  webuiPackageTitle: $("#webuiPackageTitle"),
+  webuiPackageCurrentVersion: $("#webuiPackageCurrentVersion"),
+  webuiPackageLatestVersion: $("#webuiPackageLatestVersion"),
+  webuiPackageNpmButton: $("#webuiPackageNpmButton"),
+  webuiPackageCloseButton: $("#webuiPackageCloseButton"),
+  webuiComponentUpdateStatus: $("#webuiComponentUpdateStatus"),
+  webuiComponentUpdateButton: $("#webuiComponentUpdateButton"),
   dialog: $("#extensionDialog"),
   dialogTitle: $("#dialogTitle"),
   dialogMessage: $("#dialogMessage"),
@@ -689,6 +699,8 @@ let updateRequestInProgress = false;
 let latestUpdateStatus = null;
 let updateStatusRefreshTimer = null;
 let updateNotificationHideTimer = null;
+let componentUpdatePollTimer = null;
+let componentUpdateStartInProgress = false;
 let backendOfflineNoticeShown = false;
 let latestMessages = [];
 let latestMessagesSessionKey = "";
@@ -986,6 +998,7 @@ const SUBAGENTS_IDLE_REFRESH_MS = 4000;
 const SUBAGENTS_HIDDEN_REFRESH_MS = 10_000;
 const SUBAGENT_OVERLAY_REFRESH_MS = 1000;
 const UPDATE_STATUS_REFRESH_MS = 6 * 60 * 60 * 1000;
+const COMPONENT_UPDATE_POLL_MS = 1000;
 const UPDATE_STATUS_INITIAL_DELAY_MS = 1800;
 const RUN_INDICATOR_TICK_MS = 1000;
 const RUN_INDICATOR_START_GRACE_MS = 2500;
@@ -6251,9 +6264,14 @@ function renderPiVersionButton() {
   const label = formatWebuiVersion(piVersion);
   button.hidden = !label;
   button.textContent = label ? `Pi ${label}` : "";
+  const state = componentUpdateTagState("pi");
+  const stateText = componentUpdateTagStateText(state);
+  if (state) button.dataset.updateState = state;
+  else delete button.dataset.updateState;
   if (label) {
-    button.title = `View Pi ${label} release notes`;
-    button.setAttribute("aria-label", `View Pi ${label} release notes`);
+    const base = `View Pi ${label} release notes`;
+    button.title = stateText ? `${base} — ${stateText}` : base;
+    button.setAttribute("aria-label", stateText ? `${base}, ${stateText}` : base);
   }
 }
 
@@ -6263,9 +6281,14 @@ function renderWebuiVersionButton() {
   const label = formatWebuiVersion(webuiVersion);
   button.hidden = !label;
   button.textContent = label ? `Web UI ${label}` : "";
+  const state = componentUpdateTagState("webui");
+  const stateText = componentUpdateTagStateText(state);
+  if (state) button.dataset.updateState = state;
+  else delete button.dataset.updateState;
   if (label) {
-    button.title = `Open Pi Web UI ${label} on npm`;
-    button.setAttribute("aria-label", `Open Pi Web UI ${label} package page`);
+    const base = `Open Pi Web UI ${label} package and update details`;
+    button.title = stateText ? `${base} — ${stateText}` : base;
+    button.setAttribute("aria-label", stateText ? `${base}, ${stateText}` : base);
   }
 }
 
@@ -6357,7 +6380,9 @@ async function openPiReleaseNotes() {
   elements.piReleaseNotesBody.setAttribute("aria-busy", "true");
   elements.piReleaseNotesBody.replaceChildren(make("p", "muted", "Loading…"));
   setPiReleaseNotesLink(piReleasePageUrl(requestedVersion));
+  renderComponentUpdateDialogs();
   if (!dialog.open) dialog.showModal();
+  refreshUpdateStatus({ notify: false }).catch((error) => addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn"));
 
   try {
     const response = await api("/api/pi-release-notes", { scoped: false });
@@ -6488,6 +6513,9 @@ async function refreshUpdateStatus({ force = false, notify = true } = {}) {
   const response = await api(path, { scoped: false });
   latestUpdateStatus = response.data || null;
   if (notify) renderUpdateNotification(latestUpdateStatus);
+  renderComponentUpdateIndicators();
+  renderComponentUpdateDialogs();
+  syncComponentUpdatePolling();
   return latestUpdateStatus;
 }
 
@@ -6498,6 +6526,189 @@ function scheduleUpdateStatusRefresh() {
     refreshUpdateStatus({ force: true }).catch((error) => addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn"));
     scheduleUpdateStatusRefresh();
   }, UPDATE_STATUS_REFRESH_MS);
+}
+
+const COMPONENT_UPDATE_TARGETS = ["pi", "webui"];
+
+function componentUpdateLabel(target) {
+  return target === "pi" ? "Pi" : "Web UI";
+}
+
+function componentUpdateJob(target) {
+  const job = latestUpdateStatus?.componentUpdates?.[target];
+  return job && typeof job === "object" ? job : null;
+}
+
+function componentUpdateTagState(target) {
+  const job = componentUpdateJob(target);
+  if (job?.state === "running") return "running";
+  if (job?.state === "failed") return "failed";
+  if (job?.state === "succeeded") return "succeeded";
+  if (latestUpdateStatus?.[target]?.updateAvailable) return "available";
+  return "";
+}
+
+function componentUpdateTagStateText(state) {
+  switch (state) {
+    case "running": return "update running";
+    case "failed": return "update failed";
+    case "succeeded": return "update succeeded";
+    case "available": return "update available";
+    default: return "";
+  }
+}
+
+function anyComponentUpdateRunning() {
+  return COMPONENT_UPDATE_TARGETS.some((target) => componentUpdateJob(target)?.state === "running");
+}
+
+function renderComponentUpdateIndicators() {
+  renderPiVersionButton();
+  renderWebuiVersionButton();
+}
+
+function componentUpdateStatusText(target) {
+  const label = componentUpdateLabel(target);
+  const job = componentUpdateJob(target);
+  const pkg = latestUpdateStatus?.[target] || {};
+  const current = formatWebuiVersion(pkg.currentVersion || (target === "pi" ? piVersion : webuiVersion) || "");
+  const latest = formatWebuiVersion(pkg.latestVersion || "");
+  if (job?.state === "running") return { text: job.message || `Updating ${label}…`, level: "warn" };
+  if (job?.state === "succeeded") {
+    const activation = target === "pi"
+      ? "New or reloaded Pi sessions use the update; already-running tabs keep their current runtime until restarted."
+      : "Restart the Web UI server to use the update; it is not restarted automatically.";
+    return { text: `${job.message || `${label} update completed.`} ${activation}`, level: "success" };
+  }
+  if (job?.state === "failed") {
+    const detail = job.error ? ` ${job.error}` : "";
+    return { text: `${job.message || `${label} update failed.`}${detail} You can retry the update.`, level: "error" };
+  }
+  const availability = pkg.updateAvailable
+    ? (latest ? `${label} ${current || "current"} → ${latest} is available.` : `${label} update is available.`)
+    : "";
+  if (job && job.canStart === false && job.unavailableReason) {
+    return { text: [availability, job.unavailableReason].filter(Boolean).join(" "), level: "warn" };
+  }
+  if (availability) return { text: availability, level: "info" };
+  if (pkg.checked && latest) return { text: `${label} is up to date.`, level: "info" };
+  if (pkg.skippedReason) return { text: `Update check skipped: ${pkg.skippedReason}.`, level: "info" };
+  return { text: "", level: "info" };
+}
+
+function componentUpdateButtonState(target) {
+  const label = componentUpdateLabel(target);
+  const job = componentUpdateJob(target);
+  const pkg = latestUpdateStatus?.[target] || {};
+  if (job?.state === "running") return { disabled: true, label: "Updating…" };
+  if (job && job.canStart === false) return { disabled: true, label: `Update ${label}` };
+  if (componentUpdateStartInProgress || updateRequestInProgress || latestUpdateStatus?.updateInProgress || anyComponentUpdateRunning()) {
+    return { disabled: true, label: `Update ${label}` };
+  }
+  if (job?.state === "failed") return { disabled: false, label: `Retry ${label} update` };
+  if (pkg.checked && !pkg.updateAvailable) return { disabled: true, label: "Up to date" };
+  return { disabled: false, label: `Update ${label}` };
+}
+
+function renderComponentUpdatePanel(target, statusElement, buttonElement) {
+  if (!statusElement || !buttonElement) return;
+  const { text, level } = componentUpdateStatusText(target);
+  statusElement.hidden = false;
+  statusElement.textContent = text;
+  statusElement.dataset.level = level;
+  const buttonState = componentUpdateButtonState(target);
+  buttonElement.disabled = buttonState.disabled;
+  buttonElement.textContent = buttonState.label;
+}
+
+function renderComponentUpdateDialogs() {
+  renderComponentUpdatePanel("pi", elements.piComponentUpdateStatus, elements.piComponentUpdateButton);
+  const pkg = latestUpdateStatus?.webui || {};
+  if (elements.webuiPackageCurrentVersion) {
+    elements.webuiPackageCurrentVersion.textContent = formatWebuiVersion(pkg.currentVersion || webuiVersion || "") || "Unknown";
+  }
+  if (elements.webuiPackageLatestVersion) {
+    elements.webuiPackageLatestVersion.textContent = formatWebuiVersion(pkg.latestVersion || "") || (pkg.checked ? "Unknown" : "Not checked");
+  }
+  renderComponentUpdatePanel("webui", elements.webuiComponentUpdateStatus, elements.webuiComponentUpdateButton);
+}
+
+function syncComponentUpdatePolling() {
+  if (anyComponentUpdateRunning()) {
+    if (componentUpdatePollTimer === null) {
+      componentUpdatePollTimer = setTimeout(() => {
+        componentUpdatePollTimer = null;
+        refreshUpdateStatus({ notify: false }).catch((error) => {
+          addEvent(`Component update status check failed: ${error.message || String(error)}`, "warn");
+          if (anyComponentUpdateRunning()) syncComponentUpdatePolling();
+        });
+      }, COMPONENT_UPDATE_POLL_MS);
+    }
+  } else if (componentUpdatePollTimer !== null) {
+    clearTimeout(componentUpdatePollTimer);
+    componentUpdatePollTimer = null;
+  }
+}
+
+function componentUpdateConfirmationText(target) {
+  const pkg = latestUpdateStatus?.[target] || {};
+  const versionText = pkg.updateAvailable ? `\n\nDetected update: ${packageUpdateText(componentUpdateLabel(target), pkg)}.` : "";
+  if (target === "pi") {
+    return `Update Pi in the background now?${versionText}\n\nThis runs the existing "pi update --self" resolution on the Web UI host. The Web UI server and running Pi tabs are not restarted; new or reloaded Pi sessions use the updated Pi.`;
+  }
+  return `Update the Web UI package in the background now?${versionText}\n\nThis installs @firstpick/pi-package-webui@latest into the installation that started this server. The Web UI server is not restarted automatically; restart it afterwards to use the new version.`;
+}
+
+async function startComponentUpdate(target) {
+  if (componentUpdateStartInProgress) return;
+  const label = componentUpdateLabel(target);
+  const job = componentUpdateJob(target);
+  if (job?.state === "running" || anyComponentUpdateRunning() || updateRequestInProgress || latestUpdateStatus?.updateInProgress) return;
+  if (job && job.canStart === false) {
+    addEvent(job.unavailableReason || `${label} update is currently unavailable.`, "warn");
+    renderComponentUpdateDialogs();
+    return;
+  }
+  const confirmed = await appConfirmText(componentUpdateConfirmationText(target), {
+    affected: target === "pi" ? "The Pi installation on the Web UI host" : "The Web UI package installation on this host",
+    confirmLabel: job?.state === "failed" ? `Retry ${label} update` : `Update ${label}`,
+    danger: false,
+  });
+  if (!confirmed) return;
+  componentUpdateStartInProgress = true;
+  renderComponentUpdateDialogs();
+  try {
+    const response = await api("/api/component-update", { method: "POST", body: { target }, scoped: false });
+    const accepted = response?.data;
+    if (accepted && typeof accepted === "object") {
+      latestUpdateStatus = {
+        ...(latestUpdateStatus || {}),
+        updateInProgress: true,
+        componentUpdates: { ...(latestUpdateStatus?.componentUpdates || {}), [target]: accepted },
+      };
+    }
+    addEvent(`${label} update started in the background`, "info");
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    if (error?.statusCode === 409) await refreshUpdateStatus({ notify: false }).catch(() => {});
+  } finally {
+    componentUpdateStartInProgress = false;
+    renderComponentUpdateIndicators();
+    renderComponentUpdateDialogs();
+    syncComponentUpdatePolling();
+  }
+}
+
+async function openWebuiPackageDialog() {
+  const dialog = elements.webuiPackageDialog;
+  if (!dialog) return;
+  renderComponentUpdateDialogs();
+  if (!dialog.open) dialog.showModal();
+  try {
+    await refreshUpdateStatus({ notify: false });
+  } catch (error) {
+    addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn");
+  }
 }
 
 function initializeUpdateNotifications() {
@@ -23302,6 +23513,117 @@ function formatStatsPercent(value) {
   return `${statsNumber(value).toFixed(1)}%`;
 }
 
+function statsArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function statsNullableNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatStatsNullablePercent(value) {
+  const number = statsNullableNumber(value);
+  return number === null ? "n/a" : `${number.toFixed(1)}%`;
+}
+
+function formatStatsNullableCost(value) {
+  const number = statsNullableNumber(value);
+  return number === null ? "n/a" : formatStatsCost(number);
+}
+
+function formatStatsNullableTokens(value) {
+  const number = statsNullableNumber(value);
+  return number === null ? "n/a" : `${formatStatsTokens(number)} tok`;
+}
+
+function formatStatsSignedCost(value) {
+  const number = statsNullableNumber(value);
+  if (number === null) return "n/a";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}${formatStatsCost(Math.abs(number))}`;
+}
+
+function statsSummaryHas(summary, key) {
+  return !!summary && typeof summary === "object" && key in summary;
+}
+
+function statsCostShareOf(cost, totalCost) {
+  const total = statsNumber(totalCost);
+  return total > 0 ? (statsNumber(cost) / total) * 100 : null;
+}
+
+function statsCachedInputShare(summary, totals) {
+  if (statsSummaryHas(summary, "cachedInputShare")) return statsNullableNumber(summary.cachedInputShare);
+  // Legacy v1 payload fallback: compute the cached-input share client-side.
+  const denominator = statsNumber(totals?.input) + statsNumber(totals?.cacheRead) + statsNumber(totals?.cacheWrite);
+  return denominator > 0 ? (statsNumber(totals?.cacheRead) / denominator) * 100 : null;
+}
+
+function statsPromptSideTokens(summary, totals) {
+  if (statsSummaryHas(summary, "promptSideTokens")) return statsNumber(summary.promptSideTokens);
+  return statsNumber(totals?.input) + statsNumber(totals?.cacheRead) + statsNumber(totals?.cacheWrite);
+}
+
+function statsEffectiveCostRate(summary, totals) {
+  if (statsSummaryHas(summary, "effectiveCostPerMillionTokens")) return statsNullableNumber(summary.effectiveCostPerMillionTokens);
+  // Legacy v1 payload fallback: blended cost per million total tokens.
+  return statsNumber(totals?.total) > 0 ? (statsNumber(totals?.cost) / statsNumber(totals.total)) * 1_000_000 : null;
+}
+
+function statsScopedSessionCount(payload) {
+  const scoped = statsNullableNumber(payload?.scopedSessionCount);
+  if (scoped !== null) return scoped;
+  // Legacy v1 payload fallback: only the session-file count is available.
+  return statsNullableNumber(payload?.sessionCount);
+}
+
+function statsAverageCostPerSession(summary, payload) {
+  if (statsSummaryHas(summary, "averageCostPerSession")) return statsNullableNumber(summary.averageCostPerSession);
+  const sessions = statsScopedSessionCount(payload);
+  return sessions && sessions > 0 ? statsNumber(payload?.totals?.cost) / sessions : null;
+}
+
+function statsAverageTokensPerSession(summary, payload) {
+  if (statsSummaryHas(summary, "averageTokensPerSession")) return statsNullableNumber(summary.averageTokensPerSession);
+  const sessions = statsScopedSessionCount(payload);
+  return sessions && sessions > 0 ? statsNumber(payload?.totals?.total) / sessions : null;
+}
+
+function statsSpendComparison(summary) {
+  const comparison = statsSummaryHas(summary, "spendComparison") ? summary.spendComparison : null;
+  if (!comparison || typeof comparison !== "object") return null;
+  const windowDays = statsNumber(comparison.windowDays);
+  if (windowDays <= 0) return null;
+  return {
+    windowDays,
+    recentStartDay: typeof comparison.recentStartDay === "string" ? comparison.recentStartDay : "",
+    recentEndDay: typeof comparison.recentEndDay === "string" ? comparison.recentEndDay : "",
+    recentCost: statsNumber(comparison.recentCost),
+    priorCost: statsNumber(comparison.priorCost),
+    changeCost: statsNullableNumber(comparison.changeCost),
+    changePercent: statsNullableNumber(comparison.changePercent),
+  };
+}
+
+function statsModelDriverEntries(payload) {
+  const totalCost = statsNumber(payload?.totals?.cost);
+  return statsArray(payload?.models).map((model) => ({
+    name: model?.model || "unknown",
+    cost: statsNumber(model?.cost),
+    share: statsCostShareOf(model?.cost, totalCost),
+  }));
+}
+
+function statsSessionDriverEntries(payload) {
+  const totalCost = statsNumber(payload?.totals?.cost);
+  return statsArray(payload?.expensiveSessions).map((session) => ({
+    name: session?.displayName || session?.sessionId || "unknown",
+    cost: statsNumber(session?.cost),
+    share: statsCostShareOf(session?.cost, totalCost),
+  }));
+}
+
 function parseStatsWebuiPayloadRaw(raw) {
   if (!raw) return null;
   try {
@@ -23376,13 +23698,18 @@ function statsLineBlock(lines = []) {
   return pre;
 }
 
-function renderStatsTable(headers, rows, emptyText = "No data.") {
+function renderStatsTable(headers, rows, emptyText = "No data.", caption = "") {
   if (!rows.length) return make("p", "stats-overlay-empty muted", emptyText);
   const wrapper = make("div", "stats-overlay-table-wrap");
   const table = make("table", "stats-overlay-table");
+  if (caption) table.append(make("caption", "stats-overlay-table-caption", caption));
   const thead = make("thead");
   const headRow = make("tr");
-  for (const header of headers) headRow.append(make("th", undefined, header));
+  for (const header of headers) {
+    const th = make("th", undefined, header);
+    th.scope = "col";
+    headRow.append(th);
+  }
   thead.append(headRow);
   const tbody = make("tbody");
   for (const row of rows) {
@@ -23395,18 +23722,57 @@ function renderStatsTable(headers, rows, emptyText = "No data.") {
   return wrapper;
 }
 
+const STATS_CHART_POINT_LIMIT = 31;
+
+function statsChartWindow(rows = []) {
+  const list = statsArray(rows);
+  const capped = list.length > STATS_CHART_POINT_LIMIT ? list.slice(-STATS_CHART_POINT_LIMIT) : list;
+  return { capped, total: list.length, truncated: list.length > capped.length };
+}
+
+function statsChartWindowNote({ total, truncated }, noun = "days") {
+  if (!truncated) return null;
+  return make("p", "stats-overlay-chart-note muted", `Showing the latest ${STATS_CHART_POINT_LIMIT} of ${total} ${noun}; the Daily tab lists every recorded day.`);
+}
+
+function statsLegendItem(seriesClass, label) {
+  const item = make("span", "stats-overlay-legend-item");
+  item.append(make("span", `stats-overlay-legend-swatch ${seriesClass}`), label);
+  return item;
+}
+
 function renderStatsBarRows(daily = []) {
-  const rows = daily.filter((row) => statsNumber(row.total) > 0 || statsNumber(row.cost) > 0);
+  const rows = statsArray(daily).filter((row) => statsNumber(row?.total) > 0 || statsNumber(row?.cost) > 0);
   if (!rows.length) return make("p", "stats-overlay-empty muted", "No non-zero usage in this range.");
-  const maxTokens = Math.max(1, ...rows.map((row) => statsNumber(row.total)));
+  const windowed = statsChartWindow(rows);
+  const capped = windowed.capped;
+  const maxTokens = Math.max(1, ...capped.map((row) => statsNumber(row.total)));
+  const maxCost = Math.max(0.0001, ...capped.map((row) => statsNumber(row.cost)));
+  const peakTokens = capped.reduce((best, row) => (statsNumber(row.total) > statsNumber(best?.total) ? row : best), capped[0]);
+  const peakCost = capped.reduce((best, row) => (statsNumber(row.cost) > statsNumber(best?.cost) ? row : best), capped[0]);
+  const wrapper = make("div", "stats-overlay-bars-panel");
+  const legend = make("p", "stats-overlay-legend");
+  legend.append(
+    statsLegendItem("tokens", "Tokens"),
+    statsLegendItem("cost", "Cost"),
+    make("span", "stats-overlay-legend-note muted", "token and cost bars use independent scales"),
+  );
   const list = make("div", "stats-overlay-bars");
-  for (const row of rows) {
-    const tokenRatio = Math.max(0.015, statsNumber(row.total) / maxTokens);
+  for (const row of capped) {
+    const tokenRatio = Math.min(100, Math.max(statsNumber(row.total) > 0 ? 1.5 : 0, (statsNumber(row.total) / maxTokens) * 100));
+    const costRatio = Math.min(100, Math.max(statsNumber(row.cost) > 0 ? 1.5 : 0, (statsNumber(row.cost) / maxCost) * 100));
     const item = make("div", "stats-overlay-bar-row");
     const bar = make("span", "stats-overlay-bar");
-    const fill = make("span", "stats-overlay-bar-fill");
-    fill.style.width = `${Math.min(100, tokenRatio * 100)}%`;
-    bar.append(fill);
+    bar.setAttribute("aria-hidden", "true");
+    const tokenLane = make("span", "stats-overlay-bar-lane");
+    const tokenFill = make("span", "stats-overlay-bar-fill");
+    tokenFill.style.width = `${tokenRatio}%`;
+    tokenLane.append(tokenFill);
+    const costLane = make("span", "stats-overlay-bar-lane");
+    const costFill = make("span", "stats-overlay-bar-fill cost");
+    costFill.style.width = `${costRatio}%`;
+    costLane.append(costFill);
+    bar.append(tokenLane, costLane);
     item.append(
       make("span", "stats-overlay-bar-day", row.day || "—"),
       bar,
@@ -23415,7 +23781,114 @@ function renderStatsBarRows(daily = []) {
     );
     list.append(item);
   }
+  wrapper.append(
+    legend,
+    list,
+    make("p", "stats-overlay-chart-caption muted", `${capped[0]?.day || "—"} → ${capped.at(-1)?.day || "—"} · peak ${formatStatsTokens(peakTokens?.total)} tok on ${peakTokens?.day || "—"} · peak spend ${formatStatsCost(peakCost?.cost)} on ${peakCost?.day || "—"}`),
+  );
+  const note = statsChartWindowNote(windowed, "active days");
+  if (note) wrapper.append(note);
+  return wrapper;
+}
+
+function renderStatsSpendChart(daily = []) {
+  const rows = statsArray(daily).map((row) => ({ day: String(row?.day || "—"), cost: Math.max(0, statsNumber(row?.cost)) }));
+  if (!rows.length) return make("p", "stats-overlay-empty muted", "No daily usage in this range.");
+  const windowed = statsChartWindow(rows);
+  const capped = windowed.capped;
+  const maxCost = Math.max(0, ...capped.map((row) => row.cost));
+  const total = capped.reduce((acc, row) => acc + row.cost, 0);
+  if (total <= 0) return make("p", "stats-overlay-empty muted", "No spend recorded in this range.");
+  const peak = capped.reduce((best, row) => (row.cost > (best?.cost ?? -1) ? row : best), null);
+  const wrapper = make("div", "stats-overlay-spend");
+  const chart = make("div", "stats-overlay-spend-chart");
+  chart.setAttribute("role", "img");
+  chart.setAttribute("aria-label", `Daily spend bar chart from ${capped[0].day} to ${capped.at(-1).day}. Total ${formatStatsCost(total)}; peak ${formatStatsCost(peak?.cost)} on ${peak?.day}.`);
+  for (const row of capped) {
+    const col = make("span", "stats-overlay-spend-col");
+    const bar = make("span", "stats-overlay-spend-bar");
+    const height = maxCost > 0 ? Math.min(100, Math.max(row.cost > 0 ? 3 : 0, (row.cost / maxCost) * 100)) : 0;
+    bar.style.height = `${height}%`;
+    col.title = `${row.day}: ${formatStatsCost(row.cost)}`;
+    col.append(bar);
+    chart.append(col);
+  }
+  const caption = make("p", "stats-overlay-chart-caption muted", `Daily spend ${capped[0].day} → ${capped.at(-1).day} · total ${formatStatsCost(total)} · peak ${formatStatsCost(peak?.cost ?? 0)} on ${peak?.day ?? "—"}${windowed.truncated ? ` · latest ${capped.length} of ${windowed.total} days` : ""}`);
+  wrapper.append(chart, caption);
+  return wrapper;
+}
+
+function renderStatsComposition(totals = {}) {
+  const segments = [
+    { key: "seg-input", label: "Input", value: Math.max(0, statsNumber(totals.input)) },
+    { key: "seg-output", label: "Output", value: Math.max(0, statsNumber(totals.output)) },
+    { key: "seg-cache-read", label: "Cache read", value: Math.max(0, statsNumber(totals.cacheRead)) },
+    { key: "seg-cache-write", label: "Cache write", value: Math.max(0, statsNumber(totals.cacheWrite)) },
+  ];
+  const total = segments.reduce((acc, segment) => acc + segment.value, 0);
+  if (total <= 0) return make("p", "stats-overlay-empty muted", "No token usage in this range.");
+  const shareText = (value) => `${((value / total) * 100).toFixed(1)}%`;
+  const wrapper = make("div", "stats-overlay-composition");
+  const track = make("div", "stats-overlay-composition-track");
+  track.setAttribute("role", "img");
+  track.setAttribute("aria-label", `Token composition: ${segments.map((segment) => `${segment.label} ${shareText(segment.value)}`).join(", ")}.`);
+  for (const segment of segments) {
+    if (segment.value <= 0) continue;
+    const node = make("span", `stats-overlay-composition-segment ${segment.key}`);
+    node.style.width = `${Math.min(100, Math.max(0, (segment.value / total) * 100))}%`;
+    node.title = `${segment.label}: ${formatStatsTokens(segment.value)} tok (${shareText(segment.value)})`;
+    track.append(node);
+  }
+  const legend = make("ul", "stats-overlay-legend stats-overlay-composition-legend");
+  for (const segment of segments) {
+    const item = make("li", "stats-overlay-legend-item");
+    item.append(make("span", `stats-overlay-legend-swatch ${segment.key}`), `${segment.label} ${formatStatsTokens(segment.value)} tok · ${shareText(segment.value)}`);
+    legend.append(item);
+  }
+  wrapper.append(track, legend);
+  return wrapper;
+}
+
+function renderStatsDriverList(entries = [], emptyText = "No cost drivers in this range.") {
+  const rows = statsArray(entries)
+    .map((entry) => ({ name: entry?.name || "unknown", cost: Math.max(0, statsNumber(entry?.cost)), share: statsNullableNumber(entry?.share) }))
+    .filter((entry) => entry.cost > 0)
+    .slice(0, 8);
+  if (!rows.length) return make("p", "stats-overlay-empty muted", emptyText);
+  const maxCost = Math.max(...rows.map((entry) => entry.cost));
+  const list = make("div", "stats-overlay-driver-list");
+  for (const [index, entry] of rows.entries()) {
+    const ratio = maxCost > 0 ? Math.min(100, Math.max(2, (entry.cost / maxCost) * 100)) : 0;
+    const row = make("div", "stats-overlay-driver-row");
+    const bar = make("span", "stats-overlay-driver-bar");
+    bar.setAttribute("aria-hidden", "true");
+    const fill = make("span", "stats-overlay-driver-bar-fill");
+    fill.style.width = `${ratio}%`;
+    bar.append(fill);
+    row.append(
+      make("span", "stats-overlay-driver-rank", String(index + 1)),
+      make("span", "stats-overlay-driver-name", entry.name),
+      bar,
+      make("span", "stats-overlay-driver-value", `${formatStatsCost(entry.cost)} · ${formatStatsNullablePercent(entry.share)}`),
+    );
+    list.append(row);
+  }
   return list;
+}
+
+function renderStatsDriverSection(title, entries, emptyText) {
+  const section = make("section", "stats-overlay-driver-section");
+  section.append(make("h4", undefined, title), renderStatsDriverList(entries, emptyText));
+  return section;
+}
+
+function renderStatsTopDrivers(payload) {
+  const grid = make("div", "stats-overlay-drivers");
+  grid.append(
+    renderStatsDriverSection("Models by spend", statsModelDriverEntries(payload), "No model spend in this range."),
+    renderStatsDriverSection("Sessions by spend", statsSessionDriverEntries(payload), "No session spend in this range."),
+  );
+  return grid;
 }
 
 function renderStatsOverview(payload) {
@@ -23423,25 +23896,29 @@ function renderStatsOverview(payload) {
   const totals = payload?.totals || {};
   const summary = payload?.summary || {};
   const highest = summary.highestDay;
+  const scopedSessions = statsNullableNumber(payload?.scopedSessionCount);
+  const sessionDetail = scopedSessions !== null ? `${scopedSessions} sessions in range` : `${payload?.sessionCount ?? 0} session files`;
+  const cachedShare = statsCachedInputShare(summary, totals);
   const cards = make("div", "stats-overlay-cards");
   cards.append(
     statsMetricCard("Total tokens", formatStatsTokens(totals.total), `↑${formatStatsTokens(totals.input)} ↓${formatStatsTokens(totals.output)}`, "tone-blue"),
     statsMetricCard("Cost", formatStatsCost(totals.cost), `projected 30d ${formatStatsCost(summary.projected30DayCost)}`, "tone-green"),
-    statsMetricCard("Messages", String(statsNumber(totals.messages)), `${payload?.sessionCount ?? 0} sessions`, "tone-mauve"),
+    statsMetricCard("Effective $/1M", formatStatsNullableCost(statsEffectiveCostRate(summary, totals)), "blended rate, not provider list pricing", "tone-sky"),
+    statsMetricCard("Messages", String(statsNumber(totals.messages)), sessionDetail, "tone-mauve"),
     statsMetricCard("PI initial prompt", `~${formatStatsTokens(payload?.promptEstimate?.total)} tok`, `${statsPromptEstimateSourceLabel(payload?.promptEstimate)} · ${payload?.promptEstimate?.confidence || "estimate"}`, "tone-yellow"),
-    statsMetricCard("Cache hit", formatStatsPercent(summary.cacheHitRate), `reads ${formatStatsTokens(totals.cacheRead)} · writes ${formatStatsTokens(totals.cacheWrite)}`, "tone-teal"),
+    statsMetricCard("Cached-input share", formatStatsNullablePercent(cachedShare), `reads ${formatStatsTokens(totals.cacheRead)} · writes ${formatStatsTokens(totals.cacheWrite)} of ${formatStatsTokens(statsPromptSideTokens(summary, totals))} prompt-side tok`, "tone-teal"),
     statsMetricCard("Active days", `${payload?.activeDayCount ?? 0}/${payload?.dayCount ?? 0}`, highest ? `peak ${highest.day} · ${formatStatsCost(highest.cost)}` : "no peak yet", "tone-pink"),
   );
-  node.append(cards, make("h3", undefined, "Daily usage"), renderStatsBarRows(payload?.daily || []));
+  node.append(cards, make("h3", undefined, "Daily usage"), renderStatsBarRows(payload?.daily));
   return node;
 }
 
 function renderStatsDaily(payload) {
   const node = make("div", "stats-overlay-pane");
-  node.append(make("h3", undefined, "Daily token and cost trend"), renderStatsBarRows(payload?.daily || []));
+  node.append(make("h3", undefined, "Daily token and cost trend"), renderStatsBarRows(payload?.daily));
   node.append(renderStatsTable(
     ["Day", "Tokens", "Cost", "Input", "Output", "Cache R/W", "Msgs"],
-    (payload?.daily || []).map((row) => [
+    statsArray(payload?.daily).map((row) => [
       row.day || "—",
       formatStatsTokens(row.total),
       formatStatsCost(row.cost),
@@ -23450,14 +23927,21 @@ function renderStatsDaily(payload) {
       `${formatStatsTokens(row.cacheRead)} / ${formatStatsTokens(row.cacheWrite)}`,
       String(statsNumber(row.messages)),
     ]),
+    "No data.",
+    "Daily tokens and cost by UTC day",
   ));
   return node;
 }
 
 function renderStatsModels(payload) {
-  return renderStatsTable(
+  const node = make("div", "stats-overlay-pane");
+  node.append(
+    make("h3", undefined, "Model spend ranks"),
+    renderStatsDriverList(statsModelDriverEntries(payload), "No model spend in this range."),
+  );
+  node.append(renderStatsTable(
     ["Model", "Tokens", "Token %", "Cost", "Spend %", "$/1M", "Avg out", "Msgs"],
-    (payload?.models || []).map((model) => [
+    statsArray(payload?.models).map((model) => [
       model.model || "unknown",
       formatStatsTokens(model.tokens),
       formatStatsPercent(model.percent),
@@ -23468,13 +23952,20 @@ function renderStatsModels(payload) {
       String(statsNumber(model.messages)),
     ]),
     "No model usage in this range.",
-  );
+    "Model token and cost comparison",
+  ));
+  return node;
 }
 
 function renderStatsSessions(payload) {
-  return renderStatsTable(
+  const node = make("div", "stats-overlay-pane");
+  node.append(
+    make("h3", undefined, "Session spend ranks"),
+    renderStatsDriverList(statsSessionDriverEntries(payload), "No session spend in this range."),
+  );
+  node.append(renderStatsTable(
     ["Day", "Session", "Cost", "Tokens", "Model"],
-    (payload?.expensiveSessions || []).map((session) => [
+    statsArray(payload?.expensiveSessions).map((session) => [
       session.day || "—",
       session.displayName || session.sessionId || "unknown",
       formatStatsCost(session.cost),
@@ -23482,21 +23973,43 @@ function renderStatsSessions(payload) {
       session.model || "unknown",
     ]),
     "No session usage in this range.",
-  );
+    "Most expensive sessions in the selected range",
+  ));
+  return node;
 }
 
 function renderStatsCostCache(payload) {
   const node = make("div", "stats-overlay-pane");
   const totals = payload?.totals || {};
   const summary = payload?.summary || {};
+  const comparison = statsSpendComparison(summary);
+  const scopedSessions = statsNullableNumber(payload?.scopedSessionCount);
+  const sessionDetail = scopedSessions !== null ? `per session in range (${scopedSessions})` : "per session file (legacy count)";
   const cards = make("div", "stats-overlay-cards compact");
   cards.append(
     statsMetricCard("Avg/day", formatStatsCost(summary.calendarAvgCost), "calendar average", "tone-green"),
     statsMetricCard("Active avg", formatStatsCost(summary.activeAvgCost), "per active day", "tone-teal"),
-    statsMetricCard("Non-cache", formatStatsTokens(summary.nonCacheTokens), `${formatStatsTokens(totals.total)} total`, "tone-blue"),
-    statsMetricCard("Cache hit", formatStatsPercent(summary.cacheHitRate), `${formatStatsTokens(totals.cacheRead)} read tokens`, "tone-yellow"),
+    statsMetricCard("Effective $/1M", formatStatsNullableCost(statsEffectiveCostRate(summary, totals)), "blended rate, not provider list pricing", "tone-blue"),
+    statsMetricCard("Cached-input share", formatStatsNullablePercent(statsCachedInputShare(summary, totals)), `reads ${formatStatsTokens(totals.cacheRead)} of ${formatStatsTokens(statsPromptSideTokens(summary, totals))} prompt-side tok`, "tone-yellow"),
+    statsMetricCard("Avg cost/session", formatStatsNullableCost(statsAverageCostPerSession(summary, payload)), `${formatStatsNullableTokens(statsAverageTokensPerSession(summary, payload))} · ${sessionDetail}`, "tone-mauve"),
+    statsMetricCard(
+      "Recent spend",
+      comparison ? formatStatsCost(comparison.recentCost) : "n/a",
+      comparison
+        ? `${comparison.recentStartDay} → ${comparison.recentEndDay} (${comparison.windowDays}d) vs prior ${comparison.windowDays}d ${formatStatsCost(comparison.priorCost)} · ${formatStatsSignedCost(comparison.changeCost)} (${formatStatsNullablePercent(comparison.changePercent)})`
+        : "requires the latest stats extension",
+      "tone-pink",
+    ),
   );
-  node.append(cards, make("h3", undefined, "Cost trend"), statsLineBlock(payload?.lines?.costTrend), make("h3", undefined, "Cache efficiency"), statsLineBlock(payload?.lines?.cache));
+  node.append(
+    cards,
+    make("h3", undefined, "Daily spend"),
+    renderStatsSpendChart(payload?.daily),
+    make("h3", undefined, "Token & cache composition"),
+    renderStatsComposition(totals),
+    make("h3", undefined, "Top cost drivers"),
+    renderStatsTopDrivers(payload),
+  );
   return node;
 }
 
@@ -23527,24 +24040,429 @@ function renderStatsCalibrationPanel(payload) {
   return panel;
 }
 
-function renderStatsPrompt(payload) {
-  const node = make("div", "stats-overlay-pane");
-  const cards = make("div", "stats-overlay-cards compact");
-  cards.append(
-    statsMetricCard("PI estimate", `~${formatStatsTokens(payload?.promptEstimate?.total)} tok`, `${statsPromptEstimateSourceLabel(payload?.promptEstimate)} · ${payload?.promptEstimate?.confidence || "estimate"}`, "tone-yellow"),
-    statsMetricCard("Prompt chars", statsNumber(payload?.promptEstimate?.systemPromptChars).toLocaleString(), `${statsNumber(payload?.promptEstimate?.activeToolSchemas)} active tool schemas`, "tone-blue"),
-    statsMetricCard("Calibration", `×${statsNumber(payload?.promptEstimate?.calibrationMultiplier, 1).toFixed(2)}`, `${statsNumber(payload?.promptEstimate?.calibrationSamples)} samples`, "tone-teal"),
-    statsMetricCard("Attempts", String(statsNumber(payload?.promptEstimate?.attempts)), payload?.promptEstimate?.settled ? "settled" : "live fallback", "tone-mauve"),
-  );
+const STATS_PROMPT_SOURCE_LIMIT = 24;
+const STATS_PROMPT_TOOL_LIMIT = 12;
+const STATS_PROMPT_TOOL_ENTRY_LIMIT = 24;
+const STATS_PROMPT_SKILL_LIMIT = 10;
+const STATS_PROMPT_CONTEXT_FILE_LIMIT = 8;
+const STATS_PROMPT_SOURCE_KINDS = new Set([
+  "system-prompt", "tools-prompt", "custom-prompt", "append-system", "context-file", "skills",
+  "tool-schemas", "framing", "user-messages", "assistant-messages", "assistant-tool-calls",
+  "tool-results", "other",
+]);
+
+function statsPromptRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function statsPromptText(value, maxLength = 240) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return value.trim().slice(0, maxLength);
+}
+
+function statsPromptNullableText(value, maxLength = 240) {
+  if (value === null) return null;
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : undefined;
+}
+
+function statsPromptMetric(value, { integer = false, signed = false } = {}) {
+  if (typeof value !== "number" || !Number.isFinite(value) || (!signed && value < 0)) return null;
+  if (integer && !Number.isInteger(value)) return null;
+  return value;
+}
+
+function statsPromptNullableMetric(value, options = {}) {
+  if (value === null) return null;
+  const metric = statsPromptMetric(value, options);
+  return metric === null ? undefined : metric;
+}
+
+function statsPromptPercent(value) {
+  const percent = statsPromptNullableMetric(value);
+  return percent === undefined || (percent !== null && percent > 100) ? undefined : percent;
+}
+
+function formatStatsPromptNullablePercent(value) {
+  return value === null ? "n/a" : `${value.toFixed(1)}%`;
+}
+
+function formatStatsPromptNullableTokens(value) {
+  return value === null ? "n/a" : `${formatStatsTokens(value)} tok`;
+}
+
+function statsPromptList(value, limit, normalize) {
+  if (!Array.isArray(value)) return null;
+  const result = [];
+  for (const entry of value.slice(0, limit)) {
+    const normalized = normalize(entry);
+    if (!normalized) return null;
+    result.push(normalized);
+  }
+  return result;
+}
+
+function normalizeStatsPromptSource(value, tokenKey, { charsNullable = false } = {}) {
+  const source = statsPromptRecord(value);
+  if (!source) return null;
+  const id = statsPromptText(source.id, 120);
+  const kind = statsPromptText(source.kind, 80);
+  const label = statsPromptText(source.label, 240);
+  const chars = charsNullable ? statsPromptNullableMetric(source.chars) : statsPromptMetric(source.chars);
+  const tokens = statsPromptMetric(source[tokenKey]);
+  const percent = statsPromptPercent(source.percent);
+  if (!id || !kind || !STATS_PROMPT_SOURCE_KINDS.has(kind) || !label || chars === undefined || tokens === null || percent === undefined) return null;
+  return { id, kind, label, chars, [tokenKey]: tokens, percent };
+}
+
+function normalizeStatsPromptInitial(value) {
+  const section = statsPromptRecord(value);
+  if (!section) return null;
+  const totalTokens = statsPromptMetric(section.totalTokens);
+  const lowTokens = statsPromptMetric(section.lowTokens);
+  const highTokens = statsPromptMetric(section.highTokens);
+  const confidence = statsPromptText(section.confidence, 80);
+  const source = statsPromptText(section.source, 80);
+  const warning = statsPromptNullableText(section.warning, 360);
+  const estimateMethod = statsPromptText(section.estimateMethod, 160);
+  const components = statsPromptList(section.components, STATS_PROMPT_SOURCE_LIMIT, (entry) => {
+    const component = normalizeStatsPromptSource(entry, "tokens", { charsNullable: true });
+    if (!component) return null;
+    const uncalibratedTokens = statsPromptMetric(entry.uncalibratedTokens);
+    return uncalibratedTokens === null ? null : { ...component, uncalibratedTokens };
+  });
+  if (totalTokens === null || lowTokens === null || highTokens === null || !confidence || !source || warning === undefined || !estimateMethod || !components) return null;
+  const componentTotal = components.reduce((sum, component) => sum + component.tokens, 0);
+  if (componentTotal !== totalTokens) return null;
+  return { totalTokens, lowTokens, highTokens, confidence, source, warning, estimateMethod, components };
+}
+
+function normalizeStatsPromptInventory(value, limit, itemKey, normalizeItem) {
+  const inventory = statsPromptRecord(value);
+  if (!inventory) return null;
+  const totalCount = statsPromptMetric(inventory.totalCount, { integer: true });
+  const omittedCount = statsPromptMetric(inventory.omittedCount, { integer: true });
+  const items = statsPromptList(inventory[itemKey], limit, normalizeItem);
+  if (totalCount === null || omittedCount === null || !items) return null;
+  return { totalCount, omittedCount, items };
+}
+
+function normalizeStatsPromptSnapshot(value) {
+  const section = statsPromptRecord(value);
+  const estimates = statsPromptRecord(section?.estimateComponents);
+  const calibration = statsPromptRecord(estimates?.calibration);
+  const metadata = statsPromptRecord(section?.metadata);
+  if (!section || !estimates || !calibration || !metadata) return null;
+
+  const source = statsPromptText(section.source, 80);
+  const settled = typeof section.settled === "boolean" ? section.settled : null;
+  const attempts = statsPromptMetric(section.attempts, { integer: true });
+  const warning = statsPromptNullableText(section.warning, 360);
+  const systemPromptChars = statsPromptMetric(section.systemPromptChars, { integer: true });
+  const promptText = statsPromptMetric(estimates.promptText);
+  const toolSchemas = statsPromptMetric(estimates.toolSchemas);
+  const framing = statsPromptMetric(estimates.framing);
+  const multiplier = statsPromptMetric(calibration.multiplier);
+  const samples = statsPromptMetric(calibration.samples, { integer: true });
+  const currentDate = statsPromptNullableText(metadata.currentDate, 120);
+  const cwdDisplay = statsPromptNullableText(metadata.cwdDisplay, 120);
+  const extraGuidelineCount = statsPromptMetric(metadata.extraGuidelineCount, { integer: true });
+
+  const tools = normalizeStatsPromptInventory(section.tools, STATS_PROMPT_TOOL_LIMIT, "items", (value) => {
+    const item = statsPromptRecord(value);
+    if (!item) return null;
+    const name = statsPromptText(item.name, 120);
+    const description = statsPromptNullableText(item.description, 360);
+    const parameterSummary = statsPromptText(item.parameterSummary, 120);
+    const estimatedTokens = statsPromptMetric(item.estimatedTokens);
+    return !name || description === undefined || !parameterSummary || estimatedTokens === null
+      ? null
+      : { name, description, parameterSummary, estimatedTokens };
+  });
+  const toolPromptEntries = normalizeStatsPromptInventory(section.toolPromptEntries, STATS_PROMPT_TOOL_ENTRY_LIMIT, "names", (name) => {
+    const normalized = statsPromptText(name, 120);
+    return normalized ? { name: normalized } : null;
+  });
+  const skills = normalizeStatsPromptInventory(section.skills, STATS_PROMPT_SKILL_LIMIT, "items", (value) => {
+    const item = statsPromptRecord(value);
+    if (!item) return null;
+    const name = statsPromptText(item.name, 120);
+    const description = statsPromptNullableText(item.description, 360);
+    return !name || description === undefined ? null : { name, description };
+  });
+  const contextFiles = normalizeStatsPromptInventory(section.contextFiles, STATS_PROMPT_CONTEXT_FILE_LIMIT, "items", (value) => {
+    const item = statsPromptRecord(value);
+    if (!item) return null;
+    const displayPath = statsPromptText(item.displayPath, 240);
+    const chars = statsPromptNullableMetric(item.chars);
+    return !displayPath || chars === undefined ? null : { displayPath, chars };
+  });
+
+  if (!source || settled === null || attempts === null || warning === undefined || systemPromptChars === null
+    || promptText === null || toolSchemas === null || framing === null || multiplier === null || samples === null
+    || currentDate === undefined || cwdDisplay === undefined || extraGuidelineCount === null
+    || !tools || !toolPromptEntries || !skills || !contextFiles) return null;
+  return {
+    source, settled, attempts, warning, systemPromptChars,
+    estimateComponents: { promptText, toolSchemas, framing, calibration: { multiplier, samples } },
+    metadata: { currentDate, cwdDisplay, extraGuidelineCount },
+    tools, toolPromptEntries, skills, contextFiles,
+  };
+}
+
+function normalizeStatsPromptCurrent(value) {
+  const section = statsPromptRecord(value);
+  const usage = statsPromptRecord(section?.usage);
+  const breakdown = statsPromptRecord(section?.breakdown);
+  if (!section || !usage || !breakdown) return null;
+  const tokens = statsPromptNullableMetric(usage.tokens);
+  const contextWindow = statsPromptNullableMetric(usage.contextWindow);
+  const percent = statsPromptNullableMetric(usage.percent);
+  const estimateMethod = statsPromptText(breakdown.estimateMethod, 160);
+  const reconstruction = statsPromptText(breakdown.reconstruction, 40);
+  const estimatedTotalTokens = statsPromptMetric(breakdown.estimatedTotalTokens);
+  const actualMinusEstimatedTokens = statsPromptNullableMetric(breakdown.actualMinusEstimatedTokens, { signed: true });
+  const sources = statsPromptList(breakdown.sources, STATS_PROMPT_SOURCE_LIMIT, (entry) => normalizeStatsPromptSource(entry, "estimatedTokens"));
+  if (tokens === undefined || contextWindow === undefined || percent === undefined || !estimateMethod
+    || !["complete", "unavailable"].includes(reconstruction) || estimatedTotalTokens === null
+    || actualMinusEstimatedTokens === undefined || !sources) return null;
+  return { usage: { tokens, contextWindow, percent }, breakdown: { estimateMethod, reconstruction, estimatedTotalTokens, actualMinusEstimatedTokens, sources } };
+}
+
+function statsPromptKindLabel(kind) {
+  return ({
+    "system-prompt": "System prompt", "tools-prompt": "Tools prompt", "custom-prompt": "Custom prompt",
+    "append-system": "Append system", "context-file": "Context file", skills: "Skills",
+    "tool-schemas": "Tool schemas", framing: "Framing", "user-messages": "User messages",
+    "assistant-messages": "Assistant messages", "assistant-tool-calls": "Assistant + tool calls",
+    "tool-results": "Tool results", other: "Other",
+  })[kind] || kind;
+}
+
+function statsPromptSectionHeading(title, eyebrow) {
+  const header = make("div", "stats-prompt-section-heading");
+  const text = make("div");
+  text.append(make("span", "stats-prompt-eyebrow", eyebrow), make("h3", undefined, title));
+  header.append(text);
+  return header;
+}
+
+function statsPromptLegacyFallback(title, lines) {
+  const section = make("section", "stats-prompt-section stats-prompt-legacy-fallback");
+  const heading = statsPromptSectionHeading(title, "Legacy fallback");
+  heading.append(make("span", "stats-prompt-badge warning", "Structured data unavailable"));
+  section.append(heading, make("p", "stats-prompt-note muted", "Showing the matching legacy command output for this section."), statsLineBlock(lines));
+  return section;
+}
+
+function statsPromptCompositionTrack(rows, tokenKey, totalTokens, label) {
+  const figure = make("figure", "stats-prompt-composition");
+  const track = make("div", "stats-prompt-composition-track");
+  const describedRows = rows.slice(0, 6);
+  const described = describedRows.map((row) => `${row.label} ${formatStatsPromptNullablePercent(row.percent)}`).join(", ");
+  const remaining = rows.length - describedRows.length;
+  track.setAttribute("role", "img");
+  track.setAttribute("aria-label", `${label}: ${described || "no estimated tokens"}${remaining > 0 ? `, and ${remaining} more sources` : ""}.`);
+  for (const row of rows) {
+    if (row[tokenKey] <= 0 || row.percent === null) continue;
+    const segment = make("span", "stats-prompt-composition-segment");
+    segment.dataset.promptKind = row.kind;
+    segment.style.width = `${Math.min(100, row.percent)}%`;
+    segment.title = `${row.label}: ${formatStatsTokens(row[tokenKey])} tok (${formatStatsPromptNullablePercent(row.percent)})`;
+    track.append(segment);
+  }
+  figure.append(track, make("figcaption", "stats-prompt-note muted", `${formatStatsTokens(totalTokens)} estimated tokens · numeric values are repeated in the table below.`));
+  return figure;
+}
+
+function statsPromptTable(headers, rows, caption) {
+  const wrapper = make("div", "stats-overlay-table-wrap stats-prompt-table-wrap");
+  const table = make("table", "stats-overlay-table stats-prompt-table");
+  table.append(make("caption", "stats-overlay-table-caption", caption));
+  const thead = make("thead");
+  const headRow = make("tr");
+  for (const header of headers) {
+    const th = make("th", undefined, header);
+    th.scope = "col";
+    headRow.append(th);
+  }
+  thead.append(headRow);
+  const tbody = make("tbody");
+  for (const row of rows) {
+    const tr = make("tr");
+    row.forEach((value, index) => {
+      const cell = make("td", undefined, value);
+      cell.dataset.label = headers[index];
+      tr.append(cell);
+    });
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  wrapper.append(table);
+  return wrapper;
+}
+
+function renderStatsPromptInitial(section) {
+  const node = make("section", "stats-prompt-section stats-prompt-initial");
+  const heading = statsPromptSectionHeading("Initial prompt composition", "Calibrated estimate");
+  heading.append(make("span", "stats-prompt-badge", `${formatStatsTokens(section.totalTokens)} tok`));
+  const summary = make("p", "stats-prompt-note muted", `Range ${formatStatsTokens(section.lowTokens)}–${formatStatsTokens(section.highTokens)} tok · ${section.confidence} · ${statsPromptEstimateSourceLabel(section)}`);
+  node.append(heading, summary);
+  if (section.warning) node.append(make("p", "stats-prompt-warning", section.warning));
   node.append(
-    cards,
+    statsPromptCompositionTrack(section.components, "tokens", section.totalTokens, "Initial prompt composition"),
+    statsPromptTable(
+      ["Rank", "Source", "Kind", "Chars", "Uncalibrated", "Tokens", "Share"],
+      section.components.map((component, index) => [
+        String(index + 1), component.label, statsPromptKindLabel(component.kind),
+        component.chars === null ? "n/a" : component.chars.toLocaleString(),
+        `${formatStatsTokens(component.uncalibratedTokens)} tok`, `${formatStatsTokens(component.tokens)} tok`,
+        formatStatsPromptNullablePercent(component.percent),
+      ]),
+      "Ranked initial-prompt token composition. Calibrated component tokens sum to the displayed total.",
+    ),
+  );
+  return node;
+}
+
+function statsPromptInventoryDetails(title, inventory, renderBody) {
+  const details = make("details", "stats-prompt-inventory-details");
+  const shown = inventory.items.length;
+  const count = `${shown} shown / ${inventory.totalCount} total${inventory.omittedCount ? ` · ${inventory.omittedCount} omitted` : ""}`;
+  const summary = make("summary");
+  summary.append(make("span", undefined, title), make("span", "stats-prompt-details-count", count));
+  details.append(summary);
+  const body = make("div", "stats-prompt-details-body");
+  body.append(renderBody(inventory.items));
+  if (inventory.omittedCount) body.append(make("p", "stats-prompt-note muted", `${inventory.omittedCount} additional ${title.toLowerCase()} omitted by the producer cap.`));
+  details.append(body);
+  return details;
+}
+
+function statsPromptDefinitionList(entries) {
+  const list = make("dl", "stats-prompt-definition-list");
+  for (const [term, description] of entries) list.append(make("dt", undefined, term), make("dd", undefined, description));
+  return list;
+}
+
+function renderStatsPromptSnapshot(section) {
+  const node = make("section", "stats-prompt-section stats-prompt-snapshot");
+  const heading = statsPromptSectionHeading("Prompt inventory", "Export-backed snapshot");
+  heading.append(make("span", "stats-prompt-badge", `${section.systemPromptChars.toLocaleString()} chars`));
+  node.append(heading);
+  if (section.warning) node.append(make("p", "stats-prompt-warning", section.warning));
+
+  const estimates = section.estimateComponents;
+  const cards = make("div", "stats-prompt-estimate-cards");
+  cards.append(
+    statsMetricCard("Prompt text", `${formatStatsTokens(estimates.promptText)} tok`, "character-derived estimate", "tone-blue"),
+    statsMetricCard("Tool schemas", `${formatStatsTokens(estimates.toolSchemas)} tok`, "active schema estimate", "tone-teal"),
+    statsMetricCard("Framing", `${formatStatsTokens(estimates.framing)} tok`, "provider/request allowance", "tone-mauve"),
+    statsMetricCard("Calibration", `×${estimates.calibration.multiplier.toFixed(2)}`, `${estimates.calibration.samples} samples`, "tone-yellow"),
+  );
+  node.append(cards);
+
+  const metadataDetails = make("details", "stats-prompt-inventory-details");
+  const metadataSummary = make("summary");
+  metadataSummary.append(make("span", undefined, "Prompt metadata"), make("span", "stats-prompt-details-count", section.settled ? "settled snapshot" : "live fallback"));
+  metadataDetails.append(metadataSummary, make("div", "stats-prompt-details-body"));
+  metadataDetails.lastElementChild.append(statsPromptDefinitionList([
+    ["Source", statsPromptEstimateSourceLabel(section)], ["Attempts", section.attempts.toLocaleString()],
+    ["Current date", section.metadata.currentDate ?? "n/a"], ["Working directory", section.metadata.cwdDisplay ?? "n/a"],
+    ["Extra guidelines", section.metadata.extraGuidelineCount.toLocaleString()],
+  ]));
+
+  const inventory = make("div", "stats-prompt-inventory");
+  inventory.append(
+    metadataDetails,
+    statsPromptInventoryDetails("Active tool schemas", section.tools, (items) => {
+      const list = make("ul", "stats-prompt-card-list");
+      for (const item of items) {
+        const li = make("li");
+        li.append(make("strong", undefined, item.name), make("span", "stats-prompt-item-meta", `${formatStatsTokens(item.estimatedTokens)} tok · ${item.parameterSummary}`));
+        if (item.description) li.append(make("span", "stats-prompt-item-description", item.description));
+        list.append(li);
+      }
+      return list;
+    }),
+    statsPromptInventoryDetails("Available-tool prompt entries", section.toolPromptEntries, (items) => {
+      const list = make("ul", "stats-prompt-chip-list");
+      for (const item of items) list.append(make("li", undefined, item.name));
+      return list;
+    }),
+    statsPromptInventoryDetails("Skills", section.skills, (items) => {
+      const list = make("ul", "stats-prompt-card-list");
+      for (const item of items) {
+        const li = make("li");
+        li.append(make("strong", undefined, item.name));
+        if (item.description) li.append(make("span", "stats-prompt-item-description", item.description));
+        list.append(li);
+      }
+      return list;
+    }),
+    statsPromptInventoryDetails("Context files", section.contextFiles, (items) => {
+      const list = make("ul", "stats-prompt-file-list");
+      for (const item of items) {
+        const row = make("li");
+        row.append(make("span", undefined, item.displayPath), make("span", undefined, item.chars === null ? "n/a" : `${item.chars.toLocaleString()} chars`));
+        list.append(row);
+      }
+      return list;
+    }),
+  );
+  node.append(inventory);
+  return node;
+}
+
+function renderStatsPromptCurrent(section) {
+  const node = make("section", "stats-prompt-section stats-prompt-current");
+  const heading = statsPromptSectionHeading("Current context", "Actual utilization + heuristic composition");
+  heading.append(make("span", "stats-prompt-badge", section.usage.percent === null ? "usage n/a" : formatStatsPromptNullablePercent(section.usage.percent)));
+  node.append(heading);
+
+  const utilization = make("div", "stats-prompt-utilization");
+  const progress = make("progress", "stats-prompt-progress");
+  progress.max = 100;
+  if (section.usage.percent !== null) progress.value = Math.min(100, section.usage.percent);
+  const usageText = `${formatStatsPromptNullableTokens(section.usage.tokens)} used / ${formatStatsPromptNullableTokens(section.usage.contextWindow)} window · ${formatStatsPromptNullablePercent(section.usage.percent)}`;
+  progress.setAttribute("aria-label", "Actual current context utilization");
+  progress.setAttribute("aria-valuetext", usageText);
+  utilization.append(progress, make("p", "stats-prompt-utilization-text", usageText));
+  node.append(utilization);
+
+  const breakdown = section.breakdown;
+  const cards = make("div", "stats-prompt-estimate-cards compact");
+  cards.append(
+    statsMetricCard("Actual usage", formatStatsPromptNullableTokens(section.usage.tokens), "provider/context usage", "tone-green"),
+    statsMetricCard("Context window", formatStatsPromptNullableTokens(section.usage.contextWindow), "provider/context limit", "tone-blue"),
+    statsMetricCard("Heuristic estimate", `${formatStatsTokens(breakdown.estimatedTotalTokens)} tok`, breakdown.reconstruction === "complete" ? "complete reconstruction" : "partial: reconstruction unavailable", "tone-mauve"),
+    statsMetricCard("Actual − estimate", breakdown.actualMinusEstimatedTokens === null ? "n/a" : `${breakdown.actualMinusEstimatedTokens > 0 ? "+" : ""}${formatStatsTokens(breakdown.actualMinusEstimatedTokens)} tok`, "comparison only; not source attribution", "tone-yellow"),
+  );
+  node.append(cards, make("p", "stats-prompt-note muted", "Source composition below is a character-derived heuristic. Shares use the estimated total, independently of actual provider utilization."));
+  node.append(
+    statsPromptCompositionTrack(breakdown.sources, "estimatedTokens", breakdown.estimatedTotalTokens, "Estimated current-source composition"),
+    statsPromptTable(
+      ["Rank", "Source", "Kind", "Chars", "Estimated tokens", "Estimated share"],
+      breakdown.sources.map((source, index) => [
+        String(index + 1), source.label, statsPromptKindLabel(source.kind), source.chars.toLocaleString(),
+        `${formatStatsTokens(source.estimatedTokens)} tok`, formatStatsPromptNullablePercent(source.percent),
+      ]),
+      "Ranked heuristic current-context source composition. Percentages use the estimated total, not actual usage.",
+    ),
+  );
+  return node;
+}
+
+function renderStatsPrompt(payload) {
+  const node = make("div", "stats-overlay-pane stats-prompt-pane");
+  const context = statsPromptRecord(payload?.promptContext);
+  const initialPrompt = normalizeStatsPromptInitial(context?.initialPrompt);
+  const snapshot = normalizeStatsPromptSnapshot(context?.snapshot);
+  const currentContext = normalizeStatsPromptCurrent(context?.currentContext);
+  node.append(
     renderStatsCalibrationPanel(payload),
-    make("h3", undefined, "PI prompt estimate"),
-    statsLineBlock(payload?.lines?.promptInjection),
-    make("h3", undefined, "Detailed prompt snapshot"),
-    statsLineBlock(payload?.lines?.promptDetailed),
-    make("h3", undefined, "Current context token breakdown"),
-    statsLineBlock(payload?.lines?.tokenBreakdown),
+    initialPrompt ? renderStatsPromptInitial(initialPrompt) : statsPromptLegacyFallback("Initial prompt composition", payload?.lines?.promptInjection),
+    snapshot ? renderStatsPromptSnapshot(snapshot) : statsPromptLegacyFallback("Prompt inventory", payload?.lines?.promptDetailed),
+    currentContext ? renderStatsPromptCurrent(currentContext) : statsPromptLegacyFallback("Current context", payload?.lines?.tokenBreakdown),
   );
   return node;
 }
@@ -23566,8 +24484,9 @@ function renderStatsRaw(payload) {
     statsCommandOutputSection("Model comparison", "/stats-model-compare [days|all]", "Token share, spend share, average cost, and average output by model.", payload?.lines?.modelComparison),
     statsCommandOutputSection("Most expensive sessions", "/stats-most-expense [days|all]", "Highest-cost sessions in the selected range.", payload?.lines?.expensiveSessions),
     statsCommandOutputSection("Cost trend", "/stats-cost-trend [days|all]", "Daily averages, 30-day projection, highest day, and latest active day.", payload?.lines?.costTrend),
-    statsCommandOutputSection("Cache efficiency", "/stats-cache [days|all]", "Cache hit rate, cache read/write tokens, estimated savings, and token mix.", payload?.lines?.cache),
+    statsCommandOutputSection("Cache efficiency", "/stats-cache [days|all]", "Cached-input token share, cache read/write tokens, and token mix.", payload?.lines?.cache),
     statsCommandOutputSection("PI prompt breakdown", "/stats-pi detailed", "Export-backed initial prompt estimate with detailed prompt snapshot sections.", [...(payload?.lines?.promptInjection || []), "", ...(payload?.lines?.promptDetailed || [])]),
+    statsCommandOutputSection("Current context breakdown", "/stats tokens", "Actual context usage plus the estimated source breakdown.", payload?.lines?.tokenBreakdown),
   );
   return node;
 }
@@ -23585,6 +24504,13 @@ function renderStatsOverlayPane(payload) {
   }
 }
 
+function activateStatsOverlayTab(tabId, { focus = false } = {}) {
+  if (!STATS_OVERLAY_TABS.some((tab) => tab.id === tabId)) return;
+  statsOverlayActiveTab = tabId;
+  renderStatsOverlay();
+  if (focus) document.getElementById(`statsOverlayTab-${tabId}`)?.focus();
+}
+
 function renderStatsOverlay() {
   const payload = currentStatsOverlayPayload();
   if (!elements.statsOverlayDialog) return;
@@ -23593,8 +24519,10 @@ function renderStatsOverlay() {
   syncStatsScopeControls(statsOverlayLoading ? null : payload);
 
   const generated = payload?.generatedAt ? new Date(payload.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "not loaded";
+  const scopedSessions = payload ? statsNullableNumber(payload?.scopedSessionCount) : null;
+  const sessionText = scopedSessions !== null ? `${scopedSessions} sessions in range` : `${payload?.sessionCount ?? 0} session files`;
   elements.statsOverlaySubtitle.textContent = payload
-    ? `${payload.scopeLabel || "stats"} · ${payload.sessionCount ?? 0} sessions · updated ${generated}`
+    ? `${payload.scopeLabel || "stats"} · ${sessionText} · updated ${generated}`
     : "Run stats to load the browser dashboard.";
 
   elements.statsOverlayStatus.textContent = statsOverlayError || (statsOverlayLoading ? "Loading stats from the Pi stats extension…" : statsOverlayCalibrationMessage || (payload ? "" : "No stats payload loaded yet."));
@@ -23603,16 +24531,18 @@ function renderStatsOverlay() {
 
   elements.statsOverlayTabs.replaceChildren();
   for (const tab of STATS_OVERLAY_TABS) {
-    const button = make("button", tab.id === statsOverlayActiveTab ? "active" : "", tab.label);
+    const active = tab.id === statsOverlayActiveTab;
+    const button = make("button", active ? "active" : "", tab.label);
     button.type = "button";
+    button.id = `statsOverlayTab-${tab.id}`;
     button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", tab.id === statsOverlayActiveTab ? "true" : "false");
-    button.addEventListener("click", () => {
-      statsOverlayActiveTab = tab.id;
-      renderStatsOverlay();
-    });
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.setAttribute("aria-controls", "statsOverlayBody");
+    button.tabIndex = active ? 0 : -1;
+    button.addEventListener("click", () => activateStatsOverlayTab(tab.id, { focus: true }));
     elements.statsOverlayTabs.append(button);
   }
+  elements.statsOverlayBody.setAttribute("aria-labelledby", `statsOverlayTab-${statsOverlayActiveTab}`);
 
   elements.statsOverlayRefreshButton.disabled = statsOverlayLoading;
   elements.statsOverlayBody.replaceChildren(renderStatsOverlayPane(payload));
@@ -38058,6 +38988,18 @@ elements.statsOverlayCustomDays?.addEventListener("keydown", (event) => {
   event.preventDefault();
   requestStatsOverlayRefresh();
 });
+elements.statsOverlayTabs?.addEventListener("keydown", (event) => {
+  const index = STATS_OVERLAY_TABS.findIndex((tab) => tab.id === statsOverlayActiveTab);
+  if (index < 0) return;
+  let nextIndex = -1;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % STATS_OVERLAY_TABS.length;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + STATS_OVERLAY_TABS.length) % STATS_OVERLAY_TABS.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = STATS_OVERLAY_TABS.length - 1;
+  if (nextIndex < 0) return;
+  event.preventDefault();
+  activateStatsOverlayTab(STATS_OVERLAY_TABS[nextIndex].id, { focus: true });
+});
 elements.statsOverlayCloseButton?.addEventListener("click", () => elements.statsOverlayDialog?.close());
 elements.statsOverlayDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
 elements.gitWorkflowSteps.addEventListener("click", (event) => {
@@ -38626,8 +39568,18 @@ elements.piVersionButton?.addEventListener("click", () => {
   openPiReleaseNotes().catch((error) => addEvent(error.message || String(error), "error"));
 });
 elements.webuiVersionButton?.addEventListener("click", () => {
+  openWebuiPackageDialog().catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.piComponentUpdateButton?.addEventListener("click", () => {
+  startComponentUpdate("pi").catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.webuiComponentUpdateButton?.addEventListener("click", () => {
+  startComponentUpdate("webui").catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.webuiPackageNpmButton?.addEventListener("click", () => {
   confirmOpenWebuiNpmPage().catch((error) => addEvent(error.message || String(error), "error"));
 });
+elements.webuiPackageCloseButton?.addEventListener("click", () => elements.webuiPackageDialog?.close());
 elements.piReleaseNotesCloseButton?.addEventListener("click", () => elements.piReleaseNotesDialog?.close());
 elements.toggleSidePanelButton.addEventListener("click", () => {
   setSidePanelCollapsed(true);

@@ -39,6 +39,7 @@ import {
   windowsReservedGitPathFailure,
 } from "../lib/git-command-errors.mjs";
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
+import { ComponentUpdateState, validateComponentUpdateRequest } from "../lib/component-update-state.mjs";
 import { prependedPathEnvironment, resolveCommandDirectory, resolveNpmCommandInvocation, resolvePiCommandInvocation } from "../lib/npm-command.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
@@ -10423,6 +10424,28 @@ function spawnRestartServer(restorableTabs, supervisorCursor) {
 let updateStatusCache = null;
 let updateStatusCacheAt = 0;
 let piUpdateInProgress = false;
+const componentUpdateState = new ComponentUpdateState();
+
+function webuiComponentUpdateUnavailableReason() {
+  if (webuiDevServer || !String(packageRoot).split(path.sep).includes("node_modules")) {
+    return "Automatic Web UI update is unavailable from a source or development checkout.";
+  }
+  return "";
+}
+
+function privilegedUpdateInProgress() {
+  return piUpdateInProgress || componentUpdateState.hasRunning();
+}
+
+function componentUpdatesForRequest(req) {
+  const webuiUnavailableReason = webuiComponentUpdateUnavailableReason();
+  return componentUpdateState.publicStates({
+    localRequest: isLocalRequest(req),
+    updateInProgress: privilegedUpdateInProgress(),
+    webuiAvailable: !webuiUnavailableReason,
+    webuiUnavailableReason,
+  });
+}
 
 function updateChecksSkippedReason() {
   if (process.env.PI_OFFLINE) return "PI_OFFLINE is set";
@@ -10505,7 +10528,8 @@ function updateStatusForRequest(status, req) {
   return {
     ...status,
     canRunUpdate: isLocalRequest(req),
-    updateInProgress: piUpdateInProgress,
+    updateInProgress: privilegedUpdateInProgress(),
+    componentUpdates: componentUpdatesForRequest(req),
   };
 }
 
@@ -10775,6 +10799,42 @@ async function bunGlobalPackageRootUpdateTask() {
   };
 }
 
+async function currentWebuiComponentUpdateTask(npmRuntime = {}) {
+  const unavailableReason = webuiComponentUpdateUnavailableReason();
+  if (unavailableReason) throw makeHttpError(409, unavailableReason);
+
+  const normalizedPackageRoot = path.resolve(packageRoot);
+  for (const nodeModulesRoot of await bunGlobalNodeModulesRoots()) {
+    if (path.resolve(packageNodeModulesPath(nodeModulesRoot, WEBUI_PACKAGE)) !== normalizedPackageRoot) continue;
+    return {
+      label: "global Bun Web UI package",
+      command: "bun",
+      args: ["install", "-g", "--ignore-scripts", "--minimum-release-age=0", `${WEBUI_PACKAGE}@latest`],
+      cwd: homedir(),
+    };
+  }
+
+  const installRoot = nodeModulesParentForPackageRoot(packageRoot);
+  return npmPrefixUpdateTask("current Web UI package", installRoot, [WEBUI_PACKAGE], npmRuntime);
+}
+
+async function resolveComponentUpdateTasks(target) {
+  if (target === "pi") return resolvePiUpdateCommands({ all: false });
+  if (target === "webui") {
+    let npmRuntime = {};
+    try {
+      const piTasks = await resolvePiUpdateCommands({ all: false });
+      npmRuntime = {
+        preferredDirectories: [...new Set(piTasks.map((task) => task.piInstallDirectory).filter(Boolean))],
+      };
+    } catch {
+      recordEvent({ type: "webui_component_update_npm_resolution_fallback", target });
+    }
+    return [await currentWebuiComponentUpdateTask(npmRuntime)];
+  }
+  throw makeHttpError(400, "Unsupported component update target.");
+}
+
 function updateTaskDisplay(task) {
   return task.displayCommand || formatCommandForDisplay(task.command, task.args || []);
 }
@@ -10863,8 +10923,43 @@ function combinedUpdateOutput(results, field) {
     .join("\n\n");
 }
 
+function componentUpdateSuccessMessage(target) {
+  if (target === "pi") return "Pi update completed. New or reloaded Pi sessions use the update.";
+  return "Web UI update completed. Restart the Web UI to use the update.";
+}
+
+async function runComponentUpdate(target) {
+  try {
+    const updateTasks = (await resolveComponentUpdateTasks(target)).filter(Boolean);
+    if (!updateTasks.length) throw new Error(`No ${target} update command could be resolved.`);
+    const command = updateTasks.map(updateTaskDisplay).join(" && ");
+    recordEvent({ type: "webui_component_update_started", target, command });
+    for (const task of updateTasks) await runUpdateTask(task);
+    updateStatusCache = null;
+    updateStatusCacheAt = 0;
+    componentUpdateState.succeed(target, componentUpdateSuccessMessage(target));
+    recordEvent({ type: "webui_component_update_completed", target, command });
+  } catch (error) {
+    updateStatusCache = null;
+    updateStatusCacheAt = 0;
+    componentUpdateState.fail(target, error);
+    recordEvent({ type: "webui_component_update_failed", target, error: componentUpdateState.get(target).error });
+  }
+}
+
+function startComponentUpdate(target) {
+  if (piUpdateInProgress || componentUpdateState.hasRunning()) throw makeHttpError(409, "Another privileged update is already running.");
+  const unavailableReason = target === "webui" ? webuiComponentUpdateUnavailableReason() : "";
+  if (unavailableReason) throw makeHttpError(409, unavailableReason);
+  componentUpdateState.begin(target);
+  recordEvent({ type: "webui_component_update_accepted", target });
+  setImmediate(() => { void runComponentUpdate(target); });
+  return componentUpdateState.get(target);
+}
+
 async function runPiUpdateAndPrepareRestart({ all = false } = {}) {
   if (piUpdateInProgress) throw makeHttpError(409, "A Pi update is already running.");
+  if (componentUpdateState.hasRunning()) throw makeHttpError(409, "A component update is already running.");
   piUpdateInProgress = true;
   let restartPrepared = false;
   try {
@@ -14497,6 +14592,16 @@ const server = createServer(async (req, res) => {
       const child = spawnRestartServer(restorableTabs, supervisorCursor);
       sendJson(res, 200, { ok: true, message: "Pi Web UI restarting", webuiPid: process.pid, nextWebuiPid: child.pid, restorableTabCount: restorableTabs.length });
       setTimeout(() => { void shutdown("api restart", { preserveSessions: true }); }, 20).unref();
+      return;
+    }
+
+    if (url.pathname === "/api/component-update" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const validation = validateComponentUpdateRequest(body);
+      if (!validation.ok) throw makeHttpError(400, validation.error);
+      startComponentUpdate(validation.target);
+      sendJson(res, 202, { ok: true, data: componentUpdatesForRequest(req)[validation.target] });
       return;
     }
 
