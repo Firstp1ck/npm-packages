@@ -238,6 +238,17 @@ test("mobile continuity preserves drafts, restores metadata honestly, and retrie
   await context.close();
 });
 
+test("an extension response clears stale local running state after canonical idle", async ({ page }) => {
+  await page.goto(baseURL);
+  await page.locator("#promptInput").fill("fixture mobile blocker");
+  await page.locator("#sendButton").click();
+  await expect(page.locator("#dialogTitle")).toHaveText("Fixture blocker");
+  await expect(page.locator("#chat .runIndicator")).toContainText("Waiting for your confirm response…");
+  await page.locator("#dialogActions").getByRole("button", { name: "Yes", exact: true }).click();
+  await expect(page.locator("#dialog")).not.toBeVisible();
+  await expect(page.locator("#chat .runIndicator")).toBeHidden({ timeout: 5_000 });
+});
+
 test("a blocker notification switches to its background tab before exact-target validation", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();

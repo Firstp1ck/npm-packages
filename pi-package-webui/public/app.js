@@ -36508,7 +36508,13 @@ async function sendDialogResponse(payload) {
     if (responseId && activeDialog && String(activeDialog.id || "") !== responseId) return;
     if (elements.dialog.open) elements.dialog.close();
     activeDialog = null;
-    if (runIndicatorIsActive()) setRunIndicatorActivity("Continuing after your response…");
+    if (runIndicatorIsActive()) {
+      setRunIndicatorActivity("Continuing after your response…");
+      // Extension commands can continue background work after Pi has already
+      // returned to an idle canonical state. Reconcile promptly so this local
+      // handoff label cannot survive the workflow that requested the dialog.
+      scheduleRefreshState(120, tabContext);
+    }
     showNextDialog();
   }
 }

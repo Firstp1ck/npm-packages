@@ -876,6 +876,7 @@ assert.match(app, /if \(request\.replayed\) addEvent\(`recovered pending \$\{req
 assert.match(app, /case "webui_extension_ui_cancelled":/, "frontend should close dialogs cancelled by backend abort handling");
 assert.match(app, /case "webui_extension_ui_resolved":[\s\S]*?removeQueuedDialogRequests\(\[event\.id\]\)/, "frontend should close dialogs resolved by another connected browser");
 assert.match(app, /if \(responseId && activeDialog && String\(activeDialog\.id \|\| ""\) !== responseId\) return;/, "dialog response cleanup should not close the next queued dialog after a resolve-event race");
+assert.match(app, /if \(runIndicatorIsActive\(\)\) \{\s*setRunIndicatorActivity\("Continuing after your response…"\);[\s\S]*?scheduleRefreshState\(120, tabContext\);\s*\}/, "extension UI responses should promptly reconcile canonical state so background release commands cannot leave a stale running indicator");
 assert.match(app, /function parseTodoProgressWidget\(lines\)/, "todo-progress widgets should be parsed from extension widget lines");
 assert.ok(app.includes("const goalLine = cleanLines.find((line) => /^Goal\\s*[:：]/i.test(line));"), "todo-progress parser should preserve an optional Goal line from extension widget lines");
 assert.ok(app.includes("if (todo.goal) summary.append(make(\"div\", \"todo-widget-goal\", `Goal: ${todo.goal}`));"), "todo-progress widget should display the goal above the progress header");
