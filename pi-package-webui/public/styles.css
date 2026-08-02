@@ -4676,6 +4676,50 @@ button.footer-meta {
   color: var(--context-active-color);
   text-shadow: 0 0 0.65rem var(--context-active-glow);
 }
+.footer-usage-card {
+  --usage-primary: 0%;
+  --usage-secondary: 0%;
+  --usage-active-color: var(--ctp-green);
+  --usage-active-glow: rgba(166, 227, 161, 0.42);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.footer-usage-card.has-usage-windows {
+  border-color: rgba(148, 226, 213, 0.30);
+}
+.footer-usage-card.has-usage-windows::before,
+.footer-usage-card.has-usage-windows::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 50%;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--context-card-gradient);
+  opacity: 0.34;
+}
+.footer-usage-card.has-usage-windows::before {
+  top: 0;
+  border-bottom: 1px solid rgba(148, 226, 213, 0.25);
+  clip-path: inset(0 calc(100% - var(--usage-primary)) 0 0);
+}
+.footer-usage-card.has-usage-windows::after {
+  bottom: 0;
+  clip-path: inset(0 calc(100% - var(--usage-secondary)) 0 0);
+}
+.footer-usage-card > * {
+  position: relative;
+  z-index: 1;
+}
+.footer-usage-card.has-usage-windows .footer-metric-label,
+.footer-usage-card.has-usage-windows .footer-metric-value,
+.footer-usage-card.has-usage-windows .footer-meta-label,
+.footer-usage-card.has-usage-windows .footer-meta-value {
+  color: var(--usage-active-color);
+  text-shadow: 0 0 0.65rem var(--usage-active-glow);
+}
 .footer-context .footer-meta-value {
   color: var(--ctp-teal);
   text-shadow: 0 0 0.6rem rgba(148, 226, 213, 0.22);

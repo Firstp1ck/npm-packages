@@ -17,6 +17,13 @@ import {
   type InitialPromptInputEstimate,
 } from "@firstpick/pi-utils";
 import { Container, Key, matchesKey, type SettingItem, SettingsList, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  formatProviderUsage,
+  parseAnthropicProviderUsage,
+  parseCodexProviderUsage,
+  type ProviderUsageSnapshot,
+  type ProviderUsageWindow,
+} from "./provider-usage.ts";
 
 type GitChangeKind = "staged" | "modified" | "untracked" | "conflicted";
 
@@ -102,6 +109,7 @@ const FOOTER_VISIBILITY_KEYS = [
   "speed-max",
   "cost",
   "context",
+  "usage",
   "model",
   "thinking",
   "cwd",
@@ -160,6 +168,7 @@ const FOOTER_VISIBILITY_DEFAULTS: Record<FooterVisibilityKey, boolean> = {
   "speed-max": false,
   cost: true,
   context: true,
+  usage: true,
   model: true,
   thinking: true,
   cwd: true,
@@ -719,6 +728,10 @@ type WebuiFooterChip = {
   contextUsage?: {
     percent: number | null;
     contextWindow: number;
+  };
+  usageWindows?: {
+    primaryPercent: number;
+    secondaryPercent: number;
   };
 };
 
@@ -1417,11 +1430,36 @@ function formatPromptEstimateDebugSnapshot(label: string, snapshot: InitialPromp
   ];
 }
 
+function formatProviderUsageResetAfter(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+function providerUsageResetLabel(window: ProviderUsageWindow): string {
+  if (window.resetAt !== undefined) return `resets ${new Date(window.resetAt).toISOString()}`;
+  if (window.resetAfterSeconds !== undefined) return `resets in ${formatProviderUsageResetAfter(window.resetAfterSeconds)}`;
+  return "reset time unknown";
+}
+
+function buildProviderUsageTitle(usage: ProviderUsageSnapshot): string {
+  const providerLabel = usage.provider === "openai-codex" ? "OpenAI Codex" : "Anthropic";
+  const plan = usage.plan ? ` · plan ${usage.plan}` : "";
+  return [
+    `${providerLabel} subscription usage (used share of each window)${plan}`,
+    `${usage.primary.label} window: ${Math.round(usage.primary.usedPercent)}% used · ${providerUsageResetLabel(usage.primary)}`,
+    `${usage.secondary.label} window: ${Math.round(usage.secondary.usedPercent)}% used · ${providerUsageResetLabel(usage.secondary)}`,
+  ].join("\n");
+}
+
 function buildWebuiVisibilityRecord(): Record<FooterVisibilityKey, boolean> {
   return Object.fromEntries(FOOTER_VISIBILITY_KEYS.map((key) => [key, webuiFooterItemVisible(key)])) as Record<FooterVisibilityKey, boolean>;
 }
 
-function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | null, telemetry: FooterTelemetry, fetchState: GitFetchState): WebuiFooterPayload {
+function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | null, telemetry: FooterTelemetry, fetchState: GitFetchState, providerUsage: ProviderUsageSnapshot | null): WebuiFooterPayload {
   const speed = telemetry.latestTokenSpeed;
   const speedValue = speed === null ? "— tok/s" : `${formatTokenSpeed(speed)} tok/s`;
   const speedStats = telemetry.speedStats;
@@ -1515,6 +1553,20 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       },
     });
   }
+  if (webuiFooterItemVisible("usage") && providerUsage) {
+    main.push({
+      key: "usage",
+      icon: "📊",
+      label: "Usage",
+      value: formatProviderUsage(providerUsage),
+      title: buildProviderUsageTitle(providerUsage),
+      tone: "teal",
+      usageWindows: {
+        primaryPercent: providerUsage.primary.usedPercent,
+        secondaryPercent: providerUsage.secondary.usedPercent,
+      },
+    });
+  }
 
   const meta: WebuiFooterChip[] = [];
   if (webuiFooterItemVisible("cwd")) {
@@ -1570,6 +1622,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   let sessionSpeedSamples: number[] = [];
   let lastSessionSpeedSampleMs = 0;
   let footerUsageSnapshot: FooterUsageSnapshot = emptyFooterUsageSnapshot();
+  let latestProviderUsage: ProviderUsageSnapshot | null = null;
   let latestGitSnapshot: GitSnapshot | null = null;
   let latestGitSnapshotFingerprint: string | null = null;
   let latestGitFetchState: GitFetchState = { status: "idle" };
@@ -1747,11 +1800,23 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     };
   };
 
+  const getVisibleProviderUsage = (ctx: ExtensionContext): ProviderUsageSnapshot | null => {
+    if (!latestProviderUsage) return null;
+    const model = ctx.model;
+    if (!model) return null;
+    // A snapshot is only valid for the provider it was captured from; a model
+    // switch to another provider hides it instead of showing stale data.
+    if (latestProviderUsage.provider !== model.provider) return null;
+    // Anthropic subscription usage is only meaningful for OAuth/subscription auth.
+    if (model.provider === "anthropic" && !ctx.modelRegistry.isUsingOAuth(model)) return null;
+    return latestProviderUsage;
+  };
+
   const publishWebuiFooter = (ctx: ExtensionContext, snapshot: GitSnapshot | null = latestGitSnapshot) => {
     try {
       const footerCtx = getFooterContext(ctx);
       lastWebuiFooterPublishMs = Date.now();
-      const payload = buildWebuiFooterPayload(footerCtx, snapshot, buildFooterTelemetry(footerCtx), latestGitFetchState);
+      const payload = buildWebuiFooterPayload(footerCtx, snapshot, buildFooterTelemetry(footerCtx), latestGitFetchState, getVisibleProviderUsage(footerCtx));
       footerCtx.ui.setStatus(WEBUI_FOOTER_STATUS_KEY, JSON.stringify(payload));
     } catch (error) {
       swallowBackgroundError(error);
@@ -2053,6 +2118,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     latestGitSnapshot = null;
     latestGitSnapshotFingerprint = null;
     footerUsageSnapshot = emptyFooterUsageSnapshot();
+    latestProviderUsage = null;
     accountedAssistantUsageKeys = new Set<string>();
     sessionSpeedSamples = [];
     lastSessionSpeedSampleMs = 0;
@@ -2130,6 +2196,11 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           }
 
           if (nativeFooterItemVisible("context")) segments.push(`${theme.fg("muted", "🧠")} ${contextPercentStr}`);
+
+          const providerUsage = getVisibleProviderUsage(footerCtx);
+          if (nativeFooterItemVisible("usage") && providerUsage) {
+            segments.push(`${theme.fg("muted", "📊")} ${formatProviderUsage(providerUsage)}`);
+          }
 
           let statsLeft = segments.join(` ${sectionSep} `);
           let statsLeftWidth = visibleWidth(statsLeft);
@@ -2313,6 +2384,36 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     requestFooterRender?.();
     schedulePromptInjectionEstimateRefresh(ctx);
     void refresh(ctx).catch(swallowBackgroundError);
+  });
+
+  pi.on("after_provider_response", (event, ctx) => {
+    if (!backgroundWorkEnabled) return;
+    rememberFooterContext(ctx);
+    const footerCtx = getFooterContext(ctx);
+    const model = footerCtx.model;
+    const provider = model?.provider;
+    // Passive last-seen capture only: supported providers overwrite the
+    // snapshot (or clear it on absent/malformed headers so we never show
+    // guessed data); other providers leave it untouched and render gating
+    // keeps it hidden.
+    if (provider === "openai-codex") {
+      latestProviderUsage = parseCodexProviderUsage(event.headers) ?? null;
+    } else if (provider === "anthropic" && model && footerCtx.modelRegistry.isUsingOAuth(model)) {
+      latestProviderUsage = parseAnthropicProviderUsage(event.headers) ?? null;
+    } else {
+      return;
+    }
+    requestFooterRender?.();
+    publishWebuiFooter(footerCtx);
+  });
+
+  pi.on("model_select", (_event, ctx) => {
+    if (!backgroundWorkEnabled) return;
+    rememberFooterContext(ctx);
+    // Model switches re-evaluate provider/auth gating; incompatible snapshots
+    // are hidden by getVisibleProviderUsage without a new provider response.
+    requestFooterRender?.();
+    publishWebuiFooter(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

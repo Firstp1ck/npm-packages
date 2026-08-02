@@ -13988,6 +13988,27 @@ function applyFooterContextUsage(node, contextUsage) {
   return node;
 }
 
+// Dedicated Usage visual apply path: sets two independent lane widths (top =
+// primary/first window, bottom = secondary/second window) plus a max-window
+// active foreground/glow reusing the Context color interpolation. Clamps
+// defensively to 0..100; exact text and tooltip remain untouched.
+function applyFooterUsageWindows(node, usageWindows) {
+  node.classList.add("footer-usage-card");
+  const primaryPercent = typeof usageWindows?.primaryPercent === "number" ? usageWindows.primaryPercent : Number.NaN;
+  const secondaryPercent = typeof usageWindows?.secondaryPercent === "number" ? usageWindows.secondaryPercent : Number.NaN;
+  if (Number.isFinite(primaryPercent) && Number.isFinite(secondaryPercent)) {
+    const clampedPrimary = Math.min(100, Math.max(0, primaryPercent));
+    const clampedSecondary = Math.min(100, Math.max(0, secondaryPercent));
+    const activeColor = contextUsageActiveColor(Math.max(clampedPrimary, clampedSecondary));
+    node.classList.add("has-usage-windows");
+    node.style.setProperty("--usage-primary", `${clampedPrimary.toFixed(1)}%`);
+    node.style.setProperty("--usage-secondary", `${clampedSecondary.toFixed(1)}%`);
+    node.style.setProperty("--usage-active-color", activeColor.color);
+    node.style.setProperty("--usage-active-glow", activeColor.glow);
+  }
+  return node;
+}
+
 const FOOTER_MIDDLE_TRUNCATION_END_CHARS = 16;
 const FOOTER_MIDDLE_TRUNCATION_MIN_START_CHARS = 6;
 
@@ -14075,6 +14096,7 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   speed: "Assistant streaming speed. Shows live output tokens for the current reply and current or last tokens per second.",
   cost: "Estimated session cost. sub means subscription-backed provider; api means metered API usage.",
   context: "Context window pressure. Shows percent used over the model limit; auto means auto-compaction is enabled.",
+  usage: "Provider subscription usage. Shows the used share of the provider-reported primary and secondary rate windows.",
   cwd: "Active working directory for this Web UI tab.",
   git: "Current Git branch. detached means HEAD is not on a branch; no repo means the cwd is outside a Git work tree.",
   "git-state": "Active Git operation or detached state. Finish or abort rebase/merge/cherry-pick/revert/bisect before normal commits.",
@@ -14453,6 +14475,13 @@ function normalizeFooterPayloadChip(value, index) {
       contextWindow: Number.isFinite(contextWindow) ? contextWindow : 0,
     };
   }
+  if (value.usageWindows && typeof value.usageWindows === "object") {
+    const primaryPercent = typeof value.usageWindows.primaryPercent === "number" ? value.usageWindows.primaryPercent : Number.NaN;
+    const secondaryPercent = typeof value.usageWindows.secondaryPercent === "number" ? value.usageWindows.secondaryPercent : Number.NaN;
+    if (Number.isFinite(primaryPercent) && Number.isFinite(secondaryPercent)) {
+      chip.usageWindows = { primaryPercent, secondaryPercent };
+    }
+  }
   return chip;
 }
 
@@ -14755,7 +14784,9 @@ function renderGitFooterPayloadMetric(chip, payload) {
   const action = piAction || contextAction;
   options.title = gitFooterPayloadTooltip(chip, { action });
   const node = footerMetric(chip.icon || "•", chip.label, chip.value, chip.tone ? `tone-${chip.tone}` : "", options);
-  return chip.contextUsage ? applyFooterContextUsage(node, chip.contextUsage) : node;
+  if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
+  if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
+  return node;
 }
 
 function gitFooterSyncOutgoingCount(value) {
@@ -14884,7 +14915,9 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
     node.setAttribute("aria-haspopup", "listbox");
     node.setAttribute("aria-expanded", footerBranchPickerOpen ? "true" : "false");
   }
-  return chip.contextUsage ? applyFooterContextUsage(node, chip.contextUsage) : node;
+  if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
+  if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
+  return node;
 }
 
 // Shape key for a footer chip with the frequently-changing fields removed, so
@@ -14894,8 +14927,15 @@ function gitFooterChipShapeKey(chip) {
   const shape = {};
   for (const [key, value] of Object.entries(chip || {})) {
     if (key === "value") continue;
+    // Usage percentages/reset details make its title dynamic. The fast path
+    // refreshes the complete tooltip and aria-label in place below.
+    if (key === "title" && chip?.key === "usage") continue;
     if (key === "contextUsage") {
       shape.contextUsage = value ? true : false;
+      continue;
+    }
+    if (key === "usageWindows") {
+      shape.usageWindows = value ? true : false;
       continue;
     }
     shape[key] = value;
@@ -14934,9 +14974,12 @@ function updateGitFooterChipNodeValue(node, chip, valueSelector) {
   }
   const previousTooltip = node.getAttribute("data-tooltip");
   if (previousTooltip) {
-    const nextTooltip = previousTooltip.replace(/Current: [^\n]*/u, `Current: ${cleanFooterPayloadText(chip.value, "—")}`);
+    const nextTooltip = chip.key === "usage"
+      ? gitFooterPayloadTooltip(chip)
+      : previousTooltip.replace(/Current: [^\n]*/u, `Current: ${cleanFooterPayloadText(chip.value, "—")}`);
     if (nextTooltip !== previousTooltip) {
       node.setAttribute("data-tooltip", nextTooltip);
+      node.setAttribute("aria-label", nextTooltip.replace(/\s+/g, " "));
       if (footerTooltipTarget === node && footerTooltipNode && !footerTooltipNode.hidden) {
         footerTooltipNode.textContent = nextTooltip;
         positionFooterTooltip(node);
@@ -14944,6 +14987,7 @@ function updateGitFooterChipNodeValue(node, chip, valueSelector) {
     }
   }
   if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
+  if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
 }
 
 let gitFooterRenderCache = null;
