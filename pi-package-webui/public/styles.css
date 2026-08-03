@@ -2753,7 +2753,7 @@ body.embedded-split .side-panel-backdrop {
 }
 .subagents-status-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.48rem;
   margin: 0 0 0.48rem;
 }
@@ -2764,11 +2764,18 @@ body.embedded-split .side-panel-backdrop {
   font-size: var(--text-xs);
   line-height: 1.35;
 }
+.subagents-auto-clear-button,
 .subagents-clear-finished-button {
   flex: 0 0 auto;
   min-height: 2rem;
   padding: 0.28rem 0.5rem;
   font-size: var(--text-xs);
+}
+.subagents-auto-clear-button[aria-pressed="true"] {
+  color: var(--ctp-crust);
+  border-color: rgba(148, 226, 213, 0.82);
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-green));
+  box-shadow: 0 0 0.8rem rgba(148, 226, 213, 0.18), inset 0 1px 0 rgba(255,255,255,0.28);
 }
 .subagents-box {
   display: grid;
@@ -12482,6 +12489,7 @@ body.subagent-terminal-active .composer-remote-mic-consent {
 .subagents-status {
   line-height: 1.3;
 }
+.subagents-auto-clear-button,
 .subagents-clear-finished-button {
   min-height: 1.9rem;
   padding: 0.24rem 0.42rem;

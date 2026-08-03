@@ -62,7 +62,7 @@ assert.match(
   "section headers should expose model-picker-style grab, dragging, and insertion-marker affordances",
 );
 assert.match(html, /styles\.css\?v=97/, "changed side-panel styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=110/, "changed side-panel behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v69"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /app\.js\?v=111/, "changed side-panel behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v70"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("side-panel-section-reorder-static.test.mjs passed");

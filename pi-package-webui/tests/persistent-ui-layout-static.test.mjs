@@ -213,8 +213,8 @@ assert.match(
 );
 assert.match(
   app,
-  /function restoreComposerActionSlotLayout\(\)[\s\S]*if \(!stored \|\| stored\.columns !== columns\)/,
-  "stored slots must not be applied at a mismatched column count while remaining saved for the matching geometry",
+  /function restoreComposerActionSlotLayout\(\)[\s\S]*stored\.columns === columns[\s\S]*remapComposerActionSlot[\s\S]*nearestAvailableComposerActionSlot/,
+  "stored slots should project into mismatched column counts without rewriting the saved source geometry",
 );
 
 // --- Cross-tab cache adoption without duplicate server writes --------------
@@ -261,7 +261,7 @@ assert.match(
 
 // --- Coherent browser asset revisions --------------------------------------
 
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v69"/, "changed browser assets should advance the PWA cache identity");
-assert.match(html, /data-app-src="\/app\.js\?v=110"/, "the boot loader should request the updated app module revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v70"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /data-app-src="\/app\.js\?v=111"/, "the boot loader should request the updated app module revision");
 
 console.log("persistent-ui-layout-static.test.mjs passed");

@@ -48,6 +48,8 @@ assert.match(app, /function applyComposerActionOrder\(orderIds\)[\s\S]*knownIds[
 assert.match(app, /function showComposerActionGridGuide\(\)[\s\S]*composerActionGridColumnCount\(\)[\s\S]*top - groups\.at\(-1\) > 4[\s\S]*columnCount \* rowCount[\s\S]*composer-action-drag-active[\s\S]*function hideComposerActionGridGuide/, "dragging should materialize every full-row guide cell without splitting near-equal action tops into false rows");
 assert.match(app, /function composerActionGridColumnCount\(\)[\s\S]*--composer-action-cell-min-width[\s\S]*row\.clientWidth[\s\S]*Math\.floor\(\(availableWidth \+ gap\) \/ \(minWidth \+ gap\)\)/, "column counts should derive from the visible row width instead of overflow-created implicit tracks");
 assert.match(app, /function readStoredComposerActionLayout\(\)[\s\S]*COMPOSER_ACTION_LAYOUT_STORAGE_KEY[\s\S]*function composerActionSlotCanFit[\s\S]*function persistComposerActionSlotLayout[\s\S]*positions:\s*Object\.fromEntries/, "sparse cell positions should be validated and persisted independently from order");
+assert.match(app, /function remapComposerActionSlot\(record, slot, sourceColumns, targetColumns\)[\s\S]*relativeColumn[\s\S]*function nearestAvailableComposerActionSlot[\s\S]*function restoreComposerActionSlotLayout\(\)[\s\S]*stored\.columns === columns[\s\S]*remapComposerActionSlot/, "saved sparse positions should project into changed responsive grid widths instead of being cleared");
+assert.doesNotMatch(app, /if \(!stored \|\| stored\.columns !== columns\)/, "column-count changes should not discard saved sparse positions");
 assert.match(app, /function captureComposerActionSlotLayout\(\)[\s\S]*composerActionGridGuide[\s\S]*function moveComposerActionToGridCell\(actionId, cell\)[\s\S]*composerActionSlotCanFit[\s\S]*composer-action-grid-cell-target/, "empty grid cells should capture and retain exact action slots");
 assert.match(app, /function composerActionRootFromPoint\(clientX, clientY\)[\s\S]*elementFromPoint[\s\S]*function updateComposerActionPointerDrag\(event\)[\s\S]*Math\.hypot[\s\S]*COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX[\s\S]*showComposerActionGridGuide\(\)[\s\S]*captureComposerActionSlotLayout\(\)[\s\S]*composerActionGridCellFromPoint[\s\S]*moveComposerActionToGridCell/, "pointer dragging should activate after the threshold and distinguish occupied from empty grid cells");
 assert.match(app, /function initializeComposerActionOrdering\(\)[\s\S]*MutationObserver[\s\S]*ResizeObserver[\s\S]*observedRowWidth[\s\S]*scheduleComposerActionSlotLayoutRestore[\s\S]*aria-keyshortcuts[\s\S]*ArrowLeft[\s\S]*ArrowRight[\s\S]*moveComposerActionByOffset[\s\S]*pointerdown/, "keyboard and pointer reordering should stay synchronized with dynamic action visibility and composer width");
@@ -55,7 +57,7 @@ assert.match(app, /event\.key === COMPOSER_ACTION_ORDER_STORAGE_KEY\) restoreCom
 assert.match(app, /initializeComposerActionOrdering\(\);[\s\S]*restoreSidePanelSectionOrder\(\);/, "composer ordering should initialize during guarded app startup");
 
 assert.match(html, /styles\.css\?v=97/, "changed composer styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=110/, "changed composer behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v69"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /app\.js\?v=111/, "changed composer behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v70"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("composer-action-grid-reorder-static.test.mjs passed");

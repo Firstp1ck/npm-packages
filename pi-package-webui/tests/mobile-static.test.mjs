@@ -175,7 +175,7 @@ assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscri
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
 assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*<code>subagent_gate<\/code>[\s\S]*bounded retries or a success quorum[\s\S]*id="subagentsBox"/, "side panel should explain ordinary delegation and retry-gate workflows with a live count");
 assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
-assert.match(html, /class="subagents-status-row"[\s\S]*id="subagentsStatus"[\s\S]*id="subagentsClearFinishedButton"[^>]*disabled[^>]*>Clear finished<\/button>/, "Subagents should expose a clear-finished control beside its live status");
+assert.match(html, /class="subagents-status-row"[\s\S]*id="subagentsAutoClearButton"[^>]*aria-pressed="false"[^>]*>Auto-Clear<\/button>[\s\S]*id="subagentsStatus"[\s\S]*id="subagentsClearFinishedButton"[^>]*disabled[^>]*>Clear finished<\/button>/, "Subagents should expose selectable auto-clear and manual clear controls beside its live status");
 const subagentCancelDialogHtml = html.match(/<dialog id="subagentCancelDialog"[\s\S]*?<\/dialog>/)?.[0] || "";
 assert.match(subagentCancelDialogHtml, /id="subagentCancelDialogTitle">Cancel subagent<[\s\S]*id="subagentCancelDialogSubtitle"/, "subagent cancellation should use a titled dialog with dynamic target context");
 assert.match(subagentCancelDialogHtml, /<select id="subagentCancelReason">[\s\S]*<option value="" selected>No reason<\/option>[\s\S]*Wrong model\/provider\/thinking effort[\s\S]*Wrong agent or task[\s\S]*Taking too long[\s\S]*Wrong approach or direction[\s\S]*Output no longer needed[\s\S]*Started by mistake[\s\S]*<option value="Other">Other<\/option>/, "subagent cancellation should offer every approved optional reason");
@@ -891,8 +891,10 @@ assert.match(app, /const node = make\("details", "widget todo-widget"\)/, "todo-
 assert.match(app, /Optional feature detection intentionally checks loaded Pi capabilities/, "optional Web UI features should be detected through loaded capabilities, not package folders");
 assert.match(app, /function resetOptionalFeatureAvailability\(\)/, "optional feature state should reset across active-tab and reload boundaries");
 assert.match(app, /function renderOptionalFeaturePanel\(\)/, "side panel should render optional feature installed/enabled state");
-assert.match(app, /const OPTIONAL_FEATURE_SECTIONS = \[[\s\S]*label: "Composer & commands"[\s\S]*label: "Workflows & releases"[\s\S]*label: "Safety & access"[\s\S]*label: "UI widgets & native parity"[\s\S]*label: "Conversation"/, "optional features should be grouped into five type subsections");
+assert.match(app, /const OPTIONAL_FEATURE_SECTIONS = \[[\s\S]*label: "Composer & commands"[\s\S]*label: "Workflows & releases"[\s\S]*label: "Safety & access"[\s\S]*label: "UI widgets & native parity"[\s\S]*featureIds: \[[^\]]*"questionnaire"[\s\S]*label: "Conversation"/, "optional features should be grouped into five type subsections with questionnaires under native parity");
 assert.match(app, /function renderOptionalFeatureSection\(section, features\)[\s\S]*optional-feature-section[\s\S]*optional-feature-section-title[\s\S]*optional-feature-section-list/, "optional feature panel should render subsection headers and lists");
+assert.match(app, /async function refreshQuestionnaireFeatureAvailability[\s\S]*\/api\/tools\?scope=session[\s\S]*tool\?\.name === "questionnaire"/, "questionnaire availability should be detected from the active Pi tab's loaded tool capability");
+assert.match(app, /detected && feature\.manageWith === "tools"[\s\S]*action\.textContent = "Tools…"[\s\S]*openNativeToolsSelector/, "loaded questionnaire access should be managed through the native Tools selector instead of a cosmetic WebUI disable toggle");
 assert.match(app, /function setSidePanelSectionCollapsed\(record, collapsed/, "side panel sections should have explicit collapse/expand behavior");
 assert.match(
   app,
@@ -951,9 +953,12 @@ assert.match(app, /subagentTerminalCancelButton[\s\S]*openSubagentCancelDialog\(
 assert.match(app, /function openSubagentCancelDialog\(tab, run, agent = null\)[\s\S]*agentCount[\s\S]*The entire run will be stopped[\s\S]*subagentCancelDialog\.showModal\(\)[\s\S]*async function submitSubagentCancel\(\)[\s\S]*api\("\/api\/subagents\/cancel", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*tab: selection\.tabId,[\s\S]*runId: selection\.runId/, "the shared cancel dialog should honestly describe and submit whole-run cancellation with optional reason/note data");
 assert.doesNotMatch(app, /body: \{\n\s+tab: selection\.tabId,\n\s+runId: selection\.runId,\n\s+\.\.\.\(selection\.agentId/, "the frontend must not imply unsupported per-agent cancellation in its request contract");
 assert.match(app, /async function dismissSubagentRun\(tab, run\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*body: \{ tab: tab\.tabId, runId: run\.id \}/, "finished-run dismiss controls should call the owning tab endpoint");
-assert.match(app, /function finishedSubagentRunSelections\(data = latestSubagents\)[\s\S]*ungatedSubagentRuns\(tab\)[\s\S]*run\.status !== "running" && run\.source !== "workflow"[\s\S]*async function clearFinishedSubagentRuns\(\)[\s\S]*for \(const selection of selections\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*body: \{ tab: selection\.tabId, runId: selection\.runId \}[\s\S]*subagentsClearFinishedButton\.disabled = subagentsLoading \|\| subagentsClearingFinished \|\| finishedRuns\.length === 0/, "clear-finished should dismiss visible terminal ordinary runs while preserving retry-gated, active, and workflow runs");
+assert.match(app, /function finishedSubagentRunSelections\(data = latestSubagents\)[\s\S]*ungatedSubagentRuns\(tab\)[\s\S]*run\.status !== "running" && run\.source !== "workflow"[\s\S]*async function clearFinishedSubagentRuns\(\{ automatic = false \} = \{\}\)[\s\S]*for \(const selection of selections\)[\s\S]*api\("\/api\/subagents\/dismiss", \{[\s\S]*body: \{ tab: selection\.tabId, runId: selection\.runId \}[\s\S]*subagentsClearFinishedButton\.disabled = subagentsLoading \|\| subagentsClearingFinished \|\| finishedRuns\.length === 0/, "clear-finished should dismiss visible terminal ordinary runs while preserving retry-gated, active, and workflow runs");
+assert.match(app, /subagentsAutoClearButton\?\.addEventListener\("click", \(\) => \{[\s\S]*setSubagentAutoClearEnabled\(!subagentAutoClearEnabled, \{ announce: true \}\)/, "the Auto-Clear button should toggle the selected browser preference");
+assert.match(app, /SUBAGENT_AUTO_CLEAR_STORAGE_KEY = "pi-webui-subagent-auto-clear"[\s\S]*function readStoredSubagentAutoClearEnabled\(\)[\s\S]*localStorage\.getItem\(SUBAGENT_AUTO_CLEAR_STORAGE_KEY\) === "1"[\s\S]*function setSubagentAutoClearEnabled[\s\S]*clearFinishedSubagentRuns\(\{ automatic: true \}\)[\s\S]*restoreSubagentAutoClearSetting\(\)/, "Auto-Clear should persist per browser and immediately clear already-finished ordinary runs when selected");
+assert.match(app, /async function refreshSubagents\(\)[\s\S]*refreshed = true[\s\S]*refreshed && subagentAutoClearEnabled && finishedSubagentRunSelections\(\)\.length[\s\S]*await clearFinishedSubagentRuns\(\{ automatic: true \}\)/, "successful overview refreshes should await guarded auto-clear when terminal runs appear");
 assert.match(app, /subagentsClearFinishedButton\?\.addEventListener\("click", \(\) => \{[\s\S]*clearFinishedSubagentRuns\(\)/, "the clear-finished button should invoke the guarded bulk dismissal action");
-assert.match(css, /\.subagents-status-row \{[\s\S]*display: flex;[\s\S]*\.subagents-clear-finished-button \{[\s\S]*min-height: 2rem;/, "the clear-finished control should share a compact responsive status row");
+assert.match(css, /\.subagents-status-row \{[\s\S]*display: flex;[\s\S]*\.subagents-auto-clear-button,[\s\S]*\.subagents-clear-finished-button \{[\s\S]*min-height: 2rem;[\s\S]*\.subagents-auto-clear-button\[aria-pressed="true"\]/, "the clear controls should share a compact row with a visible Auto-Clear selected state");
 const clearFinishedSourceStart = app.indexOf("function finishedSubagentRunSelections(");
 const clearFinishedSourceEnd = app.indexOf("\nfunction subagentOverlayTranscriptMessages(", clearFinishedSourceStart);
 assert.ok(clearFinishedSourceStart >= 0 && clearFinishedSourceEnd > clearFinishedSourceStart, "clear-finished helpers should remain independently testable");
@@ -991,6 +996,9 @@ assert.deepEqual(JSON.parse(JSON.stringify(clearFinishedCalls)), [
 assert.equal(clearFinishedRefreshes, 1, "clear-finished should refresh the overview once after all dismissals");
 assert.equal(clearFinishedContext.subagentsClearingFinished, false, "clear-finished should always release its in-flight guard");
 assert.deepEqual(clearFinishedEvents, [{ message: "cleared 3 finished subagent runs", level: "info" }]);
+clearFinishedContext.latestSubagents = { tabs: [{ tabId: "tab-c", runs: [{ id: "done-c", status: "done", source: "async" }] }] };
+await clearFinishedContext.runClearFinishedSubagentRuns({ automatic: true });
+assert.deepEqual(clearFinishedEvents.at(-1), { message: "auto-cleared 1 finished subagent run", level: "info" }, "automatic clearing should identify its action without changing terminal-run selection semantics");
 assert.match(app, /function materializeRetainedSubagentTerminalViews\(\)[\s\S]*restoreKey = `\$\{tab\.tabId\}\\u0000\$\{tab\.sessionFile[\s\S]*ungatedSubagentRuns\(tab\)[\s\S]*run\?\.status === "running"[\s\S]*ensureSubagentTerminalView/, "terminal mode should materialize only ungated restored retained agent views once per parent session identity without touching overlay mode");
 assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"[\s\S]*function renderSubagentLaunchSlots\(\)[\s\S]*function loadSubagentLaunchSlotConfig\([\s\S]*\/api\/subagents\/config/, "launch-slot configuration should have its own browser state and API loader");
 assert.match(app, /function subagentLaunchSlotThinkingForModel\(model\)[\s\S]*modelThinkingLevels/, "launch-slot thinking choices should come from the selected model metadata");
@@ -1330,6 +1338,7 @@ assert.match(app, /id: "safetyGuard"[\s\S]*?@firstpick\/pi-extension-safety-guar
 assert.match(app, /id: "tuiSkillsCommand"[\s\S]*?@firstpick\/pi-extension-setup-skills/, "optional features should include the TUI skills command companion");
 assert.match(app, /id: "tuiToolsCommand"[\s\S]*?@firstpick\/pi-extension-tools/, "optional features should include the TUI tools command companion");
 assert.match(app, /id: "remoteWebui"[\s\S]*?@firstpick\/pi-package-remote-webui/, "optional features should include the Remote WebUI companion");
+assert.match(app, /id: "questionnaire"[\s\S]*?@firstpick\/pi-package-questionnaire[\s\S]*?capabilityLabel: "questionnaire tool in \/tools"[\s\S]*?manageWith: "tools"/, "optional features should include the native questionnaire package and delegate access control to Tools");
 assert.match(app, /id: "naturalConversation"[\s\S]*?@firstpick\/pi-package-natural-conversation[\s\S]*?capabilityLabel: "\/talk, \/voice, or \/conversation"/, "optional features should include the capability-detected Natural Conversation shell");
 assert.match(app, /NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "frontend should detect Natural Conversation only from RPC-visible command aliases");
 assert.match(app, /const conversationModeByTab = new Map\(\)/, "frontend should track Natural Conversation state per terminal tab");
@@ -2106,6 +2115,7 @@ assert.match(server, /\["btwCommand", "@firstpick\/pi-extension-btw"\]/, "server
 assert.match(server, /\["safetyGuard", "@firstpick\/pi-extension-safety-guard"\]/, "server should allow installing the safety guard optional feature");
 assert.match(server, /\["tuiSkillsCommand", "@firstpick\/pi-extension-setup-skills"\]/, "server should allow installing the TUI skills optional feature");
 assert.match(server, /\["tuiToolsCommand", "@firstpick\/pi-extension-tools"\]/, "server should allow installing the TUI tools optional feature");
+assert.match(server, /\["questionnaire", "@firstpick\/pi-package-questionnaire"\]/, "server should allow explicitly installing the native questionnaire optional feature");
 assert.match(server, /\["naturalConversation", "@firstpick\/pi-package-natural-conversation"\]/, "server should know the standalone Natural Conversation package for status\/install guidance without making it WebUI-owned");
 assert.match(server, /const NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "server should detect Natural Conversation from RPC-visible command aliases");
 assert.match(server, /function naturalConversationFeatureData\(tab[\s\S]*getCommandData\(tab, \{ annotateSkills: false \}\)[\s\S]*available[\s\S]*mode/, "server should expose a capability-based Natural Conversation feature snapshot");
@@ -2190,6 +2200,7 @@ for (const [name, range] of Object.entries(companionDependencies)) {
 }
 assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
 assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-natural-conversation"], undefined, "webui package should not optionally depend on the standalone Natural Conversation package");
+assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-questionnaire"], undefined, "webui package should not install questionnaires by default before the user chooses the optional feature");
 assert.equal(pkg.optionalDependencies?.["@firstpick/pi-extension-aur-review"], undefined, "webui package should not reference the unpublished aur-review extension");
 assert.equal(lock.packages?.["node_modules/@firstpick/pi-extension-aur-review"], undefined, "package lock should not retain an unpublished aur-review tarball");
 assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-extension-aur-review")), "webui Pi manifest should not bundle the unpublished aur-review path");
@@ -2206,6 +2217,7 @@ for (const extensionPath of [
   "node_modules/@firstpick/pi-extension-stats/index.ts",
   "node_modules/@firstpick/pi-extension-todo-progress/index.ts",
   "node_modules/@firstpick/pi-extension-tools/index.ts",
+  "node_modules/@firstpick/pi-package-questionnaire/index.ts",
 ]) {
   assert.ok(pkg.pi?.extensions?.includes(extensionPath), `webui Pi manifest should load ${extensionPath} when present`);
 }
@@ -2228,6 +2240,7 @@ assert.match(helper, /runner\?\.hasHandlers\?\.\("user_bash"\)[\s\S]*runner\.emi
 assert.match(helper, /eventResult\?\.operations[\s\S]*original\.call\(this, command, onChunk, nextOptions\)/, "Web UI RPC helper should pass extension-provided bash operations to Pi execution");
 assert.match(helper, /eventResult\?\.result[\s\S]*recordBashResult/, "Web UI RPC helper should preserve extension-provided bash results in session history");
 assert.ok(pkg.pi?.skills?.includes("node_modules/@firstpick/pi-extension-release-aur/skills"), "webui Pi manifest should load release-aur nested skills when present");
+assert.ok(pkg.pi?.skills?.includes("node_modules/@firstpick/pi-package-questionnaire/skills"), "webui Pi manifest should load questionnaire guidance only when the optional package is installed");
 assert.ok(!pkg.pi?.skills?.includes("../pi-extension-release-aur/skills"), "webui Pi manifest should avoid duplicate release-aur sibling skills");
 assert.ok(pkg.pi?.prompts?.includes("node_modules/@firstpick/pi-prompts-git-pr/prompts"), "webui Pi manifest should load guided-git nested prompts when present");
 assert.ok(!pkg.pi?.prompts?.includes("../pi-package-prompts-git-pr/prompts"), "webui Pi manifest should avoid duplicate guided-git sibling prompts");

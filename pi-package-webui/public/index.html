@@ -989,6 +989,7 @@
                 <span id="subagentOpenModeStatus" class="muted">Overlay · saved in this browser</span>
               </div>
               <div class="subagents-status-row">
+                <button id="subagentsAutoClearButton" class="subagents-auto-clear-button" type="button" aria-pressed="false" aria-describedby="subagentsStatus">Auto-Clear</button>
                 <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
                 <button id="subagentsClearFinishedButton" class="subagents-clear-finished-button" type="button" aria-describedby="subagentsStatus" disabled>Clear finished</button>
               </div>
@@ -1520,7 +1521,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=110">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=111">
       (() => {
         "use strict";
 

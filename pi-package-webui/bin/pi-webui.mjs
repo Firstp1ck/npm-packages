@@ -33,6 +33,7 @@ import {
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
+import { ThinkingStreamRecovery } from "../lib/thinking-stream-recovery.mjs";
 import {
   classifyGitPathFailure,
   findWindowsReservedGitPath,
@@ -389,6 +390,7 @@ const OPTIONAL_FEATURE_PACKAGES = new Map([
   ["todoProgressWidget", "@firstpick/pi-extension-todo-progress"],
   ["tuiToolsCommand", "@firstpick/pi-extension-tools"],
   ["remoteWebui", "@firstpick/pi-package-remote-webui"],
+  ["questionnaire", "@firstpick/pi-package-questionnaire"],
   ["naturalConversation", "@firstpick/pi-package-natural-conversation"],
   ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status"],
   ["statsCommand", "@firstpick/pi-extension-stats"],
@@ -9802,7 +9804,8 @@ async function primeTabRpc(tab) {
 function attachRpcToTab(tab, rpc) {
   tab.rpcUnsubscribe?.();
   tab.rpc = rpc;
-  tab.rpcUnsubscribe = rpc.onEvent((event) => {
+  tab.rpcUnsubscribe = rpc.onEvent((rawEvent) => {
+    const event = tab.thinkingStreamRecovery.ingest(rawEvent);
     if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event)) return;
     updateTabActivityFromEvent(tab, event);
     let scopedEvent = eventForTabClients(tab, event);
@@ -9842,6 +9845,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     gitWorkspace: gitWorkspace || null,
     lastState: null,
     pendingThinkingLevel: undefined,
+    thinkingStreamRecovery: new ThinkingStreamRecovery(),
     gitWorkflowGenerationRestore: null,
     gitWorkflowMessageGeneration: null,
     activity: createTabActivity(createdAt),
@@ -11272,7 +11276,11 @@ function fallbackRpcResponse(tab, command, error) {
 
 async function safeRpcResponse(tab, command, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
-    return rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs)));
+    const response = rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs)));
+    if (command?.type === "get_messages" && Array.isArray(response?.data?.messages)) {
+      response.data = { ...response.data, messages: tab.thinkingStreamRecovery.applyToMessages(response.data.messages) };
+    }
+    return response;
   } catch (error) {
     const message = sanitizeError(error);
     if (/Pi RPC process is not running/i.test(message)) return responseWithPendingThinking(tab, fallbackRpcResponse(tab, command, error));

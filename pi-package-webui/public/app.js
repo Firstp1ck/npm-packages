@@ -307,6 +307,7 @@ const elements = {
   issueWizardBotHint: $("#issueWizardBotHint"),
   stateDetails: $("#stateDetails"),
   subagentsStatus: $("#subagentsStatus"),
+  subagentsAutoClearButton: $("#subagentsAutoClearButton"),
   subagentsClearFinishedButton: $("#subagentsClearFinishedButton"),
   subagentsBox: $("#subagentsBox"),
   subagentCountBadge: $("#subagentCountBadge"),
@@ -678,6 +679,7 @@ let latestSubagents = null;
 let subagentsError = null;
 let subagentsLoading = false;
 let subagentsClearingFinished = false;
+let subagentAutoClearEnabled = false;
 let refreshSubagentsTimer = null;
 const dismissedSubagentGateKeys = new Set();
 let subagentOverlaySelection = null;
@@ -838,6 +840,7 @@ const BUSY_PROMPT_BEHAVIOR_STORAGE_KEY = "pi-webui-busy-prompt-behavior";
 const SKILL_USAGE_STORAGE_KEY = "pi-webui-skill-usage-v1";
 const TERMINAL_TABS_LAYOUT_STORAGE_KEY = "pi-webui-terminal-tabs-layout";
 const SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode";
+const SUBAGENT_AUTO_CLEAR_STORAGE_KEY = "pi-webui-subagent-auto-clear";
 const TERMINAL_CUSTOM_GROUPS_STORAGE_KEY = "pi-webui-terminal-custom-groups-v1";
 const TERMINAL_TAB_DRAG_MIME = "application/x-pi-terminal-tab-id";
 const FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY = "pi-webui-footer-scoped-model-order-v1";
@@ -2196,6 +2199,7 @@ const optionalFeatureAvailability = {
   todoProgressWidget: false,
   tuiToolsCommand: false,
   remoteWebui: false,
+  questionnaire: false,
   naturalConversation: false,
   codexFastMode: false,
   themeBundle: false,
@@ -2294,6 +2298,14 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-package-remote-webui",
     capabilityLabel: "/remote",
     description: "Trusted-LAN QR helper for opening the Web UI from mobile browsers.",
+  },
+  {
+    id: "questionnaire",
+    label: "Native questionnaires",
+    packageName: "@firstpick/pi-package-questionnaire",
+    capabilityLabel: "questionnaire tool in /tools",
+    description: "Native TUI and WebUI single- or multi-select question series with Other answers and resumable clarification.",
+    manageWith: "tools",
   },
   {
     id: "naturalConversation",
@@ -2743,7 +2755,7 @@ const OPTIONAL_FEATURE_SECTIONS = [
     id: "widgets-native-parity",
     label: "UI widgets & native parity",
     description: "Status widgets, dashboards, themes, and browser access to terminal-native controls.",
-    featureIds: ["tuiSkillsCommand", "todoProgressWidget", "tuiToolsCommand", "gitFooterStatus", "statsCommand", "themeBundle"],
+    featureIds: ["tuiSkillsCommand", "todoProgressWidget", "tuiToolsCommand", "questionnaire", "gitFooterStatus", "statsCommand", "themeBundle"],
   },
   {
     id: "conversation",
@@ -3846,21 +3858,51 @@ function persistComposerActionSlotLayout() {
   markDurableUiLayoutDirty("composerActions");
 }
 
+function remapComposerActionSlot(record, slot, sourceColumns, targetColumns) {
+  const sourceRow = Math.floor(slot / sourceColumns);
+  const sourceColumn = slot % sourceColumns;
+  const sourceMaxColumn = Math.max(0, sourceColumns - record.span);
+  const targetMaxColumn = Math.max(0, targetColumns - record.span);
+  const relativeColumn = sourceMaxColumn > 0 ? Math.min(sourceColumn, sourceMaxColumn) / sourceMaxColumn : 0;
+  return sourceRow * targetColumns + Math.round(relativeColumn * targetMaxColumn);
+}
+
+function nearestAvailableComposerActionSlot(record, preferredSlot, layout, columns) {
+  if (record.span > columns) return null;
+  const preferredRow = Math.floor(preferredSlot / columns);
+  const preferredColumn = preferredSlot % columns;
+  const maxColumn = columns - record.span;
+  const columnsByDistance = Array.from({ length: maxColumn + 1 }, (_, column) => column)
+    .sort((a, b) => Math.abs(a - preferredColumn) - Math.abs(b - preferredColumn) || a - b);
+  const maxRow = preferredRow + composerActionRecords().length;
+  for (let row = preferredRow; row <= maxRow; row += 1) {
+    for (const column of columnsByDistance) {
+      const candidate = row * columns + column;
+      if (composerActionSlotCanFit(record, candidate, layout, columns)) return candidate;
+    }
+  }
+  return null;
+}
+
 function restoreComposerActionSlotLayout() {
   if (isMobileView()) return;
   const stored = readStoredComposerActionLayout();
   const columns = composerActionGridColumnCount();
   composerActionSlotLayout = new Map();
   composerActionLayoutColumns = columns;
-  if (!stored || stored.columns !== columns) {
+  if (!stored) {
     applyComposerActionSlotLayout();
     return;
   }
   const records = new Map(composerActionRecords().map((record) => [record.id, record]));
-  for (const [id, slot] of [...stored.positions].sort((a, b) => a[1] - b[1])) {
+  for (const [id, storedSlot] of [...stored.positions].sort((a, b) => a[1] - b[1])) {
     const record = records.get(id);
     if (!record || record.root.hidden || !record.root.getClientRects().length) continue;
-    if (composerActionSlotCanFit(record, slot)) composerActionSlotLayout.set(id, slot);
+    const preferredSlot = stored.columns === columns
+      ? storedSlot
+      : remapComposerActionSlot(record, storedSlot, stored.columns, columns);
+    const slot = nearestAvailableComposerActionSlot(record, preferredSlot, composerActionSlotLayout, columns);
+    if (slot !== null) composerActionSlotLayout.set(id, slot);
   }
   applyComposerActionSlotLayout();
 }
@@ -4372,6 +4414,36 @@ function setSubagentOpenMode(mode, { persist = true, announce = false } = {}) {
 
 function restoreSubagentOpenModeSetting() {
   setSubagentOpenMode(readStoredSubagentOpenMode(), { persist: false });
+}
+
+function readStoredSubagentAutoClearEnabled() {
+  try {
+    return localStorage.getItem(SUBAGENT_AUTO_CLEAR_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistSubagentAutoClearEnabled(enabled) {
+  try {
+    localStorage.setItem(SUBAGENT_AUTO_CLEAR_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {
+    // Ignore storage failures; the preference still applies for this page load.
+  }
+}
+
+function setSubagentAutoClearEnabled(enabled, { persist = true, announce = false } = {}) {
+  subagentAutoClearEnabled = Boolean(enabled);
+  if (persist) persistSubagentAutoClearEnabled(subagentAutoClearEnabled);
+  renderSubagents();
+  if (announce) addEvent(`subagent auto-clear ${subagentAutoClearEnabled ? "enabled" : "disabled"}`, "info");
+  if (subagentAutoClearEnabled && !subagentsLoading && !subagentsClearingFinished && finishedSubagentRunSelections().length) {
+    void clearFinishedSubagentRuns({ automatic: true });
+  }
+}
+
+function restoreSubagentAutoClearSetting() {
+  setSubagentAutoClearEnabled(readStoredSubagentAutoClearEnabled(), { persist: false });
 }
 
 function normalizeTerminalCustomGroupTitle(value, fallback = "Custom group") {
@@ -11021,9 +11093,9 @@ function applyDurableComposerActionsLayout(value) {
     restoreComposerActionOrder();
   }
   if (value.grid && value.grid.version === 2) {
-    // Slots are cached even when the current column count differs; the restore
-    // pass applies them only at matching geometry so responsive mismatches keep
-    // the saved arrangement instead of erasing it.
+    // Keep the saved geometry as the canonical layout. Restore projects its
+    // horizontal positions into the current responsive grid without rewriting
+    // the source slots, so resizing back restores the exact original cells.
     writeDurableLayoutCache(COMPOSER_ACTION_LAYOUT_STORAGE_KEY, JSON.stringify(value.grid));
     restoreComposerActionSlotLayout();
   }
@@ -11433,7 +11505,10 @@ function syncSidePanelWidthForViewport() {
     updateSidePanelResizeHandle();
     return;
   }
-  applySidePanelWidth(currentSidePanelWidth());
+  // Keep viewport/layout reconciliation anchored to the durable preference.
+  // Reading the rendered width here can capture an in-progress CSS transition
+  // during hard-reset startup and permanently freeze the panel below its saved width.
+  applySidePanelWidth(readStoredSidePanelWidth() || currentSidePanelWidth());
 }
 
 function readStoredFileViewerWidth() {
@@ -20940,7 +21015,7 @@ function finishedSubagentRunSelections(data = latestSubagents) {
   ));
 }
 
-async function clearFinishedSubagentRuns() {
+async function clearFinishedSubagentRuns({ automatic = false } = {}) {
   if (subagentsClearingFinished || subagentsLoading) return;
   const selections = finishedSubagentRunSelections();
   if (!selections.length) return;
@@ -20968,8 +21043,8 @@ async function clearFinishedSubagentRuns() {
     renderSubagents();
     scheduleRefreshSubagents();
   }
-  if (dismissed) addEvent(`cleared ${dismissed} finished subagent ${dismissed === 1 ? "run" : "runs"}`, "info");
-  if (failures.length) addEvent(`could not clear ${failures.length} finished subagent ${failures.length === 1 ? "run" : "runs"}`, "warn");
+  if (dismissed) addEvent(`${automatic ? "auto-cleared" : "cleared"} ${dismissed} finished subagent ${dismissed === 1 ? "run" : "runs"}`, "info");
+  if (failures.length) addEvent(`could not ${automatic ? "auto-clear" : "clear"} ${failures.length} finished subagent ${failures.length === 1 ? "run" : "runs"}`, "warn");
 }
 
 function subagentOverlayTranscriptMessages(data = subagentOverlayData) {
@@ -21982,6 +22057,13 @@ function renderSubagents() {
     elements.subagentCountBadge.textContent = String(totalAgents);
     elements.subagentCountBadge.hidden = totalAgents === 0;
   }
+  if (elements.subagentsAutoClearButton) {
+    elements.subagentsAutoClearButton.setAttribute("aria-pressed", subagentAutoClearEnabled ? "true" : "false");
+    elements.subagentsAutoClearButton.classList.toggle("selected", subagentAutoClearEnabled);
+    elements.subagentsAutoClearButton.title = subagentAutoClearEnabled
+      ? "Auto-Clear is on: finished subagent runs are removed automatically"
+      : "Auto-Clear is off: keep finished subagent runs until they are cleared manually";
+  }
   if (elements.subagentsClearFinishedButton) {
     elements.subagentsClearFinishedButton.disabled = subagentsLoading || subagentsClearingFinished || finishedRuns.length === 0;
     elements.subagentsClearFinishedButton.textContent = subagentsClearingFinished ? "Clearing…" : "Clear finished";
@@ -22012,6 +22094,7 @@ function renderSubagents() {
 
 async function refreshSubagents() {
   if (subagentsLoading) return;
+  let refreshed = false;
   let subagentViewsChanged = false;
   let materializedTerminalViews = false;
   subagentsLoading = true;
@@ -22023,6 +22106,7 @@ async function refreshSubagents() {
     subagentViewsChanged = syncSubagentTerminalViewsFromOverview();
     materializedTerminalViews = materializeRetainedSubagentTerminalViews();
     subagentsError = null;
+    refreshed = true;
   } catch (error) {
     subagentsError = error;
   } finally {
@@ -22034,6 +22118,9 @@ async function refreshSubagents() {
       scheduleSubagentTerminalRefresh();
     }
     if (subagentViewsChanged || materializedTerminalViews) renderTabs();
+  }
+  if (refreshed && subagentAutoClearEnabled && finishedSubagentRunSelections().length) {
+    await clearFinishedSubagentRuns({ automatic: true });
   }
 }
 
@@ -33608,6 +33695,7 @@ function resetOptionalFeatureAvailability() {
   for (const key of Object.keys(optionalFeatureAvailability)) optionalFeatureAvailability[key] = false;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   renderOptionalFeatureControls();
+  if (activeTabId) queueMicrotask(() => refreshQuestionnaireFeatureAvailability());
 }
 
 function optionalFeaturePackageStatus(featureId) {
@@ -33697,6 +33785,24 @@ async function copyOptionalFeatureInstallCommand(featureId) {
   }
 }
 
+async function refreshQuestionnaireFeatureAvailability(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return false;
+  try {
+    const response = await api("/api/tools?scope=session", { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return false;
+    optionalFeatureAvailability.questionnaire = Array.isArray(response.data?.tools)
+      && response.data.tools.some((tool) => tool?.name === "questionnaire");
+    renderOptionalFeatureControls();
+    return true;
+  } catch {
+    if (isCurrentTabContext(tabContext)) {
+      optionalFeatureAvailability.questionnaire = false;
+      renderOptionalFeatureControls();
+    }
+    return false;
+  }
+}
+
 async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) {
   try {
     const response = await api("/api/optional-features", { scoped: false });
@@ -33705,6 +33811,7 @@ async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) 
     for (const status of response.data?.features || []) {
       if (status?.featureId) optionalFeaturePackageStatuses.set(status.featureId, status);
     }
+    await refreshQuestionnaireFeatureAvailability();
     renderOptionalFeatureControls();
     return true;
   } catch (error) {
@@ -33822,8 +33929,10 @@ function updateOptionalFeatureAvailability() {
 }
 
 function optionalFeatureStatus(featureId) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
   const detected = isOptionalFeatureDetected(featureId);
-  const disabled = isOptionalFeatureDisabled(featureId);
+  const managedWithTools = feature?.manageWith === "tools";
+  const disabled = managedWithTools ? false : isOptionalFeatureDisabled(featureId);
   const packageStatus = optionalFeaturePackageStatus(featureId);
   const installMessage = optionalFeatureInstallMessages.get(featureId);
   const installState = optionalFeatureInstallState(featureId);
@@ -33850,6 +33959,7 @@ function optionalFeatureStatus(featureId) {
   }
   const doneDetail = installState?.phase === "done" ? optionalFeatureInstallDetail(installState, installMessage) : "";
   if (packageStatus?.updateAvailable) return { label: "Update available", className: "updating", detail: packageStatus.updateReason || `Installed package is older than the Web UI expects${versionSuffix}` };
+  if (detected && managedWithTools) return { label: "Loaded", className: "enabled", detail: doneDetail || `Detected in the active Pi tab; manage access in Tools${versionSuffix}`, command: installState?.command || "" };
   if (detected && !disabled) return { label: "Enabled", className: "enabled", detail: doneDetail || `Detected and enabled in Web UI${versionSuffix}`, command: installState?.command || "" };
   if (detected && disabled) return { label: "Disabled", className: "disabled", detail: `Detected, but disabled in Web UI${versionSuffix}` };
   if (packageStatus?.installed) return { label: "Installed", className: "installed", detail: doneDetail || `Package is installed but not loaded in the active Pi tab${versionSuffix}`, command: installState?.command || "" };
@@ -33996,6 +34106,9 @@ function renderOptionalFeatureRow(feature) {
     action.textContent = "Update…";
     action.classList.add("update");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
+  } else if (detected && feature.manageWith === "tools") {
+    action.textContent = "Tools…";
+    action.addEventListener("click", () => openNativeToolsSelector());
   } else if (detected) {
     action.textContent = enabled ? "Disable" : "Enable";
     action.addEventListener("click", async () => {
@@ -40712,6 +40825,9 @@ if (elements.subagentOpenModeSelect) {
     setSubagentOpenMode(elements.subagentOpenModeSelect.value, { announce: true });
   });
 }
+elements.subagentsAutoClearButton?.addEventListener("click", () => {
+  setSubagentAutoClearEnabled(!subagentAutoClearEnabled, { announce: true });
+});
 elements.subagentsClearFinishedButton?.addEventListener("click", () => {
   void clearFinishedSubagentRuns();
 });
@@ -41523,6 +41639,7 @@ restoreAgentDoneNotificationsSetting();
 restoreThinkingVisibilitySetting();
 restoreTerminalTabsLayoutSetting();
 restoreSubagentOpenModeSetting();
+restoreSubagentAutoClearSetting();
 restoreTerminalCustomGroups();
 restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();

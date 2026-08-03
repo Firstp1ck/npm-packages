@@ -36,10 +36,12 @@
       "node_modules/@firstpick/pi-extension-stats/index.ts",
       "node_modules/@firstpick/pi-extension-todo-progress/index.ts",
       "node_modules/@firstpick/pi-extension-tools/index.ts",
-      "node_modules/@firstpick/pi-package-remote-webui/index.ts"
+      "node_modules/@firstpick/pi-package-remote-webui/index.ts",
+      "node_modules/@firstpick/pi-package-questionnaire/index.ts"
     ],
     "skills": [
-      "node_modules/@firstpick/pi-extension-release-aur/skills"
+      "node_modules/@firstpick/pi-extension-release-aur/skills",
+      "node_modules/@firstpick/pi-package-questionnaire/skills"
     ],
     "prompts": [
       "node_modules/@firstpick/pi-prompts-git-pr/prompts"

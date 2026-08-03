@@ -79,6 +79,10 @@ async function storedOrder(page) {
   return page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]"), storageKey);
 }
 
+async function storedLayout(page) {
+  return page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), layoutStorageKey);
+}
+
 test("composer actions persist pointer and keyboard grid reordering", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(baseURL);
@@ -243,20 +247,14 @@ test("empty composer grid cells retain their space and accept later drops", asyn
   await expect.poll(async () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null")?.positions?.new, layoutStorageKey)).toBe(middleEmptyCellIndex);
 });
 
-test("sparse composer buttons stay inside the row when the Control Deck opens", async ({ page }) => {
+test("sparse composer buttons keep responsive positions when the Control Deck width changes", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(baseURL);
 
-  const body = page.locator("body");
   const row = page.locator(".composer-row");
   const options = page.locator('[data-composer-action-id="options"]');
   const gridGuide = page.locator("#composerActionGridGuide");
-  const initialRowBox = await row.boundingBox();
-  expect(initialRowBox).toBeTruthy();
-
-  await page.locator("#toggleSidePanelButton").click();
-  await expect(body).toHaveClass(/side-panel-collapsed/);
-  await expect.poll(async () => (await row.boundingBox()).width).toBeGreaterThan(initialRowBox.width + 200);
+  const resizeHandle = page.locator("#sidePanelResizeHandle");
   const wideRowBox = await row.boundingBox();
   const optionsBox = await options.boundingBox();
   expect(wideRowBox).toBeTruthy();
@@ -270,25 +268,36 @@ test("sparse composer buttons stay inside the row when the Control Deck opens", 
   expect(lastCellBox).toBeTruthy();
   await page.mouse.move(lastCellBox.x + lastCellBox.width / 2, lastCellBox.y + lastCellBox.height / 2, { steps: 8 });
   await page.mouse.up();
-  const wideColumn = await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"));
-  expect(Number(wideColumn)).toBeGreaterThan(1);
 
-  await page.locator("#sidePanelExpandButton").click();
-  await expect(body).not.toHaveClass(/side-panel-collapsed/);
-  await expect.poll(async () => (await row.boundingBox()).width).toBeLessThan(wideRowBox.width - 200);
+  const wideColumn = await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"));
+  const savedWideLayout = await storedLayout(page);
+  expect(Number(wideColumn)).toBeGreaterThan(1);
+  expect(savedWideLayout?.columns).toBeGreaterThan(1);
+
+  await resizeHandle.focus();
+  await resizeHandle.press("Shift+ArrowLeft");
+  await resizeHandle.press("Shift+ArrowLeft");
+  await resizeHandle.press("Shift+ArrowLeft");
+
+  await expect.poll(async () => (await row.boundingBox()).width).toBeLessThan(wideRowBox.width - 50);
+  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).not.toBe("");
   await expect.poll(async () => page.evaluate(() => {
     const composerRow = document.querySelector(".composer-row");
+    const action = document.querySelector('[data-composer-action-id="options"]');
     const rowRect = composerRow.getBoundingClientRect();
-    return Array.from(composerRow.querySelectorAll("[data-composer-action-id]"))
-      .filter((action) => !action.hidden && action.getClientRects().length > 0)
-      .every((action) => {
-        const rect = action.getBoundingClientRect();
-        return rect.left >= rowRect.left - 1 && rect.right <= rowRect.right + 1;
-      });
-  })).toBe(true);
-  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe("");
+    const actionRect = action.getBoundingClientRect();
+    return Math.abs(rowRect.right - actionRect.right);
+  })).toBeLessThan(2);
+  expect(await storedLayout(page)).toEqual(savedWideLayout);
 
-  await page.locator("#toggleSidePanelButton").click();
-  await expect(body).toHaveClass(/side-panel-collapsed/);
-  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(wideColumn);
+  await page.reload();
+  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).not.toBe("");
+  await expect.poll(async () => page.evaluate(() => {
+    const composerRow = document.querySelector(".composer-row");
+    const action = document.querySelector('[data-composer-action-id="options"]');
+    const rowRect = composerRow.getBoundingClientRect();
+    const actionRect = action.getBoundingClientRect();
+    return Math.abs(rowRect.right - actionRect.right);
+  })).toBeLessThan(2);
+  expect(await storedLayout(page)).toEqual(savedWideLayout);
 });
