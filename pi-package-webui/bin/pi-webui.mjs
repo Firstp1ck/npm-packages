@@ -62,6 +62,12 @@ import {
   writeWebuiSettings,
 } from "../lib/git-workflow-preferences.mjs";
 import {
+  UI_LAYOUT_REQUEST_MAX_BYTES,
+  mergeUiLayout,
+  uiLayoutRevision,
+  validateUiLayoutPatch,
+} from "../lib/ui-layout-settings.mjs";
+import {
   SUBAGENT_LAUNCH_SLOT_LIMITS,
   SUBAGENT_LAUNCH_SLOT_ROLE_CATALOG,
   SUBAGENT_LAUNCH_SLOT_THINKING_LEVELS,
@@ -13724,18 +13730,73 @@ async function saveOutputModeDefault(value) {
   return outputModeMetadata();
 }
 
+function interfacePreferencesResponse(settings) {
+  return {
+    preferences: settings.interfacePreferences,
+    layout: settings.uiLayout,
+    layoutRevision: uiLayoutRevision(settings.uiLayout),
+  };
+}
+
+function interfacePreferencesRequestError(error, operation) {
+  if (error?.statusCode) return error;
+  if (error?.code === "UI_LAYOUT_INVALID" || error instanceof TypeError) return makeHttpError(400, formatCliError(error));
+  if (error?.code === "UI_LAYOUT_STALE_REVISION") return makeHttpError(409, "The interface layout changed after it was read; refresh and retry.");
+  const message = error?.code === "WEBUI_SETTINGS_LOCK_TIMEOUT"
+    ? "Interface preferences are busy; retry shortly."
+    : `Could not ${operation} interface preferences.`;
+  const wrapped = makeHttpError(error?.code === "WEBUI_SETTINGS_LOCK_TIMEOUT" ? 503 : 500, message);
+  wrapped.userMessage = message;
+  return wrapped;
+}
+
+function requireInterfacePreferencesJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw makeHttpError(415, "Interface preference saves require Content-Type: application/json.");
+}
+
+function validateInterfacePreferencesBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw makeHttpError(400, "Interface preference save body must be an object.");
+  const allowed = new Set(["sidePanelWidth", "layout", "expectedLayoutRevision"]);
+  const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+  if (unknown.length) throw makeHttpError(400, `Interface preference save contains unsupported field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`);
+  const hasWidth = Object.hasOwn(body, "sidePanelWidth");
+  const hasLayout = Object.hasOwn(body, "layout");
+  if (!hasWidth && !hasLayout) throw makeHttpError(400, "Interface preference save must include sidePanelWidth or layout.");
+  if (hasWidth) {
+    if (typeof body.sidePanelWidth !== "number" || !Number.isFinite(body.sidePanelWidth) || body.sidePanelWidth < WEBUI_SIDE_PANEL_WIDTH_MIN_PX || body.sidePanelWidth > WEBUI_SIDE_PANEL_WIDTH_MAX_PX) {
+      throw makeHttpError(400, `sidePanelWidth must be between ${WEBUI_SIDE_PANEL_WIDTH_MIN_PX} and ${WEBUI_SIDE_PANEL_WIDTH_MAX_PX} pixels`);
+    }
+  }
+  if (hasLayout) {
+    if (!Object.hasOwn(body, "expectedLayoutRevision") || typeof body.expectedLayoutRevision !== "string" || !/^[a-f0-9]{64}$/u.test(body.expectedLayoutRevision)) {
+      throw makeHttpError(400, "layout saves require the latest layoutRevision as expectedLayoutRevision.");
+    }
+    validateUiLayoutPatch(body.layout);
+  } else if (Object.hasOwn(body, "expectedLayoutRevision")) {
+    throw makeHttpError(400, "expectedLayoutRevision is only valid with a layout save.");
+  }
+  return { hasWidth, hasLayout };
+}
+
 async function interfacePreferencesData() {
-  const settings = await readWebuiSettings();
-  return { preferences: settings.interfacePreferences };
+  return interfacePreferencesResponse(await readWebuiSettings());
 }
 
 async function saveInterfacePreferences(body = {}) {
-  const sidePanelWidth = Number(body.sidePanelWidth);
-  if (!Number.isFinite(sidePanelWidth) || sidePanelWidth < WEBUI_SIDE_PANEL_WIDTH_MIN_PX || sidePanelWidth > WEBUI_SIDE_PANEL_WIDTH_MAX_PX) {
-    throw makeHttpError(400, `sidePanelWidth must be between ${WEBUI_SIDE_PANEL_WIDTH_MIN_PX} and ${WEBUI_SIDE_PANEL_WIDTH_MAX_PX} pixels`);
-  }
-  const settings = await writeWebuiSettings({ interfacePreferences: { sidePanelWidth: Math.round(sidePanelWidth) } });
-  return { preferences: settings.interfacePreferences };
+  const { hasWidth, hasLayout } = validateInterfacePreferencesBody(body);
+  const settings = await updateWebuiSettings((current) => {
+    if (hasLayout && body.expectedLayoutRevision !== uiLayoutRevision(current.uiLayout)) {
+      const error = new Error("stale interface layout revision");
+      error.code = "UI_LAYOUT_STALE_REVISION";
+      throw error;
+    }
+    const patch = {};
+    if (hasWidth) patch.interfacePreferences = { sidePanelWidth: Math.round(body.sidePanelWidth) };
+    if (hasLayout) patch.uiLayout = mergeUiLayout(current.uiLayout, body.layout);
+    return patch;
+  });
+  return interfacePreferencesResponse(settings);
 }
 
 const remoteAuth = {
@@ -14240,12 +14301,28 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/interface-preferences" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await interfacePreferencesData() });
+      try {
+        sendJson(res, 200, { ok: true, data: await interfacePreferencesData() });
+      } catch (error) {
+        throw interfacePreferencesRequestError(error, "read");
+      }
       return;
     }
 
     if (url.pathname === "/api/interface-preferences" && req.method === "PUT") {
-      sendJson(res, 200, { ok: true, data: await saveInterfacePreferences(await readJsonBody(req)) });
+      requireInterfacePreferencesJsonRequest(req);
+      try {
+        let body;
+        try {
+          body = await readJsonBody(req, { limitBytes: UI_LAYOUT_REQUEST_MAX_BYTES });
+        } catch (error) {
+          if (error instanceof SyntaxError) throw makeHttpError(400, "Interface preference save body must be valid JSON.");
+          throw error;
+        }
+        sendJson(res, 200, { ok: true, data: await saveInterfacePreferences(body) });
+      } catch (error) {
+        throw interfacePreferencesRequestError(error, "save");
+      }
       return;
     }
 

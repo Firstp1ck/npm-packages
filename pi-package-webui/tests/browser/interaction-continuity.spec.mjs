@@ -431,6 +431,35 @@ test("streaming thinking selection survives a later thinking delta", async ({ pa
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || "")).toBe("");
 });
 
+test("live thinking, assistant output, and tool calls keep chronological tail order", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await triggerTranscriptContinuity(page, "order");
+
+  const chat = page.locator("#chat");
+  await expect(chat.locator(".message.thinking.streaming").last()).toContainText("ordering thinking");
+  await expect(chat.locator(".message.assistant.streaming").last()).toContainText("ordering assistant output");
+  await expect.poll(() => chat.evaluate((root) => {
+    const messages = [...root.querySelectorAll(":scope > .message")];
+    const thinkingIndex = messages.findIndex((message) => message.matches(".thinking.streaming") && message.textContent?.includes("ordering thinking"));
+    const outputIndex = messages.findIndex((message) => message.matches(".assistant.streaming") && message.textContent?.includes("ordering assistant output"));
+    return thinkingIndex >= 0 && outputIndex > thinkingIndex;
+  })).toBe(true);
+
+  const streamingToolCalls = chat.locator(".message.toolCall.streaming", { hasText: "order.txt" });
+  await expect(streamingToolCalls.last()).toContainText("order.txt");
+  await expect.poll(() => chat.evaluate((root) => {
+    const messages = [...root.querySelectorAll(":scope > .message")];
+    const thinkingIndex = messages.findIndex((message) => message.matches(".thinking.streaming") && message.textContent?.includes("ordering thinking"));
+    const toolIndex = messages.findIndex((message) => message.matches(".toolCall.streaming") && message.textContent?.includes("order.txt"));
+    return thinkingIndex >= 0 && toolIndex > thinkingIndex;
+  })).toBe(true);
+  await page.waitForTimeout(500);
+  await expect(streamingToolCalls).toHaveCount(1);
+  await expect(chat.locator(".message.thinking.streaming", { hasText: "ordering thinking" })).toHaveCount(1);
+  await waitForFixtureSettlement(page);
+});
+
 test("thinking visibility change explicitly invalidates a live thinking selection", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(baseURL);

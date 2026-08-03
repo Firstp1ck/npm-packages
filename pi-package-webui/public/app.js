@@ -91,6 +91,7 @@ const elements = {
   composerRow: $(".composer-row"),
   composerActionsButton: $("#composerActionsButton"),
   composerActionsPanel: $("#composerActionsPanel"),
+  composerActionGridGuide: $("#composerActionGridGuide"),
   composerActionOrderStatus: $("#composerActionOrderStatus"),
   promptInput: $("#promptInput"),
   mobileFailedSendRecovery: $("#mobileFailedSendRecovery"),
@@ -500,6 +501,9 @@ let sidePanelSectionSuppressClickUntil = 0;
 let composerActionPointerDrag = null;
 let composerActionLastDragOverKey = "";
 let composerActionSuppressClickUntil = 0;
+let composerActionSlotLayout = new Map();
+let composerActionLayoutColumns = 0;
+let composerActionLayoutRestoreFrame = null;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let sidePanelResizeState = null;
@@ -817,6 +821,7 @@ const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-
 const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
 const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const COMPOSER_ACTION_ORDER_STORAGE_KEY = "pi-webui-composer-action-order-v1";
+const COMPOSER_ACTION_LAYOUT_STORAGE_KEY = "pi-webui-composer-action-layout-v2";
 const COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
@@ -932,6 +937,8 @@ const WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1;
 const WORKFLOW_MODE_STATUS_KEY = "workflow-mode";
 const FEATURE_DECISION_OUTPUT_STATUS_KEY = "feature-decision-output";
 const FEATURE_CATEGORY_STATUS_KEY = "feature-category";
+const FEATURE_DECISION_PAYLOAD_MAX_CHARS = 4096;
+const FEATURE_DECISION_REASON_MAX_CHARS = 500;
 const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
 const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
 const WORKFLOW_MODE_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.mode";
@@ -3427,6 +3434,7 @@ function persistSidePanelSectionOrder() {
   } catch {
     // Ignore storage failures; ordering should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "sectionOrder");
 }
 
 function restoreSidePanelSectionOrder() {
@@ -3557,6 +3565,7 @@ function persistSidePanelSectionState() {
   } catch {
     // Ignore storage failures; section toggles should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "collapsedSectionIds");
 }
 
 function readStoredSidePanelSectionHiddenIds() {
@@ -3579,6 +3588,7 @@ function persistSidePanelSectionVisibility() {
   } catch {
     // Ignore storage failures; visibility toggles should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "hiddenSectionIds");
 }
 
 function setSidePanelSectionVisible(record, visible, { persist = true } = {}) {
@@ -3715,7 +3725,8 @@ function composerActionRecords() {
       const rawStoredOrder = root.style.getPropertyValue("--composer-action-order");
       const storedOrder = Number(rawStoredOrder);
       const order = rawStoredOrder !== "" && Number.isFinite(storedOrder) ? storedOrder : domIndex;
-      return { id, root, focusTarget, domIndex, order };
+      const span = Number(root.dataset.composerActionSpan) === 2 ? 2 : 1;
+      return { id, root, focusTarget, domIndex, order, span };
     })
     .filter((record) => record.id && record.focusTarget);
 }
@@ -3758,12 +3769,224 @@ function persistComposerActionOrder() {
   } catch {
     // Ignore storage failures; ordering should still work for this page load.
   }
+  markDurableUiLayoutDirty("composerActions");
+}
+
+function composerActionGridColumnCount() {
+  const row = elements.composerRow;
+  const style = getComputedStyle(row);
+  const rawMinWidth = style.getPropertyValue("--composer-action-cell-min-width").trim();
+  const numericMinWidth = Number.parseFloat(rawMinWidth);
+  const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const rowFontSize = Number.parseFloat(style.fontSize) || rootFontSize;
+  const minWidth = rawMinWidth.endsWith("rem")
+    ? numericMinWidth * rootFontSize
+    : rawMinWidth.endsWith("em")
+      ? numericMinWidth * rowFontSize
+      : numericMinWidth;
+  const gap = Number.parseFloat(style.columnGap || style.gap) || 0;
+  const availableWidth = row.clientWidth || row.getBoundingClientRect().width;
+  if (!Number.isFinite(minWidth) || minWidth <= 0 || !Number.isFinite(availableWidth) || availableWidth <= 0) return 1;
+  return Math.max(1, Math.floor((availableWidth + gap) / (minWidth + gap)));
+}
+
+function readStoredComposerActionLayout() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COMPOSER_ACTION_LAYOUT_STORAGE_KEY) || "null");
+    if (!parsed || parsed.version !== 2 || !Number.isInteger(parsed.columns) || parsed.columns < 1 || !parsed.positions || typeof parsed.positions !== "object") return null;
+    const positions = new Map();
+    for (const [id, slot] of Object.entries(parsed.positions)) {
+      if (typeof id === "string" && id && Number.isInteger(slot) && slot >= 0) positions.set(id, slot);
+    }
+    return { columns: parsed.columns, positions };
+  } catch {
+    return null;
+  }
+}
+
+function composerActionSlotCanFit(record, slot, layout = composerActionSlotLayout, columns = composerActionLayoutColumns) {
+  if (!record || !Number.isInteger(slot) || slot < 0 || columns < 1) return false;
+  const column = slot % columns;
+  if (column + record.span > columns) return false;
+  const row = Math.floor(slot / columns);
+  for (const [otherId, otherSlot] of layout) {
+    if (otherId === record.id) continue;
+    const other = composerActionRecords().find(({ id, root }) => id === otherId && !root.hidden && root.getClientRects().length > 0);
+    if (!other || Math.floor(otherSlot / columns) !== row) continue;
+    const otherColumn = otherSlot % columns;
+    if (column < otherColumn + other.span && otherColumn < column + record.span) return false;
+  }
+  return true;
+}
+
+function applyComposerActionSlotLayout() {
+  for (const record of composerActionRecords()) {
+    const slot = composerActionSlotLayout.get(record.id);
+    if (!Number.isInteger(slot) || composerActionLayoutColumns < 1 || record.root.hidden) {
+      record.root.style.removeProperty("--composer-action-grid-column");
+      record.root.style.removeProperty("--composer-action-grid-row");
+      continue;
+    }
+    record.root.style.setProperty("--composer-action-grid-column", String((slot % composerActionLayoutColumns) + 1));
+    record.root.style.setProperty("--composer-action-grid-row", String(Math.floor(slot / composerActionLayoutColumns) + 1));
+  }
+}
+
+function persistComposerActionSlotLayout() {
+  if (composerActionLayoutColumns < 1 || !composerActionSlotLayout.size) return;
+  try {
+    localStorage.setItem(COMPOSER_ACTION_LAYOUT_STORAGE_KEY, JSON.stringify({
+      version: 2,
+      columns: composerActionLayoutColumns,
+      positions: Object.fromEntries(composerActionSlotLayout),
+    }));
+  } catch {
+    // Ignore storage failures; sparse placement should still work for this page load.
+  }
+  markDurableUiLayoutDirty("composerActions");
+}
+
+function restoreComposerActionSlotLayout() {
+  if (isMobileView()) return;
+  const stored = readStoredComposerActionLayout();
+  const columns = composerActionGridColumnCount();
+  composerActionSlotLayout = new Map();
+  composerActionLayoutColumns = columns;
+  if (!stored || stored.columns !== columns) {
+    applyComposerActionSlotLayout();
+    return;
+  }
+  const records = new Map(composerActionRecords().map((record) => [record.id, record]));
+  for (const [id, slot] of [...stored.positions].sort((a, b) => a[1] - b[1])) {
+    const record = records.get(id);
+    if (!record || record.root.hidden || !record.root.getClientRects().length) continue;
+    if (composerActionSlotCanFit(record, slot)) composerActionSlotLayout.set(id, slot);
+  }
+  applyComposerActionSlotLayout();
+}
+
+function scheduleComposerActionSlotLayoutRestore() {
+  if (composerActionPointerDrag?.active || composerActionLayoutRestoreFrame !== null) return;
+  const restore = () => {
+    composerActionLayoutRestoreFrame = null;
+    if (!composerActionPointerDrag?.active) restoreComposerActionSlotLayout();
+  };
+  composerActionLayoutRestoreFrame = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(restore)
+    : setTimeout(restore, 0);
+}
+
+function captureComposerActionSlotLayout() {
+  const cells = Array.from(elements.composerActionGridGuide?.children || []);
+  if (!cells.length) return;
+  composerActionLayoutColumns = composerActionGridColumnCount();
+  const nextLayout = new Map();
+  for (const record of orderedComposerActionRecords({ visibleOnly: true })) {
+    const actionRect = record.root.getBoundingClientRect();
+    const slot = cells.findIndex((cell) => {
+      const rect = cell.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      return centerX >= actionRect.left - 1 && centerX <= actionRect.right + 1 && centerY >= actionRect.top - 1 && centerY <= actionRect.bottom + 1;
+    });
+    if (slot >= 0) nextLayout.set(record.id, slot);
+  }
+  composerActionSlotLayout = nextLayout;
+  applyComposerActionSlotLayout();
+}
+
+function repackComposerActionSlotLayout() {
+  if (composerActionLayoutColumns < 1) return;
+  const nextLayout = new Map();
+  let slot = 0;
+  for (const record of orderedComposerActionRecords({ visibleOnly: true })) {
+    const column = slot % composerActionLayoutColumns;
+    if (column + record.span > composerActionLayoutColumns) slot += composerActionLayoutColumns - column;
+    nextLayout.set(record.id, slot);
+    slot += record.span;
+  }
+  composerActionSlotLayout = nextLayout;
+  applyComposerActionSlotLayout();
+  persistComposerActionSlotLayout();
+}
+
+function syncComposerActionOrderFromSlots() {
+  const visibleIds = orderedComposerActionRecords({ visibleOnly: true })
+    .filter(({ id }) => composerActionSlotLayout.has(id))
+    .sort((a, b) => composerActionSlotLayout.get(a.id) - composerActionSlotLayout.get(b.id))
+    .map(({ id }) => id);
+  const completeOrder = [
+    ...visibleIds,
+    ...orderedComposerActionRecords().map(({ id }) => id).filter((id) => !visibleIds.includes(id)),
+  ];
+  applyComposerActionOrder(completeOrder);
+  persistComposerActionOrder();
+}
+
+function moveComposerActionToGridCell(actionId, cell) {
+  const record = composerActionRecords().find(({ id }) => id === actionId);
+  const slot = Number(cell?.dataset.composerActionGridCell);
+  if (!record || !Number.isInteger(slot)) return false;
+  const nextLayout = new Map(composerActionSlotLayout);
+  nextLayout.delete(actionId);
+  if (!composerActionSlotCanFit(record, slot, nextLayout)) return false;
+  nextLayout.set(actionId, slot);
+  composerActionSlotLayout = nextLayout;
+  applyComposerActionSlotLayout();
+  syncComposerActionOrderFromSlots();
+  clearComposerActionDragMarkers();
+  cell.classList.add("composer-action-grid-cell-target");
+  composerActionLastDragOverKey = `cell:${slot}`;
+  persistComposerActionSlotLayout();
+  return true;
 }
 
 function clearComposerActionDragMarkers() {
   for (const { root } of composerActionRecords()) {
     root.classList.remove("composer-action-drag-before", "composer-action-drag-after");
   }
+  for (const cell of elements.composerActionGridGuide?.children || []) {
+    cell.classList.remove("composer-action-grid-cell-target");
+  }
+}
+
+function showComposerActionGridGuide() {
+  const row = elements.composerRow;
+  const guide = elements.composerActionGridGuide;
+  if (!row || !guide) return;
+  const columnCount = composerActionGridColumnCount();
+  const rowTops = orderedComposerActionRecords({ visibleOnly: true })
+    .map(({ root }) => root.getBoundingClientRect().top)
+    .sort((a, b) => a - b)
+    .reduce((groups, top) => {
+      if (!groups.length || top - groups.at(-1) > 4) groups.push(top);
+      return groups;
+    }, []);
+  const rowCount = Math.max(1, rowTops.length);
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < columnCount * rowCount; index += 1) {
+    const cell = document.createElement("span");
+    cell.className = "composer-action-grid-cell";
+    cell.dataset.composerActionGridCell = String(index);
+    fragment.append(cell);
+  }
+  guide.style.setProperty("--composer-action-grid-rows", String(rowCount));
+  guide.replaceChildren(fragment);
+  guide.hidden = false;
+  document.body.classList.add("composer-action-drag-active");
+}
+
+function hideComposerActionGridGuide() {
+  document.body.classList.remove("composer-action-drag-active");
+  if (elements.composerActionGridGuide) elements.composerActionGridGuide.hidden = true;
+}
+
+function composerActionGridCellFromPoint(clientX, clientY) {
+  for (const cell of elements.composerActionGridGuide?.children || []) {
+    const rect = cell.getBoundingClientRect();
+    if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) return cell;
+  }
+  return null;
 }
 
 function moveComposerActionRelative(fromId, targetId, insertBefore) {
@@ -3773,6 +3996,7 @@ function moveComposerActionRelative(fromId, targetId, insertBefore) {
   if (targetIndex < 0) return false;
   order.splice(targetIndex + (insertBefore ? 0 : 1), 0, fromId);
   applyComposerActionOrder(order);
+  if (composerActionSlotLayout.size) repackComposerActionSlotLayout();
   clearComposerActionDragMarkers();
   const targetRecord = composerActionRecords().find(({ id }) => id === targetId);
   targetRecord?.root.classList.add(insertBefore ? "composer-action-drag-before" : "composer-action-drag-after");
@@ -3838,17 +4062,38 @@ function updateComposerActionPointerDrag(event) {
     pointerActivationTimeout = null;
     activePointerActivation = null;
     composerActionRecords().find(({ id }) => id === drag.actionId)?.root.classList.add("composer-action-dragging");
+    showComposerActionGridGuide();
+    captureComposerActionSlotLayout();
   }
   const targetRoot = composerActionRootFromPoint(event.clientX, event.clientY);
   const targetRecord = targetRoot
     ? composerActionRecords().find(({ root }) => root === targetRoot)
     : null;
-  if (!targetRecord || targetRecord.id === drag.actionId || targetRecord.root.hidden) return;
-  const rect = targetRoot.getBoundingClientRect();
-  const insertBefore = event.clientX < rect.left + rect.width / 2;
-  const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  if (targetRecord?.id === drag.actionId) {
+    drag.pendingRelative = null;
+    if (!composerActionLastDragOverKey.startsWith("cell:")) {
+      clearComposerActionDragMarkers();
+      composerActionLastDragOverKey = "";
+    }
+    return;
+  }
+  if (targetRecord && !targetRecord.root.hidden) {
+    const rect = targetRoot.getBoundingClientRect();
+    const insertBefore = event.clientX < rect.left + rect.width / 2;
+    const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+    if (markerKey === composerActionLastDragOverKey) return;
+    clearComposerActionDragMarkers();
+    targetRecord.root.classList.add(insertBefore ? "composer-action-drag-before" : "composer-action-drag-after");
+    composerActionLastDragOverKey = markerKey;
+    drag.pendingRelative = { targetId: targetRecord.id, insertBefore };
+    return;
+  }
+  const gridCell = composerActionGridCellFromPoint(event.clientX, event.clientY);
+  if (!gridCell) return;
+  const markerKey = `cell:${gridCell.dataset.composerActionGridCell}`;
   if (markerKey === composerActionLastDragOverKey) return;
-  moveComposerActionRelative(drag.actionId, targetRecord.id, insertBefore);
+  drag.pendingRelative = null;
+  moveComposerActionToGridCell(drag.actionId, gridCell);
 }
 
 function endComposerActionPointerDrag(event) {
@@ -3858,14 +4103,19 @@ function endComposerActionPointerDrag(event) {
   window.removeEventListener("pointerup", endComposerActionPointerDrag, { capture: true });
   window.removeEventListener("pointercancel", endComposerActionPointerDrag, { capture: true });
   const sourceRecord = composerActionRecords().find(({ id }) => id === drag.actionId);
+  if (drag.active && event.type === "pointerup" && drag.pendingRelative) {
+    moveComposerActionRelative(drag.actionId, drag.pendingRelative.targetId, drag.pendingRelative.insertBefore);
+  }
   composerActionPointerDrag = null;
   composerActionLastDragOverKey = "";
   clearComposerActionDragMarkers();
   sourceRecord?.root.classList.remove("composer-action-dragging");
+  hideComposerActionGridGuide();
   if (drag.active) {
     composerActionSuppressClickUntil = Date.now() + 250;
     event.preventDefault();
     persistComposerActionOrder();
+    persistComposerActionSlotLayout();
     announceComposerActionPosition(drag.actionId);
     queueMicrotask(() => sourceRecord?.focusTarget.focus({ preventScroll: true }));
   }
@@ -3878,6 +4128,24 @@ function syncComposerActionGridAvailability() {
 function initializeComposerActionOrdering() {
   syncComposerActionGridAvailability();
   restoreComposerActionOrder();
+  restoreComposerActionSlotLayout();
+  const layoutObserver = new MutationObserver((mutations) => {
+    if (mutations.some((mutation) => mutation.type === "childList" || mutation.target.matches?.("[data-composer-action-id]"))) {
+      scheduleComposerActionSlotLayoutRestore();
+    }
+  });
+  layoutObserver.observe(elements.composerRow, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  if (typeof ResizeObserver === "function") {
+    let observedRowWidth = elements.composerRow.getBoundingClientRect().width;
+    const rowResizeObserver = new ResizeObserver(([entry]) => {
+      const nextWidth = entry?.contentRect?.width ?? elements.composerRow.getBoundingClientRect().width;
+      if (Math.abs(nextWidth - observedRowWidth) < 0.5) return;
+      observedRowWidth = nextWidth;
+      scheduleComposerActionSlotLayoutRestore();
+    });
+    rowResizeObserver.observe(elements.composerRow);
+  }
+  window.addEventListener("resize", scheduleComposerActionSlotLayoutRestore);
   for (const record of composerActionRecords()) {
     record.focusTarget.setAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown");
     record.focusTarget.addEventListener("keydown", (event) => {
@@ -4012,6 +4280,7 @@ function persistTerminalTabsLayout(layout) {
   } catch {
     // Ignore storage failures; the layout control should still work for this page load.
   }
+  markDurableUiLayoutDirty("terminalTabs", "layout");
 }
 
 function readStoredToolOutputExpanded() {
@@ -4166,6 +4435,7 @@ function persistTerminalCustomGroups() {
   } catch {
     // Ignore storage failures; custom tab groups still work for this page load.
   }
+  markDurableUiLayoutDirty("terminalTabs", "customGroups");
 }
 
 function workspaceGroupsForSave() {
@@ -5045,16 +5315,63 @@ function normalizeFeatureCategory(value) {
   return value === "lightweight-feature" || value === "complex-feature" ? value : "";
 }
 
-function normalizeFeatureDecisionOutput(value) {
+function normalizeFeatureDecisionKind(value) {
   return value === "feature_lightweight" || value === "feature_complex" ? value : "";
 }
 
-function featureDecisionOutputForTab(tabId) {
+function normalizeFeatureDecisionReason(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, FEATURE_DECISION_REASON_MAX_CHARS)
+    .trimEnd();
+}
+
+// Accepts the structured {kind,reason} classifier payload and the legacy exact label.
+// Every other payload fails closed so the popup stays unavailable.
+function parseFeatureDecisionPayload(value) {
+  if (typeof value !== "string" || !value || value.length > FEATURE_DECISION_PAYLOAD_MAX_CHARS) return null;
+  const legacyKind = normalizeFeatureDecisionKind(value);
+  if (legacyKind) return { kind: legacyKind, reason: "" };
+  if (!value.startsWith("{")) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const keys = Object.keys(parsed);
+  if (keys.length !== 2 || !keys.includes("kind") || !keys.includes("reason")) return null;
+  if (typeof parsed.reason !== "string") return null;
+  const kind = normalizeFeatureDecisionKind(parsed.kind);
+  const reason = normalizeFeatureDecisionReason(parsed.reason);
+  return kind && reason ? { kind, reason } : null;
+}
+
+function featureDecisionKindLabel(kind) {
+  return kind === "feature_complex" ? "Complex feature" : "Lightweight feature";
+}
+
+function formatFeatureDecisionText(decision) {
+  if (!decision) return "";
+  const reason = decision.reason || `The classifier reported ${decision.kind} without a reason.`;
+  return `Decision: ${featureDecisionKindLabel(decision.kind)} (${decision.kind})\nReason: ${reason}`;
+}
+
+function featureDecisionForTab(tabId) {
   const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
-  const output = normalizeFeatureDecisionOutput(featureDecisionOutputByTab.get(tabId));
-  if (category === "lightweight-feature" && output === "feature_lightweight") return output;
-  if (category === "complex-feature" && output === "feature_complex") return output;
-  return "";
+  const decision = featureDecisionOutputByTab.get(tabId) || null;
+  if (!decision || !normalizeFeatureDecisionKind(decision.kind)) return null;
+  if (category === "lightweight-feature" && decision.kind === "feature_lightweight") return decision;
+  if (category === "complex-feature" && decision.kind === "feature_complex") return decision;
+  return null;
+}
+
+function featureDecisionOutputForTab(tabId) {
+  return formatFeatureDecisionText(featureDecisionForTab(tabId));
 }
 
 function closeFeatureDecisionDialog({ restoreFocus = true } = {}) {
@@ -5104,7 +5421,7 @@ function renderFeatureCategoryTag(tabId = activeTabId) {
   tag.hidden = !category;
   tag.disabled = !output;
   tag.textContent = category;
-  tag.setAttribute("aria-label", output ? `Show classifier output for ${category}` : category || "Feature category");
+  tag.setAttribute("aria-label", output ? `Show classifier decision and reason for ${category}` : category || "Feature category");
   tag.classList.toggle("lightweight-feature", category === "lightweight-feature");
   tag.classList.toggle("complex-feature", category === "complex-feature");
   syncFeatureDecisionDialog();
@@ -5112,8 +5429,8 @@ function renderFeatureCategoryTag(tabId = activeTabId) {
 
 function handleFeatureDecisionOutputStatus(statusText, tabId = activeTabId) {
   if (!tabId) return;
-  const output = normalizeFeatureDecisionOutput(statusText);
-  if (output) featureDecisionOutputByTab.set(tabId, output);
+  const decision = parseFeatureDecisionPayload(statusText);
+  if (decision) featureDecisionOutputByTab.set(tabId, decision);
   else featureDecisionOutputByTab.delete(tabId);
   if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
   else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
@@ -5511,6 +5828,7 @@ function updateComposerModeButtons() {
   }
   renderBusyPromptBehaviorTag();
   document.body.classList.toggle("pi-run-active", runActive || abortAvailable);
+  scheduleComposerActionSlotLayoutRestore();
 }
 
 function scheduleComposerModeButtonsUpdate() {
@@ -5836,6 +6154,7 @@ function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false }
   } catch {
     // Ignore storage failures; the toggle should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "collapsed");
 }
 
 function restoreSidePanelState() {
@@ -5845,7 +6164,7 @@ function restoreSidePanelState() {
     return;
   }
   const stored = readStoredSidePanelCollapsed();
-  setSidePanelCollapsed(stored ?? false, { persist: stored !== null });
+  setSidePanelCollapsed(stored ?? false, { persist: false });
 }
 
 function readStoredWorkspaceDashboardCollapsed() {
@@ -10369,6 +10688,594 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
   await moveFileTreeEntryToDestination(entry, destinationPath, { confirmMove: true });
 }
 
+// --- Durable UI layout settings -------------------------------------------
+// Browser storage stays the immediate, offline-capable cache while the durable
+// per-user layout lives in the WebUI settings file behind
+// GET/PUT /api/interface-preferences. Local writes always apply first; server
+// reconciliation is non-blocking, coalesced, and revision guarded.
+const UI_LAYOUT_SCHEMA_VERSION = 1;
+const UI_LAYOUT_ENDPOINT = "/api/interface-preferences";
+const UI_LAYOUT_SAVE_DEBOUNCE_MS = 250;
+const UI_LAYOUT_MAX_CONFLICT_RETRIES = 1;
+const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
+const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"];
+const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
+const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups"];
+const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
+const UI_LAYOUT_PENDING_WRITER_ID = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+let durableLayoutPendingMutationSerial = 0;
+const UI_LAYOUT_ID_MAX_LENGTH = 256;
+const UI_LAYOUT_TITLE_MAX_LENGTH = 160;
+const UI_LAYOUT_LIST_MAX_ITEMS = 128;
+const UI_LAYOUT_GROUP_MAX_COUNT = 32;
+const UI_LAYOUT_GRID_MAX_COLUMNS = 24;
+const UI_LAYOUT_GRID_MAX_SLOTS = 4096;
+const UI_LAYOUT_FILE_VIEWER_WIDTH_MAX_PX = 4096;
+const UI_LAYOUT_UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const UI_LAYOUT_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+let durableLayoutRevision = null;
+const durableLayoutGenerations = new Map();
+const durableLayoutDirtyFields = new Map();
+let durableLayoutSaveTimer = null;
+let durableLayoutSaveInFlight = false;
+let durableLayoutConflictAttempts = 0;
+let durableLayoutWarned = false;
+let durableLayoutReadEpoch = 0;
+let durableLayoutAppliedReadEpoch = 0;
+let durableLayoutWriteFenceReadEpoch = 0;
+
+function readDurableLayoutCache(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeDurableLayoutCache(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Browser storage is only the local cache for the durable layout settings.
+  }
+}
+
+function durableLayoutIdList(value) {
+  if (!Array.isArray(value)) return null;
+  const ids = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || id.length > UI_LAYOUT_ID_MAX_LENGTH || UI_LAYOUT_CONTROL_CHARACTERS.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= UI_LAYOUT_LIST_MAX_ITEMS) break;
+  }
+  return ids;
+}
+
+function durableLayoutStoredIdList(key) {
+  const raw = readDurableLayoutCache(key);
+  if (raw === null) return null;
+  try {
+    return durableLayoutIdList(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function collectDurableSidePanelLayout() {
+  const collapsed = readStoredSidePanelCollapsed();
+  return {
+    sectionOrder: durableLayoutStoredIdList(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY),
+    collapsedSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_STORAGE_KEY),
+    hiddenSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY),
+    collapsed: typeof collapsed === "boolean" ? collapsed : null,
+  };
+}
+
+function collectDurableComposerActionsLayout() {
+  const stored = readStoredComposerActionLayout();
+  let grid = null;
+  if (stored && Number.isInteger(stored.columns) && stored.columns >= 1 && stored.columns <= UI_LAYOUT_GRID_MAX_COLUMNS) {
+    const positions = {};
+    const usedSlots = new Set();
+    let count = 0;
+    for (const [rawId, slot] of stored.positions) {
+      const id = typeof rawId === "string" ? rawId.trim() : "";
+      if (!id || id.length > UI_LAYOUT_ID_MAX_LENGTH || UI_LAYOUT_CONTROL_CHARACTERS.test(id) || UI_LAYOUT_UNSAFE_KEYS.has(id)) continue;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= UI_LAYOUT_GRID_MAX_SLOTS || usedSlots.has(slot)) continue;
+      usedSlots.add(slot);
+      positions[id] = slot;
+      count += 1;
+      if (count >= UI_LAYOUT_LIST_MAX_ITEMS) break;
+    }
+    grid = { version: 2, columns: stored.columns, positions };
+  }
+  // Composer order and sparse grid always travel together as one logical update.
+  return { order: durableLayoutStoredIdList(COMPOSER_ACTION_ORDER_STORAGE_KEY), grid };
+}
+
+function collectDurableTerminalTabsLayout() {
+  const rawLayout = readDurableLayoutCache(TERMINAL_TABS_LAYOUT_STORAGE_KEY);
+  const rawGroups = readDurableLayoutCache(TERMINAL_CUSTOM_GROUPS_STORAGE_KEY);
+  let customGroups = null;
+  if (rawGroups !== null) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawGroups);
+    } catch {
+      parsed = null;
+    }
+    const records = Array.isArray(parsed?.groups) ? parsed.groups : Array.isArray(parsed) ? parsed : [];
+    const groups = [];
+    const groupIds = new Set();
+    const claimedTabIds = new Set();
+    for (const record of records) {
+      const id = String(record?.id || "").trim();
+      if (!id || id.length > UI_LAYOUT_ID_MAX_LENGTH || UI_LAYOUT_CONTROL_CHARACTERS.test(id) || groupIds.has(id)) continue;
+      const title = normalizeTerminalCustomGroupTitle(record?.title).slice(0, UI_LAYOUT_TITLE_MAX_LENGTH).trim();
+      const tabIds = (durableLayoutIdList(normalizeTerminalCustomGroupTabIds(record?.tabIds)) || []).filter((tabId) => {
+        if (claimedTabIds.has(tabId)) return false;
+        claimedTabIds.add(tabId);
+        return true;
+      });
+      if (!title || tabIds.length < 2) continue;
+      groupIds.add(id);
+      groups.push({ id, title, tabIds });
+      if (groups.length >= UI_LAYOUT_GROUP_MAX_COUNT) break;
+    }
+    customGroups = { version: 1, groups };
+  }
+  return { layout: TERMINAL_TABS_LAYOUTS.has(rawLayout) ? rawLayout : null, customGroups };
+}
+
+function collectDurableFileViewerWidth() {
+  const width = readStoredFileViewerWidth();
+  if (!Number.isFinite(width)) return null;
+  const rounded = Math.round(width);
+  return rounded >= FILE_VIEWER_WIDTH_MIN_PX && rounded <= UI_LAYOUT_FILE_VIEWER_WIDTH_MAX_PX ? rounded : null;
+}
+
+function collectDurableUiLayoutField(field) {
+  switch (field) {
+    case "sidePanel":
+      return collectDurableSidePanelLayout();
+    case "composerActions":
+      return collectDurableComposerActionsLayout();
+    case "footerScopedModelOrder":
+      return durableLayoutStoredIdList(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY);
+    case "terminalTabs":
+      return collectDurableTerminalTabsLayout();
+    case "fileViewerWidth":
+      return collectDurableFileViewerWidth();
+    default:
+      return null;
+  }
+}
+
+function durableUiLayoutSubFields(field) {
+  if (field === "sidePanel") return UI_LAYOUT_SIDE_PANEL_FIELDS;
+  if (field === "composerActions") return UI_LAYOUT_COMPOSER_FIELDS;
+  if (field === "terminalTabs") return UI_LAYOUT_TERMINAL_FIELDS;
+  return null;
+}
+
+function durableUiLayoutValuePresent(value) {
+  return value !== null && value !== undefined;
+}
+
+function durableUiLayoutMutationValue(field, subfield = null) {
+  const value = collectDurableUiLayoutField(field);
+  return subfield ? value?.[subfield] ?? null : value;
+}
+
+function durableUiLayoutEntryPatch(field, entry) {
+  if (!entry?.subfields?.size) return entry?.value ?? null;
+  return Object.fromEntries([...entry.subfields].map((subfield) => [subfield, entry.value?.[subfield] ?? null]));
+}
+
+function durableUiLayoutPendingMutationRecords() {
+  const records = [];
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(UI_LAYOUT_PENDING_STORAGE_PREFIX)) continue;
+      let value;
+      try {
+        value = JSON.parse(localStorage.getItem(key) || "null");
+      } catch {
+        continue;
+      }
+      if (!value || value.version !== 3 || !UI_LAYOUT_FIELDS.includes(value.field)) continue;
+      const allowedSubfields = durableUiLayoutSubFields(value.field);
+      const subfield = typeof value.subfield === "string" ? value.subfield : null;
+      if (subfield && !allowedSubfields?.includes(subfield)) continue;
+      if (allowedSubfields && value.field !== "composerActions" && !subfield) continue;
+      records.push({
+        key,
+        field: value.field,
+        subfield,
+        value: value.value,
+        updatedAt: Number(value.updatedAt) || 0,
+      });
+    }
+  } catch {
+    return [];
+  }
+  return records;
+}
+
+function writeDurableUiLayoutPendingMutation(field, subfield, value) {
+  try {
+    durableLayoutPendingMutationSerial += 1;
+    const key = `${UI_LAYOUT_PENDING_STORAGE_PREFIX}${UI_LAYOUT_PENDING_WRITER_ID}:${Date.now().toString(36)}:${durableLayoutPendingMutationSerial.toString(36)}`;
+    localStorage.setItem(key, JSON.stringify({
+      version: 3,
+      field,
+      subfield,
+      value,
+      updatedAt: Date.now(),
+    }));
+    return key;
+  } catch {
+    return null;
+  }
+}
+
+function removeDurableUiLayoutPendingMutation(key) {
+  if (!key) return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // A later startup can retry an immutable mutation record that remains.
+  }
+}
+
+function clearAcknowledgedDurableUiLayoutPendingMutations(snapshot) {
+  for (const entry of snapshot.values()) {
+    if (entry.subfieldMutationIds?.size) {
+      for (const mutationId of entry.subfieldMutationIds.values()) removeDurableUiLayoutPendingMutation(mutationId);
+    } else {
+      removeDurableUiLayoutPendingMutation(entry.mutationId);
+    }
+  }
+}
+
+function restoreDurableUiLayoutPendingJournal() {
+  const records = durableUiLayoutPendingMutationRecords();
+  const candidates = new Map();
+  for (const record of records) {
+    const path = record.subfield ? `${record.field}.${record.subfield}` : record.field;
+    const previous = candidates.get(path);
+    if (!previous || record.updatedAt > previous.updatedAt || (record.updatedAt === previous.updatedAt && record.key > previous.key)) {
+      candidates.set(path, record);
+    }
+  }
+  // Mutation records are immutable. Once a newer record exists for the same
+  // path, older records are safely superseded and can never be rewritten.
+  for (const record of records) {
+    const path = record.subfield ? `${record.field}.${record.subfield}` : record.field;
+    if (candidates.get(path)?.key !== record.key) removeDurableUiLayoutPendingMutation(record.key);
+  }
+
+  for (const field of UI_LAYOUT_FIELDS) {
+    const allowedSubfields = durableUiLayoutSubFields(field);
+    const fieldCandidates = allowedSubfields && field !== "composerActions"
+      ? allowedSubfields.map((subfield) => candidates.get(`${field}.${subfield}`)).filter(Boolean)
+      : [candidates.get(field)].filter(Boolean);
+    if (!fieldCandidates.length) continue;
+    const patch = allowedSubfields && field !== "composerActions"
+      ? Object.fromEntries(fieldCandidates.map((candidate) => [candidate.subfield, candidate.value]))
+      : fieldCandidates[0].value;
+    applyDurableUiLayoutField(field, patch);
+    const generation = durableUiLayoutGeneration(field) + 1;
+    const subfields = allowedSubfields && field !== "composerActions"
+      ? new Set(fieldCandidates.map((candidate) => candidate.subfield))
+      : null;
+    const subfieldGenerations = subfields
+      ? new Map([...subfields].map((subfield) => [subfield, generation]))
+      : null;
+    const subfieldMutationIds = subfields
+      ? new Map(fieldCandidates.map((candidate) => [candidate.subfield, candidate.key]))
+      : null;
+    durableLayoutGenerations.set(field, generation);
+    durableLayoutDirtyFields.set(field, {
+      generation,
+      value: collectDurableUiLayoutField(field),
+      subfields,
+      subfieldGenerations,
+      subfieldMutationIds,
+      mutationId: subfields ? null : fieldCandidates[0].key,
+    });
+  }
+  if (durableLayoutDirtyFields.size) scheduleDurableUiLayoutSave();
+}
+
+function applyDurableSidePanelLayout(value) {
+  if (!value) return;
+  if (Array.isArray(value.sectionOrder)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(value.sectionOrder));
+    restoreSidePanelSectionOrder();
+  }
+  if (Array.isArray(value.hiddenSectionIds)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY, JSON.stringify(value.hiddenSectionIds));
+    restoreSidePanelSectionVisibility();
+  }
+  if (Array.isArray(value.collapsedSectionIds)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_STORAGE_KEY, JSON.stringify(value.collapsedSectionIds));
+    restoreSidePanelSectionState();
+  }
+  if (typeof value.collapsed === "boolean") {
+    writeDurableLayoutCache(SIDE_PANEL_STORAGE_KEY, value.collapsed ? "1" : "0");
+    restoreSidePanelState();
+  }
+}
+
+function applyDurableComposerActionsLayout(value) {
+  if (!value) return;
+  if (Array.isArray(value.order)) {
+    writeDurableLayoutCache(COMPOSER_ACTION_ORDER_STORAGE_KEY, JSON.stringify(value.order));
+    restoreComposerActionOrder();
+  }
+  if (value.grid && value.grid.version === 2) {
+    // Slots are cached even when the current column count differs; the restore
+    // pass applies them only at matching geometry so responsive mismatches keep
+    // the saved arrangement instead of erasing it.
+    writeDurableLayoutCache(COMPOSER_ACTION_LAYOUT_STORAGE_KEY, JSON.stringify(value.grid));
+    restoreComposerActionSlotLayout();
+  }
+}
+
+function applyDurableFooterScopedModelOrder(value) {
+  if (!Array.isArray(value)) return;
+  writeDurableLayoutCache(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY, JSON.stringify(value));
+  footerScopedModels = orderedFooterScopedModels();
+  renderFooter();
+}
+
+function applyDurableTerminalTabsLayout(value) {
+  if (!value) return;
+  if (TERMINAL_TABS_LAYOUTS.has(value.layout)) {
+    writeDurableLayoutCache(TERMINAL_TABS_LAYOUT_STORAGE_KEY, value.layout);
+    setTerminalTabsLayout(value.layout, { persist: false });
+  }
+  if (value.customGroups && value.customGroups.version === 1) {
+    writeDurableLayoutCache(TERMINAL_CUSTOM_GROUPS_STORAGE_KEY, JSON.stringify(value.customGroups));
+    restoreTerminalCustomGroups();
+    syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
+    renderTabs();
+  }
+}
+
+function applyDurableFileViewerWidth(value) {
+  if (!Number.isFinite(value)) return;
+  const width = Math.round(value);
+  if (width < FILE_VIEWER_WIDTH_MIN_PX) return;
+  writeDurableLayoutCache(FILE_VIEWER_WIDTH_STORAGE_KEY, String(width));
+  restoreFileViewerWidthPreference();
+  if (activeFileViewer && !isSidePanelOverlayView()) applyFileViewerWidth(width);
+}
+
+function applyDurableUiLayoutField(field, value) {
+  if (field === "sidePanel") applyDurableSidePanelLayout(value);
+  else if (field === "composerActions") applyDurableComposerActionsLayout(value);
+  else if (field === "footerScopedModelOrder") applyDurableFooterScopedModelOrder(value);
+  else if (field === "terminalTabs") applyDurableTerminalTabsLayout(value);
+  else if (field === "fileViewerWidth") applyDurableFileViewerWidth(value);
+}
+
+function durableUiLayoutInteractionActive(field = null) {
+  const activeByField = {
+    sidePanel: Boolean(sidePanelSectionPointerDrag?.active),
+    composerActions: Boolean(composerActionPointerDrag?.active),
+    footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
+    terminalTabs: Boolean(terminalTabDragId),
+    fileViewerWidth: Boolean(fileViewerResizeState),
+  };
+  return field ? activeByField[field] === true : Object.values(activeByField).some(Boolean);
+}
+
+function durableUiLayoutGeneration(field) {
+  return durableLayoutGenerations.get(field) || 0;
+}
+
+function warnDurableUiLayoutOnce(message) {
+  if (durableLayoutWarned) return;
+  durableLayoutWarned = true;
+  addEvent(message, "warn");
+}
+
+function scheduleDurableUiLayoutSave(delay = UI_LAYOUT_SAVE_DEBOUNCE_MS) {
+  // One coalescing writer: repeated drag-over commits only reset this timer.
+  if (durableLayoutSaveTimer !== null) clearTimeout(durableLayoutSaveTimer);
+  durableLayoutSaveTimer = setTimeout(() => {
+    durableLayoutSaveTimer = null;
+    flushDurableUiLayoutSave();
+  }, delay);
+}
+
+function markDurableUiLayoutDirty(field, subfield = null) {
+  if (!UI_LAYOUT_FIELDS.includes(field)) return;
+  const allowedSubfields = durableUiLayoutSubFields(field);
+  if (subfield && !allowedSubfields?.includes(subfield)) return;
+  const generation = durableUiLayoutGeneration(field) + 1;
+  const previous = durableLayoutDirtyFields.get(field);
+  const value = collectDurableUiLayoutField(field);
+  let subfields = null;
+  let subfieldGenerations = null;
+  let subfieldMutationIds = null;
+  let mutationId = null;
+  if (allowedSubfields && field !== "composerActions") {
+    subfields = new Set(previous?.subfields || []);
+    subfieldGenerations = new Map(previous?.subfieldGenerations || []);
+    subfieldMutationIds = new Map(previous?.subfieldMutationIds || []);
+    const changedSubfields = subfield ? [subfield] : allowedSubfields;
+    for (const key of changedSubfields) {
+      const nextMutationId = writeDurableUiLayoutPendingMutation(field, key, value?.[key] ?? null);
+      if (nextMutationId) {
+        removeDurableUiLayoutPendingMutation(subfieldMutationIds.get(key));
+        subfieldMutationIds.set(key, nextMutationId);
+      }
+      subfields.add(key);
+      subfieldGenerations.set(key, generation);
+    }
+  } else {
+    mutationId = writeDurableUiLayoutPendingMutation(field, null, value);
+    if (mutationId) removeDurableUiLayoutPendingMutation(previous?.mutationId);
+    else mutationId = previous?.mutationId || null;
+  }
+  durableLayoutGenerations.set(field, generation);
+  durableLayoutDirtyFields.set(field, {
+    generation,
+    value,
+    subfields,
+    subfieldGenerations,
+    subfieldMutationIds,
+    mutationId,
+  });
+  durableLayoutConflictAttempts = 0;
+  scheduleDurableUiLayoutSave();
+}
+
+function applyDurableUiLayoutSnapshot(data, { generations = null, readEpoch = 0 } = {}) {
+  if (!data || typeof data !== "object") return false;
+  if (readEpoch && readEpoch <= durableLayoutWriteFenceReadEpoch) return false;
+  if (readEpoch && readEpoch < durableLayoutAppliedReadEpoch) return false;
+  if (readEpoch) durableLayoutAppliedReadEpoch = readEpoch;
+  if (typeof data.layoutRevision === "string" && data.layoutRevision) durableLayoutRevision = data.layoutRevision;
+  const layout = data.layout && typeof data.layout === "object" ? data.layout : null;
+  if (!layout || layout.version !== UI_LAYOUT_SCHEMA_VERSION) return Boolean(durableLayoutRevision);
+  for (const field of UI_LAYOUT_FIELDS) {
+    const requestedGeneration = generations ? generations.get(field) ?? 0 : durableUiLayoutGeneration(field);
+    const generationChanged = durableUiLayoutGeneration(field) !== requestedGeneration;
+    const dirtyEntry = durableLayoutDirtyFields.get(field);
+    const serverValue = layout[field] ?? null;
+    const localValue = collectDurableUiLayoutField(field);
+    const subfields = durableUiLayoutSubFields(field);
+    const dirtySubfields = dirtyEntry?.subfields;
+
+    if (subfields && field !== "composerActions") {
+      const applicable = {};
+      let hasApplicable = false;
+      for (const subfield of subfields) {
+        const isDirty = dirtySubfields?.has(subfield) === true;
+        const remote = serverValue?.[subfield] ?? null;
+        const local = localValue?.[subfield] ?? null;
+        if (!isDirty && !generationChanged && !durableUiLayoutInteractionActive(field) && durableUiLayoutValuePresent(remote)) {
+          applicable[subfield] = remote;
+          hasApplicable = true;
+        }
+        if (!isDirty && !durableUiLayoutValuePresent(remote) && durableUiLayoutValuePresent(local)) {
+          markDurableUiLayoutDirty(field, subfield);
+        }
+      }
+      if (hasApplicable) applyDurableUiLayoutField(field, applicable);
+      continue;
+    }
+
+    if (!dirtyEntry && !generationChanged && !durableUiLayoutInteractionActive(field) && durableUiLayoutValuePresent(serverValue)) {
+      applyDurableUiLayoutField(field, serverValue);
+    }
+    if (!dirtyEntry && !durableUiLayoutValuePresent(serverValue) && durableUiLayoutValuePresent(localValue)) {
+      markDurableUiLayoutDirty(field);
+    }
+  }
+  return true;
+}
+
+async function refreshDurableUiLayoutFromServer() {
+  const generations = new Map(UI_LAYOUT_FIELDS.map((field) => [field, durableUiLayoutGeneration(field)]));
+  const readEpoch = ++durableLayoutReadEpoch;
+  try {
+    const response = await api(UI_LAYOUT_ENDPOINT, { scoped: false });
+    return applyDurableUiLayoutSnapshot(response.data, { generations, readEpoch });
+  } catch {
+    // Keep the local cache authoritative until the settings file is reachable.
+    return false;
+  }
+}
+
+async function flushDurableUiLayoutSave() {
+  if (durableLayoutSaveInFlight || !durableLayoutDirtyFields.size) return;
+  if ([...durableLayoutDirtyFields.keys()].some((field) => durableUiLayoutInteractionActive(field))) {
+    scheduleDurableUiLayoutSave();
+    return;
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  durableLayoutSaveInFlight = true;
+  let snapshot = new Map();
+  let retryImmediately = false;
+  try {
+    if (!durableLayoutRevision) await refreshDurableUiLayoutFromServer();
+    if (!durableLayoutRevision || !durableLayoutDirtyFields.size) return;
+    snapshot = new Map([...durableLayoutDirtyFields].map(([field, entry]) => [field, {
+      ...entry,
+      subfields: entry.subfields ? new Set(entry.subfields) : null,
+      subfieldGenerations: entry.subfieldGenerations ? new Map(entry.subfieldGenerations) : null,
+      subfieldMutationIds: entry.subfieldMutationIds ? new Map(entry.subfieldMutationIds) : null,
+    }]));
+    const patch = { version: UI_LAYOUT_SCHEMA_VERSION };
+    for (const [field, entry] of snapshot) patch[field] = durableUiLayoutEntryPatch(field, entry);
+    const response = await api(UI_LAYOUT_ENDPOINT, {
+      method: "PUT",
+      scoped: false,
+      body: { layout: patch, expectedLayoutRevision: durableLayoutRevision },
+    });
+    // A successful write is newer than every GET that began before this
+    // acknowledgement, even if one of those reads completes afterward.
+    durableLayoutWriteFenceReadEpoch = Math.max(durableLayoutWriteFenceReadEpoch, durableLayoutReadEpoch);
+    if (typeof response.data?.layoutRevision === "string" && response.data.layoutRevision) durableLayoutRevision = response.data.layoutRevision;
+    for (const [field, entry] of snapshot) {
+      const current = durableLayoutDirtyFields.get(field);
+      if (!current) continue;
+      if (entry.subfields?.size) {
+        for (const subfield of entry.subfields) {
+          if (current.subfieldGenerations?.get(subfield) !== entry.subfieldGenerations?.get(subfield)) continue;
+          if (current.subfieldMutationIds?.get(subfield) !== entry.subfieldMutationIds?.get(subfield)) continue;
+          current.subfields.delete(subfield);
+          current.subfieldGenerations.delete(subfield);
+          current.subfieldMutationIds.delete(subfield);
+        }
+        if (!current.subfields.size) durableLayoutDirtyFields.delete(field);
+        else current.value = collectDurableUiLayoutField(field);
+      } else if (current.generation === entry.generation && current.mutationId === entry.mutationId) {
+        durableLayoutDirtyFields.delete(field);
+      }
+    }
+    clearAcknowledgedDurableUiLayoutPendingMutations(snapshot);
+    durableLayoutConflictAttempts = 0;
+    durableLayoutWarned = false;
+  } catch (error) {
+    const status = Number(error?.statusCode) || 0;
+    if (status === 409) {
+      durableLayoutConflictAttempts += 1;
+      await refreshDurableUiLayoutFromServer();
+      if (durableLayoutConflictAttempts <= UI_LAYOUT_MAX_CONFLICT_RETRIES) retryImmediately = durableLayoutDirtyFields.size > 0;
+      else warnDurableUiLayoutOnce("Durable layout changes stayed in this browser because the saved layout kept changing elsewhere.");
+    } else if (status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429) {
+      // Keep the pending journal for recovery, but do not retry a rejected
+      // payload until another user/lifecycle event supplies a new opportunity.
+      warnDurableUiLayoutOnce(`Could not save the durable UI layout: ${error?.message || String(error)}`);
+    }
+    // Offline and server failures keep the newest dirty state for the next
+    // mutation, online event, or foreground reconciliation.
+  } finally {
+    durableLayoutSaveInFlight = false;
+  }
+  const hasNewerMutation = [...durableLayoutDirtyFields].some(([field, entry]) => snapshot.get(field)?.generation !== entry.generation);
+  if (retryImmediately || hasNewerMutation) scheduleDurableUiLayoutSave(retryImmediately ? 0 : UI_LAYOUT_SAVE_DEBOUNCE_MS);
+}
+
+function reconcileDurableUiLayout() {
+  if (durableUiLayoutInteractionActive()) return;
+  refreshDurableUiLayoutFromServer().then((ready) => {
+    if (ready && durableLayoutDirtyFields.size) scheduleDurableUiLayoutSave(0);
+  });
+}
+
 function readStoredSidePanelWidth() {
   try {
     const width = Number.parseFloat(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY) || "");
@@ -10452,8 +11359,13 @@ async function restoreSidePanelWidthPreference() {
   else updateSidePanelResizeHandle(localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX);
 
   const restoreRevision = sidePanelWidthPreferenceRevision;
+  const layoutGenerations = new Map(UI_LAYOUT_FIELDS.map((field) => [field, durableUiLayoutGeneration(field)]));
+  const readEpoch = ++durableLayoutReadEpoch;
   try {
+    // One non-blocking unscoped read hydrates both the width preference and the
+    // durable layout after the synchronous local-cache startup pass.
     const response = await api("/api/interface-preferences", { scoped: false });
+    applyDurableUiLayoutSnapshot(response.data, { generations: layoutGenerations, readEpoch });
     if (restoreRevision !== sidePanelWidthPreferenceRevision) return;
     const userWidth = Number(response.data?.preferences?.sidePanelWidth);
     if (Number.isFinite(userWidth) && userWidth >= SIDE_PANEL_WIDTH_MIN_PX) {
@@ -10539,6 +11451,7 @@ function persistFileViewerWidth(width) {
   } catch {
     // Ignore storage failures; resizing should still work for this page load.
   }
+  markDurableUiLayoutDirty("fileViewerWidth");
 }
 
 function fileViewerMaxWidth() {
@@ -13443,6 +14356,10 @@ async function closeAllTerminalTabs() {
 
 async function initializeTabs() {
   const loadedTabs = await refreshTabs({ selectStored: true });
+  // Durable groups can arrive before the initial tab catalog. Rehydrate them
+  // after tabs load so valid memberships are not filtered against an empty set.
+  restoreTerminalCustomGroups();
+  syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
   restoreMobileContinuityState();
   resetActiveTabUi();
   renderTabs();
@@ -18550,6 +19467,7 @@ function writeFooterScopedModelOrder(order) {
   try {
     localStorage.setItem(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY, JSON.stringify([...new Set(order.filter(Boolean))]));
   } catch {}
+  markDurableUiLayoutDirty("footerScopedModelOrder");
 }
 
 function orderedFooterScopedModels() {
@@ -23587,6 +24505,7 @@ function renderAppRunnerControls() {
     item.append(label, command);
     panel.append(item);
   }
+  scheduleComposerActionSlotLayoutRestore();
 }
 
 function renderAppRunnerInfoDialog() {
@@ -30107,10 +31026,10 @@ function resetChatOutput() {
   transcriptRenderer.replaceChildren(elements.chat, ...preservedNodes);
 }
 
-function appendChatMessageBubble(bubble) {
+function appendChatMessageBubble(bubble, { liveTail = false } = {}) {
   const liveBubbles = standaloneLiveTranscriptBubbles();
   const tailAnchor = [...elements.chat.children]
-    .find((child) => child !== bubble && (child === runIndicatorBubble || liveBubbles.has(child)));
+    .find((child) => child !== bubble && (child === runIndicatorBubble || (!liveTail && liveBubbles.has(child))));
   if (tailAnchor) elements.chat.insertBefore(bubble, tailAnchor);
   else elements.chat.append(bubble);
 }
@@ -31350,7 +32269,7 @@ function appendMessage(message, options = {}) {
     return reused;
   }
   const created = createMessageBubble(message, { ...options, segmentId });
-  appendChatMessageBubble(created.bubble);
+  appendChatMessageBubble(created.bubble, { liveTail: streaming || message?.live === true });
   return created;
 }
 
@@ -35380,7 +36299,7 @@ function renderCompactToolShell(event, { complete = false } = {}) {
     transcriptRenderer.ownMessage(bubble, { key: `live:compact-tool:${id}`, role: "toolExecution" });
     transcriptRenderer.ownSurface(body, { messageKey: `live:compact-tool:${id}`, kind: "tool-execution", segment: "0" });
     transcriptRenderer.ownSurface(status, { messageKey: `live:compact-tool:${id}`, kind: "tool-execution", segment: "status" });
-    appendChatMessageBubble(bubble);
+    appendChatMessageBubble(bubble, { liveTail: true });
     shell = { bubble, role, status };
     compactToolShells.set(id, shell);
   }
@@ -35797,26 +36716,38 @@ function restoreCompactLiveOutputAfterChatRebuild() {
   compactThinkingBubble = null;
   compactThinkingNode = null;
   if (streamMessageActive) flushCompactLiveOutput();
-  for (const shell of compactToolShells.values()) appendChatMessageBubble(shell.bubble);
+  for (const shell of compactToolShells.values()) appendChatMessageBubble(shell.bubble, { liveTail: true });
   renderRunIndicator({ scroll: false });
 }
 
 /**
- * The chat DOM was rebuilt while an assistant message is still streaming:
- * drop references to the detached nodes but keep stream text state, then
- * re-append the live thinking/text bubbles so no partial output is lost.
+ * Reconcile live stream surfaces after an authoritative transcript render.
+ * Transcript resets intentionally keep mounted live-tail bubbles, so reuse
+ * those nodes and only rebuild a surface when it was actually detached.
  */
 function restoreStreamRenderAfterChatRebuild() {
   const thinkingText = streamThinking?._rawThinkingText || streamThinking?.textContent || "";
   const thinkingComplete = streamThinkingBubble?.classList.contains("complete") === true;
   const toolCallWasVisible = !!(streamToolCallBubble?.parentElement === elements.chat || streamToolCallRawArguments || streamToolCallName);
-  streamBubble = null;
-  streamText = null;
-  streamThinkingBubble = null;
-  streamThinking = null;
-  streamToolCallBubble = null;
-  streamToolCallText = null;
-  streamBubbleVisibleSince = 0;
+  const streamOutputMounted = !!(streamBubble?.parentElement === elements.chat && streamText?.isConnected && streamBubble.contains(streamText));
+  const thinkingOutputMounted = !!(streamThinkingBubble?.parentElement === elements.chat && streamThinking?.isConnected && streamThinkingBubble.contains(streamThinking));
+  const toolCallOutputMounted = !!(streamToolCallBubble?.parentElement === elements.chat && streamToolCallText?.isConnected && streamToolCallBubble.contains(streamToolCallText));
+  if (!streamOutputMounted) {
+    removeLiveTranscriptBubble(streamBubble, "assistant-rebuild");
+    streamBubble = null;
+    streamText = null;
+    streamBubbleVisibleSince = 0;
+  }
+  if (!thinkingOutputMounted) {
+    removeLiveTranscriptBubble(streamThinkingBubble, "thinking-rebuild");
+    streamThinkingBubble = null;
+    streamThinking = null;
+  }
+  if (!toolCallOutputMounted) {
+    removeLiveTranscriptBubble(streamToolCallBubble, "tool-call-rebuild");
+    streamToolCallBubble = null;
+    streamToolCallText = null;
+  }
   if (thinkingText && setStreamingThinkingText(thinkingText) && thinkingComplete) {
     streamThinkingBubble?.classList.add("complete");
   }
@@ -40150,10 +41081,34 @@ window.addEventListener("storage", (event) => {
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
   if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
   if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
+  if (event.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY) restoreComposerActionSlotLayout();
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
     const width = readStoredSidePanelWidth();
     if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
   }
+  // Another same-origin tab already saved these durable fields, so receiving
+  // tabs only adopt the shared local cache without repeating the server write.
+  if (event.key === SIDE_PANEL_SECTION_STORAGE_KEY) restoreSidePanelSectionState();
+  if (event.key === SIDE_PANEL_STORAGE_KEY) restoreSidePanelState();
+  if (event.key === TERMINAL_TABS_LAYOUT_STORAGE_KEY) restoreTerminalTabsLayoutSetting();
+  if (event.key === TERMINAL_CUSTOM_GROUPS_STORAGE_KEY) {
+    restoreTerminalCustomGroups();
+    syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
+    renderTabs();
+  }
+  if (event.key === FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY) {
+    footerScopedModels = orderedFooterScopedModels();
+    renderFooter();
+  }
+  if (event.key === FILE_VIEWER_WIDTH_STORAGE_KEY) restoreFileViewerWidthPreference();
+});
+// Durable layout reconciliation runs on its own foreground/online lifecycle
+// listeners so retained dirty state retries without changing the existing
+// transcript/session reconciliation contracts.
+window.addEventListener("online", () => reconcileDurableUiLayout());
+window.addEventListener("pageshow", () => reconcileDurableUiLayout());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") reconcileDurableUiLayout();
 });
 window.addEventListener("resize", syncResizablePanelWidthsForViewport, { passive: true });
 window.addEventListener("keydown", (event) => {
@@ -40542,6 +41497,7 @@ elements.promptInput.addEventListener("blur", () => {
 installModalPrimitives();
 initializeIssueWizard();
 resizePromptInput();
+restoreDurableUiLayoutPendingJournal();
 restoreSidePanelWidthPreference();
 restoreFileViewerWidthPreference();
 focusPromptInput({ defer: true });

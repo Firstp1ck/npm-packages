@@ -17,6 +17,7 @@ assert.match(
   "the composer should expose a count trigger and accessible non-modal follow-up queue overlay",
 );
 assert.match(css, /\.follow-up-queue-overlay \{[\s\S]*position:\s*absolute;[\s\S]*bottom:\s*calc\(100% \+ 0\.42rem\);[\s\S]*max-height:\s*min\(32rem, calc\(var\(--visual-viewport-height, 100dvh\) - 2rem\)\)/, "the queue overlay should float upward without changing composer layout and be bounded by the visual viewport");
+assert.match(css, /\.composer:has\(\.follow-up-queue-overlay:not\(\[hidden\]\)\) \{\s*z-index:\s*80;\s*\}/, "an open queue should raise the composer stacking context above transcript copy buttons and normal interface controls");
 assert.match(css, /\.follow-up-queue-trigger \{[\s\S]*justify-content:\s*center;[\s\S]*min-width:\s*5\.25rem;/, "the queue trigger should reserve a predictable width for its label and three-digit count");
 assert.match(css, /body:not\(\.mobile-keyboard-open\) \.composer-input-row:has\(\.composer-workflow-mode-dock:not\(\[hidden\]\)\) \.follow-up-queue-trigger \{\s*right:\s*calc\(3\.55rem \+ 2\.25rem \+ 0\.4rem\);\s*\}/, "the queue trigger should move left of the visible Workflow control instead of overlapping it");
 assert.match(css, /\.composer-input-row:has\(\.follow-up-queue-trigger:not\(\[hidden\]\)\) \.composer-context-tags \{\s*max-width:\s*max\(0px, calc\(100% - 9\.7rem\)\);\s*\}/, "visible queues should reserve prompt-frame space so feature and context tags cannot overlap the queue trigger");

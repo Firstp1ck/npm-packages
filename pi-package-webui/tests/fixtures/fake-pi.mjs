@@ -349,6 +349,19 @@ function runTranscriptContinuityScenario(scenario) {
       { afterMs: 650, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: " survives" } })) },
     );
     finish({ role: "assistant", content: [{ type: "thinking", thinking: "thinking selection literal survives" }, { type: "text", text: "thinking final answer" }], timestamp: Date.now() }, 450);
+  } else if (scenario === "order") {
+    const toolCallId = `continuity-order-${run}`;
+    const toolCall = { type: "toolCall", id: toolCallId, name: "read", arguments: { path: "order.txt" } };
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "ordering thinking" } })) },
+      { afterMs: 500, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ordering assistant output" } })) },
+      { afterMs: 1_000, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, name: "read", toolCall } })) },
+      { afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 2, name: "read", toolCall, delta: "" } })) },
+      { afterMs: 200, run: () => emitScriptedEvent(tagged({ type: "webui_supervisor_reconnected", supervisorScopeId: `continuity-order-${run}`, supervisorEpoch: "1", supervisorSeq: "1" })) },
+      { afterMs: 800, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 2, name: "read", toolCall } })) },
+    );
+    finish({ role: "assistant", content: [{ type: "thinking", thinking: "ordering thinking" }, toolCall], timestamp: Date.now() }, 700);
   } else if (scenario === "tool") {
     const toolCallId = `continuity-tool-${run}`;
     const toolOutput = (revision) => [
@@ -414,7 +427,7 @@ function runTranscriptContinuityScenario(scenario) {
 
 function handleTranscriptContinuityPrompt(command, base) {
   if (!continuityModeEnabled) return false;
-  const match = String(command.message || "").trim().match(/^fixture transcript continuity (reverse|duplicate|pointer|thinking|tool|authoritative|cadence|dwell|mode|mermaid)$/);
+  const match = String(command.message || "").trim().match(/^fixture transcript continuity (reverse|duplicate|pointer|thinking|order|tool|authoritative|cadence|dwell|mode|mermaid)$/);
   if (!match) return false;
   appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
   respond({ ...base, data: { output: `fake transcript continuity ${match[1]} accepted`, pid: process.pid } });
@@ -1005,12 +1018,36 @@ function statsPromptContextFixturePayload({ malformedSnapshot = false } = {}) {
   return payload;
 }
 
+const FEATURE_DECISION_FIXTURE_REASONS = {
+  lightweight: "One localized WebUI slice with no migration or rollout work.",
+  complex: "Crosses the classifier extension and the WebUI status consumer.",
+};
+
+function featureDecisionFixturePayload(mode) {
+  if (mode === "lightweight" || mode === "complex") {
+    return {
+      output: JSON.stringify({ kind: `feature_${mode}`, reason: FEATURE_DECISION_FIXTURE_REASONS[mode] }),
+      category: `${mode}-feature`,
+    };
+  }
+  // Legacy exact-label payload from a classifier build that predates the structured contract.
+  if (mode === "legacy") return { output: "feature_complex", category: "complex-feature" };
+  // Structured decision whose kind contradicts the category; the popup must stay unavailable.
+  if (mode === "mismatch") {
+    return {
+      output: JSON.stringify({ kind: "feature_lightweight", reason: FEATURE_DECISION_FIXTURE_REASONS.lightweight }),
+      category: "complex-feature",
+    };
+  }
+  if (mode === "malformed") return { output: '{"kind":"feature_complex"}', category: "complex-feature" };
+  return { output: undefined, category: undefined };
+}
+
 function handleFeatureDecisionFixturePrompt(command, base) {
-  const match = String(command.message || "").trim().match(/^fixture feature decision (lightweight|complex|clear)$/);
+  const match = String(command.message || "").trim().match(/^fixture feature decision (lightweight|complex|legacy|mismatch|malformed|clear)$/);
   if (!match) return false;
   const mode = match[1];
-  const output = mode === "lightweight" ? "feature_lightweight" : mode === "complex" ? "feature_complex" : undefined;
-  const category = mode === "lightweight" ? "lightweight-feature" : mode === "complex" ? "complex-feature" : undefined;
+  const { output, category } = featureDecisionFixturePayload(mode);
   respond({ ...base, data: { output: `fake feature decision ${mode} emitted` } });
   emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey: "feature-decision-output", statusText: output });
   emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey: "feature-category", statusText: category });

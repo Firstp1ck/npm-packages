@@ -36,38 +36,123 @@ assert.match(css, /\.feature-decision-dialog-output \{[\s\S]*white-space:\s*pre-
 
 assert.match(app, /const FEATURE_DECISION_OUTPUT_STATUS_KEY = "feature-decision-output";/, "the consumer should use the approved dedicated status key");
 assert.match(app, /const featureCategoryByTab = new Map\(\);\s*const featureDecisionOutputByTab = new Map\(\);/, "category and decision output should remain isolated in separate per-tab maps");
+assert.match(app, /const FEATURE_DECISION_PAYLOAD_MAX_CHARS = \d+;/, "the consumer should bound the accepted status payload size");
+assert.match(app, /const FEATURE_DECISION_REASON_MAX_CHARS = \d+;/, "the consumer should bound the rendered classifier reason");
 
-const context = vm.createContext({ Map });
+const context = vm.createContext({ Map, JSON });
 vm.runInContext(`
+  const FEATURE_DECISION_PAYLOAD_MAX_CHARS = ${/const FEATURE_DECISION_PAYLOAD_MAX_CHARS = (\d+);/.exec(app)[1]};
+  const FEATURE_DECISION_REASON_MAX_CHARS = ${/const FEATURE_DECISION_REASON_MAX_CHARS = (\d+);/.exec(app)[1]};
   ${functionSource("normalizeFeatureCategory")}
-  ${functionSource("normalizeFeatureDecisionOutput")}
+  ${functionSource("normalizeFeatureDecisionKind")}
+  ${functionSource("normalizeFeatureDecisionReason")}
+  ${functionSource("parseFeatureDecisionPayload")}
+  ${functionSource("featureDecisionKindLabel")}
+  ${functionSource("formatFeatureDecisionText")}
   const featureCategoryByTab = new Map();
   const featureDecisionOutputByTab = new Map();
+  ${functionSource("featureDecisionForTab")}
   ${functionSource("featureDecisionOutputForTab")}
 `, context);
 assert.equal(context.normalizeFeatureCategory("lightweight-feature"), "lightweight-feature");
 assert.equal(context.normalizeFeatureCategory("complex-feature"), "complex-feature");
 assert.equal(context.normalizeFeatureCategory(" lightweight-feature"), "", "category validation must not trim payloads");
-assert.equal(context.normalizeFeatureDecisionOutput("feature_lightweight"), "feature_lightweight");
-assert.equal(context.normalizeFeatureDecisionOutput("feature_complex"), "feature_complex");
+assert.equal(context.normalizeFeatureDecisionKind("feature_lightweight"), "feature_lightweight");
+assert.equal(context.normalizeFeatureDecisionKind("feature_complex"), "feature_complex");
 for (const invalid of ["feature_lightweight\n", "feature-lightweight", "lightweight-feature", "", null, undefined]) {
-  assert.equal(context.normalizeFeatureDecisionOutput(invalid), "", `decision output should reject ${String(invalid)}`);
+  assert.equal(context.normalizeFeatureDecisionKind(invalid), "", `decision kind should reject ${String(invalid)}`);
 }
+
+// The parser runs inside the sandbox realm, so compare plain field copies rather than prototypes.
+function parsePayload(payload) {
+  const decision = context.parseFeatureDecisionPayload(payload);
+  return decision ? { kind: decision.kind, reason: decision.reason } : decision;
+}
+
+assert.deepEqual(
+  parsePayload(JSON.stringify({ kind: "feature_complex", reason: "Crosses two packages." })),
+  { kind: "feature_complex", reason: "Crosses two packages." },
+  "the structured classifier payload should be accepted",
+);
+assert.deepEqual(
+  parsePayload(JSON.stringify({ reason: "  Collapses\n\tuntrusted\u0007 whitespace and \u202espoofed direction.  ", kind: "feature_lightweight" })),
+  { kind: "feature_lightweight", reason: "Collapses untrusted whitespace and spoofed direction." },
+  "reason text should strip control and bidi formatting characters and collapse whitespace regardless of key order",
+);
+assert.deepEqual(
+  parsePayload("feature_complex"),
+  { kind: "feature_complex", reason: "" },
+  "the legacy exact label should stay accepted for rolling compatibility",
+);
+assert.equal(
+  parsePayload(JSON.stringify({ kind: "feature_complex", reason: "x".repeat(900) }))?.reason.length,
+  500,
+  "an oversized reason should be bounded rather than rendered in full",
+);
+for (const invalid of [
+  undefined,
+  null,
+  42,
+  "",
+  "feature-lightweight",
+  "lightweight-feature",
+  '["feature_complex","reason"]',
+  "{not json",
+  JSON.stringify({ kind: "feature_complex" }),
+  JSON.stringify({ kind: "feature_complex", reason: "" }),
+  JSON.stringify({ kind: "feature_complex", reason: "   " }),
+  JSON.stringify({ kind: "feature_complex", reason: 7 }),
+  JSON.stringify({ kind: "bug", reason: "Restores documented behavior." }),
+  JSON.stringify({ kind: "feature_complex", reason: "Extra fields are rejected.", extra: true }),
+  JSON.stringify({ kind: "feature_complex", reason: "y".repeat(6000) }),
+]) {
+  assert.equal(parsePayload(invalid), null, `payload should fail closed: ${String(invalid).slice(0, 60)}`);
+}
+
+assert.equal(
+  context.formatFeatureDecisionText({ kind: "feature_complex", reason: "Crosses two packages." }),
+  "Decision: Complex feature (feature_complex)\nReason: Crosses two packages.",
+  "the dialog text should read as a decision plus reason, not only the machine label",
+);
+assert.equal(
+  context.formatFeatureDecisionText({ kind: "feature_lightweight", reason: "" }),
+  "Decision: Lightweight feature (feature_lightweight)\nReason: The classifier reported feature_lightweight without a reason.",
+  "a legacy label should render a deterministic readable fallback reason",
+);
+assert.equal(context.formatFeatureDecisionText(null), "", "absent decisions should render no dialog text");
+
 vm.runInContext(`
   featureCategoryByTab.set("light", "lightweight-feature");
-  featureDecisionOutputByTab.set("light", "feature_lightweight");
+  featureDecisionOutputByTab.set("light", { kind: "feature_lightweight", reason: "One localized slice." });
   featureCategoryByTab.set("complex", "complex-feature");
-  featureDecisionOutputByTab.set("complex", "feature_complex");
+  featureDecisionOutputByTab.set("complex", { kind: "feature_complex", reason: "Crosses two packages." });
+  featureCategoryByTab.set("legacy", "complex-feature");
+  featureDecisionOutputByTab.set("legacy", { kind: "feature_complex", reason: "" });
   featureCategoryByTab.set("mismatch", "complex-feature");
-  featureDecisionOutputByTab.set("mismatch", "feature_lightweight");
+  featureDecisionOutputByTab.set("mismatch", { kind: "feature_lightweight", reason: "One localized slice." });
 `, context);
-assert.equal(context.featureDecisionOutputForTab("light"), "feature_lightweight", "lightweight output should remain exact and tab-scoped");
-assert.equal(context.featureDecisionOutputForTab("complex"), "feature_complex", "complex output should remain exact and tab-scoped");
-assert.equal(context.featureDecisionOutputForTab("mismatch"), "", "a category/output mismatch must not open a popup");
-assert.equal(context.featureDecisionOutputForTab("missing"), "", "a tab must not inherit another tab's output");
+assert.equal(
+  context.featureDecisionOutputForTab("light"),
+  "Decision: Lightweight feature (feature_lightweight)\nReason: One localized slice.",
+  "lightweight output should stay readable and tab-scoped",
+);
+assert.equal(
+  context.featureDecisionOutputForTab("complex"),
+  "Decision: Complex feature (feature_complex)\nReason: Crosses two packages.",
+  "complex output should stay readable and tab-scoped",
+);
+assert.equal(
+  context.featureDecisionOutputForTab("legacy"),
+  "Decision: Complex feature (feature_complex)\nReason: The classifier reported feature_complex without a reason.",
+  "legacy exact-label state should render the deterministic fallback reason",
+);
+assert.equal(context.featureDecisionOutputForTab("mismatch"), "", "a category/decision mismatch must not open a popup");
+assert.equal(context.featureDecisionOutputForTab("missing"), "", "a tab must not inherit another tab's decision");
 
 const openSource = functionSource("openFeatureDecisionDialog");
 assert.match(openSource, /const tabId = activeTabId;[\s\S]*featureDecisionOutputForTab\(tabId\)[\s\S]*textContent = output;[\s\S]*dialog\.showModal\(\)/, "popup opening should resolve and render only the active tab's exact output");
+assert.doesNotMatch(app, /featureDecisionDialogOutput\.innerHTML/, "classifier reason text must never reach innerHTML");
+assert.match(functionSource("handleFeatureDecisionOutputStatus"), /parseFeatureDecisionPayload\(statusText\)[\s\S]*featureDecisionOutputByTab\.set\(tabId, decision\);\s*else featureDecisionOutputByTab\.delete\(tabId\)/, "status handling should store only parsed decisions and drop rejected payloads");
 assert.match(openSource, /featureDecisionDialogCloseButton\?\.focus/, "popup opening should place focus on its explicit close control");
 assert.match(app, /elements\.featureCategoryTag\?\.addEventListener\("click", openFeatureDecisionDialog\)/, "native click and keyboard button activation should open the popup");
 assert.match(app, /function installDialogModalPrimitive\(dialog\)[\s\S]*trigger\.focus\(\{ preventScroll: true \}\)/, "native dialog close should return focus to the triggering category button");
@@ -81,7 +166,7 @@ assert.match(functionSource("closeTerminalTabs"), /clearFeatureDecisionStateForT
 assert.match(app, /case "webui_connected":[\s\S]*clearFeatureDecisionStateForTab\(connectedTabId, \{ render: true \}\)[\s\S]*scheduleForegroundReconcile\("event stream reconnect", 0\)/, "reconnect should clear local state before authoritative replay");
 assert.match(app, /statusKey === FEATURE_DECISION_OUTPUT_STATUS_KEY[\s\S]*handleFeatureDecisionOutputStatus[\s\S]*return;[\s\S]*statusKey === FEATURE_CATEGORY_STATUS_KEY[\s\S]*return;[\s\S]*statusEntries\.set/, "both feature statuses should be intercepted before generic footer storage while preserving category handling");
 
-assert.match(html, /\/styles\.css\?v=95/, "integrated stylesheet changes should advance the cache query");
-assert.match(html, /\/app\.js\?v=106/, "integrated app changes should advance the cache query");
+assert.match(html, /\/styles\.css\?v=97/, "integrated stylesheet changes should advance the cache query");
+assert.match(html, /\/app\.js\?v=110/, "integrated app changes should advance the cache query");
 
 console.log("feature decision-output popup static checks passed");

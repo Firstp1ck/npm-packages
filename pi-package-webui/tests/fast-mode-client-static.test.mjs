@@ -123,7 +123,7 @@ assert.match(styles, /\.compact-tool-shell \.compact-tool-status\s*\{[\s\S]*?dis
 assert.match(styles, /\.compact-tool-shell\.tool-running \.compact-tool-status[\s\S]*?\.compact-tool-shell\.tool-success \.compact-tool-status[\s\S]*?\.compact-tool-shell\.tool-error \.compact-tool-status/, "running, success, and failure tool states should have distinct visual tones");
 assert.match(compactUpdate, /compactLiveState = reduced\.state;\s+clearCompactToolShells\(\)/, "new assistant or tool-call deltas should clear the preceding transient tool shell");
 assert.match(compactLiveStreamActive, /messageOutputActive = streamMessageActive && Boolean\([\s\S]*?compactLiveState\.text[\s\S]*?compactLiveState\.thinking[\s\S]*?compactOutputActive\(\) && currentState\?\.isStreaming === true && Boolean\(compactToolShells\.size \|\| messageOutputActive\)/, "mid-stream reconciliation should preserve active compact message output or a current tool shell, but not completed final text");
-assert.match(restoreCompactStream, /compactTextBubble = null[\s\S]*?compactThinkingBubble = null[\s\S]*?if \(streamMessageActive\) flushCompactLiveOutput\(\)[\s\S]*?compactToolShells\.values\(\)[\s\S]*?appendChatMessageBubble\(shell\.bubble\)/, "compact message state should be restored only while its message is active, while the current shell can survive between messages");
+assert.match(restoreCompactStream, /compactTextBubble = null[\s\S]*?compactThinkingBubble = null[\s\S]*?if \(streamMessageActive\) flushCompactLiveOutput\(\)[\s\S]*?compactToolShells\.values\(\)[\s\S]*?appendChatMessageBubble\(shell\.bubble, \{ liveTail: true \}\)/, "compact message state should be restored only while its message is active, while the current shell survives in chronological live-tail order between messages");
 assert.match(refreshMessages, /preserveCompactStream = compactLiveStreamRenderActive\(\)[\s\S]*?!preserveCompactStream && !preserveNormalStream[\s\S]*?renderMessages\(latestMessages\)[\s\S]*?preserveCompactStream\) restoreCompactLiveOutputAfterChatRebuild\(\)/, "message refreshes must not reset active compact output before rebuilding the transcript");
 
 assert.match(app, /const SETTINGS_OUTPUT_MODE_OPTIONS = \[[\s\S]*?value: "normal"[\s\S]*?value: "compact-v1"/, "settings should offer normal and compact-v1 server defaults");
@@ -155,7 +155,7 @@ assert.match(worker, /pi-webui-pwa-v\d+[\s\S]*?"\/fast-output-live\.mjs"/, "PWA 
 assert.match(html, /<label for="fastOutputModeSelect">Compact mode \(Experimental\)<\/label>/, "the sidebar should mark compact mode as experimental");
 assert.match(html, /Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed/, "the sidebar should distinguish compact rendering from model inference");
 // Intent preserved: the guarded PWA entry point must advance whenever app wiring changes.
-assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=106"/, "the guarded PWA entry point should cache-bust browser wiring");
+assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=110"/, "the guarded PWA entry point should cache-bust browser wiring");
 assert.match(JSON.parse(packageRaw).scripts.check, /node --check public\/fast-output-live\.mjs/, "package checks should parse the compact helper");
 
 const events = createFastModeOutputEvents();

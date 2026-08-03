@@ -84,7 +84,10 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true }).catch(() => {});
 });
 
-test("feature tag opens the exact classifier output and replays it after reconnect", async ({ page }) => {
+const COMPLEX_DIALOG_TEXT = "Decision: Complex feature (feature_complex)\nReason: Crosses the classifier extension and the WebUI status consumer.";
+const LEGACY_DIALOG_TEXT = "Decision: Complex feature (feature_complex)\nReason: The classifier reported feature_complex without a reason.";
+
+test("feature tag opens the readable classifier decision and replays it after reconnect", async ({ page }) => {
   await page.goto(baseURL);
   await emitDecision(page, "complex");
 
@@ -99,7 +102,7 @@ test("feature tag opens the exact classifier output and replays it after reconne
 
   await tag.click();
   await expect(dialog).toBeVisible();
-  await expect(outputText).toHaveText("feature_complex");
+  await expect(outputText).toHaveText(COMPLEX_DIALOG_TEXT);
   await expect(close).toBeFocused();
 
   await close.click();
@@ -116,9 +119,38 @@ test("feature tag opens the exact classifier output and replays it after reconne
   await expect(tag).toBeVisible();
   await expect(tag).toBeEnabled();
   await tag.click();
-  await expect(outputText).toHaveText("feature_complex");
+  await expect(outputText).toHaveText(COMPLEX_DIALOG_TEXT);
+  await page.keyboard.press("Escape");
 
   await emitDecision(page, "clear");
   await expect(dialog).toBeHidden();
+  await expect(tag).toBeHidden();
+});
+
+test("legacy labels stay readable while mismatched and malformed payloads fail closed", async ({ page }) => {
+  await page.goto(baseURL);
+
+  const tag = page.locator("#featureCategoryTag");
+  const dialog = page.locator("#featureDecisionDialog");
+  const outputText = page.locator("#featureDecisionDialogOutput");
+
+  await emitDecision(page, "legacy");
+  await expect(tag).toBeEnabled();
+  await tag.click();
+  await expect(outputText).toHaveText(LEGACY_DIALOG_TEXT);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await emitDecision(page, "mismatch");
+  await expect(tag).toBeVisible();
+  await expect(tag).toHaveText("complex-feature");
+  await expect(tag).toBeDisabled();
+
+  await emitDecision(page, "malformed");
+  await expect(tag).toBeVisible();
+  await expect(tag).toBeDisabled();
+  await expect(dialog).toBeHidden();
+
+  await emitDecision(page, "clear");
   await expect(tag).toBeHidden();
 });

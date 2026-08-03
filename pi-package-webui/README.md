@@ -139,12 +139,18 @@ Environment variables:
 - `PI_WEBUI_OUTPUT_MODE=normal|compact-v1` sets the server default for newly auto-negotiated browser connections.
 - `PI_WEBUI_RPC_SUPERVISOR=0` opts out to the legacy server-owned Pi transport only when the current scope has no live managed tabs. Use explicit shutdown before disabling or downgrading; fallback startup refuses to create duplicate direct children for a live managed scope.
 - Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
-- `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` overrides persisted Web UI settings such as Remote PIN auth, guided Git preferences, and global Tools/Skills defaults.
+- `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` authoritatively overrides the private Web UI settings file (normally `~/.pi/webui/settings.json`) and disables automatic import from the old XDG location.
 - `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
 - `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves the selected `pi` command, prefers `npm-cli.js` from that Pi installation, and runs it through Node. This prevents stale earlier `PATH` shims such as `%APPDATA%\npm\npm.cmd` from redirecting updates away from the active Pi installation.
 - `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
 - `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
+
+### Persistent interface settings
+
+Pi Web UI stores user-scoped settings in `~/.pi/webui/settings.json` by default. When that file is absent, a valid prior `$XDG_CONFIG_HOME/pi-webui/settings.json` (or `~/.config/pi-webui/settings.json`) is imported once without modifying or deleting the old file. An existing new file always wins, including when it is malformed, and `PI_WEBUI_SETTINGS_FILE` remains isolated from this migration. Writes use a private same-directory temporary file, atomic replacement, and a bounded same-host process lock; newly created settings files and directories use private permissions on supported platforms.
+
+The authenticated `GET /api/interface-preferences` response includes normalized `preferences`, versioned `layout`, and an opaque `layoutRevision`. `PUT /api/interface-preferences` remains compatible with width-only `{ "sidePanelWidth": 612 }` writes. Layout patches require the latest revision in `expectedLayoutRevision`, merge only named fields, and are limited to 32 KiB; stale revisions return `409`, unsupported media types `415`, oversized bodies `413`, and invalid or unknown fields `400`. Browser local storage remains a non-destructive compatibility cache. Semantic file moves, prompt attachments, and follow-up queue mutations are not stored in the interface-layout envelope.
 
 ### Durable Pi session continuity
 
@@ -333,7 +339,7 @@ Discovery-path rules: at most 24 paths and direct children only (no recursive wa
 - **What it is:** A browser-native `/skills` setup dialog for skills available in the active Pi tab.
 - **What you can do:** Find skills by name or description, then use **Session only** to change automatic invocation on the current branch or **Global default** to save the skill allowlist inherited by future sessions.
 
-Session-specific choices always win when their branch is resumed or selected in `/tree`. Saving a global default does not mutate currently open sessions. Global defaults are stored in the Pi Web UI settings file (normally `~/.config/pi-webui/settings.json` or `$XDG_CONFIG_HOME/pi-webui/settings.json`).
+Session-specific choices always win when their branch is resumed or selected in `/tree`. Saving a global default does not mutate currently open sessions. Global defaults are stored in the Pi Web UI settings file (normally `~/.pi/webui/settings.json`).
 
 ### Optional features
 
@@ -463,7 +469,7 @@ Optional companions:
 
 The Git workflow button runs local git commands in the active Pi working directory. It covers both empty/new projects and existing repositories.
 
-Before first use, run `/git-workflow-setup` in Pi or choose **Common Pi Options → Guided Git Setup** in the browser. Select an exact authenticated `provider/modelId`, a supported reasoning effort, and the workflow defaults described below. The browser preselects the active tab model when possible, but saving is always explicit. Preferences are stored globally in the Pi Web UI settings file (normally `~/.config/pi-webui/settings.json` or `$XDG_CONFIG_HOME/pi-webui/settings.json`), not in browser storage.
+Before first use, run `/git-workflow-setup` in Pi or choose **Common Pi Options → Guided Git Setup** in the browser. Select an exact authenticated `provider/modelId`, a supported reasoning effort, and the workflow defaults described below. The browser preselects the active tab model when possible, but saving is always explicit. Preferences are stored globally in the Pi Web UI settings file (normally `~/.pi/webui/settings.json`), not in browser storage.
 
 For a new project, the browser flow can:
 

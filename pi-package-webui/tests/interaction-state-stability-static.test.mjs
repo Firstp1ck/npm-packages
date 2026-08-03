@@ -67,6 +67,7 @@ const restoreToolDetailsInteraction = functionBody("restoreToolDetailsInteractio
 const updateLiveToolCard = functionBody("updateLiveToolCard");
 const renderStreamingMarkdown = functionBody("renderStreamingMarkdown");
 const refreshMessages = functionBody("refreshMessages");
+const restoreStreamRender = functionBody("restoreStreamRenderAfterChatRebuild");
 const captureMobileSurface = functionBody("captureMobileSurfaceRenderFocus");
 const restoreMobileSurface = functionBody("restoreMobileSurfaceRenderFocus");
 const captureAppRunnerInput = functionBody("captureAppRunnerInputFocus");
@@ -145,6 +146,8 @@ assert.doesNotMatch(captureToolDetailsInteraction, /scrollHeight|clientHeight|ge
 assert.match(restoreToolDetailsInteraction, /details\.open = snapshot\.open[\s\S]*focus\(\{ preventScroll: true \}\)[\s\S]*requestAnimationFrame[\s\S]*scrollSnapshot\.mode === "follow-end"[\s\S]*node\.scrollLeft = Math\.min/, "tool disclosure restoration must preserve keyboard focus and bounded reader scroll after layout");
 assert.match(updateLiveToolCard, /captureToolDetailsInteractionState\(body\)[\s\S]*transcriptRenderer\.replaceChildren\(body\)[\s\S]*restoreToolDetailsInteractionState\(body, detailsInteractionState\)/, "live tool updates must restore only their local disclosure interaction state around body replacement");
 assert.match(refreshMessages, /const selectionSnapshot = captureChatTextSelection\(\);[\s\S]*adoptedOutput = adoptLiveAssistantBubble\(latestMessages\)[\s\S]*resetStreamBubble\(\{ preserveCompact: adoptedOutput === "compact" \}\)[\s\S]*restoreStreamRenderAfterChatRebuild\(\)[\s\S]*restoreChatTextSelection\(selectionSnapshot\)/, "stream settlement must adopt matching normal or compact output before reset and retain exact fallback selection");
+assert.match(restoreStreamRender, /streamOutputMounted[\s\S]*thinkingOutputMounted[\s\S]*toolCallOutputMounted/, "stream restoration must distinguish preserved live-tail nodes from surfaces that were actually detached");
+assert.match(restoreStreamRender, /if \(!streamOutputMounted\)[\s\S]*streamBubble = null[\s\S]*if \(!thinkingOutputMounted\)[\s\S]*streamThinkingBubble = null[\s\S]*if \(!toolCallOutputMounted\)[\s\S]*streamToolCallBubble = null/, "authoritative refreshes must retain mounted live assistant, thinking, and tool-call bubbles instead of orphaning and duplicating them");
 
 // --- Transcript mutation coordinator contracts (keyed DOM ownership) ---
 

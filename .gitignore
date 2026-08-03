@@ -19,3 +19,4 @@ reports/
 plans/archive/
 services/issue-bot-gateway/.wrangler/
 /pi-package-webui/plans/handoffs/
+/pi-package-webui/test-results/.playwright-artifacts-0/

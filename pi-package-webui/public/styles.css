@@ -7873,6 +7873,9 @@ summary { cursor: pointer; color: var(--warning); }
   padding: 0.9rem;
   background: linear-gradient(180deg, rgba(var(--ctp-crust-rgb), 0.48), rgba(var(--ctp-crust-rgb), 0.82));
 }
+.composer:has(.follow-up-queue-overlay:not([hidden])) {
+  z-index: 80;
+}
 .composer::before {
   content: "";
   position: absolute;
@@ -8626,15 +8629,21 @@ button.composer-skill-tag:focus-visible {
 .composer-actions-button { display: none; }
 .composer-actions-panel { display: contents; }
 body.composer-action-grid-enabled .composer-row {
+  --composer-action-cell-min-width: 3.2rem;
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(2.9rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--composer-action-cell-min-width), 1fr));
   grid-auto-flow: dense;
   align-items: stretch;
 }
 body.composer-action-grid-enabled .composer-row .spacer { display: none; }
 body.composer-action-grid-enabled .composer-row [data-composer-action-id] {
+  position: relative;
+  z-index: 1;
+  --composer-action-grid-span: 1;
   order: var(--composer-action-order, 0);
-  grid-column: span 1;
+  grid-column: var(--composer-action-grid-column, auto) / span var(--composer-action-grid-span);
+  grid-row-start: var(--composer-action-grid-row, auto);
   width: 100%;
   min-width: 0;
   margin-right: 0;
@@ -8642,8 +8651,44 @@ body.composer-action-grid-enabled .composer-row [data-composer-action-id] {
   touch-action: none;
   user-select: none;
 }
-body.composer-action-grid-enabled .composer-row [data-composer-action-span="2"] { grid-column: span 2; }
+body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-publish-menu:hover,
+body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-publish-menu:focus-within,
+body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-publish-menu.open {
+  z-index: 100;
+}
+body.composer-action-grid-enabled .composer-row [data-composer-action-span="2"] { --composer-action-grid-span: 2; }
 body.composer-action-grid-enabled .composer-row [data-composer-action-id] > button { width: 100%; min-width: 0; }
+body.composer-action-grid-enabled .composer-row #newSessionButton {
+  display: grid;
+  place-items: center;
+  padding-inline: 0.4rem;
+  text-align: center;
+}
+.composer-action-grid-guide { display: none; }
+body.composer-action-grid-enabled.composer-action-drag-active .composer-row > .composer-action-grid-guide:not([hidden]) {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--composer-action-cell-min-width), 1fr));
+  grid-template-rows: repeat(var(--composer-action-grid-rows, 1), minmax(0, 1fr));
+  gap: 0.5rem;
+  pointer-events: none;
+}
+.composer-action-grid-cell {
+  min-width: 0;
+  min-height: 0;
+  border: 1px dashed rgba(137, 180, 250, 0.5);
+  border-radius: 0.7rem;
+  background: rgba(137, 180, 250, 0.07);
+  box-shadow: inset 0 0 0.7rem rgba(137, 180, 250, 0.05);
+}
+.composer-action-grid-cell.composer-action-grid-cell-target {
+  border-style: solid;
+  border-color: var(--ctp-teal);
+  background: rgba(148, 226, 213, 0.18);
+  box-shadow: inset 0 0 0.9rem rgba(148, 226, 213, 0.16), 0 0 0.65rem rgba(148, 226, 213, 0.3);
+}
 body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-action-dragging {
   z-index: 45;
   opacity: 0.58;
