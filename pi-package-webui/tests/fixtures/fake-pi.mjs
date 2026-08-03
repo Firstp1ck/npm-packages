@@ -1005,6 +1005,18 @@ function statsPromptContextFixturePayload({ malformedSnapshot = false } = {}) {
   return payload;
 }
 
+function handleFeatureDecisionFixturePrompt(command, base) {
+  const match = String(command.message || "").trim().match(/^fixture feature decision (lightweight|complex|clear)$/);
+  if (!match) return false;
+  const mode = match[1];
+  const output = mode === "lightweight" ? "feature_lightweight" : mode === "complex" ? "feature_complex" : undefined;
+  const category = mode === "lightweight" ? "lightweight-feature" : mode === "complex" ? "complex-feature" : undefined;
+  respond({ ...base, data: { output: `fake feature decision ${mode} emitted` } });
+  emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey: "feature-decision-output", statusText: output });
+  emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey: "feature-category", statusText: category });
+  return true;
+}
+
 function handleStatsPromptContextFixturePrompt(command, base) {
   if (!statsPromptContextEnabled) return false;
   const message = String(command.message || "").trim();
@@ -1110,6 +1122,7 @@ rl.on("line", (line) => {
       return;
     }
     case "prompt":
+      if (handleFeatureDecisionFixturePrompt(command, base)) return;
       if (handleStatsPromptContextFixturePrompt(command, base)) return;
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleFastModeFixturePrompt(command, base)) return;

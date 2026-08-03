@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=93" />
+    <link rel="stylesheet" href="/styles.css?v=95" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -322,7 +322,7 @@
                 aria-live="polite"
               >Follow-up</button>
               <div id="sessionSkillTags" class="composer-skill-tags" aria-live="polite" hidden></div>
-              <span id="featureCategoryTag" class="composer-feature-category-tag" aria-live="polite" aria-atomic="true" hidden></span>
+              <button id="featureCategoryTag" class="composer-feature-category-tag" type="button" aria-haspopup="dialog" aria-controls="featureDecisionDialog" aria-live="polite" aria-atomic="true" disabled hidden></button>
               <button id="conversationModeChip" class="composer-conversation-mode-chip" type="button" aria-live="polite" hidden>Voice: off</button>
               <button id="workflowModeChip" class="composer-workflow-mode-chip" type="button" aria-live="polite" aria-pressed="true" hidden>Workflow: on</button>
             </div>
@@ -362,18 +362,20 @@
           <div class="composer-row">
             <button id="composerActionsButton" class="composer-actions-button" type="button" aria-controls="composerActionsPanel" aria-expanded="false" title="Open session, workflow, and follow-up actions">Actions</button>
             <div id="composerActionsPanel" class="composer-actions-panel" aria-label="Composer actions">
-              <button id="newSessionButton" class="composer-new-button" type="button">New</button>
-              <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context">Compact</button>
+              <button id="newSessionButton" class="composer-new-button" type="button" data-composer-action-id="new" data-composer-action-span="1">New</button>
+              <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context" data-composer-action-id="compact" data-composer-action-span="2">Compact</button>
               <button
                 id="gitWorkflowButton"
                 class="composer-icon-button composer-git-button"
+                data-composer-action-id="git"
+                data-composer-action-span="1"
                 type="button"
                 hidden
                 title="Guided Git workflow"
                 aria-label="Start guided Git workflow: stage all changes, generate and preview staged commit messages, optionally open a PR branch worktree, commit short or long there, then push or create a pull request. Cancel is available at each step."
                 data-tooltip="Guided Git workflow:&#10;1. Stage all changes with git add .&#10;2. Generate and preview staged commit messages.&#10;3. Optional: create or type a PR branch worktree before committing.&#10;4. Commit with the short or long message in the worktree tab.&#10;5. Push normally, or push the PR worktree branch, generate/review /pr, and create the PR.&#10;Cancel is available at each step."
               ><svg class="composer-icon composer-icon-github" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></button>
-              <div class="composer-publish-menu" hidden>
+              <div class="composer-publish-menu" data-composer-action-id="publish" data-composer-action-span="1" hidden>
                 <button
                   id="publishButton"
                   class="composer-icon-button composer-publish-button"
@@ -394,7 +396,7 @@
                   </button>
                 </div>
               </div>
-              <div class="composer-publish-menu composer-native-command-menu" hidden>
+              <div class="composer-publish-menu composer-native-command-menu" data-composer-action-id="native-command" data-composer-action-span="1" hidden>
                 <button
                   id="nativeCommandMenuButton"
                   class="composer-icon-button composer-publish-button composer-native-command-button"
@@ -415,7 +417,7 @@
                   </button>
                 </div>
               </div>
-              <div class="composer-publish-menu composer-options-menu">
+              <div class="composer-publish-menu composer-options-menu" data-composer-action-id="options" data-composer-action-span="1">
                 <button
                   id="optionsMenuButton"
                   class="composer-icon-button composer-publish-button composer-options-button"
@@ -478,7 +480,7 @@
                   </button>
                 </div>
               </div>
-              <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" hidden>
+              <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" data-composer-action-id="app-runner" data-composer-action-span="1" hidden>
                 <button
                   id="appRunnerInfoButton"
                   class="composer-icon-button composer-app-runner-info-button"
@@ -507,6 +509,8 @@
             <button
               id="steerButton"
               type="button"
+              data-composer-action-id="steer"
+              data-composer-action-span="1"
               title="Type your message first, then tap Steer to guide the active Pi run without sending a normal prompt. Use it for corrections or direction changes while Pi is working."
               aria-label="Steer: type your message first, then tap this button to guide the active Pi run."
               data-tooltip="Steer usage:&#10;1. Type your steering message in the textarea.&#10;2. Tap Steer to guide the active Pi run.&#10;Use for corrections or direction changes while Pi is working."
@@ -514,27 +518,32 @@
             <button
               id="followUpButton"
               type="button"
+              data-composer-action-id="follow-up"
+              data-composer-action-span="1"
               title="Type your message first, then tap Follow-up to send it as a follow-up instead of a normal prompt. Use it to add extra context or the next request."
               aria-label="Follow-up: type your message first, then tap this button to send it as a follow-up."
               data-tooltip="Follow-up usage:&#10;1. Type your message in the textarea.&#10;2. Tap Follow-up to send it as a follow-up.&#10;Use for extra context or the next request."
             >Follow-up</button>
-            <div id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" hidden>
+            <div id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" data-composer-action-id="conversation-voice" data-composer-action-span="1" hidden>
               <button id="conversationVoiceButton" class="composer-publish-button composer-conversation-voice-button" type="button" title="Switch the spoken Piper voice. Voices marked with a size are downloaded when selected; progress shows on the voice chip." aria-label="Conversation voice" aria-haspopup="menu" aria-expanded="false" aria-controls="conversationVoiceMenuPanel"><span id="conversationVoiceButtonLabel">Voice</span></button>
               <div id="conversationVoiceMenuPanel" class="composer-publish-menu-panel composer-conversation-voice-menu-panel" role="menu" aria-label="Conversation voices"></div>
             </div>
-            <button id="conversationModeEndButton" class="composer-conversation-end-button" type="button" title="End Natural Conversation Mode for this Pi tab" aria-label="End Natural Conversation Mode" hidden>End conversation</button>
-            <button id="abortButton" class="composer-abort-button danger" type="button" title="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" aria-label="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" hidden disabled>Abort</button>
+            <button id="conversationModeEndButton" class="composer-conversation-end-button" type="button" title="End Natural Conversation Mode for this Pi tab" aria-label="End Natural Conversation Mode" data-composer-action-id="end-conversation" data-composer-action-span="1" hidden>End conversation</button>
+            <button id="abortButton" class="composer-abort-button danger" type="button" title="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" aria-label="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" data-composer-action-id="abort" data-composer-action-span="1" hidden disabled>Abort</button>
             <button
               id="btwButton"
               class="composer-icon-button composer-btw-button"
+              data-composer-action-id="btw"
+              data-composer-action-span="1"
               type="button"
               title="Ask as a /btw side question"
               aria-label="Ask the current composer text as a /btw side question"
               data-tooltip="/btw side question:&#10;Type a question, then tap /btw to ask without adding it to the main conversation."
               hidden
             ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5.5 6.5h10.75a2.25 2.25 0 0 1 2.25 2.25v4.5a2.25 2.25 0 0 1-2.25 2.25h-4.4L8 18.25V15.5H5.5a2.25 2.25 0 0 1-2.25-2.25v-4.5A2.25 2.25 0 0 1 5.5 6.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="m15.75 5.25 1.1-2.1 1.1 2.1 2.3 1.1-2.3 1.1-1.1 2.1-1.1-2.1-2.3-1.1 2.3-1.1Z" fill="currentColor"/><path d="M7.25 10.25h5.8M7.25 12.75h4.1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
-            <button id="sendButton" type="submit" class="primary" title="Send prompt">Send</button>
+            <button id="sendButton" type="submit" class="primary" title="Send prompt" data-composer-action-id="send" data-composer-action-span="2">Send</button>
           </div>
+          <p id="composerActionOrderStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
         </form>
         <div id="remoteMicStreamingConsent" class="composer-remote-mic-consent" role="alert" hidden>
           <span id="remoteMicStreamingConsentText" class="composer-remote-mic-consent-text"></span>
@@ -1222,6 +1231,16 @@
       </form>
     </dialog>
 
+    <dialog id="featureDecisionDialog" class="extension-dialog feature-decision-dialog" aria-labelledby="featureDecisionDialogTitle">
+      <form method="dialog">
+        <h2 id="featureDecisionDialogTitle">Classifier output</h2>
+        <pre id="featureDecisionDialogOutput" class="feature-decision-dialog-output"></pre>
+        <menu>
+          <button id="featureDecisionDialogCloseButton" type="submit" value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="extensionDialog" class="extension-dialog">
       <form id="dialogForm" method="dialog">
         <h2 id="dialogTitle">Pi request</h2>
@@ -1500,7 +1519,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=104">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=106">
       (() => {
         "use strict";
 

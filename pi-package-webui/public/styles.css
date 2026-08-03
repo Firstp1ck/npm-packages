@@ -8084,6 +8084,7 @@ summary { cursor: pointer; color: var(--warning); }
 }
 .composer-busy-mode-tag,
 .composer-skill-tag,
+.composer-feature-category-tag,
 .composer-conversation-mode-chip,
 .composer-workflow-mode-chip {
   pointer-events: auto;
@@ -8154,7 +8155,9 @@ summary { cursor: pointer; color: var(--warning); }
 .composer-feature-category-tag {
   flex: 0 1 auto;
   min-width: 0;
+  min-height: 0;
   max-width: min(14rem, 100%);
+  margin: 0;
   padding: 0.14rem 0.56rem;
   border: 1px solid rgba(148, 226, 213, 0.52);
   border-radius: 999px;
@@ -8163,6 +8166,7 @@ summary { cursor: pointer; color: var(--warning); }
     linear-gradient(120deg, rgba(148, 226, 213, 0.28), rgba(166, 227, 161, 0.10)),
     var(--ctp-crust);
   box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1rem rgba(148, 226, 213, 0.22);
+  cursor: pointer;
   font-size: var(--text-xs);
   font-weight: 900;
   letter-spacing: 0.04em;
@@ -8170,6 +8174,16 @@ summary { cursor: pointer; color: var(--warning); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.composer-feature-category-tag:hover:not(:disabled),
+.composer-feature-category-tag:focus-visible {
+  border-color: rgba(148, 226, 213, 0.78);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1.2rem rgba(148, 226, 213, 0.34);
+  transform: translateY(-1px);
+}
+.composer-feature-category-tag:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 .composer-feature-category-tag.complex-feature {
   border-color: rgba(203, 166, 247, 0.56);
@@ -8611,6 +8625,41 @@ button.composer-skill-tag:focus-visible {
 }
 .composer-actions-button { display: none; }
 .composer-actions-panel { display: contents; }
+body.composer-action-grid-enabled .composer-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.9rem, 1fr));
+  grid-auto-flow: dense;
+  align-items: stretch;
+}
+body.composer-action-grid-enabled .composer-row .spacer { display: none; }
+body.composer-action-grid-enabled .composer-row [data-composer-action-id] {
+  order: var(--composer-action-order, 0);
+  grid-column: span 1;
+  width: 100%;
+  min-width: 0;
+  margin-right: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+body.composer-action-grid-enabled .composer-row [data-composer-action-span="2"] { grid-column: span 2; }
+body.composer-action-grid-enabled .composer-row [data-composer-action-id] > button { width: 100%; min-width: 0; }
+body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-action-dragging {
+  z-index: 45;
+  opacity: 0.58;
+  cursor: grabbing;
+  transform: scale(0.97);
+}
+body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-action-drag-before {
+  outline: 2px solid var(--ctp-teal);
+  outline-offset: 2px;
+  box-shadow: -0.34rem 0 0 -0.16rem var(--ctp-teal);
+}
+body.composer-action-grid-enabled .composer-row [data-composer-action-id].composer-action-drag-after {
+  outline: 2px solid var(--ctp-mauve);
+  outline-offset: 2px;
+  box-shadow: 0.34rem 0 0 -0.16rem var(--ctp-mauve);
+}
 .composer-btw-button {
   color: var(--ctp-teal);
   border-color: rgba(148, 226, 213, 0.34);
@@ -9957,6 +10006,23 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   background: linear-gradient(145deg, rgba(var(--ctp-base-rgb), 0.98), rgba(var(--ctp-crust-rgb), 0.98));
   color: var(--text);
   box-shadow: 0 2rem 5rem var(--shadow), 0 0 2rem var(--glow-mauve);
+}
+.extension-dialog.feature-decision-dialog {
+  width: min(30rem, calc(100vw - 2rem));
+}
+.feature-decision-dialog h2 { margin: 0; }
+.feature-decision-dialog-output {
+  margin: 0.9rem 0 0;
+  padding: 0.85rem;
+  border: 1px solid rgba(148, 226, 213, 0.34);
+  border-radius: 0.72rem;
+  color: var(--ctp-teal);
+  background: rgba(var(--ctp-crust-rgb), 0.82);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .extension-dialog.workflow-script-dialog {
   width: min(96rem, calc(100vw - 2rem));

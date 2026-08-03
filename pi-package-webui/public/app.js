@@ -91,6 +91,7 @@ const elements = {
   composerRow: $(".composer-row"),
   composerActionsButton: $("#composerActionsButton"),
   composerActionsPanel: $("#composerActionsPanel"),
+  composerActionOrderStatus: $("#composerActionOrderStatus"),
   promptInput: $("#promptInput"),
   mobileFailedSendRecovery: $("#mobileFailedSendRecovery"),
   mobileFailedSendRetryButton: $("#mobileFailedSendRetryButton"),
@@ -106,6 +107,9 @@ const elements = {
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
   featureCategoryTag: $("#featureCategoryTag"),
+  featureDecisionDialog: $("#featureDecisionDialog"),
+  featureDecisionDialogOutput: $("#featureDecisionDialogOutput"),
+  featureDecisionDialogCloseButton: $("#featureDecisionDialogCloseButton"),
   conversationModeChip: $("#conversationModeChip"),
   workflowModeChip: $("#workflowModeChip"),
   skillEditorDialog: $("#skillEditorDialog"),
@@ -493,6 +497,9 @@ let sidePanelContextMenuState = null;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
 let sidePanelSectionSuppressClickUntil = 0;
+let composerActionPointerDrag = null;
+let composerActionLastDragOverKey = "";
+let composerActionSuppressClickUntil = 0;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let sidePanelResizeState = null;
@@ -809,6 +816,8 @@ const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
 const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
 const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
+const COMPOSER_ACTION_ORDER_STORAGE_KEY = "pi-webui-composer-action-order-v1";
+const COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
 const AGENT_DONE_NOTIFICATIONS_STORAGE_KEY = "pi-webui-agent-done-notifications";
@@ -921,6 +930,7 @@ const WORKFLOW_INSPECTOR_PAYLOAD_PREFIX = "WORKFLOW_RPC_PAYLOAD ";
 const WORKFLOW_INSPECTOR_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.inspector";
 const WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1;
 const WORKFLOW_MODE_STATUS_KEY = "workflow-mode";
+const FEATURE_DECISION_OUTPUT_STATUS_KEY = "feature-decision-output";
 const FEATURE_CATEGORY_STATUS_KEY = "feature-category";
 const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
 const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
@@ -2134,6 +2144,8 @@ function receiveMobileNavigationTarget(value) {
 syncMobileShellRoot();
 const statusEntries = new Map();
 const featureCategoryByTab = new Map();
+const featureDecisionOutputByTab = new Map();
+let featureDecisionDialogTabId = null;
 const widgets = new Map();
 const widgetsByTab = new Map();
 const todoProgressWidgetExpandedByTab = new Map();
@@ -3695,6 +3707,193 @@ function bindSidePanelSectionToggles() {
   }
 }
 
+function composerActionRecords() {
+  return Array.from(elements.composerRow?.querySelectorAll("[data-composer-action-id]") || [])
+    .map((root, domIndex) => {
+      const id = root.dataset.composerActionId || "";
+      const focusTarget = root.matches("button") ? root : root.querySelector("button");
+      const rawStoredOrder = root.style.getPropertyValue("--composer-action-order");
+      const storedOrder = Number(rawStoredOrder);
+      const order = rawStoredOrder !== "" && Number.isFinite(storedOrder) ? storedOrder : domIndex;
+      return { id, root, focusTarget, domIndex, order };
+    })
+    .filter((record) => record.id && record.focusTarget);
+}
+
+function orderedComposerActionRecords({ visibleOnly = false } = {}) {
+  return composerActionRecords()
+    .filter(({ root }) => !visibleOnly || (!root.hidden && root.getClientRects().length > 0))
+    .sort((a, b) => a.order - b.order || a.domIndex - b.domIndex);
+}
+
+function readStoredComposerActionOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COMPOSER_ACTION_ORDER_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? [...new Set(parsed.filter((id) => typeof id === "string" && id.trim()))] : [];
+  } catch {
+    return [];
+  }
+}
+
+function applyComposerActionOrder(orderIds) {
+  const records = composerActionRecords();
+  const knownIds = new Set(records.map(({ id }) => id));
+  const completeOrder = [
+    ...new Set(orderIds.filter((id) => knownIds.has(id))),
+    ...records.map(({ id }) => id).filter((id) => !orderIds.includes(id)),
+  ];
+  const rank = new Map(completeOrder.map((id, index) => [id, index]));
+  for (const record of records) record.root.style.setProperty("--composer-action-order", String(rank.get(record.id)));
+  return completeOrder;
+}
+
+function restoreComposerActionOrder() {
+  if (composerActionPointerDrag?.active) return;
+  applyComposerActionOrder(readStoredComposerActionOrder());
+}
+
+function persistComposerActionOrder() {
+  try {
+    localStorage.setItem(COMPOSER_ACTION_ORDER_STORAGE_KEY, JSON.stringify(orderedComposerActionRecords().map(({ id }) => id)));
+  } catch {
+    // Ignore storage failures; ordering should still work for this page load.
+  }
+}
+
+function clearComposerActionDragMarkers() {
+  for (const { root } of composerActionRecords()) {
+    root.classList.remove("composer-action-drag-before", "composer-action-drag-after");
+  }
+}
+
+function moveComposerActionRelative(fromId, targetId, insertBefore) {
+  if (!fromId || !targetId || fromId === targetId) return false;
+  const order = orderedComposerActionRecords().map(({ id }) => id).filter((id) => id !== fromId);
+  const targetIndex = order.indexOf(targetId);
+  if (targetIndex < 0) return false;
+  order.splice(targetIndex + (insertBefore ? 0 : 1), 0, fromId);
+  applyComposerActionOrder(order);
+  clearComposerActionDragMarkers();
+  const targetRecord = composerActionRecords().find(({ id }) => id === targetId);
+  targetRecord?.root.classList.add(insertBefore ? "composer-action-drag-before" : "composer-action-drag-after");
+  composerActionLastDragOverKey = `${targetId}:${insertBefore ? "before" : "after"}`;
+  persistComposerActionOrder();
+  return true;
+}
+
+function composerActionLabel(record) {
+  return record?.focusTarget?.getAttribute("aria-label")
+    || record?.focusTarget?.textContent?.trim()
+    || record?.focusTarget?.getAttribute("title")
+    || record?.id
+    || "Action";
+}
+
+function announceComposerActionPosition(actionId) {
+  if (!elements.composerActionOrderStatus) return;
+  const records = orderedComposerActionRecords({ visibleOnly: true });
+  const index = records.findIndex(({ id }) => id === actionId);
+  const record = records[index];
+  if (!record || index < 0) return;
+  elements.composerActionOrderStatus.textContent = `${composerActionLabel(record)} moved to position ${index + 1} of ${records.length}.`;
+}
+
+function moveComposerActionByOffset(actionId, offset) {
+  const records = orderedComposerActionRecords({ visibleOnly: true });
+  const fromIndex = records.findIndex(({ id }) => id === actionId);
+  const toIndex = fromIndex + offset;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= records.length) return false;
+  const moved = moveComposerActionRelative(actionId, records[toIndex].id, offset < 0);
+  clearComposerActionDragMarkers();
+  if (moved) {
+    announceComposerActionPosition(actionId);
+    queueMicrotask(() => composerActionRecords().find(({ id }) => id === actionId)?.focusTarget.focus({ preventScroll: true }));
+  }
+  return moved;
+}
+
+function composerActionRootFromPoint(clientX, clientY) {
+  return document.elementFromPoint(clientX, clientY)?.closest?.("[data-composer-action-id]") || null;
+}
+
+function beginComposerActionPointerDrag(event, actionId) {
+  if (event.button !== 0 || isMobileView() || !actionId || composerActionPointerDrag) return;
+  if (event.target?.closest?.(".composer-publish-menu-panel, input, select, textarea, a")) return;
+  composerActionPointerDrag = { actionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
+  window.addEventListener("pointermove", updateComposerActionPointerDrag, { capture: true });
+  window.addEventListener("pointerup", endComposerActionPointerDrag, { capture: true });
+  window.addEventListener("pointercancel", endComposerActionPointerDrag, { capture: true });
+}
+
+function updateComposerActionPointerDrag(event) {
+  const drag = composerActionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+  if (!drag.active && distance < COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX) return;
+  event.preventDefault();
+  if (!drag.active) {
+    drag.active = true;
+    composerActionLastDragOverKey = "";
+    clearTimeout(pointerActivationTimeout);
+    pointerActivationTimeout = null;
+    activePointerActivation = null;
+    composerActionRecords().find(({ id }) => id === drag.actionId)?.root.classList.add("composer-action-dragging");
+  }
+  const targetRoot = composerActionRootFromPoint(event.clientX, event.clientY);
+  const targetRecord = targetRoot
+    ? composerActionRecords().find(({ root }) => root === targetRoot)
+    : null;
+  if (!targetRecord || targetRecord.id === drag.actionId || targetRecord.root.hidden) return;
+  const rect = targetRoot.getBoundingClientRect();
+  const insertBefore = event.clientX < rect.left + rect.width / 2;
+  const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  if (markerKey === composerActionLastDragOverKey) return;
+  moveComposerActionRelative(drag.actionId, targetRecord.id, insertBefore);
+}
+
+function endComposerActionPointerDrag(event) {
+  const drag = composerActionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  window.removeEventListener("pointermove", updateComposerActionPointerDrag, { capture: true });
+  window.removeEventListener("pointerup", endComposerActionPointerDrag, { capture: true });
+  window.removeEventListener("pointercancel", endComposerActionPointerDrag, { capture: true });
+  const sourceRecord = composerActionRecords().find(({ id }) => id === drag.actionId);
+  composerActionPointerDrag = null;
+  composerActionLastDragOverKey = "";
+  clearComposerActionDragMarkers();
+  sourceRecord?.root.classList.remove("composer-action-dragging");
+  if (drag.active) {
+    composerActionSuppressClickUntil = Date.now() + 250;
+    event.preventDefault();
+    persistComposerActionOrder();
+    announceComposerActionPosition(drag.actionId);
+    queueMicrotask(() => sourceRecord?.focusTarget.focus({ preventScroll: true }));
+  }
+}
+
+function syncComposerActionGridAvailability() {
+  document.body.classList.toggle("composer-action-grid-enabled", !isMobileView());
+}
+
+function initializeComposerActionOrdering() {
+  syncComposerActionGridAvailability();
+  restoreComposerActionOrder();
+  for (const record of composerActionRecords()) {
+    record.focusTarget.setAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown");
+    record.focusTarget.addEventListener("keydown", (event) => {
+      if (isMobileView() || !event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      moveComposerActionByOffset(record.id, ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 1);
+    });
+    record.root.addEventListener("pointerdown", (event) => beginComposerActionPointerDrag(event, record.id));
+    record.root.addEventListener("click", (event) => {
+      if (Date.now() >= composerActionSuppressClickUntil) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, { capture: true });
+  }
+}
+
 function bindSidePanelContextMenu() {
   elements.sidePanel?.addEventListener("contextmenu", showSidePanelContextMenu);
   elements.sidePanel?.addEventListener("keydown", (event) => {
@@ -4846,22 +5045,87 @@ function normalizeFeatureCategory(value) {
   return value === "lightweight-feature" || value === "complex-feature" ? value : "";
 }
 
+function normalizeFeatureDecisionOutput(value) {
+  return value === "feature_lightweight" || value === "feature_complex" ? value : "";
+}
+
+function featureDecisionOutputForTab(tabId) {
+  const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
+  const output = normalizeFeatureDecisionOutput(featureDecisionOutputByTab.get(tabId));
+  if (category === "lightweight-feature" && output === "feature_lightweight") return output;
+  if (category === "complex-feature" && output === "feature_complex") return output;
+  return "";
+}
+
+function closeFeatureDecisionDialog({ restoreFocus = true } = {}) {
+  const dialog = elements.featureDecisionDialog;
+  if (!dialog?.open) {
+    featureDecisionDialogTabId = null;
+    if (elements.featureDecisionDialogOutput) elements.featureDecisionDialogOutput.textContent = "";
+    return;
+  }
+  if (!restoreFocus) modalSurfaceState.delete(dialog);
+  dialog.close();
+}
+
+function syncFeatureDecisionDialog() {
+  const dialog = elements.featureDecisionDialog;
+  if (!dialog?.open) return;
+  const output = featureDecisionOutputForTab(featureDecisionDialogTabId);
+  if (featureDecisionDialogTabId !== activeTabId || !output || elements.featureDecisionDialogOutput?.textContent !== output) {
+    closeFeatureDecisionDialog({ restoreFocus: false });
+  }
+}
+
+function openFeatureDecisionDialog() {
+  const tabId = activeTabId;
+  const output = featureDecisionOutputForTab(tabId);
+  const dialog = elements.featureDecisionDialog;
+  if (!tabId || !output || !dialog || !elements.featureDecisionDialogOutput) return;
+  featureDecisionDialogTabId = tabId;
+  elements.featureDecisionDialogOutput.textContent = output;
+  if (!dialog.open) dialog.showModal();
+  queueMicrotask(() => elements.featureDecisionDialogCloseButton?.focus({ preventScroll: true }));
+}
+
+function clearFeatureDecisionStateForTab(tabId, { render = false } = {}) {
+  if (!tabId) return;
+  featureCategoryByTab.delete(tabId);
+  featureDecisionOutputByTab.delete(tabId);
+  if (featureDecisionDialogTabId === tabId) closeFeatureDecisionDialog({ restoreFocus: false });
+  if (render && tabId === activeTabId) renderFeatureCategoryTag(tabId);
+}
+
 function renderFeatureCategoryTag(tabId = activeTabId) {
   const tag = elements.featureCategoryTag;
   if (!tag) return;
   const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
+  const output = featureDecisionOutputForTab(tabId);
   tag.hidden = !category;
+  tag.disabled = !output;
   tag.textContent = category;
+  tag.setAttribute("aria-label", output ? `Show classifier output for ${category}` : category || "Feature category");
   tag.classList.toggle("lightweight-feature", category === "lightweight-feature");
   tag.classList.toggle("complex-feature", category === "complex-feature");
+  syncFeatureDecisionDialog();
+}
+
+function handleFeatureDecisionOutputStatus(statusText, tabId = activeTabId) {
+  if (!tabId) return;
+  const output = normalizeFeatureDecisionOutput(statusText);
+  if (output) featureDecisionOutputByTab.set(tabId, output);
+  else featureDecisionOutputByTab.delete(tabId);
+  if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
+  else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
 }
 
 function handleFeatureCategoryStatus(statusText, tabId = activeTabId) {
   if (!tabId) return;
   const category = normalizeFeatureCategory(statusText);
   if (category) featureCategoryByTab.set(tabId, category);
-  else featureCategoryByTab.delete(tabId);
+  else clearFeatureDecisionStateForTab(tabId);
   if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
+  else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
 }
 
 function trackSkillUsage(tabId, skillName, kind = "used", source = "", details = {}) {
@@ -5649,6 +5913,7 @@ function bindMobileViewChanges() {
   if (!mobileViewMedia) return;
   const syncForViewport = (event) => {
     applyMobileShellViewport();
+    syncComposerActionGridAvailability();
     if (isMobileShellV2Active()) return;
     setComposerActionsOpen(false);
     setMobileFooterExpanded(false);
@@ -9060,7 +9325,10 @@ function activeTabContext(tabId = activeTabId) {
 
 function setActiveTabId(tabId, { remember = false } = {}) {
   const nextTabId = tabId || null;
-  if (nextTabId !== activeTabId) activeTabGeneration += 1;
+  if (nextTabId !== activeTabId) {
+    activeTabGeneration += 1;
+    closeFeatureDecisionDialog({ restoreFocus: false });
+  }
   activeTabId = nextTabId;
   bindGitWorkflowToActiveTab();
   renderFeatureCategoryTag(nextTabId);
@@ -11176,7 +11444,7 @@ function syncTabMetadata(nextTabs = []) {
       suppressPendingAgentDoneNotificationsForTab(tabId, { markSeen: false });
       actionFeedbackByTab.delete(tabId);
       skillUsageByTab.delete(tabId);
-      featureCategoryByTab.delete(tabId);
+      clearFeatureDecisionStateForTab(tabId);
       tabMessagesCache.delete(tabId);
       widgetsByTab.delete(tabId);
       appRunnerDataByTab.delete(tabId);
@@ -13122,7 +13390,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
       tabDrafts.delete(id);
       clearAttachments(id);
       clearGitWorkflowForTab(id);
-      featureCategoryByTab.delete(id);
+      clearFeatureDecisionStateForTab(id);
       commandCatalogsByTab.delete(id);
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
@@ -37709,6 +37977,10 @@ function handleExtensionUiRequest(request) {
     }
     case "setStatus": {
       const statusKey = request.statusKey || "extension";
+      if (statusKey === FEATURE_DECISION_OUTPUT_STATUS_KEY) {
+        handleFeatureDecisionOutputStatus(request.statusText, request.tabId || activeTabId);
+        return;
+      }
       if (statusKey === FEATURE_CATEGORY_STATUS_KEY) {
         handleFeatureCategoryStatus(request.statusText, request.tabId || activeTabId);
         return;
@@ -38225,8 +38497,7 @@ function handleEvent(event) {
   switch (event.type) {
     case "webui_connected": {
       const connectedTabId = event.tabId || activeTabId;
-      featureCategoryByTab.delete(connectedTabId);
-      if (connectedTabId === activeTabId) renderFeatureCategoryTag(connectedTabId);
+      clearFeatureDecisionStateForTab(connectedTabId, { render: true });
       acceptOutputModeAcknowledgement(event);
       setWebuiVersion(event.version);
       setPiVersion(event.piVersion);
@@ -38679,6 +38950,11 @@ elements.skillEditorDialog?.addEventListener("keydown", (event) => {
   if (!elements.skillEditorSaveButton?.disabled) saveSkillEditor();
 });
 elements.skillEditorDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
+elements.featureCategoryTag?.addEventListener("click", openFeatureDecisionDialog);
+elements.featureDecisionDialog?.addEventListener("close", () => {
+  featureDecisionDialogTabId = null;
+  if (elements.featureDecisionDialogOutput) elements.featureDecisionDialogOutput.textContent = "";
+});
 elements.sendFeedbackButton.addEventListener("click", () => submitQueuedActionFeedback());
 elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -39873,6 +40149,7 @@ window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
   if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
+  if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
     const width = readStoredSidePanelWidth();
     if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
@@ -40295,6 +40572,7 @@ restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
 restoreInterfaceDensity();
 initializeTerminalHeaderTooltips();
+initializeComposerActionOrdering();
 restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();

@@ -35,6 +35,8 @@ export type ActiveClassifierModel = NonNullable<ExtensionContext["model"]>;
 
 export const CLASSIFIER_TIMEOUT_MS = 15_000;
 export const MAX_CLASSIFIER_PROMPT_CHARS = 4_096;
+/** Replayable RPC status key for the accepted raw feature classifier output. */
+export const FEATURE_DECISION_OUTPUT_STATUS_KEY = "feature-decision-output";
 /** Replayable RPC status key for the effective feature category. */
 export const FEATURE_CATEGORY_STATUS_KEY = "feature-category";
 
@@ -135,9 +137,16 @@ export function shouldInjectFeaturePrompt(result: RequestKind | undefined): bool
 	return getFeatureComplexity(result) !== undefined;
 }
 
-function setFeatureCategoryStatus(ctx: Pick<ExtensionContext, "mode" | "ui">, result: RequestKind | undefined): void {
+type FeatureDecisionOutput = Extract<RequestKind, "feature_lightweight" | "feature_complex">;
+
+function setFeatureStatuses(
+	ctx: Pick<ExtensionContext, "mode" | "ui">,
+	decisionOutput: FeatureDecisionOutput | undefined,
+	result: RequestKind | undefined,
+): void {
 	if (ctx.mode !== "rpc") return;
 	const complexity = getFeatureComplexity(result);
+	ctx.ui.setStatus(FEATURE_DECISION_OUTPUT_STATUS_KEY, decisionOutput);
 	ctx.ui.setStatus(FEATURE_CATEGORY_STATUS_KEY, complexity === undefined ? undefined : `${complexity}-feature`);
 }
 
@@ -280,17 +289,19 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 	return (pi: ExtensionAPI) => {
 		let previousPrompt: string | undefined;
 		let previousEffectiveKind: EffectiveRequestKind | undefined;
+		let previousFeatureDecisionOutput: FeatureDecisionOutput | undefined;
 
 		const resetContinuationState = () => {
 			previousPrompt = undefined;
 			previousEffectiveKind = undefined;
+			previousFeatureDecisionOutput = undefined;
 		};
 		const requestClassifier = dependencies.classifyRequest ?? classifyRequest;
 		const validateFeatureSkill = dependencies.validateFeatureSkill ?? featureSkillIsAvailable;
 
 		const resetSessionState = (_event: unknown, ctx: ExtensionContext) => {
 			resetContinuationState();
-			setFeatureCategoryStatus(ctx, undefined);
+			setFeatureStatuses(ctx, undefined, undefined);
 		};
 
 		pi.on("session_start", resetSessionState);
@@ -299,11 +310,14 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 		pi.on("before_agent_start", async (event, ctx) => {
 			const continuation = isLikelyContinuation(event.prompt);
 			let resolvedKind: EffectiveRequestKind | undefined = continuation ? previousEffectiveKind : classifyObviousNonFeatureRequest(event.prompt);
+			let featureDecisionOutput: FeatureDecisionOutput | undefined = continuation
+				? previousFeatureDecisionOutput
+				: undefined;
 
 			if (resolvedKind === undefined) {
 				if (!ctx.model) {
 					resetContinuationState();
-					setFeatureCategoryStatus(ctx, undefined);
+					setFeatureStatuses(ctx, undefined, undefined);
 					return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
 				}
 
@@ -319,24 +333,28 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 					classifiedKind = await requestClassifier(input, ctx.model);
 				} catch {
 					resetContinuationState();
-					setFeatureCategoryStatus(ctx, undefined);
+					setFeatureStatuses(ctx, undefined, undefined);
 					return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
 				}
 
 				if (classifiedKind === undefined) {
 					resetContinuationState();
-					setFeatureCategoryStatus(ctx, undefined);
+					setFeatureStatuses(ctx, undefined, undefined);
 					return { systemPrompt: `${event.systemPrompt}\n\n${FEATURE_CLASSIFICATION_FALLBACK}` };
 				}
 
 				resolvedKind = classifiedKind === "continuation" && !continuation
 					? "other"
 					: resolveRequestKind(classifiedKind, previousEffectiveKind);
+				featureDecisionOutput = classifiedKind === "feature_lightweight" || classifiedKind === "feature_complex"
+					? classifiedKind
+					: undefined;
 			}
 
 			previousPrompt = truncateClassifierPrompt(event.prompt);
 			previousEffectiveKind = resolvedKind;
-			setFeatureCategoryStatus(ctx, resolvedKind);
+			previousFeatureDecisionOutput = featureDecisionOutput;
+			setFeatureStatuses(ctx, featureDecisionOutput, resolvedKind);
 
 			const complexity = getFeatureComplexity(resolvedKind);
 			if (complexity === undefined) return;

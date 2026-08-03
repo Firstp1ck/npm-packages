@@ -12,6 +12,7 @@ import featureSystemPrompt, {
 	createFeatureSystemPrompt,
 	FEATURE_CATEGORY_STATUS_KEY,
 	FEATURE_CLASSIFICATION_FALLBACK,
+	FEATURE_DECISION_OUTPUT_STATUS_KEY,
 	FEATURE_SKILL_CONFIGURATION_ERROR,
 	FEATURE_SKILL_NAME,
 	FEATURE_SKILL_ROUTING_BRIDGE,
@@ -216,10 +217,14 @@ test("successful feature and non-feature routing injects only the appropriate po
 	assert.equal(await harness.run("Review this diff"), undefined);
 });
 
-test("RPC mode emits the effective feature category and clears it for non-features", async () => {
+test("RPC mode publishes exact decision output before category, reuses it for continuations, and clears both for non-features", async () => {
 	const classifications: RequestKind[] = ["feature_lightweight", "feature_lightweight", "feature_complex"];
+	const classifierInputs: ClassifierPromptInput[] = [];
 	const harness = createFeaturePromptHarness({
-		classifyRequest: async () => classifications.shift(),
+		classifyRequest: async (input) => {
+			classifierInputs.push(input);
+			return classifications.shift();
+		},
 	});
 
 	await harness.run("Add a focused command");
@@ -230,19 +235,38 @@ test("RPC mode emits the effective feature category and clears it for non-featur
 	await harness.runInRpcMode("Continue");
 	await harness.runInRpcMode("Review this diff");
 
+	assert.deepEqual(classifierInputs, [
+		{ prompt: "Add a focused command" },
+		{ prompt: "Add a focused command" },
+		{ prompt: "Add a broader command" },
+	]);
 	assert.deepEqual(harness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: "feature_lightweight" },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "lightweight-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: "feature_lightweight" },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "lightweight-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: "feature_complex" },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: "feature_complex" },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
 	]);
 });
 
-test("RPC mode clears the feature category after unavailable classification and lifecycle resets", async () => {
+test("TUI mode does not publish feature statuses", async () => {
+	const harness = createFeaturePromptHarness({ classifyRequest: async () => "feature_complex" });
+	await harness.run("Add a broader command");
+	assert.deepEqual(harness.statusUpdates, []);
+});
+
+test("RPC mode clears decision output and category after unavailable classification, missing models, and lifecycle resets", async () => {
 	const invalidHarness = createFeaturePromptHarness({ classifyRequest: async () => undefined });
 	await invalidHarness.runInRpcMode("Do some work");
-	assert.deepEqual(invalidHarness.statusUpdates, [{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined }]);
+	assert.deepEqual(invalidHarness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
 
 	const throwingHarness = createFeaturePromptHarness({
 		classifyRequest: async () => {
@@ -250,15 +274,36 @@ test("RPC mode clears the feature category after unavailable classification and 
 		},
 	});
 	await throwingHarness.runInRpcMode("Do some work");
-	assert.deepEqual(throwingHarness.statusUpdates, [{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined }]);
+	assert.deepEqual(throwingHarness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
 
 	const noModelHarness = createFeaturePromptHarness({});
 	await noModelHarness.runWithoutModel("Do some work", "rpc");
 	noModelHarness.runLifecycle("session_start", "rpc");
 	noModelHarness.runLifecycle("session_tree", "rpc");
 	assert.deepEqual(noModelHarness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
+});
+
+test("RPC lifecycle resets clear a stored exact feature decision output", async () => {
+	const harness = createFeaturePromptHarness({ classifyRequest: async () => "feature_complex" });
+	await harness.runInRpcMode("Add a broader command");
+	harness.runLifecycle("session_start", "rpc");
+	harness.runLifecycle("session_tree", "rpc");
+	assert.deepEqual(harness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: "feature_complex" },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
 	]);
 });
