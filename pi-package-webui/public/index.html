@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=97" />
+    <link rel="stylesheet" href="/styles.css?v=98" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -1243,7 +1243,7 @@
       </form>
     </dialog>
 
-    <dialog id="extensionDialog" class="extension-dialog">
+    <dialog id="extensionDialog" class="extension-dialog" aria-labelledby="dialogTitle" aria-describedby="dialogMessage">
       <form id="dialogForm" method="dialog">
         <h2 id="dialogTitle">Pi request</h2>
         <p id="dialogMessage" class="muted"></p>
@@ -1521,7 +1521,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=111">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=112">
       (() => {
         "use strict";
 

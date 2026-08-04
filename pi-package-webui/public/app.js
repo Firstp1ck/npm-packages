@@ -572,6 +572,7 @@ const supervisorGapWarnings = new Set();
 const supervisorContinuityRefreshes = new Map();
 const supervisorEnvelopeWarnings = new Set();
 let activeDialog = null;
+let activeDialogCancel = null;
 let activeConfirmationResolve = null;
 let activeWorkspaceReplacementResolve = null;
 let workspaceLoadPickerFocusReturn = null;
@@ -12758,6 +12759,7 @@ function cancelPendingDialogs() {
     }).catch((error) => console.warn("failed to cancel stale extension dialog", error));
   }
   activeDialog = null;
+  activeDialogCancel = null;
   if (elements.dialog.open) elements.dialog.close();
 }
 
@@ -22732,6 +22734,166 @@ function releaseDialogLineClass(plainLine, section) {
   if (/publish-(?:first|update)|would bump up|first release/i.test(text) || /^(will publish|publish targets after confirmation)$/i.test(section)) return "release-dialog-success";
   if (/\bskip(?:ped)?\b|\bunchanged\b|would reduce down|already published/i.test(text) || /^will skip$/i.test(section)) return "release-dialog-warning";
   return "";
+}
+
+// Enter inside a native input dialog must never fall through to the browser's
+// implicit `method="dialog"` submission. "ignore" leaves IME composition alone,
+// "suppress" only blocks the implicit close, and "submit" sends one response.
+function dialogInputEnterIntent(event) {
+  if (!event || event.key !== "Enter") return "ignore";
+  if (event.isComposing || event.keyCode === 229) return "ignore";
+  if (event.repeat) return "suppress";
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return "suppress";
+  return "submit";
+}
+
+const QUESTIONNAIRE_TITLE_PATTERN = /^Question\s+([1-9]\d*)\s+of\s+([1-9]\d*):\s+\S.*$/;
+const QUESTIONNAIRE_ROW_PATTERN = /^(\d{2})\.\s(.*)$/;
+const QUESTIONNAIRE_STATE_PATTERN = /^(\[ \]|\[x\]|\[selected\])\s(.*)$/;
+const QUESTIONNAIRE_MAX_QUESTIONS = 20;
+const QUESTIONNAIRE_MAX_OPTIONS = 50;
+
+function isQuestionnaireChangeOtherAction(value) {
+  const prefix = "Change Other… (currently ";
+  if (!value.startsWith(prefix) || !value.endsWith(")")) return false;
+  const encoded = value.slice(prefix.length, -1);
+  try {
+    const other = JSON.parse(encoded);
+    return typeof other === "string" && JSON.stringify(other) === encoded;
+  } catch {
+    return false;
+  }
+}
+
+// Bounded, presentation-only grammar for the native questionnaire runtime's
+// action strings. Anything outside this list stays a generic option.
+function questionnaireContinueCount(text) {
+  const match = String(text || "").match(/^Continue with (0|[1-9]\d*) selection\(s\)$/);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isSafeInteger(count) && count <= QUESTIONNAIRE_MAX_OPTIONS + 1 ? count : null;
+}
+
+function questionnaireActionKind(text) {
+  const value = String(text || "");
+  if (value === "Cancel questionnaire") return "cancel";
+  if (value === "Ask Pi to clarify…") return "clarify";
+  if (value === "Remove Other answer") return "remove-other";
+  if (value === "Other… (enter a custom answer)" || value === "Add Other…") return "other";
+  if (isQuestionnaireChangeOtherAction(value)) return "other";
+  if (questionnaireContinueCount(value) !== null) return "continue";
+  return null;
+}
+
+// Parses one native option string for presentation only; the caller always
+// transports the untouched original string back to the extension.
+function parseQuestionnaireOption(text) {
+  const value = String(text || "");
+  const action = questionnaireActionKind(value);
+  if (action) return { kind: "action", action, value };
+
+  const row = value.match(QUESTIONNAIRE_ROW_PATTERN);
+  if (!row) return null;
+  const number = row[1];
+  const state = row[2].match(QUESTIONNAIRE_STATE_PATTERN);
+  const marker = state ? (state[1] === "[ ]" ? "unselected" : "selected") : "none";
+  const body = state ? state[2] : row[2];
+  if (!body.trim()) return null;
+
+  const separator = body.indexOf(" — ");
+  const label = separator === -1 ? body : body.slice(0, separator);
+  const description = separator === -1 ? "" : body.slice(separator + 3);
+  if (!label.trim()) return null;
+  return { kind: "option", marker, number, label, description, value };
+}
+
+function questionnaireActionSequenceMatches(mode, actionRows) {
+  const values = actionRows.map((row) => row.value);
+  if (mode === "single") {
+    const expected = values[0] === "Other… (enter a custom answer)"
+      ? ["Other… (enter a custom answer)", "Ask Pi to clarify…", "Cancel questionnaire"]
+      : ["Ask Pi to clarify…", "Cancel questionnaire"];
+    return values.length === expected.length && values.every((value, index) => value === expected[index]);
+  }
+
+  let index = 0;
+  if (values[index] === "Add Other…") {
+    index += 1;
+  } else if (isQuestionnaireChangeOtherAction(values[index] || "")) {
+    index += 1;
+    if (values[index] !== "Remove Other answer") return false;
+    index += 1;
+  }
+  if (values[index] !== "Ask Pi to clarify…") return false;
+  index += 1;
+  if (questionnaireContinueCount(values[index]) === null) return false;
+  index += 1;
+  return values[index] === "Cancel questionnaire" && index === values.length - 1;
+}
+
+// Detection requires the complete runtime title, contiguous numbered rows, one
+// consistent state-marker mode, and the exact ordered action tail. This keeps
+// lookalike extension selects on the generic renderer.
+function questionnaireSelectParts(prompt, options) {
+  if (!Array.isArray(options) || options.length < 3 || options.length > QUESTIONNAIRE_MAX_OPTIONS + 5) return null;
+  const title = stripAnsi(prompt?.title || "").trim();
+  const titleMatch = title.match(QUESTIONNAIRE_TITLE_PATTERN);
+  if (!titleMatch) return null;
+  const current = Number(titleMatch[1]);
+  const total = Number(titleMatch[2]);
+  if (current > total || total > QUESTIONNAIRE_MAX_QUESTIONS) return null;
+
+  const rows = [];
+  for (const option of options) {
+    const parsed = parseQuestionnaireOption(String(option));
+    if (!parsed) return null;
+    rows.push(parsed);
+  }
+
+  const firstAction = rows.findIndex((row) => row.kind === "action");
+  if (firstAction < 1 || firstAction > QUESTIONNAIRE_MAX_OPTIONS) return null;
+  const optionRows = rows.slice(0, firstAction);
+  const actionRows = rows.slice(firstAction);
+  if (actionRows.some((row) => row.kind !== "action")) return null;
+  if (!optionRows.every((row, index) => row.kind === "option" && row.number === String(index + 1).padStart(2, "0"))) return null;
+
+  const single = optionRows.every((row) => row.marker === "none");
+  const multi = optionRows.every((row) => row.marker !== "none");
+  if (!single && !multi) return null;
+  const mode = multi ? "multi" : "single";
+  if (!questionnaireActionSequenceMatches(mode, actionRows)) return null;
+  return { rows, mode };
+}
+
+function renderQuestionnaireOptionButton(row, mode) {
+  const classNames = ["questionnaire-option", `questionnaire-option-${mode}`];
+  if (row.marker === "selected") classNames.push("is-selected");
+  const button = make("button", classNames.join(" "));
+  button.type = "button";
+  // The visible text is split into semantic parts, so the accessible name keeps
+  // the exact native string that click transport sends back.
+  button.setAttribute("aria-label", row.value);
+  if (row.marker !== "none") button.setAttribute("aria-pressed", String(row.marker === "selected"));
+
+  button.append(make("span", "questionnaire-option-number", row.number));
+  if (row.marker !== "none") {
+    const state = make("span", "questionnaire-option-state", row.marker === "selected" ? "✓" : "");
+    state.setAttribute("aria-hidden", "true");
+    button.append(state);
+  }
+  const text = make("span", "questionnaire-option-text");
+  text.append(make("span", "questionnaire-option-label", row.label));
+  if (row.description) text.append(make("span", "questionnaire-option-description", row.description));
+  button.append(text);
+  return button;
+}
+
+function renderQuestionnaireActionButton(row) {
+  const classNames = ["questionnaire-action", `questionnaire-action-${row.action}`];
+  if (row.action === "continue") classNames.push("primary");
+  const button = make("button", classNames.join(" "), row.value);
+  button.type = "button";
+  return button;
 }
 
 function renderReleaseDialogMessage(parent, text) {
@@ -39003,6 +39165,7 @@ function removeQueuedDialogRequests(ids = []) {
   if (activeDialog && idSet.has(String(activeDialog.id || ""))) {
     if (elements.dialog.open) elements.dialog.close();
     activeDialog = null;
+    activeDialogCancel = null;
     showNextDialog();
     return true;
   }
@@ -39147,6 +39310,7 @@ async function sendDialogResponse(payload) {
     if (responseId && activeDialog && String(activeDialog.id || "") !== responseId) return;
     if (elements.dialog.open) elements.dialog.close();
     activeDialog = null;
+    activeDialogCancel = null;
     if (runIndicatorIsActive()) {
       setRunIndicatorActivity("Continuing after your response…");
       // Extension commands can continue background work after Pi has already
@@ -39156,6 +39320,23 @@ async function sendDialogResponse(payload) {
     }
     showNextDialog();
   }
+}
+
+function cancelActiveExtensionDialog(event) {
+  if (!activeDialog || typeof activeDialogCancel !== "function") return false;
+  event?.preventDefault?.();
+  return activeDialogCancel();
+}
+
+function createDialogResponder(sendResponse) {
+  let responseSent = false;
+  return (response, onAccept) => {
+    if (responseSent) return false;
+    responseSent = true;
+    onAccept?.();
+    sendResponse(response);
+    return true;
+  };
 }
 
 function addDialogButton(label, handler, className) {
@@ -39193,7 +39374,7 @@ function appendWorkflowScriptTokens(parent, line) {
   if (start < line.length) parent.append(document.createTextNode(line.slice(start)));
 }
 
-function renderWorkflowScriptPreview(request) {
+function renderWorkflowScriptPreview(request, respondToDialog) {
   const source = request.prefill ?? "";
   const sourceLines = source.split("\n");
   const searchableLines = sourceLines.map((line) => line.toLocaleLowerCase());
@@ -39335,14 +39516,15 @@ function renderWorkflowScriptPreview(request) {
 
   preview.append(metadata, toolbar, codeViewer);
   elements.dialogBody.append(preview);
-  addDialogButton("Cancel workflow", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, cancelled: true, tabId: request.tabId }));
-  addDialogButton("Back to approval", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: request.prefill, tabId: request.tabId }), "primary");
+  addDialogButton("Cancel workflow", () => respondToDialog({ cancelled: true }));
+  addDialogButton("Back to approval", () => respondToDialog({ value: request.prefill }), "primary");
   setTimeout(() => codeViewer.focus(), 0);
 }
 
 function showNextDialog() {
   if (activeDialog || dialogQueue.length === 0) return;
   activeDialog = dialogQueue.shift();
+  activeDialogCancel = null;
   const request = activeDialog;
 
   const prompt = normalizeDialogPrompt(request);
@@ -39352,9 +39534,11 @@ function showNextDialog() {
   const isGuardrailDialog = isGuardrailDialogPrompt(displayPrompt);
   const isReleaseDialog = !!releasePrompt;
   const isWorkflowScriptPreview = isWorkflowScriptPreviewRequest(request, prompt);
+  const questionnaire = request.method === "select" && !isReleaseDialog ? questionnaireSelectParts(prompt, request.options) : null;
   elements.dialog.classList.toggle("guardrail-dialog", isGuardrailDialog);
   elements.dialog.classList.toggle("release-dialog", isReleaseDialog);
   elements.dialog.classList.toggle("workflow-script-dialog", isWorkflowScriptPreview);
+  elements.dialog.classList.toggle("questionnaire-dialog", !!questionnaire);
   elements.dialogTitle.textContent = displayPrompt.title;
   if (isReleaseDialog) renderReleaseDialogMessage(elements.dialogMessage, displayPrompt.message);
   else renderAnsiText(elements.dialogMessage, displayPrompt.message);
@@ -39362,9 +39546,33 @@ function showNextDialog() {
   elements.dialogBody.replaceChildren();
   elements.dialogActions.replaceChildren();
 
-  const cancel = () => sendDialogResponse({ type: "extension_ui_response", id: request.id, cancelled: true, tabId: request.tabId });
+  const respondToDialog = createDialogResponder((response) => {
+    sendDialogResponse({ type: "extension_ui_response", id: request.id, tabId: request.tabId, ...response });
+  });
+  const cancel = () => respondToDialog({ cancelled: true });
+  activeDialogCancel = cancel;
 
-  if (request.method === "select") {
+  if (questionnaire) {
+    const options = make("div", "dialog-options questionnaire-options");
+    const respondToQuestionnaire = (response) => respondToDialog(response, () => {
+      options.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      elements.dialogActions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    });
+    activeDialogCancel = () => respondToQuestionnaire({ cancelled: true });
+    (request.options || []).forEach((option, index) => {
+      const optionLabel = String(option);
+      const row = questionnaire.rows[index];
+      const button = row.kind === "action"
+        ? renderQuestionnaireActionButton(row)
+        : renderQuestionnaireOptionButton(row, questionnaire.mode);
+      // Presentation is derived, but the response always carries the exact
+      // native option string the questionnaire runtime produced.
+      button.addEventListener("click", () => respondToQuestionnaire({ value: optionLabel }));
+      options.append(button);
+    });
+    elements.dialogBody.append(options);
+    addDialogButton("Cancel", () => respondToQuestionnaire({ cancelled: true }), "questionnaire-dialog-cancel");
+  } else if (request.method === "select") {
     const options = make("div", "dialog-options");
     for (const option of request.options || []) {
       const optionLabel = String(option);
@@ -39377,36 +39585,54 @@ function showNextDialog() {
       if (isReleaseDialog && /^\[x\]/.test(optionLabel)) button.classList.add("release-target-option", "release-target-selected");
       if (isReleaseDialog && /^\[ \]/.test(optionLabel)) button.classList.add("release-target-option");
       if (isReleaseDialog && /^(?:No|Cancel)$/i.test(optionLabel)) button.classList.add("release-cancel-action");
-      button.addEventListener("click", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: optionLabel, tabId: request.tabId }));
+      button.addEventListener("click", () => respondToDialog({ value: optionLabel }));
       options.append(button);
     }
     elements.dialogBody.append(options);
     addDialogButton("Cancel", cancel);
   } else if (request.method === "confirm") {
     addDialogButton("Cancel", cancel);
-    addDialogButton("No", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, confirmed: false, tabId: request.tabId }));
-    addDialogButton("Yes", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, confirmed: true, tabId: request.tabId }), "primary");
+    addDialogButton("No", () => respondToDialog({ confirmed: false }));
+    addDialogButton("Yes", () => respondToDialog({ confirmed: true }), "primary");
   } else if (request.method === "input") {
     const input = make("input", "dialog-input");
     input.value = request.prefill || "";
     input.placeholder = request.placeholder || "";
     elements.dialogBody.append(input);
-    addDialogButton("Cancel", cancel);
-    addDialogButton("Submit", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: input.value, tabId: request.tabId }), "primary");
+    // The dialog form uses method="dialog", so an unhandled Enter would close it
+    // implicitly without ever sending a response and leave the extension blocked.
+    // Keyboard, click, and cancel paths therefore share one guarded one-shot closure.
+    const respondToInput = (response) => respondToDialog(response, () => {
+      input.disabled = true;
+      elements.dialogActions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    });
+    const submitInput = () => respondToInput({ value: input.value });
+    activeDialogCancel = () => respondToInput({ cancelled: true });
+    input.addEventListener("keydown", (event) => {
+      const intent = dialogInputEnterIntent(event);
+      if (intent === "ignore") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (intent === "submit") submitInput();
+    });
+    addDialogButton("Cancel", () => respondToInput({ cancelled: true }));
+    addDialogButton("Submit", submitInput, "primary");
     setTimeout(() => input.focus(), 0);
   } else if (isWorkflowScriptPreview) {
-    renderWorkflowScriptPreview(request);
+    renderWorkflowScriptPreview(request, respondToDialog);
   } else if (request.method === "editor") {
     const textarea = make("textarea", "dialog-editor");
     textarea.value = request.prefill || "";
     elements.dialogBody.append(textarea);
     addDialogButton("Cancel", cancel);
-    addDialogButton("Submit", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: textarea.value, tabId: request.tabId }), "primary");
+    addDialogButton("Submit", () => respondToDialog({ value: textarea.value }), "primary");
     setTimeout(() => textarea.focus(), 0);
   }
 
   elements.dialog.showModal();
 }
+
+elements.dialog.addEventListener("cancel", cancelActiveExtensionDialog);
 
 function supervisorEventEnvelope(event, fallbackTabId = activeTabId) {
   if (!event || typeof event !== "object") return null;

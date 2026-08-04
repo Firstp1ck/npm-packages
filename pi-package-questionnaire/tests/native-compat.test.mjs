@@ -104,6 +104,10 @@ test("real runtime uses only native select/input methods in both TUI and RPC mod
       { questionId: "delivery", selectedOptionIds: [], other: "courier" },
       { questionId: "features", selectedOptionIds: ["alpha"], other: "gamma" },
     ]);
+    assert.deepEqual(scripted.calls[0].options.slice(0, 1), ["01. Standard"], `[${mode}] single rows must remain marker-free exact strings`);
+    assert.deepEqual(scripted.calls[2].options.slice(0, 2), ["01. [ ] Alpha", "02. [ ] Beta"], `[${mode}] initial multi rows must use exact unselected strings`);
+    assert.deepEqual(scripted.calls[3].options.slice(0, 2), ["01. [x] Alpha", "02. [ ] Beta"], `[${mode}] toggled multi rows must preserve exact selected/unselected strings`);
+    assert.deepEqual(scripted.calls[5].options.slice(0, 2), ["01. [x] Alpha", "02. [ ] Beta"], `[${mode}] exact display strings must survive native input round trips`);
     assert.deepEqual(scripted.calls.map((call) => call.method), ["select", "input", "select", "select", "input", "select"]);
     assert.deepEqual(scripted.forbidden, [], `[${mode}] runtime accessed a non-native questionnaire UI method`);
     assert.deepEqual(scripted.pending(), { selects: 0, inputs: 0 }, `[${mode}] scripted flow did not consume every expected native interaction`);
@@ -151,7 +155,7 @@ test("installed Pi selector defaults provide Up, Down, and Enter behavior", asyn
   }
 });
 
-test("current WebUI renders generic select buttons whose click response returns the exact option string", () => {
+test("current WebUI keeps native select presentation separate from the exact transport string", () => {
   const webuiSource = readContract(WEBUI_PATH);
   const selectStart = webuiSource.indexOf('if (request.method === "select") {');
   const selectEnd = webuiSource.indexOf('} else if (request.method === "confirm") {', selectStart);
@@ -161,8 +165,8 @@ test("current WebUI renders generic select buttons whose click response returns 
   const selectBranch = webuiSource.slice(selectStart, selectEnd);
 
   assert.match(selectBranch, /for\s*\(const option of request\.options\s*\|\|\s*\[\]\)/, `${WEBUI_PATH} must render every native select option`);
-  assert.match(selectBranch, /const optionLabel\s*=\s*String\(option\)/, `${WEBUI_PATH} must preserve the option as one exact string`);
-  assert.match(selectBranch, /make\(\s*["']button["']\s*,\s*undefined\s*,\s*optionLabel\s*\)/, `${WEBUI_PATH} must render each select string as a button`);
-  assert.match(selectBranch, /button\.addEventListener\(\s*["']click["']\s*,\s*\(\)\s*=>\s*sendDialogResponse\(\s*\{[\s\S]*?\bvalue:\s*optionLabel\b[\s\S]*?\}\s*\)\s*\)/, `${WEBUI_PATH} click handler must return the exact optionLabel string`);
-  assert.doesNotMatch(selectBranch, /questionnaire/i, `${WEBUI_PATH} must remain a generic native select handler, not a questionnaire-specific protocol`);
+  assert.match(selectBranch, /const optionLabel\s*=\s*String\(option\)/, `${WEBUI_PATH} must preserve each option as one exact transport string`);
+  assert.match(selectBranch, /button\.addEventListener\(\s*["']click["']\s*,\s*\(\)\s*=>\s*respondToDialog\(\s*\{[\s\S]*?\bvalue:\s*optionLabel\b[\s\S]*?\}\s*\)\s*\)/, `${WEBUI_PATH} click transport must return the untouched optionLabel through the shared one-shot responder even if its visual presentation changes`);
+  assert.doesNotMatch(selectBranch, /request\.method\s*===\s*["']questionnaire["']/i, `${WEBUI_PATH} must not add a questionnaire request method`);
+  assert.doesNotMatch(selectBranch, /\bmethod\s*:\s*["']questionnaire["']/i, `${WEBUI_PATH} must not send a questionnaire-specific response method`);
 });

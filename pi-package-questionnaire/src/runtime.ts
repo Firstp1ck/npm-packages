@@ -258,7 +258,7 @@ function title(question: NormalizedQuestion, index: number, total: number, instr
 }
 
 function optionDisplay(option: NormalizedOption, index: number, selected?: boolean): string {
-  const marker = selected === undefined ? "" : selected ? "[selected] " : "[ ] ";
+  const marker = selected === undefined ? "" : selected ? "[x] " : "[ ] ";
   return `${String(index + 1).padStart(2, "0")}. ${marker}${option.label}${option.description ? ` — ${option.description}` : ""}`;
 }
 

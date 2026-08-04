@@ -53,7 +53,7 @@ The same calls travel over the existing `extension_ui_request` / `extension_ui_r
 
 ### Multi-select
 
-Multi-select reopens the same native selector after every toggle. Each option shows `[selected]` or `[ ]`, and a `Continue with N selection(s)` entry commits the question. This keeps one shared code path for TUI and WebUI; an all-at-once checkbox form is deliberately **not** implemented, because it would require a new Pi RPC/core protocol.
+Multi-select reopens the same native selector after every toggle. Each option shows `[x]` or `[ ]`, and a `Continue with N selection(s)` entry commits the question. This keeps one shared code path for TUI and WebUI; an all-at-once checkbox form is deliberately **not** implemented, because it would require a new Pi RPC/core protocol.
 
 ## Tool contract
 

@@ -166,10 +166,14 @@ test("completes single choices and maps duplicate visible Unicode labels by exac
     ],
   });
   const { result, calls } = await executeStart([question], [({ options }) => {
+    assert.deepEqual(options, [
+      "01. 同じ — 説明",
+      "02. 同じ — 説明",
+      "Ask Pi to clarify…",
+      "Cancel questionnaire",
+    ]);
     assert.equal(new Set(options).size, options.length);
-    assert.ok(options[0].startsWith("01."));
-    assert.ok(options[1].startsWith("02."));
-    return options[1];
+    return "02. 同じ — 説明";
   }]);
   assert.equal(result.details.status, "completed");
   assert.deepEqual(result.details.answers, [{ questionId: "unicode-✓", selectedOptionIds: ["second"] }]);
@@ -183,6 +187,28 @@ test("single Other returns custom text without an option ID and blank input retu
     single("q", { allowOther: true }),
   ], [choose("Other…"), typeText("   "), choose("Other…"), typeText(" custom answer ")]);
   assert.deepEqual(result.details.answers, [{ questionId: "q", selectedOptionIds: [], other: "custom answer" }]);
+});
+
+test("multi rows use exact two-digit selected and unselected strings while mapping display values to IDs", async () => {
+  const question = multi("q", {
+    allowOther: false,
+    maxSelections: 2,
+    options: [
+      { id: "alpha-id", label: "Alpha", description: "First choice" },
+      { id: "beta-id", label: "Beta" },
+    ],
+  });
+  const { result } = await executeStart([question], [
+    ({ options }) => {
+      assert.deepEqual(options.slice(0, 2), ["01. [ ] Alpha — First choice", "02. [ ] Beta"]);
+      return "01. [ ] Alpha — First choice";
+    },
+    ({ options }) => {
+      assert.deepEqual(options.slice(0, 2), ["01. [x] Alpha — First choice", "02. [ ] Beta"]);
+      return "Continue with 1 selection(s)";
+    },
+  ]);
+  assert.deepEqual(result.details.answers, [{ questionId: "q", selectedOptionIds: ["alpha-id"] }]);
 });
 
 test("multi toggle loop enforces bounds and supports add/change/remove Other", async () => {
