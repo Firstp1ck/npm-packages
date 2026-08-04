@@ -1335,7 +1335,7 @@ const installOptionalFeatureSource = appFunctionSource("installOptionalFeature",
 const installOptionalFeatureBatchSource = appFunctionSource("installOptionalFeatureBatch", "runPublishWorkflow");
 assert.match(installOptionalFeatureSource, /featureId, \{ update = false \} = \{\}/, "optional features should expose per-row install and update actions");
 assert.match(app, /api\("\/api\/optional-features"/, "optional feature panel should fetch package install/update status from the backend");
-assert.match(app, /function optionalFeatureNeedsInstall\(feature\)[\s\S]*status\.installed !== true \|\| status\.configured !== true/, "bulk selection should include only physically missing or Pi-unregistered features");
+assert.match(app, /function optionalFeatureNeedsInstall\(feature\)[\s\S]*status\.ready !== true[\s\S]*status\.resourceConflict !== true/, "bulk selection should exclude ready top-level resources and duplicate registration conflicts");
 assert.match(app, /packageStatus\?\.updateAvailable[\s\S]*action\.textContent = "Update…"/, "optional feature package drift should retain the per-row update action");
 assert.match(app, /function optionalFeatureManualInstallCommand\(feature\)[\s\S]*`pi install npm:\$\{feature\.packageName\}`/, "optional feature fallback commands should use the exact unpinned Pi npm source");
 assert.match(app, /function copyOptionalFeatureInstallCommand\(featureId\)[\s\S]*state\?\.command \|\| optionalFeatureManualInstallCommand\(feature\)/, "missing and unregistered rows should expose a copyable Pi fallback command before an install attempt");
@@ -2141,7 +2141,9 @@ assert.match(server, /PI_VOICE_STT_URL[\s\S]*PI_VOICE_TTS_URL[\s\S]*GROQ_API_KEY
 assert.match(server, /function requireRemoteMicConsentForStt\(req, body = \{\}\)[\s\S]*remoteMicStreamingConsentAccepted/, "server STT fallback should require explicit remote microphone streaming consent for remote clients");
 assert.match(server, /function ensureNaturalConversationPromptSafety\(tab, command\)[\s\S]*setThinkingLevelForTab\(tab, "off"/, "server should force thinking off before WebUI prompts while conversation mode is active");
 assert.match(server, /function enforceNaturalConversationCommandAllowed\(tab, command\)[\s\S]*thinking is forced off[\s\S]*slash commands are blocked from the Web UI shell/, "server should block unsafe direct RPC\/WebUI commands while conversation mode is active");
-assert.match(server, /function optionalFeaturePackageStatus\(featureId, cwd = options\.cwd\)[\s\S]*installed[\s\S]*configured[\s\S]*ready/, "server should report distinct optional feature installation and Pi registration status");
+assert.match(server, /async function topLevelOptionalFeatureResourceIndex\(cwd = options\.cwd\)[\s\S]*metadata\?\.origin === "package"[\s\S]*packageNameForResourcePath/, "server should detect enabled top-level resources by owning package");
+assert.match(server, /function optionalFeaturePackageStatus\(featureId, cwd = options\.cwd, topLevelResourceIndex\)[\s\S]*installed[\s\S]*configured[\s\S]*locallyConfigured[\s\S]*resourceConflict[\s\S]*ready/, "server should report package registration, top-level availability, conflicts, and readiness separately");
+assert.match(server, /if \(beforeStatus\.locallyConfigured\)[\s\S]*load it twice[\s\S]*local-resource-conflict/, "server should block npm registration when a top-level resource already owns the optional feature");
 assert.match(server, /function installOptionalFeaturePackage\(featureId, cwd = options\.cwd\)[\s\S]*const source = `npm:\$\{packageName\}`[\s\S]*resolvePiCommand\(\["install", source\]\)/, "server should install and update optional features through the selected Pi CLI");
 assert.match(server, /function configuredAgentNpmRoot\(\)/, "status discovery should consider Pi's agent npm root for legacy or hoisted packages");
 assert.match(server, /resolveInstalledPackageSubpath\(nodeModulesRef\.packageName, nodeModulesRef\.subpath\)/, "started Web UI resource resolution should support configured package resources");
@@ -2188,7 +2190,7 @@ assert.match(readme, /blocked-tab browser notifications, and optional agent-done
 assert.match(readme, /Side-panel theme picker backed by optional `@firstpick\/pi-themes-bundle` themes when loaded/, "README should describe optional theme selection");
 assert.match(readme, /## Optional companion packages/, "README should document optional Web UI companion packages");
 assert.match(readme, /Web UI tabs load enabled resources resolved from normal Pi settings/, "README should document Pi-settings-based optional feature loading");
-assert.match(readme, /legacy\/hoisted package files without a Pi settings entry remain installable/, "README should document migration handling for physically present but unregistered packages");
+assert.match(readme, /legacy\/hoisted package files without either a Pi settings entry or an enabled top-level resource remain installable/i, "README should document migration handling for physically present but unregistered packages");
 assert.match(readme, /excluding the Web UI package itself from re-loading/, "README should document Web UI self-loading duplicate prevention");
 assert.match(readme, /checks loaded Pi capabilities directly through RPC-visible commands, tools, themes, and live widget events/, "README should document capability-based startup checks");
 assert.match(readme, /side panel separately reports physical installation and Pi registration/, "README should document distinct installed and registered optional feature status");

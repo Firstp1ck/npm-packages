@@ -1945,10 +1945,50 @@ function npmPackageNameFromPiSource(source) {
   return versionIndex === -1 ? npmSpec : npmSpec.slice(0, versionIndex);
 }
 
-function configuredOptionalFeaturePackages(packageName, cwd = options.cwd) {
+async function configuredOptionalFeaturePackages(packageName, cwd = options.cwd) {
   const settingsManager = SettingsManager.create(cwd, agentDir);
   const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
-  return packageManager.listConfiguredPackages().filter(({ source }) => npmPackageNameFromPiSource(source) === packageName);
+  const matches = [];
+  for (const configuredPackage of packageManager.listConfiguredPackages()) {
+    if (npmPackageNameFromPiSource(configuredPackage.source) === packageName) {
+      matches.push(configuredPackage);
+      continue;
+    }
+    const manifest = configuredPackage.installedPath
+      ? await readJsonFileIfExists(path.join(configuredPackage.installedPath, "package.json"))
+      : null;
+    if (manifest?.name === packageName) matches.push(configuredPackage);
+  }
+  return matches;
+}
+
+async function topLevelOptionalFeatureResourceIndex(cwd = options.cwd) {
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+  const resolved = await packageManager.resolve(async () => "skip");
+  const resourcesByPackage = new Map();
+  for (const resourceType of ["extensions", "skills", "prompts", "themes"]) {
+    for (const resource of resolved[resourceType] || []) {
+      if (!resource.enabled || resource.metadata?.origin === "package") continue;
+      let ownershipPath = resource.path;
+      try {
+        ownershipPath = await realpath(resource.path);
+      } catch {
+        // Keep the reported path when the resource disappears during status collection.
+      }
+      const packageName = await packageNameForResourcePath(ownershipPath);
+      if (!packageName) continue;
+      const resourcePaths = resourcesByPackage.get(packageName) || [];
+      resourcePaths.push(resource.path);
+      resourcesByPackage.set(packageName, resourcePaths);
+    }
+  }
+  return resourcesByPackage;
+}
+
+async function topLevelOptionalFeatureResources(packageName, cwd = options.cwd, resourceIndex) {
+  const resourcesByPackage = resourceIndex || await topLevelOptionalFeatureResourceIndex(cwd);
+  return [...new Set(resourcesByPackage.get(packageName) || [])];
 }
 
 async function installedOptionalFeatureRoot(packageName, configuredPackages) {
@@ -1961,17 +2001,22 @@ async function installedOptionalFeatureRoot(packageName, configuredPackages) {
   return null;
 }
 
-async function optionalFeaturePackageStatus(featureId, cwd = options.cwd) {
+async function optionalFeaturePackageStatus(featureId, cwd = options.cwd, topLevelResourceIndex) {
   const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
   if (!feature) throw makeHttpError(400, `Unknown optional feature: ${featureId}`);
   const { packageName, expectedSpec } = feature;
-  const configuredPackages = configuredOptionalFeaturePackages(packageName, cwd);
+  const [configuredPackages, topLevelResources] = await Promise.all([
+    configuredOptionalFeaturePackages(packageName, cwd),
+    topLevelOptionalFeatureResources(packageName, cwd, topLevelResourceIndex),
+  ]);
   const installedRoot = await installedOptionalFeatureRoot(packageName, configuredPackages);
   const manifest = installedRoot ? await readJsonFileIfExists(path.join(installedRoot, "package.json")) : null;
   const installedVersion = typeof manifest?.version === "string" ? manifest.version : "";
   const installed = !!installedRoot;
   const configured = configuredPackages.length > 0;
-  const ready = installed && configured;
+  const locallyConfigured = topLevelResources.length > 0;
+  const resourceConflict = configured && locallyConfigured;
+  const ready = installed && (configured || locallyConfigured) && !resourceConflict;
   const updateAvailable = !!(installedVersion && packageVersionBelowSpec(installedVersion, expectedSpec));
   return {
     featureId,
@@ -1980,9 +2025,12 @@ async function optionalFeaturePackageStatus(featureId, cwd = options.cwd) {
     declaredSpec: expectedSpec,
     installed,
     configured,
+    locallyConfigured,
+    resourceConflict,
     ready,
     installedVersion,
     installedRoot,
+    topLevelResources,
     updateAvailable,
     updateReason: updateAvailable ? `installed ${installedVersion} is older than Web UI expects (${expectedSpec})` : "",
   };
@@ -1990,7 +2038,10 @@ async function optionalFeaturePackageStatus(featureId, cwd = options.cwd) {
 
 async function optionalFeaturePackageStatuses(cwd = options.cwd) {
   const features = [];
-  for (const { featureId } of OPTIONAL_FEATURE_CATALOG) features.push(await optionalFeaturePackageStatus(featureId, cwd));
+  const topLevelResourceIndex = await topLevelOptionalFeatureResourceIndex(cwd);
+  for (const { featureId } of OPTIONAL_FEATURE_CATALOG) {
+    features.push(await optionalFeaturePackageStatus(featureId, cwd, topLevelResourceIndex));
+  }
   return { features };
 }
 
@@ -2019,6 +2070,8 @@ function optionalFeatureInstallFailureHint(kind, { command } = {}) {
       return "Pi could not reach the npm registry reliably. Check network/proxy/registry settings, then retry or run the copied command manually.";
     case "timeout":
       return "Pi did not finish within 5 minutes. Check for a stuck package manager, lock contention, or slow network, then retry manually.";
+    case "local-resource-conflict":
+      return "This companion is already enabled as a top-level Pi resource. Keep that local resource, or disable/remove its extensions/skills/prompts/themes alias before registering the npm package.";
     case "status-check":
       return "Pi finished, but Web UI could not verify both installation and registration. Reload the Web UI and recheck Optional features.";
     default:
@@ -2047,6 +2100,18 @@ async function installOptionalFeaturePackage(featureId, cwd = options.cwd) {
   const beforeStatus = await optionalFeaturePackageStatus(featureId, cwd);
   const packageName = beforeStatus.packageName;
   const source = `npm:${packageName}`;
+  if (beforeStatus.locallyConfigured) {
+    const message = beforeStatus.resourceConflict
+      ? `${packageName} is configured both as a Pi package and as a top-level resource; installing it again would preserve the duplicate-load conflict`
+      : `${packageName} is already enabled as a top-level Pi resource; installing the npm package would load it twice`;
+    throw makeOptionalFeatureInstallError(409, message, {
+      kind: "local-resource-conflict",
+      featureId,
+      packageName,
+      command: `pi install ${source}`,
+      hint: optionalFeatureInstallFailureHint("local-resource-conflict"),
+    });
+  }
   const piCommand = await resolvePiCommand(["install", source]);
   const command = piCommand.displayCommand;
   const result = await runCommand(piCommand.command, piCommand.args, {

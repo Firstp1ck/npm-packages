@@ -253,6 +253,35 @@ child.stderr.on("data", (chunk) => {
   serverOutput += String(chunk);
 });
 
+async function verifyTopLevelOptionalFeatureProtection(tabId) {
+  const extensionsDir = path.join(workflowPolicyAgentDir, "extensions");
+  const aliasPath = path.join(extensionsDir, "aur-review-local");
+  await mkdir(extensionsDir, { recursive: true });
+  await rm(aliasPath, { recursive: true, force: true });
+  await symlink(path.join(path.dirname(root), "pi-extension-aur-review"), aliasPath, process.platform === "win32" ? "junction" : "dir");
+  try {
+    const statusResponse = await request("127.0.0.1", "/api/optional-features");
+    const status = statusResponse.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
+    assert.equal(statusResponse.status, 200);
+    assert.equal(status?.configured, false, "a top-level resource should remain distinct from package registration");
+    assert.equal(status?.locallyConfigured, true, "an enabled top-level resource should be recognized as locally configured");
+    assert.equal(status?.ready, true, "an installed top-level resource should be ready without duplicate package registration");
+    assert.equal(status?.resourceConflict, false);
+    assert.equal(status?.topLevelResources?.some((resourcePath) => String(resourcePath).replace(/\\/g, "/").endsWith("/extensions/aur-review-local/index.ts")), true);
+
+    const logOffset = (await readJsonLines(fakePiCliLog)).length;
+    const installResponse = await request("127.0.0.1", "/api/optional-feature-install", {
+      method: "POST",
+      body: { tab: tabId, featureId: "aurReview" },
+    });
+    assert.equal(installResponse.status, 409, "npm registration should be blocked before it can duplicate an enabled top-level resource");
+    assert.equal(installResponse.body?.optionalFeatureInstall?.kind, "local-resource-conflict");
+    assert.equal((await readJsonLines(fakePiCliLog)).length, logOffset, "a blocked duplicate registration must not launch Pi install");
+  } finally {
+    await rm(aliasPath, { recursive: true, force: true });
+  }
+}
+
 async function runOptionalFeatureFocus() {
   const tabs = await request("127.0.0.1", "/api/tabs");
   const tabId = tabs.body?.data?.tabs?.[0]?.id;
@@ -269,6 +298,7 @@ async function runOptionalFeatureFocus() {
   const aurBefore = initial.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
   assert.deepEqual({ installed: aurBefore?.installed, configured: aurBefore?.configured, ready: aurBefore?.ready }, { installed: true, configured: false, ready: false });
   assert.equal(aurBefore?.expectedSpec, "^0.1.1");
+  await verifyTopLevelOptionalFeatureProtection(tabId);
 
   const single = await request("127.0.0.1", "/api/optional-feature-install", {
     method: "POST",
@@ -840,6 +870,7 @@ try {
   assert.equal(aurReviewFeature?.configured, false, "physical discovery alone must not imply Pi registration");
   assert.equal(aurReviewFeature?.ready, false, "a physical but unregistered companion must not be ready after reload");
   assert.equal(path.basename(aurReviewFeature?.installedRoot || ""), "pi-extension-aur-review", "aur-review discovery must validate the exact sibling manifest/name");
+  await verifyTopLevelOptionalFeatureProtection(tabId);
 
   const invalidSingleFeature = await request("127.0.0.1", "/api/optional-feature-install", {
     method: "POST",

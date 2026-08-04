@@ -33872,7 +33872,7 @@ function optionalFeatureManualInstallCommand(feature) {
 
 function optionalFeatureNeedsInstall(feature) {
   const status = optionalFeaturePackageStatus(feature?.id);
-  return !!status && (status.installed !== true || status.configured !== true);
+  return !!status && status.ready !== true && status.resourceConflict !== true;
 }
 
 function optionalFeatureBatchCandidates(features = OPTIONAL_FEATURES) {
@@ -34153,10 +34153,17 @@ function optionalFeatureStatus(featureId) {
   }
   const doneDetail = installState?.phase === "done" ? optionalFeatureInstallDetail(installState, installMessage) : "";
   if (!packageStatus && !detected) return { label: "Checking", className: "updating", detail: "Checking Pi installation and registration status…" };
+  if (packageStatus?.resourceConflict) return {
+    label: "Duplicate conflict",
+    className: "failed",
+    detail: `Configured both as a Pi package and as a top-level resource; remove one registration before reloading${versionSuffix}`,
+    hint: "Do not install again. Keep either the package entry or the extensions/skills/prompts/themes alias, not both.",
+  };
   if (packageStatus?.updateAvailable) return { label: "Update available", className: "updating", detail: packageStatus.updateReason || `Installed package is older than the Web UI expects${versionSuffix}` };
   if (detected && managedWithTools) return { label: "Loaded", className: "enabled", detail: doneDetail || `Detected in the active Pi tab; manage access in Tools${versionSuffix}`, command: installState?.command || "" };
   if (detected && !disabled) return { label: "Enabled", className: "enabled", detail: doneDetail || `Detected and enabled in Web UI${versionSuffix}`, command: installState?.command || "" };
   if (detected && disabled) return { label: "Disabled", className: "disabled", detail: `Detected, but disabled in Web UI${versionSuffix}` };
+  if (packageStatus?.locallyConfigured) return { label: "Available locally", className: "installed", detail: doneDetail || `Enabled as a top-level Pi resource; reload this tab if the capability is not detected yet${versionSuffix}` };
   if (packageStatus?.installed && packageStatus?.configured) return { label: "Installed", className: "installed", detail: doneDetail || `Registered with Pi but not loaded in the active tab${versionSuffix}`, command: installState?.command || "" };
   if (packageStatus?.installed && !packageStatus?.configured) return {
     label: "Registration needed",
@@ -34346,6 +34353,9 @@ function renderOptionalFeatureRow(feature) {
     action.textContent = "Retry…";
     action.classList.add(retryAsUpdate ? "update" : "install");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: retryAsUpdate }));
+  } else if (packageStatus?.resourceConflict) {
+    action.textContent = "Conflict";
+    action.disabled = true;
   } else if (packageStatus?.updateAvailable) {
     action.textContent = "Update…";
     action.classList.add("update");
