@@ -6,12 +6,15 @@ import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { terminateProcessTree } from "../lib/process-tree.mjs";
+import { readSupervisorState, supervisorPaths, supervisorPidIsAlive } from "../lib/rpc-supervisor-state.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const serverScript = join(root, "bin", "pi-webui.mjs");
 const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const port = 30000 + Math.floor(Math.random() * 20000);
+const optionalFeatureFocus = process.env.PI_WEBUI_OPTIONAL_FEATURES_FOCUS === "1";
 
 function lanAddress() {
   for (const entries of Object.values(networkInterfaces())) {
@@ -126,6 +129,8 @@ const canonicalWorkflowPolicySuggestions = {
 };
 const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
 const fakePiCommandLog = path.join(harnessSideEffectsRoot, "fake-pi-commands.jsonl");
+const fakePiCliLog = path.join(harnessSideEffectsRoot, "fake-pi-cli.jsonl");
+const fakePiCli = path.join(harnessSideEffectsRoot, "fake-pi-cli.mjs");
 const recoveryEndpointToken = "test-recovery-token-6e1cc61d22d44c8dbf3c";
 const openCommandScript = path.join(harnessSideEffectsRoot, "fake-open-default.mjs");
 const fakeOpenBinDir = path.join(harnessSideEffectsRoot, "bin");
@@ -142,6 +147,43 @@ await writeFile(path.join(fakeOpenBinDir, "xdg-open"), `#!/usr/bin/env node\nimp
 await writeFile(path.join(fakeOpenBinDir, "gio"), `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "gio\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
 await writeFile(path.join(fakeOpenBinDir, "xdg-mime"), `#!/usr/bin/env node\nconst [,, verb, mode, value = ""] = process.argv;\nif (verb === "query" && mode === "filetype") {\n  if (value.endsWith(".piunknown")) console.log("application/x-pi-unknown");\n  else if (value.endsWith(".md")) console.log("text/markdown");\n  else console.log("text/plain");\n  process.exit(0);\n}\nif (verb === "query" && mode === "default") {\n  if (value === "text/plain") console.log("fake-text-editor.desktop");\n  process.exit(0);\n}\nprocess.exit(1);\n`, "utf8");
 await Promise.all(["xdg-open", "gio", "xdg-mime"].map((name) => chmod(path.join(fakeOpenBinDir, name), 0o755)));
+await writeFile(fakePiCli, `#!/usr/bin/env node
+import { appendFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+const args = process.argv.slice(2);
+const log = async (entry) => appendFile(process.env.FAKE_PI_CLI_LOG, JSON.stringify({ at: Date.now(), ...entry }) + "\\n", "utf8");
+process.on("SIGTERM", () => process.exit(143));
+process.on("SIGINT", () => process.exit(130));
+if (args[0] === "install") {
+  const source = String(args[1] || "");
+  await log({ event: "start", args });
+  if (source === "npm:@firstpick/pi-extension-stats") {
+    console.error("fixture Pi install failure for stats");
+    await log({ event: "finish", args, exitCode: 17 });
+    process.exitCode = 17;
+  } else {
+    const packageName = source.startsWith("npm:") ? source.slice(4) : "";
+    const sourceRoot = path.join(${JSON.stringify(path.dirname(root))}, packageName.split("/").at(-1));
+    const installRoot = path.join(process.env.PI_CODING_AGENT_DIR, "npm", "node_modules", ...packageName.split("/"));
+    await mkdir(path.dirname(installRoot), { recursive: true });
+    await rm(installRoot, { recursive: true, force: true });
+    await cp(sourceRoot, installRoot, { recursive: true });
+    const settingsPath = path.join(process.env.PI_CODING_AGENT_DIR, "settings.json");
+    const settings = JSON.parse(await readFile(settingsPath, "utf8").catch(() => "{}"));
+    const packages = Array.isArray(settings.packages) ? settings.packages : [];
+    if (!packages.some((entry) => (typeof entry === "string" ? entry : entry?.source) === source)) packages.push(source);
+    settings.packages = packages;
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\\n", "utf8");
+    console.log("installed " + source);
+    await log({ event: "finish", args, exitCode: 0 });
+  }
+} else {
+  await log({ event: "rpc", args });
+  await import(${JSON.stringify(pathToFileURL(fakePi).href)});
+}
+`, "utf8");
+await chmod(fakePiCli, 0o755);
 
 const voiceProviderRequests = [];
 const voiceProvider = createServer(async (req, res) => {
@@ -176,7 +218,7 @@ const voiceProvider = createServer(async (req, res) => {
 await new Promise((resolve) => voiceProvider.listen(0, "127.0.0.1", resolve));
 const voiceProviderPort = voiceProvider.address().port;
 
-const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.0.0.0", "--port", String(port), "--pi", fakePi], {
+const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.0.0.0", "--port", String(port), "--pi", fakePiCli], {
   stdio: ["ignore", "pipe", "pipe"],
   env: {
     ...process.env,
@@ -194,6 +236,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     FAKE_PI_ARTIFACT_MANIFEST: artifactManifest,
     FAKE_PI_ARTIFACT_DOWNLOAD: artifactDownload,
     FAKE_PI_LOG_FILE: fakePiCommandLog,
+    FAKE_PI_CLI_LOG: fakePiCliLog,
     FAKE_PI_VOICE_SCRIPTS: "1",
     FAKE_PI_LARGE_PAYLOADS: "1",
     PI_WEBUI_RECOVERY_TOKEN: recoveryEndpointToken,
@@ -209,6 +252,81 @@ child.stdout.on("data", (chunk) => {
 child.stderr.on("data", (chunk) => {
   serverOutput += String(chunk);
 });
+
+async function runOptionalFeatureFocus() {
+  const tabs = await request("127.0.0.1", "/api/tabs");
+  const tabId = tabs.body?.data?.tabs?.[0]?.id;
+  assert.ok(tabId, "focused optional-feature checks require the startup tab");
+
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.deepEqual(manifest.optionalDependencies, { "node-pty": "^1.1.0" });
+  assert.equal(manifest.dependencies?.["@firstpick/pi-utils"], "^0.2.5");
+  assert.equal(JSON.stringify(manifest.pi).includes("node_modules/@firstpick"), false);
+
+  const initial = await request("127.0.0.1", "/api/optional-features");
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body?.data?.features?.length, 19);
+  const aurBefore = initial.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
+  assert.deepEqual({ installed: aurBefore?.installed, configured: aurBefore?.configured, ready: aurBefore?.ready }, { installed: true, configured: false, ready: false });
+  assert.equal(aurBefore?.expectedSpec, "^0.1.1");
+
+  const single = await request("127.0.0.1", "/api/optional-feature-install", {
+    method: "POST",
+    body: { tab: tabId, featureId: "aurReview" },
+    timeoutMs: 10_000,
+  });
+  assert.equal(single.status, 200, single.body?.error);
+  assert.match(single.body?.data?.command || "", /install npm:@firstpick\/pi-extension-aur-review$/);
+  assert.deepEqual({
+    installed: single.body?.data?.status?.installed,
+    configured: single.body?.data?.status?.configured,
+    ready: single.body?.data?.status?.ready,
+  }, { installed: true, configured: true, ready: true });
+
+  const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
+  assert.equal(resourceTab.status, 201, resourceTab.body?.error);
+  const rpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
+  const normalizedArgs = rpcArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+  assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1);
+  assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1);
+  await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTab.body?.data?.tab?.id] } });
+
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: "aurReview" } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: ["not-allowlisted"] } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: Array(20).fill("aurReview") } })).status, 400);
+
+  const logOffset = (await readJsonLines(fakePiCliLog)).length;
+  const batch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
+    timeoutMs: 20_000,
+  });
+  assert.equal(batch.status, 200, batch.body?.error);
+  assert.deepEqual(batch.body?.data?.featureIds, ["bangCommandAutocomplete", "statsCommand", "gitFooterStatus"]);
+  assert.deepEqual(batch.body?.data?.results?.map(({ featureId, ok }) => [featureId, ok]), [
+    ["bangCommandAutocomplete", true], ["statsCommand", false], ["gitFooterStatus", true],
+  ]);
+  assert.deepEqual([batch.body?.data?.total, batch.body?.data?.succeeded, batch.body?.data?.failed], [3, 2, 1]);
+  assert.equal(batch.body?.data?.results?.[1]?.optionalFeatureInstall?.exitCode, 17);
+  assert.match(batch.body?.data?.results?.[1]?.optionalFeatureInstall?.outputTail || "", /fixture Pi install failure/);
+  const sequence = (await readJsonLines(fakePiCliLog)).slice(logOffset).filter(({ event }) => event === "start" || event === "finish");
+  assert.deepEqual(sequence.map(({ event, args, exitCode }) => [event, args?.[1], exitCode]), [
+    ["start", "npm:@firstpick/pi-extension-bang-command-autocomplete", undefined],
+    ["finish", "npm:@firstpick/pi-extension-bang-command-autocomplete", 0],
+    ["start", "npm:@firstpick/pi-extension-stats", undefined],
+    ["finish", "npm:@firstpick/pi-extension-stats", 17],
+    ["start", "npm:@firstpick/pi-extension-git-footer-status", undefined],
+    ["finish", "npm:@firstpick/pi-extension-git-footer-status", 0],
+  ]);
+
+  const lanHost = lanAddress();
+  if (lanHost) assert.equal((await request(lanHost, "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: ["aurReview"] } })).status, 403);
+
+  const shutdownResponse = await request("127.0.0.1", "/api/shutdown", { method: "POST", body: {} });
+  assert.equal(shutdownResponse.status, 200);
+  for (let attempt = 0; attempt < 50 && child.exitCode === null; attempt++) await delay(100);
+  assert.notEqual(child.exitCode, null);
+}
 
 try {
   // Wait for the HTTP server to accept requests.
@@ -228,6 +346,9 @@ try {
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
   assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
 
+  if (optionalFeatureFocus) {
+    await runOptionalFeatureFocus();
+  } else {
   const initialInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
   assert.equal(initialInterfacePreferences.status, 200);
   assert.equal(initialInterfacePreferences.body?.data?.preferences?.sidePanelWidth, null, "a user without a saved width should receive the default preference");
@@ -705,11 +826,105 @@ try {
   const validImageCommand = imageCommands.find((entry) => entry.direction === "command" && entry.message === "canonical inline image fixture");
   assert.deepEqual(validImageCommand?.images, [{ type: "image", data: canonicalPng, mimeType: "image/png" }], "canonical image bytes and MIME type should be forwarded unchanged");
 
+  const webuiManifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.deepEqual(webuiManifest.optionalDependencies, { "node-pty": "^1.1.0" }, "node-pty should be the only optional dependency");
+  assert.equal(webuiManifest.dependencies?.["@firstpick/pi-utils"], "^0.2.5", "the required pi-utils runtime dependency must remain regular");
+  assert.equal(JSON.stringify(webuiManifest.pi).includes("node_modules/@firstpick"), false, "the WebUI manifest must not claim optional companion resources");
+
   const optionalFeatures = await request("127.0.0.1", "/api/optional-features");
   assert.equal(optionalFeatures.status, 200, "optional feature status should load");
+  assert.equal(optionalFeatures.body?.data?.features?.length, 19, "the explicit server catalog should expose every allowlisted feature");
   const aurReviewFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
+  assert.equal(aurReviewFeature?.expectedSpec, "^0.1.1", "status should expose the catalog-owned compatibility spec");
   assert.equal(aurReviewFeature?.installed, true, "workspace discovery should find the local pi-extension-aur-review sibling without an npm dependency");
+  assert.equal(aurReviewFeature?.configured, false, "physical discovery alone must not imply Pi registration");
+  assert.equal(aurReviewFeature?.ready, false, "a physical but unregistered companion must not be ready after reload");
   assert.equal(path.basename(aurReviewFeature?.installedRoot || ""), "pi-extension-aur-review", "aur-review discovery must validate the exact sibling manifest/name");
+
+  const invalidSingleFeature = await request("127.0.0.1", "/api/optional-feature-install", {
+    method: "POST",
+    body: { tab: tabId, featureId: "not-allowlisted" },
+  });
+  assert.equal(invalidSingleFeature.status, 400, "single installs must reject feature IDs outside the server catalog");
+
+  const installedAurReview = await request("127.0.0.1", "/api/optional-feature-install", {
+    method: "POST",
+    body: { tab: tabId, featureId: "aurReview" },
+    timeoutMs: 10_000,
+  });
+  assert.equal(installedAurReview.status, 200, installedAurReview.body?.error);
+  assert.match(installedAurReview.body?.data?.command || "", /install npm:@firstpick\/pi-extension-aur-review$/, "the selected Pi CLI should receive the exact unpinned npm source");
+  assert.equal(installedAurReview.body?.data?.status?.installed, true);
+  assert.equal(installedAurReview.body?.data?.status?.configured, true);
+  assert.equal(installedAurReview.body?.data?.status?.ready, true, "successful Pi installation must verify physical presence and registration");
+  const aurInstallCommands = (await readJsonLines(fakePiCliLog)).filter((entry) => entry.event === "start" && entry.args?.[1] === "npm:@firstpick/pi-extension-aur-review");
+  assert.deepEqual(aurInstallCommands.map((entry) => entry.args), [["install", "npm:@firstpick/pi-extension-aur-review"]], "the feature path must invoke Pi install exactly once without npm CLI flags");
+
+  const registeredOptionalFeatures = await request("127.0.0.1", "/api/optional-features");
+  const registeredAurReview = registeredOptionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
+  assert.equal(registeredAurReview?.ready, true, "Pi registration should survive a fresh status-manager read");
+
+  const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
+  assert.equal(resourceTab.status, 201, resourceTab.body?.error);
+  const resourceTabId = resourceTab.body?.data?.tab?.id;
+  const rpcLaunches = (await readJsonLines(fakePiCliLog)).filter((entry) => entry.event === "rpc");
+  const configuredLaunchArgs = rpcLaunches.at(-1)?.args || [];
+  const normalizedLaunchArgs = configuredLaunchArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+  assert.equal(normalizedLaunchArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1, "a separately configured optional extension should load once in a WebUI RPC tab");
+  assert.equal(normalizedLaunchArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1, "the WebUI package itself should remain loaded exactly once");
+  assert.equal((await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTabId] } })).status, 200);
+
+  const malformedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, featureIds: "aurReview" },
+  });
+  assert.equal(malformedBatch.status, 400, "batch installs must require an array");
+  const unknownBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, featureIds: ["aurReview", "not-allowlisted"] },
+  });
+  assert.equal(unknownBatch.status, 400, "batch installs must reject unknown IDs before starting any command");
+  const oversizedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, featureIds: Array.from({ length: 20 }, () => "aurReview") },
+  });
+  assert.equal(oversizedBatch.status, 400, "batch installs must cap raw input to the catalog size");
+
+  const batchLogStart = (await readJsonLines(fakePiCliLog)).length;
+  const partialBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
+    timeoutMs: 20_000,
+  });
+  assert.equal(partialBatch.status, 200, partialBatch.body?.error);
+  assert.deepEqual(partialBatch.body?.data?.featureIds, ["bangCommandAutocomplete", "statsCommand", "gitFooterStatus"], "batch input should be deduplicated without reordering");
+  assert.deepEqual(partialBatch.body?.data?.results?.map(({ featureId, ok }) => [featureId, ok]), [
+    ["bangCommandAutocomplete", true],
+    ["statsCommand", false],
+    ["gitFooterStatus", true],
+  ], "a failed Pi install must not stop later allowlisted installs");
+  assert.deepEqual({ total: partialBatch.body?.data?.total, succeeded: partialBatch.body?.data?.succeeded, failed: partialBatch.body?.data?.failed }, { total: 3, succeeded: 2, failed: 1 });
+  assert.equal(partialBatch.body?.data?.results?.[1]?.optionalFeatureInstall?.exitCode, 17, "batch failures should retain exit diagnostics");
+  assert.match(partialBatch.body?.data?.results?.[1]?.optionalFeatureInstall?.command || "", /install npm:@firstpick\/pi-extension-stats$/, "batch failures should retain a copyable Pi command");
+  assert.match(partialBatch.body?.data?.results?.[1]?.optionalFeatureInstall?.outputTail || "", /fixture Pi install failure/, "batch failures should retain bounded output diagnostics");
+  const batchLog = (await readJsonLines(fakePiCliLog)).slice(batchLogStart).filter((entry) => entry.event === "start" || entry.event === "finish");
+  assert.deepEqual(batchLog.map((entry) => [entry.event, entry.args?.[1], entry.exitCode]), [
+    ["start", "npm:@firstpick/pi-extension-bang-command-autocomplete", undefined],
+    ["finish", "npm:@firstpick/pi-extension-bang-command-autocomplete", 0],
+    ["start", "npm:@firstpick/pi-extension-stats", undefined],
+    ["finish", "npm:@firstpick/pi-extension-stats", 17],
+    ["start", "npm:@firstpick/pi-extension-git-footer-status", undefined],
+    ["finish", "npm:@firstpick/pi-extension-git-footer-status", 0],
+  ], "batch commands should execute sequentially in request order");
+
+  const lanHost = lanAddress();
+  if (lanHost) {
+    const remoteBatch = await request(lanHost, "/api/optional-feature-install-batch", {
+      method: "POST",
+      body: { tab: tabId, featureIds: ["aurReview"] },
+    });
+    assert.equal(remoteBatch.status, 403, "batch installs must remain localhost-only");
+  }
 
   const sessionToolsBefore = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=session`);
   assert.equal(sessionToolsBefore.status, 200);
@@ -3241,12 +3456,27 @@ try {
     await delay(100);
   }
   assert.notEqual(child.exitCode, null, "server should exit after /api/shutdown");
+  }
 } finally {
   if (child.exitCode === null) {
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("exit", resolve));
   }
   await new Promise((resolve) => voiceProvider.close(() => resolve()));
+  const testSupervisorPaths = await supervisorPaths({ agentDir: workflowPolicyAgentDir, port });
+  const testSupervisorState = await readSupervisorState(testSupervisorPaths);
+  if (testSupervisorState && supervisorPidIsAlive(testSupervisorState.pid)) {
+    terminateProcessTree({
+      pid: testSupervisorState.pid,
+      exitCode: null,
+      signalCode: null,
+      kill: (signal) => {
+        process.kill(testSupervisorState.pid, signal);
+        return true;
+      },
+    }, "SIGKILL");
+    for (let attempt = 0; attempt < 50 && supervisorPidIsAlive(testSupervisorState.pid); attempt++) await delay(100);
+  }
   await rmWithRetry(cwd);
   await rmWithRetry(harnessSideEffectsRoot);
 }

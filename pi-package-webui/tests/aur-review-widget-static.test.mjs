@@ -4,12 +4,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [app, css, pkg, server, payloadParser] = await Promise.all([
+const [app, css, pkg, server, payloadParser, optionalFeatureCatalog] = await Promise.all([
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
   readFile(join(root, "public", "aur-review-payload.mjs"), "utf8"),
+  readFile(join(root, "lib", "optional-feature-catalog.mjs"), "utf8"),
 ]);
 
 assert.match(app, /const AUR_REVIEW_RPC_WIDGET_KEY = "aur-review:rpc"[\s\S]*AUR_REVIEW_RPC_PAYLOAD_PREFIX = "AUR_REVIEW_RPC_PAYLOAD "[\s\S]*AUR_REVIEW_RPC_PAYLOAD_TYPE = "firstpick\.pi-extension-aur-review\.review"[\s\S]*AUR_REVIEW_RPC_PAYLOAD_VERSION = 3/, "WebUI should identify the versioned AUR review payload");
@@ -30,7 +31,7 @@ assert.match(app, /if \(key === AUR_REVIEW_RPC_WIDGET_KEY\) return "aurReview"[\
 assert.match(css, /\.aur-review-widget \{[\s\S]*\.aur-review-actions[\s\S]*\.aur-review-file-list[\s\S]*@media \(max-width: 720px\)[\s\S]*\.aur-review-action,[\s\S]*\.aur-review-report/, "AUR review card should be styled responsively for desktop and mobile");
 assert.equal(JSON.parse(pkg).optionalDependencies?.["@firstpick/pi-extension-aur-review"], undefined, "WebUI must not reference the unpublished review extension from clean npm installs");
 assert.equal(JSON.parse(pkg).pi?.extensions?.some((entry) => String(entry).includes("pi-extension-aur-review")), false, "WebUI must not bundle an unpublished nested review extension path");
-assert.match(server, /\["aurReview", "@firstpick\/pi-extension-aur-review"\]/, "optional-feature installer should retain the future/local review companion mapping");
+assert.match(optionalFeatureCatalog, /\["aurReview", "@firstpick\/pi-extension-aur-review", "\^0\.1\.1"\]/, "optional-feature catalog should retain the future/local review companion mapping without bundling it");
 assert.match(server, /"aur-review-payload\.mjs", "guided-git-command-state\.mjs", "guided-git-review-state\.mjs"/, "server must serve every browser module used by the review gate");
 assert.match(server, /STAGED_CONTENT_HASH_DOMAIN = "firstpick\/aur-review\/staged-content\/v1\\0"[\s\S]*git diff --cached[\s\S]*\/api\/git-workflow\/staged-content/, "server must expose the bounded read-only staged-content hash helper");
 assert.match(server, /async function getAurReviewReportContentData\(tab, \{ path: requestedPath = "", repoRoot = "" \} = \{\}\)[\s\S]*repoRoot !== root[\s\S]*lstat\(targetPath\)[\s\S]*isSymbolicLink\(\)[\s\S]*readBoundedAurReviewReport[\s\S]*\/api\/aur-review\/report-content/s, "server must bind report reads to the canonical Git root and reject symlinked paths through a dedicated read-only route");

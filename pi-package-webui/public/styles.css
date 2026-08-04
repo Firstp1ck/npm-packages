@@ -3140,6 +3140,41 @@ button.subagent-gate-attempt:focus-visible {
   50% { opacity: 1; transform: scale(1); }
 }
 
+.optional-feature-batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.48rem;
+  align-items: center;
+  padding: 0.58rem;
+  border: 1px solid rgba(148, 226, 213, 0.18);
+  border-radius: 0.72rem;
+  background: rgba(var(--ctp-surface-rgb), 0.28);
+}
+.optional-feature-batch-status {
+  min-width: 0;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-size: var(--text-xs);
+  font-weight: 750;
+  line-height: 1.35;
+}
+.optional-feature-batch-status.warning { color: var(--ctp-yellow); }
+.optional-feature-batch-action,
+.optional-feature-section-install {
+  min-height: 2rem;
+  padding: 0.3rem 0.54rem;
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.30);
+  font-size: var(--text-xs);
+  font-weight: 850;
+  white-space: nowrap;
+}
+.optional-feature-batch-action:not(:disabled):hover,
+.optional-feature-section-install:not(:disabled):hover {
+  color: #11111b;
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--ctp-teal), var(--ctp-sky));
+}
 .optional-feature-section {
   display: grid;
   gap: 0.48rem;
@@ -3153,6 +3188,12 @@ button.subagent-gate-attempt:focus-visible {
   display: flex;
   justify-content: space-between;
   gap: 0.55rem;
+  align-items: center;
+}
+.optional-feature-section-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.38rem;
   align-items: center;
 }
 .optional-feature-section-title {
@@ -3567,6 +3608,16 @@ button.subagent-gate-attempt:focus-visible {
   color: #11111b;
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-yellow), var(--ctp-peach));
+}
+@media (max-width: 34rem) {
+  .optional-feature-batch-toolbar,
+  .optional-feature-section-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .optional-feature-section-actions { justify-content: space-between; }
+  .optional-feature-batch-action,
+  .optional-feature-section-install { width: 100%; }
 }
 
 .terminal-tabs-shell {

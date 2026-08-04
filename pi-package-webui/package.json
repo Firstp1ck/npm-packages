@@ -22,32 +22,7 @@
   "pi": {
     "image": "https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_MainWindow_v0.4.8.png",
     "extensions": [
-      "./index.ts",
-      "node_modules/@firstpick/pi-extension-bang-command-autocomplete/index.ts",
-      "node_modules/@firstpick/pi-extension-fish-user-bash/index.ts",
-      "node_modules/@firstpick/pi-extension-btw/index.ts",
-      "node_modules/@firstpick/pi-extension-codex-fast-mode/index.ts",
-      "node_modules/@firstpick/pi-extension-git-footer-status/index.ts",
-      "node_modules/@firstpick/pi-extension-release-aur/index.ts",
-      "node_modules/@firstpick/pi-extension-release-npm/index.ts",
-      "node_modules/@firstpick/pi-extension-workflows/index.ts",
-      "node_modules/@firstpick/pi-extension-safety-guard/index.ts",
-      "node_modules/@firstpick/pi-extension-setup-skills/index.ts",
-      "node_modules/@firstpick/pi-extension-stats/index.ts",
-      "node_modules/@firstpick/pi-extension-todo-progress/index.ts",
-      "node_modules/@firstpick/pi-extension-tools/index.ts",
-      "node_modules/@firstpick/pi-package-remote-webui/index.ts",
-      "node_modules/@firstpick/pi-package-questionnaire/index.ts"
-    ],
-    "skills": [
-      "node_modules/@firstpick/pi-extension-release-aur/skills",
-      "node_modules/@firstpick/pi-package-questionnaire/skills"
-    ],
-    "prompts": [
-      "node_modules/@firstpick/pi-prompts-git-pr/prompts"
-    ],
-    "themes": [
-      "node_modules/@firstpick/pi-themes-bundle/themes"
+      "./index.ts"
     ]
   },
   "bin": {
@@ -65,22 +40,6 @@
     "typebox": "^1.3.6"
   },
   "optionalDependencies": {
-    "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.2",
-    "@firstpick/pi-extension-btw": "^0.1.4",
-    "@firstpick/pi-extension-codex-fast-mode": "^0.1.0",
-    "@firstpick/pi-extension-fish-user-bash": "^0.2.2",
-    "@firstpick/pi-extension-git-footer-status": "^0.4.3",
-    "@firstpick/pi-extension-release-aur": "^0.1.8",
-    "@firstpick/pi-extension-release-npm": "^0.4.4",
-    "@firstpick/pi-extension-safety-guard": "^0.2.6",
-    "@firstpick/pi-extension-setup-skills": "^0.1.9",
-    "@firstpick/pi-extension-stats": "^0.2.9",
-    "@firstpick/pi-extension-todo-progress": "^0.2.9",
-    "@firstpick/pi-extension-tools": "^0.1.7",
-    "@firstpick/pi-extension-workflows": "^0.1.7",
-    "@firstpick/pi-package-remote-webui": "^0.1.8",
-    "@firstpick/pi-prompts-git-pr": "^0.1.5",
-    "@firstpick/pi-themes-bundle": "^0.1.5",
     "node-pty": "^1.1.0"
   },
   "files": [
