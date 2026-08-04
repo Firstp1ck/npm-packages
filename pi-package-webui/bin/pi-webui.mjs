@@ -41,6 +41,7 @@ import {
 } from "../lib/git-command-errors.mjs";
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
 import { ComponentUpdateState, validateComponentUpdateRequest } from "../lib/component-update-state.mjs";
+import { OPTIONAL_FEATURE_BY_ID, OPTIONAL_FEATURE_CATALOG } from "../lib/optional-feature-catalog.mjs";
 import { prependedPathEnvironment, resolveCommandDirectory, resolveNpmCommandInvocation, resolvePiCommandInvocation } from "../lib/npm-command.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
@@ -376,38 +377,10 @@ function parseSlashCommand(message) {
   return parseNativeSlashCommand(message, NATIVE_SLASH_COMMAND_NAMES);
 }
 const NATURAL_CONVERSATION_FEATURE_ID = "naturalConversation";
-const OPTIONAL_FEATURE_PACKAGES = new Map([
-  ["bangCommandAutocomplete", "@firstpick/pi-extension-bang-command-autocomplete"],
-  ["fishUserBash", "@firstpick/pi-extension-fish-user-bash"],
-  ["btwCommand", "@firstpick/pi-extension-btw"],
-  ["gitWorkflow", "@firstpick/pi-prompts-git-pr"],
-  ["releaseNpm", "@firstpick/pi-extension-release-npm"],
-  ["releaseAur", "@firstpick/pi-extension-release-aur"],
-  ["aurReview", "@firstpick/pi-extension-aur-review"],
-  ["workflows", "@firstpick/pi-extension-workflows"],
-  ["safetyGuard", "@firstpick/pi-extension-safety-guard"],
-  ["tuiSkillsCommand", "@firstpick/pi-extension-setup-skills"],
-  ["todoProgressWidget", "@firstpick/pi-extension-todo-progress"],
-  ["tuiToolsCommand", "@firstpick/pi-extension-tools"],
-  ["remoteWebui", "@firstpick/pi-package-remote-webui"],
-  ["questionnaire", "@firstpick/pi-package-questionnaire"],
-  ["naturalConversation", "@firstpick/pi-package-natural-conversation"],
-  ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status"],
-  ["statsCommand", "@firstpick/pi-extension-stats"],
-  ["codexFastMode", "@firstpick/pi-extension-codex-fast-mode"],
-  ["themeBundle", "@firstpick/pi-themes-bundle"],
-]);
-const WEBUI_CONTROLLED_PACKAGES = new Set([
-  WEBUI_PACKAGE,
-  ...[...OPTIONAL_FEATURE_PACKAGES.entries()]
-    .filter(([featureId]) => featureId !== NATURAL_CONVERSATION_FEATURE_ID)
-    .map(([, packageName]) => packageName),
-]);
-const UPDATE_PACKAGE_NAMES = [...new Set([
-  ...CORE_UPDATE_PACKAGE_NAMES,
-  ...WEBUI_CONTROLLED_PACKAGES,
-  ...OPTIONAL_FEATURE_PACKAGES.values(),
-])].sort();
+const OPTIONAL_FEATURE_PACKAGES = new Map(OPTIONAL_FEATURE_CATALOG.map(({ featureId, packageName }) => [featureId, packageName]));
+const OPTIONAL_FEATURE_PACKAGE_NAMES = new Set(OPTIONAL_FEATURE_PACKAGES.values());
+const WEBUI_RESOURCE_EXCLUDED_PACKAGES = new Set([WEBUI_PACKAGE]);
+const UPDATE_PACKAGE_NAMES = [...CORE_UPDATE_PACKAGE_NAMES].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
 // Codex subscription Fast mode is owned by the optional @firstpick/pi-extension-codex-fast-mode
@@ -1889,36 +1862,9 @@ function declaredDependencySpec(pkg, packageName) {
   );
 }
 
-async function installRootDeclaresPackage(root, packageName) {
-  const pkg = await readJsonFileIfExists(path.join(root, "package.json"));
-  return declaredDependencySpec(pkg, packageName) !== undefined;
-}
-
-async function installRootContainsPackage(root, packageName) {
-  return directoryExists(packageNodeModulesPath(path.join(root, "node_modules"), packageName));
-}
-
 function configuredAgentNpmRoot() {
   const root = process.env.PI_CODING_AGENT_DIR ? path.resolve(expandUserPath(process.env.PI_CODING_AGENT_DIR)) : agentDir;
   return path.join(root, "npm");
-}
-
-async function optionalDependencyInstallRoot() {
-  const configuredRoot = process.env[OPTIONAL_FEATURE_INSTALL_ROOT_ENV];
-  if (configuredRoot) return path.resolve(expandUserPath(configuredRoot));
-
-  const installRoot = nodeModulesParentForPackageRoot(packageRoot);
-  if (await installRootDeclaresPackage(installRoot, "@firstpick/pi-package-webui") || await installRootContainsPackage(installRoot, "@firstpick/pi-package-webui")) return installRoot;
-
-  const agentNpmRoot = configuredAgentNpmRoot();
-  if (installRoot !== agentNpmRoot && (await installRootDeclaresPackage(agentNpmRoot, "@firstpick/pi-package-webui") || await installRootContainsPackage(agentNpmRoot, "@firstpick/pi-package-webui"))) return agentNpmRoot;
-
-  if (webuiDevServer) return installRoot;
-
-  throw makeHttpError(
-    500,
-    `Could not determine a safe optional feature install root. Set ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} to the Pi package root.`,
-  );
 }
 
 function minimumPackageVersionFromSpec(spec) {
@@ -1984,33 +1930,67 @@ async function resolveInstalledPackageSubpath(packageName, subpath = "") {
   }
 }
 
-function optionalFeatureDeclaredSpec(packageName) {
-  return declaredDependencySpec(packageJson, packageName) || "";
+function npmPackageNameFromPiSource(source) {
+  const spec = String(source || "").trim();
+  if (!spec.startsWith("npm:")) return "";
+  const npmSpec = spec.slice("npm:".length);
+  if (!npmSpec) return "";
+  if (npmSpec.startsWith("@")) {
+    const slashIndex = npmSpec.indexOf("/");
+    if (slashIndex < 2) return "";
+    const versionIndex = npmSpec.indexOf("@", slashIndex);
+    return versionIndex === -1 ? npmSpec : npmSpec.slice(0, versionIndex);
+  }
+  const versionIndex = npmSpec.indexOf("@");
+  return versionIndex === -1 ? npmSpec : npmSpec.slice(0, versionIndex);
 }
 
-async function optionalFeaturePackageStatus(featureId) {
-  const packageName = OPTIONAL_FEATURE_PACKAGES.get(featureId);
-  if (!packageName) throw makeHttpError(400, `Unknown optional feature: ${featureId}`);
-  const declaredSpec = optionalFeatureDeclaredSpec(packageName);
-  const installedRoot = await resolveInstalledPackageRoot(packageName);
+function configuredOptionalFeaturePackages(packageName, cwd = options.cwd) {
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+  return packageManager.listConfiguredPackages().filter(({ source }) => npmPackageNameFromPiSource(source) === packageName);
+}
+
+async function installedOptionalFeatureRoot(packageName, configuredPackages) {
+  const discoveredRoot = await resolveInstalledPackageRoot(packageName);
+  const candidates = [discoveredRoot, ...configuredPackages.map(({ installedPath }) => installedPath)].filter(Boolean);
+  for (const candidate of candidates) {
+    const manifest = await readJsonFileIfExists(path.join(candidate, "package.json"));
+    if (manifest?.name === packageName) return candidate;
+  }
+  return null;
+}
+
+async function optionalFeaturePackageStatus(featureId, cwd = options.cwd) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
+  if (!feature) throw makeHttpError(400, `Unknown optional feature: ${featureId}`);
+  const { packageName, expectedSpec } = feature;
+  const configuredPackages = configuredOptionalFeaturePackages(packageName, cwd);
+  const installedRoot = await installedOptionalFeatureRoot(packageName, configuredPackages);
   const manifest = installedRoot ? await readJsonFileIfExists(path.join(installedRoot, "package.json")) : null;
   const installedVersion = typeof manifest?.version === "string" ? manifest.version : "";
-  const updateAvailable = !!(installedVersion && packageVersionBelowSpec(installedVersion, declaredSpec));
+  const installed = !!installedRoot;
+  const configured = configuredPackages.length > 0;
+  const ready = installed && configured;
+  const updateAvailable = !!(installedVersion && packageVersionBelowSpec(installedVersion, expectedSpec));
   return {
     featureId,
     packageName,
-    declaredSpec,
-    installed: !!installedRoot,
+    expectedSpec,
+    declaredSpec: expectedSpec,
+    installed,
+    configured,
+    ready,
     installedVersion,
     installedRoot,
     updateAvailable,
-    updateReason: updateAvailable ? `installed ${installedVersion} is older than Web UI expects (${declaredSpec})` : "",
+    updateReason: updateAvailable ? `installed ${installedVersion} is older than Web UI expects (${expectedSpec})` : "",
   };
 }
 
-async function optionalFeaturePackageStatuses() {
+async function optionalFeaturePackageStatuses(cwd = options.cwd) {
   const features = [];
-  for (const featureId of OPTIONAL_FEATURE_PACKAGES.keys()) features.push(await optionalFeaturePackageStatus(featureId));
+  for (const { featureId } of OPTIONAL_FEATURE_CATALOG) features.push(await optionalFeaturePackageStatus(featureId, cwd));
   return { features };
 }
 
@@ -2023,28 +2003,26 @@ function optionalFeatureInstallOutputTail(result, maxLength = 4000) {
 function optionalFeatureInstallFailureKind(result, message = "") {
   const combined = `${message}\n${result?.error || ""}\n${result?.stderr || ""}\n${result?.stdout || ""}`;
   if (result?.timedOut) return "timeout";
-  if (/\b(?:ENOENT|command not found|not recognized|spawn\s+\S+\s+ENOENT)\b/i.test(combined)) return "npm-not-found";
+  if (/\b(?:ENOENT|command not found|not recognized|spawn\s+\S+\s+ENOENT)\b/i.test(combined)) return "pi-not-found";
   if (/\b(?:EACCES|EPERM|permission denied|access denied)\b/i.test(combined)) return "permission";
   if (/\b(?:EAI_AGAIN|ENOTFOUND|ECONNRESET|ETIMEDOUT|network timeout|registry\.npmjs\.org|fetch failed)\b/i.test(combined)) return "network";
-  return "npm-exit";
+  return "pi-exit";
 }
 
-function optionalFeatureInstallFailureHint(kind, { command, installRoot } = {}) {
+function optionalFeatureInstallFailureHint(kind, { command } = {}) {
   switch (kind) {
-    case "install-root":
-      return `Set ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} to the Pi/Web UI npm package root, then retry.`;
-    case "npm-not-found":
-      return "npm could not be started. Install npm or set PI_WEBUI_NPM_BIN to an absolute npm-compatible executable path.";
+    case "pi-not-found":
+      return "The selected Pi CLI could not be started. Check --pi or PI_WEBUI_PI_BIN, then restart the Web UI.";
     case "permission":
-      return `The Web UI process cannot write to ${installRoot || "the selected npm prefix"}. Retry from the owning user or use ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} with a writable package root.`;
+      return "Pi could not update its user package root or settings. Retry as the owning user or run the copied command manually.";
     case "network":
-      return "npm could not reach the registry reliably. Check network/proxy/registry settings, then retry or run the copied command manually.";
+      return "Pi could not reach the npm registry reliably. Check network/proxy/registry settings, then retry or run the copied command manually.";
     case "timeout":
-      return "npm did not finish within 5 minutes. Check for a stuck package manager, lock contention, or slow network, then retry manually.";
+      return "Pi did not finish within 5 minutes. Check for a stuck package manager, lock contention, or slow network, then retry manually.";
     case "status-check":
-      return "npm finished, but Web UI could not verify the package status. Reload the Web UI and recheck Optional features.";
+      return "Pi finished, but Web UI could not verify both installation and registration. Reload the Web UI and recheck Optional features.";
     default:
-      return command ? "Run the copied npm command manually on the Web UI host to see full package-manager diagnostics." : "Check the activity log and npm output, then retry.";
+      return command ? "Run the copied Pi command manually on the Web UI host to see full diagnostics." : "Check the activity log and Pi output, then retry.";
   }
 }
 
@@ -2065,27 +2043,14 @@ function makeOptionalFeatureInstallError(statusCode, message, details = {}) {
   return error;
 }
 
-async function installOptionalFeaturePackage(featureId) {
-  const beforeStatus = await optionalFeaturePackageStatus(featureId);
+async function installOptionalFeaturePackage(featureId, cwd = options.cwd) {
+  const beforeStatus = await optionalFeaturePackageStatus(featureId, cwd);
   const packageName = beforeStatus.packageName;
-
-  let installRoot;
-  try {
-    installRoot = await optionalDependencyInstallRoot();
-  } catch (error) {
-    const message = formatCliError(error);
-    throw makeOptionalFeatureInstallError(error?.statusCode || 500, message, {
-      kind: "install-root",
-      featureId,
-      packageName,
-      hint: optionalFeatureInstallFailureHint("install-root"),
-    });
-  }
-
-  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, packageName]);
-  const command = npmCommand.displayCommand;
-  const result = await runCommand(npmCommand.command, npmCommand.args, {
-    cwd: installRoot,
+  const source = `npm:${packageName}`;
+  const piCommand = await resolvePiCommand(["install", source]);
+  const command = piCommand.displayCommand;
+  const result = await runCommand(piCommand.command, piCommand.args, {
+    cwd,
     timeoutMs: 5 * 60 * 1000,
     maxOutputLength: 80000,
   });
@@ -2101,37 +2066,84 @@ async function installOptionalFeaturePackage(featureId) {
       kind,
       featureId,
       packageName,
-      installRoot,
       command,
       exitCode: result.exitCode,
       timedOut: result.timedOut,
       outputTail: optionalFeatureInstallOutputTail(result),
     });
   }
+
   let afterStatus;
   try {
-    afterStatus = await optionalFeaturePackageStatus(featureId);
+    afterStatus = await optionalFeaturePackageStatus(featureId, cwd);
+    if (!afterStatus.ready) {
+      throw new Error(`Pi did not leave ${packageName} both installed and registered`);
+    }
   } catch (error) {
     const message = `Optional feature install finished, but status verification failed: ${formatCliError(error)}`;
     throw makeOptionalFeatureInstallError(error?.statusCode || 500, message, {
       kind: "status-check",
       featureId,
       packageName,
-      installRoot,
       command,
       outputTail: optionalFeatureInstallOutputTail(result),
     });
   }
-  const operation = beforeStatus.installed ? "Updated" : "Installed";
+
+  const operation = beforeStatus.ready ? "Updated" : beforeStatus.installed ? "Registered" : "Installed";
   return {
     featureId,
     packageName,
-    installRoot,
+    source,
     command,
     stdout: result.stdout,
     stderr: result.stderr,
     status: afterStatus,
-    message: `${operation} optional feature package ${packageName}${afterStatus.installedVersion ? ` to ${afterStatus.installedVersion}` : ""}. Reload the active Pi tab to load new resources.`,
+    message: `${operation} optional feature package ${packageName}${afterStatus.installedVersion ? ` at ${afterStatus.installedVersion}` : ""} with Pi. Reload the active Pi tab to load new resources.`,
+  };
+}
+
+function validateOptionalFeatureBatch(featureIds) {
+  if (!Array.isArray(featureIds)) throw makeHttpError(400, "featureIds must be an array");
+  if (featureIds.length > OPTIONAL_FEATURE_CATALOG.length) {
+    throw makeHttpError(400, `featureIds must contain at most ${OPTIONAL_FEATURE_CATALOG.length} entries`);
+  }
+  const deduplicated = [];
+  const seen = new Set();
+  for (const value of featureIds) {
+    if (typeof value !== "string" || !OPTIONAL_FEATURE_BY_ID.has(value)) {
+      throw makeHttpError(400, `Unknown optional feature: ${String(value || "")}`);
+    }
+    if (seen.has(value)) continue;
+    seen.add(value);
+    deduplicated.push(value);
+  }
+  return deduplicated;
+}
+
+async function installOptionalFeaturePackages(featureIds, cwd = options.cwd) {
+  const requestedFeatureIds = validateOptionalFeatureBatch(featureIds);
+  const results = [];
+  for (const featureId of requestedFeatureIds) {
+    try {
+      results.push({ ok: true, featureId, data: await installOptionalFeaturePackage(featureId, cwd) });
+    } catch (error) {
+      results.push({
+        ok: false,
+        featureId,
+        packageName: OPTIONAL_FEATURE_BY_ID.get(featureId)?.packageName || "",
+        error: formatCliError(error),
+        optionalFeatureInstall: error?.optionalFeatureInstall || null,
+      });
+    }
+  }
+  const succeeded = results.filter((result) => result.ok).length;
+  return {
+    featureIds: requestedFeatureIds,
+    results,
+    total: results.length,
+    succeeded,
+    failed: results.length - succeeded,
   };
 }
 
@@ -8469,7 +8481,7 @@ function parseNodeModulesPackageRef(manifestEntry) {
 
 async function resolveStartedWebuiManifestResource(manifestEntry) {
   const nodeModulesRef = parseNodeModulesPackageRef(manifestEntry);
-  if (nodeModulesRef && WEBUI_CONTROLLED_PACKAGES.has(nodeModulesRef.packageName)) {
+  if (nodeModulesRef && WEBUI_RESOURCE_EXCLUDED_PACKAGES.has(nodeModulesRef.packageName)) {
     const installedCandidate = await resolveInstalledPackageSubpath(nodeModulesRef.packageName, nodeModulesRef.subpath);
     if (installedCandidate) return installedCandidate;
   }
@@ -8521,7 +8533,7 @@ async function normalPiResourcePathsForTab(resolved, resourceType) {
   for (const resource of resolved[resourceType] || []) {
     if (!resource.enabled) continue;
     const packageName = await packageNameForResourcePath(resource.path);
-    if (packageName && WEBUI_CONTROLLED_PACKAGES.has(packageName)) continue;
+    if (packageName && WEBUI_RESOURCE_EXCLUDED_PACKAGES.has(packageName)) continue;
     resourcePaths.push(resource.path);
   }
   return resourcePaths;
@@ -10622,6 +10634,7 @@ function packageNodeModulesPath(nodeModulesRoot, packageName) {
 
 function isWebuiOrPiPackageName(packageName) {
   const name = String(packageName || "").trim();
+  if (OPTIONAL_FEATURE_PACKAGE_NAMES.has(name)) return false;
   return UPDATE_PACKAGE_NAMES.includes(name)
     || /^@firstpick\/pi(?:-|$)/.test(name)
     || /^@earendil-works\/pi(?:-|$)/.test(name)
@@ -15087,7 +15100,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/optional-features" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await optionalFeaturePackageStatuses() });
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await optionalFeaturePackageStatuses(tab.cwd) });
       return;
     }
 
@@ -15096,7 +15110,17 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
-      const data = await installOptionalFeaturePackage(String(body.featureId || ""));
+      const data = await installOptionalFeaturePackage(String(body.featureId || ""), tab.cwd);
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/optional-feature-install-batch" && req.method === "POST") {
+      requireLocalhost(req, "Installing optional Web UI features is only allowed from localhost");
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
+      const data = await installOptionalFeaturePackages(body.featureIds, tab.cwd);
       sendJson(res, 200, { ok: true, data });
       return;
     }

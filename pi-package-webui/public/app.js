@@ -2827,6 +2827,8 @@ const optionalFeaturePackageStatuses = new Map();
 const optionalFeatureInstallMessages = new Map();
 const optionalFeatureInstallStates = new Map();
 const optionalFeatureInstallProgressTimers = new Map();
+let optionalFeatureBatchState = null;
+let optionalFeaturePackageStatusesLoaded = false;
 let optionalFeaturePackageStatusError = "";
 const gitFooterPayloadRefreshInFlightByTab = new Set();
 const gitFooterPayloadStateByTab = new Map();
@@ -7137,8 +7139,8 @@ function renderUpdateNotification(status = latestUpdateStatus, { force = false }
   if (elements.updateNotificationMessage) {
     let message = "Updates are available. Direct Web UI updates are only enabled from localhost on the host machine.";
     if (canRunUpdate) {
-      if (hasPiUpdate && hasPackageUpdate) message = "Run pi update --self for Pi only, or update all to use pi update --all when supported and include Web UI, Optional Features, configured Pi packages, and detected Pi package roots, then restart this Web UI server automatically.";
-      else if (hasPackageUpdate) message = "Update all checks for pi update --all support, then refreshes Web UI/package entries, Optional Features, configured Pi packages, and detected Pi package roots before restarting this Web UI server automatically.";
+      if (hasPiUpdate && hasPackageUpdate) message = "Run pi update --self for Pi only, or update all to use Pi for configured packages and Optional Features while refreshing detected core Pi/Web UI package roots, then restart this Web UI server automatically.";
+      else if (hasPackageUpdate) message = "Update all uses Pi for configured packages and Optional Features, then refreshes detected core Pi/Web UI package roots before restarting this Web UI server automatically.";
       else message = "Run pi update --self for Pi only, then restart this Web UI server automatically.";
     }
     elements.updateNotificationMessage.textContent = message;
@@ -7380,8 +7382,8 @@ function piUpdateConfirmationText({ all = false } = {}) {
   const workingWarning = hasWorkingTab() ? "\n\nOne or more Pi tabs look busy or blocked. Finish or abort in-flight work before updating if you need to preserve it." : "";
   const versionText = items.length ? `\n\nDetected update: ${items.join(" · ")}.` : "";
   const commandText = all ? '"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"' : '"pi update --self"';
-  const scope = all ? "Pi, configured packages, Optional Features, and detected Pi package roots" : "Pi only";
-  const extra = all ? " It will also run npm/bun package updates for detected Web UI, Optional Feature, agent, project, and global Pi package roots." : "";
+  const scope = all ? "Pi, configured packages including Optional Features, and detected core Pi/Web UI package roots" : "Pi only";
+  const extra = all ? " Pi owns configured Optional Feature updates; direct npm/bun updates are limited to detected core Pi/Web UI package roots." : "";
   return `Run ${scope} now?${versionText}\n\nThis will run ${commandText} on the Web UI host.${extra} After it finishes, Pi Web UI will restart itself. Browser clients will briefly disconnect, and managed Pi tabs/RPC processes will be restarted from saved session state when possible.${workingWarning}`;
 }
 
@@ -33864,6 +33866,23 @@ function optionalFeaturePackageStatus(featureId) {
   return optionalFeaturePackageStatuses.get(featureId) || null;
 }
 
+function optionalFeatureManualInstallCommand(feature) {
+  return feature?.packageName ? `pi install npm:${feature.packageName}` : "";
+}
+
+function optionalFeatureNeedsInstall(feature) {
+  const status = optionalFeaturePackageStatus(feature?.id);
+  return !!status && (status.installed !== true || status.configured !== true);
+}
+
+function optionalFeatureBatchCandidates(features = OPTIONAL_FEATURES) {
+  return features.filter((feature) => optionalFeatureNeedsInstall(feature));
+}
+
+function optionalFeatureBatchIsActive() {
+  return optionalFeatureBatchState?.phase === "running";
+}
+
 function optionalFeaturePackageVersionLabel(status) {
   if (!status?.installedVersion) return "";
   return status.declaredSpec ? `${status.installedVersion} (expects ${status.declaredSpec})` : status.installedVersion;
@@ -33928,13 +33947,24 @@ function optionalFeatureInstallFailureFromError(error) {
   const message = details.message || error?.message || String(error);
   const hint = details.hint || (error?.backendOffline
     ? "The Web UI server connection failed. Check that pi-webui is still running, then retry."
-    : "Run the shown npm command manually from the Web UI host to inspect the full package-manager output.");
+    : "Run the shown Pi command manually from the Web UI host to inspect the full installer output.");
   return { ...details, message, hint, statusCode: error?.statusCode };
 }
 
+function optionalFeatureInstallFailureFromBatchResult(result, feature) {
+  const details = result?.optionalFeatureInstall || {};
+  return {
+    ...details,
+    message: details.message || result?.error || `Pi could not install ${feature.packageName}`,
+    hint: details.hint || "Run the shown Pi command manually from the Web UI host to inspect the full installer output.",
+    command: details.command || optionalFeatureManualInstallCommand(feature),
+  };
+}
+
 async function copyOptionalFeatureInstallCommand(featureId) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
   const state = optionalFeatureInstallState(featureId);
-  const command = String(state?.command || "").trim();
+  const command = String(state?.command || optionalFeatureManualInstallCommand(feature)).trim();
   if (!command) {
     addEvent("optional feature install command is not available yet", "warn");
     return;
@@ -33969,6 +33999,7 @@ async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) 
   try {
     const response = await api("/api/optional-features", { scoped: false });
     optionalFeaturePackageStatusError = "";
+    optionalFeaturePackageStatusesLoaded = true;
     optionalFeaturePackageStatuses.clear();
     for (const status of response.data?.features || []) {
       if (status?.featureId) optionalFeaturePackageStatuses.set(status.featureId, status);
@@ -33977,6 +34008,7 @@ async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) 
     renderOptionalFeatureControls();
     return true;
   } catch (error) {
+    optionalFeaturePackageStatusesLoaded = false;
     optionalFeaturePackageStatusError = error.message || String(error);
     renderOptionalFeatureControls();
     if (announce) addEvent(`optional feature package status check failed: ${optionalFeaturePackageStatusError}`, "warn");
@@ -34105,27 +34137,39 @@ function optionalFeatureStatus(featureId) {
     return {
       label: optionalFeatureInstallPhaseLabel(installState),
       className: "updating",
-      detail: optionalFeatureInstallDetail(installState, installMessage || "npm install is running; waiting for package-manager output"),
-      hint: "The package manager may be quiet for a while; elapsed time updates here until npm exits.",
-      command: installState?.command || "",
+      detail: optionalFeatureInstallDetail(installState, installMessage || "Pi install is running; waiting for installer output"),
+      hint: "Pi may be quiet while resolving the package; elapsed time updates here until it exits.",
+      command: installState?.command || optionalFeatureManualInstallCommand(feature),
     };
   }
   if (installState?.phase === "failed") {
     return {
       label: optionalFeatureInstallPhaseLabel(installState),
       className: "failed",
-      detail: optionalFeatureInstallDetail(installState, installState.detail || installMessage || "npm install failed"),
-      hint: installState.hint || "Copy the npm command and run it manually from the Web UI host for full diagnostics.",
-      command: installState.command || "",
+      detail: optionalFeatureInstallDetail(installState, installState.detail || installMessage || "Pi install failed"),
+      hint: installState.hint || "Copy the Pi command and run it manually from the Web UI host for full diagnostics.",
+      command: installState.command || optionalFeatureManualInstallCommand(feature),
     };
   }
   const doneDetail = installState?.phase === "done" ? optionalFeatureInstallDetail(installState, installMessage) : "";
+  if (!packageStatus && !detected) return { label: "Checking", className: "updating", detail: "Checking Pi installation and registration status…" };
   if (packageStatus?.updateAvailable) return { label: "Update available", className: "updating", detail: packageStatus.updateReason || `Installed package is older than the Web UI expects${versionSuffix}` };
   if (detected && managedWithTools) return { label: "Loaded", className: "enabled", detail: doneDetail || `Detected in the active Pi tab; manage access in Tools${versionSuffix}`, command: installState?.command || "" };
   if (detected && !disabled) return { label: "Enabled", className: "enabled", detail: doneDetail || `Detected and enabled in Web UI${versionSuffix}`, command: installState?.command || "" };
   if (detected && disabled) return { label: "Disabled", className: "disabled", detail: `Detected, but disabled in Web UI${versionSuffix}` };
-  if (packageStatus?.installed) return { label: "Installed", className: "installed", detail: doneDetail || `Package is installed but not loaded in the active Pi tab${versionSuffix}`, command: installState?.command || "" };
-  return { label: "Install needed", className: "missing", detail: installMessage || "Package is not installed or not visible from the Web UI package root" };
+  if (packageStatus?.installed && packageStatus?.configured) return { label: "Installed", className: "installed", detail: doneDetail || `Registered with Pi but not loaded in the active tab${versionSuffix}`, command: installState?.command || "" };
+  if (packageStatus?.installed && !packageStatus?.configured) return {
+    label: "Registration needed",
+    className: "missing",
+    detail: doneDetail || `Package files exist, but the package is not registered in Pi settings${versionSuffix}`,
+    command: optionalFeatureManualInstallCommand(feature),
+  };
+  return {
+    label: "Install needed",
+    className: "missing",
+    detail: installMessage || "Package is not installed and registered with Pi",
+    command: optionalFeatureManualInstallCommand(feature),
+  };
 }
 
 function optionalFeatureTooltip(feature, status) {
@@ -34158,10 +34202,39 @@ function optionalFeatureWidgetHasSpecializedRenderer(key) {
   return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === AUR_REVIEW_RPC_WIDGET_KEY || key === "workflow:subprocess" || key === WORKFLOW_INSPECTOR_WIDGET_KEY;
 }
 
+function renderOptionalFeatureBatchToolbar() {
+  const candidates = optionalFeatureBatchCandidates();
+  const busy = optionalFeatureBatchIsActive();
+  const toolbar = make("div", "optional-feature-batch-toolbar");
+  const action = make("button", "optional-feature-batch-action", busy ? "Installing…" : "Install all");
+  action.type = "button";
+  action.disabled = busy || optionalFeatureInstallInProgress.size > 0 || !optionalFeaturePackageStatusesLoaded || candidates.length === 0 || !!optionalFeaturePackageStatusError;
+  action.setAttribute("aria-label", candidates.length
+    ? `Install all ${candidates.length} missing or unregistered optional features`
+    : "All optional features are installed and registered");
+  if (busy) action.setAttribute("aria-busy", "true");
+  action.addEventListener("click", () => installOptionalFeatureBatch(OPTIONAL_FEATURES, { scopeLabel: "all optional features" }));
+
+  let summary = !optionalFeaturePackageStatusesLoaded
+    ? optionalFeaturePackageStatusError ? "Install availability unknown" : "Checking Pi package status…"
+    : candidates.length ? `${candidates.length} missing or unregistered` : "All installed and registered";
+  if (optionalFeatureBatchState?.phase === "running") {
+    summary = `Installing ${optionalFeatureBatchState.total} sequentially with Pi…`;
+  } else if (["done", "failed"].includes(optionalFeatureBatchState?.phase)) {
+    summary = `Batch finished: ${optionalFeatureBatchState.succeeded} succeeded, ${optionalFeatureBatchState.failed} failed.`;
+  }
+  const status = make("div", `optional-feature-batch-status${optionalFeatureBatchState?.failed ? " warning" : ""}`, summary);
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  toolbar.append(status, action);
+  return toolbar;
+}
+
 function renderOptionalFeaturePanel() {
   if (!elements.optionalFeaturesBox) return;
   elements.optionalFeaturesBox.replaceChildren();
   elements.optionalFeaturesBox.classList.remove("muted");
+  elements.optionalFeaturesBox.append(renderOptionalFeatureBatchToolbar());
 
   if (optionalFeaturePackageStatusError) {
     const notice = make("div", "optional-feature-panel-notice error");
@@ -34202,10 +34275,18 @@ function renderOptionalFeatureSection(section, features) {
   sectionNode.dataset.optionalFeatureSection = section.id;
 
   const header = make("div", "optional-feature-section-header");
-  header.append(
-    make("div", "optional-feature-section-title", section.label),
-    make("span", "optional-feature-section-count", String(features.length)),
-  );
+  const headerActions = make("div", "optional-feature-section-actions");
+  const candidates = optionalFeatureBatchCandidates(features);
+  const installMissing = make("button", "optional-feature-section-install", optionalFeatureBatchIsActive() ? "Installing…" : "Install missing");
+  installMissing.type = "button";
+  installMissing.disabled = optionalFeatureBatchIsActive() || optionalFeatureInstallInProgress.size > 0 || !optionalFeaturePackageStatusesLoaded || candidates.length === 0 || !!optionalFeaturePackageStatusError;
+  installMissing.setAttribute("aria-label", candidates.length
+    ? `Install ${candidates.length} missing or unregistered features in ${section.label}`
+    : `All features in ${section.label} are installed and registered`);
+  if (optionalFeatureBatchIsActive()) installMissing.setAttribute("aria-busy", "true");
+  installMissing.addEventListener("click", () => installOptionalFeatureBatch(features, { scopeLabel: section.label }));
+  headerActions.append(make("span", "optional-feature-section-count", String(features.length)), installMissing);
+  header.append(make("div", "optional-feature-section-title", section.label), headerActions);
   sectionNode.append(header);
   if (section.description) sectionNode.append(make("div", "optional-feature-section-description", section.description));
 
@@ -34227,6 +34308,7 @@ function renderOptionalFeatureRow(feature) {
   const tooltip = optionalFeatureTooltip(feature, status);
   row.dataset.tooltip = tooltip;
   row.setAttribute("aria-label", tooltip.replace(/\s+/g, " "));
+  if (installing) row.setAttribute("aria-busy", "true");
   row.tabIndex = 0;
 
   const main = make("div", "optional-feature-main");
@@ -34255,7 +34337,7 @@ function renderOptionalFeatureRow(feature) {
   const actions = make("div", "optional-feature-actions");
   const action = make("button", "optional-feature-action");
   action.type = "button";
-  action.disabled = installing;
+  action.disabled = installing || optionalFeatureBatchIsActive() || (!optionalFeaturePackageStatusesLoaded && !detected);
   if (installing) {
     action.textContent = installState?.actionLabel === "Update" ? "Updating…" : "Installing…";
     action.setAttribute("aria-busy", "true");
@@ -34299,7 +34381,7 @@ function renderOptionalFeatureRow(feature) {
         successMessage: `${feature.label} was ${disabled ? "re-enabled" : "disabled again"}.`,
       });
     });
-  } else if (packageStatus?.installed) {
+  } else if (packageStatus?.ready) {
     action.textContent = "Reload";
     action.addEventListener("click", () => sendPrompt("prompt", "/reload"));
   } else {
@@ -34311,6 +34393,7 @@ function renderOptionalFeatureRow(feature) {
   if (status.command) {
     const copyCommand = make("button", "optional-feature-action copy-command", "Copy cmd");
     copyCommand.type = "button";
+    copyCommand.disabled = optionalFeatureBatchIsActive();
     copyCommand.addEventListener("click", () => copyOptionalFeatureInstallCommand(feature.id));
     actions.append(copyCommand);
   }
@@ -34445,16 +34528,16 @@ function commandUnavailableMessage(commandName) {
 
 async function installOptionalFeature(featureId, { update = false } = {}) {
   const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
-  if (!feature || optionalFeatureInstallInProgress.has(featureId)) return;
+  if (!feature || optionalFeatureInstallInProgress.has(featureId) || optionalFeatureBatchIsActive()) return;
 
   const actionLabel = update ? "Update" : "Install";
   const warning = [
     `${actionLabel} optional feature: ${feature.label}?`,
     "",
-    `This will run npm install for ${feature.packageName} in the Web UI package install root.`,
-    "It can download code from npm and modify the local Pi/Web UI npm installation.",
-    "Progress, elapsed time, the npm command, and actionable failures will be shown in the optional-features row and activity log.",
-    "If this feature is already installed but disabled in Pi settings, cancel and enable it there instead.",
+    `This will run ${optionalFeatureManualInstallCommand(feature)} with the selected Pi CLI.`,
+    "Pi can download code from npm and update its user package registration and package storage.",
+    "Progress, elapsed time, the Pi command, and actionable failures will be shown in the optional-features row and activity log.",
+    "Re-running the same Pi install command is the supported update path.",
     "",
     "Continue?",
   ].join("\n");
@@ -34462,34 +34545,34 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
 
   const startedAt = Date.now();
   optionalFeatureInstallInProgress.add(featureId);
-  optionalFeatureInstallMessages.set(featureId, `${actionLabel} preparing; resolving Web UI package install root…`);
+  optionalFeatureInstallMessages.set(featureId, `${actionLabel} preparing with Pi…`);
   setOptionalFeatureInstallState(featureId, {
     phase: "preparing",
     actionLabel,
     startedAt,
     endedAt: 0,
-    detail: "Resolving safe Web UI package install root…",
-    hint: "The package manager has not started yet.",
-    command: "",
+    detail: "Resolving the selected Pi CLI…",
+    hint: "The Pi installer has not started yet.",
+    command: optionalFeatureManualInstallCommand(feature),
     outputTail: "",
   });
   startOptionalFeatureInstallProgressTimer(featureId);
-  addEvent(`${update ? "updating" : "installing"} optional feature ${feature.label} (${feature.packageName})…`, "warn");
+  addEvent(`${update ? "updating" : "installing"} optional feature ${feature.label} (${feature.packageName}) with Pi…`, "warn");
   setTimeout(() => {
     const state = optionalFeatureInstallState(featureId);
     if (optionalFeatureInstallInProgress.has(featureId) && state?.startedAt === startedAt && state.phase === "preparing") {
-      optionalFeatureInstallMessages.set(featureId, `${actionLabel} running via npm; waiting for package-manager output…`);
+      optionalFeatureInstallMessages.set(featureId, `${actionLabel} running via Pi; waiting for installer output…`);
       setOptionalFeatureInstallState(featureId, {
         phase: "installing",
-        detail: "npm install is running; waiting for package-manager output…",
-        hint: "npm can be quiet while resolving packages. Keep this page open; elapsed time updates here.",
+        detail: "Pi install is running; waiting for installer output…",
+        hint: "Pi may be quiet while resolving the npm package. Keep this page open; elapsed time updates here.",
       });
     }
   }, 1200);
 
   try {
     const response = await api("/api/optional-feature-install", { method: "POST", body: { featureId }, scoped: false });
-    const command = response.data?.command || "";
+    const command = response.data?.command || optionalFeatureManualInstallCommand(feature);
     disabledOptionalFeatures.delete(featureId);
     storeDisabledOptionalFeatures();
     optionalFeatureInstallMessages.set(featureId, response.data?.message || `${actionLabel} finished`);
@@ -34497,24 +34580,24 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
       phase: "refreshing",
       actionLabel,
       startedAt,
-      detail: "npm finished; checking package status and refreshed Web UI capabilities…",
-      hint: "If the package is installed but not detected, reload the active Pi tab.",
+      detail: "Pi finished; checking installation and registration status…",
+      hint: "Reload the active Pi tab to load newly registered resources.",
       command,
       outputTail: "",
     });
-    addEvent(response.data?.message || `${update ? "updated" : "installed"} ${feature.packageName}`, "info");
+    addEvent(response.data?.message || `${update ? "updated" : "installed"} ${feature.packageName} with Pi`, "info");
     const output = [response.data?.stderr, response.data?.stdout].filter(Boolean).join("\n").trim();
-    if (output) addEvent(`npm output for ${feature.packageName}:\n${output.slice(-4000)}`, "info");
+    if (output) addEvent(`Pi install output for ${feature.packageName}:\n${output.slice(-4000)}`, "info");
     await refreshOptionalFeaturePackageStatuses({ announce: true });
     setOptionalFeatureInstallState(featureId, {
       phase: "done",
       actionLabel,
       endedAt: Date.now(),
-      detail: response.data?.message || `${actionLabel} finished. Reload the active Pi tab to load newly installed resources.`,
+      detail: response.data?.message || `${actionLabel} finished. Reload the active Pi tab to load newly registered resources.`,
       hint: "Use Reload if this row still says Installed instead of Enabled.",
       command,
     });
-    if (await appConfirmText(`${feature.label} ${actionLabel.toLowerCase()} finished. Reload the active Pi tab now to enable newly loaded resources?`, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
+    if (await appConfirmText(`${feature.label} ${actionLabel.toLowerCase()} finished. Reload the active Pi tab now to load its resources?`, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
       sendPrompt("prompt", "/reload");
     } else {
       const tabContext = activeTabContext();
@@ -34530,7 +34613,7 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
       endedAt: Date.now(),
       detail: failure.message,
       hint: failure.hint,
-      command: failure.command || optionalFeatureInstallState(featureId)?.command || "",
+      command: failure.command || optionalFeatureInstallState(featureId)?.command || optionalFeatureManualInstallCommand(feature),
       outputTail: failure.outputTail || "",
       errorKind: failure.kind || "unknown",
     });
@@ -34538,6 +34621,140 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
   } finally {
     optionalFeatureInstallInProgress.delete(featureId);
     clearOptionalFeatureInstallProgressTimer(featureId);
+    renderOptionalFeatureControls();
+  }
+}
+
+async function installOptionalFeatureBatch(features, { scopeLabel = "optional features" } = {}) {
+  if (optionalFeatureBatchIsActive() || optionalFeatureInstallInProgress.size > 0) return;
+  const candidates = optionalFeatureBatchCandidates(features);
+  if (!candidates.length) {
+    addEvent(`no missing or unregistered ${scopeLabel} to install`, "info");
+    return;
+  }
+
+  const warning = [
+    `Install ${candidates.length} missing or unregistered ${scopeLabel}?`,
+    "",
+    "The selected Pi CLI will run one install command at a time:",
+    ...candidates.map((feature) => optionalFeatureManualInstallCommand(feature)),
+    "",
+    "Pi can download code from npm and update its user package registration and package storage.",
+    "The batch continues after individual failures and reports every result.",
+    "",
+    "Continue?",
+  ].join("\n");
+  if (!(await appConfirmText(warning, {
+    affected: `${candidates.length} optional feature package${candidates.length === 1 ? "" : "s"}`,
+    confirmLabel: candidates.length === 1 ? "Install feature" : "Install features",
+  }))) return;
+
+  const startedAt = Date.now();
+  const featureIds = candidates.map((feature) => feature.id);
+  optionalFeatureBatchState = { phase: "running", scopeLabel, total: candidates.length, succeeded: 0, failed: 0, startedAt };
+  candidates.forEach((feature, index) => {
+    optionalFeatureInstallInProgress.add(feature.id);
+    optionalFeatureInstallMessages.set(feature.id, `Queued in Pi install batch (${index + 1} of ${candidates.length})…`);
+    setOptionalFeatureInstallState(feature.id, {
+      phase: "installing",
+      actionLabel: "Install",
+      startedAt,
+      endedAt: 0,
+      detail: `Sequential Pi install batch position ${index + 1} of ${candidates.length}…`,
+      hint: "The server continues to the next package even if an earlier install fails.",
+      command: optionalFeatureManualInstallCommand(feature),
+      outputTail: "",
+    });
+    startOptionalFeatureInstallProgressTimer(feature.id);
+  });
+  addEvent(`installing ${candidates.length} missing or unregistered ${scopeLabel} sequentially with Pi…`, "warn");
+
+  try {
+    const response = await api("/api/optional-feature-install-batch", {
+      method: "POST",
+      body: { featureIds },
+      scoped: false,
+    });
+    const results = Array.isArray(response.data?.results) ? response.data.results : [];
+    const resultByFeatureId = new Map(results.map((result) => [result?.featureId, result]));
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const feature of candidates) {
+      const result = resultByFeatureId.get(feature.id);
+      if (result?.ok === true) {
+        succeeded += 1;
+        const data = result.data || {};
+        const command = data.command || optionalFeatureManualInstallCommand(feature);
+        disabledOptionalFeatures.delete(feature.id);
+        optionalFeatureInstallMessages.set(feature.id, data.message || "Installed and registered with Pi");
+        setOptionalFeatureInstallState(feature.id, {
+          phase: "done",
+          actionLabel: "Install",
+          startedAt,
+          endedAt: Date.now(),
+          detail: data.message || "Installed and registered with Pi. Reload the active tab to load its resources.",
+          hint: "Reload the active Pi tab to load newly registered resources.",
+          command,
+          outputTail: "",
+        });
+        addEvent(data.message || `installed ${feature.packageName} with Pi`, "info");
+      } else {
+        failed += 1;
+        const failure = optionalFeatureInstallFailureFromBatchResult(result, feature);
+        optionalFeatureInstallMessages.set(feature.id, `Install failed: ${failure.message}`);
+        setOptionalFeatureInstallState(feature.id, {
+          phase: "failed",
+          actionLabel: "Install",
+          startedAt,
+          endedAt: Date.now(),
+          detail: failure.message,
+          hint: failure.hint,
+          command: failure.command,
+          outputTail: failure.outputTail || "",
+          errorKind: failure.kind || "unknown",
+        });
+        addEvent(`install optional feature ${feature.label} failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
+      }
+    }
+    storeDisabledOptionalFeatures();
+    optionalFeatureBatchState = { phase: "done", scopeLabel, total: candidates.length, succeeded, failed, startedAt, endedAt: Date.now() };
+    await refreshOptionalFeaturePackageStatuses({ announce: true });
+    addEvent(`optional feature batch finished: ${succeeded} succeeded, ${failed} failed`, failed ? "warn" : "info");
+
+    const reloadMessage = failed
+      ? `Optional feature batch finished: ${succeeded} succeeded and ${failed} failed. Reload the active Pi tab now to load resources from successful installs?`
+      : `All ${succeeded} optional feature installs succeeded. Reload the active Pi tab now to load their resources?`;
+    if (await appConfirmText(reloadMessage, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
+      sendPrompt("prompt", "/reload");
+    } else {
+      const tabContext = activeTabContext();
+      await Promise.allSettled([refreshCommands(tabContext), initializeThemes()]);
+      if (isCurrentTabContext(tabContext)) renderOptionalFeatureControls();
+    }
+  } catch (error) {
+    const failure = optionalFeatureInstallFailureFromError(error);
+    for (const feature of candidates) {
+      optionalFeatureInstallMessages.set(feature.id, `Batch request failed: ${failure.message}`);
+      setOptionalFeatureInstallState(feature.id, {
+        phase: "failed",
+        actionLabel: "Install",
+        startedAt,
+        endedAt: Date.now(),
+        detail: failure.message,
+        hint: failure.hint,
+        command: failure.command || optionalFeatureManualInstallCommand(feature),
+        outputTail: failure.outputTail || "",
+        errorKind: failure.kind || "batch-request",
+      });
+    }
+    optionalFeatureBatchState = { phase: "failed", scopeLabel, total: candidates.length, succeeded: 0, failed: candidates.length, startedAt, endedAt: Date.now() };
+    addEvent(`optional feature batch request failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
+  } finally {
+    for (const feature of candidates) {
+      optionalFeatureInstallInProgress.delete(feature.id);
+      clearOptionalFeatureInstallProgressTimer(feature.id);
+    }
     renderOptionalFeatureControls();
   }
 }

@@ -140,9 +140,8 @@ Environment variables:
 - `PI_WEBUI_RPC_SUPERVISOR=0` opts out to the legacy server-owned Pi transport only when the current scope has no live managed tabs. Use explicit shutdown before disabling or downgrading; fallback startup refuses to create duplicate direct children for a live managed scope.
 - Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` authoritatively overrides the private Web UI settings file (normally `~/.pi/webui/settings.json`) and disables automatic import from the old XDG location.
-- `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` overrides the npm prefix used for optional companion installs.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.
-- `PI_WEBUI_NPM_BIN=/path/to/npm` overrides the npm executable used by optional feature install/update actions. By default, Web UI resolves the selected `pi` command, prefers `npm-cli.js` from that Pi installation, and runs it through Node. This prevents stale earlier `PATH` shims such as `%APPDATA%\npm\npm.cmd` from redirecting updates away from the active Pi installation.
+- Optional feature install/update actions use the selected Pi executable (`--pi` or `PI_WEBUI_PI_BIN`) so registration and package storage stay owned by Pi.
 - `PI_BANG_AUTOCOMPLETE_INCLUDE_HISTORY=1` lets optional bang-command autocomplete include local fish/bash/zsh history executables.
 - `PI_BANG_AUTOCOMPLETE_RUNTIME_STORE_PATH=/path/to/runtime.json` overrides the runtime store shared with `@firstpick/pi-extension-bang-command-autocomplete`.
 
@@ -218,7 +217,7 @@ Optional Natural Conversation server-side voice fallback variables:
 - Detected app runner dropdown for the active tab cwd, including Cargo, Bun, npm/npx/pnpm, Python/uv, Go/Golang, Zig, C/C++, Docker Compose, root/dev/scripts shell scripts, and other common project runners with live output pinned at the top of the terminal. Running app runners expose line-oriented stdin in the widget for interactive scripts. Projects can add browseable custom runners in `.pi-webui-runners.json` with a command (default `./`) plus a relative path to the file to run. The same dialog also configures project discovery paths: project-relative directories that are scanned one level deep (no subdirectories) for `.sh`, `.bash`, `.zsh`, `.fish`, and `.py` files plus extensionless files with a bash/sh, zsh, fish, or Python shebang. Python candidates use `uv run` and/or the available `python3`/`python` interpreter. Discovered scripts extend the built-in root, `dev/`, `scripts/`, and `dev/scripts/` detection and run from the resolved project root.
 - Guided Git workflow for existing repos and new repos with persistent model/reasoning preferences, review-first staging, an optional manual staged repository-review gate from `aur-review`, generated or typed commit messages, explicit push/PR confirmation, and optional PR worktrees. When the review extension is loaded/enabled, both `git add .` and accepting the current staged set send `/aur-review start --scope staged --origin guided-git` to the same tab. Only its matching approval advances to message generation. The browser and server recheck the approved domain-separated staged-content hash before message generation, commit, and PR-worktree transfer; drift, missing hashes, or hash-check errors return to Stage and require a new review. A decline returns to staging and rejects an unchanged declined staged hash until corrected content is restaged. Guided Git never stages, commits, or pushes remediation automatically. The extension remains the decision authority; direct API callers are not granted an approval by this browser workflow.
 - Browser support for Pi extension UI prompts, widgets, status updates, `/btw` side-question output widgets with optional context transfer/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications.
-- Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update --self` for Pi-only updates, while **Update Pi + Packages & Restart** first checks the selected Pi executable's `pi update --help`. It resolves that Pi installation and puts its bin directory first on the update task's `PATH`, so Pi and detected npm package roots use the npm bundled with the selected Pi instead of an unrelated stale shim. It uses `pi update --all` when advertised, otherwise falls back to `pi update --self` followed by `pi update --extensions`, then updates detected Web UI/Optional Feature package roots for configured, local agent, project, global npm, and global Bun installs.
+- Localhost-only Pi/Web UI update checks with a top-right update notification and confirmed restart actions: **Update Pi & restart** runs `pi update --self` for Pi-only updates, while **Update Pi + Packages & Restart** first checks the selected Pi executable's `pi update --help`. It resolves that Pi installation and puts its bin directory first on the update task's `PATH`, so Pi and detected npm package roots use the npm bundled with the selected Pi instead of an unrelated stale shim. It uses `pi update --all` when advertised, otherwise falls back to `pi update --self` followed by `pi update --extensions`. Pi owns configured Optional Feature updates; direct npm/Bun tasks are limited to detected core Pi/Web UI package roots.
 - Feedback reactions (`👍`, `👎`, `?`) on final assistant output plus tool/bash action cards, which can ask Pi to create or update a LEARNING.
 - Mobile-friendly layout, PWA install support where the browser allows it, backend-offline recovery, and a dedicated server-restart overlay while confirmed restart/update actions run.
 
@@ -345,8 +344,8 @@ Session-specific choices always win when their branch is resumed or selected in 
 
 ![Pi Web UI optional features list showing companion packages and install or update states](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_OptionalFeatures_v0.4.8.png)
 
-- **What it is:** A companion-package manager for Web UI-aware extensions, prompts, themes, and optional dashboards.
-- **What you can do:** See whether each companion is enabled, disabled, installed-but-not-loaded, missing, or updateable; install/update known packages from localhost; and reload affected tabs when a feature becomes available.
+- **What it is:** A Pi package manager for Web UI-aware extensions, prompts, themes, and optional dashboards. Optional companions are separate from the Web UI core install.
+- **What you can do:** See whether each companion is enabled, disabled, registered-but-not-loaded, missing/unregistered, or updateable; keep per-row Install/Update actions; use panel-level **Install all** or section-level **Install missing** for missing/unregistered packages only; and reload affected tabs when resources become available. Bulk installs are confirmed once, run sequentially through Pi, continue after individual failures, and show aggregate plus per-row results.
 
 ### `/btw` side questions
 
@@ -410,10 +409,11 @@ Useful browser endpoints exposed by the local server include:
 - `GET /api/git-root`, `GET /api/git-panel`, and `GET /api/git-commit?hash=<full-hash>` for compact per-terminal-group repository discovery, local status/history snapshots, and bounded read-only commit diffs. `POST /api/git-changes/stage-all` and `POST /api/git-changes/unstage-all` complement the guarded path-level staging routes.
 - `GET /api/git-changes`, `POST /api/git-changes/pull`, `GET /api/git-branches`, `POST /api/git-branch`, and `/api/git-workflow/*` for browser Git status, diff, branch, init, commit, push, and PR helpers.
 - `POST /api/action-feedback?tab=<tabId>` for feedback on final assistant output and action cards.
-- `GET /api/optional-features` for optional companion package install/update status.
-- `POST /api/optional-feature-install` for installing or updating known optional companion packages from the side panel.
+- `GET /api/optional-features` for distinct optional companion installed, Pi-registered/configured, ready, and update status.
+- Localhost-only `POST /api/optional-feature-install` for installing or updating one known optional companion through Pi.
+- Localhost-only `POST /api/optional-feature-install-batch` for a bounded allowlisted `featureIds` batch that Pi installs sequentially and reports with ordered per-feature and aggregate results.
 - `GET /api/git-workflow/staged-content?tab=<tabId>` for the read-only bounded staged-content hash used by Guided Git approval binding.
-- `GET /api/update-status`, localhost-only `POST /api/restart`, and localhost-only `POST /api/update` for checking Pi/Web UI updates and restarting the Web UI. `POST /api/update?all=1` probes the selected Pi executable for `pi update --all`, uses the split `pi update --self` plus `pi update --extensions` fallback when unavailable, and then updates detected Web UI/Optional Feature package roots for configured, local agent, project, global npm, and global Bun installs.
+- `GET /api/update-status`, localhost-only `POST /api/restart`, and localhost-only `POST /api/update` for checking Pi/Web UI updates and restarting the Web UI. `POST /api/update?all=1` probes the selected Pi executable for `pi update --all`, uses the split `pi update --self` plus `pi update --extensions` fallback when unavailable, lets Pi update registered Optional Features, and limits direct npm/Bun updates to detected core Pi/Web UI package roots.
 - `GET /api/network`, localhost-only `POST /api/network/open`, localhost-only `POST /api/network/close`, `GET /api/remote-auth`, `POST /api/remote-auth`, and localhost-only `POST /api/remote-auth/settings` for trusted-LAN exposure and optional 4-digit PIN authentication when serving non-local browser clients.
 
 For local development, run the checkout helper directly, for example:
@@ -435,15 +435,21 @@ npm run test:browser
 
 On hosts with WebKit's system libraries installed, provision it and include its project explicitly with `npx playwright install webkit && PI_WEBUI_TEST_WEBKIT=1 npm run test:browser`. The browser suite is intentionally separate from `npm test`; it covers browser-only geometry, flag/rollback, and scoped axe checks without making ordinary Node/static tests download browser engines.
 
-Run `../dev/scripts/sync-pi-package-symlinks.sh` first when developing companion packages from this workspace. The Web UI manifest loads companions through `node_modules/` paths, and the sync script links those paths to the top-level dev packages so only one copy is loaded.
+When developing a companion package from this workspace, register that package with Pi from its absolute local path (for example, `pi install /path/to/pi-extension-stats`) and reload the affected native Pi/Web UI tabs. Optional companions are resolved from Pi settings rather than the Web UI manifest.
 
 ## Optional companion packages
 
-A normal Pi/npm install includes the published optional companion packages unless optional dependencies are disabled. Each Web UI tab curates Pi resources from the Web UI package that started the server, while preserving unrelated user/project resources. Companion packages installed as global/npm-prefix siblings of the started Web UI package are reused when the Web UI package does not have its own nested optional dependency copy, avoiding duplicate loads while keeping global `pi-webui` launches working. Startup checks loaded Pi capabilities directly through RPC-visible commands and live widget events, then the side panel shows each optional feature as enabled, disabled, installed-but-not-loaded, update-available, or install-needed. Installing or updating a feature is an explicit, warned action with running/failure feedback in the row and activity log; it is localhost-only, limited to known packages, and requires reloading the active Pi tab after installation.
+Installing `npm:@firstpick/pi-package-webui` installs the Web UI core only; optional companions are independently registered Pi packages. Web UI tabs load enabled resources resolved from normal Pi settings, while excluding the Web UI package itself from re-loading. Startup checks loaded Pi capabilities directly through RPC-visible commands, tools, themes, and live widget events. The side panel separately reports physical installation and Pi registration: legacy/hoisted package files without a Pi settings entry remain installable so Pi can register them canonically.
 
-`@firstpick/pi-extension-aur-review` is intentionally not bundled with this WebUI release until it is published. From this workspace, install it locally with `pi install /home/firstpick/pi-coding-agent-forge/pi-extension-aur-review`, then reload the affected Pi/WebUI tab. `pi install npm:@firstpick/pi-extension-aur-review` becomes valid only after that package is published to npm.
+Use a per-row **Install** or **Update** action for one package. **Install all** selects every missing/unregistered feature, while each section's **Install missing** selects only missing/unregistered features in that group; neither bulk action installs updates. A batch has one confirmation, runs sequentially, continues after failures, keeps bounded diagnostics in each row and the activity log, and prompts for one active-tab reload after completion. All browser install actions are localhost-only and limited to the server allowlist.
 
-When the standalone global `pi-webui` launcher is used, optional companion installs target the npm prefix containing the Web UI package when that prefix is safe, otherwise the Pi agent npm root if it contains Web UI. Override the target explicitly with `PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT=/path/to/package-root` when needed.
+You can install any published companion separately from a terminal with its exact unpinned Pi source, then reload Pi/Web UI tabs:
+
+```bash
+pi install npm:@firstpick/pi-extension-stats
+```
+
+Replace the package name with the companion listed below. Re-running the same `pi install npm:<package>` command is the supported update path. `@firstpick/pi-extension-aur-review` is not published yet; from this workspace, use `pi install /home/firstpick/pi-coding-agent-forge/pi-extension-aur-review` until its npm source becomes available.
 
 Optional companions:
 
@@ -557,7 +563,7 @@ Keep this browser configuration disabled until the gateway's exact-origin CORS p
 
 - **`/webui-start` is missing:** restart Pi after installing the package.
 - **Wrong port or existing server:** use `/webui-status detailed`, or start on another port with `/webui-start --port 31500`.
-- **Optional feature is disabled or missing:** check the side panel, install the companion package if needed, then run `/reload` in the active Pi tab.
-- **`spawn npm ENOENT` on Windows during install/update:** use a Web UI release with bundled npm CLI resolution, or run the displayed `npm install` command manually and restart Web UI. Adding Node to `PATH` alone may not help because Windows `spawn()` does not execute the `npm.cmd` shim directly.
+- **Optional feature is disabled, missing, or unregistered:** check the side panel, use its Pi install action (or manually run the displayed `pi install npm:<package>` command), then run `/reload` in the active Pi tab.
+- **Pi install/update fails:** copy the bounded row diagnostics and displayed Pi command. Run that command on the Web UI host to inspect full Pi/npm output and verify that the selected Pi executable can update user package settings.
 - **Remote browser asks for a PIN:** read it from the optional **Remote WebUI** side-panel controls, `/webui-status`, `/remote status`, or the local Web UI server log. Disable the toggle from localhost to remove the PIN gate.
 - **PWA install or notifications are unavailable:** use `localhost` or HTTPS; browser support varies on LAN HTTP URLs.

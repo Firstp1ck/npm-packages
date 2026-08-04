@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [server, app, html, styles, serviceWorker, readme, packageRaw, lockRaw] = await Promise.all([
+const [server, app, html, styles, serviceWorker, readme, packageRaw, lockRaw, optionalFeatureCatalog] = await Promise.all([
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "index.html"), "utf8"),
@@ -13,18 +13,19 @@ const [server, app, html, styles, serviceWorker, readme, packageRaw, lockRaw] = 
   readFile(join(root, "README.md"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
   readFile(join(root, "package-lock.json"), "utf8"),
+  readFile(join(root, "lib", "optional-feature-catalog.mjs"), "utf8"),
 ]);
 const pkg = JSON.parse(packageRaw);
 const lock = JSON.parse(lockRaw);
 const packageName = "@firstpick/pi-extension-codex-fast-mode";
 
-assert.equal(pkg.optionalDependencies?.[packageName], "^0.1.0", "WebUI should declare the Fast-mode companion as optional");
-assert.ok(pkg.pi?.extensions?.includes(`node_modules/${packageName}/index.ts`), "WebUI should load the optional Fast-mode extension when installed");
-assert.equal(lock.packages?.[""]?.optionalDependencies?.[packageName], "^0.1.0", "lock root should mirror the unpublished optional requirement without inventing a resolved artifact");
-assert.equal(lock.packages?.[`node_modules/${packageName}`]?.version, "0.1.0", "lockfile should resolve the published Fast-mode companion");
-assert.equal(lock.packages?.[`node_modules/${packageName}`]?.optional, true, "resolved Fast-mode companion should remain optional");
+assert.equal(pkg.optionalDependencies?.[packageName], undefined, "WebUI should keep the Fast-mode companion as a separate Pi package");
+assert.equal(pkg.pi?.extensions?.includes(`node_modules/${packageName}/index.ts`), false, "WebUI should not claim the separately configured Fast-mode extension");
+assert.equal(lock.packages?.[""]?.optionalDependencies?.[packageName], undefined, "lock root should not install the Fast-mode companion with WebUI core");
+assert.equal(lock.packages?.[`node_modules/${packageName}`], undefined, "lockfile should not resolve the separately installed Fast-mode companion");
+assert.match(optionalFeatureCatalog, /\["codexFastMode", "@firstpick\/pi-extension-codex-fast-mode", "\^0\.1\.0"\]/, "Optional Features should retain the Pi-installable Fast-mode package mapping");
 
-assert.match(server, /\["codexFastMode", "@firstpick\/pi-extension-codex-fast-mode"\]/, "server should register the package in Optional Features");
+assert.match(server, /const OPTIONAL_FEATURE_PACKAGES = new Map\(OPTIONAL_FEATURE_CATALOG/, "server should derive Fast-mode installation from the shared Optional Features catalog");
 assert.match(server, /CODEX_FAST_MODE_STATUS_KEY = "codex-fast-mode"[\s\S]*?CODEX_FAST_MODE_COMMAND_NAME = "fast-mode"/, "server should use the extension-owned status and command contracts");
 assert.match(server, /function codexFastModeStatusState\(statusText\)[\s\S]*?text !== "on" && text !== "off"[\s\S]*?known: true, enabled: text === "on"/, "server should accept only exact published on/off states");
 assert.match(server, /function codexFastModeSnapshot\(tab, patch = \{\}\)[\s\S]*?extensionStatusMap\(tab\)\.get\(CODEX_FAST_MODE_STATUS_KEY\)/, "server snapshots should come from remembered extension status");

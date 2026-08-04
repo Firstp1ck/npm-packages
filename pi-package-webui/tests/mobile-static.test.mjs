@@ -24,13 +24,17 @@ const [pkgRaw, html, css, app, server, extension, readme, startScript, manifestR
 ]);
 const pkg = JSON.parse(pkgRaw);
 const manifest = JSON.parse(manifestRaw);
-const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
 const helper = await readFile(join(root, "webui-rpc-helper.mjs"), "utf8");
 const codexAuth = await readFile(join(root, "lib", "codex-usage-auth.mjs"), "utf8");
+const optionalFeatureCatalog = await readFile(join(root, "lib", "optional-feature-catalog.mjs"), "utf8");
 
 function appFunctionSource(name, nextName) {
   const start = app.indexOf(`function ${name}(`);
-  const end = app.indexOf(`\nfunction ${nextName}(`, start);
+  const nextStarts = [
+    app.indexOf(`\nfunction ${nextName}(`, start),
+    app.indexOf(`\nasync function ${nextName}(`, start),
+  ].filter((index) => index > start);
+  const end = nextStarts.length ? Math.min(...nextStarts) : -1;
   assert.ok(start >= 0 && end > start, `${name} should remain a standalone frontend helper`);
   return app.slice(start, end);
 }
@@ -815,9 +819,10 @@ assert.match(server, /if \(webuiDevServer\) env\.PI_WEBUI_DEV = "1";/, "server r
 assert.match(server, /async function piUpdateCommandSupportsAll\(command\)[\s\S]*runCommand\(command\.command, command\.args \|\| \[\][\s\S]*piUpdateHelpSupportsAll/, "server should check the selected Pi executable's update help");
 assert.match(server, /const supportsAll = all && await piUpdateCommandSupportsAll\(await resolveCommand\(\["update", "--help"\]\)\)[\s\S]*piUpdateCommandSteps\(\{ all, supportsAll \}\)/, "server should prefer --all only when the capability check succeeds");
 assert.match(server, /async function resolveUpdateTasks\(\{ all = false \} = \{\}\)[\s\S]*const piTasks = await resolvePiUpdateCommands\(\{ all \}\)[\s\S]*if \(!all\) return uniqueUpdateTasks\(piTasks\)[\s\S]*currentWebuiPackageUpdateTask\(npmRuntime\)[\s\S]*agentPackageRootUpdateTask\(npmRuntime\)[\s\S]*projectPackageRootUpdateTasks\(npmRuntime\)[\s\S]*npmGlobalPackageRootUpdateTask\(npmRuntime\)[\s\S]*bunGlobalPackageRootUpdateTask\(\)/, "server all-update should run the selected Pi plan plus detected local/global Pi package root tasks with install-aware npm resolution");
-assert.match(server, /const UPDATE_PACKAGE_NAMES = \[\.\.\.new Set\(\[[\s\S]*WEBUI_CONTROLLED_PACKAGES[\s\S]*OPTIONAL_FEATURE_PACKAGES\.values\(\)/, "package-inclusive updates should include Web UI controlled Optional Feature packages");
+assert.match(server, /const OPTIONAL_FEATURE_PACKAGE_NAMES = new Set\(OPTIONAL_FEATURE_PACKAGES\.values\(\)\)[\s\S]*const UPDATE_PACKAGE_NAMES = \[\.\.\.CORE_UPDATE_PACKAGE_NAMES\]\.sort\(\)/, "direct package-root updates should target core packages while retaining the Optional Feature exclusion set");
+assert.match(server, /function isWebuiOrPiPackageName\(packageName\)[\s\S]*OPTIONAL_FEATURE_PACKAGE_NAMES\.has\(name\)\) return false/, "direct npm and Bun update discovery should leave Optional Features under Pi management");
 assert.match(app, /const commandText = all \? '"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"' : '"pi update --self"'/, "frontend update confirmation should describe capability selection and fallback");
-assert.match(app, /Optional Features, and detected Pi package roots/, "frontend all-update confirmation should describe optional-feature and detected-root coverage");
+assert.match(app, /configured packages including Optional Features, and detected core Pi\/Web UI package roots/, "frontend all-update confirmation should distinguish Pi-managed Optional Features from direct core-root updates");
 assert.match(app, /api\(all \? "\/api\/update\?all=1" : "\/api\/update"/, "frontend all update should call the explicit all-mode endpoint");
 assert.match(html, /<option value="update-all">Update Pi \+ Packages &amp; Restart<\/option>/, "side panel should expose package-inclusive updates as a separate server action");
 assert.match(readme, /first checks the selected Pi executable's `pi update --help`[\s\S]*uses `pi update --all` when advertised[\s\S]*otherwise falls back/, "README should document the checked preferred and fallback update modes");
@@ -1326,11 +1331,21 @@ assert.match(app, /\["skills", "tuiSkillsCommand"\][\s\S]*\["tools", "tuiToolsCo
 assert.match(app, /function setNativeCommandMenuOpen\(open\)/, "frontend should track the skills/tools command menu open state separately from Publish");
 assert.match(app, /nativeSkillsButton\.hidden = !isOptionalFeatureEnabled\("tuiSkillsCommand"\)[\s\S]*nativeToolsButton\.hidden = !isOptionalFeatureEnabled\("tuiToolsCommand"\)/, "skills/tools menu items should be hidden by their optional feature toggles");
 assert.match(app, /function renderCommands\(\)/, "side-panel commands should be re-renderable from current optional feature state");
-assert.match(app, /function installOptionalFeature\(featureId, \{ update = false \} = \{\}\)/, "optional features should expose install and update actions");
+const installOptionalFeatureSource = appFunctionSource("installOptionalFeature", "installOptionalFeatureBatch");
+const installOptionalFeatureBatchSource = appFunctionSource("installOptionalFeatureBatch", "runPublishWorkflow");
+assert.match(installOptionalFeatureSource, /featureId, \{ update = false \} = \{\}/, "optional features should expose per-row install and update actions");
 assert.match(app, /api\("\/api\/optional-features"/, "optional feature panel should fetch package install/update status from the backend");
-assert.match(app, /packageStatus\?\.updateAvailable[\s\S]*action\.textContent = "Update…"/, "optional feature package drift should turn the install action into an update action");
-assert.match(app, /optionalFeatureInstallMessages\.set\(featureId[\s\S]*waiting for package-manager output/, "optional feature installs should show running feedback while npm is active");
-assert.match(app, /api\("\/api\/optional-feature-install"/, "optional feature install action should call the backend installer endpoint");
+assert.match(app, /function optionalFeatureNeedsInstall\(feature\)[\s\S]*status\.installed !== true \|\| status\.configured !== true/, "bulk selection should include only physically missing or Pi-unregistered features");
+assert.match(app, /packageStatus\?\.updateAvailable[\s\S]*action\.textContent = "Update…"/, "optional feature package drift should retain the per-row update action");
+assert.match(app, /function optionalFeatureManualInstallCommand\(feature\)[\s\S]*`pi install npm:\$\{feature\.packageName\}`/, "optional feature fallback commands should use the exact unpinned Pi npm source");
+assert.match(app, /function copyOptionalFeatureInstallCommand\(featureId\)[\s\S]*state\?\.command \|\| optionalFeatureManualInstallCommand\(feature\)/, "missing and unregistered rows should expose a copyable Pi fallback command before an install attempt");
+assert.match(installOptionalFeatureSource, /optionalFeatureManualInstallCommand\(feature\)[\s\S]*selected Pi CLI[\s\S]*api\("\/api\/optional-feature-install"/, "per-row install/update should describe and call the Pi-backed endpoint");
+assert.doesNotMatch(installOptionalFeatureSource, /npm install|Web UI package install root|npm command/i, "per-row optional feature copy should not claim that Web UI invokes npm directly");
+assert.match(app, /renderOptionalFeatureBatchToolbar\(\)[\s\S]*"Install all"[\s\S]*installOptionalFeatureBatch\(OPTIONAL_FEATURES/, "optional feature panel should expose Install all");
+assert.match(app, /function renderOptionalFeatureSection\(section, features\)[\s\S]*"Install missing"[\s\S]*installOptionalFeatureBatch\(features/, "each optional feature section should expose Install missing");
+assert.match(installOptionalFeatureBatchSource, /optionalFeatureBatchCandidates\(features\)[\s\S]*await appConfirmText\([\s\S]*api\("\/api\/optional-feature-install-batch"[\s\S]*for \(const feature of candidates\)[\s\S]*result\?\.ok === true[\s\S]*optionalFeatureInstallFailureFromBatchResult/, "bulk install should confirm once, call one backend batch, and settle every requested row independently");
+assert.match(installOptionalFeatureBatchSource, /Batch finished:[\s\S]*succeeded[\s\S]*failed|optional feature batch finished:[\s\S]*succeeded[\s\S]*failed/, "bulk install should expose bounded aggregate success/failure counts");
+assert.equal((installOptionalFeatureBatchSource.match(/confirmLabel: "Reload tab"/g) || []).length, 1, "bulk install should issue exactly one post-batch reload prompt");
 assert.match(app, /id: "btwCommand"[\s\S]*?@firstpick\/pi-extension-btw/, "optional features should include the /btw companion");
 assert.match(app, /BTW_OUTPUT_WIDGET_KEY = "btw:output"[\s\S]*function renderBtwOutputWidget/, "Web UI should render structured /btw output widgets");
 assert.match(app, /if \(key\.startsWith\("btw:"\)\) return "btwCommand"/, "extension widget routing should associate /btw widgets with the optional feature");
@@ -1976,10 +1991,10 @@ assert.ok(mochaBackground.length > 8000, "Catppuccin Mocha background image shou
 
 assert.match(server, /resolveCodexUsageAuth/, "server should use the lock-safe Codex OAuth compatibility adapter");
 assert.match(server, /DefaultPackageManager/, "server should use Pi's package resolver when controlling Web UI tab extension loading");
-assert.match(server, /WEBUI_CONTROLLED_PACKAGES = new Set\(\[[\s\S]*WEBUI_PACKAGE[\s\S]*filter\(\(\[featureId\]\) => featureId !== NATURAL_CONVERSATION_FEATURE_ID\)/, "server should identify Web UI-controlled packages for de-duplicated feature loading while leaving Natural Conversation independently owned");
-assert.match(server, /const args = \["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"\]/, "Web UI tabs should disable implicit resource loading before adding curated resource paths");
-assert.match(server, /normalPiResourcePathsForTab[\s\S]*WEBUI_CONTROLLED_PACKAGES\.has\(packageName\)[\s\S]*continue/, "Web UI tab resource resolution should exclude separately installed Web UI feature packages");
-assert.match(server, /startedWebuiResourcePaths\(resourceType\)/, "Web UI tabs should load feature resources from the started Web UI package");
+assert.match(server, /WEBUI_RESOURCE_EXCLUDED_PACKAGES = new Set\(\[WEBUI_PACKAGE\]\)/, "server should exclude only the Web UI package itself from normal Pi resource loading");
+assert.match(server, /const args = \["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"\]/, "Web UI tabs should disable implicit resource loading before adding resolved resource paths");
+assert.match(server, /normalPiResourcePathsForTab[\s\S]*WEBUI_RESOURCE_EXCLUDED_PACKAGES\.has\(packageName\)[\s\S]*continue/, "Web UI tab resource resolution should retain separately configured optional packages and prevent only self-loading duplication");
+assert.match(server, /startedWebuiResourcePaths\(resourceType\)/, "Web UI tabs should load Web UI-owned resources from the started package");
 assert.match(server, /resolveInstalledPackageSubpath\(nodeModulesRef\.packageName, nodeModulesRef\.subpath\)/, "Web UI should prefer workspace/global/package-root installed packages for node_modules manifest entries");
 assert.match(codexAuth, /CODEX_TOKEN_REFRESH_SKEW_MS = 5 \* 60 \* 1000/, "Codex OAuth credentials should refresh five minutes before expiry");
 assert.match(server, /catch \{[\s\S]*OpenAI Codex OAuth token refresh failed/, "Codex auth failures should be redacted before reaching clients");
@@ -2108,15 +2123,15 @@ assert.match(server, /type: "set_steering_mode"/, "server should expose steering
 assert.match(server, /type: "set_follow_up_mode"/, "server should expose follow-up queue-mode changes for native /settings");
 assert.match(server, /type: "set_auto_compaction"/, "server should expose auto-compaction changes for native /settings");
 assert.match(server, /@firstpick\/pi-themes-bundle/, "server should discover themes from the optional theme package");
-assert.match(server, /const OPTIONAL_FEATURE_PACKAGES = new Map/, "server should whitelist optional feature packages for install actions");
-assert.match(server, /\["bangCommandAutocomplete", "@firstpick\/pi-extension-bang-command-autocomplete"\]/, "server should allow installing the bang autocomplete optional feature");
-assert.match(server, /\["fishUserBash", "@firstpick\/pi-extension-fish-user-bash"\]/, "server should allow installing the fish user-bash optional feature");
-assert.match(server, /\["btwCommand", "@firstpick\/pi-extension-btw"\]/, "server should allow installing the /btw optional feature");
-assert.match(server, /\["safetyGuard", "@firstpick\/pi-extension-safety-guard"\]/, "server should allow installing the safety guard optional feature");
-assert.match(server, /\["tuiSkillsCommand", "@firstpick\/pi-extension-setup-skills"\]/, "server should allow installing the TUI skills optional feature");
-assert.match(server, /\["tuiToolsCommand", "@firstpick\/pi-extension-tools"\]/, "server should allow installing the TUI tools optional feature");
-assert.match(server, /\["questionnaire", "@firstpick\/pi-package-questionnaire"\]/, "server should allow explicitly installing the native questionnaire optional feature");
-assert.match(server, /\["naturalConversation", "@firstpick\/pi-package-natural-conversation"\]/, "server should know the standalone Natural Conversation package for status\/install guidance without making it WebUI-owned");
+assert.match(server, /const OPTIONAL_FEATURE_PACKAGES = new Map\(OPTIONAL_FEATURE_CATALOG/, "server should derive install allowlisting from the optional feature catalog");
+assert.match(optionalFeatureCatalog, /\["bangCommandAutocomplete", "@firstpick\/pi-extension-bang-command-autocomplete"/, "catalog should allow installing the bang autocomplete optional feature");
+assert.match(optionalFeatureCatalog, /\["fishUserBash", "@firstpick\/pi-extension-fish-user-bash"/, "catalog should allow installing the fish user-bash optional feature");
+assert.match(optionalFeatureCatalog, /\["btwCommand", "@firstpick\/pi-extension-btw"/, "catalog should allow installing the /btw optional feature");
+assert.match(optionalFeatureCatalog, /\["safetyGuard", "@firstpick\/pi-extension-safety-guard"/, "catalog should allow installing the safety guard optional feature");
+assert.match(optionalFeatureCatalog, /\["tuiSkillsCommand", "@firstpick\/pi-extension-setup-skills"/, "catalog should allow installing the TUI skills optional feature");
+assert.match(optionalFeatureCatalog, /\["tuiToolsCommand", "@firstpick\/pi-extension-tools"/, "catalog should allow installing the TUI tools optional feature");
+assert.match(optionalFeatureCatalog, /\["questionnaire", "@firstpick\/pi-package-questionnaire"/, "catalog should allow explicitly installing the native questionnaire optional feature");
+assert.match(optionalFeatureCatalog, /\["naturalConversation", "@firstpick\/pi-package-natural-conversation"/, "catalog should know the standalone Natural Conversation package for status and install guidance");
 assert.match(server, /const NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "server should detect Natural Conversation from RPC-visible command aliases");
 assert.match(server, /function naturalConversationFeatureData\(tab[\s\S]*getCommandData\(tab, \{ annotateSkills: false \}\)[\s\S]*available[\s\S]*mode/, "server should expose a capability-based Natural Conversation feature snapshot");
 assert.match(server, /url\.pathname === "\/api\/features\/natural-conversation" && req\.method === "GET"[\s\S]*naturalConversationFeatureData\(tab\)/, "server should expose Natural Conversation feature metadata");
@@ -2126,18 +2141,16 @@ assert.match(server, /PI_VOICE_STT_URL[\s\S]*PI_VOICE_TTS_URL[\s\S]*GROQ_API_KEY
 assert.match(server, /function requireRemoteMicConsentForStt\(req, body = \{\}\)[\s\S]*remoteMicStreamingConsentAccepted/, "server STT fallback should require explicit remote microphone streaming consent for remote clients");
 assert.match(server, /function ensureNaturalConversationPromptSafety\(tab, command\)[\s\S]*setThinkingLevelForTab\(tab, "off"/, "server should force thinking off before WebUI prompts while conversation mode is active");
 assert.match(server, /function enforceNaturalConversationCommandAllowed\(tab, command\)[\s\S]*thinking is forced off[\s\S]*slash commands are blocked from the Web UI shell/, "server should block unsafe direct RPC\/WebUI commands while conversation mode is active");
-assert.match(server, /function optionalFeaturePackageStatus\(featureId\)/, "server should report optional feature package install\/update status");
-assert.match(server, /function installOptionalFeaturePackage\(featureId\)/, "server should provide optional feature package installation helper");
-assert.match(server, /PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT/, "optional feature installs should support an explicit package-manager root override");
-assert.match(server, /function configuredAgentNpmRoot\(\)/, "global Web UI launches should consider Pi's agent npm root for optional packages");
-assert.match(server, /installRootDeclaresPackage\(.*?@firstpick\/pi-package-webui/s, "optional feature installs should reuse a node_modules parent that declares the Web UI package dependency");
-assert.match(server, /installRootContainsPackage\(.*?@firstpick\/pi-package-webui/s, "global npm Web UI launches should also accept the prefix containing the Web UI package folder");
-assert.match(server, /resolveInstalledPackageSubpath\(nodeModulesRef\.packageName, nodeModulesRef\.subpath\)/, "started Web UI resource resolution should fall back to globally installed sibling optional packages");
-assert.match(server, /if \(webuiDevServer\) return installRoot/, "source-checkout Web UI launches should still use the checkout root for optional feature installs");
-assert.match(server, /Could not determine a safe optional feature install root/, "optional feature installs should fail closed when no safe package root can be found");
+assert.match(server, /function optionalFeaturePackageStatus\(featureId, cwd = options\.cwd\)[\s\S]*installed[\s\S]*configured[\s\S]*ready/, "server should report distinct optional feature installation and Pi registration status");
+assert.match(server, /function installOptionalFeaturePackage\(featureId, cwd = options\.cwd\)[\s\S]*const source = `npm:\$\{packageName\}`[\s\S]*resolvePiCommand\(\["install", source\]\)/, "server should install and update optional features through the selected Pi CLI");
+assert.match(server, /function configuredAgentNpmRoot\(\)/, "status discovery should consider Pi's agent npm root for legacy or hoisted packages");
+assert.match(server, /resolveInstalledPackageSubpath\(nodeModulesRef\.packageName, nodeModulesRef\.subpath\)/, "started Web UI resource resolution should support configured package resources");
 assert.match(server, /url\.pathname === "\/api\/optional-features" && req\.method === "GET"/, "server should expose optional feature package status endpoint");
-assert.match(server, /url\.pathname === "\/api\/optional-feature-install" && req\.method === "POST"/, "server should expose optional feature install endpoint");
-assert.match(server, /requireLocalhostRoute\(req, url\.pathname\)/, "optional feature install endpoint should use shared localhost trust policy");
+assert.match(server, /url\.pathname === "\/api\/optional-feature-install" && req\.method === "POST"/, "server should preserve the optional feature single-install endpoint");
+assert.match(server, /url\.pathname === "\/api\/optional-feature-install-batch" && req\.method === "POST"[\s\S]*installOptionalFeaturePackages\(body\.featureIds, tab\.cwd\)/, "server should expose the sequential optional feature batch endpoint");
+assert.match(server, /function validateOptionalFeatureBatch\(featureIds\)[\s\S]*OPTIONAL_FEATURE_CATALOG\.length[\s\S]*seen\.has\(value\)/, "server batch validation should remain allowlisted, bounded, and deduplicated");
+assert.match(server, /async function installOptionalFeaturePackages\(featureIds, cwd = options\.cwd\)[\s\S]*for \(const featureId of requestedFeatureIds\)[\s\S]*catch \(error\)[\s\S]*succeeded[\s\S]*failed/, "server batch execution should be sequential and continue after per-feature failures");
+assert.match(server, /requireLocalhostRoute\(req, url\.pathname\)|requireLocalhost\(req, "Installing optional Web UI features is only allowed from localhost"\)/, "optional feature install endpoints should enforce localhost trust policy");
 assert.match(server, /url\.pathname === "\/api\/skill-file" && req\.method === "GET"[\s\S]*?getSkillFileData/, "server should expose GET /api/skill-file for editable skill content");
 assert.match(server, /url\.pathname === "\/api\/skill-file" && req\.method === "POST"[\s\S]*?requireLocalhostRoute\(req, url\.pathname\)[\s\S]*?saveSkillFileData/, "server should expose localhost-only POST /api/skill-file for saving skill content");
 assert.match(server, /function resolveEditableSkillFile\(tab, request = \{\}\)[\s\S]*?path\.basename\(skill\.filePath\) !== "SKILL\.md"/, "skill file API should validate that edits target resolved SKILL.md resources");
@@ -2166,20 +2179,23 @@ assert.match(readme, /optional `@firstpick\/pi-extension-fish-user-bash` compani
 assert.match(readme, /GET \/api\/path-suggestions\?tab=<tabId>&query=<path>/, "README should document the path-suggestions endpoint");
 assert.match(readme, /GET \/api\/optional-features/, "README should document optional feature status endpoint");
 assert.match(readme, /POST \/api\/optional-feature-install/, "README should document optional feature install endpoint");
+assert.match(readme, /POST \/api\/optional-feature-install-batch[\s\S]*bounded allowlisted[\s\S]*sequentially/, "README should document the bounded sequential batch endpoint");
+assert.match(readme, /\*\*Install all\*\*[\s\S]*\*\*Install missing\*\*[\s\S]*missing\/unregistered[\s\S]*one confirmation[\s\S]*continues after failures/, "README should document bulk control scope and partial-failure behavior");
+assert.match(readme, /pi install npm:@firstpick\/pi-extension-stats[\s\S]*Re-running the same `pi install npm:<package>` command is the supported update path/, "README should document separate manual Pi package installation and updates");
 assert.match(readme, /server-persisted fast picks/, "README should describe server-persisted fast picks");
 assert.match(readme, /`\/btw` side-question output widgets with optional context transfer\/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications/, "README should describe /btw, blocked-tab, and agent-done notifications");
 assert.match(readme, /blocked-tab browser notifications, and optional agent-done notifications require browser service-worker\/notification support/, "README should document notification requirements");
 assert.match(readme, /Side-panel theme picker backed by optional `@firstpick\/pi-themes-bundle` themes when loaded/, "README should describe optional theme selection");
 assert.match(readme, /## Optional companion packages/, "README should document optional Web UI companion packages");
-assert.match(readme, /curates Pi resources from the Web UI package that started the server/, "README should document started-package-based Web UI feature loading");
-assert.match(readme, /Companion packages installed as global\/npm-prefix siblings/, "README should document global sibling companion discovery");
-assert.match(readme, /avoiding duplicate loads while keeping global `pi-webui` launches working/, "README should document duplicate companion suppression");
-assert.match(readme, /checks loaded Pi capabilities directly through RPC-visible commands and live widget events/, "README should document capability-based startup checks");
-assert.match(readme, /side panel shows each optional feature as enabled, disabled, installed-but-not-loaded, update-available, or install-needed/, "README should document optional feature side-panel controls");
-assert.match(readme, /Installing or updating a feature is an explicit, warned action with running\/failure feedback/, "README should document optional feature install and update warning behavior");
+assert.match(readme, /Web UI tabs load enabled resources resolved from normal Pi settings/, "README should document Pi-settings-based optional feature loading");
+assert.match(readme, /legacy\/hoisted package files without a Pi settings entry remain installable/, "README should document migration handling for physically present but unregistered packages");
+assert.match(readme, /excluding the Web UI package itself from re-loading/, "README should document Web UI self-loading duplicate prevention");
+assert.match(readme, /checks loaded Pi capabilities directly through RPC-visible commands, tools, themes, and live widget events/, "README should document capability-based startup checks");
+assert.match(readme, /side panel separately reports physical installation and Pi registration/, "README should document distinct installed and registered optional feature status");
+assert.match(readme, /per-row \*\*Install\*\* or \*\*Update\*\* action[\s\S]*batch has one confirmation[\s\S]*bounded diagnostics/, "README should document per-row and bulk warning/result behavior");
 assert.match(readme, /Natural Conversation Mode shell[\s\S]*\/talk[\s\S]*read-only/, "README should document the optional Natural Conversation WebUI shell");
 assert.match(readme, /\.\/dev\/scripts\/start-webui\.sh --dev --cwd \/path\/to\/project/, "README should document the dev helper launcher");
-assert.match(readme, /sync-pi-package-symlinks\.sh[\s\S]*only one copy is loaded/, "README should document dev companion symlink setup");
+assert.match(readme, /register that package with Pi from its absolute local path[\s\S]*resolved from Pi settings rather than the Web UI manifest/, "README should document local companion registration through Pi settings");
 assert.match(startScript, /--dev\)/, "start-webui.sh should accept a --dev flag");
 assert.match(startScript, /local_pi_webui_bin\(\)/, "start-webui.sh should resolve this checkout's local server entrypoint");
 assert.match(startScript, /candidate="\$\(package_root\)\/bin\/pi-webui\.mjs"/, "start-webui.sh should resolve the package-root bin from dev/scripts");
@@ -2191,61 +2207,28 @@ assert.match(pkg.scripts?.test || "", /node tests\/run-all\.mjs/, "package test 
 assert.ok(!pkg.files?.includes("start-webui.sh"), "npm package should not list the moved Bash dev helper at the package root");
 assert.ok(!pkg.files?.includes("start-webui.ps1"), "npm package should not list the moved PowerShell dev helper at the package root");
 assert.ok(!pkg.files?.some((entry) => entry === "dev/scripts" || entry.startsWith("dev/scripts/")), "npm package should not publish development helper scripts");
-for (const [name, range] of Object.entries(companionDependencies)) {
-  assert.equal(pkg.optionalDependencies?.[name], range, `webui package should optionally depend on ${name}`);
-  assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require optional companion ${name}`);
-  assert.equal(lock.packages?.[""]?.optionalDependencies?.[name], range, `package-lock root should optionally depend on ${name}`);
-  assert.equal(lock.packages?.[""]?.dependencies?.[name], undefined, `package-lock root should not promote optional companion ${name} to a required dependency`);
-  assert.ok(lock.packages?.[`node_modules/${name}`], `package-lock should include resolved optional companion ${name}`);
+for (const name of Object.keys(companionDependencies)) {
+  assert.equal(pkg.optionalDependencies?.[name], undefined, `webui package should not optionally install companion ${name}`);
+  assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require companion ${name}`);
 }
+for (const name of [
+  "@firstpick/pi-package-natural-conversation",
+  "@firstpick/pi-package-questionnaire",
+  "@firstpick/pi-extension-aur-review",
+]) {
+  assert.equal(pkg.optionalDependencies?.[name], undefined, `webui package should keep ${name} as a separate Pi package`);
+  assert.equal(pkg.dependencies?.[name], undefined, `webui package should not require separate Pi package ${name}`);
+}
+assert.deepEqual(pkg.optionalDependencies, { "node-pty": "^1.1.0" }, "node-pty should be the sole optional Web UI runtime dependency");
 assert.equal(pkg.bundledDependencies, undefined, "webui optional companion packages should not be bundled into the tarball");
-assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-natural-conversation"], undefined, "webui package should not optionally depend on the standalone Natural Conversation package");
-assert.equal(pkg.optionalDependencies?.["@firstpick/pi-package-questionnaire"], undefined, "webui package should not install questionnaires by default before the user chooses the optional feature");
-assert.equal(pkg.optionalDependencies?.["@firstpick/pi-extension-aur-review"], undefined, "webui package should not reference the unpublished aur-review extension");
-assert.equal(lock.packages?.["node_modules/@firstpick/pi-extension-aur-review"], undefined, "package lock should not retain an unpublished aur-review tarball");
-assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-extension-aur-review")), "webui Pi manifest should not bundle the unpublished aur-review path");
-assert.ok(!pkg.pi?.extensions?.some((entry) => String(entry).includes("pi-package-natural-conversation")), "webui Pi manifest should not load Natural Conversation directly; /talk must come from the standalone package");
-assert.ok(pkg.pi?.extensions?.includes("./index.ts"), "webui Pi manifest should load its own extension");
-for (const extensionPath of [
-  "node_modules/@firstpick/pi-extension-bang-command-autocomplete/index.ts",
-  "node_modules/@firstpick/pi-extension-fish-user-bash/index.ts",
-  "node_modules/@firstpick/pi-extension-git-footer-status/index.ts",
-  "node_modules/@firstpick/pi-extension-release-aur/index.ts",
-  "node_modules/@firstpick/pi-extension-release-npm/index.ts",
-  "node_modules/@firstpick/pi-extension-safety-guard/index.ts",
-  "node_modules/@firstpick/pi-extension-setup-skills/index.ts",
-  "node_modules/@firstpick/pi-extension-stats/index.ts",
-  "node_modules/@firstpick/pi-extension-todo-progress/index.ts",
-  "node_modules/@firstpick/pi-extension-tools/index.ts",
-  "node_modules/@firstpick/pi-package-questionnaire/index.ts",
-]) {
-  assert.ok(pkg.pi?.extensions?.includes(extensionPath), `webui Pi manifest should load ${extensionPath} when present`);
-}
-for (const siblingExtensionPath of [
-  "../pi-extension-bang-command-autocomplete/index.ts",
-  "../pi-extension-fish-user-bash/index.ts",
-  "../pi-extension-git-footer-status/index.ts",
-  "../pi-extension-release-aur/index.ts",
-  "../pi-extension-release-npm/index.ts",
-  "../pi-extension-safety-guard/index.ts",
-  "../pi-extension-setup-skills/index.ts",
-  "../pi-extension-stats/index.ts",
-  "../pi-extension-todo-progress/index.ts",
-  "../pi-extension-tools/index.ts",
-]) {
-  assert.ok(!pkg.pi?.extensions?.includes(siblingExtensionPath), `webui Pi manifest should avoid duplicate sibling load path ${siblingExtensionPath}`);
-}
+assert.deepEqual(pkg.pi?.extensions, ["./index.ts"], "webui Pi manifest should load only its own extension");
+assert.equal(pkg.pi?.skills, undefined, "webui Pi manifest should not own companion skills");
+assert.equal(pkg.pi?.prompts, undefined, "webui Pi manifest should not own companion prompts");
+assert.equal(pkg.pi?.themes, undefined, "webui Pi manifest should not own companion themes");
 assert.match(helper, /function installRpcUserBashSupport\(\)/, "Web UI RPC helper should patch RPC bash execution for user_bash events");
 assert.match(helper, /runner\?\.hasHandlers\?\.\("user_bash"\)[\s\S]*runner\.emitUserBash/, "Web UI RPC helper should emit user_bash before default bash execution");
 assert.match(helper, /eventResult\?\.operations[\s\S]*original\.call\(this, command, onChunk, nextOptions\)/, "Web UI RPC helper should pass extension-provided bash operations to Pi execution");
 assert.match(helper, /eventResult\?\.result[\s\S]*recordBashResult/, "Web UI RPC helper should preserve extension-provided bash results in session history");
-assert.ok(pkg.pi?.skills?.includes("node_modules/@firstpick/pi-extension-release-aur/skills"), "webui Pi manifest should load release-aur nested skills when present");
-assert.ok(pkg.pi?.skills?.includes("node_modules/@firstpick/pi-package-questionnaire/skills"), "webui Pi manifest should load questionnaire guidance only when the optional package is installed");
-assert.ok(!pkg.pi?.skills?.includes("../pi-extension-release-aur/skills"), "webui Pi manifest should avoid duplicate release-aur sibling skills");
-assert.ok(pkg.pi?.prompts?.includes("node_modules/@firstpick/pi-prompts-git-pr/prompts"), "webui Pi manifest should load guided-git nested prompts when present");
-assert.ok(!pkg.pi?.prompts?.includes("../pi-package-prompts-git-pr/prompts"), "webui Pi manifest should avoid duplicate guided-git sibling prompts");
-assert.ok(pkg.pi?.themes?.includes("node_modules/@firstpick/pi-themes-bundle/themes"), "webui Pi manifest should load nested bundled themes when present");
-assert.ok(!pkg.pi?.themes?.includes("../pi-package-themes-bundle/themes"), "webui Pi manifest should avoid duplicate sibling bundled themes");
 assert.ok(pkg.scripts?.check?.includes("node --check public/app.js"), "check script should syntax-check app.js");
 assert.ok(pkg.scripts?.check?.includes("node tests/run-all.mjs"), "check script should run the shared test runner");
 

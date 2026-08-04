@@ -276,7 +276,7 @@ Reusable scaffold for local documentation/wiki extensions analogous to the ArchW
 
 ## Utility scripts
 
-- `dev/scripts/install-pi-add.sh` – discovers local `pi-extension-*`, `pi-skill-*`, and `pi-package-*` packages, compares installed versions against npm `latest`, and installs selected/all via `pi install npm:<package>` (supports interactive mode, `--non-interactive`, `--all`, `--dry-run`, `--force`)
+- `dev/scripts/install-pi-add.sh` – discovers local `pi-extension-*`, `pi-skill-*`, and `pi-package-*` packages, compares installed versions against npm `latest`, repairs packages present in `node_modules` but missing from Pi user settings, and registers/installs selected or all packages via `pi install npm:<package>` (supports interactive mode, `--non-interactive`, `--all`, `--dry-run`, `--force`)
 - `dev/scripts/check-publish-readiness.sh` – validates package metadata, extension entries, dry-run publish, registry/version status, and local-vs-npm packed contents
 - `dev/scripts/publish-packages.sh` – plans/applies publish actions dynamically for all package folders or a `--targets-file` shortlist
 - `dev/scripts/bump-package-versions.sh` – checks npm published versions first and enforces the next release version for changed packages (`+0.0.1`, rolling `*.9` to next minor `.0`; bumps up or reduces down only when needed); can write publish candidates to a target list
