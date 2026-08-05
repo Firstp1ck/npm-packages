@@ -20,6 +20,7 @@ const elements = {
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
   splitTabButton: $("#splitTabButton"),
   workspaceSaveButton: $("#workspaceSaveButton"),
+  summaryHeaderButton: $("#summaryHeaderButton"),
   newTabMenu: $("#newTabMenu"),
   newTabButton: $("#newTabButton"),
   newTabMenuPanel: $("#newTabMenuPanel"),
@@ -139,6 +140,7 @@ const elements = {
   remoteMicStreamingConsentButton: $("#remoteMicStreamingConsentButton"),
   newSessionButton: $("#newSessionButton"),
   compactButton: $("#compactButton"),
+  summaryActionButton: $("#summaryActionButton"),
   workflowModeControls: $("#workflowModeControls"),
   workflowModeButton: $("#workflowModeButton"),
   workflowOverlayOpenButton: $("#workflowOverlayOpenButton"),
@@ -165,6 +167,7 @@ const elements = {
   optionsNameButton: $("#optionsNameButton"),
   optionsCloneButton: $("#optionsCloneButton"),
   optionsSettingsButton: $("#optionsSettingsButton"),
+  optionsSummarySetupButton: $("#optionsSummarySetupButton"),
   optionsWorkflowSetupButton: $("#optionsWorkflowSetupButton"),
   optionsSafetyGuardSetupButton: $("#optionsSafetyGuardSetupButton"),
   optionsGitWorkflowSetupButton: $("#optionsGitWorkflowSetupButton"),
@@ -238,6 +241,17 @@ const elements = {
   agentDoneNotificationsToggle: $("#agentDoneNotificationsToggle"),
   agentDoneNotificationsStatus: $("#agentDoneNotificationsStatus"),
   optionalFeaturesBox: $("#optionalFeaturesBox"),
+  optionalFeatureMigrationSurface: $("#optionalFeatureMigrationSurface"),
+  optionalFeatureMigrationDialog: $("#optionalFeatureMigrationDialog"),
+  optionalFeatureMigrationDialogTitle: $("#optionalFeatureMigrationDialogTitle"),
+  optionalFeatureMigrationDialogMessage: $("#optionalFeatureMigrationDialogMessage"),
+  optionalFeatureMigrationDialogSummary: $("#optionalFeatureMigrationDialogSummary"),
+  optionalFeatureMigrationChooseDetails: $("#optionalFeatureMigrationChooseDetails"),
+  optionalFeatureMigrationChoices: $("#optionalFeatureMigrationChoices"),
+  optionalFeatureMigrationDialogError: $("#optionalFeatureMigrationDialogError"),
+  optionalFeatureMigrationCancelButton: $("#optionalFeatureMigrationCancelButton"),
+  optionalFeatureMigrationLaterButton: $("#optionalFeatureMigrationLaterButton"),
+  optionalFeatureMigrationConfirmButton: $("#optionalFeatureMigrationConfirmButton"),
   codexUsageBox: $("#codexUsageBox"),
   refreshCodexUsageButton: $("#refreshCodexUsageButton"),
   codexFastModeSelect: $("#codexFastModeSelect"),
@@ -354,6 +368,14 @@ const elements = {
   attachmentTextStatus: $("#attachmentTextStatus"),
   attachmentTextCancelButton: $("#attachmentTextCancelButton"),
   attachmentTextSaveButton: $("#attachmentTextSaveButton"),
+  sessionSummaryOverlay: $("#sessionSummaryOverlay"),
+  sessionSummaryOverlayTitle: $("#sessionSummaryOverlayTitle"),
+  sessionSummaryOverlayMeta: $("#sessionSummaryOverlayMeta"),
+  sessionSummaryOverlayStatus: $("#sessionSummaryOverlayStatus"),
+  sessionSummaryOverlayBody: $("#sessionSummaryOverlayBody"),
+  sessionSummaryOverlayCloseButton: $("#sessionSummaryOverlayCloseButton"),
+  sessionSummaryOverlayCopyButton: $("#sessionSummaryOverlayCopyButton"),
+  sessionSummaryOverlayRefreshButton: $("#sessionSummaryOverlayRefreshButton"),
   commandSearchInput: $("#commandSearchInput"),
   commandsBox: $("#commandsBox"),
   eventLog: $("#eventLog"),
@@ -600,6 +622,9 @@ let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
 let nativeSettingsDirty = false;
+let sessionSummaryOverlayTabId = null;
+let sessionSummaryOverlayFocusReturn = null;
+const sessionSummaryByTab = new Map();
 let pathPickerState = null;
 let firstTerminalCwdPromptShown = false;
 let pathFastPicks = [];
@@ -2799,7 +2824,11 @@ const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
 HIDDEN_COMMAND_NAMES.add("stats-webui");
 HIDDEN_COMMAND_NAMES.add("btw-status");
 HIDDEN_COMMAND_NAMES.add("btw-transfer");
-const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "workflow-setup", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
+const SESSION_SUMMARY_PROTOCOL_VERSION = 1;
+const SESSION_SUMMARY_MARKDOWN_MAX_CHARS = 16 * 1024;
+const SESSION_SUMMARY_PROMPT_MAX_CHARS = 8 * 1024;
+const SESSION_SUMMARY_REQUEST_TIMEOUT_MS = 110 * 1000;
+const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "summary", "summary-setup", "workflow-setup", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
 const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_OPTIONS = ["sse", "websocket", "websocket-cached", "auto"];
 const SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS = [
@@ -2827,7 +2856,24 @@ const optionalFeaturePackageStatuses = new Map();
 const optionalFeatureInstallMessages = new Map();
 const optionalFeatureInstallStates = new Map();
 const optionalFeatureInstallProgressTimers = new Map();
+const optionalFeatureMigrationResultEvents = new Set();
 let optionalFeatureBatchState = null;
+let optionalFeatureMigrationSnapshot = {
+  phase: "checking",
+  revision: "pending",
+  installKind: "unknown",
+  summary: { ready: 0, migratable: 0, missing: 0, conflicts: 0, disabled: 0, unknown: 0 },
+  features: [],
+  progress: null,
+  completedAt: null,
+  diagnostic: null,
+};
+let optionalFeatureMigrationCheckingStartedAt = Date.now();
+let optionalFeatureMigrationRenderTimer = null;
+let optionalFeatureMigrationDialogState = null;
+let optionalFeatureMigrationLastPhase = "";
+let optionalFeatureMigrationCompletionFocusKey = "";
+let optionalFeatureRestartNotice = null;
 let optionalFeaturePackageStatusesLoaded = false;
 let optionalFeaturePackageStatusError = "";
 const gitFooterPayloadRefreshInFlightByTab = new Set();
@@ -9215,6 +9261,7 @@ async function handleVoiceConversationTurnEnd(tabContext = activeTabContext()) {
 
 function renderOptionalFeatureDependentDisplays() {
   renderOptionalFeatureControls();
+  if (elements.optionalFeatureMigrationDialog?.open) renderOptionalFeatureMigrationDialog();
   renderThemeSelect();
   renderWidgets();
   renderStatus();
@@ -9722,10 +9769,12 @@ function setActiveTabId(tabId, { remember = false } = {}) {
   if (nextTabId !== activeTabId) {
     activeTabGeneration += 1;
     closeFeatureDecisionDialog({ restoreFocus: false });
+    closeSessionSummaryOverlay({ restoreFocus: false });
   }
   activeTabId = nextTabId;
   bindGitWorkflowToActiveTab();
   renderFeatureCategoryTag(nextTabId);
+  renderSessionSummaryControls();
   if (remember) rememberActiveTab();
   return activeTabContext(nextTabId);
 }
@@ -12426,6 +12475,7 @@ function syncTabMetadata(nextTabs = []) {
     setTabActivity(tab.id, tab.activity);
     if (Object.prototype.hasOwnProperty.call(tab, "appRunner")) setAppRunnerData(tab.id, { activeRun: tab.appRunner });
     if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
+    if (tab.sessionSummary) updateSessionSummaryForTab(tab.id, tab.sessionSummary);
   }
   for (const tabId of tabActivities.keys()) {
     if (!liveIds.has(tabId)) {
@@ -12452,6 +12502,8 @@ function syncTabMetadata(nextTabs = []) {
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
       commandCatalogsByTab.delete(tabId);
+      sessionSummaryByTab.delete(tabId);
+      if (sessionSummaryOverlayTabId === tabId) closeSessionSummaryOverlay({ restoreFocus: false });
       clearGitFooterPayloadState(tabId);
       gitFooterPayloadRequestSerialByTab.delete(tabId);
     }
@@ -12469,8 +12521,10 @@ function applyTabMetadata(tab) {
   else tabs[index] = { ...tabs[index], ...tab };
   if (tab.activity) setTabActivity(tab.id, tab.activity);
   if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
+  if (tab.sessionSummary) updateSessionSummaryForTab(tab.id, tab.sessionSummary);
   renderConversationModeControls();
   renderWorkflowModeControls();
+  renderSessionSummaryControls();
   renderTabs();
   return true;
 }
@@ -33872,7 +33926,10 @@ function optionalFeatureManualInstallCommand(feature) {
 
 function optionalFeatureNeedsInstall(feature) {
   const status = optionalFeaturePackageStatus(feature?.id);
-  return !!status && status.ready !== true && status.resourceConflict !== true;
+  if (!status || isOptionalFeatureDisabled(feature?.id)) return false;
+  const legacyNeedsInstall = status.ready !== true && status.resourceConflict !== true;
+  if (status.state) return ["missing", "legacy-migratable"].includes(status.state) && status.resourceConflict !== true;
+  return legacyNeedsInstall;
 }
 
 function optionalFeatureBatchCandidates(features = OPTIONAL_FEATURES) {
@@ -33977,6 +34034,444 @@ async function copyOptionalFeatureInstallCommand(featureId) {
   }
 }
 
+function optionalFeatureAuditFeature(featureId) {
+  return optionalFeatureMigrationSnapshot.features.find((feature) => feature?.featureId === featureId) || null;
+}
+
+function optionalFeatureDisplayLabel(featureId, packageName = "") {
+  return OPTIONAL_FEATURE_BY_ID.get(featureId)?.label || packageName || featureId || "optional feature";
+}
+
+function optionalFeatureCandidateSignature(snapshot, featureIds) {
+  const requested = new Set(featureIds || []);
+  return (snapshot?.features || [])
+    .filter((feature) => requested.has(feature.featureId))
+    .map((feature) => `${feature.featureId}:${feature.state}:${feature.sourceKind}:${feature.previouslyEnabled === true}`)
+    .sort()
+    .join("|");
+}
+
+function optionalFeatureMigrationCandidates(featureIds = null, { includeBrowserDisabled = false } = {}) {
+  const requested = featureIds ? new Set(featureIds) : null;
+  return (optionalFeatureMigrationSnapshot.features || []).filter((feature) => {
+    if (feature?.state !== "legacy-migratable") return false;
+    if (requested && !requested.has(feature.featureId)) return false;
+    return includeBrowserDisabled || !isOptionalFeatureDisabled(feature.featureId);
+  });
+}
+
+function optionalFeatureMigrationElapsedMs() {
+  const progress = optionalFeatureMigrationSnapshot.progress;
+  if (progress?.startedAt) {
+    const startedAt = Date.parse(progress.startedAt);
+    if (Number.isFinite(startedAt)) return Math.max(Number(progress.elapsedMs) || 0, Date.now() - startedAt);
+  }
+  if (optionalFeatureMigrationSnapshot.phase === "checking") return Date.now() - optionalFeatureMigrationCheckingStartedAt;
+  return Number(progress?.elapsedMs) || 0;
+}
+
+function optionalFeatureMigrationProgressText(progress = optionalFeatureMigrationSnapshot.progress) {
+  if (!progress) return "";
+  const elapsed = formatDuration(optionalFeatureMigrationElapsedMs());
+  if (progress.phase === "migrating" && progress.currentFeatureId) {
+    const label = optionalFeatureDisplayLabel(progress.currentFeatureId, progress.currentPackageName);
+    return `Installing ${progress.index || (progress.completed || 0) + 1} of ${progress.total || 0}: ${label}${elapsed ? ` · elapsed ${elapsed}` : ""}`;
+  }
+  if (progress.phase === "partial") return `${progress.succeeded || 0} succeeded · ${progress.failed || 0} failed${elapsed ? ` · finished after ${elapsed}` : ""}`;
+  if (progress.phase === "complete") return `${progress.succeeded || progress.total || 0} installed successfully${elapsed ? ` · finished after ${elapsed}` : ""}`;
+  return "";
+}
+
+function optionalFeatureMigrationPhaseMessage(phase) {
+  switch (phase) {
+    case "checking": return "checking optional features";
+    case "ready": return "optional feature audit ready";
+    case "action-required": return "optional feature audit needs attention";
+    case "migrating": return "optional feature migration started";
+    case "partial": return "optional feature migration finished with failures";
+    case "complete": return "optional feature migration completed";
+    case "degraded": return "optional feature audit degraded; Web UI is running core-only";
+    default: return "";
+  }
+}
+
+function rememberOptionalFeatureMigrationEvent(key) {
+  optionalFeatureMigrationResultEvents.add(key);
+  while (optionalFeatureMigrationResultEvents.size > 256) optionalFeatureMigrationResultEvents.delete(optionalFeatureMigrationResultEvents.values().next().value);
+}
+
+function announceOptionalFeatureMigrationSnapshot(snapshot) {
+  if (snapshot.phase !== optionalFeatureMigrationLastPhase) {
+    optionalFeatureMigrationLastPhase = snapshot.phase;
+    const message = optionalFeatureMigrationPhaseMessage(snapshot.phase);
+    if (message) addEvent(message, ["degraded", "action-required", "partial"].includes(snapshot.phase) ? "warn" : "info");
+  }
+  const progress = snapshot.progress;
+  if (progress?.phase === "migrating" && progress.currentFeatureId) {
+    const startKey = `${progress.startedAt || snapshot.revision}:start:${progress.currentFeatureId}`;
+    if (!optionalFeatureMigrationResultEvents.has(startKey)) {
+      rememberOptionalFeatureMigrationEvent(startKey);
+      addEvent(optionalFeatureMigrationProgressText(progress), "info");
+    }
+  }
+  for (const result of progress?.results || []) {
+    const key = `${progress.startedAt || snapshot.revision}:${result.featureId}:${result.ok}:${result.kind || ""}`;
+    if (optionalFeatureMigrationResultEvents.has(key)) continue;
+    rememberOptionalFeatureMigrationEvent(key);
+    const label = optionalFeatureDisplayLabel(result.featureId, result.packageName);
+    addEvent(`${label}: ${result.ok ? "installed and verified" : result.message || "installation failed"}`, result.ok ? "info" : "error");
+  }
+}
+
+function applyOptionalFeatureProgressStates(snapshot) {
+  const progress = snapshot.progress;
+  if (!progress) return;
+  const startedAt = Number.isFinite(Date.parse(progress.startedAt || "")) ? Date.parse(progress.startedAt) : Date.now();
+  for (const result of progress.results || []) {
+    const feature = OPTIONAL_FEATURE_BY_ID.get(result.featureId);
+    const previous = optionalFeatureInstallState(result.featureId) || {};
+    optionalFeatureInstallStates.set(result.featureId, {
+      ...previous,
+      phase: result.ok ? "done" : "failed",
+      actionLabel: progress.migration ? "Migrate" : "Install",
+      startedAt: previous.startedAt || startedAt,
+      endedAt: progress.completedAt ? Date.parse(progress.completedAt) || Date.now() : Date.now(),
+      detail: result.message || (result.ok ? "Installed and verified" : "Installation failed"),
+      hint: result.ok ? "The server verified this package registration." : "Retry this package or run the copied Pi command on the Web UI host.",
+      command: previous.command || optionalFeatureManualInstallCommand(feature),
+      errorKind: result.kind || previous.errorKind || "",
+    });
+  }
+  if (progress.phase === "migrating" && progress.currentFeatureId) {
+    const current = OPTIONAL_FEATURE_BY_ID.get(progress.currentFeatureId);
+    const previous = optionalFeatureInstallState(progress.currentFeatureId) || {};
+    optionalFeatureInstallStates.set(progress.currentFeatureId, {
+      ...previous,
+      phase: "installing",
+      actionLabel: progress.migration ? "Migrate" : "Install",
+      startedAt: previous.startedAt || startedAt,
+      endedAt: 0,
+      detail: optionalFeatureMigrationProgressText(progress),
+      hint: "Pi installs packages sequentially. This operation continues if the browser disconnects.",
+      command: previous.command || optionalFeatureManualInstallCommand(current),
+    });
+  }
+  if (progress.restartDeferred === true) {
+    optionalFeatureRestartNotice = { autoRestarted: false, restartDeferred: true, tabId: activeTabId };
+  } else if (progress.autoRestarted === true) {
+    optionalFeatureRestartNotice = { autoRestarted: true, restartDeferred: false, tabId: activeTabId };
+  }
+  optionalFeatureBatchState = {
+    phase: progress.phase === "migrating" ? "running" : progress.phase === "partial" ? "failed" : "done",
+    scopeLabel: progress.migration ? "previous optional features" : "optional features",
+    total: progress.total || 0,
+    succeeded: progress.succeeded ?? (progress.results || []).filter((result) => result.ok).length,
+    failed: progress.failed ?? (progress.results || []).filter((result) => !result.ok).length,
+    startedAt,
+    endedAt: progress.completedAt ? Date.parse(progress.completedAt) || Date.now() : 0,
+  };
+}
+
+function refreshOptionalFeatureMigrationElapsedText() {
+  const detail = elements.optionalFeatureMigrationSurface?.querySelector(".optional-feature-migration-detail");
+  if (!detail) return;
+  if (optionalFeatureMigrationSnapshot.phase === "checking") {
+    const elapsed = optionalFeatureMigrationElapsedMs();
+    detail.textContent = elapsed >= 1000 ? `Read-only startup audit · elapsed ${formatDuration(elapsed)}` : "Read-only startup audit";
+  } else if (optionalFeatureMigrationSnapshot.phase === "migrating") {
+    detail.textContent = optionalFeatureMigrationProgressText(optionalFeatureMigrationSnapshot.progress) || "Preparing sequential Pi installs…";
+  }
+}
+
+function ensureOptionalFeatureMigrationRenderTimer() {
+  const timed = ["checking", "migrating"].includes(optionalFeatureMigrationSnapshot.phase);
+  if (timed && !optionalFeatureMigrationRenderTimer) {
+    optionalFeatureMigrationRenderTimer = setInterval(() => {
+      refreshOptionalFeatureMigrationElapsedText();
+      if (optionalFeatureMigrationSnapshot.phase === "migrating") renderOptionalFeaturePanel();
+    }, 1000);
+  } else if (!timed && optionalFeatureMigrationRenderTimer) {
+    clearInterval(optionalFeatureMigrationRenderTimer);
+    optionalFeatureMigrationRenderTimer = null;
+  }
+}
+
+function optionalFeatureMigrationAction(label, handler, className = "") {
+  const button = make("button", className, label);
+  button.type = "button";
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function optionalFeatureConflictDescription(feature) {
+  return `${optionalFeatureDisplayLabel(feature.featureId, feature.packageName)}: Pi package + top-level resource; the top-level copy was safely excluded.`;
+}
+
+async function copyOptionalFeatureConflictFix(feature) {
+  const text = [
+    `Recommended fix for ${feature.packageName}:`,
+    "Keep the registered Pi package as the canonical source.",
+    "Disable or remove the duplicate top-level extension/skill/prompt/theme alias, then use Recheck in Pi Web UI.",
+  ].join("\n");
+  try {
+    await copyText(text);
+    addEvent(`copied recommended conflict fix for ${optionalFeatureDisplayLabel(feature.featureId, feature.packageName)}`, "info");
+  } catch (error) {
+    addEvent(`could not copy optional feature conflict fix: ${error.message || String(error)}`, "warn");
+  }
+}
+
+function optionalFeatureFailureOutputTail() {
+  const tails = [];
+  for (const [featureId, state] of optionalFeatureInstallStates) {
+    if (state?.phase !== "failed" || !state.outputTail) continue;
+    tails.push(`${optionalFeatureDisplayLabel(featureId)}\n${String(state.outputTail).slice(-2000)}`);
+  }
+  return tails.join("\n\n").slice(-4000);
+}
+
+async function restartOptionalFeatureTab() {
+  const tabId = optionalFeatureRestartNotice?.tabId || activeTabId;
+  try {
+    await sendPrompt("prompt", "/reload", { targetTabId: tabId, throwOnError: true });
+    optionalFeatureRestartNotice = null;
+    renderOptionalFeatureMigrationSurface();
+  } catch (error) {
+    addEvent(`optional feature tab restart failed: ${error.message || String(error)}`, "error");
+  }
+}
+
+function renderOptionalFeatureMigrationSurface() {
+  const surface = elements.optionalFeatureMigrationSurface;
+  if (!surface) return;
+  const snapshot = optionalFeatureMigrationSnapshot;
+  const summary = snapshot.summary || {};
+  const conflicts = (snapshot.features || []).filter((feature) => feature.state === "conflict");
+  const progress = snapshot.progress;
+  const card = make("div", `optional-feature-migration-card phase-${snapshot.phase}`);
+  const copy = make("div", "optional-feature-migration-copy");
+  const title = make("strong", "optional-feature-migration-title");
+  const detail = make("span", "optional-feature-migration-detail");
+  const actions = make("div", "optional-feature-migration-actions");
+
+  if (snapshot.phase === "checking") {
+    title.textContent = "Checking optional features…";
+    const elapsed = optionalFeatureMigrationElapsedMs();
+    detail.textContent = elapsed >= 1000 ? `Read-only startup audit · elapsed ${formatDuration(elapsed)}` : "Read-only startup audit";
+  } else if (snapshot.phase === "degraded") {
+    title.textContent = "Web UI started safely without optional companions";
+    detail.textContent = snapshot.diagnostic?.message || "The optional-feature audit could not establish a safe configuration.";
+    actions.append(optionalFeatureMigrationAction("Recheck", () => recheckOptionalFeatureMigration(), "primary"));
+  } else if (snapshot.phase === "migrating") {
+    title.textContent = "Migrating optional features";
+    detail.textContent = optionalFeatureMigrationProgressText(progress) || "Preparing sequential Pi installs…";
+  } else if (snapshot.phase === "partial") {
+    title.textContent = "Optional feature migration needs attention";
+    detail.textContent = optionalFeatureMigrationProgressText(progress);
+    const failedIds = (progress?.results || []).filter((result) => !result.ok).map((result) => result.featureId);
+    if (failedIds.length) actions.append(optionalFeatureMigrationAction("Retry failed", () => openOptionalFeatureMigrationDialog({ featureIds: failedIds, retryFailed: true }), "primary"));
+    actions.append(optionalFeatureMigrationAction("Copy commands", () => copyFailedOptionalFeatureCommands()));
+  } else if (snapshot.phase === "complete") {
+    title.textContent = "Optional feature migration complete";
+    detail.textContent = optionalFeatureMigrationProgressText(progress) || `${summary.ready || 0} optional features ready`;
+  } else if (snapshot.phase === "action-required") {
+    title.textContent = conflicts.length ? "Optional feature conflicts were safely excluded" : "Previous optional features need migration";
+    detail.textContent = conflicts.length
+      ? conflicts.map(optionalFeatureConflictDescription).join(" ")
+      : `${summary.migratable || 0} previously available companion${summary.migratable === 1 ? "" : "s"} can be restored${snapshot.installKind === "upgrade" ? " after this Web UI upgrade" : ""}.`;
+    if (summary.migratable > 0) {
+      actions.append(optionalFeatureMigrationAction("Migrate…", () => openOptionalFeatureMigrationDialog(), "primary"));
+      actions.append(optionalFeatureMigrationAction("Later", () => dismissOptionalFeatureMigration()));
+    }
+    for (const conflict of conflicts) actions.append(optionalFeatureMigrationAction("Copy recommended fix", () => copyOptionalFeatureConflictFix(conflict)));
+    if (conflicts.length) actions.append(optionalFeatureMigrationAction("Recheck", () => recheckOptionalFeatureMigration()));
+  } else {
+    title.textContent = `Core ready · ${summary.ready || 0} optional feature${summary.ready === 1 ? "" : "s"} ready`;
+    detail.textContent = summary.migratable > 0
+      ? "Migration was deferred. Restore remains available in Optional features."
+      : summary.missing > 0 ? `${summary.missing} optional companion${summary.missing === 1 ? " is" : "s are"} not installed.` : "Optional feature audit complete.";
+  }
+
+  copy.append(title, detail);
+  card.append(copy);
+  if (actions.childElementCount) card.append(actions);
+
+  if (conflicts.length) {
+    const alert = make("div", "optional-feature-migration-alert sr-only", "Optional feature conflict detected; duplicate top-level resources were safely excluded.");
+    alert.setAttribute("role", "alert");
+    card.append(alert);
+  }
+  if (snapshot.phase === "partial") {
+    const alert = make("div", "optional-feature-migration-alert sr-only", `${progress?.failed || 0} optional feature installations failed.`);
+    alert.setAttribute("role", "alert");
+    card.append(alert);
+  }
+  const outputTail = optionalFeatureFailureOutputTail();
+  if (outputTail && snapshot.phase === "partial") card.append(make("pre", "optional-feature-migration-output", outputTail));
+
+  if (optionalFeatureRestartNotice) {
+    const notice = make("div", "optional-feature-restart-notice");
+    const noticeText = optionalFeatureRestartNotice.restartDeferred
+      ? "New optional features are ready. Restart is deferred because the affected tab was busy."
+      : "Restarted tab to load new features.";
+    notice.append(make("span", undefined, noticeText));
+    if (optionalFeatureRestartNotice.restartDeferred) {
+      notice.append(optionalFeatureMigrationAction("Restart tab", () => restartOptionalFeatureTab(), "primary"));
+    } else {
+      notice.append(optionalFeatureMigrationAction("Dismiss", () => {
+        optionalFeatureRestartNotice = null;
+        renderOptionalFeatureMigrationSurface();
+      }));
+    }
+    card.append(notice);
+  }
+
+  const focusKey = ["complete", "partial"].includes(snapshot.phase) ? `${snapshot.revision}:${snapshot.phase}:${progress?.completedAt || ""}` : "";
+  if (focusKey) {
+    card.tabIndex = -1;
+    card.classList.add("optional-feature-migration-completion-summary");
+  }
+  surface.replaceChildren(card);
+  surface.hidden = false;
+  ensureOptionalFeatureMigrationRenderTimer();
+  if (focusKey && focusKey !== optionalFeatureMigrationCompletionFocusKey) {
+    optionalFeatureMigrationCompletionFocusKey = focusKey;
+    queueMicrotask(() => card.isConnected && card.focus({ preventScroll: true }));
+  }
+}
+
+function applyOptionalFeatureMigrationSnapshot(snapshot, { announce = true } = {}) {
+  if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.features)) return false;
+  if (snapshot.phase === "checking" && optionalFeatureMigrationSnapshot.phase !== "checking") optionalFeatureMigrationCheckingStartedAt = Date.now();
+  optionalFeatureMigrationSnapshot = snapshot;
+  optionalFeaturePackageStatuses.clear();
+  for (const status of snapshot.features) {
+    if (status?.featureId) optionalFeaturePackageStatuses.set(status.featureId, status);
+  }
+  optionalFeaturePackageStatusesLoaded = true;
+  optionalFeaturePackageStatusError = "";
+  applyOptionalFeatureProgressStates(snapshot);
+  if (announce) announceOptionalFeatureMigrationSnapshot(snapshot);
+  renderOptionalFeatureMigrationSurface();
+  renderOptionalFeatureControls();
+  return true;
+}
+
+async function recheckOptionalFeatureMigration() {
+  addEvent("rechecking optional features", "info");
+  try {
+    const response = await api("/api/optional-feature-migration/recheck", { method: "POST", body: {}, scoped: false });
+    applyOptionalFeatureMigrationSnapshot(response.data);
+  } catch (error) {
+    addEvent(`optional feature recheck failed: ${error.message || String(error)}`, "error");
+  }
+}
+
+async function dismissOptionalFeatureMigration({ closeDialog = false, retryOnStale = true } = {}) {
+  const revision = optionalFeatureMigrationSnapshot.revision;
+  try {
+    const response = await api("/api/optional-feature-migration/dismiss", { method: "POST", body: { revision }, scoped: false });
+    applyOptionalFeatureMigrationSnapshot(response.data);
+    if (closeDialog && elements.optionalFeatureMigrationDialog?.open) elements.optionalFeatureMigrationDialog.close();
+    addEvent("optional feature migration deferred; the Migrate action remains available in Optional features", "info");
+  } catch (error) {
+    if (retryOnStale && error.statusCode === 409 && /stale|revision/i.test(error.message || "")) {
+      await refreshOptionalFeaturePackageStatuses();
+      return dismissOptionalFeatureMigration({ closeDialog, retryOnStale: false });
+    }
+    addEvent(`could not defer optional feature migration: ${error.message || String(error)}`, "error");
+  }
+}
+
+function renderOptionalFeatureMigrationDialog() {
+  const state = optionalFeatureMigrationDialogState;
+  if (!state || !elements.optionalFeatureMigrationChoices) return;
+  const features = optionalFeatureMigrationCandidates(state.featureIds, { includeBrowserDisabled: true });
+  const availableIds = new Set(features.map((feature) => feature.featureId));
+  state.selected = new Set([...state.selected].filter((featureId) => availableIds.has(featureId) && !isOptionalFeatureDisabled(featureId)));
+  elements.optionalFeatureMigrationChoices.replaceChildren();
+
+  for (const feature of features) {
+    const item = make("div", "optional-feature-migration-choice");
+    const choice = make("label", "optional-feature-migration-choice-label");
+    const input = make("input");
+    input.type = "checkbox";
+    input.value = feature.featureId;
+    input.checked = state.selected.has(feature.featureId);
+    input.disabled = isOptionalFeatureDisabled(feature.featureId);
+    input.addEventListener("change", () => {
+      if (input.checked) state.selected.add(feature.featureId);
+      else state.selected.delete(feature.featureId);
+      renderOptionalFeatureMigrationDialog();
+    });
+    const label = make("span");
+    label.append(make("strong", undefined, optionalFeatureDisplayLabel(feature.featureId, feature.packageName)));
+    label.append(make("span", "optional-feature-migration-choice-package", feature.packageName));
+    choice.append(input, label);
+    const details = make("details", "optional-feature-migration-choice-details");
+    details.append(
+      make("summary", undefined, "Details"),
+      make("span", undefined, `${feature.previouslyEnabled ? "Previously enabled" : "Previously disabled"} · source: ${feature.sourceKind || "legacy evidence"} · Pi will install ${feature.expectedSpec || feature.packageName}.`),
+    );
+    item.append(choice, details);
+    elements.optionalFeatureMigrationChoices.append(item);
+  }
+
+  const selectedFeatures = features.filter((feature) => state.selected.has(feature.featureId));
+  elements.optionalFeatureMigrationDialogTitle.textContent = state.retryFailed ? "Retry failed optional features" : "Migrate optional features";
+  elements.optionalFeatureMigrationDialogMessage.textContent = state.retryFailed
+    ? "Retry only the failed packages. Successful packages stay installed. This is the only confirmation before retry."
+    : "Previously enabled features are selected unless they are disabled in this browser. Pi installs the confirmed selection sequentially.";
+  elements.optionalFeatureMigrationDialogSummary.textContent = selectedFeatures.length
+    ? `${selectedFeatures.length} selected: ${selectedFeatures.map((feature) => optionalFeatureDisplayLabel(feature.featureId, feature.packageName)).join(", ")}. Pi may download code and update its package registration.`
+    : "No features selected. Browser-disabled and previously disabled features remain unselected.";
+  elements.optionalFeatureMigrationConfirmButton.textContent = state.retryFailed ? "Retry selected" : "Migrate selected";
+  elements.optionalFeatureMigrationConfirmButton.disabled = selectedFeatures.length === 0 || optionalFeatureBatchIsActive();
+  elements.optionalFeatureMigrationLaterButton.hidden = state.retryFailed;
+  elements.optionalFeatureMigrationDialogError.hidden = !state.error;
+  elements.optionalFeatureMigrationDialogError.textContent = state.error || "";
+  elements.optionalFeatureMigrationChooseDetails.querySelector("summary").textContent = `Choose features (${selectedFeatures.length} selected)`;
+}
+
+function openOptionalFeatureMigrationDialog({ featureIds = null, retryFailed = false } = {}) {
+  const features = optionalFeatureMigrationCandidates(featureIds, { includeBrowserDisabled: true });
+  if (!features.length) {
+    addEvent("no migratable optional features are currently available", "info");
+    return;
+  }
+  const selected = new Set(features
+    .filter((feature) => retryFailed || feature.selectedByDefault === true)
+    .filter((feature) => !isOptionalFeatureDisabled(feature.featureId))
+    .map((feature) => feature.featureId));
+  optionalFeatureMigrationDialogState = {
+    featureIds: features.map((feature) => feature.featureId),
+    selected,
+    retryFailed,
+    error: "",
+    signature: optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, features.map((feature) => feature.featureId)),
+  };
+  renderOptionalFeatureMigrationDialog();
+  if (!elements.optionalFeatureMigrationDialog.open) elements.optionalFeatureMigrationDialog.showModal();
+  queueMicrotask(() => elements.optionalFeatureMigrationConfirmButton?.focus({ preventScroll: true }));
+}
+
+async function copyFailedOptionalFeatureCommands() {
+  const commands = [...optionalFeatureInstallStates]
+    .filter(([, state]) => state?.phase === "failed")
+    .map(([featureId, state]) => state.command || optionalFeatureManualInstallCommand(OPTIONAL_FEATURE_BY_ID.get(featureId)))
+    .filter(Boolean);
+  if (!commands.length) {
+    addEvent("no failed optional feature commands are available", "warn");
+    return;
+  }
+  try {
+    await copyText([...new Set(commands)].join("\n"));
+    addEvent(`copied ${new Set(commands).size} failed optional feature command${new Set(commands).size === 1 ? "" : "s"}`, "info");
+  } catch (error) {
+    addEvent(`could not copy failed optional feature commands: ${error.message || String(error)}`, "warn");
+  }
+}
+
 async function refreshQuestionnaireFeatureAvailability(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return false;
   try {
@@ -33998,14 +34493,8 @@ async function refreshQuestionnaireFeatureAvailability(tabContext = activeTabCon
 async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) {
   try {
     const response = await api("/api/optional-features", { scoped: false });
-    optionalFeaturePackageStatusError = "";
-    optionalFeaturePackageStatusesLoaded = true;
-    optionalFeaturePackageStatuses.clear();
-    for (const status of response.data?.features || []) {
-      if (status?.featureId) optionalFeaturePackageStatuses.set(status.featureId, status);
-    }
+    applyOptionalFeatureMigrationSnapshot(response.data, { announce: true });
     await refreshQuestionnaireFeatureAvailability();
-    renderOptionalFeatureControls();
     return true;
   } catch (error) {
     optionalFeaturePackageStatusesLoaded = false;
@@ -34152,6 +34641,12 @@ function optionalFeatureStatus(featureId) {
     };
   }
   const doneDetail = installState?.phase === "done" ? optionalFeatureInstallDetail(installState, installMessage) : "";
+  if (disabled) return {
+    label: "Disabled",
+    className: "disabled",
+    detail: `Disabled in this browser and excluded from migration selection${versionSuffix}`,
+    hint: "Enable it in Optional features before installing or restoring it.",
+  };
   if (!packageStatus && !detected) return { label: "Checking", className: "updating", detail: "Checking Pi installation and registration status…" };
   if (packageStatus?.resourceConflict) return {
     label: "Duplicate conflict",
@@ -34211,6 +34706,7 @@ function optionalFeatureWidgetHasSpecializedRenderer(key) {
 
 function renderOptionalFeatureBatchToolbar() {
   const candidates = optionalFeatureBatchCandidates();
+  const migratable = optionalFeatureMigrationCandidates();
   const busy = optionalFeatureBatchIsActive();
   const toolbar = make("div", "optional-feature-batch-toolbar");
   const action = make("button", "optional-feature-batch-action", busy ? "Installing…" : "Install all");
@@ -34222,18 +34718,30 @@ function renderOptionalFeatureBatchToolbar() {
   if (busy) action.setAttribute("aria-busy", "true");
   action.addEventListener("click", () => installOptionalFeatureBatch(OPTIONAL_FEATURES, { scopeLabel: "all optional features" }));
 
+  const actionGroup = make("div", "optional-feature-batch-actions");
+  if (migratable.length) {
+    const migrate = make("button", "optional-feature-batch-action primary", "Migrate…");
+    migrate.type = "button";
+    migrate.disabled = busy || optionalFeatureInstallInProgress.size > 0;
+    migrate.setAttribute("aria-label", `Migrate ${migratable.length} previously available optional feature${migratable.length === 1 ? "" : "s"}`);
+    migrate.addEventListener("click", () => openOptionalFeatureMigrationDialog());
+    actionGroup.append(migrate);
+  }
+  actionGroup.append(action);
+
   let summary = !optionalFeaturePackageStatusesLoaded
     ? optionalFeaturePackageStatusError ? "Install availability unknown" : "Checking Pi package status…"
     : candidates.length ? `${candidates.length} missing or unregistered` : "All installed and registered";
+  if (optionalFeatureMigrationSnapshot.phase === "checking") summary = "Checking optional features…";
   if (optionalFeatureBatchState?.phase === "running") {
-    summary = `Installing ${optionalFeatureBatchState.total} sequentially with Pi…`;
+    summary = optionalFeatureMigrationProgressText() || `Installing ${optionalFeatureBatchState.total} sequentially with Pi…`;
   } else if (["done", "failed"].includes(optionalFeatureBatchState?.phase)) {
     summary = `Batch finished: ${optionalFeatureBatchState.succeeded} succeeded, ${optionalFeatureBatchState.failed} failed.`;
   }
   const status = make("div", `optional-feature-batch-status${optionalFeatureBatchState?.failed ? " warning" : ""}`, summary);
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
-  toolbar.append(status, action);
+  toolbar.append(status, actionGroup);
   return toolbar;
 }
 
@@ -34324,7 +34832,8 @@ function renderOptionalFeatureRow(feature) {
   main.append(title);
   if (status.detail) {
     const detail = make("div", `optional-feature-detail ${status.className === "failed" ? "error" : ""}`.trim(), status.detail);
-    detail.setAttribute("aria-live", installing ? "polite" : "off");
+    if (status.className === "failed" && !installing) detail.setAttribute("role", "alert");
+    else detail.setAttribute("aria-live", installing ? "polite" : "off");
     main.append(detail);
   }
   if (installing) {
@@ -34353,6 +34862,9 @@ function renderOptionalFeatureRow(feature) {
     action.textContent = "Retry…";
     action.classList.add(retryAsUpdate ? "update" : "install");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: retryAsUpdate }));
+  } else if (isOptionalFeatureDisabled(feature.id)) {
+    action.textContent = "Enable";
+    action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, false));
   } else if (packageStatus?.resourceConflict) {
     action.textContent = "Conflict";
     action.disabled = true;
@@ -34400,6 +34912,17 @@ function renderOptionalFeatureRow(feature) {
     action.addEventListener("click", () => installOptionalFeature(feature.id));
   }
   actions.append(action);
+  if (failed) {
+    const retryFailed = make("button", "optional-feature-action install", "Retry failed");
+    retryFailed.type = "button";
+    retryFailed.disabled = optionalFeatureBatchIsActive();
+    retryFailed.addEventListener("click", () => {
+      const audit = optionalFeatureAuditFeature(feature.id);
+      if (audit?.state === "legacy-migratable") openOptionalFeatureMigrationDialog({ featureIds: [feature.id], retryFailed: true });
+      else installOptionalFeature(feature.id, { update: packageStatus?.updateAvailable === true });
+    });
+    actions.replaceChildren(retryFailed);
+  }
   if (status.command) {
     const copyCommand = make("button", "optional-feature-action copy-command", "Copy cmd");
     copyCommand.type = "button";
@@ -34651,6 +35174,7 @@ async function installOptionalFeatureBatch(features, { scopeLabel = "optional fe
     "",
     "Pi can download code from npm and update its user package registration and package storage.",
     "The batch continues after individual failures and reports every result.",
+    "The affected tab restarts automatically only when idle; busy work is never interrupted.",
     "",
     "Continue?",
   ].join("\n");
@@ -34659,32 +35183,81 @@ async function installOptionalFeatureBatch(features, { scopeLabel = "optional fe
     confirmLabel: candidates.length === 1 ? "Install feature" : "Install features",
   }))) return;
 
+  await runOptionalFeatureBatch(candidates, {
+    scopeLabel,
+    migration: false,
+    signatureFeatureIds: candidates.map((feature) => feature.id),
+    candidateSignature: optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, candidates.map((feature) => feature.id)),
+    reopen: () => installOptionalFeatureBatch(features, { scopeLabel }),
+  });
+}
+
+async function postOptionalFeatureBatch({ featureIds, migration, signatureFeatureIds, candidateSignature, retryOnStale = true }) {
+  const submit = () => api("/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: activeTabId, featureIds, revision: optionalFeatureMigrationSnapshot.revision, migration },
+    scoped: false,
+  });
+  try {
+    return await submit();
+  } catch (error) {
+    const staleRevision = error.statusCode === 409 && /stale|revision/i.test(error.message || "");
+    if (!staleRevision || !retryOnStale) throw error;
+    await refreshOptionalFeaturePackageStatuses();
+    const refreshedSignature = optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, signatureFeatureIds);
+    if (refreshedSignature !== candidateSignature) {
+      error.optionalFeatureCandidatesChanged = true;
+      throw error;
+    }
+    try {
+      return await submit();
+    } catch (retryError) {
+      const stillStale = retryError.statusCode === 409 && /stale|revision/i.test(retryError.message || "");
+      if (stillStale) retryError.optionalFeatureRevisionChurn = true;
+      throw retryError;
+    }
+  }
+}
+
+function restoreOptionalFeatureInstallStates(previousStates) {
+  for (const [featureId, state] of previousStates) {
+    if (state) optionalFeatureInstallStates.set(featureId, state);
+    else optionalFeatureInstallStates.delete(featureId);
+  }
+}
+
+async function runOptionalFeatureBatch(candidates, {
+  scopeLabel = "optional features",
+  migration = false,
+  signatureFeatureIds = candidates.map((feature) => feature.id),
+  candidateSignature = optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, signatureFeatureIds),
+  reopen = null,
+} = {}) {
+  if (!candidates.length || optionalFeatureBatchIsActive() || optionalFeatureInstallInProgress.size > 0) return;
   const startedAt = Date.now();
+  const actionLabel = migration ? "Migrate" : "Install";
   const featureIds = candidates.map((feature) => feature.id);
+  const previousStates = new Map(candidates.map((feature) => [feature.id, optionalFeatureInstallState(feature.id)]));
   optionalFeatureBatchState = { phase: "running", scopeLabel, total: candidates.length, succeeded: 0, failed: 0, startedAt };
   candidates.forEach((feature, index) => {
     optionalFeatureInstallInProgress.add(feature.id);
-    optionalFeatureInstallMessages.set(feature.id, `Queued in Pi install batch (${index + 1} of ${candidates.length})…`);
+    optionalFeatureInstallMessages.set(feature.id, `Queued (${index + 1} of ${candidates.length})…`);
     setOptionalFeatureInstallState(feature.id, {
       phase: "installing",
-      actionLabel: "Install",
+      actionLabel,
       startedAt,
       endedAt: 0,
-      detail: `Sequential Pi install batch position ${index + 1} of ${candidates.length}…`,
-      hint: "The server continues to the next package even if an earlier install fails.",
+      detail: `Installing ${index + 1} of ${candidates.length}: ${feature.label}`,
+      hint: "Pi installs sequentially and continues after individual failures.",
       command: optionalFeatureManualInstallCommand(feature),
       outputTail: "",
     });
     startOptionalFeatureInstallProgressTimer(feature.id);
   });
-  addEvent(`installing ${candidates.length} missing or unregistered ${scopeLabel} sequentially with Pi…`, "warn");
+  addEvent(`installing ${candidates.length} ${scopeLabel} sequentially with Pi`, "warn");
 
   try {
-    const response = await api("/api/optional-feature-install-batch", {
-      method: "POST",
-      body: { featureIds },
-      scoped: false,
-    });
+    const response = await postOptionalFeatureBatch({ featureIds, migration, signatureFeatureIds, candidateSignature });
     const results = Array.isArray(response.data?.results) ? response.data.results : [];
     const resultByFeatureId = new Map(results.map((result) => [result?.featureId, result]));
     let succeeded = 0;
@@ -34696,77 +35269,108 @@ async function installOptionalFeatureBatch(features, { scopeLabel = "optional fe
         succeeded += 1;
         const data = result.data || {};
         const command = data.command || optionalFeatureManualInstallCommand(feature);
-        disabledOptionalFeatures.delete(feature.id);
         optionalFeatureInstallMessages.set(feature.id, data.message || "Installed and registered with Pi");
         setOptionalFeatureInstallState(feature.id, {
           phase: "done",
-          actionLabel: "Install",
+          actionLabel,
           startedAt,
           endedAt: Date.now(),
-          detail: data.message || "Installed and registered with Pi. Reload the active tab to load its resources.",
-          hint: "Reload the active Pi tab to load newly registered resources.",
+          detail: data.message || "Installed and verified with Pi.",
+          hint: response.data?.restart?.autoRestarted ? "The affected tab restarted automatically." : "The server verified this package registration.",
           command,
           outputTail: "",
         });
+        const output = [data.stderr, data.stdout].filter(Boolean).join("\n").trim().slice(-4000);
+        if (output) addEvent(`Pi install output for ${feature.packageName}:\n${output}`, "info");
         addEvent(data.message || `installed ${feature.packageName} with Pi`, "info");
       } else {
         failed += 1;
         const failure = optionalFeatureInstallFailureFromBatchResult(result, feature);
-        optionalFeatureInstallMessages.set(feature.id, `Install failed: ${failure.message}`);
+        optionalFeatureInstallMessages.set(feature.id, `${actionLabel} failed: ${failure.message}`);
         setOptionalFeatureInstallState(feature.id, {
           phase: "failed",
-          actionLabel: "Install",
+          actionLabel,
           startedAt,
           endedAt: Date.now(),
           detail: failure.message,
           hint: failure.hint,
           command: failure.command,
-          outputTail: failure.outputTail || "",
+          outputTail: String(failure.outputTail || "").slice(-4000),
           errorKind: failure.kind || "unknown",
         });
-        addEvent(`install optional feature ${feature.label} failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
+        addEvent(`${actionLabel.toLowerCase()} optional feature ${feature.label} failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
       }
     }
-    storeDisabledOptionalFeatures();
-    optionalFeatureBatchState = { phase: "done", scopeLabel, total: candidates.length, succeeded, failed, startedAt, endedAt: Date.now() };
+
+    optionalFeatureBatchState = { phase: failed ? "failed" : "done", scopeLabel, total: candidates.length, succeeded, failed, startedAt, endedAt: Date.now() };
+    const restart = response.data?.restart || {};
+    if (restart.autoRestarted || restart.restartDeferred) {
+      optionalFeatureRestartNotice = { ...restart, tabId: activeTabId };
+      addEvent(restart.autoRestarted ? "restarted tab to load new optional features" : "optional feature restart deferred because the tab is busy", restart.restartDeferred ? "warn" : "info");
+    }
     await refreshOptionalFeaturePackageStatuses({ announce: true });
     addEvent(`optional feature batch finished: ${succeeded} succeeded, ${failed} failed`, failed ? "warn" : "info");
-
-    const reloadMessage = failed
-      ? `Optional feature batch finished: ${succeeded} succeeded and ${failed} failed. Reload the active Pi tab now to load resources from successful installs?`
-      : `All ${succeeded} optional feature installs succeeded. Reload the active Pi tab now to load their resources?`;
-    if (await appConfirmText(reloadMessage, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
-      sendPrompt("prompt", "/reload");
-    } else {
-      const tabContext = activeTabContext();
-      await Promise.allSettled([refreshCommands(tabContext), initializeThemes()]);
-      if (isCurrentTabContext(tabContext)) renderOptionalFeatureControls();
-    }
+    renderOptionalFeatureMigrationSurface();
+    // Backend-owned idle restart replaces the legacy post-batch prompt (formerly confirmLabel: "Reload tab").
   } catch (error) {
-    const failure = optionalFeatureInstallFailureFromError(error);
-    for (const feature of candidates) {
-      optionalFeatureInstallMessages.set(feature.id, `Batch request failed: ${failure.message}`);
-      setOptionalFeatureInstallState(feature.id, {
-        phase: "failed",
-        actionLabel: "Install",
-        startedAt,
-        endedAt: Date.now(),
-        detail: failure.message,
-        hint: failure.hint,
-        command: failure.command || optionalFeatureManualInstallCommand(feature),
-        outputTail: failure.outputTail || "",
-        errorKind: failure.kind || "batch-request",
-      });
+    if (error.optionalFeatureCandidatesChanged || error.optionalFeatureRevisionChurn) {
+      restoreOptionalFeatureInstallStates(previousStates);
+      optionalFeatureBatchState = null;
+      if (error.optionalFeatureRevisionChurn) await refreshOptionalFeaturePackageStatuses();
+      addEvent(error.optionalFeatureRevisionChurn
+        ? "optional feature audit changed repeatedly; refreshed the plan before asking again"
+        : "optional feature choices changed while confirmation was open; refreshed the current migration plan", "warn");
+      if (typeof reopen === "function") setTimeout(reopen, 0);
+    } else if (error.statusCode === 409 && /already in progress|mutation|busy/i.test(error.message || "")) {
+      restoreOptionalFeatureInstallStates(previousStates);
+      optionalFeatureBatchState = null;
+      await refreshOptionalFeaturePackageStatuses();
+      addEvent("another optional feature operation is already running; recovered its server-owned progress", "warn");
+    } else {
+      const failure = optionalFeatureInstallFailureFromError(error);
+      for (const feature of candidates) {
+        optionalFeatureInstallMessages.set(feature.id, `Batch request failed: ${failure.message}`);
+        setOptionalFeatureInstallState(feature.id, {
+          phase: "failed",
+          actionLabel,
+          startedAt,
+          endedAt: Date.now(),
+          detail: failure.message,
+          hint: failure.hint,
+          command: failure.command || optionalFeatureManualInstallCommand(feature),
+          outputTail: String(failure.outputTail || "").slice(-4000),
+          errorKind: failure.kind || "batch-request",
+        });
+      }
+      optionalFeatureBatchState = { phase: "failed", scopeLabel, total: candidates.length, succeeded: 0, failed: candidates.length, startedAt, endedAt: Date.now() };
+      addEvent(`optional feature batch request failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
     }
-    optionalFeatureBatchState = { phase: "failed", scopeLabel, total: candidates.length, succeeded: 0, failed: candidates.length, startedAt, endedAt: Date.now() };
-    addEvent(`optional feature batch request failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
   } finally {
     for (const feature of candidates) {
       optionalFeatureInstallInProgress.delete(feature.id);
       clearOptionalFeatureInstallProgressTimer(feature.id);
     }
     renderOptionalFeatureControls();
+    renderOptionalFeatureMigrationSurface();
   }
+}
+
+async function migrateSelectedOptionalFeatures() {
+  const state = optionalFeatureMigrationDialogState;
+  if (!state || optionalFeatureBatchIsActive()) return;
+  const selectedIds = [...state.selected].filter((featureId) => !isOptionalFeatureDisabled(featureId));
+  const candidates = selectedIds.map((featureId) => OPTIONAL_FEATURE_BY_ID.get(featureId)).filter(Boolean);
+  if (!candidates.length) return;
+  elements.optionalFeatureMigrationConfirmButton.disabled = true;
+  elements.optionalFeatureMigrationDialogError.hidden = true;
+  elements.optionalFeatureMigrationDialog.close();
+  await runOptionalFeatureBatch(candidates, {
+    scopeLabel: state.retryFailed ? "failed optional features" : "previous optional features",
+    migration: true,
+    signatureFeatureIds: state.featureIds,
+    candidateSignature: state.signature,
+    reopen: () => openOptionalFeatureMigrationDialog({ featureIds: state.featureIds, retryFailed: state.retryFailed }),
+  });
 }
 
 function runPublishWorkflow(command) {
@@ -34809,6 +35413,176 @@ async function runNativeCommandMenu(command) {
   }
   if (await handleNativeSlashSelectorCommand(command)) return;
   await sendPrompt("prompt", command);
+}
+
+function normalizeSessionSummaryClientState(value, previous = null, { resetProjection = false } = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== SESSION_SUMMARY_PROTOCOL_VERSION) return null;
+  const status = ["idle", "generating", "success", "failure"].includes(value.status) ? value.status : "idle";
+  const title = typeof value.title === "string" && value.title.length <= 44 && !/[\r\n]/.test(value.title) ? value.title.trim() : "";
+  const summaryMarkdown = typeof value.summaryMarkdown === "string" && value.summaryMarkdown.length <= SESSION_SUMMARY_MARKDOWN_MAX_CHARS
+    ? value.summaryMarkdown.trim()
+    : "";
+  const message = typeof value.message === "string" ? value.message.replace(/[\r\n]+/g, " ").slice(0, 512).trim() : "";
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.slice(0, 128) : previous?.sessionId || "";
+  const sessionChanged = !!(sessionId && previous?.sessionId && sessionId !== previous.sessionId);
+  const inherited = resetProjection || sessionChanged ? null : previous;
+  return {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status,
+    configured: value.configured === true,
+    enabled: value.enabled === true,
+    durable: value.durable === true,
+    sessionId,
+    title: title || inherited?.title || "",
+    summaryMarkdown: summaryMarkdown || inherited?.summaryMarkdown || "",
+    message,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
+  };
+}
+
+function sessionSummaryStateForTab(tabId = activeTabId) {
+  if (!tabId) return null;
+  const cached = sessionSummaryByTab.get(tabId);
+  if (cached) return cached;
+  const metadata = tabs.find((tab) => tab.id === tabId)?.sessionSummary;
+  const normalized = normalizeSessionSummaryClientState(metadata);
+  if (normalized) sessionSummaryByTab.set(tabId, normalized);
+  return normalized;
+}
+
+function renderSessionSummaryControls() {
+  const available = !!activeTabId && hasAvailableCommand("summary", { tabId: activeTabId });
+  const setupAvailable = !!activeTabId && hasAvailableCommand("summary-setup", { tabId: activeTabId });
+  const state = sessionSummaryStateForTab(activeTabId);
+  const status = state?.status === "generating" ? "Generating session summary…" : state?.status === "failure" ? `Session summary failed: ${state.message || "unknown error"}` : state?.summaryMarkdown ? "Open the latest session summary" : "Open or create a session summary";
+  for (const button of [elements.summaryHeaderButton, elements.summaryActionButton]) {
+    if (!button) continue;
+    button.hidden = !available;
+    button.disabled = !available || state?.status === "generating";
+    button.setAttribute("aria-busy", state?.status === "generating" ? "true" : "false");
+    applyStyledTooltip(button, status, { ariaLabel: status, align: "end" });
+  }
+  if (elements.optionsSummarySetupButton) elements.optionsSummarySetupButton.hidden = !setupAvailable;
+}
+
+function closeSessionSummaryOverlay({ restoreFocus = true } = {}) {
+  const overlay = elements.sessionSummaryOverlay;
+  if (!overlay || overlay.hidden) return;
+  overlay.hidden = true;
+  const focusReturn = sessionSummaryOverlayFocusReturn;
+  sessionSummaryOverlayTabId = null;
+  sessionSummaryOverlayFocusReturn = null;
+  if (restoreFocus && focusReturn?.isConnected) queueMicrotask(() => focusReturn.focus({ preventScroll: true }));
+}
+
+function renderSessionSummaryOverlay() {
+  const overlay = elements.sessionSummaryOverlay;
+  if (!overlay || overlay.hidden || !sessionSummaryOverlayTabId) return;
+  const tab = tabs.find((item) => item.id === sessionSummaryOverlayTabId);
+  const state = sessionSummaryStateForTab(sessionSummaryOverlayTabId);
+  elements.sessionSummaryOverlayTitle.textContent = state?.title || "Session summary";
+  elements.sessionSummaryOverlayMeta.textContent = `${tab?.title || "Pi terminal"}${state?.durable === false ? " · in-memory session" : ""}`;
+  const generating = state?.status === "generating";
+  const failed = state?.status === "failure";
+  elements.sessionSummaryOverlayStatus.textContent = generating
+    ? "Generating with the configured background model…"
+    : failed
+      ? state.message || "Summary generation failed. The previous successful summary is preserved."
+      : state?.summaryMarkdown
+        ? "Latest successful active-branch summary."
+        : "No successful summary is available yet.";
+  elements.sessionSummaryOverlayStatus.classList.toggle("error", failed);
+  elements.sessionSummaryOverlayBody.replaceChildren();
+  if (state?.summaryMarkdown) renderMarkdown(elements.sessionSummaryOverlayBody, state.summaryMarkdown);
+  else elements.sessionSummaryOverlayBody.append(make("p", "muted", generating ? "Waiting for the first validated Markdown result…" : "Generate a summary to populate this view."));
+  elements.sessionSummaryOverlayCopyButton.disabled = !state?.summaryMarkdown;
+  elements.sessionSummaryOverlayRefreshButton.disabled = generating;
+  elements.sessionSummaryOverlayRefreshButton.textContent = generating ? "Generating…" : "Refresh";
+}
+
+function openSessionSummaryOverlay(tabId, { loading = false } = {}) {
+  if (!tabId || !elements.sessionSummaryOverlay) return;
+  sessionSummaryOverlayFocusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  sessionSummaryOverlayTabId = tabId;
+  if (loading) {
+    const previous = sessionSummaryStateForTab(tabId);
+    sessionSummaryByTab.set(tabId, normalizeSessionSummaryClientState({
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "generating",
+      configured: true,
+      enabled: previous?.enabled === true,
+      durable: previous?.durable === true,
+      updatedAt: new Date().toISOString(),
+    }, previous));
+  }
+  elements.sessionSummaryOverlay.hidden = false;
+  renderSessionSummaryOverlay();
+}
+
+function updateSessionSummaryForTab(tabId, value, { resetProjection = false } = {}) {
+  if (!tabId) return null;
+  const normalized = normalizeSessionSummaryClientState(value, sessionSummaryByTab.get(tabId), { resetProjection });
+  if (!normalized) return null;
+  sessionSummaryByTab.set(tabId, normalized);
+  if (tabId === activeTabId) renderSessionSummaryControls();
+  if (sessionSummaryOverlayTabId === tabId) renderSessionSummaryOverlay();
+  return normalized;
+}
+
+async function requestSessionSummaryGeneration(tabId, { refresh = false } = {}) {
+  const previous = sessionSummaryStateForTab(tabId);
+  updateSessionSummaryForTab(tabId, {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: "generating",
+    configured: true,
+    enabled: previous?.enabled === true,
+    durable: previous?.durable === true,
+    updatedAt: new Date().toISOString(),
+  });
+  try {
+    const signal = globalThis.AbortSignal?.timeout?.(SESSION_SUMMARY_REQUEST_TIMEOUT_MS);
+    const response = await api("/api/session-summary/generate", { method: "POST", body: { refresh }, tabId, signal });
+    if (response.data?.summary) updateSessionSummaryForTab(tabId, response.data.summary);
+    if (response.data?.tab) applyTabMetadata(response.data.tab);
+    return response;
+  } catch (error) {
+    updateSessionSummaryForTab(tabId, {
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "failure",
+      configured: true,
+      enabled: previous?.enabled === true,
+      durable: previous?.durable === true,
+      message: error.message || String(error),
+      updatedAt: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+async function openSessionSummaryForTab(tabId = activeTabId, { refresh = false } = {}) {
+  if (!tabId || !hasAvailableCommand("summary", { tabId })) return;
+  let state = sessionSummaryStateForTab(tabId);
+  if (!state?.configured) {
+    const response = await api("/api/session-summary/preferences", { tabId });
+    state = updateSessionSummaryForTab(tabId, response.data?.summary || {
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "idle",
+      configured: response.data?.preferences?.configured === true,
+      enabled: response.data?.preferences?.enabled === true,
+      durable: false,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!response.data?.preferences?.configured) {
+      await openNativeSessionSummarySetupDialog({ initialData: response.data });
+      return;
+    }
+  }
+  openSessionSummaryOverlay(tabId, { loading: refresh || !state?.summaryMarkdown });
+  if (refresh || !state?.summaryMarkdown) await requestSessionSummaryGeneration(tabId, { refresh }).catch(() => {});
+}
+
+function handleSessionSummaryEvent(event) {
+  updateSessionSummaryForTab(event?.tabId, event?.summary, { resetProjection: event?.kind === "state" });
 }
 
 function slashCommandName(message) {
@@ -35073,6 +35847,19 @@ function nativeSettingToggle(label, checked, hint, badge) {
   if (hint) text.append(make("span", "native-settings-hint", hint));
   field.append(input, text);
   return { field, input };
+}
+
+function nativeSettingTextarea(label, value, hint, { maxLength = SESSION_SUMMARY_PROMPT_MAX_CHARS, rows = 6, badge } = {}) {
+  const field = make("label", "native-settings-field native-settings-textarea-field");
+  field.append(nativeSettingsLabelRow(label, badge));
+  const textarea = make("textarea", "dialog-editor native-settings-textarea");
+  textarea.value = String(value || "");
+  textarea.maxLength = maxLength;
+  textarea.rows = rows;
+  textarea.spellcheck = true;
+  field.append(textarea);
+  if (hint) field.append(make("span", "native-settings-hint", hint));
+  return { field, textarea };
 }
 
 function nativeSettingsSection(title, description, controls, { open = true, badge } = {}) {
@@ -35587,6 +36374,149 @@ async function openNativeSafetyGuardSetupDialog() {
 
 function gitWorkflowSetupModelKey(model) {
   return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved } = {}) {
+  nativeCommandTabId = activeTabId;
+  openNativeCommandDialog({
+    title: "/summary-setup",
+    message: "Configure persistent background titles and Markdown summaries. Saving confirms the disclosure below, then immediately generates and opens the first summary.",
+  });
+  renderNativeLoading("Loading session summary preferences and available models…");
+
+  let data = initialData;
+  if (!data) {
+    try {
+      const response = await nativeCommandApi("/api/session-summary/preferences");
+      data = response.data || {};
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+      elements.nativeCommandBody.replaceChildren();
+      return;
+    }
+  }
+
+  const preferences = data.preferences || {};
+  const models = Array.isArray(data.models) ? data.models : [];
+  if (!models.length) {
+    setNativeCommandError("No authenticated Pi models are available. Run /login or configure a provider first.");
+    elements.nativeCommandBody.replaceChildren();
+    return;
+  }
+  const configuredKey = `${preferences.model?.provider || ""}/${preferences.model?.modelId || ""}`;
+  const defaultKey = "openai-codex/gpt-5.6-luna";
+  const modelKeys = new Set(models.map(gitWorkflowSetupModelKey));
+  const initialModelKey = modelKeys.has(configuredKey) ? configuredKey : modelKeys.has(defaultKey) ? defaultKey : gitWorkflowSetupModelKey(models[0]);
+  const modelOptions = models.map((model) => ({
+    value: gitWorkflowSetupModelKey(model),
+    label: `${gitWorkflowSetupModelKey(model)}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}`,
+  }));
+  const controls = {
+    model: nativeSettingSelect("Summary model", initialModelKey, modelOptions, "Dedicated authenticated provider/model. No fallback is used.", { label: "required", tone: "safety" }),
+    thinking: nativeSettingSelect("Reasoning effort", preferences.model?.thinkingLevel || "low", SETTINGS_THINKING_OPTIONS, "Only levels supported by the selected model are offered.", { label: "required", tone: "safety" }),
+    automatic: nativeSettingToggle("Generate automatically", preferences.enabled === true, "After eligible settled turns; automatic updates remain silent.", { label: "cost", tone: "safety" }),
+    titleEnabled: nativeSettingToggle("Update generated titles", preferences.title?.enabled !== false, "Only default/automatic tab titles are eligible. Explicit names always win.", { label: "safe", tone: "safety" }),
+    cadence: nativeSettingSelect("Title update cadence", preferences.title?.minSettledTurns || 3, [1, 2, 3, 5, 10, 20].map((value) => ({ value: String(value), label: `${value} settled user turn${value === 1 ? "" : "s"}` })), "Minimum turns between changed generated titles after the first title.", { label: "saved", tone: "browser" }),
+    injectLatest: nativeSettingToggle("Inject latest summary into main-agent context", preferences.context?.injectLatest === true, "Off by default. When enabled, exactly one latest active-branch summary is injected as reference-only data.", { label: "privacy", tone: "safety" }),
+    titlePrompt: nativeSettingTextarea("Editable title prompt", preferences.prompts?.title, "Maximum 8 KiB. This text is untrusted data, not system authority.", { rows: 4, badge: { label: "prompt", tone: "browser" } }),
+    summaryPrompt: nativeSettingTextarea("Editable Markdown summary prompt", preferences.prompts?.summary, "Maximum 8 KiB. Generated Markdown is validated and capped at 16 KiB.", { rows: 7, badge: { label: "prompt", tone: "browser" } }),
+  };
+  const thinkingLevelsForModel = (modelKey) => {
+    const levels = data.modelThinkingLevels?.[modelKey];
+    return Array.isArray(levels) && levels.length ? levels : ["off"];
+  };
+  const syncThinkingLevels = () => {
+    const current = controls.thinking.select.value || preferences.model?.thinkingLevel || "low";
+    replaceNativeSettingSelectOptions(controls.thinking.select, thinkingLevelsForModel(controls.model.select.value), current);
+  };
+  controls.model.select.addEventListener("change", syncThinkingLevels);
+  syncThinkingLevels();
+
+  const disclosure = data.disclosure || {};
+  const body = make("div", "native-settings-panel session-summary-setup-panel");
+  body.append(
+    nativeSettingsNote("Privacy scope", disclosure.scope || "Active-branch user text, final assistant text, and tool names only. Thinking, images, tool arguments/results, credentials, and prior summaries are excluded."),
+    nativeSettingsNote("Cost and provider behavior", disclosure.cost || "One configured-model request per eligible refresh; no provider fallback or automatic retry."),
+    nativeSettingsNote("Persistence and context", disclosure.persistence || "Preferences and generated output are local. Main-agent context injection is off unless enabled."),
+    nativeSettingsSection("Generation profile", "Choose the dedicated model, effort, and automatic-generation policy.", [controls.model, controls.thinking, controls.automatic], { open: true }),
+    nativeSettingsSection("Titles", "Generated names never replace explicit session or browser names.", [controls.titleEnabled, controls.cadence], { open: true }),
+    nativeSettingsSection("Prompts", "Editable instructions are bounded and treated as untrusted data.", [controls.titlePrompt, controls.summaryPrompt], { open: true }),
+    nativeSettingsSection("Privacy and context", "The transcript scope is fixed to text and tool names; injection is separately opt-in.", [controls.injectLatest], { open: true }),
+  );
+  elements.nativeCommandBody.replaceChildren(body);
+  elements.nativeCommandActions.replaceChildren();
+  addNativeCommandAction("Cancel", closeNativeCommandDialog);
+
+  const signature = () => JSON.stringify({
+    model: controls.model.select.value,
+    thinking: controls.thinking.select.value,
+    automatic: controls.automatic.input.checked,
+    titleEnabled: controls.titleEnabled.input.checked,
+    cadence: controls.cadence.select.value,
+    injectLatest: controls.injectLatest.input.checked,
+    titlePrompt: controls.titlePrompt.textarea.value,
+    summaryPrompt: controls.summaryPrompt.textarea.value,
+  });
+  const initialSignature = signature();
+  const updateDirty = () => { nativeSettingsDirty = signature() !== initialSignature; };
+  for (const control of [controls.model.select, controls.thinking.select, controls.automatic.input, controls.titleEnabled.input, controls.cadence.select, controls.injectLatest.input, controls.titlePrompt.textarea, controls.summaryPrompt.textarea]) {
+    control.addEventListener("input", updateDirty);
+    control.addEventListener("change", updateDirty);
+  }
+
+  const save = addNativeCommandAction("Save and generate", async () => {
+    setNativeActionBusy(save, true, "Saving…");
+    setNativeCommandError("");
+    try {
+      const selectedModel = models.find((model) => gitWorkflowSetupModelKey(model) === controls.model.select.value);
+      if (!selectedModel) throw new Error("Select an available session summary model.");
+      const titlePrompt = controls.titlePrompt.textarea.value.trim();
+      const summaryPrompt = controls.summaryPrompt.textarea.value.trim();
+      if (!titlePrompt || !summaryPrompt) throw new Error("Both editable prompts are required.");
+      if (titlePrompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS || summaryPrompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS) throw new Error("Each editable prompt must not exceed 8 KiB.");
+      const reviewed = await appConfirm({
+        title: "Save session summary setup?",
+        summary: `${disclosure.scope || "Selected active-branch text and tool names will be sent to the configured model."}\n\n${disclosure.cost || "Generation may incur provider usage."}`,
+        affected: "Global session-summary preferences and the active tab's first generated summary",
+        undoable: false,
+        confirmLabel: "Save and generate",
+        danger: false,
+      });
+      if (!reviewed) return;
+      const response = await nativeCommandApi("/api/session-summary/preferences", {
+        method: "PUT",
+        body: {
+          confirmed: true,
+          preferences: {
+            enabled: controls.automatic.input.checked,
+            model: { provider: selectedModel.provider, modelId: selectedModel.id, thinkingLevel: controls.thinking.select.value },
+            prompts: { title: titlePrompt, summary: summaryPrompt },
+            input: { scope: "text-and-tool-names" },
+            context: { injectLatest: controls.injectLatest.input.checked },
+            title: { enabled: controls.titleEnabled.input.checked, minSettledTurns: Number(controls.cadence.select.value) },
+          },
+        },
+      });
+      const targetTabId = nativeCommandTabId || activeTabId;
+      updateSessionSummaryForTab(targetTabId, response.data?.summary || {
+        version: SESSION_SUMMARY_PROTOCOL_VERSION,
+        status: "idle",
+        configured: true,
+        enabled: controls.automatic.input.checked,
+        durable: false,
+        updatedAt: new Date().toISOString(),
+      });
+      nativeSettingsDirty = false;
+      closeNativeCommandDialog({ force: true });
+      openSessionSummaryOverlay(targetTabId, { loading: true });
+      await requestSessionSummaryGeneration(targetTabId, { refresh: true }).catch(() => {});
+      if (typeof onSaved === "function") await onSaved(response.data?.preferences);
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+    } finally {
+      setNativeActionBusy(save, false);
+    }
+  }, "primary");
 }
 
 async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
@@ -36602,10 +37532,11 @@ async function openNativeAuthSelector(mode) {
 }
 
 async function handleNativeSlashSelectorCommand(message, { usesPromptInput = false } = {}) {
-  const name = slashCommandName(message);
+  const summaryMatch = String(message || "").trim().match(/^\/summary(?:\s+(refresh))?$/i);
+  const name = summaryMatch ? "summary" : slashCommandName(message);
   if (!NATIVE_SELECTOR_COMMANDS.has(name)) return false;
   const featureId = optionalFeatureIdForCommand(name);
-  if (name === "workflow-setup" && !hasLoadedRpcCommand(name)) {
+  if ((name === "workflow-setup" || name === "summary" || name === "summary-setup") && !hasLoadedRpcCommand(name)) {
     const tabContext = activeTabContext();
     addEvent(commandUnavailableMessage(name), "warn");
     refreshCommands(tabContext).catch((error) => {
@@ -36633,6 +37564,12 @@ async function handleNativeSlashSelectorCommand(message, { usesPromptInput = fal
       return true;
     case "settings":
       await openNativeSettingsDialog();
+      return true;
+    case "summary":
+      await openSessionSummaryForTab(activeTabId, { refresh: summaryMatch?.[1]?.toLowerCase() === "refresh" });
+      return true;
+    case "summary-setup":
+      await openNativeSessionSummarySetupDialog();
       return true;
     case "workflow-setup":
       await openNativeWorkflowSetupDialog();
@@ -38557,6 +39494,7 @@ async function refreshCommands(tabContext = activeTabContext()) {
   rawAvailableCommands = catalog.raw;
   availableCommands = catalog.available;
   updateOptionalFeatureAvailability();
+  renderSessionSummaryControls();
   renderCommands();
   if (elements.commandPaletteDialog?.open) renderCommandPalette({ preserveScroll: true });
 }
@@ -39983,6 +40921,26 @@ function handleInactiveTabEvent(event) {
 }
 
 function handleEvent(event) {
+  if (event?.type === "webui_session_summary") {
+    handleSessionSummaryEvent(event);
+    return;
+  }
+  if (event?.type === "webui_optional_feature_migration") {
+    applyOptionalFeatureMigrationSnapshot(event.snapshot);
+    return;
+  }
+  if (["webui_optional_feature_restart_completed", "webui_optional_feature_restart_deferred"].includes(event?.type)) {
+    optionalFeatureRestartNotice = {
+      tabId: event.tabId || activeTabId,
+      tabTitle: event.tabTitle || "terminal",
+      autoRestarted: event.autoRestarted === true,
+      restartDeferred: event.restartDeferred === true,
+      reason: event.reason || "",
+    };
+    addEvent(event.autoRestarted ? "restarted tab to load new optional features" : "optional feature restart deferred because the tab is busy", event.restartDeferred ? "warn" : "info");
+    renderOptionalFeatureMigrationSurface();
+    return;
+  }
   if (eventHasTabActivityPayload(event)) ingestEventTabActivity(event);
   if (event?.type === "auto_retry_start" || event?.type === "auto_retry_end") trackAutoRetryStateFromEvent(event);
   if (eventMayAffectSkillUsage(event)) trackSkillsFromEvent(event);
@@ -40376,6 +41334,10 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   });
   const source = new EventSource(`/api/events?${parameters.toString()}`);
   eventSource = source;
+  source.onopen = () => {
+    if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
+    refreshOptionalFeaturePackageStatuses().catch(() => {});
+  };
   source.onmessage = (message) => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
     try {
@@ -40566,6 +41528,14 @@ elements.newTabChooseDirectoryButton?.addEventListener("click", () => createTerm
 elements.newTabWorktreeButton?.addEventListener("click", () => openBranchWorktreePicker());
 elements.splitTabButton?.addEventListener("click", () => splitActiveTerminalTab());
 elements.workspaceSaveButton?.addEventListener("click", () => saveWebuiWorkspace());
+const openActiveSessionSummary = () => {
+  void openSessionSummaryForTab().catch((error) => addEvent(error.message || String(error), "error"));
+};
+elements.summaryHeaderButton?.addEventListener("click", openActiveSessionSummary);
+elements.summaryActionButton?.addEventListener("click", () => {
+  setComposerActionsOpen(false);
+  openActiveSessionSummary();
+});
 elements.terminalSplitCloseButton?.addEventListener("click", () => closeTerminalSplitView());
 elements.closeAllTabsButton.addEventListener("click", () => closeAllTerminalTabs());
 elements.commandPaletteButton?.addEventListener("click", () => openCommandPalette());
@@ -40727,6 +41697,7 @@ elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsNameButton.addEventListener("click", () => runNativeCommandMenu("/name"));
 elements.optionsCloneButton.addEventListener("click", () => runNativeCommandMenu("/clone"));
 elements.optionsSettingsButton.addEventListener("click", () => runNativeCommandMenu("/settings"));
+elements.optionsSummarySetupButton?.addEventListener("click", () => runNativeCommandMenu("/summary-setup"));
 elements.optionsWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/workflow-setup"));
 elements.optionsSafetyGuardSetupButton?.addEventListener("click", () => runNativeCommandMenu("/safety-guard-setup"));
 elements.optionsGitWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/git-workflow-setup"));
@@ -40735,6 +41706,28 @@ elements.optionsForkButton.addEventListener("click", () => runNativeCommandMenu(
 elements.optionsTreeButton.addEventListener("click", () => runNativeCommandMenu("/tree"));
 elements.optionsStatsButton?.addEventListener("click", () => openStatsOverlay({ refresh: true }));
 elements.optionsFooterVisibilityButton?.addEventListener("click", openGitFooterVisibilityDialog);
+elements.sessionSummaryOverlayCloseButton?.addEventListener("click", () => closeSessionSummaryOverlay());
+elements.sessionSummaryOverlayCopyButton?.addEventListener("click", async () => {
+  const state = sessionSummaryStateForTab(sessionSummaryOverlayTabId);
+  if (!state?.summaryMarkdown) return;
+  try {
+    await copyText(state.summaryMarkdown);
+    elements.sessionSummaryOverlayStatus.textContent = "Markdown copied to the clipboard.";
+  } catch (error) {
+    elements.sessionSummaryOverlayStatus.textContent = `Copy failed: ${error.message || String(error)}`;
+    elements.sessionSummaryOverlayStatus.classList.add("error");
+  }
+});
+elements.sessionSummaryOverlayRefreshButton?.addEventListener("click", () => {
+  const tabId = sessionSummaryOverlayTabId;
+  if (tabId) void requestSessionSummaryGeneration(tabId, { refresh: true }).catch(() => {});
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || elements.sessionSummaryOverlay?.hidden || document.querySelector("dialog[open]")) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  closeSessionSummaryOverlay();
+}, true);
 elements.gitFooterVisibilitySelectAllButton?.addEventListener("click", () => setGitFooterVisibilitySelection(true));
 elements.gitFooterVisibilitySelectNoneButton?.addEventListener("click", () => setGitFooterVisibilitySelection(false));
 elements.gitFooterVisibilityCloseButton?.addEventListener("click", closeGitFooterVisibilityDialog);
@@ -42063,6 +43056,14 @@ elements.promptInput.addEventListener("blur", () => {
   }, 120);
 });
 
+elements.optionalFeatureMigrationCancelButton?.addEventListener("click", () => elements.optionalFeatureMigrationDialog?.close());
+elements.optionalFeatureMigrationLaterButton?.addEventListener("click", () => dismissOptionalFeatureMigration({ closeDialog: true }));
+elements.optionalFeatureMigrationConfirmButton?.addEventListener("click", migrateSelectedOptionalFeatures);
+elements.optionalFeatureMigrationDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  elements.optionalFeatureMigrationDialog.close();
+});
+
 installModalPrimitives();
 initializeIssueWizard();
 resizePromptInput();
@@ -42075,6 +43076,7 @@ restoreBusyPromptBehaviorSetting();
 updateComposerModeButtons();
 installSessionSkillTagResizeHandling();
 updateOptionalFeatureAvailability();
+renderOptionalFeatureMigrationSurface();
 refreshOptionalFeaturePackageStatuses({ announce: true });
 renderAppRunnerControls();
 renderLoadedPromptListPreview();

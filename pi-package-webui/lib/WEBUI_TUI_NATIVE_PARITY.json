@@ -57,6 +57,32 @@
       "targetBehavior": "Keep browser and Pi TUI setup aligned with the canonical strict policy validator, deny defaults, explicit normalized review, and stale-write protection."
     },
     {
+      "id": "/summary",
+      "kind": "slash-command",
+      "category": "native-command",
+      "title": "Session summary viewer and refresh",
+      "command": { "name": "summary", "description": "Open the latest Markdown session summary or generate one" },
+      "webStatus": "implemented",
+      "priority": "P1",
+      "sensitive": true,
+      "guards": ["confirmation"],
+      "currentBehavior": "Catalog-gated header and composer actions open a non-blocking sanitized Markdown overlay; an unconfigured first click opens setup, and configured refreshes use the active tab only while preserving the latest successful result on failure.",
+      "targetBehavior": "Keep browser and TUI summary display branch-aware, bounded, tab-scoped, and explicit about configured provider usage."
+    },
+    {
+      "id": "/summary-setup",
+      "kind": "slash-command",
+      "category": "native-command",
+      "title": "Session summary setup",
+      "command": { "name": "summary-setup", "description": "Configure persistent session titles and Markdown summaries" },
+      "webStatus": "implemented",
+      "priority": "P1",
+      "sensitive": true,
+      "guards": ["confirmation"],
+      "currentBehavior": "Catalog-gated exact routing and Common Pi options open a browser-native model, reasoning, prompts, cadence, automatic-generation, privacy-scope, and context-injection editor; a disclosure confirmation is required before private global persistence and immediate first generation.",
+      "targetBehavior": "Keep browser and Pi TUI setup aligned with the canonical session-summary preference schema, fixed privacy scope, and explicit privacy/cost confirmation."
+    },
+    {
       "id": "/model",
       "kind": "slash-command",
       "category": "native-command",

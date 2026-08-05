@@ -16,6 +16,11 @@ import { authProvidersPayload, createAuthContext, logoutStoredProvider } from ".
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
 import {
+  readSessionSummaryPreferences,
+  supportedSessionSummaryThinkingLevels,
+  writeSessionSummaryPreferences,
+} from "../lib/session-summary-preferences.mjs";
+import {
   deleteWebuiWorkspace,
   getWebuiWorkspace,
   listWebuiWorkspaces,
@@ -42,6 +47,10 @@ import {
 import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
 import { ComponentUpdateState, validateComponentUpdateRequest } from "../lib/component-update-state.mjs";
 import { OPTIONAL_FEATURE_BY_ID, OPTIONAL_FEATURE_CATALOG } from "../lib/optional-feature-catalog.mjs";
+import {
+  OptionalFeatureAuditCoordinator,
+  OptionalFeatureMigrationStore,
+} from "../lib/optional-feature-migration.mjs";
 import { prependedPathEnvironment, resolveCommandDirectory, resolveNpmCommandInvocation, resolvePiCommandInvocation } from "../lib/npm-command.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
@@ -131,6 +140,7 @@ const require = createRequire(import.meta.url);
 const packageRoot = path.resolve(__dirname, "..");
 const publicDir = path.join(packageRoot, "public");
 const webuiHelperExtensionPath = path.join(packageRoot, "webui-rpc-helper.mjs");
+const sessionSummaryExtensionPath = path.join(packageRoot, "session-summary.ts");
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
 const OPTIONAL_FEATURE_INSTALL_ROOT_ENV = "PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT";
 const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
@@ -189,6 +199,16 @@ const CLAUDE_USAGE_OUTPUT_MAX_CHARS = 60_000;
 const CLAUDE_USAGE_COMMAND = process.env.PI_WEBUI_CLAUDE_BIN || "claude";
 const CLAUDE_USAGE_ARGS = ["--safe-mode", "--no-session-persistence", "-p", "/usage", "--output-format", "json"];
 const BODY_LIMIT_BYTES = 1024 * 1024;
+const SESSION_SUMMARY_REQUEST_MAX_BYTES = 32 * 1024;
+const SESSION_SUMMARY_RPC_TYPE = "firstpick:session-summary-rpc";
+const SESSION_SUMMARY_DISPLAY_TYPE = "firstpick:session-summary-display";
+const SESSION_SUMMARY_PROTOCOL_VERSION = 1;
+const SESSION_SUMMARY_TITLE_MAX_CHARS = 44;
+const SESSION_SUMMARY_MARKDOWN_MAX_CHARS = 16 * 1024;
+const SESSION_SUMMARY_PROMPT_MAX_CHARS = 8 * 1024;
+const SESSION_SUMMARY_FAILURE_MAX_CHARS = 512;
+const SESSION_SUMMARY_GENERATE_TIMEOUT_MS = 105 * 1000;
+const SESSION_SUMMARY_KINDS = new Set(["setup", "state", "generating", "success", "failure", "title"]);
 const RECOVERY_ENDPOINT_PATH = "/api/recovery/plan";
 const RECOVERY_BODY_LIMIT_BYTES = 256 * 1024;
 const RECOVERY_PROMPT_MAX_CHARS = 200_000;
@@ -380,6 +400,9 @@ const NATURAL_CONVERSATION_FEATURE_ID = "naturalConversation";
 const OPTIONAL_FEATURE_PACKAGES = new Map(OPTIONAL_FEATURE_CATALOG.map(({ featureId, packageName }) => [featureId, packageName]));
 const OPTIONAL_FEATURE_PACKAGE_NAMES = new Set(OPTIONAL_FEATURE_PACKAGES.values());
 const WEBUI_RESOURCE_EXCLUDED_PACKAGES = new Set([WEBUI_PACKAGE]);
+let optionalFeatureMigrationStore;
+let optionalFeatureAuditCoordinator;
+let optionalFeatureStartupReady = false;
 const UPDATE_PACKAGE_NAMES = [...CORE_UPDATE_PACKAGE_NAMES].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
@@ -412,6 +435,8 @@ Options:
   --remote-auth       Enable startup PIN authentication for non-local clients
   --no-remote-auth    Disable startup PIN authentication
   --output-mode <mode>  Web UI output default: normal or compact-v1
+  --migrate-optional-features  Migrate audit-selected legacy optional features
+  --migration-dry-run  Print the startup migration plan without package mutation
   -h, --help          Show this help
   -v, --version       Print version
 
@@ -461,6 +486,8 @@ function parseArgs(argv) {
     remoteAuthExplicit: process.env.PI_WEBUI_REMOTE_AUTH !== undefined,
     outputMode: undefined,
     envOutputMode: process.env.PI_WEBUI_OUTPUT_MODE === undefined ? undefined : requiredOutputMode(process.env.PI_WEBUI_OUTPUT_MODE, "PI_WEBUI_OUTPUT_MODE"),
+    migrateOptionalFeatures: false,
+    migrationDryRun: false,
     piArgs: [],
     help: false,
     version: false,
@@ -518,6 +545,14 @@ function parseArgs(argv) {
     if (arg === "--output-mode") {
       options.outputMode = requiredOutputMode(takeValue(argv, i, arg), "--output-mode");
       i++;
+      continue;
+    }
+    if (arg === "--migrate-optional-features") {
+      options.migrateOptionalFeatures = true;
+      continue;
+    }
+    if (arg === "--migration-dry-run") {
+      options.migrationDryRun = true;
       continue;
     }
     if (arg === "--remote-auth") {
@@ -2015,6 +2050,10 @@ async function optionalFeaturePackageStatus(featureId, cwd = options.cwd, topLev
   const installed = !!installedRoot;
   const configured = configuredPackages.length > 0;
   const locallyConfigured = topLevelResources.length > 0;
+  const legacyRoot = path.join(packageRoot, "node_modules", ...packageName.split("/"));
+  const legacyManifest = await readJsonFileIfExists(path.join(legacyRoot, "package.json"));
+  const legacyEvidence = legacyManifest?.name === packageName;
+  const disabled = configuredPackages.length > 0 && configuredPackages.every((entry) => entry.enabled === false);
   const resourceConflict = configured && locallyConfigured;
   const ready = installed && (configured || locallyConfigured) && !resourceConflict;
   const updateAvailable = !!(installedVersion && packageVersionBelowSpec(installedVersion, expectedSpec));
@@ -2031,6 +2070,8 @@ async function optionalFeaturePackageStatus(featureId, cwd = options.cwd, topLev
     installedVersion,
     installedRoot,
     topLevelResources,
+    legacyEvidence,
+    disabled,
     updateAvailable,
     updateReason: updateAvailable ? `installed ${installedVersion} is older than Web UI expects (${expectedSpec})` : "",
   };
@@ -2189,18 +2230,37 @@ function validateOptionalFeatureBatch(featureIds) {
 async function installOptionalFeaturePackages(featureIds, cwd = options.cwd) {
   const requestedFeatureIds = validateOptionalFeatureBatch(featureIds);
   const results = [];
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const migration = optionalFeatureAuditCoordinator.current().progress?.migration === true;
+  let index = 0;
   for (const featureId of requestedFeatureIds) {
+    const packageName = OPTIONAL_FEATURE_BY_ID.get(featureId)?.packageName || "";
+    optionalFeatureAuditCoordinator.setProgress({
+      phase: "migrating",
+      migration,
+      startedAt,
+      elapsedMs: Date.now() - startedAtMs,
+      currentFeatureId: featureId,
+      currentPackageName: packageName,
+      index: index + 1,
+      total: requestedFeatureIds.length,
+      completed: index,
+      remaining: requestedFeatureIds.length - index,
+      results: results.map(optionalFeatureProgressResult),
+    });
     try {
       results.push({ ok: true, featureId, data: await installOptionalFeaturePackage(featureId, cwd) });
     } catch (error) {
       results.push({
         ok: false,
         featureId,
-        packageName: OPTIONAL_FEATURE_BY_ID.get(featureId)?.packageName || "",
+        packageName,
         error: formatCliError(error),
         optionalFeatureInstall: error?.optionalFeatureInstall || null,
       });
     }
+    index++;
   }
   const succeeded = results.filter((result) => result.ok).length;
   return {
@@ -2210,6 +2270,67 @@ async function installOptionalFeaturePackages(featureIds, cwd = options.cwd) {
     succeeded,
     failed: results.length - succeeded,
   };
+}
+
+function optionalFeatureProgressResult(result) {
+  return {
+    featureId: result.featureId,
+    packageName: result.packageName || result.data?.packageName || "",
+    ok: result.ok,
+    kind: result.optionalFeatureInstall?.kind || "",
+    message: result.ok ? result.data?.message || "Installed and verified" : "Installation failed; see the localhost response for details",
+  };
+}
+
+async function runOptionalFeatureBatchMutation({ revision, featureIds, cwd = options.cwd, migration = false, tab = null, install = null }) {
+  return optionalFeatureAuditCoordinator.runMutation(revision, async () => {
+    optionalFeatureAuditCoordinator.setProgress({ phase: "migrating", migration, startedAt: new Date().toISOString(), completed: 0, remaining: Array.isArray(featureIds) ? featureIds.length : 0, total: Array.isArray(featureIds) ? featureIds.length : 0, results: [] });
+    const batch = install ? await install() : await installOptionalFeaturePackages(featureIds, cwd);
+    if (migration && batch.failed === 0) await optionalFeatureMigrationStore.completeMigration();
+    await optionalFeatureAuditCoordinator.recheck({ reason: migration ? "post-migration" : "post-install" });
+    const restart = { autoRestarted: false, restartDeferred: false };
+    if (batch.failed === 0 && batch.total > 0 && tab) {
+      const busy = tab.activity?.isWorking === true
+        || pendingExtensionUiRequests(tab).length > 0
+        || (tab.browserPromptRequests?.size || 0) > 0
+        || (tab.bashQueue?.length || 0) > 0
+        || (tab.compactionQueue?.length || 0) > 0;
+      if (busy) {
+        restart.restartDeferred = true;
+      } else {
+        try {
+          await restartTabRpc(tab, "optional-feature-migration");
+          restart.autoRestarted = true;
+        } catch (error) {
+          restart.restartDeferred = true;
+          restart.reason = error?.statusCode === 409 ? "tab-busy" : "restart-failed";
+        }
+      }
+      broadcastTabEvent(tab, {
+        type: restart.autoRestarted ? "webui_optional_feature_restart_completed" : "webui_optional_feature_restart_deferred",
+        tabId: tab.id,
+        tabTitle: tab.title,
+        ...restart,
+      });
+    }
+    batch.restart = restart;
+    optionalFeatureAuditCoordinator.setProgress({
+      phase: batch.failed ? "partial" : "complete",
+      migration,
+      completedAt: new Date().toISOString(),
+      currentFeatureId: null,
+      currentPackageName: null,
+      index: batch.total,
+      total: batch.total,
+      completed: batch.total,
+      remaining: 0,
+      succeeded: batch.succeeded,
+      failed: batch.failed,
+      results: batch.results.map(optionalFeatureProgressResult),
+      ...restart,
+    });
+    return batch;
+  });
 }
 
 function displayPath(cwd) {
@@ -2366,6 +2487,15 @@ function requireWorkflowPolicyJsonRequest(req) {
   const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
     throw makeHttpError(403, "Cross-origin workflow policy saves are blocked.");
+  }
+}
+
+function requireSessionSummaryJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw makeHttpError(415, "Session summary changes require Content-Type: application/json.");
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw makeHttpError(403, "Cross-origin session summary changes are blocked.");
   }
 }
 
@@ -2632,6 +2762,172 @@ async function saveGitWorkflowPreferencesData(tab, body = {}) {
 
   await writeGitWorkflowPreferences(next);
   return gitWorkflowPreferencesData(tab);
+}
+
+function sessionSummaryModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function availableSessionSummaryModels(tab) {
+  const models = await availableGitWorkflowModels(tab);
+  return models.map((model) => ({
+    provider: model.provider,
+    id: model.id,
+    ...(model.name ? { name: String(model.name).slice(0, 240) } : {}),
+    reasoning: model.reasoning === true,
+    ...(model.thinkingLevelMap && typeof model.thinkingLevelMap === "object" ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+  }));
+}
+
+function publicSessionSummaryPreferences(value) {
+  return {
+    version: 1,
+    configured: value?.configured === true,
+    enabled: value?.enabled === true,
+    model: {
+      provider: String(value?.model?.provider || ""),
+      modelId: String(value?.model?.modelId || ""),
+      thinkingLevel: String(value?.model?.thinkingLevel || "off"),
+    },
+    prompts: {
+      title: String(value?.prompts?.title || "").slice(0, SESSION_SUMMARY_PROMPT_MAX_CHARS),
+      summary: String(value?.prompts?.summary || "").slice(0, SESSION_SUMMARY_PROMPT_MAX_CHARS),
+    },
+    input: { scope: "text-and-tool-names" },
+    context: { injectLatest: value?.context?.injectLatest === true },
+    title: {
+      enabled: value?.title?.enabled !== false,
+      minSettledTurns: Number.isInteger(value?.title?.minSettledTurns) ? value.title.minSettledTurns : 3,
+    },
+  };
+}
+
+async function sessionSummaryPreferencesData(tab) {
+  const [storedPreferences, models] = await Promise.all([
+    readSessionSummaryPreferences(),
+    availableSessionSummaryModels(tab),
+  ]);
+  return {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    preferences: publicSessionSummaryPreferences(storedPreferences),
+    models,
+    modelThinkingLevels: Object.fromEntries(models.map((model) => [sessionSummaryModelKey(model), supportedSessionSummaryThinkingLevels(model)])),
+    disclosure: {
+      scope: "Active-branch user text, final assistant text, and tool names only. Thinking, images, tool arguments/results, credentials, and prior summary messages are excluded.",
+      cost: "Automatic generation makes one request to the selected model after each eligible settled refresh. There is no provider fallback or automatic provider retry.",
+      persistence: "Preferences and generated output are stored locally. Main-agent context injection is off unless explicitly enabled.",
+    },
+    summary: publicSessionSummaryState(tab),
+  };
+}
+
+function requiredSessionSummaryObject(value, label, allowedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw makeHttpError(400, `${label} must be an object`);
+  const unexpected = Object.keys(value).filter((key) => !allowedKeys.includes(key));
+  if (unexpected.length) throw makeHttpError(400, `${label} contains unsupported field${unexpected.length === 1 ? "" : "s"}: ${unexpected.join(", ")}`);
+  return value;
+}
+
+function requiredSessionSummaryBoolean(value, label) {
+  if (typeof value !== "boolean") throw makeHttpError(400, `${label} must be true or false`);
+  return value;
+}
+
+function requiredSessionSummaryPrompt(value, label) {
+  if (typeof value !== "string") throw makeHttpError(400, `${label} must be a string`);
+  const prompt = value.trim();
+  if (!prompt) throw makeHttpError(400, `${label} must not be empty`);
+  if (prompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS) throw makeHttpError(400, `${label} must not exceed 8 KiB`);
+  return prompt;
+}
+
+async function saveSessionSummaryPreferencesData(tab, body = {}) {
+  requiredSessionSummaryObject(body, "request", ["confirmed", "preferences", "tab"]);
+  if (body.confirmed !== true) throw makeHttpError(409, "Session summary setup requires explicit privacy and cost confirmation (confirmed: true).");
+  const submitted = requiredSessionSummaryObject(body.preferences, "preferences", ["enabled", "model", "prompts", "input", "context", "title"]);
+  const submittedModel = requiredSessionSummaryObject(submitted.model, "preferences.model", ["provider", "modelId", "thinkingLevel"]);
+  const submittedPrompts = requiredSessionSummaryObject(submitted.prompts, "preferences.prompts", ["title", "summary"]);
+  const submittedInput = requiredSessionSummaryObject(submitted.input, "preferences.input", ["scope"]);
+  const submittedContext = requiredSessionSummaryObject(submitted.context, "preferences.context", ["injectLatest"]);
+  const submittedTitle = requiredSessionSummaryObject(submitted.title, "preferences.title", ["enabled", "minSettledTurns"]);
+  const provider = String(submittedModel.provider || "").trim();
+  const modelId = String(submittedModel.modelId || "").trim();
+  const thinkingLevel = String(submittedModel.thinkingLevel || "").trim();
+  if (!provider || provider.length > 160 || !modelId || modelId.length > 512) throw makeHttpError(400, "Select an available session summary model");
+  const models = await availableSessionSummaryModels(tab);
+  const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId);
+  if (!model) throw makeHttpError(400, `Selected session summary model is not currently available: ${provider}/${modelId}`);
+  const supportedLevels = supportedSessionSummaryThinkingLevels(model);
+  if (!supportedLevels.includes(thinkingLevel)) throw makeHttpError(400, `${provider}/${modelId} does not support thinking level ${thinkingLevel}`);
+  if (submittedInput.scope !== "text-and-tool-names") throw makeHttpError(400, "input.scope must be text-and-tool-names");
+  const minSettledTurns = Number(submittedTitle.minSettledTurns);
+  if (!Number.isInteger(minSettledTurns) || minSettledTurns < 1 || minSettledTurns > 20) throw makeHttpError(400, "title.minSettledTurns must be an integer from 1 to 20");
+
+  const saved = await writeSessionSummaryPreferences({
+    configured: true,
+    enabled: requiredSessionSummaryBoolean(submitted.enabled, "enabled"),
+    model: { provider, modelId, thinkingLevel },
+    prompts: {
+      title: requiredSessionSummaryPrompt(submittedPrompts.title, "prompts.title"),
+      summary: requiredSessionSummaryPrompt(submittedPrompts.summary, "prompts.summary"),
+    },
+    input: { scope: "text-and-tool-names" },
+    context: { injectLatest: requiredSessionSummaryBoolean(submittedContext.injectLatest, "context.injectLatest") },
+    title: {
+      enabled: requiredSessionSummaryBoolean(submittedTitle.enabled, "title.enabled"),
+      minSettledTurns,
+    },
+  });
+  tab.sessionSummary = {
+    ...(tab.sessionSummary || {}),
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: tab.sessionSummary?.status || "idle",
+    configured: true,
+    enabled: saved.enabled === true,
+    durable: tab.sessionSummary?.durable === true,
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSessionSummaryState(tab, "setup");
+  return sessionSummaryPreferencesData(tab);
+}
+
+async function triggerSessionSummary(tab, { refresh = false } = {}) {
+  const preferences = await readSessionSummaryPreferences();
+  if (!preferences.configured) throw makeHttpError(409, "Session summary setup must be confirmed before generation.");
+  const commands = await safeRpcData(tab, { type: "get_commands" }, STATUS_RPC_TIMEOUT_MS);
+  const available = Array.isArray(commands.data?.commands) && commands.data.commands.some((command) => String(command?.name || "").replace(/:\d+$/, "") === "summary");
+  if (!commands.ok || !available) throw makeHttpError(409, "The /summary extension command is not loaded in this Pi tab. Reload the tab and retry.");
+  tab.sessionSummary = {
+    ...(tab.sessionSummary || {}),
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: "generating",
+    configured: true,
+    message: "",
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSessionSummaryState(tab, "generating");
+  try {
+    const response = await tab.rpc.send(
+      { type: "prompt", message: refresh ? "/summary refresh" : "/summary" },
+      SESSION_SUMMARY_GENERATE_TIMEOUT_MS,
+    );
+    if (response.success === false) throw makeHttpError(400, response.error || "Session summary generation failed");
+    return { requested: true, refresh: refresh === true, summary: publicSessionSummaryState(tab), tab: tabMeta(tab) };
+  } catch (error) {
+    const message = (sanitizeError(error) || "Session summary generation failed")
+      .replace(/[\r\n]+/g, " ")
+      .slice(0, SESSION_SUMMARY_FAILURE_MAX_CHARS)
+      .trim();
+    tab.sessionSummary = {
+      ...(tab.sessionSummary || {}),
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "failure",
+      message: message || "Session summary generation failed",
+      updatedAt: new Date().toISOString(),
+    };
+    broadcastSessionSummaryState(tab, "failure");
+    throw error;
+  }
 }
 
 function gitWorkflowGenerationPrompt(kind, preferences) {
@@ -8595,10 +8891,15 @@ async function resolvedNormalPiResourcesForTab(cwd) {
 async function normalPiResourcePathsForTab(resolved, resourceType) {
   if (piArgsDisableResourceDiscovery(resourceType)) return [];
   const resourcePaths = [];
+  const auditExcludedPackages = optionalFeatureAuditCoordinator?.excludedPackageNames?.() || new Set();
+  const coreOnly = optionalFeatureAuditCoordinator?.current?.().phase === "checking" || optionalFeatureAuditCoordinator?.current?.().phase === "degraded";
   for (const resource of resolved[resourceType] || []) {
     if (!resource.enabled) continue;
     const packageName = await packageNameForResourcePath(resource.path);
     if (packageName && WEBUI_RESOURCE_EXCLUDED_PACKAGES.has(packageName)) continue;
+    if (packageName && auditExcludedPackages.has(packageName)) {
+      if (coreOnly || resource.metadata?.origin !== "package") continue;
+    }
     resourcePaths.push(resource.path);
   }
   return resourcePaths;
@@ -8622,6 +8923,11 @@ async function buildPiArgsForTab(tabIndex, title, tabCwd = options.cwd) {
   await appendCuratedResourceArgs(args, normalResources, "skills", "--skill");
   await appendCuratedResourceArgs(args, normalResources, "prompts", "--prompt-template");
   await appendCuratedResourceArgs(args, normalResources, "themes", "--theme");
+
+  // The package manifest is resolved above, but keep session-summary explicit:
+  // curated child discovery intentionally excludes package-owned resources in
+  // some installations. Avoid a duplicate when the manifest path was retained.
+  if (!args.includes(sessionSummaryExtensionPath)) args.push("--extension", sessionSummaryExtensionPath);
 
   // Load a browser-safe RPC helper into every Web UI tab. It exposes hidden
   // extension commands for Web UI-native /tools and /skills selectors without
@@ -9010,6 +9316,133 @@ function clearExtensionStatuses(tab) {
 
 function clearExtensionWidgets(tab) {
   tab?.extensionWidgets?.clear();
+}
+
+function normalizedSessionSummaryTitle(value) {
+  if (typeof value !== "string" || value.length > SESSION_SUMMARY_TITLE_MAX_CHARS) return "";
+  const title = value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  return title.length <= SESSION_SUMMARY_TITLE_MAX_CHARS ? title : "";
+}
+
+function normalizedSessionSummaryRpcDetails(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== SESSION_SUMMARY_PROTOCOL_VERSION) return null;
+  const kind = String(value.kind || "");
+  if (!SESSION_SUMMARY_KINDS.has(kind)) return null;
+  const details = { version: SESSION_SUMMARY_PROTOCOL_VERSION, kind };
+  if (value.sessionId !== undefined) {
+    if (typeof value.sessionId !== "string" || value.sessionId.length > 128) return null;
+    details.sessionId = value.sessionId;
+  }
+  if (value.title !== undefined) {
+    const title = normalizedSessionSummaryTitle(value.title);
+    if (!title) return null;
+    details.title = title;
+  }
+  if (value.summaryMarkdown !== undefined) {
+    if (typeof value.summaryMarkdown !== "string" || !value.summaryMarkdown.trim() || value.summaryMarkdown.length > SESSION_SUMMARY_MARKDOWN_MAX_CHARS) return null;
+    details.summaryMarkdown = value.summaryMarkdown.trim();
+  }
+  if (value.message !== undefined) {
+    if (typeof value.message !== "string" || value.message.length > SESSION_SUMMARY_FAILURE_MAX_CHARS) return null;
+    details.message = value.message.replace(/[\r\n]+/g, " ").trim();
+  }
+  for (const key of ["configured", "enabled", "durable"]) {
+    if (value[key] !== undefined) {
+      if (typeof value[key] !== "boolean") return null;
+      details[key] = value[key];
+    }
+  }
+  if ((kind === "success" && !details.summaryMarkdown) || (kind === "failure" && !details.message) || (kind === "title" && !details.title)) return null;
+  return details;
+}
+
+function publicSessionSummaryState(tab) {
+  const value = tab?.sessionSummary;
+  if (!value) return null;
+  return {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: value.status || "idle",
+    configured: value.configured === true,
+    enabled: value.enabled === true,
+    durable: value.durable === true,
+    ...(value.sessionId ? { sessionId: value.sessionId } : {}),
+    ...(value.title ? { title: value.title } : {}),
+    ...(value.summaryMarkdown ? { summaryMarkdown: value.summaryMarkdown } : {}),
+    ...(value.message ? { message: value.message } : {}),
+    updatedAt: value.updatedAt || new Date(0).toISOString(),
+  };
+}
+
+function broadcastSessionSummaryState(tab, kind) {
+  broadcastTabEvent(tab, {
+    type: "webui_session_summary",
+    kind,
+    tabId: tab.id,
+    tabTitle: tab.title,
+    summary: publicSessionSummaryState(tab),
+  });
+}
+
+function applySessionSummaryRpcDetails(tab, details) {
+  const previous = tab.sessionSummary?.sessionId && details.sessionId && tab.sessionSummary.sessionId !== details.sessionId
+    ? null
+    : tab.sessionSummary;
+  const next = {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: previous?.status || "idle",
+    configured: previous?.configured === true,
+    enabled: previous?.enabled === true,
+    durable: previous?.durable === true,
+    sessionId: details.sessionId || previous?.sessionId || "",
+    title: previous?.title || "",
+    summaryMarkdown: previous?.summaryMarkdown || "",
+    message: "",
+    updatedAt: new Date().toISOString(),
+  };
+  if (details.configured !== undefined) next.configured = details.configured;
+  if (details.enabled !== undefined) next.enabled = details.enabled;
+  if (details.durable !== undefined) next.durable = details.durable;
+  if (details.kind === "state") {
+    next.status = details.summaryMarkdown ? "success" : "idle";
+    next.title = details.title || "";
+    next.summaryMarkdown = details.summaryMarkdown || "";
+  } else if (details.kind === "setup") {
+    next.status = "idle";
+  } else if (details.kind === "generating") {
+    next.status = "generating";
+  } else if (details.kind === "success") {
+    next.status = "success";
+    next.title = details.title || next.title;
+    next.summaryMarkdown = details.summaryMarkdown;
+  } else if (details.kind === "failure") {
+    next.status = "failure";
+    next.message = details.message;
+  } else if (details.kind === "title") {
+    next.title = details.title;
+    if (tab.titleSource === "default" || tab.titleSource === "auto") {
+      renameTab(tab, details.title, { source: "auto", maxLength: SESSION_SUMMARY_TITLE_MAX_CHARS });
+    }
+  }
+  tab.sessionSummary = next;
+  broadcastSessionSummaryState(tab, details.kind);
+}
+
+function consumeSessionSummaryRpcEvent(tab, event) {
+  const message = event?.message;
+  if ((event?.type !== "message_start" && event?.type !== "message_end") || message?.role !== "custom") return false;
+  if (message.customType === SESSION_SUMMARY_DISPLAY_TYPE) return true;
+  if (message.customType !== SESSION_SUMMARY_RPC_TYPE) return false;
+  if (event.type === "message_end") {
+    const details = normalizedSessionSummaryRpcDetails(message.details);
+    if (details) applySessionSummaryRpcDetails(tab, details);
+  }
+  return true;
+}
+
+function filterSessionSummaryTranscriptMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).filter((message) => !(
+    message?.role === "custom" && (message.customType === SESSION_SUMMARY_RPC_TYPE || message.customType === SESSION_SUMMARY_DISPLAY_TYPE)
+  ));
 }
 
 function clearWebuiSubagents(tab) {
@@ -9883,7 +10316,7 @@ function attachRpcToTab(tab, rpc) {
   tab.rpc = rpc;
   tab.rpcUnsubscribe = rpc.onEvent((rawEvent) => {
     const event = tab.thinkingStreamRecovery.ingest(rawEvent);
-    if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event)) return;
+    if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event) || consumeSessionSummaryRpcEvent(tab, event)) return;
     updateTabActivityFromEvent(tab, event);
     let scopedEvent = eventForTabClients(tab, event);
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
@@ -9929,6 +10362,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
     extensionWidgets: new Map(),
+    sessionSummary: null,
     webuiSubagents: null,
     subagentDisplayTitle: undefined,
     subagentDisplayTitlePromise: undefined,
@@ -10087,6 +10521,7 @@ function tabMeta(tab) {
     activity: tabActivitySnapshot(tab),
     appRunner: publicAppRunnerState(tab.appRunner),
     conversationMode: naturalConversationModeSnapshot(tab),
+    sessionSummary: publicSessionSummaryState(tab),
   };
 }
 
@@ -11016,8 +11451,18 @@ function componentUpdateSuccessMessage(target) {
   return "Web UI update completed. Restart the Web UI to use the update.";
 }
 
+async function persistOptionalFeaturePendingUpgrade() {
+  optionalFeatureAuditCoordinator.assertIdle();
+  const snapshot = await optionalFeatureAuditCoordinator.recheck({ reason: "pre-update" });
+  const featureIds = snapshot.features
+    .filter(({ state }) => !["missing", "unknown", "disabled"].includes(state))
+    .map(({ featureId }) => featureId);
+  await optionalFeatureMigrationStore.markPendingUpgrade({ fromVersion: packageJson.version, featureIds });
+}
+
 async function runComponentUpdate(target) {
   try {
+    if (target === "webui") await persistOptionalFeaturePendingUpgrade();
     const updateTasks = (await resolveComponentUpdateTasks(target)).filter(Boolean);
     if (!updateTasks.length) throw new Error(`No ${target} update command could be resolved.`);
     const command = updateTasks.map(updateTaskDisplay).join(" && ");
@@ -11051,6 +11496,7 @@ async function runPiUpdateAndPrepareRestart({ all = false } = {}) {
   piUpdateInProgress = true;
   let restartPrepared = false;
   try {
+    if (all) await persistOptionalFeaturePendingUpgrade();
     const restorableTabs = await restorableTabsForRestart();
     const updateTasks = await resolveUpdateTasks({ all });
     if (!updateTasks.length) throw makeHttpError(500, "No Pi update command could be resolved.");
@@ -11356,7 +11802,10 @@ async function safeRpcResponse(tab, command, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
     const response = rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs)));
     if (command?.type === "get_messages" && Array.isArray(response?.data?.messages)) {
-      response.data = { ...response.data, messages: tab.thinkingStreamRecovery.applyToMessages(response.data.messages) };
+      response.data = {
+        ...response.data,
+        messages: filterSessionSummaryTranscriptMessages(tab.thinkingStreamRecovery.applyToMessages(response.data.messages)),
+      };
     }
     return response;
   } catch (error) {
@@ -13679,12 +14128,16 @@ const serverStartedAt = new Date().toISOString();
 const persistedStartupSettings = await readWebuiSettings(undefined, { reportInvalidOutputMode: true });
 let persistedRemoteAuthEnabled = persistedStartupSettings.remoteAuthEnabled === true;
 let persistedOutputModeDefault = persistedStartupSettings.outputModeDefault;
-rpcSupervisor = await initializeRpcSupervisor();
-rpcSupervisorSnapshot = rpcSupervisor?.snapshot || null;
-installRpcSupervisorEventDispatch(rpcSupervisorSnapshot);
-const initialTabs = await createInitialTabs();
-await finishRpcSupervisorStartup(initialTabs);
-const initialTab = initialTabs[0];
+optionalFeatureMigrationStore = new OptionalFeatureMigrationStore({
+  filePath: process.env.PI_WEBUI_OPTIONAL_FEATURE_MIGRATION_FILE || path.join(agentDir, "webui", "optional-feature-migration.json"),
+});
+optionalFeatureAuditCoordinator = new OptionalFeatureAuditCoordinator({
+  catalog: OPTIONAL_FEATURE_CATALOG,
+  collectStatuses: async () => (await optionalFeaturePackageStatuses(options.cwd)).features,
+  store: optionalFeatureMigrationStore,
+  webuiVersion: packageJson.version,
+  onEvent: (event) => broadcastServerEvent(event),
+});
 let currentHost = options.host;
 let networkRebindInProgress = false;
 let networkRebindTargetHost = null;
@@ -14328,6 +14781,30 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/session-summary/preferences" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await sessionSummaryPreferencesData(tab) }, { "cache-control": "private, no-store" });
+      return;
+    }
+
+    if (url.pathname === "/api/session-summary/preferences" && req.method === "PUT") {
+      requireSessionSummaryJsonRequest(req);
+      const body = await readJsonBody(req, { limitBytes: SESSION_SUMMARY_REQUEST_MAX_BYTES });
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await saveSessionSummaryPreferencesData(tab, body) }, { "cache-control": "private, no-store" });
+      return;
+    }
+
+    if (url.pathname === "/api/session-summary/generate" && req.method === "POST") {
+      requireSessionSummaryJsonRequest(req);
+      const body = await readJsonBody(req, { limitBytes: SESSION_SUMMARY_REQUEST_MAX_BYTES });
+      requiredSessionSummaryObject(body, "request", ["refresh", "tab"]);
+      if (body.refresh !== undefined && typeof body.refresh !== "boolean") throw makeHttpError(400, "refresh must be true or false");
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await triggerSessionSummary(tab, { refresh: body.refresh === true }) }, { "cache-control": "private, no-store" });
+      return;
+    }
+
     if (url.pathname === "/api/workflow-policy" && req.method === "GET") {
       requireLocalhost(req, "Workflow policy setup is only allowed from localhost.");
       try {
@@ -14517,6 +14994,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/tabs" && req.method === "POST") {
+      if (!optionalFeatureStartupReady) throw makeHttpError(503, "Optional feature startup audit is still checking; retry after /api/health is ready");
       const body = await readJsonBody(req);
       const tab = await createTab({ title: body.title, cwd: body.cwd });
       sendJson(res, 201, { ok: true, data: { tab: tabMeta(tab), tabs: listTabs() } });
@@ -14611,6 +15089,16 @@ const server = createServer(async (req, res) => {
       }
       replayExtensionStatuses(tab, client);
       replayExtensionWidgets(tab, client);
+      if (tab.sessionSummary) {
+        sendSseToClient(client, {
+          type: "webui_session_summary",
+          kind: "replay",
+          tabId: tab.id,
+          tabTitle: tab.title,
+          summary: publicSessionSummaryState(tab),
+          replayed: true,
+        });
+      }
       replayPendingExtensionUiRequests(tab, client);
       const keepAlive = setInterval(() => writeSseFrame(client, ": keepalive\n\n"), 15000);
       req.on("close", () => {
@@ -14622,8 +15110,9 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/health" && req.method === "GET") {
       const status = await webuiStatus({ includeAuthPin: isLocalRequest(req) });
-      sendJson(res, 200, {
-        ok: true,
+      sendJson(res, optionalFeatureStartupReady ? 200 : 503, {
+        ok: optionalFeatureStartupReady,
+        startupPhase: optionalFeatureAuditCoordinator.current().phase,
         webuiVersion: status.webuiVersion,
         piVersion: status.piVersion,
         webuiDev: status.webuiDev,
@@ -15165,8 +15654,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/optional-features" && req.method === "GET") {
-      const tab = getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await optionalFeaturePackageStatuses(tab.cwd) });
+      sendJson(res, 200, { ok: true, data: optionalFeatureAuditCoordinator.current() });
       return;
     }
 
@@ -15175,7 +15663,14 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
-      const data = await installOptionalFeaturePackage(String(body.featureId || ""), tab.cwd);
+      const revision = optionalFeatureAuditCoordinator.current().revision;
+      const data = await optionalFeatureAuditCoordinator.runMutation(revision, async () => {
+        try {
+          return await installOptionalFeaturePackage(String(body.featureId || ""), tab.cwd);
+        } finally {
+          await optionalFeatureAuditCoordinator.recheck({ reason: "post-install" });
+        }
+      });
       sendJson(res, 200, { ok: true, data });
       return;
     }
@@ -15185,7 +15680,31 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
-      const data = await installOptionalFeaturePackages(body.featureIds, tab.cwd);
+      const data = await runOptionalFeatureBatchMutation({
+        revision: body.revision,
+        featureIds: body.featureIds,
+        cwd: tab.cwd,
+        migration: body.migration === true,
+        tab,
+        install: () => installOptionalFeaturePackages(body.featureIds, tab.cwd),
+      });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/optional-feature-migration/recheck" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      await readJsonBody(req);
+      optionalFeatureAuditCoordinator.assertIdle();
+      const data = await optionalFeatureAuditCoordinator.recheck({ reason: "manual" });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/optional-feature-migration/dismiss" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const data = await optionalFeatureAuditCoordinator.dismiss(body.revision);
       sendJson(res, 200, { ok: true, data });
       return;
     }
@@ -15673,17 +16192,48 @@ function sweepWebuiTempArtifacts() {
 sweepWebuiTempArtifacts();
 setInterval(sweepWebuiTempArtifacts, TEMP_ARTIFACT_SWEEP_INTERVAL_MS).unref();
 
-server.listen(options.port, currentHost, () => {
-  const urlHost = formatUrlHost(currentHost);
-  console.log(`Pi Web UI: http://${urlHost}:${options.port}/`);
-  console.log(`Working directory: ${options.cwd}`);
-  if (initialTab) console.log(`Pi RPC: ${initialTab.rpc.displayCommand}`);
-  else console.log("Pi RPC: waiting for CWD selection in the Web UI");
-  if (restoreTabs.length) console.log(`Restored Web UI tabs: ${initialTabs.length}`);
-  if (!isLocalHost(currentHost)) {
-    console.warn(`WARNING: Web UI is exposed to the network. Remote PIN auth is ${remoteAuth.pin ? "enabled" : "OFF"}; only expose it on trusted networks.`);
-  }
+await new Promise((resolve, reject) => {
+  const onError = (error) => {
+    server.off("listening", onListening);
+    reject(error);
+  };
+  const onListening = () => {
+    server.off("error", onError);
+    resolve();
+  };
+  server.once("error", onError);
+  server.once("listening", onListening);
+  server.listen(options.port, currentHost);
 });
+
+const urlHost = formatUrlHost(currentHost);
+console.log(`Pi Web UI: http://${urlHost}:${options.port}/`);
+console.log(`Working directory: ${options.cwd}`);
+if (!isLocalHost(currentHost)) {
+  console.warn(`WARNING: Web UI is exposed to the network. Remote PIN auth is ${remoteAuth.pin ? "enabled" : "OFF"}; only expose it on trusted networks.`);
+}
+
+const startupAudit = await optionalFeatureAuditCoordinator.recheck({ reason: "startup" });
+if (options.migrationDryRun) {
+  console.log(`Optional feature migration dry run:\n${JSON.stringify(startupAudit, null, 2)}`);
+} else if (options.migrateOptionalFeatures) {
+  const featureIds = startupAudit.features.filter(({ state }) => state === "legacy-migratable").map(({ featureId }) => featureId);
+  if (featureIds.length) {
+    const result = await runOptionalFeatureBatchMutation({ revision: startupAudit.revision, featureIds, cwd: options.cwd, migration: true });
+    console.log(`Optional feature migration: ${result.succeeded} succeeded, ${result.failed} failed.`);
+  }
+}
+
+rpcSupervisor = await initializeRpcSupervisor();
+rpcSupervisorSnapshot = rpcSupervisor?.snapshot || null;
+installRpcSupervisorEventDispatch(rpcSupervisorSnapshot);
+const initialTabs = await createInitialTabs();
+await finishRpcSupervisorStartup(initialTabs);
+const initialTab = initialTabs[0] || null;
+optionalFeatureStartupReady = true;
+if (initialTab) console.log(`Pi RPC: ${initialTab.rpc.displayCommand}`);
+else console.log("Pi RPC: waiting for CWD selection in the Web UI");
+if (restoreTabs.length) console.log(`Restored Web UI tabs: ${initialTabs.length}`);
 
 let shutdownInProgress = false;
 

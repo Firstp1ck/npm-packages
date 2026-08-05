@@ -122,6 +122,7 @@ const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const workflowPolicyAgentDir = path.join(harnessSideEffectsRoot, "agent");
 const workflowPolicyFile = path.join(workflowPolicyAgentDir, "workflow-policy.json");
+const sessionSummaryConfigFile = path.join(workflowPolicyAgentDir, "session-summary.json");
 const canonicalWorkflowPolicySuggestions = {
   shellAllowlist: ["git", "node", "npm"],
   networkAllowlist: ["api.github.com", "registry.npmjs.org"],
@@ -229,6 +230,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     PATH: `${fakeOpenBinDir}${path.delimiter}${process.env.PATH || ""}`,
     PI_CODING_AGENT_DIR: workflowPolicyAgentDir,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
+    PI_SESSION_SUMMARY_CONFIG_FILE: sessionSummaryConfigFile,
     PI_WEBUI_RPC_SUPERVISOR: "1",
     ...(process.platform === "linux" ? {} : { PI_WEBUI_OPEN_COMMAND: openCommandScript }),
     PI_WEBUI_OPEN_LOG: openCommandLog,
@@ -260,6 +262,8 @@ async function verifyTopLevelOptionalFeatureProtection(tabId) {
   await rm(aliasPath, { recursive: true, force: true });
   await symlink(path.join(path.dirname(root), "pi-extension-aur-review"), aliasPath, process.platform === "win32" ? "junction" : "dir");
   try {
+    const recheckResponse = await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+    assert.equal(recheckResponse.status, 200, recheckResponse.body?.error);
     const statusResponse = await request("127.0.0.1", "/api/optional-features");
     const status = statusResponse.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
     assert.equal(statusResponse.status, 200);
@@ -267,7 +271,9 @@ async function verifyTopLevelOptionalFeatureProtection(tabId) {
     assert.equal(status?.locallyConfigured, true, "an enabled top-level resource should be recognized as locally configured");
     assert.equal(status?.ready, true, "an installed top-level resource should be ready without duplicate package registration");
     assert.equal(status?.resourceConflict, false);
-    assert.equal(status?.topLevelResources?.some((resourcePath) => String(resourcePath).replace(/\\/g, "/").endsWith("/extensions/aur-review-local/index.ts")), true);
+    assert.equal(Object.hasOwn(status || {}, "installedRoot"), false, "browser audit payloads must not expose install paths");
+    assert.equal(Object.hasOwn(status || {}, "topLevelResources"), false, "browser audit payloads must not expose resource paths");
+    assert.equal(status?.state, "local-resource");
 
     const logOffset = (await readJsonLines(fakePiCliLog)).length;
     const installResponse = await request("127.0.0.1", "/api/optional-feature-install", {
@@ -279,6 +285,7 @@ async function verifyTopLevelOptionalFeatureProtection(tabId) {
     assert.equal((await readJsonLines(fakePiCliLog)).length, logOffset, "a blocked duplicate registration must not launch Pi install");
   } finally {
     await rm(aliasPath, { recursive: true, force: true });
+    await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
   }
 }
 
@@ -313,6 +320,27 @@ async function runOptionalFeatureFocus() {
     ready: single.body?.data?.status?.ready,
   }, { installed: true, configured: true, ready: true });
 
+  const conflictExtensionsDir = path.join(workflowPolicyAgentDir, "extensions");
+  const conflictAliasPath = path.join(conflictExtensionsDir, "aur-review-conflict");
+  await mkdir(conflictExtensionsDir, { recursive: true });
+  await symlink(path.join(path.dirname(root), "pi-extension-aur-review"), conflictAliasPath, process.platform === "win32" ? "junction" : "dir");
+  try {
+    const conflictAudit = await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+    const conflictFeature = conflictAudit.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
+    assert.equal(conflictFeature?.state, "conflict");
+    assert.equal(conflictFeature?.resourceConflict, true);
+    const conflictTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "conflict-safe optional package" } });
+    assert.equal(conflictTab.status, 201, conflictTab.body?.error);
+    const conflictRpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
+    const normalizedConflictArgs = conflictRpcArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+    assert.equal(normalizedConflictArgs.some((arg) => arg.includes("/extensions/aur-review-conflict/")), false, "conflicting top-level alias must be excluded from RPC args");
+    assert.equal(normalizedConflictArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1, "registered package remains canonical during a conflict");
+    await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [conflictTab.body?.data?.tab?.id] } });
+  } finally {
+    await rm(conflictAliasPath, { recursive: true, force: true });
+    await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+  }
+
   const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
   assert.equal(resourceTab.status, 201, resourceTab.body?.error);
   const rpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
@@ -321,14 +349,18 @@ async function runOptionalFeatureFocus() {
   assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1);
   await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTab.body?.data?.tab?.id] } });
 
-  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: "aurReview" } })).status, 400);
-  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: ["not-allowlisted"] } })).status, 400);
-  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: Array(20).fill("aurReview") } })).status, 400);
+  const batchPlan = await request("127.0.0.1", "/api/optional-features");
+  const batchRevision = batchPlan.body?.data?.revision;
+  assert.match(batchRevision || "", /^sha256:[a-f0-9]{64}$/);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: "aurReview" } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: ["not-allowlisted"] } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: Array(20).fill("aurReview") } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: "sha256:stale", featureIds: ["aurReview"] } })).status, 409);
 
   const logOffset = (await readJsonLines(fakePiCliLog)).length;
   const batch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
     method: "POST",
-    body: { tab: tabId, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
+    body: { tab: tabId, revision: batchRevision, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
     timeoutMs: 20_000,
   });
   assert.equal(batch.status, 200, batch.body?.error);
@@ -349,8 +381,31 @@ async function runOptionalFeatureFocus() {
     ["finish", "npm:@firstpick/pi-extension-git-footer-status", 0],
   ]);
 
+  const progressSnapshot = (await request("127.0.0.1", "/api/optional-features")).body?.data;
+  assert.equal(progressSnapshot?.phase, "partial");
+  assert.deepEqual([progressSnapshot?.progress?.succeeded, progressSnapshot?.progress?.failed], [2, 1]);
+  assert.equal(progressSnapshot?.progress?.results?.length, 3);
+
+  const rpcLaunchCountBeforeSuccess = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").length;
+  const successfulBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: progressSnapshot.revision, featureIds: ["releaseAur"] },
+    timeoutMs: 20_000,
+  });
+  assert.equal(successfulBatch.status, 200, successfulBatch.body?.error);
+  assert.deepEqual(successfulBatch.body?.data?.restart, { autoRestarted: true, restartDeferred: false });
+  let rpcLaunchCountAfterSuccess = rpcLaunchCountBeforeSuccess;
+  for (let attempt = 0; attempt < 20 && rpcLaunchCountAfterSuccess === rpcLaunchCountBeforeSuccess; attempt++) {
+    await delay(50);
+    rpcLaunchCountAfterSuccess = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").length;
+  }
+  assert.equal(rpcLaunchCountAfterSuccess, rpcLaunchCountBeforeSuccess + 1, "an idle tab should restart automatically after a fully successful batch");
+  const completedSnapshot = (await request("127.0.0.1", "/api/optional-features")).body?.data;
+  assert.equal(completedSnapshot?.phase, "complete");
+  assert.equal(completedSnapshot?.progress?.autoRestarted, true);
+
   const lanHost = lanAddress();
-  if (lanHost) assert.equal((await request(lanHost, "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, featureIds: ["aurReview"] } })).status, 403);
+  if (lanHost) assert.equal((await request(lanHost, "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: ["aurReview"] } })).status, 403);
 
   const shutdownResponse = await request("127.0.0.1", "/api/shutdown", { method: "POST", body: {} });
   assert.equal(shutdownResponse.status, 200);
@@ -379,6 +434,98 @@ try {
   if (optionalFeatureFocus) {
     await runOptionalFeatureFocus();
   } else {
+  const summaryTabs = await request("127.0.0.1", "/api/tabs");
+  const summaryTabId = summaryTabs.body?.data?.tabs?.[0]?.id;
+  assert.ok(summaryTabId, "session-summary endpoint checks require the startup tab");
+  const summaryPath = `/api/session-summary/preferences?tab=${encodeURIComponent(summaryTabId)}`;
+  const initialSummaryPreferences = await request("127.0.0.1", summaryPath);
+  assert.equal(initialSummaryPreferences.status, 200, initialSummaryPreferences.body?.error);
+  assert.equal(initialSummaryPreferences.headers.get("cache-control"), "private, no-store", "summary preferences must not be cached by shared or browser caches");
+  assert.equal(initialSummaryPreferences.body?.data?.version, 1);
+  assert.equal(initialSummaryPreferences.body?.data?.preferences?.configured, false, "first read should not silently save setup defaults");
+  assert.deepEqual(initialSummaryPreferences.body?.data?.models?.map(({ provider, id }) => [provider, id]), [["fake", "fake-model"]]);
+  assert.deepEqual(initialSummaryPreferences.body?.data?.modelThinkingLevels?.["fake/fake-model"], ["off"]);
+  assert.match(initialSummaryPreferences.body?.data?.disclosure?.scope || "", /user text, final assistant text, and tool names only/i);
+  assert.equal(await pathExists(sessionSummaryConfigFile), false, "reading unconfigured summary setup must not create a preference file");
+
+  const unconfiguredSummaryGenerate = await request("127.0.0.1", `/api/session-summary/generate?tab=${encodeURIComponent(summaryTabId)}`, { method: "POST", body: { refresh: true } });
+  assert.equal(unconfiguredSummaryGenerate.status, 409, "direct generation must not bypass explicit setup confirmation");
+  assert.match(unconfiguredSummaryGenerate.body?.error || "", /setup must be confirmed/i);
+
+  const nonJsonSummarySave = await fetch(`http://127.0.0.1:${port}${summaryPath}`, {
+    method: "PUT",
+    headers: { "content-type": "text/plain" },
+    body: "{}",
+  });
+  assert.equal(nonJsonSummarySave.status, 415, "summary setup must reject cross-origin-simple content types");
+  const crossSiteSummarySave = await fetch(`http://127.0.0.1:${port}${summaryPath}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" },
+    body: JSON.stringify({ confirmed: true, preferences: {} }),
+  });
+  assert.equal(crossSiteSummarySave.status, 403, "summary setup must reject explicit cross-site mutations");
+  const unconfirmedSummarySave = await request("127.0.0.1", summaryPath, { method: "PUT", body: { confirmed: false, preferences: {} } });
+  assert.equal(unconfirmedSummarySave.status, 409, "summary setup must require explicit privacy and cost confirmation");
+  assert.equal(await pathExists(sessionSummaryConfigFile), false, "rejected summary setup must not persist defaults");
+
+  const validSummaryPreferences = {
+    enabled: true,
+    model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" },
+    prompts: { title: "Fixture title prompt", summary: "Fixture Markdown summary prompt" },
+    input: { scope: "text-and-tool-names" },
+    context: { injectLatest: false },
+    title: { enabled: true, minSettledTurns: 3 },
+  };
+  const invalidSummaryShape = await request("127.0.0.1", summaryPath, {
+    method: "PUT",
+    body: { confirmed: true, preferences: { ...validSummaryPreferences, credentials: "forbidden" } },
+  });
+  assert.equal(invalidSummaryShape.status, 400, "summary setup must reject unknown fields rather than retaining secrets or future client authority");
+  const invalidSummaryModel = await request("127.0.0.1", summaryPath, {
+    method: "PUT",
+    body: { confirmed: true, preferences: { ...validSummaryPreferences, model: { provider: "fake", modelId: "missing", thinkingLevel: "off" } } },
+  });
+  assert.equal(invalidSummaryModel.status, 400, "summary setup must validate against the active tab's authenticated model registry");
+  const savedSummaryPreferences = await request("127.0.0.1", summaryPath, {
+    method: "PUT",
+    body: { confirmed: true, preferences: validSummaryPreferences },
+  });
+  assert.equal(savedSummaryPreferences.status, 200, savedSummaryPreferences.body?.error);
+  assert.equal(savedSummaryPreferences.headers.get("cache-control"), "private, no-store");
+  assert.equal(savedSummaryPreferences.body?.data?.preferences?.configured, true);
+  assert.equal(savedSummaryPreferences.body?.data?.summary?.configured, true);
+  const summaryReplay = await waitForSseEvent(summaryTabId, (event) => event.type === "webui_session_summary" && event.kind === "replay");
+  assert.equal(summaryReplay.event.tabId, summaryTabId, "summary replay must remain scoped to the requested tab");
+  assert.equal(summaryReplay.event.summary?.configured, true);
+  assert.equal(Object.hasOwn(summaryReplay.event, "preferences"), false, "summary SSE replay must not expose setup prompts or model preferences");
+  const persistedSummaryPreferences = JSON.parse(await readFile(sessionSummaryConfigFile, "utf8"));
+  assert.equal(persistedSummaryPreferences.configured, true);
+  assert.equal(persistedSummaryPreferences.model.modelId, "fake-model");
+  assert.equal(Object.hasOwn(persistedSummaryPreferences, "credentials"), false, "summary preferences must not persist credentials");
+  assert.equal((await stat(sessionSummaryConfigFile)).mode & 0o777, 0o600, "summary preferences must be private");
+  persistedSummaryPreferences.credentials = "fixture-secret-must-not-cross-http";
+  persistedSummaryPreferences.model.providerToken = "fixture-provider-token";
+  await writeFile(sessionSummaryConfigFile, `${JSON.stringify(persistedSummaryPreferences, null, 2)}\n`, { mode: 0o600 });
+  const sanitizedSummaryPreferences = await request("127.0.0.1", summaryPath);
+  assert.equal(sanitizedSummaryPreferences.status, 200);
+  assert.equal(Object.hasOwn(sanitizedSummaryPreferences.body?.data?.preferences || {}, "credentials"), false, "unknown persisted keys must not cross the browser API boundary");
+  assert.equal(Object.hasOwn(sanitizedSummaryPreferences.body?.data?.preferences?.model || {}, "providerToken"), false, "unknown nested model keys must not cross the browser API boundary");
+  assert.equal(JSON.parse(await readFile(sessionSummaryConfigFile, "utf8")).credentials, "fixture-secret-must-not-cross-http", "sanitized reads must not destroy unknown future persisted keys");
+
+  const summaryPromptCountBefore = (await readJsonLines(fakePiCommandLog)).filter(({ direction, type, message }) => direction === "command" && type === "prompt" && String(message || "").startsWith("/summary")).length;
+  const unavailableSummaryGenerate = await request("127.0.0.1", `/api/session-summary/generate?tab=${encodeURIComponent(summaryTabId)}`, { method: "POST", body: { refresh: true } });
+  assert.equal(unavailableSummaryGenerate.status, 409, "generation should fail closed when /summary is absent from the active tab command catalog");
+  const summaryPromptCountAfter = (await readJsonLines(fakePiCommandLog)).filter(({ direction, type, message }) => direction === "command" && type === "prompt" && String(message || "").startsWith("/summary")).length;
+  assert.equal(summaryPromptCountAfter, summaryPromptCountBefore, "an unavailable summary command must not start a model-facing agent prompt");
+  const malformedSummaryGenerate = await request("127.0.0.1", `/api/session-summary/generate?tab=${encodeURIComponent(summaryTabId)}`, { method: "POST", body: { refresh: "yes" } });
+  assert.equal(malformedSummaryGenerate.status, 400, "summary refresh must be a strict boolean");
+  const oversizedSummarySave = await fetch(`http://127.0.0.1:${port}${summaryPath}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirmed: true, padding: "x".repeat(33 * 1024) }),
+  });
+  assert.equal(oversizedSummarySave.status, 413, "summary mutations over 32 KiB must be rejected before validation");
+
   const initialInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
   assert.equal(initialInterfacePreferences.status, 200);
   assert.equal(initialInterfacePreferences.body?.data?.preferences?.sidePanelWidth, null, "a user without a saved width should receive the default preference");
@@ -869,7 +1016,8 @@ try {
   assert.equal(aurReviewFeature?.installed, true, "workspace discovery should find the local pi-extension-aur-review sibling without an npm dependency");
   assert.equal(aurReviewFeature?.configured, false, "physical discovery alone must not imply Pi registration");
   assert.equal(aurReviewFeature?.ready, false, "a physical but unregistered companion must not be ready after reload");
-  assert.equal(path.basename(aurReviewFeature?.installedRoot || ""), "pi-extension-aur-review", "aur-review discovery must validate the exact sibling manifest/name");
+  assert.equal(aurReviewFeature?.state, "unknown", "physical discovery without canonical ownership must remain unknown");
+  assert.equal(Object.hasOwn(aurReviewFeature || {}, "installedRoot"), false, "browser status must not expose the validated host package path");
   await verifyTopLevelOptionalFeatureProtection(tabId);
 
   const invalidSingleFeature = await request("127.0.0.1", "/api/optional-feature-install", {
@@ -905,26 +1053,33 @@ try {
   assert.equal(normalizedLaunchArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1, "the WebUI package itself should remain loaded exactly once");
   assert.equal((await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTabId] } })).status, 200);
 
+  const currentBatchPlan = await request("127.0.0.1", "/api/optional-features");
+  const currentBatchRevision = currentBatchPlan.body?.data?.revision;
   const malformedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
     method: "POST",
-    body: { tab: tabId, featureIds: "aurReview" },
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: "aurReview" },
   });
   assert.equal(malformedBatch.status, 400, "batch installs must require an array");
   const unknownBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
     method: "POST",
-    body: { tab: tabId, featureIds: ["aurReview", "not-allowlisted"] },
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: ["aurReview", "not-allowlisted"] },
   });
   assert.equal(unknownBatch.status, 400, "batch installs must reject unknown IDs before starting any command");
   const oversizedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
     method: "POST",
-    body: { tab: tabId, featureIds: Array.from({ length: 20 }, () => "aurReview") },
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: Array.from({ length: 20 }, () => "aurReview") },
   });
   assert.equal(oversizedBatch.status, 400, "batch installs must cap raw input to the catalog size");
+  const staleBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: "sha256:stale", featureIds: ["aurReview"] },
+  });
+  assert.equal(staleBatch.status, 409, "batch installs must reject stale audit revisions");
 
   const batchLogStart = (await readJsonLines(fakePiCliLog)).length;
   const partialBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
     method: "POST",
-    body: { tab: tabId, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
     timeoutMs: 20_000,
   });
   assert.equal(partialBatch.status, 200, partialBatch.body?.error);
@@ -952,7 +1107,7 @@ try {
   if (lanHost) {
     const remoteBatch = await request(lanHost, "/api/optional-feature-install-batch", {
       method: "POST",
-      body: { tab: tabId, featureIds: ["aurReview"] },
+      body: { tab: tabId, revision: currentBatchRevision, featureIds: ["aurReview"] },
     });
     assert.equal(remoteBatch.status, 403, "batch installs must remain localhost-only");
   }
