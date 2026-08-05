@@ -698,6 +698,19 @@ assert.match(app, /"Resolve with agent"[\s\S]*api\("\/api\/git-operation\/resolv
 assert.match(server, /function gitConflictResolutionAgentPrompt\(operation\)[\s\S]*Conflicted files:[\s\S]*Do not continue, skip, abort, commit, reset, or push[\s\S]*diff-filter=U is empty/, "server should build a bounded conflict handoff with operation safety and verification instructions");
 assert.match(server, /"\/api\/git-operation\/resolve-with-agent"[\s\S]*openGitConflictResolutionAgentTab\(tab\)/, "server should expose conflict-resolution agent tab creation through the git operation routes");
 assert.match(app, /async function pullGitChangesDialog\(\)[\s\S]*api\("\/api\/git-changes\/pull", \{ method: "POST"/, "git changes modal should post to the pull endpoint from the Pull button");
+assert.match(app, /async function pullGitFooterSync\(tabId = activeTabId\)[\s\S]*api\("\/api\/git-changes\/pull", \{ method: "POST", body: \{ remote: "origin" \}, tabId \}\)[\s\S]*requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "incoming-only footer Sync should pull directly from origin and refresh the footer payload");
+assert.doesNotMatch(app.match(/async function pullGitFooterSync[\s\S]*?\n\}/)?.[0] || "", /git-workflow\/push|appConfirmText/, "the direct footer pull path should neither push nor open a confirmation");
+assert.match(app, /async function pushGitFooterSync\(tabId = activeTabId, syncValue = ""\)[\s\S]*api\("\/api\/git-workflow\/push", \{ method: "POST", body: \{\}, tabId \}\)[\s\S]*response\.code === "NON_FAST_FORWARD"[\s\S]*forceWithLease: true, confirmed: true/, "outgoing footer Sync should preserve confirmed push and guarded force-with-lease fallback behavior");
+assert.match(app, /chip\.key === "sync" && visible\("webui-sync-push"\)[\s\S]*syncAction === "pull"[\s\S]*pullGitFooterSync\(tabId\)[\s\S]*syncAction === "push"[\s\S]*pushGitFooterSync\(tabId, chip\.value\)/, "footer Sync should route incoming and outgoing states to their respective actions");
+const gitFooterSyncRoutingSource = appFunctionSource("gitFooterSyncCounts", "gitFooterCurrentBranch");
+const gitFooterSyncRouting = JSON.parse(vm.runInNewContext(`${gitFooterSyncRoutingSource}\nJSON.stringify({
+  incoming: gitFooterSyncAction({ key: "sync", value: "⇣2" }),
+  outgoing: gitFooterSyncAction({ key: "sync", value: "⇡2" }),
+  diverged: gitFooterSyncAction({ key: "sync", value: "⇡1 · ⇣2" }),
+  unavailable: gitFooterSyncAction({ key: "sync", value: "no upstream" }),
+  other: gitFooterSyncAction({ key: "changes", value: "⇣2" }),
+})`));
+assert.deepEqual(gitFooterSyncRouting, { incoming: "pull", outgoing: "push", diverged: "push", unavailable: "", other: "" }, "Sync routing should pull only incoming-only state and preserve push handling whenever outgoing commits exist");
 assert.match(app, /function gitDiffDisplayLine\(row, side\)[\s\S]*`-\$\{text\}`[\s\S]*`\+\$\{text\}`/, "git changes modal should render changed lines with +/- prefixes");
 assert.match(app, /function gitUntrackedEntryToDiffFile\(entry\)[\s\S]*?renderRowLimit:\s*Number\.POSITIVE_INFINITY[\s\S]*?type: "added"/, "untracked files should render as complete added-file diffs without the row preview cap");
 assert.match(app, /async function loadMissingGitUntrackedContent\(entry[\s\S]*?\/api\/git-changes\/untracked-file\?path=/, "untracked path-only payloads should fetch complete file contents instead of rendering as empty files");
@@ -710,7 +723,8 @@ assert.match(server, /async function readGitChanges\(cwd\)[\s\S]*?const diffArgs
 assert.match(server, /\["status", "--porcelain=2", "--branch", "--untracked-files=all"\][\s\S]*?summarizeGitPorcelainStatus\(porcelainStatusText\)/, "server should derive behind/ahead from locale-independent porcelain status so the Pull button activates after fetch");
 assert.match(server, /async function readGitIncomingChanges\(root, summary\)[\s\S]*?"HEAD\.\.@\{upstream\}"/, "server should collect incoming upstream diffs when remote commits are behind");
 assert.match(server, /url\.pathname === "\/api\/git-changes" && req\.method === "GET"/, "server should expose GET /api/git-changes for the changes modal");
-assert.match(server, /url\.pathname === "\/api\/git-changes\/pull" && req\.method === "POST"[\s\S]*?pullGitChanges\(tab\.cwd\)/, "server should expose POST /api/git-changes/pull for the changes modal Pull button");
+assert.match(server, /async function pullGitChanges\(cwd, \{ remote \} = \{\}\)[\s\S]*?const pullArgs = \["pull", "--ff-only"\];[\s\S]*?remote === "origin"[\s\S]*?pullArgs\.push\("origin"\)[\s\S]*?runGuardedGitMutation\(pullArgs/, "server should allow the guarded pull endpoint to target origin explicitly");
+assert.match(server, /url\.pathname === "\/api\/git-changes\/pull" && req\.method === "POST"[\s\S]*?pullGitChanges\(tab\.cwd, \{ remote: body\?\.remote \}\)/, "server should expose POST /api/git-changes/pull for modal and footer Pull actions");
 assert.match(css, /@media \(max-width: 1050px\)[\s\S]*?\.footer-line-meta \{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?\.footer-line-meta \.footer-meta \{[\s\S]*?flex:\s*1 1 var\(--footer-chip-min-width\);[\s\S]*?width:\s*auto;[\s\S]*?\.footer-workspace,\n\s+\.footer-model,\n\s+\.footer-thinking \{ grid-column:\s*auto; \}/, "narrow git-footer metadata should wrap like the top metric row instead of forcing a two-column grid");
 assert.match(css, /@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*?\.context-meter-bar \{ display:\s*none !important; \}/, "mobile should hide the WebUI context meter that appears after high context usage");
 assert.match(css, /\.footer-line-tui \{[\s\S]*?white-space:\s*nowrap/, "default Web UI footer should use a minimal TUI-like line");

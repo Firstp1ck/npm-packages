@@ -2884,7 +2884,7 @@ const gitFooterPayloadRefreshInFlightByTab = new Set();
 const gitFooterPayloadStateByTab = new Map();
 const gitFooterPayloadSettlementTimersByTab = new Map();
 const gitFooterPayloadRequestSerialByTab = new Map();
-const gitFooterSyncPushInFlightByTab = new Set();
+const gitFooterSyncInFlightByTab = new Set();
 const gitFooterPiCalibrationInFlightByTab = new Set();
 let gitFooterVisibilityApplyInFlight = false;
 let gitFooterVisibilityDirty = false;
@@ -15651,7 +15651,7 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   cwd: "Active working directory for this Web UI tab.",
   git: "Current Git branch. detached means HEAD is not on a branch; no repo means the cwd is outside a Git work tree.",
   "git-state": "Active Git operation or detached state. Finish or abort rebase/merge/cherry-pick/revert/bisect before normal commits.",
-  sync: "Remote tracking divergence. ↑ means local commits ahead; ↓ means remote commits to pull. Click when ↑ appears to run git push for this tab.",
+  sync: "Remote tracking divergence. ↑ means local commits to push; ↓ means remote commits to pull. Incoming-only Sync pulls from origin; outgoing Sync uses the confirmed push flow, including the guarded force-with-lease fallback when needed.",
   changes: "Working tree and fetched remote summary. 🟢 staged, ✏️ modified unstaged, ➕ untracked, ⚠️ conflicted; ⬇️ means fetched remote commits to pull; 🔄/✓/⚠️ fetch shows the tab git fetch state; ✅ means no changes.",
   "git-extra": "Extra Git signals. 📦 stash, 🧩 dirty submodules, 🌳 worktrees, 🏷️ tag at HEAD, 🕒 last commit age, 🔓 signing mismatch.",
   worktree: "Git worktree checkout for this tab. Use branch worktrees to work on branches in parallel without switching this checkout.",
@@ -15728,7 +15728,7 @@ const GIT_FOOTER_VISIBILITY_LABELS = Object.freeze({
   "webui-context-auto-compaction": "Auto-compaction action",
   "webui-branch-picker": "Branch/worktree picker",
   "webui-git-init": "Git init affordance",
-  "webui-sync-push": "Sync push action",
+  "webui-sync-push": "Sync pull/push action",
   "webui-changes-modal": "Changes modal",
   "webui-git-tools-modal": "Git tools modal",
   "webui-model-picker": "Model picker",
@@ -15765,7 +15765,7 @@ const GIT_FOOTER_VISIBILITY_HINTS = Object.freeze({
   "webui-context-auto-compaction": "Click action on context chips for auto-compaction.",
   "webui-branch-picker": "Click action on the git branch/worktree chips.",
   "webui-git-init": "Git initialization affordance when a tab has no repository.",
-  "webui-sync-push": "Click-to-push action on outgoing sync chips.",
+  "webui-sync-push": "Compatibility visibility key for incoming pull and outgoing push actions on Sync chips.",
   "webui-changes-modal": "Click action opening the changes/conflicts modal.",
   "webui-git-tools-modal": "Click action opening extra git tools.",
   "webui-model-picker": "Click action opening the footer model picker.",
@@ -16340,13 +16340,22 @@ function renderGitFooterPayloadMetric(chip, payload) {
   return node;
 }
 
-function gitFooterSyncOutgoingCount(value) {
-  const match = String(value || "").match(/[↑⇡]\s*(\d+)/u);
-  return match ? Number.parseInt(match[1] || "0", 10) || 0 : 0;
+function gitFooterSyncCounts(value) {
+  const text = String(value || "");
+  const aheadMatch = text.match(/[↑⇡]\s*(\d+)/u);
+  const behindMatch = text.match(/[↓⇣]\s*(\d+)/u);
+  return {
+    ahead: aheadMatch ? Number.parseInt(aheadMatch[1] || "0", 10) || 0 : 0,
+    behind: behindMatch ? Number.parseInt(behindMatch[1] || "0", 10) || 0 : 0,
+  };
 }
 
-function gitFooterSyncChipHasOutgoing(chip) {
-  return chip?.key === "sync" && gitFooterSyncOutgoingCount(chip.value) > 0;
+function gitFooterSyncAction(chip) {
+  if (chip?.key !== "sync") return "";
+  const { ahead, behind } = gitFooterSyncCounts(chip.value);
+  if (behind > 0 && ahead === 0) return "pull";
+  if (ahead > 0) return "push";
+  return "";
 }
 
 function gitFooterCurrentBranch() {
@@ -16355,9 +16364,31 @@ function gitFooterCurrentBranch() {
   return value && value !== "no repo" ? cleanFooterPayloadText(gitChip.value, "") : "";
 }
 
+async function pullGitFooterSync(tabId = activeTabId) {
+  if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return;
+  const tabContext = activeTabContext(tabId);
+  hideFooterTooltip();
+  gitFooterSyncInFlightByTab.add(tabId);
+  if (isCurrentTabContext(tabContext)) renderFooter();
+  try {
+    const response = await api("/api/git-changes/pull", { method: "POST", body: { remote: "origin" }, tabId });
+    if (!response.ok) {
+      const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
+      throw new Error(detail || "git pull from origin failed");
+    }
+    addEvent("Pulled Git changes from origin.", "success");
+    requestGitFooterWebuiPayload(tabContext, { force: true });
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+  } finally {
+    gitFooterSyncInFlightByTab.delete(tabId);
+    if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+}
+
 async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
-  if (!tabId || gitFooterSyncPushInFlightByTab.has(tabId)) return;
-  const outgoing = gitFooterSyncOutgoingCount(syncValue);
+  if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return;
+  const outgoing = gitFooterSyncCounts(syncValue).ahead;
   if (outgoing <= 0) return;
   const tabContext = activeTabContext(tabId);
   const tab = tabs.find((item) => item.id === tabId);
@@ -16369,7 +16400,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
     : "";
   if (!(await appConfirmText(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?${protectedWarning}`, { affected: `Remote Git branch ${branch || "current branch"}`, confirmLabel: "Push commits" }))) return;
 
-  gitFooterSyncPushInFlightByTab.add(tabId);
+  gitFooterSyncInFlightByTab.add(tabId);
   if (isCurrentTabContext(tabContext)) renderFooter();
   try {
     const response = await api("/api/git-workflow/push", { method: "POST", body: {}, tabId });
@@ -16411,7 +16442,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
   } catch (error) {
     addEvent(error.message || String(error), "error");
   } finally {
-    gitFooterSyncPushInFlightByTab.delete(tabId);
+    gitFooterSyncInFlightByTab.delete(tabId);
     if (isCurrentTabContext(tabContext)) renderFooter();
   }
 }
@@ -16432,13 +16463,19 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
   } else if (chip.key === "worktree" && visible("webui-branch-picker")) {
     options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
     action = "Click to manage branch worktrees for this repository.";
-  } else if (chip.key === "sync" && visible("webui-sync-push") && gitFooterSyncChipHasOutgoing(chip)) {
+  } else if (chip.key === "sync" && visible("webui-sync-push")) {
     const tabId = tab?.id || activeTabId;
-    const inFlight = tabId ? gitFooterSyncPushInFlightByTab.has(tabId) : false;
-    options.onClick = () => pushGitFooterSync(tabId, chip.value);
+    const syncAction = gitFooterSyncAction(chip);
+    const inFlight = tabId ? gitFooterSyncInFlightByTab.has(tabId) : false;
+    if (syncAction === "pull") {
+      options.onClick = () => pullGitFooterSync(tabId);
+      action = inFlight ? "Pulling from origin." : "Click to pull from origin with fast-forward only.";
+    } else if (syncAction === "push") {
+      options.onClick = () => pushGitFooterSync(tabId, chip.value);
+      action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
+    }
     options.ariaBusy = inFlight;
     options.disabled = inFlight;
-    action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
   } else if (chip.key === "changes" && visible("webui-changes-modal")) {
     options.onClick = () => openGitChangesDialog(tab?.id || activeTabId);
     action = "Click to view the current git diff.";
@@ -16504,10 +16541,10 @@ function footerBranchPickerRenderKey() {
 function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
-  const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
+  const syncInFlight = tabContext.tabId ? gitFooterSyncInFlightByTab.has(tabContext.tabId) : false;
   const piCalibrationInFlight = tabContext.tabId ? gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -23498,6 +23535,7 @@ function renderAurReviewWidget() {
   if (!isOptionalFeatureEnabled("aurReview")) return null;
   const payload = parseAurReviewPayload(getWidgetLines(AUR_REVIEW_RPC_WIDGET_KEY));
   if (!payload || payload.decision.state === "closed") return null;
+  if (payload.origin === "guided-git" && payload.scope === "staged" && payload.decision.state === "approved") return null;
 
   const node = make("section", "widget aur-review-widget");
   node.setAttribute("aria-label", "Manual repository review");

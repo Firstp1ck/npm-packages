@@ -6240,9 +6240,12 @@ async function readGitIncomingChanges(root, summary) {
   }
 }
 
-async function pullGitChanges(cwd) {
+async function pullGitChanges(cwd, { remote } = {}) {
   const root = await getGitRoot(cwd);
-  const payload = await runGuardedGitMutation(["pull", "--ff-only"], { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
+  const pullArgs = ["pull", "--ff-only"];
+  if (remote === "origin") pullArgs.push("origin");
+  else if (remote) throw new Error(`Unsupported Git pull remote: ${String(remote)}`);
+  const payload = await runGuardedGitMutation(pullArgs, { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
   if (payload.data) payload.data.root = root;
   if (payload.ok) payload.data.changes = await readGitChanges(root);
   else {
@@ -15934,7 +15937,7 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "git pull is blocked");
       try {
-        sendJson(res, 200, await pullGitChanges(tab.cwd));
+        sendJson(res, 200, await pullGitChanges(tab.cwd, { remote: body?.remote }));
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
       }
