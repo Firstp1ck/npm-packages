@@ -358,7 +358,7 @@ test("focus returns to a regenerated per-tab summary action after tab controls r
   await expect(summaryButton).toBeFocused();
 });
 
-test("each terminal tab shares one horizontal Split and Summary action slot", async ({ page }) => {
+test("each terminal tab stacks Split and Summary across one horizontally divided action slot", async ({ page }) => {
   const requests = { get: 0, put: [], generate: [] };
   await installSummaryRoutes(page, requests, { configured: true });
   await page.goto(baseURL);
@@ -371,13 +371,20 @@ test("each terminal tab shares one horizontal Split and Summary action slot", as
   await expect(activeActions).toHaveCount(1);
   await expect(activeActions.locator(":scope > .terminal-tab-split-button")).toHaveCount(1);
   await expect(activeActions.locator(":scope > .terminal-tab-summary-button")).toHaveCount(1);
-  const actionWidths = await activeActions.evaluate((slot) => ({
-    slot: slot.getBoundingClientRect().width,
-    split: slot.querySelector(".terminal-tab-split-button")?.getBoundingClientRect().width || 0,
-    summary: slot.querySelector(".terminal-tab-summary-button")?.getBoundingClientRect().width || 0,
+  const actionGeometry = await activeActions.evaluate((slot) => ({
+    slotWidth: slot.getBoundingClientRect().width,
+    splitWidth: slot.querySelector(".terminal-tab-split-button")?.getBoundingClientRect().width || 0,
+    summaryWidth: slot.querySelector(".terminal-tab-summary-button")?.getBoundingClientRect().width || 0,
+    slotHeight: slot.getBoundingClientRect().height,
+    tabHeight: slot.parentElement?.querySelector(":scope > .terminal-tab-button")?.getBoundingClientRect().height || 0,
+    splitHeight: slot.querySelector(".terminal-tab-split-button")?.getBoundingClientRect().height || 0,
+    summaryHeight: slot.querySelector(".terminal-tab-summary-button")?.getBoundingClientRect().height || 0,
   }));
-  expect(Math.abs(actionWidths.split - actionWidths.summary)).toBeLessThan(1);
-  expect(Math.abs((actionWidths.split + actionWidths.summary) - actionWidths.slot)).toBeLessThan(2);
+  expect(Math.abs(actionGeometry.splitWidth - actionGeometry.slotWidth)).toBeLessThanOrEqual(1);
+  expect(Math.abs(actionGeometry.summaryWidth - actionGeometry.slotWidth)).toBeLessThanOrEqual(1);
+  expect(Math.abs(actionGeometry.slotHeight - actionGeometry.tabHeight)).toBeLessThan(1);
+  expect(Math.abs(actionGeometry.splitHeight - actionGeometry.summaryHeight)).toBeLessThan(1);
+  expect(Math.abs((actionGeometry.splitHeight + actionGeometry.summaryHeight) - actionGeometry.slotHeight)).toBeLessThan(2);
 
   await activeActions.locator(":scope > .terminal-tab-split-button").click();
   await expect(page.locator("[data-tab-id] > .terminal-tab-actions")).toHaveCount(initialTabCount + 1);

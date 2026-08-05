@@ -4307,6 +4307,7 @@ button.subagent-gate-attempt:focus-visible {
   position: relative;
   flex: 0 0 2rem;
   display: flex;
+  flex-direction: column;
   align-self: stretch;
   min-width: 2rem;
   min-height: 2.35rem;
@@ -4319,13 +4320,14 @@ button.subagent-gate-attempt:focus-visible {
   display: inline-grid;
   place-items: center;
   min-width: 0;
+  min-height: 0;
   padding: 0;
 }
 .terminal-tab-split-button {
   color: var(--ctp-blue);
 }
 .terminal-tab-split-button:not(:only-child) {
-  border-right: 1px solid rgba(137, 180, 250, 0.16);
+  border-bottom: 1px solid rgba(137, 180, 250, 0.16);
 }
 .terminal-tab-split-button[aria-pressed="true"] {
   color: var(--ctp-teal);
@@ -13434,8 +13436,6 @@ button.git-workflow-step { min-height: 1.9rem; }
   }
   .terminal-tab-button,
   .terminal-tab-actions,
-  .terminal-tab-split-button,
-  .terminal-tab-summary-button,
   .terminal-tab-close,
   .terminal-new-tab-button,
   .terminal-new-tab-menu-item,
