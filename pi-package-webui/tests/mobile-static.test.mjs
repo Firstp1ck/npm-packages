@@ -1673,8 +1673,8 @@ assert.match(app, /function syncStreamingThinkingFromUpdate\(event, update[\s\S]
 assert.match(app, /function setStreamRawText\(text\)[\s\S]*?streamRawText = nextText;[\s\S]*?resetStreamDerivedTextCache\(\);/, "live assistant text should synchronize from partial messages through a cache-aware setter");
 assert.match(app, /const TODO_PROGRESS_LINE_REGEX = /, "frontend should recognize live todo progress lines that will be moved into the todo widget");
 assert.match(app, /function stripTodoProgressLines\(text, \{ streaming = false \} = \{\}\)/, "live Assistant output should strip todo-progress lines before rendering final-output text");
-assert.match(app, /function syncLiveTodoProgressWidgetFromText\(text, tabId = activeTabId\)/, "live Assistant checklist text should update the todo-progress widget before tool execution events");
-assert.match(app, /scheduleLiveTodoProgressWidgetSync\(streamRawText, event\.tabId \|\| activeTabId\)/, "streaming assistant text should feed the live todo-progress widget through the coalesced sync scheduler");
+assert.match(app, /function syncLiveTodoProgressWidgetFromText\(text, tabId = activeTabId\)/, "authoritative Assistant checklist text should remain convertible into the todo-progress widget");
+assert.doesNotMatch(app, /scheduleLiveTodoProgressWidgetSync\(streamRawText, event\.tabId \|\| activeTabId\)/, "raw streaming assistant text must not drive the todo-progress widget");
 assert.match(app, /function renderStreamingAssistantText\(\)[\s\S]*?const thinkingFormat = syncStreamingThinkingFormat\(\);[\s\S]*?const finalText = thinkingFormat\?\.hasThinkingFormat \? streamDerivedText\(\)\.finalText : streamRenderableAssistantText\(\);/, "streamed Assistant text should render cached derived output without directly rescanning raw stream text");
 assert.match(app, /function syncStreamingThinkingFormat\(\)[\s\S]*?const parsed = streamDerivedText\(\)\.thinkingFormat;[\s\S]*?setStreamingThinkingText\(thinking\)/, "tagged <think> streaming output should update the live thinking card from cached parse state instead of flashing raw tags");
 assert.match(app, /const finalText = thinkingFormat\?\.hasThinkingFormat \? streamDerivedText\(\)\.finalText : streamRenderableAssistantText\(\);/, "tagged <think> streaming output should render only final response text in the Assistant card");
@@ -1682,10 +1682,10 @@ assert.match(app, /const STREAM_OUTPUT_HIDE_DELAY_MS = 300/, "stream output hidi
 assert.match(app, /const STREAM_OUTPUT_TOOLCALL_GUARD_MS = 220/, "live assistant text should be briefly guarded so pre-tool-call text can be suppressed");
 assert.match(app, /function scheduleStreamBubbleHide\([\s\S]*?STREAM_OUTPUT_MIN_VISIBLE_MS/, "stream output cards should observe a minimum visible duration before hiding");
 assert.match(app, /if \(finalText\) \{[\s\S]*?renderStreamingMarkdown\(streamText, finalText\);[\s\S]*?\} else \{\n\s+scheduleStreamBubbleHide\(\);/, "empty filtered stream output should schedule hide while visible stream output renders as Markdown");
-assert.match(app, /scheduleStreamingAssistantTextRender\(\{ immediate: !!\(streamToolCallSeen \|\| streamBubble\) \}\);/, "live assistant text should wait briefly before showing unless it is already visible or follows a tool call");
+assert.match(app, /function handleMessageUpdate\(event\)[\s\S]*?renderStreamingAssistantText\(\);/, "controller-batched assistant text should render through the transcript-only sink without a second scheduler");
 assert.match(app, /streamToolCallSeen = true;\n\s+suppressStreamingAssistantTextBeforeToolCall\(\);/, "tool-call starts should remove pending assistant text from the live transcript");
 assert.match(app, /function renderStreamingToolCallCard\(\{ scroll = false \} = \{\}\)[\s\S]*?appendMessage\(message, \{ streaming: true, itemKey:[\s\S]*?transcriptRenderer\.ownSurface\(streamToolCallText[\s\S]*?transcriptRenderer\.updateTextSurface\(\{[\s\S]*?text: displayText/, "live tool-call cards should render and update their stable semantic arguments surface in place");
-assert.match(app, /update\.type === "toolcall_delta"[\s\S]*?updateStreamingToolCallFromEvent\(event, \{ appendDelta: true \}\)[\s\S]*?Building tool call:/, "tool-call deltas should update visible streamed arguments instead of a static placeholder");
+assert.match(app, /update\.type === "toolcall_delta"[\s\S]*?updateStreamingToolCallFromEvent\(event, \{ appendDelta: true \}\)/, "tool-call deltas should update visible streamed arguments through the transcript-only sink");
 assert.match(app, /case "tool_execution_start":[\s\S]*?removeStreamingToolCallCard\(\)[\s\S]*?handleToolExecutionStart\(event\)/, "the streamed tool-call argument card should be removed when the real tool execution card starts");
 assert.doesNotMatch(app, /Preparing tool call:/, "tool-call streaming should no longer show only the static preparing placeholder");
 assert.match(app, /const created = appendMessage\(\{ role: "assistant", title: "final output"/, "live Assistant cards should be created only for final output text without a noisy Assistant label");
@@ -1713,7 +1713,7 @@ assert.match(app, /function ensureRunIndicatorBubble\(\)[\s\S]*?!runIndicatorBub
 assert.match(app, /const headline = runIndicatorHeadline\(\);\n\s+if \(runIndicatorText\.textContent !== headline\) runIndicatorText\.textContent = headline;/, "active agent indicator should avoid redundant headline DOM writes that can flicker");
 assert.match(app, /const meta = runIndicatorShowsElapsed\(\) \? `\$\{detail\} · run time[\s\S]*?if \(runIndicatorMeta\.textContent !== meta\) runIndicatorMeta\.textContent = meta;/, "active agent indicator should avoid redundant metadata DOM writes except elapsed changes");
 assert.match(app, /runIndicatorShowsElapsed\(\) \? `\$\{detail\} · run time/, "active agent indicator should label elapsed run time instead of showing a bare counter");
-assert.match(app, /case "agent_settled":[\s\S]*?clearRunIndicatorActivity\(\{ deferRemoval: !autoFollowChat \|\| !isChatNearBottom\(\) \}\);[\s\S]*?scheduleRefreshMessages\(\)/, "settlement should keep the tail height stable for readers above the live edge until canonical messages reconcile");
+assert.match(app, /case "agent_settled":(?:(?!case ")[\s\S])*?clearRunIndicatorActivity\(\{ deferRemoval: !autoFollowChat \|\| !isChatNearBottom\(\) \}\);(?:(?!case ")[\s\S])*?scheduleSemanticReconcile\(\{[^}]*messages: true/, "settlement should keep the tail height stable for readers above the live edge until the coalesced semantic reconciler refreshes canonical messages");
 assert.match(app, /Abort requested/, "abort feedback should clarify that Web UI is checking stop status");
 assert.match(app, /const ABORT_LONG_PRESS_MS = 3000/, "Abort long-press timing should be explicit");
 assert.match(app, /const ABORT_LONG_PRESS_TICK_MS = 100/, "Abort hold countdown should update visibly while held");
@@ -1742,7 +1742,7 @@ assert.match(app, /function clearRunIndicatorActivity[\s\S]*?clearRunIndicatorGr
 assert.match(app, /scheduleRunIndicatorGraceCheck\(tabContext = activeTabContext\(\)\)[\s\S]*?refreshState\(tabContext\)/, "stale local-only run indicators should re-check state after the start grace period");
 assert.match(app, /function scheduleAbortStateChecks\(/, "abort handling should poll state so the active indicator can clear after stop confirmation");
 assert.match(app, /case "tool_execution_start":[\s\S]*?suppressStreamingAssistantTextBeforeToolCall\(\)[\s\S]*?handleToolExecutionStart\(event\)[\s\S]*?setRunIndicatorActivity\(`Running tool:/, "tool execution should suppress pre-tool assistant text, then update the active agent indicator and live tool card");
-assert.match(app, /case "tool_execution_update":[\s\S]*?handleToolExecutionUpdate\(event\)/, "tool execution updates should be handled as transcript output");
+assert.match(app, /applyToolExecutionUpdate: \(event\) => \{\s+if \(!compactOutputActive\(\)\) applyTranscriptToolExecutionUpdate\(event\);/, "tool execution updates should enter the transcript-only controller sink before lifecycle dispatch");
 assert.match(app, /case "auto_retry_start":[\s\S]*?addTransientMessage\(\{ role: "warn", title: "auto retry"/, "auto-retry starts should be transcript-visible warnings");
 assert.match(app, /function trackAutoRetryStateFromEvent\(event\)[\s\S]*?event\.type === "auto_retry_start"[\s\S]*?autoRetryingTabs\.add\(tabId\)[\s\S]*?suppressPendingAgentDoneNotificationsForTab\(tabId\)[\s\S]*?markTabWorkingLocally\(tabId\)/, "auto-retry starts should suppress misleading done notifications and keep the tab working");
 assert.match(app, /function notifyAgentDone[\s\S]*?agentDoneNotificationKeys\.add\(key\);\n\s+if \(isAutoRetryingTab\(tabId\)\) return;/, "agent-done notifications should be ignored while a tab is auto-retrying");
@@ -2204,7 +2204,7 @@ assert.match(server, /url\.pathname === "\/api\/themes" && req\.method === "GET"
 assert.match(server, /readBundledThemes\(\)/, "server should read bundled theme JSON files for the browser");
 assert.match(server, /"apple-touch-icon\.png", "icon-192\.png"/, "server should serve the conventional apple touch icon path");
 // Intent preserved: the static allowlist must include every app startup module, including the Phase 1 shell state.
-assert.match(server, /"mobile-shell-state\.mjs", "issue-wizard-state\.mjs", "issue-bot-client\.mjs", "fast-output-live\.mjs"/, "server should serve browser modules imported by the app");
+assert.match(server, /"mobile-shell-state\.mjs", "issue-wizard-state\.mjs", "issue-bot-client\.mjs", "fast-output-live\.mjs", "stream-output-controller\.mjs"/, "server should serve browser modules imported by the app");
 assert.match(server, /"catppuccin-mocha-background\.png", "matrix-background\.webp", "manifest\.webmanifest", "service-worker\.js"/, "server should serve theme background images as static assets");
 assert.match(server, /\["\.webmanifest", "application\/manifest\+json; charset=utf-8"\]/, "server should serve manifest with the correct MIME type");
 assert.match(server, /\["\.png", "image\/png"\]/, "server should serve PWA PNG icons with the correct MIME type");
@@ -2297,7 +2297,7 @@ assert.match(app, /if \(!nextMessages\) \{[\s\S]*?api\("\/api\/messages", \{ tab
 assert.match(server, /function applyMessagesSinceParam\(response, url\)/, "server should slice get_messages results for \\?since= requests");
 assert.match(app, /const messageStaticSignatureCache = new WeakMap\(\);/, "static message signatures should be cached by object identity");
 assert.match(app, /case "tool_execution_end":(?:(?!scheduleRefreshMessages)[\s\S])*?break;/, "tool completions must not trigger full transcript refreshes");
-assert.match(app, /case "message_end":[\s\S]*?scheduleRefreshMessages\(\);/, "assistant message completion must still reconcile the transcript");
+assert.match(app, /case "message_end": \{(?:(?!case ")[\s\S])*?scheduleSemanticReconcile\(\{ messages: true, state: true, footerData: true \}, tabContext\);/, "assistant message completion must still reconcile the transcript, through the coalesced semantic scheduler");
 
 // --- UX: transcript search (P2-1) ---
 assert.match(html, /id="chatSearchBar"[\s\S]*?id="chatSearchInput"[\s\S]*?id="chatSearchPrevButton"[\s\S]*?id="chatSearchNextButton"[\s\S]*?id="chatSearchCloseButton"/, "transcript search bar markup should exist with navigation controls");

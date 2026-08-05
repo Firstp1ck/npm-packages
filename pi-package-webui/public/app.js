@@ -9,6 +9,7 @@ import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, ge
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 import { createTranscriptRenderer } from "./transcript-renderer.mjs";
+import { createStreamOutputController } from "./stream-output-controller.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -565,6 +566,28 @@ let outputModeAcknowledged = false;
 let eventSourceOutputModeRequest = "auto";
 let eventSourceOutputModeFallbackAttempted = false;
 const compactLiveScheduler = createSustainedFlushScheduler({ flush: () => flushCompactLiveOutput() });
+let unknownTranscriptStreamEventCount = 0;
+let staleTranscriptStreamEventCount = 0;
+const streamOutputController = createStreamOutputController({
+  isOwnerCurrent: (owner) => owner === transcriptStreamOwner(),
+  applyTextUpdate: (event) => handleMessageUpdate(event),
+  applyThinkingUpdate: (event) => handleMessageUpdate(event),
+  applyToolCallUpdate: (event) => handleMessageUpdate(event),
+  applyToolExecutionUpdate: (event) => {
+    if (!compactOutputActive()) applyTranscriptToolExecutionUpdate(event);
+  },
+  applyStreamError: (event) => handleMessageUpdate(event),
+  applyFollowScroll: () => {
+    if (compactOutputActive()) flushCompactLiveOutput();
+    scheduleChatFollowScroll();
+  },
+  onUnknownStreamEvent: () => {
+    unknownTranscriptStreamEventCount += 1;
+  },
+  onStaleOwner: () => {
+    staleTranscriptStreamEventCount += 1;
+  },
+});
 let assistantErrorSurfacedThisRun = false;
 let runIndicatorBubble = null;
 let runIndicatorText = null;
@@ -574,6 +597,27 @@ let runIndicatorRenderFrame = null;
 let runIndicatorRenderScroll = false;
 let runIndicatorGraceCheckTimer = null;
 let runIndicatorLastStateCheckAt = 0;
+// Lifecycle ownership is deliberately separate from the transcript-owned
+// activity label: the transcript ticker only repaints its own elapsed-time
+// node, while this watchdog owns the low-frequency canonical state recheck.
+let lifecycleStateWatchdogTimer = null;
+let lifecycleComposerSignature = null;
+// Bounded dedupe of semantic tool-boundary records (skill tags, event log).
+const TOOL_BOUNDARY_RECORD_LIMIT = 400;
+const recordedToolBoundaryKeys = new Set();
+// Dirty flags owned by the coalesced semantic reconciler. Only semantic
+// lifecycle boundaries may set these; raw stream deltas never reach them.
+const semanticReconcileDirty = {
+  messages: false,
+  state: false,
+  footer: false,
+  footerData: false,
+  feedback: false,
+  usage: false,
+  workflow: false,
+};
+let semanticReconcileFrame = null;
+let semanticReconcileContext = null;
 let runIndicatorLocallyActive = false;
 let runIndicatorRemovalDeferred = false;
 let runIndicatorStartedAt = null;
@@ -786,9 +830,6 @@ let chatFollowFrame = null;
 let chatFollowSettleTimer = null;
 let chatFollowNeedsSettle = false;
 let liveWidgetRenderFrame = null;
-let liveTodoProgressSyncFrame = null;
-let liveTodoProgressPendingText = "";
-let liveTodoProgressPendingTabId = null;
 let lastChatProgrammaticScrollAt = 0;
 let chatUserScrollIntentUntil = 0;
 let chatUserScrollAwayIntentUntil = 0;
@@ -5650,26 +5691,48 @@ function assistantMessageUpdateType(event) {
   return event?.assistantMessageEvent?.type || "";
 }
 
+// Skill usage is recorded only at semantic tool boundaries. Argument/output
+// delta cadence (`toolcall_*`, `tool_execution_update`) must never enter skill
+// tracking: those raw fragments are transcript-owned stream content.
 function eventMayAffectSkillUsage(event) {
   const type = event?.type || "";
-  return ["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(type)
-    || (type === "message_update" && assistantMessageUpdateType(event) === "toolcall_start")
+  return ["tool_execution_start", "tool_execution_end"].includes(type)
     || (type === "response" && event.command === "new_session");
+}
+
+function toolBoundaryRecordKey(event, phase) {
+  const tabId = event?.tabId || activeTabId || "";
+  const toolCallId = String(event?.toolCallId || event?.id || "").trim();
+  if (!toolCallId) return "";
+  return `${tabId}:${toolCallId}:${phase}`;
+}
+
+// One record per tool boundary. Redelivered or replayed boundaries (supervisor
+// replay, reconnect) must not duplicate skill tags or event-log lines.
+function claimToolBoundaryRecord(event, phase) {
+  const key = toolBoundaryRecordKey(event, phase);
+  if (!key) return true;
+  if (recordedToolBoundaryKeys.has(key)) return false;
+  recordedToolBoundaryKeys.add(key);
+  while (recordedToolBoundaryKeys.size > TOOL_BOUNDARY_RECORD_LIMIT) {
+    const oldest = recordedToolBoundaryKeys.values().next().value;
+    if (oldest === undefined) break;
+    recordedToolBoundaryKeys.delete(oldest);
+  }
+  return true;
 }
 
 function trackSkillsFromEvent(event) {
   const tabId = event?.tabId || activeTabId;
   if (!tabId || !event) return;
-  if (["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(event.type)) {
+  if (["tool_execution_start", "tool_execution_end"].includes(event.type)) {
+    // Prefer the start boundary; fall back to completion when start is absent.
+    if (!claimToolBoundaryRecord(event, "skills")) return;
     trackSkillsFromToolInvocation(tabId, event.toolName, event.args, { sourcePrefix: `event:${event.type}` });
     return;
   }
-  if (assistantMessageUpdateType(event) === "toolcall_start") {
-    const update = event.assistantMessageEvent || {};
-    trackSkillsFromToolInvocation(tabId, update.name || update.toolName || update.toolCall?.name, update.arguments || update.args || update.toolCall?.arguments || {}, { sourcePrefix: "event:message_update" });
-    return;
-  }
   if (event.type === "response" && event.command === "new_session") {
+    recordedToolBoundaryKeys.clear();
     clearSkillUsageForTab(tabId);
   }
 }
@@ -9767,6 +9830,10 @@ function activeTabContext(tabId = activeTabId) {
   return { tabId: tabId || null, generation: activeTabGeneration };
 }
 
+function transcriptStreamOwner(tabId = activeTabId, generation = activeTabGeneration) {
+  return `${tabId || ""}:${generation}`;
+}
+
 function setActiveTabId(tabId, { remember = false } = {}) {
   const nextTabId = tabId || null;
   if (nextTabId !== activeTabId) {
@@ -12965,10 +13032,11 @@ function resetActiveTabUi() {
   renderAppRunnerControls();
   renderWidgets();
   renderGitWorkflow();
-  if (!restoreCachedMessagesForActiveTab()) {
-    renderFooter();
-    renderFeedbackTray();
-  }
+  // renderMessages() is transcript-only, so tab-level chrome is rendered here
+  // explicitly whether or not a cached transcript was restored.
+  restoreCachedMessagesForActiveTab();
+  renderFooter();
+  renderFeedbackTray();
 }
 
 function tabGroupStatusRank(state) {
@@ -20383,6 +20451,65 @@ function scheduleRefreshFooter(delay = 300, tabContext = activeTabContext()) {
   }, delay);
 }
 
+// Coalesced semantic reconciliation. Lifecycle boundaries declare which
+// non-transcript surfaces became dirty; the scheduler then performs the
+// minimum changed set once per frame. Raw stream deltas never reach here.
+function scheduleSemanticReconcile(dirty = {}, tabContext = activeTabContext()) {
+  let requested = false;
+  for (const [flag, value] of Object.entries(dirty)) {
+    if (!value || !Object.prototype.hasOwnProperty.call(semanticReconcileDirty, flag)) continue;
+    semanticReconcileDirty[flag] = true;
+    requested = true;
+  }
+  if (!requested) return;
+  semanticReconcileContext = tabContext;
+  if (semanticReconcileFrame !== null) return;
+  const flush = () => {
+    semanticReconcileFrame = null;
+    flushSemanticReconcile();
+  };
+  if (typeof requestAnimationFrame === "function") semanticReconcileFrame = requestAnimationFrame(flush);
+  else semanticReconcileFrame = setTimeout(flush, 0);
+}
+
+function takeSemanticReconcileDirty() {
+  const dirty = { ...semanticReconcileDirty };
+  for (const flag of Object.keys(semanticReconcileDirty)) semanticReconcileDirty[flag] = false;
+  return dirty;
+}
+
+function flushSemanticReconcile() {
+  const dirty = takeSemanticReconcileDirty();
+  const tabContext = semanticReconcileContext || activeTabContext();
+  semanticReconcileContext = null;
+  if (!isCurrentTabContext(tabContext)) return;
+  if (dirty.messages) scheduleRefreshMessages(120, tabContext);
+  if (dirty.state) scheduleRefreshState(120, tabContext);
+  if (dirty.footerData) scheduleRefreshFooter(300, tabContext);
+  if (dirty.footer) renderFooter();
+  if (dirty.feedback) renderFeedbackTray();
+  if (dirty.usage) {
+    scheduleRefreshCodexUsage(2200);
+    scheduleRefreshClaudeUsage(2200);
+    refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
+  }
+  if (dirty.workflow) reconcileGitWorkflowContinuation(tabContext.tabId || activeTabId);
+}
+
+// Continue a guided git workflow that was waiting on the agent turn. This is a
+// settlement-boundary concern, not a streaming concern.
+function reconcileGitWorkflowContinuation(workflowTabId = activeTabId) {
+  const workflow = gitWorkflowForTab(workflowTabId, { create: false });
+  if (!workflow?.active) return;
+  if (workflow.step === "generating") {
+    loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
+  } else if (workflow.step === "branchNaming") {
+    loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+  } else if (workflow.step === "prGenerating") {
+    loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+  }
+}
+
 function formatCodexPlanType(value) {
   const text = String(value || "").trim();
   if (!text) return "unknown plan";
@@ -23132,10 +23259,10 @@ function liveTodoProgressWidgetLinesFromText(text, tabId = activeTabId) {
   return lines;
 }
 
-// Coalesce live widget rebuilds to one per animation frame. The streaming
-// output handler calls into here on every text token, but the widget area
-// must not be torn down/rebuilt per token (that is UI reacting to the agent
-// output stream). One render per frame keeps streaming transcript-local.
+// Coalesce widget rebuilds to one per animation frame. Todo-progress records
+// are now derived only at authoritative message reconciliation, but several
+// semantic boundaries can land in the same frame, so the widget area must
+// still never be torn down/rebuilt more than once per frame.
 function scheduleLiveWidgetRender() {
   if (liveWidgetRenderFrame !== null) return;
   const flush = () => {
@@ -23146,20 +23273,25 @@ function scheduleLiveWidgetRender() {
   else liveWidgetRenderFrame = setTimeout(flush, 0);
 }
 
-function scheduleLiveTodoProgressWidgetSync(text, tabId = activeTabId) {
-  liveTodoProgressPendingText = String(text || "");
-  liveTodoProgressPendingTabId = tabId || activeTabId;
-  if (liveTodoProgressSyncFrame !== null) return;
-  const flush = () => {
-    const pendingText = liveTodoProgressPendingText;
-    const pendingTabId = liveTodoProgressPendingTabId || activeTabId;
-    liveTodoProgressSyncFrame = null;
-    liveTodoProgressPendingText = "";
-    liveTodoProgressPendingTabId = null;
-    syncLiveTodoProgressWidgetFromText(pendingText, pendingTabId);
-  };
-  if (typeof requestAnimationFrame === "function") liveTodoProgressSyncFrame = requestAnimationFrame(flush);
-  else liveTodoProgressSyncFrame = setTimeout(flush, 0);
+// Authoritative source for the todo-progress record: the settled assistant
+// text that message reconciliation just fetched. Raw stream tokens never
+// reach this path, so widget records change at most once per reconciliation
+// and only when the parsed checklist value actually differs.
+function authoritativeTodoProgressSourceText(messages = latestMessages) {
+  for (let index = (messages?.length || 0) - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const text = textFromContent(message.content);
+    if (String(text || "").trim()) return text;
+  }
+  return "";
+}
+
+function reconcileTodoProgressFromMessages(messages = latestMessages, tabId = activeTabId) {
+  if (!tabId) return false;
+  const text = authoritativeTodoProgressSourceText(messages);
+  if (!text) return false;
+  return syncLiveTodoProgressWidgetFromText(text, tabId);
 }
 
 function syncLiveTodoProgressWidgetFromText(text, tabId = activeTabId) {
@@ -23169,7 +23301,7 @@ function syncLiveTodoProgressWidgetFromText(text, tabId = activeTabId) {
   if (tabId && todoProgressSignatureByTab.get(tabId) === signature) return false;
   // liveTodoProgressWidgetLinesFromText already short-circuits unless the
   // feature is enabled, so detection is settled here. Do NOT run
-  // updateOptionalFeatureAvailability() per token: it triggers git-footer
+  // updateOptionalFeatureAvailability() from this path: it triggers git-footer
   // payload reconciliation and a full optional-feature control rebuild.
   // Availability is reconciled on command/state refreshes and RPC widget
   // updates instead, keeping streaming output decoupled from chrome UI.
@@ -32451,6 +32583,12 @@ function handleToolExecutionUpdate(event) {
   if (run) scheduleLiveToolRunRender(run, { scroll: false });
 }
 
+function applyTranscriptToolExecutionUpdate(event) {
+  const result = { ...(event.partialResult || {}), isError: false };
+  const run = upsertLiveToolRun(event, { result, isPartial: true, isError: false });
+  if (run) renderLiveToolRun(run, { scroll: false });
+}
+
 function handleToolExecutionEnd(event) {
   const result = { ...(event.result || {}), isError: !!event.isError };
   const run = upsertLiveToolRun(event, { result, isPartial: false, isError: !!event.isError, endedAt: Date.now() });
@@ -32789,7 +32927,11 @@ function runIndicatorDetail() {
   return "Waiting for output or action…";
 }
 
+// Transcript-owned ticker: it may only repaint the run-indicator bubble's own
+// stable text nodes. Canonical state reconciliation belongs to the separate
+// lifecycle watchdog below, so transcript rendering never issues network work.
 function startRunIndicatorTicker() {
+  startLifecycleStateWatchdog();
   if (runIndicatorTimer) return;
   runIndicatorTimer = setInterval(() => {
     if (!runIndicatorIsActive()) {
@@ -32797,17 +32939,39 @@ function startRunIndicatorTicker() {
       return;
     }
     updateRunIndicatorBubble();
-    maybeRefreshRunIndicatorState();
   }, RUN_INDICATOR_TICK_MS);
 }
 
 function stopRunIndicatorTicker() {
   clearInterval(runIndicatorTimer);
   runIndicatorTimer = null;
+  stopLifecycleStateWatchdog();
+}
+
+// Lifecycle-owned watchdog. It runs while a run is active and performs the
+// bounded canonical state recheck that keeps Stop/idle honest when a terminal
+// lifecycle event is dropped. It is time-driven, never output/token-driven.
+function startLifecycleStateWatchdog() {
+  if (lifecycleStateWatchdogTimer) return;
+  lifecycleStateWatchdogTimer = setInterval(() => {
+    if (!runIndicatorIsActive()) {
+      stopLifecycleStateWatchdog();
+      return;
+    }
+    maybeRefreshRunIndicatorState();
+  }, RUN_INDICATOR_STATE_RECHECK_MS);
+}
+
+function stopLifecycleStateWatchdog() {
+  clearInterval(lifecycleStateWatchdogTimer);
+  lifecycleStateWatchdogTimer = null;
 }
 
 function createRunIndicatorBubble() {
   runIndicatorBubble = make("article", "message runIndicator run-indicator-message streaming");
+  // Stable transcript-owned activity root: streaming activity updates rewrite
+  // only this bubble's own text nodes, never composer or chrome surfaces.
+  runIndicatorBubble.dataset.streamOwned = "run-indicator";
   runIndicatorBubble.setAttribute("aria-live", "polite");
   runIndicatorBubble.setAttribute("aria-label", "Agent is running:");
 
@@ -32884,8 +33048,29 @@ function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}
   const needsRender = scroll || !hadRunIndicatorBubble || wasLocallyActive !== runIndicatorLocallyActive || previousActivity !== runIndicatorActivity;
   if (needsRender) scheduleRunIndicatorRender({ scroll });
   else if (runIndicatorIsActive()) startRunIndicatorTicker();
-  scheduleComposerModeButtonsUpdate();
+  // Activity wording is transcript-owned. Composer/Stop chrome is reconciled
+  // only when the lifecycle enum itself changes, so wording updates can never
+  // reparent Steer/Follow-up controls or rewrite the run-active body class.
+  syncLifecycleComposerState();
   if (active) scheduleRunIndicatorGraceCheck();
+}
+
+function currentLifecycleComposerSignature() {
+  return [
+    activeTabGeneration,
+    isRunActive() ? "run" : "idle",
+    isAbortAvailable() ? "abort" : "no-abort",
+    abortRequestInFlight ? "aborting" : "ready",
+    busyPromptBehavior,
+  ].join("|");
+}
+
+function syncLifecycleComposerState({ force = false } = {}) {
+  const signature = currentLifecycleComposerSignature();
+  if (!force && signature === lifecycleComposerSignature) return false;
+  lifecycleComposerSignature = signature;
+  scheduleComposerModeButtonsUpdate();
+  return true;
 }
 
 function clearRunIndicatorActivity({ render = true, deferRemoval = false } = {}) {
@@ -32897,6 +33082,8 @@ function clearRunIndicatorActivity({ render = true, deferRemoval = false } = {})
   runIndicatorRemovalDeferred = deferRemoval && runIndicatorBubble?.parentElement === elements.chat;
   if (runIndicatorRemovalDeferred) stopRunIndicatorTicker();
   else if (render) renderRunIndicator();
+  stopLifecycleStateWatchdog();
+  lifecycleComposerSignature = currentLifecycleComposerSignature();
   updateComposerModeButtons();
 }
 
@@ -32922,6 +33109,7 @@ function syncRunIndicatorFromState(state = currentState) {
   } else {
     renderRunIndicator();
   }
+  lifecycleComposerSignature = currentLifecycleComposerSignature();
   updateComposerModeButtons();
 }
 
@@ -37848,6 +38036,9 @@ function insertNumpadDecimal(event) {
   return true;
 }
 
+// Transcript-only. Message rendering may reconcile transcript state and the
+// transcript DOM, but never footer/feedback/widget chrome: those surfaces are
+// owned by the coalesced semantic reconciler.
 function renderMessages(messages) {
   latestMessages = messages || [];
   reconcileOptimisticUserPrompts(latestMessages);
@@ -37856,8 +38047,6 @@ function renderMessages(messages) {
   syncPromptHistoryFromMessages(latestMessages);
   trackSkillsFromMessages(latestMessages, activeTabId);
   renderAllMessages();
-  renderFooter();
-  renderFeedbackTray();
 }
 
 function cancelStreamBubbleHide() {
@@ -38002,10 +38191,6 @@ function handleCompactMessageUpdate(event) {
   if (!reduced.changed) return true;
   compactLiveState = reduced.state;
   clearCompactToolShells();
-  if (reduced.kind.startsWith("thinking")) setRunIndicatorActivity("Thinking…", { scroll: false });
-  else if (reduced.kind.startsWith("toolcall")) setRunIndicatorActivity("Building tool call…", { scroll: false });
-  else setRunIndicatorActivity("Writing response…", { scroll: false });
-  compactLiveScheduler.request();
   return true;
 }
 
@@ -38567,52 +38752,35 @@ function handleMessageUpdate(event) {
   if (compactOutputActive() && handleCompactMessageUpdate(event)) return;
   const update = event.assistantMessageEvent || {};
   if (update.type === "thinking_start") {
-    setRunIndicatorActivity("Thinking…", { scroll: false });
     syncStreamingThinkingFromUpdate(event, update);
-    scheduleChatFollowScroll();
   } else if (update.type === "thinking_delta") {
     const delta = thinkingDeltaText(update);
-    setRunIndicatorActivity("Thinking…", { scroll: false });
     const synced = syncStreamingThinkingFromUpdate(event, update);
     if (thinkingOutputVisible && delta && (!synced || !streamThinking?.textContent)) {
       showStreamingThinking("");
       if (streamThinking) renderThinkingMarkdown(streamThinking, `${streamThinking._rawThinkingText || ""}${delta}`);
     }
-    scheduleChatFollowScroll();
   } else if (update.type === "thinking_end") {
     if (syncStreamingThinkingFromUpdate(event, update)) streamThinkingBubble?.classList.add("complete");
-    setRunIndicatorActivity("Finished thinking; waiting for the next output or action…", { scroll: false });
   } else if (update.type === "text_delta" || update.type === "text_end") {
     syncStreamRawTextFromUpdate(event, update);
-    scheduleLiveTodoProgressWidgetSync(streamRawText, event.tabId || activeTabId);
-    setRunIndicatorActivity("Writing response…", { scroll: false });
-    scheduleStreamingAssistantTextRender({ immediate: !!(streamToolCallSeen || streamBubble) });
-    // Streaming output must stay transcript-local. Full footer/status
-    // reconciliation happens on message/state refreshes, not per token.
-    scheduleChatFollowScroll();
+    renderStreamingAssistantText();
   } else if (update.type === "toolcall_start") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = updateStreamingToolCallFromEvent(event, { reset: true, scroll: true });
-    setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
-    addEvent(`tool call started in assistant message`, "info");
+    updateStreamingToolCallFromEvent(event, { reset: true });
   } else if (update.type === "toolcall_delta") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = updateStreamingToolCallFromEvent(event, { appendDelta: true });
-    setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
-    scheduleChatFollowScroll();
+    updateStreamingToolCallFromEvent(event, { appendDelta: true });
   } else if (update.type === "toolcall_end") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = updateStreamingToolCallFromEvent(event, { complete: true, scroll: true });
-    setRunIndicatorActivity(`Tool call ready: ${name}; waiting to run…`, { scroll: false });
+    updateStreamingToolCallFromEvent(event, { complete: true });
   } else if (update.type === "error") {
     streamProviderErrorText = assistantStreamErrorMessage(event, update);
-    setRunIndicatorActivity("Assistant stream reported an error…");
     appendMessage({ role: "error", title: "assistant error", timestamp: Date.now(), content: streamProviderErrorText, level: "error" }, { streaming: true });
     renderRunIndicator({ scroll: false });
-    scheduleChatFollowScroll();
   }
 }
 
@@ -38908,7 +39076,13 @@ async function refreshMessages(tabContext = activeTabContext(), { authoritative 
   else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
   restoreChatTextSelection(selectionSnapshot);
   markTabOutputSeen();
-  renderFooter();
+  // Authoritative content just landed: derive the todo-progress record once
+  // here instead of from raw token cadence, and let the coalesced semantic
+  // reconciler own the footer/widget chrome that message data can change.
+  // syncLiveTodoProgressWidgetFromText owns the frame-coalesced widget render
+  // and only fires when the parsed checklist value actually changed.
+  reconcileTodoProgressFromMessages(latestMessages, tabContext.tabId);
+  scheduleSemanticReconcile({ footer: true }, tabContext);
 }
 
 async function refreshModels(tabContext = activeTabContext()) {
@@ -41133,7 +41307,36 @@ function handleInactiveTabEvent(event) {
   }
 }
 
+const TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES = new Set([
+  "agent_start",
+  "message_start",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_end",
+  "agent_end",
+  "agent_settled",
+  "compaction_start",
+  "compaction_end",
+  "webui_output_mode",
+  "pi_process_exit",
+  "pi_process_error",
+]);
+
+function dispatchTranscriptStreamEvent(event) {
+  return streamOutputController.dispatch(event, {
+    owner: transcriptStreamOwner(event?.tabId || activeTabId),
+  });
+}
+
+function flushTranscriptStreamBarrier(event) {
+  if (!TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES.has(event?.type)) return;
+  streamOutputController.barrier();
+  if (event.type === "pi_process_exit" || event.type === "pi_process_error") streamOutputController.cancel();
+}
+
 function handleEvent(event) {
+  if (dispatchTranscriptStreamEvent(event)) return;
+  flushTranscriptStreamBarrier(event);
   if (event?.type === "webui_session_summary") {
     handleSessionSummaryEvent(event);
     return;
@@ -41339,9 +41542,8 @@ function handleEvent(event) {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ streaming: true });
       setRunIndicatorActivity("Agent run started; waiting for first output or action…");
       addEvent("agent started");
-      scheduleRefreshState();
-      renderFooter();
-      renderFeedbackTray();
+      syncLifecycleComposerState({ force: true });
+      scheduleSemanticReconcile({ state: true, footer: true, feedback: true }, tabContext);
       break;
     case "agent_end":
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
@@ -41355,9 +41557,7 @@ function handleEvent(event) {
       }
       addEvent("agent run ended; waiting for settlement");
       if (runIndicatorIsActive()) setRunIndicatorActivity("Agent run ended; checking for retry or continuation…", { scroll: false });
-      scheduleRefreshMessages();
-      scheduleRefreshState();
-      scheduleRefreshFooter();
+      scheduleSemanticReconcile({ messages: true, state: true, footerData: true }, tabContext);
       break;
     case "message_start":
       if (event.message?.role === "assistant") {
@@ -41379,9 +41579,9 @@ function handleEvent(event) {
       }
       streamProviderErrorText = "";
       if (runIndicatorIsActive()) setRunIndicatorActivity("Assistant message finished; waiting for the next step…", { scroll: false });
-      scheduleRefreshMessages();
-      scheduleRefreshState();
-      scheduleRefreshFooter();
+      // Authoritative message reconciliation derives the todo-progress record;
+      // raw assistant tokens never rebuild widgets.
+      scheduleSemanticReconcile({ messages: true, state: true, footerData: true }, tabContext);
       break;
     }
     case "tool_execution_start":
@@ -41396,7 +41596,7 @@ function handleEvent(event) {
         handleToolExecutionStart(event);
       }
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
-      addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
+      if (claimToolBoundaryRecord(event, "log:start")) addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
       break;
     case "tool_execution_update":
       if (!compactOutputActive()) handleToolExecutionUpdate(event);
@@ -41414,10 +41614,10 @@ function handleEvent(event) {
         handleToolExecutionEnd(event);
       }
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
-      addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
+      if (claimToolBoundaryRecord(event, "log:end")) addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
       // Compact tool shells deliberately defer rich body construction to the
       // final transcript reconciliation; normal mode retains its live card.
-      scheduleRefreshFooter();
+      scheduleSemanticReconcile({ footerData: true }, tabContext);
       break;
     }
     case "compaction_start":
@@ -41437,9 +41637,7 @@ function handleEvent(event) {
       if (!currentState?.isStreaming) clearRunIndicatorActivity();
       markTabOutputSeen();
       renderStatus();
-      scheduleRefreshState();
-      scheduleRefreshMessages();
-      scheduleRefreshFooter();
+      scheduleSemanticReconcile({ state: true, messages: true, footerData: true }, tabContext);
       break;
     case "agent_settled":
       promptRoutingTabs.delete(event.tabId || activeTabId);
@@ -41456,24 +41654,17 @@ function handleEvent(event) {
       clearRunIndicatorActivity({ deferRemoval: !autoFollowChat || !isChatNearBottom() });
       markTabOutputSeen();
       requestGitFooterWebuiPayload(tabContext, { force: true });
-      scheduleRefreshState();
-      scheduleRefreshMessages();
-      scheduleRefreshFooter();
-      scheduleRefreshCodexUsage(2200);
-      scheduleRefreshClaudeUsage(2200);
-      refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
-      renderFeedbackTray();
-      {
-        const workflowTabId = event.tabId || activeTabId;
-        const workflow = gitWorkflowForTab(workflowTabId, { create: false });
-        if (workflow?.active && workflow.step === "generating") {
-          loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
-        } else if (workflow?.active && workflow.step === "branchNaming") {
-          loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
-        } else if (workflow?.active && workflow.step === "prGenerating") {
-          loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
-        }
-      }
+      // Settlement is the one boundary allowed to reconcile the full changed
+      // set; it runs once here through the coalesced semantic scheduler.
+      syncLifecycleComposerState({ force: true });
+      scheduleSemanticReconcile({
+        state: true,
+        messages: true,
+        footerData: true,
+        feedback: true,
+        usage: true,
+        workflow: true,
+      }, tabContext);
       break;
     case "auto_retry_start": {
       const seconds = Math.max(0, Math.ceil(Number(event.delayMs || 0) / 1000));
@@ -41534,6 +41725,7 @@ function handleEvent(event) {
 function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto", fallbackAttempted = false } = {}) {
   eventSource?.close();
   eventSource = null;
+  streamOutputController.cancel();
   resetCompactLiveOutput();
   activeOutputMode = "normal";
   outputModeAcknowledged = false;
@@ -41563,6 +41755,8 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   };
   source.onerror = () => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
+    streamOutputController.flush();
+    streamOutputController.cancel();
     if (compactOutputActive()) compactLiveScheduler.flushNow();
     addEvent("event stream disconnected; browser will retry", "warn");
     fetch("/api/health", { cache: "no-store" }).catch((error) => setBackendOffline(true, error));

@@ -1,6 +1,6 @@
 # Pi WebUI Main-Agent Stream Output Isolation — Complex Refactor Plan
 
-- **Status:** Planned; implementation not started
+- **Status:** In progress; Wave 0 baseline complete
 - **Classification:** Complex refactor / behavioral bug fix
 - **Feature slug:** `webui-main-agent-stream-output-isolation`
 - **Target package:** `pi-package-webui/`
@@ -279,7 +279,7 @@ It must not consume raw token/tool-output deltas.
 
 ## 10. Execution DAG and ownership
 
-The repository is currently dirty, including target files. Writers must be sequential in the shared tree unless the user first authorizes and creates a clean isolated baseline. The parent remains integration owner and never resets unrelated changes.
+The implementation baseline was clean at revision `6f96d29256c2362bee165469899b4007e1655f18`; the integration owner then added only the Wave 0 evidence and plan-state updates. Writers remain sequential in the shared tree because WS1 and WS2 both touch `public/app.js`. The parent remains integration owner and never resets unrelated changes.
 
 ### Wave 0 — baseline and seam validation
 
@@ -324,17 +324,17 @@ Handoff: `plans/handoffs/webui-stream-isolation-core.md`.
 
 ### Wave 2 — WS2 lifecycle/chrome separation and browser proof
 
-Implementation worker 2, sole writer after WS1 integration.
+After WS1 integration, this wave is decomposed into two sequential writers in the shared tree. The decomposition preserves the approved WS2 scope while giving lifecycle behavior and browser proof distinct, independently verifiable ownership.
 
-Prerequisite: integrated WS1 controller and exact source handoff.
+#### WS2a — lifecycle/chrome/todo separation
+
+Implementation worker 2, sole writer after WS1 integration.
 
 Write boundary:
 
-- `public/app.js` lifecycle/chrome/todo/reconciliation paths
-- `public/index.html` and `public/styles.css` only if required for stable transcript-owned activity roots
-- `tests/browser/stream-output-isolation.spec.mjs`
-- focused existing interaction/mobile/completion tests
-- fake-Pi fixture only if required
+- `public/app.js` lifecycle/chrome/todo/reconciliation paths;
+- focused existing streaming/interaction/mobile/completion static tests;
+- `public/index.html` and `public/styles.css` only if required for stable transcript-owned activity roots.
 
 Deliverables:
 
@@ -342,16 +342,34 @@ Deliverables:
 2. Move todo-widget derivation to authoritative message reconciliation.
 3. Record skills/events once at semantic tool boundaries.
 4. Make message rendering transcript-only; broad post-turn refreshes go through a coalesced lifecycle scheduler.
-5. Browser mutation/focus/selection/node-identity/network tests cover all major interactive surfaces.
-6. Preserve Stop, retry, compaction, tool, voice, inactive-tab, and settlement behavior.
+5. Preserve Stop, retry, compaction, tool, voice, inactive-tab, and settlement behavior.
 
-Forbidden/shared paths:
+Handoff: `plans/handoffs/webui-stream-isolation-lifecycle.md`.
+
+#### WS2b — deterministic browser isolation proof and hardening
+
+Implementation worker 3, sole writer after WS2a.
+
+Write boundary:
+
+- `tests/browser/stream-output-isolation.spec.mjs`;
+- `tests/fixtures/fake-pi.mjs` only for deterministic burst scenarios;
+- focused existing browser/interaction tests;
+- narrowly required source corrections inside the approved event-ownership contract when browser evidence exposes a concrete defect.
+
+Deliverables:
+
+1. Browser mutation/focus/selection/node-identity/network tests cover the 1,000-delta stream and major interactive surfaces.
+2. Normal, compact, and tool-stream isolation is directly observed.
+3. Any concrete isolation defect exposed by the browser harness is corrected without widening product scope.
+
+Handoff: `plans/handoffs/webui-stream-isolation-browser-proof.md`.
+
+Forbidden/shared paths for both WS2 workers:
 
 - controller internals except a parent-approved interface correction;
 - unrelated widget/footer/tab features;
 - plans, reports, package versions, lockfiles, unrelated dirty hunks.
-
-Handoff: `plans/handoffs/webui-stream-isolation-lifecycle-and-browser.md`.
 
 ### Wave 3 — central integration and validation
 
@@ -625,6 +643,11 @@ Public ChatGPT, Claude, and Gemini sources do not expose their private component
 - 2026-08-05: accepted that todo progress becomes authoritative/post-message unless a dedicated structured event is introduced.
 - 2026-08-05: selected sequential shared-tree writers because target files already contain unrelated uncommitted changes.
 - 2026-08-05: made browser mutation/focus/node-identity evidence a completion gate, not optional polish.
+- 2026-08-05: implementation preflight reconfirmed the complex classification from repository evidence: routing/controller, lifecycle/chrome/todo reconciliation, and browser proof are distinct slices crossing shared frontend contracts.
+- 2026-08-05: Wave 0 captured at `6f96d29256c2362bee165469899b4007e1655f18`; the working tree was clean, all eleven focused baseline tests passed, and `git diff --check` passed. Evidence: [`plans/handoffs/webui-stream-isolation-baseline.md`](../handoffs/webui-stream-isolation-baseline.md).
+- 2026-08-05: no blocking product, architecture, interface, security, migration, compatibility, deployment, or rollout decision remained after validating the plan against the current source.
+- 2026-08-05: WS1 completed as a qualifying implementation outcome after one blocked prerequisite false positive and a persisted-run recovery. The integration owner approved the mechanical static-server/PWA compatibility additions; `npm run check` passed all 113 test files. Evidence: [`plans/handoffs/webui-stream-isolation-core.md`](../handoffs/webui-stream-isolation-core.md).
+- 2026-08-05: decomposed the already-approved WS2 scope into sequential WS2a lifecycle/chrome ownership and WS2b browser-proof/hardening ownership. This adds no product scope and preserves one-writer isolation while satisfying the static multi-writer launch requirement.
 
 ## 18. Progress and completion checklist
 
@@ -632,8 +655,8 @@ Public ChatGPT, Claude, and Gemini sources do not expose their private component
 - [x] External TypeScript implementations compared.
 - [x] Event ownership contract defined.
 - [x] Implementation workstreams and validation contract planned.
-- [ ] Wave 0 baseline captured immediately before implementation.
-- [ ] WS1 controller/router implemented and integrated.
+- [x] Wave 0 baseline captured immediately before implementation.
+- [x] WS1 controller/router implemented and integrated.
 - [ ] WS2 lifecycle/chrome separation and browser proof implemented and integrated.
 - [ ] Focused and full validation pass.
 - [ ] Independent review findings dispositioned.

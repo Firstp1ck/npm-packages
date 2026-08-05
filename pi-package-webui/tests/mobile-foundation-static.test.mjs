@@ -38,7 +38,7 @@ assert.match(server, /"mobile-shell-state\.mjs"/, "the server allowlist must ser
 assert.match(server, /"transcript-renderer\.mjs"/, "the server allowlist must serve the transcript startup module");
 assert.match(serviceWorker, /"\/mobile-shell-state\.mjs"/, "the PWA shell must cache the new startup module");
 assert.match(serviceWorker, /"\/transcript-renderer\.mjs"/, "the PWA shell must cache the transcript startup module");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v72"/, "the cache identity must change with the startup graph");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v73"/, "the cache identity must change with the startup graph");
 assert.match(html, /styles\.css\?v=98/, "the stylesheet revision must change with mobile/tablet CSS fixes");
 assert.match(html, /app\.js\?v=113/, "the app revision must change with continuity/tablet wiring");
 assert.match(serviceWorker, /const APP_SHELL_NETWORK_TIMEOUT_MS = 8_000;[\s\S]*?event\.waitUntil\([\s\S]*?cache\.put\(request, response\.clone\(\)\)[\s\S]*?return networkResponse;/, "runtime cache writes must extend the event lifetime without blocking bounded network responses");

@@ -201,6 +201,55 @@ assert.match(requestGitFooterWebuiPayload, /currentState\?\.isStreaming \|\| cur
 assert.match(findCaseBody(handleEvent, "agent_settled"), /currentState\) currentState = \{ \.\.\.currentState, isStreaming: false \};[\s\S]*?requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "theory #8: forced git-footer refresh should only happen after agent settlement clears streaming state");
 assert.doesNotMatch(findCaseBody(handleEvent, "agent_end"), /isStreaming: false|requestGitFooterWebuiPayload/, "theory #8: low-level agent_end must not expose an idle window before retry or continuation");
 
+// --- WS2a: lifecycle / chrome / todo ownership separation ---
+// These are hard invariants, not future theories: raw stream output may not own
+// lifecycle chrome, and lifecycle chrome may not be driven by token cadence.
+
+const renderMessages = findFunctionBody(app, "renderMessages");
+const refreshMessages = findFunctionBody(app, "refreshMessages");
+const setRunIndicatorActivityBody = findFunctionBody(app, "setRunIndicatorActivity");
+const startRunIndicatorTicker = findFunctionBody(app, "startRunIndicatorTicker");
+const startLifecycleStateWatchdog = findFunctionBody(app, "startLifecycleStateWatchdog");
+const reconcileTodoProgressFromMessages = findFunctionBody(app, "reconcileTodoProgressFromMessages");
+const eventMayAffectSkillUsage = findFunctionBody(app, "eventMayAffectSkillUsage");
+const flushSemanticReconcile = findFunctionBody(app, "flushSemanticReconcile");
+
+// (1) Transcript rendering is transcript-only; chrome belongs to the reconciler.
+assert.doesNotMatch(renderMessages, /renderFooter\(\)|renderFeedbackTray\(\)|renderWidgets\(\)|renderStatus\(\)/, "WS2a: renderMessages must be transcript-only and must not render footer/feedback/widget/status chrome");
+assert.match(renderMessages, /renderAllMessages\(\)/, "WS2a: renderMessages must still own transcript rendering");
+
+// (2) Todo progress derives from authoritative content, never token cadence.
+assert.doesNotMatch(app, /function scheduleLiveTodoProgressWidgetSync/, "WS2a: the token-driven todo-progress scheduler must be removed");
+assert.doesNotMatch(app, /scheduleLiveTodoProgressWidgetSync\(/, "WS2a: nothing may schedule token-driven todo-progress syncs");
+assert.match(reconcileTodoProgressFromMessages, /authoritativeTodoProgressSourceText\([\s\S]*?syncLiveTodoProgressWidgetFromText\(/, "WS2a: todo progress must be derived from authoritative assistant content");
+assert.match(refreshMessages, /reconcileTodoProgressFromMessages\(latestMessages, tabContext\.tabId\)/, "WS2a: todo progress must be derived once at authoritative message reconciliation");
+assert.match(findFunctionBody(app, "syncLiveTodoProgressWidgetFromText"), /todoProgressSignatureByTab\.get\(tabId\) === signature\) return false/, "WS2a: the todo widget record may change only when its semantic value changes");
+
+// (3) Activity wording is transcript-owned; composer/Stop changes on transitions.
+assert.doesNotMatch(setRunIndicatorActivityBody, /^\s*scheduleComposerModeButtonsUpdate\(\);/m, "WS2a: activity wording must not unconditionally reconcile composer chrome");
+assert.match(setRunIndicatorActivityBody, /syncLifecycleComposerState\(\)/, "WS2a: composer/Stop reconciliation must be gated on a lifecycle signature change");
+assert.match(findFunctionBody(app, "syncLifecycleComposerState"), /signature === lifecycleComposerSignature\) return false/, "WS2a: an unchanged lifecycle signature must not schedule composer work");
+assert.match(app, /runIndicatorBubble\.dataset\.streamOwned = "run-indicator"/, "WS2a: the live activity root must be a stable transcript-owned node");
+
+// (4) The transcript ticker must not perform lifecycle/network reconciliation.
+assert.doesNotMatch(startRunIndicatorTicker, /maybeRefreshRunIndicatorState\(\)/, "WS2a: the transcript-owned ticker must only repaint its own node");
+assert.match(startLifecycleStateWatchdog, /maybeRefreshRunIndicatorState\(\)/, "WS2a: canonical state rechecks belong to the lifecycle watchdog");
+
+// (5) Skills and event-log records happen once at semantic tool boundaries.
+assert.doesNotMatch(eventMayAffectSkillUsage, /tool_execution_update|toolcall_start/, "WS2a: skill tracking must not be reachable from tool update/argument cadence");
+assert.match(eventMayAffectSkillUsage, /"tool_execution_start", "tool_execution_end"/, "WS2a: skill tracking must run at semantic tool boundaries");
+assert.match(trackSkillsFromEvent, /claimToolBoundaryRecord\(event, "skills"\)/, "WS2a: tool skill records must be recorded once per boundary");
+assert.match(findCaseBody(handleEvent, "tool_execution_start"), /claimToolBoundaryRecord\(event, "log:start"\)\) addEvent\(/, "WS2a: tool start event-log records must be deduplicated by tool boundary");
+assert.match(findCaseBody(handleEvent, "tool_execution_end"), /claimToolBoundaryRecord\(event, "log:end"\)\) addEvent\(/, "WS2a: tool end event-log records must be deduplicated by tool boundary");
+
+// (6) Lifecycle boundaries reconcile chrome through one coalesced scheduler.
+assert.match(findFunctionBody(app, "scheduleSemanticReconcile"), /semanticReconcileFrame !== null\) return;/, "WS2a: semantic reconciliation must coalesce to one pending flush");
+assert.match(flushSemanticReconcile, /if \(!isCurrentTabContext\(tabContext\)\) return;/, "WS2a: coalesced reconciliation must not apply to a stale tab context");
+for (const [caseLabel, flag] of [["agent_start", "state: true"], ["agent_end", "messages: true"], ["message_end", "messages: true"], ["agent_settled", "messages: true"]]) {
+  assert.match(findCaseBody(handleEvent, caseLabel), new RegExp(`scheduleSemanticReconcile\\(\\{[\\s\\S]*?${flag}`), `WS2a: ${caseLabel} must reconcile chrome through the coalesced semantic scheduler`);
+}
+assert.match(findCaseBody(handleEvent, "agent_settled"), /usage: true,[\s\S]*?workflow: true,/, "WS2a: settlement must own the coalesced post-turn usage/workflow reconciliation");
+
 if (futureFailures.length) {
   assert.fail(`streaming/UI coupling invariants still failing (${futureFailures.length}):\n\n${futureFailures.map((failure, index) => `${index + 1}. ${failure}`).join("\n\n")}`);
 }

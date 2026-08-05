@@ -50,6 +50,7 @@ const continuityModeEnabled = process.env.FAKE_PI_CONTINUITY_MODE === "1";
 const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
 const sseFloodEnabled = process.env.FAKE_PI_SSE_FLOOD === "1";
 const statsPromptContextEnabled = process.env.FAKE_PI_STATS_PROMPT_CONTEXT === "1";
+const streamIsolationEnabled = process.env.FAKE_PI_STREAM_ISOLATION === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
 const largeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
 const largeTokenSamples = Array.from({ length: 300 }, (_, index) => ({ index, input: index + 1, output: index + 2 }));
@@ -63,6 +64,7 @@ const dynamicMessages = [];
 let dynamicLeafId = "u0000002";
 let scriptedStreaming = false;
 let continuityRun = 0;
+let streamIsolationRun = 0;
 let largeTranscriptEnabled = false;
 const fixtureSubagentRuns = [];
 const fixtureSubagentGates = [];
@@ -203,7 +205,16 @@ function emitEvent(payload) {
 }
 
 function emitScriptedEvent(payload) {
-  logJsonLine({ direction: "event", type: payload.type, ...(payload.toolName ? { toolName: payload.toolName } : {}) });
+  logJsonLine({
+    direction: "event",
+    type: payload.type,
+    ...(payload.toolName ? { toolName: payload.toolName } : {}),
+    ...(payload.assistantMessageEvent?.type ? { assistantMessageEventType: payload.assistantMessageEvent.type } : {}),
+    ...(payload.isolationRunId ? { isolationRunId: payload.isolationRunId } : {}),
+    ...(payload.isolationMode ? { isolationMode: payload.isolationMode } : {}),
+    ...(payload.isolationPhase ? { isolationPhase: payload.isolationPhase } : {}),
+    ...(Number.isInteger(payload.isolationDeltaIndex) ? { isolationDeltaIndex: payload.isolationDeltaIndex } : {}),
+  });
   emitEvent(payload);
 }
 
@@ -773,6 +784,114 @@ function handleFastModeFixturePrompt(command, base) {
   return true;
 }
 
+function streamIsolationTextDelta(index) {
+  // Exercise 1,000 distinct transport events without turning this ownership
+  // proof into a Markdown throughput benchmark. The final delta carries the
+  // complete deterministic tail; the preceding empty deltas still traverse
+  // the real EventSource classifier/controller path.
+  if (index !== 999) return "";
+  const body = Array.from({ length: 250 }, (_, bodyIndex) => String(bodyIndex % 10)).join("");
+  return `ISOLATION-TEXT-BEGIN ${body}ISOLATION-TEXT-TAIL`;
+}
+
+function runStreamIsolationFixtureFlow(mode) {
+  const runId = `stream-isolation-${mode}-${++streamIsolationRun}`;
+  const toolCallId = `${runId}-execution`;
+  const streamedToolCallId = `${runId}-call`;
+  const textDeltas = Array.from({ length: 1_000 }, (_, index) => streamIsolationTextDelta(index));
+  const finalText = textDeltas.join("");
+  const thinkingText = "ISOLATION-THINKING-PATH";
+  const toolCall = { type: "toolCall", id: streamedToolCallId, name: "read", arguments: { path: "isolation.txt" } };
+  const tagged = (payload, phase) => ({
+    ...payload,
+    isolationRunId: runId,
+    isolationMode: mode,
+    isolationPhase: phase,
+  });
+
+  scriptedStreaming = true;
+  runScriptedSteps([
+    {
+      afterMs: 25,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "agent_start" }, "pre-burst"));
+        if (mode === "compact") {
+          emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
+          emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
+        } else {
+          emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
+          emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
+        }
+      },
+    },
+    {
+      afterMs: 1_800,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_start" } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: thinkingText } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_end", delta: thinkingText } }, "raw"));
+      },
+    },
+    {
+      afterMs: 120,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } }, "raw"));
+        for (let index = 0; index < textDeltas.length; index += 1) {
+          emitScriptedEvent({
+            ...tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: textDeltas[index] } }, "raw"),
+            isolationDeltaIndex: index,
+          });
+        }
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, text: finalText } }, "raw"));
+      },
+    },
+    {
+      afterMs: 700,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, name: "read", toolCall: { ...toolCall, arguments: undefined } } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 2, name: "read", toolCall: { ...toolCall, arguments: undefined }, delta: "{\"path\":\"isolation.txt\"}" } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 2, name: "read", toolCall } }, "raw"));
+      },
+    },
+    {
+      afterMs: 100,
+      run: () => emitScriptedEvent(tagged({
+        type: "tool_execution_update",
+        toolCallId,
+        toolName: "read",
+        partialResult: { content: [{ type: "text", text: "ISOLATION-TOOL-UPDATE-COMPLETE" }] },
+      }, "raw")),
+    },
+    {
+      afterMs: 2_000,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "ISOLATION-TOOL-RESULT" }] } }, "post-burst"));
+        const message = {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: thinkingText }, toolCall, { type: "text", text: finalText }],
+          timestamp: Date.now(),
+        };
+        appendDynamicMessage(message);
+        emitScriptedEvent(tagged({ type: "message_end", message }, "post-burst"));
+        emitScriptedEvent(tagged({ type: "agent_end" }, "post-burst"));
+        scriptedStreaming = false;
+        emitScriptedEvent(tagged({ type: "agent_settled" }, "post-burst"));
+      },
+    },
+  ]);
+  return runId;
+}
+
+function handleStreamIsolationFixturePrompt(command, base) {
+  if (!streamIsolationEnabled) return false;
+  const match = String(command.message || "").trim().match(/^fixture stream isolation (normal|compact)$/);
+  if (!match) return false;
+  const mode = match[1];
+  const runId = runStreamIsolationFixtureFlow(mode);
+  respond({ ...base, data: { output: "stream isolation fixture accepted", runId, deltaCount: 1_000, mode } });
+  return true;
+}
+
 function handleTransportFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
   if (message === "fixture stderr diagnostic") {
@@ -1163,6 +1282,7 @@ rl.on("line", (line) => {
       if (handleStatsPromptContextFixturePrompt(command, base)) return;
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleFastModeFixturePrompt(command, base)) return;
+      if (handleStreamIsolationFixturePrompt(command, base)) return;
       if (handleTransportFixturePrompt(command, base)) return;
       if (handleSubagentFixturePrompt(command, base)) return;
       if (handleDocumentArtifactFixturePrompt(command, base)) return;
