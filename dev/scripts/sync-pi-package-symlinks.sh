@@ -42,8 +42,9 @@ Ensures local pi-coding-agent-forge Pi resources are live-linked for development
   resource resolver, including resources exposed by package.json pi manifests,
   conventional resource directories, bundled dependencies, and vendored paths
 - every discovered extension gets a matching development entry under
-  ~/.pi/agent/extensions/; index.ts|js resources are linked as directories so
-  relative imports keep working, package standalone files are linked as files
+  ~/.pi/agent/extensions/; index.ts|js resources are linked as directories,
+  package standalone files are linked as files, and their direct relative-import
+  companion directories are linked beside them so source-relative imports work
 - local-only development extensions matching pi-*/dev/*-extension.ts|js use
   generated wrapper files for TUI testing so relative imports resolve from the
   source checkout; they remain excluded from package manifests and npm publication
@@ -585,6 +586,31 @@ extension_link_source() {
   fi
 }
 
+extension_companion_dirs() {
+  local extension_path="$1"
+  node - "$extension_path" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const extensionPath = process.argv[2];
+const source = fs.readFileSync(extensionPath, "utf8");
+const importPattern = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)["'](\.\/[^"']+)["']/g;
+const companions = new Set();
+let match;
+while ((match = importPattern.exec(source)) !== null) {
+  const firstSegment = match[1].slice(2).split(/[\\/]/, 1)[0];
+  if (!firstSegment) continue;
+  const candidate = path.join(path.dirname(extensionPath), firstSegment);
+  try {
+    if (fs.statSync(candidate).isDirectory()) companions.add(candidate);
+  } catch {
+    // Missing imports are reported by Pi when it loads the extension.
+  }
+}
+for (const companion of [...companions].sort()) process.stdout.write(`${companion}\0`);
+NODE
+}
+
 ensure_node_module_symlink() {
   local module_name="$1"
   local source_dir="$2"
@@ -711,6 +737,7 @@ ensure_shared_deps() {
 
 sync_extension_symlinks() {
   local count_total=0 count_ok=0 count_linked=0 count_relinked=0 count_renamed=0 count_skipped=0
+  local companion_total=0 companion_ok=0 companion_linked=0 companion_relinked=0 companion_renamed=0 companion_skipped=0
   local expected_names=""
 
   while IFS= read -r -d '' extension_file; do
@@ -747,12 +774,46 @@ sync_extension_symlinks() {
       renamed) count_renamed=$((count_renamed+1)) ;;
       *) count_skipped=$((count_skipped+1)) ;;
     esac
+
+    if [[ -f "$link_source" ]] && ! is_dev_extension_path "$extension_file"; then
+      local companion_source companion_name companion_dest companion_source_real companion_dest_real
+      while IFS= read -r -d '' companion_source; do
+        companion_total=$((companion_total+1))
+        companion_name="$(basename "$companion_source")"
+        companion_dest="$EXT_DIR/$companion_name"
+        companion_source_real="$(realpath_safe "$companion_source" || true)"
+
+        if expected_name_in_list "$companion_name" "$expected_names"; then
+          companion_dest_real="$(realpath_safe "$companion_dest" || true)"
+          if [[ -n "$companion_source_real" && "$companion_dest_real" == "$companion_source_real" ]]; then
+            companion_ok=$((companion_ok+1))
+          else
+            printf '%s extension companion name conflict %s from %s\n' "$(label_skip)" "$companion_name" "$extension_file"
+            companion_skipped=$((companion_skipped+1))
+          fi
+          continue
+        fi
+
+        expected_names+="$companion_name"$'\n'
+        ensure_symlink "$companion_source" "$companion_dest" "extension companion"
+        case "$ENSURE_RESULT" in
+          ok) companion_ok=$((companion_ok+1)) ;;
+          linked) companion_linked=$((companion_linked+1)) ;;
+          relinked) companion_relinked=$((companion_relinked+1)) ;;
+          renamed) companion_renamed=$((companion_renamed+1)) ;;
+          *) companion_skipped=$((companion_skipped+1)) ;;
+        esac
+      done < <(extension_companion_dirs "$extension_file")
+    fi
   done < <(resource_paths "extensions")
 
   cleanup_stale_symlinks "$EXT_DIR" "$expected_names" "extension"
   cleanup_stale_extension_wrappers "$EXT_DIR" "$expected_names"
 
   add_summary "$(format_summary_line "Extensions:" "$count_total" "$count_ok" "$count_linked" "$count_relinked" "$count_renamed" "$count_skipped")"
+  if [[ "$companion_total" -gt 0 ]]; then
+    add_summary "$(format_summary_line "Ext deps:" "$companion_total" "$companion_ok" "$companion_linked" "$companion_relinked" "$companion_renamed" "$companion_skipped")"
+  fi
 }
 
 sync_skill_symlinks() {

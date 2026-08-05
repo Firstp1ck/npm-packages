@@ -341,13 +341,23 @@ async function runOptionalFeatureFocus() {
     await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
   }
 
-  const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
-  assert.equal(resourceTab.status, 201, resourceTab.body?.error);
-  const rpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
-  const normalizedArgs = rpcArgs.map((arg) => String(arg).replace(/\\/g, "/"));
-  assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1);
-  assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1);
-  await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTab.body?.data?.tab?.id] } });
+  const summaryFileAlias = path.join(workflowPolicyAgentDir, "extensions", "session-summary.ts");
+  await mkdir(path.dirname(summaryFileAlias), { recursive: true });
+  await symlink(path.join(root, "session-summary.ts"), summaryFileAlias);
+  try {
+    const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
+    assert.equal(resourceTab.status, 201, resourceTab.body?.error);
+    const rpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
+    const normalizedArgs = rpcArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+    const normalizedSummaryAlias = summaryFileAlias.replace(/\\/g, "/");
+    assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1);
+    assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1);
+    assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/session-summary.ts")).length, 1, "the started WebUI package should contribute one canonical summary extension");
+    assert.equal(normalizedArgs.includes(normalizedSummaryAlias), false, "a top-level file symlink into the WebUI package must not duplicate the canonical summary extension");
+    await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTab.body?.data?.tab?.id] } });
+  } finally {
+    await rm(summaryFileAlias, { force: true });
+  }
 
   const batchPlan = await request("127.0.0.1", "/api/optional-features");
   const batchRevision = batchPlan.body?.data?.revision;

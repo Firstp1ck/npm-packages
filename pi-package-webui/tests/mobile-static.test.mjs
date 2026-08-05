@@ -2005,6 +2005,7 @@ assert.ok(mochaBackground.length > 8000, "Catppuccin Mocha background image shou
 assert.match(server, /resolveCodexUsageAuth/, "server should use the lock-safe Codex OAuth compatibility adapter");
 assert.match(server, /DefaultPackageManager/, "server should use Pi's package resolver when controlling Web UI tab extension loading");
 assert.match(server, /WEBUI_RESOURCE_EXCLUDED_PACKAGES = new Set\(\[WEBUI_PACKAGE\]\)/, "server should exclude only the Web UI package itself from normal Pi resource loading");
+assert.match(server, /async function packageNameForResourcePath\(resourcePath\)[\s\S]*canonicalResourcePath = await realpath\(resourcePath\)[\s\S]*path\.dirname\(canonicalResourcePath\)/, "package ownership checks should canonicalize file symlinks before walking package ancestors");
 assert.match(server, /const args = \["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"\]/, "Web UI tabs should disable implicit resource loading before adding resolved resource paths");
 assert.match(server, /normalPiResourcePathsForTab[\s\S]*WEBUI_RESOURCE_EXCLUDED_PACKAGES\.has\(packageName\)[\s\S]*continue/, "Web UI tab resource resolution should retain separately configured optional packages and prevent only self-loading duplication");
 assert.match(server, /startedWebuiResourcePaths\(resourceType\)/, "Web UI tabs should load Web UI-owned resources from the started package");

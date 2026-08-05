@@ -61,6 +61,9 @@ assert.match(app, /source\.onopen[\s\S]*refreshOptionalFeaturePackageStatuses\(\
 const timerSource = sourceBetween("function refreshOptionalFeatureMigrationElapsedText", "function optionalFeatureMigrationAction");
 assert.doesNotMatch(timerSource, /renderOptionalFeatureMigrationSurface\(\)/, "elapsed ticks must not replace and re-announce the entire live region");
 assert.match(timerSource, /querySelector\("\.optional-feature-migration-detail"\)/, "elapsed ticks should update only the detail node");
+assert.match(app, /const OPTIONAL_FEATURE_READY_AUTO_DISMISS_MS = 5_000;/, "a successful startup audit should remain readable briefly before dismissal");
+assert.match(timerSource, /scheduleOptionalFeatureReadyDismiss[\s\S]*setTimeout[\s\S]*optionalFeatureReadyDismissKey\(\) !== key \|\| optionalFeatureRestartNotice[\s\S]*surface\.hidden = true/, "ready feedback should auto-dismiss only while the same ready snapshot remains non-actionable");
+assert.match(surfaceSource, /readyCanAutoDismiss[\s\S]*scheduleOptionalFeatureReadyDismiss\(readyCanAutoDismiss \? readyDismissKey : ""\)/, "rendering should schedule dismissal only for non-actionable ready feedback");
 
 assert.match(css, /\.optional-feature-migration-surface[\s\S]*\.optional-feature-migration-dialog[\s\S]*@media \(max-width: 34rem\)/, "migration surfaces should have desktop and responsive styling");
 assert.match(css, /\.optional-feature-migration-card:focus-visible/, "focused completion summary should have a visible focus treatment");

@@ -8771,7 +8771,14 @@ function readSupervisorCursorFromEnv() {
 }
 
 async function packageNameForResourcePath(resourcePath) {
-  let current = path.dirname(resourcePath);
+  let canonicalResourcePath = resourcePath;
+  try {
+    canonicalResourcePath = await realpath(resourcePath);
+  } catch {
+    // Keep lexical lookup for missing or virtual resources.
+  }
+
+  let current = path.dirname(canonicalResourcePath);
   while (current && current !== path.dirname(current)) {
     if (PACKAGE_NAME_CACHE.has(current)) return PACKAGE_NAME_CACHE.get(current) || undefined;
     try {

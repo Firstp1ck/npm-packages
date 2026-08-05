@@ -2857,6 +2857,7 @@ const optionalFeatureInstallMessages = new Map();
 const optionalFeatureInstallStates = new Map();
 const optionalFeatureInstallProgressTimers = new Map();
 const optionalFeatureMigrationResultEvents = new Set();
+const OPTIONAL_FEATURE_READY_AUTO_DISMISS_MS = 5_000;
 let optionalFeatureBatchState = null;
 let optionalFeatureMigrationSnapshot = {
   phase: "checking",
@@ -2870,6 +2871,9 @@ let optionalFeatureMigrationSnapshot = {
 };
 let optionalFeatureMigrationCheckingStartedAt = Date.now();
 let optionalFeatureMigrationRenderTimer = null;
+let optionalFeatureMigrationReadyDismissTimer = null;
+let optionalFeatureMigrationPendingReadyDismissKey = "";
+let optionalFeatureMigrationDismissedReadyKey = "";
 let optionalFeatureMigrationDialogState = null;
 let optionalFeatureMigrationLastPhase = "";
 let optionalFeatureMigrationCompletionFocusKey = "";
@@ -34196,6 +34200,38 @@ function ensureOptionalFeatureMigrationRenderTimer() {
   }
 }
 
+function clearOptionalFeatureReadyDismissTimer() {
+  if (optionalFeatureMigrationReadyDismissTimer) clearTimeout(optionalFeatureMigrationReadyDismissTimer);
+  optionalFeatureMigrationReadyDismissTimer = null;
+  optionalFeatureMigrationPendingReadyDismissKey = "";
+}
+
+function optionalFeatureReadyDismissKey(snapshot = optionalFeatureMigrationSnapshot) {
+  return snapshot.phase === "ready" ? String(snapshot.revision || "pending") : "";
+}
+
+function scheduleOptionalFeatureReadyDismiss(key) {
+  if (!key) {
+    clearOptionalFeatureReadyDismissTimer();
+    if (optionalFeatureMigrationSnapshot.phase !== "ready") optionalFeatureMigrationDismissedReadyKey = "";
+    return;
+  }
+  if (optionalFeatureMigrationDismissedReadyKey === key) return;
+  if (optionalFeatureMigrationReadyDismissTimer && optionalFeatureMigrationPendingReadyDismissKey === key) return;
+  clearOptionalFeatureReadyDismissTimer();
+  optionalFeatureMigrationPendingReadyDismissKey = key;
+  optionalFeatureMigrationReadyDismissTimer = setTimeout(() => {
+    optionalFeatureMigrationReadyDismissTimer = null;
+    optionalFeatureMigrationPendingReadyDismissKey = "";
+    if (optionalFeatureReadyDismissKey() !== key || optionalFeatureRestartNotice) return;
+    optionalFeatureMigrationDismissedReadyKey = key;
+    const surface = elements.optionalFeatureMigrationSurface;
+    if (!surface) return;
+    surface.replaceChildren();
+    surface.hidden = true;
+  }, OPTIONAL_FEATURE_READY_AUTO_DISMISS_MS);
+}
+
 function optionalFeatureMigrationAction(label, handler, className = "") {
   const button = make("button", className, label);
   button.type = "button";
@@ -34248,6 +34284,14 @@ function renderOptionalFeatureMigrationSurface() {
   const summary = snapshot.summary || {};
   const conflicts = (snapshot.features || []).filter((feature) => feature.state === "conflict");
   const progress = snapshot.progress;
+  const readyDismissKey = optionalFeatureReadyDismissKey(snapshot);
+  const readyCanAutoDismiss = Boolean(readyDismissKey && !optionalFeatureRestartNotice);
+  if (readyCanAutoDismiss && optionalFeatureMigrationDismissedReadyKey === readyDismissKey) {
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
   const card = make("div", `optional-feature-migration-card phase-${snapshot.phase}`);
   const copy = make("div", "optional-feature-migration-copy");
   const title = make("strong", "optional-feature-migration-title");
@@ -34334,6 +34378,7 @@ function renderOptionalFeatureMigrationSurface() {
   surface.replaceChildren(card);
   surface.hidden = false;
   ensureOptionalFeatureMigrationRenderTimer();
+  scheduleOptionalFeatureReadyDismiss(readyCanAutoDismiss ? readyDismissKey : "");
   if (focusKey && focusKey !== optionalFeatureMigrationCompletionFocusKey) {
     optionalFeatureMigrationCompletionFocusKey = focusKey;
     queueMicrotask(() => card.isConnected && card.focus({ preventScroll: true }));
