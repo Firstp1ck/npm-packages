@@ -152,7 +152,7 @@ test("first click opens confirmed setup, cancel has no side effect, and save ope
   await installSummaryRoutes(page, requests);
   await page.goto(baseURL);
 
-  const summaryButton = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-summary-button");
+  const summaryButton = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-actions > .terminal-tab-summary-button");
   await expect(summaryButton).toBeVisible();
   await summaryButton.evaluate((button) => button.click());
   await expect(page.locator("#nativeCommandDialog")).toBeVisible();
@@ -240,7 +240,7 @@ test("typed summary commands stay native, preserve failures, reset sessions, res
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, data: {} }) });
   });
   await page.goto(baseURL);
-  await expect(page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-summary-button")).toBeVisible();
+  await expect(page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-actions > .terminal-tab-summary-button")).toBeVisible();
 
   const prompt = page.locator("#promptInput");
   await prompt.fill("/summary");
@@ -309,8 +309,8 @@ test("inactive and grouped tab actions keep setup, generation, and busy state sc
   const activeTab = page.locator(".terminal-tab.active[data-tab-id]");
   const activeTabId = await activeTab.getAttribute("data-tab-id");
   expect(activeTabId).not.toBe(firstTabId);
-  const inactiveSummary = page.locator(`[data-tab-id="${firstTabId}"] > .terminal-tab-summary-button`);
-  const activeSummary = page.locator(`[data-tab-id="${activeTabId}"] > .terminal-tab-summary-button`);
+  const inactiveSummary = page.locator(`[data-tab-id="${firstTabId}"] > .terminal-tab-actions > .terminal-tab-summary-button`);
+  const activeSummary = page.locator(`[data-tab-id="${activeTabId}"] > .terminal-tab-actions > .terminal-tab-summary-button`);
   await inactiveSummary.click();
   await expect(page.locator("#nativeCommandDialog")).toBeVisible();
   await expect(page.locator("#nativeCommandTitle")).toHaveText("/summary-setup");
@@ -338,8 +338,8 @@ test("inactive and grouped tab actions keep setup, generation, and busy state sc
   await expect(group).toHaveCount(1);
   await group.hover();
   await expect(group.locator(".terminal-tab-group-item")).toHaveCount(2);
-  await expect(group.locator(".terminal-tab-group-item > .terminal-tab-summary-button")).toHaveCount(2);
-  await group.locator(`[data-tab-id="${firstTabId}"] > .terminal-tab-summary-button`).click();
+  await expect(group.locator(".terminal-tab-group-item > .terminal-tab-actions > .terminal-tab-summary-button")).toHaveCount(2);
+  await group.locator(`[data-tab-id="${firstTabId}"] > .terminal-tab-actions > .terminal-tab-summary-button`).click();
   await expect(page.locator("#sessionSummaryOverlayTitle")).toHaveText("Validated fixture title");
   await expect(group.locator(`[data-tab-id="${activeTabId}"]`)).toHaveClass(/active/);
 });
@@ -350,10 +350,43 @@ test("focus returns to a regenerated per-tab summary action after tab controls r
   await page.goto(baseURL);
 
   await expect(page.locator("#promptInput")).toBeFocused();
-  const summaryButton = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-summary-button, .terminal-tab-group.active .terminal-tab-group-item.active > .terminal-tab-summary-button");
+  const summaryButton = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-actions > .terminal-tab-summary-button, .terminal-tab-group.active .terminal-tab-group-item.active > .terminal-tab-actions > .terminal-tab-summary-button");
   await expect(summaryButton).toHaveCount(1);
   await summaryButton.evaluate((button) => button.click());
   await expect(page.locator("#sessionSummaryOverlayTitle")).toHaveText("Validated fixture title");
   await page.keyboard.press("Escape");
   await expect(summaryButton).toBeFocused();
+});
+
+test("each terminal tab shares one horizontal Split and Summary action slot", async ({ page }) => {
+  const requests = { get: 0, put: [], generate: [] };
+  await installSummaryRoutes(page, requests, { configured: true });
+  await page.goto(baseURL);
+
+  await expect(page.locator("#splitTabButton")).toHaveCount(0);
+  const initialTabCount = await page.locator("[data-tab-id] > .terminal-tab-actions").count();
+  const activeGroup = page.locator(".terminal-tab-group.active");
+  if (await activeGroup.count()) await activeGroup.hover();
+  const activeActions = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-actions, .terminal-tab-group.active .terminal-tab-group-item.active > .terminal-tab-actions");
+  await expect(activeActions).toHaveCount(1);
+  await expect(activeActions.locator(":scope > .terminal-tab-split-button")).toHaveCount(1);
+  await expect(activeActions.locator(":scope > .terminal-tab-summary-button")).toHaveCount(1);
+  const actionWidths = await activeActions.evaluate((slot) => ({
+    slot: slot.getBoundingClientRect().width,
+    split: slot.querySelector(".terminal-tab-split-button")?.getBoundingClientRect().width || 0,
+    summary: slot.querySelector(".terminal-tab-summary-button")?.getBoundingClientRect().width || 0,
+  }));
+  expect(Math.abs(actionWidths.split - actionWidths.summary)).toBeLessThan(1);
+  expect(Math.abs((actionWidths.split + actionWidths.summary) - actionWidths.slot)).toBeLessThan(2);
+
+  await activeActions.locator(":scope > .terminal-tab-split-button").click();
+  await expect(page.locator("[data-tab-id] > .terminal-tab-actions")).toHaveCount(initialTabCount + 1);
+  await expect(page.locator("#terminalSplitShell")).toBeVisible();
+  const splitTabId = await page.locator("#terminalSplitFrame").getAttribute("data-tab-id");
+  expect(splitTabId).toBeTruthy();
+  const splitControl = page.locator(`[data-tab-id="${splitTabId}"] > .terminal-tab-actions > .terminal-tab-split-button`);
+  await expect(splitControl).toHaveAttribute("aria-pressed", "true");
+  await splitControl.evaluate((button) => button.click());
+  await expect(page.locator("#terminalSplitShell")).toBeHidden();
+  await expect(splitControl).toHaveAttribute("aria-pressed", "false");
 });

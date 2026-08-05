@@ -18,7 +18,6 @@ const elements = {
   webuiDevBadge: $("#webuiDevBadge"),
   tabBar: $("#tabBar"),
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
-  splitTabButton: $("#splitTabButton"),
   workspaceSaveButton: $("#workspaceSaveButton"),
   newTabMenu: $("#newTabMenu"),
   newTabButton: $("#newTabButton"),
@@ -5061,7 +5060,7 @@ function bindTerminalTabDragAndDrop(element, { sourceTabId = "", target = null }
     element.draggable = true;
     element.dataset.dragTabId = sourceTabId;
     element.addEventListener("dragstart", (event) => {
-      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-summary-button, .terminal-tab-group-add")) {
+      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-actions, .terminal-tab-group-add")) {
         event.preventDefault();
         return;
       }
@@ -13891,9 +13890,7 @@ function renderTerminalTab(tab) {
   applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
-  wrapper.append(button);
-  const summary = createTerminalTabSessionSummaryButton(tab);
-  if (summary) wrapper.append(summary);
+  wrapper.append(button, createTerminalTabActions(tab));
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close", "×");
@@ -13935,9 +13932,7 @@ function renderTerminalTabGroupItem(tab, group) {
     event.stopPropagation();
     switchTab(tab.id);
   });
-  item.append(button);
-  const summary = createTerminalTabSessionSummaryButton(tab);
-  if (summary) item.append(summary);
+  item.append(button, createTerminalTabActions(tab));
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close terminal-tab-group-item-close", "×");
@@ -14063,7 +14058,6 @@ function setNewTabMenuOpen(open) {
 
 function initializeTerminalHeaderTooltips() {
   applyStyledTooltip(elements.newTabButton, "Start a separate isolated Pi terminal", { ariaLabel: "Start a separate isolated Pi terminal" });
-  applyStyledTooltip(elements.splitTabButton, "Split the active terminal to the right", { ariaLabel: "Split the active terminal to the right" });
   applyStyledTooltip(elements.closeAllTabsButton, "Close all terminal tabs", { ariaLabel: "Close all terminal tabs" });
 }
 
@@ -14108,6 +14102,7 @@ function terminalTabControlKey(node) {
   const tabId = node?.closest?.("[data-tab-id]")?.dataset?.tabId;
   if (tabId) {
     if (node.classList.contains("terminal-tab-close")) return `terminal-tab:${tabId}:close`;
+    if (node.classList.contains("terminal-tab-split-button")) return `terminal-tab:${tabId}:split`;
     if (node.classList.contains("terminal-tab-summary-button")) return `terminal-tab:${tabId}:summary`;
     if (node.classList.contains("terminal-tab-button")) return `terminal-tab:${tabId}:switch`;
   }
@@ -14268,19 +14263,28 @@ function terminalSplitFrameUrl(tabId) {
   return `${url.pathname}${url.search}`;
 }
 
+function updateTerminalSplitControls(canShowSplit, splitTab = terminalSplitTab()) {
+  elements.tabBar?.querySelectorAll(".terminal-tab-split-button").forEach((button) => {
+    const tabId = button.closest("[data-tab-id]")?.dataset?.tabId || "";
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    const isOpenSplit = canShowSplit && tabId === splitTab?.id;
+    button.disabled = embeddedSplitMode || isSidePanelOverlayView() || !tab;
+    button.setAttribute("aria-pressed", isOpenSplit ? "true" : "false");
+    button.dataset.splitState = isOpenSplit ? "unsplit" : "split";
+    const label = isOpenSplit
+      ? `Close split view for ${tab?.title || "Pi terminal"}`
+      : `Split ${tab?.title || "Pi terminal"} to the right`;
+    applyStyledTooltip(button, label, { ariaLabel: label, targetKey: tabId ? `terminal-tab:${tabId}:split` : "" });
+  });
+}
+
 function updateTerminalSplitUi() {
   const tab = terminalSplitTab();
   const canShowSplit = !!tab && !embeddedSplitMode && !isSidePanelOverlayView();
   document.body.classList.toggle("terminal-split-open", canShowSplit);
   if (elements.terminalSplitShell) elements.terminalSplitShell.hidden = !canShowSplit;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
-  if (elements.splitTabButton) {
-    elements.splitTabButton.disabled = embeddedSplitMode || isSidePanelOverlayView() || !activeTab();
-    elements.splitTabButton.setAttribute("aria-pressed", canShowSplit ? "true" : "false");
-    elements.splitTabButton.dataset.splitState = canShowSplit ? "unsplit" : "split";
-    const label = canShowSplit ? `Close split view for ${tab.title}` : "Split the active terminal to the right";
-    applyStyledTooltip(elements.splitTabButton, label, { ariaLabel: label });
-  }
+  updateTerminalSplitControls(canShowSplit, tab);
   if (!canShowSplit) return;
   if (elements.terminalSplitTitle) elements.terminalSplitTitle.textContent = tab.title || "Split terminal";
   if (elements.terminalSplitMeta) elements.terminalSplitMeta.textContent = [tab.running ? `pid ${tab.pid || "starting"}` : "stopped", normalizeDisplayPath(tab.cwd || "")].filter(Boolean).join(" · ");
@@ -14313,22 +14317,23 @@ function reconcileTerminalSplitState() {
   updateTerminalSplitUi();
 }
 
-async function splitActiveTerminalTab({ triggerButton = elements.splitTabButton } = {}) {
+async function splitTerminalTab(tabId, { triggerButton = null } = {}) {
   if (embeddedSplitMode) return;
-  if (splitTabId) {
+  if (splitTabId === tabId) {
     closeTerminalSplitView();
     return;
   }
-  const sourceTab = activeTab();
-  let resolvedCwd = latestWorkspace?.cwd || sourceTab?.cwd || currentDirectoryForNewTab();
+  const sourceTab = tabs.find((tab) => tab.id === tabId);
+  if (!sourceTab) return;
+  if (splitTabId) closeTerminalSplitView();
+  let resolvedCwd = sourceTab.cwd || latestWorkspace?.cwd || currentDirectoryForNewTab();
   setMobileTabsExpanded(false);
   setNewTabMenuOpen(false);
   if (!resolvedCwd) {
-    resolvedCwd = await pickCwd(sourceTab || { id: "split-terminal", title: "split terminal" }, "", { title: "Choose CWD for split terminal" });
+    resolvedCwd = await pickCwd(sourceTab, "", { title: "Choose CWD for split terminal" });
     if (!resolvedCwd) return;
   }
-  const disabledButtons = new Set([elements.splitTabButton, triggerButton].filter(Boolean));
-  for (const button of disabledButtons) button.disabled = true;
+  if (triggerButton) triggerButton.disabled = true;
   try {
     const response = await api("/api/tabs", { method: "POST", body: { cwd: resolvedCwd }, scoped: false });
     tabs = response.data?.tabs || tabs;
@@ -14337,12 +14342,12 @@ async function splitActiveTerminalTab({ triggerButton = elements.splitTabButton 
     if (tab?.id) {
       setTerminalSplitTab(tab.id);
       renderTabs();
-      addEvent(`split ${sourceTab?.title || "terminal"} into independent ${tab.title}`, "info");
+      addEvent(`split ${sourceTab.title || "terminal"} into independent ${tab.title}`, "info");
     }
   } catch (error) {
     addEvent(error.message, "error");
   } finally {
-    for (const button of disabledButtons) button.disabled = false;
+    if (triggerButton) triggerButton.disabled = false;
     updateTerminalSplitUi();
   }
 }
@@ -35558,6 +35563,57 @@ function sessionSummaryControlStatus(tabId) {
   return "Open or create a session summary";
 }
 
+function createTerminalTabSplitButton(tab) {
+  const button = make("button", "terminal-tab-split-button");
+  button.type = "button";
+  button.draggable = false;
+  const isOpenSplit = splitTabId === tab.id && !embeddedSplitMode && !isSidePanelOverlayView();
+  button.disabled = embeddedSplitMode || isSidePanelOverlayView();
+  button.setAttribute("aria-pressed", isOpenSplit ? "true" : "false");
+  button.dataset.splitState = isOpenSplit ? "unsplit" : "split";
+  const label = isOpenSplit ? `Close split view for ${tab.title || "Pi terminal"}` : `Split ${tab.title || "Pi terminal"} to the right`;
+  applyStyledTooltip(button, label, { ariaLabel: label, targetKey: `terminal-tab:${tab.id}:split` });
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  icon.setAttribute("class", "terminal-tab-action-icon terminal-tab-split-icon");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const frame = document.createElementNS(ns, "rect");
+  frame.setAttribute("x", "4");
+  frame.setAttribute("y", "5");
+  frame.setAttribute("width", "16");
+  frame.setAttribute("height", "14");
+  frame.setAttribute("rx", "2");
+  frame.setAttribute("fill", "none");
+  frame.setAttribute("stroke", "currentColor");
+  frame.setAttribute("stroke-width", "2");
+  const divider = document.createElementNS(ns, "path");
+  divider.setAttribute("d", "M12 5v14M15 12h4m0 0-2-2m2 2-2 2");
+  divider.setAttribute("fill", "none");
+  divider.setAttribute("stroke", "currentColor");
+  divider.setAttribute("stroke-width", "2");
+  divider.setAttribute("stroke-linecap", "round");
+  divider.setAttribute("stroke-linejoin", "round");
+  icon.append(frame, divider);
+  button.append(icon);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void splitTerminalTab(tab.id, { triggerButton: button });
+  });
+  return button;
+}
+
+function createTerminalTabActions(tab) {
+  const actions = make("div", "terminal-tab-actions");
+  actions.setAttribute("role", "group");
+  actions.setAttribute("aria-label", `Actions for ${tab.title || "Pi terminal"}`);
+  actions.append(createTerminalTabSplitButton(tab));
+  const summary = createTerminalTabSessionSummaryButton(tab);
+  if (summary) actions.append(summary);
+  return actions;
+}
+
 function createTerminalTabSessionSummaryButton(tab) {
   if (!tab?.id || !hasAvailableCommand("summary", { tabId: tab.id })) return null;
   const state = sessionSummaryStateForTab(tab.id);
@@ -41683,7 +41739,6 @@ elements.newTabMenu?.addEventListener("focusout", () => {
 elements.newTabCurrentDirectoryButton?.addEventListener("click", () => createTerminalTab(currentDirectoryForNewTab(), { triggerButton: elements.newTabCurrentDirectoryButton }));
 elements.newTabChooseDirectoryButton?.addEventListener("click", () => createTerminalTabFromChosenDirectory({ triggerButton: elements.newTabChooseDirectoryButton }));
 elements.newTabWorktreeButton?.addEventListener("click", () => openBranchWorktreePicker());
-elements.splitTabButton?.addEventListener("click", () => splitActiveTerminalTab());
 elements.workspaceSaveButton?.addEventListener("click", () => saveWebuiWorkspace());
 elements.terminalSplitCloseButton?.addEventListener("click", () => closeTerminalSplitView());
 elements.closeAllTabsButton.addEventListener("click", () => closeAllTerminalTabs());
