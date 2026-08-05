@@ -746,6 +746,7 @@
                     </div>
                     <input id="themeSearchInput" class="model-search-input theme-search-input" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
                     <select id="themeSelect" title="Theme"></select>
+                    <button id="themeCustomizeButton" class="theme-customize-button" type="button" aria-haspopup="dialog" aria-controls="themeCustomizerDialog">Customize…</button>
                     <div id="themeSearchResults" class="model-search-results theme-search-results" role="listbox" aria-label="Theme search results" hidden></div>
                   </div>
 
@@ -1174,6 +1175,81 @@
           <button id="webuiPackageNpmButton" class="webui-package-npm-link" type="button">View on npm</button>
           <button id="webuiComponentUpdateButton" class="component-update-button primary" type="button">Update Web UI</button>
           <button value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="themeCustomizerDialog" class="extension-dialog theme-customizer-dialog" aria-labelledby="themeCustomizerTitle" aria-describedby="themeCustomizerDescription">
+      <form class="theme-customizer-shell" method="dialog">
+        <header class="theme-customizer-header">
+          <div>
+            <span class="theme-customizer-kicker">Pi-native theme</span>
+            <h2 id="themeCustomizerTitle">Customize theme</h2>
+            <p id="themeCustomizerDescription" class="muted">Preview changes in this browser, then save a JSON theme file without changing your Light, Dark, or Auto selection.</p>
+          </div>
+          <span id="themeCustomizerSourceBadge" class="theme-scope-badge">Bundled source</span>
+        </header>
+
+        <div class="theme-customizer-scroll">
+          <section class="theme-customizer-identity" aria-label="Theme destination">
+            <label for="themeCustomizerName">Theme name
+              <input id="themeCustomizerName" type="text" maxlength="75" autocomplete="off" spellcheck="false" aria-describedby="themeCustomizerNameHint" />
+            </label>
+            <p id="themeCustomizerNameHint" class="muted">Saved as this exact name plus <code>.json</code>.</p>
+            <label for="themeCustomizerScope">Save destination
+              <select id="themeCustomizerScope" aria-describedby="themeCustomizerScopeHint">
+                <option id="themeCustomizerProjectOption" value="project">This project</option>
+                <option value="global">Global themes</option>
+              </select>
+            </label>
+            <p id="themeCustomizerScopeHint" class="muted">Project themes require the active project to be trusted by Pi.</p>
+          </section>
+
+          <section id="themeCustomizerPreview" class="theme-customizer-preview" aria-label="Live theme sample">
+            <strong>Live sample</strong>
+            <p>Valid drafts preview across WebUI. <a href="#themeCustomizerJson">Links</a>, <code>inline code</code>, and status colours update without writing storage or disk.</p>
+            <div><span class="success">Success</span><span class="warning">Warning</span><span class="error">Error</span></div>
+          </section>
+
+          <details open>
+            <summary>Visual colors <span class="muted">51 required tokens</span></summary>
+            <div id="themeCustomizerVisualFields" class="theme-customizer-visual-fields"></div>
+          </details>
+
+          <details>
+            <summary>Optional fields</summary>
+            <div class="theme-customizer-optional-fields">
+              <label for="themeCustomizerThinkingMax">thinkingMax <span class="muted">optional; blank uses thinkingXhigh</span>
+                <input id="themeCustomizerThinkingMax" type="text" autocomplete="off" spellcheck="false" />
+              </label>
+              <label for="themeCustomizerVars">Variables <span class="muted">JSON object</span>
+                <textarea id="themeCustomizerVars" rows="5" spellcheck="false">{}</textarea>
+              </label>
+              <fieldset>
+                <legend>Export colors</legend>
+                <div id="themeCustomizerExportFields" class="theme-customizer-export-fields"></div>
+              </fieldset>
+            </div>
+          </details>
+
+          <details>
+            <summary>Advanced JSON</summary>
+            <label class="sr-only" for="themeCustomizerJson">Advanced Pi theme JSON</label>
+            <textarea id="themeCustomizerJson" class="theme-customizer-json" rows="18" spellcheck="false" aria-describedby="themeCustomizerStatus"></textarea>
+          </details>
+
+          <section id="themeCustomizerOverwrite" class="theme-customizer-overwrite" role="alert" hidden>
+            <strong>Replace this exact target?</strong>
+            <p id="themeCustomizerOverwriteMessage"></p>
+            <button id="themeCustomizerOverwriteButton" class="danger" type="button">Replace existing file</button>
+          </section>
+          <p id="themeCustomizerStatus" class="theme-customizer-status muted" role="status" aria-live="polite" aria-atomic="true">Valid changes preview immediately.</p>
+        </div>
+
+        <menu class="theme-customizer-actions">
+          <button id="themeCustomizerCancelButton" type="button">Cancel</button>
+          <button id="themeCustomizerResetButton" type="button">Reset draft</button>
+          <button id="themeCustomizerSaveButton" class="primary" type="button">Save theme</button>
         </menu>
       </form>
     </dialog>

@@ -1,3 +1,5 @@
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+
 export const TRUST_GUARD_TYPES = new Set([
   "none",
   "confirmation",
@@ -28,6 +30,7 @@ export const LOCALHOST_ONLY_POST_ROUTES = new Map([
   ["/api/files/open-default", "Opening files in the default editor is only allowed from localhost"],
   ["/api/session-delete", "Deleting sessions is only allowed from localhost"],
   ["/api/auth-logout", "Removing stored provider credentials is only allowed from localhost"],
+  ["/api/themes/custom", "Saving custom themes is only allowed from localhost"],
 ]);
 
 export const REMOTE_SHELL_WARNING =
@@ -63,6 +66,16 @@ export function requireLocalhost(req, message = "This action is only allowed fro
 export function requireLocalhostRoute(req, pathname) {
   const message = LOCALHOST_ONLY_POST_ROUTES.get(pathname);
   if (message) requireLocalhost(req, message);
+}
+
+/** Uses the installed Pi trust store, including nearest-ancestor decisions. */
+export function projectTrustDecision(cwd, agentDir) {
+  try {
+    return new ProjectTrustStore(agentDir).get(cwd) === true;
+  } catch {
+    // A malformed, unreadable, or lock-contended trust store must never grant access.
+    return false;
+  }
 }
 
 export function nativeParitySurfaces(matrix) {

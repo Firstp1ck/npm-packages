@@ -146,11 +146,12 @@ export function normalizeSummaryState(value) {
   if (!value || typeof value !== "object" || value.version !== SESSION_SUMMARY_PROTOCOL_VERSION || !validSource(value.source)) return undefined;
   let result;
   try {
-    const parsed = parseSummaryObject({
+    const resultInput = {
       version: SESSION_SUMMARY_PROTOCOL_VERSION,
-      title: value.result?.title,
       summaryMarkdown: value.result?.summaryMarkdown,
-    });
+    };
+    if (value.result?.title !== undefined) resultInput.title = value.result.title;
+    const parsed = parseSummaryObject(resultInput);
     result = {
       ...(parsed.title ? { title: parsed.title } : {}),
       summaryMarkdown: parsed.summaryMarkdown,

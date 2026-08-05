@@ -65,6 +65,7 @@ let dynamicLeafId = "u0000002";
 let scriptedStreaming = false;
 let continuityRun = 0;
 let streamIsolationRun = 0;
+const pendingStreamIsolationRuns = new Map();
 let largeTranscriptEnabled = false;
 const fixtureSubagentRuns = [];
 const fixtureSubagentGates = [];
@@ -785,17 +786,18 @@ function handleFastModeFixturePrompt(command, base) {
 }
 
 function streamIsolationTextDelta(index) {
-  // Exercise 1,000 distinct transport events without turning this ownership
-  // proof into a Markdown throughput benchmark. The final delta carries the
-  // complete deterministic tail; the preceding empty deltas still traverse
-  // the real EventSource classifier/controller path.
-  if (index !== 999) return "";
-  const body = Array.from({ length: 250 }, (_, bodyIndex) => String(bodyIndex % 10)).join("");
-  return `ISOLATION-TEXT-BEGIN ${body}ISOLATION-TEXT-TAIL`;
+  const digit = String(index % 10);
+  if (index === 0) return `ISOLATION-TEXT-BEGIN ${digit}`;
+  if (index === 999) return `${digit} ISOLATION-TEXT-TAIL`;
+  return digit;
 }
 
-function runStreamIsolationFixtureFlow(mode) {
-  const runId = `stream-isolation-${mode}-${++streamIsolationRun}`;
+function logStreamIsolationPhase(runId, mode, scenario, phase) {
+  logJsonLine({ direction: "isolation-phase", isolationRunId: runId, isolationMode: mode, isolationScenario: scenario, isolationPhase: phase });
+}
+
+function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
+  const runId = `stream-isolation-${mode}-${scenario}-${++streamIsolationRun}`;
   const toolCallId = `${runId}-execution`;
   const streamedToolCallId = `${runId}-call`;
   const textDeltas = Array.from({ length: 1_000 }, (_, index) => streamIsolationTextDelta(index));
@@ -806,47 +808,69 @@ function runStreamIsolationFixtureFlow(mode) {
     ...payload,
     isolationRunId: runId,
     isolationMode: mode,
+    isolationScenario: scenario,
     isolationPhase: phase,
   });
+  const emitTextRange = (start, end, { finish = false } = {}) => {
+    if (start === 0) emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } }, "raw"));
+    for (let index = start; index < end; index += 1) {
+      emitScriptedEvent({
+        ...tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: textDeltas[index] } }, "raw"),
+        isolationDeltaIndex: index,
+      });
+    }
+    if (finish) emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, text: finalText } }, "raw"));
+  };
 
   scriptedStreaming = true;
-  runScriptedSteps([
-    {
-      afterMs: 25,
-      run: () => {
-        emitScriptedEvent(tagged({ type: "agent_start" }, "pre-burst"));
-        if (mode === "compact") {
-          emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
-          emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
-        } else {
-          emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
-          emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
-        }
-      },
+  const preburstStep = {
+    afterMs: 25,
+    run: () => {
+      emitScriptedEvent(tagged({ type: "agent_start" }, "pre-burst"));
+      if (mode === "compact") {
+        emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
+        emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
+      } else {
+        emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
+        emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
+      }
+      logStreamIsolationPhase(runId, mode, scenario, "ready");
     },
+  };
+  const steps = [
     {
-      afterMs: 1_800,
+      afterMs: 0,
       run: () => {
+        logStreamIsolationPhase(runId, mode, scenario, "raw-start");
         emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_start" } }, "raw"));
         emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: thinkingText } }, "raw"));
         emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_end", delta: thinkingText } }, "raw"));
       },
     },
     {
-      afterMs: 120,
+      afterMs: 100,
       run: () => {
-        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } }, "raw"));
-        for (let index = 0; index < textDeltas.length; index += 1) {
-          emitScriptedEvent({
-            ...tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: textDeltas[index] } }, "raw"),
-            isolationDeltaIndex: index,
-          });
+        if (scenario === "abort") {
+          emitTextRange(0, 500);
+          logStreamIsolationPhase(runId, mode, scenario, "abort-ready");
+        } else {
+          emitTextRange(0, 1_000, { finish: true });
+          logStreamIsolationPhase(runId, mode, scenario, "text-complete");
         }
-        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, text: finalText } }, "raw"));
       },
     },
+  ];
+
+  if (scenario === "abort") {
+    // Keep a deterministic partial stream pending long enough for the browser
+    // proof to inspect it and issue Abort; cancelScriptedSteps() must prevent
+    // this fallback tail from ever being emitted after cancellation.
+    steps.push({ afterMs: 30_000, run: () => emitTextRange(500, 1_000, { finish: true }) });
+  }
+  const completionSteps = [];
+  steps.push(
     {
-      afterMs: 700,
+      afterMs: 1_500,
       run: () => {
         emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, name: "read", toolCall: { ...toolCall, arguments: undefined } } }, "raw"));
         emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 2, name: "read", toolCall: { ...toolCall, arguments: undefined }, delta: "{\"path\":\"isolation.txt\"}" } }, "raw"));
@@ -855,17 +879,47 @@ function runStreamIsolationFixtureFlow(mode) {
     },
     {
       afterMs: 100,
-      run: () => emitScriptedEvent(tagged({
-        type: "tool_execution_update",
-        toolCallId,
-        toolName: "read",
-        partialResult: { content: [{ type: "text", text: "ISOLATION-TOOL-UPDATE-COMPLETE" }] },
-      }, "raw")),
+      run: () => {
+        emitScriptedEvent(tagged({
+          type: "tool_execution_update",
+          toolCallId,
+          toolName: "read",
+          partialResult: { content: [{ type: "text", text: "ISOLATION-TOOL-UPDATE-COMPLETE" }] },
+        }, "raw"));
+        if (scenario === "lifecycle") {
+          pendingStreamIsolationRuns.set(runId, () => {
+            pendingStreamIsolationRuns.delete(runId);
+            runScriptedSteps(completionSteps);
+          });
+        }
+        logStreamIsolationPhase(runId, mode, scenario, "raw-end");
+      },
     },
+  );
+  if (scenario === "lifecycle") {
+    completionSteps.push({
+      afterMs: 0,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 10, errorMessage: "fixture retry" }, "semantic"));
+        emitScriptedEvent(tagged({ type: "auto_retry_end", attempt: 1, success: true }, "semantic"));
+        emitScriptedEvent(tagged({ type: "compaction_start", reason: "fixture" }, "semantic"));
+        emitScriptedEvent(tagged({ type: "compaction_end", aborted: false }, "semantic"));
+        emitScriptedEvent(tagged({ type: "webui_supervisor_reconnected", supervisorScopeId: runId, supervisorEpoch: "1", supervisorSeq: "1" }, "semantic"));
+        logStreamIsolationPhase(runId, mode, scenario, "lifecycle-complete");
+      },
+    });
+  }
+  completionSteps.push(
     {
-      afterMs: 2_000,
+      afterMs: 1_200,
       run: () => {
         emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "ISOLATION-TOOL-RESULT" }] } }, "post-burst"));
+        logStreamIsolationPhase(runId, mode, scenario, "tool-complete");
+      },
+    },
+    {
+      afterMs: 500,
+      run: () => {
         const message = {
           role: "assistant",
           content: [{ type: "thinking", thinking: thinkingText }, toolCall, { type: "text", text: finalText }],
@@ -876,19 +930,33 @@ function runStreamIsolationFixtureFlow(mode) {
         emitScriptedEvent(tagged({ type: "agent_end" }, "post-burst"));
         scriptedStreaming = false;
         emitScriptedEvent(tagged({ type: "agent_settled" }, "post-burst"));
+        logStreamIsolationPhase(runId, mode, scenario, "settled");
       },
     },
-  ]);
-  return runId;
+  );
+  runScriptedSteps([preburstStep]);
+  pendingStreamIsolationRuns.set(runId, () => {
+    pendingStreamIsolationRuns.delete(runId);
+    runScriptedSteps(scenario === "lifecycle" ? steps : [...steps, ...completionSteps]);
+  });
+  return { runId, finalText };
+}
+
+function continueStreamIsolationFixture(runId) {
+  const start = pendingStreamIsolationRuns.get(runId);
+  if (!start) return false;
+  start();
+  return true;
 }
 
 function handleStreamIsolationFixturePrompt(command, base) {
   if (!streamIsolationEnabled) return false;
-  const match = String(command.message || "").trim().match(/^fixture stream isolation (normal|compact)$/);
+  const match = String(command.message || "").trim().match(/^fixture stream isolation (normal|compact)(?: (standard|abort|lifecycle))?$/);
   if (!match) return false;
   const mode = match[1];
-  const runId = runStreamIsolationFixtureFlow(mode);
-  respond({ ...base, data: { output: "stream isolation fixture accepted", runId, deltaCount: 1_000, mode } });
+  const scenario = match[2] || "standard";
+  const { runId, finalText } = runStreamIsolationFixtureFlow(mode, scenario);
+  respond({ ...base, data: { output: "stream isolation fixture accepted", runId, deltaCount: 1_000, mode, scenario, finalText } });
   return true;
 }
 
@@ -1297,8 +1365,21 @@ rl.on("line", (line) => {
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });
       return;
-    case "steer":
+    case "steer": {
+      const match = String(command.message || "").trim().match(/^fixture stream isolation continue (stream-isolation-[A-Za-z0-9-]+)$/);
+      if (match && continueStreamIsolationFixture(match[1])) {
+        respond({ ...base, data: { output: "stream isolation raw phase started" } });
+        return;
+      }
       respond({ ...base, data: { output: "fake steer accepted" } });
+      return;
+    }
+    case "abort":
+      cancelScriptedSteps();
+      respond({ ...base, data: { output: "fake abort accepted" } });
+      emitScriptedEvent({ type: "agent_end", aborted: true });
+      scriptedStreaming = false;
+      emitScriptedEvent({ type: "agent_settled", aborted: true });
       return;
     case "set_thinking_level":
       thinkingLevel = String(command.level || "off");

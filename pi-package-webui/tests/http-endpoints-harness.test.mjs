@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -9,12 +9,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
 import { readSupervisorState, supervisorPaths, supervisorPidIsAlive } from "../lib/rpc-supervisor-state.mjs";
+import { REQUIRED_THEME_TOKENS, serializeTheme } from "../public/theme-contract.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const serverScript = join(root, "bin", "pi-webui.mjs");
 const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const port = 30000 + Math.floor(Math.random() * 20000);
 const optionalFeatureFocus = process.env.PI_WEBUI_OPTIONAL_FEATURES_FOCUS === "1";
+
+function themeFixture(name, color = "#123456") {
+  return {
+    name,
+    colors: Object.fromEntries(REQUIRED_THEME_TOKENS.map((token) => [token, color])),
+    export: { pageBg: color, cardBg: color, infoBg: color },
+  };
+}
 
 function lanAddress() {
   for (const entries of Object.values(networkInterfaces())) {
@@ -121,6 +130,8 @@ const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
 const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-side-effects-"));
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const workflowPolicyAgentDir = path.join(harnessSideEffectsRoot, "agent");
+const managedThemePackageRoot = path.join(workflowPolicyAgentDir, "npm", "node_modules", "@firstpick", "pi-themes-bundle");
+const managedThemeDir = path.join(managedThemePackageRoot, "themes");
 const workflowPolicyFile = path.join(workflowPolicyAgentDir, "workflow-policy.json");
 const sessionSummaryConfigFile = path.join(workflowPolicyAgentDir, "session-summary.json");
 const canonicalWorkflowPolicySuggestions = {
@@ -140,6 +151,10 @@ await mkdir(artifactDir, { recursive: true });
 await writeFile(artifactDownload, Buffer.from("fixture docx download bytes"));
 await writeFile(artifactPage, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 await writeFile(artifactManifest, JSON.stringify({ artifact: { schema: "pi.artifact/v1", kind: "document", id: "fixture-document-artifact", revisionId: "fixture-revision", title: "fixture.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pageCount: 1, manifestPath: artifactManifest, downloadPath: artifactDownload, expiresAt: artifactExpiresAt }, sourcePath: "/private/source.docx", sourceSha256: "a".repeat(64), renderer: { engine: "fixture" }, pages: [{ pageNum: 1, width: 10, height: 20, outputPath: artifactPage }], warnings: [] }));
+await mkdir(managedThemeDir, { recursive: true });
+await writeFile(path.join(managedThemePackageRoot, "package.json"), JSON.stringify({ name: "@firstpick/pi-themes-bundle", version: "0.0.0-test", pi: { themes: ["./themes"] } }));
+await writeFile(path.join(managedThemeDir, "managed-fixture.json"), serializeTheme(themeFixture("managed-fixture")));
+await writeFile(path.join(workflowPolicyAgentDir, "trust.json"), `${JSON.stringify({ [cwd]: true }, null, 2)}\n`);
 await chmod(fakePi, 0o755);
 await mkdir(fakeOpenBinDir, { recursive: true });
 await writeFile(openCommandScript, `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "custom-open\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
@@ -440,6 +455,188 @@ try {
   assert.equal(health.body.ok, true);
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
   assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
+
+  const managedThemesResponse = await request("127.0.0.1", "/api/themes");
+  assert.equal(managedThemesResponse.status, 200, managedThemesResponse.body?.error);
+  assert.equal(managedThemesResponse.body?.data?.source, "@firstpick/pi-themes-bundle");
+  assert.deepEqual(managedThemesResponse.body?.data?.themes?.map(({ name }) => name), ["managed-fixture"], "themes installed only under PI_CODING_AGENT_DIR/npm/node_modules should be exposed to the browser");
+  assert.equal(managedThemesResponse.body?.data?.themes?.[0]?.colors?.accent, "#123456");
+  assert.equal(managedThemesResponse.body?.data?.themes?.[0]?.scope, "bundled");
+
+  const themeTabs = await request("127.0.0.1", "/api/tabs");
+  const themeTabId = themeTabs.body?.data?.tabs?.[0]?.id;
+  assert.ok(themeTabId, "custom theme endpoint checks require the startup tab");
+  const customThemePath = `/api/themes/custom?tab=${encodeURIComponent(themeTabId)}`;
+  const globalTheme = themeFixture("global-fixture", "#224466");
+  const createdGlobalTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(createdGlobalTheme.status, 201, createdGlobalTheme.body?.error);
+  assert.deepEqual({ created: createdGlobalTheme.body?.data?.created, overwritten: createdGlobalTheme.body?.data?.overwritten }, { created: true, overwritten: false });
+  assert.equal(Object.hasOwn(createdGlobalTheme.body?.data || {}, "path"), false, "theme save responses must not disclose host paths");
+  const globalThemeFile = path.join(workflowPolicyAgentDir, "themes", "global-fixture.json");
+  assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(globalTheme), "global themes must use canonical Pi JSON bytes");
+  assert.equal((await stat(globalThemeFile)).mode & 0o777, 0o600, "saved themes must have private permissions");
+
+  const projectTheme = themeFixture("project-fixture", "#335577");
+  const createdProjectTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    headers: { "Sec-Fetch-Site": "same-site" },
+    body: { scope: "project", fileName: "project-fixture.json", theme: projectTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(createdProjectTheme.status, 201, createdProjectTheme.body?.error);
+  assert.equal(await readFile(path.join(cwd, ".pi", "themes", "project-fixture.json"), "utf8"), serializeTheme(projectTheme));
+
+  const customCatalog = await request("127.0.0.1", `/api/themes?tab=${encodeURIComponent(themeTabId)}`);
+  assert.equal(customCatalog.status, 200);
+  assert.deepEqual(customCatalog.body?.data?.themes?.map(({ name }) => name), ["managed-fixture", "global-fixture", "project-fixture"]);
+  assert.deepEqual(customCatalog.body?.data?.themes?.map(({ scope }) => scope), ["bundled", "global", "project"]);
+  assert.equal(customCatalog.body?.data?.scopes?.project?.trusted, true);
+
+  const bundledCollision = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "managed-fixture.json", theme: themeFixture("managed-fixture"), overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(bundledCollision.status, 409);
+  assert.equal(bundledCollision.body?.code, "THEME_NAME_COLLISION");
+  const oppositeScopeCollision = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "project-fixture.json", theme: projectTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(oppositeScopeCollision.status, 409);
+  assert.equal(oppositeScopeCollision.body?.code, "THEME_NAME_COLLISION");
+
+  const existingGlobalTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(existingGlobalTheme.status, 409);
+  assert.equal(existingGlobalTheme.body?.code, "THEME_EXISTS");
+  assert.deepEqual(
+    { scope: existingGlobalTheme.body?.details?.scope, fileName: existingGlobalTheme.body?.details?.fileName },
+    { scope: "global", fileName: "global-fixture.json" },
+  );
+  assert.equal(typeof existingGlobalTheme.body?.details?.mtimeMs, "number");
+  await delay(25);
+  await writeFile(globalThemeFile, serializeTheme(themeFixture("global-fixture", "#446688")), { mode: 0o600 });
+  const staleOverwrite = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: true, expectedMtimeMs: existingGlobalTheme.body.details.mtimeMs },
+  });
+  assert.equal(staleOverwrite.status, 409);
+  assert.equal(staleOverwrite.body?.code, "THEME_CHANGED");
+  assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(themeFixture("global-fixture", "#446688")), "a stale overwrite must preserve current bytes");
+  const refreshedConflict = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  const overwrittenGlobalTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: true, expectedMtimeMs: refreshedConflict.body?.details?.mtimeMs },
+  });
+  assert.equal(overwrittenGlobalTheme.status, 200, overwrittenGlobalTheme.body?.error);
+  assert.deepEqual({ created: overwrittenGlobalTheme.body?.data?.created, overwritten: overwrittenGlobalTheme.body?.data?.overwritten }, { created: false, overwritten: true });
+  assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(globalTheme));
+  assert.equal((await readdir(path.dirname(globalThemeFile))).some((name) => name.endsWith(".tmp")), false, "atomic theme saves must clean temporary artifacts");
+
+  const rejectedThemeBodies = [
+    { body: { scope: "global", fileName: "bad-name.json", theme: themeFixture("different-name"), overwrite: false, expectedMtimeMs: null }, code: "THEME_NAME_MISMATCH" },
+    { body: { scope: "global", fileName: "path-field.json", theme: themeFixture("path-field"), overwrite: false, expectedMtimeMs: null, path: "/tmp/escape" }, code: "THEME_REQUEST_INVALID" },
+    { body: { scope: "elsewhere", fileName: "scope.json", theme: themeFixture("scope"), overwrite: false, expectedMtimeMs: null }, code: "THEME_SCOPE_INVALID" },
+    { body: { scope: "global", fileName: "invalid.json", theme: { name: "invalid", colors: {} }, overwrite: false, expectedMtimeMs: null }, code: "THEME_INVALID" },
+  ];
+  for (const { body, code } of rejectedThemeBodies) {
+    const rejected = await request("127.0.0.1", customThemePath, { method: "POST", body });
+    assert.equal(rejected.status, 400, rejected.body?.error);
+    assert.equal(rejected.body?.code, code);
+  }
+  const nonJsonTheme = await fetch(`http://127.0.0.1:${port}${customThemePath}`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" });
+  assert.equal(nonJsonTheme.status, 415);
+  const crossSiteTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    body: { scope: "global", fileName: "cross-site.json", theme: themeFixture("cross-site"), overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(crossSiteTheme.status, 403);
+  assert.equal(crossSiteTheme.body?.code, "THEME_CROSS_SITE_BLOCKED");
+  const malformedThemeJson = await fetch(`http://127.0.0.1:${port}${customThemePath}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
+  assert.equal(malformedThemeJson.status, 400);
+  assert.equal((await malformedThemeJson.json()).code, "THEME_JSON_INVALID");
+  const oversizedTheme = await fetch(`http://127.0.0.1:${port}${customThemePath}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(257 * 1024) }),
+  });
+  assert.equal(oversizedTheme.status, 413);
+
+  const untrustedThemeCwd = await mkdtemp(path.join(harnessSideEffectsRoot, "untrusted-theme-"));
+  const untrustedTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: untrustedThemeCwd, title: "untrusted theme fixture" } });
+  assert.equal(untrustedTab.status, 201, untrustedTab.body?.error);
+  const untrustedTabId = untrustedTab.body?.data?.tab?.id;
+  const untrustedSave = await request("127.0.0.1", `/api/themes/custom?tab=${encodeURIComponent(untrustedTabId)}`, {
+    method: "POST",
+    body: { scope: "project", fileName: "untrusted.json", theme: themeFixture("untrusted"), overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(untrustedSave.status, 403);
+  assert.equal(untrustedSave.body?.code, "THEME_PROJECT_UNTRUSTED");
+  assert.equal(await pathExists(path.join(untrustedThemeCwd, ".pi", "themes")), false, "untrusted project saves must not create .pi/themes");
+  await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [untrustedTabId] } });
+
+  const outsideTheme = path.join(harnessSideEffectsRoot, "outside-theme.json");
+  await writeFile(outsideTheme, "outside bytes", "utf8");
+  const symlinkThemeTarget = path.join(workflowPolicyAgentDir, "themes", "symlink-fixture.json");
+  try {
+    await symlink(outsideTheme, symlinkThemeTarget);
+    const symlinkSave = await request("127.0.0.1", customThemePath, {
+      method: "POST",
+      body: { scope: "global", fileName: "symlink-fixture.json", theme: themeFixture("symlink-fixture"), overwrite: false, expectedMtimeMs: null },
+    });
+    assert.equal(symlinkSave.status, 409);
+    assert.equal(symlinkSave.body?.code, "THEME_UNSAFE_TARGET");
+    assert.equal(await readFile(outsideTheme, "utf8"), "outside bytes", "theme saves must never follow a target symlink");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+    console.log(`http-endpoints-harness: symlink unavailable (${error.code}); skipping theme target symlink check`);
+  } finally {
+    await rm(symlinkThemeTarget, { force: true });
+  }
+
+  const symlinkProjectCwd = await mkdtemp(path.join(harnessSideEffectsRoot, "symlink-theme-project-"));
+  const outsideProjectPi = await mkdtemp(path.join(harnessSideEffectsRoot, "outside-project-pi-"));
+  const symlinkProjectPi = path.join(symlinkProjectCwd, ".pi");
+  let symlinkProjectTabId;
+  try {
+    await symlink(outsideProjectPi, symlinkProjectPi, process.platform === "win32" ? "junction" : "dir");
+    await writeFile(path.join(workflowPolicyAgentDir, "trust.json"), `${JSON.stringify({ [cwd]: true, [symlinkProjectCwd]: true }, null, 2)}\n`);
+    const symlinkProjectTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: symlinkProjectCwd, title: "symlink theme project" } });
+    assert.equal(symlinkProjectTab.status, 201, symlinkProjectTab.body?.error);
+    symlinkProjectTabId = symlinkProjectTab.body?.data?.tab?.id;
+    const symlinkProjectSave = await request("127.0.0.1", `/api/themes/custom?tab=${encodeURIComponent(symlinkProjectTabId)}`, {
+      method: "POST",
+      body: { scope: "project", fileName: "escaped.json", theme: themeFixture("escaped"), overwrite: false, expectedMtimeMs: null },
+    });
+    assert.equal(symlinkProjectSave.status, 409);
+    assert.equal(symlinkProjectSave.body?.code, "THEME_UNSAFE_TARGET");
+    assert.equal(await pathExists(path.join(outsideProjectPi, "themes")), false, "a symlinked .pi directory must not receive theme writes");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+    console.log(`http-endpoints-harness: directory symlink unavailable (${error.code}); skipping theme root symlink check`);
+  } finally {
+    if (symlinkProjectTabId) await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [symlinkProjectTabId] } });
+    await rm(symlinkProjectPi, { force: true });
+  }
+
+  const themeLanHost = lanAddress();
+  if (themeLanHost) {
+    const remoteThemeSave = await request(themeLanHost, customThemePath, {
+      method: "POST",
+      body: { scope: "global", fileName: "remote.json", theme: themeFixture("remote"), overwrite: false, expectedMtimeMs: null },
+    });
+    assert.equal(remoteThemeSave.status, 403, "custom theme saves must be localhost-only");
+  }
+  // Keep this focused persistence fixture out of the later git-workflow fixture.
+  await rm(path.join(cwd, ".pi"), { recursive: true, force: true });
 
   if (optionalFeatureFocus) {
     await runOptionalFeatureFocus();
@@ -778,12 +975,16 @@ try {
   const appSource = await readFile(join(root, "public", "app.js"), "utf8");
   const startupModuleNames = [...new Set([...appSource.matchAll(/(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']\.\/([^"'?]+)(?:\?[^"']*)?["']/g)].map((match) => match[1]))];
   assert.ok(startupModuleNames.length >= 1, "the startup-module harness should discover app.js imports");
-  for (const moduleName of startupModuleNames) {
-    const response = await fetch(`http://127.0.0.1:${port}/${moduleName}`, { signal: AbortSignal.timeout(5_000) });
-    assert.equal(response.status, 200, `${moduleName} is imported by app.js and must be served by the WebUI`);
-    assert.match(response.headers.get("content-type") || "", /text\/javascript/, `${moduleName} should use a JavaScript MIME type`);
-    assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served startup module ${moduleName} must match its source file`);
+  const startupHosts = [...new Set(["127.0.0.1", lanAddress()].filter(Boolean))];
+  for (const host of startupHosts) {
+    for (const moduleName of startupModuleNames) {
+      const response = await fetch(`http://${host}:${port}/${moduleName}`, { signal: AbortSignal.timeout(5_000) });
+      assert.equal(response.status, 200, `${moduleName} is imported by app.js and must be served by the WebUI on ${host}`);
+      assert.match(response.headers.get("content-type") || "", /text\/javascript/, `${moduleName} should use a JavaScript MIME type on ${host}`);
+      assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served startup module ${moduleName} must match its source file on ${host}`);
+    }
   }
+  assert.ok(startupModuleNames.includes("stream-output-controller.mjs"), "the remote startup regression must exercise the stream output controller import");
 
   const mermaidModuleResponse = await fetch(`http://127.0.0.1:${port}/vendor/mermaid/mermaid.esm.min.mjs`, {
     signal: AbortSignal.timeout(5_000),

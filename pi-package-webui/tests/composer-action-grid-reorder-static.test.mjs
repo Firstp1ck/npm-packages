@@ -58,6 +58,6 @@ assert.match(app, /initializeComposerActionOrdering\(\);[\s\S]*restoreSidePanelS
 
 assert.match(html, /styles\.css\?v=98/, "changed composer styles should advance the stylesheet revision");
 assert.match(html, /app\.js\?v=113/, "changed composer behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v73"/, "changed browser assets should advance the PWA cache identity");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v74"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("composer-action-grid-reorder-static.test.mjs passed");

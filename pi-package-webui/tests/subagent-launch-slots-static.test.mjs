@@ -33,7 +33,7 @@ assert.match(css, /\.subagent-launch-slot-role \{[^}]*padding: 0\.34rem/, "role 
 assert.match(css, /\.subagent-launch-slot-controls \{[\s\S]*grid-column: 1 \/ -1[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/, "model and thinking controls should remain paired where side-panel space permits");
 assert.match(css, /\.sr-only \{[\s\S]*clip-path: inset\(50%\)[\s\S]*white-space: nowrap/, "screen-reader announcements should stay visually hidden without leaving the accessibility tree");
 assert.match(css, /\.subagent-launch-slot-remove \{[^}]*color: var\(--ctp-red\)/, "destructive slot removal should have a textual control and warning color");
-assert.match(server, /"subagent-launch-slot-state\.mjs"/, "the pure browser module should be on the static allowlist");
+assert.match(server, /STATIC_PUBLIC_FILE_EXTENSIONS[\s\S]*"\.mjs"/, "the server should serve typed browser modules from the public asset boundary");
 assert.match(serviceWorker, /pi-webui-pwa-v\d+[\s\S]*"\/subagent-launch-slot-state\.mjs"/, "the refreshed PWA cache should include the browser module");
 assert.match(pkg, /node --check public\/subagent-launch-slot-state\.mjs/, "package checks should syntax-check the browser state module");
 

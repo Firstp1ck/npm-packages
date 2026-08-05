@@ -794,8 +794,13 @@ assert.match(app, /const TERMINAL_TABS_LAYOUT_STORAGE_KEY = "pi-webui-terminal-t
 assert.match(app, /document\.body\.classList\.toggle\("terminal-tabs-left", next === "left"\)/, "terminal-tabs layout should toggle a body class for CSS layout");
 assert.match(app, /terminalTabsLayoutSelect\.addEventListener\("change"/, "terminal-tabs layout selector should update the browser layout immediately");
 assert.match(app, /async function initializeThemes\(\)/, "frontend should initialize bundled themes");
-assert.match(app, /api\("\/api\/themes", \{ scoped: false \}\)/, "theme loading should use the unscoped themes endpoint");
+assert.match(app, /api\("\/api\/themes", \{ scoped: false \}\)/, "baseline theme loading should remain backward-compatible with the unscoped themes endpoint");
+assert.match(app, /async function refreshThemeCatalog\(tabContext = activeTabContext\(\)\)[\s\S]*api\("\/api\/themes", \{ tabId: tabContext\.tabId \}\)/, "custom project theme discovery should refresh against the active tab context");
 assert.match(app, /function applyTheme\(theme/, "frontend should apply a selected theme to CSS variables");
+assert.match(html, /id="themeCustomizeButton"[^>]*aria-controls="themeCustomizerDialog"/, "mobile theme controls should expose the accessible customizer launcher");
+assert.match(css, /@media \(max-width: 720px\), \(pointer: coarse\) and \(hover: none\)[\s\S]*\.theme-customizer-dialog \{[\s\S]*width: 100vw[\s\S]*height: var\(--visual-viewport-height, 100dvh\)[\s\S]*\.theme-token-grid,[\s\S]*grid-template-columns: minmax\(0, 1fr\)/, "theme customizer should become a one-column visual-viewport-height editor on phones and coarse pointers");
+assert.match(css, /\.theme-customizer-scroll \{[\s\S]*overflow-y: auto/, "the 51-token mobile customizer should scroll internally");
+assert.match(css, /\.theme-token-swatch \{[^}]*width: 44px[^}]*height: 44px/, "theme color pickers should preserve 44px touch targets");
 assert.match(app, /const LOCAL_BACKGROUND_IMAGE_PATTERN = /, "frontend should restrict theme background images to local static URLs");
 assert.match(app, /"--theme-background-image": themeExportCssValue\(theme, "backgroundImage", "none", LOCAL_BACKGROUND_IMAGE_PATTERN\)/, "frontend should apply theme export background images to CSS variables");
 assert.match(app, /applyCustomBackgroundOverride\(\{ render: false \}\);/, "theme changes should preserve the user's custom background override");
@@ -1627,15 +1632,15 @@ assert.match(app, /function toolResultPreviewText\(message, lineLimit = 10\)/, "
 assert.match(app, /const WEBUI_TOOL_RENDERERS = \{[\s\S]*?function renderSingleToolExecution\(parent, message\)[\s\S]*?WEBUI_TOOL_RENDERERS[\s\S]*?function renderToolExecution\(parent, message\)[\s\S]*?renderSingleToolExecution\(parent, message\)/, "paired tool cards should use the browser-side built-in tool renderer registry");
 assert.match(app, /appendToolRawDetails\(parent, tool\)/, "paired tool cards should keep a safe raw-data expander for debugging renderer mismatches");
 assert.match(app, /function toolStateMeta\(tool\)/, "tool cards should expose consistent status and elapsed metadata across built-in renderers");
-assert.match(app, /const TOOL_LIVE_UPDATE_THROTTLE_MS = 80/, "live tool cards should coalesce rapid partial updates before re-rendering");
-const updateLiveToolCardSource = appFunctionSource("updateLiveToolCard", "cancelQueuedLiveToolRunRender");
+assert.doesNotMatch(app, /TOOL_LIVE_UPDATE_THROTTLE_MS|liveToolRenderQueue/, "superseded per-tool timers should not compete with the bounded stream controller");
+const updateLiveToolCardSource = appFunctionSource("updateLiveToolCard", "renderLiveToolRun");
 assert.match(updateLiveToolCardSource, /transcriptRenderer\.ownSurface\(body[\s\S]*?transcriptRenderer\.commitTranscriptMutation\(\{[\s\S]*?kind: "reconcile"[\s\S]*?transcriptRenderer\.replaceChildren\(body\)[\s\S]*?renderToolExecution\(body, message\)/, "live tool card updates should re-render the existing semantic body through the transcript coordinator");
 assert.match(app, /function applyToolExecutionBubbleState\(bubble, message\)[\s\S]*?bubble\.dataset\.toolStatus !== status[\s\S]*?bubble\.classList\.add\(nextClass\)[\s\S]*?bubble\.classList\.toggle\("error"/, "tool status classes should not be removed and re-added on every live update");
 assert.match(app, /function toolExecutionRenderSignature\(message\)[\s\S]*?normalizeToolExecution\(message\)[\s\S]*?toolRenderSignatureReplacer\(\)/, "tool cards should derive stable render signatures from normalized tool payloads");
 assert.match(app, /const nextRenderSignature = toolExecutionRenderSignature\(message\)[\s\S]*?bubble\._toolRenderSignature === nextRenderSignature[\s\S]*?return true;[\s\S]*?bubble\._toolRenderSignature = nextRenderSignature/, "live tool card updates should skip identical body re-renders");
 assert.match(app, /message\.role === "toolExecution"[\s\S]*?renderToolExecution\(body, message\);[\s\S]*?bubble\._toolRenderSignature = toolExecutionRenderSignature\(message\);/, "new tool cards should cache their initial render signature");
-assert.match(app, /function scheduleLiveToolRunRender\(run[\s\S]*?liveToolRenderQueue\.set[\s\S]*?TOOL_LIVE_UPDATE_THROTTLE_MS/, "live tool update events should be queued and throttled for smoother browser output");
-assert.match(app, /function handleToolExecutionUpdate\(event\)[\s\S]*?event\.partialResult[\s\S]*?scheduleLiveToolRunRender\(run, \{ scroll: false \}\)/, "live tool_execution_update events should update transcript-visible tool cards without replacing them per event");
+assert.match(app, /applyToolExecutionUpdate: \(event\) => \{\s+if \(!compactOutputActive\(\)\) applyTranscriptToolExecutionUpdate\(event\);/, "live tool updates should enter the bounded transcript controller sink");
+assert.match(app, /function applyTranscriptToolExecutionUpdate\(event\)[\s\S]*?event\.partialResult[\s\S]*?renderLiveToolRun\(run, \{ scroll: false \}\)/, "coalesced tool_execution_update events should update transcript-visible tool cards in the controller frame");
 assert.match(app, /function captureReusableToolCards\(\)[\s\S]*?\.message\.toolExecution\[data-tool-call-id\]/, "full transcript re-renders should capture existing tool cards before clearing the chat");
 assert.match(app, /function appendMessage\(message,[\s\S]*?reusableToolCards = null[\s\S]*?reuseToolExecutionBubble\(reusableToolCards, message/, "message rendering should reuse matching tool cards instead of replacing them during refreshes");
 assert.match(app, /function renderAllMessages\(\{ preserveScroll = false, forceRebuild = false \} = \{\}\)[\s\S]*?const reusableToolCards = captureReusableToolCards\(\);[\s\S]*?appendTranscriptMessage\(entry\.item\.message,[\s\S]*?reusableToolCards,/, "transcript refreshes should pass reusable tool cards through to item rendering");
@@ -1679,7 +1684,7 @@ assert.match(app, /function renderStreamingAssistantText\(\)[\s\S]*?const thinki
 assert.match(app, /function syncStreamingThinkingFormat\(\)[\s\S]*?const parsed = streamDerivedText\(\)\.thinkingFormat;[\s\S]*?setStreamingThinkingText\(thinking\)/, "tagged <think> streaming output should update the live thinking card from cached parse state instead of flashing raw tags");
 assert.match(app, /const finalText = thinkingFormat\?\.hasThinkingFormat \? streamDerivedText\(\)\.finalText : streamRenderableAssistantText\(\);/, "tagged <think> streaming output should render only final response text in the Assistant card");
 assert.match(app, /const STREAM_OUTPUT_HIDE_DELAY_MS = 300/, "stream output hiding should be debounced to prevent rapid flicker");
-assert.match(app, /const STREAM_OUTPUT_TOOLCALL_GUARD_MS = 220/, "live assistant text should be briefly guarded so pre-tool-call text can be suppressed");
+assert.doesNotMatch(app, /STREAM_OUTPUT_TOOLCALL_GUARD_MS|scheduleStreamingAssistantTextRender/, "controller batching should be the only live assistant render scheduler");
 assert.match(app, /function scheduleStreamBubbleHide\([\s\S]*?STREAM_OUTPUT_MIN_VISIBLE_MS/, "stream output cards should observe a minimum visible duration before hiding");
 assert.match(app, /if \(finalText\) \{[\s\S]*?renderStreamingMarkdown\(streamText, finalText\);[\s\S]*?\} else \{\n\s+scheduleStreamBubbleHide\(\);/, "empty filtered stream output should schedule hide while visible stream output renders as Markdown");
 assert.match(app, /function handleMessageUpdate\(event\)[\s\S]*?renderStreamingAssistantText\(\);/, "controller-batched assistant text should render through the transcript-only sink without a second scheduler");
@@ -1788,7 +1793,7 @@ assert.match(app, /function renderBusyPromptBehaviorTag\(\)[\s\S]*?tag\.textCont
 assert.doesNotMatch(app, /Busy send: \$\{label\}/, "busy prompt behavior tag should not prefix the current mode label");
 assert.match(app, /function renderSessionSkillTags\(tabId = activeTabId\)[\s\S]*?filter\(\(entry\) => entry\.kinds\.has\("read"\)\)[\s\S]*?make\("button", classes\.join\(" "\), entry\.name\)[\s\S]*?openSkillEditor\(entry\)/, "skill tags should render as clickable buttons only after the full skill context was read");
 assert.ok(app.includes('normalized.match(/\\/skills\\/([^/]+)\\/SKILL\\.md$/i)'), "skill context tracking should require SKILL.md paths");
-assert.match(app, /function trackSkillsFromToolInvocation\(tabId, toolName[\s\S]*?name\.toLowerCase\(\) !== "read"\) return;[\s\S]*?kind: "read"/, "skill context tracking should only follow read-tool invocations");
+assert.match(app, /function trackSkillsFromToolInvocation\(tabId, toolName[\s\S]*?name\.toLowerCase\(\) !== "read"\) return false;[\s\S]*?kind: "read"/, "skill context tracking should only follow read-tool invocations");
 assert.match(app, /function trackSkillUsage\(tabId, skillName[\s\S]*?persistSkillUsage\(\);[\s\S]*?renderSessionSkillTags\(tabId\)/, "skill tags should persist and live-update when a read skill is tracked");
 assert.match(app, /const SKILL_USAGE_STORAGE_KEY = "pi-webui-skill-usage-v1"/, "read skill tags should have browser storage for hard-refresh and restart restore");
 assert.match(app, /function persistSkillUsage\(\)[\s\S]*?localStorage\.setItem\(SKILL_USAGE_STORAGE_KEY/, "read skill tags should be persisted to browser storage");
@@ -1823,7 +1828,7 @@ assert.match(app, /function renderMessages\(messages\) \{\n\s+latestMessages = m
 assert.match(app, /if \(startsRun\) \{\n\s+promptRoutingTabs\.add\(targetTabId\);\n\s+markTabWorkingLocally\(targetTabId\);\n\s+if \(isCurrentTabContext\(tabContext\)\) \{\n\s+optimisticPromptId = appendOptimisticUserPrompt\(originalMessage, attachments\.length\);\n\s+setRunIndicatorActivity\(attachments\.length \? "Preparing attachments for routing…" : "Routing prompt to the selected agent…"\);/, "new runs should show the prompt and routing progress immediately in the target tab");
 assert.match(app, /if \(startsRun && isCurrentTabContext\(tabContext\)\) setRunIndicatorActivity\("Routing complete; starting agent…"\);/, "prepared prompts should transition from routing to agent-start progress before dispatch");
 assert.doesNotMatch(app, /applyResponseTab\(response\);\n\s+if \(startsRun\) promptRoutingTabs\.delete\(targetTabId\);/, "prompt acceptance alone should not clear pending launch continuity before Pi confirms the run");
-assert.match(app, /case "agent_start":\n\s+promptRoutingTabs\.delete\(event\.tabId \|\| activeTabId\);/, "agent start should replace optimistic routing continuity with canonical streaming state");
+assert.match(app, /if \(event\?\.type === "agent_start"\) beginToolBoundaryRun\(event\);[\s\S]*?if \(!eventTargetsActiveTab\(event\)\)[\s\S]*?case "agent_start":\n\s+promptRoutingTabs\.delete\(event\.tabId \|\| activeTabId\);/, "agent start should establish run-scoped dedupe for active and inactive tabs before replacing optimistic routing continuity with canonical streaming state");
 assert.match(app, /else if \(promptRoutingTabs\.has\(activeTabId\)\) \{\n\s+renderRunIndicator/, "idle state snapshots should not hide the run indicator while an accepted prompt still awaits agent start");
 assert.match(app, /if \(state\.isStreaming && runIndicatorActivityIsRouting\(\)\) \{\n\s+runIndicatorActivity = "Agent run confirmed; waiting for first output or action…";/, "confirmed streaming state should replace stale routing copy without overwriting newer thinking or tool activity");
 assert.match(app, /function runPublishWorkflow\(command\)[\s\S]*?sendPrompt\("prompt", `\/\$\{resolvedCommandName\}\$\{commandRest\}`\)/, "Publish workflows should send resolved slash commands directly without replacing the draft");
@@ -2164,6 +2169,7 @@ assert.match(server, /type: "set_steering_mode"/, "server should expose steering
 assert.match(server, /type: "set_follow_up_mode"/, "server should expose follow-up queue-mode changes for native /settings");
 assert.match(server, /type: "set_auto_compaction"/, "server should expose auto-compaction changes for native /settings");
 assert.match(server, /@firstpick\/pi-themes-bundle/, "server should discover themes from the optional theme package");
+assert.match(server, /configuredAgentNpmRoot\(\), "node_modules", "@firstpick", "pi-themes-bundle", "themes"/, "server should discover themes installed in Pi's managed agent npm root");
 assert.match(server, /const OPTIONAL_FEATURE_PACKAGES = new Map\(OPTIONAL_FEATURE_CATALOG/, "server should derive install allowlisting from the optional feature catalog");
 assert.match(optionalFeatureCatalog, /\["bangCommandAutocomplete", "@firstpick\/pi-extension-bang-command-autocomplete"/, "catalog should allow installing the bang autocomplete optional feature");
 assert.match(optionalFeatureCatalog, /\["fishUserBash", "@firstpick\/pi-extension-fish-user-bash"/, "catalog should allow installing the fish user-bash optional feature");
@@ -2202,10 +2208,10 @@ assert.match(server, /Skill path is outside allowed Pi skill locations/, "explic
 assert.match(server, /writeFile\(tmpFile, body\.content[\s\S]*?rename\(tmpFile, skill\.filePath\)/, "skill file saves should use an atomic temp-file rename");
 assert.match(server, /url\.pathname === "\/api\/themes" && req\.method === "GET"/, "server should expose GET /api/themes");
 assert.match(server, /readBundledThemes\(\)/, "server should read bundled theme JSON files for the browser");
-assert.match(server, /"apple-touch-icon\.png", "icon-192\.png"/, "server should serve the conventional apple touch icon path");
-// Intent preserved: the static allowlist must include every app startup module, including the Phase 1 shell state.
-assert.match(server, /"mobile-shell-state\.mjs", "issue-wizard-state\.mjs", "issue-bot-client\.mjs", "fast-output-live\.mjs", "stream-output-controller\.mjs"/, "server should serve browser modules imported by the app");
-assert.match(server, /"catppuccin-mocha-background\.png", "matrix-background\.webp", "manifest\.webmanifest", "service-worker\.js"/, "server should serve theme background images as static assets");
+// public/ is the explicit browser boundary; flat, typed asset serving prevents a
+// newly imported module from drifting out of sync with a second name allowlist.
+assert.match(server, /const STATIC_PUBLIC_FILE_EXTENSIONS = new Set\(\["\.html", "\.css", "\.js", "\.mjs", "\.svg", "\.png", "\.webp", "\.webmanifest"\]\)/, "server should allow only supported public asset types");
+assert.match(server, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\*\$[\s\S]*STATIC_PUBLIC_FILE_EXTENSIONS\.has\(path\.extname\(name\)\)/, "server should serve only safe flat file names from public");
 assert.match(server, /\["\.webmanifest", "application\/manifest\+json; charset=utf-8"\]/, "server should serve manifest with the correct MIME type");
 assert.match(server, /\["\.png", "image\/png"\]/, "server should serve PWA PNG icons with the correct MIME type");
 assert.match(server, /\["\.webp", "image\/webp"\]/, "server should serve Matrix WebP backgrounds with the correct MIME type");
@@ -2228,7 +2234,7 @@ assert.match(readme, /pi install npm:@firstpick\/pi-extension-stats[\s\S]*Re-run
 assert.match(readme, /server-persisted fast picks/, "README should describe server-persisted fast picks");
 assert.match(readme, /`\/btw` side-question output widgets with optional context transfer\/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications/, "README should describe /btw, blocked-tab, and agent-done notifications");
 assert.match(readme, /blocked-tab browser notifications, and optional agent-done notifications require browser service-worker\/notification support/, "README should document notification requirements");
-assert.match(readme, /Side-panel theme picker backed by optional `@firstpick\/pi-themes-bundle` themes when loaded/, "README should describe optional theme selection");
+assert.match(readme, /Side-panel theme picker backed by optional `@firstpick\/pi-themes-bundle` themes plus Pi-native project\/global custom themes/, "README should describe bundled and custom theme selection");
 assert.match(readme, /## Optional companion packages/, "README should document optional Web UI companion packages");
 assert.match(readme, /Web UI tabs load enabled resources resolved from normal Pi settings/, "README should document Pi-settings-based optional feature loading");
 assert.match(readme, /legacy\/hoisted package files without either a Pi settings entry or an enabled top-level resource remain installable/i, "README should document migration handling for physically present but unregistered packages");

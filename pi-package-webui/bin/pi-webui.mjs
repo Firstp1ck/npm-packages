@@ -12,6 +12,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
+import {
+  ThemeContractError,
+  canonicalizeTheme,
+  normalizeThemeFileName,
+  serializeTheme,
+  themeNameFromFileName,
+  validateTheme,
+} from "../public/theme-contract.mjs";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
@@ -105,6 +113,7 @@ import {
   evaluateDispatchTrustGuards,
   guardsForNativeCommand,
   isLocalRequest,
+  projectTrustDecision,
   remoteShellTrustWarning,
   requireLocalhost,
   requireLocalhostRoute,
@@ -199,6 +208,7 @@ const CLAUDE_USAGE_OUTPUT_MAX_CHARS = 60_000;
 const CLAUDE_USAGE_COMMAND = process.env.PI_WEBUI_CLAUDE_BIN || "claude";
 const CLAUDE_USAGE_ARGS = ["--safe-mode", "--no-session-persistence", "-p", "/usage", "--output-format", "json"];
 const BODY_LIMIT_BYTES = 1024 * 1024;
+const CUSTOM_THEME_BODY_LIMIT_BYTES = 256 * 1024;
 const SESSION_SUMMARY_REQUEST_MAX_BYTES = 32 * 1024;
 const SESSION_SUMMARY_RPC_TYPE = "firstpick:session-summary-rpc";
 const SESSION_SUMMARY_DISPLAY_TYPE = "firstpick:session-summary-display";
@@ -1114,6 +1124,9 @@ function makeHttpError(statusCode, message) {
 function sendError(res, statusCode, error) {
   const message = statusCode >= 500 ? sanitizeError(error) : formatCliError(error);
   const payload = { ok: false, error: message };
+  const isThemeError = typeof error?.code === "string" && error.code.startsWith("THEME_");
+  if (isThemeError) payload.code = error.code;
+  if (isThemeError && error?.details && typeof error.details === "object") payload.details = error.details;
   if (error?.optionalFeatureInstall) payload.optionalFeatureInstall = error.optionalFeatureInstall;
   sendJson(res, statusCode, payload);
 }
@@ -8299,15 +8312,6 @@ function themeLabel(name) {
     .join(" ");
 }
 
-function stringRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const record = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") record[key] = String(item);
-  }
-  return record;
-}
-
 async function directoryExists(dir) {
   try {
     const info = await stat(dir);
@@ -8318,7 +8322,9 @@ async function directoryExists(dir) {
 }
 
 async function resolveBundledThemesDir() {
-  const candidates = [];
+  // Pi-managed packages are the user's canonical installation. Prefer them to
+  // any duplicate that happens to be visible from the WebUI's npm prefix.
+  const candidates = [path.join(configuredAgentNpmRoot(), "node_modules", "@firstpick", "pi-themes-bundle", "themes")];
   try {
     const manifestPath = require.resolve("@firstpick/pi-themes-bundle/package.json");
     const root = path.dirname(manifestPath);
@@ -8328,8 +8334,9 @@ async function resolveBundledThemesDir() {
       if (typeof entry === "string" && entry.trim()) candidates.push(path.resolve(root, entry));
     }
   } catch {
-    // In repo development the bundle may be a sibling package rather than an installed dependency.
+    // The bundle may live outside this package's Node resolution tree.
   }
+  // In repo development the bundle may be a sibling package instead.
   candidates.push(path.resolve(packageRoot, "..", "pi-package-themes-bundle", "themes"));
 
   for (const candidate of candidates) {
@@ -8338,39 +8345,350 @@ async function resolveBundledThemesDir() {
   return null;
 }
 
-function sanitizeBundledTheme(theme, fileName) {
-  const name = typeof theme?.name === "string" && theme.name.trim() ? theme.name.trim() : path.basename(fileName, ".json");
-  return {
-    name,
-    label: themeLabel(name),
-    vars: stringRecord(theme?.vars),
-    colors: stringRecord(theme?.colors),
-    export: stringRecord(theme?.export),
+function themeHttpError(statusCode, code, message, details) {
+  const error = makeHttpError(statusCode, message);
+  error.code = code;
+  if (details) error.details = details;
+  return error;
+}
+
+function catalogTheme(theme, fileName, scope) {
+  const validation = validateTheme(theme, { allowWebuiExport: scope === "bundled" });
+  if (!validation.ok) throw new ThemeContractError("Theme does not satisfy the installed Pi theme contract", validation.issues);
+  const native = canonicalizeTheme(theme, { allowWebuiExport: scope === "bundled" });
+  if (scope === "bundled" && theme.export) {
+    native.export = { ...(native.export || {}) };
+    for (const [key, value] of Object.entries(theme.export)) {
+      if (typeof value === "string" && !Object.hasOwn(native.export, key)) native.export[key] = value;
+    }
+  }
+  const entry = {
+    name: native.name,
+    label: themeLabel(native.name),
+    vars: native.vars || {},
+    colors: native.colors,
+    export: native.export || {},
+    scope,
+    custom: scope !== "bundled",
   };
+  if (scope !== "bundled") entry.fileName = fileName;
+  return entry;
+}
+
+function themePathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+async function existingThemeRoot(baseDir, segments) {
+  let root;
+  try {
+    root = await realpath(baseDir);
+  } catch {
+    return null;
+  }
+  const confinementRoot = root;
+  for (const segment of segments) {
+    const candidate = path.join(root, segment);
+    let info;
+    try {
+      info = await lstat(candidate);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    root = await realpath(candidate);
+    if (!themePathInside(confinementRoot, root)) return null;
+  }
+  return root;
+}
+
+async function ensureThemeRoot(baseDir, segments) {
+  await mkdir(baseDir, { recursive: true, mode: 0o700 });
+  const baseInfo = await stat(baseDir);
+  if (!baseInfo.isDirectory()) throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The server-derived theme base is not a directory.");
+  let root = await realpath(baseDir);
+  const confinementRoot = root;
+  for (const segment of segments) {
+    const candidate = path.join(root, segment);
+    try {
+      await mkdir(candidate, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    const info = await lstat(candidate);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The server-derived theme directory contains a symlink or non-directory component.");
+    }
+    root = await realpath(candidate);
+    if (!themePathInside(confinementRoot, root)) {
+      throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The server-derived theme directory escapes its allowed root.");
+    }
+  }
+  return root;
+}
+
+async function readThemeDirectory(baseDir, segments, scope) {
+  const root = await existingThemeRoot(baseDir, segments);
+  if (!root) return [];
+  const entries = [];
+  let files;
+  try {
+    files = await readdir(root);
+  } catch {
+    return [];
+  }
+  for (const fileName of files.filter((name) => name.endsWith(".json")).sort((a, b) => a.localeCompare(b))) {
+    try {
+      const target = path.join(root, fileName);
+      const info = await lstat(target);
+      if (info.isSymbolicLink() || !info.isFile()) continue;
+      const resolved = await realpath(target);
+      if (!themePathInside(root, resolved)) continue;
+      entries.push(catalogTheme(JSON.parse(await readFile(resolved, "utf8")), fileName, scope));
+    } catch (error) {
+      console.error(`Skipping invalid ${scope} theme ${fileName}: ${sanitizeError(error)}`);
+    }
+  }
+  return entries.sort((a, b) => a.label.localeCompare(b.label) || a.fileName.localeCompare(b.fileName));
 }
 
 async function readBundledThemes() {
   const dir = await resolveBundledThemesDir();
   if (!dir) return { source: "@firstpick/pi-themes-bundle", themes: [] };
-
-  const files = (await readdir(dir)).filter((file) => file.endsWith(".json")).sort((a, b) => a.localeCompare(b));
   const themes = [];
-  for (const file of files) {
+  for (const fileName of (await readdir(dir)).filter((file) => file.endsWith(".json")).sort((a, b) => a.localeCompare(b))) {
     try {
-      const raw = await readFile(path.join(dir, file), "utf8");
-      themes.push(sanitizeBundledTheme(JSON.parse(raw), file));
+      const target = path.join(dir, fileName);
+      const info = await lstat(target);
+      if (info.isSymbolicLink() || !info.isFile()) continue;
+      themes.push(catalogTheme(JSON.parse(await readFile(target, "utf8")), fileName, "bundled"));
     } catch (error) {
-      console.error(`Skipping invalid theme ${file}: ${sanitizeError(error)}`);
+      console.error(`Skipping invalid bundled theme ${fileName}: ${sanitizeError(error)}`);
     }
   }
   themes.sort((a, b) => a.label.localeCompare(b.label));
   return { source: "@firstpick/pi-themes-bundle", themes };
 }
 
+function customThemeRoots(tab) {
+  const projectTrusted = !!tab && projectTrustDecision(tab.cwd, agentDir);
+  return {
+    global: { baseDir: agentDir, segments: ["themes"] },
+    project: { baseDir: tab?.cwd, segments: [".pi", "themes"], trusted: projectTrusted },
+  };
+}
+
+async function readThemeCatalog(tab) {
+  const bundled = await readBundledThemes();
+  const roots = customThemeRoots(tab);
+  const globalThemes = await readThemeDirectory(roots.global.baseDir, roots.global.segments, "global");
+  const projectThemes = roots.project.trusted
+    ? await readThemeDirectory(roots.project.baseDir, roots.project.segments, "project")
+    : [];
+  const themes = [];
+  const names = new Map();
+  const collisions = [];
+  for (const entry of [...bundled.themes, ...globalThemes, ...projectThemes]) {
+    const previous = names.get(entry.name);
+    if (previous) {
+      collisions.push({ name: entry.name, keptScope: previous.scope, skippedScope: entry.scope });
+      continue;
+    }
+    names.set(entry.name, entry);
+    themes.push(entry);
+  }
+  return {
+    source: bundled.source,
+    themes,
+    collisions,
+    scopes: {
+      global: { available: true },
+      project: { available: !!tab, trusted: roots.project.trusted },
+    },
+  };
+}
+
+function requireCustomThemeJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw themeHttpError(415, "THEME_JSON_REQUIRED", "Custom theme saves require Content-Type: application/json.");
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (fetchSite && !["same-origin", "same-site", "none"].includes(fetchSite)) {
+    throw themeHttpError(403, "THEME_CROSS_SITE_BLOCKED", "Cross-site custom theme saves are blocked.");
+  }
+}
+
+function validateCustomThemeSaveBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "Custom theme save body must be an object.");
+  }
+  const allowed = new Set(["scope", "fileName", "theme", "overwrite", "expectedMtimeMs"]);
+  const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+  if (unknown.length) throw themeHttpError(400, "THEME_REQUEST_INVALID", `Unsupported custom theme save field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`);
+  if (body.scope !== "global" && body.scope !== "project") throw themeHttpError(400, "THEME_SCOPE_INVALID", "scope must be global or project.");
+  let fileName;
+  let theme;
+  try {
+    fileName = normalizeThemeFileName(body.fileName);
+    theme = canonicalizeTheme(body.theme, { allowWebuiExport: true });
+  } catch (error) {
+    if (error instanceof ThemeContractError) throw themeHttpError(400, "THEME_INVALID", error.message, { issues: error.issues || [] });
+    throw error;
+  }
+  if (theme.name !== themeNameFromFileName(fileName)) {
+    throw themeHttpError(400, "THEME_NAME_MISMATCH", "Theme name must exactly match fileName without the .json suffix.");
+  }
+  if (typeof body.overwrite !== "boolean") throw themeHttpError(400, "THEME_REQUEST_INVALID", "overwrite must be a boolean.");
+  if (body.expectedMtimeMs !== null && (typeof body.expectedMtimeMs !== "number" || !Number.isFinite(body.expectedMtimeMs) || body.expectedMtimeMs < 0)) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "expectedMtimeMs must be a non-negative number or null.");
+  }
+  if (!body.overwrite && body.expectedMtimeMs !== null) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "expectedMtimeMs must be null until overwrite is explicitly confirmed.");
+  }
+  if (body.overwrite && body.expectedMtimeMs === null) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "An overwrite requires the target mtime returned by THEME_EXISTS.");
+  }
+  return { scope: body.scope, fileName, theme, overwrite: body.overwrite, expectedMtimeMs: body.expectedMtimeMs };
+}
+
+async function customThemeCollision(request, tab) {
+  const bundled = await readBundledThemes();
+  if (bundled.themes.some(({ name }) => name === request.theme.name)) return { scope: "bundled" };
+  const roots = customThemeRoots(tab);
+  for (const scope of ["global", "project"]) {
+    if (scope === "project" && !roots.project.trusted) continue;
+    const root = roots[scope];
+    const entries = await readThemeDirectory(root.baseDir, root.segments, scope);
+    for (const entry of entries) {
+      if (entry.name !== request.theme.name) continue;
+      if (scope === request.scope && entry.fileName === request.fileName) continue;
+      if (scope === request.scope) {
+        const directory = await existingThemeRoot(root.baseDir, root.segments);
+        if (directory) {
+          try {
+            const [existingPath, requestedPath] = await Promise.all([
+              realpath(path.join(directory, entry.fileName)),
+              realpath(path.join(directory, request.fileName)),
+            ]);
+            if (existingPath === requestedPath) continue;
+          } catch {
+            // A missing differently-cased path is a real collision on a case-sensitive filesystem.
+          }
+        }
+      }
+      return { scope, fileName: entry.fileName };
+    }
+  }
+  return null;
+}
+
+let customThemeMutationQueue = Promise.resolve();
+
+function queueCustomThemeMutation(operation) {
+  const result = customThemeMutationQueue.catch(() => {}).then(operation);
+  customThemeMutationQueue = result.catch(() => {});
+  return result;
+}
+
+async function saveCustomTheme(tab, request) {
+  return queueCustomThemeMutation(async () => {
+    const roots = customThemeRoots(tab);
+    if (request.scope === "project" && !roots.project.trusted) {
+      throw themeHttpError(403, "THEME_PROJECT_UNTRUSTED", "Project theme saves require a saved trusted-project decision in Pi.");
+    }
+    const collision = await customThemeCollision(request, tab);
+    if (collision) {
+      throw themeHttpError(409, "THEME_NAME_COLLISION", "A bundled or opposite-scope theme already uses this name.", {
+        scope: collision.scope,
+        ...(collision.fileName ? { fileName: collision.fileName } : {}),
+      });
+    }
+    const selected = roots[request.scope];
+    const root = await ensureThemeRoot(selected.baseDir, selected.segments);
+    const target = path.join(root, request.fileName);
+    if (!themePathInside(root, target)) throw themeHttpError(409, "THEME_UNSAFE_TARGET", "Theme target escapes its server-derived root.");
+
+    let before = null;
+    try {
+      before = await lstat(target);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (before?.isSymbolicLink() || (before && !before.isFile())) {
+      throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The theme target is a symlink or non-file entry.");
+    }
+    if (before && !request.overwrite) {
+      throw themeHttpError(409, "THEME_EXISTS", "The custom theme already exists and requires explicit overwrite confirmation.", {
+        scope: request.scope,
+        fileName: request.fileName,
+        mtimeMs: before.mtimeMs,
+      });
+    }
+    if ((!before && request.overwrite) || (before && before.mtimeMs !== request.expectedMtimeMs)) {
+      throw themeHttpError(409, "THEME_CHANGED", "The custom theme changed after overwrite confirmation.", {
+        scope: request.scope,
+        fileName: request.fileName,
+        ...(before ? { mtimeMs: before.mtimeMs } : {}),
+      });
+    }
+
+    const bytes = serializeTheme(request.theme, { allowWebuiExport: false });
+    const temp = path.join(root, `.${request.fileName}.${randomUUID()}.tmp`);
+    let handle;
+    try {
+      handle = await open(temp, "wx", 0o600);
+      await handle.writeFile(bytes, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+
+      const verifiedRoot = await existingThemeRoot(selected.baseDir, selected.segments);
+      if (verifiedRoot !== root) throw themeHttpError(409, "THEME_UNSAFE_TARGET", "Theme directory changed during save.");
+      let finalState = null;
+      try {
+        finalState = await lstat(target);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      if (finalState?.isSymbolicLink() || (finalState && !finalState.isFile())) {
+        throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The theme target changed to an unsafe entry during save.");
+      }
+      if ((before && (!finalState || finalState.mtimeMs !== request.expectedMtimeMs)) || (!before && finalState)) {
+        throw themeHttpError(409, "THEME_CHANGED", "The custom theme changed during save.", {
+          scope: request.scope,
+          fileName: request.fileName,
+          ...(finalState ? { mtimeMs: finalState.mtimeMs } : {}),
+        });
+      }
+      await rename(temp, target);
+    } finally {
+      await handle?.close().catch(() => {});
+      await rm(temp, { force: true }).catch(() => {});
+    }
+    const saved = await stat(target);
+    return {
+      scope: request.scope,
+      fileName: request.fileName,
+      themeName: request.theme.name,
+      created: !before,
+      overwritten: !!before,
+      mtimeMs: saved.mtimeMs,
+      reloadRequired: true,
+    };
+  });
+}
+
+const STATIC_PUBLIC_FILE_EXTENSIONS = new Set([".html", ".css", ".js", ".mjs", ".svg", ".png", ".webp", ".webmanifest"]);
+
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "mobile-shell-state.mjs", "issue-wizard-state.mjs", "issue-bot-client.mjs", "fast-output-live.mjs", "stream-output-controller.mjs", "transcript-renderer.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  // public/ is the package's explicit browser-asset boundary. Accept any safe,
+  // flat asset name from it so a newly imported module cannot outrun a second
+  // manually maintained server allowlist during an in-place package update.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return undefined;
+  if (!STATIC_PUBLIC_FILE_EXTENSIONS.has(path.extname(name))) return undefined;
   return name;
 }
 
@@ -15197,7 +15515,25 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/themes" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await readBundledThemes() });
+      const tab = tabs.size ? getRequestedTab(req, url) : null;
+      sendJson(res, 200, { ok: true, data: await readThemeCatalog(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/themes/custom" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      requireCustomThemeJsonRequest(req);
+      let body;
+      try {
+        body = await readJsonBody(req, { limitBytes: CUSTOM_THEME_BODY_LIMIT_BYTES });
+      } catch (error) {
+        if (error instanceof SyntaxError) throw themeHttpError(400, "THEME_JSON_INVALID", "Custom theme save body contains malformed JSON.");
+        throw error;
+      }
+      const tab = getRequestedTab(req, url);
+      const request = validateCustomThemeSaveBody(body);
+      const data = await saveCustomTheme(tab, request);
+      sendJson(res, data.created ? 201 : 200, { ok: true, data });
       return;
     }
 

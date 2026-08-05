@@ -238,13 +238,14 @@ assert.match(startLifecycleStateWatchdog, /maybeRefreshRunIndicatorState\(\)/, "
 // (5) Skills and event-log records happen once at semantic tool boundaries.
 assert.doesNotMatch(eventMayAffectSkillUsage, /tool_execution_update|toolcall_start/, "WS2a: skill tracking must not be reachable from tool update/argument cadence");
 assert.match(eventMayAffectSkillUsage, /"tool_execution_start", "tool_execution_end"/, "WS2a: skill tracking must run at semantic tool boundaries");
-assert.match(trackSkillsFromEvent, /claimToolBoundaryRecord\(event, "skills"\)/, "WS2a: tool skill records must be recorded once per boundary");
+assert.match(trackSkillsFromEvent, /recordedToolBoundaryKeys\.has\(key\)[\s\S]*?trackSkillsFromToolInvocation[\s\S]*?if \(tracked && key\) rememberToolBoundaryRecordKey\(key\)/, "WS2a: usable tool skill records must be deduplicated without consuming a missing-args fallback");
 assert.match(findCaseBody(handleEvent, "tool_execution_start"), /claimToolBoundaryRecord\(event, "log:start"\)\) addEvent\(/, "WS2a: tool start event-log records must be deduplicated by tool boundary");
 assert.match(findCaseBody(handleEvent, "tool_execution_end"), /claimToolBoundaryRecord\(event, "log:end"\)\) addEvent\(/, "WS2a: tool end event-log records must be deduplicated by tool boundary");
 
 // (6) Lifecycle boundaries reconcile chrome through one coalesced scheduler.
-assert.match(findFunctionBody(app, "scheduleSemanticReconcile"), /semanticReconcileFrame !== null\) return;/, "WS2a: semantic reconciliation must coalesce to one pending flush");
-assert.match(flushSemanticReconcile, /if \(!isCurrentTabContext\(tabContext\)\) return;/, "WS2a: coalesced reconciliation must not apply to a stale tab context");
+assert.match(findFunctionBody(app, "scheduleSemanticReconcile"), /mergeSemanticReconcileRequest\(semanticReconcilePending, dirty, tabContext\)[\s\S]*?semanticReconcileFrame !== null\) return;/, "WS2a: semantic reconciliation must coalesce partitioned requests to one pending flush");
+assert.match(findFunctionBody(app, "mergeSemanticReconcileRequest"), /semanticReconcileContextKey\(tabContext\)[\s\S]*?pendingByContext\.set\(key, request\)/, "WS2a: semantic dirty flags must remain partitioned by tab generation");
+assert.match(flushSemanticReconcile, /if \(dirty\.workflow\) reconcileGitWorkflowContinuation\(tabContext\.tabId\);[\s\S]*?if \(!isCurrentTabContext\(tabContext\)\) continue;/, "WS2a: originating workflow settlement must run before stale active-DOM work no-ops");
 for (const [caseLabel, flag] of [["agent_start", "state: true"], ["agent_end", "messages: true"], ["message_end", "messages: true"], ["agent_settled", "messages: true"]]) {
   assert.match(findCaseBody(handleEvent, caseLabel), new RegExp(`scheduleSemanticReconcile\\(\\{[\\s\\S]*?${flag}`), `WS2a: ${caseLabel} must reconcile chrome through the coalesced semantic scheduler`);
 }

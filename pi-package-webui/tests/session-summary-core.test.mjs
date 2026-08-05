@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSessionSummaryPreferences } from "../lib/session-summary-preferences.mjs";
@@ -98,6 +98,8 @@ assert.equal(latestSummaryState([{
   data: { ...baseState, result: { ...baseState.result, summaryMarkdown: escapedPersistedSummary } },
 }]).result.summaryMarkdown, escapedPersistedSummary, "persisted state validation uses the decoded Markdown bound");
 assert.equal(latestSummaryState([{ type: "custom", customType: SESSION_SUMMARY_STATE_TYPE, data: { version: 99 } }]), undefined);
+const titlelessState = { ...baseState, result: { summaryMarkdown: "# Valid titleless summary" }, titleAppliedAtOrdinal: undefined };
+assert.equal(latestSummaryState([{ type: "custom", customType: SESSION_SUMMARY_STATE_TYPE, data: titlelessState }]).result.summaryMarkdown, "# Valid titleless summary", "valid titleless generated states remain discoverable");
 assert.deepEqual(latestSummaryNameProvenance([
   { type: "custom", customType: SESSION_SUMMARY_NAME_PROVENANCE_TYPE, data: { version: 1, explicit: true } },
   { type: "custom", customType: SESSION_SUMMARY_NAME_PROVENANCE_TYPE, data: { version: 99, explicit: false } },
@@ -254,6 +256,7 @@ try {
   const api = {
     on(name, handler) { handlers.set(name, handler); },
     registerCommand(name, options) { commands.set(name, options); },
+    registerTool() {},
     registerEntryRenderer(name, renderer) { renderers.set(name, renderer); },
     sendMessage(message) {
       const id = `e${activeBranch.length + 1}`;
@@ -482,6 +485,185 @@ try {
     routingIds.add(calledOptions.sessionId);
   }
   assert.equal(routingIds.size, representativeCases.length, "each representative provider call gets a fresh routing ID");
+
+  // W2 integration: use pi-intercom's documented extension-channel contract.
+  class FakeChannel {
+    connected = true;
+    supported = true;
+    published = [];
+    peers = new Map();
+    snapshot() { return { connected: this.connected, supported: this.supported }; }
+    publish(payload, options) { this.published.push({ payload, options }); }
+    async listSessions() {
+      return [...this.peers.entries()].map(([id, value]) => ({ id, cwd: value.cwd, pid: value.pid }));
+    }
+  }
+
+  const testCwd = "/tmp/test-workspace-a";
+  const crossCwd = "/tmp/test-workspace-b";
+  const fakeChannel = new FakeChannel();
+  fakeChannel.peers.set("self-sender-1", { cwd: testCwd, pid: process.pid });
+  const w2Tools = new Map();
+  const w2Commands = new Map();
+  const w2Branch = [
+    { type: "message", id: "m1", message: { role: "user", content: "Work on feature" } },
+    { type: "custom", customType: SESSION_SUMMARY_STATE_TYPE, data: {
+      version: 1,
+      source: { sessionId: "s-self", leafId: "m1", fingerprint: "fp-self", entryCount: 1 },
+      result: { title: "Self Title", summaryMarkdown: "# Self Summary\n\nWorking on feature" },
+      generation: { provider: "fake", modelId: "fake", thinkingLevel: "low", promptRevision: "v1" },
+      generatedAt: "2026-08-05T00:00:00.000Z",
+      settledTurnOrdinal: 1,
+    } },
+  ];
+  let intercomRegistration;
+  const w2Api = {
+    events: {
+      emit(event, registration) {
+        if (event !== "intercom:extension-register") return;
+        intercomRegistration = registration;
+        registration.onReady(fakeChannel);
+      },
+    },
+    on(name, handler) { handlers.set(name, handler); },
+    registerCommand(name, options) { w2Commands.set(name, options); },
+    registerTool(tool) { w2Tools.set(tool.name, tool); },
+    registerEntryRenderer() {},
+    sendMessage() {},
+    appendEntry(customType, data) { w2Branch.push({ type: "custom", customType, data }); },
+    getSessionName() { return "Self Title"; },
+  };
+
+  createSessionSummaryExtension({ completeFn: fakeComplete })(w2Api);
+  assert.equal(w2Tools.has("workspace_session_summaries"), true, "workspace_session_summaries tool registered");
+  const workspaceTool = w2Tools.get("workspace_session_summaries");
+  assert.match(workspaceTool.promptSnippet, /same-CWD session summaries/);
+  assert.equal(Array.isArray(workspaceTool.promptGuidelines), true, "tool guidelines use the Pi array contract");
+  assert.match(workspaceTool.promptGuidelines.join("\n"), /intercom/);
+
+  const w2Ctx = {
+    cwd: testCwd,
+    sessionManager: {
+      getBranch: () => w2Branch.slice(),
+      getSessionId: () => "s-self",
+      getSessionFile: () => join(extensionTemp, "s-self.jsonl"),
+    },
+  };
+  await handlers.get("session_start")({ type: "session_start", reason: "startup" }, w2Ctx);
+  assert.equal(intercomRegistration.namespace, "firstpick/session-summary/v1");
+  assert.equal(intercomRegistration.ownerEligible, false);
+  assert.equal(typeof intercomRegistration.onEvent, "function");
+  assert.equal(fakeChannel.published.at(-1)?.options?.audience, "capable");
+  const initialPublicationCount = fakeChannel.published.length;
+  intercomRegistration.onEvent({ type: "session_joined", session: { id: "new-peer", cwd: testCwd } });
+  assert.equal(fakeChannel.published.length, initialPublicationCount + 1, "a joining capable peer triggers summary republication");
+  fakeChannel.connected = false;
+  intercomRegistration.onEvent({ type: "connection", connected: false, supported: false });
+  fakeChannel.connected = true;
+  intercomRegistration.onEvent({ type: "connection", connected: true, supported: true });
+  assert.equal(fakeChannel.published.length, initialPublicationCount + 2, "a supported reconnect republishes the current summary");
+
+  fakeChannel.peers.set("peer-same", { cwd: testCwd, pid: process.pid + 1 });
+  fakeChannel.peers.set("peer-cross", { cwd: crossCwd, pid: process.pid + 2 });
+  intercomRegistration.onEvent({ type: "message", fromSessionId: "peer-same", payload: {
+    version: 1,
+    sessionId: "s-peer-same",
+    cwd: testCwd,
+    title: "Peer Same Title",
+    summaryMarkdown: "Working on same CWD with secret sk-proj-123456789012345 and path /.pi/agent/sessions/secret.jsonl",
+    generatedAt: "2026-08-05T01:00:00.000Z",
+  } });
+  intercomRegistration.onEvent({ type: "message", fromSessionId: "peer-cross", payload: {
+    version: 1,
+    sessionId: "s-peer-cross",
+    cwd: crossCwd,
+    title: "Peer Cross Title",
+    summaryMarkdown: "Working on cross CWD",
+    generatedAt: "2026-08-05T01:00:00.000Z",
+  } });
+  intercomRegistration.onEvent({ type: "message", fromSessionId: "self-sender-1", payload: {
+    version: 1,
+    sessionId: "s-self",
+    cwd: testCwd,
+    title: "Self Payload",
+    summaryMarkdown: "Self payload should be excluded",
+    generatedAt: "2026-08-05T01:00:00.000Z",
+  } });
+
+  let toolResult = await workspaceTool.execute("call-1", {}, undefined, undefined, w2Ctx);
+  let toolText = toolResult.content[0].text;
+  assert.match(toolText, /Peer Same Title/);
+  assert.equal(toolText.includes("Peer Cross Title"), false, "cross-CWD live peer excluded");
+  assert.equal(toolText.includes("Self Payload"), false, "self live payload excluded");
+  assert.equal(toolText.includes("sk-proj-123456789012345"), false, "raw API secret redacted from tool output");
+  assert.match(toolText, /\[redacted secret\]/);
+  assert.equal(toolText.includes("/.pi/agent/sessions/secret.jsonl"), false, "private session path redacted from tool output");
+  assert.match(toolText, /\[private session path\]/);
+  intercomRegistration.onEvent({ type: "session_joined", session: { id: "peer-same", cwd: testCwd } });
+  toolResult = await workspaceTool.execute("call-replaced", {}, undefined, undefined, w2Ctx);
+  assert.equal(toolResult.content[0].text.includes("Peer Same Title"), false, "a stable sender-ID replacement invalidates the prior live summary until the replacement publishes");
+  intercomRegistration.onEvent({ type: "message", fromSessionId: "peer-same", payload: {
+    version: 1,
+    sessionId: "s-peer-same",
+    cwd: testCwd,
+    title: "Peer Same Title",
+    summaryMarkdown: "Replacement summary",
+    generatedAt: "2026-08-05T01:10:00.000Z",
+  } });
+
+  fakeChannel.peers.set("peer-malformed", { cwd: testCwd, pid: process.pid + 3 });
+  intercomRegistration.onEvent({ type: "message", fromSessionId: "peer-malformed", payload: { version: 99, sessionId: "s-bad" } });
+  toolResult = await workspaceTool.execute("call-2", {}, undefined, undefined, w2Ctx);
+  assert.equal(toolResult.content[0].text.includes("s-bad"), false, "malformed payload ignored");
+
+  fakeChannel.peers.delete("peer-same");
+  intercomRegistration.onEvent({ type: "session_left", sessionId: "peer-same" });
+  toolResult = await workspaceTool.execute("call-3", {}, undefined, undefined, w2Ctx);
+  assert.equal(toolResult.content[0].text.includes("Peer Same Title"), false, "disconnected peer removed");
+
+  const summaryCmd = w2Commands.get("summary");
+  await summaryCmd.handler("workspace", w2Ctx);
+  const workspaceDisplayEntry = w2Branch.findLast((entry) => entry.type === "custom" && entry.customType === SESSION_SUMMARY_DISPLAY_TYPE);
+  assert.equal(workspaceDisplayEntry.data.title, "Workspace session summaries");
+  assert.match(workspaceDisplayEntry.data.summaryMarkdown, /Workspace session summaries/);
+
+  fakeChannel.connected = false;
+  intercomRegistration.onEvent({ type: "connection", connected: false, supported: false });
+  toolResult = await workspaceTool.execute("call-4", {}, undefined, undefined, w2Ctx);
+  assert.match(toolResult.content[0].text, /Live peer status is unavailable/);
+
+  let fallbackRegisteredTool;
+  const noEventsApi = {
+    on() {},
+    registerCommand() {},
+    registerTool(tool) { fallbackRegisteredTool = tool; },
+    registerEntryRenderer() {},
+    getSessionName() { return "Self Title"; },
+  };
+  createSessionSummaryExtension({ completeFn: fakeComplete })(noEventsApi);
+  const customSessionDir = join(extensionTemp, "configured-session-dir");
+  await mkdir(customSessionDir);
+  const persistedPeerState = {
+    ...baseState,
+    source: { ...baseState.source, sessionId: "configured-peer" },
+    result: { title: "Configured session dir peer", summaryMarkdown: "# Persisted peer" },
+  };
+  await writeFile(join(customSessionDir, "configured-peer.jsonl"), [
+    JSON.stringify({ type: "session", version: 3, id: "configured-peer", timestamp: "2026-08-05T00:00:00.000Z", cwd: testCwd }),
+    JSON.stringify({ type: "custom", id: "peer0001", parentId: null, timestamp: "2026-08-05T00:01:00.000Z", customType: SESSION_SUMMARY_STATE_TYPE, data: persistedPeerState }),
+  ].join("\n") + "\n");
+  const fallbackCtx = {
+    ...w2Ctx,
+    sessionManager: {
+      ...w2Ctx.sessionManager,
+      getSessionFile: () => join(extensionTemp, "external", "s-self.jsonl"),
+      getSessionDir: () => customSessionDir,
+    },
+  };
+  const fallbackResult = await fallbackRegisteredTool.execute("call-5", {}, undefined, undefined, fallbackCtx);
+  assert.match(fallbackResult.content[0].text, /Live peer status is unavailable/);
+  assert.match(fallbackResult.content[0].text, /Configured session dir peer/, "configured session directory is preferred over the current session file parent");
+
 } finally {
   if (previousConfigFile === undefined) delete process.env.PI_SESSION_SUMMARY_CONFIG_FILE;
   else process.env.PI_SESSION_SUMMARY_CONFIG_FILE = previousConfigFile;

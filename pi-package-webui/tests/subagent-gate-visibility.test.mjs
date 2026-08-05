@@ -76,7 +76,7 @@ assert.match(app, /function renderSubagentGate\(tab, gate\)[\s\S]*subagentGateIs
 assert.match(app, /pruneDismissedSubagentGateKeys\(latestSubagents\?\.tabs, dismissedSubagentGateKeys\)/, "polling should prune stale dismissal keys");
 assert.match(css, /\.subagent-gate-actions[\s\S]*\.subagent-gate-close[\s\S]*min-width:\s*1\.45rem[\s\S]*background:\s*transparent[\s\S]*\.subagent-gate-close:hover,[\s\S]*\.subagent-gate-close:focus-visible/, "the close control should remain minimal, compact, and keyboard-visible");
 assert.match(serviceWorker, /"\/subagent-gate-visibility\.mjs"/, "the PWA app shell should cache the visibility module");
-assert.match(server, /"subagent-gate-visibility\.mjs"/, "the server static allowlist should serve the visibility module");
+assert.match(server, /STATIC_PUBLIC_FILE_EXTENSIONS[\s\S]*"\.mjs"/, "the server should serve typed visibility modules from the public asset boundary");
 assert.match(pkg.scripts.check, /node --check public\/subagent-gate-visibility\.mjs/, "the package check should syntax-check the visibility module");
 
 console.log("subagent gate visibility tests passed");

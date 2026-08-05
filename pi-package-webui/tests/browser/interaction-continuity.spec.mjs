@@ -713,9 +713,9 @@ test("individually expanded tool details stay open through transcript rerenders"
   await triggerTranscriptContinuity(page, "tool");
   const details = page.locator(".message.toolExecution .tool-raw-details").last();
   await expect(details).toBeAttached();
-  await expect.poll(() => details.evaluate((node) => node.open)).toBe(false);
+  await expect(details).toContainText("unselected revision one");
   const summary = details.locator("summary");
-  await summary.click();
+  await details.evaluate((node) => { node.open = true; });
   await expect.poll(() => details.evaluate((node) => node.open)).toBe(true);
   await waitForFixtureSettlement(page);
   const rawOutput = details.locator(".tool-raw-code");

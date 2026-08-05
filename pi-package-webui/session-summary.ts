@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import {
   SESSION_SUMMARY_DISPLAY_TYPE,
   SESSION_SUMMARY_MAX_OUTPUT_TOKENS,
@@ -29,6 +31,13 @@ import {
   supportedSessionSummaryThinkingLevels,
   writeSessionSummaryPreferences,
 } from "./lib/session-summary-preferences.mjs";
+import {
+  createLiveSummaryPayload,
+  discoverPersistedWorkspaceSummaries,
+  formatWorkspaceSummariesForCommand,
+  formatWorkspaceSummariesForTool,
+  mergeWorkspaceSessionSummaries,
+} from "./lib/workspace-session-summaries.mjs";
 
 type SummaryContext = ExtensionContext | ExtensionCommandContext;
 type CompleteFunction = typeof completeSimple;
@@ -170,6 +179,133 @@ async function runSetup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise
 export function createSessionSummaryExtension({ completeFn = completeSimple }: { completeFn?: CompleteFunction } = {}) {
   return function registerSessionSummary(pi: ExtensionAPI): void {
     let selfGeneratedName: { sessionId: string; name: string } | undefined;
+    let activeContext: SummaryContext | undefined;
+    let liveAvailable = false;
+    let activeChannel: any;
+    let channelRegistered = false;
+    const livePeers = new Map<string, { senderId: string; payload: unknown; receivedAt?: string }>();
+
+    const channelIsLive = (): boolean => {
+      try {
+        const snapshot = activeChannel?.snapshot?.();
+        return snapshot?.connected === true && snapshot?.supported === true;
+      } catch {
+        return false;
+      }
+    };
+
+    const publishLiveSummary = (ctx: SummaryContext | undefined = activeContext): void => {
+      if (!ctx || !activeChannel || !channelIsLive()) return;
+      try {
+        const state = latestSummaryState(ctx.sessionManager.getBranch());
+        if (!state) return;
+        const payload = createLiveSummaryPayload({ cwd: ctx.cwd, state, sessionName: pi.getSessionName() });
+        if (payload) activeChannel.publish(payload, { audience: "capable" });
+      } catch {
+        // The optional live channel must never break local summary behavior.
+      }
+    };
+
+    const setupLiveChannel = (channel: any): void => {
+      if (!channel || typeof channel.snapshot !== "function" || typeof channel.publish !== "function" || typeof channel.listSessions !== "function") return;
+      activeChannel = channel;
+      liveAvailable = channelIsLive();
+      if (liveAvailable) publishLiveSummary();
+    };
+
+    const handleLiveChannelEvent = (event: any): void => {
+      if (!event || typeof event.type !== "string") return;
+      if (event.type === "connection") {
+        liveAvailable = event.connected === true && event.supported === true;
+        if (!liveAvailable) {
+          livePeers.clear();
+        } else {
+          publishLiveSummary();
+        }
+        return;
+      }
+      if (event.type === "message" && typeof event.fromSessionId === "string") {
+        livePeers.set(event.fromSessionId, {
+          senderId: event.fromSessionId,
+          payload: event.payload,
+          receivedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      if (event.type === "session_left" && typeof event.sessionId === "string") {
+        livePeers.delete(event.sessionId);
+        return;
+      }
+      if (event.type === "session_joined") {
+        if (typeof event.session?.id === "string") livePeers.delete(event.session.id);
+        publishLiveSummary();
+      }
+    };
+
+    const registerLiveChannel = (): void => {
+      if (channelRegistered || !pi.events || typeof pi.events.emit !== "function") return;
+      channelRegistered = true;
+      try {
+        pi.events.emit("intercom:extension-register", {
+          namespace: "firstpick/session-summary/v1",
+          ownerEligible: false,
+          onReady: setupLiveChannel,
+          onEvent: handleLiveChannelEvent,
+        });
+      } catch {
+        // pi-intercom is optional; persisted discovery remains available.
+      }
+    };
+
+    const getWorkspaceSnapshot = async (ctx: SummaryContext) => {
+      const cwd = ctx.cwd;
+      const currentSessionId = ctx.sessionManager.getSessionId();
+      const currentState = latestSummaryState(ctx.sessionManager.getBranch());
+      const currentSessionName = pi.getSessionName();
+      const sessionFile = ctx.sessionManager.getSessionFile();
+      const configuredSessionDir = (ctx.sessionManager as any).getSessionDir?.();
+      const sessionDir = typeof configuredSessionDir === "string" && configuredSessionDir
+        ? configuredSessionDir
+        : sessionFile ? path.dirname(sessionFile) : undefined;
+      const persisted = await discoverPersistedWorkspaceSummaries({ cwd, sessionDir, currentSessionId });
+
+      let connectedSessions: any[] = [];
+      liveAvailable = channelIsLive();
+      if (liveAvailable) {
+        try {
+          connectedSessions = await activeChannel.listSessions();
+        } catch {
+          liveAvailable = false;
+        }
+      }
+
+      return mergeWorkspaceSessionSummaries({
+        cwd,
+        currentSessionId,
+        currentState,
+        currentSessionName,
+        livePeers: [...livePeers.values()],
+        connectedSessions,
+        persisted,
+        liveAvailable,
+      });
+    };
+
+    pi.registerTool({
+      name: "workspace_session_summaries",
+      label: "Workspace Session Summaries",
+      description: "Show bounded generated summaries from current, connected, and persisted Pi sessions in the same canonical working directory so overlap can be identified before writes.",
+      promptSnippet: "Inspect same-CWD session summaries before potentially overlapping repository work",
+      promptGuidelines: [
+        "Use workspace_session_summaries when another Pi session in the same working directory may overlap the current work.",
+        "After workspace_session_summaries, compare goals, files or symbols, decisions, and next steps; when overlap is material or ownership is unclear, coordinate through intercom before writing.",
+      ],
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+        const snapshot = await getWorkspaceSnapshot(ctx);
+        return { content: [{ type: "text", text: formatWorkspaceSummariesForTool(snapshot) }], details: snapshot.counts };
+      },
+    });
 
     const publishCurrentState = async (ctx: SummaryContext): Promise<void> => {
       const state = latestSummaryState(ctx.sessionManager.getBranch());
@@ -239,7 +375,7 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
           return { stale: true };
         }
 
-        const currentName = pi.getSessionName();
+        const currentName = typeof (pi as any).getSessionName === "function" ? (pi as any).getSessionName() : undefined;
         const applyTitle = shouldApplySummaryTitle({
           candidate: output.title,
           currentSessionName: currentName,
@@ -285,6 +421,7 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
           sendRpc(pi, ctx, "title", { title: output.title });
         }
         sendRpc(pi, ctx, "success", { title: state.result.title, summaryMarkdown: state.result.summaryMarkdown });
+        publishLiveSummary(ctx);
           if (!ctx.sessionManager.getSessionFile() && manual) ctx.ui.notify("Summary created in memory; this session has no durable session file.", "warning");
           return { state, appliedTitle: applyTitle };
         } catch (error) {
@@ -319,6 +456,7 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
     });
 
     pi.on("session_info_changed", (event, ctx) => {
+      activeContext = ctx;
       if (selfGeneratedName?.sessionId === ctx.sessionManager.getSessionId() && selfGeneratedName.name === event.name) {
         selfGeneratedName = undefined;
         return;
@@ -328,20 +466,26 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
         version: 1,
         explicit: event.name !== undefined,
       });
+      publishLiveSummary(ctx);
     });
 
     pi.on("session_start", async (_event, ctx) => {
       selfGeneratedName = undefined;
+      activeContext = ctx;
+      registerLiveChannel();
       try {
         await publishCurrentState(ctx);
+        publishLiveSummary(ctx);
       } catch (error) {
         sendRpc(pi, ctx, "failure", { message: errorMessage(error) });
       }
     });
 
     pi.on("session_tree", async (_event, ctx) => {
+      activeContext = ctx;
       try {
         await publishCurrentState(ctx);
+        publishLiveSummary(ctx);
       } catch (error) {
         sendRpc(pi, ctx, "failure", { message: errorMessage(error) });
       }
@@ -349,6 +493,10 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
 
     pi.on("session_shutdown", () => {
       selfGeneratedName = undefined;
+      activeContext = undefined;
+      activeChannel = undefined;
+      liveAvailable = false;
+      livePeers.clear();
       scheduler.abort();
     });
 
@@ -364,8 +512,20 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
     };
 
     pi.registerCommand("summary", {
-      description: "Show the latest session summary or generate one; use /summary refresh to force an update",
+      description: "Show the latest session summary or generate one; use /summary refresh to force an update, or /summary workspace to view all workspace session summaries",
       handler: async (args, ctx) => {
+        const trimmed = args.trim().toLowerCase();
+        if (trimmed === "workspace") {
+          const snapshot = await getWorkspaceSnapshot(ctx);
+          const text = formatWorkspaceSummariesForCommand(snapshot);
+          pi.appendEntry(SESSION_SUMMARY_DISPLAY_TYPE, {
+            version: 1,
+            title: "Workspace session summaries",
+            summaryMarkdown: text,
+          });
+          return;
+        }
+
         const preferences = await readSessionSummaryPreferences().catch((error) => {
           ctx.ui.notify(`Session summary settings failed: ${errorMessage(error)}`, "error");
           return undefined;
@@ -376,9 +536,9 @@ export function createSessionSummaryExtension({ completeFn = completeSimple }: {
           await generateManual(ctx);
         } else {
           const state = latestSummaryState(ctx.sessionManager.getBranch());
-          const refresh = args.trim().toLowerCase() === "refresh";
+          const refresh = trimmed === "refresh";
           if (args.trim() && !refresh) {
-            ctx.ui.notify("Usage: /summary [refresh]", "warning");
+            ctx.ui.notify("Usage: /summary [refresh | workspace]", "warning");
             return;
           }
           if (!state || refresh) await generateManual(ctx);

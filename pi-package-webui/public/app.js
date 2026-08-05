@@ -10,6 +10,7 @@ import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-cli
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 import { createTranscriptRenderer } from "./transcript-renderer.mjs";
 import { createStreamOutputController } from "./stream-output-controller.mjs";
+import { PI_THEME_EXPORT_FIELDS, THEME_TOKEN_GROUPS, canonicalizeTheme, serializeTheme, themeColorToRgb, validateTheme } from "./theme-contract.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -216,6 +217,26 @@ const elements = {
   themeSearchResults: $("#themeSearchResults"),
   themeSelect: $("#themeSelect"),
   themeSchemeToggle: $("#themeSchemeToggle"),
+  themeCustomizeButton: $("#themeCustomizeButton"),
+  themeCustomizerDialog: $("#themeCustomizerDialog"),
+  themeCustomizerName: $("#themeCustomizerName"),
+  themeCustomizerScope: $("#themeCustomizerScope"),
+  themeCustomizerProjectOption: $("#themeCustomizerProjectOption"),
+  themeCustomizerScopeHint: $("#themeCustomizerScopeHint"),
+  themeCustomizerSourceBadge: $("#themeCustomizerSourceBadge"),
+  themeCustomizerVisualFields: $("#themeCustomizerVisualFields"),
+  themeCustomizerThinkingMax: $("#themeCustomizerThinkingMax"),
+  themeCustomizerVars: $("#themeCustomizerVars"),
+  themeCustomizerExportFields: $("#themeCustomizerExportFields"),
+  themeCustomizerJson: $("#themeCustomizerJson"),
+  themeCustomizerPreview: $("#themeCustomizerPreview"),
+  themeCustomizerStatus: $("#themeCustomizerStatus"),
+  themeCustomizerOverwrite: $("#themeCustomizerOverwrite"),
+  themeCustomizerOverwriteMessage: $("#themeCustomizerOverwriteMessage"),
+  themeCustomizerOverwriteButton: $("#themeCustomizerOverwriteButton"),
+  themeCustomizerCancelButton: $("#themeCustomizerCancelButton"),
+  themeCustomizerResetButton: $("#themeCustomizerResetButton"),
+  themeCustomizerSaveButton: $("#themeCustomizerSaveButton"),
   backgroundInput: $("#backgroundInput"),
   backgroundChooseButton: $("#backgroundChooseButton"),
   backgroundClearButton: $("#backgroundClearButton"),
@@ -541,8 +562,6 @@ let streamThinkingRawText = "";
 let streamDerivedTextCache = { rawText: null, assistantText: "", thinkingFormat: null, finalText: "" };
 let streamBubbleVisibleSince = 0;
 let streamBubbleHideTimer = null;
-let streamTextRenderTimer = null;
-let streamTextRenderFrame = null;
 let streamToolCallSeen = false;
 let streamToolCallBubble = null;
 let streamToolCallText = null;
@@ -566,8 +585,81 @@ let outputModeAcknowledged = false;
 let eventSourceOutputModeRequest = "auto";
 let eventSourceOutputModeFallbackAttempted = false;
 const compactLiveScheduler = createSustainedFlushScheduler({ flush: () => flushCompactLiveOutput() });
-let unknownTranscriptStreamEventCount = 0;
-let staleTranscriptStreamEventCount = 0;
+const STREAM_ISOLATION_DEBUG_LIMIT = 4096;
+const STREAM_ISOLATION_DEBUG_ENABLED = globalThis.__PI_STREAM_ISOLATION_DEBUG__ === true
+  || new URLSearchParams(window.location.search).get("streamIsolationDebug") === "1";
+const streamIsolationDebugLedger = STREAM_ISOLATION_DEBUG_ENABLED ? {
+  version: 1,
+  counters: {
+    receivedEvents: 0,
+    appliedEvents: 0,
+    sinkCalls: 0,
+    batches: 0,
+    barriers: 0,
+    overflows: 0,
+    unknownEvents: 0,
+    staleEvents: 0,
+    highWaterPendingCount: 0,
+    highWaterPendingBytes: 0,
+  },
+  receivedIndexes: [],
+  appliedIndexes: [],
+  records: [],
+  unknownEvidence: [],
+} : null;
+const UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT = 32;
+const UNKNOWN_TRANSCRIPT_EVIDENCE_TEXT_LIMIT = 512;
+const unknownTranscriptEvidence = [];
+const unknownTranscriptOwnersPendingReconcile = new Set();
+
+function appendBoundedStreamDiagnostic(list, value, limit = STREAM_ISOLATION_DEBUG_LIMIT) {
+  list.push(value);
+  if (list.length > limit) list.splice(0, list.length - limit);
+}
+
+function recordStreamIsolationDiagnostic(record) {
+  const ledger = streamIsolationDebugLedger;
+  if (!ledger || !record) return;
+  const counters = ledger.counters;
+  if (record.type === "receipt") {
+    counters.receivedEvents += 1;
+    if (Number.isSafeInteger(record.index)) appendBoundedStreamDiagnostic(ledger.receivedIndexes, record.index);
+  } else if (record.type === "apply") {
+    if (record.applied) {
+      counters.appliedEvents += Number(record.sourceCount) || 0;
+      counters.sinkCalls += 1;
+      for (const index of record.sourceIndexes || []) {
+        if (Number.isSafeInteger(index)) appendBoundedStreamDiagnostic(ledger.appliedIndexes, index);
+      }
+    }
+    if (record.kind === "unknown-message-update") counters.unknownEvents += Number(record.sourceCount) || 1;
+  } else if (record.type === "batch") {
+    counters.batches += 1;
+  } else if (record.type === "barrier") {
+    counters.barriers += 1;
+  } else if (record.type === "overflow") {
+    counters.overflows += 1;
+  } else if (record.type === "stale") {
+    counters.staleEvents += 1;
+  }
+  if (record.type === "queued") {
+    counters.highWaterPendingCount = Math.max(counters.highWaterPendingCount, Number(record.pendingCount) || 0);
+    counters.highWaterPendingBytes = Math.max(counters.highWaterPendingBytes, Number(record.pendingBytes) || 0);
+  }
+  appendBoundedStreamDiagnostic(ledger.records, {
+    ...record,
+    sourceIndexes: Array.isArray(record.sourceIndexes) ? [...record.sourceIndexes] : undefined,
+  });
+}
+
+if (streamIsolationDebugLedger) {
+  Object.defineProperty(globalThis, "__piStreamIsolationDebug", {
+    configurable: true,
+    enumerable: false,
+    value: streamIsolationDebugLedger,
+  });
+}
+
 const streamOutputController = createStreamOutputController({
   isOwnerCurrent: (owner) => owner === transcriptStreamOwner(),
   applyTextUpdate: (event) => handleMessageUpdate(event),
@@ -581,12 +673,8 @@ const streamOutputController = createStreamOutputController({
     if (compactOutputActive()) flushCompactLiveOutput();
     scheduleChatFollowScroll();
   },
-  onUnknownStreamEvent: () => {
-    unknownTranscriptStreamEventCount += 1;
-  },
-  onStaleOwner: () => {
-    staleTranscriptStreamEventCount += 1;
-  },
+  onUnknownStreamEvent: preserveUnknownTranscriptEvidence,
+  onDiagnostic: streamIsolationDebugLedger ? recordStreamIsolationDiagnostic : undefined,
 });
 let assistantErrorSurfacedThisRun = false;
 let runIndicatorBubble = null;
@@ -602,22 +690,24 @@ let runIndicatorLastStateCheckAt = 0;
 // node, while this watchdog owns the low-frequency canonical state recheck.
 let lifecycleStateWatchdogTimer = null;
 let lifecycleComposerSignature = null;
-// Bounded dedupe of semantic tool-boundary records (skill tags, event log).
+// Bounded dedupe of semantic tool-boundary records (skill tags, event log),
+// partitioned by agent-run epoch so provider tool IDs may be reused next turn.
 const TOOL_BOUNDARY_RECORD_LIMIT = 400;
 const recordedToolBoundaryKeys = new Set();
-// Dirty flags owned by the coalesced semantic reconciler. Only semantic
-// lifecycle boundaries may set these; raw stream deltas never reach them.
-const semanticReconcileDirty = {
-  messages: false,
-  state: false,
-  footer: false,
-  footerData: false,
-  feedback: false,
-  usage: false,
-  workflow: false,
-};
+const toolBoundaryRunEpochByTab = new Map();
+// Dirty flags owned by the coalesced semantic reconciler. Requests remain
+// partitioned by originating tab generation; raw stream deltas never reach it.
+const SEMANTIC_RECONCILE_FLAGS = Object.freeze([
+  "messages",
+  "state",
+  "footer",
+  "footerData",
+  "feedback",
+  "usage",
+  "workflow",
+]);
+const semanticReconcilePending = new Map();
 let semanticReconcileFrame = null;
-let semanticReconcileContext = null;
 let runIndicatorLocallyActive = false;
 let runIndicatorRemovalDeferred = false;
 let runIndicatorStartedAt = null;
@@ -1060,6 +1150,9 @@ const THEME_LIGHT_DEFAULT = "catppuccin-latte";
 const THEME_DARK_DEFAULT = "catppuccin-mocha";
 const THEME_SCHEME_MODES = new Set(["light", "dark", "auto"]);
 let themeSchemeMode = "light"; // "light" | "dark" | "auto"; finalized in initializeThemes
+let themeCatalogScopes = { global: { available: true }, project: { available: false, trusted: false } };
+let themeCustomizerGeneration = 0;
+let themeCustomizerState = null;
 const TERMINAL_TABS_LAYOUTS = new Set(["top", "left"]);
 const TERMINAL_TABS_LAYOUT_LABELS = { top: "Top bar", left: "Left sidebar" };
 const SUBAGENT_OPEN_MODES = new Set(["overlay", "tab"]);
@@ -1094,9 +1187,7 @@ const ABORT_LONG_PRESS_TICK_MS = 100;
 const ABORT_LONG_PRESS_RELEASE_GRACE_MS = 350;
 const EMPTY_PROMPT_ESCAPE_AFTER_ABORT_GRACE_MS = 1000;
 const STREAM_OUTPUT_HIDE_DELAY_MS = 300;
-const STREAM_OUTPUT_TOOLCALL_GUARD_MS = 220;
 const STREAM_OUTPUT_MIN_VISIBLE_MS = 900;
-const TOOL_LIVE_UPDATE_THROTTLE_MS = 80;
 const UNEXPOSED_THINKING_TEXT = "No thinking content was exposed by the provider.";
 const THINKING_FORMAT_OPEN_TAG_REGEX = /^<think\b[^>]*>/i;
 const THINKING_FORMAT_CLOSE_TAG_REGEX = /<\/think\s*>/i;
@@ -2244,8 +2335,6 @@ const appRunnerContextLineDraftByRun = new Map();
 const scopedScrollContinuityByKey = new Map();
 const liveToolRuns = new Map();
 const liveToolCards = new Map();
-const liveToolRenderQueue = new Map();
-let liveToolRenderTimer = null;
 // Optional feature detection intentionally checks loaded Pi capabilities (RPC-visible
 // commands and live widget events), not npm package folders. This keeps local dev
 // symlinks and independently installed packages working.
@@ -5642,29 +5731,31 @@ function trackSkillsFromText(tabId, text, { kind = "used", source = "" } = {}) {
 }
 
 function trackSkillsFromValue(tabId, value, { keyHint = "", kind = "used", source = "", depth = 0 } = {}) {
-  if (!tabId || value === undefined || value === null || depth > 5) return;
+  if (!tabId || value === undefined || value === null || depth > 5) return 0;
   if (Array.isArray(value)) {
-    for (const item of value) trackSkillsFromValue(tabId, item, { keyHint, kind, source, depth: depth + 1 });
-    return;
+    return value.reduce((count, item) => count + trackSkillsFromValue(tabId, item, { keyHint, kind, source, depth: depth + 1 }), 0);
   }
   if (typeof value === "string") {
     const skillInfo = skillInfoFromPath(value);
-    if (skillInfo) trackSkillUsage(tabId, skillInfo.name, "read", source, { path: skillInfo.path });
-    return;
+    if (!skillInfo) return 0;
+    trackSkillUsage(tabId, skillInfo.name, "read", source, { path: skillInfo.path });
+    return 1;
   }
-  if (typeof value !== "object") return;
+  if (typeof value !== "object") return 0;
+  let tracked = 0;
   for (const [key, nested] of Object.entries(value)) {
     const hint = String(key || "").toLowerCase();
-    trackSkillsFromValue(tabId, nested, { keyHint: hint, kind, source, depth: depth + 1 });
+    tracked += trackSkillsFromValue(tabId, nested, { keyHint: hint, kind, source, depth: depth + 1 });
   }
+  return tracked;
 }
 
 function trackSkillsFromToolInvocation(tabId, toolName, args, { sourcePrefix = "tool" } = {}) {
-  if (!tabId) return;
+  if (!tabId) return false;
   const name = String(toolName || "").trim();
-  if (name.toLowerCase() !== "read") return;
+  if (name.toLowerCase() !== "read") return false;
   const source = `${sourcePrefix}:${name}`;
-  trackSkillsFromValue(tabId, args, { kind: "read", source });
+  return trackSkillsFromValue(tabId, args, { kind: "read", source }) > 0;
 }
 
 function trackSkillsFromMessage(tabId, message) {
@@ -5700,19 +5791,26 @@ function eventMayAffectSkillUsage(event) {
     || (type === "response" && event.command === "new_session");
 }
 
+function beginToolBoundaryRun(event) {
+  const tabId = event?.tabId || activeTabId || "";
+  if (!tabId || event?.replayed === true) return;
+  toolBoundaryRunEpochByTab.set(tabId, (toolBoundaryRunEpochByTab.get(tabId) || 0) + 1);
+}
+
+function toolBoundaryRunIdentity(event, tabId) {
+  const explicit = String(event?.agentRunId || event?.turnId || "").trim();
+  return explicit || `epoch-${toolBoundaryRunEpochByTab.get(tabId) || 0}`;
+}
+
 function toolBoundaryRecordKey(event, phase) {
   const tabId = event?.tabId || activeTabId || "";
   const toolCallId = String(event?.toolCallId || event?.id || "").trim();
   if (!toolCallId) return "";
-  return `${tabId}:${toolCallId}:${phase}`;
+  return `${tabId}:${toolBoundaryRunIdentity(event, tabId)}:${toolCallId}:${phase}`;
 }
 
-// One record per tool boundary. Redelivered or replayed boundaries (supervisor
-// replay, reconnect) must not duplicate skill tags or event-log lines.
-function claimToolBoundaryRecord(event, phase) {
-  const key = toolBoundaryRecordKey(event, phase);
-  if (!key) return true;
-  if (recordedToolBoundaryKeys.has(key)) return false;
+function rememberToolBoundaryRecordKey(key) {
+  if (!key || recordedToolBoundaryKeys.has(key)) return false;
   recordedToolBoundaryKeys.add(key);
   while (recordedToolBoundaryKeys.size > TOOL_BOUNDARY_RECORD_LIMIT) {
     const oldest = recordedToolBoundaryKeys.values().next().value;
@@ -5722,17 +5820,29 @@ function claimToolBoundaryRecord(event, phase) {
   return true;
 }
 
+// One record per tool boundary within an agent run. Redelivered or replayed
+// boundaries must not duplicate skill tags or event-log lines.
+function claimToolBoundaryRecord(event, phase) {
+  const key = toolBoundaryRecordKey(event, phase);
+  return key ? rememberToolBoundaryRecordKey(key) : true;
+}
+
 function trackSkillsFromEvent(event) {
   const tabId = event?.tabId || activeTabId;
   if (!tabId || !event) return;
   if (["tool_execution_start", "tool_execution_end"].includes(event.type)) {
-    // Prefer the start boundary; fall back to completion when start is absent.
-    if (!claimToolBoundaryRecord(event, "skills")) return;
-    trackSkillsFromToolInvocation(tabId, event.toolName, event.args, { sourcePrefix: `event:${event.type}` });
+    // Start is preferred, but unusable start args do not consume the claim;
+    // completion may still provide the authoritative invocation arguments.
+    const key = toolBoundaryRecordKey(event, "skills");
+    if (key && recordedToolBoundaryKeys.has(key)) return;
+    const args = event.args ?? event.arguments ?? event.invocation?.args;
+    const tracked = trackSkillsFromToolInvocation(tabId, event.toolName, args, { sourcePrefix: `event:${event.type}` });
+    if (tracked && key) rememberToolBoundaryRecordKey(key);
     return;
   }
   if (event.type === "response" && event.command === "new_session") {
     recordedToolBoundaryKeys.clear();
+    toolBoundaryRunEpochByTab.delete(tabId);
     clearSkillUsageForTab(tabId);
   }
 }
@@ -9332,7 +9442,6 @@ function renderOptionalFeatureDependentDisplays() {
   renderWidgets();
   renderStatus();
   renderCommands();
-  cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
   streamBubble?.remove();
   streamBubble = null;
@@ -9397,7 +9506,14 @@ function displayThemeName(name) {
 }
 
 function resolveThemeValue(theme, value, fallback, seen = new Set()) {
-  const raw = String(value || "").trim();
+  if (Number.isInteger(value)) {
+    try {
+      return themeColorToRgb(value, theme?.vars || {}, fallback);
+    } catch {
+      return fallback;
+    }
+  }
+  const raw = String(value ?? "").trim();
   if (!raw) return fallback;
   if (/^(#|rgb\(|rgba\(|hsl\(|hsla\()/i.test(raw)) return raw;
   if (seen.has(raw)) return fallback;
@@ -9708,7 +9824,10 @@ function renderThemeSearchResults(themes = []) {
     button.title = themeSearchText(theme);
     const title = make("span", "theme-search-result-title");
     title.append(make("span", "model-search-result-main", themeDisplayLabel(theme)));
-    title.append(make("span", `theme-search-result-scheme ${themeIsLight(theme) ? "light" : "dark"}`, themeIsLight(theme) ? "Light" : "Dark"));
+    const badges = make("span", "theme-search-result-badges");
+    badges.append(make("span", `theme-search-result-scheme ${themeIsLight(theme) ? "light" : "dark"}`, themeIsLight(theme) ? "Light" : "Dark"));
+    if (theme.custom) badges.append(make("span", `theme-scope-badge ${theme.scope}`, themeScopeLabel(theme.scope)));
+    title.append(badges);
     button.append(title);
     button.addEventListener("click", () => {
       if (elements.themeSelect) elements.themeSelect.value = theme.name;
@@ -9758,6 +9877,422 @@ function toggleThemeSearchInput() {
   else hideThemeSearchInput();
 }
 
+function themeScopeLabel(scope) {
+  if (scope === "project") return "Project";
+  if (scope === "global") return "Global";
+  return "Bundled";
+}
+
+function cloneThemeDraft(theme) {
+  return JSON.parse(JSON.stringify(theme));
+}
+
+function themeDraftFromCatalog(theme, name = theme?.name) {
+  return {
+    name,
+    ...(theme?.vars && Object.keys(theme.vars).length ? { vars: cloneThemeDraft(theme.vars) } : {}),
+    colors: cloneThemeDraft(theme?.colors || {}),
+    ...(theme?.export && Object.keys(theme.export).length ? { export: cloneThemeDraft(theme.export) } : {}),
+  };
+}
+
+function themeCustomizerValue(raw) {
+  const value = String(raw ?? "").trim();
+  if (/^(?:0|[1-9]\d{0,2})$/.test(value)) return Number(value);
+  return value;
+}
+
+function themeCustomizerDraftSignature(state = themeCustomizerState) {
+  if (!state?.validTheme) return "";
+  return JSON.stringify({
+    scope: elements.themeCustomizerScope?.value || "",
+    fileName: `${elements.themeCustomizerName?.value.trim() || ""}.json`,
+    theme: state.validTheme,
+  });
+}
+
+function setThemeCustomizerStatus(message, kind = "muted") {
+  if (!elements.themeCustomizerStatus) return;
+  const urgent = kind === "error";
+  elements.themeCustomizerStatus.textContent = message;
+  elements.themeCustomizerStatus.className = `theme-customizer-status ${kind}`;
+  elements.themeCustomizerStatus.setAttribute("role", urgent ? "alert" : "status");
+  elements.themeCustomizerStatus.setAttribute("aria-live", urgent ? "assertive" : "polite");
+}
+
+function invalidateThemeCustomizerOverwrite() {
+  if (themeCustomizerState) themeCustomizerState.overwrite = null;
+  if (elements.themeCustomizerOverwrite) elements.themeCustomizerOverwrite.hidden = true;
+}
+
+function updateThemeCustomizerActions() {
+  const state = themeCustomizerState;
+  const name = elements.themeCustomizerName?.value.trim() || "";
+  const validName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,74}$/.test(name) && !name.includes("..");
+  const scope = elements.themeCustomizerScope?.value;
+  const projectUnavailable = scope === "project" && !themeCatalogScopes.project?.trusted;
+  if (elements.themeCustomizerSaveButton) {
+    elements.themeCustomizerSaveButton.disabled = !state?.draftValid || !validName || projectUnavailable || !!state?.saving || !!state?.overwrite;
+    elements.themeCustomizerSaveButton.textContent = state?.saving ? "Saving…" : "Save theme";
+  }
+  if (elements.themeCustomizerOverwriteButton) elements.themeCustomizerOverwriteButton.disabled = !!state?.saving;
+  if (elements.themeCustomizerCancelButton) elements.themeCustomizerCancelButton.disabled = !!state?.saving;
+  if (elements.themeCustomizerResetButton) elements.themeCustomizerResetButton.disabled = !!state?.saving;
+  if (!validName) setThemeCustomizerStatus("Use 1–75 letters, numbers, dots, underscores, or hyphens; consecutive dots are not allowed.", "error");
+  else if (projectUnavailable) setThemeCustomizerStatus("This project is not saved as trusted in Pi. Choose Global themes or trust the project in Pi first.", "warn");
+}
+
+function themeCustomizerColor(theme, token) {
+  try {
+    return themeColorToRgb(theme.colors[token], theme.vars || {}, "#000000");
+  } catch {
+    return "#000000";
+  }
+}
+
+function renderThemeCustomizerVisualFields(theme) {
+  const container = elements.themeCustomizerVisualFields;
+  if (!container || !theme) return;
+  const groups = THEME_TOKEN_GROUPS.map((group) => {
+    const fieldset = make("fieldset", "theme-token-group");
+    fieldset.dataset.themeTokenGroup = group.id;
+    fieldset.append(make("legend", undefined, group.label));
+    const grid = make("div", "theme-token-grid");
+    for (const { name, label } of group.tokens) {
+      const row = make("div", "theme-token-row");
+      row.dataset.themeToken = name;
+      const inputId = `theme-token-${name}`;
+      const copy = document.createElement("label");
+      copy.className = "theme-token-label";
+      copy.htmlFor = inputId;
+      copy.append(document.createTextNode(label), make("code", undefined, name));
+      const swatch = document.createElement("input");
+      swatch.className = "theme-token-swatch";
+      swatch.type = "color";
+      const value = document.createElement("input");
+      value.id = inputId;
+      value.className = "theme-token-value";
+      value.type = "text";
+      value.autocomplete = "off";
+      value.spellcheck = false;
+      value.value = String(theme.colors[name] ?? "");
+      value.setAttribute("aria-label", `${label} value`);
+      const swatchNote = make("span", "theme-token-swatch-note");
+      const syncSwatch = () => {
+        const raw = value.value.trim();
+        const directValue = themeCustomizerValue(raw);
+        const direct = /^#[0-9a-f]{6}$/i.test(raw) || (typeof directValue === "number" && directValue >= 0 && directValue <= 255);
+        swatch.disabled = !direct;
+        swatch.value = direct ? themeColorToRgb(directValue, {}, "#000000") : themeCustomizerColor(theme, name);
+        swatch.setAttribute("aria-label", direct
+          ? `Choose ${label} color`
+          : `${label} uses ${raw ? `variable ${raw}` : "the terminal default"}. Edit the raw value to replace it with a color.`);
+        swatchNote.hidden = direct;
+        swatchNote.textContent = raw ? `Variable ${raw}; edit the value to replace it.` : "Terminal default; edit the value to replace it.";
+      };
+      value.addEventListener("input", () => {
+        syncSwatch();
+        updateThemeCustomizerFromVisual();
+      });
+      swatch.addEventListener("input", () => {
+        value.value = swatch.value;
+        syncSwatch();
+        updateThemeCustomizerFromVisual();
+      });
+      syncSwatch();
+      row.append(copy, swatch, value, swatchNote);
+      grid.append(row);
+    }
+    fieldset.append(grid);
+    return fieldset;
+  });
+  container.replaceChildren(...groups);
+}
+
+function renderThemeCustomizerOptionalFields(theme) {
+  if (!theme) return;
+  if (elements.themeCustomizerThinkingMax) elements.themeCustomizerThinkingMax.value = String(theme.colors.thinkingMax ?? "");
+  if (elements.themeCustomizerVars) elements.themeCustomizerVars.value = JSON.stringify(theme.vars || {}, null, 2);
+  if (elements.themeCustomizerExportFields) {
+    const fields = PI_THEME_EXPORT_FIELDS.map((name) => {
+      const label = document.createElement("label");
+      label.textContent = name;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.dataset.themeExport = name;
+      input.value = String(theme.export?.[name] ?? "");
+      input.addEventListener("input", updateThemeCustomizerFromVisual);
+      label.append(input);
+      return label;
+    });
+    elements.themeCustomizerExportFields.replaceChildren(...fields);
+  }
+}
+
+function themeCustomizerCandidateFromVisual() {
+  const state = themeCustomizerState;
+  if (!state?.validTheme) throw new Error("No valid theme draft is available.");
+  const candidate = cloneThemeDraft(state.validTheme);
+  candidate.name = elements.themeCustomizerName.value.trim();
+  candidate.colors = { ...candidate.colors };
+  for (const input of elements.themeCustomizerVisualFields.querySelectorAll("[data-theme-token] .theme-token-value")) {
+    candidate.colors[input.closest("[data-theme-token]").dataset.themeToken] = themeCustomizerValue(input.value);
+  }
+  const thinkingMax = elements.themeCustomizerThinkingMax.value.trim();
+  if (thinkingMax) candidate.colors.thinkingMax = themeCustomizerValue(thinkingMax);
+  else delete candidate.colors.thinkingMax;
+  let vars;
+  try {
+    vars = JSON.parse(elements.themeCustomizerVars.value || "{}");
+  } catch (error) {
+    throw new Error(`Variables JSON is invalid: ${error.message}`);
+  }
+  if (!vars || typeof vars !== "object" || Array.isArray(vars)) throw new Error("Variables must be a JSON object.");
+  if (Object.keys(vars).length) candidate.vars = vars;
+  else delete candidate.vars;
+  const exportColors = {};
+  for (const input of elements.themeCustomizerExportFields.querySelectorAll("[data-theme-export]")) {
+    if (input.value.trim()) exportColors[input.dataset.themeExport] = themeCustomizerValue(input.value);
+  }
+  if (Object.keys(exportColors).length) candidate.export = exportColors;
+  else delete candidate.export;
+  return candidate;
+}
+
+function acceptThemeCustomizerDraft(candidate, { syncJson = true, syncControls = false } = {}) {
+  const state = themeCustomizerState;
+  if (!state) return false;
+  const validation = validateTheme(candidate, { allowWebuiExport: true });
+  if (!validation.ok) {
+    state.draftValid = false;
+    invalidateThemeCustomizerOverwrite();
+    setThemeCustomizerStatus(validation.issues.map(({ path, message }) => `${path}: ${message}`).join(" · "), "error");
+    updateThemeCustomizerActions();
+    return false;
+  }
+  const canonical = canonicalizeTheme(candidate, { allowWebuiExport: true });
+  state.validTheme = canonical;
+  state.draftValid = true;
+  invalidateThemeCustomizerOverwrite();
+  if (syncJson && elements.themeCustomizerJson) elements.themeCustomizerJson.value = serializeTheme(canonical, { allowWebuiExport: true });
+  if (syncControls) {
+    elements.themeCustomizerName.value = canonical.name;
+    renderThemeCustomizerVisualFields(canonical);
+    renderThemeCustomizerOptionalFields(canonical);
+  }
+  applyTheme(canonical, { persist: false });
+  setThemeCustomizerStatus("Valid draft previewed. Nothing has been written to browser storage or disk.", "success");
+  updateThemeCustomizerActions();
+  return true;
+}
+
+function updateThemeCustomizerFromVisual() {
+  if (!themeCustomizerState) return;
+  invalidateThemeCustomizerOverwrite();
+  try {
+    acceptThemeCustomizerDraft(themeCustomizerCandidateFromVisual(), { syncJson: true });
+  } catch (error) {
+    themeCustomizerState.draftValid = false;
+    setThemeCustomizerStatus(error.message || String(error), "error");
+    updateThemeCustomizerActions();
+  }
+}
+
+function updateThemeCustomizerFromJson() {
+  if (!themeCustomizerState) return;
+  invalidateThemeCustomizerOverwrite();
+  let candidate;
+  try {
+    candidate = JSON.parse(elements.themeCustomizerJson.value);
+  } catch (error) {
+    themeCustomizerState.draftValid = false;
+    setThemeCustomizerStatus(`Advanced JSON is invalid: ${error.message}. The last valid preview remains active.`, "error");
+    updateThemeCustomizerActions();
+    return;
+  }
+  acceptThemeCustomizerDraft(candidate, { syncJson: false, syncControls: true });
+}
+
+function restoreThemeCustomizerOpeningState(generation) {
+  const state = themeCustomizerState;
+  if (!state || state.generation !== generation || state.restored) return;
+  state.restored = true;
+  applyTheme(state.opening.theme, { persist: false });
+  setCustomBackgroundRecord(state.opening.background);
+  customBackgroundLoading = false;
+  applyCustomBackgroundOverride();
+  renderThemeSelect();
+}
+
+function closeThemeCustomizer({ restore = true } = {}) {
+  const state = themeCustomizerState;
+  if (!state) {
+    if (elements.themeCustomizerDialog?.open) elements.themeCustomizerDialog.close();
+    return;
+  }
+  if (state.saving) {
+    setThemeCustomizerStatus("Wait for the theme save to finish before closing or switching tabs.", "warn");
+    return false;
+  }
+  const generation = state.generation;
+  state.closing = true;
+  if (restore) restoreThemeCustomizerOpeningState(generation);
+  themeCustomizerState = null;
+  if (elements.themeCustomizerDialog?.open) elements.themeCustomizerDialog.close();
+  return true;
+}
+
+function themeCustomizerNameForSource(theme) {
+  const raw = theme?.custom ? theme.name : `${theme?.name || "custom-theme"}-custom`;
+  return raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "").slice(0, 75) || "custom-theme";
+}
+
+function installThemeCatalog(data) {
+  availableThemes = Array.isArray(data?.themes) ? data.themes : [];
+  themeCatalogScopes = data?.scopes && typeof data.scopes === "object" ? data.scopes : themeCatalogScopes;
+  optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
+  renderOptionalFeatureControls();
+  renderThemeSelect();
+}
+
+async function refreshThemeCatalog(tabContext = activeTabContext()) {
+  const response = await api("/api/themes", { tabId: tabContext.tabId });
+  if (tabContext.tabId && !isCurrentTabContext(tabContext)) return response.data;
+  installThemeCatalog(response.data || {});
+  return response.data || {};
+}
+
+async function openThemeCustomizer() {
+  if (!elements.themeCustomizerDialog || !availableThemes.length) return;
+  const generation = ++themeCustomizerGeneration;
+  const tabContext = activeTabContext();
+  const openingTheme = availableThemes.find((theme) => theme.name === currentThemeName) || availableThemes[0];
+  const opening = {
+    theme: cloneThemeDraft(openingTheme),
+    background: customBackground ? cloneThemeDraft(customBackground) : null,
+  };
+  themeCustomizerState = { generation, tabContext, opening, validTheme: null, draftValid: false, initialTheme: null, overwrite: null, saving: false, restored: false };
+  setThemeCustomizerStatus("Loading project and global theme destinations…");
+  try {
+    await refreshThemeCatalog(tabContext);
+  } catch (error) {
+    if (themeCustomizerState?.generation === generation) setThemeCustomizerStatus(`Theme catalog refresh failed: ${error.message || String(error)}`, "warn");
+  }
+  if (themeCustomizerState?.generation !== generation) return;
+  const source = availableThemes.find((theme) => theme.name === openingTheme.name) || openingTheme;
+  const draft = canonicalizeTheme(themeDraftFromCatalog(source, themeCustomizerNameForSource(source)), { allowWebuiExport: true });
+  themeCustomizerState.source = source;
+  themeCustomizerState.initialTheme = cloneThemeDraft(draft);
+  const projectTrusted = themeCatalogScopes.project?.trusted === true;
+  elements.themeCustomizerProjectOption.disabled = !projectTrusted;
+  elements.themeCustomizerScope.value = source.custom ? source.scope : projectTrusted ? "project" : "global";
+  elements.themeCustomizerScopeHint.textContent = projectTrusted
+    ? "Project saves use this active trusted tab’s .pi/themes directory; global saves use Pi’s agent themes directory."
+    : "This active project is not saved as trusted in Pi, so only Global themes is available.";
+  elements.themeCustomizerSourceBadge.textContent = `${themeScopeLabel(source.scope)} source`;
+  elements.themeCustomizerSourceBadge.className = `theme-scope-badge ${source.scope || "bundled"}`;
+  elements.themeCustomizerName.value = draft.name;
+  renderThemeCustomizerVisualFields(draft);
+  renderThemeCustomizerOptionalFields(draft);
+  elements.themeCustomizerJson.value = serializeTheme(draft, { allowWebuiExport: true });
+  themeCustomizerState.validTheme = draft;
+  themeCustomizerState.draftValid = true;
+  invalidateThemeCustomizerOverwrite();
+  applyTheme(draft, { persist: false });
+  setThemeCustomizerStatus("Valid draft previewed. Nothing has been written to browser storage or disk.", "success");
+  updateThemeCustomizerActions();
+  if (!elements.themeCustomizerDialog.open) elements.themeCustomizerDialog.showModal();
+  queueMicrotask(() => elements.themeCustomizerName?.focus({ preventScroll: true }));
+}
+
+function showThemeCustomizerOverwrite(details) {
+  const state = themeCustomizerState;
+  if (!state) return;
+  const scope = details?.scope;
+  const fileName = details?.fileName;
+  if (scope !== elements.themeCustomizerScope.value || fileName !== `${elements.themeCustomizerName.value.trim()}.json` || !Number.isFinite(details?.mtimeMs)) {
+    setThemeCustomizerStatus("The server returned conflict details for a different target. Refresh the catalog and try again.", "error");
+    return;
+  }
+  state.overwrite = { signature: themeCustomizerDraftSignature(state), scope, fileName, mtimeMs: details.mtimeMs };
+  elements.themeCustomizerOverwriteMessage.textContent = `${themeScopeLabel(scope)} themes / ${fileName} already exists. Replace only this file with the current unchanged draft?`;
+  elements.themeCustomizerOverwrite.hidden = false;
+  setThemeCustomizerStatus("Review the exact target, then confirm replacement. Any draft, name, or destination change cancels this confirmation.", "warn");
+  updateThemeCustomizerActions();
+  elements.themeCustomizerOverwriteButton.focus();
+}
+
+async function saveThemeCustomizer({ overwrite = false } = {}) {
+  const state = themeCustomizerState;
+  if (!state?.draftValid || !state.validTheme || state.saving) return;
+  if (!isCurrentTabContext(state.tabContext)) {
+    setThemeCustomizerStatus("The active tab changed. Cancel and reopen Customize so the project destination is bound to the intended tab.", "warn");
+    return;
+  }
+  const confirmation = state.overwrite;
+  if (overwrite && (!confirmation || confirmation.signature !== themeCustomizerDraftSignature(state))) {
+    invalidateThemeCustomizerOverwrite();
+    setThemeCustomizerStatus("The overwrite confirmation no longer matches this target and draft. Save again to request a fresh confirmation.", "warn");
+    updateThemeCustomizerActions();
+    return;
+  }
+  const name = elements.themeCustomizerName.value.trim();
+  const scope = elements.themeCustomizerScope.value;
+  state.saving = true;
+  updateThemeCustomizerActions();
+  try {
+    const response = await api("/api/themes/custom", {
+      method: "POST",
+      tabId: state.tabContext.tabId,
+      body: {
+        scope,
+        fileName: `${name}.json`,
+        theme: state.validTheme,
+        overwrite,
+        expectedMtimeMs: overwrite ? confirmation.mtimeMs : null,
+      },
+    });
+    if (themeCustomizerState?.generation !== state.generation) return;
+    invalidateThemeCustomizerOverwrite();
+    await refreshThemeCatalog(state.tabContext);
+    if (themeCustomizerState?.generation !== state.generation) return;
+    applyTheme(state.validTheme, { persist: false });
+    elements.themeCustomizerSourceBadge.textContent = `${themeScopeLabel(scope)} saved`;
+    elements.themeCustomizerSourceBadge.className = `theme-scope-badge ${scope}`;
+    setThemeCustomizerStatus(`Saved ${response.data?.fileName || `${name}.json`} to ${themeScopeLabel(scope)} themes. The WebUI catalog is refreshed. In Pi TUI, run /reload or restart, then choose it with /theme. No Pi or browser theme setting was changed.`, "success");
+  } catch (error) {
+    if (themeCustomizerState?.generation !== state.generation) return;
+    const code = error.data?.code;
+    if (code === "THEME_EXISTS") showThemeCustomizerOverwrite(error.data?.details);
+    else if (code === "THEME_CHANGED") {
+      invalidateThemeCustomizerOverwrite();
+      setThemeCustomizerStatus("The target changed after confirmation and was not overwritten. Review the current file, then save again for a fresh target-bound confirmation.", "error");
+    } else {
+      const issues = error.data?.details?.issues;
+      setThemeCustomizerStatus(Array.isArray(issues) && issues.length
+        ? issues.map(({ path, message }) => `${path}: ${message}`).join(" · ")
+        : error.message || String(error), "error");
+    }
+  } finally {
+    if (themeCustomizerState?.generation === state.generation) {
+      state.saving = false;
+      updateThemeCustomizerActions();
+    }
+  }
+}
+
+function resetThemeCustomizerDraft() {
+  const state = themeCustomizerState;
+  if (!state?.initialTheme) return;
+  const reset = cloneThemeDraft(state.initialTheme);
+  elements.themeCustomizerName.value = reset.name;
+  renderThemeCustomizerVisualFields(reset);
+  renderThemeCustomizerOptionalFields(reset);
+  acceptThemeCustomizerDraft(reset, { syncJson: true });
+}
+
 function renderThemeSelect({ unavailableLabel = "Theme bundle unavailable" } = {}) {
   if (!elements.themeSelect) return;
   elements.themeSelect.replaceChildren();
@@ -9766,6 +10301,7 @@ function renderThemeSelect({ unavailableLabel = "Theme bundle unavailable" } = {
     option.value = "";
     elements.themeSelect.append(option);
     elements.themeSelect.disabled = true;
+    if (elements.themeCustomizeButton) elements.themeCustomizeButton.disabled = true;
     return;
   }
   if (!availableThemes.length) {
@@ -9773,11 +10309,14 @@ function renderThemeSelect({ unavailableLabel = "Theme bundle unavailable" } = {
     option.value = "";
     elements.themeSelect.append(option);
     elements.themeSelect.disabled = true;
+    if (elements.themeCustomizeButton) elements.themeCustomizeButton.disabled = true;
     return;
   }
   elements.themeSelect.disabled = false;
+  if (elements.themeCustomizeButton) elements.themeCustomizeButton.disabled = false;
   for (const theme of availableThemes) {
-    const option = make("option", undefined, theme.label || displayThemeName(theme.name) || theme.name);
+    const suffix = theme.custom ? ` · ${themeScopeLabel(theme.scope)}` : "";
+    const option = make("option", undefined, `${theme.label || displayThemeName(theme.name) || theme.name}${suffix}`);
     option.value = theme.name;
     elements.themeSelect.append(option);
   }
@@ -9812,6 +10351,7 @@ async function initializeThemes() {
     throw error;
   }
   availableThemes = Array.isArray(response.data?.themes) ? response.data.themes : [];
+  themeCatalogScopes = response.data?.scopes && typeof response.data.scopes === "object" ? response.data.scopes : themeCatalogScopes;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   renderOptionalFeatureControls();
   themeSchemeMode = storedThemeMode() ?? seedThemeSchemeFromStoredTheme();
@@ -9832,6 +10372,49 @@ function activeTabContext(tabId = activeTabId) {
 
 function transcriptStreamOwner(tabId = activeTabId, generation = activeTabGeneration) {
   return `${tabId || ""}:${generation}`;
+}
+
+function unknownTranscriptEvidenceText(event) {
+  const update = event?.assistantMessageEvent || {};
+  const value = update.delta ?? update.content ?? update.text ?? update.thinking ?? "";
+  if (typeof value === "string") return value.slice(0, UNKNOWN_TRANSCRIPT_EVIDENCE_TEXT_LIMIT);
+  try {
+    return JSON.stringify(value).slice(0, UNKNOWN_TRANSCRIPT_EVIDENCE_TEXT_LIMIT);
+  } catch {
+    return "[unserializable transcript evidence]";
+  }
+}
+
+function preserveUnknownTranscriptEvidence(event, classification, owner) {
+  const update = event?.assistantMessageEvent || {};
+  const evidence = {
+    owner: String(owner || ""),
+    subtype: classification?.subtype || "(missing)",
+    fields: Object.keys(update).slice(0, 16),
+    text: unknownTranscriptEvidenceText(event),
+    receivedAt: Date.now(),
+  };
+  appendBoundedStreamDiagnostic(unknownTranscriptEvidence, evidence, UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT);
+  if (owner) {
+    unknownTranscriptOwnersPendingReconcile.add(owner);
+    while (unknownTranscriptOwnersPendingReconcile.size > UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT) {
+      const oldest = unknownTranscriptOwnersPendingReconcile.values().next().value;
+      if (oldest === undefined) break;
+      unknownTranscriptOwnersPendingReconcile.delete(oldest);
+    }
+  }
+  if (streamIsolationDebugLedger) {
+    appendBoundedStreamDiagnostic(streamIsolationDebugLedger.unknownEvidence, evidence, UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT);
+  }
+}
+
+function reconcileUnknownTranscriptEvidenceAtBarrier(event) {
+  const tabContext = activeTabContext(event?.tabId || activeTabId);
+  const owner = transcriptStreamOwner(tabContext.tabId, tabContext.generation);
+  if (!unknownTranscriptOwnersPendingReconcile.delete(owner)) return false;
+  if (!isCurrentTabContext(tabContext)) return false;
+  scheduleSemanticReconcile({ messages: true }, tabContext);
+  return true;
 }
 
 function setActiveTabId(tabId, { remember = false } = {}) {
@@ -12984,7 +13567,6 @@ function clearWidgetsForTab(tabId = activeTabId) {
 
 function resetActiveTabUi() {
   clearRefreshTimers();
-  clearLiveToolRenderQueue();
   eventSource?.close();
   eventSource = null;
   currentState = null;
@@ -14286,7 +14868,12 @@ async function switchTab(tabId) {
     if (activeSubagentTerminalId) deactivateSubagentTerminalView({ focusParent: true });
     return;
   }
+  if (themeCustomizerState?.saving) {
+    setThemeCustomizerStatus("Wait for the theme save to finish before switching tabs.", "warn");
+    return;
+  }
   if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
+  if (themeCustomizerState) closeThemeCustomizer({ restore: true });
   clearOpenTerminalTabGroup(null, { force: true });
   setFollowUpQueueOpen(false);
   setFollowUpQueueStatus("");
@@ -14309,6 +14896,7 @@ async function switchTab(tabId) {
   connectEvents(tabContext);
   await refreshAll(tabContext);
   if (isCurrentTabContext(tabContext)) markTabOutputSeen();
+  await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
   if (!subagentLaunchSlotDraftIsDirty()) {
     loadSubagentLaunchSlotConfig({ tabId }).catch(() => {});
   } else {
@@ -14599,6 +15187,7 @@ async function initializeTabs() {
       return [];
     });
     if (!saved.length) await createFirstTerminalTabFromChosenDirectory();
+    await refreshThemeCatalog(activeTabContext()).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
     return;
   }
   focusPromptInput({ defer: true });
@@ -14610,6 +15199,7 @@ async function initializeTabs() {
     if (!subagentLaunchSlotDraftIsDirty() || subagentLaunchSlotConfigTabId !== activeTabId) {
       loadSubagentLaunchSlotConfig().catch(() => {});
     }
+    await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
   }
 }
 
@@ -20451,18 +21041,37 @@ function scheduleRefreshFooter(delay = 300, tabContext = activeTabContext()) {
   }, delay);
 }
 
-// Coalesced semantic reconciliation. Lifecycle boundaries declare which
-// non-transcript surfaces became dirty; the scheduler then performs the
-// minimum changed set once per frame. Raw stream deltas never reach here.
-function scheduleSemanticReconcile(dirty = {}, tabContext = activeTabContext()) {
+function semanticReconcileContextKey(tabContext = {}) {
+  return `${tabContext.tabId || ""}:${Number(tabContext.generation) || 0}`;
+}
+
+function mergeSemanticReconcileRequest(pendingByContext, dirty = {}, tabContext = {}) {
+  const key = semanticReconcileContextKey(tabContext);
+  let request = pendingByContext.get(key);
+  if (!request) {
+    request = { tabContext: { tabId: tabContext.tabId || null, generation: Number(tabContext.generation) || 0 }, dirty: {} };
+  }
   let requested = false;
-  for (const [flag, value] of Object.entries(dirty)) {
-    if (!value || !Object.prototype.hasOwnProperty.call(semanticReconcileDirty, flag)) continue;
-    semanticReconcileDirty[flag] = true;
+  for (const flag of SEMANTIC_RECONCILE_FLAGS) {
+    if (!dirty[flag]) continue;
+    request.dirty[flag] = true;
     requested = true;
   }
-  if (!requested) return;
-  semanticReconcileContext = tabContext;
+  if (requested) pendingByContext.set(key, request);
+  return requested;
+}
+
+function takeSemanticReconcileRequests(pendingByContext) {
+  const requests = Array.from(pendingByContext.values());
+  pendingByContext.clear();
+  return requests;
+}
+
+// Coalesced semantic reconciliation. Lifecycle boundaries declare which
+// non-transcript surfaces became dirty; each tab generation retains its own
+// request until the frame flush. Raw stream deltas never reach here.
+function scheduleSemanticReconcile(dirty = {}, tabContext = activeTabContext()) {
+  if (!mergeSemanticReconcileRequest(semanticReconcilePending, dirty, tabContext)) return;
   if (semanticReconcileFrame !== null) return;
   const flush = () => {
     semanticReconcileFrame = null;
@@ -20472,28 +21081,28 @@ function scheduleSemanticReconcile(dirty = {}, tabContext = activeTabContext()) 
   else semanticReconcileFrame = setTimeout(flush, 0);
 }
 
-function takeSemanticReconcileDirty() {
-  const dirty = { ...semanticReconcileDirty };
-  for (const flag of Object.keys(semanticReconcileDirty)) semanticReconcileDirty[flag] = false;
-  return dirty;
-}
-
 function flushSemanticReconcile() {
-  const dirty = takeSemanticReconcileDirty();
-  const tabContext = semanticReconcileContext || activeTabContext();
-  semanticReconcileContext = null;
-  if (!isCurrentTabContext(tabContext)) return;
-  if (dirty.messages) scheduleRefreshMessages(120, tabContext);
-  if (dirty.state) scheduleRefreshState(120, tabContext);
-  if (dirty.footerData) scheduleRefreshFooter(300, tabContext);
-  if (dirty.footer) renderFooter();
-  if (dirty.feedback) renderFeedbackTray();
-  if (dirty.usage) {
-    scheduleRefreshCodexUsage(2200);
-    scheduleRefreshClaudeUsage(2200);
-    refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
+  for (const { dirty, tabContext } of takeSemanticReconcileRequests(semanticReconcilePending)) {
+    // Originating-tab settlement work is never reassigned. Workflow continuation
+    // is tab-scoped and may run after the user has switched away.
+    if (dirty.workflow) reconcileGitWorkflowContinuation(tabContext.tabId);
+    if (dirty.usage) {
+      scheduleRefreshCodexUsage(2200);
+      scheduleRefreshClaudeUsage(2200);
+    }
+
+    // DOM and active-session fetches are valid only for the still-current tab
+    // generation; resetActiveTabUi/refreshAll owns the newly active tab.
+    if (!isCurrentTabContext(tabContext)) continue;
+    if (dirty.messages) scheduleRefreshMessages(120, tabContext);
+    if (dirty.state) scheduleRefreshState(120, tabContext);
+    if (dirty.footerData) scheduleRefreshFooter(300, tabContext);
+    if (dirty.footer) renderFooter();
+    if (dirty.feedback) renderFeedbackTray();
+    if (dirty.usage) {
+      refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
+    }
   }
-  if (dirty.workflow) reconcileGitWorkflowContinuation(tabContext.tabId || activeTabId);
 }
 
 // Continue a guided git workflow that was waiting on the agent turn. This is a
@@ -32491,43 +33100,9 @@ function updateLiveToolCard(bubble, message) {
   return true;
 }
 
-function cancelQueuedLiveToolRunRender(toolCallId = "") {
-  if (toolCallId) liveToolRenderQueue.delete(String(toolCallId));
-  else liveToolRenderQueue.clear();
-  if (liveToolRenderQueue.size === 0) {
-    clearTimeout(liveToolRenderTimer);
-    liveToolRenderTimer = null;
-  }
-}
-
-function clearLiveToolRenderQueue() {
-  cancelQueuedLiveToolRunRender();
-}
-
-function flushLiveToolRunRenderQueue() {
-  const entries = Array.from(liveToolRenderQueue.values());
-  clearLiveToolRenderQueue();
-  for (const entry of entries) renderLiveToolRun(entry.run, { scroll: entry.scroll });
-}
-
-function scheduleLiveToolRunRender(run, { scroll = false } = {}) {
-  if (!run?.toolCallId) return;
-  const id = String(run.toolCallId);
-  const existing = liveToolRenderQueue.get(id);
-  liveToolRenderQueue.set(id, { run, scroll: !!(existing?.scroll || scroll) });
-  if (liveToolRenderTimer) return;
-  liveToolRenderTimer = setTimeout(() => {
-    liveToolRenderTimer = null;
-    const flush = () => flushLiveToolRunRenderQueue();
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
-    else flush();
-  }, TOOL_LIVE_UPDATE_THROTTLE_MS);
-}
-
 function renderLiveToolRun(run, { scroll = true } = {}) {
   if (!run?.toolCallId) return;
   const id = String(run.toolCallId);
-  cancelQueuedLiveToolRunRender(id);
   const existing = liveToolCards.get(id);
   const existingConnected = !!(existing?.isConnected && existing.parentElement === elements.chat);
   const shouldFollow = scroll && (autoFollowChat || isChatNearBottom());
@@ -32575,12 +33150,6 @@ function upsertLiveToolRun(event, patch = {}) {
 function handleToolExecutionStart(event) {
   const run = upsertLiveToolRun(event, { isPartial: true, isError: false });
   if (run) renderLiveToolRun(run);
-}
-
-function handleToolExecutionUpdate(event) {
-  const result = { ...(event.partialResult || {}), isError: false };
-  const run = upsertLiveToolRun(event, { result, isPartial: true, isError: false });
-  if (run) scheduleLiveToolRunRender(run, { scroll: false });
 }
 
 function applyTranscriptToolExecutionUpdate(event) {
@@ -38250,15 +38819,7 @@ function applyOutputModeControl(event, tabContext = activeTabContext()) {
   return true;
 }
 
-function cancelStreamingAssistantTextRender() {
-  clearTimeout(streamTextRenderTimer);
-  streamTextRenderTimer = null;
-  if (streamTextRenderFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(streamTextRenderFrame);
-  streamTextRenderFrame = null;
-}
-
 function removeStreamBubble() {
-  cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
   removeLiveTranscriptBubble(streamBubble, "assistant");
   streamBubble = null;
@@ -38405,18 +38966,6 @@ function renderStreamingAssistantText() {
   }
 }
 
-function scheduleStreamingAssistantTextRender({ immediate = false } = {}) {
-  if (streamTextRenderTimer || streamTextRenderFrame !== null) return;
-  const flush = () => {
-    streamTextRenderTimer = null;
-    streamTextRenderFrame = null;
-    renderStreamingAssistantText();
-    scheduleChatFollowScroll();
-  };
-  if (immediate && typeof requestAnimationFrame === "function") streamTextRenderFrame = requestAnimationFrame(flush);
-  else streamTextRenderTimer = setTimeout(flush, immediate ? 0 : STREAM_OUTPUT_TOOLCALL_GUARD_MS);
-}
-
 function suppressStreamingAssistantTextBeforeToolCall() {
   setStreamRawText("");
   removeStreamBubble();
@@ -38513,7 +39062,6 @@ function showStreamingThinking(initialText = "") {
 
 function resetStreamBubble({ preserveCompact = false } = {}) {
   resetCompactLiveOutput({ remove: !preserveCompact });
-  cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
   streamBubble = null;
   streamText = null;
@@ -41315,6 +41863,8 @@ const TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES = new Set([
   "tool_execution_end",
   "agent_end",
   "agent_settled",
+  "auto_retry_start",
+  "auto_retry_end",
   "compaction_start",
   "compaction_end",
   "webui_output_mode",
@@ -41330,7 +41880,8 @@ function dispatchTranscriptStreamEvent(event) {
 
 function flushTranscriptStreamBarrier(event) {
   if (!TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES.has(event?.type)) return;
-  streamOutputController.barrier();
+  streamOutputController.barrier(event.type);
+  reconcileUnknownTranscriptEvidenceAtBarrier(event);
   if (event.type === "pi_process_exit" || event.type === "pi_process_error") streamOutputController.cancel();
 }
 
@@ -41359,6 +41910,10 @@ function handleEvent(event) {
   }
   if (eventHasTabActivityPayload(event)) ingestEventTabActivity(event);
   if (event?.type === "auto_retry_start" || event?.type === "auto_retry_end") trackAutoRetryStateFromEvent(event);
+  // Advance the fallback tool-boundary epoch before inactive-tab routing.
+  // Inactive tool boundaries are still tracked, so their agent_start must own
+  // the same run identity semantics as the foreground tab.
+  if (event?.type === "agent_start") beginToolBoundaryRun(event);
   if (eventMayAffectSkillUsage(event)) trackSkillsFromEvent(event);
   if (!eventTargetsActiveTab(event)) {
     handleInactiveTabEvent(event);
@@ -41566,9 +42121,6 @@ function handleEvent(event) {
         setRunIndicatorActivity("Starting assistant message…", { scroll: false });
       }
       break;
-    case "message_update":
-      handleMessageUpdate(event);
-      break;
     case "message_end": {
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       streamMessageActive = false;
@@ -41597,10 +42149,6 @@ function handleEvent(event) {
       }
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
       if (claimToolBoundaryRecord(event, "log:start")) addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
-      break;
-    case "tool_execution_update":
-      if (!compactOutputActive()) handleToolExecutionUpdate(event);
-      setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`, { scroll: false });
       break;
     case "tool_execution_end": {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
@@ -42411,6 +42959,8 @@ function resetAbortLongPressAffordance() {
 async function abortActiveRun({ source = "button" } = {}) {
   if (abortRequestInFlight || !isAbortAvailable()) return;
   const tabContext = activeTabContext();
+  streamOutputController.barrier("user-abort");
+  reconcileUnknownTranscriptEvidenceAtBarrier({ type: "user_abort", tabId: tabContext.tabId });
   abortRequestInFlight = true;
   resetAbortLongPressAffordance();
   updateComposerModeButtons();
@@ -42606,6 +43156,33 @@ elements.themeSchemeToggle?.querySelectorAll("[data-scheme-mode]").forEach((butt
   button.addEventListener("click", () => {
     setThemeSchemeMode(button.dataset.schemeMode, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
   });
+});
+elements.themeCustomizeButton?.addEventListener("click", () => openThemeCustomizer().catch((error) => addEvent(error.message || String(error), "error")));
+elements.themeCustomizerName?.addEventListener("input", updateThemeCustomizerFromVisual);
+elements.themeCustomizerScope?.addEventListener("change", () => {
+  invalidateThemeCustomizerOverwrite();
+  updateThemeCustomizerActions();
+});
+elements.themeCustomizerThinkingMax?.addEventListener("input", updateThemeCustomizerFromVisual);
+elements.themeCustomizerVars?.addEventListener("input", updateThemeCustomizerFromVisual);
+elements.themeCustomizerJson?.addEventListener("input", updateThemeCustomizerFromJson);
+elements.themeCustomizerCancelButton?.addEventListener("click", () => closeThemeCustomizer({ restore: true }));
+elements.themeCustomizerResetButton?.addEventListener("click", resetThemeCustomizerDraft);
+elements.themeCustomizerSaveButton?.addEventListener("click", () => saveThemeCustomizer().catch((error) => setThemeCustomizerStatus(error.message || String(error), "error")));
+elements.themeCustomizerOverwriteButton?.addEventListener("click", () => saveThemeCustomizer({ overwrite: true }).catch((error) => setThemeCustomizerStatus(error.message || String(error), "error")));
+elements.themeCustomizerDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (themeCustomizerState?.saving) {
+    setThemeCustomizerStatus("Wait for the theme save to finish before closing.", "warn");
+    return;
+  }
+  closeThemeCustomizer({ restore: true });
+});
+elements.themeCustomizerDialog?.addEventListener("close", () => {
+  const state = themeCustomizerState;
+  if (!state || state.closing) return;
+  restoreThemeCustomizerOpeningState(state.generation);
+  themeCustomizerState = null;
 });
 if (elements.backgroundChooseButton && elements.backgroundInput) {
   elements.backgroundChooseButton.addEventListener("click", () => elements.backgroundInput.click());
