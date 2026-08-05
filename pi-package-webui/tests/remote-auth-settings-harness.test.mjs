@@ -98,6 +98,7 @@ try {
   assert.equal(initialGitSetup.status, 200);
   assert.equal(initialGitSetup.body?.data?.configured, false, "guided Git should require first-time model setup");
   assert.equal(initialGitSetup.body?.data?.preferences?.stagingPolicy, "review", "review/select should be the safe staging default");
+  assert.equal(initialGitSetup.body?.data?.preferences?.reviewProcessEnabled, true, "manual review should remain enabled by default for compatibility");
   assert.equal(initialGitSetup.body?.data?.models?.[0]?.id, "fake-model");
 
   const unsupportedEffort = await request("/api/git-workflow/preferences", {
@@ -112,6 +113,12 @@ try {
   });
   assert.equal(invalidStagingPolicy.status, 400, "setup should reject invalid preference choices instead of silently normalizing them");
 
+  const invalidReviewProcess = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" }, reviewProcessEnabled: "disabled" } },
+  });
+  assert.equal(invalidReviewProcess.status, 400, "setup should require an explicit boolean review-process preference");
+
   const savedGitSetup = await request("/api/git-workflow/preferences", {
     method: "POST",
     body: {
@@ -119,6 +126,7 @@ try {
         generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", unavailablePolicy: "ask" },
         commit: { language: "de", defaultVariant: "long", scope: "required" },
         stagingPolicy: "review",
+        reviewProcessEnabled: false,
         deliveryMode: "ask",
         verificationPolicy: "ask",
       },
@@ -127,6 +135,7 @@ try {
   assert.equal(savedGitSetup.status, 200);
   assert.equal(savedGitSetup.body?.data?.configured, true);
   assert.equal(savedGitSetup.body?.data?.preferences?.commit?.language, "de");
+  assert.equal(savedGitSetup.body?.data?.preferences?.reviewProcessEnabled, false);
 
   const generation = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
   assert.equal(generation.status, 200);

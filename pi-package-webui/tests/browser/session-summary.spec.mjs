@@ -106,6 +106,10 @@ function generatedSummaryResponse() {
 }
 
 async function installSummaryRoutes(page, requests, { configured = false, summary = null, generate = generatedSummaryResponse } = {}) {
+  const requestTabId = (route) => new URL(route.request().url()).searchParams.get("tab");
+  requests.getTabs = [];
+  requests.putTabs = [];
+  requests.generateTabs = [];
   await page.route("**/api/commands?*", async (route) => {
     await route.fulfill({
       status: 200,
@@ -118,16 +122,21 @@ async function installSummaryRoutes(page, requests, { configured = false, summar
   });
   await page.route("**/api/session-summary/preferences?*", async (route) => {
     const method = route.request().method();
+    const tabId = requestTabId(route);
     if (method === "GET") {
       requests.get += 1;
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, data: preferencesData({ configured, summary }) }) });
+      requests.getTabs.push(tabId);
+      const tabSummary = typeof summary === "function" ? summary(tabId) : summary;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, data: preferencesData({ configured, summary: tabSummary }) }) });
       return;
     }
+    requests.putTabs.push(tabId);
     requests.put.push(JSON.parse(route.request().postData() || "{}"));
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, data: preferencesData({ configured: true }) }) });
   });
   await page.route("**/api/session-summary/generate?*", async (route) => {
     const request = JSON.parse(route.request().postData() || "{}");
+    requests.generateTabs.push(requestTabId(route));
     requests.generate.push(request);
     const response = await generate(request, requests.generate.length);
     await route.fulfill({
@@ -143,7 +152,7 @@ test("first click opens confirmed setup, cancel has no side effect, and save ope
   await installSummaryRoutes(page, requests);
   await page.goto(baseURL);
 
-  const summaryButton = page.locator("#summaryHeaderButton");
+  const summaryButton = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-summary-button");
   await expect(summaryButton).toBeVisible();
   await summaryButton.evaluate((button) => button.click());
   await expect(page.locator("#nativeCommandDialog")).toBeVisible();
@@ -231,7 +240,7 @@ test("typed summary commands stay native, preserve failures, reset sessions, res
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, data: {} }) });
   });
   await page.goto(baseURL);
-  await expect(page.locator("#summaryHeaderButton")).toBeVisible();
+  await expect(page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-summary-button")).toBeVisible();
 
   const prompt = page.locator("#promptInput");
   await prompt.fill("/summary");
@@ -268,4 +277,83 @@ test("typed summary commands stay native, preserve failures, reset sessions, res
   await page.locator("#newTabCurrentDirectoryButton").evaluate((button) => button.click());
   await expect(page.locator("#tabBar [role=\"tab\"]")).toHaveCount(2);
   await expect(page.locator("#sessionSummaryOverlay")).toBeHidden();
+});
+
+test("inactive and grouped tab actions keep setup, generation, and busy state scoped without activating the tab", async ({ page }) => {
+  const requests = { get: 0, put: [], generate: [] };
+  let releaseGeneration;
+  const generationReleased = new Promise((resolve) => { releaseGeneration = resolve; });
+  await installSummaryRoutes(page, requests, {
+    generate: async () => {
+      await generationReleased;
+      return generatedSummaryResponse();
+    },
+  });
+  await page.goto(baseURL);
+  await expect(page.locator(".terminal-tab[data-tab-id]").first()).toBeVisible();
+  const initialTabCount = await page.locator(".terminal-tab[data-tab-id]").count();
+  expect(initialTabCount).toBeGreaterThan(0);
+  await expect(page.locator(".terminal-tab-summary-button")).toHaveCount(initialTabCount);
+
+  const firstTabId = await page.locator(".terminal-tab[data-tab-id]").first().getAttribute("data-tab-id");
+  await page.locator("#newTabButton").evaluate((button) => button.click());
+  await page.locator("#newTabCurrentDirectoryButton").evaluate((button) => button.click());
+  const expectedTabCount = initialTabCount + 1;
+  await expect(page.locator(".terminal-tab[data-tab-id]")).toHaveCount(expectedTabCount);
+  await expect(page.locator(".terminal-tab-summary-button")).toHaveCount(expectedTabCount);
+
+  await page.reload();
+  await expect(page.locator(".terminal-tab[data-tab-id]")).toHaveCount(expectedTabCount);
+  await expect(page.locator(".terminal-tab-summary-button")).toHaveCount(expectedTabCount);
+
+  const activeTab = page.locator(".terminal-tab.active[data-tab-id]");
+  const activeTabId = await activeTab.getAttribute("data-tab-id");
+  expect(activeTabId).not.toBe(firstTabId);
+  const inactiveSummary = page.locator(`[data-tab-id="${firstTabId}"] > .terminal-tab-summary-button`);
+  const activeSummary = page.locator(`[data-tab-id="${activeTabId}"] > .terminal-tab-summary-button`);
+  await inactiveSummary.click();
+  await expect(page.locator("#nativeCommandDialog")).toBeVisible();
+  await expect(page.locator("#nativeCommandTitle")).toHaveText("/summary-setup");
+  await expect(page.locator(`[data-tab-id="${activeTabId}"]`)).toHaveClass(/active/);
+
+  await page.locator("#nativeCommandActions").getByRole("button", { name: "Save and generate" }).click();
+  await page.locator("#confirmationConfirmButton").click();
+  await expect.poll(() => requests.generate.length).toBe(1);
+  expect(requests.putTabs).toEqual([firstTabId]);
+  expect(requests.generateTabs).toEqual([firstTabId]);
+  await expect(inactiveSummary).toBeDisabled();
+  await expect(inactiveSummary).toHaveAttribute("aria-busy", "true");
+  await expect(activeSummary).toBeEnabled();
+  await expect(activeSummary).toHaveAttribute("aria-busy", "false");
+  await expect(page.locator(`[data-tab-id="${activeTabId}"]`)).toHaveClass(/active/);
+
+  releaseGeneration();
+  await expect(page.locator("#sessionSummaryOverlay")).toBeVisible();
+  await expect(page.locator("#sessionSummaryOverlayTitle")).toHaveText("Validated fixture title");
+  await expect(inactiveSummary).toBeEnabled();
+  await page.keyboard.press("Escape");
+
+  await page.locator(`.terminal-tab[data-tab-id="${activeTabId}"]`).dragTo(page.locator(`.terminal-tab[data-tab-id="${firstTabId}"]`));
+  const group = page.locator(".terminal-tab-custom-group");
+  await expect(group).toHaveCount(1);
+  await group.hover();
+  await expect(group.locator(".terminal-tab-group-item")).toHaveCount(2);
+  await expect(group.locator(".terminal-tab-group-item > .terminal-tab-summary-button")).toHaveCount(2);
+  await group.locator(`[data-tab-id="${firstTabId}"] > .terminal-tab-summary-button`).click();
+  await expect(page.locator("#sessionSummaryOverlayTitle")).toHaveText("Validated fixture title");
+  await expect(group.locator(`[data-tab-id="${activeTabId}"]`)).toHaveClass(/active/);
+});
+
+test("focus returns to a regenerated per-tab summary action after tab controls rerender", async ({ page }) => {
+  const requests = { get: 0, put: [], generate: [] };
+  await installSummaryRoutes(page, requests, { configured: true });
+  await page.goto(baseURL);
+
+  await expect(page.locator("#promptInput")).toBeFocused();
+  const summaryButton = page.locator(".terminal-tab.active[data-tab-id] > .terminal-tab-summary-button, .terminal-tab-group.active .terminal-tab-group-item.active > .terminal-tab-summary-button");
+  await expect(summaryButton).toHaveCount(1);
+  await summaryButton.evaluate((button) => button.click());
+  await expect(page.locator("#sessionSummaryOverlayTitle")).toHaveText("Validated fixture title");
+  await page.keyboard.press("Escape");
+  await expect(summaryButton).toBeFocused();
 });

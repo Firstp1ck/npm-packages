@@ -824,6 +824,12 @@ async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> 
     ], current.stagingPolicy);
     if (!stagingPolicy) return;
 
+    const reviewProcess = await selectGitWorkflowSetupValue(ctx, "Manual review process", [
+      { value: "enabled", label: "Enabled when aur-review is available" },
+      { value: "disabled", label: "Disabled — continue directly to message generation" },
+    ], current.reviewProcessEnabled ? "enabled" : "disabled");
+    if (!reviewProcess) return;
+
     const deliveryMode = await selectGitWorkflowSetupValue(ctx, "Default delivery path", [
       { value: "ask", label: "Ask each workflow" },
       { value: "current", label: "Prefer the current branch" },
@@ -846,6 +852,7 @@ async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> 
       },
       commit: { language, defaultVariant, scope },
       stagingPolicy,
+      reviewProcessEnabled: reviewProcess === "enabled",
       deliveryMode,
       verificationPolicy,
     };
@@ -896,7 +903,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.registerCommand("git-workflow-setup", {
-    description: "Configure the model, reasoning effort, staging, and commit defaults for guided Git",
+    description: "Configure the model, reasoning effort, staging, review process, and commit defaults for guided Git",
     handler: async (_args, ctx) => runGitWorkflowSetup(ctx),
   });
 

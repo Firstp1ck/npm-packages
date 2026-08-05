@@ -20,7 +20,6 @@ const elements = {
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
   splitTabButton: $("#splitTabButton"),
   workspaceSaveButton: $("#workspaceSaveButton"),
-  summaryHeaderButton: $("#summaryHeaderButton"),
   newTabMenu: $("#newTabMenu"),
   newTabButton: $("#newTabButton"),
   newTabMenuPanel: $("#newTabMenuPanel"),
@@ -140,7 +139,6 @@ const elements = {
   remoteMicStreamingConsentButton: $("#remoteMicStreamingConsentButton"),
   newSessionButton: $("#newSessionButton"),
   compactButton: $("#compactButton"),
-  summaryActionButton: $("#summaryActionButton"),
   workflowModeControls: $("#workflowModeControls"),
   workflowModeButton: $("#workflowModeButton"),
   workflowOverlayOpenButton: $("#workflowOverlayOpenButton"),
@@ -624,6 +622,7 @@ let nativeCommandTabId = null;
 let nativeSettingsDirty = false;
 let sessionSummaryOverlayTabId = null;
 let sessionSummaryOverlayFocusReturn = null;
+let sessionSummaryOverlayFocusReturnKey = "";
 const sessionSummaryByTab = new Map();
 let pathPickerState = null;
 let firstTerminalCwdPromptShown = false;
@@ -656,6 +655,7 @@ let optionsMenuOpen = false;
 let availableCommands = [];
 let rawAvailableCommands = [];
 const commandCatalogsByTab = new Map();
+const commandCatalogRefreshesByTab = new Map();
 let commandSuggestions = [];
 let pathSuggestions = [];
 let bangSuggestions = [];
@@ -5061,7 +5061,7 @@ function bindTerminalTabDragAndDrop(element, { sourceTabId = "", target = null }
     element.draggable = true;
     element.dataset.dragTabId = sourceTabId;
     element.addEventListener("dragstart", (event) => {
-      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-group-add")) {
+      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-summary-button, .terminal-tab-group-add")) {
         event.preventDefault();
         return;
       }
@@ -13892,6 +13892,8 @@ function renderTerminalTab(tab) {
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button);
+  const summary = createTerminalTabSessionSummaryButton(tab);
+  if (summary) wrapper.append(summary);
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close", "×");
@@ -13934,6 +13936,8 @@ function renderTerminalTabGroupItem(tab, group) {
     switchTab(tab.id);
   });
   item.append(button);
+  const summary = createTerminalTabSessionSummaryButton(tab);
+  if (summary) item.append(summary);
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close terminal-tab-group-item-close", "×");
@@ -14104,6 +14108,7 @@ function terminalTabControlKey(node) {
   const tabId = node?.closest?.("[data-tab-id]")?.dataset?.tabId;
   if (tabId) {
     if (node.classList.contains("terminal-tab-close")) return `terminal-tab:${tabId}:close`;
+    if (node.classList.contains("terminal-tab-summary-button")) return `terminal-tab:${tabId}:summary`;
     if (node.classList.contains("terminal-tab-button")) return `terminal-tab:${tabId}:switch`;
   }
   const groupKey = node?.closest?.("[data-group-key]")?.dataset?.groupKey;
@@ -14172,6 +14177,18 @@ function renderTabs() {
   if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
 }
 
+function prefetchInactiveTabCommandCatalogs() {
+  for (const tab of tabs) {
+    if (!tab?.id || tab.id === activeTabId || commandCatalogsByTab.has(tab.id) || commandCatalogRefreshesByTab.has(tab.id)) continue;
+    const refresh = refreshCommands(activeTabContext(tab.id))
+      .catch(() => {})
+      .finally(() => {
+        if (commandCatalogRefreshesByTab.get(tab.id) === refresh) commandCatalogRefreshesByTab.delete(tab.id);
+      });
+    commandCatalogRefreshesByTab.set(tab.id, refresh);
+  }
+}
+
 async function refreshTabs({ selectStored = false } = {}) {
   const previousTabs = tabs;
   const response = await api("/api/tabs", { scoped: false });
@@ -14196,6 +14213,7 @@ async function refreshTabs({ selectStored = false } = {}) {
   }
   renderSessionSkillTags(activeTabId);
   renderTabs();
+  prefetchInactiveTabCommandCatalogs();
   return tabs;
 }
 
@@ -27556,10 +27574,11 @@ function renderGitWorkflow() {
   elements.gitWorkflowSteps.replaceChildren();
   elements.gitWorkflowActions.replaceChildren();
 
-  // Once a flow required manual review, keep its recovery step visible even
-  // if the extension was disabled or disappeared. Hiding it would suggest a
-  // legacy fallback that is no longer authorized for this flow.
-  const reviewStepAvailable = guidedGitReviewAvailable(activeTabId) || gitWorkflow.guidedReviewRequired === true;
+  const preferences = gitWorkflow.preferences || gitWorkflowPreferences || {};
+  // The saved option controls new workflows, while an already-required review
+  // remains visible and fail-closed if setup or extension availability changes.
+  const reviewStepAvailable = (preferences.reviewProcessEnabled !== false && guidedGitReviewAvailable(activeTabId))
+    || gitWorkflow.guidedReviewRequired === true;
   const standardProcesses = reviewStepAvailable ? GIT_WORKFLOW_PROCESSES : GIT_WORKFLOW_PROCESSES.filter((process) => process.value !== "review");
   const processes = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_PROCESSES : standardProcesses;
   const activeIndexMap = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_ACTIVE_INDEX : GIT_WORKFLOW_ACTIVE_INDEX;
@@ -27586,7 +27605,6 @@ function renderGitWorkflow() {
     return;
   }
 
-  const preferences = gitWorkflow.preferences || gitWorkflowPreferences || {};
   if (gitWorkflow.step === "add") {
     if (preferences.stagingPolicy === "all") {
       addGitWorkflowAction("Run git add .", () => runGitAdd(), "primary", false);
@@ -27968,10 +27986,9 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
     pr: null,
     prRequestedAt: 0,
     ...resetGuidedGitReviewPatch({ retainDeclinedStagedContentHash: false }),
-    // Availability at the moment this new standard flow begins determines
-    // whether it is a required-review flow; later extension loss cannot turn
-    // an already-required flow into the legacy path.
-    guidedReviewRequired: guidedGitReviewAvailable(tabId),
+    // The saved option and current capability decide whether a new flow requires
+    // review; once required, later setup or extension changes cannot bypass it.
+    guidedReviewRequired: preferences.reviewProcessEnabled !== false && guidedGitReviewAvailable(tabId),
     preferences,
     verificationConfirmed: false,
   }, { tabId });
@@ -28303,7 +28320,7 @@ async function runGitAdd(tabId = gitWorkflowActionTabId()) {
     const result = await gitWorkflowRequest("/api/git-workflow/add", { runId, tabId });
     if (!result) return;
     const output = `${formatGitCommandResult(result)}\n\nStaged.`;
-    if (guidedGitReviewAvailable(tabId) || workflow.guidedReviewRequired === true) {
+    if ((workflow.preferences?.reviewProcessEnabled !== false && guidedGitReviewAvailable(tabId)) || workflow.guidedReviewRequired === true) {
       // A required gate never falls through to the legacy message flow just
       // because its extension was disabled or disappeared after staging.
       await requestGuidedGitReview(tabId, { output });
@@ -28327,7 +28344,7 @@ async function acceptCurrentGitStaging(tabId = gitWorkflowActionTabId()) {
     const staged = Number(response.data?.summary?.staged || 0);
     if (staged <= 0) throw new Error("No staged files are available. Use Review/select changes to stage the intended files first.");
     const output = `Using the current staged set (${staged} file${staged === 1 ? "" : "s"}).`;
-    if (guidedGitReviewAvailable(tabId) || workflow.guidedReviewRequired === true) {
+    if ((workflow.preferences?.reviewProcessEnabled !== false && guidedGitReviewAvailable(tabId)) || workflow.guidedReviewRequired === true) {
       await requestGuidedGitReview(tabId, { output });
     } else {
       setGitWorkflow({
@@ -35495,19 +35512,57 @@ function sessionSummaryStateForTab(tabId = activeTabId) {
   return normalized;
 }
 
+function sessionSummaryControlStatus(tabId) {
+  const state = sessionSummaryStateForTab(tabId);
+  if (state?.status === "generating") return "Generating session summary…";
+  if (state?.status === "failure") return `Session summary failed: ${state.message || "unknown error"}`;
+  if (state?.summaryMarkdown) return "Open the latest session summary";
+  return "Open or create a session summary";
+}
+
+function createTerminalTabSessionSummaryButton(tab) {
+  if (!tab?.id || !hasAvailableCommand("summary", { tabId: tab.id })) return null;
+  const state = sessionSummaryStateForTab(tab.id);
+  const status = sessionSummaryControlStatus(tab.id);
+  const button = make("button", "terminal-tab-summary-button");
+  button.type = "button";
+  button.draggable = false;
+  button.disabled = state?.status === "generating";
+  button.setAttribute("aria-busy", state?.status === "generating" ? "true" : "false");
+  button.setAttribute("aria-controls", "sessionSummaryOverlay");
+  const label = `${status} for ${tab.title || "Pi terminal"}`;
+  applyStyledTooltip(button, status, { ariaLabel: label, targetKey: `terminal-tab:${tab.id}:summary` });
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  icon.setAttribute("class", "composer-icon");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const page = document.createElementNS(ns, "path");
+  page.setAttribute("d", "M5 4h14v16H5z");
+  page.setAttribute("fill", "none");
+  page.setAttribute("stroke", "currentColor");
+  page.setAttribute("stroke-width", "2");
+  page.setAttribute("stroke-linejoin", "round");
+  const lines = document.createElementNS(ns, "path");
+  lines.setAttribute("d", "M8 8h8M8 12h8M8 16h5");
+  lines.setAttribute("fill", "none");
+  lines.setAttribute("stroke", "currentColor");
+  lines.setAttribute("stroke-width", "2");
+  lines.setAttribute("stroke-linecap", "round");
+  icon.append(page, lines);
+  button.append(icon);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void openSessionSummaryForTab(tab.id, { focusReturnKey: `terminal-tab:${tab.id}:summary` }).catch((error) => addEvent(error.message || String(error), "error"));
+  });
+  return button;
+}
+
 function renderSessionSummaryControls() {
-  const available = !!activeTabId && hasAvailableCommand("summary", { tabId: activeTabId });
   const setupAvailable = !!activeTabId && hasAvailableCommand("summary-setup", { tabId: activeTabId });
-  const state = sessionSummaryStateForTab(activeTabId);
-  const status = state?.status === "generating" ? "Generating session summary…" : state?.status === "failure" ? `Session summary failed: ${state.message || "unknown error"}` : state?.summaryMarkdown ? "Open the latest session summary" : "Open or create a session summary";
-  for (const button of [elements.summaryHeaderButton, elements.summaryActionButton]) {
-    if (!button) continue;
-    button.hidden = !available;
-    button.disabled = !available || state?.status === "generating";
-    button.setAttribute("aria-busy", state?.status === "generating" ? "true" : "false");
-    applyStyledTooltip(button, status, { ariaLabel: status, align: "end" });
-  }
   if (elements.optionsSummarySetupButton) elements.optionsSummarySetupButton.hidden = !setupAvailable;
+  scheduleTabsRender();
 }
 
 function closeSessionSummaryOverlay({ restoreFocus = true } = {}) {
@@ -35515,9 +35570,19 @@ function closeSessionSummaryOverlay({ restoreFocus = true } = {}) {
   if (!overlay || overlay.hidden) return;
   overlay.hidden = true;
   const focusReturn = sessionSummaryOverlayFocusReturn;
+  const focusReturnKey = sessionSummaryOverlayFocusReturnKey;
+  const keyedFocusReturn = focusReturnKey
+    ? [...elements.tabBar.querySelectorAll("button")].find((node) => terminalTabControlKey(node) === focusReturnKey)
+    : null;
+  const connectedFocusReturn = keyedFocusReturn || (focusReturn?.isConnected ? focusReturn : null);
   sessionSummaryOverlayTabId = null;
   sessionSummaryOverlayFocusReturn = null;
-  if (restoreFocus && focusReturn?.isConnected) queueMicrotask(() => focusReturn.focus({ preventScroll: true }));
+  sessionSummaryOverlayFocusReturnKey = "";
+  if (restoreFocus && connectedFocusReturn) {
+    const groupKey = connectedFocusReturn.closest?.("[data-group-key]")?.dataset?.groupKey;
+    if (groupKey) setOpenTerminalTabGroup(groupKey);
+    queueMicrotask(() => connectedFocusReturn.focus({ preventScroll: true }));
+  }
 }
 
 function renderSessionSummaryOverlay() {
@@ -35545,9 +35610,10 @@ function renderSessionSummaryOverlay() {
   elements.sessionSummaryOverlayRefreshButton.textContent = generating ? "Generating…" : "Refresh";
 }
 
-function openSessionSummaryOverlay(tabId, { loading = false } = {}) {
+function openSessionSummaryOverlay(tabId, { loading = false, focusReturnKey = "" } = {}) {
   if (!tabId || !elements.sessionSummaryOverlay) return;
   sessionSummaryOverlayFocusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  sessionSummaryOverlayFocusReturnKey = focusReturnKey || terminalTabControlKey(sessionSummaryOverlayFocusReturn);
   sessionSummaryOverlayTabId = tabId;
   if (loading) {
     const previous = sessionSummaryStateForTab(tabId);
@@ -35569,7 +35635,7 @@ function updateSessionSummaryForTab(tabId, value, { resetProjection = false } = 
   const normalized = normalizeSessionSummaryClientState(value, sessionSummaryByTab.get(tabId), { resetProjection });
   if (!normalized) return null;
   sessionSummaryByTab.set(tabId, normalized);
-  if (tabId === activeTabId) renderSessionSummaryControls();
+  renderSessionSummaryControls();
   if (sessionSummaryOverlayTabId === tabId) renderSessionSummaryOverlay();
   return normalized;
 }
@@ -35604,7 +35670,7 @@ async function requestSessionSummaryGeneration(tabId, { refresh = false } = {}) 
   }
 }
 
-async function openSessionSummaryForTab(tabId = activeTabId, { refresh = false } = {}) {
+async function openSessionSummaryForTab(tabId = activeTabId, { refresh = false, focusReturnKey = "" } = {}) {
   if (!tabId || !hasAvailableCommand("summary", { tabId })) return;
   let state = sessionSummaryStateForTab(tabId);
   if (!state?.configured) {
@@ -35618,11 +35684,11 @@ async function openSessionSummaryForTab(tabId = activeTabId, { refresh = false }
       updatedAt: new Date().toISOString(),
     });
     if (!response.data?.preferences?.configured) {
-      await openNativeSessionSummarySetupDialog({ initialData: response.data });
+      await openNativeSessionSummarySetupDialog({ initialData: response.data, tabId, focusReturnKey });
       return;
     }
   }
-  openSessionSummaryOverlay(tabId, { loading: refresh || !state?.summaryMarkdown });
+  openSessionSummaryOverlay(tabId, { loading: refresh || !state?.summaryMarkdown, focusReturnKey });
   if (refresh || !state?.summaryMarkdown) await requestSessionSummaryGeneration(tabId, { refresh }).catch(() => {});
 }
 
@@ -36421,8 +36487,8 @@ function gitWorkflowSetupModelKey(model) {
   return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
 }
 
-async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved } = {}) {
-  nativeCommandTabId = activeTabId;
+async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved, tabId = activeTabId, focusReturnKey = "" } = {}) {
+  nativeCommandTabId = tabId;
   openNativeCommandDialog({
     title: "/summary-setup",
     message: "Configure persistent background titles and Markdown summaries. Saving confirms the disclosure below, then immediately generates and opens the first summary.",
@@ -36519,10 +36585,11 @@ async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved
       const summaryPrompt = controls.summaryPrompt.textarea.value.trim();
       if (!titlePrompt || !summaryPrompt) throw new Error("Both editable prompts are required.");
       if (titlePrompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS || summaryPrompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS) throw new Error("Each editable prompt must not exceed 8 KiB.");
+      const targetTabId = nativeCommandTabId || tabId || activeTabId;
       const reviewed = await appConfirm({
         title: "Save session summary setup?",
         summary: `${disclosure.scope || "Selected active-branch text and tool names will be sent to the configured model."}\n\n${disclosure.cost || "Generation may incur provider usage."}`,
-        affected: "Global session-summary preferences and the active tab's first generated summary",
+        affected: "Global session-summary preferences and the selected tab's first generated summary",
         undoable: false,
         confirmLabel: "Save and generate",
         danger: false,
@@ -36530,6 +36597,7 @@ async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved
       if (!reviewed) return;
       const response = await nativeCommandApi("/api/session-summary/preferences", {
         method: "PUT",
+        tabId: targetTabId,
         body: {
           confirmed: true,
           preferences: {
@@ -36542,7 +36610,6 @@ async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved
           },
         },
       });
-      const targetTabId = nativeCommandTabId || activeTabId;
       updateSessionSummaryForTab(targetTabId, response.data?.summary || {
         version: SESSION_SUMMARY_PROTOCOL_VERSION,
         status: "idle",
@@ -36553,7 +36620,7 @@ async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved
       });
       nativeSettingsDirty = false;
       closeNativeCommandDialog({ force: true });
-      openSessionSummaryOverlay(targetTabId, { loading: true });
+      openSessionSummaryOverlay(targetTabId, { loading: true, focusReturnKey });
       await requestSessionSummaryGeneration(targetTabId, { refresh: true }).catch(() => {});
       if (typeof onSaved === "function") await onSaved(response.data?.preferences);
     } catch (error) {
@@ -36623,6 +36690,10 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
       { value: "preserve", label: "Use current staged set" },
       { value: "all", label: "Stage all with git add ." },
     ], "Review/select is the safe default and opens Git Changes for per-file staging.", { label: "safety", tone: "safety" }),
+    reviewProcess: nativeSettingSelect("Manual review process", preferences.reviewProcessEnabled !== false ? "enabled" : "disabled", [
+      { value: "enabled", label: "Enabled when aur-review is available" },
+      { value: "disabled", label: "Disabled — continue to message generation" },
+    ], "When enabled, staged changes require explicit approval before message, worktree, or commit actions.", { label: "safety", tone: "safety" }),
     delivery: nativeSettingSelect("Delivery path", preferences.deliveryMode || "ask", [
       { value: "ask", label: "Ask each workflow" },
       { value: "current", label: "Prefer current branch" },
@@ -36651,7 +36722,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
     nativeSettingsNote("Persistence", `Saved globally in ${data.path || "the Pi Web UI settings file"}. Credentials are never stored here.`),
     nativeSettingsSection("Generation profile", "Required model and effort for generated Git text.", [controls.model, controls.thinking], { open: true }),
     nativeSettingsSection("Commit style", "Conventional Commit output preferences.", [controls.language, controls.defaultVariant, controls.scope], { open: true }),
-    nativeSettingsSection("Workflow safety", "Staging, delivery, and verification defaults; push and PR confirmation remain mandatory.", [controls.staging, controls.delivery, controls.verification], { open: true }),
+    nativeSettingsSection("Workflow safety", "Staging, review, delivery, and verification defaults; push and PR confirmation remain mandatory.", [controls.staging, controls.reviewProcess, controls.delivery, controls.verification], { open: true }),
   );
   elements.nativeCommandBody.replaceChildren(body);
   elements.nativeCommandActions.replaceChildren();
@@ -36679,6 +36750,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
               scope: controls.scope.select.value,
             },
             stagingPolicy: controls.staging.select.value,
+            reviewProcessEnabled: controls.reviewProcess.select.value === "enabled",
             deliveryMode: controls.delivery.select.value,
             verificationPolicy: controls.verification.select.value,
           },
@@ -39527,6 +39599,7 @@ function renderCommands() {
 async function refreshCommands(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return;
   const response = await api("/api/commands", { tabId: tabContext.tabId });
+  if (!tabs.some((tab) => tab.id === tabContext.tabId)) return;
   const catalog = {
     raw: normalizeCommands(response.data?.commands || [], { dedupe: false }),
     available: normalizeCommands(response.data?.commands || []),
@@ -39535,6 +39608,7 @@ async function refreshCommands(tabContext = activeTabContext()) {
   // while this request was in flight. Guided Git must never borrow another
   // tab's extension availability or duplicate-command alias.
   commandCatalogsByTab.set(tabContext.tabId, catalog);
+  scheduleTabsRender();
   if (!isCurrentTabContext(tabContext)) return;
   rawAvailableCommands = catalog.raw;
   availableCommands = catalog.available;
@@ -41573,14 +41647,6 @@ elements.newTabChooseDirectoryButton?.addEventListener("click", () => createTerm
 elements.newTabWorktreeButton?.addEventListener("click", () => openBranchWorktreePicker());
 elements.splitTabButton?.addEventListener("click", () => splitActiveTerminalTab());
 elements.workspaceSaveButton?.addEventListener("click", () => saveWebuiWorkspace());
-const openActiveSessionSummary = () => {
-  void openSessionSummaryForTab().catch((error) => addEvent(error.message || String(error), "error"));
-};
-elements.summaryHeaderButton?.addEventListener("click", openActiveSessionSummary);
-elements.summaryActionButton?.addEventListener("click", () => {
-  setComposerActionsOpen(false);
-  openActiveSessionSummary();
-});
 elements.terminalSplitCloseButton?.addEventListener("click", () => closeTerminalSplitView());
 elements.closeAllTabsButton.addEventListener("click", () => closeAllTerminalTabs());
 elements.commandPaletteButton?.addEventListener("click", () => openCommandPalette());

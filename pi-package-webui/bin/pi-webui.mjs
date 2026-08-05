@@ -2736,6 +2736,11 @@ function requireGitWorkflowChoice(value, key, choices) {
   return text;
 }
 
+function requireGitWorkflowBoolean(value, key) {
+  if (typeof value !== "boolean") throw makeHttpError(400, `${key} must be a boolean`);
+  return value;
+}
+
 async function saveGitWorkflowPreferencesData(tab, body = {}) {
   const submitted = body.preferences && typeof body.preferences === "object" ? body.preferences : body;
   if (submitted.generation?.thinkingLevel !== undefined) requireGitWorkflowChoice(submitted.generation.thinkingLevel, "generation.thinkingLevel", GIT_WORKFLOW_THINKING_LEVELS);
@@ -2743,6 +2748,7 @@ async function saveGitWorkflowPreferencesData(tab, body = {}) {
   if (submitted.commit?.defaultVariant !== undefined) requireGitWorkflowChoice(submitted.commit.defaultVariant, "commit.defaultVariant", GIT_WORKFLOW_DEFAULT_VARIANTS);
   if (submitted.commit?.scope !== undefined) requireGitWorkflowChoice(submitted.commit.scope, "commit.scope", GIT_WORKFLOW_SCOPE_POLICIES);
   if (submitted.stagingPolicy !== undefined) requireGitWorkflowChoice(submitted.stagingPolicy, "stagingPolicy", GIT_WORKFLOW_STAGING_POLICIES);
+  if (submitted.reviewProcessEnabled !== undefined) requireGitWorkflowBoolean(submitted.reviewProcessEnabled, "reviewProcessEnabled");
   if (submitted.deliveryMode !== undefined) requireGitWorkflowChoice(submitted.deliveryMode, "deliveryMode", GIT_WORKFLOW_DELIVERY_MODES);
   if (submitted.verificationPolicy !== undefined) requireGitWorkflowChoice(submitted.verificationPolicy, "verificationPolicy", GIT_WORKFLOW_VERIFICATION_POLICIES);
 

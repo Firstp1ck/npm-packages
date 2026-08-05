@@ -43,6 +43,7 @@ try {
   assert.equal(migrated.resourceDefaults.tools.enabledTools, null, "legacy settings should inherit Pi's normal tool defaults");
   assert.equal(migrated.resourceDefaults.skills.enabledSkills, null, "legacy settings should inherit Pi's normal skill defaults");
   assert.equal(migrated.gitWorkflow.stagingPolicy, "review");
+  assert.equal(migrated.gitWorkflow.reviewProcessEnabled, true, "legacy settings should preserve the existing review-process behavior");
   assert.equal(migrated.gitWorkflow.generation.thinkingLevel, "low");
   assert.equal(migrated.uiLayout.version, 1);
   assert.equal(migrated.uiLayout.sidePanel.sectionOrder, null);
@@ -54,6 +55,7 @@ try {
     generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", unavailablePolicy: "ask" },
     commit: { language: "de", defaultVariant: "long", scope: "required" },
     stagingPolicy: "preserve",
+    reviewProcessEnabled: false,
     deliveryMode: "pr-worktree",
     verificationPolicy: "none",
   }, settingsFile);
@@ -62,6 +64,7 @@ try {
   assert.equal(saved.commit.language, "de");
   assert.equal(saved.commit.defaultVariant, "long");
   assert.equal(saved.stagingPolicy, "preserve");
+  assert.equal(saved.reviewProcessEnabled, false);
 
   await writeWebuiSettings({
     outputModeDefault: "compact-v1",
@@ -76,6 +79,7 @@ try {
   assert.equal(partiallyUpdated.generation.modelId, "fake-model", "partial updates should preserve the selected model");
   assert.equal(partiallyUpdated.commit.language, "de", "partial updates should preserve nested commit preferences");
   assert.equal(partiallyUpdated.deliveryMode, "current");
+  assert.equal(partiallyUpdated.reviewProcessEnabled, false, "partial updates should preserve the review-process choice");
 
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
   assert.equal(persisted.version, 6);
@@ -86,7 +90,9 @@ try {
   assert.deepEqual(persisted.resourceDefaults.skills.enabledSkills, ["repo-explorer", "code-security"], "global skill defaults should persist beside other Web UI settings");
   assert.equal(persisted.interfacePreferences.sidePanelWidth, 612, "the user-scoped Control Deck width should persist beside other Web UI settings");
   assert.equal((await readWebuiSettings(settingsFile)).interfacePreferences.sidePanelWidth, 612);
-  assert.match(gitWorkflowPreferencesSummary(await readGitWorkflowPreferences(settingsFile)), /fake\/fake-model/);
+  const summary = gitWorkflowPreferencesSummary(await readGitWorkflowPreferences(settingsFile));
+  assert.match(summary, /fake\/fake-model/);
+  assert.match(summary, /Review process: disabled/);
   if (process.platform !== "win32") assert.equal((await stat(settingsFile)).mode & 0o777, 0o600);
 
   console.log("git-workflow-preferences.test.mjs passed");

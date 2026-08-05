@@ -58,6 +58,7 @@ export function defaultGitWorkflowPreferences() {
       scope: "auto",
     },
     stagingPolicy: "review",
+    reviewProcessEnabled: true,
     deliveryMode: "ask",
     verificationPolicy: "ask",
   };
@@ -81,6 +82,7 @@ export function normalizeGitWorkflowPreferences(value) {
       scope: choice(value?.commit?.scope, GIT_WORKFLOW_SCOPE_POLICIES, defaults.commit.scope),
     },
     stagingPolicy: choice(value?.stagingPolicy, GIT_WORKFLOW_STAGING_POLICIES, defaults.stagingPolicy),
+    reviewProcessEnabled: typeof value?.reviewProcessEnabled === "boolean" ? value.reviewProcessEnabled : defaults.reviewProcessEnabled,
     deliveryMode: choice(value?.deliveryMode, GIT_WORKFLOW_DELIVERY_MODES, defaults.deliveryMode),
     verificationPolicy: choice(value?.verificationPolicy, GIT_WORKFLOW_VERIFICATION_POLICIES, defaults.verificationPolicy),
   };
@@ -109,6 +111,7 @@ export function gitWorkflowPreferencesSummary(preferences) {
     `Thinking: ${value.generation.thinkingLevel}`,
     `Commit: ${value.commit.language} · ${value.commit.defaultVariant} · scope ${value.commit.scope}`,
     `Staging: ${value.stagingPolicy}`,
+    `Review process: ${value.reviewProcessEnabled ? "enabled" : "disabled"}`,
     `Delivery: ${value.deliveryMode}`,
     `Verification: ${value.verificationPolicy}`,
   ].join("\n");
