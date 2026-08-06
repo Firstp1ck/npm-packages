@@ -37,9 +37,9 @@ assert.match(pkg.scripts.check, /node --check public\/transcript-renderer\.mjs/,
 assert.match(server, /STATIC_PUBLIC_FILE_EXTENSIONS[\s\S]*"\.mjs"/, "the server must serve typed startup modules from the public asset boundary");
 assert.match(serviceWorker, /"\/mobile-shell-state\.mjs"/, "the PWA shell must cache the new startup module");
 assert.match(serviceWorker, /"\/transcript-renderer\.mjs"/, "the PWA shell must cache the transcript startup module");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v74"/, "the cache identity must change with the startup graph");
-assert.match(html, /styles\.css\?v=98/, "the stylesheet revision must change with mobile/tablet CSS fixes");
-assert.match(html, /app\.js\?v=113/, "the app revision must change with continuity/tablet wiring");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v75"/, "the cache identity must change with the startup graph");
+assert.match(html, /styles\.css\?v=99/, "the stylesheet revision must change with mobile/tablet CSS fixes");
+assert.match(html, /app\.js\?v=114/, "the app revision must change with continuity/tablet wiring");
 assert.match(serviceWorker, /const APP_SHELL_NETWORK_TIMEOUT_MS = 8_000;[\s\S]*?event\.waitUntil\([\s\S]*?cache\.put\(request, response\.clone\(\)\)[\s\S]*?return networkResponse;/, "runtime cache writes must extend the event lifetime without blocking bounded network responses");
 assert.match(serviceWorker, /MOBILE_NAVIGATION_MESSAGE_TYPE = "pi-webui:navigate:v1"/, "the service worker must use a versioned active-client navigation message");
 assert.match(serviceWorker, /client\.postMessage\(\{ type: MOBILE_NAVIGATION_MESSAGE_TYPE, target \}\)/, "existing clients must receive only a validated target message");
@@ -57,7 +57,7 @@ assert.match(server, /requestId was already used for a different prompt/, "reque
 assert.match(server, /runId: null/, "tab activity must expose an opaque parent-run field");
 assert.match(server, /activity\.runId = randomUUID\(\)/, "parent-run IDs must be server-issued opaque values");
 assert.match(server, /function markTabFailed\([\s\S]*?activity\.status = "failed"[\s\S]*?activity\.completionSerial/, "failed parent turns must be represented distinctly from successful completion");
-assert.match(server, /SSE_BACKPRESSURE_MAX_PENDING_BYTES = 512 \* 1024/, "SSE backpressure buffering must remain explicitly bounded");
+assert.match(server, /SSE_BACKPRESSURE_MAX_PENDING_BYTES = 4 \* 1024 \* 1024/, "SSE backpressure buffering must remain explicitly bounded above the healthy fixture burst");
 assert.match(server, /res\.once\("drain", \(\) => flushSseClient\(client\)\)/, "healthy SSE clients must resume after transient write backpressure");
 assert.match(server, /client\.tab\?\.sseClients\?\.delete\(client\)/, "eviction must remove only the slow client");
 assert.match(server, /client\.res\?\.end\(\)/, "slow-client eviction must finish chunked SSE responses gracefully");

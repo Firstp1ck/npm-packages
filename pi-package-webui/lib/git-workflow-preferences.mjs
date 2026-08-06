@@ -249,6 +249,21 @@ async function readSettingsLockRecords(lockDirectory) {
   }));
 }
 
+async function renameWithWindowsRetry(source, target) {
+  let lastError;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (process.platform !== "win32" || !["EACCES", "EBUSY", "EPERM"].includes(error?.code)) throw error;
+      await delay(25 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 async function writeSettingsLockRecord(recordFile, value) {
   const temporaryFile = `${recordFile}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   let handle;
@@ -258,7 +273,7 @@ async function writeSettingsLockRecord(recordFile, value) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryFile, recordFile);
+    await renameWithWindowsRetry(temporaryFile, recordFile);
   } catch (error) {
     await handle?.close().catch(() => {});
     await rm(temporaryFile, { force: true }).catch(() => {});
@@ -360,7 +375,7 @@ async function writePrivateAtomicSettings(storageFile, value) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryFile, storageFile);
+    await renameWithWindowsRetry(temporaryFile, storageFile);
     await syncDirectoryBestEffort(path.dirname(storageFile));
   } catch (error) {
     await handle?.close().catch(() => {});

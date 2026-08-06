@@ -19,5 +19,8 @@ test("extension registers persistent setup and applies every configurable guard"
   assert.match(source, /config\.protectedPaths\.edit/);
   assert.match(source, /linesBefore: config\.contextLines\.before[\s\S]*linesAfter: config\.contextLines\.after/);
   assert.match(source, /refreshConfig\(ctx\);[\s\S]*if \(!config\.enabled\) return/);
+  assert.match(source, /id: "autoReview\.enabled"[\s\S]*configureAutoReviewModel/);
+  assert.match(source, /modelRegistry\.getAvailable\(\)[\s\S]*supportedAutoReviewThinkingLevels/);
+  assert.match(source, /requestAutoReviewFn[\s\S]*confirmOrBlock/);
   assert.equal(pkg.peerDependencies?.["@earendil-works/pi-tui"], "*", "SettingsList UI should declare the bundled Pi TUI peer");
 });

@@ -206,6 +206,21 @@ async function withConfigLock(storageFile, operation) {
   }
 }
 
+async function renameWithRetry(source, target) {
+  let lastError;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (process.platform !== "win32" || !["EACCES", "EBUSY", "EPERM"].includes(error?.code)) throw error;
+      await delay(25 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 async function writePrivateAtomic(storageFile, value) {
   await mkdir(path.dirname(storageFile), { recursive: true, mode: 0o700 });
   const temporaryFile = path.join(path.dirname(storageFile), `.${path.basename(storageFile)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
@@ -216,7 +231,7 @@ async function writePrivateAtomic(storageFile, value) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryFile, storageFile);
+    await renameWithRetry(temporaryFile, storageFile);
     const persisted = await open(storageFile, "r+");
     await persisted.chmod(0o600);
     await persisted.close();

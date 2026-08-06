@@ -1,0 +1,7 @@
+[project]
+name = "repo-explorer-benchmark-fixture"
+version = "0.0.0"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

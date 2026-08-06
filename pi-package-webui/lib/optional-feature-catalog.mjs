@@ -7,6 +7,7 @@ const entries = [
   ["releaseAur", "@firstpick/pi-extension-release-aur", "^0.1.8"],
   ["aurReview", "@firstpick/pi-extension-aur-review", "^0.1.1"],
   ["workflows", "@firstpick/pi-extension-workflows", "^0.1.7"],
+  ["featureSystemPrompt", "@firstpick/pi-extension-feature-system-prompt", "^0.1.3"],
   ["safetyGuard", "@firstpick/pi-extension-safety-guard", "^0.2.6"],
   ["tuiSkillsCommand", "@firstpick/pi-extension-setup-skills", "^0.1.9"],
   ["todoProgressWidget", "@firstpick/pi-extension-todo-progress", "^0.2.9"],

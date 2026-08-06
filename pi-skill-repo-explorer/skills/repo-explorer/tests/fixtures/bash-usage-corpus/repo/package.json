@@ -1,0 +1,5 @@
+{
+  "name": "repo-explorer-benchmark-fixture",
+  "private": true,
+  "scripts": {"test": "python -m unittest discover -s tests"}
+}

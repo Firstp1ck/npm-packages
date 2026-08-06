@@ -10,6 +10,7 @@ Interactive safety prompts for high-risk operations in Pi.
 - Intercepts `write`/`edit` on protected paths and requires confirmation.
 - In non-interactive mode, blocks risky operations with explicit reasons.
 - Has persistent setup through `/safety-guard-setup`, including per-category toggles and independent preview lines before/after matches.
+- Optionally auto-reviews matched calls with one authenticated Pi model and supported thinking level; this is off by default.
 - Can be toggled globally with `/safety-guard on|off|status`.
 - Supports exact allow entries for the current session or permanently per cwd.
 
@@ -140,6 +141,11 @@ No configuration is required. Run `/safety-guard-setup` to edit all persistent g
 - Git, filesystem, Docker/Podman, package, system, database, and secret-access command categories
 - protected-path `write` and `edit` guards
 - command-preview lines before and after each matched line (`0`-`20`, default `3` each)
+- optional auto-review enablement, authenticated model, and model-supported thinking level
+
+Auto-review defaults off. When enabled, an allow verdict proceeds without a popup; a block verdict stops the tool and emits a notification. Missing models or authentication, timeouts, provider failures, and invalid verdicts fall back to the existing confirmation prompt. In non-interactive mode that existing fallback remains fail-closed.
+
+While a review is awaited, the TUI/RPC surface shows a non-modal status and widget indicator. Overlapping reviews are counted independently, and successful allows are quiet after the indicator clears.
 
 Settings are stored globally in:
 
@@ -147,7 +153,24 @@ Settings are stored globally in:
 ~/.pi/agent/safety-guard.json
 ```
 
-Set `PI_SAFETY_GUARD_CONFIG_FILE` to override that path. Invalid configuration fails safe: every guard is enabled with default context limits.
+Set `PI_SAFETY_GUARD_CONFIG_FILE` to override that path. Invalid configuration fails safe: every guard is enabled with default context limits and auto-review disabled. The additive auto-review fields retain config version `1`; older version-1 files normalize to the disabled default without rewriting or deleting existing settings.
+
+The persisted auto-review shape is:
+
+```json
+{
+  "autoReview": {
+    "enabled": false,
+    "model": {
+      "provider": "",
+      "modelId": "",
+      "thinkingLevel": "off"
+    }
+  }
+}
+```
+
+The reviewer receives only rule/category/risk metadata, cwd, and bounded command or path text from the pending tool input. It does not receive the conversation transcript, file contents, tool results, or credentials. Calls use only the configured model with resolved authentication, no tools, no retries, no cache retention, a 20-second timeout, and a 256-token output budget. The strict verdict is a single JSON object containing only `verdict` (`allow` or `block`) and a one-line reason of at most 512 characters; anything else uses prompt fallback.
 
 Permanent allows are stored separately in:
 
@@ -179,7 +202,7 @@ When a guard prompt appears, choose one of:
 /safety-guard allow-clear-permanent
 ```
 
-`/safety-guard-setup` opens a settings list in Pi's TUI. In Pi Web UI it opens a browser-native setup dialog with the same persisted settings.
+`/safety-guard-setup` opens a settings list in Pi's TUI, followed by authenticated model and supported-thinking selectors when auto-review is enabled. RPC setup uses the JSON editor plus the same authenticated selectors. In Pi Web UI it opens a browser-native setup dialog with the same persisted settings.
 
 When disabled, the status bar shows `🔓!`. The `on` and `off` commands update the global setup file.
 

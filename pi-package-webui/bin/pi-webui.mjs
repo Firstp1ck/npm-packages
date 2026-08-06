@@ -1309,7 +1309,7 @@ function sendRemoteAuthRequired(req, res, url) {
 // disconnects healthy Chromium EventSource streams as soon as a frame exceeds
 // roughly 16 KiB. Queue subsequent frames until "drain", with strict bounds so
 // a client that truly stops reading cannot grow server memory indefinitely.
-const SSE_BACKPRESSURE_MAX_PENDING_BYTES = 512 * 1024;
+const SSE_BACKPRESSURE_MAX_PENDING_BYTES = 4 * 1024 * 1024;
 const SSE_BACKPRESSURE_MAX_PENDING_FRAMES = 256;
 const SSE_BACKPRESSURE_TIMEOUT_MS = 10_000;
 
@@ -2554,9 +2554,25 @@ async function safetyGuardConfigModule() {
         new URL("../../pi-extension-safety-guard/src/config.mjs", import.meta.url).href,
       ];
       const failures = [];
+      const requiredExports = [
+        "SAFETY_GUARD_CATEGORIES",
+        "SAFETY_GUARD_CONTEXT_LINES_MAX",
+        "SAFETY_GUARD_CONTEXT_LINES_MIN",
+        "SAFETY_GUARD_CONFIG_VERSION",
+        "SAFETY_GUARD_THINKING_LEVELS",
+        "assertSafetyGuardConfigPatch",
+        "defaultSafetyGuardConfig",
+        "mergeSafetyGuardConfig",
+        "readSafetyGuardConfig",
+        "safetyGuardConfigFile",
+        "writeSafetyGuardConfig",
+      ];
       for (const specifier of specifiers) {
         try {
-          return await import(specifier);
+          const module = await import(specifier);
+          const missing = requiredExports.filter((name) => module[name] === undefined);
+          if (missing.length) throw new Error(`missing ${missing.join(", ")}`);
+          return module;
         } catch (error) {
           failures.push(error instanceof Error ? error.message : String(error));
         }
@@ -2570,9 +2586,14 @@ async function safetyGuardConfigModule() {
   return safetyGuardConfigModulePromise;
 }
 
-async function safetyGuardConfigData() {
+function safetyGuardModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function safetyGuardConfigData(tab, { config: suppliedConfig, models: suppliedModels } = {}) {
   const settingsModule = await safetyGuardConfigModule();
-  const config = settingsModule.readSafetyGuardConfig();
+  const config = suppliedConfig || settingsModule.readSafetyGuardConfig();
+  const models = suppliedModels || await availableGitWorkflowModels(tab);
   return {
     config,
     defaults: settingsModule.defaultSafetyGuardConfig(),
@@ -2581,12 +2602,18 @@ async function safetyGuardConfigData() {
       min: settingsModule.SAFETY_GUARD_CONTEXT_LINES_MIN,
       max: settingsModule.SAFETY_GUARD_CONTEXT_LINES_MAX,
     },
+    models,
+    modelThinkingLevels: Object.fromEntries(models.map((model) => [
+      safetyGuardModelKey(model),
+      supportedGitWorkflowThinkingLevels(model),
+    ])),
+    thinkingLevels: [...settingsModule.SAFETY_GUARD_THINKING_LEVELS],
     version: settingsModule.SAFETY_GUARD_CONFIG_VERSION,
     path: settingsModule.safetyGuardConfigFile(),
   };
 }
 
-async function saveSafetyGuardConfigData(body = {}) {
+async function saveSafetyGuardConfigData(tab, body = {}) {
   const settingsModule = await safetyGuardConfigModule();
   const submitted = body.config && typeof body.config === "object" ? body.config : body;
   try {
@@ -2595,12 +2622,27 @@ async function saveSafetyGuardConfigData(body = {}) {
     throw makeHttpError(400, error instanceof Error ? error.message : String(error));
   }
 
+  const next = settingsModule.mergeSafetyGuardConfig(settingsModule.readSafetyGuardConfig(), submitted);
+  let models;
+  if (next.autoReview.enabled) {
+    models = await availableGitWorkflowModels(tab);
+    const provider = next.autoReview.model.provider;
+    const modelId = next.autoReview.model.modelId;
+    const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId);
+    if (!model) throw makeHttpError(400, `Selected auto-review model is not currently available: ${provider || "unset"}/${modelId || "unset"}`);
+    const supportedLevels = supportedGitWorkflowThinkingLevels(model);
+    if (!supportedLevels.includes(next.autoReview.model.thinkingLevel)) {
+      throw makeHttpError(400, `${provider}/${modelId} does not support thinking level ${next.autoReview.model.thinkingLevel}`);
+    }
+  }
+
+  let config;
   try {
-    const config = settingsModule.writeSafetyGuardConfig(submitted);
-    return { ...(await safetyGuardConfigData()), config };
+    config = settingsModule.writeSafetyGuardConfig(submitted);
   } catch (error) {
     throw makeHttpError(500, error instanceof Error ? error.message : String(error));
   }
+  return safetyGuardConfigData(tab, { config, models });
 }
 
 function requireSubagentLaunchSlotScope(value) {
@@ -3302,7 +3344,12 @@ function appRunnerCandidate({ id, label, kind, command, args = [], projectFile =
 
 function addAppRunner(runners, runner) {
   if (!runner?.id || !runner.command) return;
-  if (runners.some((item) => item.id === runner.id || item.displayCommand === runner.displayCommand)) return;
+  if (runners.some((item) => item.id === runner.id)) return;
+  const duplicateIndex = runners.findIndex((item) => item.displayCommand === runner.displayCommand);
+  if (duplicateIndex >= 0) {
+    if (runner.custom && !runners[duplicateIndex].custom) runners.splice(duplicateIndex, 1, runner);
+    return;
+  }
   runners.push(runner);
 }
 
@@ -13628,9 +13675,15 @@ async function moveFileSystemEntryData(tab, body = {}) {
 }
 
 function defaultEditorCommand(targetPath) {
+  if (process.env.PI_WEBUI_OPEN_COMMAND) {
+    const override = process.env.PI_WEBUI_OPEN_COMMAND;
+    return [".js", ".cjs", ".mjs"].includes(path.extname(override).toLowerCase())
+      ? { command: process.execPath, args: [override, targetPath] }
+      : { command: override, args: [targetPath] };
+  }
   if (platform() === "win32") return { command: "cmd", args: ["/c", "start", "", targetPath] };
   if (platform() === "darwin") return { command: "open", args: [targetPath] };
-  return { command: process.env.PI_WEBUI_OPEN_COMMAND || "xdg-open", args: [targetPath] };
+  return { command: "xdg-open", args: [targetPath] };
 }
 
 function firstCommandOutputLine(value = "") {
@@ -16105,8 +16158,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/safety-guard/config" && req.method === "GET") {
-      getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await safetyGuardConfigData() });
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await safetyGuardConfigData(tab) });
       return;
     }
 
@@ -16114,7 +16167,7 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "safety guard setup changes are blocked");
-      sendJson(res, 200, { ok: true, data: await saveSafetyGuardConfigData(body) });
+      sendJson(res, 200, { ok: true, data: await saveSafetyGuardConfigData(tab, body) });
       return;
     }
 

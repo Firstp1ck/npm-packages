@@ -542,6 +542,7 @@ let gitFooterContextMenuState = null;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
 let sidePanelSectionSuppressClickUntil = 0;
+let sidePanelSectionResizeState = null;
 let composerActionPointerDrag = null;
 let composerActionLastDragOverKey = "";
 let composerActionSuppressClickUntil = 0;
@@ -979,6 +980,12 @@ const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
 const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
+const SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
+const SIDE_PANEL_SECTION_HEIGHT_MIN_PX = 120;
+const SIDE_PANEL_SECTION_HEIGHT_MAX_PX = 4096;
+const SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_STEP_PX = 24;
+const SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_LARGE_STEP_PX = 80;
+const SIDE_PANEL_SECTION_HEIGHT_VIEWPORT_RESERVE_PX = 24;
 const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const COMPOSER_ACTION_ORDER_STORAGE_KEY = "pi-webui-composer-action-order-v1";
 const COMPOSER_ACTION_LAYOUT_STORAGE_KEY = "pi-webui-composer-action-layout-v2";
@@ -2350,6 +2357,7 @@ const optionalFeatureAvailability = {
   releaseAur: false,
   aurReview: false,
   workflows: false,
+  featureSystemPrompt: false,
   safetyGuard: false,
   statsCommand: false,
   gitFooterStatus: false,
@@ -2421,6 +2429,13 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-extension-workflows",
     capabilityLabel: "/workflow or workflow subprocess widget event",
     description: "Modular workflow runner with live subprocess output shown in a non-blocking Web UI widget.",
+  },
+  {
+    id: "featureSystemPrompt",
+    label: "Feature workflow routing",
+    packageName: "@firstpick/pi-extension-feature-system-prompt",
+    capabilityLabel: "feature-category or feature-decision-output status event",
+    description: "Classify feature requests and show lightweight or complex routing decisions in the composer.",
   },
   {
     id: "safetyGuard",
@@ -2901,7 +2916,7 @@ const OPTIONAL_FEATURE_SECTIONS = [
     id: "workflows-releases",
     label: "Workflows & releases",
     description: "Guided workflows, task runners, and publishing actions with visible execution state.",
-    featureIds: ["gitWorkflow", "workflows", "releaseNpm", "releaseAur", "aurReview"],
+    featureIds: ["gitWorkflow", "workflows", "featureSystemPrompt", "releaseNpm", "releaseAur", "aurReview"],
   },
   {
     id: "safety-access",
@@ -3612,9 +3627,204 @@ function sidePanelSectionRecords() {
       const button = section.querySelector("[data-side-panel-section-toggle]");
       const contentId = button?.getAttribute("aria-controls") || "";
       const content = contentId ? document.getElementById(contentId) : null;
-      return { id, section, button, content };
+      const resizeHandle = section.querySelector("[data-side-panel-section-resize]");
+      return { id, section, button, content, resizeHandle };
     })
     .filter((record) => record.id && record.button && record.content);
+}
+
+function readStoredSidePanelSectionHeights() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY) || "null");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const heights = Object.create(null);
+    let count = 0;
+    for (const [rawId, rawHeight] of Object.entries(parsed)) {
+      const id = typeof rawId === "string" ? rawId.trim() : "";
+      const height = Number(rawHeight);
+      if (!id || id !== rawId || id.length > 256 || /[\u0000-\u001f\u007f]/u.test(id) || ["__proto__", "constructor", "prototype"].includes(id)) continue;
+      if (!Number.isInteger(height) || height < SIDE_PANEL_SECTION_HEIGHT_MIN_PX || height > SIDE_PANEL_SECTION_HEIGHT_MAX_PX) continue;
+      heights[id] = height;
+      count += 1;
+      if (count >= 128) break;
+    }
+    return heights;
+  } catch {
+    return null;
+  }
+}
+
+function sidePanelSectionRenderableMaxHeight(record) {
+  const body = record?.section?.closest?.(".side-panel-body") || elements.sidePanel?.querySelector?.(".side-panel-body");
+  const available = Number(body?.clientHeight);
+  if (!Number.isFinite(available) || available <= 0) return SIDE_PANEL_SECTION_HEIGHT_MAX_PX;
+  return Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(SIDE_PANEL_SECTION_HEIGHT_MAX_PX, Math.floor(available - SIDE_PANEL_SECTION_HEIGHT_VIEWPORT_RESERVE_PX)));
+}
+
+function sidePanelSectionResizeAvailable(record) {
+  return Boolean(record && !isSidePanelOverlayView() && !record.section.hidden && !record.section.classList.contains("collapsed") && !record.content.hidden);
+}
+
+function updateSidePanelSectionResizeHandle(record, renderedHeight = null) {
+  const handle = record?.resizeHandle || record?.section?.querySelector?.("[data-side-panel-section-resize]");
+  if (!handle) return;
+  const available = sidePanelSectionResizeAvailable(record);
+  const maximum = sidePanelSectionRenderableMaxHeight(record);
+  handle.hidden = !available;
+  const naturalHeight = Math.round(record.content?.getBoundingClientRect?.().height || SIDE_PANEL_SECTION_HEIGHT_MIN_PX);
+  const current = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(maximum, Number.isInteger(renderedHeight) ? renderedHeight : naturalHeight));
+  handle.setAttribute("aria-valuemin", String(SIDE_PANEL_SECTION_HEIGHT_MIN_PX));
+  handle.setAttribute("aria-valuemax", String(maximum));
+  handle.setAttribute("aria-valuenow", String(current));
+  handle.setAttribute("aria-valuetext", `${current} pixels high`);
+}
+
+function applySidePanelSectionHeight(record, preferredHeight) {
+  if (!record?.content) return;
+  if (!sidePanelSectionResizeAvailable(record)) {
+    record.content.style.removeProperty("height");
+    record.content.style.removeProperty("overflow");
+    updateSidePanelSectionResizeHandle(record);
+    return;
+  }
+  const maximum = sidePanelSectionRenderableMaxHeight(record);
+  let renderedHeight;
+  if (Number.isInteger(preferredHeight)) {
+    renderedHeight = Math.min(preferredHeight, maximum);
+  } else {
+    record.content.style.removeProperty("height");
+    record.content.style.removeProperty("overflow");
+    const naturalHeight = Math.round(record.content.getBoundingClientRect().height || SIDE_PANEL_SECTION_HEIGHT_MIN_PX);
+    renderedHeight = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(maximum, naturalHeight));
+  }
+  record.content.style.height = `${renderedHeight}px`;
+  record.content.style.overflow = "auto";
+  updateSidePanelSectionResizeHandle(record, renderedHeight);
+}
+
+function restoreSidePanelSectionHeights() {
+  const heights = readStoredSidePanelSectionHeights() || {};
+  for (const record of sidePanelSectionRecords()) applySidePanelSectionHeight(record, heights[record.id] ?? null);
+}
+
+function persistSidePanelSectionHeight(sectionId, height) {
+  const heights = readStoredSidePanelSectionHeights() || Object.create(null);
+  heights[sectionId] = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(SIDE_PANEL_SECTION_HEIGHT_MAX_PX, Math.round(height)));
+  try {
+    localStorage.setItem(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY, JSON.stringify(heights));
+  } catch {
+    // The current resize remains usable when browser storage is unavailable.
+  }
+  markDurableUiLayoutDirty("sidePanel", "sectionHeights");
+  return heights[sectionId];
+}
+
+function beginSidePanelSectionResize(event, sectionId) {
+  const record = sidePanelSectionRecords().find(({ id }) => id === sectionId);
+  if (!sidePanelSectionResizeAvailable(record) || sidePanelSectionResizeState) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const storedHeight = readStoredSidePanelSectionHeights()?.[sectionId] ?? null;
+  const renderedHeight = Math.round(record.content.getBoundingClientRect().height);
+  const startHeight = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(sidePanelSectionRenderableMaxHeight(record), renderedHeight));
+  sidePanelSectionResizeState = {
+    pointerId: event.pointerId,
+    sectionId,
+    record,
+    handle: event.currentTarget,
+    startY: event.clientY,
+    startHeight,
+    height: startHeight,
+    storedHeight,
+  };
+  record.section.classList.add("resizing");
+  document.body.classList.add("side-panel-section-resizing");
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", updateSidePanelSectionResize, { passive: false });
+  window.addEventListener("pointerup", finishSidePanelSectionResize, { passive: false });
+  window.addEventListener("pointercancel", cancelSidePanelSectionResize, { passive: false });
+}
+
+function updateSidePanelSectionResize(event) {
+  const state = sidePanelSectionResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault();
+  state.height = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(sidePanelSectionRenderableMaxHeight(state.record), Math.round(state.startHeight + event.clientY - state.startY)));
+  applySidePanelSectionHeight(state.record, state.height);
+}
+
+function clearSidePanelSectionResize(state) {
+  try {
+    state.handle?.releasePointerCapture?.(state.pointerId);
+  } catch {
+    // Pointer capture may already be released by the browser during cancellation.
+  }
+  window.removeEventListener("pointermove", updateSidePanelSectionResize);
+  window.removeEventListener("pointerup", finishSidePanelSectionResize);
+  window.removeEventListener("pointercancel", cancelSidePanelSectionResize);
+  state.record.section.classList.remove("resizing");
+  document.body.classList.remove("side-panel-section-resizing");
+  sidePanelSectionResizeState = null;
+}
+
+function finishSidePanelSectionResize(event) {
+  const state = sidePanelSectionResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault?.();
+  const height = persistSidePanelSectionHeight(state.sectionId, state.height);
+  clearSidePanelSectionResize(state);
+  applySidePanelSectionHeight(state.record, height);
+}
+
+function cancelSidePanelSectionResize(event) {
+  const state = sidePanelSectionResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault?.();
+  clearSidePanelSectionResize(state);
+  applySidePanelSectionHeight(state.record, state.storedHeight);
+}
+
+function handleSidePanelSectionResizeKeydown(event, sectionId) {
+  if (isSidePanelOverlayView()) return;
+  const record = sidePanelSectionRecords().find(({ id }) => id === sectionId);
+  if (!sidePanelSectionResizeAvailable(record)) return;
+  const maximum = sidePanelSectionRenderableMaxHeight(record);
+  const current = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(maximum, Math.round(record.content.getBoundingClientRect().height)));
+  const step = event.shiftKey ? SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_LARGE_STEP_PX : SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_STEP_PX;
+  let next = current;
+  if (event.key === "ArrowUp") next = current - step;
+  else if (event.key === "ArrowDown") next = current + step;
+  else if (event.key === "Home") next = SIDE_PANEL_SECTION_HEIGHT_MIN_PX;
+  else if (event.key === "End") next = maximum;
+  else return;
+  event.preventDefault();
+  event.stopPropagation();
+  const height = persistSidePanelSectionHeight(sectionId, next);
+  applySidePanelSectionHeight(record, height);
+}
+
+function initializeSidePanelSectionResizing() {
+  for (const record of sidePanelSectionRecords()) {
+    if (record.resizeHandle) continue;
+    const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || record.id;
+    const handle = make("div", "side-panel-section-resize-handle");
+    handle.tabIndex = 0;
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "horizontal");
+    handle.setAttribute("aria-controls", record.content.id);
+    handle.setAttribute("aria-label", `Resize ${label} section height`);
+    handle.dataset.sidePanelSectionResize = record.id;
+    handle.addEventListener("pointerdown", (event) => beginSidePanelSectionResize(event, record.id));
+    handle.addEventListener("keydown", (event) => handleSidePanelSectionResizeKeydown(event, record.id));
+    record.section.append(handle);
+  }
+  restoreSidePanelSectionHeights();
+}
+
+function syncSidePanelSectionHeightsForViewport() {
+  if (sidePanelSectionResizeState && isSidePanelOverlayView()) cancelSidePanelSectionResize({ pointerId: sidePanelSectionResizeState.pointerId });
+  restoreSidePanelSectionHeights();
 }
 
 function readStoredSidePanelSectionOrder() {
@@ -3791,6 +4001,7 @@ function persistSidePanelSectionVisibility() {
 
 function setSidePanelSectionVisible(record, visible, { persist = true } = {}) {
   record.section.hidden = !visible;
+  applySidePanelSectionHeight(record, readStoredSidePanelSectionHeights()?.[record.id] ?? null);
   if (visible && record.id === "git" && !record.section.classList.contains("collapsed")) {
     queueMicrotask(() => {
       renderGitPanel();
@@ -3820,6 +4031,7 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
       ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
     });
   }
+  applySidePanelSectionHeight(record, readStoredSidePanelSectionHeights()?.[record.id] ?? null);
   if (persist) persistSidePanelSectionState();
 }
 
@@ -5674,8 +5886,9 @@ function clearFeatureDecisionStateForTab(tabId, { render = false } = {}) {
 function renderFeatureCategoryTag(tabId = activeTabId) {
   const tag = elements.featureCategoryTag;
   if (!tag) return;
-  const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
-  const output = featureDecisionOutputForTab(tabId);
+  const enabled = isOptionalFeatureEnabled("featureSystemPrompt");
+  const category = enabled ? normalizeFeatureCategory(featureCategoryByTab.get(tabId)) : "";
+  const output = enabled ? featureDecisionOutputForTab(tabId) : "";
   tag.hidden = !category;
   tag.disabled = !output;
   tag.textContent = category;
@@ -5687,18 +5900,22 @@ function renderFeatureCategoryTag(tabId = activeTabId) {
 
 function handleFeatureDecisionOutputStatus(statusText, tabId = activeTabId) {
   if (!tabId) return;
+  optionalFeatureAvailability.featureSystemPrompt = true;
   const decision = parseFeatureDecisionPayload(statusText);
   if (decision) featureDecisionOutputByTab.set(tabId, decision);
   else featureDecisionOutputByTab.delete(tabId);
+  renderOptionalFeatureControls();
   if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
   else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
 }
 
 function handleFeatureCategoryStatus(statusText, tabId = activeTabId) {
   if (!tabId) return;
+  optionalFeatureAvailability.featureSystemPrompt = true;
   const category = normalizeFeatureCategory(statusText);
   if (category) featureCategoryByTab.set(tabId, category);
   else clearFeatureDecisionStateForTab(tabId);
+  renderOptionalFeatureControls();
   if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
   else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
 }
@@ -9465,6 +9682,12 @@ function setOptionalFeatureDisabled(featureId, disabled) {
     clearGitFooterWebuiPayloadCache();
     for (const tabId of new Set([...gitFooterPayloadStateByTab.keys(), ...gitFooterPayloadSettlementTimersByTab.keys(), ...gitFooterPayloadRefreshInFlightByTab])) clearGitFooterPayloadState(tabId);
   }
+  if (featureId === "featureSystemPrompt") {
+    if (disabled) {
+      for (const tabId of new Set([...featureCategoryByTab.keys(), ...featureDecisionOutputByTab.keys()])) clearFeatureDecisionStateForTab(tabId);
+    }
+    renderFeatureCategoryTag();
+  }
   if (featureId === "btwCommand") {
     statusEntries.delete(BTW_WEBUI_STATUS_KEY);
     widgets.delete(BTW_OUTPUT_WIDGET_KEY);
@@ -11479,7 +11702,7 @@ const UI_LAYOUT_ENDPOINT = "/api/interface-preferences";
 const UI_LAYOUT_SAVE_DEBOUNCE_MS = 250;
 const UI_LAYOUT_MAX_CONFLICT_RETRIES = 1;
 const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
-const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"];
+const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed", "sectionHeights"];
 const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
 const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups"];
 const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
@@ -11554,6 +11777,7 @@ function collectDurableSidePanelLayout() {
     collapsedSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_STORAGE_KEY),
     hiddenSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY),
     collapsed: typeof collapsed === "boolean" ? collapsed : null,
+    sectionHeights: readStoredSidePanelSectionHeights(),
   };
 }
 
@@ -11793,6 +12017,10 @@ function applyDurableSidePanelLayout(value) {
     writeDurableLayoutCache(SIDE_PANEL_STORAGE_KEY, value.collapsed ? "1" : "0");
     restoreSidePanelState();
   }
+  if (value.sectionHeights && typeof value.sectionHeights === "object" && !Array.isArray(value.sectionHeights)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY, JSON.stringify(value.sectionHeights));
+    restoreSidePanelSectionHeights();
+  }
 }
 
 function applyDurableComposerActionsLayout(value) {
@@ -11850,7 +12078,7 @@ function applyDurableUiLayoutField(field, value) {
 
 function durableUiLayoutInteractionActive(field = null) {
   const activeByField = {
-    sidePanel: Boolean(sidePanelSectionPointerDrag?.active),
+    sidePanel: Boolean(sidePanelSectionPointerDrag?.active || sidePanelSectionResizeState),
     composerActions: Boolean(composerActionPointerDrag?.active),
     footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
     terminalTabs: Boolean(terminalTabDragId),
@@ -11937,6 +12165,8 @@ function applyDurableUiLayoutSnapshot(data, { generations = null, readEpoch = 0 
     const localValue = collectDurableUiLayoutField(field);
     const subfields = durableUiLayoutSubFields(field);
     const dirtySubfields = dirtyEntry?.subfields;
+
+    if (field === "sidePanel" && durableUiLayoutInteractionActive(field)) continue;
 
     if (subfields && field !== "composerActions") {
       const applicable = {};
@@ -12352,6 +12582,7 @@ function syncFileViewerWidthForViewport() {
 function syncResizablePanelWidthsForViewport() {
   syncSidePanelWidthForViewport();
   syncFileViewerWidthForViewport();
+  syncSidePanelSectionHeightsForViewport();
 }
 
 async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
@@ -37337,9 +37568,9 @@ const SAFETY_GUARD_CATEGORY_LABELS = Object.freeze({
 async function openNativeSafetyGuardSetupDialog() {
   openNativeCommandDialog({
     title: "/safety-guard-setup",
-    message: "Configure persistent command categories, protected-path checks, and the context shown around dangerous matches.",
+    message: "Configure persistent command categories, protected-path checks, preview context, and optional model auto-review.",
   });
-  renderNativeLoading("Loading safety guard setup…");
+  renderNativeLoading("Loading safety guard setup and authenticated models…");
 
   let data;
   try {
@@ -37353,6 +37584,7 @@ async function openNativeSafetyGuardSetupDialog() {
 
   const config = data.config || {};
   const defaults = data.defaults || {};
+  const models = Array.isArray(data.models) ? data.models : [];
   const categories = Array.isArray(data.categories) && data.categories.length
     ? data.categories
     : Object.keys(SAFETY_GUARD_CATEGORY_LABELS);
@@ -37362,6 +37594,17 @@ async function openNativeSafetyGuardSetupDialog() {
     { length: Math.max(1, maximumContext - minimumContext + 1) },
     (_, index) => String(index + minimumContext),
   );
+  const modelKey = (model) => model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+  const configuredModelKey = config.autoReview?.model?.provider && config.autoReview?.model?.modelId
+    ? `${config.autoReview.model.provider}/${config.autoReview.model.modelId}`
+    : "";
+  const modelOptions = [
+    { value: "", label: models.length ? "Select an authenticated model" : "No authenticated models available" },
+    ...models.map((model) => ({
+      value: modelKey(model),
+      label: `${modelKey(model)}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}`,
+    })),
+  ];
   const categoryControls = Object.fromEntries(categories.map((category) => [
     category,
     nativeSettingToggle(
@@ -37373,38 +37616,105 @@ async function openNativeSafetyGuardSetupDialog() {
   ]));
   const controls = {
     enabled: nativeSettingToggle("Safety guard enabled", config.enabled !== false, "Master switch for command and protected-path guards.", { label: "global", tone: "safety" }),
+    autoReview: nativeSettingToggle("Automatic model review", config.autoReview?.enabled === true, "Off by default. When enabled, matched operations wait for this model's allow/block verdict; failures return to the existing prompt.", { label: "opt-in", tone: "safety" }),
+    autoReviewModel: nativeSettingSelect("Review model", configuredModelKey, modelOptions, "Authenticated provider/model used only for safety preflight. There is no provider fallback.", { label: "required when on", tone: "safety" }),
+    autoReviewThinking: nativeSettingSelect("Review thinking", config.autoReview?.model?.thinkingLevel || "off", data.thinkingLevels || SETTINGS_THINKING_OPTIONS, "Only levels supported by the selected model are offered.", { label: "required when on", tone: "safety" }),
     before: nativeSettingSelect("Lines before a match", config.contextLines?.before ?? 3, contextOptions, "Number of command lines shown before each matched line.", { label: "preview", tone: "browser" }),
     after: nativeSettingSelect("Lines after a match", config.contextLines?.after ?? 3, contextOptions, "Number of command lines shown after each matched line.", { label: "preview", tone: "browser" }),
     protectedWrite: nativeSettingToggle("Guard protected-path writes", config.protectedPaths?.write !== false, "Prompt before write calls target credentials, private keys, or environment files.", { label: "write", tone: "safety" }),
     protectedEdit: nativeSettingToggle("Guard protected-path edits", config.protectedPaths?.edit !== false, "Prompt before edit calls target credentials, private keys, or environment files.", { label: "edit", tone: "safety" }),
   };
+  controls.autoReviewModel.select.options[0].disabled = true;
+  if (configuredModelKey && !models.some((model) => modelKey(model) === configuredModelKey)) {
+    const unavailable = make("option", undefined, `Unavailable: ${configuredModelKey}`);
+    unavailable.value = configuredModelKey;
+    unavailable.disabled = true;
+    controls.autoReviewModel.select.append(unavailable);
+    controls.autoReviewModel.select.value = configuredModelKey;
+  }
 
-  const collectConfig = () => ({
-    version: data.version || 1,
-    enabled: controls.enabled.input.checked,
-    categories: Object.fromEntries(categories.map((category) => [category, categoryControls[category].input.checked])),
-    protectedPaths: {
-      write: controls.protectedWrite.input.checked,
-      edit: controls.protectedEdit.input.checked,
-    },
-    contextLines: {
-      before: Number.parseInt(controls.before.select.value, 10),
-      after: Number.parseInt(controls.after.select.value, 10),
-    },
-  });
+  const autoReviewAvailability = nativeSettingsNote("Auto-review availability", "");
+  const autoReviewAvailabilityText = autoReviewAvailability.querySelector("span");
+  const thinkingLevelsForModel = (selectedModelKey) => {
+    const levels = data.modelThinkingLevels?.[selectedModelKey];
+    return Array.isArray(levels) && levels.length ? levels : [];
+  };
+  const syncAutoReviewControls = ({ preferredThinking, preserveUnavailable = false } = {}) => {
+    const enabled = controls.autoReview.input.checked;
+    const selectedModelKey = controls.autoReviewModel.select.value;
+    const selectedAvailable = models.some((model) => modelKey(model) === selectedModelKey);
+    const levels = thinkingLevelsForModel(selectedModelKey);
+    const preferred = preferredThinking ?? controls.autoReviewThinking.select.value ?? "off";
+    replaceNativeSettingSelectOptions(controls.autoReviewThinking.select, levels.length ? levels : ["off"], preferred);
+    if (preserveUnavailable && preferred && !levels.includes(preferred) && preferred !== "off") {
+      const unavailable = make("option", undefined, `Unavailable: ${preferred}`);
+      unavailable.value = preferred;
+      unavailable.disabled = true;
+      controls.autoReviewThinking.select.append(unavailable);
+      controls.autoReviewThinking.select.value = preferred;
+    }
+    controls.autoReviewModel.select.disabled = !enabled || !models.length;
+    controls.autoReviewThinking.select.disabled = !enabled || !selectedAvailable;
+    autoReviewAvailability.classList.toggle("warning", enabled && (!selectedAvailable || !levels.includes(controls.autoReviewThinking.select.value)));
+    autoReviewAvailabilityText.textContent = !enabled
+      ? "Off. Matched operations use the existing interactive prompt; saved model selections are retained."
+      : !models.length
+        ? "Unavailable: no authenticated Pi models are available. Run /login or configure a provider before enabling auto-review."
+        : !selectedAvailable
+          ? "Unavailable: select one of the authenticated models from this active tab."
+          : `Ready: ${selectedModelKey} supports ${levels.join(", ")} thinking.`;
+  };
+  controls.autoReview.input.addEventListener("change", () => syncAutoReviewControls());
+  controls.autoReviewModel.select.addEventListener("change", () => syncAutoReviewControls({ preferredThinking: "off" }));
+  syncAutoReviewControls({ preferredThinking: config.autoReview?.model?.thinkingLevel || "off", preserveUnavailable: true });
+
+  const collectConfig = () => {
+    const selectedModelKey = controls.autoReviewModel.select.value;
+    const selectedModel = models.find((model) => modelKey(model) === selectedModelKey);
+    const persistedModel = selectedModelKey === configuredModelKey ? config.autoReview?.model : null;
+    return {
+      version: data.version || 1,
+      enabled: controls.enabled.input.checked,
+      categories: Object.fromEntries(categories.map((category) => [category, categoryControls[category].input.checked])),
+      protectedPaths: {
+        write: controls.protectedWrite.input.checked,
+        edit: controls.protectedEdit.input.checked,
+      },
+      contextLines: {
+        before: Number.parseInt(controls.before.select.value, 10),
+        after: Number.parseInt(controls.after.select.value, 10),
+      },
+      autoReview: {
+        enabled: controls.autoReview.input.checked,
+        model: {
+          provider: selectedModel?.provider || persistedModel?.provider || "",
+          modelId: selectedModel?.id || persistedModel?.modelId || "",
+          thinkingLevel: controls.autoReviewThinking.select.value || "off",
+        },
+      },
+    };
+  };
   const applyConfig = (value) => {
     controls.enabled.input.checked = value?.enabled !== false;
     controls.before.select.value = String(value?.contextLines?.before ?? 3);
     controls.after.select.value = String(value?.contextLines?.after ?? 3);
     controls.protectedWrite.input.checked = value?.protectedPaths?.write !== false;
     controls.protectedEdit.input.checked = value?.protectedPaths?.edit !== false;
+    controls.autoReview.input.checked = value?.autoReview?.enabled === true;
+    const nextModelKey = value?.autoReview?.model?.provider && value?.autoReview?.model?.modelId
+      ? `${value.autoReview.model.provider}/${value.autoReview.model.modelId}`
+      : "";
+    controls.autoReviewModel.select.value = [...controls.autoReviewModel.select.options].some((option) => option.value === nextModelKey) ? nextModelKey : "";
     for (const category of categories) categoryControls[category].input.checked = value?.categories?.[category] !== false;
+    syncAutoReviewControls({ preferredThinking: value?.autoReview?.model?.thinkingLevel || "off", preserveUnavailable: true });
   };
 
   const body = make("div", "native-settings-panel");
   body.append(
     nativeSettingsNote("Persistence", `Saved globally in ${data.path || "~/.pi/agent/safety-guard.json"}. Changes are reloaded before guard checks.`),
     nativeSettingsSection("General", "Enable or disable all guard behavior.", [controls.enabled], { open: true }),
+    nativeSettingsSection("Automatic review", "Opt in to a dedicated authenticated model for non-modal allow/block preflight. Provider failures and invalid verdicts return to the existing prompt.", [controls.autoReview, controls.autoReviewModel, controls.autoReviewThinking], { open: true }),
+    autoReviewAvailability,
     nativeSettingsSection("Command preview", "Choose independent context limits before and after each dangerous matched line.", [controls.before, controls.after], { open: true }),
     nativeSettingsSection("Command categories", "Disable only categories you intentionally do not want guarded.", categories.map((category) => categoryControls[category]), { open: true }),
     nativeSettingsSection("Protected paths", "Control write/edit prompts for secret-bearing files and credential paths.", [controls.protectedWrite, controls.protectedEdit], { open: true }),
@@ -37421,16 +37731,28 @@ async function openNativeSafetyGuardSetupDialog() {
     setNativeActionBusy(save, true, "Saving…");
     setNativeCommandError("");
     try {
+      const submitted = collectConfig();
+      const selectedModelKey = controls.autoReviewModel.select.value;
+      const supportedLevels = thinkingLevelsForModel(selectedModelKey);
+      if (submitted.autoReview.enabled && !models.some((model) => modelKey(model) === selectedModelKey)) {
+        throw new Error("Select an authenticated auto-review model from this active tab.");
+      }
+      if (submitted.autoReview.enabled && !supportedLevels.includes(submitted.autoReview.model.thinkingLevel)) {
+        throw new Error(`${selectedModelKey} does not support thinking level ${submitted.autoReview.model.thinkingLevel}.`);
+      }
       const response = await nativeCommandApi("/api/safety-guard/config", {
         method: "POST",
-        body: { config: collectConfig() },
+        body: { config: submitted },
       });
-      const saved = response.data?.config || collectConfig();
+      const saved = response.data?.config || submitted;
       const activeCategories = categories.filter((category) => saved.categories?.[category]).length;
+      const autoReviewSummary = saved.autoReview?.enabled
+        ? `auto-review ${saved.autoReview.model.provider}/${saved.autoReview.model.modelId} at ${saved.autoReview.model.thinkingLevel}`
+        : "auto-review off";
       addTransientMessage({
         role: "native",
         title: "/safety-guard-setup",
-        content: `Safety guard ${saved.enabled ? "enabled" : "disabled"}; ${activeCategories}/${categories.length} command categories active; preview ${saved.contextLines?.before ?? 3} before and ${saved.contextLines?.after ?? 3} after.`,
+        content: `Safety guard ${saved.enabled ? "enabled" : "disabled"}; ${activeCategories}/${categories.length} command categories active; ${autoReviewSummary}; preview ${saved.contextLines?.before ?? 3} before and ${saved.contextLines?.after ?? 3} after.`,
         level: saved.enabled ? "info" : "warn",
       });
       closeNativeCommandDialog();
@@ -43732,6 +44054,7 @@ window.addEventListener("storage", (event) => {
   }
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
   if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
+  if (event.key === SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY && !sidePanelSectionResizeState) restoreSidePanelSectionHeights();
   if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
   if (event.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY) restoreComposerActionSlotLayout();
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
@@ -44219,6 +44542,7 @@ restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
+initializeSidePanelSectionResizing();
 restoreSidePanelState();
 initializeCodexUsage();
 initializeClaudeUsage();

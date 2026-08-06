@@ -1383,7 +1383,50 @@ body.embedded-split .side-panel-backdrop {
 }
 .side-panel-section-content {
   min-width: 0;
+  min-height: 0;
 }
+.side-panel-section-resize-handle {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 0.72rem;
+  margin: -0.18rem 0 -0.36rem;
+  border-radius: 999px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.side-panel-section-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0.72rem;
+  left: 0.72rem;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(var(--ctp-overlay-rgb), 0.46);
+  box-shadow: 0 0 0.45rem rgba(148, 226, 213, 0.08);
+  transform: translateY(-50%);
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+.side-panel-section-resize-handle:hover::before,
+.side-panel-section-resize-handle:focus-visible::before,
+.side-panel-section.resizing > .side-panel-section-resize-handle::before {
+  background: var(--ctp-teal);
+  box-shadow: 0 0 0.75rem rgba(148, 226, 213, 0.62);
+}
+.side-panel-section-resize-handle:focus-visible {
+  outline: 2px solid var(--ctp-blue);
+  outline-offset: 2px;
+}
+.side-panel-section-resize-handle[hidden],
+.side-panel-section.collapsed > .side-panel-section-resize-handle {
+  display: none;
+}
+body.side-panel-section-resizing {
+  cursor: row-resize;
+  user-select: none;
+}
+body.side-panel-section-resizing * { cursor: row-resize !important; }
 .side-panel-section.collapsed .side-panel-section-content,
 .side-panel-section-content[hidden] {
   display: none;
@@ -13346,8 +13389,13 @@ button.git-workflow-step { min-height: 1.9rem; }
     min-height: 28rem;
   }
   .file-viewer-resize-handle,
-  .side-panel-resize-handle {
-    display: none;
+  .side-panel-resize-handle,
+  .side-panel-section-resize-handle {
+    display: none !important;
+  }
+  .side-panel-section-content {
+    height: auto !important;
+    overflow: visible !important;
   }
   .chat { flex-basis: 0; }
   body:not(.side-panel-collapsed) { overflow: hidden; }
@@ -16274,6 +16322,8 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
   }
   html[data-mobile-shell="v2"] .mobile-canonical-host > .side-panel-section-content {
     display: block !important;
+    height: auto !important;
+    overflow: visible !important;
     padding: 0.35rem 0;
     overflow: visible;
     border: 0;

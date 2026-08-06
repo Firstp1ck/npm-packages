@@ -82,7 +82,24 @@ try {
   const projectKey = await resolveSubagentLaunchSlotProjectKey(nested);
   assert.equal(projectKey, projectRoot, "nested tab cwd must resolve to the nearest canonical repository root");
   const markerlessProjectKey = await resolveSubagentLaunchSlotProjectKey(settingsRoot);
-  assert.equal(markerlessProjectKey, settingsRoot, "a markerless tab cwd must not collapse to the filesystem root");
+  assert.equal(markerlessProjectKey, settingsRoot, "a markerless tab cwd must not collapse to the global Pi directory");
+
+  const piProjectRoot = path.join(settingsRoot, "pi-project");
+  const piProjectNested = path.join(piProjectRoot, "nested");
+  await mkdir(path.join(piProjectRoot, ".pi"), { recursive: true });
+  await mkdir(piProjectNested, { recursive: true });
+  assert.equal(await resolveSubagentLaunchSlotProjectKey(piProjectNested), piProjectRoot, "a project-local .pi marker must still define the project root");
+
+  const simulatedHome = path.join(settingsRoot, "simulated-home");
+  const simulatedGlobalPiRoot = path.join(simulatedHome, ".pi");
+  const simulatedMarkerlessCwd = path.join(simulatedHome, "workspace");
+  await mkdir(simulatedGlobalPiRoot, { recursive: true });
+  await mkdir(simulatedMarkerlessCwd, { recursive: true });
+  assert.equal(
+    await resolveSubagentLaunchSlotProjectKey(simulatedMarkerlessCwd, { globalPiRoot: simulatedGlobalPiRoot }),
+    simulatedMarkerlessCwd,
+    "the global Pi directory must not turn its parent into a project root",
+  );
 
   const config = normalizeSubagentLaunchSlots({ user: { roles: validRoles } });
   const inherited = subagentLaunchSlotScopeEntry(config, "project", projectKey);

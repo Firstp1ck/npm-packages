@@ -33,6 +33,8 @@ No required configuration.
 
 ## Commands
 
+- `/goal <one-sentence goal>` — set the current todo-progress goal directly.
+- `/goal` — open an interactive prompt to set the current todo-progress goal.
 - `/todo-progress-status` — show whether the widget is loaded, visible, and tracking a goal/list.
 
 ## Shortcuts

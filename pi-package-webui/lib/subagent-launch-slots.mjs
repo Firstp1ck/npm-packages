@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 export const SUBAGENT_LAUNCH_SLOTS_VERSION = 1;
@@ -252,7 +253,7 @@ export function validateSubagentLaunchSlotRoles(value, models = []) {
   return normalizeSubagentLaunchSlotRoles(value);
 }
 
-export async function resolveSubagentLaunchSlotProjectKey(cwd) {
+export async function resolveSubagentLaunchSlotProjectKey(cwd, { globalPiRoot = path.join(homedir(), ".pi") } = {}) {
   const fallback = path.resolve(String(cwd || process.cwd()));
   let current;
   try {
@@ -261,11 +262,22 @@ export async function resolveSubagentLaunchSlotProjectKey(cwd) {
     return fallback;
   }
   const canonicalCwd = current;
+  const pathKey = (value) => process.platform === "win32" ? path.normalize(value).toLowerCase() : path.normalize(value);
+  const globalPiRoots = new Set();
+  for (const candidate of [path.join(homedir(), ".pi"), globalPiRoot]) {
+    try {
+      globalPiRoots.add(pathKey(await realpath(candidate)));
+    } catch {
+      globalPiRoots.add(pathKey(path.resolve(candidate)));
+    }
+  }
 
   while (true) {
     for (const marker of [".pi", ".git"]) {
+      const markerPath = path.join(current, marker);
+      if (marker === ".pi" && globalPiRoots.has(pathKey(markerPath))) continue;
       try {
-        await lstat(path.join(current, marker));
+        await lstat(markerPath);
         return current;
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;

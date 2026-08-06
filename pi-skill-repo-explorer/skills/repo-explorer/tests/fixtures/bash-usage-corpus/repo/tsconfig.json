@@ -1,0 +1,4 @@
+{
+  "compilerOptions": {"strict": true, "module": "NodeNext"},
+  "include": ["src/typescript", "tests"]
+}

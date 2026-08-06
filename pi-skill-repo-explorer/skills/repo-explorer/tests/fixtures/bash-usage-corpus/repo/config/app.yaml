@@ -1,0 +1,4 @@
+service:
+  name: benchmark-api
+  auth_mode: session
+  health_route: /health

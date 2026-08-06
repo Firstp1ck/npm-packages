@@ -441,6 +441,9 @@ function formatHandoff(handoff: any, repoRoot: string, budget: Budget, includeEv
 	}
 
 	if (budget !== "full") lines.push("\nUse budget='normal'/'full' or includeEvidence=true only when more detail is needed.");
+	if (explorerLimitations.length > 0 || errors.length > 0 || omittedEntries.length > 0) {
+		lines.push("If a reported limitation, error, or omission blocks the goal, retry repo_explorer_explore with a narrower target or larger budget, then use targeted read/grep/find/ls only for the remaining explicit gap. Do not use Bash fallback.");
+	}
 	return lines.join("\n");
 }
 
@@ -462,11 +465,12 @@ export default function repoExplorerExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "repo_explorer_explore",
 		label: "Repo Explorer",
-		description: "Build or refresh a local repo index, extract a goal-focused handoff, validate it, write an effectiveness report, and return compact repository exploration results.",
-		promptSnippet: "Explore a local repository with cached indexing, compact validated handoff output, and a saved effectiveness report.",
+		description: "Routine native repository exploration: build or refresh a local index, extract and validate a goal-focused handoff, write an effectiveness report, and return compact results.",
+		promptSnippet: "Use repo_explorer_explore as the routine repository-exploration path with compact validated output; do not use Bash for routine exploration.",
 		promptGuidelines: [
-			"Use repo_explorer_explore before broad manual grep/read passes in unfamiliar repositories.",
-			"Use repo_explorer_explore with budget='compact' first; request larger budgets only when the compact result is insufficient.",
+			"Call repo_explorer_explore first for repository exploration; do not use Bash to preflight availability, run helper scripts, or duplicate a successful result.",
+			"Start with budget='compact' and includeEvidence=false; retry the native tool with a narrower target, larger budget, or includeEvidence=true only when a reported gap blocks the goal.",
+			"For a still-missing fact explicitly identified by limitations, errors, or omissions, use targeted non-shell read/grep/find/ls tools; Bash is diagnostic-only after native unavailability or failure.",
 			"Expect every invocation to write a Markdown effectiveness report under skills/repo-explorer/.",
 		],
 		parameters: ExploreParams,

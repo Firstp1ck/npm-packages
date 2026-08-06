@@ -14,6 +14,7 @@ const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const layoutKeys = {
   sideOrder: "pi-webui-side-panel-section-order-v1",
   sideCollapsed: "pi-webui-side-panel-collapsed",
+  sideHeights: "pi-webui-side-panel-section-heights-v1",
   composerOrder: "pi-webui-composer-action-order-v1",
   composerGrid: "pi-webui-composer-action-layout-v2",
   footerOrder: "pi-webui-footer-scoped-model-order-v1",
@@ -119,6 +120,7 @@ async function seedStaleServerLayout() {
           collapsedSectionIds: [],
           hiddenSectionIds: [],
           collapsed: false,
+          sectionHeights: { git: 320 },
         },
         composerActions: { order: ["send", "new"], grid: null },
         footerScopedModelOrder: ["fake/fake-gamma", "fake/fake-beta", "fake/fake-model"],
@@ -140,6 +142,7 @@ async function localLayout(page) {
     const json = (key) => JSON.parse(localStorage.getItem(key) || "null");
     return {
       sideOrder: json(keys.sideOrder),
+      sideHeights: json(keys.sideHeights),
       composerOrder: json(keys.composerOrder),
       composerGrid: json(keys.composerGrid),
       footerOrder: json(keys.footerOrder),
@@ -208,6 +211,7 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
   await expect.poll(() => sectionOrder(page)).toEqual(expected.sideOrder);
   await expect.poll(() => localLayout(page)).toMatchObject({
     sideOrder: expected.sideOrder,
+    sideHeights: expected.sideHeights,
     composerOrder: expected.composerOrder,
     composerGrid: expected.composerGrid,
     footerOrder: expected.footerOrder,
@@ -219,6 +223,15 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
   await expect(page.locator("#terminalTabsLayoutSelect")).toHaveValue("left");
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(320);
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeLessThanOrEqual(expected.sidePanelWidth);
+  for (const sectionId of ["controls", "files"]) {
+    const toggle = page.locator(`[data-side-panel-section-toggle="${sectionId}"]`);
+    if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+    const handle = page.locator(`[data-side-panel-section-resize="${sectionId}"]`);
+    await expect(handle).toBeVisible();
+    await expect(handle).toHaveAttribute("role", "separator");
+    await expect(handle).toHaveAttribute("aria-orientation", "horizontal");
+    await expect(handle).toHaveAttribute("aria-valuenow", String(expected.sideHeights[sectionId]));
+  }
   const matchingViewportWidth = await useMatchingComposerViewport(page, expected.composerGrid.columns);
   await expect.poll(() => page.locator('[data-composer-action-id="options"]').evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(expected.optionsColumn);
   if (expectCustomGroup === true) await expect(page.locator(".terminal-tab-custom-group")).toHaveCount(1);
@@ -252,7 +265,7 @@ test.beforeEach(async () => {
 
 test.afterAll(async () => {
   await stopServer();
-  await rm(tempRoot, { recursive: true, force: true });
+  await rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("server-owned layout survives stale reads, failed writes, localStorage clear, and process restart", async ({ browser }) => {
@@ -317,10 +330,14 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
 
   await openFooterModelPicker(page);
   const selectedModel = page.locator('[data-footer-model-key="fake/fake-model"]');
-  await selectedModel.focus();
-  await selectedModel.press("Alt+ArrowUp");
-  const expectedFooterOrder = await page.locator(".footer-model-option").evaluateAll((buttons) => buttons.map((button) => button.dataset.footerModelKey));
-  expect(expectedFooterOrder).toEqual(["fake/fake-gamma", "fake/fake-model", "fake/fake-beta"]);
+  const initialFooterOrder = await page.locator(".footer-model-option").evaluateAll((buttons) => buttons.map((button) => button.dataset.footerModelKey));
+  const selectedModelIndex = initialFooterOrder.indexOf("fake/fake-model");
+  const moveOffset = selectedModelIndex > 0 ? -1 : 1;
+  const expectedFooterOrder = [...initialFooterOrder];
+  [expectedFooterOrder[selectedModelIndex], expectedFooterOrder[selectedModelIndex + moveOffset]] = [expectedFooterOrder[selectedModelIndex + moveOffset], expectedFooterOrder[selectedModelIndex]];
+  await selectedModel.evaluate((button, key) => button.dispatchEvent(new KeyboardEvent("keydown", { key, altKey: true, bubbles: true })), moveOffset < 0 ? "ArrowUp" : "ArrowDown");
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]"), layoutKeys.footerOrder)).toEqual(expectedFooterOrder);
+  await expect.poll(() => page.locator(".footer-model-option").evaluateAll((buttons) => buttons.map((button) => button.dataset.footerModelKey))).toEqual(expectedFooterOrder);
   await expect(page.locator('.footer-model-option[aria-selected="true"]')).toHaveAttribute("data-footer-model-key", "fake/fake-model");
   await page.keyboard.press("Escape");
 
@@ -335,6 +352,13 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect(page.locator("#terminalTabsLayoutSelect")).toBeVisible();
   await page.locator("#terminalTabsLayoutSelect").selectOption("left");
   await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
+  const controlsHeightResize = page.locator('[data-side-panel-section-resize="controls"]');
+  await expect(controlsHeightResize).toBeVisible();
+  await controlsHeightResize.focus();
+  await controlsHeightResize.press("Home");
+  await controlsHeightResize.press("Shift+ArrowDown");
+  await controlsHeightResize.press("Shift+ArrowDown");
+  await expect(controlsHeightResize).toHaveAttribute("aria-valuenow", "280");
 
   const options = page.locator('[data-composer-action-id="options"]');
   const optionsBox = await options.boundingBox();
@@ -351,6 +375,12 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect(gridGuide).toBeHidden();
 
   await openAcceptanceFile(page);
+  const filesHeightResize = page.locator('[data-side-panel-section-resize="files"]');
+  await expect(filesHeightResize).toBeVisible();
+  await filesHeightResize.focus();
+  await filesHeightResize.press("Home");
+  await filesHeightResize.press("Shift+ArrowDown");
+  await expect(filesHeightResize).toHaveAttribute("aria-valuenow", "200");
   await expect(page.locator("#fileViewerPane")).toBeVisible();
   const fileViewerResize = page.locator("#fileViewerResizeHandle");
   await fileViewerResize.focus();
@@ -359,7 +389,21 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   expect(expectedFileViewerWidth).toBeGreaterThan(384);
   await page.locator("#fileViewerCloseButton").click();
 
+  if (await controlsToggle.getAttribute("aria-expanded") !== "true") await controlsToggle.click();
+  await expect(controlsHeightResize).toBeVisible();
+  const filesHeightBeforePointerResize = (await localLayout(page)).sideHeights.files;
+  const controlsResizeBox = await controlsHeightResize.boundingBox();
+  expect(controlsResizeBox).toBeTruthy();
+  await page.mouse.move(controlsResizeBox.x + controlsResizeBox.width / 2, controlsResizeBox.y + controlsResizeBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(controlsResizeBox.x + controlsResizeBox.width / 2, controlsResizeBox.y + controlsResizeBox.height / 2 + 48, { steps: 6 });
+  await page.mouse.up();
+  const expectedControlsHeight = Number(await controlsHeightResize.getAttribute("aria-valuenow"));
+  expect(expectedControlsHeight).toBeGreaterThan(280);
+  await expect.poll(async () => (await localLayout(page)).sideHeights).toMatchObject({ controls: expectedControlsHeight, files: filesHeightBeforePointerResize });
+
   const expectedLocal = await localLayout(page);
+  expect(expectedLocal.sideHeights).toMatchObject({ controls: expectedControlsHeight, files: 200 });
   expect(expectedLocal.composerGrid?.positions?.options).toBeGreaterThan(0);
   expect(expectedLocal.terminalGroups?.groups?.[0]?.tabIds).toEqual([firstTabId, secondTabId]);
   const optionsColumn = String((expectedLocal.composerGrid.positions.options % expectedLocal.composerGrid.columns) + 1);
@@ -380,7 +424,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
 
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout).toMatchObject({
-    sidePanel: { sectionOrder: expected.sideOrder },
+    sidePanel: { sectionOrder: expected.sideOrder, sectionHeights: expected.sideHeights },
     composerActions: { order: expected.composerOrder, grid: expected.composerGrid },
     footerScopedModelOrder: expected.footerOrder,
     terminalTabs: { layout: "left", customGroups: expected.terminalGroups },
@@ -393,8 +437,8 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await page.reload();
   const matchingViewportWidth = await assertRestoredLayout(page, expected, { expectCustomGroup: true });
 
-  await page.setViewportSize({ width: 900, height: 900 });
-  await expect.poll(() => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe("");
+  await page.setViewportSize({ width: 700, height: 900 });
+  await expect(page.locator("body")).not.toHaveClass(/composer-action-grid-enabled/);
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), layoutKeys.composerGrid)).toEqual(expected.composerGrid);
   await page.setViewportSize({ width: matchingViewportWidth, height: 1000 });
   await expect.poll(() => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(expected.optionsColumn);
@@ -403,6 +447,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await stopServer();
   const settingsOnDisk = JSON.parse(await readFile(settingsFile, "utf8"));
   assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionOrder, expected.sideOrder, "the private settings file should contain the browser-committed Control Deck order");
+  assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionHeights, expected.sideHeights, "the private settings file should contain independent Control Deck section heights");
   assert.deepEqual(settingsOnDisk.uiLayout.composerActions.grid, expected.composerGrid, "the private settings file should contain the exact sparse composer grid");
   assert.equal(settingsOnDisk.uiLayout.fileViewerWidth, expected.fileViewerWidth, "the private settings file should contain the browser-committed file-viewer width");
 
@@ -420,6 +465,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
 test("returning browsers adopt authoritative Control Deck state without echo writes", async ({ browser }) => {
   const current = await serverApi("/api/interface-preferences");
   const serverSideOrder = ["git", "files", "controls"];
+  const serverSideHeights = { git: 360, files: 220, controls: 300 };
   await serverApi("/api/interface-preferences", {
     method: "PUT",
     body: {
@@ -431,15 +477,17 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
           collapsedSectionIds: [],
           hiddenSectionIds: [],
           collapsed: false,
+          sectionHeights: serverSideHeights,
         },
       },
     },
   });
 
   const context = await browser.newContext({ viewport: { width: 1680, height: 1000 } });
-  await context.addInitScript(({ sideOrder, sideCollapsed }) => {
+  await context.addInitScript(({ sideOrder, sideCollapsed, sideHeights }) => {
     localStorage.setItem(sideOrder, JSON.stringify(["files", "controls", "git"]));
     localStorage.setItem(sideCollapsed, "1");
+    localStorage.setItem(sideHeights, JSON.stringify({ git: 180, files: 180, controls: 180 }));
   }, layoutKeys);
   const page = await context.newPage();
   let layoutPuts = 0;
@@ -450,12 +498,29 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
 
   await page.goto(baseURL);
   await expect.poll(async () => (await sectionOrder(page)).slice(0, serverSideOrder.length)).toEqual(serverSideOrder);
+  await expect.poll(async () => (await localLayout(page)).sideHeights).toEqual(serverSideHeights);
   await expect(page.locator("body")).not.toHaveClass(/side-panel-collapsed/);
   await page.waitForTimeout(700);
   expect(layoutPuts).toBe(0);
   const persisted = await serverApi("/api/interface-preferences");
   assert.deepEqual(persisted.data.layout.sidePanel.sectionOrder, serverSideOrder);
+  assert.deepEqual(persisted.data.layout.sidePanel.sectionHeights, serverSideHeights);
   assert.equal(persisted.data.layout.sidePanel.collapsed, false);
+
+  const controlsToggle = page.locator('[data-side-panel-section-toggle="controls"]');
+  if (await controlsToggle.getAttribute("aria-expanded") !== "true") await controlsToggle.click();
+  const controlsSection = page.locator('[data-side-panel-section="controls"]');
+  const controlsHeightResize = page.locator('[data-side-panel-section-resize="controls"]');
+  await expect(controlsHeightResize).toBeVisible();
+  await controlsToggle.click({ button: "right" });
+  const controlsVisibilityItem = page.locator('[data-side-panel-section-visibility="controls"]');
+  await expect(controlsVisibilityItem).toBeVisible();
+  await controlsVisibilityItem.click();
+  await expect(controlsSection).toBeHidden();
+  await controlsVisibilityItem.click();
+  await expect(controlsSection).toBeVisible();
+  await expect(controlsHeightResize).toBeVisible();
+  await expect(controlsHeightResize).toHaveAttribute("aria-valuenow", String(serverSideHeights.controls));
   await context.close();
 });
 
@@ -576,10 +641,11 @@ test("one tab cannot erase another tab's failed pending journal", async ({ brows
     await route.continue();
   });
   await Promise.all([pageA.goto(baseURL), pageB.goto(baseURL)]);
+  await expect.poll(() => pageA.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]").slice(0, 2), layoutKeys.composerOrder)).toEqual(["send", "new"]);
 
   const newSession = pageA.locator('[data-composer-action-id="new"]');
-  await newSession.focus();
-  await newSession.press("Alt+ArrowLeft");
+  await newSession.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true })));
+  await expect.poll(() => pageA.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]").slice(0, 2), layoutKeys.composerOrder)).toEqual(["new", "send"]);
   await expect.poll(() => failedComposerWrites).toBeGreaterThan(0);
   await expect.poll(() => pageA.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("pi-webui-ui-layout-pending-v3:")).length)).toBeGreaterThan(0);
 
@@ -655,11 +721,12 @@ test("in-flight sibling acknowledgement clears only the acknowledged subfield", 
     await route.continue();
   });
   await Promise.all([pageA.goto(baseURL), pageB.goto(baseURL)]);
+  await expect.poll(async () => (await sectionOrder(pageA)).slice(0, initialOrder.length)).toEqual(initialOrder);
+  await expect.poll(async () => (await sectionOrder(pageB)).slice(0, initialOrder.length)).toEqual(initialOrder);
   interceptWrites = true;
 
   const controlsA = pageA.locator('[data-side-panel-section-toggle="controls"]');
-  await controlsA.focus();
-  await controlsA.press("Alt+ArrowDown");
+  await controlsA.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })));
   await firstOrderFetchedPromise;
   await pageA.locator("#toggleSidePanelButton").click();
   releaseFirstOrder();
@@ -668,8 +735,7 @@ test("in-flight sibling acknowledgement clears only the acknowledged subfield", 
   assert.equal(secondPayload.layout.sidePanel?.collapsed, true);
 
   const controlsB = pageB.locator('[data-side-panel-section-toggle="controls"]');
-  await controlsB.focus();
-  await controlsB.press("Alt+ArrowUp");
+  await controlsB.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true })));
   const browserBOrder = ["controls", "files", "git"];
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionOrder.slice(0, browserBOrder.length)).toEqual(browserBOrder);
   releaseSecondWrite();
@@ -716,9 +782,12 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
       await route.fulfill({ response });
       return;
     }
-    if (captureNextPut && request.method() === "PUT" && request.postDataJSON()?.layout) {
-      captureNextPut = false;
-      capturedExpectedRevision = request.postDataJSON().expectedLayoutRevision;
+    if (captureNextPut && request.method() === "PUT") {
+      const payload = request.postDataJSON();
+      if (Object.hasOwn(payload?.layout?.sidePanel || {}, "collapsed")) {
+        captureNextPut = false;
+        capturedExpectedRevision = payload.expectedLayoutRevision;
+      }
     }
     await route.continue();
   });
@@ -728,17 +797,38 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
   await delayedGetCapturedPromise;
 
   const controls = page.locator('[data-side-panel-section-toggle="controls"]');
-  await controls.focus();
-  await controls.press("Alt+ArrowDown");
-  const newerOrder = ["files", "git", "controls"];
+  const orderBeforeMove = (await sectionOrder(page)).slice(0, 3);
+  const controlsIndex = orderBeforeMove.indexOf("controls");
+  const moveOffset = controlsIndex < orderBeforeMove.length - 1 ? 1 : -1;
+  const newerOrder = [...orderBeforeMove];
+  [newerOrder[controlsIndex], newerOrder[controlsIndex + moveOffset]] = [newerOrder[controlsIndex + moveOffset], newerOrder[controlsIndex]];
+  const newerPutResponse = page.waitForResponse((response) => {
+    if (!response.url().includes("/api/interface-preferences") || response.request().method() !== "PUT") return false;
+    return Array.isArray(response.request().postDataJSON()?.layout?.sidePanel?.sectionOrder);
+  });
+  await controls.evaluate((button, key) => button.dispatchEvent(new KeyboardEvent("keydown", { key, altKey: true, bubbles: true })), moveOffset > 0 ? "ArrowDown" : "ArrowUp");
+  await newerPutResponse;
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionOrder.slice(0, newerOrder.length)).toEqual(newerOrder);
-  const revisionAfterPut = (await serverApi("/api/interface-preferences")).data.layoutRevision;
+  await expect.poll(() => page.evaluate((prefix) => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      try {
+        const record = JSON.parse(localStorage.getItem(key) || "null");
+        if (record?.field === "sidePanel" && record?.subfield === "sectionOrder") return true;
+      } catch {
+        // Ignore malformed unrelated records; production also fails soft here.
+      }
+    }
+    return false;
+  }, "pi-webui-ui-layout-pending-v3:")).toBe(false);
   releaseDelayedGet();
   await page.waitForTimeout(300);
+  const revisionBeforeCollapse = (await serverApi("/api/interface-preferences")).data.layoutRevision;
 
   captureNextPut = true;
-  await page.locator("#toggleSidePanelButton").click();
-  await expect.poll(() => capturedExpectedRevision).toBe(revisionAfterPut);
+  await page.locator("#toggleSidePanelButton").evaluate((button) => button.click());
+  await expect.poll(() => capturedExpectedRevision).toBe(revisionBeforeCollapse);
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsed).toBe(true);
   await context.close();
 });

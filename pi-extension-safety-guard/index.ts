@@ -17,9 +17,16 @@ import {
   writeSafetyGuardConfig,
 } from "./src/config.mjs";
 import type { SafetyGuardCategory, SafetyGuardConfig, SafetyGuardConfigPatch } from "./src/config.mjs";
+import {
+  requestAutoReview,
+  supportedAutoReviewThinkingLevels,
+  type AutoReviewRequest,
+} from "./src/auto-review.ts";
 import { matchingCommandExcerpt } from "./src/excerpt.ts";
 
 const STATUS_KEY = "safety-guard";
+const AUTO_REVIEW_STATUS_KEY = "safety-guard-auto-review";
+const AUTO_REVIEW_WIDGET_KEY = "safety-guard-auto-review";
 const PROMPT_WIDGET_KEY = "safety-guard-prompt";
 
 type RiskLevel = "prompt" | "strong-confirm" | "block-noninteractive";
@@ -204,9 +211,9 @@ function allowedScope(decision: AllowDecision): AllowScope | undefined {
   return decision && "allow" in decision ? decision.scope : undefined;
 }
 
-function isProtectedPath(targetPath: string, cwd: string): boolean {
+export function isProtectedPath(targetPath: string, cwd: string): boolean {
   const resolved = path.resolve(cwd, targetPath);
-  const lower = resolved.toLowerCase();
+  const lower = resolved.toLowerCase().replace(/\\/g, "/");
 
   if (/(^|\/)\.ssh(\/|$)/.test(lower)) return true;
   if (/(^|\/)\.git-credentials$/.test(lower)) return true;
@@ -334,6 +341,71 @@ function onOff(value: boolean): "on" | "off" {
   return value ? "on" : "off";
 }
 
+function modelKey(model: any): string {
+  return `${model?.provider || ""}/${model?.id || ""}`;
+}
+
+function availableAutoReviewModels(ctx: ExtensionContext): any[] {
+  return ctx.modelRegistry.getAvailable()
+    .filter((model: any) => model?.provider && model?.id)
+    .sort((left: any, right: any) => modelKey(left).localeCompare(modelKey(right)));
+}
+
+async function selectSetupValue(
+  ctx: ExtensionContext,
+  title: string,
+  options: Array<{ value: string; label: string }>,
+  current?: string,
+): Promise<string | undefined> {
+  const labels = options.map((option) => option.value === current ? `${option.label} (current)` : option.label);
+  const selected = await ctx.ui.select(title, labels);
+  if (!selected) return undefined;
+  const index = labels.indexOf(selected);
+  return index < 0 ? undefined : options[index].value;
+}
+
+async function configureAutoReviewModel(
+  ctx: ExtensionContext,
+  values: SafetyGuardConfig,
+): Promise<SafetyGuardConfig | undefined> {
+  if (!values.autoReview.enabled) return values;
+  const models = availableAutoReviewModels(ctx);
+  if (!models.length) {
+    ctx.ui.notify("No authenticated Pi models are available. Run /login or configure a provider before enabling safety-guard auto-review.", "warning");
+    return undefined;
+  }
+
+  const configuredKey = `${values.autoReview.model.provider}/${values.autoReview.model.modelId}`;
+  const availableKeys = new Set(models.map(modelKey));
+  const selectedKey = await selectSetupValue(
+    ctx,
+    "Safety guard auto-review model",
+    models.map((model: any) => ({
+      value: modelKey(model),
+      label: `${modelKey(model)}${model.name && model.name !== model.id ? ` — ${model.name}` : ""}`,
+    })),
+    availableKeys.has(configuredKey) ? configuredKey : undefined,
+  );
+  if (!selectedKey) return undefined;
+  const selectedModel = models.find((model: any) => modelKey(model) === selectedKey);
+  if (!selectedModel) return undefined;
+
+  const levels = supportedAutoReviewThinkingLevels(selectedModel);
+  const selectedThinking = await selectSetupValue(
+    ctx,
+    "Safety guard auto-review reasoning effort",
+    levels.map((level) => ({ value: level, label: level })),
+    levels.includes(values.autoReview.model.thinkingLevel) ? values.autoReview.model.thinkingLevel : levels[0],
+  );
+  if (!selectedThinking) return undefined;
+  values.autoReview.model = {
+    provider: selectedModel.provider,
+    modelId: selectedModel.id,
+    thinkingLevel: selectedThinking,
+  };
+  return values;
+}
+
 async function configureSafetyGuardSetup(
   ctx: ExtensionContext,
   initial: SafetyGuardConfig,
@@ -350,7 +422,7 @@ async function configureSafetyGuardSetup(
     try {
       const parsed = JSON.parse(edited) as unknown;
       assertSafetyGuardConfigPatch(parsed);
-      return normalizeSafetyGuardConfig(parsed);
+      return await configureAutoReviewModel(ctx, normalizeSafetyGuardConfig(parsed));
     } catch (error) {
       ctx.ui.notify(`Invalid safety guard setup: ${error instanceof Error ? error.message : String(error)}`, "error");
       return undefined;
@@ -360,6 +432,7 @@ async function configureSafetyGuardSetup(
   const result = await ctx.ui.custom<"save" | undefined>((tui, theme, _keybindings, done) => {
     const items: SettingItem[] = [
       { id: "enabled", label: "General · Guard enabled", currentValue: onOff(values.enabled), values: ["on", "off"] },
+      { id: "autoReview.enabled", label: "Auto-review · Review matched calls with a model", currentValue: onOff(values.autoReview.enabled), values: ["on", "off"] },
       { id: "context.before", label: "Preview · Lines before a match", currentValue: String(values.contextLines.before), values: CONTEXT_LINE_VALUES },
       { id: "context.after", label: "Preview · Lines after a match", currentValue: String(values.contextLines.after), values: CONTEXT_LINE_VALUES },
       ...SAFETY_GUARD_CATEGORIES.map((category): SettingItem => ({
@@ -384,6 +457,7 @@ async function configureSafetyGuardSetup(
       getSettingsListTheme(),
       (id, newValue) => {
         if (id === "enabled") values.enabled = newValue === "on";
+        else if (id === "autoReview.enabled") values.autoReview.enabled = newValue === "on";
         else if (id === "context.before") values.contextLines.before = Number.parseInt(newValue, 10);
         else if (id === "context.after") values.contextLines.after = Number.parseInt(newValue, 10);
         else if (id === "protected.write") values.protectedPaths.write = newValue === "on";
@@ -416,7 +490,7 @@ async function configureSafetyGuardSetup(
     };
   });
 
-  return result === "save" ? normalizeSafetyGuardConfig(values) : undefined;
+  return result === "save" ? await configureAutoReviewModel(ctx, normalizeSafetyGuardConfig(values)) : undefined;
 }
 
 function updateStatus(ctx: ExtensionContext, config: SafetyGuardConfig): void {
@@ -428,11 +502,43 @@ function updateStatus(ctx: ExtensionContext, config: SafetyGuardConfig): void {
   ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("success", "🔓!"));
 }
 
-export default function safetyGuard(pi: ExtensionAPI) {
+export function createSafetyGuardExtension({
+  requestAutoReviewFn = requestAutoReview,
+}: {
+  requestAutoReviewFn?: typeof requestAutoReview;
+} = {}) {
+  return function safetyGuard(pi: ExtensionAPI) {
   let config = defaultSafetyGuardConfig();
   let lastConfigError = "";
   const sessionAllow = new Map<string, AllowEntry>();
+  const activeReviewTokens = new Set<symbol>();
   let permanentAllow = readAllowStore();
+
+  const renderAutoReviewIndicator = (ctx: ExtensionContext): void => {
+    if (!ctx.hasUI) return;
+    const count = activeReviewTokens.size;
+    if (!count) {
+      ctx.ui.setStatus(AUTO_REVIEW_STATUS_KEY, undefined);
+      ctx.ui.setWidget(AUTO_REVIEW_WIDGET_KEY, undefined);
+      return;
+    }
+    const suffix = count === 1 ? "tool call" : `${count} tool calls`;
+    ctx.ui.setStatus(AUTO_REVIEW_STATUS_KEY, `🔎 reviewing ${count}`);
+    ctx.ui.setWidget(AUTO_REVIEW_WIDGET_KEY, [`🔎 Safety guard is auto-reviewing ${suffix}…`], { placement: "aboveEditor" });
+  };
+
+  const beginAutoReview = (ctx: ExtensionContext): (() => void) => {
+    const token = Symbol("safety-guard-auto-review");
+    activeReviewTokens.add(token);
+    renderAutoReviewIndicator(ctx);
+    let cleared = false;
+    return () => {
+      if (cleared) return;
+      cleared = true;
+      activeReviewTokens.delete(token);
+      renderAutoReviewIndicator(ctx);
+    };
+  };
 
   const refreshConfig = (ctx?: ExtensionContext): SafetyGuardConfig => {
     const wasEnabled = config.enabled;
@@ -466,6 +572,28 @@ export default function safetyGuard(pi: ExtensionAPI) {
   refreshConfig();
 
   const isAllowed = (key: string): boolean => sessionAllow.has(key) || permanentAllow.entries.some((entry) => entry.key === key);
+
+  const autoReviewOrPrompt = async (
+    ctx: ExtensionContext,
+    request: AutoReviewRequest,
+    fallback: () => Promise<AllowDecision>,
+  ): Promise<AllowDecision> => {
+    if (!config.autoReview.enabled) return await fallback();
+
+    const clearIndicator = beginAutoReview(ctx);
+    try {
+      const verdict = await requestAutoReviewFn(ctx.modelRegistry, { ...config.autoReview.model }, request, undefined, ctx.signal);
+      clearIndicator();
+      if (verdict.verdict === "allow") return { allow: true };
+      if (ctx.hasUI) ctx.ui.notify(`Safety guard auto-review blocked ${request.kind}: ${request.label}`, "warning");
+      return { block: true, reason: `Blocked by safety guard auto-review (${request.label})` };
+    } catch {
+      clearIndicator();
+      return await fallback();
+    } finally {
+      clearIndicator();
+    }
+  };
 
   const rememberAllow = (entry: Omit<AllowEntry, "createdAt">, scope: AllowScope, ctx: ExtensionContext): void => {
     const next: AllowEntry = { ...entry, createdAt: new Date().toISOString() };
@@ -529,7 +657,7 @@ export default function safetyGuard(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("safety-guard-setup", {
-    description: "Configure guard categories, protected-path checks, and command preview context",
+    description: "Configure guards and optional authenticated model auto-review",
     handler: async (args, ctx) => {
       if (args?.trim()) {
         if (ctx.hasUI) ctx.ui.notify("Usage: /safety-guard-setup", "warning");
@@ -575,7 +703,14 @@ export default function safetyGuard(pi: ExtensionAPI) {
       if (isAllowed(entry.key)) return;
 
       const prompt = formatRuleMessage(match, matchedCommandText, config, (value) => ctx.ui.theme.fg("warning", value));
-      const decision = await confirmOrBlock(ctx, prompt.title, prompt.message, prompt.nonInteractiveReason);
+      const decision = await autoReviewOrPrompt(ctx, {
+        kind: "bash",
+        label: match.label,
+        category: match.category,
+        riskLevel: match.level,
+        cwd: normalizeCwd(ctx.cwd),
+        pendingText: command,
+      }, () => confirmOrBlock(ctx, prompt.title, prompt.message, prompt.nonInteractiveReason));
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);
       if (decision && "block" in decision) return decision;
@@ -595,12 +730,19 @@ export default function safetyGuard(pi: ExtensionAPI) {
       };
       if (isAllowed(entry.key)) return;
 
-      const decision = await confirmOrBlock(
+      const decision = await autoReviewOrPrompt(ctx, {
+        kind: "write",
+        label: "protected file write",
+        category: "protected-path",
+        riskLevel: "prompt",
+        cwd: normalizeCwd(ctx.cwd),
+        pendingText: event.input.path,
+      }, () => confirmOrBlock(
         ctx,
         "Protected file write",
         `Write to protected path '${event.input.path}'?`,
         `Blocked write to protected path '${event.input.path}' in non-interactive mode`,
-      );
+      ));
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);
       if (decision && "block" in decision) return decision;
@@ -620,16 +762,26 @@ export default function safetyGuard(pi: ExtensionAPI) {
       };
       if (isAllowed(entry.key)) return;
 
-      const decision = await confirmOrBlock(
+      const decision = await autoReviewOrPrompt(ctx, {
+        kind: "edit",
+        label: "protected file edit",
+        category: "protected-path",
+        riskLevel: "prompt",
+        cwd: normalizeCwd(ctx.cwd),
+        pendingText: event.input.path,
+      }, () => confirmOrBlock(
         ctx,
         "Protected file edit",
         `Edit protected path '${event.input.path}'?`,
         `Blocked edit to protected path '${event.input.path}' in non-interactive mode`,
-      );
+      ));
       const scope = allowedScope(decision);
       if (scope) rememberAllow(entry, scope, ctx);
       if (decision && "block" in decision) return decision;
       return;
     }
   });
+  };
 }
+
+export default createSafetyGuardExtension();

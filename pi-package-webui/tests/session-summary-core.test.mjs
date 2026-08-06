@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { writeSessionSummaryPreferences } from "../lib/session-summary-preferences.mjs";
 import {
   SESSION_SUMMARY_DISPLAY_TYPE,
@@ -25,6 +26,15 @@ import {
   serializeSummarySource,
   shouldApplySummaryTitle,
 } from "../lib/session-summary-core.mjs";
+
+async function waitFor(label, predicate, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(10);
+  }
+  throw new Error(`${label} did not happen within ${timeoutMs}ms`);
+}
 
 const entries = [
   { type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: "Please fix auth" }, { type: "image", data: "SECRET_IMAGE" }] } },
@@ -315,7 +325,7 @@ try {
   const settledReturn = handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
   assert.equal(settledReturn, undefined, "settled handler returns synchronously");
   assert.equal(completionCalls.length, 0, "provider work does not delay outward settlement");
-  for (let i = 0; i < 20 && completionCalls.length === 0; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await waitFor("automatic session-summary completion start", () => completionCalls.length === 1);
   assert.equal(completionCalls.length, 1);
   const [, completionContext, completionOptions] = completionCalls[0];
   assert.equal(completionContext.tools, undefined);
@@ -330,7 +340,7 @@ try {
   assert.equal(typeof completionOptions.sessionId, "string");
   assert.notEqual(completionOptions.sessionId, "fake-session", "completion uses a fresh routing ID");
   releaseComplete();
-  for (let i = 0; i < 20 && !branchEntries.some((entry) => entry.customType === SESSION_SUMMARY_STATE_TYPE); i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await waitFor("persisted automatic session-summary state", () => branchEntries.some((entry) => entry.customType === SESSION_SUMMARY_STATE_TYPE));
   const persistedState = latestSummaryState(branchEntries);
   assert.equal(persistedState.result.summaryMarkdown, "# Summary\n\nCore is ready.");
   assert.equal(sessionName, "Summary core", "first generated title applies immediately");
@@ -348,7 +358,7 @@ try {
   nextCompletionError = new Error("overlap failed");
   const overlapCallIndex = completionCalls.length;
   handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
-  for (let i = 0; i < 20 && completionCalls.length === overlapCallIndex; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await waitFor("overlapping automatic session-summary start", () => completionCalls.length === overlapCallIndex + 1);
   assert.equal(completionCalls.length, overlapCallIndex + 1);
   const overlapRefresh = commands.get("summary").handler("refresh", ctx);
   releaseComplete();
@@ -364,20 +374,21 @@ try {
   const coalescedFailureCountBefore = branchEntries.filter((entry) => entry.details?.kind === "failure" && entry.details?.message === "pending automatic failed").length;
   const coalescedCallIndex = completionCalls.length;
   handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
-  for (let i = 0; i < 20 && completionCalls.length === coalescedCallIndex; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await waitFor("coalesced automatic session-summary start", () => completionCalls.length === coalescedCallIndex + 1);
   assert.equal(completionCalls.length, coalescedCallIndex + 1);
   handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
   nextCompletionError = new Error("pending automatic failed");
   completeGate = Promise.resolve();
   releaseComplete();
-  for (let i = 0; i < 40 && !branchEntries.some((entry) => entry.details?.kind === "failure" && entry.details?.message === "pending automatic failed"); i += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await waitFor(
+    "pending automatic session-summary failure",
+    () => branchEntries.some((entry) => entry.details?.kind === "failure" && entry.details?.message === "pending automatic failed"),
+  );
   assert.equal(completionCalls.length, coalescedCallIndex + 2, "pending automatic refresh launches after the first succeeds");
   const coalescedFailures = branchEntries.filter((entry) => entry.details?.kind === "failure" && entry.details?.message === "pending automatic failed");
   assert.equal(coalescedFailures.length - coalescedFailureCountBefore, 1, "an internally launched pending failure emits exactly one terminal RPC event");
 
-  for (let i = 0; i < 20 && !branchEntries.some((entry) => entry.details?.kind === "success"); i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await waitFor("automatic session-summary success", () => branchEntries.some((entry) => entry.details?.kind === "success"));
   assert.equal(latestSummaryNameProvenance(branchEntries), undefined, "self-generated rename does not record explicit provenance");
 
   api.setSessionName("Summary core");
@@ -424,7 +435,7 @@ try {
   fakeOutput = { version: 1, title: "Stale title", summaryMarkdown: "# Stale result" };
   const staleCallIndex = completionCalls.length;
   const staleRefresh = commands.get("summary").handler("refresh", ctx);
-  for (let i = 0; i < 20 && completionCalls.length === staleCallIndex; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await waitFor("stale-source session-summary start", () => completionCalls.length === staleCallIndex + 1);
   assert.equal(completionCalls.length, staleCallIndex + 1);
   activeBranch = branchB;
   leafId = branchB.at(-1).id;
@@ -499,8 +510,10 @@ try {
     }
   }
 
-  const testCwd = "/tmp/test-workspace-a";
-  const crossCwd = "/tmp/test-workspace-b";
+  const testCwd = join(extensionTemp, "test-workspace-a");
+  const crossCwd = join(extensionTemp, "test-workspace-b");
+  await mkdir(testCwd, { recursive: true });
+  await mkdir(crossCwd, { recursive: true });
   const fakeChannel = new FakeChannel();
   fakeChannel.peers.set("self-sender-1", { cwd: testCwd, pid: process.pid });
   const w2Tools = new Map();

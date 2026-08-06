@@ -37,6 +37,7 @@
     "skills/repo-explorer/improve.md",
     "skills/repo-explorer/scripts",
     "skills/repo-explorer/tests/*.py",
+    "skills/repo-explorer/tests/fixtures",
     "!skills/repo-explorer/repo-explorer-effectiveness-*.md",
     "README.md",
     "LICENSE",

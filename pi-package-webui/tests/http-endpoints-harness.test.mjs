@@ -88,14 +88,14 @@ async function waitForSseEvent(tabId, predicate, trigger) {
 
 async function rmWithRetry(target) {
   let lastError;
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
       await rm(target, { recursive: true, force: true });
       return;
     } catch (error) {
       lastError = error;
       if (error?.code !== "EBUSY" && error?.code !== "EPERM" && error?.code !== "ENOTEMPTY") throw error;
-      await delay(150 * (attempt + 1));
+      await delay(Math.min(500, 150 * (attempt + 1)));
     }
   }
   throw lastError;
@@ -477,7 +477,7 @@ try {
   assert.equal(Object.hasOwn(createdGlobalTheme.body?.data || {}, "path"), false, "theme save responses must not disclose host paths");
   const globalThemeFile = path.join(workflowPolicyAgentDir, "themes", "global-fixture.json");
   assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(globalTheme), "global themes must use canonical Pi JSON bytes");
-  assert.equal((await stat(globalThemeFile)).mode & 0o777, 0o600, "saved themes must have private permissions");
+  if (process.platform !== "win32") assert.equal((await stat(globalThemeFile)).mode & 0o777, 0o600, "saved themes must have private permissions");
 
   const projectTheme = themeFixture("project-fixture", "#335577");
   const createdProjectTheme = await request("127.0.0.1", customThemePath, {
@@ -709,7 +709,7 @@ try {
   assert.equal(persistedSummaryPreferences.configured, true);
   assert.equal(persistedSummaryPreferences.model.modelId, "fake-model");
   assert.equal(Object.hasOwn(persistedSummaryPreferences, "credentials"), false, "summary preferences must not persist credentials");
-  assert.equal((await stat(sessionSummaryConfigFile)).mode & 0o777, 0o600, "summary preferences must be private");
+  if (process.platform !== "win32") assert.equal((await stat(sessionSummaryConfigFile)).mode & 0o777, 0o600, "summary preferences must be private");
   persistedSummaryPreferences.credentials = "fixture-secret-must-not-cross-http";
   persistedSummaryPreferences.model.providerToken = "fixture-provider-token";
   await writeFile(sessionSummaryConfigFile, `${JSON.stringify(persistedSummaryPreferences, null, 2)}\n`, { mode: 0o600 });
@@ -877,7 +877,7 @@ try {
   assert.deepEqual(persistedWorkflowPolicy, savedWorkflowPolicy.body?.data?.policy, "workflow policy file should contain exactly the canonical saved policy");
   assert.equal(Object.hasOwn(savedWorkflowPolicy.body?.data?.policy || {}, "suggestions"), false, "saved v1 response policy must not persist advisory suggestions");
   assert.equal(Object.hasOwn(persistedWorkflowPolicy, "suggestions"), false, "saved v1 file must not persist advisory suggestions");
-  assert.equal((await stat(workflowPolicyFile)).mode & 0o777, 0o600, "workflow policy file must be private");
+  if (process.platform !== "win32") assert.equal((await stat(workflowPolicyFile)).mode & 0o777, 0o600, "workflow policy file must be private");
 
   const readWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy");
   assert.equal(readWorkflowPolicy.status, 200, `saved workflow policy should reload: ${readWorkflowPolicy.body?.error || ""}`);
@@ -2537,9 +2537,11 @@ try {
     assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.preview?.hasMarkers, true, "conflict preview should detect conflict markers");
 
     const conflictAgent = await request("127.0.0.1", "/api/git-operation/resolve-with-agent", { method: "POST", body: { tab: mergeTab }, timeoutMs: 20_000 });
+    const conflictAgentTabId = conflictAgent.body?.data?.tab?.id;
     assert.equal(conflictAgent.status, 200);
     assert.equal(conflictAgent.body?.ok, true, `conflict handoff should open an agent tab: ${conflictAgent.body?.error || ""}`);
-    assert.notEqual(conflictAgent.body?.data?.tab?.id, mergeTab, "conflict handoff should create a separate tab");
+    assert.ok(conflictAgentTabId, "conflict handoff should create a separate tab");
+    assert.notEqual(conflictAgentTabId, mergeTab, "conflict handoff should create a separate tab");
     assert.equal(conflictAgent.body?.data?.tab?.cwd, mergeRepo, "conflict agent should use the conflicted repository root");
     assert.equal(conflictAgent.body?.data?.tab?.title, "Resolve merge conflicts");
     assert.deepEqual(conflictAgent.body?.data?.operation?.conflicts, [{ path: "file.txt", status: "UU" }]);
@@ -2745,7 +2747,7 @@ try {
     const pruneConfirmed = await request("127.0.0.1", "/api/git-worktrees/prune", { method: "POST", body: { tab: undoTab, confirmed: true }, timeoutMs: 20_000 });
     assert.equal(pruneConfirmed.body?.ok, true, `confirmed prune should succeed: ${pruneConfirmed.body?.error || ""}`);
 
-    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [gitignoreTab, lfTab, noFinalNewlineTab, crlfTab, literalTab, unsafeTab, fileDiffTab, stagingTab, truncationTab, mergeTab, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
+    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [gitignoreTab, lfTab, noFinalNewlineTab, crlfTab, literalTab, unsafeTab, fileDiffTab, stagingTab, truncationTab, mergeTab, conflictAgentTabId, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
     assert.equal(closeGitActionTabs.status, 200, "git action fixture tabs should close");
     await rmWithRetry(gitFixturesRoot);
 
@@ -3033,7 +3035,10 @@ try {
         nestedSearchState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(nestedSearchTabId)}`, { timeoutMs: 5_000 });
       }
       assert.equal(nestedSearchState.body?.data?.activeRun?.status, "done", "configured shell runner should complete");
-      assert.match((nestedSearchState.body?.data?.activeRun?.lines || []).join("\n"), new RegExp(`configured alpha cwd=${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "configured shell runners should execute at the project root");
+      const expectedShellCwd = process.platform === "win32"
+        ? cwd.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive) => `/${drive.toLowerCase()}`)
+        : cwd;
+      assert.match((nestedSearchState.body?.data?.activeRun?.lines || []).join("\n"), new RegExp(`configured alpha cwd=${expectedShellCwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "configured shell runners should execute at the project root");
     } finally {
       if (nestedSearchTabId) await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [nestedSearchTabId] }, timeoutMs: 10_000 });
     }

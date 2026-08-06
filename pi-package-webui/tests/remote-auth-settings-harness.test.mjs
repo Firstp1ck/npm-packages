@@ -68,13 +68,41 @@ try {
   assert.equal(initialSafetyGuardSetup.status, 200);
   assert.equal(initialSafetyGuardSetup.body?.data?.config?.enabled, true, "safety guard should default to enabled");
   assert.deepEqual(initialSafetyGuardSetup.body?.data?.config?.contextLines, { before: 3, after: 3 });
+  assert.deepEqual(initialSafetyGuardSetup.body?.data?.config?.autoReview, {
+    enabled: false,
+    model: { provider: "", modelId: "", thinkingLevel: "off" },
+  }, "auto-review should default off with no implicit model selection");
   assert.ok(initialSafetyGuardSetup.body?.data?.categories?.includes("database"));
+  assert.equal(initialSafetyGuardSetup.body?.data?.models?.[0]?.id, "fake-model", "GET should return authenticated models from the active Pi tab");
+  assert.deepEqual(initialSafetyGuardSetup.body?.data?.modelThinkingLevels?.["fake/fake-model"], ["off"], "GET should return supported thinking levels per model");
 
   const invalidSafetyGuardSetup = await request("/api/safety-guard/config", {
     method: "POST",
     body: { config: { contextLines: { before: 21 } } },
   });
   assert.equal(invalidSafetyGuardSetup.status, 400, "setup should reject context limits outside the canonical range");
+
+  const unavailableAutoReviewModel = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { autoReview: { enabled: true, model: { provider: "fake", modelId: "missing-model", thinkingLevel: "off" } } } },
+  });
+  assert.equal(unavailableAutoReviewModel.status, 400, "enabled auto-review should reject unavailable models");
+
+  const unsupportedAutoReviewThinking = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { autoReview: { enabled: true, model: { provider: "fake", modelId: "fake-model", thinkingLevel: "low" } } } },
+  });
+  assert.equal(unsupportedAutoReviewThinking.status, 400, "enabled auto-review should reject unsupported thinking levels");
+
+  const enabledAutoReviewSetup = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { autoReview: { enabled: true, model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" } } } },
+  });
+  assert.equal(enabledAutoReviewSetup.status, 200);
+  assert.deepEqual(enabledAutoReviewSetup.body?.data?.config?.autoReview, {
+    enabled: true,
+    model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" },
+  });
 
   const savedSafetyGuardSetup = await request("/api/safety-guard/config", {
     method: "POST",
@@ -84,6 +112,7 @@ try {
         categories: { docker: false },
         protectedPaths: { edit: false },
         contextLines: { before: 2, after: 4 },
+        autoReview: { enabled: false },
       },
     },
   });
@@ -91,8 +120,13 @@ try {
   assert.equal(savedSafetyGuardSetup.body?.data?.config?.enabled, false);
   assert.equal(savedSafetyGuardSetup.body?.data?.config?.categories?.docker, false);
   assert.deepEqual(savedSafetyGuardSetup.body?.data?.config?.contextLines, { before: 2, after: 4 });
+  assert.deepEqual(savedSafetyGuardSetup.body?.data?.config?.autoReview, {
+    enabled: false,
+    model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" },
+  }, "disabling auto-review should retain the explicitly selected model");
   const persistedSafetyGuardSetup = JSON.parse(await readFile(safetyGuardSettingsFile, "utf8"));
   assert.equal(persistedSafetyGuardSetup.protectedPaths?.edit, false);
+  assert.equal(persistedSafetyGuardSetup.autoReview?.enabled, false);
 
   const initialGitSetup = await request("/api/git-workflow/preferences");
   assert.equal(initialGitSetup.status, 200);
