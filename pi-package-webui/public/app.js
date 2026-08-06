@@ -315,6 +315,7 @@ const elements = {
   fileSelectionSendButton: $("#fileSelectionSendButton"),
   fileContextMenu: $("#fileContextMenu"),
   sidePanelContextMenu: $("#sidePanelContextMenu"),
+  gitFooterContextMenu: $("#gitFooterContextMenu"),
   sidePanelResizeHandle: $("#sidePanelResizeHandle"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
@@ -537,6 +538,7 @@ let fileViewerSearchTimer = null;
 let fileViewerSearchHighlightElement = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
+let gitFooterContextMenuState = null;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
 let sidePanelSectionSuppressClickUntil = 0;
@@ -16602,6 +16604,7 @@ function setGitFooterVisibilitySelection(checked) {
 function openGitFooterVisibilityDialog() {
   if (!elements.gitFooterVisibilityDialog) return;
   setOptionsMenuOpen(false);
+  closeGitFooterContextMenu({ returnFocus: false });
   hideFooterTooltip();
   gitFooterVisibilityDirty = false;
   renderGitFooterVisibilityDialog();
@@ -16613,6 +16616,65 @@ function closeGitFooterVisibilityDialog() {
   gitFooterVisibilityDirty = false;
   gitFooterVisibilityApplyInFlight = false;
   if (elements.gitFooterVisibilityDialog?.open) elements.gitFooterVisibilityDialog.close();
+}
+
+function closeGitFooterContextMenu({ returnFocus = true } = {}) {
+  const trigger = gitFooterContextMenuState?.trigger;
+  gitFooterContextMenuState = null;
+  if (elements.gitFooterContextMenu) elements.gitFooterContextMenu.hidden = true;
+  if (returnFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus?.({ preventScroll: true }));
+}
+
+function showGitFooterContextMenu(event, chip, trigger) {
+  const menu = elements.gitFooterContextMenu;
+  const key = cleanStatusText(chip?.key);
+  if (!menu || !key) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeFileContextMenu({ returnFocus: false });
+  closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
+  closeGitFooterContextMenu({ returnFocus: false });
+  hideFooterTooltip();
+
+  const label = cleanStatusText(chip?.label) || gitFooterVisibilityLabel(key);
+  gitFooterContextMenuState = { key, label, trigger };
+  const disableButton = menu.querySelector('[data-git-footer-menu-action="disable"]');
+  if (disableButton) disableButton.textContent = `Disable ${label} box`;
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, Math.max(8, window.innerWidth - rect.width - 8));
+  const top = Math.min(event.clientY, Math.max(8, window.innerHeight - rect.height - 8));
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
+}
+
+function bindGitFooterContextMenu(node, chip) {
+  if (!node || !chip?.key) return node;
+  node.setAttribute("aria-keyshortcuts", "ContextMenu Shift+F10");
+  node.addEventListener("contextmenu", (event) => showGitFooterContextMenu(event, chip, node));
+  node.addEventListener("keydown", (event) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    const rect = node.getBoundingClientRect();
+    showGitFooterContextMenu({
+      preventDefault: () => event.preventDefault(),
+      stopPropagation: () => event.stopPropagation(),
+      clientX: rect.left + Math.min(rect.width, 24),
+      clientY: rect.bottom,
+    }, chip, node);
+  });
+  return node;
+}
+
+async function disableGitFooterContextChip(key, label) {
+  try {
+    await runGitFooterVisibilityCommand("hide", [key]);
+    addEvent(`Disabled the ${label || key} Git footer box.`, "success");
+    requestGitFooterWebuiPayload(activeTabContext(), { force: true, allowDuringRun: true });
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+  }
 }
 
 function cleanFooterPayloadText(value, fallback = "", maxLength = 240) {
@@ -17002,7 +17064,7 @@ function renderGitFooterPayloadMetric(chip, payload) {
   const node = footerMetric(chip.icon || "•", chip.label, chip.value, chip.tone ? `tone-${chip.tone}` : "", options);
   if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
   if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
-  return node;
+  return bindGitFooterContextMenu(node, chip);
 }
 
 function gitFooterSyncCounts(value) {
@@ -17170,7 +17232,7 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
   }
   if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
   if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
-  return node;
+  return bindGitFooterContextMenu(node, chip);
 }
 
 // Shape key for a footer chip with the frequently-changing fields removed, so
@@ -17314,6 +17376,7 @@ function renderGitFooterPayload(payload) {
     return;
   }
 
+  closeGitFooterContextMenu({ returnFocus: false });
   elements.statusBar.replaceChildren();
   elements.statusBar.classList.remove("statusbar-tui-footer");
   elements.statusBar.classList.add("statusbar-git-footer");
@@ -43448,6 +43511,9 @@ document.addEventListener("pointerdown", (event) => {
   if (elements.sidePanelContextMenu && !elements.sidePanelContextMenu.hidden && !event.target?.closest?.(".side-panel-context-menu")) {
     closeSidePanelContextMenu();
   }
+  if (elements.gitFooterContextMenu && !elements.gitFooterContextMenu.hidden && !event.target?.closest?.(".git-footer-context-menu")) {
+    closeGitFooterContextMenu();
+  }
 }, { passive: true });
 document.addEventListener("pointermove", (event) => {
   if (openTerminalTabGroupKey && !event.target?.closest?.(".terminal-tab-group")) {
@@ -43893,6 +43959,30 @@ elements.sidePanelContextMenu?.addEventListener("keydown", (event) => {
     event.preventDefault();
     items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
   }
+});
+elements.gitFooterContextMenu?.addEventListener("keydown", (event) => {
+  const items = [...elements.gitFooterContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeGitFooterContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+elements.gitFooterContextMenu?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-git-footer-menu-action]");
+  const state = gitFooterContextMenuState;
+  if (!button || !state) return;
+  const action = button.dataset.gitFooterMenuAction;
+  closeGitFooterContextMenu({ returnFocus: action !== "visibility" });
+  if (action === "disable") void disableGitFooterContextChip(state.key, state.label);
+  else if (action === "visibility") openGitFooterVisibilityDialog();
 });
 elements.fileContextMenu?.addEventListener("click", (event) => {
   const button = event.target?.closest?.("[data-file-menu-action]");
