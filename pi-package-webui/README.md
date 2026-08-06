@@ -81,7 +81,7 @@ Running `/webui-start` again on the same URL restarts the HTTP server. By defaul
 
 ### Control Deck component updates
 
-The **Pi** and **Web UI** version tags in the Control Deck show component-specific `available`, `running`, `succeeded`, or `failed` status. Open the Pi tag for release notes and its Pi update action. Open the Web UI tag for installed/latest versions, the npm package link, and its Web UI update action.
+The **Pi** and **Web UI** version tags in the Control Deck show component-specific `available`, `running`, `succeeded`, or `failed` status. Open the Pi tag for the available update's release notes (or the installed release when no update is available) and its Pi update action. Open the Web UI tag for installed/latest versions, the npm package link, and its Web UI update action.
 
 Tag actions run one target in the background and do not replace the existing **Update & restart** controls:
 

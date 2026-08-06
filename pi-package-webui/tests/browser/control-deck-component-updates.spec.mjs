@@ -86,7 +86,7 @@ test("component tags and dialogs expose safe background update lifecycle", async
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ok: true, data: { version: "0.83.0", body: "Fixture release notes", url: "https://example.test/pi" } }),
+      body: JSON.stringify({ ok: true, data: { version: "0.84.0", body: "Fixture v0.84.0 release notes", url: "https://example.test/pi/v0.84.0" } }),
     });
   });
   await page.route("**/api/component-update", async (route) => {
@@ -144,6 +144,9 @@ test("component tags and dialogs expose safe background update lifecycle", async
   await piTag.click();
   const piDialog = page.locator("#piReleaseNotesDialog");
   await expect(piDialog).toBeVisible();
+  await expect(page.locator("#piReleaseNotesTitle")).toHaveText("Pi v0.84.0 release notes");
+  await expect(page.locator("#piReleaseNotesBody")).toContainText("Fixture v0.84.0 release notes");
+  await expect(page.locator("#piReleaseNotesGithubLink")).toHaveAttribute("href", "https://example.test/pi/v0.84.0");
   await expect(page.locator("#piComponentUpdateStatus")).toContainText("Pi v0.83.0 → v0.84.0 is available");
   await page.locator("#piComponentUpdateButton").click();
   await expect(page.locator("#confirmationDialog")).toBeVisible();

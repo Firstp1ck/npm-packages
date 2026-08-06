@@ -201,6 +201,7 @@ if (args[0] === "install") {
 `, "utf8");
 await chmod(fakePiCli, 0o755);
 
+const latestPiVersion = "999.0.0";
 const voiceProviderRequests = [];
 const voiceProvider = createServer(async (req, res) => {
   const chunks = [];
@@ -215,6 +216,11 @@ const voiceProvider = createServer(async (req, res) => {
   if (req.url === "/tts") {
     res.writeHead(200, { "content-type": "audio/mpeg" });
     res.end(Buffer.from("fake mp3 bytes"));
+    return;
+  }
+  if (req.url === "/pi-latest") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ version: latestPiVersion, packageName: "@earendil-works/pi-coding-agent" }));
     return;
   }
   if (req.url?.startsWith("/pi-releases/")) {
@@ -259,6 +265,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     PI_WEBUI_RECOVERY_TOKEN: recoveryEndpointToken,
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
+    PI_WEBUI_PI_LATEST_VERSION_URL: `http://127.0.0.1:${voiceProviderPort}/pi-latest`,
     PI_WEBUI_PI_RELEASES_API_BASE_URL: `http://127.0.0.1:${voiceProviderPort}/pi-releases`,
   },
 });
@@ -927,15 +934,16 @@ try {
 
   const releaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
   assert.equal(releaseNotes.status, 200, `Pi release notes should load through the server: ${releaseNotes.body?.error || ""}`);
-  assert.equal(releaseNotes.body?.data?.version, health.body.piVersion);
-  assert.equal(releaseNotes.body?.data?.tagName, `v${health.body.piVersion}`);
-  assert.equal(releaseNotes.body?.data?.title, `Pi v${health.body.piVersion} test release`);
+  assert.equal(releaseNotes.body?.data?.version, latestPiVersion, "an available update should select the latest Pi release");
+  assert.equal(releaseNotes.body?.data?.tagName, `v${latestPiVersion}`);
+  assert.equal(releaseNotes.body?.data?.title, `Pi v${latestPiVersion} test release`);
   assert.match(releaseNotes.body?.data?.body || "", /Release notes from the test GitHub endpoint/);
-  assert.equal(releaseNotes.body?.data?.url, `https://github.com/earendil-works/pi/releases/tag/v${health.body.piVersion}`);
+  assert.equal(releaseNotes.body?.data?.url, `https://github.com/earendil-works/pi/releases/tag/v${latestPiVersion}`);
   assert.equal(releaseNotes.headers.get("cache-control"), "private, no-store", "browser caches should not retain notes across Pi upgrades");
   const cachedReleaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
-  assert.equal(cachedReleaseNotes.body?.data?.tagName, `v${health.body.piVersion}`);
-  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${health.body.piVersion}`).length, 1, "the server should fetch each installed Pi release only once");
+  assert.equal(cachedReleaseNotes.body?.data?.tagName, `v${latestPiVersion}`);
+  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${latestPiVersion}`).length, 1, "the server should fetch the available Pi release only once");
+  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${health.body.piVersion}`).length, 0, "the installed Pi release should not be fetched while a newer release is available");
 
   // Static assets: brotli/gzip compression plus ETag revalidation (P0-2).
   const brotliResponse = await fetch(`http://127.0.0.1:${port}/app.js`, {

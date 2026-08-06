@@ -704,12 +704,12 @@ async function fetchJsonWithTimeout(url, { timeoutMs = UPDATE_STATUS_TIMEOUT_MS,
   return response.json();
 }
 
-function installedPiRelease() {
-  const version = String(piPackageJson.version || "").trim().replace(/^v/i, "");
-  if (!parsePackageVersion(version)) throw makeHttpError(503, "The installed Pi version could not be determined");
-  const tagName = `v${version}`;
+function piRelease(version = piPackageJson.version) {
+  const cleanVersion = String(version || "").trim().replace(/^v/i, "");
+  if (!parsePackageVersion(cleanVersion)) throw makeHttpError(503, "The Pi release version could not be determined");
+  const tagName = `v${cleanVersion}`;
   return {
-    version,
+    version: cleanVersion,
     tagName,
     apiUrl: `${PI_RELEASES_API_BASE_URL}/${encodeURIComponent(tagName)}`,
     pageUrl: `${PI_RELEASES_PAGE_BASE_URL}/${encodeURIComponent(tagName)}`,
@@ -718,8 +718,14 @@ function installedPiRelease() {
 
 let piReleaseNotesCache = null;
 
-async function installedPiReleaseNotes() {
-  const release = installedPiRelease();
+async function piReleaseNotes() {
+  const currentVersion = String(piPackageJson.version || "").trim().replace(/^v/i, "");
+  const cachedUpdateStatus = updateStatusCache && Date.now() - updateStatusCacheAt < UPDATE_STATUS_CACHE_MS
+    ? updateStatusCache.pi
+    : null;
+  const piStatus = cachedUpdateStatus || await checkLatestPiReleaseStatus();
+  const latestVersion = String(piStatus?.latestVersion || "").trim().replace(/^v/i, "");
+  const release = piRelease(piStatus?.updateAvailable && parsePackageVersion(latestVersion) ? latestVersion : currentVersion);
   if (piReleaseNotesCache?.tagName === release.tagName) return piReleaseNotesCache;
   if (process.env.PI_OFFLINE) throw makeHttpError(503, "Pi release notes are unavailable while PI_OFFLINE is set");
 
@@ -15518,7 +15524,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/pi-release-notes" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await installedPiReleaseNotes() }, { "cache-control": "private, no-store" });
+      sendJson(res, 200, { ok: true, data: await piReleaseNotes() }, { "cache-control": "private, no-store" });
       return;
     }
 

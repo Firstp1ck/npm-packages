@@ -7475,24 +7475,25 @@ async function confirmOpenWebuiNpmPage() {
 async function openPiReleaseNotes() {
   const dialog = elements.piReleaseNotesDialog;
   if (!dialog) return;
-  const requestedVersion = piVersion;
-  const label = formatWebuiVersion(requestedVersion);
+  const installedVersion = piVersion;
+  const availableVersion = latestUpdateStatus?.pi?.updateAvailable ? latestUpdateStatus.pi.latestVersion : "";
+  const displayedVersion = availableVersion || installedVersion;
+  const label = formatWebuiVersion(displayedVersion);
   elements.piReleaseNotesTitle.textContent = label ? `Pi ${label} release notes` : "Pi release notes";
   elements.piReleaseNotesStatus.textContent = "Loading release notes from GitHub…";
   elements.piReleaseNotesBody.setAttribute("aria-busy", "true");
   elements.piReleaseNotesBody.replaceChildren(make("p", "muted", "Loading…"));
-  setPiReleaseNotesLink(piReleasePageUrl(requestedVersion));
+  setPiReleaseNotesLink(piReleasePageUrl(displayedVersion));
   renderComponentUpdateDialogs();
   if (!dialog.open) dialog.showModal();
   refreshUpdateStatus({ notify: false }).catch((error) => addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn"));
 
   try {
     const response = await api("/api/pi-release-notes", { scoped: false });
-    if (requestedVersion !== piVersion) return;
+    if (installedVersion !== piVersion) return;
     const release = response.data || {};
     const releaseVersion = String(release.version || "").trim().replace(/^v/i, "");
-    if (requestedVersion && releaseVersion !== requestedVersion) throw new Error(`Expected Pi ${formatWebuiVersion(requestedVersion)} release notes but received ${formatWebuiVersion(releaseVersion) || "an unknown version"}`);
-    const releaseLabel = formatWebuiVersion(releaseVersion || requestedVersion);
+    const releaseLabel = formatWebuiVersion(releaseVersion || displayedVersion);
     elements.piReleaseNotesTitle.textContent = releaseLabel ? `Pi ${releaseLabel} release notes` : (release.title || "Pi release notes");
     renderMarkdown(elements.piReleaseNotesBody, release.body || "No release notes were provided for this release.");
     const published = formatPiReleaseDate(release.publishedAt);

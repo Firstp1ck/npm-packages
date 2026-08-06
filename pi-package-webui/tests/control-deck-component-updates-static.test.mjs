@@ -227,7 +227,8 @@ assert.equal(JSON.stringify(piStartCall?.options.body), '{"target":"pi"}', "the 
 assert.equal(harness.getStatus().componentUpdates.pi.state, "running", "the accepted 202-shaped state should render immediately as running");
 assert.equal(harness.buttonState("pi").disabled, true, "the accepted job should immediately disable duplicate starts");
 assert.match(componentBlock, /statusElement\.hidden = false;[\s\S]*statusElement\.textContent = text;/, "component live regions should remain rendered before their status text changes");
-assert.match(app, /openPiReleaseNotes\(\)[\s\S]*refreshUpdateStatus\(\{ notify: false \}\)/, "opening Pi details should refresh component status even when cached state exists");
+assert.match(app, /openPiReleaseNotes\(\)[\s\S]*latestUpdateStatus\?\.pi\?\.updateAvailable[\s\S]*latestUpdateStatus\.pi\.latestVersion[\s\S]*refreshUpdateStatus\(\{ notify: false \}\)/, "opening Pi details should prefer the advertised update version while refreshing component status");
+assert.match(server, /async function piReleaseNotes\(\)[\s\S]*updateStatusCache\.pi[\s\S]*checkLatestPiReleaseStatus\(\)[\s\S]*piStatus\?\.updateAvailable[\s\S]*latestVersion/, "the release-notes endpoint should select a valid available Pi version and otherwise fall back to the installed release");
 
 assert.match(
   server,
