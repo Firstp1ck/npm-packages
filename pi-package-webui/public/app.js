@@ -985,6 +985,7 @@ const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
 const AGENT_DONE_NOTIFICATIONS_STORAGE_KEY = "pi-webui-agent-done-notifications";
 const UPDATE_NOTIFICATION_DISMISS_STORAGE_KEY = "pi-webui-update-notification-dismissed";
+const OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY = "pi-webui-optional-feature-migration-dismissed";
 const MOBILE_CONTINUITY_STORAGE_KEY = "pi-webui-mobile-continuity-v1";
 const MOBILE_INSTALL_EDUCATION_STORAGE_KEY = "pi-webui-mobile-install-education-v1";
 const MOBILE_CONTINUITY_MAX_SESSIONS = 24;
@@ -3003,6 +3004,7 @@ let optionalFeatureMigrationRenderTimer = null;
 let optionalFeatureMigrationReadyDismissTimer = null;
 let optionalFeatureMigrationPendingReadyDismissKey = "";
 let optionalFeatureMigrationDismissedReadyKey = "";
+let optionalFeatureMigrationDismissedCompletionKey = "";
 let optionalFeatureMigrationDialogState = null;
 let optionalFeatureMigrationLastPhase = "";
 let optionalFeatureMigrationCompletionFocusKey = "";
@@ -34979,8 +34981,10 @@ function applyOptionalFeatureProgressStates(snapshot) {
   }
   if (progress.restartDeferred === true) {
     optionalFeatureRestartNotice = { autoRestarted: false, restartDeferred: true, tabId: activeTabId };
-  } else if (progress.autoRestarted === true) {
+  } else if (progress.autoRestarted === true && !optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
     optionalFeatureRestartNotice = { autoRestarted: true, restartDeferred: false, tabId: activeTabId };
+  } else if (optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
+    optionalFeatureRestartNotice = null;
   }
   optionalFeatureBatchState = {
     phase: progress.phase === "migrating" ? "running" : progress.phase === "partial" ? "failed" : "done",
@@ -35025,6 +35029,41 @@ function clearOptionalFeatureReadyDismissTimer() {
 
 function optionalFeatureReadyDismissKey(snapshot = optionalFeatureMigrationSnapshot) {
   return snapshot.phase === "ready" ? String(snapshot.revision || "pending") : "";
+}
+
+function optionalFeatureMigrationCompletionKey(snapshot = optionalFeatureMigrationSnapshot) {
+  if (snapshot.phase !== "complete") return "";
+  const completedAt = String(snapshot.progress?.completedAt || snapshot.completedAt || "");
+  return completedAt ? `${snapshot.revision || "pending"}:${completedAt}` : "";
+}
+
+function storedDismissedOptionalFeatureMigrationKey() {
+  try {
+    return localStorage.getItem(OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function optionalFeatureMigrationCompletionIsDismissed(snapshot = optionalFeatureMigrationSnapshot) {
+  const key = optionalFeatureMigrationCompletionKey(snapshot);
+  return Boolean(key && (optionalFeatureMigrationDismissedCompletionKey === key || storedDismissedOptionalFeatureMigrationKey() === key));
+}
+
+function rememberDismissedOptionalFeatureMigration(key) {
+  if (!key) return;
+  optionalFeatureMigrationDismissedCompletionKey = key;
+  try {
+    localStorage.setItem(OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY, key);
+  } catch {
+    // Keep the dismissal page-local when browser storage is unavailable.
+  }
+}
+
+function dismissOptionalFeatureMigrationCompletion() {
+  rememberDismissedOptionalFeatureMigration(optionalFeatureMigrationCompletionKey());
+  optionalFeatureRestartNotice = null;
+  renderOptionalFeatureMigrationSurface();
 }
 
 function scheduleOptionalFeatureReadyDismiss(key) {
@@ -35103,6 +35142,14 @@ function renderOptionalFeatureMigrationSurface() {
   const progress = snapshot.progress;
   const readyDismissKey = optionalFeatureReadyDismissKey(snapshot);
   const readyCanAutoDismiss = Boolean(readyDismissKey && !optionalFeatureRestartNotice);
+  if (optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
+    clearOptionalFeatureReadyDismissTimer();
+    optionalFeatureRestartNotice = null;
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
   if (readyCanAutoDismiss && optionalFeatureMigrationDismissedReadyKey === readyDismissKey) {
     surface.replaceChildren();
     surface.hidden = true;
@@ -35135,6 +35182,7 @@ function renderOptionalFeatureMigrationSurface() {
   } else if (snapshot.phase === "complete") {
     title.textContent = "Optional feature migration complete";
     detail.textContent = optionalFeatureMigrationProgressText(progress) || `${summary.ready || 0} optional features ready`;
+    if (!optionalFeatureRestartNotice) actions.append(optionalFeatureMigrationAction("Dismiss", dismissOptionalFeatureMigrationCompletion));
   } else if (snapshot.phase === "action-required") {
     title.textContent = conflicts.length ? "Optional feature conflicts were safely excluded" : "Previous optional features need migration";
     detail.textContent = conflicts.length
@@ -35179,10 +35227,7 @@ function renderOptionalFeatureMigrationSurface() {
     if (optionalFeatureRestartNotice.restartDeferred) {
       notice.append(optionalFeatureMigrationAction("Restart tab", () => restartOptionalFeatureTab(), "primary"));
     } else {
-      notice.append(optionalFeatureMigrationAction("Dismiss", () => {
-        optionalFeatureRestartNotice = null;
-        renderOptionalFeatureMigrationSurface();
-      }));
+      notice.append(optionalFeatureMigrationAction("Dismiss", dismissOptionalFeatureMigrationCompletion));
     }
     card.append(notice);
   }
@@ -43615,6 +43660,10 @@ window.addEventListener("offline", () => {
 window.addEventListener("beforeunload", persistMobileContinuityState);
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
+  if (event.key === OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY && optionalFeatureMigrationCompletionIsDismissed()) {
+    optionalFeatureRestartNotice = null;
+    renderOptionalFeatureMigrationSurface();
+  }
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
   if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
   if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();

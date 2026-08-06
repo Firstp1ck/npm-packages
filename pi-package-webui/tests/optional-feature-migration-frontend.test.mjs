@@ -33,6 +33,7 @@ assert.match(surfaceSource, /safely excluded[\s\S]*Copy recommended fix[\s\S]*Re
 assert.match(surfaceSource, /started safely without optional companions[\s\S]*Recheck/, "degraded startup should remain core-safe and recheckable");
 assert.match(surfaceSource, /Migrating optional features[\s\S]*Retry failed[\s\S]*Copy commands[\s\S]*Restart tab/, "progress and recovery should expose the required sequential/retry/copy/deferred-restart actions");
 assert.match(surfaceSource, /if \(optionalFeatureRestartNotice\.restartDeferred\)[\s\S]*Restart tab[\s\S]*else[\s\S]*Dismiss/, "a deferred restart action must remain persistent until restart succeeds");
+assert.match(surfaceSource, /optionalFeatureMigrationCompletionIsDismissed\(snapshot\)[\s\S]*surface\.hidden = true[\s\S]*phase === "complete"[\s\S]*dismissOptionalFeatureMigrationCompletion/, "dismissing a completed migration should hide the complete surface, not only its restart notice");
 assert.match(surfaceSource, /setAttribute\("role", "alert"\)/, "only conflict/partial terminal feedback should add alert semantics");
 assert.match(surfaceSource, /optional-feature-migration-completion-summary[\s\S]*card\.focus/, "completion summary should receive focus once");
 assert.doesNotMatch(surfaceSource, /percent|% complete/i, "package-manager progress must not fabricate percentages");
@@ -56,13 +57,16 @@ assert.match(eventSource, /webui_optional_feature_migration[\s\S]*applyOptionalF
 assert.match(eventSource, /webui_optional_feature_restart_completed[\s\S]*webui_optional_feature_restart_deferred/, "SSE restart events should be consumed");
 const progressRecoverySource = sourceBetween("function applyOptionalFeatureProgressStates", "function refreshOptionalFeatureMigrationElapsedText");
 assert.match(progressRecoverySource, /progress\.restartDeferred === true[\s\S]*optionalFeatureRestartNotice/, "cached progress must rehydrate the deferred Restart action after a full browser reload");
-assert.match(progressRecoverySource, /progress\.autoRestarted === true[\s\S]*optionalFeatureRestartNotice/, "cached progress should rehydrate the completed restart notice");
+assert.match(progressRecoverySource, /progress\.autoRestarted === true && !optionalFeatureMigrationCompletionIsDismissed\(snapshot\)[\s\S]*optionalFeatureRestartNotice/, "cached progress should rehydrate an undismissed completed restart notice");
+assert.match(progressRecoverySource, /optionalFeatureMigrationCompletionIsDismissed\(snapshot\)[\s\S]*optionalFeatureRestartNotice = null/, "cached progress must not resurrect a dismissed completion notice");
+assert.match(app, /OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY[\s\S]*storedDismissedOptionalFeatureMigrationKey[\s\S]*localStorage\.setItem\(OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY, key\)/, "completion dismissal should survive reloads in browser storage");
 assert.match(app, /source\.onopen[\s\S]*refreshOptionalFeaturePackageStatuses\(\)/, "event-stream reconnect should recover the current cached server snapshot");
-const timerSource = sourceBetween("function refreshOptionalFeatureMigrationElapsedText", "function optionalFeatureMigrationAction");
-assert.doesNotMatch(timerSource, /renderOptionalFeatureMigrationSurface\(\)/, "elapsed ticks must not replace and re-announce the entire live region");
-assert.match(timerSource, /querySelector\("\.optional-feature-migration-detail"\)/, "elapsed ticks should update only the detail node");
+const elapsedTimerSource = sourceBetween("function refreshOptionalFeatureMigrationElapsedText", "function clearOptionalFeatureReadyDismissTimer");
+const dismissalTimerSource = sourceBetween("function clearOptionalFeatureReadyDismissTimer", "function optionalFeatureMigrationAction");
+assert.doesNotMatch(elapsedTimerSource, /renderOptionalFeatureMigrationSurface\(\)/, "elapsed ticks must not replace and re-announce the entire live region");
+assert.match(elapsedTimerSource, /querySelector\("\.optional-feature-migration-detail"\)/, "elapsed ticks should update only the detail node");
 assert.match(app, /const OPTIONAL_FEATURE_READY_AUTO_DISMISS_MS = 5_000;/, "a successful startup audit should remain readable briefly before dismissal");
-assert.match(timerSource, /scheduleOptionalFeatureReadyDismiss[\s\S]*setTimeout[\s\S]*optionalFeatureReadyDismissKey\(\) !== key \|\| optionalFeatureRestartNotice[\s\S]*surface\.hidden = true/, "ready feedback should auto-dismiss only while the same ready snapshot remains non-actionable");
+assert.match(dismissalTimerSource, /scheduleOptionalFeatureReadyDismiss[\s\S]*setTimeout[\s\S]*optionalFeatureReadyDismissKey\(\) !== key \|\| optionalFeatureRestartNotice[\s\S]*surface\.hidden = true/, "ready feedback should auto-dismiss only while the same ready snapshot remains non-actionable");
 assert.match(surfaceSource, /readyCanAutoDismiss[\s\S]*scheduleOptionalFeatureReadyDismiss\(readyCanAutoDismiss \? readyDismissKey : ""\)/, "rendering should schedule dismissal only for non-actionable ready feedback");
 
 assert.match(css, /\.optional-feature-migration-surface[\s\S]*\.optional-feature-migration-dialog[\s\S]*@media \(max-width: 34rem\)/, "migration surfaces should have desktop and responsive styling");
