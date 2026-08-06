@@ -10,7 +10,19 @@ import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-cli
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 import { createTranscriptRenderer } from "./transcript-renderer.mjs";
 import { createStreamOutputController } from "./stream-output-controller.mjs";
+import { installMiddleButtonDragScroll } from "./middle-button-drag-scroll.mjs";
 import { PI_THEME_EXPORT_FIELDS, THEME_TOKEN_GROUPS, canonicalizeTheme, serializeTheme, themeColorToRgb, validateTheme } from "./theme-contract.mjs";
+import {
+  SAMPLING_PARAMETER_CATALOG,
+  buildSamplingParametersFromDraft,
+  createSamplingControlDraft,
+  samplingControlDraftEquals,
+  samplingParameterCapability,
+  samplingParameterSliderValue,
+  splitSamplingParameters,
+  summarizePreservedSamplingParameters,
+  validateSamplingControlDraft,
+} from "./sampling-parameter-controls.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -340,6 +352,13 @@ const elements = {
   issueWizardBotButton: $("#issueWizardBotButton"),
   issueWizardBotHint: $("#issueWizardBotHint"),
   stateDetails: $("#stateDetails"),
+  samplingParametersSupport: $("#samplingParametersSupport"),
+  samplingParametersControls: $("#samplingParametersControls"),
+  samplingParametersPreserved: $("#samplingParametersPreserved"),
+  applySamplingParametersButton: $("#applySamplingParametersButton"),
+  resetSamplingParametersButton: $("#resetSamplingParametersButton"),
+  reloadSamplingParametersButton: $("#reloadSamplingParametersButton"),
+  samplingParametersStatus: $("#samplingParametersStatus"),
   subagentsStatus: $("#subagentsStatus"),
   subagentsAutoClearButton: $("#subagentsAutoClearButton"),
   subagentsClearFinishedButton: $("#subagentsClearFinishedButton"),
@@ -542,7 +561,6 @@ let gitFooterContextMenuState = null;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
 let sidePanelSectionSuppressClickUntil = 0;
-let sidePanelSectionResizeState = null;
 let composerActionPointerDrag = null;
 let composerActionLastDragOverKey = "";
 let composerActionSuppressClickUntil = 0;
@@ -788,6 +806,19 @@ let appRunnerSearchPathDraft = "";
 let appRunnerSearchPathFeedback = { type: "", message: "" };
 let appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
 let optionsMenuOpen = false;
+const OPTIONS_SUBMENU_GROUP_SELECTOR = "[data-options-submenu]";
+const OPTIONS_SUBMENU_TRIGGER_SELECTOR = "[data-options-submenu-trigger]";
+const OPTIONS_SUBMENU_PANEL_SELECTOR = "[data-options-submenu-panel]";
+const OPTIONS_SUBMENU_BACK_SELECTOR = "[data-options-submenu-back]";
+const OPTIONS_SUBMENU_LEFT_CLASS = "opens-left";
+const OPTIONS_SUBMENU_DRILL_IN_QUERY = "(hover: none), (pointer: coarse)";
+const OPTIONS_MENU_LABEL_SELECTOR = '.composer-options-menu-item > span:not([aria-hidden="true"]):not(.composer-options-submenu-chevron)';
+const OPTIONS_MENU_LABEL_FONT_SIZE_PROPERTY = "--options-menu-label-font-size";
+const OPTIONS_MENU_LABEL_MIN_FONT_SIZE_PX = 12;
+let openOptionsSubmenuGroup = null;
+let optionsSubmenuObserver = null;
+let optionsSubmenuSyncing = false;
+let optionsMenuLabelFitFrame = 0;
 let availableCommands = [];
 let rawAvailableCommands = [];
 const commandCatalogsByTab = new Map();
@@ -868,6 +899,15 @@ let subagentLaunchSlotRequestSerial = 0;
 let subagentLaunchSlotReloadRequired = false;
 const subagentLaunchSlotReloadTabs = new Set();
 let subagentLaunchSlotFocusTarget = null;
+let samplingParametersState = null;
+let samplingParametersStateTabId = null;
+const samplingParametersDrafts = new Map();
+let samplingParametersLoading = false;
+let samplingParametersBusy = false;
+let samplingParametersError = "";
+let samplingParametersNotice = "";
+let samplingParametersFeedbackTabId = null;
+let samplingParametersRequestSerial = 0;
 let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
@@ -980,12 +1020,6 @@ const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
 const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
-const SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
-const SIDE_PANEL_SECTION_HEIGHT_MIN_PX = 120;
-const SIDE_PANEL_SECTION_HEIGHT_MAX_PX = 4096;
-const SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_STEP_PX = 24;
-const SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_LARGE_STEP_PX = 80;
-const SIDE_PANEL_SECTION_HEIGHT_VIEWPORT_RESERVE_PX = 24;
 const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const COMPOSER_ACTION_ORDER_STORAGE_KEY = "pi-webui-composer-action-order-v1";
 const COMPOSER_ACTION_LAYOUT_STORAGE_KEY = "pi-webui-composer-action-layout-v2";
@@ -1752,6 +1786,7 @@ function mobileRenderMore() {
   const page = mobileShellState.surfacePage || "root";
   const topics = {
     session: ["Session", ["sidePanelSectionSession"]],
+    sampling: ["Sampling parameters", ["sidePanelSectionSampling"]],
     usage: ["Usage", ["sidePanelSectionCodexUsage", "sidePanelSectionClaudeUsage"]],
     extensions: ["Extensions", ["sidePanelSectionOptionalFeatures"]],
     settings: ["Settings", ["sidePanelSectionControls"]],
@@ -1802,6 +1837,7 @@ function mobileRenderMore() {
   title.textContent = topic[0];
   back.hidden = false;
   mobileCanonicalMountContent(host, topic[1], `more:${page}`);
+  if (page === "sampling") ensureSamplingParametersLoaded();
   if (page === "commands") mobileShellElement("commandSearchInput")?.focus({ preventScroll: true });
 }
 
@@ -3627,204 +3663,9 @@ function sidePanelSectionRecords() {
       const button = section.querySelector("[data-side-panel-section-toggle]");
       const contentId = button?.getAttribute("aria-controls") || "";
       const content = contentId ? document.getElementById(contentId) : null;
-      const resizeHandle = section.querySelector("[data-side-panel-section-resize]");
-      return { id, section, button, content, resizeHandle };
+      return { id, section, button, content };
     })
     .filter((record) => record.id && record.button && record.content);
-}
-
-function readStoredSidePanelSectionHeights() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY) || "null");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const heights = Object.create(null);
-    let count = 0;
-    for (const [rawId, rawHeight] of Object.entries(parsed)) {
-      const id = typeof rawId === "string" ? rawId.trim() : "";
-      const height = Number(rawHeight);
-      if (!id || id !== rawId || id.length > 256 || /[\u0000-\u001f\u007f]/u.test(id) || ["__proto__", "constructor", "prototype"].includes(id)) continue;
-      if (!Number.isInteger(height) || height < SIDE_PANEL_SECTION_HEIGHT_MIN_PX || height > SIDE_PANEL_SECTION_HEIGHT_MAX_PX) continue;
-      heights[id] = height;
-      count += 1;
-      if (count >= 128) break;
-    }
-    return heights;
-  } catch {
-    return null;
-  }
-}
-
-function sidePanelSectionRenderableMaxHeight(record) {
-  const body = record?.section?.closest?.(".side-panel-body") || elements.sidePanel?.querySelector?.(".side-panel-body");
-  const available = Number(body?.clientHeight);
-  if (!Number.isFinite(available) || available <= 0) return SIDE_PANEL_SECTION_HEIGHT_MAX_PX;
-  return Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(SIDE_PANEL_SECTION_HEIGHT_MAX_PX, Math.floor(available - SIDE_PANEL_SECTION_HEIGHT_VIEWPORT_RESERVE_PX)));
-}
-
-function sidePanelSectionResizeAvailable(record) {
-  return Boolean(record && !isSidePanelOverlayView() && !record.section.hidden && !record.section.classList.contains("collapsed") && !record.content.hidden);
-}
-
-function updateSidePanelSectionResizeHandle(record, renderedHeight = null) {
-  const handle = record?.resizeHandle || record?.section?.querySelector?.("[data-side-panel-section-resize]");
-  if (!handle) return;
-  const available = sidePanelSectionResizeAvailable(record);
-  const maximum = sidePanelSectionRenderableMaxHeight(record);
-  handle.hidden = !available;
-  const naturalHeight = Math.round(record.content?.getBoundingClientRect?.().height || SIDE_PANEL_SECTION_HEIGHT_MIN_PX);
-  const current = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(maximum, Number.isInteger(renderedHeight) ? renderedHeight : naturalHeight));
-  handle.setAttribute("aria-valuemin", String(SIDE_PANEL_SECTION_HEIGHT_MIN_PX));
-  handle.setAttribute("aria-valuemax", String(maximum));
-  handle.setAttribute("aria-valuenow", String(current));
-  handle.setAttribute("aria-valuetext", `${current} pixels high`);
-}
-
-function applySidePanelSectionHeight(record, preferredHeight) {
-  if (!record?.content) return;
-  if (!sidePanelSectionResizeAvailable(record)) {
-    record.content.style.removeProperty("height");
-    record.content.style.removeProperty("overflow");
-    updateSidePanelSectionResizeHandle(record);
-    return;
-  }
-  const maximum = sidePanelSectionRenderableMaxHeight(record);
-  let renderedHeight;
-  if (Number.isInteger(preferredHeight)) {
-    renderedHeight = Math.min(preferredHeight, maximum);
-  } else {
-    record.content.style.removeProperty("height");
-    record.content.style.removeProperty("overflow");
-    const naturalHeight = Math.round(record.content.getBoundingClientRect().height || SIDE_PANEL_SECTION_HEIGHT_MIN_PX);
-    renderedHeight = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(maximum, naturalHeight));
-  }
-  record.content.style.height = `${renderedHeight}px`;
-  record.content.style.overflow = "auto";
-  updateSidePanelSectionResizeHandle(record, renderedHeight);
-}
-
-function restoreSidePanelSectionHeights() {
-  const heights = readStoredSidePanelSectionHeights() || {};
-  for (const record of sidePanelSectionRecords()) applySidePanelSectionHeight(record, heights[record.id] ?? null);
-}
-
-function persistSidePanelSectionHeight(sectionId, height) {
-  const heights = readStoredSidePanelSectionHeights() || Object.create(null);
-  heights[sectionId] = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(SIDE_PANEL_SECTION_HEIGHT_MAX_PX, Math.round(height)));
-  try {
-    localStorage.setItem(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY, JSON.stringify(heights));
-  } catch {
-    // The current resize remains usable when browser storage is unavailable.
-  }
-  markDurableUiLayoutDirty("sidePanel", "sectionHeights");
-  return heights[sectionId];
-}
-
-function beginSidePanelSectionResize(event, sectionId) {
-  const record = sidePanelSectionRecords().find(({ id }) => id === sectionId);
-  if (!sidePanelSectionResizeAvailable(record) || sidePanelSectionResizeState) return;
-  if (event.button !== undefined && event.button !== 0) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const storedHeight = readStoredSidePanelSectionHeights()?.[sectionId] ?? null;
-  const renderedHeight = Math.round(record.content.getBoundingClientRect().height);
-  const startHeight = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(sidePanelSectionRenderableMaxHeight(record), renderedHeight));
-  sidePanelSectionResizeState = {
-    pointerId: event.pointerId,
-    sectionId,
-    record,
-    handle: event.currentTarget,
-    startY: event.clientY,
-    startHeight,
-    height: startHeight,
-    storedHeight,
-  };
-  record.section.classList.add("resizing");
-  document.body.classList.add("side-panel-section-resizing");
-  event.currentTarget?.setPointerCapture?.(event.pointerId);
-  window.addEventListener("pointermove", updateSidePanelSectionResize, { passive: false });
-  window.addEventListener("pointerup", finishSidePanelSectionResize, { passive: false });
-  window.addEventListener("pointercancel", cancelSidePanelSectionResize, { passive: false });
-}
-
-function updateSidePanelSectionResize(event) {
-  const state = sidePanelSectionResizeState;
-  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
-  event.preventDefault();
-  state.height = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(sidePanelSectionRenderableMaxHeight(state.record), Math.round(state.startHeight + event.clientY - state.startY)));
-  applySidePanelSectionHeight(state.record, state.height);
-}
-
-function clearSidePanelSectionResize(state) {
-  try {
-    state.handle?.releasePointerCapture?.(state.pointerId);
-  } catch {
-    // Pointer capture may already be released by the browser during cancellation.
-  }
-  window.removeEventListener("pointermove", updateSidePanelSectionResize);
-  window.removeEventListener("pointerup", finishSidePanelSectionResize);
-  window.removeEventListener("pointercancel", cancelSidePanelSectionResize);
-  state.record.section.classList.remove("resizing");
-  document.body.classList.remove("side-panel-section-resizing");
-  sidePanelSectionResizeState = null;
-}
-
-function finishSidePanelSectionResize(event) {
-  const state = sidePanelSectionResizeState;
-  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
-  event.preventDefault?.();
-  const height = persistSidePanelSectionHeight(state.sectionId, state.height);
-  clearSidePanelSectionResize(state);
-  applySidePanelSectionHeight(state.record, height);
-}
-
-function cancelSidePanelSectionResize(event) {
-  const state = sidePanelSectionResizeState;
-  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
-  event.preventDefault?.();
-  clearSidePanelSectionResize(state);
-  applySidePanelSectionHeight(state.record, state.storedHeight);
-}
-
-function handleSidePanelSectionResizeKeydown(event, sectionId) {
-  if (isSidePanelOverlayView()) return;
-  const record = sidePanelSectionRecords().find(({ id }) => id === sectionId);
-  if (!sidePanelSectionResizeAvailable(record)) return;
-  const maximum = sidePanelSectionRenderableMaxHeight(record);
-  const current = Math.max(SIDE_PANEL_SECTION_HEIGHT_MIN_PX, Math.min(maximum, Math.round(record.content.getBoundingClientRect().height)));
-  const step = event.shiftKey ? SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_LARGE_STEP_PX : SIDE_PANEL_SECTION_HEIGHT_KEYBOARD_STEP_PX;
-  let next = current;
-  if (event.key === "ArrowUp") next = current - step;
-  else if (event.key === "ArrowDown") next = current + step;
-  else if (event.key === "Home") next = SIDE_PANEL_SECTION_HEIGHT_MIN_PX;
-  else if (event.key === "End") next = maximum;
-  else return;
-  event.preventDefault();
-  event.stopPropagation();
-  const height = persistSidePanelSectionHeight(sectionId, next);
-  applySidePanelSectionHeight(record, height);
-}
-
-function initializeSidePanelSectionResizing() {
-  for (const record of sidePanelSectionRecords()) {
-    if (record.resizeHandle) continue;
-    const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || record.id;
-    const handle = make("div", "side-panel-section-resize-handle");
-    handle.tabIndex = 0;
-    handle.setAttribute("role", "separator");
-    handle.setAttribute("aria-orientation", "horizontal");
-    handle.setAttribute("aria-controls", record.content.id);
-    handle.setAttribute("aria-label", `Resize ${label} section height`);
-    handle.dataset.sidePanelSectionResize = record.id;
-    handle.addEventListener("pointerdown", (event) => beginSidePanelSectionResize(event, record.id));
-    handle.addEventListener("keydown", (event) => handleSidePanelSectionResizeKeydown(event, record.id));
-    record.section.append(handle);
-  }
-  restoreSidePanelSectionHeights();
-}
-
-function syncSidePanelSectionHeightsForViewport() {
-  if (sidePanelSectionResizeState && isSidePanelOverlayView()) cancelSidePanelSectionResize({ pointerId: sidePanelSectionResizeState.pointerId });
-  restoreSidePanelSectionHeights();
 }
 
 function readStoredSidePanelSectionOrder() {
@@ -4001,12 +3842,14 @@ function persistSidePanelSectionVisibility() {
 
 function setSidePanelSectionVisible(record, visible, { persist = true } = {}) {
   record.section.hidden = !visible;
-  applySidePanelSectionHeight(record, readStoredSidePanelSectionHeights()?.[record.id] ?? null);
   if (visible && record.id === "git" && !record.section.classList.contains("collapsed")) {
     queueMicrotask(() => {
       renderGitPanel();
       ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
     });
+  }
+  if (visible && record.id === "sampling" && !record.section.classList.contains("collapsed")) {
+    queueMicrotask(() => ensureSamplingParametersLoaded());
   }
   if (persist) persistSidePanelSectionVisibility();
 }
@@ -4031,7 +3874,9 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
       ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
     });
   }
-  applySidePanelSectionHeight(record, readStoredSidePanelSectionHeights()?.[record.id] ?? null);
+  if (!collapsed && record.id === "sampling" && !record.section.hidden) {
+    queueMicrotask(() => ensureSamplingParametersLoaded());
+  }
   if (persist) persistSidePanelSectionState();
 }
 
@@ -9057,7 +8902,7 @@ function conversationModeCommandName() {
 }
 
 function conversationModeButtonLabel(mode = activeConversationMode()) {
-  return mode.enabled ? "End Conversation" : "Start Conversation";
+  return mode.enabled ? "End Conversation" : "Start Natural Conversation";
 }
 
 function conversationModePartialPreview(text = "") {
@@ -11703,7 +11548,8 @@ const UI_LAYOUT_ENDPOINT = "/api/interface-preferences";
 const UI_LAYOUT_SAVE_DEBOUNCE_MS = 250;
 const UI_LAYOUT_MAX_CONFLICT_RETRIES = 1;
 const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
-const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed", "sectionHeights"];
+const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"];
+const REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
 const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
 const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups"];
 const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
@@ -11778,7 +11624,6 @@ function collectDurableSidePanelLayout() {
     collapsedSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_STORAGE_KEY),
     hiddenSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY),
     collapsed: typeof collapsed === "boolean" ? collapsed : null,
-    sectionHeights: readStoredSidePanelSectionHeights(),
   };
 }
 
@@ -11940,6 +11785,19 @@ function removeDurableUiLayoutPendingMutation(key) {
   }
 }
 
+function clearRemovedSidePanelSectionHeightState() {
+  try {
+    localStorage.removeItem(REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY);
+  } catch {
+    // Removed layout state may remain when browser storage is unavailable.
+  }
+  for (const record of durableUiLayoutPendingMutationRecords()) {
+    if (record.field === "sidePanel" && record.subfield === "sectionHeights") {
+      removeDurableUiLayoutPendingMutation(record.key);
+    }
+  }
+}
+
 function clearAcknowledgedDurableUiLayoutPendingMutations(snapshot) {
   for (const entry of snapshot.values()) {
     if (entry.subfieldMutationIds?.size) {
@@ -12018,10 +11876,6 @@ function applyDurableSidePanelLayout(value) {
     writeDurableLayoutCache(SIDE_PANEL_STORAGE_KEY, value.collapsed ? "1" : "0");
     restoreSidePanelState();
   }
-  if (value.sectionHeights && typeof value.sectionHeights === "object" && !Array.isArray(value.sectionHeights)) {
-    writeDurableLayoutCache(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY, JSON.stringify(value.sectionHeights));
-    restoreSidePanelSectionHeights();
-  }
 }
 
 function applyDurableComposerActionsLayout(value) {
@@ -12079,7 +11933,7 @@ function applyDurableUiLayoutField(field, value) {
 
 function durableUiLayoutInteractionActive(field = null) {
   const activeByField = {
-    sidePanel: Boolean(sidePanelSectionPointerDrag?.active || sidePanelSectionResizeState),
+    sidePanel: Boolean(sidePanelSectionPointerDrag?.active),
     composerActions: Boolean(composerActionPointerDrag?.active),
     footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
     terminalTabs: Boolean(terminalTabDragId),
@@ -12583,7 +12437,6 @@ function syncFileViewerWidthForViewport() {
 function syncResizablePanelWidthsForViewport() {
   syncSidePanelWidthForViewport();
   syncFileViewerWidthForViewport();
-  syncSidePanelSectionHeightsForViewport();
 }
 
 async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
@@ -15138,6 +14991,7 @@ async function switchTab(tabId) {
   } else {
     renderSubagentLaunchSlots();
   }
+  refreshSamplingParametersForTabContext(tabContext);
 }
 
 function currentDirectoryForNewTab() {
@@ -15435,6 +15289,7 @@ async function initializeTabs() {
     if (!subagentLaunchSlotDraftIsDirty() || subagentLaunchSlotConfigTabId !== activeTabId) {
       loadSubagentLaunchSlotConfig().catch(() => {});
     }
+    refreshSamplingParametersForTabContext(tabContext);
     await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
   }
 }
@@ -23707,6 +23562,499 @@ async function reloadActiveTabForSubagentLaunchSlots() {
 function initializeSubagentLaunchSlots() {
   renderSubagentLaunchSlots();
   if (activeTabId) loadSubagentLaunchSlotConfig().catch(() => {});
+}
+
+function samplingParametersPath(tabId) {
+  return `/api/tabs/${encodeURIComponent(tabId)}/sampling-parameters`;
+}
+
+const samplingParameterControlElements = new Map();
+let samplingParameterTooltipDismissalInstalled = false;
+
+function samplingParameterTooltipBoundary(row) {
+  const viewportHeight = globalThis.innerHeight || document.documentElement?.clientHeight || 0;
+  const clippingRects = [row?.closest?.(".side-panel-section-content"), row?.closest?.(".side-panel-body")]
+    .map((node) => node?.getBoundingClientRect?.())
+    .filter(Boolean);
+  return {
+    top: Math.max(8, ...clippingRects.map((rect) => rect.top)),
+    bottom: Math.min(viewportHeight - 8, ...clippingRects.map((rect) => rect.bottom)),
+  };
+}
+
+function updateSamplingParameterTooltipPlacement(row, tooltip) {
+  if (!row?.classList.contains("unsupported") || tooltip?.hidden || !row.getBoundingClientRect || !tooltip.getBoundingClientRect) return;
+  tooltip.classList.remove("sampling-tooltip-below");
+  tooltip.style?.removeProperty("--sampling-tooltip-max-height");
+  const rowRect = row.getBoundingClientRect();
+  const naturalHeight = Math.max(tooltip.scrollHeight || 0, tooltip.getBoundingClientRect().height || 0);
+  const boundary = samplingParameterTooltipBoundary(row);
+  const spaceAbove = Math.max(0, rowRect.top - boundary.top - 6);
+  const spaceBelow = Math.max(0, boundary.bottom - rowRect.bottom - 6);
+  const placeBelow = spaceAbove < naturalHeight && spaceBelow > spaceAbove;
+  const availableHeight = placeBelow ? spaceBelow : spaceAbove;
+  tooltip.classList.toggle("sampling-tooltip-below", placeBelow);
+  tooltip.style?.setProperty("--sampling-tooltip-max-height", `${Math.floor(availableHeight)}px`);
+}
+
+function resetSamplingParameterTooltip(row, tooltip) {
+  row?.classList.remove("sampling-tooltip-dismissed");
+  updateSamplingParameterTooltipPlacement(row, tooltip);
+}
+
+function dismissSamplingParameterTooltip(row, event) {
+  if (!row?.classList.contains("unsupported") || row.classList.contains("sampling-tooltip-dismissed")) return false;
+  row.classList.add("sampling-tooltip-dismissed");
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  return true;
+}
+
+function initializeSamplingParameterTooltipDismissal() {
+  if (samplingParameterTooltipDismissalInstalled || typeof document.addEventListener !== "function") return;
+  samplingParameterTooltipDismissalInstalled = true;
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.target?.closest?.(".sampling-parameter-control.unsupported")) return;
+    const hovered = document.querySelector?.(".sampling-parameter-control.unsupported:hover:not(.sampling-tooltip-dismissed)");
+    if (hovered) dismissSamplingParameterTooltip(hovered, event);
+  });
+}
+
+function cloneSamplingControlDraft(draft) {
+  return draft ? JSON.parse(JSON.stringify(draft)) : null;
+}
+
+function samplingParametersBaseDraft(tabId = activeTabId) {
+  if (!tabId || samplingParametersStateTabId !== tabId || !samplingParametersState) return null;
+  return createSamplingControlDraft(samplingParametersState.session || {}, {
+    defaults: samplingParametersState.defaults || {},
+  });
+}
+
+function samplingParametersDraft(tabId = activeTabId) {
+  return tabId ? samplingParametersDrafts.get(tabId) ?? null : null;
+}
+
+function setSamplingParametersDraft(draft, tabId = activeTabId) {
+  if (!tabId) return;
+  if (draft === null) samplingParametersDrafts.delete(tabId);
+  else samplingParametersDrafts.set(tabId, cloneSamplingControlDraft(draft));
+}
+
+function samplingParametersEditableDraft(tabId = activeTabId) {
+  return samplingParametersDraft(tabId) || samplingParametersBaseDraft(tabId);
+}
+
+// Drafts are keyed by Pi tab so background refreshes and tab switches cannot
+// overwrite or expose another session's unsaved controls.
+function samplingParametersDraftIsDirty(tabId = activeTabId) {
+  const draft = samplingParametersDraft(tabId);
+  if (!draft) return false;
+  const baseline = samplingParametersBaseDraft(tabId);
+  return !baseline || !samplingControlDraftEquals(draft, baseline);
+}
+
+function samplingParametersSectionRecord() {
+  return sidePanelSectionRecords().find(({ id }) => id === "sampling") || null;
+}
+
+function samplingParametersSectionActive() {
+  const record = samplingParametersSectionRecord();
+  return !!record && !record.section.hidden && !record.section.classList.contains("collapsed");
+}
+
+function samplingParametersSupportText() {
+  const state = samplingParametersStateTabId === activeTabId ? samplingParametersState : null;
+  const support = state?.support;
+  if (!support) return samplingParametersLoading ? "Loading sampling support…" : "Select a running Pi tab to load sampling parameters.";
+  const modelLabel = support.model?.provider && support.model?.id ? `(${support.model.provider}) ${support.model.id}` : "unknown model";
+  const apiLabel = support.api || "unknown API";
+  if (support.supported) return `${modelLabel} · ${apiLabel} · ${support.message || "Sampling parameters apply to subsequent provider requests."}`;
+  const compatible = Array.isArray(support.compatibleApis) && support.compatibleApis.length
+    ? ` Sampling-capable APIs: ${support.compatibleApis.join(", ")}.`
+    : "";
+  return `${modelLabel} · ${apiLabel} · ${support.message || "Sampling parameters are stored but not applied."}${compatible}`;
+}
+
+// Success and error text describes one tab's last action, so it is suppressed as soon
+// as another tab becomes active instead of leaking into the new tab's status line.
+function samplingParametersFeedbackIsCurrent() {
+  return samplingParametersFeedbackTabId === activeTabId;
+}
+
+function setSamplingParametersFeedback({ error = "", notice = "" } = {}) {
+  samplingParametersError = error;
+  samplingParametersNotice = notice;
+  samplingParametersFeedbackTabId = error || notice ? activeTabId : null;
+}
+
+function samplingParametersStatusText({ dirty, unsupported, validation, loadedForActiveTab }) {
+  const feedbackCurrent = samplingParametersFeedbackIsCurrent();
+  if (samplingParametersError && feedbackCurrent) return samplingParametersError;
+  if (samplingParametersBusy) return "Applying sampling parameters…";
+  if (samplingParametersLoading) return "Loading session sampling parameters…";
+  if (!activeTabId) return "Select a running Pi tab to edit sampling parameters.";
+  if (samplingParametersNotice && feedbackCurrent) return samplingParametersNotice;
+  if (!loadedForActiveTab) return "Sampling parameters are not loaded for this tab.";
+  if (!validation.valid) return Object.values(validation.errors)[0] || "Correct invalid sampling values before applying.";
+  if (unsupported) return "This model has no verified sampling parameters, so applying them is disabled.";
+  if (dirty) return "Unsaved controls · Apply stores enabled values for this session only.";
+  return "Saved for this Pi session · unchecked parameters inherit model defaults.";
+}
+
+function samplingParameterCapabilities(state) {
+  return Object.fromEntries(SAMPLING_PARAMETER_CATALOG.map(({ key }) => [
+    key,
+    samplingParameterCapability(state?.support?.parameters, key),
+  ]));
+}
+
+function samplingParameterDomId(key, suffix) {
+  return `samplingParameter${key.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("")}${suffix}`;
+}
+
+function samplingParameterDisplayValue(parameters, key) {
+  if (!parameters || typeof parameters !== "object" || !Object.hasOwn(parameters, key)) return "Inherited";
+  const value = parameters[key];
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "Invalid or unsupported value";
+}
+
+function updateSamplingParameterControl(key, mutate) {
+  const baseline = samplingParametersEditableDraft();
+  if (!baseline || samplingParametersStateTabId !== activeTabId) return;
+  const next = cloneSamplingControlDraft(baseline);
+  mutate(next.controls[key]);
+  setSamplingParametersDraft(next);
+  setSamplingParametersFeedback();
+  renderSamplingParameters();
+}
+
+function initializeSamplingParameterControls() {
+  if (!elements.samplingParametersControls || samplingParameterControlElements.size) return;
+  initializeSamplingParameterTooltipDismissal();
+  const groups = new Map();
+  for (const [name, label] of [["core", "OpenAI-compatible controls"], ["server-extension", "Server extensions"]]) {
+    const section = document.createElement("section");
+    section.className = "sampling-parameter-group";
+    section.dataset.samplingParameterGroup = name;
+    const heading = document.createElement("h3");
+    heading.textContent = label;
+    section.append(heading);
+    elements.samplingParametersControls.append(section);
+    groups.set(name, section);
+  }
+
+  for (const definition of SAMPLING_PARAMETER_CATALOG) {
+    const row = document.createElement("div");
+    row.className = "sampling-parameter-control";
+    row.dataset.samplingParameter = definition.key;
+    row.setAttribute("role", "group");
+
+    const enableId = samplingParameterDomId(definition.key, "Enabled");
+    const valueId = samplingParameterDomId(definition.key, "Value");
+    const rangeId = samplingParameterDomId(definition.key, "Range");
+    const descriptionId = samplingParameterDomId(definition.key, "Description");
+    const errorId = samplingParameterDomId(definition.key, "Error");
+    const tooltipId = samplingParameterDomId(definition.key, "UnsupportedReason");
+    row.setAttribute("aria-labelledby", `${enableId}Label`);
+
+    const header = document.createElement("div");
+    header.className = "sampling-parameter-control-header";
+    const enable = document.createElement("input");
+    enable.id = enableId;
+    enable.type = "checkbox";
+    const label = document.createElement("label");
+    label.id = `${enableId}Label`;
+    label.htmlFor = enableId;
+    label.textContent = definition.label;
+    const scope = document.createElement("span");
+    scope.className = "sampling-parameter-scope";
+    scope.textContent = definition.scopeLabel;
+    header.append(enable, label, scope);
+
+    const description = document.createElement("p");
+    description.id = descriptionId;
+    description.className = "sampling-parameter-description";
+    description.textContent = definition.description;
+
+    const editor = document.createElement("div");
+    editor.className = "sampling-parameter-editor";
+    const number = document.createElement("input");
+    number.id = valueId;
+    number.className = "sampling-parameter-number";
+    number.type = "number";
+    number.inputMode = definition.kind === "integer" ? "numeric" : "decimal";
+    number.step = String(definition.step);
+    if (definition.min !== undefined && !definition.minExclusive) number.min = String(definition.min);
+    if (definition.max !== undefined) number.max = String(definition.max);
+    number.setAttribute("aria-label", `${definition.label} exact value`);
+    number.setAttribute("aria-describedby", `${descriptionId} ${errorId}`);
+    const range = document.createElement("input");
+    range.id = rangeId;
+    range.className = "sampling-parameter-range";
+    range.type = "range";
+    range.min = String(definition.slider.min);
+    range.max = String(definition.slider.max);
+    range.step = String(definition.slider.step);
+    range.setAttribute("aria-label", `${definition.label} common-range slider`);
+    range.setAttribute("aria-describedby", descriptionId);
+    editor.append(number, range);
+
+    const context = document.createElement("dl");
+    context.className = "sampling-parameter-context";
+    const defaultTerm = document.createElement("dt");
+    defaultTerm.textContent = "Model default";
+    const defaultValue = document.createElement("dd");
+    const effectiveTerm = document.createElement("dt");
+    effectiveTerm.textContent = "Effective";
+    const effectiveValue = document.createElement("dd");
+    context.append(defaultTerm, defaultValue, effectiveTerm, effectiveValue);
+
+    const error = document.createElement("p");
+    error.id = errorId;
+    error.className = "sampling-parameter-error";
+    error.setAttribute("aria-live", "polite");
+
+    const tooltip = document.createElement("p");
+    tooltip.id = tooltipId;
+    tooltip.className = "sampling-parameter-unsupported-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+
+    enable.addEventListener("change", () => updateSamplingParameterControl(definition.key, (control) => {
+      control.enabled = enable.checked;
+    }));
+    number.addEventListener("input", () => updateSamplingParameterControl(definition.key, (control) => {
+      control.value = number.value;
+    }));
+    range.addEventListener("input", () => updateSamplingParameterControl(definition.key, (control) => {
+      control.value = range.value;
+    }));
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") dismissSamplingParameterTooltip(row, event);
+    });
+    row.addEventListener("pointerenter", () => resetSamplingParameterTooltip(row, tooltip));
+    row.addEventListener("focusin", () => resetSamplingParameterTooltip(row, tooltip));
+    row.addEventListener("focusout", (event) => {
+      if (!row.contains?.(event.relatedTarget) && !row.matches?.(":hover")) row.classList.remove("sampling-tooltip-dismissed");
+    });
+
+    row.append(header, description, editor, context, error, tooltip);
+    groups.get(definition.group)?.append(row);
+    samplingParameterControlElements.set(definition.key, { row, enable, number, range, defaultValue, effectiveValue, error, tooltip });
+  }
+}
+
+function renderSamplingParameters() {
+  initializeSamplingParameterControls();
+  const loadedForActiveTab = !!samplingParametersState && samplingParametersStateTabId === activeTabId;
+  const activeState = loadedForActiveTab ? samplingParametersState : null;
+  const editableDraft = samplingParametersEditableDraft()
+    || createSamplingControlDraft({}, { defaults: activeState?.defaults || {} });
+  const validation = validateSamplingControlDraft(editableDraft);
+  const dirty = samplingParametersDraftIsDirty();
+  const capabilities = samplingParameterCapabilities(activeState);
+  const unsupported = !Object.values(capabilities).some(({ supported }) => supported);
+  const feedbackError = !!samplingParametersError && samplingParametersFeedbackIsCurrent();
+  const showError = feedbackError || !validation.valid;
+  const defaults = splitSamplingParameters(activeState?.defaults || {}).known;
+  const effective = splitSamplingParameters(activeState?.effective || {}).known;
+  const controlsDisabled = samplingParametersBusy || samplingParametersLoading || !activeTabId || !loadedForActiveTab;
+
+  for (const definition of SAMPLING_PARAMETER_CATALOG) {
+    const refs = samplingParameterControlElements.get(definition.key);
+    if (!refs) continue;
+    const control = editableDraft.controls[definition.key];
+    const capability = capabilities[definition.key];
+    const parameterUnsupported = !capability.supported;
+    const error = validation.errors[definition.key] || "";
+    const valueText = typeof control.value === "number" || typeof control.value === "string" ? String(control.value) : "";
+    const tooltipId = samplingParameterDomId(definition.key, "UnsupportedReason");
+    refs.enable.checked = control.enabled;
+    refs.enable.disabled = controlsDisabled || parameterUnsupported;
+    refs.number.disabled = controlsDisabled || parameterUnsupported || !control.enabled;
+    refs.range.disabled = controlsDisabled || parameterUnsupported || !control.enabled;
+    if (refs.number.value !== valueText) refs.number.value = valueText;
+    refs.range.value = String(samplingParameterSliderValue(definition.key, control.value));
+    refs.number.setAttribute("aria-invalid", error ? "true" : "false");
+    refs.row.classList.toggle("enabled", control.enabled);
+    refs.row.classList.toggle("invalid", !!error);
+    refs.row.classList.toggle("unsupported", parameterUnsupported);
+    refs.row.tabIndex = parameterUnsupported ? 0 : -1;
+    if (parameterUnsupported) {
+      refs.row.setAttribute("aria-disabled", "true");
+      refs.row.setAttribute("aria-describedby", tooltipId);
+      refs.enable.setAttribute("aria-describedby", tooltipId);
+    } else {
+      refs.row.removeAttribute("aria-disabled");
+      refs.row.removeAttribute("aria-describedby");
+      refs.enable.removeAttribute("aria-describedby");
+      refs.row.classList.remove("sampling-tooltip-dismissed");
+    }
+    refs.defaultValue.textContent = samplingParameterDisplayValue(defaults, definition.key);
+    refs.effectiveValue.textContent = samplingParameterDisplayValue(effective, definition.key);
+    refs.error.textContent = error;
+    refs.error.hidden = !error;
+    refs.tooltip.hidden = !parameterUnsupported;
+    refs.tooltip.textContent = parameterUnsupported ? capability.reason : "";
+  }
+
+  if (elements.samplingParametersSupport) {
+    elements.samplingParametersSupport.textContent = samplingParametersSupportText();
+    elements.samplingParametersSupport.classList.toggle("warning", unsupported);
+  }
+  if (elements.samplingParametersPreserved) {
+    elements.samplingParametersPreserved.textContent = loadedForActiveTab
+      ? summarizePreservedSamplingParameters(editableDraft.preservedUnknown).text
+      : samplingParametersLoading ? "Loading additional parameter state…" : "Additional parameter state is not loaded for this tab.";
+  }
+  if (elements.applySamplingParametersButton) {
+    elements.applySamplingParametersButton.disabled = samplingParametersBusy
+      || samplingParametersLoading
+      || !activeTabId
+      || !loadedForActiveTab
+      || unsupported
+      || !validation.valid;
+    elements.applySamplingParametersButton.textContent = samplingParametersBusy ? "Applying…" : "Apply";
+  }
+  if (elements.resetSamplingParametersButton) {
+    elements.resetSamplingParametersButton.disabled = samplingParametersBusy
+      || samplingParametersLoading
+      || !activeTabId
+      || !loadedForActiveTab;
+  }
+  if (elements.reloadSamplingParametersButton) {
+    elements.reloadSamplingParametersButton.disabled = samplingParametersBusy || samplingParametersLoading || !activeTabId;
+  }
+  if (elements.samplingParametersStatus) {
+    elements.samplingParametersStatus.textContent = samplingParametersStatusText({ dirty, unsupported, validation, loadedForActiveTab });
+    elements.samplingParametersStatus.classList.toggle("error", showError);
+    elements.samplingParametersStatus.classList.toggle("warning", !showError && unsupported);
+  }
+}
+
+function applySamplingParametersResponse(data, tabId) {
+  const existingDraft = samplingParametersDraft(tabId);
+  samplingParametersState = data || null;
+  samplingParametersStateTabId = tabId;
+  if (existingDraft) {
+    const loadedDraft = samplingParametersBaseDraft(tabId);
+    existingDraft.preservedUnknown = cloneSamplingControlDraft(loadedDraft)?.preservedUnknown || {};
+    setSamplingParametersDraft(existingDraft, tabId);
+  }
+  if (!samplingParametersDraftIsDirty(tabId)) setSamplingParametersDraft(null, tabId);
+}
+
+async function loadSamplingParameters({ tabId = activeTabId, force = false } = {}) {
+  if (!tabId) {
+    samplingParametersState = null;
+    samplingParametersStateTabId = null;
+    renderSamplingParameters();
+    return;
+  }
+  // Structured drafts are stored separately from loaded state, so a background
+  // refresh can update support/default/hidden-key context without discarding edits.
+  if (force) setSamplingParametersDraft(null, tabId);
+  const requestSerial = ++samplingParametersRequestSerial;
+  samplingParametersLoading = true;
+  setSamplingParametersFeedback();
+  renderSamplingParameters();
+  try {
+    const response = await api(samplingParametersPath(tabId), { scoped: false });
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    applySamplingParametersResponse(response.data, tabId);
+  } catch (error) {
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    setSamplingParametersFeedback({ error: `Could not load sampling parameters: ${error.message || String(error)}` });
+  } finally {
+    if (requestSerial === samplingParametersRequestSerial) {
+      samplingParametersLoading = false;
+      renderSamplingParameters();
+    }
+  }
+}
+
+// Background refresh for tab and model changes. It stays quiet until the section has
+// been opened once, so collapsed panels never pay for helper round-trips.
+function refreshSamplingParametersForTabContext(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return;
+  if (!samplingParametersState && !samplingParametersSectionActive()) return;
+  return loadSamplingParameters({ tabId: tabContext.tabId }).catch(() => {});
+}
+
+async function writeSamplingParameters(samplingParams, { successNotice }) {
+  const tabId = activeTabId;
+  if (!tabId) return;
+  const requestSerial = ++samplingParametersRequestSerial;
+  samplingParametersBusy = true;
+  setSamplingParametersFeedback();
+  renderSamplingParameters();
+  try {
+    const response = await api(samplingParametersPath(tabId), { method: "PUT", body: samplingParams, scoped: false });
+    setSamplingParametersDraft(null, tabId);
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    applySamplingParametersResponse(response.data, tabId);
+    setSamplingParametersFeedback({ notice: successNotice });
+  } catch (error) {
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    setSamplingParametersFeedback({ error: `Could not save sampling parameters: ${error.message || String(error)}` });
+  } finally {
+    // Writes are serialized by the busy guard. A tab/model refresh may supersede
+    // the response serial, but it must never strand the section in a busy state.
+    samplingParametersBusy = false;
+    renderSamplingParameters();
+  }
+}
+
+async function applySamplingParameters() {
+  if (!activeTabId || samplingParametersBusy) return;
+  if (!samplingParametersState || samplingParametersStateTabId !== activeTabId) {
+    setSamplingParametersFeedback({ error: "Wait for this tab's sampling parameters to load before applying changes." });
+    renderSamplingParameters();
+    return;
+  }
+  const capabilities = samplingParameterCapabilities(samplingParametersState);
+  if (!Object.values(capabilities).some(({ supported }) => supported)) {
+    setSamplingParametersFeedback({ error: "This model has no verified sampling parameters, so nothing was sent." });
+    renderSamplingParameters();
+    return;
+  }
+  const draft = samplingParametersEditableDraft();
+  const validation = validateSamplingControlDraft(draft);
+  if (!validation.valid) {
+    setSamplingParametersFeedback({ error: Object.values(validation.errors)[0] || "Correct invalid sampling values before applying." });
+    renderSamplingParameters();
+    return;
+  }
+  const samplingParams = buildSamplingParametersFromDraft(draft);
+  await writeSamplingParameters(samplingParams, {
+    successNotice: Object.keys(samplingParams).length
+      ? "Applied to this Pi session · affects subsequent provider requests."
+      : "Session override cleared · model defaults apply.",
+  });
+}
+
+async function resetSamplingParameters() {
+  if (!activeTabId || samplingParametersBusy) return;
+  if (!samplingParametersState || samplingParametersStateTabId !== activeTabId) {
+    setSamplingParametersFeedback({ error: "Wait for this tab's sampling parameters to load before resetting them." });
+    renderSamplingParameters();
+    return;
+  }
+  await writeSamplingParameters({}, { successNotice: "Session override cleared · model defaults apply." });
+}
+
+// Lazy loader for surfaces that reveal the section (side-panel expand/visibility,
+// mobile canonical mount) after the initial page load.
+function ensureSamplingParametersLoaded() {
+  if (!activeTabId || samplingParametersLoading || samplingParametersBusy) return;
+  if (samplingParametersState && samplingParametersStateTabId === activeTabId) return;
+  loadSamplingParameters().catch(() => {});
+}
+
+function initializeSamplingParameters() {
+  initializeSamplingParameterControls();
+  renderSamplingParameters();
+  if (samplingParametersSectionActive()) ensureSamplingParametersLoaded();
 }
 
 function sessionCopyButton(label, value) {
@@ -34732,6 +35080,7 @@ function clearChatTouchIntent() {
 
 function isChatScrollAwayIntent(event) {
   if (event?.type === "wheel") return event.deltaY < 0;
+  if (event?.type === "middle-drag") return event.deltaY > 0;
   if (event?.type === "touchmove") {
     const clientY = Number(event?.touches?.[0]?.clientY);
     const scrollAway = !Number.isFinite(clientY) || chatLastTouchClientY === null || clientY > chatLastTouchClientY;
@@ -34928,8 +35277,283 @@ function setOptionsMenuOpen(open) {
   elements.optionsMenuButton.setAttribute("aria-expanded", optionsMenuOpen ? "true" : "false");
   elements.optionsMenuButton.classList.toggle("menu-open", optionsMenuOpen);
   elements.optionsMenuButton.parentElement?.classList.toggle("open", optionsMenuOpen);
+  if (optionsMenuOpen) syncOptionsSubmenuAvailability();
+  else closeOptionsSubmenus();
+  if (optionsMenuOpen) scheduleOptionsMenuLabelFit();
   scheduleMobileDropdownScrollBoundsUpdate();
   if (!optionsMenuOpen) scheduleDeferredUiFlushAfterDropdownClose();
+}
+
+function optionsSubmenuGroups() {
+  if (!elements.optionsMenu) return [];
+  return Array.from(elements.optionsMenu.querySelectorAll(OPTIONS_SUBMENU_GROUP_SELECTOR));
+}
+
+function optionsSubmenuTrigger(group) {
+  if (!group?.querySelector) return null;
+  return group.querySelector(OPTIONS_SUBMENU_TRIGGER_SELECTOR) || group.querySelector('button[aria-haspopup="menu"]');
+}
+
+function optionsSubmenuPanel(group) {
+  if (!group?.querySelector) return null;
+  const controlledId = optionsSubmenuTrigger(group)?.getAttribute("aria-controls");
+  const controlled = controlledId ? document.getElementById(controlledId) : null;
+  if (controlled) return controlled;
+  return group.querySelector(OPTIONS_SUBMENU_PANEL_SELECTOR) || group.querySelector('[role="menu"]');
+}
+
+function optionsSubmenuBackButton(group) {
+  return optionsSubmenuPanel(group)?.querySelector(OPTIONS_SUBMENU_BACK_SELECTOR) || null;
+}
+
+function isOptionsSubmenuPanelItem(item) {
+  const panel = item?.closest?.(OPTIONS_SUBMENU_PANEL_SELECTOR);
+  return !!panel && !!elements.optionsMenu?.contains(panel);
+}
+
+function isVisibleOptionsMenuItem(item) {
+  if (!item || item.hidden || item.disabled) return false;
+  if (item.getAttribute?.("aria-hidden") === "true") return false;
+  return !item.closest?.("[hidden]");
+}
+
+function optionsSubmenuActionItems(group) {
+  const panel = optionsSubmenuPanel(group);
+  if (!panel) return [];
+  const back = optionsSubmenuBackButton(group);
+  return Array.from(panel.querySelectorAll('[role="menuitem"]')).filter((item) => item !== back);
+}
+
+function optionsSubmenuHasVisibleActions(group) {
+  return optionsSubmenuActionItems(group).some((item) => !item.hidden && !item.disabled && item.getAttribute("aria-hidden") !== "true");
+}
+
+function optionsSubmenuItems(group) {
+  const panel = optionsSubmenuPanel(group);
+  if (!panel) return [];
+  const back = optionsSubmenuBackButton(group);
+  return Array.from(panel.querySelectorAll('[role="menuitem"]')).filter((item) => item !== back && !item.hidden && !item.disabled && item.getAttribute("aria-hidden") !== "true");
+}
+
+function optionsMenuRootItems() {
+  if (!elements.optionsMenu) return [];
+  return Array.from(elements.optionsMenu.querySelectorAll('[role="menuitem"]'))
+    .filter((item) => !isOptionsSubmenuPanelItem(item) && isVisibleOptionsMenuItem(item));
+}
+
+function focusOptionsMenuItem(item) {
+  item?.focus?.({ preventScroll: true });
+}
+
+function optionsSubmenuUsesDrillIn() {
+  if (isMobileView()) return true;
+  return window.matchMedia?.(OPTIONS_SUBMENU_DRILL_IN_QUERY)?.matches === true;
+}
+
+function syncOptionsSubmenuAvailability() {
+  if (optionsSubmenuSyncing) return;
+  optionsSubmenuSyncing = true;
+  try {
+    for (const group of optionsSubmenuGroups()) {
+      const available = optionsSubmenuHasVisibleActions(group);
+      const unavailable = !available;
+      const trigger = optionsSubmenuTrigger(group);
+      if (group.hidden !== unavailable) group.hidden = unavailable;
+      if (trigger) {
+        if (trigger.hidden !== unavailable) trigger.hidden = unavailable;
+        if (trigger.disabled !== unavailable) trigger.disabled = unavailable;
+      }
+      if (!available && openOptionsSubmenuGroup === group) setOptionsSubmenuOpen(group, false);
+    }
+  } finally {
+    optionsSubmenuSyncing = false;
+  }
+}
+
+function fitOptionsMenuLabels() {
+  if (!elements.optionsMenu) return;
+  const labels = elements.optionsMenu.querySelectorAll(OPTIONS_MENU_LABEL_SELECTOR);
+  for (const label of labels) {
+    label.style.removeProperty(OPTIONS_MENU_LABEL_FONT_SIZE_PROPERTY);
+    label.removeAttribute("data-options-menu-label-fitted");
+    const availableWidth = label.clientWidth;
+    const requiredWidth = label.scrollWidth;
+    if (availableWidth <= 0 || requiredWidth <= availableWidth + 0.5) continue;
+    const baseFontSize = Number.parseFloat(window.getComputedStyle(label).fontSize);
+    if (!Number.isFinite(baseFontSize) || baseFontSize <= 0) continue;
+    const fittedFontSize = Math.max(
+      OPTIONS_MENU_LABEL_MIN_FONT_SIZE_PX,
+      Math.floor(baseFontSize * (availableWidth / requiredWidth) * 98) / 100,
+    );
+    if (fittedFontSize >= baseFontSize) continue;
+    label.style.setProperty(OPTIONS_MENU_LABEL_FONT_SIZE_PROPERTY, `${fittedFontSize}px`);
+    label.setAttribute("data-options-menu-label-fitted", "");
+  }
+}
+
+function scheduleOptionsMenuLabelFit() {
+  if (!elements.optionsMenu) return;
+  if (optionsMenuLabelFitFrame) window.cancelAnimationFrame(optionsMenuLabelFitFrame);
+  optionsMenuLabelFitFrame = window.requestAnimationFrame(() => {
+    optionsMenuLabelFitFrame = 0;
+    fitOptionsMenuLabels();
+  });
+}
+
+function updateOptionsSubmenuPlacement(group) {
+  const panel = optionsSubmenuPanel(group);
+  if (!group || !panel) return;
+  if (optionsSubmenuUsesDrillIn()) {
+    group.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+    panel.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+    return;
+  }
+  const anchorRect = (optionsSubmenuTrigger(group) || group).getBoundingClientRect?.();
+  if (!anchorRect) return;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const panelWidth = panel.offsetWidth || panel.getBoundingClientRect?.().width || 0;
+  const spaceRight = viewportWidth - anchorRect.right;
+  const flipLeft = panelWidth > 0 && spaceRight < panelWidth && anchorRect.left > spaceRight;
+  group.classList.toggle(OPTIONS_SUBMENU_LEFT_CLASS, flipLeft);
+  panel.classList.toggle(OPTIONS_SUBMENU_LEFT_CLASS, flipLeft);
+}
+
+function setOptionsSubmenuOpen(group, open, { focusFirstItem = false, restoreFocus = false } = {}) {
+  if (!group) return;
+  const trigger = optionsSubmenuTrigger(group);
+  const panel = optionsSubmenuPanel(group);
+  const shouldOpen = !!open && !trigger?.disabled && !trigger?.hidden && !group.hidden;
+  if (shouldOpen) {
+    for (const sibling of optionsSubmenuGroups()) {
+      if (sibling !== group) setOptionsSubmenuOpen(sibling, false);
+    }
+  }
+  if (shouldOpen) openOptionsSubmenuGroup = group;
+  else if (openOptionsSubmenuGroup === group) openOptionsSubmenuGroup = null;
+  group.classList.toggle("open", shouldOpen);
+  trigger?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  trigger?.classList.toggle("menu-open", shouldOpen);
+  if (panel) panel.hidden = !shouldOpen;
+  if (elements.optionsMenu) {
+    elements.optionsMenu.classList.toggle("submenu-open", !!openOptionsSubmenuGroup);
+    const openGroupId = openOptionsSubmenuGroup?.dataset?.optionsSubmenu || "";
+    if (openGroupId) elements.optionsMenu.dataset.openGroup = openGroupId;
+    else delete elements.optionsMenu.dataset.openGroup;
+  }
+  if (shouldOpen) updateOptionsSubmenuPlacement(group);
+  else {
+    group.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+    panel?.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+  }
+  if (shouldOpen && focusFirstItem) focusOptionsMenuItem(optionsSubmenuItems(group)[0]);
+  if (!shouldOpen && restoreFocus) focusOptionsMenuItem(trigger);
+  if (shouldOpen) scheduleOptionsMenuLabelFit();
+  scheduleMobileDropdownScrollBoundsUpdate();
+}
+
+function closeOptionsSubmenus({ restoreFocus = false } = {}) {
+  const previous = openOptionsSubmenuGroup;
+  for (const group of optionsSubmenuGroups()) setOptionsSubmenuOpen(group, false);
+  openOptionsSubmenuGroup = null;
+  if (restoreFocus && previous) focusOptionsMenuItem(optionsSubmenuTrigger(previous));
+}
+
+function moveOptionsMenuFocus(items, currentIndex, offset) {
+  if (!items.length) return;
+  const nextIndex = currentIndex < 0
+    ? (offset > 0 ? 0 : items.length - 1)
+    : (currentIndex + offset + items.length) % items.length;
+  focusOptionsMenuItem(items[nextIndex]);
+}
+
+function handleOptionsMenuKeydown(event) {
+  const target = event.target;
+  if (!target?.closest || !elements.optionsMenu?.contains(target)) return;
+  const panelGroup = isOptionsSubmenuPanelItem(target) ? target.closest(OPTIONS_SUBMENU_GROUP_SELECTOR) : null;
+  const items = panelGroup ? optionsSubmenuItems(panelGroup) : optionsMenuRootItems();
+  const index = items.indexOf(target);
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    moveOptionsMenuFocus(items, index, event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    focusOptionsMenuItem(event.key === "Home" ? items[0] : items[items.length - 1]);
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    const group = panelGroup ? null : target.closest(OPTIONS_SUBMENU_GROUP_SELECTOR);
+    if (group && optionsSubmenuTrigger(group) === target) {
+      event.preventDefault();
+      setOptionsSubmenuOpen(group, true, { focusFirstItem: true });
+    }
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    if (!panelGroup) return;
+    event.preventDefault();
+    setOptionsSubmenuOpen(panelGroup, false, { restoreFocus: true });
+    return;
+  }
+  if (event.key !== "Escape") return;
+  if (panelGroup || openOptionsSubmenuGroup) {
+    // Escape closes only the deepest open level; the root menu stays open.
+    event.preventDefault();
+    event.stopPropagation();
+    if (panelGroup) setOptionsSubmenuOpen(panelGroup, false, { restoreFocus: true });
+    else closeOptionsSubmenus({ restoreFocus: true });
+    return;
+  }
+  closeOptionsSubmenus();
+  focusOptionsMenuItem(elements.optionsMenuButton);
+}
+
+function handleOptionsSubmenuClick(event) {
+  const back = event.target?.closest?.(OPTIONS_SUBMENU_BACK_SELECTOR);
+  if (back && elements.optionsMenu?.contains(back)) {
+    event.preventDefault();
+    event.stopPropagation();
+    setOptionsSubmenuOpen(back.closest(OPTIONS_SUBMENU_GROUP_SELECTOR), false, { restoreFocus: true });
+    return;
+  }
+  const trigger = event.target?.closest?.(OPTIONS_SUBMENU_TRIGGER_SELECTOR);
+  if (!trigger || !elements.optionsMenu?.contains(trigger)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const group = trigger.closest(OPTIONS_SUBMENU_GROUP_SELECTOR);
+  const shouldOpen = openOptionsSubmenuGroup !== group;
+  setOptionsSubmenuOpen(group, shouldOpen, { focusFirstItem: shouldOpen });
+}
+
+function initializeOptionsSubmenus() {
+  const groups = optionsSubmenuGroups();
+  if (!elements.optionsMenu || !groups.length) return;
+  for (const group of groups) {
+    group.addEventListener("pointerenter", (event) => {
+      if (event.pointerType === "touch" || optionsSubmenuUsesDrillIn()) return;
+      setOptionsSubmenuOpen(group, true);
+    });
+    group.addEventListener("pointerleave", (event) => {
+      if (event.pointerType === "touch" || optionsSubmenuUsesDrillIn()) return;
+      if (group.contains(document.activeElement)) return;
+      setOptionsSubmenuOpen(group, false);
+    });
+  }
+  const rootMenuContainer = elements.optionsMenu.parentElement;
+  rootMenuContainer?.addEventListener("pointerenter", scheduleOptionsMenuLabelFit);
+  rootMenuContainer?.addEventListener("focusin", scheduleOptionsMenuLabelFit);
+  elements.optionsMenu.addEventListener("click", handleOptionsSubmenuClick);
+  elements.optionsMenu.addEventListener("keydown", handleOptionsMenuKeydown);
+  optionsSubmenuObserver?.disconnect();
+  optionsSubmenuObserver = new MutationObserver(() => syncOptionsSubmenuAvailability());
+  optionsSubmenuObserver.observe(elements.optionsMenu, { subtree: true, attributes: true, attributeFilter: ["hidden", "disabled", "aria-hidden"] });
+  window.addEventListener("resize", () => {
+    if (openOptionsSubmenuGroup) updateOptionsSubmenuPlacement(openOptionsSubmenuGroup);
+    scheduleOptionsMenuLabelFit();
+  });
+  closeOptionsSubmenus();
+  syncOptionsSubmenuAvailability();
 }
 
 function optionalFeatureIdForCommand(name) {
@@ -37654,11 +38278,11 @@ async function openNativeSafetyGuardSetupDialog() {
       controls.autoReviewThinking.select.append(unavailable);
       controls.autoReviewThinking.select.value = preferred;
     }
-    controls.autoReviewModel.select.disabled = !enabled || !models.length;
-    controls.autoReviewThinking.select.disabled = !enabled || !selectedAvailable;
+    controls.autoReviewModel.select.disabled = !models.length;
+    controls.autoReviewThinking.select.disabled = !selectedAvailable;
     autoReviewAvailability.classList.toggle("warning", enabled && (!selectedAvailable || !levels.includes(controls.autoReviewThinking.select.value)));
     autoReviewAvailabilityText.textContent = !enabled
-      ? "Off. Matched operations use the existing interactive prompt; saved model selections are retained."
+      ? "Off. Matched operations use the existing interactive prompt; model and thinking can still be preselected before enabling auto-review."
       : !models.length
         ? "Unavailable: no authenticated Pi models are available. Run /login or configure a provider before enabling auto-review."
         : !selectedAvailable
@@ -39788,6 +40412,11 @@ async function refreshState(tabContext = activeTabContext()) {
   renderStatus();
   if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
   requestGitFooterWebuiPayload(tabContext, { force: shouldRefreshGitFooter });
+  // Sampling support and effective values depend on the active model, so refresh
+  // them whenever the session reports a different model.
+  if (modelStateKey(previousState?.model) !== modelStateKey(currentState?.model)) {
+    refreshSamplingParametersForTabContext(tabContext);
+  }
 }
 
 async function refreshStats(tabContext = activeTabContext()) {
@@ -43038,6 +43667,17 @@ optionsMenuContainer?.addEventListener("focusout", () => {
     if (!optionsMenuContainer?.contains(document.activeElement)) setOptionsMenuOpen(false);
   }, 0);
 });
+elements.optionsMenuButton.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  setPublishMenuOpen(false);
+  setNativeCommandMenuOpen(false);
+  setAppRunnerMenuOpen(false);
+  setOptionsMenuOpen(true);
+  const items = optionsMenuRootItems();
+  focusOptionsMenuItem(event.key === "ArrowDown" ? items[0] : items[items.length - 1]);
+});
+initializeOptionsSubmenus();
 elements.releaseNpmButton.addEventListener("click", () => runPublishWorkflow("/release-npm"));
 elements.releaseAurButton.addEventListener("click", () => runPublishWorkflow("/release-aur"));
 elements.nativeSkillsButton.addEventListener("click", () => runNativeCommandMenu("/skills"));
@@ -43718,6 +44358,24 @@ elements.subagentLaunchSlotsLater?.addEventListener("click", () => {
   setSubagentLaunchSlotAnnouncement("Agent models are saved. Reload this tab later before relying on them for future launches.");
   renderSubagentLaunchSlots();
 });
+elements.applySamplingParametersButton?.addEventListener("click", () => {
+  applySamplingParameters().catch((error) => {
+    setSamplingParametersFeedback({ error: error.message || String(error) });
+    renderSamplingParameters();
+  });
+});
+elements.resetSamplingParametersButton?.addEventListener("click", () => {
+  resetSamplingParameters().catch((error) => {
+    setSamplingParametersFeedback({ error: error.message || String(error) });
+    renderSamplingParameters();
+  });
+});
+elements.reloadSamplingParametersButton?.addEventListener("click", () => {
+  loadSamplingParameters({ force: true }).catch((error) => {
+    setSamplingParametersFeedback({ error: error.message || String(error) });
+    renderSamplingParameters();
+  });
+});
 elements.subagentTerminalCopyButton?.addEventListener("click", () => copySubagentTerminalOutput());
 elements.subagentTerminalRefreshButton?.addEventListener("click", () => {
   refreshSubagentTerminalView(activeSubagentTerminalId, { showLoading: true }).finally(() => scheduleSubagentTerminalRefresh());
@@ -44055,7 +44713,6 @@ window.addEventListener("storage", (event) => {
   }
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
   if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
-  if (event.key === SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY && !sidePanelSectionResizeState) restoreSidePanelSectionHeights();
   if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
   if (event.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY) restoreComposerActionSlotLayout();
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
@@ -44503,8 +45160,14 @@ elements.optionalFeatureMigrationDialog?.addEventListener("cancel", (event) => {
 });
 
 installModalPrimitives();
+installMiddleButtonDragScroll({
+  onDirection: ({ target, offsetY }) => {
+    if (target === elements.chat) noteChatUserScrollIntent({ type: "middle-drag", deltaY: offsetY });
+  },
+});
 initializeIssueWizard();
 resizePromptInput();
+clearRemovedSidePanelSectionHeightState();
 restoreDurableUiLayoutPendingJournal();
 restoreSidePanelWidthPreference();
 restoreFileViewerWidthPreference();
@@ -44543,12 +45206,12 @@ restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
-initializeSidePanelSectionResizing();
 restoreSidePanelState();
 initializeCodexUsage();
 initializeClaudeUsage();
 initializeSubagents();
 initializeSubagentLaunchSlots();
+initializeSamplingParameters();
 initializeUpdateNotifications();
 bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();

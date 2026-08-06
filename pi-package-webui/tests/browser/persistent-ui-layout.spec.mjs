@@ -14,7 +14,6 @@ const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const layoutKeys = {
   sideOrder: "pi-webui-side-panel-section-order-v1",
   sideCollapsed: "pi-webui-side-panel-collapsed",
-  sideHeights: "pi-webui-side-panel-section-heights-v1",
   composerOrder: "pi-webui-composer-action-order-v1",
   composerGrid: "pi-webui-composer-action-layout-v2",
   footerOrder: "pi-webui-footer-scoped-model-order-v1",
@@ -120,7 +119,6 @@ async function seedStaleServerLayout() {
           collapsedSectionIds: [],
           hiddenSectionIds: [],
           collapsed: false,
-          sectionHeights: { git: 320 },
         },
         composerActions: { order: ["send", "new"], grid: null },
         footerScopedModelOrder: ["fake/fake-gamma", "fake/fake-beta", "fake/fake-model"],
@@ -142,7 +140,6 @@ async function localLayout(page) {
     const json = (key) => JSON.parse(localStorage.getItem(key) || "null");
     return {
       sideOrder: json(keys.sideOrder),
-      sideHeights: json(keys.sideHeights),
       composerOrder: json(keys.composerOrder),
       composerGrid: json(keys.composerGrid),
       footerOrder: json(keys.footerOrder),
@@ -211,7 +208,6 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
   await expect.poll(() => sectionOrder(page)).toEqual(expected.sideOrder);
   await expect.poll(() => localLayout(page)).toMatchObject({
     sideOrder: expected.sideOrder,
-    sideHeights: expected.sideHeights,
     composerOrder: expected.composerOrder,
     composerGrid: expected.composerGrid,
     footerOrder: expected.footerOrder,
@@ -223,15 +219,7 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
   await expect(page.locator("#terminalTabsLayoutSelect")).toHaveValue("left");
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(320);
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeLessThanOrEqual(expected.sidePanelWidth);
-  for (const sectionId of ["controls", "files"]) {
-    const toggle = page.locator(`[data-side-panel-section-toggle="${sectionId}"]`);
-    if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-    const handle = page.locator(`[data-side-panel-section-resize="${sectionId}"]`);
-    await expect(handle).toBeVisible();
-    await expect(handle).toHaveAttribute("role", "separator");
-    await expect(handle).toHaveAttribute("aria-orientation", "horizontal");
-    await expect(handle).toHaveAttribute("aria-valuenow", String(expected.sideHeights[sectionId]));
-  }
+  await expect(page.locator("[data-side-panel-section-resize]")).toHaveCount(0);
   const matchingViewportWidth = await useMatchingComposerViewport(page, expected.composerGrid.columns);
   await expect.poll(() => page.locator('[data-composer-action-id="options"]').evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(expected.optionsColumn);
   if (expectCustomGroup === true) await expect(page.locator(".terminal-tab-custom-group")).toHaveCount(1);
@@ -352,14 +340,6 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect(page.locator("#terminalTabsLayoutSelect")).toBeVisible();
   await page.locator("#terminalTabsLayoutSelect").selectOption("left");
   await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
-  const controlsHeightResize = page.locator('[data-side-panel-section-resize="controls"]');
-  await expect(controlsHeightResize).toBeVisible();
-  await controlsHeightResize.focus();
-  await controlsHeightResize.press("Home");
-  await controlsHeightResize.press("Shift+ArrowDown");
-  await controlsHeightResize.press("Shift+ArrowDown");
-  await expect(controlsHeightResize).toHaveAttribute("aria-valuenow", "280");
-
   const options = page.locator('[data-composer-action-id="options"]');
   const optionsBox = await options.boundingBox();
   expect(optionsBox).toBeTruthy();
@@ -375,12 +355,6 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect(gridGuide).toBeHidden();
 
   await openAcceptanceFile(page);
-  const filesHeightResize = page.locator('[data-side-panel-section-resize="files"]');
-  await expect(filesHeightResize).toBeVisible();
-  await filesHeightResize.focus();
-  await filesHeightResize.press("Home");
-  await filesHeightResize.press("Shift+ArrowDown");
-  await expect(filesHeightResize).toHaveAttribute("aria-valuenow", "200");
   await expect(page.locator("#fileViewerPane")).toBeVisible();
   const fileViewerResize = page.locator("#fileViewerResizeHandle");
   await fileViewerResize.focus();
@@ -389,21 +363,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   expect(expectedFileViewerWidth).toBeGreaterThan(384);
   await page.locator("#fileViewerCloseButton").click();
 
-  if (await controlsToggle.getAttribute("aria-expanded") !== "true") await controlsToggle.click();
-  await expect(controlsHeightResize).toBeVisible();
-  const filesHeightBeforePointerResize = (await localLayout(page)).sideHeights.files;
-  const controlsResizeBox = await controlsHeightResize.boundingBox();
-  expect(controlsResizeBox).toBeTruthy();
-  await page.mouse.move(controlsResizeBox.x + controlsResizeBox.width / 2, controlsResizeBox.y + controlsResizeBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(controlsResizeBox.x + controlsResizeBox.width / 2, controlsResizeBox.y + controlsResizeBox.height / 2 + 48, { steps: 6 });
-  await page.mouse.up();
-  const expectedControlsHeight = Number(await controlsHeightResize.getAttribute("aria-valuenow"));
-  expect(expectedControlsHeight).toBeGreaterThan(280);
-  await expect.poll(async () => (await localLayout(page)).sideHeights).toMatchObject({ controls: expectedControlsHeight, files: filesHeightBeforePointerResize });
-
   const expectedLocal = await localLayout(page);
-  expect(expectedLocal.sideHeights).toMatchObject({ controls: expectedControlsHeight, files: 200 });
   expect(expectedLocal.composerGrid?.positions?.options).toBeGreaterThan(0);
   expect(expectedLocal.terminalGroups?.groups?.[0]?.tabIds).toEqual([firstTabId, secondTabId]);
   const optionsColumn = String((expectedLocal.composerGrid.positions.options % expectedLocal.composerGrid.columns) + 1);
@@ -424,7 +384,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
 
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout).toMatchObject({
-    sidePanel: { sectionOrder: expected.sideOrder, sectionHeights: expected.sideHeights },
+    sidePanel: { sectionOrder: expected.sideOrder },
     composerActions: { order: expected.composerOrder, grid: expected.composerGrid },
     footerScopedModelOrder: expected.footerOrder,
     terminalTabs: { layout: "left", customGroups: expected.terminalGroups },
@@ -447,7 +407,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await stopServer();
   const settingsOnDisk = JSON.parse(await readFile(settingsFile, "utf8"));
   assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionOrder, expected.sideOrder, "the private settings file should contain the browser-committed Control Deck order");
-  assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionHeights, expected.sideHeights, "the private settings file should contain independent Control Deck section heights");
+  assert.equal("sectionHeights" in settingsOnDisk.uiLayout.sidePanel, false, "removed Control Deck section heights must not be persisted");
   assert.deepEqual(settingsOnDisk.uiLayout.composerActions.grid, expected.composerGrid, "the private settings file should contain the exact sparse composer grid");
   assert.equal(settingsOnDisk.uiLayout.fileViewerWidth, expected.fileViewerWidth, "the private settings file should contain the browser-committed file-viewer width");
 
@@ -465,7 +425,6 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
 test("returning browsers adopt authoritative Control Deck state without echo writes", async ({ browser }) => {
   const current = await serverApi("/api/interface-preferences");
   const serverSideOrder = ["git", "files", "controls"];
-  const serverSideHeights = { git: 360, files: 220, controls: 300 };
   await serverApi("/api/interface-preferences", {
     method: "PUT",
     body: {
@@ -477,17 +436,16 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
           collapsedSectionIds: [],
           hiddenSectionIds: [],
           collapsed: false,
-          sectionHeights: serverSideHeights,
         },
       },
     },
   });
 
   const context = await browser.newContext({ viewport: { width: 1680, height: 1000 } });
-  await context.addInitScript(({ sideOrder, sideCollapsed, sideHeights }) => {
+  await context.addInitScript(({ sideOrder, sideCollapsed }) => {
     localStorage.setItem(sideOrder, JSON.stringify(["files", "controls", "git"]));
     localStorage.setItem(sideCollapsed, "1");
-    localStorage.setItem(sideHeights, JSON.stringify({ git: 180, files: 180, controls: 180 }));
+    localStorage.setItem("pi-webui-side-panel-section-heights-v1", JSON.stringify({ controls: 240 }));
   }, layoutKeys);
   const page = await context.newPage();
   let layoutPuts = 0;
@@ -497,21 +455,20 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
   });
 
   await page.goto(baseURL);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-webui-side-panel-section-heights-v1"))).toBeNull();
   await expect.poll(async () => (await sectionOrder(page)).slice(0, serverSideOrder.length)).toEqual(serverSideOrder);
-  await expect.poll(async () => (await localLayout(page)).sideHeights).toEqual(serverSideHeights);
   await expect(page.locator("body")).not.toHaveClass(/side-panel-collapsed/);
   await page.waitForTimeout(700);
   expect(layoutPuts).toBe(0);
   const persisted = await serverApi("/api/interface-preferences");
   assert.deepEqual(persisted.data.layout.sidePanel.sectionOrder, serverSideOrder);
-  assert.deepEqual(persisted.data.layout.sidePanel.sectionHeights, serverSideHeights);
+  assert.equal("sectionHeights" in persisted.data.layout.sidePanel, false);
   assert.equal(persisted.data.layout.sidePanel.collapsed, false);
 
   const controlsToggle = page.locator('[data-side-panel-section-toggle="controls"]');
   if (await controlsToggle.getAttribute("aria-expanded") !== "true") await controlsToggle.click();
   const controlsSection = page.locator('[data-side-panel-section="controls"]');
-  const controlsHeightResize = page.locator('[data-side-panel-section-resize="controls"]');
-  await expect(controlsHeightResize).toBeVisible();
+  await expect(page.locator("[data-side-panel-section-resize]")).toHaveCount(0);
   await controlsToggle.click({ button: "right" });
   const controlsVisibilityItem = page.locator('[data-side-panel-section-visibility="controls"]');
   await expect(controlsVisibilityItem).toBeVisible();
@@ -519,8 +476,6 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
   await expect(controlsSection).toBeHidden();
   await controlsVisibilityItem.click();
   await expect(controlsSection).toBeVisible();
-  await expect(controlsHeightResize).toBeVisible();
-  await expect(controlsHeightResize).toHaveAttribute("aria-valuenow", String(serverSideHeights.controls));
   await context.close();
 });
 

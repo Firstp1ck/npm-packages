@@ -9,11 +9,24 @@ import {
   subagentLaunchSlotScopeEntry,
 } from "./lib/subagent-launch-slots.mjs";
 import { SUBAGENT_GATE_UPDATE_EVENT } from "./lib/subagent-gate.mjs";
+import {
+  applySupportedSamplingParameters,
+  BUILTIN_SAMPLING_APIS,
+  filterSupportedSamplingParameters,
+  resolveSamplingParameterCapabilities,
+} from "./lib/sampling-parameter-capabilities.mjs";
+import {
+  SamplingParameterValidationError,
+  validateSamplingParameterObject,
+} from "./public/sampling-parameter-controls.mjs";
 
 const HELPER_COMMAND = "webui-helper";
 const RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
 const TOOLS_CONFIG_TYPE = "webui-tools-config";
 const SKILLS_CONFIG_TYPE = "webui-skills-config";
+const SAMPLING_CONFIG_TYPE = "webui-session-sampling-params-v1";
+const SAMPLING_MAX_KEYS = 128;
+const SAMPLING_MAX_BYTES = 16 * 1024;
 const APP_RUNNER_CONTEXT_TYPE = "webui-app-runner-output";
 const RETAINED_SUBAGENT_RUNS_TYPE = "webui-subagent-retained-runs-v1";
 const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
@@ -133,6 +146,30 @@ function lastBranchConfig(ctx, customType) {
     }
   }
   return found;
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function normalizeSamplingParams(value) {
+  if (!isPlainObject(value)) throw new Error("Sampling parameters must be a JSON object");
+  const keys = Object.keys(value);
+  if (keys.length > SAMPLING_MAX_KEYS) throw new Error(`Sampling parameters may contain at most ${SAMPLING_MAX_KEYS} top-level keys`);
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error("Sampling parameters must contain only JSON-compatible values");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > SAMPLING_MAX_BYTES) {
+    throw new Error(`Sampling parameters must be at most ${SAMPLING_MAX_BYTES} bytes`);
+  }
+  const normalized = JSON.parse(serialized);
+  if (!isPlainObject(normalized)) throw new Error("Sampling parameters must be a JSON object");
+  return normalized;
 }
 
 function normalizeNameList(value) {
@@ -797,6 +834,7 @@ export default function webuiRpcHelper(pi) {
   let enabledTools = new Set();
   let disabledSkills = new Set();
   let inheritedEnabledSkills = null;
+  let sessionSamplingParams = {};
   let subagentLaunchSlotGuidance = "";
   let subagentContext = null;
   let subagentBridgeAvailable = false;
@@ -1408,6 +1446,72 @@ export default function webuiRpcHelper(pi) {
     return pi.getAllTools().map((tool) => tool.name);
   }
 
+  function restoreSamplingParamsFromBranch(ctx) {
+    const saved = lastBranchConfig(ctx, SAMPLING_CONFIG_TYPE);
+    try {
+      sessionSamplingParams = saved?.version === 1 ? normalizeSamplingParams(saved.samplingParams) : {};
+    } catch {
+      sessionSamplingParams = {};
+    }
+  }
+
+  function persistSamplingParams() {
+    pi.appendEntry(SAMPLING_CONFIG_TYPE, { version: 1, samplingParams: sessionSamplingParams });
+  }
+
+  function samplingState(ctx) {
+    const model = ctx.model;
+    const api = typeof model?.api === "string" ? model.api : null;
+    const parameters = resolveSamplingParameterCapabilities(model, { thinkingLevel: ctx.thinkingLevel });
+    const supported = Object.values(parameters).some((capability) => capability.supported);
+    const defaults = isPlainObject(model?.samplingParams) ? { ...model.samplingParams } : {};
+    const session = { ...sessionSamplingParams };
+    return {
+      session,
+      defaults,
+      effective: {
+        ...filterSupportedSamplingParameters(defaults, parameters),
+        ...filterSupportedSamplingParameters(session, parameters),
+      },
+      support: {
+        supported,
+        api,
+        model: model ? {
+          provider: typeof model.provider === "string" ? model.provider : null,
+          id: typeof model.id === "string" ? model.id : null,
+          name: typeof model.name === "string" ? model.name : null,
+        } : null,
+        parameters,
+        compatibleApis: [...BUILTIN_SAMPLING_APIS],
+        message: supported
+          ? "Session sampling parameters apply to subsequent provider requests."
+          : api
+            ? `Session sampling parameters are stored but not applied to ${api}.`
+            : "Session sampling parameters are stored but no active model is available.",
+      },
+    };
+  }
+
+  function setSamplingParams(ctx, payload) {
+    const normalized = normalizeSamplingParams(payload?.samplingParams);
+    const validation = validateSamplingParameterObject(normalized);
+    if (!validation.valid) {
+      throw new SamplingParameterValidationError(
+        `Invalid sampling parameters: ${Object.values(validation.errors).join(" ")}`,
+        validation.errors,
+      );
+    }
+    sessionSamplingParams = normalized;
+    persistSamplingParams();
+    return samplingState(ctx);
+  }
+
+  function resetSamplingParams(ctx) {
+    sessionSamplingParams = {};
+    persistSamplingParams();
+    return samplingState(ctx);
+  }
+
   async function readGlobalResourceDefaults() {
     try {
       return (await readWebuiSettings()).resourceDefaults;
@@ -1607,6 +1711,12 @@ export default function webuiRpcHelper(pi) {
         return skillState(ctx);
       case "skills-set":
         return setSkillState(ctx, payload);
+      case "sampling-state":
+        return samplingState(ctx);
+      case "sampling-set":
+        return setSamplingParams(ctx, payload);
+      case "sampling-reset":
+        return resetSamplingParams(ctx);
       case "app-runner-context":
         return transferAppRunnerContext(ctx, payload);
       case "subagent-output":
@@ -1643,6 +1753,7 @@ export default function webuiRpcHelper(pi) {
     const globalDefaults = await readGlobalResourceDefaults();
     restoreToolsFromBranch(ctx, globalDefaults);
     restoreSkillsFromBranch(ctx, globalDefaults);
+    restoreSamplingParamsFromBranch(ctx);
     await loadSubagentLaunchSlotGuidance(ctx);
     subagentContext = ctx;
     subagentPollGeneration += 1;
@@ -1660,6 +1771,7 @@ export default function webuiRpcHelper(pi) {
     const globalDefaults = await readGlobalResourceDefaults();
     restoreToolsFromBranch(ctx, globalDefaults);
     restoreSkillsFromBranch(ctx, globalDefaults);
+    restoreSamplingParamsFromBranch(ctx);
     subagentContext = ctx;
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
@@ -1746,6 +1858,13 @@ export default function webuiRpcHelper(pi) {
     workflowSubagentRuns.clear();
     subagentGates.clear();
     for (const unsubscribe of subagentEventUnsubscribers) unsubscribe();
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (Object.keys(sessionSamplingParams).length === 0) return undefined;
+    return applySupportedSamplingParameters(event.payload, ctx.model, sessionSamplingParams, {
+      thinkingLevel: ctx.thinkingLevel,
+    });
   });
 
   pi.on("input", async (event, ctx) => {

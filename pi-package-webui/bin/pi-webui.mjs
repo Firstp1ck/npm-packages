@@ -175,6 +175,7 @@ const PROMPT_REQUEST_TIMEOUT_MS = Math.max(REQUEST_TIMEOUT_MS, Number.parseInt(p
 const WEBUI_HELPER_TIMEOUT_MS = 8 * 1000;
 const WEBUI_HELPER_COMMAND = "webui-helper";
 const WEBUI_HELPER_RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
+const SAMPLING_PARAMS_HTTP_MAX_BYTES = 20 * 1024;
 const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
 const WEBUI_SUBAGENT_RUN_LIMIT = 128;
@@ -1149,7 +1150,7 @@ function formatBytes(bytes) {
   return `${value} B`;
 }
 
-async function readJsonBody(req, { limitBytes = BODY_LIMIT_BYTES } = {}) {
+async function readJsonBody(req, { limitBytes = BODY_LIMIT_BYTES, emptyError } = {}) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -1157,9 +1158,15 @@ async function readJsonBody(req, { limitBytes = BODY_LIMIT_BYTES } = {}) {
     if (size > limitBytes) throw makeHttpError(413, `Request body too large (limit ${formatBytes(limitBytes)})`);
     chunks.push(chunk);
   }
-  if (chunks.length === 0) return {};
+  if (chunks.length === 0) {
+    if (emptyError) throw makeHttpError(400, emptyError);
+    return {};
+  }
   const text = Buffer.concat(chunks).toString("utf8");
-  if (!text.trim()) return {};
+  if (!text.trim()) {
+    if (emptyError) throw makeHttpError(400, emptyError);
+    return {};
+  }
   return JSON.parse(text);
 }
 
@@ -2757,8 +2764,8 @@ function gitWorkflowModelKey(model) {
 }
 
 async function availableGitWorkflowModels(tab) {
-  const response = await safeRpcData(tab, { type: "get_available_models" });
-  if (!response.ok) throw makeHttpError(400, response.error || "Failed to load available models");
+  const response = await safeRpcResponse(tab, { type: "get_available_models" });
+  if (response.success === false) throw makeHttpError(400, response.error || "Failed to load available models");
   return (Array.isArray(response.data?.models) ? response.data.models : [])
     .filter((model) => model?.provider && model?.id)
     .sort((left, right) => gitWorkflowModelKey(left).localeCompare(gitWorkflowModelKey(right)));
@@ -15284,6 +15291,33 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/tabs" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: { tabs: await listTabsWithReconciledActivity() } });
+      return;
+    }
+
+    const samplingParametersRoute = /^\/api\/tabs\/([^/]+)\/sampling-parameters$/.exec(url.pathname);
+    if (samplingParametersRoute && (req.method === "GET" || req.method === "PUT")) {
+      const tabId = decodeURIComponent(samplingParametersRoute[1]);
+      const tab = tabs.get(tabId);
+      if (!tab) throw makeHttpError(404, `Unknown Pi tab: ${tabId}`);
+      if (req.method === "GET") {
+        sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "sampling-state") }, { "cache-control": "private, no-store" });
+        return;
+      }
+      let samplingParams;
+      try {
+        samplingParams = await readJsonBody(req, {
+          limitBytes: SAMPLING_PARAMS_HTTP_MAX_BYTES,
+          emptyError: "Sampling parameters body must be a JSON object.",
+        });
+      } catch (error) {
+        if (error instanceof SyntaxError) throw makeHttpError(400, "Sampling parameters body must be valid JSON.");
+        throw error;
+      }
+      const action = samplingParams && typeof samplingParams === "object" && !Array.isArray(samplingParams) && Object.keys(samplingParams).length === 0
+        ? "sampling-reset"
+        : "sampling-set";
+      const payload = action === "sampling-set" ? { samplingParams } : {};
+      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, action, payload) }, { "cache-control": "private, no-store" });
       return;
     }
 

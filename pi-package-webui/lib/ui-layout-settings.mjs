@@ -11,8 +11,6 @@ export const UI_LAYOUT_LIMITS = Object.freeze({
   gridSlots: 4096,
   fileViewerWidthMin: 384,
   fileViewerWidthMax: 4096,
-  sectionHeightMin: 120,
-  sectionHeightMax: 4096,
 });
 
 const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -59,29 +57,10 @@ function nullable(value, validate) {
   return value === null ? null : validate(value);
 }
 
-function validateSectionHeights(value) {
-  const source = objectValue(value);
-  if (!source) invalid("layout.sidePanel.sectionHeights must be an object or null");
-  const entries = Object.entries(source);
-  if (entries.length > UI_LAYOUT_LIMITS.listItems) {
-    invalid(`layout.sidePanel.sectionHeights must contain at most ${UI_LAYOUT_LIMITS.listItems} items`);
-  }
-  const result = {};
-  for (const [rawId, height] of entries) {
-    const id = boundedString(rawId, "layout.sidePanel.sectionHeights section id");
-    if (UNSAFE_OBJECT_KEYS.has(id)) invalid("layout.sidePanel.sectionHeights contains an unsupported section id");
-    if (!Number.isInteger(height) || height < UI_LAYOUT_LIMITS.sectionHeightMin || height > UI_LAYOUT_LIMITS.sectionHeightMax) {
-      invalid(`layout.sidePanel.sectionHeights values must be integers between ${UI_LAYOUT_LIMITS.sectionHeightMin} and ${UI_LAYOUT_LIMITS.sectionHeightMax}`);
-    }
-    result[id] = height;
-  }
-  return result;
-}
-
 function validateSidePanel(value, { partial = false } = {}) {
   const source = objectValue(value);
   if (!source) invalid("layout.sidePanel must be an object or null");
-  const fields = new Set(["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed", "sectionHeights"]);
+  const fields = new Set(["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"]);
   assertOnlyKeys(source, fields, "layout.sidePanel");
   if (partial && Object.keys(source).length === 0) invalid("layout.sidePanel must name at least one field");
   const result = {};
@@ -92,9 +71,6 @@ function validateSidePanel(value, { partial = false } = {}) {
     const collapsed = source.collapsed ?? null;
     if (collapsed !== null && typeof collapsed !== "boolean") invalid("layout.sidePanel.collapsed must be a boolean or null");
     result.collapsed = collapsed;
-  }
-  if (!partial || own(source, "sectionHeights")) {
-    result.sectionHeights = nullable(source.sectionHeights ?? null, validateSectionHeights);
   }
   return result;
 }
@@ -192,7 +168,7 @@ function validateFileViewerWidth(value) {
 export function defaultUiLayout() {
   return {
     version: UI_LAYOUT_VERSION,
-    sidePanel: { sectionOrder: null, collapsedSectionIds: null, hiddenSectionIds: null, collapsed: null, sectionHeights: null },
+    sidePanel: { sectionOrder: null, collapsedSectionIds: null, hiddenSectionIds: null, collapsed: null },
     composerActions: { order: null, grid: null },
     footerScopedModelOrder: null,
     terminalTabs: { layout: null, customGroups: null },
@@ -222,7 +198,6 @@ export function normalizeUiLayout(value) {
       collapsedSectionIds: softField(() => nullable(sidePanel?.collapsedSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.collapsedSectionIds"))),
       hiddenSectionIds: softField(() => nullable(sidePanel?.hiddenSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.hiddenSectionIds"))),
       collapsed: typeof sidePanel?.collapsed === "boolean" ? sidePanel.collapsed : null,
-      sectionHeights: softField(() => nullable(sidePanel?.sectionHeights ?? null, validateSectionHeights)),
     },
     composerActions: {
       order: softField(() => nullable(composerActions?.order ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.composerActions.order"))),

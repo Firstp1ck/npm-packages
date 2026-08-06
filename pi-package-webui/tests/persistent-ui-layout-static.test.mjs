@@ -24,8 +24,8 @@ assert.match(
 );
 assert.match(
   app,
-  /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed", "sectionHeights"\];/,
-  "Control Deck height preferences should use an isolated durable sidePanel subfield",
+  /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"\];/,
+  "Control Deck durable layout should contain only order, visibility, and collapse state",
 );
 for (const [constant, value] of [
   ["UI_LAYOUT_ID_MAX_LENGTH", "256"],
@@ -198,15 +198,10 @@ assert.match(
   /function restoreSidePanelState\(\)[\s\S]*setSidePanelCollapsed\(stored \?\? false, \{ persist: false \}\)/,
   "passive Control Deck restoration must not echo stale cache back to the server",
 );
-assert.match(
+assert.doesNotMatch(
   app,
-  /function persistSidePanelSectionHeight\([^)]*\)[\s\S]*localStorage\.setItem\(SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY[\s\S]*markDurableUiLayoutDirty\("sidePanel", "sectionHeights"\)/,
-  "a section height should update its independent cache before dirtying only the sectionHeights subfield",
-);
-assert.match(
-  app,
-  /function collectDurableSidePanelLayout\(\)[\s\S]*sectionHeights: readStoredSidePanelSectionHeights\(\)/,
-  "the independent section-height cache should be collected into durable sidePanel layout",
+  /initializeSidePanelSectionResizing|persistSidePanelSectionHeight|beginSidePanelSectionResize|sidePanelSectionResizeState|data-side-panel-section-resize/,
+  "Control Deck section-height adjustment and persistence should be absent",
 );
 
 // --- Composer order and grid stay one atomic logical update ----------------
@@ -246,11 +241,6 @@ assert.match(
 );
 assert.match(
   app,
-  /window\.addEventListener\("storage"[\s\S]*event\.key === SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY && !sidePanelSectionResizeState\) restoreSidePanelSectionHeights\(\)/,
-  "another tab's Control Deck section heights should be adopted locally",
-);
-assert.match(
-  app,
   /window\.addEventListener\("storage"[\s\S]*event\.key === FILE_VIEWER_WIDTH_STORAGE_KEY\) restoreFileViewerWidthPreference\(\)/,
   "another tab's file-viewer width should be adopted locally",
 );
@@ -281,8 +271,8 @@ assert.match(
 
 // --- Coherent browser asset revisions --------------------------------------
 
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v75"/, "changed browser assets should advance the PWA cache identity");
-assert.match(html, /styles\.css\?v=99/, "the page should request the updated layout stylesheet revision");
-assert.match(html, /data-app-src="\/app\.js\?v=114"/, "the boot loader should request the updated app module revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v81"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=104/, "the page should request the updated layout stylesheet revision");
+assert.match(html, /data-app-src="\/app\.js\?v=120"/, "the boot loader should request the updated app module revision");
 
 console.log("persistent-ui-layout-static.test.mjs passed");

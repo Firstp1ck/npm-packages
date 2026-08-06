@@ -20,6 +20,12 @@
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import {
+  BUILTIN_SAMPLING_APIS,
+  filterSupportedSamplingParameters,
+  resolveSamplingParameterCapabilities,
+} from "../../lib/sampling-parameter-capabilities.mjs";
+import { validateSamplingParameterObject } from "../../public/sampling-parameter-controls.mjs";
 
 const sessionIndex = process.argv.indexOf("--session");
 const sessionFile = sessionIndex !== -1
@@ -42,6 +48,38 @@ const fakeSkills = [
 ];
 let enabledToolNames = new Set(fakeTools.map((tool) => tool.name));
 let enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name));
+let fakeSessionSamplingParams = {};
+const fakeSamplingModel = {
+  provider: "fake",
+  id: "fake-model",
+  name: "Fake Model",
+  api: "openai-completions",
+  samplingParams: { temperature: 0.7 },
+};
+
+function fakeSamplingState() {
+  const parameters = resolveSamplingParameterCapabilities(fakeSamplingModel);
+  return {
+    session: { ...fakeSessionSamplingParams },
+    defaults: { ...fakeSamplingModel.samplingParams },
+    effective: {
+      ...filterSupportedSamplingParameters(fakeSamplingModel.samplingParams, parameters),
+      ...filterSupportedSamplingParameters(fakeSessionSamplingParams, parameters),
+    },
+    support: {
+      supported: Object.values(parameters).some((capability) => capability.supported),
+      api: fakeSamplingModel.api,
+      model: {
+        provider: fakeSamplingModel.provider,
+        id: fakeSamplingModel.id,
+        name: fakeSamplingModel.name,
+      },
+      parameters,
+      compatibleApis: [...BUILTIN_SAMPLING_APIS],
+      message: "Session sampling parameters apply to subsequent provider requests.",
+    },
+  };
+}
 
 const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
 // The continuity harness opts into this behavior explicitly so existing fixture
@@ -609,6 +647,34 @@ function handleWebuiHelperPrompt(command, base) {
       respondHelper({ requestId, ok: true, data: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) } });
       return true;
     }
+    case "sampling-state":
+      respondHelper({ requestId, ok: true, data: fakeSamplingState() });
+      return true;
+    case "sampling-set": {
+      const samplingParams = request.payload?.samplingParams;
+      const plain = samplingParams && typeof samplingParams === "object" && !Array.isArray(samplingParams);
+      if (!plain || Object.keys(samplingParams).length > 128 || Buffer.byteLength(JSON.stringify(samplingParams), "utf8") > 16 * 1024) {
+        respondHelper({ requestId, ok: false, error: "Sampling parameters must be a bounded JSON object" });
+        return true;
+      }
+      const normalized = JSON.parse(JSON.stringify(samplingParams));
+      const validation = validateSamplingParameterObject(normalized);
+      if (!validation.valid) {
+        respondHelper({
+          requestId,
+          ok: false,
+          error: `Invalid sampling parameters: ${Object.values(validation.errors).join(" ")}`,
+        });
+        return true;
+      }
+      fakeSessionSamplingParams = normalized;
+      respondHelper({ requestId, ok: true, data: fakeSamplingState() });
+      return true;
+    }
+    case "sampling-reset":
+      fakeSessionSamplingParams = {};
+      respondHelper({ requestId, ok: true, data: fakeSamplingState() });
+      return true;
     case "queue-mutate":
       respondHelper({ requestId, ok: true, data: mutateRuntimeQueue(request.payload) });
       return true;

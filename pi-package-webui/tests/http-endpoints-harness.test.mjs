@@ -651,6 +651,32 @@ try {
   const summaryTabs = await request("127.0.0.1", "/api/tabs");
   const summaryTabId = summaryTabs.body?.data?.tabs?.[0]?.id;
   assert.ok(summaryTabId, "session-summary endpoint checks require the startup tab");
+
+  const samplingPath = `/api/tabs/${encodeURIComponent(summaryTabId)}/sampling-parameters`;
+  const initialSampling = await request("127.0.0.1", samplingPath);
+  assert.equal(initialSampling.status, 200, initialSampling.body?.error);
+  assert.equal(initialSampling.headers.get("cache-control"), "private, no-store");
+  assert.equal(initialSampling.body?.data?.support?.supported, true);
+  assert.equal(initialSampling.body?.data?.support?.api, "openai-completions");
+  assert.deepEqual(initialSampling.body?.data?.support?.model, { provider: "fake", id: "fake-model", name: "Fake Model" });
+  assert.equal(initialSampling.body?.data?.support?.parameters?.temperature?.supported, true);
+  assert.equal(initialSampling.body?.data?.support?.parameters?.top_k?.supported, false);
+  assert.equal(initialSampling.body?.data?.support?.parameters?.min_p?.source, "unsupported");
+  assert.ok(Array.isArray(initialSampling.body?.data?.support?.compatibleApis), "legacy support diagnostics must remain available");
+
+  const savedSampling = await request("127.0.0.1", samplingPath, {
+    method: "PUT",
+    body: { temperature: 0.3, top_k: 32, vendor_mode: "strict" },
+  });
+  assert.equal(savedSampling.status, 200, savedSampling.body?.error);
+  assert.deepEqual(savedSampling.body?.data?.session, { temperature: 0.3, top_k: 32, vendor_mode: "strict" });
+  assert.deepEqual(savedSampling.body?.data?.effective, { temperature: 0.3 }, "unsupported stored sampling values must remain inert");
+  assert.equal(savedSampling.body?.data?.support?.parameters?.top_k?.supported, false);
+  const resetSampling = await request("127.0.0.1", samplingPath, { method: "PUT", body: {} });
+  assert.equal(resetSampling.status, 200, resetSampling.body?.error);
+  assert.deepEqual(resetSampling.body?.data?.session, {});
+  assert.deepEqual(resetSampling.body?.data?.effective, { temperature: 0.7 });
+
   const summaryPath = `/api/session-summary/preferences?tab=${encodeURIComponent(summaryTabId)}`;
   const initialSummaryPreferences = await request("127.0.0.1", summaryPath);
   assert.equal(initialSummaryPreferences.status, 200, initialSummaryPreferences.body?.error);

@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=99" />
+    <link rel="stylesheet" href="/styles.css?v=104" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -452,54 +452,104 @@
                   <button id="optionsCommandPaletteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem">
                     <span>Command Palette</span>
                   </button>
-                  <button id="optionsConversationModeButton" class="composer-publish-menu-item composer-options-menu-item composer-conversation-menu-item" type="button" role="menuitem" data-command="/talk" hidden>
-                    <span>Start Conversation</span>
-                  </button>
-                  <button id="optionsTreeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/tree">
-                    <span>Tree</span>
-                  </button>
-                  <button id="optionsStatsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/stats-webui" hidden>
-                    <span>Stats Dashboard</span>
-                  </button>
-                  <button id="optionsFooterVisibilityButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" hidden>
-                    <span>Git-footer Visibility</span>
-                  </button>
-                  <button id="optionsForkButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/fork">
-                    <span>Fork</span>
-                  </button>
-                  <button id="optionsExportButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/export">
-                    <span>Export</span>
-                  </button>
                   <button id="optionsSettingsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/settings">
                     <span>Settings</span>
                   </button>
-                  <button id="optionsSummarySetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/summary-setup" hidden>
-                    <span>Session Summary Setup</span>
+                  <button id="optionsConversationModeButton" class="composer-publish-menu-item composer-options-menu-item composer-conversation-menu-item" type="button" role="menuitem" data-command="/talk" hidden>
+                    <span>Start Natural Conversation</span>
                   </button>
-                  <button id="optionsWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/workflow-setup" hidden>
-                    <span>Workflow Permission Setup</span>
-                  </button>
-                  <button id="optionsSafetyGuardSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/safety-guard-setup" hidden>
-                    <span>Safety Guard Setup</span>
-                  </button>
-                  <button id="optionsGitWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/git-workflow-setup">
-                    <span>Guided Git Setup</span>
-                  </button>
-                  <button id="optionsCloneButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/clone">
-                    <span>Clone Session</span>
-                  </button>
-                  <button id="optionsNameButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/name">
-                    <span>Name Session</span>
-                  </button>
-                  <button id="optionsRemoteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/remote" hidden>
-                    <span>Open Remote</span>
-                  </button>
-                  <button id="optionsReloadButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/reload">
-                    <span>Reload Pi</span>
-                  </button>
-                  <button id="optionsResumeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/resume">
-                    <span>Resume Session</span>
-                  </button>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="session">
+                    <button id="optionsSessionSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsSessionSubmenu" data-options-submenu-trigger>
+                      <span>Session</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsSessionSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsSessionSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsResumeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/resume">
+                        <span>Resume Session</span>
+                      </button>
+                      <button id="optionsNameButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/name">
+                        <span>Name Session</span>
+                      </button>
+                      <button id="optionsCloneButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/clone">
+                        <span>Clone Session</span>
+                      </button>
+                      <button id="optionsForkButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/fork">
+                        <span>Fork</span>
+                      </button>
+                      <button id="optionsTreeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/tree">
+                        <span>Tree</span>
+                      </button>
+                      <button id="optionsExportButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/export">
+                        <span>Export</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="feature-setup">
+                    <button id="optionsFeatureSetupSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsFeatureSetupSubmenu" data-options-submenu-trigger>
+                      <span>Feature Setup</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsFeatureSetupSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsFeatureSetupSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsSummarySetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/summary-setup" hidden>
+                        <span>Session Summary Setup</span>
+                      </button>
+                      <button id="optionsGitWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/git-workflow-setup">
+                        <span>Guided Git Setup</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="safety-permissions">
+                    <button id="optionsSafetyPermissionsSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsSafetyPermissionsSubmenu" data-options-submenu-trigger>
+                      <span>Safety &amp; Permissions</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsSafetyPermissionsSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsSafetyPermissionsSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/workflow-setup" hidden>
+                        <span>Workflow Permission Setup</span>
+                      </button>
+                      <button id="optionsSafetyGuardSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/safety-guard-setup" hidden>
+                        <span>Safety Guard Setup</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="view-diagnostics">
+                    <button id="optionsViewDiagnosticsSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsViewDiagnosticsSubmenu" data-options-submenu-trigger>
+                      <span>View &amp; Diagnostics</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsViewDiagnosticsSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsViewDiagnosticsSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsStatsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/stats-webui" hidden>
+                        <span>Stats Dashboard</span>
+                      </button>
+                      <button id="optionsFooterVisibilityButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" hidden>
+                        <span>Git-footer Visibility</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="remote-system">
+                    <button id="optionsRemoteSystemSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsRemoteSystemSubmenu" data-options-submenu-trigger>
+                      <span>Remote &amp; System</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsRemoteSystemSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsRemoteSystemSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsRemoteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/remote" hidden>
+                        <span>Open Remote</span>
+                      </button>
+                      <button id="optionsReloadButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/reload">
+                        <span>Reload Pi</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" data-composer-action-id="app-runner" data-composer-action-span="2" hidden>
@@ -953,6 +1003,28 @@
             </h2>
             <div id="sidePanelSectionSession" class="side-panel-section-content" hidden>
               <div id="stateDetails" class="session-details" aria-label="Current session details"></div>
+            </div>
+          </section>
+          <section class="side-panel-section collapsed" data-side-panel-section="sampling">
+            <h2>
+              <button id="sidePanelSectionToggleSampling" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionSampling" aria-label="Expand Sampling parameters section" title="Expand Sampling parameters section" data-side-panel-section-toggle="sampling">
+                <span class="side-panel-section-label">Sampling parameters</span>
+                <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+              </button>
+            </h2>
+            <div id="sidePanelSectionSampling" class="side-panel-section-content" hidden>
+              <div class="sampling-parameters" aria-label="Session sampling parameters">
+                <p class="sampling-parameters-intro">Enable only the values this Pi session should override. Unchecked controls inherit model defaults; server-extension support varies by provider and model.</p>
+                <p id="samplingParametersSupport" class="sampling-parameters-support muted" role="status" aria-live="polite">Loading sampling support…</p>
+                <div id="samplingParametersControls" class="sampling-parameter-groups" aria-describedby="samplingParametersStatus"></div>
+                <p id="samplingParametersPreserved" class="sampling-parameters-preserved muted">No additional parameters are preserved outside this editor.</p>
+                <div class="sampling-parameters-actions">
+                  <button id="applySamplingParametersButton" class="primary" type="button" aria-describedby="samplingParametersStatus" disabled>Apply</button>
+                  <button id="resetSamplingParametersButton" type="button" aria-describedby="samplingParametersStatus" disabled>Reset</button>
+                  <button id="reloadSamplingParametersButton" type="button" aria-label="Reload session sampling parameters">Reload</button>
+                </div>
+                <p id="samplingParametersStatus" class="sampling-parameters-status muted" role="status" aria-live="polite">Loading session sampling parameters…</p>
+              </div>
             </div>
           </section>
           <section class="side-panel-section collapsed" data-side-panel-section="subagents">
@@ -1640,7 +1712,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=114">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=120">
       (() => {
         "use strict";
 
