@@ -28,8 +28,18 @@ assert.match(
 );
 assert.match(
   server,
-  /async function resolveComponentUpdateTasks\(target\)[\s\S]*target === "pi"[\s\S]*resolvePiUpdateCommands\(\{ all: false \}\)[\s\S]*target === "webui"[\s\S]*currentWebuiComponentUpdateTask/,
-  "component resolution should keep Pi-only and WebUI-only paths separate",
+  /async function currentPiRuntimeVersion\(\)[\s\S]*resolvePiCommand\(\["--version"\]\)[\s\S]*parsePackageVersion/,
+  "Pi status should query the runtime used by Web UI tabs instead of trusting startup package metadata",
+);
+assert.match(
+  server,
+  /async function currentBundledPiComponentUpdateTask\(npmRuntime = \{\}\)[\s\S]*resolvedPiCliScript\(\)[\s\S]*path\.join\(packageRoot, "node_modules"\)[\s\S]*preserveManifest: true/,
+  "a nested Web UI Pi runtime should be updated in its owning package root without rewriting the published manifest",
+);
+assert.match(
+  server,
+  /async function resolveComponentUpdateTasks\(target\)[\s\S]*target === "pi"[\s\S]*currentBundledPiComponentUpdateTask\(\)[\s\S]*bundledTask \? \[bundledTask\] : resolvePiUpdateCommands\(\{ all: false \}\)[\s\S]*target === "webui"[\s\S]*currentWebuiComponentUpdateTask/,
+  "component resolution should update the actual bundled Pi runtime while keeping Pi-only and WebUI-only paths separate",
 );
 assert.match(
   server,
@@ -57,6 +67,11 @@ assert.doesNotMatch(
   targetedWebuiUpdater,
   /UPDATE_PACKAGE_NAMES|packagesPresentInInstallPrefix|optionalFeature|projectPackageRoot/,
   "the targeted Web UI updater must not broaden into package-root or optional package updates",
+);
+assert.match(
+  server,
+  /expectedPiVersion = target === "pi"[\s\S]*updateStatusCache\?\.pi\?\.latestVersion[\s\S]*checkLatestPiReleaseStatus\(\)[\s\S]*for \(const task of updateTasks\) await runUpdateTask\(task\);[\s\S]*currentPiRuntimeVersion\(\)[\s\S]*isNewerPackageVersion\(expectedPiVersion, installedVersion\)[\s\S]*Web UI runtime is still[\s\S]*componentUpdateState\.succeed/,
+  "Pi component updates must retain the advertised target and verify the runtime version before publishing success",
 );
 assert.match(
   server,

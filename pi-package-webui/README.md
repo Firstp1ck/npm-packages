@@ -85,7 +85,7 @@ The **Pi** and **Web UI** version tags in the Control Deck show component-specif
 
 Tag actions run one target in the background and do not replace the existing **Update & restart** controls:
 
-- **Update Pi** uses the selected Pi installation's `pi update --self` path. It does not restart the Web UI or interrupt managed Pi tabs. New or explicitly reloaded Pi sessions use the updated Pi; already-running tabs keep their loaded runtime.
+- **Update Pi** updates the Pi runtime used by Web UI tabs. For standalone Web UI installs with a nested Pi dependency, it updates that package-local runtime directly; explicit or independently managed Pi installations retain the selected `pi update --self` path. Success is shown only after the runtime version is re-read and is no longer behind the advertised release. The action does not restart the Web UI or interrupt managed Pi tabs; new or explicitly reloaded Pi sessions use the updated Pi, while already-running tabs keep their loaded runtime.
 - **Update Web UI** updates only `@firstpick/pi-package-webui` in the installation that started the server. It does not restart the server automatically; restart the Web UI after success to activate the new version.
 - Only one privileged component or legacy update runs at a time. Buttons remain disabled while work is running, and a bounded failure remains visible with a retry action.
 

@@ -7460,6 +7460,7 @@ async function refreshUpdateStatus({ force = false, notify = true } = {}) {
   const path = force ? "/api/update-status?refresh=1" : "/api/update-status";
   const response = await api(path, { scoped: false });
   latestUpdateStatus = response.data || null;
+  if (latestUpdateStatus?.pi?.currentVersion) setPiVersion(latestUpdateStatus.pi.currentVersion);
   if (notify) renderUpdateNotification(latestUpdateStatus);
   renderComponentUpdateIndicators();
   renderComponentUpdateDialogs();

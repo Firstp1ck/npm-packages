@@ -720,11 +720,11 @@ function piRelease(version = piPackageJson.version) {
 let piReleaseNotesCache = null;
 
 async function piReleaseNotes() {
-  const currentVersion = String(piPackageJson.version || "").trim().replace(/^v/i, "");
   const cachedUpdateStatus = updateStatusCache && Date.now() - updateStatusCacheAt < UPDATE_STATUS_CACHE_MS
     ? updateStatusCache.pi
     : null;
   const piStatus = cachedUpdateStatus || await checkLatestPiReleaseStatus();
+  const currentVersion = String(piStatus?.currentVersion || piPackageJson.version || "").trim().replace(/^v/i, "");
   const latestVersion = String(piStatus?.latestVersion || "").trim().replace(/^v/i, "");
   const release = piRelease(piStatus?.updateAvailable && parsePackageVersion(latestVersion) ? latestVersion : currentVersion);
   if (piReleaseNotesCache?.tagName === release.tagName) return piReleaseNotesCache;
@@ -11382,8 +11382,25 @@ function basePackageUpdateStatus(packageName, currentVersion) {
   };
 }
 
+async function currentPiRuntimeVersion() {
+  const fallback = String(piPackageJson.version || "").trim().replace(/^v/i, "");
+  try {
+    const command = await resolvePiCommand(["--version"]);
+    const result = await runCommand(command.command, command.args || [], { timeoutMs: 3000, maxOutputLength: 4000 });
+    if (result.exitCode !== 0 || result.timedOut || result.error) return fallback;
+    const version = stripAnsi(`${result.stdout}\n${result.stderr}`)
+      .split(/\s+/)
+      .map((value) => value.trim().replace(/^v/i, ""))
+      .find((value) => parsePackageVersion(value));
+    return version || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function checkLatestPiReleaseStatus() {
-  const status = basePackageUpdateStatus(PI_CODING_AGENT_PACKAGE, piPackageJson.version);
+  const currentVersion = await currentPiRuntimeVersion();
+  const status = basePackageUpdateStatus(PI_CODING_AGENT_PACKAGE, currentVersion);
   const skippedReason = updateChecksSkippedReason();
   if (skippedReason) {
     status.skipped = true;
@@ -11393,7 +11410,7 @@ async function checkLatestPiReleaseStatus() {
   try {
     const data = await fetchJsonWithTimeout(PI_LATEST_VERSION_URL, {
       headers: {
-        "User-Agent": `pi-webui/${packageJson.version} pi/${piPackageJson.version || "unknown"}`,
+        "User-Agent": `pi-webui/${packageJson.version} pi/${currentVersion || "unknown"}`,
         accept: "application/json",
       },
     });
@@ -11607,9 +11624,10 @@ function resolvedNpmCommand(args, runtime = {}) {
   };
 }
 
-function npmPrefixUpdateTask(label, installRoot, packageNames, npmRuntime = {}) {
+function npmPrefixUpdateTask(label, installRoot, packageNames, npmRuntime = {}, { preserveManifest = false } = {}) {
   if (!packageNames.length) return null;
-  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packageNames)], npmRuntime);
+  const preserveArgs = preserveManifest ? ["--no-save", "--package-lock=false"] : [];
+  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...preserveArgs, ...packageInstallSpecs(packageNames)], npmRuntime);
   return {
     label,
     command: npmCommand.command,
@@ -11716,6 +11734,32 @@ async function bunGlobalPackageRootUpdateTask() {
   };
 }
 
+function updatePathInside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+async function currentBundledPiComponentUpdateTask(npmRuntime = {}) {
+  if (options.piBinExplicit || webuiDevServer) return null;
+  const bundledCli = await resolvedPiCliScript();
+  if (!bundledCli) return null;
+  const bundledPackageRoot = path.resolve(path.dirname(bundledCli), "..");
+  if (!updatePathInside(path.join(packageRoot, "node_modules"), bundledPackageRoot)) return null;
+
+  const normalizedPackageRoot = path.resolve(packageRoot);
+  for (const nodeModulesRoot of await bunGlobalNodeModulesRoots()) {
+    if (path.resolve(packageNodeModulesPath(nodeModulesRoot, WEBUI_PACKAGE)) !== normalizedPackageRoot) continue;
+    return {
+      label: "bundled Web UI Pi runtime",
+      command: "bun",
+      args: ["add", "--no-save", "--ignore-scripts", "--minimum-release-age=0", `${PI_CODING_AGENT_PACKAGE}@latest`],
+      cwd: packageRoot,
+    };
+  }
+
+  return npmPrefixUpdateTask("bundled Web UI Pi runtime", packageRoot, [PI_CODING_AGENT_PACKAGE], npmRuntime, { preserveManifest: true });
+}
+
 async function currentWebuiComponentUpdateTask(npmRuntime = {}) {
   const unavailableReason = webuiComponentUpdateUnavailableReason();
   if (unavailableReason) throw makeHttpError(409, unavailableReason);
@@ -11736,7 +11780,10 @@ async function currentWebuiComponentUpdateTask(npmRuntime = {}) {
 }
 
 async function resolveComponentUpdateTasks(target) {
-  if (target === "pi") return resolvePiUpdateCommands({ all: false });
+  if (target === "pi") {
+    const bundledTask = await currentBundledPiComponentUpdateTask();
+    return bundledTask ? [bundledTask] : resolvePiUpdateCommands({ all: false });
+  }
   if (target === "webui") {
     let npmRuntime = {};
     try {
@@ -11840,8 +11887,11 @@ function combinedUpdateOutput(results, field) {
     .join("\n\n");
 }
 
-function componentUpdateSuccessMessage(target) {
-  if (target === "pi") return "Pi update completed. New or reloaded Pi sessions use the update.";
+function componentUpdateSuccessMessage(target, installedVersion = "") {
+  if (target === "pi") {
+    const version = String(installedVersion || "").trim().replace(/^v/i, "");
+    return `Pi${version ? ` v${version}` : ""} update completed. New or reloaded Pi sessions use the update.`;
+  }
   return "Web UI update completed. Restart the Web UI to use the update.";
 }
 
@@ -11856,16 +11906,27 @@ async function persistOptionalFeaturePendingUpgrade() {
 
 async function runComponentUpdate(target) {
   try {
+    const expectedPiVersion = target === "pi"
+      ? String(updateStatusCache?.pi?.latestVersion || (await checkLatestPiReleaseStatus()).latestVersion || "").trim().replace(/^v/i, "")
+      : "";
     if (target === "webui") await persistOptionalFeaturePendingUpgrade();
     const updateTasks = (await resolveComponentUpdateTasks(target)).filter(Boolean);
     if (!updateTasks.length) throw new Error(`No ${target} update command could be resolved.`);
     const command = updateTasks.map(updateTaskDisplay).join(" && ");
     recordEvent({ type: "webui_component_update_started", target, command });
     for (const task of updateTasks) await runUpdateTask(task);
+    let installedVersion = "";
+    if (target === "pi") {
+      installedVersion = await currentPiRuntimeVersion();
+      if (expectedPiVersion && isNewerPackageVersion(expectedPiVersion, installedVersion)) {
+        throw new Error(`Pi update command completed, but the Web UI runtime is still v${installedVersion || "unknown"}; expected v${expectedPiVersion}.`);
+      }
+      if (installedVersion) piPackageJson = { ...piPackageJson, version: installedVersion };
+    }
     updateStatusCache = null;
     updateStatusCacheAt = 0;
-    componentUpdateState.succeed(target, componentUpdateSuccessMessage(target));
-    recordEvent({ type: "webui_component_update_completed", target, command });
+    componentUpdateState.succeed(target, componentUpdateSuccessMessage(target, installedVersion));
+    recordEvent({ type: "webui_component_update_completed", target, command, ...(installedVersion ? { installedVersion } : {}) });
   } catch (error) {
     updateStatusCache = null;
     updateStatusCacheAt = 0;
