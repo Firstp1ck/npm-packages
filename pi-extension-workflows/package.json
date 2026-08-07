@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-workflows",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Minimal modular workflow runtime extension for Pi.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-workflows#readme",

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-dolt-database-version-control",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Use automatically when evaluating or applying Dolt, the Git-like version-controlled SQL database, for database branching, merging, diffs, audit history, rollback, or versioned MySQL replica workflows.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-dolt-database-version-control#readme",

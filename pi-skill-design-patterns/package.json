@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-design-patterns",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Agents should invoke this skill when choosing patterns, designing traits/interfaces/components, deciding abstraction boundaries, evaluating dependency injection/callbacks, or comparing implementation approaches in Rust, TypeScript/React, or Django/Python.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-design-patterns#readme",

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-package-questionnaire",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native TUI and RPC questionnaires for the Pi coding agent, with resumable clarification.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-questionnaire#readme",

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-deep-research",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Agents should invoke this skill for high-stakes or complex research needing multi-source evidence, scientific/technical fact-checking, decision traces, or rigorous verification. Runs deterministic two-phase research with schema/policy validation.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-deep-research#readme",

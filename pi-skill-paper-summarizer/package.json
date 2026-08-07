@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-paper-summarizer",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Agents should invoke this skill for academic or technical papers, arXiv/PubMed/IEEE/ACM links, PDFs, methodology review, limitations, practical implications, or extracting findings for engineering decisions.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-paper-summarizer#readme",

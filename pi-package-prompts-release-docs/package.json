@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-prompts-release-docs",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Reusable Pi prompt templates for release notes, announcements, README updates, and wiki updates.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-prompts-release-docs#readme",
