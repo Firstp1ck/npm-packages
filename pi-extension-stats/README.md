@@ -1,74 +1,47 @@
-# pi-extension-stats
+# Stats for Pi
 
-Token and cost analytics for Pi session history.
+See where your Pi tokens and model costs are going over time.
 
 ![Token stats dashboard](https://unpkg.com/@firstpick/pi-extension-stats/images/stats_v0.1.2.png)
 
-## What it does
+## What you can do
 
-- Parses local Pi session `.jsonl` files for the current workspace.
-- Aggregates usage by UTC day.
-- Displays compact daily token bars and cost bars with totals.
-- Shows input/output/cache breakdown, estimated initial prompt input (`PI: X tok`) with source split-up, cached-input token share, cost burn rate, and top model usage.
-- Highlights highest-cost day, projected 30-day cost, scoped session averages, recent-vs-prior spend, most expensive sessions, and model/session cost concentration.
+- Shows daily token and cost history.
+- Compares model usage and expensive sessions.
+- Explains how much of the initial prompt comes from Pi, tools, and context.
+- Shows cache use, trends, and projected cost.
 
 ## Install
+
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-stats
 ```
 
-## Configuration
+Restart Pi if the package does not appear in your current session.
 
-No required configuration.
+## How to use it
 
-## Commands
-
-- `/stats [days|all]` — show token usage dashboard (default: last 14 days).
-- `/stats tokens` — show current context token breakdown by source/type.
-- `/stats-pi` — show export-backed estimated initial prompt input token breakdown. It creates a temporary Pi HTML export, decodes its embedded session data, then counts Pi's system prompt text, active provider-level tool schemas, framing overhead, and optional historical calibration (falling back to live context data if export is unavailable).
-- `/stats-pi detailed` — add a concise detail view of the exported initial prompt snapshot: active tool schemas, available-tool prompt entries, skills, context files, metadata, and estimate components.
-- `/calibrate` — start an isolated calibration session with a fixed probe prompt, then update `/stats-pi` and the footer `PI: X tok` estimate from the first assistant response usage. `/calibrate current` reuses the current branch if it already has a suitable first-turn usage sample.
-- `/stats-last [days|all]` — show non-zero daily usage graph.
-- `/stats-most-expense [days|all]` — show most expensive sessions.
-- `/stats-model-compare [days|all]` — show model token/cost comparison.
-- `/stats-cost-trend [days|all]` — show cost trend and projections.
-- `/stats-cache [days|all]` — show cached-input share and token mix. Cached-input share is `cacheRead / (input + cacheRead + cacheWrite)`; it is not a request-level cache hit rate or a monetary savings estimate.
-
-## Prompt input estimate
-
-`/stats-pi` and the `PI: ~X tok` value in `/stats` estimate the full initial model input, not just raw prompt text. `/stats-pi` prefers Pi's own HTML export data for the exact exported system prompt and active tool definitions; it falls back to live context data when a temporary export cannot be produced, so it can still be run before any LLM prompt in a fresh session.
-
-The token calculation is intentionally provider-agnostic:
+Start with:
 
 ```text
-promptTextTokens = weighted text estimate of the system prompt (from exported session data when available)
-toolSchemaTokens = weighted text estimate of active tool definitions JSON (from exported session data when available)
-framingTokens = conservative message/request framing allowance
-baseEstimate = promptTextTokens + toolSchemaTokens + framingTokens
-estimatedInitialInput = baseEstimate × historicalCalibrationMultiplier
+/stats
 ```
 
-The historical multiplier is learned opportunistically from future sessions by comparing the pre-call estimate with the provider-reported first assistant `usage.input + usage.cacheRead + usage.cacheWrite` after subtracting the first user prompt estimate. `/calibrate` performs the same calculation on demand by opening an isolated session and sending a fixed probe prompt; `/calibrate current` can reuse the current branch once its first assistant response has usage data. Without samples, `/stats-pi` reports an uncalibrated estimate and a conservative range. Provider-reported usage in Pi session JSONL remains the authoritative post-call value.
+This shows the most recent 14 days. Use `/stats 30` for a longer period or `/stats all` for everything available.
 
-The version-1 Web UI payload also includes an optional `promptContext` object with independently consumable `initialPrompt`, `snapshot`, and `currentContext` sections. Initial-prompt components are calibrated to sum exactly to the reported estimate. Current-context provider usage remains separate from heuristic character-derived source composition. Structured inventories are deterministic and capped, omit tool parameter schemas and skill locations, and reduce context-file paths to workspace-relative or basename-only display values. Existing `promptEstimate`, `lines.*`, and command text remain available for compatibility.
+Focused views:
 
-## Tools
+- `/stats tokens` — show what is using the current conversation space.
+- `/stats-pi` — estimate how much space Pi’s starting instructions and tools use.
+- `/stats-model-compare` — compare model usage and cost.
+- `/stats-most-expense` — find the most expensive sessions.
+- `/stats-cost-trend` — view recent spending direction and projections.
+- `/stats-cache` — show Cached-input share (cache-read tokens as a share of prompt-side input and cache tokens), cache reads and writes, and the token mix.
 
-None.
+Estimation and calibration details are kept in the technical reference.
 
-## Example view
+## Technical details
 
-```text
-/stats 7
-Token usage — last 7 days
-
-May 06  in 18k  out 4k   $0.11  ████
-May 07  in 42k  out 9k   $0.29  █████████
-May 08  in 12k  out 2k   $0.06  ██
-
-Total: 72k input, 15k output, $0.46
-Cached-input share: 38%
-```
-
-Use it to understand which days, sessions, and models are driving token volume and cost.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-stats/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

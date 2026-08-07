@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-bug-reporter
+# Bug Reporter
 
-A Pi skill for tasks involving defects, regressions, failed tests, unexpected behavior, or spec mismatches are found. Produces structured reproducible bug reports with severity, evidence, environment, and actionable next steps.
+Turn a confusing problem into a clear report that someone can reproduce and fix.
 
-## What it does
+## Helpful when
 
-- Adds the `bug-reporter` skill to Pi's skill library.
-- Guides agents to invoke the skill when defects, regressions, failed tests, unexpected behavior, or spec mismatches are found. Produces structured reproducible bug reports with severity, evidence, environment, and actionable next steps.
-- Bundles `skills/bug-reporter/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- An app behaves differently from what you expected.
+- A test fails or a feature stopped working.
+- You need to report a problem to a maintainer or teammate.
+
+## What to share with Pi
+
+- What you did and what you expected
+- What actually happened
+- Screenshots, error messages, logs, or a small example when available
+
+## Try asking
+
+> Turn this problem into a useful bug report. Include simple reproduction steps, expected and actual behavior, evidence, and likely cause.
+
+## What you’ll get
+
+- A clear title and severity
+- Repeatable steps and supporting evidence
+- Environment, likely-cause analysis, and any known workaround
+
+## Keep in mind
+
+The report will separate confirmed facts from guesses. If the problem cannot be reproduced, that uncertainty will remain visible.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving defects, regressions, failed tests, unexpected be
 pi install npm:@firstpick/pi-skill-bug-reporter
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `bug-reporter`.
-Agent: Invokes the `bug-reporter` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-bug-reporter/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

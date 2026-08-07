@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-performance-optimizer
+# Performance Optimizer
 
-A Pi skill for slow code, high CPU/memory, latency, large data processing, algorithmic complexity, profiling plans, benchmarks, or optimization requests. Profiles first and weighs trade-offs before changing code.
+Find what is actually making software slow or resource-heavy before changing it.
 
-## What it does
+## Helpful when
 
-- Adds the `performance-optimizer` skill to Pi's skill library.
-- Guides agents to invoke the skill for slow code, high CPU/memory, latency, large data processing, algorithmic complexity, profiling plans, benchmarks, or optimization requests. Profiles first and weighs trade-offs before changing code.
-- Bundles `skills/performance-optimizer/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- An app, page, or task feels slow.
+- CPU, memory, or cost is unexpectedly high.
+- You need to compare possible improvements.
+
+## What to share with Pi
+
+- What feels slow and how it is measured
+- The relevant code or system
+- Typical workload and acceptable performance
+
+## Try asking
+
+> Find why this endpoint is slow under normal load. Start with measurements, identify the main cause, and compare the safest fixes.
+
+## What you’ll get
+
+- A measurement and profiling plan
+- The most likely bottlenecks with evidence
+- Fix options and expected trade-offs
+
+## Keep in mind
+
+Optimization without measurement often makes code harder without making it faster. Results should be checked with a repeatable test.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for slow code, high CPU/memory, latency, large data processing, algor
 pi install npm:@firstpick/pi-skill-performance-optimizer
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `performance-optimizer`.
-Agent: Invokes the `performance-optimizer` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-performance-optimizer/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

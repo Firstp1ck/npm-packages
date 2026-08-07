@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-deployment-automation
+# Deployment Automation
 
-A Pi skill for Docker Compose deployments, container updates, stack health checks, rollbacks, compose-file changes, image upgrades, failed deploys, or service restart planning. Provides safe deployment and rollback workflows.
+Plan safer application updates with clear checks, failure handling, and a way back.
 
-## What it does
+## Helpful when
 
-- Adds the `deployment-automation` skill to Pi's skill library.
-- Guides agents to invoke the skill for Docker Compose deployments, container updates, stack health checks, rollbacks, compose-file changes, image upgrades, failed deploys, or service restart planning. Provides safe deployment and rollback workflows.
-- Bundles `skills/deployment-automation/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You are updating services or containers.
+- A previous deployment failed or caused downtime.
+- You want a repeatable release and rollback process.
+
+## What to share with Pi
+
+- The deployment files or current setup
+- What is changing
+- Health checks, downtime limits, and rollback needs
+
+## Try asking
+
+> Review this deployment update. Give me a safe step-by-step plan with health checks, stop conditions, and rollback instructions.
+
+## What you’ll get
+
+- A deployment plan in the right order
+- Checks before and after each risky step
+- A clear rollback path
+
+## Keep in mind
+
+Deployments can affect real users and data. Pi should ask before making external or destructive changes.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for Docker Compose deployments, container updates, stack health check
 pi install npm:@firstpick/pi-skill-deployment-automation
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `deployment-automation`.
-Agent: Invokes the `deployment-automation` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-deployment-automation/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

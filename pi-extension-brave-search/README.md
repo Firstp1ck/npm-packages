@@ -1,60 +1,36 @@
-# pi-extension-brave-search
+# Brave Search for Pi
 
-Brave Search tool integration for Pi.
+Lets Pi search the current web through the Brave Search API.
 
-## What it does
+## What you can do
 
-- Adds the `brave_search` tool for live web search from Pi.
-- Returns formatted results plus structured metadata.
-- Supports Brave result filters, extra snippets, spellcheck, clean text output, and Goggles.
-- Deduplicates normalized URLs across returned result blocks.
-- Applies sane limits and request pacing to keep output stable, context-safe, and compatible with low-rate plans.
-- Resolves API key in this order:
-  1. `process.env.BRAVE_SEARCH_API_KEY`
-  2. `./.env` (current working directory)
-  3. `PI_CODING_AGENT_DIR/.env`
+- Lets Pi search for current information on the web.
+- Supports language, country, date, and safety filters.
+- Lets you choose how many results Pi returns by default.
+- Includes setup and status commands for the API connection.
 
 ## Install
+
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-brave-search
 ```
 
-## Configuration
+Restart Pi if the package does not appear in your current session.
 
-- `BRAVE_SEARCH_API_KEY` (required)
+## How to use it
 
-If no key is configured when Pi starts, the extension prompts you to enter one and choose where to save it:
-
-- current workspace: `./.env`
-- global Pi config: `$PI_CODING_AGENT_DIR/.env` or `~/.pi/agent/.env`
-
-## Commands
+Run `/brave-search-setup` to save your API key. Pi can then search automatically when current information is needed, or you can ask it explicitly to use Brave Search.
 
 - `/brave-search-status` — show whether Brave Search is configured and where key resolution succeeded.
 - `/brave-search-setup` — run the interactive setup prompt again when no key is configured.
 - `/brave-search-results` — show and adjust the default web result count saved as `BRAVE_SEARCH_RESULT_COUNT`.
 
-## Tools
+## Before you start
 
-- `brave_search`
-  - Inputs: `query`, optional `count`, `country`, `search_lang`, `freshness`, `safesearch`, `result_filter`, `extra_snippets`, `spellcheck`, `text_decorations`, `goggles`
-  - Output: formatted search results + metadata, including `responseTypes`, requested web result count, count warning, canonical URLs, result type, original index, duplicate count, and optional extra snippets
+You need a Brave Search API key. If none is configured, Pi opens a setup prompt and lets you save it for the current workspace or your Pi user configuration.
 
-Useful `result_filter` values include `web`, `news`, `videos`, `faq`, `discussions`, `infobox`, and `locations`. `count` applies to web results only in Brave's API. Brave Web Search supports `count` from 1 to 20 per request; the extension warns at 16+ and clamps invalid saved defaults into the supported range.
+## Technical details
 
-## Example view
-
-```text
-brave_search "Brave Search API documentation" (2 results)
- 1. Documentation - Brave Search API
- https://api-dashboard.search.brave.com/documentation
- Access billions of web pages with our core search API. Includes local results and rich content enhancements.
-
- 2. Brave Search API | Brave
- https://brave.com/search/api/
- Enterprise-grade Web search API accessing an index of 40+ billion pages.
- Age: 1 month ago
-```
-
-The query is shown directly in the tool header, so it is easy to see what Pi searched for before reading the results.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-brave-search/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

@@ -1,67 +1,35 @@
-# @firstpick/pi-themes-bundle
+# Theme bundle for Pi
 
-Firstpick's custom theme bundle for the Pi coding agent.
+Adds a collection of familiar color themes to Pi.
 
-## What it does
+## What you can do
 
-- Adds sixteen custom themes to Pi's theme discovery.
-- Packages themes through `pi.themes: ["./themes"]` for npm installation.
-- Includes dark and light terminal palettes based on Catppuccin, Dracula, Tokyo Night, Gruvbox, Nord, Rosé Pine, One Dark, Solarized, and Everforest, plus Matrix-inspired and dark crimson custom palettes.
-
-## Included themes
-
-- `catppuccin-latte`
-- `catppuccin-mocha`
-- `crimson-noir`
-- `dracula`
-- `everforest-dark`
-- `gruvbox-dark`
-- `gruvbox-light`
-- `matrix`
-- `nord`
-- `one-dark`
-- `rose-pine`
-- `rose-pine-dawn`
-- `solarized-dark`
-- `solarized-light`
-- `tokyo-night`
-- `tokyo-night-storm`
+- Adds several familiar light and dark color themes.
+- Works with Pi’s built-in theme selector.
+- Includes Catppuccin, Dracula, Tokyo Night, Nord, and more.
+- Requires no extra tools or configuration.
 
 ## Install
+
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-themes-bundle
 ```
 
-For local testing from this repository root:
+Restart Pi if the package does not appear in your current session.
 
-```bash
-pi install ./pi-package-themes-bundle
-```
+## How to use it
 
-## Configuration
+Install the bundle, restart Pi if needed, then run `/settings` and choose a theme. You can switch themes again at any time.
 
-No required configuration.
-
-Select a theme in `/settings` or set it in `~/.pi/agent/settings.json`:
-
-```json
-{
-  "theme": "tokyo-night"
-}
-```
-
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
+## Example
 
 ```text
 /settings
 Theme: tokyo-night
 ```
+
+## Technical details
+
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-package-themes-bundle/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

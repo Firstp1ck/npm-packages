@@ -1,49 +1,41 @@
-# @firstpick/pi-skill-lab-qc-presentation-theme
+# Lab QC Presentation Theme
 
-Pi package containing the `lab-qc-presentation-theme` Agent Skill.
+Create clear, modern presentations for technical chemical-production quality-control laboratory audiences.
 
-Use it to create or restyle browser-based HTML/CSS/JS presentations for chemical production quality-control laboratory audiences:
+## Helpful when
 
-- laboratory technicians;
-- scientists;
-- quality-control teamleaders.
+- You are presenting quality-control results.
+- Laboratory technicians, scientists, or QC teamleaders need a quick view of trends and limits.
+- A technical report needs a more visual format.
 
-The skill captures the reusable **styling, theming, deck mechanics, and audience framing** from the successful green laboratory-themed presentation. It intentionally ignores previous presentation content and instructs agents to regenerate slides only from the current source material.
+## What to share with Pi
 
-## What it provides
+- The results, tables, or report to present
+- The audience and meeting goal
+- Required branding, warnings, or action items
 
-- `skills/lab-qc-presentation-theme/SKILL.md` — routing and workflow instructions.
-- `skills/lab-qc-presentation-theme/references/THEME-SPEC.md` — detailed theme specification.
-- `skills/lab-qc-presentation-theme/assets/starter-template.html` — static deck starter.
-- `skills/lab-qc-presentation-theme/assets/lab-qc-theme.css` — reusable green laboratory CSS.
-- `skills/lab-qc-presentation-theme/assets/lab-qc-deck.js` — keyboard navigation, overview, notes, print/PDF support.
-- Contract tests for package validation.
+## Try asking
+
+> Turn these quality-control results into a concise presentation for QC teamleaders and laboratory technicians. Highlight trends, limits, risks, and actions.
+
+## What you’ll get
+
+- A green-themed browser presentation
+- Clear charts, summaries, and action slides
+- A structure suited to laboratory and production discussions
+
+## Keep in mind
+
+Deck text and generated documentation default to German; request another language explicitly when needed. The presentation does not validate the underlying laboratory data, so values and conclusions should be checked before use.
 
 ## Install
-
-From npm after publishing:
 
 ```bash
 pi install npm:@firstpick/pi-skill-lab-qc-presentation-theme
 ```
 
-From a local checkout:
+Restart Pi if the skill does not appear in your current session.
 
-```bash
-pi install <absolute-path-to-package>
-```
+## Technical details
 
-Installing or enabling packages changes the active Pi runtime configuration; review the skill first.
-
-## Verification
-
-```bash
-cd <package-root>
-npm test
-```
-
-## Notes
-
-- No build step or runtime dependencies are required.
-- Generated presentations should remain static and browser-openable.
-- Company logos should be supplied per deck and referenced locally, not bundled by default.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-lab-qc-presentation-theme/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

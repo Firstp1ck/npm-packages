@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-tech-debt-tracker
+# Technical Debt Tracker
 
-A Pi skill for tasks involving identifying, categorizing, prioritizing, or planning technical debt work, debt sprints, cleanup backlogs, TODO consolidation, or long-term maintainability risks. Tracks debt with severity/effort.
+Turn recurring maintenance problems into a clear, prioritized cleanup list.
 
-## What it does
+## Helpful when
 
-- Adds the `tech-debt-tracker` skill to Pi's skill library.
-- Guides agents to invoke the skill when identifying, categorizing, prioritizing, or planning technical debt work, debt sprints, cleanup backlogs, TODO consolidation, or long-term maintainability risks. Tracks debt with severity/effort.
-- Bundles `skills/tech-debt-tracker/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- TODOs and workarounds are scattered across a project.
+- The same problems keep slowing down changes.
+- You need to choose what cleanup work is worth doing next.
+
+## What to share with Pi
+
+- Known problems, TODOs, or project files
+- How each problem affects users or the team
+- Time, staffing, and release constraints
+
+## Try asking
+
+> Turn these maintenance problems into a prioritized cleanup backlog. Explain impact, effort, dependencies, and a sensible order.
+
+## What you’ll get
+
+- A grouped debt inventory
+- Priority based on impact and effort
+- Suggested sequencing and ownership
+
+## Keep in mind
+
+Priorities depend on real business and team constraints. By default, the workflow records debt in the host’s `MEMORY.md` Tech Debt Registry; confirm that location or request a report-only backlog when no memory file is available.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving identifying, categorizing, prioritizing, or plann
 pi install npm:@firstpick/pi-skill-tech-debt-tracker
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `tech-debt-tracker`.
-Agent: Invokes the `tech-debt-tracker` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-tech-debt-tracker/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

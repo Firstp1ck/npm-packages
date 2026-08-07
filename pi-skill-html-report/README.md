@@ -1,67 +1,41 @@
-# @firstpick/pi-skill-html-report
+# HTML Report
 
-Portable Pi/Agent Skill package for creating polished, self-contained HTML reports that explain complex or multi-step material.
+Turn a complex explanation into a polished report that opens in any modern browser.
 
-The visual system reproduces the approved dark technical report style:
+## Helpful when
 
-- deep navy radial background;
-- rounded dark panels and restrained shadows;
-- semantic status badges and callouts;
-- hero conclusions, metric/finding cards, numbered steps, evidence tables, and print styling;
-- responsive browser-readable output without a build step.
+- A topic needs more structure than a chat response.
+- You want diagrams, evidence cards, or comparison tables.
+- The report must work as one shareable file.
 
-It adds the requested capabilities:
+## What to share with Pi
 
-- a mandatory overview table;
-- data-grounded graphs when quantitative comparisons or trends warrant them;
-- process, dependency, decision, and architecture diagrams when relationships warrant them;
-- meaningful inline SVG or local media with accessibility/provenance rules;
-- accessible tabs for long reports, including keyboard navigation, URL hashes, no-JavaScript fallback, and print-all-panels behavior.
+- The topic, audience, and purpose
+- The facts, files, or research to include
+- Any visual style or accessibility needs
 
-## Package contents
+## Try asking
 
-- `skills/html-report/SKILL.md` — routing, workflow, safety, and output contract.
-- `skills/html-report/assets/starter-template.html` — self-contained report shell demonstrating the design and components.
-- `skills/html-report/references/DESIGN-SYSTEM.md` — canonical visual tokens and components.
-- `skills/html-report/references/CONTENT-ARCHITECTURE.md` — overview/table structure and tab thresholds.
-- `skills/html-report/references/VISUAL-DECISIONS.md` — graph, diagram, image, SVG, accessibility, and data-integrity rules.
-- `skills/html-report/references/INTERACTION-DESIGN.md` — purposeful interaction and progressive-enhancement guidance.
-- `skills/html-report/scripts/validate_report.py` — dependency-free report validator.
-- `skills/html-report/tests/` — package contracts and report fixtures.
-- `tests/routing/html-report.json` — representative model-routing fixtures for repository-level validation.
+> Create a browser-ready report explaining this incident to technical and non-technical readers. Include the timeline, evidence, cause, and next steps.
 
-## Intended routing
+## What you’ll get
 
-Use for complex diagnostics, technical guides, implementation plans, architecture explanations, decision analyses, investigations, and research syntheses **when an HTML artifact is requested**.
+- A self-contained HTML file
+- Clear sections and useful visual elements
+- Accessible navigation for longer reports
 
-Do not route short prose answers, slide decks, application dashboards, landing pages, or non-HTML technology comparisons here.
+## Keep in mind
 
-## Verification
+The report can improve presentation, but it cannot make weak or unverified source material reliable.
+
+## Install
 
 ```bash
-cd <package-root>
-npm test
-npm run validate:fixture
+pi install npm:@firstpick/pi-skill-html-report
 ```
 
-Validate a generated report from the skill directory:
+Restart Pi if the skill does not appear in your current session.
 
-```bash
-python3 ./scripts/validate_report.py <path-to-report.html> --strict
-```
+## Technical details
 
-## Install or enable
-
-The package is intentionally **not installed or enabled automatically**. Review it first. If approved later, install the local checkout with:
-
-```bash
-pi install <absolute-path-to-package>
-```
-
-Installing or enabling a package changes the active Pi runtime configuration and requires explicit confirmation.
-
-## Dependencies
-
-- Generated reports: modern browser only.
-- Validator/tests: Python 3.10+ standard library.
-- No npm runtime dependencies and no required CDN.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-html-report/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

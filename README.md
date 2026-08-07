@@ -1,295 +1,119 @@
 # Pi Coding Agent Forge
 
-Extensions, skills, prompts, themes, companion packages, and developer tools for the [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
+A collection of practical add-ons for the [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
-This public JavaScript/TypeScript monorepo contains Firstpick's Pi ecosystem packages, published through npm with npm and/or Bun. It includes **Pi extensions, Agent Skills, prompt collections, theme bundles, WebUI packages, and companion utilities**.
+You can add a browser interface, safer workflows, local documentation search, reusable skills, prompts, themes, and small quality-of-life tools. Install only the pieces that are useful to you.
 
-## Skill authoring standards
+## Start here
 
-- Follow the packaged portability guide in [`pi-package-skill-lifecycle/vendor/pi-skill-skill-creator/skills/skill-creator/references/SKILL-PORTABILITY.md`](pi-package-skill-lifecycle/vendor/pi-skill-skill-creator/skills/skill-creator/references/SKILL-PORTABILITY.md) when creating or updating reusable skills.
-- Keep portable skill workflows harness-neutral; isolate Pi-only tools, slash commands, and local settings under a `## Pi adapter` section.
-- Keep personal runtime memory outside package directories, e.g. `~/.pi/agent/memory/skills/<skill-name>.md` for Pi-local observations.
-
-## Skill packages
-
-These package active Pi skills that are not already bundled in an existing `pi-extension-*` package. Each package uses `pi.skills: ["./skills"]` and includes its full skill directory, including bundled scripts/references/assets.
-
-Extension-bundled skills kept as direct Pi config includes instead of duplicate packages:
-
-- `arch-linux-local` from `pi-extension-archwiki-local`
-- `hyprland-local` from `pi-extension-hyprland-wiki-local`
-- `nixos-local` from `pi-extension-nixos-wiki-local`
-
-- `@firstpick/pi-skill-acceptance-tester` (`pi-skill-acceptance-tester`) — Use automatically as the final gate before release, handoff, or claiming completion for substantial changes. Runs acceptance/readiness checks, determines pass/fail, and gives a go/no-go recommendation.
-- `@firstpick/pi-skill-architecture-review` (`pi-skill-architecture-review`) — Use automatically for architecture reviews, module boundaries, dependency direction, coupling/cohesion, SOLID concerns, system design trade-offs, layering, service boundaries, or design decisions before implementation.
-- `@firstpick/pi-skill-backup-manager` (`pi-skill-backup-manager`) — Use automatically for backup health checks, restore testing, NAS/Gitea backup integrity, 3-2-1 strategy review, backup script audits, or verifying repositories and archives can be restored safely.
-- `@firstpick/pi-skill-bug-reporter` (`pi-skill-bug-reporter`) — Use automatically when defects, regressions, failed tests, unexpected behavior, or spec mismatches are found. Produces structured reproducible bug reports with severity, evidence, environment, and actionable next steps.
-- `@firstpick/pi-skill-code-quality` (`pi-skill-code-quality`) — Use automatically for code reviews, linting/formatting setup, maintainability checks, complexity concerns, warning cleanup, coding standards, or quality gates in Rust, TypeScript, Python, shell, and mixed repos.
-- `@firstpick/pi-skill-code-security` (`pi-skill-code-security`) — Use automatically for code security reviews, leaked secret checks, dependency risk, unsafe shell/Python/TypeScript/Rust patterns, auth/input-validation flaws, SAST-style audits, or supply-chain concerns in repositories.
-- `@firstpick/pi-skill-competitor-analysis` (`pi-skill-competitor-analysis`) — Use automatically when comparing competing products, services, libraries, tools, vendors, or approaches for market/product positioning, feature matrices, strategic trade-offs, pricing, adoption, or differentiation.
-- `@firstpick/pi-skill-deep-research` (`pi-skill-deep-research`) — Use automatically for high-stakes or complex research needing multi-source evidence, scientific/technical fact-checking, decision traces, or rigorous verification. Runs deterministic two-phase research with schema/policy validation.
-- `@firstpick/pi-skill-deployment-automation` (`pi-skill-deployment-automation`) — Use automatically for Docker Compose deployments, container updates, stack health checks, rollbacks, compose-file changes, image upgrades, failed deploys, or service restart planning. Provides safe deployment and rollback workflows.
-- `@firstpick/pi-skill-design-patterns` (`pi-skill-design-patterns`) — Use automatically when choosing patterns, designing traits/interfaces/components, deciding abstraction boundaries, evaluating dependency injection/callbacks, or comparing implementation approaches in Rust, TypeScript/React, or Django/Python.
-- `@firstpick/pi-skill-dolt-database-version-control` (`pi-skill-dolt-database-version-control`) — Use automatically when evaluating or applying Dolt, the Git-like version-controlled SQL database, for database branching, merging, diffs, audit history, rollback, or versioned MySQL replica workflows.
-- `@firstpick/pi-skill-feature-development-workflow` (`pi-skill-feature-development-workflow`) — Use for authorized new-capability implementation to classify lightweight versus complex features and govern planning, implementation, integration, review, reporting, and completion gates.
-- `@firstpick/pi-skill-network-diagnostics` (`pi-skill-network-diagnostics`) — Use automatically for connectivity, DNS, Pi-hole, port reachability, routing, firewall reachability, TLS/network timeouts, or service access failures. Provides structured network troubleshooting commands and interpretation.
-- `@firstpick/pi-skill-paper-summarizer` (`pi-skill-paper-summarizer`) — Use automatically for academic or technical papers, arXiv/PubMed/IEEE/ACM links, PDFs, methodology review, limitations, practical implications, or extracting findings for engineering decisions.
-- `@firstpick/pi-skill-performance-optimizer` (`pi-skill-performance-optimizer`) — Use automatically for slow code, high CPU/memory, latency, large data processing, algorithmic complexity, profiling plans, benchmarks, or optimization requests. Profiles first and weighs trade-offs before changing code.
-- `@firstpick/pi-skill-refactoring-advisor` (`pi-skill-refactoring-advisor`) — Use automatically for refactors, code smells, migrations, duplication removal, module splitting, API cleanup, or restructuring plans. Emphasizes small safe steps, behavior preservation, and verification after each change.
-- `@firstpick/pi-skill-repo-explorer` (`pi-skill-repo-explorer`) — Use automatically before modifying unfamiliar codebases, answering where/how something is implemented, tracing dependencies, mapping repo structure, or planning changes. Explores a repository and returns a strict JSON handoff with key files, symbols, risks, and evidence.
-- `@firstpick/pi-skill-research-orchestration` (`pi-skill-research-orchestration`) — Use automatically for broad multi-claim research projects needing planning, parallel investigation, source merging, gap closure, citation audit, and final synthesis when narrower research skills are insufficient.
-- `@firstpick/pi-skill-server-audit` (`pi-skill-server-audit`) — Use automatically for Linux server security reviews, SSH hardening, firewall/open-port audits, user/permission checks, exposed services, or host hardening requests. Produces severity-rated findings and practical remediation steps.
-- `@firstpick/pi-skill-spec-vs-impl-checker` (`pi-skill-spec-vs-impl-checker`) — Use automatically when a spec, plan, README, issue, or requirement must be verified against implementation. Traces requirements to code, checks interface contracts, and reports gaps or mismatches.
-- `@firstpick/pi-skill-subagent-governance` (`pi-skill-subagent-governance`) — Use when a parent orchestrator must decide delegation admissibility, role-fit, writer isolation, retry safety, integration acceptance, or reviewer-finding dispositions without duplicating runtime mechanics.
-- `@firstpick/pi-skill-tauri-django-react` (`pi-skill-tauri-django-react`) — Use automatically for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, build packaging, dual desktop/web deployment, Rust commands, and platform-specific gotchas.
-- `@firstpick/pi-skill-tech-debt-tracker` (`pi-skill-tech-debt-tracker`) — Use automatically when identifying, categorizing, prioritizing, or planning technical debt work, debt sprints, cleanup backlogs, TODO consolidation, or long-term maintainability risks. Tracks debt with severity/effort.
-- `@firstpick/pi-skill-tech-deep-dive` (`pi-skill-tech-deep-dive`) — Use automatically when choosing or evaluating libraries, frameworks, tools, platforms, models, databases, APIs, or architectures for a use case. Produces criteria scoring, ecosystem assessment, and recommendations.
-- `@firstpick/pi-skill-test-plan-generator` (`pi-skill-test-plan-generator`) — Use automatically when planning tests from specs, architecture docs, PRs, risky changes, new features, bug fixes, or release work. Generates prioritized unit, integration, E2E, regression, and edge-case coverage.
-- `@firstpick/pi-skill-vulnerability-scanner` (`pi-skill-vulnerability-scanner`) — Use automatically when checking CVEs or known vulnerabilities in installed packages, dependencies, Docker images, OS packages, exposed services, or software versions. Produces severity-rated scan reports.
-
-## Packages
-
-### `@firstpick/pi-package-webui`
-Pi Web UI companion package for Pi coding agent RPC mode.
-
-- Bundles the `pi-webui` CLI server and `/webui-start` Pi extension command (`/start-webui` alias)
-- Starts `pi --mode rpc` and serves a no-build HTTP/SSE web app
-- Supports prompt, steer, follow-up, abort, new session, model/thinking controls, slash-command autocomplete, and guided git workflow
-- Binds to `127.0.0.1` by default; no authentication, so do not expose it to untrusted networks
-
-### `@firstpick/pi-package-skill-lifecycle`
-Bundles the skill lifecycle packages that are designed to work together.
-
-- Includes per-skill memory, skill-bank audit/management, skill evaluation, skill creation, skill refinement-loop resources, and the package-bundled skill lifecycle policy
-- Uses Pi package `dependencies` + `bundledDependencies` so npm publication can be self-contained
-- Does not include repository-level `tests/routing/`; those fixtures are development/evaluation data
-
-### `@firstpick/pi-prompts-code-workflows`
-Adds reusable prompt templates for code review, bug fixing, issue analysis, and incident triage.
-
-- Prompt templates loaded via `pi.prompts: ["./prompts"]`
-- Includes `/fix`, `/incident`, `/issue-fix`, `/issue-new`, `/review`, and `/sum-issue`
-- Generalized for public repositories and maintainer-friendly workflows
-
-### `@firstpick/pi-prompts-git-pr`
-Adds reusable prompt templates for commits, pull requests, and PR review workflows.
-
-- Prompt templates loaded via `pi.prompts: ["./prompts"]`
-- Includes `/check-pr`, `/git-staged-msg`, `/pr`, `/pr-review-branch`, `/pr-review-implement`, and `/pr-update`
-- Detects the repository default branch instead of assuming only `main`
-
-### `@firstpick/pi-prompts-release-docs`
-Adds reusable prompt templates for release preparation, announcements, and documentation updates.
-
-- Prompt templates loaded via `pi.prompts: ["./prompts"]`
-- Includes `/announce-branch`, `/announce-version`, `/readme-update`, `/release-new`, `/ship`, `/summary`, and `/wiki-update`
-- Writes generated release/announcement artifacts under project-local `dev/` paths
-
-### `@firstpick/pi-prompts-agent-memory`
-Adds a reusable prompt template for durable Pi agent memory curation.
-
-- Prompt templates loaded via `pi.prompts: ["./prompts"]`
-- Includes `/update-memory`
-- Uses standard Pi memory paths under `~/.pi/agent/`
-
-### `@firstpick/pi-themes-bundle`
-Adds Firstpick's custom Pi coding-agent themes.
-
-- Theme bundle loaded via `pi.themes: ["./themes"]`
-- Includes Catppuccin, Dracula, Tokyo Night, Gruvbox, Nord, Rosé Pine, One Dark, Solarized, and Everforest themes
-- No commands or tools; select themes through `/settings` or `settings.json`
-
-### `@firstpick/pi-extension-archwiki-local`
-Adds local ArchWiki retrieval tools to Pi using the installed `arch-wiki-docs` package.
-
-- `/archwiki-status` cache/docs status command
-- `archwiki_search`, `archwiki_read`, `archwiki_sections`, `archwiki_extract`, `archwiki_related` tools
-- Prefers local ArchWiki evidence for Arch/Linux troubleshooting
-
-### `@firstpick/pi-extension-bang-command-autocomplete`
-Adds autocomplete for `!<command>` in Pi.
-
-- Fast suggestions from a built-in command list
-- Optional shell-history command indexing via env flag
-
-### `@firstpick/pi-extension-brave-search`
-Adds a `brave_search` tool to Pi for up-to-date web search.
-
-- Uses Brave Search API
-- Supports query options like country/language/freshness/safesearch
-- Includes status/test helper commands
-
-### `@firstpick/pi-extension-cursor-composer`
-Adds Cursor SDK Composer 2.5 integration to Pi.
-
-- Registers native Pi provider `cursor-composer/composer-2.5`
-- Adds `/cursor-composer-*` setup/status/model commands
-- Adds `cursor_composer_agent` tool for explicit delegated Cursor agent runs
-- Can append Composer 2.5 to Pi `enabledModels` scoped-model cycling
-
-### `@firstpick/pi-extension-fish-user-bash`
-Runs Pi `!` / `!!` commands through fish shell.
-
-- Fish as default shell backend
-- Configurable shell path via env var
-
-### `@firstpick/pi-extension-memory-helper`
-Adds lightweight daily and per-skill memory commands/tools.
-
-- `/remember` to append notes
-- `/memory-search` to search memory files
-- `/skill-memory-*` commands and `skill_memory_*` tools for local per-skill memory
-- `remember_note` tool for agent use
-
-### `@firstpick/pi-extension-notes`
-Adds local notes management inside Pi.
-
-- Create, list, read, update, delete notes
-- Fuzzy note lookup and quick status command
-- Optional rule-note injection into prompt
-
-### `@firstpick/pi-extension-plan-mode-toggle`
-Plan mode workflow controls for Pi.
-
-- `/plan-mode on|off|status`
-- `/plan-model [select|provider/model-id]`
-- `Ctrl+Q` shortcut for toggle/arm flow
-
-### `@firstpick/pi-extension-git-footer-status`
-Enhanced footer/status line for Pi sessions.
-
-- Git status snapshot (branch, dirty state, sync, operations)
-- Token/cost/context usage telemetry in footer
-- `/git-footer-refresh` command
-
-### `@firstpick/pi-extension-reverse-last`
-Undo support for Pi `write`/`edit` file mutations.
-
-- Per-session undo stack
-- `/reverse-last [count]` command
-- Optional state directory override via env var
-
-### `@firstpick/pi-extension-safety-guard`
-Protective confirmation layer for risky operations.
-
-- Confirmation prompts for dangerous bash commands
-- Protected-path checks for `write`/`edit`
-- Auto-block behavior in non-interactive mode
-
-### `@firstpick/pi-extension-stats`
-Usage analytics command for Pi session history.
-
-- Daily token graph (`/stats`, `/stats N`, `/stats all`)
-- Input/output/cache breakdown
-- Top model usage summary
-
-### `@firstpick/pi-extension-plan-executor`
-Autonomous `PLAN.md` checklist execution loop.
-
-- `/execute-plan [path]`
-- `/stop-plan`
-- `/plan-status`
-
-### `@firstpick/pi-extension-release-npm`
-Release orchestration command for this monorepo.
-
-- `/release-npm` runs release checks and optional publish flow
-
-### `@firstpick/pi-extension-release-aur`
-Reviewed AUR package setup and release workflow.
-
-- `/release-aur-setup` sets up AUR publishing prerequisites, starting with native Pi-guided SSH key/config/test flow
-- `/release-aur` plans, checks, queues agent review, and can create/publish AUR package repos after confirmation
-- preflight includes `.SRCINFO`, `makepkg`, `namcap`, optional clean-chroot/repro checks, and conservative git staging
-
-### `@firstpick/pi-extension-todo-progress`
-Auto todo/progress tracking extension.
-
-- auto-creates todos for multi-step prompts
-- persistent progress widget until completion
-
-### `@firstpick/pi-extension-upgrade-extensions`
-Update npm-installed Pi extensions.
-
-- `/extensions-update` with interactive multi-select
-- `/extensions-update all` to directly update all available updates
-
-### `@firstpick/pi-extension-wiki-tools`
-Scaffold and maintain local wiki/documentation extension packages from templates.
-
-- `/wiki-create`, `/wiki-update`, `/wiki-validate`, and `/wiki-templates` user commands
-- `create_wiki`, `update_wiki`, `validate_wiki`, and `list_wiki_templates` agent tools
-- bundled `wiki-tools` skill for using `templates/local-wiki-extension`
-- safe defaults: create refuses existing targets; update defaults to dry-run
-
-### `@firstpick/pi-extension-anthropic-auth-recovery`
-Plan-only recovery assistance for narrowly classified Anthropic compatibility errors.
-
-- selects an authenticated non-Anthropic model only after confirmation
-- runs external compatibility-patch status and planning without automatic apply
-- supports explicit authenticated RPC/WebUI recovery endpoints and secure local fallback
-
-### `@firstpick/pi-extension-codex-fast-mode`
-Session-scoped Fast mode for subscription-backed Codex requests.
-
-- `/fast-mode` toggle with `on`, `off`, and `status` forms
-- applies `service_tier: "priority"` only to `openai-codex` / `openai-codex-responses` requests
-- defaults off, persists per session branch, and rejects mutations while busy
-
-### `@firstpick/pi-extension-conditional-system-prompts`
-Conditionally appends the local Windows policy and a governance-skill routing bridge.
-
-- loads `APPEND_WINDOWS.md` on Windows
-- routes turns with the `subagent` tool to the enabled `subagent-governance` skill
-- preserves Windows-first ordering and fail-closed missing-skill guidance
-
-### `@firstpick/pi-extension-feature-system-prompt`
-Routes feature requests to the enabled `feature-development-workflow` skill.
-
-- classifies requests with the active conversation model in an isolated tool-free session
-- distinguishes lightweight and complex features
-- injects a short fail-closed skill bridge while preserving bounded continuation context and safe classifier fallbacks
-
-### `@firstpick/pi-extension-subagent-minimum-fanout`
-Enforces zero-or-multiple model delegation for Pi subagent tool calls.
-
-- blocks direct and statically single-child execution requests
-- supports tasks, chains, schedules, dynamic fanout, and execution-mode aliases
-- leaves management/recovery actions available and documents slash-command/RPC boundaries
-
-### `@firstpick/pi-utils`
-Shared helpers used by multiple Pi extensions.
-
-- Agent-dir resolution (`PI_CODING_AGENT_DIR` aware)
-- Environment boolean parsing
-- Agent-relative path resolution
-
-## Templates
-
-### `templates/local-wiki-extension`
-Reusable scaffold for local documentation/wiki extensions analogous to the ArchWiki and Hyprland Wiki packages.
-
-- local search/read/sections/extract/related tools
-- setup/status commands
-- packaged skill template for local-docs-first routing
-- cache-backed Markdown/HTML corpus indexing
-
-## Utility scripts
-
-- `dev/scripts/install-pi-add.sh` – discovers local `pi-extension-*`, `pi-skill-*`, and `pi-package-*` packages, compares installed versions against npm `latest`, repairs packages present in `node_modules` but missing from Pi user settings, and registers/installs selected or all packages via `pi install npm:<package>` (supports interactive mode, `--non-interactive`, `--all`, `--dry-run`, `--force`)
-- `dev/scripts/check-publish-readiness.sh` – validates package metadata, extension entries, dry-run publish, registry/version status, and local-vs-npm packed contents
-- `dev/scripts/publish-packages.sh` – plans/applies publish actions dynamically for all package folders or a `--targets-file` shortlist
-- `dev/scripts/bump-package-versions.sh` – checks npm published versions first and enforces the next release version for changed packages (`+0.0.1`, rolling `*.9` to next minor `.0`; bumps up or reduces down only when needed); can write publish candidates to a target list
-- `dev/scripts/release-workflow.sh` – orchestrates release checks: `--check` reports required bumps, `--plan` uses bump planning to shortlist packages before publish checks, and `--publish` applies required bumps before publishing
-- `dev/scripts/sync-pi-package-symlinks.sh` – uses Pi's package resource resolver to symlink local development extensions, skills, prompts, and themes from top-level `pi-*` workspace packages into `~/.pi/agent/`; package-local `node_modules` resources referenced by Pi manifests are linked to top-level workspace packages first, so dev packages win over stale installed optional dependencies; index-based extensions are linked as directories, standalone package resources as files, and direct relative-import companion directories beside standalone files; local-only dev extensions use generated wrappers so their relative imports resolve from the source checkout; unrelated non-symlink conflicts are renamed to `.hardcoded.<timestamp>.bak`
-- `dev/scripts/validate-skill-routing-fixtures.mjs` – validates development-only `tests/routing/*.json`; schema-only by default, with optional `--settings` or `--skill-root` target coverage
-
-## Publish model
-
-- Registry: **npm**
-- Client: **npm** by default; **bun** is the fallback publisher when available
-- Installation for users remains standard npm registry usage, e.g.:
+Most packages can be installed directly through Pi:
 
 ```bash
-pi install npm:@firstpick/pi-extension-notes
+pi install npm:@firstpick/<package-name>
 ```
+
+Open a package below for its exact install command and a short usage guide.
+
+## Find what you need
+
+### Packages
+
+Packages bundle larger features, prompt collections, themes, or related tools.
+
+- **[Troubleshooting learnings for Pi](pi-package-learnings/README.md)** — Keep a durable, searchable record of troubleshooting lessons that Pi can reuse later.
+- **[Natural Conversation Mode for Pi](pi-package-natural-conversation/README.md)** — Adds a voice-friendly conversation mode with strict limits on what Pi can do while listening.
+- **[Agent memory prompts for Pi](pi-package-prompts-agent-memory/README.md)** — Adds a reusable prompt for keeping Pi’s long-term memory useful and tidy.
+- **[Code workflow prompts for Pi](pi-package-prompts-code-workflows/README.md)** — Adds ready-made prompts for reviews, bug fixes, issue work, and incident triage.
+- **[Git and PR prompts for Pi](pi-package-prompts-git-pr/README.md)** — Adds ready-made prompts for commits, pull requests, and PR reviews.
+- **[Release documentation prompts for Pi](pi-package-prompts-release-docs/README.md)** — Adds ready-made prompts for release notes, announcements, README updates, and wiki updates.
+- **[Questionnaires for Pi](pi-package-questionnaire/README.md)** — Lets Pi ask clear single- and multiple-choice questions in the terminal and Web UI.
+- **[Remote access for Pi Web UI](pi-package-remote-webui/README.md)** — Open an existing Pi Web UI safely to devices on a trusted local network.
+- **[Skill lifecycle tools for Pi](pi-package-skill-lifecycle/README.md)** — Bundles the tools used to review, create, organize, and improve Pi skills.
+- **[Theme bundle for Pi](pi-package-themes-bundle/README.md)** — Adds a collection of familiar color themes to Pi.
+- **[Pi Web UI](pi-package-webui/README.md)** — Use Pi from a local browser with tabs, streaming responses, uploads, model controls, Git helpers, and optional companion features.
+
+### Extensions
+
+Extensions add commands, tools, interface elements, or automatic behavior to Pi.
+
+- **[Anthropic Auth Recovery for Pi](pi-extension-anthropic-auth-recovery/README.md)** — Helps you recover from a narrow class of Anthropic compatibility errors without changing anything automatically.
+- **[ArchWiki Local for Pi](pi-extension-archwiki-local/README.md)** — Lets Pi search your local ArchWiki copy before reaching for the public web.
+- **[AUR Review for Pi](pi-extension-aur-review/README.md)** — Adds a careful review checkpoint before AUR-related Git changes move forward.
+- **[Bang Command Autocomplete for Pi](pi-extension-bang-command-autocomplete/README.md)** — Suggests shell commands when you type `!` or `!!` in Pi.
+- **[Brave Search for Pi](pi-extension-brave-search/README.md)** — Lets Pi search the current web through the Brave Search API.
+- **[BTW for Pi](pi-extension-btw/README.md)** — Ask a quick side question without derailing the main conversation.
+- **[cd for Pi](pi-extension-cd/README.md)** — Makes changing directories in Pi faster with suggestions, history, and aliases.
+- **[Codex Fast Mode for Pi](pi-extension-codex-fast-mode/README.md)** — Adds an easy on/off switch for subscription-backed Codex Fast mode.
+- **[Conditional System Prompts for Pi](pi-extension-conditional-system-prompts/README.md)** — Loads only the extra system guidance that matches the current platform and enabled tools.
+- **[Cursor Composer for Pi](pi-extension-cursor-composer/README.md)** — Connects Cursor Composer 2.5 to Pi as both a model provider and an explicitly requested coding agent.
+- **[DOCX for Pi](pi-extension-docx/README.md)** — Lets Pi inspect and carefully edit Word documents while keeping validation and rollback in the workflow.
+- **[Feature System Prompt for Pi](pi-extension-feature-system-prompt/README.md)** — Recognizes feature requests and loads the feature workflow only when it is actually needed.
+- **[Fish User Bash for Pi](pi-extension-fish-user-bash/README.md)** — Runs Pi’s `!` and `!!` commands through Fish instead of the default shell.
+- **[Git Footer Status for Pi](pi-extension-git-footer-status/README.md)** — Shows Git state, token use, context use, and model information in Pi’s footer.
+- **[Grill Me for Pi](pi-extension-grill-me/README.md)** — Turns an early idea into a focused design interview so important decisions are made before implementation.
+- **[Hyprland Wiki Local for Pi](pi-extension-hyprland-wiki-local/README.md)** — Lets Pi search a local copy of the official Hyprland Wiki first.
+- **[NixOS Wiki Local for Pi](pi-extension-nixos-wiki-local/README.md)** — Lets Pi search local NixOS and Nix documentation before using the public web.
+- **[Notes for Pi](pi-extension-notes/README.md)** — Keep small local notes inside Pi and optionally use selected notes as operating rules.
+- **[Plan Executor for Pi](pi-extension-plan-executor/README.md)** — Works through a PLAN.md checklist and keeps going until the plan is complete or needs your input.
+- **[Plan Mode Toggle for Pi](pi-extension-plan-mode-toggle/README.md)** — Adds a planning mode for thinking through a change before code is written.
+- **[Raspberry Pi Wiki Local for Pi](pi-extension-raspberrypi-wiki-local/README.md)** — Lets Pi search a local Raspberry Pi documentation collection.
+- **[Release AUR for Pi](pi-extension-release-aur/README.md)** — Guides AUR setup, review, and publishing with explicit safety checks and confirmation.
+- **[Release npm for Pi](pi-extension-release-npm/README.md)** — Guides this workspace’s npm release process and asks before publishing.
+- **[Reverse Last for Pi](pi-extension-reverse-last/README.md)** — Undo the most recent changes made through Pi’s write and edit tools.
+- **[Safety Guard for Pi](pi-extension-safety-guard/README.md)** — Adds confirmation and path protection around commands and edits that could cause serious damage.
+- **[Setup Skills for Pi](pi-extension-setup-skills/README.md)** — Choose which local Pi skills are enabled from one interactive list.
+- **[Small Modal Reliability for Pi](pi-extension-small-modal-reliability/README.md)** — Gives smaller language models a clearer task loop, scratchpad, and verification routine.
+- **[Stats for Pi](pi-extension-stats/README.md)** — See where your Pi tokens and model costs are going over time.
+- **[Subagent Minimum Fanout for Pi](pi-extension-subagent-minimum-fanout/README.md)** — Prevents unsafe one-off delegation patterns and checks reviewer model diversity.
+- **[Tech News for Pi](pi-extension-tech-news/README.md)** — Bring technology news from several sources into Pi for browsing and summaries.
+- **[Todo Progress for Pi](pi-extension-todo-progress/README.md)** — Shows a live checklist for prompts that contain several steps or goals.
+- **[Tools for Pi](pi-extension-tools/README.md)** — Turn Pi tools on or off from an interactive selector.
+- **[Upgrade Extensions for Pi](pi-extension-upgrade-extensions/README.md)** — Check and update npm-installed Pi extensions from inside Pi.
+- **[Wiki Tools for Pi](pi-extension-wiki-tools/README.md)** — Create and maintain local documentation-search extensions from a reusable template.
+- **[Workbook for Pi](pi-extension-workbook/README.md)** — Lets Pi inspect and carefully edit Excel workbooks with visual checks and validation.
+- **[Workflows for Pi](pi-extension-workflows/README.md)** — Run saved, repeatable Pi workflows without putting all workflow logic in one large prompt.
+
+### Skills
+
+Skills give Pi a reusable workflow for a particular kind of work. You normally ask in plain language rather than calling a command.
+
+- **[Acceptance Tester](pi-skill-acceptance-tester/README.md)** — Check whether substantial work is truly ready to release or hand off.
+- **[Architecture Review](pi-skill-architecture-review/README.md)** — Review a system design before implementation and spot coupling, layering, or boundary problems.
+- **[Backup Manager](pi-skill-backup-manager/README.md)** — Check backup health, test restore readiness, and find gaps before an emergency.
+- **[Bug Reporter](pi-skill-bug-reporter/README.md)** — Turn a defect or failed test into a clear, reproducible bug report.
+- **[Code Quality](pi-skill-code-quality/README.md)** — Review code for maintainability, complexity, consistency, and useful quality checks.
+- **[Code Security](pi-skill-code-security/README.md)** — Look for security flaws, leaked secrets, risky dependencies, and unsafe coding patterns.
+- **[Competitor Analysis](pi-skill-competitor-analysis/README.md)** — Compare products, tools, or approaches using clear criteria and practical trade-offs.
+- **[Deep Research](pi-skill-deep-research/README.md)** — Research complex or high-stakes questions with multiple sources and explicit verification.
+- **[Deployment Automation](pi-skill-deployment-automation/README.md)** — Plan and review safer container deployments, updates, health checks, and rollbacks.
+- **[Design Patterns](pi-skill-design-patterns/README.md)** — Choose an appropriate design pattern without adding unnecessary abstraction.
+- **[Dolt Database Version Control](pi-skill-dolt-database-version-control/README.md)** — Evaluate or use Dolt when database history, branching, merging, or rollback matters.
+- **[Feature Development Workflow](pi-skill-feature-development-workflow/README.md)** — Guide a feature from scope and planning through implementation, review, and completion.
+- **[HTML Report](pi-skill-html-report/README.md)** — Create polished, self-contained HTML reports for complex explanations and investigations.
+- **[Lab QC Presentation Theme](pi-skill-lab-qc-presentation-theme/README.md)** — Create modern green presentations for chemical production and quality-control teams.
+- **[Network Diagnostics](pi-skill-network-diagnostics/README.md)** — Troubleshoot DNS, routing, ports, firewalls, TLS, and general connectivity problems.
+- **[Paper Summarizer](pi-skill-paper-summarizer/README.md)** — Read technical or academic papers and explain their findings, limits, and practical value.
+- **[Patch MD](pi-skill-patch-md/README.md)** — Create and manage reproducible PATCH.md packages with validation and rollback guidance.
+- **[Performance Optimizer](pi-skill-performance-optimizer/README.md)** — Find why software is slow or resource-heavy before recommending optimizations.
+- **[Refactoring Advisor](pi-skill-refactoring-advisor/README.md)** — Plan small, safe refactors that preserve behavior while improving maintainability.
+- **[Repo Explorer](pi-skill-repo-explorer/README.md)** — Map an unfamiliar repository and return the files, symbols, risks, and evidence needed for the next step.
+- **[Research Orchestration](pi-skill-research-orchestration/README.md)** — Coordinate broad research across several claims, sources, and verification passes.
+- **[Server Audit](pi-skill-server-audit/README.md)** — Review a Linux server for exposed services, weak access controls, and practical hardening opportunities.
+- **[Shoo Auth](pi-skill-shoo-auth/README.md)** — Implement or troubleshoot Shoo Google sign-in in browser applications.
+- **[Spec vs Impl Checker](pi-skill-spec-vs-impl-checker/README.md)** — Check whether code actually matches a specification, plan, README, or issue.
+- **[Subagent Governance](pi-skill-subagent-governance/README.md)** — Keep delegated agent work properly scoped, isolated, reviewed, and safely retried.
+- **[Tauri Django React](pi-skill-tauri-django-react/README.md)** — Build and troubleshoot desktop apps that combine Tauri, Django, and React.
+- **[Tech Debt Tracker](pi-skill-tech-debt-tracker/README.md)** — Find, group, and prioritize technical debt so cleanup work becomes actionable.
+- **[Tech Deep Dive](pi-skill-tech-deep-dive/README.md)** — Evaluate libraries, frameworks, platforms, models, databases, APIs, or architectures for a real use case.
+- **[Test Plan Generator](pi-skill-test-plan-generator/README.md)** — Turn a change or specification into a prioritized, practical test plan.
+- **[Vulnerability Scanner](pi-skill-vulnerability-scanner/README.md)** — Check software, containers, and services for known vulnerabilities and explain the risk.
+
+### Shared utilities
+
+These are building blocks for package authors and are usually installed indirectly.
+
+- **[Shared Pi extension utilities](pi-utils/README.md)** — Shared building blocks used by Firstpick’s Pi extensions. Most users do not need to install this package directly.
+
+## Technical and contributor information
+
+See [TECHNICAL.md](TECHNICAL.md) for package types, installation, and compatibility. Contributors can use [DEVELOPMENT.md](DEVELOPMENT.md) for repository layout, authoring standards, release tooling, and maintenance.

@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-refactoring-advisor
+# Refactoring Advisor
 
-A Pi skill for refactors, code smells, migrations, duplication removal, module splitting, API cleanup, or restructuring plans. Emphasizes small safe steps, behavior preservation, and verification after each change.
+Improve difficult code through small steps while keeping its behavior the same.
 
-## What it does
+## Helpful when
 
-- Adds the `refactoring-advisor` skill to Pi's skill library.
-- Guides agents to invoke the skill for refactors, code smells, migrations, duplication removal, module splitting, API cleanup, or restructuring plans. Emphasizes small safe steps, behavior preservation, and verification after each change.
-- Bundles `skills/refactoring-advisor/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- A file or module has become too large.
+- Changes are risky because responsibilities are mixed together.
+- You want a cleanup plan before editing code.
+
+## What to share with Pi
+
+- The code or area that is hard to maintain
+- Behavior that must not change
+- Available tests and time constraints
+
+## Try asking
+
+> Plan a small, safe refactor for this module. Keep behavior unchanged and show the checks needed after each step.
+
+## What you’ll get
+
+- The main maintenance problems
+- A sequence of small changes
+- Tests, checkpoints, and rollback options
+
+## Keep in mind
+
+Refactoring should not quietly add features or change behavior. Any such choice should be handled separately.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for refactors, code smells, migrations, duplication removal, module s
 pi install npm:@firstpick/pi-skill-refactoring-advisor
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `refactoring-advisor`.
-Agent: Invokes the `refactoring-advisor` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-refactoring-advisor/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

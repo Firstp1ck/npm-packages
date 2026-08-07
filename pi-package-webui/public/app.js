@@ -544,6 +544,7 @@ let tabAttachments = new Map();
 let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
 let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0, gitStatusRoot: "", gitStatusByPath: new Map() };
+let fileTreeLastRenderSignature = "";
 let activeFileViewer = null;
 let fileViewersByTab = new Map();
 let fileViewerOpenRequestSerial = 0;
@@ -10675,6 +10676,7 @@ function resetFileTreeState() {
   fileTreeSearchTimer = null;
   fileTreeSearchRequestSerial += 1;
   fileTreeState = emptyFileTreeState(fileTreeState.requestSerial + 1);
+  fileTreeLastRenderSignature = "";
   if (elements.fileTreeSearchInput) elements.fileTreeSearchInput.value = "";
   updateFileTreeSearchControls();
   renderFileTree();
@@ -10695,10 +10697,47 @@ function fileTreeControlKey(node) {
   return node?.classList?.contains("file-tree-item") && path ? `file-tree:${path}` : "";
 }
 
+function fileTreeEntryRenderSignature(entry = {}) {
+  return [
+    normalizeFileTreePath(entry.path || ""),
+    String(entry.name || ""),
+    String(entry.type || ""),
+    entry.directory === true,
+    String(entry.extension || ""),
+    String(entry.error || ""),
+  ];
+}
+
+function fileTreeRenderSignature() {
+  const entriesByPath = [...fileTreeState.entriesByPath.entries()]
+    .map(([path, entries]) => [normalizeFileTreePath(path), (Array.isArray(entries) ? entries : []).map(fileTreeEntryRenderSignature)])
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const gitStatusByPath = [...fileTreeState.gitStatusByPath.entries()]
+    .map(([path, status]) => [normalizeFileTreePath(path), normalizeFileTreeGitStatus(status)])
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return JSON.stringify({
+    context: `${activeTabId || ""}:${activeTabGeneration}`,
+    root: fileTreeState.root || "",
+    displayCwd: fileTreeState.root || latestWorkspace?.displayCwd || activeTab()?.cwd || "",
+    entriesByPath,
+    expanded: [...fileTreeState.expanded].map(normalizeFileTreePath).sort(),
+    loading: [...fileTreeState.loading].map(normalizeFileTreePath).sort(),
+    selectedPath: normalizeFileTreePath(fileTreeState.selectedPath || ""),
+    searchQuery: fileTreeState.searchQuery || fileTreeSearchQueryText(),
+    searchEntries: fileTreeState.searchEntries.map(fileTreeEntryRenderSignature),
+    searchLoading: fileTreeState.searchLoading,
+    gitStatusRoot: fileTreeState.gitStatusRoot || "",
+    gitStatusByPath,
+  });
+}
+
 function renderFileTree() {
   if (deferUiRenderDuringPointerActivation("file-tree", renderFileTree)) return;
   const root = elements.fileTreeRoot;
   if (!root) return;
+  const renderSignature = fileTreeRenderSignature();
+  if (renderSignature === fileTreeLastRenderSignature) return;
+  fileTreeLastRenderSignature = renderSignature;
   const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${fileTreeState.root || ""}`;
   const focusSnapshot = captureScopedControlContinuity(root, continuityContextKey, fileTreeControlKey);
   const restoreFocus = () => restoreScopedControlContinuity(root, continuityContextKey, focusSnapshot, (key) => [...root.querySelectorAll(".file-tree-item[data-path]")].find((node) => fileTreeControlKey(node) === key));
@@ -10895,7 +10934,7 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   parent.append(item);
 }
 
-async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false } = {}) {
+async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false, renderResult = true } = {}) {
   const normalized = normalizeFileTreePath(path);
   if (!force && fileTreeState.entriesByPath.has(normalized)) return fileTreeState.entriesByPath.get(normalized);
   const tabContext = activeTabContext();
@@ -10903,8 +10942,10 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
   const serial = ++fileTreeState.requestSerial;
   const hadCachedEntries = fileTreeState.entriesByPath.has(normalized);
   fileTreeState.loading.add(normalized);
-  if (!hadCachedEntries) setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
-  renderFileTree();
+  if (!hadCachedEntries) {
+    setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
+    renderFileTree();
+  }
   try {
     const response = await api(fileApiPath("/api/files", normalized), { tabId: tabContext.tabId });
     if (!isCurrentTabContext(tabContext) || serial < fileTreeState.requestSerial) return [];
@@ -10929,7 +10970,7 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
     return [];
   } finally {
     fileTreeState.loading.delete(normalized);
-    if (isCurrentTabContext(tabContext)) renderFileTree();
+    if (renderResult && isCurrentTabContext(tabContext)) renderFileTree();
   }
 }
 
@@ -10950,7 +10991,7 @@ function clearFileTreeSearch({ focus = false } = {}) {
   if (focus) elements.fileTreeSearchInput?.focus();
 }
 
-async function runFileTreeSearch() {
+async function runFileTreeSearch({ background = false } = {}) {
   clearTimeout(fileTreeSearchTimer);
   fileTreeSearchTimer = null;
   const query = fileTreeSearchQueryText();
@@ -10963,12 +11004,14 @@ async function runFileTreeSearch() {
   const tabContext = activeTabContext();
   if (!tabContext.tabId) return [];
   fileTreeState.searchQuery = query;
-  fileTreeState.searchLoading = true;
-  fileTreeState.searchEntries = [];
-  fileTreeState.searchTruncated = false;
-  fileTreeState.searchTotal = 0;
-  setFileTreeStatus(`Searching for “${query}”…`);
-  renderFileTree();
+  if (!background) {
+    fileTreeState.searchLoading = true;
+    fileTreeState.searchEntries = [];
+    fileTreeState.searchTruncated = false;
+    fileTreeState.searchTotal = 0;
+    setFileTreeStatus(`Searching for “${query}”…`);
+    renderFileTree();
+  }
   try {
     const response = await api(fileSearchApiPath(query), { tabId: tabContext.tabId });
     if (!isCurrentTabContext(tabContext) || serial !== fileTreeSearchRequestSerial) return [];
@@ -10985,8 +11028,10 @@ async function runFileTreeSearch() {
     return entries;
   } catch (error) {
     if (isCurrentTabContext(tabContext) && serial === fileTreeSearchRequestSerial) {
-      fileTreeState.searchLoading = false;
-      fileTreeState.searchEntries = [];
+      if (!background) {
+        fileTreeState.searchLoading = false;
+        fileTreeState.searchEntries = [];
+      }
       setFileTreeStatus(error.message || String(error), "error");
       addEvent(`file search failed: ${error.message || String(error)}`, "error");
     }
@@ -11033,7 +11078,7 @@ async function refreshLoadedFileTreeDirectories(tabContext = activeTabContext())
     }
   };
   if (fileTreeState.loading.has(FILE_TREE_ROOT_PATH)) return true;
-  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
+  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true, renderResult: false });
   if (!isCurrentTabContext(tabContext)) return false;
   collectDirectories(FILE_TREE_ROOT_PATH);
   const cachedDirectories = [...fileTreeState.entriesByPath.keys()]
@@ -11051,7 +11096,7 @@ async function refreshLoadedFileTreeDirectories(tabContext = activeTabContext())
       collectDirectories(path);
       continue;
     }
-    await loadFileTreeDirectory(path, { force: true });
+    await loadFileTreeDirectory(path, { force: true, renderResult: false });
     if (!isCurrentTabContext(tabContext)) return false;
     collectDirectories(path);
   }
@@ -11075,7 +11120,7 @@ async function refreshFileTreeLive(tabContext = activeTabContext()) {
     while (refreshContext && isCurrentTabContext(refreshContext)) {
       fileTreeLiveRefreshPendingContext = null;
       let skippedLoadingDirectory = false;
-      if (fileTreeSearchQueryText()) await runFileTreeSearch();
+      if (fileTreeSearchQueryText()) await runFileTreeSearch({ background: true });
       else skippedLoadingDirectory = await refreshLoadedFileTreeDirectories(refreshContext);
       if (skippedLoadingDirectory && isCurrentTabContext(refreshContext)) retryContext = refreshContext;
       refreshContext = fileTreeLiveRefreshPendingContext;

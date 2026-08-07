@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-architecture-review
+# Architecture Review
 
-A Pi skill for architecture reviews, module boundaries, dependency direction, coupling/cohesion, SOLID concerns, system design trade-offs, layering, service boundaries, or design decisions before implementation.
+Review how a software system is organized before its structure becomes difficult to change.
 
-## What it does
+## Helpful when
 
-- Adds the `architecture-review` skill to Pi's skill library.
-- Guides agents to invoke the skill for architecture reviews, module boundaries, dependency direction, coupling/cohesion, SOLID concerns, system design trade-offs, layering, service boundaries, or design decisions before implementation.
-- Bundles `skills/architecture-review/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You are planning a new system or large feature.
+- Parts of a project feel too dependent on each other.
+- You want a second opinion before implementation starts.
+
+## What to share with Pi
+
+- A diagram, plan, or relevant project files
+- The main goals and constraints
+- Expected users, scale, or future changes
+
+## Try asking
+
+> Review this system design. Show me what is clear, what may become hard to maintain, and the smallest improvements worth making now.
+
+## What you’ll get
+
+- Strengths and problem areas
+- Important trade-offs in everyday language
+- Practical changes ordered by value
+
+## Keep in mind
+
+There is rarely one perfect design. Recommendations will explain the trade-offs instead of presenting personal preference as fact.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for architecture reviews, module boundaries, dependency direction, co
 pi install npm:@firstpick/pi-skill-architecture-review
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `architecture-review`.
-Agent: Invokes the `architecture-review` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-architecture-review/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

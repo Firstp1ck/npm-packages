@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-design-patterns
+# Design Patterns
 
-A Pi skill for tasks involving choosing patterns, designing traits/interfaces/components, deciding abstraction boundaries, evaluating dependency injection/callbacks, or comparing implementation approaches in Rust, TypeScript/React, or Django/Python.
+Choose a simple, proven way to organize code when the design choices are not obvious.
 
-## What it does
+## Helpful when
 
-- Adds the `design-patterns` skill to Pi's skill library.
-- Guides agents to invoke the skill when choosing patterns, designing traits/interfaces/components, deciding abstraction boundaries, evaluating dependency injection/callbacks, or comparing implementation approaches in Rust, TypeScript/React, or Django/Python.
-- Bundles `skills/design-patterns/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- Several parts of the system need similar behavior.
+- You are unsure where responsibilities should live.
+- A design is becoming hard to test or extend.
+
+## What to share with Pi
+
+- The problem you are solving
+- A small example of the current code or design
+- Expected future changes and important constraints
+
+## Try asking
+
+> Help me choose a simple design for these interchangeable payment providers. Explain the options and avoid unnecessary complexity.
+
+## What you’ll get
+
+- A small set of suitable options
+- Plain-language benefits and drawbacks
+- A recommended approach with an example
+
+## Keep in mind
+
+A named pattern is not automatically better. The simplest design that meets the real need should win.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving choosing patterns, designing traits/interfaces/co
 pi install npm:@firstpick/pi-skill-design-patterns
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `design-patterns`.
-Agent: Invokes the `design-patterns` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-design-patterns/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

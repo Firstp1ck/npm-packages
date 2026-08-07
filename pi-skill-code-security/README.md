@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-code-security
+# Code Security
 
-A Pi skill for code security reviews, leaked secret checks, dependency risk, unsafe shell/Python/TypeScript/Rust patterns, auth/input-validation flaws, SAST-style audits, or supply-chain concerns in repositories.
+Look for realistic security problems before they put users, data, or systems at risk.
 
-## What it does
+## Helpful when
 
-- Adds the `code-security` skill to Pi's skill library.
-- Guides agents to invoke the skill for code security reviews, leaked secret checks, dependency risk, unsafe shell/Python/TypeScript/Rust patterns, auth/input-validation flaws, SAST-style audits, or supply-chain concerns in repositories.
-- Bundles `skills/code-security/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You changed sign-in, permissions, payments, or sensitive data handling.
+- You want to check for exposed passwords or keys.
+- You are preparing an application or service for release.
+
+## What to share with Pi
+
+- The files, branch, or project to review
+- What the software protects and who can access it
+- Any known concerns or likely threats
+
+## Try asking
+
+> Review this sign-in change for security problems. Show evidence, explain the real-world risk, and suggest the smallest safe fix.
+
+## What you’ll get
+
+- Prioritized findings with evidence
+- A clear explanation of who or what could be affected
+- Practical fixes and ways to verify them
+
+## Keep in mind
+
+A review can find important risks, but it cannot prove complete security. Redact any discovered secret values, and require explicit approval before installing scanners, changing dependencies, rewriting Git history, rotating credentials, or force pushing.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for code security reviews, leaked secret checks, dependency risk, uns
 pi install npm:@firstpick/pi-skill-code-security
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `code-security`.
-Agent: Invokes the `code-security` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-code-security/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

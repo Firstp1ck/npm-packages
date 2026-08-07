@@ -1,13 +1,32 @@
-# @firstpick/pi-skill-tauri-django-react
+# Tauri + Django + React
 
-A Pi skill for Tauri + Django + React desktop apps, especially backend lifecycle, CORS/auth, frontend integration, local-first desktop patterns, build packaging, updates, and platform-specific gotchas.
+Build and troubleshoot desktop apps that combine a Tauri shell, Django server, and React interface.
 
-## What it does
+## Helpful when
 
-- Adds the `tauri-django-react` skill to Pi's skill library.
-- Guides agents to invoke the skill for Tauri + Django + React desktop apps.
-- Covers backend lifecycle, hybrid auth, frontend integration, local SQLite configuration, installer/update flows, packaging, and platform gotchas.
-- Bundles `skills/tauri-django-react/SKILL.md` plus helper scripts used by the skill.
+- The desktop and browser versions behave differently.
+- The app has sign-in, connection, startup, or packaging problems.
+- You are planning how the three parts should work together.
+
+## What to share with Pi
+
+- The relevant project files and platform
+- What works in the browser and what fails on desktop
+- Build output or errors with secrets removed
+
+## Try asking
+
+> Find why this desktop app cannot sign in while the browser version works. Check startup, connections, permissions, and packaging.
+
+## What you’ll get
+
+- A likely cause across the three app layers
+- Focused changes and setup guidance
+- Checks for both desktop and browser builds
+
+## Keep in mind
+
+Behavior can differ by operating system and package version. For projects it creates or updates, this workflow requires GitHub release automation; it also expects a local start script unless declined. React frontends that it creates or substantially updates default to light/dark theming and German/English text unless declined, while desktop update support requires a configurable filesystem path unless you choose only Tauri’s built-in updater. Its scaffold writes project files (`--force` overwrites), and its generated release helper can commit, push, and tag; review and approve those effects before running them.
 
 ## Install
 
@@ -15,68 +34,8 @@ A Pi skill for Tauri + Django + React desktop apps, especially backend lifecycle
 pi install npm:@firstpick/pi-skill-tauri-django-react
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Expected project structure
-
-The skill targets projects that combine Tauri, Django, and React. The exact layout can vary, but the included examples and helper scripts assume a project root with separate backend, frontend, and Tauri areas.
-
-Typical layout:
-
-```text
-project-root/
-  backend/
-    manage.py
-    tauri_entry.py
-    pyinstaller.spec
-  frontend/
-    package.json
-    src/
-  src-tauri/
-    tauri.conf.json
-    Cargo.toml
-  scripts/
-    start.sh
-    build-backend.sh
-    build-backend.ps1
-    release.sh
-  .github/workflows/
-    release.yml
-```
-
-The skill package also bundles helper scripts relative to the installed skill directory:
-
-```text
-skills/tauri-django-react/
-  SKILL.md
-  scripts/
-    scaffold.py
-    validate.py
-```
-
-Manual usage example:
-
-```bash
-python3 /path/to/installed/package/skills/tauri-django-react/scripts/validate.py \
-  --project-root /path/to/project \
-  --format json
-```
-
-The generated or validated project usually needs standard toolchains installed separately: Python/Django dependencies, Node frontend dependencies, Rust/Cargo, Tauri CLI, PyInstaller, and optionally Waitress for packaged backends.
-
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `tauri-django-react`.
-Agent: Invokes the `tauri-django-react` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-tauri-django-react/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

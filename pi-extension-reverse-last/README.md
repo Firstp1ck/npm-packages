@@ -1,43 +1,34 @@
-# pi-extension-reverse-last
+# Reverse Last for Pi
 
-Session-local undo for Pi `write` and `edit` file changes.
+Undo the most recent changes made through Pi’s write and edit tools.
 
-## What it does
+## What you can do
 
-- Captures pre-change file snapshots for successful `write`/`edit` tool calls.
-- Maintains a per-session undo stack.
-- Restores one or multiple recent changes with a command.
+- Tracks changes made through Pi’s write and edit tools.
+- Shows which recent change can be undone.
+- Restores one or several recent change steps.
+- Keeps undo limited to changes it can safely identify.
 
 ## Install
+
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-reverse-last
 ```
 
-## Configuration
+Restart Pi if the package does not appear in your current session.
 
-- `PI_REVERSE_LAST_STATE_DIR` (optional)
-  - Override undo state storage directory.
-  - Accepts absolute paths or home-relative paths.
-  - Default: `~/.pi/agent/state/reverse-last`
+## How to use it
 
-## Commands
+Run `/reverse-last` to preview and undo the latest Pi file change. Add a number when you need to reverse several recent change steps together.
 
 - `/reverse-last [count]` — undo last successful file changes in current session.
 
-## Tools
+## Before you start
 
-- `reverse_last` — undo the most recent write/edit file changes captured in this session.
+No setup is required. Undo history is kept only for the current Pi session unless you configure another state directory.
 
-## Example view
+## Technical details
 
-```text
-/reverse-last
-Restored 1 file from the session undo stack:
-- src/config.ts
-
-/reverse-last 2
-Restored 2 recent file changes.
-```
-
-This is a quick escape hatch for recent Pi `write`/`edit` changes in the current session.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-reverse-last/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

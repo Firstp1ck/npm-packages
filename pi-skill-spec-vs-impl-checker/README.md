@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-spec-vs-impl-checker
+# Specification vs Implementation Checker
 
-A Pi skill for tasks involving a spec, plan, README, issue, or requirement must be verified against implementation. Traces requirements to code, checks interface contracts, and reports gaps or mismatches.
+Check whether the software does what its specification, plan, or documentation promises.
 
-## What it does
+## Helpful when
 
-- Adds the `spec-vs-impl-checker` skill to Pi's skill library.
-- Guides agents to invoke the skill when a spec, plan, README, issue, or requirement must be verified against implementation. Traces requirements to code, checks interface contracts, and reports gaps or mismatches.
-- Bundles `skills/spec-vs-impl-checker/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- A feature must match written requirements.
+- Documentation may be out of date.
+- You want to find missing or conflicting behavior before release.
+
+## What to share with Pi
+
+- The specification, plan, README, or issue
+- The code or project to compare
+- Which requirements matter most
+
+## Try asking
+
+> Compare this implementation with the specification. Trace each requirement to evidence and clearly report anything missing or different.
+
+## What you’ll get
+
+- A requirement-by-requirement comparison
+- Evidence from the implementation
+- Missing, conflicting, or uncertain behavior
+
+## Keep in mind
+
+If either the specification or the implementation is unclear, the result will identify the gap rather than inventing intent.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving a spec, plan, README, issue, or requirement must 
 pi install npm:@firstpick/pi-skill-spec-vs-impl-checker
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `spec-vs-impl-checker`.
-Agent: Invokes the `spec-vs-impl-checker` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-spec-vs-impl-checker/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.
