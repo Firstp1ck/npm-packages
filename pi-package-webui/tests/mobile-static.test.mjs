@@ -10,7 +10,7 @@ const [pkgRaw, html, css, app, server, extension, readme, startScript, manifestR
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "public", "app.js"), "utf8"),
-  readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
+  readFile(join(root, "bin", "pi-webui.mjs"), "utf8").then((value) => value.replace(/\r\n/g, "\n")),
   readFile(join(root, "index.ts"), "utf8"),
   readFile(join(root, "README.md"), "utf8"),
   readFile(join(root, "dev", "scripts", "start-webui.sh"), "utf8"),
@@ -853,8 +853,8 @@ assert.match(server, /options\.cwd = await validateStartupCwd\(options\.cwd\)/, 
 assert.match(server, /cwdExplicit: false/, "server should track whether startup cwd was explicitly requested");
 assert.match(server, /return options\.cwdExplicit \? \[await createTab\(\)\] : \[\]/, "server should wait for UI cwd selection when no --cwd is supplied");
 assert.match(server, /async function resolvedPiCliScript\(\)[\s\S]*require\.resolve\.paths\(PI_CODING_AGENT_PACKAGE\)[\s\S]*nodeModulesRoot[\s\S]*dist[\s\S]*cli\.js/, "server should resolve the bundled Pi CLI through Node resolution roots so hoisted global installs can spawn RPC tabs");
-assert.match(server, /const bundledCli = await resolvedPiCliScript\(\)/, "standalone server should prefer the resolved Pi CLI script before falling back to PATH pi");
-assert.match(server, /if \(options\.piBinExplicit\) \{\n\s+resolveCommand = \(args\) => resolvePiCommand\(args\)/, "explicit --pi JavaScript launchers should also work for capability checks and update commands");
+assert.match(server, /canonicalPiRuntimeIdentity[\s\S]*bundledCli: await resolvedPiCliScript\(\)/, "standalone server should use the canonical resolver with the bundled Pi CLI before PATH pi");
+assert.match(server, /resolveCanonicalPiRuntime\([\s\S]*explicitCommand: options\.piBinExplicit \? options\.piBin : ""[\s\S]*bundledCli/, "updates should resolve the same canonical explicit or bundled Pi identity used by tabs");
 assert.match(app, /serverActionSelect\.addEventListener\("change", updateServerActionButton\)/, "Server action dropdown should control the guarded run button");
 assert.match(app, /runServerActionButton\.addEventListener\("click"[\s\S]*runSelectedServerAction/, "Server action run button should execute the selected action");
 assert.match(app, /api\("\/api\/restart", \{ method: "POST", scoped: false \}\)/, "Restart Server action should call the unscoped restart endpoint");
@@ -862,18 +862,16 @@ assert.match(app, /setServerActionStatus\(message, "warn"\);\n\s+setServerRestar
 assert.match(app, /const showOfflinePanel = backendOffline && !serverRestartInProgress/, "intentional restart should suppress the generic offline shell while reconnecting");
 assert.match(app, /api\("\/api\/shutdown", \{ method: "POST", scoped: false \}\)/, "Stop Server action should call the unscoped shutdown endpoint");
 assert.match(server, /url\.pathname === "\/api\/restart" && req\.method === "POST"/, "server should expose restart endpoint");
-assert.match(server, /PI_WEBUI_RESTORE_TABS: JSON\.stringify\(restorableTabs \|\| \[\]\)/, "server restart should preserve restorable tab metadata");
+assert.match(server, /PI_WEBUI_RESTORE_FILE: restore\.file/, "server restart should pass tab metadata through a private read-once restore file");
 assert.match(server, /if \(webuiDevServer\) env\.PI_WEBUI_DEV = "1";/, "server restart should explicitly preserve dev mode");
-assert.match(server, /async function piUpdateCommandSupportsAll\(command\)[\s\S]*runCommand\(command\.command, command\.args \|\| \[\][\s\S]*piUpdateHelpSupportsAll/, "server should check the selected Pi executable's update help");
-assert.match(server, /const supportsAll = all && await piUpdateCommandSupportsAll\(await resolveCommand\(\["update", "--help"\]\)\)[\s\S]*piUpdateCommandSteps\(\{ all, supportsAll \}\)/, "server should prefer --all only when the capability check succeeds");
-assert.match(server, /async function resolveUpdateTasks\(\{ all = false \} = \{\}\)[\s\S]*const piTasks = await resolvePiUpdateCommands\(\{ all \}\)[\s\S]*if \(!all\) return uniqueUpdateTasks\(piTasks\)[\s\S]*currentWebuiPackageUpdateTask\(npmRuntime\)[\s\S]*agentPackageRootUpdateTask\(npmRuntime\)[\s\S]*projectPackageRootUpdateTasks\(npmRuntime\)[\s\S]*npmGlobalPackageRootUpdateTask\(npmRuntime\)[\s\S]*bunGlobalPackageRootUpdateTask\(\)/, "server all-update should run the selected Pi plan plus detected local/global Pi package root tasks with install-aware npm resolution");
-assert.match(server, /const OPTIONAL_FEATURE_PACKAGE_NAMES = new Set\(OPTIONAL_FEATURE_PACKAGES\.values\(\)\)[\s\S]*const UPDATE_PACKAGE_NAMES = \[\.\.\.CORE_UPDATE_PACKAGE_NAMES\]\.sort\(\)/, "direct package-root updates should target core packages while retaining the Optional Feature exclusion set");
-assert.match(server, /function isWebuiOrPiPackageName\(packageName\)[\s\S]*OPTIONAL_FEATURE_PACKAGE_NAMES\.has\(name\)\) return false/, "direct npm and Bun update discovery should leave Optional Features under Pi management");
-assert.match(app, /const commandText = all \? '"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"' : '"pi update --self"'/, "frontend update confirmation should describe capability selection and fallback");
-assert.match(app, /configured packages including Optional Features, and detected core Pi\/Web UI package roots/, "frontend all-update confirmation should distinguish Pi-managed Optional Features from direct core-root updates");
-assert.match(app, /api\(all \? "\/api\/update\?all=1" : "\/api\/update"/, "frontend all update should call the explicit all-mode endpoint");
-assert.match(html, /<option value="update-all">Update Pi \+ Packages &amp; Restart<\/option>/, "side panel should expose package-inclusive updates as a separate server action");
-assert.match(readme, /first checks the selected Pi executable's `pi update --help`[\s\S]*uses `pi update --all` when advertised[\s\S]*otherwise falls back/, "README should document the checked preferred and fallback update modes");
+assert.match(server, /url\.pathname === "\/api\/update\/plan"[\s\S]*createServerOwnedUpdatePlan/, "server should expose exact server-owned update planning");
+assert.match(server, /url\.pathname === "\/api\/update\/apply"[\s\S]*validateUpdateApplyRequest[\s\S]*applyServerOwnedUpdate/, "server should apply only a transaction id and plan digest");
+assert.match(server, /Legacy update mutation is disabled/, "divergent legacy update mutation routes should fail closed");
+assert.doesNotMatch(server, /function resolveUpdateTasks|function projectPackageRootUpdateTasks|function npmGlobalPackageRootUpdateTask|function bunGlobalPackageRootUpdateTask/, "broad heuristic package-root mutation should be removed");
+assert.match(app, /Exact immutable plan digest:[\s\S]*persisted exact-target plan[\s\S]*will not re-resolve latest or scan package roots/, "frontend confirmation should bind users to the exact plan digest and fail-closed scope");
+assert.match(app, /api\("\/api\/update\/apply", \{ method: "POST", body: \{ transactionId: plan\.transactionId, planDigest: plan\.digest \}/, "frontend should apply only the confirmed transaction and digest");
+assert.match(html, /<option value="update-all">/, "side panel should retain a combined update action while routing through exact plans");
+assert.match(readme, /exact-target plan|plan digest/i, "README should document exact update plans");
 assert.match(server, /async function closeNetworkAccess\(\)/, "server should expose a local-only rebind helper for closing network access");
 assert.match(server, /url\.pathname === "\/api\/network\/close" && req\.method === "POST"/, "server should route network close requests");
 assert.match(server, /server\.closeAllConnections\?\.\(\)/, "network rebind should force-close long-lived clients so close-to-localhost can complete");
@@ -1367,7 +1365,7 @@ assert.match(app, /if \(response\.data\?\.level\) requestGitFooterWebuiPayload\(
 assert.match(app, /Loading git footer status…/, "missing git footer payload should show a loading state before declaring the extension unavailable");
 assert.match(app, /GIT_FOOTER_WEBUI_PAYLOAD_CACHE_KEY/, "git footer payloads should be cached across Web UI reloads");
 assert.match(app, /function setOptionalFeatureDisabled\(featureId, disabled\)[\s\S]*clearGitFooterWebuiPayloadCache\(\)/, "changing the git footer feature toggle should invalidate the cached footer payload");
-const workspaceInfoSource = server.match(/async function getWorkspaceInfo[\s\S]*?\n}\n\nlet activeGitWorkflowProcess/)?.[0] || "";
+const workspaceInfoSource = server.match(/async function getWorkspaceInfo[\s\S]*?\r?\n}\r?\n\r?\nlet activeGitWorkflowProcess/)?.[0] || "";
 assert.ok(workspaceInfoSource, "server workspace info source should be inspectable");
 assert.doesNotMatch(workspaceInfoSource, /runCommand\("git"|branchStatus|isRepo/, "Web UI workspace endpoint should not duplicate git footer status collection");
 assert.match(app, /function renderOptionalFeatureDependentDisplays\(\)[\s\S]*renderOptionalFeatureControls\(\);[\s\S]*renderThemeSelect\(\);[\s\S]*renderWidgets\(\);[\s\S]*renderStatus\(\);[\s\S]*renderCommands\(\);[\s\S]*renderAllMessages\(\{ preserveScroll: true, forceRebuild: true \}\);[\s\S]*if \(streamRawText\) renderStreamingAssistantText\(\);/, "optional feature toggles should immediately refresh visible controls, commands, transcript, and live stream displays");
@@ -2085,8 +2083,8 @@ assert.match(server, /type: "webui_extension_ui_resolved"[\s\S]*?pendingExtensio
 assert.match(server, /command\.type === "abort"[\s\S]*?cancelPendingExtensionUiRequests\(tab\)/, "abort should cancel hidden pending extension UI requests");
 assert.match(server, /type: "webui_extension_ui_cancelled"/, "server should notify browsers when pending extension UI requests are cancelled");
 assert.match(server, /async function handleNativeSlashCommand\(tab, body, req\)/, "server should intercept supported native slash commands with request context for security guards");
-assert.match(server, /const restoreTabs = readRestoreTabsFromEnv\(\)/, "server should accept restart tab restore descriptors from the launcher environment");
-assert.match(server, /delete process\.env\.PI_WEBUI_RESTORE_TABS/, "server should avoid leaking restore descriptors into spawned Pi RPC processes");
+assert.match(server, /const restoreTabs = await readRestoreTabsFromEnv\(\)/, "server should accept private restart tab restore descriptors from the launcher environment");
+assert.match(server, /delete process\.env\.PI_WEBUI_RESTORE_FILE[\s\S]*delete process\.env\.PI_WEBUI_RESTORE_TABS/, "server should avoid leaking private or obsolete restore descriptors into spawned Pi RPC processes");
 assert.match(server, /if \(sessionFile && !options\.noSession\) piArgs\.push\("--session", sessionFile\)/, "restored tabs should resume previous session files");
 assert.doesNotMatch(server, /args\.push\("--name"/, "Web UI tab titles should not be forwarded as Pi CLI --name flags because older bundled Pi CLIs reject them");
 assert.match(server, /const closedRestorableTabs = \[\]/, "server should track recently closed tabs separately from restart restore descriptors");
@@ -2108,7 +2106,7 @@ assert.match(extension, /const openTabSources: unknown\[\] = \[\]/, "launcher sh
 assert.match(extension, /const detailedTabs = statusData\?\.tabs;\n\s+if \(Array\.isArray\(detailedTabs\)\) openTabSources\.push\(detailedTabs\)/, "launcher should prefer detailed open tabs over restorableTabs that may include closed tabs");
 assert.match(extension, /if \(openTabSources\.length > 0\) return mergeRestorableTabsFromStatusSources\(openTabSources, options\)/, "launcher should restore only open tabs when open tab lists are available");
 assert.match(extension, /return mergeRestorableTabsFromStatusSources\(\[statusData\?\.restorableTabs, existing\.restorableTabs\], options\)/, "launcher should use restorableTabs only as a legacy fallback");
-assert.match(extension, /env\.PI_WEBUI_RESTORE_TABS = JSON\.stringify\(restoreTabs\)/, "launcher should pass restorable tabs to the new detached server");
+assert.match(extension, /env\.PI_WEBUI_RESTORE_FILE = \(await createRestoreFile\(agentDir, restoreTabs\)\)\.file/, "launcher should pass restorable tabs through a private read-once file");
 assert.match(extension, /pi\.registerCommand\("webui-start"/, "extension should expose the canonical /webui-start command");
 assert.match(extension, /pi\.registerCommand\("webui-tree-navigate"/, "extension should expose the internal Web UI tree navigation command");
 assert.match(extension, /ctx\.navigateTree\(payload\.entryId/, "internal Web UI tree command should call the native session tree navigation API");

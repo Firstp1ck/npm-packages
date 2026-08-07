@@ -170,7 +170,9 @@ const args = process.argv.slice(2);
 const log = async (entry) => appendFile(process.env.FAKE_PI_CLI_LOG, JSON.stringify({ at: Date.now(), ...entry }) + "\\n", "utf8");
 process.on("SIGTERM", () => process.exit(143));
 process.on("SIGINT", () => process.exit(130));
-if (args[0] === "install") {
+if (args[0] === "--version") {
+  console.log("0.84.0");
+} else if (args[0] === "install") {
   const source = String(args[1] || "");
   await log({ event: "start", args });
   if (source === "npm:@firstpick/pi-extension-stats") {
@@ -323,7 +325,7 @@ async function runOptionalFeatureFocus() {
 
   const initial = await request("127.0.0.1", "/api/optional-features");
   assert.equal(initial.status, 200);
-  assert.equal(initial.body?.data?.features?.length, 19);
+  assert.equal(initial.body?.data?.features?.length, 20);
   const aurBefore = initial.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
   assert.deepEqual({ installed: aurBefore?.installed, configured: aurBefore?.configured, ready: aurBefore?.ready }, { installed: true, configured: false, ready: false });
   assert.equal(aurBefore?.expectedSpec, "^0.1.1");
@@ -1255,7 +1257,7 @@ try {
 
   const optionalFeatures = await request("127.0.0.1", "/api/optional-features");
   assert.equal(optionalFeatures.status, 200, "optional feature status should load");
-  assert.equal(optionalFeatures.body?.data?.features?.length, 19, "the explicit server catalog should expose every allowlisted feature");
+  assert.equal(optionalFeatures.body?.data?.features?.length, 20, "the explicit server catalog should expose every allowlisted feature");
   const aurReviewFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
   assert.equal(aurReviewFeature?.expectedSpec, "^0.1.1", "status should expose the catalog-owned compatibility spec");
   assert.equal(aurReviewFeature?.installed, true, "workspace discovery should find the local pi-extension-aur-review sibling without an npm dependency");
@@ -1312,7 +1314,7 @@ try {
   assert.equal(unknownBatch.status, 400, "batch installs must reject unknown IDs before starting any command");
   const oversizedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
     method: "POST",
-    body: { tab: tabId, revision: currentBatchRevision, featureIds: Array.from({ length: 20 }, () => "aurReview") },
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: Array.from({ length: 21 }, () => "aurReview") },
   });
   assert.equal(oversizedBatch.status, 400, "batch installs must cap raw input to the catalog size");
   const staleBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
@@ -3693,6 +3695,15 @@ try {
 
     const remoteWorkflowPolicyRead = await request(lan, "/api/workflow-policy");
     assert.equal(remoteWorkflowPolicyRead.status, 403, "workflow policy reads must be localhost-only");
+
+    const remoteUpdatePlan = await request(lan, "/api/update/plan", { method: "POST", body: { targets: ["pi"] } });
+    assert.equal(remoteUpdatePlan.status, 403, "update plans must be localhost-only before target resolution");
+    const remoteUpdateApply = await request(lan, "/api/update/apply", { method: "POST", body: { transactionId: "remote", planDigest: "a".repeat(64) } });
+    assert.equal(remoteUpdateApply.status, 403, "update apply must be localhost-only before journal lookup");
+    const remoteUpdateTransaction = await request(lan, "/api/update/transactions/remote");
+    assert.equal(remoteUpdateTransaction.status, 403, "update transaction receipts must be localhost-only");
+    const remoteUpdateRollback = await request(lan, "/api/update/rollback", { method: "POST", body: { transactionId: "remote", planDigest: "a".repeat(64) } });
+    assert.equal(remoteUpdateRollback.status, 403, "update rollback must be localhost-only before pointer mutation");
 
     const remoteWorkflowPolicySave = await request(lan, "/api/workflow-policy", {
       method: "POST",

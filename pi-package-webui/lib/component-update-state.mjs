@@ -37,6 +37,27 @@ export function validateComponentUpdateRequest(body) {
   return { ok: true, target: body.target };
 }
 
+export function validateUpdatePlanRequest(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "Request body must be an object." };
+  const keys = Object.keys(body).sort();
+  if (keys.some((key) => !["targets"].includes(key)) || !Array.isArray(body.targets) || body.targets.length < 1 || body.targets.length > 2) {
+    return { ok: false, error: "targets must contain one or both exact values: pi, webui." };
+  }
+  const targets = [...new Set(body.targets)];
+  if (targets.length !== body.targets.length || targets.some((target) => !TARGET_SET.has(target))) return { ok: false, error: "targets contains an unsupported or duplicate target." };
+  return { ok: true, targets };
+}
+
+export function validateUpdateApplyRequest(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "Request body must be an object." };
+  const keys = Object.keys(body).sort();
+  if (keys.join(",") !== "planDigest,transactionId") return { ok: false, error: "Apply accepts only transactionId and planDigest." };
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(String(body.transactionId || "")) || !/^[a-f0-9]{64}$/.test(String(body.planDigest || ""))) {
+    return { ok: false, error: "transactionId or planDigest is invalid." };
+  }
+  return { ok: true, transactionId: body.transactionId, planDigest: body.planDigest };
+}
+
 function initialState(target) {
   return {
     target,

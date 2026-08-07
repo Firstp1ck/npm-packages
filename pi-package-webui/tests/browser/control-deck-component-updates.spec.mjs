@@ -89,23 +89,18 @@ test("component tags and dialogs expose safe background update lifecycle", async
       body: JSON.stringify({ ok: true, data: { version: "0.84.0", body: "Fixture v0.84.0 release notes", url: "https://example.test/pi/v0.84.0" } }),
     });
   });
-  await page.route("**/api/component-update", async (route) => {
+  const plan = { transactionId: "browser-pi-plan", digest: "a".repeat(64), targets: [{ id: "pi", currentVersion: "0.83.0", targetVersion: "0.84.0" }], refusals: [] };
+  await page.route("**/api/update/plan", async (route) => {
     const body = route.request().postDataJSON();
-    requests.push({ method: route.request().method(), body });
-    const target = body?.target;
+    requests.push({ endpoint: "plan", method: route.request().method(), body });
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ ok: true, data: { plan } }) });
+  });
+  await page.route("**/api/update/apply", async (route) => {
+    const body = route.request().postDataJSON();
+    requests.push({ endpoint: "apply", method: route.request().method(), body });
     status.updateInProgress = true;
-    status.componentUpdates[target] = {
-      ...status.componentUpdates[target],
-      state: "running",
-      canStart: false,
-      message: `Updating ${target === "pi" ? "Pi" : "Web UI"}…`,
-      error: "",
-    };
-    await route.fulfill({
-      status: 202,
-      contentType: "application/json",
-      body: JSON.stringify({ ok: true, data: status.componentUpdates[target] }),
-    });
+    status.componentUpdates.pi = { ...status.componentUpdates.pi, state: "running", canStart: false, message: "Updating Pi…", error: "" };
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true, data: { state: "applying", outcome: "success", receipts: [{ targetId: "pi", status: "success" }] } }) });
   });
   await page.route("**/api/update-status*", async (route) => {
     if (status.componentUpdates.pi.state === "running") {
@@ -150,15 +145,15 @@ test("component tags and dialogs expose safe background update lifecycle", async
   await expect(page.locator("#piComponentUpdateStatus")).toContainText("Pi v0.83.0 → v0.84.0 is available");
   await page.locator("#piComponentUpdateButton").click();
   await expect(page.locator("#confirmationDialog")).toBeVisible();
-  await expect(page.locator("#confirmationSummary")).toContainText("Web UI server and running Pi tabs are not restarted");
+  await expect(page.locator("#confirmationSummary")).toContainText("Bundled Pi updates are staged with the current Web UI in a side-by-side managed runtime");
   await page.locator("#confirmationConfirmButton").click();
 
-  await expect(piTag).toHaveAttribute("data-update-state", "running");
-  await expect(piTag).toHaveAccessibleName(/update running/);
-  await expect(page.locator("#piComponentUpdateButton")).toBeDisabled();
-  assert.deepEqual(requests, [{ method: "POST", body: { target: "pi" } }], "the dialog must submit exactly one Pi-only POST");
+  assert.deepEqual(requests, [
+    { endpoint: "plan", method: "POST", body: { targets: ["pi"] } },
+    { endpoint: "apply", method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest } },
+  ], "the dialog must create one target-only plan and apply only its transaction id plus digest");
 
-  await expect(piTag).toHaveAttribute("data-update-state", "succeeded", { timeout: 5_000 });
+  await expect(piTag).toHaveAttribute("data-update-state", "succeeded", { timeout: 8_000 });
   await expect(page.locator("#piComponentUpdateStatus")).toContainText("New or reloaded Pi sessions use the update");
   await expect(page.locator("#piComponentUpdateStatus")).toContainText("already-running tabs keep their current runtime");
   assert.ok(statusPollsAfterStart >= 1, "the browser should poll while the accepted job is running");

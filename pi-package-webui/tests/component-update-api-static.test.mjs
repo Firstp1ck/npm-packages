@@ -3,80 +3,26 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const server = await readFile(join(packageRoot, "bin", "pi-webui.mjs"), "utf8");
-
-assert.match(
-  server,
-  /function updateStatusForRequest\(status, req\)[\s\S]*updateInProgress: privilegedUpdateInProgress\(\)[\s\S]*componentUpdates: componentUpdatesForRequest\(req\)/,
-  "update status should preserve top-level single-flight state and add per-component public state",
-);
-assert.match(
-  server,
-  /url\.pathname === "\/api\/component-update" && req\.method === "POST"[\s\S]*requireLocalhostRoute\(req, url\.pathname\)[\s\S]*readJsonBody\(req\)[\s\S]*validateComponentUpdateRequest\(body\)[\s\S]*startComponentUpdate\(validation\.target\)[\s\S]*sendJson\(res, 202/,
-  "component update starts should be localhost-only, validated, asynchronous 202 responses",
-);
-assert.match(
-  server,
-  /function startComponentUpdate\(target\)[\s\S]*piUpdateInProgress \|\| componentUpdateState\.hasRunning\(\)[\s\S]*componentUpdateState\.begin\(target\)[\s\S]*setImmediate\(\(\) => \{ void runComponentUpdate\(target\); \}\)/,
-  "component starts should reserve shared single-flight state before scheduling background execution",
-);
-assert.match(
-  server,
-  /async function runPiUpdateAndPrepareRestart[\s\S]*if \(componentUpdateState\.hasRunning\(\)\) throw makeHttpError\(409/,
-  "legacy updates should conflict with running component jobs",
-);
-assert.match(
-  server,
-  /async function currentPiRuntimeVersion\(\)[\s\S]*resolvePiCommand\(\["--version"\]\)[\s\S]*parsePackageVersion/,
-  "Pi status should query the runtime used by Web UI tabs instead of trusting startup package metadata",
-);
-assert.match(
-  server,
-  /async function currentBundledPiComponentUpdateTask\(npmRuntime = \{\}\)[\s\S]*resolvedPiCliScript\(\)[\s\S]*path\.join\(packageRoot, "node_modules"\)[\s\S]*preserveManifest: true/,
-  "a nested Web UI Pi runtime should be updated in its owning package root without rewriting the published manifest",
-);
-assert.match(
-  server,
-  /async function resolveComponentUpdateTasks\(target\)[\s\S]*target === "pi"[\s\S]*currentBundledPiComponentUpdateTask\(\)[\s\S]*bundledTask \? \[bundledTask\] : resolvePiUpdateCommands\(\{ all: false \}\)[\s\S]*target === "webui"[\s\S]*currentWebuiComponentUpdateTask/,
-  "component resolution should update the actual bundled Pi runtime while keeping Pi-only and WebUI-only paths separate",
-);
-assert.match(
-  server,
-  /async function currentWebuiComponentUpdateTask\(npmRuntime = \{\}\)[\s\S]*webuiComponentUpdateUnavailableReason\(\)[\s\S]*global Bun Web UI package[\s\S]*`\$\{WEBUI_PACKAGE\}@latest`[\s\S]*npmPrefixUpdateTask\("current Web UI package", installRoot, \[WEBUI_PACKAGE\], npmRuntime\)/,
-  "Web UI updates should refuse source mode and update only the Web UI package in supported Bun/npm topologies",
-);
-assert.match(
-  server,
-  /function webuiComponentUpdateUnavailableReason\(\)[\s\S]*webuiDevServer \|\| !String\(packageRoot\).*includes\("node_modules"\)[\s\S]*source or development checkout/,
-  "source and development checkouts should fail closed",
-);
-assert.match(
-  server,
-  /target === "webui"[\s\S]*let npmRuntime = \{\}[\s\S]*resolvePiUpdateCommands\(\{ all: false \}\)[\s\S]*preferredDirectories:[\s\S]*piInstallDirectory[\s\S]*catch[\s\S]*webui_component_update_npm_resolution_fallback[\s\S]*currentWebuiComponentUpdateTask\(npmRuntime\)/,
-  "the Web UI updater should prefer npm from the selected Pi installation and fall back when Pi resolution is unavailable",
-);
-assert.match(
-  server,
-  /url\.pathname === "\/api\/update" && req\.method === "POST"[\s\S]*runPiUpdateAndPrepareRestart\(\{ all: queryAll \|\| bodyAll \}\)[\s\S]*sendJson\(res, 200[\s\S]*shutdown\("api update", \{ preserveSessions: true \}\)/,
-  "the legacy update route should retain update-all selection, 200 completion, restart, and session preservation",
-);
-const targetedWebuiUpdater = server.match(/async function currentWebuiComponentUpdateTask\([^)]*\)[\s\S]*?\n}\n\nasync function resolveComponentUpdateTasks/)?.[0];
-assert.ok(targetedWebuiUpdater, "the targeted Web UI updater source should be inspectable");
-assert.doesNotMatch(
-  targetedWebuiUpdater,
-  /UPDATE_PACKAGE_NAMES|packagesPresentInInstallPrefix|optionalFeature|projectPackageRoot/,
-  "the targeted Web UI updater must not broaden into package-root or optional package updates",
-);
-assert.match(
-  server,
-  /expectedPiVersion = target === "pi"[\s\S]*updateStatusCache\?\.pi\?\.latestVersion[\s\S]*checkLatestPiReleaseStatus\(\)[\s\S]*for \(const task of updateTasks\) await runUpdateTask\(task\);[\s\S]*currentPiRuntimeVersion\(\)[\s\S]*isNewerPackageVersion\(expectedPiVersion, installedVersion\)[\s\S]*Web UI runtime is still[\s\S]*componentUpdateState\.succeed/,
-  "Pi component updates must retain the advertised target and verify the runtime version before publishing success",
-);
-assert.match(
-  server,
-  /catch \(error\) \{\n\s*updateStatusCache = null;\n\s*updateStatusCacheAt = 0;\n\s*componentUpdateState\.fail/,
-  "failed component updates should invalidate cached package status before publishing terminal state",
-);
-
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const [server, state, launcher, activation, trust] = await Promise.all([
+  readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
+  readFile(join(root, "lib", "component-update-state.mjs"), "utf8"),
+  readFile(join(root, "bin", "pi-webui-launcher.mjs"), "utf8"),
+  readFile(join(root, "bin", "pi-webui-update-supervisor.mjs"), "utf8"),
+  readFile(join(root, "lib", "trust-boundaries.mjs"), "utf8"),
+]);
+assert.match(state, /validateUpdatePlanRequest[\s\S]*targets must contain one or both exact values/);
+assert.match(state, /validateUpdateApplyRequest[\s\S]*Apply accepts only transactionId and planDigest/);
+assert.match(server, /url\.pathname === "\/api\/update\/plan"[\s\S]*requireLocalhostRoute[\s\S]*validateUpdatePlanRequest[\s\S]*sendJson\(res, 201/);
+assert.match(server, /url\.pathname === "\/api\/update\/apply"[\s\S]*requireLocalhostRoute[\s\S]*validateUpdateApplyRequest[\s\S]*applyServerOwnedUpdate/);
+assert.match(server, /assertUpdatePlanDigest\(journal\.plan, planDigest\)[\s\S]*acquireInstallLock\(agentDir\)/);
+assert.match(server, /assertPlanIdentity\(target, active\)/);
+assert.match(server, /probeCandidateRuntime\(serverEntry, \{ expectedVersion: target\.metadata\.webuiVersion, expectedPiVersion: target\.metadata\.piVersion \}\)/);
+assert.match(server, /Legacy update mutation is disabled/);
+assert.match(server, /optionalFeaturePackageStatuses\(options\.cwd\)[\s\S]*strategy: "pi-owned-optional"[\s\S]*optionalFeature: true/);
+assert.match(trust, /"\/api\/update\/plan"[\s\S]*"\/api\/update\/apply"[\s\S]*"\/api\/update\/rollback"/);
+assert.match(server, /updateTransactionRoute && req\.method === "GET"[\s\S]*requireLocalhost\(req, "Viewing update transactions is only allowed from localhost"\)/);
+assert.doesNotMatch(server, /function resolveUpdateTasks|function projectPackageRootUpdateTasks|function npmGlobalPackageRootUpdateTask|function bunGlobalPackageRootUpdateTask/);
+assert.match(launcher, /readRuntimePointer\(agentDir, "current"\)[\s\S]*pointer\?\.serverEntry \|\| bootstrapServer/);
+assert.match(activation, /switchRuntimePointer[\s\S]*waitForHealth[\s\S]*rollbackRuntimePointer/);
 console.log("component update API static tests passed");

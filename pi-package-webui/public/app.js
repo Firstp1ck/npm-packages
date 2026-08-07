@@ -912,6 +912,7 @@ let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
 let latestUpdateStatus = null;
+let serverBootIdentity = "";
 let updateStatusRefreshTimer = null;
 let updateNotificationHideTimer = null;
 let componentUpdatePollTimer = null;
@@ -7354,6 +7355,7 @@ async function openPiReleaseNotes() {
 
 async function refreshWebuiVersion() {
   const health = await api("/api/health", { scoped: false });
+  if (health.bootIdentity) serverBootIdentity = health.bootIdentity;
   setWebuiVersion(health.webuiVersion);
   setPiVersion(health.piVersion);
   setWebuiDevServer(isWebuiDevMetadata(health));
@@ -7428,15 +7430,15 @@ function renderUpdateNotification(status = latestUpdateStatus, { force = false }
   if (elements.updateNotificationMessage) {
     let message = "Updates are available. Direct Web UI updates are only enabled from localhost on the host machine.";
     if (canRunUpdate) {
-      if (hasPiUpdate && hasPackageUpdate) message = "Run pi update --self for Pi only, or update all to use Pi for configured packages and Optional Features while refreshing detected core Pi/Web UI package roots, then restart this Web UI server automatically.";
-      else if (hasPackageUpdate) message = "Update all uses Pi for configured packages and Optional Features, then refreshes detected core Pi/Web UI package roots before restarting this Web UI server automatically.";
-      else message = "Run pi update --self for Pi only, then restart this Web UI server automatically.";
+      if (hasPiUpdate && hasPackageUpdate) message = "Create and confirm an exact combined update plan for eligible Pi, Web UI, and Pi-owned Optional Features; managed runtimes are staged, verified, activated, and restarted with rollback protection.";
+      else if (hasPackageUpdate) message = "Create and confirm an exact package update plan; managed Web UI runtimes are staged, verified, activated, and restarted with rollback protection.";
+      else message = "Create and confirm an exact Pi update plan; bundled Pi is staged with the Web UI, while an independent Pi executable is delegated to and verified.";
     }
     elements.updateNotificationMessage.textContent = message;
   }
   const details = [
     items.join(" · "),
-    latestUpdateStatus.webuiDev && latestUpdateStatus.webui?.updateAvailable ? "The current Web UI is a dev checkout; update all also refreshes detected Web UI/Optional Feature Pi package dependencies when possible." : "",
+    latestUpdateStatus.webuiDev && latestUpdateStatus.webui?.updateAvailable ? "The current Web UI is a source checkout and remains untouched; only separately verified, eligible targets can enter the exact update plan." : "",
     latestUpdateStatus.packages?.note || "",
   ].filter(Boolean).join(" ");
   if (elements.updateNotificationDetail) elements.updateNotificationDetail.textContent = details;
@@ -7526,7 +7528,7 @@ function componentUpdateStatusText(target) {
   if (job?.state === "succeeded") {
     const activation = target === "pi"
       ? "New or reloaded Pi sessions use the update; already-running tabs keep their current runtime until restarted."
-      : "Restart the Web UI server to use the update; it is not restarted automatically.";
+      : "The managed Web UI runtime was activated automatically; the browser reconnects after the verified restart.";
     return { text: `${job.message || `${label} update completed.`} ${activation}`, level: "success" };
   }
   if (job?.state === "failed") {
@@ -7599,13 +7601,20 @@ function syncComponentUpdatePolling() {
   }
 }
 
+function separatePathPiPlanNotice(plan) {
+  const identities = Array.isArray(plan?.identities) ? plan.identities : [];
+  const activePi = identities.find((identity) => identity?.kind === "pi" && identity.source !== "path");
+  const pathPi = identities.find((identity) => identity?.kind === "pi" && identity.source === "path" && identity.canonicalId !== activePi?.canonicalId);
+  return pathPi ? `PATH Pi${pathPi.version ? ` v${pathPi.version}` : ""} is a separate installation and will remain untouched. Run pi update in a terminal to update it.` : "";
+}
+
 function componentUpdateConfirmationText(target) {
   const pkg = latestUpdateStatus?.[target] || {};
   const versionText = pkg.updateAvailable ? `\n\nDetected update: ${packageUpdateText(componentUpdateLabel(target), pkg)}.` : "";
   if (target === "pi") {
-    return `Update Pi in the background now?${versionText}\n\nThis runs the existing "pi update --self" resolution on the Web UI host. The Web UI server and running Pi tabs are not restarted; new or reloaded Pi sessions use the updated Pi.`;
+    return `Create and apply an exact Pi update plan now?${versionText}\n\nBundled Pi updates are staged with the current Web UI in a side-by-side managed runtime and activated with a health-gated restart. A verified independent Pi executable delegates to that exact executable and is rejected if it cannot reach the confirmed version.`;
   }
-  return `Update the Web UI package in the background now?${versionText}\n\nThis installs @firstpick/pi-package-webui@latest into the installation that started this server. The Web UI server is not restarted automatically; restart it afterwards to use the new version.`;
+  return `Create and apply an exact Web UI update plan now?${versionText}\n\nThe confirmed Web UI and Pi versions are staged outside the live installation, probed, and activated through the stable launcher. Activation restarts the Web UI automatically and rolls back the runtime pointer if health verification fails.`;
 }
 
 async function startComponentUpdate(target) {
@@ -7618,17 +7627,28 @@ async function startComponentUpdate(target) {
     renderComponentUpdateDialogs();
     return;
   }
-  const confirmed = await appConfirmText(componentUpdateConfirmationText(target), {
-    affected: target === "pi" ? "The Pi installation on the Web UI host" : "The Web UI package installation on this host",
-    confirmLabel: job?.state === "failed" ? `Retry ${label} update` : `Update ${label}`,
+  let plan;
+  try {
+    plan = (await api("/api/update/plan", { method: "POST", body: { targets: [target] }, scoped: false }))?.data?.plan;
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    return;
+  }
+  const planNotice = separatePathPiPlanNotice(plan);
+  const confirmed = await appConfirmText(`${componentUpdateConfirmationText(target)}${planNotice ? `\n\n${planNotice}` : ""}\n\nExact plan digest: ${plan.digest}`, {
+    affected: target === "pi" ? "The verified active Pi installation on the Web UI host" : "A side-by-side managed Web UI runtime",
+    confirmLabel: job?.state === "failed" ? `Retry ${label} update` : `Apply exact ${label} plan`,
     danger: false,
   });
   if (!confirmed) return;
   componentUpdateStartInProgress = true;
   renderComponentUpdateDialogs();
   try {
-    const response = await api("/api/component-update", { method: "POST", body: { target }, scoped: false });
-    const accepted = response?.data;
+    const response = await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false });
+    const acceptedState = ["applying", "verifying", "activating"].includes(response?.data?.state)
+      ? "running"
+      : response?.data?.outcome === "success" ? "succeeded" : "failed";
+    const accepted = { target, state: acceptedState, canStart: false, message: `Exact ${label} update ${response?.data?.state || response?.data?.outcome || "accepted"}.`, receipts: response?.data?.receipts || [] };
     if (accepted && typeof accepted === "object") {
       latestUpdateStatus = {
         ...(latestUpdateStatus || {}),
@@ -7667,14 +7687,16 @@ function initializeUpdateNotifications() {
   }, UPDATE_STATUS_INITIAL_DELAY_MS);
 }
 
-function piUpdateConfirmationText({ all = false } = {}) {
+function piUpdateConfirmationText({ all = false, plan = null } = {}) {
   const items = updateNotificationItems();
   const workingWarning = hasWorkingTab() ? "\n\nOne or more Pi tabs look busy or blocked. Finish or abort in-flight work before updating if you need to preserve it." : "";
   const versionText = items.length ? `\n\nDetected update: ${items.join(" · ")}.` : "";
-  const commandText = all ? '"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"' : '"pi update --self"';
-  const scope = all ? "Pi, configured packages including Optional Features, and detected core Pi/Web UI package roots" : "Pi only";
-  const extra = all ? " Pi owns configured Optional Feature updates; direct npm/bun updates are limited to detected core Pi/Web UI package roots." : "";
-  return `Run ${scope} now?${versionText}\n\nThis will run ${commandText} on the Web UI host.${extra} After it finishes, Pi Web UI will restart itself. Browser clients will briefly disconnect, and managed Pi tabs/RPC processes will be restarted from saved session state when possible.${workingWarning}`;
+  const scope = all ? "the verified active Pi and Web UI targets" : "the verified active Pi target";
+  const refusals = Array.isArray(plan?.refusals) && plan.refusals.length ? `\n\nRefused automatic targets: ${plan.refusals.map((item) => `${item.id}: ${item.guidance}`).join(" · ")}` : "";
+  const separatePathPi = separatePathPiPlanNotice(plan);
+  const pathNotice = separatePathPi ? `\n\n${separatePathPi}` : "";
+  const digest = plan?.digest ? `\n\nExact immutable plan digest: ${plan.digest}` : "";
+  return `Apply ${scope} now?${versionText}${refusals}${pathNotice}${digest}\n\nThe server will use only this persisted exact-target plan; it will not re-resolve latest or scan package roots. Managed Web UI activation is health-gated and automatically rolls back on failure.${workingWarning}`;
 }
 
 async function runPiUpdateAndRestart({ all = false } = {}) {
@@ -7684,16 +7706,23 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
     renderUpdateNotification(latestUpdateStatus, { force: true });
     return;
   }
-  if (!(await appConfirmText(piUpdateConfirmationText({ all }), { affected: "The Pi Web UI server and all managed Pi tabs", confirmLabel: all ? "Update all and restart" : "Update Pi and restart" }))) return;
+  let plan;
+  try {
+    plan = (await api("/api/update/plan", { method: "POST", body: { targets: all ? ["pi", "webui"] : ["pi"] }, scoped: false }))?.data?.plan;
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    return;
+  }
+  if (!(await appConfirmText(piUpdateConfirmationText({ all, plan }), { affected: "Only targets accepted by the exact server-owned plan", confirmLabel: all ? "Apply exact update plan" : "Apply exact Pi plan" }))) return;
 
-  const updateLabel = all ? "Pi and package updates" : "Pi update";
+  const updateLabel = all ? "Pi and Web UI exact updates" : "Pi exact update";
   updateRequestInProgress = true;
   hideUpdateNotification();
   setServerActionBusy("Updating…");
   setServerActionStatus(`Running ${updateLabel}. The server will restart after the update completes…`, "warn");
   setServerRestartOverlay(true, `Running ${updateLabel}. The server will restart after the update completes…`);
   try {
-    await api(all ? "/api/update?all=1" : "/api/update", { method: "POST", scoped: false });
+    await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false });
     addEvent(`${updateLabel} completed; Pi Web UI server restart requested`, "warn");
   } catch (error) {
     if (!error?.backendOffline) {
@@ -7710,7 +7739,7 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
   }
 
   setBackendOffline(true, new Error("update requested from side panel"));
-  const restarted = await waitForServerRestart();
+  const restarted = await waitForServerRestart(serverBootIdentity);
   updateRequestInProgress = false;
   resetServerActionControls();
   if (restarted) {
@@ -41805,8 +41834,8 @@ function updateServerActionButton() {
   button.textContent = action === "restart" ? "Restart" : action === "update" || action === "update-all" ? "Update" : action === "stop" ? "Stop" : "Run";
   button.classList.toggle("danger", action === "stop");
   if (action === "restart") setServerActionStatus("Ready to restart the Web UI server.", "info");
-  else if (action === "update") setServerActionStatus("Ready to run pi update --self for Pi only, then restart the Web UI server.", "info");
-  else if (action === "update-all") setServerActionStatus("Ready to check pi update --all support, use the compatible fallback when needed, update detected Web UI/Optional Feature Pi package roots, then restart the Web UI server.", "info");
+  else if (action === "update") setServerActionStatus("Ready to create and confirm an exact Pi-only update plan.", "info");
+  else if (action === "update-all") setServerActionStatus("Ready to create and confirm an exact combined update plan for eligible Pi, Web UI, and Pi-owned Optional Features.", "info");
   else if (action === "stop") setServerActionStatus("Ready to stop the Web UI server.", "info");
   else setServerActionStatus();
 }
@@ -41827,19 +41856,25 @@ function resetServerActionControls() {
   updateServerActionButton();
 }
 
-async function waitForServerRestart() {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    await delay(attempt === 0 ? 900 : 500);
-    const message = `Restarting… reconnect attempt ${attempt + 1}/40`;
+async function waitForServerRestart(previousBootIdentity = serverBootIdentity) {
+  const deadline = Date.now() + 90_000;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    await delay(attempt === 1 ? 900 : 500);
+    const remainingSeconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    const message = `Restarting… waiting for changed server identity (${remainingSeconds}s remaining)`;
     setServerActionStatus(message, "warn");
     setServerRestartOverlay(true, message);
     try {
-      await api("/api/health", { scoped: false });
+      const health = await api("/api/health", { scoped: false });
+      if (!health.bootIdentity || health.bootIdentity === previousBootIdentity) continue;
+      serverBootIdentity = health.bootIdentity;
       setBackendOffline(false);
       await initializeTabs();
       setServerRestartOverlay(false);
       setServerActionStatus("Server restarted and reconnected.", "success");
-      addEvent("Pi Web UI server restarted", "warn");
+      addEvent("Pi Web UI server restarted with a changed boot identity", "warn");
       return true;
     } catch (error) {
       setBackendOffline(true, error);
@@ -41879,7 +41914,7 @@ async function restartServer() {
   }
 
   setBackendOffline(true, new Error("restart requested from side panel"));
-  const restarted = await waitForServerRestart();
+  const restarted = await waitForServerRestart(serverBootIdentity);
   if (elements.serverActionSelect) {
     elements.serverActionSelect.disabled = false;
     elements.serverActionSelect.value = "";
