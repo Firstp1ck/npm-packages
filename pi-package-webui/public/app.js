@@ -17470,6 +17470,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
   if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return;
   const outgoing = gitFooterSyncCounts(syncValue).ahead;
   if (outgoing <= 0) return;
+  let recoverWithPullFirst = false;
   const tabContext = activeTabContext(tabId);
   const tab = tabs.find((item) => item.id === tabId);
   const target = tab?.title || tab?.cwd || "this tab";
@@ -17497,33 +17498,24 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
         throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
       }
       if (response.code === "NON_FAST_FORWARD") {
-        const forcePush = await appConfirmText([
-          response.error,
-          "",
-          response.hint || "",
-          "",
-          "Recommended: open the Git Changes dialog, fetch, and review the incoming diff first.",
-          `DANGER: force-push ${branch || "the current branch"} with --force-with-lease instead? This rewrites the remote branch (but still refuses if the remote moved past what you fetched).`,
-        ].join("\n"));
-        if (forcePush) {
-          const forceResponse = await api("/api/git-workflow/push", { method: "POST", body: { forceWithLease: true, confirmed: true }, tabId });
-          if (!forceResponse.ok) throw new Error([forceResponse.error, forceResponse.hint].filter(Boolean).join("\n"));
-          addEvent("Force-pushed with --force-with-lease.", "success");
-          requestGitFooterWebuiPayload(tabContext, { force: true });
-          return;
-        }
-        throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
+        recoverWithPullFirst = true;
+      } else {
+        const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
+        throw new Error(detail || "git push failed");
       }
-      const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
-      throw new Error(detail || "git push failed");
+    } else {
+      addEvent(`Pushed ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"}.`, "success");
+      requestGitFooterWebuiPayload(tabContext, { force: true });
     }
-    addEvent(`Pushed ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"}.`, "success");
-    requestGitFooterWebuiPayload(tabContext, { force: true });
   } catch (error) {
     addEvent(error.message || String(error), "error");
   } finally {
     gitFooterSyncInFlightByTab.delete(tabId);
     if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+  if (recoverWithPullFirst) {
+    addEvent("Push found incoming commits. Starting pull-first recovery.", "info");
+    await pullThenPushGitFooterSync(tabId, syncValue);
   }
 }
 

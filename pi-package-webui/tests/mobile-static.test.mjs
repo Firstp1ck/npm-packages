@@ -849,7 +849,39 @@ vm.runInNewContext(`${pullGitFooterSyncSource}\nthis.runPullGitFooterSync = pull
 assert.equal(await pullFailureContext.runPullGitFooterSync("tab-pull", { syncValue: "⇡1 · ⇣2" }), false, "failed footer pull should report failure to ordered Sync");
 assert.deepEqual(pullFailureEvents, [{ message: "deduplicated pull error", level: "error" }], "failed footer pull should keep only deduplicated output in the event log");
 assert.deepEqual(JSON.parse(JSON.stringify(pullFailureDialogs)), [{ message: "deduplicated pull error", options: { code: "DIVERGED", tabId: "tab-pull", syncValue: "⇡1 · ⇣2" } }], "failed footer pull should preserve structured recovery context");
-assert.match(app, /async function pushGitFooterSync\(tabId = activeTabId, syncValue = ""\)[\s\S]*api\("\/api\/git-workflow\/push", \{ method: "POST", body: \{\}, tabId \}\)[\s\S]*response\.code === "NON_FAST_FORWARD"[\s\S]*forceWithLease: true, confirmed: true/, "outgoing footer Sync should preserve confirmed push and guarded force-with-lease fallback behavior");
+assert.match(app, /async function pushGitFooterSync\(tabId = activeTabId, syncValue = ""\)[\s\S]*api\("\/api\/git-workflow\/push", \{ method: "POST", body: \{\}, tabId \}\)[\s\S]*response\.code === "NON_FAST_FORWARD"[\s\S]*recoverWithPullFirst = true[\s\S]*gitFooterSyncInFlightByTab\.delete\(tabId\)[\s\S]*pullThenPushGitFooterSync\(tabId, syncValue\)/, "non-fast-forward footer pushes should release their mutation lock before entering pull-first recovery");
+const pushGitFooterSyncStart = app.indexOf("async function pushGitFooterSync(");
+const pushGitFooterSyncEnd = app.indexOf("\nfunction renderGitFooterPayloadMeta(", pushGitFooterSyncStart);
+assert.ok(pushGitFooterSyncStart >= 0 && pushGitFooterSyncEnd > pushGitFooterSyncStart, "footer push should remain a standalone async frontend helper");
+const pushRecoveryRequests = [];
+const pushRecoveryEvents = [];
+const pushRecoveryCalls = [];
+const pushRecoveryInFlight = new Set();
+const pushRecoveryContext = {
+  activeTabId: "tab-push",
+  gitFooterSyncInFlightByTab: pushRecoveryInFlight,
+  gitFooterSyncCounts: () => ({ ahead: 2, behind: 0 }),
+  activeTabContext: (tabId) => ({ tabId }),
+  tabs: [{ id: "tab-push", title: "feature/push-recovery" }],
+  hideFooterTooltip() {},
+  gitFooterCurrentBranch: () => "feature/push-recovery",
+  appConfirmText: async () => true,
+  isCurrentTabContext: () => false,
+  renderFooter() {},
+  api: async (path, options) => {
+    pushRecoveryRequests.push({ path, options });
+    return { ok: false, code: "NON_FAST_FORWARD", error: "remote contains new commits" };
+  },
+  addEvent: (message, level) => pushRecoveryEvents.push({ message, level }),
+  requestGitFooterWebuiPayload() {},
+  formatGitCommandResult: () => "",
+  pullThenPushGitFooterSync: async (tabId, value) => pushRecoveryCalls.push({ tabId, value, locked: pushRecoveryInFlight.has(tabId) }),
+};
+vm.runInNewContext(`${app.slice(pushGitFooterSyncStart, pushGitFooterSyncEnd)}\nthis.runPushGitFooterSync = pushGitFooterSync;`, pushRecoveryContext);
+await pushRecoveryContext.runPushGitFooterSync("tab-push", "⇡2");
+assert.deepEqual(JSON.parse(JSON.stringify(pushRecoveryRequests)), [{ path: "/api/git-workflow/push", options: { method: "POST", body: {}, tabId: "tab-push" } }], "footer Push should not offer or attempt force-with-lease after a non-fast-forward rejection");
+assert.deepEqual(JSON.parse(JSON.stringify(pushRecoveryCalls)), [{ tabId: "tab-push", value: "⇡2", locked: false }], "footer Push should hand non-fast-forward recovery to the existing pull-then-push workflow after unlocking the tab");
+assert.deepEqual(pushRecoveryEvents, [{ message: "Push found incoming commits. Starting pull-first recovery.", level: "info" }], "footer Push should explain the switch to pull-first recovery");
 assert.match(app, /chip\.key === "sync" && visible\("webui-sync-push"\)[\s\S]*syncAction === "pull"[\s\S]*pullGitFooterSync\(tabId\)[\s\S]*syncAction === "pull-push"[\s\S]*pullThenPushGitFooterSync\(tabId, chip\.value\)[\s\S]*syncAction === "push"[\s\S]*pushGitFooterSync\(tabId, chip\.value\)/, "footer Sync should route incoming, diverged, and outgoing states to their respective actions");
 const gitFooterSyncRoutingSource = appFunctionSource("gitFooterSyncCounts", "gitFooterCurrentBranch");
 const gitFooterSyncRouting = JSON.parse(vm.runInNewContext(`${gitFooterSyncRoutingSource}\nJSON.stringify({

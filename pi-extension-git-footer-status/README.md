@@ -23,7 +23,7 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-The footer appears automatically and updates as you work. In the Web UI, click **SYNC** to apply pending remote changes: when both pull and push are available, it attempts the fast-forward-only pull first and offers the push only after that pull succeeds. Pull failures open a native popup with deduplicated, selectable, and copyable error output. If local and remote histories diverged, the popup explains that conflicts are not yet known and offers **Merge changes** (the default), **Rebase commits**, or **Review changes**; merge and rebase each require confirmation, and actual conflicts open the Git Changes panel.
+The footer appears automatically and updates as you work. In the Web UI, click **SYNC** to apply pending remote changes: when both pull and push are available, it attempts the fast-forward-only pull first and offers the push only after that pull succeeds. If **Push** discovers new incoming commits, it switches to the same pull-first workflow instead of offering a force-push. Pull failures open a native popup with deduplicated, selectable, and copyable error output. If local and remote histories diverged, the popup explains that conflicts are not yet known and offers **Merge changes** (the default), **Rebase commits**, or **Review changes**; merge and rebase each require confirmation, and actual conflicts open the Git Changes panel.
 
 - `/git-footer-refresh` — refresh the Git and usage information now.
 - `/git-footer-visibility` — choose which footer items are shown.

@@ -37,6 +37,10 @@ Useful keys include metric cards (`tokens`, `cache`, `pi`, `speed`, `cost`, `con
 
 The initial prompt estimate and session-usage recompute run lazily after the TUI is ready, so the footer should not block startup.
 
+## Git sync safety
+
+The Web UI always uses the pull-first workflow when it knows incoming and outgoing commits both exist. If a direct **Push** is rejected because the remote gained commits after the footer last refreshed, the action releases its push lock and enters that same pull-first workflow. It does not offer a force-push from the footer. Diverged histories require you to confirm merge or rebase, or you can review the incoming changes without integrating them.
+
 ## Commands
 
 - `/git-footer-refresh` — refresh git/footer information immediately.
