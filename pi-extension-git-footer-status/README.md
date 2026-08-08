@@ -23,7 +23,7 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-The footer appears automatically and updates as you work. In the Web UI, click **SYNC** to apply pending remote changes: when both pull and push are available, it attempts the fast-forward-only pull first and offers the push only after that pull succeeds.
+The footer appears automatically and updates as you work. In the Web UI, click **SYNC** to apply pending remote changes: when both pull and push are available, it attempts the fast-forward-only pull first and offers the push only after that pull succeeds. If the pull fails, a native Web UI popup shows selectable error details and provides a **Copy error output** action.
 
 - `/git-footer-refresh` — refresh the Git and usage information now.
 - `/git-footer-visibility` — choose which footer items are shown.

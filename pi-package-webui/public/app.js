@@ -430,6 +430,11 @@ const elements = {
   confirmationUndo: $("#confirmationUndo"),
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
+  gitPullErrorDialog: $("#gitPullErrorDialog"),
+  gitPullErrorOutput: $("#gitPullErrorOutput"),
+  gitPullErrorStatus: $("#gitPullErrorStatus"),
+  gitPullErrorCopyButton: $("#gitPullErrorCopyButton"),
+  gitPullErrorCloseButton: $("#gitPullErrorCloseButton"),
   workspaceLoadDialog: $("#workspaceLoadDialog"),
   workspaceLoadDialogCloseButton: $("#workspaceLoadDialogCloseButton"),
   workspaceLoadDialogStatus: $("#workspaceLoadDialogStatus"),
@@ -3072,6 +3077,7 @@ const gitFooterPayloadStateByTab = new Map();
 const gitFooterPayloadSettlementTimersByTab = new Map();
 const gitFooterPayloadRequestSerialByTab = new Map();
 const gitFooterSyncInFlightByTab = new Set();
+let gitPullErrorText = "";
 const gitFooterPiCalibrationInFlightByTab = new Set();
 let gitFooterVisibilityApplyInFlight = false;
 let gitFooterVisibilityDirty = false;
@@ -17255,6 +17261,50 @@ function gitFooterCurrentBranch() {
   return value && value !== "no repo" ? cleanFooterPayloadText(gitChip.value, "") : "";
 }
 
+function closeGitPullErrorDialog() {
+  if (elements.gitPullErrorDialog?.open) elements.gitPullErrorDialog.close();
+}
+
+function openGitPullErrorDialog(message) {
+  const text = String(message || "git pull from origin failed").trim();
+  gitPullErrorText = text;
+  if (!elements.gitPullErrorDialog?.showModal || !elements.gitPullErrorOutput) {
+    window.alert(`Git pull failed\n\n${text}`);
+    return;
+  }
+  elements.gitPullErrorOutput.textContent = text;
+  if (elements.gitPullErrorStatus) {
+    elements.gitPullErrorStatus.textContent = "Select the output or use Copy error output.";
+    elements.gitPullErrorStatus.classList.remove("error", "success");
+  }
+  if (!elements.gitPullErrorDialog.open) elements.gitPullErrorDialog.showModal();
+  queueMicrotask(() => elements.gitPullErrorCopyButton?.focus({ preventScroll: true }));
+}
+
+async function copyGitPullErrorOutput() {
+  if (!gitPullErrorText) return;
+  if (elements.gitPullErrorCopyButton) elements.gitPullErrorCopyButton.disabled = true;
+  try {
+    await copyText(gitPullErrorText);
+    if (elements.gitPullErrorStatus) {
+      elements.gitPullErrorStatus.textContent = "Error output copied to the clipboard.";
+      elements.gitPullErrorStatus.classList.add("success");
+      elements.gitPullErrorStatus.classList.remove("error");
+    }
+    addEvent("copied Git pull error output", "info");
+  } catch (error) {
+    const message = `Copy failed: ${error.message || String(error)}`;
+    if (elements.gitPullErrorStatus) {
+      elements.gitPullErrorStatus.textContent = message;
+      elements.gitPullErrorStatus.classList.add("error");
+      elements.gitPullErrorStatus.classList.remove("success");
+    }
+    addEvent(`Git pull error output copy failed: ${error.message || String(error)}`, "error");
+  } finally {
+    if (elements.gitPullErrorCopyButton) elements.gitPullErrorCopyButton.disabled = false;
+  }
+}
+
 async function pullGitFooterSync(tabId = activeTabId) {
   if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return false;
   const tabContext = activeTabContext(tabId);
@@ -17271,7 +17321,9 @@ async function pullGitFooterSync(tabId = activeTabId) {
     requestGitFooterWebuiPayload(tabContext, { force: true });
     return true;
   } catch (error) {
-    addEvent(error.message || String(error), "error");
+    const message = error.message || String(error);
+    addEvent(message, "error");
+    openGitPullErrorDialog(message);
     return false;
   } finally {
     gitFooterSyncInFlightByTab.delete(tabId);
@@ -43948,6 +44000,8 @@ elements.undoToastButton?.addEventListener("click", () => runOfferedUndo());
 elements.undoToastDismissButton?.addEventListener("click", dismissUndoToast);
 elements.confirmationCancelButton?.addEventListener("click", () => finishApplicationConfirmation(false));
 elements.confirmationConfirmButton?.addEventListener("click", () => finishApplicationConfirmation(true));
+elements.gitPullErrorCopyButton?.addEventListener("click", () => copyGitPullErrorOutput());
+elements.gitPullErrorCloseButton?.addEventListener("click", closeGitPullErrorDialog);
 elements.confirmationDialog?.addEventListener("cancel", (event) => {
   event.preventDefault();
   finishApplicationConfirmation(false);

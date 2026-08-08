@@ -1345,6 +1345,19 @@
       </form>
     </dialog>
 
+    <dialog id="gitPullErrorDialog" class="extension-dialog git-pull-error-dialog" aria-labelledby="gitPullErrorDialogTitle" aria-describedby="gitPullErrorDialogDescription gitPullErrorOutput">
+      <form method="dialog">
+        <h2 id="gitPullErrorDialogTitle">Git pull failed</h2>
+        <p id="gitPullErrorDialogDescription" class="muted">The repository was not changed by the failed pull. Review or copy the complete error output below.</p>
+        <pre id="gitPullErrorOutput" class="git-pull-error-output" tabindex="0"></pre>
+        <p id="gitPullErrorStatus" class="git-pull-error-status muted" role="status" aria-live="polite" aria-atomic="true"></p>
+        <menu>
+          <button id="gitPullErrorCopyButton" type="button">Copy error output</button>
+          <button id="gitPullErrorCloseButton" class="primary" type="button">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="workspaceLoadDialog" class="extension-dialog workspace-load-dialog" aria-labelledby="workspaceLoadDialogTitle" aria-describedby="workspaceLoadDialogDescription">
       <form method="dialog">
         <header class="workspace-load-dialog-header">

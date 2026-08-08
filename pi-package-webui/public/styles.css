@@ -10887,6 +10887,38 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   color: var(--text);
   box-shadow: 0 2rem 5rem var(--shadow), 0 0 2rem var(--glow-mauve);
 }
+.extension-dialog.git-pull-error-dialog {
+  width: min(46rem, calc(100vw - 2rem));
+  border-color: rgba(243, 139, 168, 0.52);
+  box-shadow: 0 2rem 5rem var(--shadow), 0 0 2rem rgba(243, 139, 168, 0.18);
+}
+.git-pull-error-dialog h2 {
+  margin: 0;
+  color: var(--ctp-red);
+}
+.git-pull-error-output {
+  max-height: min(24rem, 48vh);
+  margin: 0.9rem 0 0;
+  padding: 0.9rem;
+  overflow: auto;
+  border: 1px solid rgba(243, 139, 168, 0.34);
+  border-radius: 0.72rem;
+  color: var(--ctp-text);
+  background: rgba(var(--ctp-crust-rgb), 0.86);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: pre-wrap;
+}
+.git-pull-error-status {
+  min-height: 1.3rem;
+  margin: 0.65rem 0 0;
+}
+.git-pull-error-status.success { color: var(--ctp-green); }
+.git-pull-error-status.error { color: var(--ctp-red); }
+
 .extension-dialog.feature-decision-dialog {
   width: min(30rem, calc(100vw - 2rem));
 }

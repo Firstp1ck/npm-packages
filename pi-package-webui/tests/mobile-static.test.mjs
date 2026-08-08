@@ -707,6 +707,62 @@ assert.match(server, /"\/api\/git-operation\/resolve-with-agent"[\s\S]*openGitCo
 assert.match(app, /async function pullGitChangesDialog\(\)[\s\S]*api\("\/api\/git-changes\/pull", \{ method: "POST"/, "git changes modal should post to the pull endpoint from the Pull button");
 assert.match(app, /async function pullGitFooterSync\(tabId = activeTabId\)[\s\S]*api\("\/api\/git-changes\/pull", \{ method: "POST", body: \{ remote: "origin" \}, tabId \}\)[\s\S]*requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "incoming-only footer Sync should pull directly from origin and refresh the footer payload");
 assert.doesNotMatch(app.match(/async function pullGitFooterSync[\s\S]*?\n\}/)?.[0] || "", /git-workflow\/push|appConfirmText/, "the direct footer pull path should neither push nor open a confirmation");
+assert.match(html, /id="gitPullErrorDialog"[\s\S]*aria-labelledby="gitPullErrorDialogTitle"[\s\S]*id="gitPullErrorOutput"[\s\S]*id="gitPullErrorCopyButton"[\s\S]*Copy error output[\s\S]*id="gitPullErrorCloseButton"/, "footer pull failures should use a labelled native dialog with copy and close actions");
+assert.match(css, /\.extension-dialog\.git-pull-error-dialog[\s\S]*\.git-pull-error-output \{[\s\S]*user-select: text;[\s\S]*white-space: pre-wrap;/, "Git pull error output should remain readable, scrollable, and manually selectable");
+assert.match(app, /function openGitPullErrorDialog\(message\)[\s\S]*gitPullErrorOutput\.textContent = text[\s\S]*gitPullErrorDialog\.showModal\(\)/, "Git pull errors should populate and open the native WebUI dialog");
+assert.match(app, /async function copyGitPullErrorOutput\(\)[\s\S]*copyText\(gitPullErrorText\)[\s\S]*Error output copied to the clipboard/, "Git pull error dialog should copy the complete displayed output");
+assert.match(app, /async function pullGitFooterSync[\s\S]*catch \(error\)[\s\S]*openGitPullErrorDialog\(message\)/, "footer pull failures should route the error message into the native dialog");
+const gitPullErrorDialogStart = app.indexOf("function closeGitPullErrorDialog(");
+const gitPullErrorDialogEnd = app.indexOf("\nasync function pullGitFooterSync(", gitPullErrorDialogStart);
+assert.ok(gitPullErrorDialogStart >= 0 && gitPullErrorDialogEnd > gitPullErrorDialogStart, "Git pull error dialog helpers should remain isolated from the pull request helper");
+const gitPullErrorDialogSource = app.slice(gitPullErrorDialogStart, gitPullErrorDialogEnd);
+const copiedPullErrors = [];
+const nativePullErrorDialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+const nativePullErrorOutput = { textContent: "" };
+const nativePullErrorStatus = { textContent: "", classList: { add() {}, remove() {} } };
+const nativePullErrorCopyButton = { disabled: false, focus() {} };
+const gitPullErrorDialogContext = {
+  gitPullErrorText: "",
+  elements: {
+    gitPullErrorDialog: nativePullErrorDialog,
+    gitPullErrorOutput: nativePullErrorOutput,
+    gitPullErrorStatus: nativePullErrorStatus,
+    gitPullErrorCopyButton: nativePullErrorCopyButton,
+  },
+  window: { alert() { throw new Error("native dialog should avoid alert fallback"); } },
+  queueMicrotask: (callback) => callback(),
+  copyText: async (text) => copiedPullErrors.push(text),
+  addEvent() {},
+};
+vm.runInNewContext(`${gitPullErrorDialogSource}\nthis.openPullError = openGitPullErrorDialog; this.copyPullError = copyGitPullErrorOutput;`, gitPullErrorDialogContext);
+gitPullErrorDialogContext.openPullError("network unavailable\n\ncheck the connection");
+assert.equal(nativePullErrorDialog.open, true, "Git pull error dialog should open natively");
+assert.equal(nativePullErrorOutput.textContent, "network unavailable\n\ncheck the connection", "Git pull error dialog should display complete output");
+await gitPullErrorDialogContext.copyPullError();
+assert.deepEqual(copiedPullErrors, ["network unavailable\n\ncheck the connection"], "Git pull error copy action should preserve the complete output");
+assert.equal(nativePullErrorStatus.textContent, "Error output copied to the clipboard.", "Git pull error dialog should announce copy success");
+const pullGitFooterSyncStart = app.indexOf("async function pullGitFooterSync(");
+const pullGitFooterSyncEnd = app.indexOf("\nasync function pullThenPushGitFooterSync(", pullGitFooterSyncStart);
+assert.ok(pullGitFooterSyncStart >= 0 && pullGitFooterSyncEnd > pullGitFooterSyncStart, "footer pull should remain a standalone async frontend helper");
+const pullGitFooterSyncSource = app.slice(pullGitFooterSyncStart, pullGitFooterSyncEnd);
+const pullFailureEvents = [];
+const pullFailureDialogs = [];
+const pullFailureContext = {
+  gitFooterSyncInFlightByTab: new Set(),
+  activeTabContext: (tabId) => ({ tabId }),
+  hideFooterTooltip() {},
+  isCurrentTabContext: () => false,
+  renderFooter() {},
+  api: async () => ({ ok: false, error: "network unavailable", hint: "check the connection" }),
+  formatGitCommandResult: () => "",
+  addEvent: (message, level) => pullFailureEvents.push({ message, level }),
+  requestGitFooterWebuiPayload() {},
+  openGitPullErrorDialog: (message) => pullFailureDialogs.push(message),
+};
+vm.runInNewContext(`${pullGitFooterSyncSource}\nthis.runPullGitFooterSync = pullGitFooterSync;`, pullFailureContext);
+assert.equal(await pullFailureContext.runPullGitFooterSync("tab-pull"), false, "failed footer pull should report failure to ordered Sync");
+assert.deepEqual(pullFailureEvents, [{ message: "network unavailable\n\ncheck the connection", level: "error" }], "failed footer pull should keep the error in the event log");
+assert.deepEqual(pullFailureDialogs, ["network unavailable\n\ncheck the connection"], "failed footer pull should pass the complete error to the native dialog");
 assert.match(app, /async function pushGitFooterSync\(tabId = activeTabId, syncValue = ""\)[\s\S]*api\("\/api\/git-workflow\/push", \{ method: "POST", body: \{\}, tabId \}\)[\s\S]*response\.code === "NON_FAST_FORWARD"[\s\S]*forceWithLease: true, confirmed: true/, "outgoing footer Sync should preserve confirmed push and guarded force-with-lease fallback behavior");
 assert.match(app, /chip\.key === "sync" && visible\("webui-sync-push"\)[\s\S]*syncAction === "pull"[\s\S]*pullGitFooterSync\(tabId\)[\s\S]*syncAction === "pull-push"[\s\S]*pullThenPushGitFooterSync\(tabId, chip\.value\)[\s\S]*syncAction === "push"[\s\S]*pushGitFooterSync\(tabId, chip\.value\)/, "footer Sync should route incoming, diverged, and outgoing states to their respective actions");
 const gitFooterSyncRoutingSource = appFunctionSource("gitFooterSyncCounts", "gitFooterCurrentBranch");
