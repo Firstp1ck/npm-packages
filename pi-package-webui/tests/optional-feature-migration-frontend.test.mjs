@@ -31,6 +31,9 @@ assert.match(surfaceSource, /Checking optional features…[\s\S]*elapsed[\s\S]*C
 assert.match(surfaceSource, /Previous optional features need migration[\s\S]*Migrate…[\s\S]*Later/, "action-required migration should expose Migrate and persisted Later actions");
 assert.match(surfaceSource, /safely excluded[\s\S]*Copy recommended fix[\s\S]*Recheck/, "conflicts should explain safe exclusion using a recommended path-free fix and recheck");
 assert.match(surfaceSource, /started safely without optional companions[\s\S]*Recheck/, "degraded startup should remain core-safe and recheckable");
+assert.match(surfaceSource, /noticeDismissKey[\s\S]*optionalFeatureMigrationDismissedNoticeKey === noticeDismissKey[\s\S]*surface\.hidden = true/, "a dismissed degraded snapshot should stay hidden for the current page lifetime");
+assert.match(surfaceSource, /optional-feature-migration-dismiss[\s\S]*aria-label", "Close optional feature startup notice"/, "degraded startup should expose an accessible dismiss button");
+assert.match(app, /function dismissOptionalFeatureMigrationNotice\(\)[\s\S]*optionalFeatureMigrationDismissedNoticeKey = key[\s\S]*renderOptionalFeatureMigrationSurface\(\)/, "the degraded dismiss action should hide the current snapshot through the existing renderer");
 assert.match(surfaceSource, /Migrating optional features[\s\S]*Retry failed[\s\S]*Copy commands[\s\S]*Restart tab/, "progress and recovery should expose the required sequential/retry/copy/deferred-restart actions");
 assert.match(surfaceSource, /if \(optionalFeatureRestartNotice\.restartDeferred\)[\s\S]*Restart tab[\s\S]*else[\s\S]*Dismiss/, "a deferred restart action must remain persistent until restart succeeds");
 assert.match(surfaceSource, /optionalFeatureMigrationCompletionIsDismissed\(snapshot\)[\s\S]*surface\.hidden = true[\s\S]*phase === "complete"[\s\S]*dismissOptionalFeatureMigrationCompletion/, "dismissing a completed migration should hide the complete surface, not only its restart notice");
@@ -71,6 +74,7 @@ assert.match(surfaceSource, /readyCanAutoDismiss[\s\S]*scheduleOptionalFeatureRe
 
 assert.match(css, /\.optional-feature-migration-surface[\s\S]*\.optional-feature-migration-dialog[\s\S]*@media \(max-width: 34rem\)/, "migration surfaces should have desktop and responsive styling");
 assert.match(css, /\.optional-feature-migration-card:focus-visible/, "focused completion summary should have a visible focus treatment");
+assert.match(css, /\.optional-feature-migration-card\.phase-degraded[\s\S]*padding-right:[^;]+;[\s\S]*\.optional-feature-migration-dismiss \{[\s\S]*position: absolute;[\s\S]*top:[^;]+;[\s\S]*right:[^;]+;/, "the degraded popup should reserve space for a top-right dismiss button");
 
 assert.match(readme, /read-only startup audit/i, "README should document startup auditing");
 assert.match(readme, /--migrate-optional-features[\s\S]*--migration-dry-run/, "README should document explicit unattended migration and dry-run flags");

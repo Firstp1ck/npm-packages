@@ -708,7 +708,7 @@ assert.match(app, /async function pullGitChangesDialog\(\)[\s\S]*api\("\/api\/gi
 assert.match(app, /async function pullGitFooterSync\(tabId = activeTabId\)[\s\S]*api\("\/api\/git-changes\/pull", \{ method: "POST", body: \{ remote: "origin" \}, tabId \}\)[\s\S]*requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "incoming-only footer Sync should pull directly from origin and refresh the footer payload");
 assert.doesNotMatch(app.match(/async function pullGitFooterSync[\s\S]*?\n\}/)?.[0] || "", /git-workflow\/push|appConfirmText/, "the direct footer pull path should neither push nor open a confirmation");
 assert.match(app, /async function pushGitFooterSync\(tabId = activeTabId, syncValue = ""\)[\s\S]*api\("\/api\/git-workflow\/push", \{ method: "POST", body: \{\}, tabId \}\)[\s\S]*response\.code === "NON_FAST_FORWARD"[\s\S]*forceWithLease: true, confirmed: true/, "outgoing footer Sync should preserve confirmed push and guarded force-with-lease fallback behavior");
-assert.match(app, /chip\.key === "sync" && visible\("webui-sync-push"\)[\s\S]*syncAction === "pull"[\s\S]*pullGitFooterSync\(tabId\)[\s\S]*syncAction === "push"[\s\S]*pushGitFooterSync\(tabId, chip\.value\)/, "footer Sync should route incoming and outgoing states to their respective actions");
+assert.match(app, /chip\.key === "sync" && visible\("webui-sync-push"\)[\s\S]*syncAction === "pull"[\s\S]*pullGitFooterSync\(tabId\)[\s\S]*syncAction === "pull-push"[\s\S]*pullThenPushGitFooterSync\(tabId, chip\.value\)[\s\S]*syncAction === "push"[\s\S]*pushGitFooterSync\(tabId, chip\.value\)/, "footer Sync should route incoming, diverged, and outgoing states to their respective actions");
 const gitFooterSyncRoutingSource = appFunctionSource("gitFooterSyncCounts", "gitFooterCurrentBranch");
 const gitFooterSyncRouting = JSON.parse(vm.runInNewContext(`${gitFooterSyncRoutingSource}\nJSON.stringify({
   incoming: gitFooterSyncAction({ key: "sync", value: "⇣2" }),
@@ -717,7 +717,23 @@ const gitFooterSyncRouting = JSON.parse(vm.runInNewContext(`${gitFooterSyncRouti
   unavailable: gitFooterSyncAction({ key: "sync", value: "no upstream" }),
   other: gitFooterSyncAction({ key: "changes", value: "⇣2" }),
 })`));
-assert.deepEqual(gitFooterSyncRouting, { incoming: "pull", outgoing: "push", diverged: "push", unavailable: "", other: "" }, "Sync routing should pull only incoming-only state and preserve push handling whenever outgoing commits exist");
+assert.deepEqual(gitFooterSyncRouting, { incoming: "pull", outgoing: "push", diverged: "pull-push", unavailable: "", other: "" }, "Sync routing should pull before pushing whenever incoming and outgoing commits both exist");
+const pullThenPushGitFooterSyncStart = app.indexOf("async function pullThenPushGitFooterSync(");
+const pullThenPushGitFooterSyncEnd = app.indexOf("\nasync function pushGitFooterSync(", pullThenPushGitFooterSyncStart);
+assert.ok(pullThenPushGitFooterSyncStart >= 0 && pullThenPushGitFooterSyncEnd > pullThenPushGitFooterSyncStart, "pull-then-push Sync should remain a standalone async frontend helper");
+const pullThenPushGitFooterSyncSource = app.slice(pullThenPushGitFooterSyncStart, pullThenPushGitFooterSyncEnd);
+const orderedSyncCalls = [];
+const orderedSyncContext = {
+  pullGitFooterSync: async (tabId) => { orderedSyncCalls.push(`pull:${tabId}`); return true; },
+  pushGitFooterSync: async (tabId, value) => { orderedSyncCalls.push(`push:${tabId}:${value}`); },
+};
+vm.runInNewContext(`${pullThenPushGitFooterSyncSource}\nthis.runPullThenPushGitFooterSync = pullThenPushGitFooterSync;`, orderedSyncContext);
+await orderedSyncContext.runPullThenPushGitFooterSync("tab-sync", "⇡1 · ⇣2");
+assert.deepEqual(orderedSyncCalls, ["pull:tab-sync", "push:tab-sync:⇡1 · ⇣2"], "combined Sync should await pull before push");
+orderedSyncCalls.length = 0;
+orderedSyncContext.pullGitFooterSync = async (tabId) => { orderedSyncCalls.push(`pull:${tabId}`); return false; };
+await orderedSyncContext.runPullThenPushGitFooterSync("tab-sync", "⇡1 · ⇣2");
+assert.deepEqual(orderedSyncCalls, ["pull:tab-sync"], "combined Sync should skip push when pull fails or cannot start");
 assert.match(app, /function gitDiffDisplayLine\(row, side\)[\s\S]*`-\$\{text\}`[\s\S]*`\+\$\{text\}`/, "git changes modal should render changed lines with +/- prefixes");
 assert.match(app, /function gitUntrackedEntryToDiffFile\(entry\)[\s\S]*?renderRowLimit:\s*Number\.POSITIVE_INFINITY[\s\S]*?type: "added"/, "untracked files should render as complete added-file diffs without the row preview cap");
 assert.match(app, /async function loadMissingGitUntrackedContent\(entry[\s\S]*?\/api\/git-changes\/untracked-file\?path=/, "untracked path-only payloads should fetch complete file contents instead of rendering as empty files");

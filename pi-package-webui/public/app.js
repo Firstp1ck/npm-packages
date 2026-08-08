@@ -3060,6 +3060,7 @@ let optionalFeatureMigrationReadyDismissTimer = null;
 let optionalFeatureMigrationPendingReadyDismissKey = "";
 let optionalFeatureMigrationDismissedReadyKey = "";
 let optionalFeatureMigrationDismissedCompletionKey = "";
+let optionalFeatureMigrationDismissedNoticeKey = "";
 let optionalFeatureMigrationDialogState = null;
 let optionalFeatureMigrationLastPhase = "";
 let optionalFeatureMigrationCompletionFocusKey = "";
@@ -17242,7 +17243,8 @@ function gitFooterSyncCounts(value) {
 function gitFooterSyncAction(chip) {
   if (chip?.key !== "sync") return "";
   const { ahead, behind } = gitFooterSyncCounts(chip.value);
-  if (behind > 0 && ahead === 0) return "pull";
+  if (behind > 0 && ahead > 0) return "pull-push";
+  if (behind > 0) return "pull";
   if (ahead > 0) return "push";
   return "";
 }
@@ -17254,7 +17256,7 @@ function gitFooterCurrentBranch() {
 }
 
 async function pullGitFooterSync(tabId = activeTabId) {
-  if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return;
+  if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return false;
   const tabContext = activeTabContext(tabId);
   hideFooterTooltip();
   gitFooterSyncInFlightByTab.add(tabId);
@@ -17267,12 +17269,20 @@ async function pullGitFooterSync(tabId = activeTabId) {
     }
     addEvent("Pulled Git changes from origin.", "success");
     requestGitFooterWebuiPayload(tabContext, { force: true });
+    return true;
   } catch (error) {
     addEvent(error.message || String(error), "error");
+    return false;
   } finally {
     gitFooterSyncInFlightByTab.delete(tabId);
     if (isCurrentTabContext(tabContext)) renderFooter();
   }
+}
+
+async function pullThenPushGitFooterSync(tabId = activeTabId, syncValue = "") {
+  const pulled = await pullGitFooterSync(tabId);
+  if (!pulled) return;
+  await pushGitFooterSync(tabId, syncValue);
 }
 
 async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
@@ -17359,6 +17369,9 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
     if (syncAction === "pull") {
       options.onClick = () => pullGitFooterSync(tabId);
       action = inFlight ? "Pulling from origin." : "Click to pull from origin with fast-forward only.";
+    } else if (syncAction === "pull-push") {
+      options.onClick = () => pullThenPushGitFooterSync(tabId, chip.value);
+      action = inFlight ? "Pulling from origin before pushing local commits." : "Click to pull from origin with fast-forward only, then push if the pull succeeds.";
     } else if (syncAction === "push") {
       options.onClick = () => pushGitFooterSync(tabId, chip.value);
       action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
@@ -36031,6 +36044,11 @@ function optionalFeatureMigrationCompletionKey(snapshot = optionalFeatureMigrati
   return completedAt ? `${snapshot.revision || "pending"}:${completedAt}` : "";
 }
 
+function optionalFeatureMigrationNoticeDismissKey(snapshot = optionalFeatureMigrationSnapshot) {
+  if (snapshot.phase !== "degraded") return "";
+  return JSON.stringify([snapshot.revision || "pending", snapshot.diagnostic?.message || ""]);
+}
+
 function storedDismissedOptionalFeatureMigrationKey() {
   try {
     return localStorage.getItem(OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY) || "";
@@ -36057,6 +36075,14 @@ function rememberDismissedOptionalFeatureMigration(key) {
 function dismissOptionalFeatureMigrationCompletion() {
   rememberDismissedOptionalFeatureMigration(optionalFeatureMigrationCompletionKey());
   optionalFeatureRestartNotice = null;
+  renderOptionalFeatureMigrationSurface();
+}
+
+function dismissOptionalFeatureMigrationNotice() {
+  const key = optionalFeatureMigrationNoticeDismissKey();
+  if (!key) return;
+  optionalFeatureMigrationDismissedNoticeKey = key;
+  clearOptionalFeatureReadyDismissTimer();
   renderOptionalFeatureMigrationSurface();
 }
 
@@ -36135,6 +36161,7 @@ function renderOptionalFeatureMigrationSurface() {
   const conflicts = (snapshot.features || []).filter((feature) => feature.state === "conflict");
   const progress = snapshot.progress;
   const readyDismissKey = optionalFeatureReadyDismissKey(snapshot);
+  const noticeDismissKey = optionalFeatureMigrationNoticeDismissKey(snapshot);
   const readyCanAutoDismiss = Boolean(readyDismissKey && !optionalFeatureRestartNotice);
   if (optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
     clearOptionalFeatureReadyDismissTimer();
@@ -36145,6 +36172,12 @@ function renderOptionalFeatureMigrationSurface() {
     return;
   }
   if (readyCanAutoDismiss && optionalFeatureMigrationDismissedReadyKey === readyDismissKey) {
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
+  if (noticeDismissKey && optionalFeatureMigrationDismissedNoticeKey === noticeDismissKey) {
     surface.replaceChildren();
     surface.hidden = true;
     ensureOptionalFeatureMigrationRenderTimer();
@@ -36198,6 +36231,12 @@ function renderOptionalFeatureMigrationSurface() {
   copy.append(title, detail);
   card.append(copy);
   if (actions.childElementCount) card.append(actions);
+  if (noticeDismissKey) {
+    const dismissButton = optionalFeatureMigrationAction("×", dismissOptionalFeatureMigrationNotice, "optional-feature-migration-dismiss");
+    dismissButton.setAttribute("aria-label", "Close optional feature startup notice");
+    dismissButton.title = "Close";
+    card.append(dismissButton);
+  }
 
   if (conflicts.length) {
     const alert = make("div", "optional-feature-migration-alert sr-only", "Optional feature conflict detected; duplicate top-level resources were safely excluded.");

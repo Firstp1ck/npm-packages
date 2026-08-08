@@ -3552,6 +3552,7 @@ button.subagent-gate-attempt:focus-visible {
   pointer-events: none;
 }
 .optional-feature-migration-card {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.65rem;
@@ -3570,6 +3571,9 @@ button.subagent-gate-attempt:focus-visible {
 .optional-feature-migration-card.phase-degraded,
 .optional-feature-migration-card.phase-partial {
   border-color: rgba(249, 226, 175, 0.48);
+}
+.optional-feature-migration-card.phase-degraded {
+  padding-right: 3.35rem;
 }
 .optional-feature-migration-card.phase-complete {
   border-color: rgba(166, 227, 161, 0.46);
@@ -3605,6 +3609,29 @@ button.subagent-gate-attempt:focus-visible {
   padding: 0.3rem 0.58rem;
   font-size: var(--text-xs);
   font-weight: 850;
+}
+.optional-feature-migration-dismiss {
+  position: absolute;
+  top: 0.48rem;
+  right: 0.48rem;
+  display: inline-grid;
+  place-items: center;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-color: rgba(180, 190, 254, 0.28);
+  border-radius: 0.58rem;
+  color: rgba(var(--ctp-subtext-rgb), 0.86);
+  background: rgba(var(--ctp-surface-rgb), 0.36);
+  font-size: 1.1rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.optional-feature-migration-dismiss:hover,
+.optional-feature-migration-dismiss:focus-visible {
+  border-color: rgba(148, 226, 213, 0.58);
+  color: var(--ctp-text);
+  background: rgba(148, 226, 213, 0.16);
 }
 .optional-feature-migration-output {
   grid-column: 1 / -1;
@@ -4211,6 +4238,10 @@ button.subagent-gate-attempt:focus-visible {
   .optional-feature-migration-card {
     grid-template-columns: 1fr;
     max-height: min(52vh, 25rem);
+  }
+  .optional-feature-migration-dismiss {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
   .optional-feature-migration-actions,
   .optional-feature-batch-actions,
