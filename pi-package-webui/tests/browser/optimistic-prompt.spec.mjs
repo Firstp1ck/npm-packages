@@ -84,8 +84,10 @@ test("run indicator remains visible and stable on mobile until delayed agent sta
   await page.locator("#promptInput").fill(prompt);
   await page.locator("#sendButton").click();
 
-  const runIndicator = page.locator("#chat .runIndicator");
+  const runIndicator = page.locator("#runIndicatorHost .runIndicator");
   await expect(runIndicator).toBeVisible();
+  await expect(page.locator("#chat .runIndicator")).toHaveCount(0);
+  expect(await runIndicator.evaluate((node) => node.parentElement?.id)).toBe("runIndicatorHost");
   await delay(250);
   await page.evaluate(() => {
     window.__runIndicatorFrameGaps = 0;
@@ -93,7 +95,7 @@ test("run indicator remains visible and stable on mobile until delayed agent sta
     window.__monitorRunIndicator = true;
     const sample = () => {
       if (!window.__monitorRunIndicator) return;
-      const indicator = document.querySelector("#chat .runIndicator");
+      const indicator = document.querySelector("#runIndicatorHost .runIndicator");
       if (!indicator) window.__runIndicatorFrameGaps += 1;
       else window.__runIndicatorPositions.push(indicator.getBoundingClientRect().top);
       requestAnimationFrame(sample);
@@ -123,7 +125,7 @@ test("confirmed streaming replaces routing status before delayed activity events
   await page.locator("#promptInput").fill("fixture continuity confirmed before tool");
   await page.locator("#sendButton").click();
 
-  const runIndicator = page.locator("#chat .runIndicator");
+  const runIndicator = page.locator("#runIndicatorHost .runIndicator");
   await expect(runIndicator).toContainText("Agent run confirmed; waiting for first output or action…");
   await expect(runIndicator).not.toContainText(/Routing/i);
   await expect(runIndicator).toContainText("Running tool: read…");

@@ -28,18 +28,18 @@ assert.match(
 );
 assert.match(
   app,
-  /function moveSidePanelSectionRelative\(fromId, targetRecord, insertBefore\) \{\n\s+if \(!sidePanelSectionEditMode\) return false;[\s\S]*parent\.insertBefore\(sourceRecord\.section, targetRecord\.section\)[\s\S]*targetRecord\.section\.nextSibling[\s\S]*persistSidePanelSectionOrder\(\)/,
-  "reordering should fail closed outside edit mode, then move and persist the complete section",
+  /function isSidePanelSectionReorderingEnabled\(\) \{\n\s+return !isMobileView\(\) \|\| sidePanelSectionEditMode;[\s\S]*function moveSidePanelSectionRelative\(fromId, targetRecord, insertBefore\) \{\n\s+if \(!isSidePanelSectionReorderingEnabled\(\)\) return false;[\s\S]*parent\.insertBefore\(sourceRecord\.section, targetRecord\.section\)[\s\S]*targetRecord\.section\.nextSibling[\s\S]*persistSidePanelSectionOrder\(\)/,
+  "desktop reordering should stay enabled while mobile reordering fails closed outside Edit mode",
 );
 assert.match(
   app,
-  /function moveSidePanelSectionByOffset\(sectionId, offset\) \{\n\s+if \(!sidePanelSectionEditMode\) return false;/,
-  "keyboard reordering should require explicit edit mode",
+  /function moveSidePanelSectionByOffset\(sectionId, offset\) \{\n\s+if \(!isSidePanelSectionReorderingEnabled\(\)\) return false;/,
+  "keyboard reordering should follow the desktop-always/mobile-Edit gate",
 );
 assert.match(
   app,
-  /function beginSidePanelSectionPointerDrag\(event, sectionId\) \{\n\s+if \(!sidePanelSectionEditMode \|\| event\.button !== 0/,
-  "pointer and touch dragging should require explicit edit mode",
+  /function beginSidePanelSectionPointerDrag\(event, sectionId\) \{\n\s+if \(!isSidePanelSectionReorderingEnabled\(\) \|\| event\.button !== 0/,
+  "pointer and touch dragging should follow the responsive reorder gate",
 );
 assert.match(
   app,
@@ -53,8 +53,8 @@ assert.match(
 );
 assert.match(
   app,
-  /function bindSidePanelSectionToggles\(\)[\s\S]*Date\.now\(\) < sidePanelSectionSuppressClickUntil[\s\S]*!sidePanelSectionEditMode \|\| !event\.altKey[\s\S]*event\.key !== "ArrowUp"[\s\S]*moveSidePanelSectionByOffset[\s\S]*beginSidePanelSectionPointerDrag/,
-  "section headers should retain click toggling while edit mode gates Alt+Arrow and pointer reordering",
+  /function bindSidePanelSectionToggles\(\)[\s\S]*Date\.now\(\) < sidePanelSectionSuppressClickUntil[\s\S]*!isSidePanelSectionReorderingEnabled\(\) \|\| !event\.altKey[\s\S]*event\.key !== "ArrowUp"[\s\S]*moveSidePanelSectionByOffset[\s\S]*beginSidePanelSectionPointerDrag/,
+  "section headers should retain click toggling while the responsive gate controls Alt+Arrow and pointer reordering",
 );
 assert.match(
   app,
@@ -68,14 +68,14 @@ assert.match(
 );
 assert.match(
   css,
-  /\.side-panel-section-toggle\[data-side-panel-section-toggle\] \{\n\s+cursor: pointer;\n\s+touch-action: manipulation;[\s\S]*?\.side-panel\.section-edit-mode \.side-panel-section-toggle\[data-side-panel-section-toggle\] \{[\s\S]*?cursor: grab;[\s\S]*?touch-action: none;[\s\S]*?\.side-panel-section\.dragging[\s\S]*cursor: grabbing[\s\S]*\.drag-over-before[\s\S]*\.drag-over-after/,
-  "section headers should expose drag capture and insertion markers only in edit mode",
+  /\.side-panel-edit-button \{\n\s+display: none;[\s\S]*?\.side-panel\.section-edit-mode \.side-panel-section-toggle\[data-side-panel-section-toggle\] \{\n\s+cursor: grab;\n\s+touch-action: none;\n\s+user-select: none;\n\}[\s\S]*?@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\) \{[\s\S]*?\.side-panel-edit-button \{ display: inline-flex;[\s\S]*?\.side-panel\.section-edit-mode \.side-panel-section-toggle\[data-side-panel-section-toggle\] \{\n\s+border-color:[\s\S]*?box-shadow:[\s\S]*?\.side-panel\.section-edit-mode \.side-panel-section-label::before \{/,
+  "desktop should keep drag capture without edit highlighting while mobile restores Edit and its visual affordance",
 );
-assert.match(html, /id="sidePanelEditButton"[^>]*aria-controls="sidePanel"[^>]*aria-pressed="false"[^>]*aria-label="Edit Control Deck section order"[\s\S]*side-panel-edit-button-label">Edit</, "Control Deck should expose an accessible Edit toggle");
-assert.match(app, /function setSidePanelSectionEditMode\(enabled\)[\s\S]*classList\.toggle\("section-edit-mode", next\)[\s\S]*aria-pressed[\s\S]*"Done" : "Edit"[\s\S]*aria-keyshortcuts/, "Edit mode should synchronize visual, button, and keyboard affordances");
+assert.match(html, /id="sidePanelEditButton"[^>]*aria-controls="sidePanel"[^>]*aria-pressed="false"[^>]*aria-label="Edit Control Deck section order"[\s\S]*side-panel-edit-button-label">Edit</, "mobile Control Deck should retain an accessible Edit toggle");
+assert.match(app, /function setSidePanelSectionEditMode\(enabled\)[\s\S]*const next = isMobileView\(\) && !!enabled;[\s\S]*classList\.toggle\("section-edit-mode", reorderingEnabled\)[\s\S]*aria-pressed[\s\S]*"Done" : "Edit"[\s\S]*aria-keyshortcuts/, "mobile Edit state and always-enabled desktop reorder affordances should stay synchronized");
 assert.match(app, /function setSidePanelCollapsed\(collapsed,[\s\S]*if \(collapsed\) setSidePanelSectionEditMode\(false\);/, "closing the Control Deck should leave transient edit mode");
-assert.match(html, /styles\.css\?v=104/, "changed side-panel styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=120/, "changed side-panel behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v81"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=106/, "changed side-panel styles should advance the stylesheet revision");
+assert.match(html, /app\.js\?v=121/, "changed side-panel behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v83"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("side-panel-section-reorder-static.test.mjs passed");

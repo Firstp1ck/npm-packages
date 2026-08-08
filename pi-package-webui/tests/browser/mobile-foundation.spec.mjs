@@ -601,10 +601,10 @@ test("an extension response clears stale local running state after canonical idl
   await page.locator("#promptInput").fill("fixture mobile blocker");
   await page.locator("#sendButton").click();
   await expect(page.locator("#dialogTitle")).toHaveText("Fixture blocker");
-  await expect(page.locator("#chat .runIndicator")).toContainText("Waiting for your confirm response…");
+  await expect(page.locator("#runIndicatorHost .runIndicator")).toContainText("Waiting for your confirm response…");
   await page.locator("#dialogActions").getByRole("button", { name: "Yes", exact: true }).click();
   await expect(page.locator("#dialog")).not.toBeVisible();
-  await expect(page.locator("#chat .runIndicator")).toBeHidden({ timeout: 5_000 });
+  await expect(page.locator("#runIndicatorHost .runIndicator")).toBeHidden({ timeout: 5_000 });
 });
 
 test("a blocker notification switches to its background tab before exact-target validation", async ({ browser }) => {

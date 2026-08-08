@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=104" />
+    <link rel="stylesheet" href="/styles.css?v=106" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -284,6 +284,7 @@
         <div id="chat" class="chat" aria-live="polite">
           <button id="stickyUserPromptButton" class="sticky-user-prompt-button" type="button" aria-controls="chat" hidden></button>
         </div>
+        <div id="runIndicatorHost" class="run-indicator-host"></div>
         <div id="feedbackTray" class="feedback-tray" aria-live="polite" hidden>
           <span id="feedbackTraySummary">No action feedback queued.</span>
           <button id="sendFeedbackButton" type="button">Send &amp; create LEARNING</button>
@@ -1747,7 +1748,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=120">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=121">
       (() => {
         "use strict";
 

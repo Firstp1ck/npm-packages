@@ -133,7 +133,7 @@ At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses termin
 - The compact composer keeps the prompt, attachment, Send, and applicable Abort, Follow-up, and Steer controls immediately available.
 - Todo progress uses one overflow-safe summary line while collapsed. Tap the line to expand the goal, progress bar, checklist, and footer; native keyboard and screen-reader disclosure behavior remains available.
 - Tap **More** to open grouped session, workspace, command, workflow, context, and mode controls in a full-screen legacy-mobile overlay. Use the accessible top-right `−` control or `Escape` to minimize it and return focus to **More**.
-- Control Deck section order is locked by default on desktop and mobile. Select **Edit** in the panel header to enable pointer or touch dragging and `Alt+ArrowUp` / `Alt+ArrowDown`; select **Done** to lock ordering again. Edit mode is transient, while the resulting order keeps using the existing durable layout preference.
+- Control Deck section reordering is always enabled on desktop: drag a section header or use `Alt+ArrowUp` / `Alt+ArrowDown`. Mobile keeps the transient **Edit** / **Done** mode so normal touch scrolling and section toggling stay protected; the resulting order continues to use the existing durable layout preference.
 - Opening the software keyboard hides secondary disclosure chrome while retaining prompt entry and applicable primary run controls.
 - Touch pointers do not schedule hover-only tooltips or reveal latched CSS hover hints. Fine-pointer hover and keyboard-focus help remain available where supported.
 - Tablet layout, desktop tab placement, stored composer ordering, and command behavior are unchanged.

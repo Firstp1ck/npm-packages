@@ -304,7 +304,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect(page.locator("#sidePanel")).toBeVisible();
   await expect(page.locator('[data-composer-action-id="options"]')).toBeVisible();
 
-  await page.locator("#sidePanelEditButton").click();
+  await expect(page.locator("#sidePanelEditButton")).toBeHidden();
   const controls = page.locator('[data-side-panel-section-toggle="controls"]');
   await controls.focus();
   await controls.press("Alt+ArrowDown");
@@ -548,7 +548,7 @@ test("conflict retry updates only the changed Control Deck subfield", async ({ b
   await expect.poll(async () => (await sectionOrder(pageA)).slice(0, initialOrder.length)).toEqual(initialOrder);
   await expect.poll(async () => (await sectionOrder(pageB)).slice(0, initialOrder.length)).toEqual(initialOrder);
 
-  await pageA.locator("#sidePanelEditButton").click();
+  await expect(pageA.locator("#sidePanelEditButton")).toBeHidden();
   const controlsA = pageA.locator('[data-side-panel-section-toggle="controls"]');
   await controlsA.focus();
   await controlsA.press("Alt+ArrowDown");

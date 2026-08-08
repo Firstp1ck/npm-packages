@@ -93,6 +93,7 @@ const elements = {
   subagentCancelSubmitButton: $("#subagentCancelSubmitButton"),
   stickyUserPromptButton: $("#stickyUserPromptButton"),
   chat: $("#chat"),
+  runIndicatorHost: $("#runIndicatorHost"),
   chatSearchBar: $("#chatSearchBar"),
   chatSearchInput: $("#chatSearchInput"),
   chatSearchCount: $("#chatSearchCount"),
@@ -726,9 +727,9 @@ let runIndicatorRenderFrame = null;
 let runIndicatorRenderScroll = false;
 let runIndicatorGraceCheckTimer = null;
 let runIndicatorLastStateCheckAt = 0;
-// Lifecycle ownership is deliberately separate from the transcript-owned
-// activity label: the transcript ticker only repaints its own elapsed-time
-// node, while this watchdog owns the low-frequency canonical state recheck.
+// Lifecycle ownership is deliberately separate from the status-host-owned
+// activity label: the status ticker only repaints its own elapsed-time node,
+// while this watchdog owns the low-frequency canonical state recheck.
 let lifecycleStateWatchdogTimer = null;
 let lifecycleComposerSignature = null;
 // Bounded dedupe of semantic tool-boundary records (skill tags, event log),
@@ -3741,15 +3742,20 @@ function clearSidePanelSectionDragMarkers() {
   }
 }
 
+function isSidePanelSectionReorderingEnabled() {
+  return !isMobileView() || sidePanelSectionEditMode;
+}
+
 function updateSidePanelSectionEditAffordance(record) {
   const collapsed = record.section.classList.contains("collapsed");
   const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || "side panel";
   const action = `${collapsed ? "Expand" : "Collapse"} ${label} section`;
+  const reorderingEnabled = isSidePanelSectionReorderingEnabled();
   record.button.setAttribute("aria-label", action);
-  record.button.setAttribute("title", sidePanelSectionEditMode
+  record.button.setAttribute("title", reorderingEnabled
     ? `${action} · drag to reorder · Alt+↑/↓ moves`
     : action);
-  if (sidePanelSectionEditMode) record.button.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+  if (reorderingEnabled) record.button.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
   else record.button.removeAttribute("aria-keyshortcuts");
 }
 
@@ -3766,11 +3772,12 @@ function cancelSidePanelSectionPointerDrag() {
 }
 
 function setSidePanelSectionEditMode(enabled) {
-  const next = !!enabled;
-  if (sidePanelSectionEditMode === next && elements.sidePanel?.classList.contains("section-edit-mode") === next) return;
-  if (!next) cancelSidePanelSectionPointerDrag();
+  if (!enabled) cancelSidePanelSectionPointerDrag();
+  const next = isMobileView() && !!enabled;
+  const reorderingEnabled = !isMobileView() || next;
+  if (sidePanelSectionEditMode === next && elements.sidePanel?.classList.contains("section-edit-mode") === reorderingEnabled) return;
   sidePanelSectionEditMode = next;
-  elements.sidePanel?.classList.toggle("section-edit-mode", next);
+  elements.sidePanel?.classList.toggle("section-edit-mode", reorderingEnabled);
   if (elements.sidePanelEditButton) {
     elements.sidePanelEditButton.setAttribute("aria-pressed", next ? "true" : "false");
     elements.sidePanelEditButton.setAttribute("aria-label", next ? "Finish editing Control Deck section order" : "Edit Control Deck section order");
@@ -3783,7 +3790,7 @@ function setSidePanelSectionEditMode(enabled) {
 }
 
 function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
-  if (!sidePanelSectionEditMode) return false;
+  if (!isSidePanelSectionReorderingEnabled()) return false;
   const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === fromId);
   if (!sourceRecord || !targetRecord || sourceRecord.section === targetRecord.section) return false;
   const parent = sourceRecord.section.parentElement;
@@ -3798,7 +3805,7 @@ function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
 }
 
 function moveSidePanelSectionByOffset(sectionId, offset) {
-  if (!sidePanelSectionEditMode) return false;
+  if (!isSidePanelSectionReorderingEnabled()) return false;
   const records = visibleSidePanelSectionRecords();
   const fromIndex = records.findIndex(({ id }) => id === sectionId);
   const toIndex = fromIndex + offset;
@@ -3815,7 +3822,7 @@ function sidePanelSectionToggleFromPoint(clientX, clientY) {
 }
 
 function beginSidePanelSectionPointerDrag(event, sectionId) {
-  if (!sidePanelSectionEditMode || event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
+  if (!isSidePanelSectionReorderingEnabled() || event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
   sidePanelSectionPointerDrag = { sectionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
   window.addEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
   window.addEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
@@ -4036,7 +4043,7 @@ function bindSidePanelSectionToggles() {
       }
     });
     record.button.addEventListener("keydown", (event) => {
-      if (!sidePanelSectionEditMode || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      if (!isSidePanelSectionReorderingEnabled() || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
       event.preventDefault();
       moveSidePanelSectionByOffset(record.id, event.key === "ArrowUp" ? -1 : 1);
     });
@@ -6795,6 +6802,7 @@ function bindMobileViewChanges() {
     applyMobileShellViewport();
     syncComposerActionGridAvailability();
     syncMobileComposerDisclosureLayout();
+    setSidePanelSectionEditMode(false);
     if (isMobileShellV2Active()) return;
     setComposerActionsOpen(false);
     setMobileFooterExpanded(false);
@@ -11016,9 +11024,11 @@ function fileTreeExpander(expanded = false) {
 function appendFileSearchEntry(parent, entry) {
   const path = normalizeFileTreePath(entry.path);
   const isDirectory = entry.type === "directory" || entry.directory === true;
+  const expanded = isDirectory && fileTreeState.expanded.has(path);
+  const loading = isDirectory && fileTreeState.loading.has(path);
   const gitStatus = fileTreeGitStatusForEntry(entry);
   const gitStatusClasses = fileTreeGitStatusClasses(gitStatus);
-  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
   item.setAttribute("role", "none");
   const button = make("button", "file-tree-item file-tree-search-item");
   button.type = "button";
@@ -11028,18 +11038,19 @@ function appendFileSearchEntry(parent, entry) {
   button.setAttribute("role", "treeitem");
   button.setAttribute("aria-selected", fileTreeState.selectedPath === path ? "true" : "false");
   if (isDirectory) {
-    button.setAttribute("aria-expanded", "false");
-    button.setAttribute("aria-label", `Expand ${entry.name || fileDisplayName(path)}`);
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${entry.name || fileDisplayName(path)}`);
   }
   button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
+  const contextPath = fileParentPath(path) || ".";
   const label = make("span", "file-tree-search-label");
   label.append(
     make("span", "file-tree-name", entry.name || fileDisplayName(path)),
-    make("span", "file-tree-search-path", path || "."),
+    make("span", "file-tree-search-path", contextPath),
   );
   button.append(
-    isDirectory ? fileTreeExpander(false) : make("span", "file-tree-expander-spacer"),
-    make("span", "file-tree-icon", fileEntryIcon(entry)),
+    isDirectory ? fileTreeExpander(expanded) : make("span", "file-tree-expander-spacer"),
+    make("span", "file-tree-icon", loading ? "…" : fileEntryIcon(entry)),
     label,
   );
   const gitBadge = fileTreeGitStatusBadge(gitStatus);
@@ -11050,20 +11061,28 @@ function appendFileSearchEntry(parent, entry) {
   button.addEventListener("click", () => {
     fileTreeState.selectedPath = path;
     if (entry.type === "file") openFileInViewer(path);
-    else revealFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
+    else toggleFileTreeDirectory(path).catch((error) => addEvent(error.message || String(error), "error"));
   });
   button.addEventListener("contextmenu", (event) => showFileContextMenu(event, entry));
   bindFileTreeDragAndDrop(button, item, entry);
   item.append(button, fileTreeOverflowButton(entry));
+  if (isDirectory && expanded) {
+    const children = fileTreeState.entriesByPath.get(path) || [];
+    const childList = make("ul", "file-tree-list");
+    childList.setAttribute("role", "group");
+    if (loading) childList.append(make("li", "file-tree-loading muted", "Loading…"));
+    else if (!children.length) childList.append(make("li", "file-tree-empty muted", "Empty"));
+    else for (const child of children) appendFileTreeEntry(childList, child, 1);
+    item.append(childList);
+  }
   parent.append(item);
 }
 
-async function revealFileTreeEntry(entry = {}) {
+async function revealFileTreeEntry(entry = {}, { expandTarget = true } = {}) {
   const targetPath = normalizeFileTreePath(entry.path || "");
   if (!targetPath && targetPath !== FILE_TREE_ROOT_PATH) return;
   const isDirectory = entry.type === "directory" || entry.directory === true;
-  const parentPath = isDirectory ? targetPath : fileParentPath(targetPath);
-  clearFileTreeSearch();
+  const parentPath = fileParentPath(targetPath);
   fileTreeState.selectedPath = targetPath;
   await loadFileTreeDirectory(FILE_TREE_ROOT_PATH);
   let currentPath = "";
@@ -11073,7 +11092,7 @@ async function revealFileTreeEntry(entry = {}) {
     renderFileTree();
     await loadFileTreeDirectory(currentPath);
   }
-  if (isDirectory) {
+  if (isDirectory && expandTarget) {
     fileTreeState.expanded.add(targetPath);
     await loadFileTreeDirectory(targetPath);
   }
@@ -11171,21 +11190,49 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
   }
 }
 
+function focusVisibleFileTreeSelection(path = fileTreeState.selectedPath) {
+  const normalized = normalizeFileTreePath(path);
+  if (!normalized) return false;
+  const selected = visibleFileTreeItems().find((item) => normalizeFileTreePath(item.dataset.path) === normalized);
+  if (!selected) return false;
+  selected.focus({ preventScroll: true });
+  selected.scrollIntoView?.({ block: "nearest" });
+  return true;
+}
+
 function clearFileTreeSearch({ focus = false } = {}) {
   clearTimeout(fileTreeSearchTimer);
   fileTreeSearchTimer = null;
   fileTreeSearchRequestSerial += 1;
+  const serial = fileTreeSearchRequestSerial;
+  const selectedPath = normalizeFileTreePath(fileTreeState.selectedPath || "");
+  const selectedEntry = fileTreeState.searchEntries.find((entry) => normalizeFileTreePath(entry.path) === selectedPath) || fileEntryByPath(selectedPath);
+  const selectedDirectoryExpanded = fileTreeState.expanded.has(selectedPath);
   if (elements.fileTreeSearchInput) elements.fileTreeSearchInput.value = "";
-  fileTreeState.searchQuery = "";
-  fileTreeState.searchEntries = [];
-  fileTreeState.searchLoading = false;
-  fileTreeState.searchTruncated = false;
-  fileTreeState.searchTotal = 0;
   updateFileTreeSearchControls();
-  const rootEntries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
-  setFileTreeStatus(rootEntries.length ? fileTreeEntriesStatus(rootEntries) : "");
-  renderFileTree();
-  if (focus) elements.fileTreeSearchInput?.focus();
+
+  const commitClear = () => {
+    if (serial !== fileTreeSearchRequestSerial || fileTreeSearchQueryText()) return;
+    fileTreeState.searchQuery = "";
+    fileTreeState.searchEntries = [];
+    fileTreeState.searchLoading = false;
+    fileTreeState.searchTruncated = false;
+    fileTreeState.searchTotal = 0;
+    const rootEntries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
+    setFileTreeStatus(rootEntries.length ? fileTreeEntriesStatus(rootEntries) : "");
+    renderFileTree();
+    if (selectedPath && focusVisibleFileTreeSelection(selectedPath)) return;
+    if (focus) elements.fileTreeSearchInput?.focus();
+  };
+
+  if (!selectedPath || !selectedEntry) {
+    commitClear();
+    return;
+  }
+  revealFileTreeEntry(selectedEntry, { expandTarget: selectedDirectoryExpanded }).then(commitClear).catch((error) => {
+    addEvent(error.message || String(error), "error");
+    commitClear();
+  });
 }
 
 async function runFileTreeSearch({ background = false } = {}) {
@@ -33281,14 +33328,14 @@ function resetChatOutput() {
   renderedTranscriptState = { epoch: "", entries: [] };
   const liveBubbles = standaloneLiveTranscriptBubbles();
   const preservedNodes = [...elements.chat.children]
-    .filter((child) => child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child));
+    .filter((child) => child === elements.stickyUserPromptButton || liveBubbles.has(child));
   transcriptRenderer.replaceChildren(elements.chat, ...preservedNodes);
 }
 
 function appendChatMessageBubble(bubble, { liveTail = false } = {}) {
   const liveBubbles = standaloneLiveTranscriptBubbles();
   const tailAnchor = [...elements.chat.children]
-    .find((child) => child !== bubble && (child === runIndicatorBubble || (!liveTail && liveBubbles.has(child))));
+    .find((child) => child !== bubble && !liveTail && liveBubbles.has(child));
   if (tailAnchor) elements.chat.insertBefore(bubble, tailAnchor);
   else elements.chat.append(bubble);
 }
@@ -34647,9 +34694,9 @@ function runIndicatorDetail() {
   return "Waiting for output or action…";
 }
 
-// Transcript-owned ticker: it may only repaint the run-indicator bubble's own
+// Status-host-owned ticker: it may only repaint the run-indicator bubble's own
 // stable text nodes. Canonical state reconciliation belongs to the separate
-// lifecycle watchdog below, so transcript rendering never issues network work.
+// lifecycle watchdog below, so status rendering never issues network work.
 function startRunIndicatorTicker() {
   startLifecycleStateWatchdog();
   if (runIndicatorTimer) return;
@@ -34689,8 +34736,8 @@ function stopLifecycleStateWatchdog() {
 
 function createRunIndicatorBubble() {
   runIndicatorBubble = make("article", "message runIndicator run-indicator-message streaming");
-  // Stable transcript-owned activity root: streaming activity updates rewrite
-  // only this bubble's own text nodes, never composer or chrome surfaces.
+  // Stable status-host activity root: streaming activity updates rewrite only
+  // this bubble's own text nodes, never transcript, composer, or chrome surfaces.
   runIndicatorBubble.dataset.streamOwned = "run-indicator";
   runIndicatorBubble.setAttribute("aria-live", "polite");
   runIndicatorBubble.setAttribute("aria-label", "Agent is running:");
@@ -34708,7 +34755,7 @@ function createRunIndicatorBubble() {
 
 function ensureRunIndicatorBubble() {
   if (!runIndicatorBubble || !runIndicatorText || !runIndicatorMeta) createRunIndicatorBubble();
-  if (elements.chat.lastElementChild !== runIndicatorBubble) elements.chat.append(runIndicatorBubble);
+  if (runIndicatorBubble.parentElement !== elements.runIndicatorHost) elements.runIndicatorHost.replaceChildren(runIndicatorBubble);
 }
 
 function updateRunIndicatorBubble() {
@@ -34732,7 +34779,7 @@ function removeRunIndicatorBubble() {
 
 function renderRunIndicator({ scroll = false } = {}) {
   if (!runIndicatorIsActive()) {
-    if (runIndicatorRemovalDeferred && runIndicatorBubble?.parentElement === elements.chat) return;
+    if (runIndicatorRemovalDeferred && runIndicatorBubble?.parentElement === elements.runIndicatorHost) return;
     removeRunIndicatorBubble();
     return;
   }
@@ -34758,7 +34805,7 @@ function scheduleRunIndicatorRender({ scroll = false } = {}) {
 function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}) {
   const wasLocallyActive = runIndicatorLocallyActive;
   const previousActivity = runIndicatorActivity;
-  const hadRunIndicatorBubble = runIndicatorBubble?.parentElement === elements.chat;
+  const hadRunIndicatorBubble = runIndicatorBubble?.parentElement === elements.runIndicatorHost;
   if (active) {
     runIndicatorLocallyActive = true;
     runIndicatorRemovalDeferred = false;
@@ -34768,7 +34815,7 @@ function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}
   const needsRender = scroll || !hadRunIndicatorBubble || wasLocallyActive !== runIndicatorLocallyActive || previousActivity !== runIndicatorActivity;
   if (needsRender) scheduleRunIndicatorRender({ scroll });
   else if (runIndicatorIsActive()) startRunIndicatorTicker();
-  // Activity wording is transcript-owned. Composer/Stop chrome is reconciled
+  // Activity wording is status-host-owned. Composer/Stop chrome is reconciled
   // only when the lifecycle enum itself changes, so wording updates can never
   // reparent Steer/Follow-up controls or rewrite the run-active body class.
   syncLifecycleComposerState();
@@ -34799,7 +34846,7 @@ function clearRunIndicatorActivity({ render = true, deferRemoval = false } = {})
   runIndicatorLocallyActive = false;
   runIndicatorStartedAt = null;
   runIndicatorActivity = "Waiting for output or action…";
-  runIndicatorRemovalDeferred = deferRemoval && runIndicatorBubble?.parentElement === elements.chat;
+  runIndicatorRemovalDeferred = deferRemoval && runIndicatorBubble?.parentElement === elements.runIndicatorHost;
   if (runIndicatorRemovalDeferred) stopRunIndicatorTicker();
   else if (render) renderRunIndicator();
   stopLifecycleStateWatchdog();
@@ -35334,7 +35381,7 @@ function restoreChatTextSelection(snapshot) {
 function removeChatBubblesAfterPrefix(keptKeys) {
   const liveBubbles = standaloneLiveTranscriptBubbles();
   for (const child of [...elements.chat.children]) {
-    if (child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child)) continue;
+    if (child === elements.stickyUserPromptButton || liveBubbles.has(child)) continue;
     const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
     if (key && keptKeys.has(key)) continue;
     child.remove();
@@ -35374,7 +35421,7 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
   const affectedSurfaces = prefixLength === 0 && adoptedKeys.size === 0
     ? [elements.chat]
     : [...elements.chat.children].filter((child) => {
-      if (child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child)) return false;
+      if (child === elements.stickyUserPromptButton || liveBubbles.has(child)) return false;
       const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
       return !prefixKeys.has(key) && !adoptedKeys.has(key);
     });
@@ -44967,6 +45014,7 @@ elements.webuiPackageNpmButton?.addEventListener("click", () => {
 elements.webuiPackageCloseButton?.addEventListener("click", () => elements.webuiPackageDialog?.close());
 elements.piReleaseNotesCloseButton?.addEventListener("click", () => elements.piReleaseNotesDialog?.close());
 elements.sidePanelEditButton?.addEventListener("click", () => {
+  if (!isMobileView()) return;
   setSidePanelSectionEditMode(!sidePanelSectionEditMode);
 });
 elements.toggleSidePanelButton.addEventListener("click", () => {
