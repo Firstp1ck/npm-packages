@@ -4,12 +4,12 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLocalWikiEngine, jsonToolResult, pathExists, runCommand } from "@firstpick/pi-utils";
 import { Type } from "typebox";
+import { shouldRouteLocalWikiPrompt } from "./lib/prompt-routing.mjs";
 
 const CONFIG = {
   extensionId: "raspberrypi",
   displayName: "Raspberry Pi Documentation",
   topicName: "Raspberry Pi",
-  skillName: "raspberrypi-local",
   docsPath: "~/.raspberrypiwiki".replace(/^~(?=\/|$)/, os.homedir()).replace(/^\$HOME(?=\/|$)/, os.homedir()),
   repoUrl: "https://github.com/raspberrypi/documentation",
   setupCommand: "/raspberrypi-wiki-local-setup",
@@ -174,8 +174,7 @@ const smokeParams = Type.Object({ maxSearchResults: Type.Optional(Type.Number({ 
 
 export default function localWikiExtension(pi: ExtensionAPI) {
   pi.on?.("before_agent_start", async (event, ctx) => {
-    const skillLoaded = event.systemPromptOptions.skills?.some((skill) => skill.name === CONFIG.skillName) ?? false;
-    if (!skillLoaded && !CONFIG.promptDetection.test(event.prompt ?? "")) return;
+    if (!shouldRouteLocalWikiPrompt(event.prompt ?? "", CONFIG.promptDetection)) return;
 
     if (!await wiki.available()) {
       const warning = `${MISSING_DOCS_MESSAGE} Aborting ${CONFIG.displayName}-local lookup until setup is complete.`;
