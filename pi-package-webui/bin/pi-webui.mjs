@@ -1896,6 +1896,10 @@ function nodeModulesParentForPackageRoot(root = packageRoot) {
   return root;
 }
 
+function packageNodeModulesPath(nodeModulesRoot, packageName) {
+  return path.join(nodeModulesRoot, ...String(packageName).split("/").filter(Boolean));
+}
+
 function prependNodePathEntries(entries) {
   const existing = String(process.env.NODE_PATH || "").split(path.delimiter).filter(Boolean);
   const seen = new Set();

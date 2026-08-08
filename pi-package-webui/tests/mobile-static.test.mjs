@@ -2195,6 +2195,7 @@ assert.match(server, /function optionalFeaturePackageStatus\(featureId, cwd = op
 assert.match(server, /if \(beforeStatus\.locallyConfigured\)[\s\S]*load it twice[\s\S]*local-resource-conflict/, "server should block npm registration when a top-level resource already owns the optional feature");
 assert.match(server, /function installOptionalFeaturePackage\(featureId, cwd = options\.cwd\)[\s\S]*const source = `npm:\$\{packageName\}`[\s\S]*resolvePiCommand\(\["install", source\]\)/, "server should install and update optional features through the selected Pi CLI");
 assert.match(server, /function configuredAgentNpmRoot\(\)/, "status discovery should consider Pi's agent npm root for legacy or hoisted packages");
+assert.match(server, /function packageNodeModulesPath\(nodeModulesRoot, packageName\)[\s\S]*path\.join\(nodeModulesRoot,[\s\S]*split\("\/"\)/, "status discovery should map scoped npm package names into node_modules paths");
 assert.match(server, /resolveInstalledPackageSubpath\(nodeModulesRef\.packageName, nodeModulesRef\.subpath\)/, "started Web UI resource resolution should support configured package resources");
 assert.match(server, /url\.pathname === "\/api\/optional-features" && req\.method === "GET"/, "server should expose optional feature package status endpoint");
 assert.match(server, /url\.pathname === "\/api\/optional-feature-install" && req\.method === "POST"/, "server should preserve the optional feature single-install endpoint");
