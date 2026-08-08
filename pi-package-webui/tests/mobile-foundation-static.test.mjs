@@ -47,7 +47,7 @@ assert.match(app, /function installMobileShellNavigationBridge\([\s\S]*?pi-webui
 assert.match(app, /function updateVisualViewportVars\([\s\S]*?keyboardOpen && !isMobileShellV2Active\(\)/, "v2 must retain viewport measurement but suppress legacy keyboard mutation");
 assert.match(app, /function syncMobileChatToBottomForInput\(\) \{\n  if \(!isMobileView\(\) \|\| isMobileShellV2Active\(\)\) return;/, "v2 must suppress legacy forced chat scrolling");
 assert.match(app, /function bindMobileViewChanges\([\s\S]*?applyMobileShellViewport\(\);[\s\S]*?if \(isMobileShellV2Active\(\)\) return;/, "v2 must bypass legacy breakpoint mutations");
-assert.match(app, /function setMobileTabsExpanded\(expanded\) \{\n  if \(isMobileShellV2Active\(\)\) return;/, "v2 must own surface visibility rather than the legacy tabs expander");
+assert.match(app, /function setMobileTabsExpanded\(expanded, \{ restoreFocus = false \} = \{\}\) \{\n  if \(isMobileShellV2Active\(\)\) return;/, "v2 must own surface visibility rather than the legacy tabs expander");
 assert.match(app, /function setMobileFooterExpanded\(expanded\) \{\n  if \(isMobileShellV2Active\(\)\) return;/, "v2 must suppress legacy footer expansion");
 assert.match(app, /function createBrowserPromptRequestId\(/, "browser prompt submission must mint an opaque request identity");
 assert.match(app, /if \(kind === "prompt"\) bodyBase\.requestId = createBrowserPromptRequestId\(\)/, "the browser identity must travel with primary prompt submission and remain stable in the captured manual-retry body");

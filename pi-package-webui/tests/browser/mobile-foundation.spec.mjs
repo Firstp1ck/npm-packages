@@ -26,8 +26,10 @@ let baseURL;
 let tempRoot;
 let output = "";
 
-async function assertAxeClean(page, label, selector = "#mobileShellV2") {
-  const accessibility = await new AxeBuilder({ page }).include(selector).analyze();
+async function assertAxeClean(page, label, selector = "#mobileShellV2", disabledRules = []) {
+  let builder = new AxeBuilder({ page }).include(selector);
+  if (disabledRules.length) builder = builder.disableRules(disabledRules);
+  const accessibility = await builder.analyze();
   const serious = accessibility.violations.filter((violation) => ["serious", "critical"].includes(violation.impact));
   assert.deepEqual(serious, [], `${label} should not introduce serious/critical axe violations: ${serious.map((item) => item.id).join(", ")}`);
 }
@@ -85,6 +87,86 @@ test("v2 flag is isolated on desktop and rollback remains explicit", async ({ pa
   })));
   await expect(page.locator("html")).not.toHaveAttribute("data-mobile-shell");
   await expect(page.locator("#mobileShellV2")).toBeHidden();
+});
+
+test("legacy phone keeps terminal navigation and secondary composer actions collapsed", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  await page.goto(`${baseURL}/?mobileShell=legacy`);
+  await page.addStyleTag({ content: "#optionalFeatureMigrationSurface, #updateNotification { display: none !important; }" });
+
+  await expect(page.locator("html")).not.toHaveAttribute("data-mobile-shell");
+  await expect(page.locator("body")).toHaveClass(/mobile-composer-disclosure/);
+  await expect(page.locator("#terminalTabsDrawerContent")).toBeHidden();
+  await expect(page.locator("#terminalTabsBackdrop")).toBeHidden();
+  await expect(page.locator("#terminalTabsToggleButton")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#promptInput")).toBeVisible();
+  await expect(page.locator("#attachButton")).toBeVisible();
+  await expect(page.locator("#composerActionsButton")).toBeVisible();
+  await expect(page.locator("#sendButton")).toBeVisible();
+  await expect(page.locator("#composerActionsPanel")).toBeHidden();
+
+  await page.locator("#terminalTabsToggleButton").tap();
+  await expect(page.locator("#footerFloatingTooltip")).toHaveCount(0);
+  await expect(page.locator("#terminalTabsToggleButton")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#terminalTabsDrawerContent")).toBeVisible();
+  await expect(page.locator("#terminalTabsBackdrop")).toBeVisible();
+  await expect(page.locator(".terminal-sidebar-actions")).toBeVisible();
+  await expect(page.locator("#closeAllTabsButton")).toBeVisible();
+  const drawer = await page.locator(".terminal-tabs-shell").boundingBox();
+  assert.ok(drawer && drawer.x < 12 && drawer.width < 390, `terminal drawer should be left aligned and bounded, got ${JSON.stringify(drawer)}`);
+  await page.locator("#terminalTabsBackdrop").click({ position: { x: 385, y: 400 } });
+  await expect(page.locator("#terminalTabsDrawerContent")).toBeHidden();
+  await expect(page.locator("#terminalTabsToggleButton")).toBeFocused();
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.locator("#terminalTabsToggleButton").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#terminalTabsDrawerContent")).toBeVisible();
+  const narrowDrawer = await page.locator(".terminal-tabs-shell").boundingBox();
+  assert.ok(narrowDrawer && narrowDrawer.x < 12 && narrowDrawer.width < 320, `terminal drawer should remain bounded at 320px, got ${JSON.stringify(narrowDrawer)}`);
+  await expect(page.locator(".terminal-tabs-shell")).toHaveAttribute("role", "dialog");
+  await expect(page.locator(".terminal-tabs-shell")).toHaveAttribute("aria-modal", "true");
+  await page.locator("#closeAllTabsButton").focus();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#terminalTabsToggleButton")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect.poll(() => page.evaluate(() => document.activeElement?.closest?.(".terminal-tabs-shell") !== null)).toBe(true);
+  await assertAxeClean(page, "legacy terminal drawer", ".terminal-tabs-shell", ["aria-required-children"]);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#terminalTabsDrawerContent")).toBeHidden();
+  await expect(page.locator("#terminalTabsToggleButton")).toBeFocused();
+
+  await page.locator("#composerActionsButton").focus();
+  await page.locator("#composerActionsButton").click();
+  await expect(page.locator("#composerActionsButton")).toHaveText("Less");
+  await expect(page.locator("#composerActionsPanel")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Session & workspace" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Tools & commands" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Context & modes" })).toBeVisible();
+  await expect(page.locator("#newSessionButton")).toBeVisible();
+  await expect(page.locator("#optionsMenuButton")).toBeVisible();
+  await expect.poll(() => page.locator("#workflowModeControls").evaluate((node) => node.parentElement?.id)).toBe("composerActionsPanel");
+  await expect.poll(() => page.locator("#btwButton").evaluate((node) => node.parentElement?.id)).toBe("composerActionsPanel");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#composerActionsPanel")).toBeHidden();
+  await expect(page.locator("#composerActionsButton")).toHaveText("More");
+  await expect(page.locator("#composerActionsButton")).toBeFocused();
+
+  await page.locator("#sidePanelExpandButton").click();
+  await expect(page.locator("#sidePanel")).toBeVisible();
+  await expect(page.getByText("Control Deck", { exact: true })).toBeVisible();
+  await page.locator("#toggleSidePanelButton").click();
+
+  await context.close();
+
+  const desktopContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const desktopPage = await desktopContext.newPage();
+  await desktopPage.goto(`${baseURL}/?mobileShell=legacy`);
+  await desktopPage.addStyleTag({ content: "#optionalFeatureMigrationSurface, #updateNotification { display: none !important; }" });
+  await expect(desktopPage.locator("#terminalTabsToggleButton")).toBeHidden();
+  await expect.poll(() => desktopPage.locator("#workflowModeControls").evaluate((node) => node.parentElement?.className)).toContain("composer-input-row");
+  await expect.poll(() => desktopPage.locator("#btwButton").evaluate((node) => node.parentElement?.className)).toContain("composer-row");
+  await desktopContext.close();
 });
 
 test("phone v2 destinations, canonical actions, history, and presentation remain functional", async ({ browser }) => {

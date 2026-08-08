@@ -32,6 +32,9 @@ const elements = {
   webuiDevBadge: $("#webuiDevBadge"),
   tabBar: $("#tabBar"),
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
+  terminalTabsShell: $(".terminal-tabs-shell"),
+  terminalTabsDrawerContent: $("#terminalTabsDrawerContent"),
+  terminalTabsBackdrop: $("#terminalTabsBackdrop"),
   workspaceSaveButton: $("#workspaceSaveButton"),
   newTabMenu: $("#newTabMenu"),
   newTabButton: $("#newTabButton"),
@@ -101,6 +104,8 @@ const elements = {
   sendFeedbackButton: $("#sendFeedbackButton"),
   jumpToLatestButton: $("#jumpToLatestButton"),
   composer: $("#composer"),
+  composerInputRow: $(".composer-input-row"),
+  composerContextTags: $(".composer-context-tags"),
   composerRow: $(".composer-row"),
   composerActionsButton: $("#composerActionsButton"),
   composerActionsPanel: $("#composerActionsPanel"),
@@ -796,6 +801,9 @@ let pathFastPicks = [];
 let pathFastPicksReady = false;
 let pathFastPicksLoadPromise = null;
 let mobileTabsExpanded = false;
+let mobileTabsFocusReturn = null;
+let composerActionsFocusReturn = null;
+const mobileComposerOriginalPositions = new Map();
 let openTerminalTabGroupKey = null;
 let terminalCustomGroups = new Map();
 let terminalCustomGroupSerial = 1;
@@ -6114,18 +6122,69 @@ async function refreshNativeSettings(tabContext = activeTabContext()) {
   applyNativeSettingsForBrowser(response.data?.settings || {});
 }
 
-function setComposerActionsOpen(open) {
+function mobileComposerSecondaryNodes() {
+  return [
+    elements.workflowModeControls,
+    elements.composerContextTags,
+    elements.busyPromptBehaviorMenu,
+    elements.followUpQueueTrigger,
+    elements.btwButton,
+    elements.conversationVoiceMenu,
+    elements.conversationModeEndButton,
+  ].filter(Boolean);
+}
+
+function rememberMobileComposerOriginalPositions() {
+  for (const node of mobileComposerSecondaryNodes()) {
+    if (!mobileComposerOriginalPositions.has(node)) {
+      mobileComposerOriginalPositions.set(node, { parent: node.parentNode, nextSibling: node.nextSibling });
+    }
+  }
+}
+
+function restoreMobileComposerOriginalPositions() {
+  for (const [node, { parent, nextSibling }] of mobileComposerOriginalPositions) {
+    if (!parent) continue;
+    if (nextSibling?.parentNode === parent) parent.insertBefore(node, nextSibling);
+    else parent.append(node);
+  }
+}
+
+function syncMobileComposerDisclosureLayout() {
+  rememberMobileComposerOriginalPositions();
+  const useMobileDisclosure = isMobileView() && !isMobileShellV2Active();
+  document.body.classList.toggle("mobile-composer-disclosure", useMobileDisclosure);
+  if (!useMobileDisclosure) {
+    restoreMobileComposerOriginalPositions();
+    return;
+  }
+  for (const node of mobileComposerSecondaryNodes()) elements.composerActionsPanel.append(node);
+}
+
+function setComposerActionsOpen(open, { restoreFocus = false } = {}) {
   if (isMobileShellV2Active()) return;
+  syncMobileComposerDisclosureLayout();
   const shouldOpen = open && isMobileView();
-  if (shouldOpen && followUpQueueOpen) setFollowUpQueueOpen(false);
+  if (shouldOpen) {
+    composerActionsFocusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : elements.composerActionsButton;
+    if (followUpQueueOpen) setFollowUpQueueOpen(false);
+    setMobileTabsExpanded(false);
+    setMobileFooterExpanded(false);
+  }
   document.body.classList.toggle("composer-actions-open", shouldOpen);
   elements.composerActionsButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  elements.composerActionsButton.textContent = shouldOpen ? "Less" : "More";
+  elements.composerActionsButton.title = shouldOpen ? "Hide more composer actions" : "Show more composer actions";
+  elements.composerActionsPanel.setAttribute("aria-hidden", shouldOpen || !isMobileView() ? "false" : "true");
   if (!shouldOpen) {
     setPublishMenuOpen(false);
     setNativeCommandMenuOpen(false);
     setAppRunnerMenuOpen(false);
     setOptionsMenuOpen(false);
     setBusyPromptBehaviorMenuOpen(false);
+    const focusReturn = restoreFocus ? composerActionsFocusReturn : null;
+    composerActionsFocusReturn = null;
+    if (focusReturn?.isConnected) requestAnimationFrame(() => focusReturn.focus({ preventScroll: true }));
   }
   scheduleMobileDropdownScrollBoundsUpdate();
   if (!shouldOpen) scheduleDeferredUiFlushAfterDropdownClose();
@@ -6294,11 +6353,37 @@ function setMobileFooterExpanded(expanded) {
   updateFooterModelPickerPosition();
 }
 
-function setMobileTabsExpanded(expanded) {
+function setMobileTabsExpanded(expanded, { restoreFocus = false } = {}) {
   if (isMobileShellV2Active()) return;
-  mobileTabsExpanded = expanded && isMobileView();
+  const shouldExpand = expanded && isMobileView();
+  if (shouldExpand) {
+    mobileTabsFocusReturn = elements.terminalTabsToggleButton;
+    setComposerActionsOpen(false);
+    setMobileFooterExpanded(false);
+  }
+  mobileTabsExpanded = shouldExpand;
   document.body.classList.toggle("mobile-tabs-expanded", mobileTabsExpanded);
   elements.terminalTabsToggleButton.setAttribute("aria-expanded", mobileTabsExpanded ? "true" : "false");
+  if (mobileTabsExpanded) {
+    activateDrawerModal(elements.terminalTabsShell, elements.terminalTabsToggleButton, {
+      close: () => {
+        setNewTabMenuOpen(false);
+        setMobileTabsExpanded(false, { restoreFocus: true });
+      },
+    });
+  } else {
+    deactivateDrawerModal(elements.terminalTabsShell, { restoreFocus: false });
+  }
+  if (elements.terminalTabsBackdrop) elements.terminalTabsBackdrop.hidden = !mobileTabsExpanded;
+  if (elements.terminalTabsDrawerContent) {
+    if (isMobileView()) elements.terminalTabsDrawerContent.setAttribute("aria-hidden", mobileTabsExpanded ? "false" : "true");
+    else elements.terminalTabsDrawerContent.removeAttribute("aria-hidden");
+  }
+  if (!mobileTabsExpanded) {
+    const focusReturn = restoreFocus ? mobileTabsFocusReturn : null;
+    mobileTabsFocusReturn = null;
+    if (focusReturn?.isConnected) requestAnimationFrame(() => focusReturn.focus({ preventScroll: true }));
+  }
 }
 
 function modalFocusableElements(surface) {
@@ -6464,7 +6549,7 @@ function handleDrawerModalKeydown(event) {
   if (!activeDrawerModal || event.defaultPrevented) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    setSidePanelCollapsed(true, { persist: false });
+    activeDrawerModal.close?.();
     return;
   }
   if (event.key !== "Tab") return;
@@ -6476,7 +6561,10 @@ function handleDrawerModalKeydown(event) {
   }
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
+  if (!activeDrawerModal.surface.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus({ preventScroll: true });
+  } else if (event.shiftKey && document.activeElement === first) {
     event.preventDefault();
     last.focus({ preventScroll: true });
   } else if (!event.shiftKey && document.activeElement === last) {
@@ -6485,31 +6573,47 @@ function handleDrawerModalKeydown(event) {
   }
 }
 
-function activateDrawerModal(surface, trigger) {
+function activateDrawerModal(surface, trigger, { close } = {}) {
   if (activeDrawerModal?.surface === surface) return;
-  activeDrawerModal = { surface, trigger };
+  activeDrawerModal = {
+    surface,
+    trigger,
+    close,
+    previousRole: surface.getAttribute("role"),
+    previousTabindex: surface.getAttribute("tabindex"),
+  };
+  surface.setAttribute("role", "dialog");
   surface.setAttribute("aria-modal", "true");
   surface.setAttribute("tabindex", "-1");
   document.addEventListener("keydown", handleDrawerModalKeydown, true);
 }
 
-function deactivateDrawerModal(surface) {
+function deactivateDrawerModal(surface, { restoreFocus = true } = {}) {
   if (activeDrawerModal?.surface !== surface) {
     surface?.removeAttribute("aria-modal");
     return;
   }
-  const trigger = activeDrawerModal.trigger;
+  const { trigger, previousRole, previousTabindex } = activeDrawerModal;
   activeDrawerModal = null;
   surface.removeAttribute("aria-modal");
+  if (previousRole === null) surface.removeAttribute("role");
+  else surface.setAttribute("role", previousRole);
+  if (previousTabindex === null) surface.removeAttribute("tabindex");
+  else surface.setAttribute("tabindex", previousTabindex);
   document.removeEventListener("keydown", handleDrawerModalKeydown, true);
-  if (trigger?.isConnected) queueMicrotask(() => trigger.focus({ preventScroll: true }));
+  if (restoreFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus({ preventScroll: true }));
 }
 
 function syncMobileSidePanelState(collapsed) {
   const showBackdrop = !collapsed && isSidePanelOverlayView();
   elements.sidePanelBackdrop.hidden = !showBackdrop;
-  if (showBackdrop) activateDrawerModal(elements.sidePanel, elements.sidePanelExpandButton);
-  else deactivateDrawerModal(elements.sidePanel);
+  if (showBackdrop) {
+    activateDrawerModal(elements.sidePanel, elements.sidePanelExpandButton, {
+      close: () => setSidePanelCollapsed(true, { persist: false }),
+    });
+  } else {
+    deactivateDrawerModal(elements.sidePanel);
+  }
 }
 
 function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false } = {}) {
@@ -6612,6 +6716,7 @@ function bindMobileViewChanges() {
   const syncForViewport = (event) => {
     applyMobileShellViewport();
     syncComposerActionGridAvailability();
+    syncMobileComposerDisclosureLayout();
     if (isMobileShellV2Active()) return;
     setComposerActionsOpen(false);
     setMobileFooterExpanded(false);
@@ -16292,10 +16397,13 @@ function hideFooterTooltip(target) {
 function bindStyledTooltipEvents(node) {
   if (!node || node._styledTooltipBound) return;
   node._styledTooltipBound = true;
-  node.addEventListener("mouseenter", () => scheduleFooterTooltip(node));
-  node.addEventListener("mouseleave", () => hideFooterTooltip(node));
+  node.addEventListener("pointerenter", (event) => {
+    if (event.pointerType === "touch") return;
+    scheduleFooterTooltip(node);
+  });
+  node.addEventListener("pointerleave", () => hideFooterTooltip(node));
   node.addEventListener("focus", () => {
-    if (node.getAttribute("data-tooltip-variant") === "workspace" && !node.matches(":focus-visible")) return;
+    if (!node.matches(":focus-visible")) return;
     showFooterTooltip(node);
   });
   node.addEventListener("blur", () => hideFooterTooltip(node));
@@ -40822,7 +40930,7 @@ function renderNetworkStatus() {
   if (elements.showRemoteQrButton) {
     elements.showRemoteQrButton.hidden = !open;
     elements.showRemoteQrButton.disabled = rebinding || !open;
-    elements.showRemoteQrButton.textContent = "Show QR code";
+    elements.showRemoteQrButton.textContent = "Open QR-Code";
   }
 }
 
@@ -43737,7 +43845,7 @@ elements.followUpQueueTrigger?.addEventListener("click", () => {
 });
 elements.followUpQueueCloseButton?.addEventListener("click", () => setFollowUpQueueOpen(false, { restoreFocus: true }));
 elements.composerActionsButton.addEventListener("click", () => {
-  setComposerActionsOpen(!document.body.classList.contains("composer-actions-open"));
+  setComposerActionsOpen(!document.body.classList.contains("composer-actions-open"), { restoreFocus: true });
 });
 elements.busyPromptBehaviorTag?.addEventListener("click", (event) => {
   event.preventDefault();
@@ -43746,7 +43854,7 @@ elements.busyPromptBehaviorTag?.addEventListener("click", (event) => {
   setNativeCommandMenuOpen(false);
   setAppRunnerMenuOpen(false);
   setOptionsMenuOpen(false);
-  setComposerActionsOpen(false);
+  if (!document.body.classList.contains("mobile-composer-disclosure")) setComposerActionsOpen(false);
   setBusyPromptBehaviorMenuOpen(nextOpen);
 });
 elements.busyPromptBehaviorTag?.addEventListener("keydown", (event) => {
@@ -43793,7 +43901,7 @@ elements.steerButton.addEventListener("click", () => sendPromptFromModeButton("s
 elements.followUpButton.addEventListener("click", () => sendPromptFromModeButton("follow-up", elements.followUpButton));
 elements.btwButton?.addEventListener("click", () => sendBtwPromptFromButton());
 elements.terminalTabsToggleButton.addEventListener("click", () => {
-  setMobileTabsExpanded(!document.body.classList.contains("mobile-tabs-expanded"));
+  setMobileTabsExpanded(!document.body.classList.contains("mobile-tabs-expanded"), { restoreFocus: true });
 });
 elements.newTabButton.addEventListener("click", (event) => {
   event.stopPropagation();
@@ -44781,9 +44889,9 @@ document.addEventListener("pointerdown", (event) => {
   if (busyPromptBehaviorMenuOpen && !event.target?.closest?.(".composer-context-tags, .composer-busy-mode-menu")) {
     setBusyPromptBehaviorMenuOpen(false);
   }
-  if (document.body.classList.contains("mobile-tabs-expanded") && !elements.tabBar.contains(event.target) && !elements.terminalTabsToggleButton.contains(event.target)) {
+  if (document.body.classList.contains("mobile-tabs-expanded") && !elements.terminalTabsDrawerContent?.contains(event.target) && !elements.terminalTabsToggleButton.contains(event.target)) {
     setNewTabMenuOpen(false);
-    setMobileTabsExpanded(false);
+    setMobileTabsExpanded(false, { restoreFocus: true });
   }
   if (isFooterPickerOpen() && !elements.statusBar.contains(event.target)) {
     setFooterModelPickerOpen(false);
@@ -45090,12 +45198,12 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (document.body.classList.contains("composer-actions-open")) {
-    setComposerActionsOpen(false);
+    setComposerActionsOpen(false, { restoreFocus: true });
     return;
   }
   if (document.body.classList.contains("mobile-tabs-expanded")) {
     setNewTabMenuOpen(false);
-    setMobileTabsExpanded(false);
+    setMobileTabsExpanded(false, { restoreFocus: true });
     return;
   }
   if (isFooterPickerOpen()) {
@@ -45481,6 +45589,7 @@ restoreFileViewerWidthPreference();
 focusPromptInput({ defer: true });
 restoreStoredSkillUsage();
 restoreBusyPromptBehaviorSetting();
+syncMobileComposerDisclosureLayout();
 updateComposerModeButtons();
 installSessionSkillTagResizeHandling();
 updateOptionalFeatureAvailability();

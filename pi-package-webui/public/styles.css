@@ -2655,7 +2655,6 @@ body.embedded-split .side-panel-backdrop {
   border-color: transparent;
   background: linear-gradient(120deg, var(--ctp-yellow), var(--ctp-peach), var(--ctp-red));
 }
-#networkControlField #showRemoteQrButton { display: none; }
 #showRemoteQrButton {
   color: var(--ctp-teal);
   border-color: rgba(148, 226, 213, 0.32);
@@ -17539,4 +17538,251 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
   .session-summary-overlay-body { min-height: 8rem; }
   .session-summary-overlay-actions { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
   .session-summary-overlay-actions button { flex: 1 1 0; min-width: 0; }
+}
+
+/* Compact legacy-mobile shell: terminal navigation is a left drawer and the
+   composer keeps only primary run controls visible until More is expanded. */
+.terminal-tabs-drawer-content { display: contents; }
+.terminal-tabs-backdrop,
+.composer-actions-heading { display: none; }
+
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .terminal-tabs-drawer-content { display: none; }
+  body.mobile-tabs-expanded .terminal-tabs-backdrop:not([hidden]) {
+    position: fixed;
+    inset: 0;
+    z-index: 121;
+    display: block;
+    width: 100%;
+    min-height: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: rgba(var(--ctp-crust-rgb), 0.66);
+    box-shadow: none;
+    backdrop-filter: blur(4px);
+  }
+  body.mobile-tabs-expanded .terminal-tabs-backdrop:hover,
+  body.mobile-tabs-expanded .terminal-tabs-backdrop:active {
+    transform: none;
+    border-color: transparent;
+    box-shadow: none;
+  }
+  body.mobile-tabs-expanded .terminal-tabs-shell {
+    position: fixed;
+    z-index: 122;
+    top: max(0.45rem, env(safe-area-inset-top));
+    right: auto;
+    bottom: max(0.45rem, env(safe-area-inset-bottom));
+    left: 0.45rem;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+    width: min(22rem, calc(100vw - 3rem));
+    min-height: 0;
+    padding: 0.68rem;
+    overflow: hidden;
+    border: 1px solid rgba(148, 226, 213, 0.28);
+    border-radius: 1rem;
+    background:
+      radial-gradient(circle at 0% 0%, rgba(148, 226, 213, 0.13), transparent 14rem),
+      linear-gradient(180deg, rgba(var(--ctp-crust-rgb), 0.99), rgba(var(--ctp-base-rgb), 0.97));
+    box-shadow: 1.2rem 0 3rem rgba(var(--ctp-crust-rgb), 0.62), inset 0 1px 0 rgba(255,255,255,0.05);
+  }
+  body.mobile-tabs-expanded .terminal-tabs-toggle-button {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: none;
+  }
+  body.mobile-tabs-expanded .terminal-tabs-drawer-content {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 0.52rem;
+    min-height: 0;
+  }
+  body.mobile-tabs-expanded .terminal-tabs {
+    position: static;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 0.38rem;
+    width: 100%;
+    max-height: none;
+    min-height: 0;
+    padding: 0.08rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body.mobile-tabs-expanded .terminal-tabs.terminal-tabs-dense { max-height: none; }
+  body.mobile-tabs-expanded .terminal-tab,
+  body.mobile-tabs-expanded .terminal-tabs.terminal-tabs-dense .terminal-tab,
+  body.mobile-tabs-expanded .terminal-tab-group,
+  body.mobile-tabs-expanded .terminal-new-tab-menu {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  body.mobile-tabs-expanded .terminal-new-tab-button { width: 100%; justify-content: flex-start; }
+  body.mobile-tabs-expanded .terminal-sidebar-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.42rem;
+    width: 100%;
+    padding: 0.42rem;
+    border: 1px solid rgba(180, 190, 254, 0.16);
+    border-radius: 0.86rem;
+    background: rgba(var(--ctp-crust-rgb), 0.42);
+  }
+  body.mobile-tabs-expanded .terminal-sidebar-actions > button {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.42rem;
+  }
+  body.mobile-tabs-expanded .remote-access-indicator,
+  body.mobile-tabs-expanded .terminal-close-all-button { width: 100%; max-width: none; }
+
+  body.mobile-composer-disclosure .composer-input-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 0.36rem;
+  }
+  body.mobile-composer-disclosure .composer-row {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.28rem;
+  }
+  body.mobile-composer-disclosure .composer-row > #abortButton,
+  body.mobile-composer-disclosure .composer-row > #steerButton,
+  body.mobile-composer-disclosure .composer-row > #followUpButton,
+  body.mobile-composer-disclosure .composer-row > #sendButton,
+  body.mobile-composer-disclosure .composer-row > .composer-actions-button {
+    min-width: 0;
+    grid-column: auto;
+    padding-inline: 0.28rem;
+    font-size: 0.72rem;
+  }
+  body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > #abortButton { order: 1; }
+  body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > #steerButton { order: 2; }
+  body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > #followUpButton { order: 3; }
+  body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > .composer-actions-button { order: 4; }
+  body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > #sendButton { order: 5; }
+  body.mobile-composer-disclosure:not(.pi-run-active):not(.mobile-keyboard-open) .composer-row > .composer-actions-button {
+    order: 1;
+    grid-column: span 2;
+  }
+  body.mobile-composer-disclosure:not(.pi-run-active):not(.mobile-keyboard-open) .composer-row > #sendButton {
+    order: 2;
+    grid-column: span 3;
+  }
+  body.mobile-composer-disclosure .composer-actions-panel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.44rem;
+    max-height: min(58dvh, 28rem);
+    padding: 0.7rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  body.mobile-composer-disclosure.composer-actions-open .composer-actions-panel { display: grid; }
+  body.mobile-composer-disclosure .composer-actions-heading {
+    grid-column: 1 / -1;
+    display: block;
+    margin: 0.2rem 0 0;
+    padding: 0.34rem 0.12rem 0.18rem;
+    color: var(--ctp-subtext);
+    border-top: 1px solid rgba(180, 190, 254, 0.14);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  body.mobile-composer-disclosure .composer-actions-heading:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-workflow-mode-dock,
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-context-tags,
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-busy-mode-menu,
+  body.mobile-composer-disclosure .composer-actions-panel > .follow-up-queue-trigger {
+    position: static;
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    transform: none;
+  }
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-workflow-mode-dock {
+    display: flex;
+    justify-content: flex-start;
+    min-height: 44px;
+    padding: 0.28rem;
+    border: 1px solid rgba(180, 190, 254, 0.16);
+    border-radius: 0.72rem;
+    background: rgba(var(--ctp-crust-rgb), 0.34);
+  }
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-context-tags {
+    display: flex;
+    min-height: 44px;
+    padding: 0.3rem;
+    overflow: visible;
+    pointer-events: auto;
+    border: 1px solid rgba(180, 190, 254, 0.16);
+    border-radius: 0.72rem;
+    background: rgba(var(--ctp-crust-rgb), 0.34);
+  }
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-context-tags > * { pointer-events: auto; }
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-busy-mode-menu {
+    display: grid;
+    z-index: auto;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+  }
+  body.mobile-composer-disclosure .composer-actions-panel > .follow-up-queue-trigger {
+    display: inline-flex;
+    justify-content: center;
+    min-height: 44px;
+  }
+  body.mobile-composer-disclosure .composer-actions-panel > #btwButton,
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-conversation-voice-menu,
+  body.mobile-composer-disclosure .composer-actions-panel > .composer-conversation-end-button {
+    grid-column: span 1;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    margin: 0;
+  }
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.28rem;
+  }
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-actions-button,
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-actions-panel { display: none !important; }
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-row > #abortButton,
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-row > #steerButton,
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-row > #followUpButton,
+  body.mobile-composer-disclosure.mobile-keyboard-open .composer-row > #sendButton {
+    grid-column: auto;
+    min-height: 44px;
+  }
+  body.mobile-composer-disclosure.mobile-keyboard-open:not(.pi-run-active) .composer-row > #sendButton { grid-column: 1 / -1; }
+}
+
+/* Touch browsers can leave :hover latched after a tap. Keep explicit
+   keyboard and tap-feedback states, but do not render hover-only tooltips. */
+@media (hover: none) and (pointer: coarse) {
+  [data-tooltip]:not(:focus-visible):not(.tooltip-open)::before,
+  [data-tooltip]:not(:focus-visible):not(.tooltip-open)::after {
+    display: none !important;
+    opacity: 0 !important;
+  }
 }

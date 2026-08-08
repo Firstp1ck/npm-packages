@@ -36,6 +36,7 @@ import {
 } from "../lib/webui-workspaces.mjs";
 import { nativeExportDownloadPayload } from "../lib/native-export-payload.mjs";
 import { discoverStartAttachRpcSupervisor } from "../lib/rpc-supervisor-client.mjs";
+import { deriveSupervisorRecoveryToken } from "../lib/rpc-supervisor-protocol.mjs";
 import { readSupervisorState, supervisorPaths } from "../lib/rpc-supervisor-state.mjs";
 import {
   collectOpenSessionFiles,
@@ -9109,6 +9110,7 @@ try {
 process.env.PI_WEBUI_HOST = options.host;
 process.env.PI_WEBUI_PORT = String(options.port);
 const recoveryEndpointToken = String(process.env.PI_WEBUI_RECOVERY_TOKEN || "").trim() || `${randomUUID()}${randomUUID()}`;
+const recoveryEndpointTokens = new Set([recoveryEndpointToken]);
 
 function recoveryLoopbackUrl(bindHost = options.host) {
   const normalized = String(bindHost || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
@@ -14331,7 +14333,8 @@ function recoveryText(value, field, maxChars) {
 function requireRecoveryEndpointAuthorization(req) {
   requireLocalhostRoute(req, RECOVERY_ENDPOINT_PATH);
   const match = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/iu);
-  if (!match || !safeTimingEqual(match[1].trim(), recoveryEndpointToken)) {
+  const credential = match?.[1]?.trim();
+  if (!credential || ![...recoveryEndpointTokens].some((expected) => safeTimingEqual(credential, expected))) {
     throw makeHttpError(401, "Invalid recovery endpoint credential");
   }
 }
@@ -16615,6 +16618,7 @@ if (options.migrationDryRun) {
 }
 
 rpcSupervisor = await initializeRpcSupervisor();
+if (rpcSupervisor?.state?.token) recoveryEndpointTokens.add(deriveSupervisorRecoveryToken(rpcSupervisor.state.token));
 rpcSupervisorSnapshot = rpcSupervisor?.snapshot || null;
 installRpcSupervisorEventDispatch(rpcSupervisorSnapshot);
 const initialTabs = await createInitialTabs();

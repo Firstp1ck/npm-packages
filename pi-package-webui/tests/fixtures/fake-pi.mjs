@@ -17,8 +17,8 @@
 //   isStreaming=true while a scripted flow runs.
 // - FAKE_PI_STATS_PROMPT_CONTEXT=1: advertise /stats-webui and publish deterministic
 //   structured or malformed-subsection Prompt/context dashboard payloads.
+import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import {
   BUILTIN_SAMPLING_APIS,
@@ -216,6 +216,9 @@ logJsonLine({
   cwd: process.cwd(),
   recoveryUrl: String(process.env.PI_WEBUI_RECOVERY_URL || ""),
   recoveryTokenConfigured: Boolean(process.env.PI_WEBUI_RECOVERY_TOKEN),
+  recoveryTokenDigest: process.env.PI_WEBUI_RECOVERY_TOKEN
+    ? createHash("sha256").update(process.env.PI_WEBUI_RECOVERY_TOKEN).digest("hex")
+    : "",
   ...(continuityModeEnabled ? { pid: process.pid, continuityMode: true } : {}),
 });
 

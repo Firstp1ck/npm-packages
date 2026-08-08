@@ -194,8 +194,9 @@
 
     <main class="layout">
       <section class="chat-panel">
-        <header class="terminal-tabs-shell">
-          <button id="terminalTabsToggleButton" class="terminal-tabs-toggle-button" type="button" aria-controls="tabBar" aria-expanded="false">Tabs</button>
+        <header class="terminal-tabs-shell" aria-label="Terminal navigation">
+          <button id="terminalTabsToggleButton" class="terminal-tabs-toggle-button" type="button" aria-controls="terminalTabsDrawerContent" aria-expanded="false">Tabs</button>
+          <div id="terminalTabsDrawerContent" class="terminal-tabs-drawer-content" role="region" aria-label="Terminal navigation">
           <div id="tabBar" class="terminal-tabs" role="tablist" aria-label="Pi terminal tabs">
             <div id="newTabMenu" class="terminal-new-tab-menu composer-publish-menu">
               <button id="newTabButton" class="terminal-new-tab-button" type="button" aria-label="Start a separate isolated Pi terminal" aria-haspopup="menu" aria-expanded="false" aria-controls="newTabMenuPanel">+ Tab ▾</button>
@@ -213,7 +214,9 @@
           </div>
           <div id="remoteAccessIndicator" class="remote-access-indicator" role="status" aria-live="polite" hidden>Remote access open</div>
           <button id="closeAllTabsButton" class="terminal-close-all-button" type="button" aria-label="Close all terminal tabs">Close all Tabs</button>
+          </div>
         </header>
+        <button id="terminalTabsBackdrop" class="terminal-tabs-backdrop" type="button" aria-label="Close terminal navigation" tabindex="-1" hidden></button>
         <section id="workspaceDashboard" class="workspace-dashboard" aria-label="Workspace dashboard"></section>
         <div id="widgetArea" class="widget-area"></div>
         <section id="subagentTerminalView" class="subagent-terminal-view" aria-labelledby="subagentTerminalTitle" hidden>
@@ -379,8 +382,9 @@
           </section>
           <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
           <div class="composer-row">
-            <button id="composerActionsButton" class="composer-actions-button" type="button" aria-controls="composerActionsPanel" aria-expanded="false" title="Open session, workflow, and follow-up actions">Actions</button>
-            <div id="composerActionsPanel" class="composer-actions-panel" aria-label="Composer actions">
+            <button id="composerActionsButton" class="composer-actions-button" type="button" aria-controls="composerActionsPanel" aria-expanded="false" title="Show more composer actions">More</button>
+            <div id="composerActionsPanel" class="composer-actions-panel" aria-label="More composer actions">
+              <h2 class="composer-actions-heading composer-actions-heading-session">Session &amp; workspace</h2>
               <button id="newSessionButton" class="composer-new-button" type="button" data-composer-action-id="new" data-composer-action-span="1">New</button>
               <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context" data-composer-action-id="compact" data-composer-action-span="2">Compact</button>
               <button
@@ -394,6 +398,7 @@
                 aria-label="Start guided Git workflow: stage all changes, generate and preview staged commit messages, optionally open a PR branch worktree, commit short or long there, then push or create a pull request. Cancel is available at each step."
                 data-tooltip="Guided Git workflow:&#10;1. Stage all changes with git add .&#10;2. Generate and preview staged commit messages.&#10;3. Optional: create or type a PR branch worktree before committing.&#10;4. Commit with the short or long message in the worktree tab.&#10;5. Push normally, or push the PR worktree branch, generate/review /pr, and create the PR.&#10;Cancel is available at each step."
               ><svg class="composer-icon composer-icon-github" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></button>
+              <h2 class="composer-actions-heading composer-actions-heading-tools">Tools &amp; commands</h2>
               <div class="composer-publish-menu" data-composer-action-id="publish" data-composer-action-span="1" hidden>
                 <button
                   id="publishButton"
@@ -576,6 +581,7 @@
                 ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z" fill="currentColor"/></svg></button>
                 <div id="appRunnerMenuPanel" class="composer-publish-menu-panel composer-app-runner-menu-panel composer-auto-height-menu-panel" role="menu" aria-label="Detected app runners"></div>
               </div>
+              <h2 class="composer-actions-heading composer-actions-heading-context">Context &amp; modes</h2>
             </div>
             <div class="spacer"></div>
             <button
@@ -864,7 +870,7 @@
                   </label>
                   <div class="network-action-row">
                     <button id="openNetworkButton" type="button">Open for remote access</button>
-                    <button id="showRemoteQrButton" type="button" hidden>Show QR code</button>
+                    <button id="showRemoteQrButton" type="button" hidden>Open QR-Code</button>
                   </div>
                 </section>
 

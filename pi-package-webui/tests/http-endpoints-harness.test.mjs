@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
+import { deriveSupervisorRecoveryToken } from "../lib/rpc-supervisor-protocol.mjs";
 import { readSupervisorState, supervisorPaths, supervisorPidIsAlive } from "../lib/rpc-supervisor-state.mjs";
 import { REQUIRED_THEME_TOKENS, serializeTheme } from "../public/theme-contract.mjs";
 
@@ -3848,12 +3849,15 @@ try {
     body: recoveryBody,
   });
   assert.equal(wrongCredentialRecovery.status, 401, "recovery endpoint must reject an incorrect bearer credential");
+  const liveRecoverySupervisorState = await readSupervisorState(await supervisorPaths({ agentDir: workflowPolicyAgentDir, port }));
+  assert.ok(liveRecoverySupervisorState?.token, "recovery endpoint test needs the active supervisor credential");
+  const retainedChildRecoveryToken = deriveSupervisorRecoveryToken(liveRecoverySupervisorState.token);
   const invalidModeRecovery = await request("127.0.0.1", "/api/recovery/plan", {
     method: "POST",
-    headers: { authorization: `Bearer ${recoveryEndpointToken}` },
+    headers: { authorization: `Bearer ${retainedChildRecoveryToken}` },
     body: { ...recoveryBody, mode: "apply" },
   });
-  assert.equal(invalidModeRecovery.status, 400, "recovery endpoint must accept plan-only mode exclusively");
+  assert.equal(invalidModeRecovery.status, 400, "recovery endpoint must accept the stable managed-child credential and plan-only mode exclusively");
   if (lan) {
     const remoteRecovery = await request(lan, "/api/recovery/plan", {
       method: "POST",

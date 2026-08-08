@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
 export const RPC_SUPERVISOR_PROTOCOL = Object.freeze({ major: 1, minor: 2 });
@@ -103,6 +103,11 @@ export function constantTimeTokenEqual(actual, expected) {
   const right = Buffer.from(expected);
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
+}
+
+export function deriveSupervisorRecoveryToken(supervisorToken) {
+  if (typeof supervisorToken !== "string" || !supervisorToken) throw new TypeError("supervisorToken is required");
+  return createHmac("sha256", supervisorToken).update("pi-webui-recovery-v1").digest("base64url");
 }
 
 export function newRequestId() {

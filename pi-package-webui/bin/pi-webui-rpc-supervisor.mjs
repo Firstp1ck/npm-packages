@@ -15,6 +15,7 @@ import {
   RpcSupervisorProtocolError,
   assertProtocolCompatible,
   constantTimeTokenEqual,
+  deriveSupervisorRecoveryToken,
   encodeFrame,
   frameReader,
   validateClientFrame,
@@ -395,9 +396,11 @@ class SupervisorHost {
 
   async spawnChildCandidate(child) {
     const cwd = await realpath(child.cwd).catch(() => child.cwd);
+    const env = sanitizedSupervisorEnvironment(process.env);
+    if (env.PI_WEBUI_RECOVERY_URL) env.PI_WEBUI_RECOVERY_TOKEN = deriveSupervisorRecoveryToken(this.token);
     const processChild = spawn(child.command, child.args, {
       cwd,
-      env: sanitizedSupervisorEnvironment(process.env),
+      env,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
       windowsHide: true,

@@ -217,7 +217,7 @@ Environment variables:
 - `PI_WEBUI_REMOTE_AUTH=1` starts with Remote PIN authentication enabled.
 - `PI_WEBUI_OUTPUT_MODE=normal|compact-v1` sets the server default for newly auto-negotiated browser connections.
 - `PI_WEBUI_RPC_SUPERVISOR=0` opts out to the legacy server-owned Pi transport only when the current scope has no live managed tabs. Use explicit shutdown before disabling or downgrading; fallback startup refuses to create duplicate direct children for a live managed scope.
-- Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
+- Pi Web UI automatically injects a loopback `PI_WEBUI_RECOVERY_URL` and a bearer `PI_WEBUI_RECOVERY_TOKEN` into spawned Pi RPC processes. Managed RPC children receive a lower-privilege credential derived from the private supervisor token, so retained tabs stay authorized across server-only restarts without persisting another secret. The authenticated endpoint can only create a separate plan-only recovery tab; keep any manually supplied token private.
 - `PI_WEBUI_SETTINGS_FILE=/path/to/settings.json` authoritatively overrides the private Web UI settings file (normally `~/.pi/webui/settings.json`) and disables automatic import from the old XDG location.
 - `PI_SESSION_SUMMARY_CONFIG_FILE=/path/to/session-summary.json` overrides the private session-summary profile (normally `~/.pi/agent/session-summary.json`), primarily for isolated tests or managed deployments.
 - `PI_WEBUI_FAST_PICKS_FILE=/path/to/paths.json` overrides saved cwd fast-pick storage.

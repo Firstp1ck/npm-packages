@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createConnection, createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import {
   RPC_SUPERVISOR_CHILD_ARG_LIMIT,
   RPC_SUPERVISOR_EVENT_RING_MAX_BYTES,
   RPC_SUPERVISOR_REQUEST_DEDUPE_LIMIT,
+  deriveSupervisorRecoveryToken,
 } from "../lib/rpc-supervisor-protocol.mjs";
 import {
   RpcSupervisorClient,
@@ -123,7 +125,13 @@ try {
   client = await discoverStartAttachRpcSupervisor({
     agentDir,
     port,
-    environment: { ...process.env, FAKE_PI_LOG_FILE: logFile, RAW_PI_LOG: rawLogFile },
+    environment: {
+      ...process.env,
+      FAKE_PI_LOG_FILE: logFile,
+      RAW_PI_LOG: rawLogFile,
+      PI_WEBUI_RECOVERY_URL: `http://127.0.0.1:${port}/api/recovery/plan`,
+      PI_WEBUI_RECOVERY_TOKEN: "server-ephemeral-recovery-token",
+    },
     startupTimeoutMs: 10_000,
   });
   const created = await client.createTab({
@@ -160,6 +168,15 @@ try {
   await delay(60);
   const logged = (await readFile(logFile, "utf8")).split("\n").filter(Boolean).map(JSON.parse);
   assert.equal(logged.filter((entry) => entry.direction === "command" && entry.message === "dedupe me").length, 1, "duplicate request IDs must not write to Pi twice");
+  const startupState = await readSupervisorState(await supervisorPaths({ agentDir, port }));
+  const expectedRecoveryDigest = createHash("sha256").update(deriveSupervisorRecoveryToken(startupState.token)).digest("hex");
+  const startupEntry = logged.find((entry) => entry.direction === "startup" && entry.cwd === work);
+  assert.equal(startupEntry?.recoveryTokenDigest, expectedRecoveryDigest, "managed Pi children must receive the stable derived recovery credential");
+  assert.notEqual(
+    startupEntry?.recoveryTokenDigest,
+    createHash("sha256").update("server-ephemeral-recovery-token").digest("hex"),
+    "managed Pi children must not retain the server process's restart-scoped credential",
+  );
 
   const rawCommand = {
     type: "raw_round_trip",

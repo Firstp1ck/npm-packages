@@ -121,6 +121,20 @@ Normal output shows the full live tool and response stream. Compact output keeps
 
 Choose the mode under **Controls → Output processing** or **Settings → Browser workflow**. The setting affects display only; it does not change Pi prompts, tools, models, saved transcript meaning, or inference.
 
+## Mobile layout
+
+At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses terminal navigation and secondary composer controls by default:
+
+- Tap the current terminal summary to open a left-side drawer containing terminal tabs, new-tab choices, workspace actions, and **Close all Tabs**.
+- Close the terminal drawer with the summary button, backdrop, `Escape`, or by choosing a terminal.
+- The compact composer keeps the prompt, attachment, Send, and applicable Abort, Follow-up, and Steer controls immediately available.
+- Tap **More** to open grouped session, workspace, command, workflow, context, and mode controls above the composer. `Escape` closes the panel and returns focus to **More**.
+- Opening the software keyboard hides secondary disclosure chrome while retaining prompt entry and applicable primary run controls.
+- Touch pointers do not schedule hover-only tooltips or reveal latched CSS hover hints. Fine-pointer hover and keyboard-focus help remain available where supported.
+- The Control Deck, tablet layout, desktop tab placement, stored composer ordering, and command behavior are unchanged.
+
+The optional Mobile Experience v2 shell remains separately controlled by its existing preview setting and is not changed by this legacy mobile layout.
+
 ## Themes
 
 Use **Controls → Interface → Theme** to choose a theme. **Customize…** opens the visual editor.

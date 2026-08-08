@@ -6,6 +6,7 @@ import {
   RPC_SUPERVISOR_PROTOCOL,
   RpcSupervisorProtocolError,
   constantTimeTokenEqual,
+  deriveSupervisorRecoveryToken,
   encodeFrame,
   frameReader,
   protocolCompatible,
@@ -20,6 +21,10 @@ const attach = validateClientFrame({
 assert.equal(attach.token, "private-token", "attach validation must retain the private token for authentication");
 assert.equal(constantTimeTokenEqual("same", "same"), true);
 assert.equal(constantTimeTokenEqual("same", "different"), false);
+const recoveryToken = deriveSupervisorRecoveryToken("private-token");
+assert.equal(recoveryToken, deriveSupervisorRecoveryToken("private-token"), "recovery credentials must remain stable across server reattachment");
+assert.notEqual(recoveryToken, "private-token", "the lower-privilege recovery credential must not expose the supervisor credential");
+assert.notEqual(recoveryToken, deriveSupervisorRecoveryToken("other-private-token"));
 assert.equal(protocolCompatible({ major: RPC_SUPERVISOR_PROTOCOL.major, minor: 0 }), true, "older minor versions remain attach-compatible for actionable recovery");
 assert.equal(protocolCurrent({ major: RPC_SUPERVISOR_PROTOCOL.major, minor: 0 }), false, "older detached supervisors must be detectable after a server-only restart");
 assert.equal(protocolCurrent(RPC_SUPERVISOR_PROTOCOL), true);

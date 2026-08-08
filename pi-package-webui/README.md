@@ -10,6 +10,7 @@ Use Pi from a local browser with tabs, streaming responses, uploads, model contr
 - Change models and thinking effort without leaving the browser.
 - Upload files and images, use slash-command suggestions, and manage follow-up prompts.
 - Resume sessions, switch projects, and use guided Git helpers.
+- Keep phone sessions compact with expandable terminal navigation and secondary composer actions.
 - Add optional themes, statistics, remote access, voice features, and other companion packages.
 
 ## Install
@@ -38,6 +39,8 @@ pi-webui
 ```
 
 If no working directory is supplied, the browser asks which project to open first.
+
+On a phone, tap the current terminal name to open the left-side terminal drawer. The composer keeps the prompt, attachment, Send, and active-run controls visible; tap **More** for session, workflow, command, and mode controls. Hover-only tooltips stay hidden on touch controls, and the **Control Deck** keeps its existing expandable menu.
 
 ## Keep it private
 

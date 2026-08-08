@@ -92,7 +92,7 @@ assert.match(renderTerminalTabGroupSource, /applyStyledTooltip\(button, terminal
 assert.doesNotMatch(renderTerminalTabGroupSource, /terminal-tab-group-summary|menu\.append\(summary\)/, "group hover disclosure should not render an in-flow summary that shifts group menu items");
 assert.match(app, /footerTooltipNode\.setAttribute\("role", "tooltip"\)/, "the shared visual tooltip should expose tooltip semantics");
 assert.match(app, /document\.addEventListener\("keydown", \(event\) => \{[\s\S]*event\.key === "Escape" && footerTooltipTarget[\s\S]*hideFooterTooltip\(footerTooltipTarget\)[\s\S]*\}, true\)/, "Escape should dismiss both hover- and focus-triggered tooltips from the document capture phase");
-assert.match(app, /data-tooltip-variant"\) === "workspace" && !node\.matches\(":focus-visible"\)/, "touch focus should not flash the large workspace tooltip while keyboard focus remains supported");
+assert.match(app, /node\.addEventListener\("focus", \(\) => \{[\s\S]*?!node\.matches\(":focus-visible"\)[\s\S]*?showFooterTooltip\(node\)/, "touch focus should not flash styled tooltips while keyboard focus remains supported");
 assert.match(app, /styled-tooltip-description[\s\S]*aria-describedby/, "detailed tab tooltip text should be available as an accessible description");
 assert.match(styles, /footer-floating-tooltip\[data-variant="workspace"\][\s\S]*line-height: 1\.52/, "workspace tooltips should use the readable visual variant");
 assert.doesNotMatch(styles, /terminal-tab-group-summary/, "group tooltip styling should not reserve in-flow menu space");
