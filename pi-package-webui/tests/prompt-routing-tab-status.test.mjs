@@ -98,11 +98,19 @@ const routingAdd = sendSource.indexOf("promptRoutingTabs.add(targetTabId);");
 const workingMark = sendSource.indexOf("markTabWorkingLocally(targetTabId);");
 const responseApply = sendSource.indexOf("applyResponseTab(response);");
 const successDelete = sendSource.indexOf("promptRoutingTabs.delete(targetTabId);", responseApply);
+const nativeResponseBranch = sendSource.indexOf('if (response?.command === "native_slash_command"', responseApply);
 const catchStart = sendSource.indexOf("} catch (error)", successDelete);
 const failureDelete = sendSource.indexOf("promptRoutingTabs.delete(targetTabId);", catchStart);
 const idleMark = sendSource.indexOf("markTabIdleLocally(targetTabId);", catchStart);
 assert.ok(routingAdd >= 0 && routingAdd < workingMark, "fresh prompts should enter routing protection before rendering working state");
 assert.ok(responseApply >= 0 && successDelete > responseApply && successDelete < catchStart, "successful routing protection should end only after applying the server handoff response");
+assert.ok(successDelete < nativeResponseBranch, "all accepted prompts, including extension commands, should release routing ownership before native-command special cases");
 assert.ok(failureDelete > catchStart && failureDelete < idleMark, "failed routing should clear protection before restoring idle state");
+
+const abortSource = functionSource("abortActiveRun");
+const abortRequest = abortSource.indexOf('await api("/api/abort"');
+const abortRoutingDelete = abortSource.indexOf("promptRoutingTabs.delete(tabContext.tabId);", abortRequest);
+const abortStateChecks = abortSource.indexOf("scheduleAbortStateChecks(tabContext);", abortRoutingDelete);
+assert.ok(abortRequest >= 0 && abortRoutingDelete > abortRequest && abortRoutingDelete < abortStateChecks, "a successful abort should release local routing ownership before canonical state checks");
 
 console.log("prompt routing tab-status checks passed");

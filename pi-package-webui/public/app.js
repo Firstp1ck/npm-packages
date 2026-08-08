@@ -42343,10 +42343,13 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       response = await api("/api/prompt", { method: "POST", body, tabId: targetTabId });
     }
     applyResponseTab(response);
+    // A successful RPC response ends prompt-routing ownership even when an
+    // extension command handled the input without starting an agent turn.
+    // Canonical streaming state keeps real agent runs active after this handoff.
+    if (startsRun) promptRoutingTabs.delete(targetTabId);
     if (response?.command === "native_slash_command" && /^\/new(?:\s|$)/.test(message)) forgetLastUserPrompt(targetTabId);
     const targetStillActive = isCurrentTabContext(tabContext);
     if (startsRun && response?.command === "native_slash_command") {
-      promptRoutingTabs.delete(targetTabId);
       discardOptimisticUserPrompt(optimisticPromptId);
       markTabIdleLocally(targetTabId);
       if (targetStillActive) clearRunIndicatorActivity();
@@ -44129,6 +44132,9 @@ async function abortActiveRun({ source = "button" } = {}) {
     }
     if (hadActiveRun) setRunIndicatorActivity(`Abort requested${source === "escape" ? " from Esc" : source === "long-press" ? " from long-press" : ""}; checking whether Pi stopped…`);
     await api("/api/abort", { method: "POST", body: {}, tabId: tabContext.tabId });
+    // Abort also terminates an in-flight local routing handoff. Without this,
+    // canonical idle state cannot clear a stale extension-command indicator.
+    promptRoutingTabs.delete(tabContext.tabId);
     if (!isCurrentTabContext(tabContext)) return;
     addAbortTranscriptNotice({ activeRun: hadActiveRun });
     scheduleAbortStateChecks(tabContext);

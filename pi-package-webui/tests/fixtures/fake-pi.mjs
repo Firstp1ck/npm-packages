@@ -487,7 +487,8 @@ function handleTranscriptContinuityPrompt(command, base) {
 function handleMobileBlockerPrompt(command, base) {
   if (String(command.message || "").trim() !== "fixture mobile blocker") return false;
   respond({ ...base, data: { output: "mobile blocker fixture accepted" } });
-  emitEvent({ type: "agent_start" });
+  // Model a handled extension command: it opens a dialog without starting an
+  // agent turn, so the browser must settle from the accepted prompt response.
   emitEvent({
     type: "extension_ui_request",
     id: "fixture_blocker_12345678",
