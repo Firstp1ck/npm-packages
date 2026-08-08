@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-competitor-analysis",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Agents should invoke this skill when comparing competing products, services, libraries, tools, vendors, or approaches for market/product positioning, feature matrices, strategic trade-offs, pricing, adoption, or differentiation.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-competitor-analysis#readme",

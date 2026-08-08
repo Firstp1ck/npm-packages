@@ -15,9 +15,17 @@
 //   assistant turns are appended to a dynamic transcript returned by
 //   get_messages AFTER the three baseline messages, and get_state reports
 //   isStreaming=true while a scripted flow runs.
+// - FAKE_PI_STATS_PROMPT_CONTEXT=1: advertise /stats-webui and publish deterministic
+//   structured or malformed-subsection Prompt/context dashboard payloads.
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import {
+  BUILTIN_SAMPLING_APIS,
+  filterSupportedSamplingParameters,
+  resolveSamplingParameterCapabilities,
+} from "../../lib/sampling-parameter-capabilities.mjs";
+import { validateSamplingParameterObject } from "../../public/sampling-parameter-controls.mjs";
 
 const sessionIndex = process.argv.indexOf("--session");
 const sessionFile = sessionIndex !== -1
@@ -40,12 +48,47 @@ const fakeSkills = [
 ];
 let enabledToolNames = new Set(fakeTools.map((tool) => tool.name));
 let enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name));
+let fakeSessionSamplingParams = {};
+const fakeSamplingModel = {
+  provider: "fake",
+  id: "fake-model",
+  name: "Fake Model",
+  api: "openai-completions",
+  samplingParams: { temperature: 0.7 },
+};
+
+function fakeSamplingState() {
+  const parameters = resolveSamplingParameterCapabilities(fakeSamplingModel);
+  return {
+    session: { ...fakeSessionSamplingParams },
+    defaults: { ...fakeSamplingModel.samplingParams },
+    effective: {
+      ...filterSupportedSamplingParameters(fakeSamplingModel.samplingParams, parameters),
+      ...filterSupportedSamplingParameters(fakeSessionSamplingParams, parameters),
+    },
+    support: {
+      supported: Object.values(parameters).some((capability) => capability.supported),
+      api: fakeSamplingModel.api,
+      model: {
+        provider: fakeSamplingModel.provider,
+        id: fakeSamplingModel.id,
+        name: fakeSamplingModel.name,
+      },
+      parameters,
+      compatibleApis: [...BUILTIN_SAMPLING_APIS],
+      message: "Session sampling parameters apply to subsequent provider requests.",
+    },
+  };
+}
 
 const voiceScriptsEnabled = process.env.FAKE_PI_VOICE_SCRIPTS === "1";
 // The continuity harness opts into this behavior explicitly so existing fixture
 // consumers retain their current timing and log shapes.
 const continuityModeEnabled = process.env.FAKE_PI_CONTINUITY_MODE === "1";
 const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
+const sseFloodEnabled = process.env.FAKE_PI_SSE_FLOOD === "1";
+const statsPromptContextEnabled = process.env.FAKE_PI_STATS_PROMPT_CONTEXT === "1";
+const streamIsolationEnabled = process.env.FAKE_PI_STREAM_ISOLATION === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
 const largeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
 const largeTokenSamples = Array.from({ length: 300 }, (_, index) => ({ index, input: index + 1, output: index + 2 }));
@@ -59,6 +102,8 @@ const dynamicMessages = [];
 let dynamicLeafId = "u0000002";
 let scriptedStreaming = false;
 let continuityRun = 0;
+let streamIsolationRun = 0;
+const pendingStreamIsolationRuns = new Map();
 let largeTranscriptEnabled = false;
 const fixtureSubagentRuns = [];
 const fixtureSubagentGates = [];
@@ -114,6 +159,11 @@ function mutateRuntimeQueue(payload = {}) {
     const [message] = runtimeQueue.followUpMessages.splice(operation.from, 1);
     runtimeQueue.followUp.splice(operation.to, 0, text);
     runtimeQueue.followUpMessages.splice(operation.to, 0, message);
+  } else if (operation.type === "delete") {
+    if (!Number.isInteger(operation.index) || operation.index < 0 || operation.index >= runtimeQueue.followUp.length
+      || runtimeQueue.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
+    runtimeQueue.followUp.splice(operation.index, 1);
+    runtimeQueue.followUpMessages.splice(operation.index, 1);
   } else {
     return failed("invalid-request");
   }
@@ -194,7 +244,16 @@ function emitEvent(payload) {
 }
 
 function emitScriptedEvent(payload) {
-  logJsonLine({ direction: "event", type: payload.type, ...(payload.toolName ? { toolName: payload.toolName } : {}) });
+  logJsonLine({
+    direction: "event",
+    type: payload.type,
+    ...(payload.toolName ? { toolName: payload.toolName } : {}),
+    ...(payload.assistantMessageEvent?.type ? { assistantMessageEventType: payload.assistantMessageEvent.type } : {}),
+    ...(payload.isolationRunId ? { isolationRunId: payload.isolationRunId } : {}),
+    ...(payload.isolationMode ? { isolationMode: payload.isolationMode } : {}),
+    ...(payload.isolationPhase ? { isolationPhase: payload.isolationPhase } : {}),
+    ...(Number.isInteger(payload.isolationDeltaIndex) ? { isolationDeltaIndex: payload.isolationDeltaIndex } : {}),
+  });
   emitEvent(payload);
 }
 
@@ -276,11 +335,179 @@ function runContinuityDelayedStream() {
   runScriptedSteps(steps);
 }
 
+function runContinuityDelayedStart() {
+  runScriptedSteps([{ afterMs: 3500, run: runContinuityDelayedStream }]);
+}
+
+function runContinuityConfirmedBeforeTool() {
+  scriptedStreaming = true;
+  runScriptedSteps([{ afterMs: 1500, run: () => runTranscriptContinuityScenario("tool") }]);
+}
+
+function runTranscriptContinuityScenario(scenario) {
+  scriptedStreaming = true;
+  const run = ++continuityRun;
+  const tagged = (payload) => ({ ...payload, continuityRun: run, continuityScenario: scenario });
+  const steps = [];
+  const start = () => steps.push(
+    { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "agent_start" })) },
+    { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } })) },
+  );
+  const finish = (message, afterMs = 160) => {
+    if (message) {
+      steps.push({ afterMs, run: () => {
+        const settledMessage = typeof message === "function" ? message() : message;
+        appendDynamicMessage(settledMessage);
+        emitScriptedEvent(tagged({ type: "message_end", message: settledMessage }));
+      } });
+    }
+    steps.push(
+      { afterMs: message ? 60 : afterMs, run: () => emitScriptedEvent(tagged({ type: "agent_end" })) },
+      { afterMs: 20, run: () => {
+        scriptedStreaming = false;
+        emitScriptedEvent(tagged({ type: "agent_settled" }));
+      } },
+    );
+  };
+  const assistant = (text) => ({ role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() });
+
+  if (scenario === "reverse") {
+    const text = "backward selection literal survives";
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "backward selection literal" } })) },
+      { afterMs: 650, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " survives" } })) },
+    );
+    finish(assistant(text), 400);
+  } else if (scenario === "duplicate") {
+    const text = "duplicate keyed selection literal";
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })) });
+    finish(assistant(text), 400);
+  } else if (scenario === "pointer") {
+    const text = "pointer drag selection literal remains after update";
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "pointer drag selection literal" } })) },
+      { afterMs: 900, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " remains after update" } })) },
+    );
+    finish(assistant(text), 1_000);
+  } else if (scenario === "thinking") {
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "thinking selection literal" } })) },
+      { afterMs: 650, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: " survives" } })) },
+    );
+    finish({ role: "assistant", content: [{ type: "thinking", thinking: "thinking selection literal survives" }, { type: "text", text: "thinking final answer" }], timestamp: Date.now() }, 450);
+  } else if (scenario === "order") {
+    const toolCallId = `continuity-order-${run}`;
+    const toolCall = { type: "toolCall", id: toolCallId, name: "read", arguments: { path: "order.txt" } };
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "ordering thinking" } })) },
+      { afterMs: 500, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ordering assistant output" } })) },
+      { afterMs: 1_000, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, name: "read", toolCall } })) },
+      { afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 2, name: "read", toolCall, delta: "" } })) },
+      { afterMs: 200, run: () => emitScriptedEvent(tagged({ type: "webui_supervisor_reconnected", supervisorScopeId: `continuity-order-${run}`, supervisorEpoch: "1", supervisorSeq: "1" })) },
+      { afterMs: 800, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 2, name: "read", toolCall } })) },
+    );
+    finish({ role: "assistant", content: [{ type: "thinking", thinking: "ordering thinking" }, toolCall], timestamp: Date.now() }, 700);
+  } else if (scenario === "tool") {
+    const toolCallId = `continuity-tool-${run}`;
+    const toolOutput = (revision) => [
+      "tool selection literal",
+      `unselected revision ${revision}`,
+      ...Array.from({ length: 64 }, (_, index) => `continuity output line ${String(index + 1).padStart(2, "0")} ${"x".repeat(160)}`),
+    ].join("\n");
+    steps.push(
+      { afterMs: 40, run: () => emitScriptedEvent(tagged({ type: "agent_start" })) },
+      { afterMs: 70, run: () => emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "continuity.txt" } })) },
+      { afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: toolOutput("one") }] } })) },
+      { afterMs: 700, run: () => emitScriptedEvent(tagged({ type: "tool_execution_update", toolCallId, toolName: "read", partialResult: { content: [{ type: "text", text: toolOutput("two") }] } })) },
+      { afterMs: 600, run: () => emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: toolOutput("two") }] } })) },
+    );
+    finish(null, 120);
+  } else if (scenario === "authoritative") {
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "authoritative selection literal" } })) });
+    finish(assistant("authoritative replacement text"), 700);
+  } else if (scenario === "cadence") {
+    const prefix = "high cadence selection literal\n\n";
+    let finalText = prefix;
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: prefix } })) });
+    steps.push({ afterMs: 800, run: () => {
+      for (let index = 0; index < 96; index += 1) {
+        const delta = `c${String(index).padStart(2, "0")} `;
+        finalText += delta;
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } }));
+      }
+    } });
+    finish(() => assistant(finalText), 500);
+  } else if (scenario === "dwell") {
+    const prefix = "thirty second selection literal anchor\n\n";
+    let finalText = prefix;
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: prefix } })) });
+    for (let index = 0; index < 300; index += 1) {
+      const delta = `d${String(index).padStart(3, "0")} `;
+      finalText += delta;
+      steps.push({ afterMs: 100, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } })) });
+    }
+    finish(() => assistant(finalText), 200);
+  } else if (scenario === "mode") {
+    const text = "output mode transition literal";
+    start();
+    steps.push(
+      { afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })) },
+      { afterMs: 3_000, run: () => emitScriptedEvent(tagged({ type: "webui_output_mode", protocolVersion: 1, activeMode: "compact-v1" })) },
+    );
+    finish(assistant(text), 1_200);
+  } else if (scenario === "mermaid") {
+    const text = "Mermaid source selection literal\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n";
+    start();
+    steps.push({ afterMs: 120, run: () => emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })) });
+    finish(assistant(text), 1800);
+  } else {
+    return false;
+  }
+  runScriptedSteps(steps);
+  return true;
+}
+
+function handleTranscriptContinuityPrompt(command, base) {
+  if (!continuityModeEnabled) return false;
+  const match = String(command.message || "").trim().match(/^fixture transcript continuity (reverse|duplicate|pointer|thinking|order|tool|authoritative|cadence|dwell|mode|mermaid)$/);
+  if (!match) return false;
+  appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
+  respond({ ...base, data: { output: `fake transcript continuity ${match[1]} accepted`, pid: process.pid } });
+  return runTranscriptContinuityScenario(match[1]);
+}
+
+function handleMobileBlockerPrompt(command, base) {
+  if (String(command.message || "").trim() !== "fixture mobile blocker") return false;
+  respond({ ...base, data: { output: "mobile blocker fixture accepted" } });
+  // Model a handled extension command: it opens a dialog without starting an
+  // agent turn, so the browser must settle from the accepted prompt response.
+  emitEvent({
+    type: "extension_ui_request",
+    id: "fixture_blocker_12345678",
+    method: "confirm",
+    title: "Fixture blocker",
+    message: "Confirm the background-tab blocker.",
+  });
+  return true;
+}
+
 function handleContinuityPrompt(command, base) {
-  if (!continuityModeEnabled || String(command.message || "").trim() !== "fixture continuity delayed stream") return false;
+  if (!continuityModeEnabled) return false;
+  const message = String(command.message || "").trim();
+  if (!["fixture continuity delayed stream", "fixture continuity delayed start", "fixture continuity confirmed before tool"].includes(message)) return false;
   appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
   respond({ ...base, data: { output: "fake continuity stream accepted", pid: process.pid } });
-  runContinuityDelayedStream();
+  if (message === "fixture continuity delayed start") runContinuityDelayedStart();
+  else if (message === "fixture continuity confirmed before tool") runContinuityConfirmedBeforeTool();
+  else runContinuityDelayedStream();
   return true;
 }
 
@@ -288,6 +515,18 @@ function handleLargePayloadPrompt(command, base) {
   if (!largePayloadsEnabled || String(command.message || "").trim() !== "fixture large rpc payload") return false;
   largeTranscriptEnabled = true;
   respond({ ...base, data: { output: largeRpcText, tokens: { input: 123456, output: 654321 }, samples: largeTokenSamples } });
+  return true;
+}
+
+function handleSseFloodPrompt(command, base) {
+  const message = String(command.message || "").trim();
+  if (!sseFloodEnabled || !["fixture sse flood", "fixture sse stall flood"].includes(message)) return false;
+  respond({ ...base, data: { output: "fake SSE flood accepted" } });
+  const payload = "s".repeat(8192);
+  const eventCount = message === "fixture sse stall flood" ? 4096 : 256;
+  for (let index = 0; index < eventCount; index += 1) {
+    emitEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${index}:${payload}` } });
+  }
   return true;
 }
 
@@ -409,6 +648,34 @@ function handleWebuiHelperPrompt(command, base) {
       respondHelper({ requestId, ok: true, data: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) } });
       return true;
     }
+    case "sampling-state":
+      respondHelper({ requestId, ok: true, data: fakeSamplingState() });
+      return true;
+    case "sampling-set": {
+      const samplingParams = request.payload?.samplingParams;
+      const plain = samplingParams && typeof samplingParams === "object" && !Array.isArray(samplingParams);
+      if (!plain || Object.keys(samplingParams).length > 128 || Buffer.byteLength(JSON.stringify(samplingParams), "utf8") > 16 * 1024) {
+        respondHelper({ requestId, ok: false, error: "Sampling parameters must be a bounded JSON object" });
+        return true;
+      }
+      const normalized = JSON.parse(JSON.stringify(samplingParams));
+      const validation = validateSamplingParameterObject(normalized);
+      if (!validation.valid) {
+        respondHelper({
+          requestId,
+          ok: false,
+          error: `Invalid sampling parameters: ${Object.values(validation.errors).join(" ")}`,
+        });
+        return true;
+      }
+      fakeSessionSamplingParams = normalized;
+      respondHelper({ requestId, ok: true, data: fakeSamplingState() });
+      return true;
+    }
+    case "sampling-reset":
+      fakeSessionSamplingParams = {};
+      respondHelper({ requestId, ok: true, data: fakeSamplingState() });
+      return true;
     case "queue-mutate":
       respondHelper({ requestId, ok: true, data: mutateRuntimeQueue(request.payload) });
       return true;
@@ -438,6 +705,17 @@ function handleWebuiHelperPrompt(command, base) {
             currentToolArgs: "README.md",
             model: agent.model || "anthropic/claude-opus-4-8:high",
             thinking: agent.thinking || "high",
+            telemetry: {
+              promptInjectionTokens: 1234,
+              inputTokens: 300,
+              outputTokens: 100,
+              tokenSpeed: 20,
+              contextTokens: 240,
+              contextWindow: 200_000,
+              model: null,
+              effort: null,
+              rawSessionPayload: "must not leave fake helper telemetry",
+            },
             recentTools: [{ tool: "grep", args: "Subagents", endMs: Date.now() - 200 }],
             recentOutput: ["Inspecting current implementation", "Waiting for the next tool result"],
             transcript: [
@@ -571,6 +849,181 @@ function handleFastModeFixturePrompt(command, base) {
   respond({ ...base, data: { output: "fast mode fixture accepted" } });
   if (message.endsWith("history")) runFastModeHistoryFlow();
   else runFastModeFixtureFlow({ barrierOnly: message.endsWith("barrier") });
+  return true;
+}
+
+function streamIsolationTextDelta(index) {
+  const digit = String(index % 10);
+  if (index === 0) return `ISOLATION-TEXT-BEGIN ${digit}`;
+  if (index === 999) return `${digit} ISOLATION-TEXT-TAIL`;
+  return digit;
+}
+
+function logStreamIsolationPhase(runId, mode, scenario, phase) {
+  logJsonLine({ direction: "isolation-phase", isolationRunId: runId, isolationMode: mode, isolationScenario: scenario, isolationPhase: phase });
+}
+
+function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
+  const runId = `stream-isolation-${mode}-${scenario}-${++streamIsolationRun}`;
+  const toolCallId = `${runId}-execution`;
+  const streamedToolCallId = `${runId}-call`;
+  const textDeltas = Array.from({ length: 1_000 }, (_, index) => streamIsolationTextDelta(index));
+  const finalText = textDeltas.join("");
+  const thinkingText = "ISOLATION-THINKING-PATH";
+  const toolCall = { type: "toolCall", id: streamedToolCallId, name: "read", arguments: { path: "isolation.txt" } };
+  const tagged = (payload, phase) => ({
+    ...payload,
+    isolationRunId: runId,
+    isolationMode: mode,
+    isolationScenario: scenario,
+    isolationPhase: phase,
+  });
+  const emitTextRange = (start, end, { finish = false } = {}) => {
+    if (start === 0) emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } }, "raw"));
+    for (let index = start; index < end; index += 1) {
+      emitScriptedEvent({
+        ...tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: textDeltas[index] } }, "raw"),
+        isolationDeltaIndex: index,
+      });
+    }
+    if (finish) emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, text: finalText } }, "raw"));
+  };
+
+  scriptedStreaming = true;
+  const preburstStep = {
+    afterMs: 25,
+    run: () => {
+      emitScriptedEvent(tagged({ type: "agent_start" }, "pre-burst"));
+      if (mode === "compact") {
+        emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
+        emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
+      } else {
+        emitScriptedEvent(tagged({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "isolation.txt" } }, "pre-burst"));
+        emitScriptedEvent(tagged({ type: "message_start", message: { role: "assistant" } }, "pre-burst"));
+      }
+      logStreamIsolationPhase(runId, mode, scenario, "ready");
+    },
+  };
+  const steps = [
+    {
+      afterMs: 0,
+      run: () => {
+        logStreamIsolationPhase(runId, mode, scenario, "raw-start");
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_start" } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: thinkingText } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_end", delta: thinkingText } }, "raw"));
+      },
+    },
+    {
+      afterMs: 100,
+      run: () => {
+        if (scenario === "abort") {
+          emitTextRange(0, 500);
+          logStreamIsolationPhase(runId, mode, scenario, "abort-ready");
+        } else {
+          emitTextRange(0, 1_000, { finish: true });
+          logStreamIsolationPhase(runId, mode, scenario, "text-complete");
+        }
+      },
+    },
+  ];
+
+  if (scenario === "abort") {
+    // Keep a deterministic partial stream pending long enough for the browser
+    // proof to inspect it and issue Abort; cancelScriptedSteps() must prevent
+    // this fallback tail from ever being emitted after cancellation.
+    steps.push({ afterMs: 30_000, run: () => emitTextRange(500, 1_000, { finish: true }) });
+  }
+  const completionSteps = [];
+  steps.push(
+    {
+      afterMs: 1_500,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, name: "read", toolCall: { ...toolCall, arguments: undefined } } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 2, name: "read", toolCall: { ...toolCall, arguments: undefined }, delta: "{\"path\":\"isolation.txt\"}" } }, "raw"));
+        emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 2, name: "read", toolCall } }, "raw"));
+      },
+    },
+    {
+      afterMs: 100,
+      run: () => {
+        emitScriptedEvent(tagged({
+          type: "tool_execution_update",
+          toolCallId,
+          toolName: "read",
+          partialResult: { content: [{ type: "text", text: "ISOLATION-TOOL-UPDATE-COMPLETE" }] },
+        }, "raw"));
+        if (scenario === "lifecycle") {
+          pendingStreamIsolationRuns.set(runId, () => {
+            pendingStreamIsolationRuns.delete(runId);
+            runScriptedSteps(completionSteps);
+          });
+        }
+        logStreamIsolationPhase(runId, mode, scenario, "raw-end");
+      },
+    },
+  );
+  if (scenario === "lifecycle") {
+    completionSteps.push({
+      afterMs: 0,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 10, errorMessage: "fixture retry" }, "semantic"));
+        emitScriptedEvent(tagged({ type: "auto_retry_end", attempt: 1, success: true }, "semantic"));
+        emitScriptedEvent(tagged({ type: "compaction_start", reason: "fixture" }, "semantic"));
+        emitScriptedEvent(tagged({ type: "compaction_end", aborted: false }, "semantic"));
+        emitScriptedEvent(tagged({ type: "webui_supervisor_reconnected", supervisorScopeId: runId, supervisorEpoch: "1", supervisorSeq: "1" }, "semantic"));
+        logStreamIsolationPhase(runId, mode, scenario, "lifecycle-complete");
+      },
+    });
+  }
+  completionSteps.push(
+    {
+      afterMs: 1_200,
+      run: () => {
+        emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "ISOLATION-TOOL-RESULT" }] } }, "post-burst"));
+        logStreamIsolationPhase(runId, mode, scenario, "tool-complete");
+      },
+    },
+    {
+      afterMs: 500,
+      run: () => {
+        const message = {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: thinkingText }, toolCall, { type: "text", text: finalText }],
+          timestamp: Date.now(),
+        };
+        appendDynamicMessage(message);
+        emitScriptedEvent(tagged({ type: "message_end", message }, "post-burst"));
+        emitScriptedEvent(tagged({ type: "agent_end" }, "post-burst"));
+        scriptedStreaming = false;
+        emitScriptedEvent(tagged({ type: "agent_settled" }, "post-burst"));
+        logStreamIsolationPhase(runId, mode, scenario, "settled");
+      },
+    },
+  );
+  runScriptedSteps([preburstStep]);
+  pendingStreamIsolationRuns.set(runId, () => {
+    pendingStreamIsolationRuns.delete(runId);
+    runScriptedSteps(scenario === "lifecycle" ? steps : [...steps, ...completionSteps]);
+  });
+  return { runId, finalText };
+}
+
+function continueStreamIsolationFixture(runId) {
+  const start = pendingStreamIsolationRuns.get(runId);
+  if (!start) return false;
+  start();
+  return true;
+}
+
+function handleStreamIsolationFixturePrompt(command, base) {
+  if (!streamIsolationEnabled) return false;
+  const match = String(command.message || "").trim().match(/^fixture stream isolation (normal|compact)(?: (standard|abort|lifecycle))?$/);
+  if (!match) return false;
+  const mode = match[1];
+  const scenario = match[2] || "standard";
+  const { runId, finalText } = runStreamIsolationFixtureFlow(mode, scenario);
+  respond({ ...base, data: { output: "stream isolation fixture accepted", runId, deltaCount: 1_000, mode, scenario, finalText } });
   return true;
 }
 
@@ -723,6 +1176,154 @@ function handleTalkPrompt(command, base) {
   return true;
 }
 
+function statsPromptContextFixturePayload({ malformedSnapshot = false } = {}) {
+  const hostileLabel = `System <img src=x onerror="globalThis.fixturePwned=true"> & "quoted" ${"long-label-".repeat(16)}`;
+  const payload = {
+    type: "firstpick.pi-extension-stats.overlay",
+    version: 1,
+    generatedAt: Date.now(),
+    open: true,
+    scopeLabel: "fixture prompt context",
+    scope: { mode: "range", days: 14 },
+    sessionCount: 0,
+    scopedSessionCount: 0,
+    dayCount: 14,
+    activeDayCount: 0,
+    totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 },
+    promptEstimate: {
+      total: 300, low: 270, high: 330, confidence: "fixture", calibrationMultiplier: 1,
+      calibrationSamples: 0, source: "export-html", settled: true, attempts: 0,
+      warning: null, systemPromptChars: 0, activeToolSchemas: 2,
+    },
+    promptContext: {
+      initialPrompt: {
+        totalTokens: 300,
+        lowTokens: 270,
+        highTokens: 330,
+        confidence: "fixture",
+        source: "export-html",
+        warning: null,
+        estimateMethod: "weighted-character-estimate-with-largest-remainder-calibration",
+        components: [
+          { id: "system-prompt-1", kind: "system-prompt", label: hostileLabel, chars: null, uncalibratedTokens: 300, tokens: 300, percent: 100 },
+          { id: "framing-1", kind: "framing", label: "Zero-token framing", chars: 0, uncalibratedTokens: 0, tokens: 0, percent: 0 },
+        ],
+      },
+      snapshot: {
+        source: "export-html",
+        settled: true,
+        attempts: 0,
+        warning: null,
+        systemPromptChars: 0,
+        estimateComponents: {
+          promptText: malformedSnapshot ? "not-a-number" : 0,
+          toolSchemas: 25,
+          framing: 0,
+          calibration: { multiplier: 1, samples: 0 },
+        },
+        metadata: { currentDate: null, cwdDisplay: null, extraGuidelineCount: 0 },
+        tools: {
+          totalCount: 3,
+          omittedCount: 1,
+          items: [
+            { name: "<script>fixture-tool</script>", description: "Text-safe <b>description</b> & symbols", parameterSummary: "0 params", estimatedTokens: 0 },
+            { name: "read", description: null, parameterSummary: "1 param, 1 required", estimatedTokens: 25 },
+          ],
+        },
+        toolPromptEntries: { totalCount: 2, omittedCount: 0, names: ["<unsafe-entry>", "read"] },
+        skills: { totalCount: 2, omittedCount: 1, items: [{ name: "fixture-skill", description: "Hostile </details> stays text" }] },
+        contextFiles: {
+          totalCount: 2,
+          omittedCount: 0,
+          items: [
+            { displayPath: `nested/${"overflow-segment-".repeat(18)}context.md`, chars: null },
+            { displayPath: "zero.md", chars: 0 },
+          ],
+        },
+      },
+      currentContext: {
+        usage: { tokens: 0, contextWindow: null, percent: 0 },
+        breakdown: {
+          estimateMethod: "weighted-character-estimate",
+          reconstruction: "complete",
+          estimatedTotalTokens: 200,
+          actualMinusEstimatedTokens: -200,
+          sources: [
+            { id: "user-messages-1", kind: "user-messages", label: `User ${"overflow-source-".repeat(18)}`, chars: 800, estimatedTokens: 200, percent: 100 },
+          ],
+        },
+      },
+    },
+    summary: {},
+    daily: [],
+    models: [],
+    expensiveSessions: [],
+    lines: {
+      graph: ["RAW_GRAPH_FIXTURE"],
+      promptInjection: ["RAW_PROMPT_INJECTION <keep>& exact"],
+      promptDetailed: ["RAW_PROMPT_DETAILED </pre> exact"],
+      tokenBreakdown: ["RAW_CONTEXT_BREAKDOWN <raw> exact"],
+      costTrend: ["RAW_COST_TREND"],
+      cache: ["RAW_CACHE"],
+      modelComparison: ["RAW_MODEL_COMPARISON"],
+      expensiveSessions: ["RAW_EXPENSIVE_SESSIONS"],
+    },
+  };
+  return payload;
+}
+
+const FEATURE_DECISION_FIXTURE_REASONS = {
+  lightweight: "One localized WebUI slice with no migration or rollout work.",
+  complex: "Crosses the classifier extension and the WebUI status consumer.",
+};
+
+function featureDecisionFixturePayload(mode) {
+  if (mode === "lightweight" || mode === "complex") {
+    return {
+      output: JSON.stringify({ kind: `feature_${mode}`, reason: FEATURE_DECISION_FIXTURE_REASONS[mode] }),
+      category: `${mode}-feature`,
+    };
+  }
+  // Legacy exact-label payload from a classifier build that predates the structured contract.
+  if (mode === "legacy") return { output: "feature_complex", category: "complex-feature" };
+  // Structured decision whose kind contradicts the category; the popup must stay unavailable.
+  if (mode === "mismatch") {
+    return {
+      output: JSON.stringify({ kind: "feature_lightweight", reason: FEATURE_DECISION_FIXTURE_REASONS.lightweight }),
+      category: "complex-feature",
+    };
+  }
+  if (mode === "malformed") return { output: '{"kind":"feature_complex"}', category: "complex-feature" };
+  return { output: undefined, category: undefined };
+}
+
+function handleFeatureDecisionFixturePrompt(command, base) {
+  const match = String(command.message || "").trim().match(/^fixture feature decision (lightweight|complex|legacy|mismatch|malformed|clear)$/);
+  if (!match) return false;
+  const mode = match[1];
+  const { output, category } = featureDecisionFixturePayload(mode);
+  respond({ ...base, data: { output: `fake feature decision ${mode} emitted` } });
+  emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey: "feature-decision-output", statusText: output });
+  emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey: "feature-category", statusText: category });
+  return true;
+}
+
+function handleStatsPromptContextFixturePrompt(command, base) {
+  if (!statsPromptContextEnabled) return false;
+  const message = String(command.message || "").trim();
+  const malformedSnapshot = message === "fixture stats prompt malformed";
+  if (!malformedSnapshot && !/^\/stats-webui(?:\s|$)/.test(message)) return false;
+  respond({ ...base, data: { output: malformedSnapshot ? "malformed stats prompt fixture emitted" : "structured stats prompt fixture emitted" } });
+  emitEvent({
+    type: "extension_ui_request",
+    id: randomUUID(),
+    method: "setStatus",
+    statusKey: "stats-webui",
+    statusText: JSON.stringify(statsPromptContextFixturePayload({ malformedSnapshot })),
+  });
+  return true;
+}
+
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -789,6 +1390,7 @@ rl.on("line", (line) => {
             { name: "conversation", source: "extension", description: "Natural Conversation Mode alias" },
             { name: "fast-mode", source: "extension", description: "Toggle Codex subscription Fast mode" },
             { name: "workflow", source: "extension", description: "Run and inspect JavaScript workflows" },
+            ...(statsPromptContextEnabled ? [{ name: "stats-webui", source: "extension", description: "Publish fixture stats dashboard" }] : []),
           ],
         },
       });
@@ -811,21 +1413,40 @@ rl.on("line", (line) => {
       return;
     }
     case "prompt":
+      if (handleFeatureDecisionFixturePrompt(command, base)) return;
+      if (handleStatsPromptContextFixturePrompt(command, base)) return;
       if (handleWebuiHelperPrompt(command, base)) return;
       if (handleFastModeFixturePrompt(command, base)) return;
+      if (handleStreamIsolationFixturePrompt(command, base)) return;
       if (handleTransportFixturePrompt(command, base)) return;
       if (handleSubagentFixturePrompt(command, base)) return;
       if (handleDocumentArtifactFixturePrompt(command, base)) return;
       if (handleWorkflowFixturePrompt(command, base)) return;
       if (handleCodexFastModePrompt(command, base)) return;
       if (handleTalkPrompt(command, base)) return;
+      if (handleMobileBlockerPrompt(command, base)) return;
+      if (handleTranscriptContinuityPrompt(command, base)) return;
       if (handleContinuityPrompt(command, base)) return;
       if (handleLargePayloadPrompt(command, base)) return;
+      if (handleSseFloodPrompt(command, base)) return;
       if (handleVoiceScriptPrompt(command, base)) return;
       respond({ ...base, data: { output: "fake prompt accepted" } });
       return;
-    case "steer":
+    case "steer": {
+      const match = String(command.message || "").trim().match(/^fixture stream isolation continue (stream-isolation-[A-Za-z0-9-]+)$/);
+      if (match && continueStreamIsolationFixture(match[1])) {
+        respond({ ...base, data: { output: "stream isolation raw phase started" } });
+        return;
+      }
       respond({ ...base, data: { output: "fake steer accepted" } });
+      return;
+    }
+    case "abort":
+      cancelScriptedSteps();
+      respond({ ...base, data: { output: "fake abort accepted" } });
+      emitScriptedEvent({ type: "agent_end", aborted: true });
+      scriptedStreaming = false;
+      emitScriptedEvent({ type: "agent_settled", aborted: true });
       return;
     case "set_thinking_level":
       thinkingLevel = String(command.level || "off");

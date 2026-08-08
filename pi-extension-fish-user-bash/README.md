@@ -1,45 +1,34 @@
-# pi-extension-fish-user-bash
+# Fish User Bash for Pi
 
-Use fish (or a custom shell) for Pi `!` and `!!` command execution.
+Runs Pi’s `!` and `!!` commands through Fish instead of the default shell.
 
-## What it does
+## What you can do
 
-- Overrides Pi `user_bash` operations to use your preferred shell.
-- Prefers explicit shell configuration via env var.
-- Auto-detects fish if not configured.
-- Falls back to `$SHELL` (if valid), then bash.
-- Uses cross-platform shell resolution (PATH-aware; supports Windows `.exe` lookups).
+- Runs Pi’s `!` and `!!` commands through Fish.
+- Keeps normal agent tool commands unchanged.
+- Supports a custom Fish path when needed.
+- Uses the same visible command experience inside Pi.
 
 ## Install
+
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-fish-user-bash
 ```
 
-## Configuration
+Restart Pi if the package does not appear in your current session.
 
-- `PI_USER_BASH_SHELL_PATH`
-  - absolute path (example: `/usr/bin/fish`), or
-  - executable name resolvable on `PATH` (example: `fish` or `bash`)
-  - if unset: tries fish automatically, then `$SHELL` (if valid), then bash
+## How to use it
 
-## Commands
+Use `!command` or `!!command` exactly as you normally would in Pi. The extension sends those commands through Fish automatically.
 
 - `/user-bash-shell` — print the currently resolved shell path.
 
-## Tools
+## Before you start
 
-None.
+Fish must be installed and available as `fish`. You can use the technical configuration if Fish lives at a non-standard path.
 
-## Example view
+## Technical details
 
-```text
-/user-bash-shell
-Using shell for !/!! commands:
-/usr/bin/fish
-
-!echo $version
-3.7.1
-```
-
-Use this when your normal shell setup lives in Fish and you want Pi bang commands to behave like your own terminal.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-fish-user-bash/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-server-audit
+# Server Audit
 
-A Pi skill for Linux server security reviews, SSH hardening, firewall/open-port audits, user/permission checks, exposed services, or host hardening requests. Produces severity-rated findings and practical remediation steps.
+Review a Linux server for avoidable exposure and practical ways to make it safer.
 
-## What it does
+## Helpful when
 
-- Adds the `server-audit` skill to Pi's skill library.
-- Guides agents to invoke the skill for Linux server security reviews, SSH hardening, firewall/open-port audits, user/permission checks, exposed services, or host hardening requests. Produces severity-rated findings and practical remediation steps.
-- Bundles `skills/server-audit/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You are preparing a new server.
+- You want to check remote access and open services.
+- The server has not had a security review recently.
+
+## What to share with Pi
+
+- The server’s purpose and who should access it
+- Available configuration or command output
+- Changes you are allowed to make
+
+## Try asking
+
+> Audit this server’s remote access, users, firewall, open ports, and exposed services. Show the most important risks first.
+
+## What you’ll get
+
+- A simple security overview
+- Findings ordered by seriousness
+- Practical fixes with verification steps
+
+## Keep in mind
+
+The audit should start read-only. Firewall, account, package, and service changes require explicit approval.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for Linux server security reviews, SSH hardening, firewall/open-port 
 pi install npm:@firstpick/pi-skill-server-audit
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `server-audit`.
-Agent: Invokes the `server-audit` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-server-audit/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

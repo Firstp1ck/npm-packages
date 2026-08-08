@@ -52,6 +52,7 @@ class RepoExplorerTests(unittest.TestCase):
 
         self.assertIn("./extensions", package_json["pi"]["extensions"])
         self.assertIn("extensions", package_json["files"])
+        self.assertIn("skills/repo-explorer/tests/fixtures", package_json["files"])
         self.assertTrue(extension_path.exists())
         source = extension_path.read_text(encoding="utf-8")
         self.assertIn('name: "repo_explorer_explore"', source)
@@ -66,6 +67,9 @@ class RepoExplorerTests(unittest.TestCase):
         self.assertIn("## Tracking Metadata", source)
         self.assertIn("## Improvement Signals", source)
         self.assertIn("## Downstream Feedback Capture", source)
+        self.assertIn("do not use Bash to preflight availability", source)
+        self.assertIn("targeted non-shell read/grep/find/ls", source)
+        self.assertIn("Bash is diagnostic-only", source)
 
     def test_skill_documents_effectiveness_report_requirement(self):
         source = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
@@ -73,6 +77,10 @@ class RepoExplorerTests(unittest.TestCase):
         self.assertIn("Write Effectiveness Report", source)
         self.assertIn("skills/repo-explorer/repo-explorer-effectiveness-<timestamp>-<repo-key>.md", source)
         self.assertIn("effectiveness_report", source)
+        self.assertIn("Use the Native Tool for Routine Exploration", source)
+        self.assertIn("Do not use Bash to preflight tool availability", source)
+        self.assertIn("specialized non-shell `read`, `grep`, `find`, or `ls`", source)
+        self.assertIn("Bash is diagnostic-only", source)
 
     def test_validator_rejects_missing_required_contract_fields(self):
         handoff_missing_index_info_and_errors = {
@@ -298,6 +306,93 @@ class RepoExplorerTests(unittest.TestCase):
             self.assertTrue(login_symbol["confidence_reason"])
             self.assertLessEqual(len(handoff["evidence"]), 5)
             self.assertTrue(all("confidence" in item for item in handoff["evidence"]))
+
+    def test_compact_ranking_keeps_ci_config_and_snake_case_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / ".github" / "workflows").mkdir(parents=True)
+            (repo / "config").mkdir()
+            (repo / "docs").mkdir()
+            (repo / "src").mkdir()
+            (repo / "tests").mkdir()
+            (repo / ".github" / "workflows" / "ci.yml").write_text(
+                "name: ci\n", encoding="utf-8"
+            )
+            (repo / "config" / "app.yaml").write_text("service: fixture\n", encoding="utf-8")
+            (repo / "docs" / "architecture.md").write_text("# Architecture\n", encoding="utf-8")
+            (repo / "tests" / "test_token.py").write_text("def test_token(): pass\n", encoding="utf-8")
+            (repo / "src" / "token_store.py").write_text(
+                "def save_token(value):\n    return value\n", encoding="utf-8"
+            )
+
+            index_path = repo / "index.json"
+            _build_index(repo, index_path)
+            result = _run([
+                EXTRACT_HANDOFF,
+                "--index",
+                index_path,
+                "--goal",
+                "find ci tests configuration architecture token store",
+                "--depth",
+                "standard",
+                "--budget",
+                "compact",
+                "--include-evidence",
+                "false",
+                "--target-paths",
+                repo,
+            ])
+            handoff = json.loads(result.stdout)
+            key_paths = {_normalize(Path(item["path"]).relative_to(repo).as_posix()) for item in handoff["key_files"]}
+            symbol_names = {item["name"] for item in handoff["relevant_symbols"]}
+
+            self.assertIn(".github/workflows/ci.yml", key_paths)
+            self.assertIn("config/app.yaml", key_paths)
+            self.assertIn("save_token", symbol_names)
+
+    def test_internal_dependency_resolution_handles_rust_public_modules_and_go_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            (repo / "src" / "rust").mkdir(parents=True)
+            (repo / "cmd" / "server").mkdir(parents=True)
+            (repo / "internal" / "router").mkdir(parents=True)
+            (repo / "src" / "rust" / "lib.rs").write_text("pub mod auth;\n", encoding="utf-8")
+            (repo / "src" / "rust" / "auth.rs").write_text(
+                "pub fn authenticate_request() {}\n", encoding="utf-8"
+            )
+            (repo / "go.mod").write_text("module example.com/fixture\n", encoding="utf-8")
+            (repo / "cmd" / "server" / "main.go").write_text(
+                'package main\nimport "example.com/fixture/internal/router"\nfunc main() { router.NewRouter() }\n',
+                encoding="utf-8",
+            )
+            (repo / "internal" / "router" / "router.go").write_text(
+                "package router\nfunc NewRouter() {}\n", encoding="utf-8"
+            )
+
+            index_path = repo / "index.json"
+            _build_index(repo, index_path)
+            result = _run([
+                EXTRACT_HANDOFF,
+                "--index",
+                index_path,
+                "--goal",
+                "trace rust auth module and go router wiring",
+                "--depth",
+                "standard",
+                "--budget",
+                "compact",
+                "--include-evidence",
+                "false",
+                "--target-paths",
+                repo,
+            ])
+            dependencies = {
+                (item["source"], item["target"], item["kind"])
+                for item in json.loads(result.stdout)["dependency_map"]
+            }
+
+            self.assertIn(("src/rust/lib.rs", "src/rust/auth.rs", "import"), dependencies)
+            self.assertIn(("cmd/server/main.go", "internal/router/router.go", "import"), dependencies)
 
     def test_extraction_redacts_secret_snippets_and_records_error(self):
         with tempfile.TemporaryDirectory() as tmp:

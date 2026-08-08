@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-spec-vs-impl-checker",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Agents should invoke this skill when a spec, plan, README, issue, or requirement must be verified against implementation. Traces requirements to code, checks interface contracts, and reports gaps or mismatches.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-spec-vs-impl-checker#readme",

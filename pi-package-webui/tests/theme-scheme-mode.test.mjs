@@ -96,6 +96,21 @@ assert.match(
   /async function applySchemeTheme\(options = \{\}\) \{\s*await setThemeByName\(effectiveThemeName\(\), \{ \.\.\.options, persist: false \}\);\s*\}/,
   "applySchemeTheme must never persist",
 );
+assert.match(
+  app,
+  /function acceptThemeCustomizerDraft\([\s\S]*?applyTheme\(canonical, \{ persist: false \}\)/,
+  "custom theme live preview must use a non-persisting apply path",
+);
+assert.match(
+  app,
+  /function restoreThemeCustomizerOpeningState\(generation\)[\s\S]*?applyTheme\(state\.opening\.theme, \{ persist: false \}\)/,
+  "customizer cancel must restore presentation without persisting a selection",
+);
+assert.doesNotMatch(
+  app.slice(app.indexOf("function themeScopeLabel("), app.indexOf("function renderThemeSelect(")),
+  /storeTheme(?:Name|Mode)|storeSchemeTheme|setThemeByName\([^;]*persist: true/,
+  "customizer internals must not bypass chooseTheme or mutate Light/Dark/Auto persistence",
+);
 
 // Auto mode also works on MediaQueryList implementations without addEventListener
 // (legacy addListener API), matching the mobileViewMedia wiring.

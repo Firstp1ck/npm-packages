@@ -68,13 +68,41 @@ try {
   assert.equal(initialSafetyGuardSetup.status, 200);
   assert.equal(initialSafetyGuardSetup.body?.data?.config?.enabled, true, "safety guard should default to enabled");
   assert.deepEqual(initialSafetyGuardSetup.body?.data?.config?.contextLines, { before: 3, after: 3 });
+  assert.deepEqual(initialSafetyGuardSetup.body?.data?.config?.autoReview, {
+    enabled: false,
+    model: { provider: "", modelId: "", thinkingLevel: "off" },
+  }, "auto-review should default off with no implicit model selection");
   assert.ok(initialSafetyGuardSetup.body?.data?.categories?.includes("database"));
+  assert.equal(initialSafetyGuardSetup.body?.data?.models?.[0]?.id, "fake-model", "GET should return authenticated models from the active Pi tab");
+  assert.deepEqual(initialSafetyGuardSetup.body?.data?.modelThinkingLevels?.["fake/fake-model"], ["off"], "GET should return supported thinking levels per model");
 
   const invalidSafetyGuardSetup = await request("/api/safety-guard/config", {
     method: "POST",
     body: { config: { contextLines: { before: 21 } } },
   });
   assert.equal(invalidSafetyGuardSetup.status, 400, "setup should reject context limits outside the canonical range");
+
+  const unavailableAutoReviewModel = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { autoReview: { enabled: true, model: { provider: "fake", modelId: "missing-model", thinkingLevel: "off" } } } },
+  });
+  assert.equal(unavailableAutoReviewModel.status, 400, "enabled auto-review should reject unavailable models");
+
+  const unsupportedAutoReviewThinking = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { autoReview: { enabled: true, model: { provider: "fake", modelId: "fake-model", thinkingLevel: "low" } } } },
+  });
+  assert.equal(unsupportedAutoReviewThinking.status, 400, "enabled auto-review should reject unsupported thinking levels");
+
+  const enabledAutoReviewSetup = await request("/api/safety-guard/config", {
+    method: "POST",
+    body: { config: { autoReview: { enabled: true, model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" } } } },
+  });
+  assert.equal(enabledAutoReviewSetup.status, 200);
+  assert.deepEqual(enabledAutoReviewSetup.body?.data?.config?.autoReview, {
+    enabled: true,
+    model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" },
+  });
 
   const savedSafetyGuardSetup = await request("/api/safety-guard/config", {
     method: "POST",
@@ -84,6 +112,7 @@ try {
         categories: { docker: false },
         protectedPaths: { edit: false },
         contextLines: { before: 2, after: 4 },
+        autoReview: { enabled: false },
       },
     },
   });
@@ -91,13 +120,19 @@ try {
   assert.equal(savedSafetyGuardSetup.body?.data?.config?.enabled, false);
   assert.equal(savedSafetyGuardSetup.body?.data?.config?.categories?.docker, false);
   assert.deepEqual(savedSafetyGuardSetup.body?.data?.config?.contextLines, { before: 2, after: 4 });
+  assert.deepEqual(savedSafetyGuardSetup.body?.data?.config?.autoReview, {
+    enabled: false,
+    model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" },
+  }, "disabling auto-review should retain the explicitly selected model");
   const persistedSafetyGuardSetup = JSON.parse(await readFile(safetyGuardSettingsFile, "utf8"));
   assert.equal(persistedSafetyGuardSetup.protectedPaths?.edit, false);
+  assert.equal(persistedSafetyGuardSetup.autoReview?.enabled, false);
 
   const initialGitSetup = await request("/api/git-workflow/preferences");
   assert.equal(initialGitSetup.status, 200);
   assert.equal(initialGitSetup.body?.data?.configured, false, "guided Git should require first-time model setup");
   assert.equal(initialGitSetup.body?.data?.preferences?.stagingPolicy, "review", "review/select should be the safe staging default");
+  assert.equal(initialGitSetup.body?.data?.preferences?.reviewProcessEnabled, true, "manual review should remain enabled by default for compatibility");
   assert.equal(initialGitSetup.body?.data?.models?.[0]?.id, "fake-model");
 
   const unsupportedEffort = await request("/api/git-workflow/preferences", {
@@ -112,6 +147,12 @@ try {
   });
   assert.equal(invalidStagingPolicy.status, 400, "setup should reject invalid preference choices instead of silently normalizing them");
 
+  const invalidReviewProcess = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" }, reviewProcessEnabled: "disabled" } },
+  });
+  assert.equal(invalidReviewProcess.status, 400, "setup should require an explicit boolean review-process preference");
+
   const savedGitSetup = await request("/api/git-workflow/preferences", {
     method: "POST",
     body: {
@@ -119,6 +160,7 @@ try {
         generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", unavailablePolicy: "ask" },
         commit: { language: "de", defaultVariant: "long", scope: "required" },
         stagingPolicy: "review",
+        reviewProcessEnabled: false,
         deliveryMode: "ask",
         verificationPolicy: "ask",
       },
@@ -127,6 +169,7 @@ try {
   assert.equal(savedGitSetup.status, 200);
   assert.equal(savedGitSetup.body?.data?.configured, true);
   assert.equal(savedGitSetup.body?.data?.preferences?.commit?.language, "de");
+  assert.equal(savedGitSetup.body?.data?.preferences?.reviewProcessEnabled, false);
 
   const generation = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
   assert.equal(generation.status, 200);
@@ -136,7 +179,7 @@ try {
   const disableAuth = await request("/api/remote-auth/settings", { method: "POST", body: { enabled: false } });
   assert.equal(disableAuth.status, 200);
   const savedAfterDisable = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(savedAfterDisable.version, 4, "Web UI settings should migrate to the output-mode schema version");
+  assert.equal(savedAfterDisable.version, 6, "Web UI settings should retain the current private settings envelope version");
   assert.equal(savedAfterDisable.remoteAuthEnabled, false, "disabling Remote PIN auth should persist the off preference");
   assert.equal(savedAfterDisable.gitWorkflow?.generation?.modelId, "fake-model", "Remote PIN updates should preserve guided Git preferences");
 

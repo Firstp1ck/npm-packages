@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-acceptance-tester
+# Acceptance Tester
 
-A Pi skill for use as the final gate before release, handoff, or claiming completion for substantial changes. Runs acceptance/readiness checks, determines pass/fail, and gives a go/no-go recommendation.
+Check whether important work is genuinely ready to release, share, or hand over.
 
-## What it does
+## Helpful when
 
-- Adds the `acceptance-tester` skill to Pi's skill library.
-- Guides agents to invoke the skill as the final gate before release, handoff, or claiming completion for substantial changes. Runs acceptance/readiness checks, determines pass/fail, and gives a go/no-go recommendation.
-- Bundles `skills/acceptance-tester/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You are about to release a change.
+- Someone else needs to take over the work.
+- You want a clear final check instead of relying on “it looks done.”
+
+## What to share with Pi
+
+- The work or project to check
+- What “done” should mean
+- Any required checks or promises made to users
+
+## Try asking
+
+> Check whether this work is ready to release. Verify the important requirements and give me a clear go or no-go decision.
+
+## What you’ll get
+
+- A plain-language readiness decision
+- The checks that passed or failed
+- Anything that still needs attention
+
+## Keep in mind
+
+A readiness review is only as strong as the requirements and evidence available. Missing information will be called out rather than guessed.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for use as the final gate before release, handoff, or claiming comple
 pi install npm:@firstpick/pi-skill-acceptance-tester
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `acceptance-tester`.
-Agent: Invokes the `acceptance-tester` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-acceptance-tester/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

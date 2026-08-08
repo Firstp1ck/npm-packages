@@ -61,6 +61,15 @@ const rawPiScript = String.raw`
   });
 `;
 
+let testSocketSerial = 0;
+
+function testSocketPath(label) {
+  testSocketSerial += 1;
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\pi-webui-rpc-host-${process.pid}-${testSocketSerial}-${label}`
+    : path.join(work, `${label}.sock`);
+}
+
 async function listen(server, socketPath) {
   const connections = new Set();
   server.__testConnections = connections;
@@ -374,7 +383,7 @@ try {
   await removeSupervisorState(resetPaths, { removeSocket: true, instanceId: "reset-instance" });
 
   // Untagged pre-attach errors and silent peers must fail a client deterministically.
-  const attachErrorPath = path.join(work, "attach-error.sock");
+  const attachErrorPath = testSocketPath("attach-error");
   const attachErrorServer = createServer((socket) => socket.once("data", () => socket.write(`${JSON.stringify({ type: "result", ok: false, code: "RPC_SUPERVISOR_AUTH", error: "denied" })}\n`)));
   await listen(attachErrorServer, attachErrorPath);
   const attachErrorClient = new RpcSupervisorClient({
@@ -387,7 +396,7 @@ try {
   await delay(20);
   await closeServer(attachErrorServer);
 
-  const attachTimeoutPath = path.join(work, "attach-timeout.sock");
+  const attachTimeoutPath = testSocketPath("attach-timeout");
   const attachTimeoutServer = createServer(() => {});
   await listen(attachTimeoutServer, attachTimeoutPath);
   const attachTimeoutClient = new RpcSupervisorClient({

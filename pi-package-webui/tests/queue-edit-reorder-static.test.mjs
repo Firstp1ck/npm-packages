@@ -17,6 +17,11 @@ assert.match(
   "the composer should expose a count trigger and accessible non-modal follow-up queue overlay",
 );
 assert.match(css, /\.follow-up-queue-overlay \{[\s\S]*position:\s*absolute;[\s\S]*bottom:\s*calc\(100% \+ 0\.42rem\);[\s\S]*max-height:\s*min\(32rem, calc\(var\(--visual-viewport-height, 100dvh\) - 2rem\)\)/, "the queue overlay should float upward without changing composer layout and be bounded by the visual viewport");
+assert.match(css, /\.composer:has\(\.follow-up-queue-overlay:not\(\[hidden\]\)\) \{\s*z-index:\s*80;\s*\}/, "an open queue should raise the composer stacking context above transcript copy buttons and normal interface controls");
+assert.match(css, /\.follow-up-queue-trigger \{[\s\S]*justify-content:\s*center;[\s\S]*min-width:\s*5\.25rem;/, "the queue trigger should reserve a predictable width for its label and three-digit count");
+assert.match(css, /body:not\(\.mobile-keyboard-open\) \.composer-input-row:has\(\.composer-workflow-mode-dock:not\(\[hidden\]\)\) \.follow-up-queue-trigger \{\s*right:\s*calc\(3\.55rem \+ 2\.25rem \+ 0\.4rem\);\s*\}/, "the queue trigger should move left of the visible Workflow control instead of overlapping it");
+assert.match(css, /\.composer-input-row:has\(\.follow-up-queue-trigger:not\(\[hidden\]\)\) \.composer-context-tags \{\s*max-width:\s*max\(0px, calc\(100% - 9\.7rem\)\);\s*\}/, "visible queues should reserve prompt-frame space so feature and context tags cannot overlap the queue trigger");
+assert.match(css, /body:not\(\.mobile-keyboard-open\) \.composer-input-row:has\(\.composer-workflow-mode-dock:not\(\[hidden\]\)\):has\(\.follow-up-queue-trigger:not\(\[hidden\]\)\) \.composer-context-tags \{\s*max-width:\s*max\(0px, calc\(100% - 12\.6rem\)\);\s*\}/, "context tags should reserve the combined Workflow and queue dock width");
 assert.match(css, /body\.mobile-keyboard-open \.follow-up-queue-trigger:not\(\[hidden\]\) \{ display: inline-flex; \}/, "the queue trigger should remain usable while the mobile keyboard is open");
 assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.follow-up-queue-overlay,[\s\S]*\.follow-up-queue-row \{ transition: none; \}/, "the queue overlay should suppress motion for reduced-motion users");
 
@@ -48,6 +53,8 @@ assert.deepEqual(compactionMutation, {
 const runtimeMutation = JSON.parse(vm.runInNewContext(`${mutationBodySource}\nJSON.stringify(queueMutationBody({ source: "pi-runtime", steering: [], followUp: ["old"] }, { type: "edit", index: 0, expectedText: "old", text: "new" }))`));
 assert.equal(Object.hasOwn(runtimeMutation, "revision"), false, "Pi-runtime mutations must omit the compaction-only revision field");
 assert.deepEqual(runtimeMutation.expected, { steering: [], followUp: ["old"] }, "Pi-runtime mutations should send the complete B1 expected snapshot");
+const deleteMutation = JSON.parse(vm.runInNewContext(`${mutationBodySource}\nJSON.stringify(queueMutationBody({ source: "webui-compaction", revision: 4, steering: ["steer"], followUp: ["remove me"] }, { type: "delete", index: 0, expectedText: "remove me" }))`));
+assert.deepEqual(deleteMutation.operation, { type: "delete", index: 0, expectedText: "remove me" }, "queue deletion should use the same source-aware full-snapshot mutation contract");
 
 const draftHelperStart = app.indexOf("function preservedFocusedFollowUpQueueDraft(draft, followUps) {");
 const draftHelperEnd = app.indexOf("\nfunction focusedFollowUpQueueDraft", draftHelperStart);
@@ -90,12 +97,14 @@ assert.match(app, /const textarea = make\("textarea", "follow-up-queue-textarea"
 assert.match(app, /row\.draggable = false;[\s\S]*dragHandle\.draggable = !unavailable;[\s\S]*row\.addEventListener\("dragstart", \(event\) => \{[\s\S]*event\.target\?\.closest\?\.\("\.follow-up-queue-drag-handle"\) !== dragHandle[\s\S]*application\/x-pi-webui-follow-up[\s\S]*row\.addEventListener\("dragover"[\s\S]*event\.stopPropagation\(\)[\s\S]*row\.addEventListener\("drop"[\s\S]*type: "move", from: drag\.index, to: index/, "native drag/drop should begin only from its visible handle, persist the final-index permutation, and isolate row drag events");
 assert.match(app, /function handleComposerDragOver\(event\) \{\n\s*if \(event\.target\?\.closest\?\.\("#followUpQueueOverlay"\) \|\| !isFileDrag\(event\)\) return;[\s\S]*function handleComposerDrop\(event\) \{\n\s*if \(event\.target\?\.closest\?\.\("#followUpQueueOverlay"\) \|\| !isFileDrag\(event\)\) return;/, "composer attachment drops should ignore queue-row drag events");
 assert.match(app, /Moved queued follow-up \$\{operation\.from \+ 1\} to position \$\{operation\.to \+ 1\}[\s\S]*Move queued follow-up \$\{index \+ 1\} up[\s\S]*Move queued follow-up \$\{index \+ 1\} down/, "move controls should provide labelled keyboard/touch parity and live reorder announcements");
+assert.match(app, /const remove = make\("button", "follow-up-queue-remove-button", "Remove"\)[\s\S]*type: "delete", index, expectedText: message/, "every composer queue row should expose an accessible remove control backed by the unified mutation contract");
+assert.match(css, /\.follow-up-queue-remove-button \{[\s\S]*color:\s*var\(--ctp-red\)/, "queue removal should have a distinct destructive visual treatment");
 assert.match(app, /setFollowUpQueueOpen\(false, \{ restoreFocus: true \}\)/, "outside close and Escape should request queue-focus restoration");
 assert.match(app, /function setFollowUpQueueOpen\([\s\S]*followUpQueueRestoreFocus[\s\S]*requestAnimationFrame\(\(\) => focusTarget\?\.focus\(\{ preventScroll: true \}\)\)/, "queue close should restore focus to the saved trigger context");
 assert.match(app, /function setFollowUpQueueOpen[\s\S]*setComposerActionsOpen\(false\)[\s\S]*setPublishMenuOpen\(false\)[\s\S]*setNativeCommandMenuOpen\(false\)[\s\S]*setAppRunnerMenuOpen\(false\)[\s\S]*setOptionsMenuOpen\(false\)[\s\S]*setConversationVoiceMenuOpen\(false\)[\s\S]*setBusyPromptBehaviorMenuOpen\(false\)[\s\S]*setNewTabMenuOpen\(false\)/, "opening the queue should close competing dropdown surfaces");
 assert.match(app, /function renderFollowUpQueueOverlay\(\) \{\n\s*if \(deferUiRenderDuringPointerActivation\("follow-up-queue", renderFollowUpQueueOverlay\)\) return;/, "queue rendering should defer during pointer activation");
 assert.match(app, /function switchTab\(tabId\)[\s\S]*setFollowUpQueueOpen\(false\)[\s\S]*setFollowUpQueueStatus\(""\)/, "switching tabs should close queue UI and clear its tab-local status before the new context renders");
-assert.match(app, /renderQueueGroup\("Follow-up", followUp, "follow-up", \{ removable: snapshot\.source === "pi-runtime", tabId \}\)/, "Control Deck removal must stay gated to Pi-runtime snapshots");
+assert.match(app, /renderQueueGroup\("Follow-up", followUp, "follow-up", \{ removable: !snapshot\.draining, tabId \}\)/, "Control Deck removal should support every mutable queue source");
 assert.doesNotMatch(app, /nextQueuedFollowUpPrompt|sticky-user-follow-up-prompt|Next follow-up prompt:/, "the sticky last/current prompt control must no longer expose queued follow-up preview content");
 
 console.log("queue edit/reorder static tests passed");

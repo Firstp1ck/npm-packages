@@ -1,57 +1,35 @@
-# @firstpick/pi-extension-plan-mode-toggle
+# Plan Mode Toggle for Pi
 
-Plan mode workflow extension for Pi.
+Adds a planning mode for thinking through a change before code is written.
 
-## What it does
+## What you can do
 
-- Toggle plan mode with `Ctrl+Q` or `/plan-mode on|off|status`.
-- Optionally select a dedicated planning model with `/plan-model`.
-- Runs a mandatory planning questionnaire before transforming prompts.
-- Forces structured `PLAN.md` planning output and checks for web evidence links.
-- Archives `PLAN.md` snapshots to `~/.pi/agent/docs/<topic>/PLAN.md`.
+- Switches Pi into a planning-first mode.
+- Can use a dedicated model for planning.
+- Asks for important decisions before writing a plan.
+- Checks plan quality before implementation begins.
 
 ## Install
+
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-plan-mode-toggle
 ```
 
-## Configuration
+Restart Pi if the package does not appear in your current session.
 
-No required configuration beyond runtime requirements.
+## How to use it
 
-## Requirements
+Turn planning on with `/plan-mode on`, describe the change, and answer the planning questions. Review the resulting plan before switching back to implementation work.
 
-- `brave_search` tool must be available in Pi.
-- `BRAVE_SEARCH_API_KEY` must be set in Pi environment.
+- `/plan-mode [on|off|status]` — enable, disable, or inspect plan mode.
+- `/plan-model [select|provider/model-id]` — choose or configure the planning model.
 
-## Commands
+## Before you start
 
-- `/plan-mode on|off|status`
-- `/plan-model [select|provider/model-id]`
+Brave Search is optional. Configure the Brave Search extension first if you want planning mode to use current web results.
 
-## Shortcuts
+## Technical details
 
-- `Ctrl+Q` — toggle/arm plan mode.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-/plan-mode on
-Plan mode enabled. Your next request will be turned into a PLAN.md first.
-
-Ctrl+Q
-Plan mode armed for the next prompt.
-
-/plan-model select
-Pick planning model:
-  gpt-5-codex
-  gemini-3-pro
-  claude-sonnet
-```
-
-Plan mode is useful when the next task needs deliberate research, sequencing, or review before code changes begin.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-plan-mode-toggle/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

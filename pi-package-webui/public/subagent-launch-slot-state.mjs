@@ -13,6 +13,22 @@ export function cloneLaunchSlotRoles(roles = {}) {
   ]));
 }
 
+export function subagentLaunchSlotSaveState({
+  hasConfig = false,
+  hasDraft = false,
+  dirty = false,
+  loading = false,
+  saving = false,
+  activeConfigTab = false,
+} = {}) {
+  if (saving) return { disabled: true, reason: "Saving agent models…" };
+  if (loading) return { disabled: true, reason: "Wait for agent models to finish loading." };
+  if (!hasConfig || !hasDraft) return { disabled: true, reason: "Agent model configuration is not available for this tab." };
+  if (!dirty) return { disabled: true, reason: "Change a model or thinking preset to enable saving." };
+  if (!activeConfigTab) return { disabled: true, reason: "Switch back to the tab where these changes were made to save them." };
+  return { disabled: false, reason: "Ready to save." };
+}
+
 export function launchSlotRolesEqual(left, right) {
   const leftRoles = Object.keys(left || {}).sort();
   const rightRoles = Object.keys(right || {}).sort();

@@ -42,8 +42,12 @@ assert.equal(isLocalRequest(remoteReq), false);
 
 assert.throws(() => requireLocalhost(remoteReq, "blocked"), (error) => error.statusCode === 403);
 assert.throws(() => requireLocalhostRoute(remoteReq, "/api/update"), (error) => error.statusCode === 403);
+assert.throws(() => requireLocalhostRoute(remoteReq, "/api/component-update"), (error) => error.statusCode === 403);
 assert.doesNotThrow(() => requireLocalhostRoute(localReq, "/api/update"));
+assert.doesNotThrow(() => requireLocalhostRoute(localReq, "/api/component-update"));
 assert.ok(LOCALHOST_ONLY_POST_ROUTES.has("/api/workflow-policy"), "workflow policy mutation must stay in the canonical localhost route registry");
+assert.equal(LOCALHOST_ONLY_POST_ROUTES.has("/api/session-summary/preferences"), false, "authenticated remote clients are allowed to save summary setup after confirmation");
+assert.equal(LOCALHOST_ONLY_POST_ROUTES.has("/api/session-summary/generate"), false, "authenticated remote clients are allowed to trigger summary generation");
 
 for (const pathname of LOCALHOST_ONLY_POST_ROUTES.keys()) {
   assert.match(pathname, /^\/api\//, `${pathname} should be an API route`);
@@ -55,6 +59,12 @@ for (const guard of parity.guardTaxonomy) {
 
 const exportGuards = guardsForNativeCommand("export", parity);
 assert.ok(exportGuards.includes("localhost"), "export should declare localhost guard in parity matrix");
+for (const command of ["summary", "summary-setup"]) {
+  const guards = guardsForNativeCommand(command, parity);
+  assert.deepEqual(guards, ["confirmation"], `/${command} should require disclosure confirmation but remain available to authenticated remote clients`);
+  assert.equal(evaluateDispatchTrustGuards(guards, { isLocal: false, confirmed: false, networkOpen: true }).allowed, true, `/${command} transport dispatch should not add a localhost-only block`);
+  assert.equal(evaluateTrustGuards(guards, { isLocal: false, confirmed: false, networkOpen: true }).allowed, false, `/${command} full evaluation should require confirmation`);
+}
 
 const exportDispatchLocal = evaluateDispatchTrustGuards(exportGuards, { isLocal: true, confirmed: false });
 const exportDispatchRemote = evaluateDispatchTrustGuards(exportGuards, { isLocal: false, confirmed: false, networkOpen: true });
@@ -130,7 +140,7 @@ for (const target of ["state", "tabs", "commands", "themes", "workspace"]) {
 }
 
 const slashCommands = nativeSlashCommandEntries(parity);
-assert.equal(slashCommands.length, 27);
+assert.equal(slashCommands.length, 29);
 assert.equal(slashCommands[0].name, "settings");
 assert.equal(slashCommands.at(-1).name, "quit");
 

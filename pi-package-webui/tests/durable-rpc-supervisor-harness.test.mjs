@@ -253,7 +253,9 @@ try {
     return false;
   }, { timeoutMs: 12_000 });
   const exitEntries = (await readLog(logFile)).filter((entry) => entry.direction === "exit" && entry.pid === observedPiPid);
-  assert.ok(exitEntries.some((entry) => entry.signal === "SIGTERM"), "explicit shutdown must produce the fake-Pi termination marker");
+  if (process.platform !== "win32") {
+    assert.ok(exitEntries.some((entry) => entry.signal === "SIGTERM"), "explicit shutdown must produce the fake-Pi termination marker");
+  }
   console.log(`durable-rpc-supervisor-harness.test.mjs passed (Pi PID ${observedPiPid}; tab ${observedTabId})`);
 } finally {
   const liveServer = manualServer?.exitCode === null ? manualServer : initialServer?.exitCode === null ? initialServer : null;

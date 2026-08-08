@@ -43,6 +43,7 @@ test("Control Deck resizing disables itself in overlay layouts and responds to v
   assert.match(app, /const resizeAvailable = !isSidePanelOverlayView\(\) && !document\.body\.classList\.contains\("side-panel-collapsed"\)/);
   assert.match(css, /@media \(max-width: 1050px\)[\s\S]*\.file-viewer-resize-handle,[\s\S]*\.side-panel-resize-handle \{\s*display:\s*none/);
   assert.match(app, /window\.addEventListener\("resize", syncResizablePanelWidthsForViewport/);
+  assert.match(app, /function syncSidePanelWidthForViewport\(\)[\s\S]*applySidePanelWidth\(readStoredSidePanelWidth\(\) \|\| currentSidePanelWidth\(\)\)/, "hard-reset startup reconciliation should preserve the durable width instead of freezing an in-progress CSS transition");
   assert.match(app, /function updateFileViewerUi\(\)[\s\S]*requestAnimationFrame\(syncResizablePanelWidthsForViewport\)/);
   assert.match(app, /function closeFileViewer\(\)[\s\S]*requestAnimationFrame\(syncResizablePanelWidthsForViewport\)/);
   assert.match(app, /function updateTerminalSplitUi\(\)[\s\S]*requestAnimationFrame\(syncResizablePanelWidthsForViewport\)/);

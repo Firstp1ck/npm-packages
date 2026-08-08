@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-network-diagnostics
+# Network Diagnostics
 
-A Pi skill for connectivity, DNS, Pi-hole, port reachability, routing, firewall reachability, TLS/network timeouts, or service access failures. Provides structured network troubleshooting commands and interpretation.
+Work out why a device or service cannot connect, one safe check at a time.
 
-## What it does
+## Helpful when
 
-- Adds the `network-diagnostics` skill to Pi's skill library.
-- Guides agents to invoke the skill for connectivity, DNS, Pi-hole, port reachability, routing, firewall reachability, TLS/network timeouts, or service access failures. Provides structured network troubleshooting commands and interpretation.
-- Bundles `skills/network-diagnostics/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- A website, server, or port cannot be reached.
+- Names resolve incorrectly or not at all.
+- A firewall, route, certificate, or local service may be involved.
+
+## What to share with Pi
+
+- What is trying to connect to what
+- The error and when it started
+- Relevant device, network, and service details
+
+## Try asking
+
+> This computer can find the server name but cannot connect to port 443. Diagnose it step by step and explain each result simply.
+
+## What you’ll get
+
+- A likely cause based on evidence
+- Safe checks in a useful order
+- Clear next steps and what each one proves
+
+## Keep in mind
+
+Diagnosis should begin with read-only checks. Changes to firewalls, routes, or services need your approval.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for connectivity, DNS, Pi-hole, port reachability, routing, firewall 
 pi install npm:@firstpick/pi-skill-network-diagnostics
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `network-diagnostics`.
-Agent: Invokes the `network-diagnostics` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-network-diagnostics/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

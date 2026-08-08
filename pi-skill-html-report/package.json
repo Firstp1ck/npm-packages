@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-html-report",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Reusable Agent Skill for polished self-contained HTML reports that explain complex, multi-step diagnostics, guides, decisions, investigations, and research with adaptive visuals and accessible long-page navigation.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-html-report#readme",

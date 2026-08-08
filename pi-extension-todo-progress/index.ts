@@ -492,6 +492,35 @@ export default function todoProgress(pi: ExtensionAPI) {
   pi.registerShortcut("ctrl+alt+j", { description: "Todo scroll down", handler: async (ctx) => { state.offset = Math.min(Math.max(0, state.items.length - MAX_ROWS), state.offset + 1); render(ctx, state); persistState(); } });
   pi.registerShortcut("ctrl+alt+k", { description: "Todo scroll up", handler: async (ctx) => { state.offset = Math.max(0, state.offset - 1); render(ctx, state); persistState(); } });
 
+  pi.registerCommand("goal", {
+    description: "Set the todo-progress goal. Usage: /goal <one-sentence goal>",
+    handler: async (args, ctx) => {
+      let goal = cleanGoalText(args);
+
+      if (!goal) {
+        if (!ctx.hasUI) {
+          ctx.ui.notify("Usage: /goal <one-sentence goal> (interactive input is unavailable)", "warning");
+          return;
+        }
+
+        const input = await ctx.ui.input(
+          "Set one-sentence todo goal",
+          state.goal ? `Current: ${state.goal}` : "What should this work achieve?",
+        );
+        goal = cleanGoalText(input);
+        if (!goal) {
+          ctx.ui.notify("Todo goal update cancelled", "info");
+          return;
+        }
+      }
+
+      state.goal = goal;
+      render(ctx, state);
+      persistState();
+      ctx.ui.notify(`Todo goal set: ${goal}`, "info");
+    },
+  });
+
   pi.registerCommand("todo-progress-status", {
     description: "Show todo-progress widget extension status",
     handler: async (_args, ctx) => {

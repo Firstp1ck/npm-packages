@@ -22,7 +22,7 @@ interface GrillState {
 const RecordTurnParams = Type.Object({
 	question: Type.String({ description: "The exact question asked, one question only." }),
 	recommendedAnswer: Type.String({ description: "The assistant's recommended answer to the question." }),
-	userAnswer: Type.Optional(Type.String({ description: "The user's answer, if already provided." })),
+	userAnswer: Type.Optional(Type.String({ description: "The user's explicit answer. Required when decisionStatus is resolved." })),
 	decisionStatus: Type.Union([
 		Type.Literal("resolved"),
 		Type.Literal("open"),
@@ -120,7 +120,7 @@ export default function grillMeExtension(pi: ExtensionAPI) {
 			await writeState(ctx.cwd, state);
 			ctx.ui.notify(`Grill session initialized: ${statePath(ctx.cwd)}`, "info");
 
-			pi.sendUserMessage(`Start /grill-me for this plan:\n\n${plan}\n\nRules:\n- Interview me relentlessly about every aspect of this plan until we reach shared understanding.\n- Walk down each branch of the design tree, resolving dependencies between decisions one-by-one.\n- Ask exactly one question at a time.\n- For each question, provide your recommended answer.\n- If a question can be answered by exploring the codebase, explore the codebase instead.\n- Use grill_record_turn after each question/answer decision is captured.\n- Use grill_save_results to save the results into a Markdown file in the project directory when enough understanding has been reached or when I ask to stop/save.`);
+			pi.sendUserMessage(`Start /grill-me for this plan:\n\n${plan}\n\nRules:\n- Interview me relentlessly about every aspect of this plan until we reach shared understanding.\n- Walk down each branch of the design tree, resolving dependencies between decisions one-by-one.\n- Ask exactly one question at a time.\n- For each question, provide your recommended answer.\n- If a question can be answered by exploring the codebase, explore the codebase instead.\n- Use grill_record_turn after each question/answer decision is captured.\n- For every resolved turn, include my explicit choice in userAnswer; do not leave the answer only in notes.\n- Use grill_save_results to save the results into a Markdown file in the project directory when enough understanding has been reached or when I ask to stop/save.`);
 		},
 	});
 
@@ -131,10 +131,21 @@ export default function grillMeExtension(pi: ExtensionAPI) {
 		promptSnippet: "Record structured progress for an active /grill-me design interview",
 		promptGuidelines: [
 			"Use grill_record_turn after each /grill-me interview question is answered or resolved from codebase exploration.",
+			"For a resolved turn, userAnswer must contain the explicit selected or discovered answer; notes are not a substitute.",
 			"Do not use grill_record_turn for more than one question at a time.",
 		],
 		parameters: RecordTurnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (params.decisionStatus === "resolved" && !params.userAnswer?.trim()) {
+				return {
+					content: [{
+						type: "text",
+						text: "userAnswer is required for resolved turns. Retry with the user's explicit choice or the answer discovered from the codebase.",
+					}],
+					isError: true,
+					details: { path: statePath(ctx.cwd), decisionStatus: params.decisionStatus },
+				};
+			}
 			const state = (await readState(ctx.cwd)) ?? {
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
@@ -142,7 +153,10 @@ export default function grillMeExtension(pi: ExtensionAPI) {
 				plan: "(state was created by grill_record_turn; no plan recorded)",
 				turns: [],
 			};
-			state.turns.push(params as GrillTurn);
+			state.turns.push({
+				...params,
+				userAnswer: params.userAnswer?.trim() || undefined,
+			} as GrillTurn);
 			state.updatedAt = new Date().toISOString();
 			await writeState(ctx.cwd, state);
 			return {

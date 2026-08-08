@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-backup-manager
+# Backup Manager
 
-A Pi skill for backup health checks, restore testing, NAS/Gitea backup integrity, 3-2-1 strategy review, backup script audits, or verifying repositories and archives can be restored safely.
+Find out whether your backups are complete, current, and likely to work when you need them.
 
-## What it does
+## Helpful when
 
-- Adds the `backup-manager` skill to Pi's skill library.
-- Guides agents to invoke the skill for backup health checks, restore testing, NAS/Gitea backup integrity, 3-2-1 strategy review, backup script audits, or verifying repositories and archives can be restored safely.
-- Bundles `skills/backup-manager/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You have not tested a restore recently.
+- Important files or services may be missing from backups.
+- You want to review a home server, NAS, or repository backup plan.
+
+## What to share with Pi
+
+- What must be protected
+- Where backups are stored
+- Any backup scripts, schedules, or recent reports
+
+## Try asking
+
+> Review my backup setup and tell me whether I could restore my important data today. Show me the biggest gaps first.
+
+## What you’ll get
+
+- A simple backup health summary
+- Missing coverage and restore risks
+- A prioritized improvement and restore-test plan
+
+## Keep in mind
+
+A file listing is not proof that recovery works. Use HTTPS for remote APIs, keep live tokens out of chat and logs, and require confirmation before pushes, deletions, or restore actions. The strongest check is a real restore test using safe, separate storage.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for backup health checks, restore testing, NAS/Gitea backup integrity
 pi install npm:@firstpick/pi-skill-backup-manager
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `backup-manager`.
-Agent: Invokes the `backup-manager` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-backup-manager/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

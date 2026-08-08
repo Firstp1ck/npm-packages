@@ -56,6 +56,8 @@ const requiredNativeCommands = [
   "safety-guard-setup",
   "git-workflow-setup",
   "workflow-setup",
+  "summary",
+  "summary-setup",
   "model",
   "theme",
   "scoped-models",
@@ -93,6 +95,14 @@ assert.ok(workflowSetupSurface, "/workflow-setup should be represented in the na
 assert.equal(workflowSetupSurface.webStatus, "implemented", "/workflow-setup browser-native support should be implemented");
 assert.equal(workflowSetupSurface.sensitive, true, "/workflow-setup should be tracked as a sensitive policy mutation");
 assert.deepEqual(workflowSetupSurface.guards, ["localhost", "confirmation"], "/workflow-setup should require both localhost and explicit confirmation guards");
+
+for (const id of ["/summary", "/summary-setup"]) {
+  const surface = slashSurfaces.find((item) => item.id === id);
+  assert.ok(surface, `${id} should be represented in the native parity matrix`);
+  assert.equal(surface.webStatus, "implemented", `${id} browser-native support should be implemented`);
+  assert.equal(surface.sensitive, true, `${id} sends or configures provider-bound session data`);
+  assert.deepEqual(surface.guards, ["confirmation"], `${id} should use explicit setup/disclosure confirmation without a localhost-only restriction`);
+}
 
 const selectorMatch = app.match(/const NATIVE_SELECTOR_COMMANDS = new Set\(\[(.*?)\]\)/s);
 assert.ok(selectorMatch, "frontend native selector command set should be discoverable");
@@ -141,7 +151,19 @@ assert.match(server, /url\.pathname === "\/api\/auth-providers" && req\.method =
 assert.match(server, /url\.pathname === "\/api\/auth-logout" && req\.method === "POST"/, "server should expose localhost-only POST /api/auth-logout");
 assert.match(server, /url\.pathname === "\/api\/workflow-policy" && req\.method === "GET"[\s\S]*requireLocalhost\(req, "Workflow policy setup is only allowed from localhost\."\)/, "workflow policy reads should be localhost-only");
 assert.match(server, /url\.pathname === "\/api\/workflow-policy" && req\.method === "POST"[\s\S]*requireLocalhostRoute\(req, url\.pathname\)[\s\S]*requireWorkflowPolicyJsonRequest\(req\)[\s\S]*expectedRevision: body\.expectedRevision/, "workflow policy saves should be registry-guarded, same-origin JSON, and revision protected");
-assert.match(app, /name === "workflow-setup" && !hasLoadedRpcCommand\(name\)[\s\S]*case "workflow-setup":[\s\S]*openNativeWorkflowSetupDialog\(\)/, "frontend should gate exact /workflow-setup native routing on the active tab's loaded extension catalog");
+assert.match(app, /\(name === "workflow-setup" \|\| name === "summary" \|\| name === "summary-setup"\) && !hasLoadedRpcCommand\(name\)[\s\S]*case "workflow-setup":[\s\S]*openNativeWorkflowSetupDialog\(\)/, "frontend should gate exact summary and setup commands on the active Pi tab's loaded extension catalog");
+assert.ok(app.includes('const summaryMatch = String(message || "").trim().match(/^\\/summary(?:\\s+(refresh))?$/i);'), "frontend should intercept only exact /summary and /summary refresh command forms");
+assert.match(app, /case "summary":[\s\S]*openSessionSummaryForTab\(activeTabId, \{ refresh: summaryMatch\?\.\[1\][\s\S]*case "summary-setup":[\s\S]*openNativeSessionSummarySetupDialog\(\)/, "frontend should route exact summary commands to the non-blocking overlay without normal prompt dispatch");
+assert.match(app, /async function openSessionSummaryForTab\(tabId = activeTabId, \{ refresh = false, focusReturnKey = "" \} = \{\}\)[\s\S]*hasAvailableCommand\("summary", \{ tabId \}\)[\s\S]*preferences\?\.configured[\s\S]*openNativeSessionSummarySetupDialog[\s\S]*openSessionSummaryOverlay[\s\S]*requestSessionSummaryGeneration\(tabId, \{ refresh \}\)/, "frontend /summary action should remain catalog-gated, preserve focus restoration, open setup when needed, and force exact refresh requests");
+assert.match(app, /function normalizeSessionSummaryClientState\(value, previous = null, \{ resetProjection = false \} = \{\}\)[\s\S]*sessionChanged[\s\S]*resetProjection \|\| sessionChanged \? null : previous[\s\S]*function handleSessionSummaryEvent\(event\)[\s\S]*resetProjection: event\?\.kind === "state"/, "client projection should clear across session IDs and active-branch state events while preserving ordinary failure state");
+assert.match(app, /title: "Save session summary setup\?"[\s\S]*if \(!reviewed\) return;[\s\S]*confirmed: true[\s\S]*requestSessionSummaryGeneration/, "summary setup should require explicit privacy/cost confirmation before persistence and immediate first generation");
+assert.match(server, /args\.includes\(sessionSummaryExtensionPath\)[\s\S]*args\.push\("--extension", sessionSummaryExtensionPath\)/, "each WebUI child should explicitly receive the package-owned summary extension");
+assert.match(server, /url\.pathname === "\/api\/session-summary\/preferences" && req\.method === "GET"[\s\S]*url\.pathname === "\/api\/session-summary\/preferences" && req\.method === "PUT"[\s\S]*url\.pathname === "\/api\/session-summary\/generate" && req\.method === "POST"/, "server should expose authenticated tab-scoped preferences and generation routes");
+assert.match(server, /function requireSessionSummaryJsonRequest\(req\)[\s\S]*application\/json[\s\S]*same-origin/, "summary mutations should fail closed on cross-origin-simple request shapes");
+assert.match(server, /function publicSessionSummaryPreferences\(value\)[\s\S]*scope: "text-and-tool-names"[\s\S]*preferences: publicSessionSummaryPreferences\(storedPreferences\)/, "summary preference responses should project only approved bounded fields instead of exposing preserved unknown keys");
+assert.match(server, /tab\.titleSource === "default" \|\| tab\.titleSource === "auto"[\s\S]*renameTab\(tab, details\.title, \{ source: "auto"/, "summary title bridge should preserve explicit tab names");
+assert.match(server, /filterSessionSummaryTranscriptMessages[\s\S]*SESSION_SUMMARY_RPC_TYPE[\s\S]*SESSION_SUMMARY_DISPLAY_TYPE/, "summary control and display messages should remain outside the normal WebUI transcript");
+assert.match(server, /const SESSION_SUMMARY_GENERATE_TIMEOUT_MS = 105 \* 1000[\s\S]*async function triggerSessionSummary[\s\S]*SESSION_SUMMARY_GENERATE_TIMEOUT_MS[\s\S]*status: "failure"[\s\S]*broadcastSessionSummaryState\(tab, "failure"\)[\s\S]*throw error/, "summary RPC dispatch should use the extension-scale timeout and broadcast bounded terminal failure before rethrowing");
 assert.match(app, /title: "Save reviewed workflow permission ceiling\?"[\s\S]*if \(!reviewed\) return;[\s\S]*body: \{ policy: policyToSave, expectedRevision: data\.revision \?\? null \}/, "frontend should explicitly confirm the normalized workflow policy before revision-protected save");
 assert.match(server, /url\.pathname === "\/api\/native-parity" && req\.method === "GET"/, "server should expose the native parity matrix for clients/tests");
 assert.match(server, /const NATIVE_DOWNLOAD_TOKEN_TTL_MS = 10 \* 60 \* 1000/, "native downloads should use short-lived tokens");

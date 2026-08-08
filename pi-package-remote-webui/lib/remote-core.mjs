@@ -1,8 +1,52 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { takeValue, tokenizeArgs } from "@firstpick/pi-utils/cli";
-import { fetchJsonWithTimeout as fetchJsonWithTimeoutBase } from "@firstpick/pi-utils/http";
 
-export { tokenizeArgs };
+export function tokenizeArgs(input) {
+  const tokens = [];
+  let current = "";
+  let quote;
+  let escaped = false;
+  for (const char of input) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (quote) {
+      if (char === quote) quote = undefined;
+      else current += char;
+    } else if (char === "\"" || char === "'") {
+      quote = char;
+    } else if (/\s/.test(char)) {
+      if (current) tokens.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (escaped) current += "\\";
+  if (quote) throw new Error(`Unclosed ${quote} quote`);
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function takeValue(tokens, index, flag) {
+  const value = tokens[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
+async function fetchJsonWithTimeoutBase(url, init, { timeoutMs, fetchImpl }) {
+  if (typeof fetchImpl !== "function") throw new Error("fetch is not available in this runtime");
+  const timeoutSignal = AbortSignal.timeout(Math.max(0, timeoutMs));
+  const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+  try {
+    const response = await fetchImpl(url, { ...init, signal });
+    const body = await response.json().catch(() => undefined);
+    return { ok: response.ok, status: response.status, body };
+  } catch (error) {
+    return { ok: false, status: 0, error };
+  }
+}
 
 export const DEFAULT_PORT = 31415;
 export const DEFAULT_LOCAL_HOST = "127.0.0.1";

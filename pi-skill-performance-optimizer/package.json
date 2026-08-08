@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-skill-performance-optimizer",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Agents should invoke this skill for slow code, high CPU/memory, latency, large data processing, algorithmic complexity, profiling plans, benchmarks, or optimization requests. Profiles first and weighs trade-offs before changing code.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-performance-optimizer#readme",

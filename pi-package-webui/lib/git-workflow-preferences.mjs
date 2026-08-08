@@ -1,7 +1,9 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { normalizeSubagentLaunchSlots } from "./subagent-launch-slots.mjs";
+import { normalizeUiLayout } from "./ui-layout-settings.mjs";
 import { normalizeOutputMode, OUTPUT_MODE_NORMAL } from "./webui-output-mode.mjs";
 
 export const GIT_WORKFLOW_SETUP_VERSION = 1;
@@ -24,8 +26,10 @@ export function supportedGitWorkflowThinkingLevels(model) {
   });
 }
 
-const WEBUI_SETTINGS_VERSION = 4;
+const WEBUI_SETTINGS_VERSION = 6;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
+const WEBUI_SETTINGS_LOCK_TIMEOUT_MS = 2_000;
+const WEBUI_SETTINGS_LOCK_RETRY_MS = 25;
 export const WEBUI_SIDE_PANEL_WIDTH_MIN_PX = 320;
 export const WEBUI_SIDE_PANEL_WIDTH_MAX_PX = 4096;
 const webuiSettingsUpdateQueues = new Map();
@@ -54,6 +58,7 @@ export function defaultGitWorkflowPreferences() {
       scope: "auto",
     },
     stagingPolicy: "review",
+    reviewProcessEnabled: true,
     deliveryMode: "ask",
     verificationPolicy: "ask",
   };
@@ -77,6 +82,7 @@ export function normalizeGitWorkflowPreferences(value) {
       scope: choice(value?.commit?.scope, GIT_WORKFLOW_SCOPE_POLICIES, defaults.commit.scope),
     },
     stagingPolicy: choice(value?.stagingPolicy, GIT_WORKFLOW_STAGING_POLICIES, defaults.stagingPolicy),
+    reviewProcessEnabled: typeof value?.reviewProcessEnabled === "boolean" ? value.reviewProcessEnabled : defaults.reviewProcessEnabled,
     deliveryMode: choice(value?.deliveryMode, GIT_WORKFLOW_DELIVERY_MODES, defaults.deliveryMode),
     verificationPolicy: choice(value?.verificationPolicy, GIT_WORKFLOW_VERIFICATION_POLICIES, defaults.verificationPolicy),
   };
@@ -105,6 +111,7 @@ export function gitWorkflowPreferencesSummary(preferences) {
     `Thinking: ${value.generation.thinkingLevel}`,
     `Commit: ${value.commit.language} · ${value.commit.defaultVariant} · scope ${value.commit.scope}`,
     `Staging: ${value.stagingPolicy}`,
+    `Review process: ${value.reviewProcessEnabled ? "enabled" : "disabled"}`,
     `Delivery: ${value.deliveryMode}`,
     `Verification: ${value.verificationPolicy}`,
   ].join("\n");
@@ -112,6 +119,10 @@ export function gitWorkflowPreferencesSummary(preferences) {
 
 export function webuiSettingsFile(env = process.env) {
   if (env[WEBUI_SETTINGS_FILE_ENV]) return path.resolve(String(env[WEBUI_SETTINGS_FILE_ENV]).replace(/^~(?=$|[\\/])/, homedir()));
+  return path.join(homedir(), ".pi", "webui", "settings.json");
+}
+
+export function legacyWebuiSettingsFile(env = process.env) {
   const configRoot = env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
   return path.join(configRoot, "pi-webui", "settings.json");
 }
@@ -169,24 +180,251 @@ export function normalizeWebuiSettings(value) {
     gitWorkflow: normalizeGitWorkflowPreferences(source.gitWorkflow),
     resourceDefaults: normalizeResourceDefaults(source.resourceDefaults),
     interfacePreferences: normalizeInterfacePreferences(source.interfacePreferences),
+    uiLayout: normalizeUiLayout(source.uiLayout),
     subagentLaunchSlots: normalizeSubagentLaunchSlots(source.subagentLaunchSlots),
   };
 }
 
-async function readRawWebuiSettings(storageFile) {
+function settingsReadError(storageFile, error) {
+  const wrapped = new Error(`Cannot read Pi Web UI settings at ${storageFile}: ${error instanceof Error ? error.message : String(error)}`);
+  wrapped.code = "WEBUI_SETTINGS_READ_FAILED";
+  wrapped.cause = error;
+  return wrapped;
+}
+
+async function readRawWebuiSettings(storageFile, { missing = {} } = {}) {
+  let text;
   try {
-    return settingsObject(JSON.parse(await readFile(storageFile, "utf8")));
+    text = await readFile(storageFile, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT") return {};
-    throw new Error(`Cannot read Pi Web UI settings at ${storageFile}: ${error instanceof Error ? error.message : String(error)}`);
+    if (error?.code === "ENOENT") return missing;
+    throw settingsReadError(storageFile, error);
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError("settings must contain a JSON object");
+    return parsed;
+  } catch (error) {
+    throw settingsReadError(storageFile, error);
   }
 }
 
+function isDefaultSettingsTarget(storageFile, env = process.env) {
+  return !env[WEBUI_SETTINGS_FILE_ENV] && path.resolve(storageFile) === path.resolve(webuiSettingsFile(env));
+}
+
+async function ensurePrivateSettingsDirectory(storageFile) {
+  await mkdir(path.dirname(storageFile), { recursive: true, mode: 0o700 });
+}
+
+function lockDirectoryFor(storageFile) {
+  return `${storageFile}.lock`;
+}
+
+function lockOwnerIsDead(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+}
+
+async function readSettingsLockRecords(lockDirectory) {
+  const names = (await readdir(lockDirectory)).filter((name) => name.endsWith(".json")).sort();
+  return Promise.all(names.map(async (name) => {
+    const recordFile = path.join(lockDirectory, name);
+    try {
+      const value = JSON.parse(await readFile(recordFile, "utf8"));
+      const valid = Number.isSafeInteger(value?.pid)
+        && value.pid > 0
+        && typeof value?.token === "string"
+        && value.token.length > 0
+        && ["pending", "active"].includes(value?.state);
+      return { ...value, name, recordFile, valid };
+    } catch {
+      return { name, recordFile, valid: false };
+    }
+  }));
+}
+
+async function renameWithWindowsRetry(source, target) {
+  let lastError;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (process.platform !== "win32" || !["EACCES", "EBUSY", "EPERM"].includes(error?.code)) throw error;
+      await delay(25 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+async function writeSettingsLockRecord(recordFile, value) {
+  const temporaryFile = `${recordFile}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  let handle;
+  try {
+    handle = await open(temporaryFile, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await renameWithWindowsRetry(temporaryFile, recordFile);
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await rm(temporaryFile, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function releaseSettingsLock(lockDirectory, recordFile) {
+  await rm(recordFile, { force: true });
+  await rmdir(lockDirectory).catch((error) => {
+    if (error?.code !== "ENOENT" && error?.code !== "ENOTEMPTY" && error?.code !== "EEXIST") throw error;
+  });
+}
+
+export async function withWebuiSettingsLock(storageFile, operation, {
+  timeoutMs = WEBUI_SETTINGS_LOCK_TIMEOUT_MS,
+  retryMs = WEBUI_SETTINGS_LOCK_RETRY_MS,
+} = {}) {
+  await ensurePrivateSettingsDirectory(storageFile);
+  const lockDirectory = lockDirectoryFor(storageFile);
+  await mkdir(lockDirectory, { mode: 0o700 }).catch((error) => {
+    if (error?.code !== "EEXIST") throw error;
+  });
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const recordFile = path.join(lockDirectory, `${token}.json`);
+  const ownRecord = { pid: process.pid, token, state: "pending" };
+  let handle;
+  try {
+    handle = await open(recordFile, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify(ownRecord)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await rm(recordFile, { force: true }).catch(() => {});
+    throw error;
+  }
+
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let acquired = false;
+  try {
+    while (!acquired) {
+      let records = await readSettingsLockRecords(lockDirectory);
+      let removedDeadOwner = false;
+      for (const record of records) {
+        if (record.valid && lockOwnerIsDead(record.pid)) {
+          await rm(record.recordFile, { force: true });
+          removedDeadOwner = true;
+        }
+      }
+      if (removedDeadOwner) continue;
+
+      const active = records.filter((record) => record.valid && record.state === "active");
+      if (active.length === 1 && active[0].token === token) {
+        acquired = true;
+        break;
+      }
+      if (active.length === 0 && records[0]?.token === token && records[0]?.valid) {
+        ownRecord.state = "active";
+        await writeSettingsLockRecord(recordFile, ownRecord);
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        const timeoutError = new Error("Timed out waiting for the Pi Web UI settings lock");
+        timeoutError.code = "WEBUI_SETTINGS_LOCK_TIMEOUT";
+        throw timeoutError;
+      }
+      await delay(Math.max(1, Math.min(retryMs, deadline - Date.now())));
+    }
+    return await operation();
+  } finally {
+    await releaseSettingsLock(lockDirectory, recordFile);
+  }
+}
+
+async function syncDirectoryBestEffort(directory) {
+  let handle;
+  try {
+    handle = await open(directory, "r");
+    await handle.sync();
+  } catch {
+    // Directory fsync is unsupported on some platforms/filesystems.
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function writePrivateAtomicSettings(storageFile, value) {
+  await ensurePrivateSettingsDirectory(storageFile);
+  const temporaryFile = path.join(
+    path.dirname(storageFile),
+    `.${path.basename(storageFile)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let handle;
+  try {
+    handle = await open(temporaryFile, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await renameWithWindowsRetry(temporaryFile, storageFile);
+    await syncDirectoryBestEffort(path.dirname(storageFile));
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await rm(temporaryFile, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export async function migrateLegacyWebuiSettings(targetFile, legacyFile) {
+  if (path.resolve(targetFile) === path.resolve(legacyFile)) return false;
+  try {
+    await readFile(targetFile, "utf8");
+    return false;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw settingsReadError(targetFile, error);
+  }
+  let legacy;
+  try {
+    legacy = await readRawWebuiSettings(legacyFile, { missing: null });
+  } catch {
+    return false;
+  }
+  if (!legacy) return false;
+  return withWebuiSettingsLock(targetFile, async () => {
+    try {
+      await readFile(targetFile, "utf8");
+      return false;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw settingsReadError(targetFile, error);
+    }
+    const { settings, persistLaunchSlots, persistedUiLayout } = mergeWebuiSettings(legacy, {});
+    const persisted = { ...settings, uiLayout: persistedUiLayout };
+    if (!persistLaunchSlots) delete persisted.subagentLaunchSlots;
+    await writePrivateAtomicSettings(targetFile, persisted);
+    return true;
+  });
+}
+
+async function ensureDefaultSettingsMigration(storageFile, env = process.env) {
+  if (!isDefaultSettingsTarget(storageFile, env)) return false;
+  return migrateLegacyWebuiSettings(storageFile, legacyWebuiSettingsFile(env));
+}
+
 export async function readWebuiSettings(storageFile = webuiSettingsFile(), { reportInvalidOutputMode = false } = {}) {
+  await ensureDefaultSettingsMigration(storageFile);
   const raw = await readRawWebuiSettings(storageFile);
   const normalized = normalizeWebuiSettings(raw);
   if (reportInvalidOutputMode && raw.outputModeDefault !== undefined && normalized.outputModeDefault !== raw.outputModeDefault) {
-    console.warn(`Invalid persisted Web UI output mode ${JSON.stringify(raw.outputModeDefault)} in ${storageFile}; using ${OUTPUT_MODE_NORMAL}.`);
+    console.warn(`Invalid persisted Web UI output mode ${JSON.stringify(raw.outputModeDefault)}; using ${OUTPUT_MODE_NORMAL}.`);
   }
   return normalized;
 }
@@ -214,6 +452,9 @@ function mergeWebuiSettings(rawCurrent, patch) {
     interfacePreferences: patchValue.interfacePreferences
       ? { ...current.interfacePreferences, ...patchValue.interfacePreferences }
       : current.interfacePreferences,
+    uiLayout: Object.hasOwn(patchValue, "uiLayout")
+      ? normalizeUiLayout(patchValue.uiLayout)
+      : current.uiLayout,
   };
   if (persistLaunchSlots) {
     source.subagentLaunchSlots = hasLaunchSlotPatch
@@ -224,17 +465,18 @@ function mergeWebuiSettings(rawCurrent, patch) {
     delete source.subagentLaunchSlots;
     source.version = Math.max(WEBUI_SETTINGS_VERSION, Number.isInteger(raw.version) ? raw.version : 0);
   }
-  return { settings: normalizeWebuiSettings(source), persistLaunchSlots };
+  const settings = normalizeWebuiSettings(source);
+  const persistedUiLayout = !Object.hasOwn(patchValue, "uiLayout") && raw.uiLayout !== undefined
+    ? raw.uiLayout
+    : settings.uiLayout;
+  return { settings, persistLaunchSlots, persistedUiLayout };
 }
 
 async function writeMergedWebuiSettings(rawCurrent, patch, storageFile) {
-  const { settings, persistLaunchSlots } = mergeWebuiSettings(rawCurrent, patch);
-  const persisted = { ...settings };
+  const { settings, persistLaunchSlots, persistedUiLayout } = mergeWebuiSettings(rawCurrent, patch);
+  const persisted = { ...settings, uiLayout: persistedUiLayout };
   if (!persistLaunchSlots) delete persisted.subagentLaunchSlots;
-  await mkdir(path.dirname(storageFile), { recursive: true });
-  const temporaryFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporaryFile, `${JSON.stringify(persisted, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporaryFile, storageFile);
+  await writePrivateAtomicSettings(storageFile, persisted);
   return settings;
 }
 
@@ -246,11 +488,14 @@ export function updateWebuiSettings(updater, storageFile = webuiSettingsFile()) 
   const queueKey = path.resolve(storageFile);
   const previous = webuiSettingsUpdateQueues.get(queueKey) || Promise.resolve();
   const currentUpdate = previous.catch(() => {}).then(async () => {
-    const rawCurrent = await readRawWebuiSettings(storageFile);
-    const current = normalizeWebuiSettings(rawCurrent);
-    const patch = await updater(current);
-    if (patch === undefined) return current;
-    return writeMergedWebuiSettings(rawCurrent, patch, storageFile);
+    await ensureDefaultSettingsMigration(storageFile);
+    return withWebuiSettingsLock(storageFile, async () => {
+      const rawCurrent = await readRawWebuiSettings(storageFile);
+      const current = normalizeWebuiSettings(rawCurrent);
+      const patch = await updater(current);
+      if (patch === undefined) return current;
+      return writeMergedWebuiSettings(rawCurrent, patch, storageFile);
+    });
   });
   webuiSettingsUpdateQueues.set(queueKey, currentUpdate);
   return currentUpdate.finally(() => {

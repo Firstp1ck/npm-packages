@@ -1,247 +1,39 @@
-# pi-package-learnings
+# Troubleshooting learnings for Pi
 
-Durable troubleshooting memory for Pi agents.
+Keep a durable, searchable record of troubleshooting lessons that Pi can reuse later.
 
-`pi-package-learnings` helps Pi remember **how a real problem was solved** without relying on chat history. After a troubleshooting session, you save a short Markdown note. The package then builds an index and summary so future agents can quickly find relevant past fixes, read the original note, and verify whether it still applies.
+## What you can do
 
-## What this package provides
+- Stores short notes about problems that were actually solved.
+- Builds an index so old fixes can be found quickly.
+- Lets Pi search and read relevant lessons during troubleshooting.
+- Keeps the archive in a location you choose.
 
-This is a Pi package with four parts:
+## Install
 
-| Part | Purpose |
-| --- | --- |
-| Extension | Adds `/learnings-setup` plus LEARNINGS agent tools (`learnings_search`, `learnings_read`, `learnings_add`, `learnings_sync`). |
-| Skill | Tells agents when and how to use LEARNINGS safely. |
-| Prompt templates | Adds `/sum-LEARNINGS` and `/ret-LEARNINGS`. |
-| Scripts | Generate the archive index, manifest, summary, and sync log. |
-
-The package code is separate from the archive data. Your actual LEARNINGS notes live in a directory you choose, for example:
-
-```text
-/mnt/SSD_NVME/LEARNINGS
-```
-
-## Quick start
-
-Install the published npm package:
+Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-package-learnings
 ```
 
-Reload or restart Pi if needed, then run:
+Restart Pi if the package does not appear in your current session.
+
+## How to use it
+
+Run `/learnings-setup` once. After solving a useful problem, ask Pi to save the lesson; later, ask it to search prior learnings before repeating the investigation.
+
+1. Run `/learnings-setup` once and choose where the archive should live.
+   By default, setup writes `~/.pi/agent/learnings.env`, creates or replaces the `~/.pi/agent/LEARNINGS` symlink (backing up an existing path), installs helper scripts, and enables a daily `systemd --user` sync timer at 20:00. This needs Python 3, Bash, and a systemd user session; use `--no-timer` on other systems or when you do not want the timer.
+2. After solving a useful troubleshooting problem, ask Pi to save a short learning.
+3. When a similar problem returns, ask Pi to search prior learnings or run:
 
 ```text
-/learnings-setup
+/ret-LEARNINGS NetworkManager got a DHCP lease but no default route
 ```
 
-The setup wizard asks where the archive should live and whether to enable a daily sync timer.
+Pi returns the most relevant notes so the old fix can be checked against the current system.
 
-For Firstpick's current machine, the intended setup is:
+## Technical details
 
-```text
-/learnings-setup --dir /mnt/SSD_NVME/LEARNINGS --timer 20:00
-```
-
-## `/learnings-setup`
-
-The setup command configures the full local LEARNINGS environment.
-
-It opens one setup list. In that list:
-
-- `Enter` / `Space` toggles rows or opens text input for editable path/time rows.
-- `Ctrl+S` applies/saves the shown settings.
-- `Escape`/`ctrl+c` cancels without applying.
-
-When applied, it will:
-
-1. Create the archive directory.
-2. Create `archive/` and `logs/`.
-3. Write the configured `learnings.env` file.
-4. Create/update the configured stable symlink.
-5. Install the archive scripts into the archive directory when enabled.
-6. Generate the initial `manifest.json`, `INDEX.md`, and `LEARNINGS-SUMMARY.md` when enabled.
-7. Optionally create and enable the user systemd timer.
-8. Print a final health report.
-
-Examples:
-
-```text
-/learnings-setup
-/learnings-setup --dir /mnt/SSD_NVME/LEARNINGS --timer 20:00
-/learnings-setup --dir ~/LEARNINGS --no-timer
-/learnings-setup --check
-```
-
-### Health check
-
-Use this to inspect the current setup without changing it:
-
-```text
-/learnings-setup --check
-```
-
-It reports whether the archive, symlink, env file, scripts, summary, manifest, and support directories exist.
-
-## How Pi finds the archive
-
-Agents and scripts resolve the LEARNINGS archive in this order:
-
-1. Source `~/.pi/agent/learnings.env` and use `LEARNINGS_DIR`.
-2. Fall back to the stable symlink `~/.pi/agent/LEARNINGS`.
-
-A typical setup looks like this:
-
-```text
-~/.pi/agent/learnings.env       # contains LEARNINGS_DIR=/mnt/SSD_NVME/LEARNINGS
-~/.pi/agent/LEARNINGS           # symlink to /mnt/SSD_NVME/LEARNINGS
-/mnt/SSD_NVME/LEARNINGS         # actual archive data
-```
-
-This makes the setup portable: if the real disk path changes, update the env file and symlink instead of changing agent instructions everywhere.
-
-## Archive layout
-
-After setup, the archive contains files like:
-
-```text
-LEARNINGS/
-├── README.md
-├── INDEX.md
-├── LEARNINGS-SUMMARY.md
-├── manifest.json
-├── archive/
-├── logs/
-│   └── latest.log
-├── sync-learnings.py
-├── summarize-learnings.py
-├── run-sync-with-notification.sh
-└── *.md                         # your troubleshooting notes
-```
-
-Important files:
-
-| File | Meaning |
-| --- | --- |
-| `*.md` | Human-written solved troubleshooting notes. |
-| `archive/` | Generated by the sync process. Stores content-addressed / hashed snapshot copies of each learning note used by the summary/index. |
-| `manifest.json` | Machine-readable list of indexed notes and the mapping from each root note to its archived snapshot. |
-| `INDEX.md` | Human-readable list of notes and archive references. |
-| `LEARNINGS-SUMMARY.md` | First file agents read when searching past fixes. |
-| `logs/latest.log` | Last sync run output. |
-
-## Using LEARNINGS during troubleshooting
-
-When an issue looks familiar, the agent should:
-
-1. Read `LEARNINGS-SUMMARY.md`.
-2. Find likely matching entries.
-3. Read the referenced source or archive note.
-4. Verify the lesson against the current system before acting.
-5. Mention which LEARNINGS files influenced the answer.
-
-The summary is only a routing file. The detailed note is the source of truth.
-
-## Adding a new learning
-
-Create a short Markdown file directly in the archive root, for example:
-
-```text
-/mnt/SSD_NVME/LEARNINGS/hyprsunset-warm-mode-keybind-resets-2026-05-19.md
-```
-
-Recommended note format:
-
-```markdown
-# hyprsunset-warm-mode-keybind-resets-2026-05-19
-
-- Issue: Ctrl+Super+S briefly enabled Warm Mode, then it reset immediately.
-- Tried: Inspected the Hyprland keybind and hyprsunset toggle script.
-- Solution: Replaced two concatenated toggle implementations with one state-file based toggle.
-- Verification: Pressing the keybind now switches reliably between 4000K and identity mode.
-```
-
-Then regenerate the summary:
-
-```bash
-~/.pi/agent/bin/learnings-summary
-```
-
-or use the prompt template:
-
-```text
-/sum-LEARNINGS
-```
-
-## Prompt templates
-
-### `/sum-LEARNINGS`
-
-Refreshes the archive:
-
-- runs sync
-- rebuilds `manifest.json`
-- rebuilds `INDEX.md`
-- rebuilds `LEARNINGS-SUMMARY.md`
-
-### `/ret-LEARNINGS [issue/context]`
-
-Retrieves relevant prior troubleshooting notes for a current issue.
-
-Example:
-
-```text
-/ret-LEARNINGS NetworkManager DHCP got lease but no default route
-```
-
-## Command-line scripts
-
-The package exposes these binaries:
-
-```bash
-pi-learnings-sync
-pi-learnings-summary
-```
-
-Inside Pi's existing setup, these wrappers are also commonly available:
-
-```bash
-~/.pi/agent/bin/learnings-sync
-~/.pi/agent/bin/learnings-summary
-```
-
-Direct script usage from the package directory:
-
-```bash
-LEARNINGS_DIR=/mnt/SSD_NVME/LEARNINGS ./scripts/sync-learnings.py
-LEARNINGS_DIR=/mnt/SSD_NVME/LEARNINGS ./scripts/summarize-learnings.py
-```
-
-## Daily sync timer
-
-If enabled, `/learnings-setup` writes a user systemd timer similar to:
-
-```ini
-[Unit]
-Description=Daily Pi LEARNINGS archive sync
-
-[Timer]
-OnCalendar=*-*-* 20:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-Check timer status:
-
-```bash
-systemctl --user list-timers sync-learnings.timer --all --no-pager
-```
-
-## Safety and behavior notes
-
-- Setup is designed to be idempotent: running it again should repair or refresh the setup.
-- The archive directory is intentionally outside the package so package updates do not delete your notes.
-- Past learnings are hints, not proof. Agents must verify current state before applying an old fix.
-- Do not store secrets in LEARNINGS notes.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-package-learnings/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

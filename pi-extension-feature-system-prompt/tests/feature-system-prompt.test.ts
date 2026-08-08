@@ -12,6 +12,7 @@ import featureSystemPrompt, {
 	createFeatureSystemPrompt,
 	FEATURE_CATEGORY_STATUS_KEY,
 	FEATURE_CLASSIFICATION_FALLBACK,
+	FEATURE_DECISION_OUTPUT_STATUS_KEY,
 	FEATURE_SKILL_CONFIGURATION_ERROR,
 	FEATURE_SKILL_NAME,
 	FEATURE_SKILL_ROUTING_BRIDGE,
@@ -19,11 +20,14 @@ import featureSystemPrompt, {
 	getFeatureComplexity,
 	isLikelyContinuation,
 	MAX_CLASSIFIER_PROMPT_CHARS,
+	MAX_CLASSIFIER_REASON_CHARS,
+	parseClassifierDecision,
 	parseRequestKind,
 	REQUEST_KINDS,
 	resolveRequestKind,
 	shouldInjectFeaturePrompt,
 	type ActiveClassifierModel,
+	type ClassifierDecision,
 	type ClassifierPromptInput,
 	type FeatureSystemPromptDependencies,
 	type RequestKind,
@@ -37,6 +41,10 @@ type LifecycleHandler = (event: unknown, ctx: TestContext) => void;
 type StatusUpdate = { key: string; text: string | undefined };
 
 const ACTIVE_MODEL = { provider: "local-provider", id: "active-conversation-model" } as ActiveClassifierModel;
+
+function classifierDecision(kind: RequestKind, reason = `The request is classified as ${kind}.`): ClassifierDecision {
+	return { kind, reason };
+}
 
 function createFeaturePromptHarness(dependencies: FeatureSystemPromptDependencies) {
 	let beforeAgentStart: BeforeAgentStartHandler | undefined;
@@ -107,6 +115,28 @@ test("the taxonomy has every approved label and parses only exact labels", () =>
 	for (const output of ["", "feature", "Feature", " feature_lightweight", "feature_complex ", "feature_lightweight\n", "feature_complex.", "feature_lightweight\nbug"]) {
 		assert.equal(parseRequestKind(output), undefined, output);
 	}
+});
+
+test("structured classifier decisions require exact JSON fields and normalize bounded plain-text reasons", () => {
+	assert.deepEqual(
+		parseClassifierDecision('{"kind":"feature_complex","reason":"  Adds a UI flow.\\nCrosses an interface.\\u202eSpoofed direction.  "}'),
+		{ kind: "feature_complex", reason: "Adds a UI flow. Crosses an interface. Spoofed direction." },
+	);
+	assert.deepEqual(
+		parseClassifierDecision(JSON.stringify({ kind: "feature_lightweight", reason: "r".repeat(MAX_CLASSIFIER_REASON_CHARS + 20) })),
+		{ kind: "feature_lightweight", reason: "r".repeat(MAX_CLASSIFIER_REASON_CHARS) },
+	);
+
+	for (const output of [
+		"feature_lightweight",
+		'{"kind":"feature_lightweight"}',
+		'{"kind":"feature_lightweight","reason":""}',
+		'{"kind":"feature_lightweight","reason":"   \\n  "}',
+		'{"kind":"feature_lightweight","reason":1}',
+		'{"kind":"feature_lightweight","reason":"Valid.","extra":true}',
+		'{"kind":"unknown","reason":"Valid."}',
+		'```json\\n{"kind":"feature_lightweight","reason":"Valid."}\\n```',
+	]) assert.equal(parseClassifierDecision(output), undefined, output);
 });
 
 test("continuation resolution inherits only a known effective kind", () => {
@@ -181,7 +211,7 @@ test("the handler model-routes ambiguous work but locally resolves obvious non-f
 		classifyRequest: async (input, model) => {
 			classifierInputs.push(input);
 			classifierModels.push(model);
-			return "feature_complex";
+			return classifierDecision("feature_complex", "The request adds a broad command palette.");
 		},
 	});
 
@@ -199,7 +229,7 @@ test("a continuation without known local state still uses the active model witho
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async (input) => {
 			classifierInputs.push(input);
-			return "continuation";
+			return classifierDecision("continuation", "The request continues the previous task.");
 		},
 	});
 	assert.equal(await harness.run("Continue"), undefined);
@@ -207,7 +237,10 @@ test("a continuation without known local state still uses the active model witho
 });
 
 test("successful feature and non-feature routing injects only the appropriate policy", async () => {
-	const classifications: RequestKind[] = ["feature_lightweight", "review"];
+	const classifications: ClassifierDecision[] = [
+		classifierDecision("feature_lightweight"),
+		classifierDecision("review"),
+	];
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async () => classifications.shift(),
 	});
@@ -216,10 +249,16 @@ test("successful feature and non-feature routing injects only the appropriate po
 	assert.equal(await harness.run("Review this diff"), undefined);
 });
 
-test("RPC mode emits the effective feature category and clears it for non-features", async () => {
-	const classifications: RequestKind[] = ["feature_lightweight", "feature_lightweight", "feature_complex"];
+test("RPC mode publishes a structured feature decision before category, reuses it for continuations, and clears both for non-features", async () => {
+	const lightweightDecision = classifierDecision("feature_lightweight", "Adds one localized command.");
+	const complexDecision = classifierDecision("feature_complex", "Crosses the command and rendering interfaces.");
+	const classifications: ClassifierDecision[] = [lightweightDecision, lightweightDecision, complexDecision];
+	const classifierInputs: ClassifierPromptInput[] = [];
 	const harness = createFeaturePromptHarness({
-		classifyRequest: async () => classifications.shift(),
+		classifyRequest: async (input) => {
+			classifierInputs.push(input);
+			return classifications.shift();
+		},
 	});
 
 	await harness.run("Add a focused command");
@@ -230,19 +269,38 @@ test("RPC mode emits the effective feature category and clears it for non-featur
 	await harness.runInRpcMode("Continue");
 	await harness.runInRpcMode("Review this diff");
 
+	assert.deepEqual(classifierInputs, [
+		{ prompt: "Add a focused command" },
+		{ prompt: "Add a focused command" },
+		{ prompt: "Add a broader command" },
+	]);
 	assert.deepEqual(harness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: JSON.stringify(lightweightDecision) },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "lightweight-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: JSON.stringify(lightweightDecision) },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "lightweight-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: JSON.stringify(complexDecision) },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: JSON.stringify(complexDecision) },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
 	]);
 });
 
-test("RPC mode clears the feature category after unavailable classification and lifecycle resets", async () => {
+test("TUI mode does not publish feature statuses", async () => {
+	const harness = createFeaturePromptHarness({ classifyRequest: async () => classifierDecision("feature_complex") });
+	await harness.run("Add a broader command");
+	assert.deepEqual(harness.statusUpdates, []);
+});
+
+test("RPC mode clears decision output and category after unavailable classification, missing models, and lifecycle resets", async () => {
 	const invalidHarness = createFeaturePromptHarness({ classifyRequest: async () => undefined });
 	await invalidHarness.runInRpcMode("Do some work");
-	assert.deepEqual(invalidHarness.statusUpdates, [{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined }]);
+	assert.deepEqual(invalidHarness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
 
 	const throwingHarness = createFeaturePromptHarness({
 		classifyRequest: async () => {
@@ -250,15 +308,37 @@ test("RPC mode clears the feature category after unavailable classification and 
 		},
 	});
 	await throwingHarness.runInRpcMode("Do some work");
-	assert.deepEqual(throwingHarness.statusUpdates, [{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined }]);
+	assert.deepEqual(throwingHarness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
 
 	const noModelHarness = createFeaturePromptHarness({});
 	await noModelHarness.runWithoutModel("Do some work", "rpc");
 	noModelHarness.runLifecycle("session_start", "rpc");
 	noModelHarness.runLifecycle("session_tree", "rpc");
 	assert.deepEqual(noModelHarness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
+});
+
+test("RPC lifecycle resets clear a stored structured feature decision output", async () => {
+	const complexDecision = classifierDecision("feature_complex", "Adds multiple coordinated slices.");
+	const harness = createFeaturePromptHarness({ classifyRequest: async () => complexDecision });
+	await harness.runInRpcMode("Add a broader command");
+	harness.runLifecycle("session_start", "rpc");
+	harness.runLifecycle("session_tree", "rpc");
+	assert.deepEqual(harness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: JSON.stringify(complexDecision) },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: "complex-feature" },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
 		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
 	]);
 });
@@ -280,7 +360,7 @@ test("classifier invalid output, throw, and no active model inject only the shor
 	const noModelHarness = createFeaturePromptHarness({
 		classifyRequest: async () => {
 			classifierCalls += 1;
-			return "feature_complex";
+			return classifierDecision("feature_complex");
 		},
 	});
 	assert.deepEqual(await noModelHarness.runWithoutModel("Do some work"), { systemPrompt: `BASE\n\n${FEATURE_CLASSIFICATION_FALLBACK}` });
@@ -292,7 +372,7 @@ test("classifier invalid output, throw, and no active model inject only the shor
 
 test("a successful classified feature injects a fail-closed skill-routing bridge", async () => {
 	const harness = createFeaturePromptHarness({
-		classifyRequest: async () => "feature_lightweight",
+		classifyRequest: async () => classifierDecision("feature_lightweight"),
 	});
 	assert.deepEqual(await harness.run("Add a command palette"), {
 		systemPrompt: injectedFeaturePrompt("feature_lightweight"),
@@ -303,7 +383,7 @@ test("a successful classified feature injects a fail-closed skill-routing bridge
 	assert.match(FEATURE_SKILL_ROUTING_BRIDGE, /do not silently weaken a required gate/);
 
 	const unavailableHarness = createFeaturePromptHarness({
-		classifyRequest: async () => "feature_complex",
+		classifyRequest: async () => classifierDecision("feature_complex"),
 		validateFeatureSkill: () => false,
 	});
 	assert.deepEqual(await unavailableHarness.run("Add a command palette"), {
@@ -332,7 +412,10 @@ test("feature skill availability checks prompt discovery and required files", ()
 
 test("session starts reset continuation state for startup, new, resume, fork, and reload", async () => {
 	for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
-		const classifications: RequestKind[] = ["feature_complex", "continuation"];
+		const classifications: ClassifierDecision[] = [
+			classifierDecision("feature_complex"),
+			classifierDecision("continuation"),
+		];
 		const harness = createFeaturePromptHarness({
 			classifyRequest: async () => classifications.shift(),
 		});
@@ -343,7 +426,10 @@ test("session starts reset continuation state for startup, new, resume, fork, an
 });
 
 test("tree navigation resets branch-local continuation state", async () => {
-	const classifications: RequestKind[] = ["feature_lightweight", "continuation"];
+	const classifications: ClassifierDecision[] = [
+		classifierDecision("feature_lightweight"),
+		classifierDecision("continuation"),
+	];
 	const harness = createFeaturePromptHarness({
 		classifyRequest: async () => classifications.shift(),
 	});

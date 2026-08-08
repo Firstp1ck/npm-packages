@@ -1,53 +1,32 @@
-# archwiki-local Pi extension
+# ArchWiki Local for Pi
 
-Local ArchWiki retrieval tools and an Arch/Arch-based distro troubleshooting skill backed by the installed `arch-wiki-docs` package. The skill prioritizes EndeavourOS first and CachyOS second when distro-specific context matters.
+Lets Pi search your local ArchWiki copy before reaching for the public web.
 
-Docs path:
+## What you can do
 
-```txt
-/usr/share/doc/arch-wiki/html/en/
+- Searches the ArchWiki copy installed on your computer.
+- Reads focused sections instead of sending you through long pages.
+- Includes guidance for Arch and common Arch-based distributions.
+- Keeps local documentation available even when web search is unnecessary.
+
+## Install
+
+Install it through Pi:
+
+```bash
+pi install npm:@firstpick/pi-extension-archwiki-local
 ```
 
-Cache path:
+Restart Pi if the package does not appear in your current session.
 
-```txt
-~/.cache/pi/archwiki-local/
-├── pages.json
-└── metadata.json
-```
+## How to use it
 
-## Packaged skill
-
-The package includes `skills/arch-linux-local/SKILL.md`, so publishing/installing the package can deliver the troubleshooting workflow and the extension together.
-
-The skill is for Arch Linux and Arch-based distributions, not only vanilla Arch. It includes distro reference notes for EndeavourOS, CachyOS, Manjaro, Garuda Linux, Artix Linux, and BlackArch.
-
-## Registered commands
+Run `/archwiki-local-setup` once if the local ArchWiki package is missing. After that, ask Pi an Arch Linux question normally; it searches and cites the local documentation first.
 
 - `/archwiki-status` — reports docs path, page count, `arch-wiki-docs` package version, and cache freshness.
-- `/archwiki-local-setup` — installs `arch-wiki-docs` with `pacman` when missing, and checks `pacman -Qu arch-wiki-docs` for pending updates when already installed. If automatic install/update is not possible, it tells the user to run:
-
-  ```bash
-  sudo pacman -S arch-wiki-docs
-  ```
-
+- `/archwiki-local-setup` — installs or updates `arch-wiki-docs`. If it cannot do that automatically, it shows the exact `pacman` command for you to run.
 - `/archwiki-smoke-test` — runs compact local parser/search/extract/read checks against representative ArchWiki topics.
 
-## Registered tools
+## Technical details
 
-- `archwiki_search` — searches local pages with query normalization, query expansion, stopword/downweight tuning, compact output by default, and optional snippets.
-- `archwiki_read` — reads a page as clean text with local path citation.
-- `archwiki_sections` — lists extracted headings with `maxSections` and omitted-count metadata.
-- `archwiki_extract` — extracts a named or query-relevant section with `maxSections`, truncation, and omitted-count metadata.
-- `archwiki_related` — returns locally linked ArchWiki pages.
-- `archwiki_smoke_test` — runs parser/search/extract/read smoke checks.
-
-## Notes
-
-The first tool call builds the cache through the shared `pi-utils` local-wiki engine. Cache invalidation uses schema version, page count, docs path, and newest source mtime.
-
-If `/usr/share/doc/arch-wiki/html/en/` is missing or empty, ArchWiki-local prompts/tools warn that `arch-wiki-docs` is required and stop instead of falling back silently.
-
-## Local development note
-
-The global extension symlink loads only the extension file. To load the packaged skill without a standalone `~/.pi/agent/skills/arch-linux-local` copy, install the package as a local Pi package or add it to Pi package settings.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-archwiki-local/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

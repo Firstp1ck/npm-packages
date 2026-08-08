@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-test-plan-generator
+# Test Plan Generator
 
-A Pi skill for tasks involving planning tests from specs, architecture docs, PRs, risky changes, new features, bug fixes, or release work. Generates prioritized unit, integration, E2E, regression, and edge-case coverage.
+Turn a project plan and its supporting specification and architecture documents into a practical list of tests, ordered by risk and value.
 
-## What it does
+## Helpful when
 
-- Adds the `test-plan-generator` skill to Pi's skill library.
-- Guides agents to invoke the skill when planning tests from specs, architecture docs, PRs, risky changes, new features, bug fixes, or release work. Generates prioritized unit, integration, E2E, regression, and edge-case coverage.
-- Bundles `skills/test-plan-generator/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- A feature needs test coverage.
+- A bug fix could cause regressions.
+- You need to decide what to test manually and automatically.
+
+## What to share with Pi
+
+- The combined project plan (the primary source of truth)
+- The original specification and architecture document
+- The existing completion report, important user journeys, risks, platforms, and time limits
+
+## Try asking
+
+> Using this combined plan, specification, architecture document, and completion report, create a prioritized test plan. Include normal use, failures, edge cases, and regression checks.
+
+## What you’ll get
+
+- Tests grouped by type and priority
+- Expected results and important test data
+- Coverage gaps and suggested order
+
+## Keep in mind
+
+The plan describes what should be tested; it does not prove the tests were run or passed.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving planning tests from specs, architecture docs, PRs
 pi install npm:@firstpick/pi-skill-test-plan-generator
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `test-plan-generator`.
-Agent: Invokes the `test-plan-generator` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-test-plan-generator/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

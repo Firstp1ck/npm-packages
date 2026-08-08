@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = join(root, "..");
@@ -12,6 +13,29 @@ const serverScript = join(root, "bin", "pi-webui.mjs");
 const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const reviewModuleUrl = pathToFileURL(join(workspaceRoot, "pi-extension-aur-review", "src", "git.ts")).href;
 const port = 41000 + Math.floor(Math.random() * 10000);
+
+async function waitForChildClose(child, timeoutMs = 2_000) {
+  if (child.exitCode !== null) return true;
+  return Promise.race([
+    new Promise((resolve) => child.once("close", () => resolve(true))),
+    delay(timeoutMs, false),
+  ]);
+}
+
+async function rmWithRetry(target) {
+  let lastError;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)) throw error;
+      await delay(Math.min(500, 150 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
 
 function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -56,6 +80,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", repo, "--host", "1
     ...process.env,
     PI_CODING_AGENT_DIR: agentDir,
     PI_WEBUI_SETTINGS_FILE: path.join(agentDir, "settings.json"),
+    PI_WEBUI_RPC_SUPERVISOR: "0",
   },
 });
 let serverOutput = "";
@@ -130,10 +155,19 @@ try {
   await assertMatchesExtension("mode");
   reset();
 
-  await symlink("normal.txt", path.join(repo, "normal-link"));
-  git(repo, "add", "normal-link");
-  await assertMatchesExtension("symlink");
-  reset();
+  let symlinkSupported = true;
+  try {
+    await symlink("normal.txt", path.join(repo, "normal-link"));
+  } catch (error) {
+    if (!["EACCES", "EPERM"].includes(error?.code)) throw error;
+    symlinkSupported = false;
+    console.log(`staged-content-hash-contract: symlink unavailable (${error.code}); skipping symlink hash case`);
+  }
+  if (symlinkSupported) {
+    git(repo, "add", "normal-link");
+    await assertMatchesExtension("symlink");
+    reset();
+  }
 
   await writeFile(path.join(repo, "added.txt"), "added\n");
   git(repo, "rm", "-q", "deleted.txt");
@@ -164,11 +198,18 @@ try {
 
   console.log("staged content hash contract tests passed");
 } finally {
-  child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => child.once("close", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
-  await Promise.all([rm(repo, { recursive: true, force: true }), rm(agentDir, { recursive: true, force: true })]);
+  if (child.exitCode === null) {
+    try {
+      await request("/api/shutdown", { method: "POST" });
+    } catch {
+      // Fall back to direct termination below when the server is already unavailable.
+    }
+  }
+  if (child.exitCode === null) child.kill("SIGTERM");
+  if (!(await waitForChildClose(child))) {
+    child.kill("SIGKILL");
+    await waitForChildClose(child);
+  }
+  await delay(500);
+  await Promise.all([rmWithRetry(repo), rmWithRetry(agentDir)]);
 }

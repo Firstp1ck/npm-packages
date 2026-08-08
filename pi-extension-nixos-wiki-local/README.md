@@ -1,51 +1,32 @@
-# NixOS Wiki Local Pi Extension
+# NixOS Wiki Local for Pi
 
-Local NixOS/Nix documentation retrieval for Pi, backed by the shared `pi-utils` local-wiki engine.
+Lets Pi search local NixOS and Nix documentation before using the public web.
 
-## Sources
+## What you can do
 
-The setup command creates minimal sparse, shallow, blob-filtered checkouts under `~/.nixoswiki`:
+- Searches local NixOS and Nix documentation.
+- Uses official documentation repositories as its source.
+- Returns focused passages instead of whole manuals.
+- Includes status and local-corpus checks.
 
-- `NixOS/nixpkgs` — `doc/` and `nixos/doc/`
-- `NixOS/nix.dev` — `source/`
-- `NixOS/nix` — `doc/`
+## Install
 
-Sparse checkout patterns exclude common images, archives, media, fonts, and binary artifacts to keep the local corpus focused on documentation text.
+Install it through Pi:
 
-## Commands
+```bash
+pi install npm:@firstpick/pi-extension-nixos-wiki-local
+```
+
+Restart Pi if the package does not appear in your current session.
+
+## How to use it
+
+Complete the local documentation setup described by the status command, then ask Pi a NixOS or Nix question normally. Pi searches the local official sources first.
 
 - `/nixoswiki-status` — show docs path, page count, repository revisions, and cache timestamp.
 - `/nixoswiki-local-setup` — clone/update the three official documentation sources.
 - `/nixoswiki-smoke-test` — run compact parser/search/extract/read checks against representative NixOS/Nix topics.
 
-Set `NIXOSWIKI_DOCS_PATH=/path/to/docs` to override the corpus path, useful for tests.
+## Technical details
 
-## Tools
-
-- `nixoswiki_search` — compact output by default, optional snippets, query expansions, and corpus-specific stopword/downweight tuning.
-- `nixoswiki_read`
-- `nixoswiki_sections` — supports `maxSections` and omitted-count metadata.
-- `nixoswiki_extract` — supports `maxSections`, truncation, and omitted-count metadata.
-- `nixoswiki_related`
-- `nixoswiki_smoke_test`
-
-## Skill references
-
-Markdown parsing uses frontmatter titles when present, ignores headings inside fenced code blocks, and strips common `{#anchor}` suffixes from headings/titles.
-
-The packaged `nixos-local` skill includes reference notes matching the ArchWiki-local style:
-
-- `references/troubleshooting-policy.md`
-- `references/safety-rules.md`
-- `references/query-expansions.md`
-- `references/source-map.md`
-- `references/non-nixos-host-policy.md`
-
-## Mock tests
-
-These tests use local fixture docs and do not require NixOS:
-
-```bash
-cd pi-extension-nixos-wiki-local
-bun tests/mocktest.ts
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-nixos-wiki-local/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

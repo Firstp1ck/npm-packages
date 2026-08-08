@@ -1,8 +1,27 @@
-# @firstpick/pi-prompts-release-docs
+# Prompts Release Docs for Pi
 
-Reusable prompt templates for release preparation, documentation updates, branch summaries, and user-facing announcements.
+Adds ready-made prompts for release notes, announcements, README updates, and wiki updates.
 
-## Included prompts
+## What you can do
+
+- Creates release notes and announcements.
+- Updates README and wiki content from real changes.
+- Summarizes branches and versions for publication.
+- Keeps generated release material in predictable project folders.
+
+## Install
+
+Install it through Pi:
+
+```bash
+pi install npm:@firstpick/pi-prompts-release-docs
+```
+
+Restart Pi if the package does not appear in your current session.
+
+## How to use it
+
+Choose the prompt for the document you need, such as `/announce-version` or `/readme-update`, and point Pi at the real changes or release information.
 
 - `/announce-branch` — create a short user-facing branch announcement.
 - `/announce-version` — create a short user-facing version announcement.
@@ -10,24 +29,8 @@ Reusable prompt templates for release preparation, documentation updates, branch
 - `/release-new` — generate release notes for a version.
 - `/ship` — prepare verification notes, release notes, commits, and risks.
 - `/summary` — summarize recent repository work.
-- `/wiki-update` — update wiki docs from branch changes.
+- `/update-wiki` — update wiki docs from branch changes.
 
-## Install
+## Technical details
 
-```bash
-pi install npm:@firstpick/pi-prompts-release-docs
-```
-
-For local testing from this repository root:
-
-```bash
-pi install ./pi-package-prompts-release-docs
-```
-
-## Configuration
-
-No required configuration. After installation, type `/` in Pi to autocomplete the prompt templates.
-
-## Dependencies
-
-No repository-local Pi extensions, tools, skills, or other prompt packages are required. This bundle only contributes prompt templates through `pi.prompts`.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-package-prompts-release-docs/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

@@ -2,11 +2,27 @@ import { aurReviewSafePath as parsedAurReviewSafePath, parseAurReviewPayload as 
 import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
 import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
-import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
-import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
+import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, subagentLaunchSlotSaveState, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
+import { pruneDismissedSubagentGateKeys, subagentGateIsTerminal, subagentGateKey, ungatedSubagentRuns, visibleSubagentGates } from "./subagent-gate-visibility.mjs";
 import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution, workflowStatusSnapshot } from "./workflow-status-stack.mjs";
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
+import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
+import { createTranscriptRenderer } from "./transcript-renderer.mjs";
+import { createStreamOutputController } from "./stream-output-controller.mjs";
+import { installMiddleButtonDragScroll } from "./middle-button-drag-scroll.mjs";
+import { PI_THEME_EXPORT_FIELDS, THEME_TOKEN_GROUPS, canonicalizeTheme, serializeTheme, themeColorToRgb, validateTheme } from "./theme-contract.mjs";
+import {
+  SAMPLING_PARAMETER_CATALOG,
+  buildSamplingParametersFromDraft,
+  createSamplingControlDraft,
+  samplingControlDraftEquals,
+  samplingParameterCapability,
+  samplingParameterSliderValue,
+  splitSamplingParameters,
+  summarizePreservedSamplingParameters,
+  validateSamplingControlDraft,
+} from "./sampling-parameter-controls.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -16,7 +32,6 @@ const elements = {
   webuiDevBadge: $("#webuiDevBadge"),
   tabBar: $("#tabBar"),
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
-  splitTabButton: $("#splitTabButton"),
   workspaceSaveButton: $("#workspaceSaveButton"),
   newTabMenu: $("#newTabMenu"),
   newTabButton: $("#newTabButton"),
@@ -59,6 +74,12 @@ const elements = {
   subagentTerminalCopyButton: $("#subagentTerminalCopyButton"),
   subagentTerminalRefreshButton: $("#subagentTerminalRefreshButton"),
   subagentTerminalCancelButton: $("#subagentTerminalCancelButton"),
+  subagentTerminalCardPi: $("#subagentTerminalCardPi"),
+  subagentTerminalCardSpeed: $("#subagentTerminalCardSpeed"),
+  subagentTerminalCardContext: $("#subagentTerminalCardContext"),
+  subagentTerminalCardModel: $("#subagentTerminalCardModel"),
+  subagentTerminalCardEffort: $("#subagentTerminalCardEffort"),
+  subagentTerminalCardTokens: $("#subagentTerminalCardTokens"),
   subagentTerminalInput: $("#subagentTerminalInput"),
   subagentCancelDialog: $("#subagentCancelDialog"),
   subagentCancelDialogSubtitle: $("#subagentCancelDialogSubtitle"),
@@ -83,7 +104,12 @@ const elements = {
   composerRow: $(".composer-row"),
   composerActionsButton: $("#composerActionsButton"),
   composerActionsPanel: $("#composerActionsPanel"),
+  composerActionGridGuide: $("#composerActionGridGuide"),
+  composerActionOrderStatus: $("#composerActionOrderStatus"),
   promptInput: $("#promptInput"),
+  mobileFailedSendRecovery: $("#mobileFailedSendRecovery"),
+  mobileFailedSendRetryButton: $("#mobileFailedSendRetryButton"),
+  mobileFailedSendDiscardButton: $("#mobileFailedSendDiscardButton"),
   followUpQueueTrigger: $("#followUpQueueTrigger"),
   followUpQueueTriggerCount: $("#followUpQueueTriggerCount"),
   followUpQueueOverlay: $("#followUpQueueOverlay"),
@@ -95,6 +121,9 @@ const elements = {
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
   featureCategoryTag: $("#featureCategoryTag"),
+  featureDecisionDialog: $("#featureDecisionDialog"),
+  featureDecisionDialogOutput: $("#featureDecisionDialogOutput"),
+  featureDecisionDialogCloseButton: $("#featureDecisionDialogCloseButton"),
   conversationModeChip: $("#conversationModeChip"),
   workflowModeChip: $("#workflowModeChip"),
   skillEditorDialog: $("#skillEditorDialog"),
@@ -149,6 +178,7 @@ const elements = {
   optionsNameButton: $("#optionsNameButton"),
   optionsCloneButton: $("#optionsCloneButton"),
   optionsSettingsButton: $("#optionsSettingsButton"),
+  optionsSummarySetupButton: $("#optionsSummarySetupButton"),
   optionsWorkflowSetupButton: $("#optionsWorkflowSetupButton"),
   optionsSafetyGuardSetupButton: $("#optionsSafetyGuardSetupButton"),
   optionsGitWorkflowSetupButton: $("#optionsGitWorkflowSetupButton"),
@@ -199,6 +229,26 @@ const elements = {
   themeSearchResults: $("#themeSearchResults"),
   themeSelect: $("#themeSelect"),
   themeSchemeToggle: $("#themeSchemeToggle"),
+  themeCustomizeButton: $("#themeCustomizeButton"),
+  themeCustomizerDialog: $("#themeCustomizerDialog"),
+  themeCustomizerName: $("#themeCustomizerName"),
+  themeCustomizerScope: $("#themeCustomizerScope"),
+  themeCustomizerProjectOption: $("#themeCustomizerProjectOption"),
+  themeCustomizerScopeHint: $("#themeCustomizerScopeHint"),
+  themeCustomizerSourceBadge: $("#themeCustomizerSourceBadge"),
+  themeCustomizerVisualFields: $("#themeCustomizerVisualFields"),
+  themeCustomizerThinkingMax: $("#themeCustomizerThinkingMax"),
+  themeCustomizerVars: $("#themeCustomizerVars"),
+  themeCustomizerExportFields: $("#themeCustomizerExportFields"),
+  themeCustomizerJson: $("#themeCustomizerJson"),
+  themeCustomizerPreview: $("#themeCustomizerPreview"),
+  themeCustomizerStatus: $("#themeCustomizerStatus"),
+  themeCustomizerOverwrite: $("#themeCustomizerOverwrite"),
+  themeCustomizerOverwriteMessage: $("#themeCustomizerOverwriteMessage"),
+  themeCustomizerOverwriteButton: $("#themeCustomizerOverwriteButton"),
+  themeCustomizerCancelButton: $("#themeCustomizerCancelButton"),
+  themeCustomizerResetButton: $("#themeCustomizerResetButton"),
+  themeCustomizerSaveButton: $("#themeCustomizerSaveButton"),
   backgroundInput: $("#backgroundInput"),
   backgroundChooseButton: $("#backgroundChooseButton"),
   backgroundClearButton: $("#backgroundClearButton"),
@@ -222,6 +272,17 @@ const elements = {
   agentDoneNotificationsToggle: $("#agentDoneNotificationsToggle"),
   agentDoneNotificationsStatus: $("#agentDoneNotificationsStatus"),
   optionalFeaturesBox: $("#optionalFeaturesBox"),
+  optionalFeatureMigrationSurface: $("#optionalFeatureMigrationSurface"),
+  optionalFeatureMigrationDialog: $("#optionalFeatureMigrationDialog"),
+  optionalFeatureMigrationDialogTitle: $("#optionalFeatureMigrationDialogTitle"),
+  optionalFeatureMigrationDialogMessage: $("#optionalFeatureMigrationDialogMessage"),
+  optionalFeatureMigrationDialogSummary: $("#optionalFeatureMigrationDialogSummary"),
+  optionalFeatureMigrationChooseDetails: $("#optionalFeatureMigrationChooseDetails"),
+  optionalFeatureMigrationChoices: $("#optionalFeatureMigrationChoices"),
+  optionalFeatureMigrationDialogError: $("#optionalFeatureMigrationDialogError"),
+  optionalFeatureMigrationCancelButton: $("#optionalFeatureMigrationCancelButton"),
+  optionalFeatureMigrationLaterButton: $("#optionalFeatureMigrationLaterButton"),
+  optionalFeatureMigrationConfirmButton: $("#optionalFeatureMigrationConfirmButton"),
   codexUsageBox: $("#codexUsageBox"),
   refreshCodexUsageButton: $("#refreshCodexUsageButton"),
   codexFastModeSelect: $("#codexFastModeSelect"),
@@ -266,6 +327,7 @@ const elements = {
   fileSelectionSendButton: $("#fileSelectionSendButton"),
   fileContextMenu: $("#fileContextMenu"),
   sidePanelContextMenu: $("#sidePanelContextMenu"),
+  gitFooterContextMenu: $("#gitFooterContextMenu"),
   sidePanelResizeHandle: $("#sidePanelResizeHandle"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
@@ -290,7 +352,16 @@ const elements = {
   issueWizardBotButton: $("#issueWizardBotButton"),
   issueWizardBotHint: $("#issueWizardBotHint"),
   stateDetails: $("#stateDetails"),
+  samplingParametersSupport: $("#samplingParametersSupport"),
+  samplingParametersControls: $("#samplingParametersControls"),
+  samplingParametersPreserved: $("#samplingParametersPreserved"),
+  applySamplingParametersButton: $("#applySamplingParametersButton"),
+  resetSamplingParametersButton: $("#resetSamplingParametersButton"),
+  reloadSamplingParametersButton: $("#reloadSamplingParametersButton"),
+  samplingParametersStatus: $("#samplingParametersStatus"),
   subagentsStatus: $("#subagentsStatus"),
+  subagentsAutoClearButton: $("#subagentsAutoClearButton"),
+  subagentsClearFinishedButton: $("#subagentsClearFinishedButton"),
   subagentsBox: $("#subagentsBox"),
   subagentCountBadge: $("#subagentCountBadge"),
   subagentOpenModeSelect: $("#subagentOpenModeSelect"),
@@ -336,6 +407,14 @@ const elements = {
   attachmentTextStatus: $("#attachmentTextStatus"),
   attachmentTextCancelButton: $("#attachmentTextCancelButton"),
   attachmentTextSaveButton: $("#attachmentTextSaveButton"),
+  sessionSummaryOverlay: $("#sessionSummaryOverlay"),
+  sessionSummaryOverlayTitle: $("#sessionSummaryOverlayTitle"),
+  sessionSummaryOverlayMeta: $("#sessionSummaryOverlayMeta"),
+  sessionSummaryOverlayStatus: $("#sessionSummaryOverlayStatus"),
+  sessionSummaryOverlayBody: $("#sessionSummaryOverlayBody"),
+  sessionSummaryOverlayCloseButton: $("#sessionSummaryOverlayCloseButton"),
+  sessionSummaryOverlayCopyButton: $("#sessionSummaryOverlayCopyButton"),
+  sessionSummaryOverlayRefreshButton: $("#sessionSummaryOverlayRefreshButton"),
   commandSearchInput: $("#commandSearchInput"),
   commandsBox: $("#commandsBox"),
   eventLog: $("#eventLog"),
@@ -351,6 +430,17 @@ const elements = {
   confirmationUndo: $("#confirmationUndo"),
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
+  gitPullErrorDialog: $("#gitPullErrorDialog"),
+  gitPullErrorDialogTitle: $("#gitPullErrorDialogTitle"),
+  gitPullErrorDialogDescription: $("#gitPullErrorDialogDescription"),
+  gitPullErrorOutput: $("#gitPullErrorOutput"),
+  gitPullErrorStatus: $("#gitPullErrorStatus"),
+  gitPullErrorRecovery: $("#gitPullErrorRecovery"),
+  gitPullErrorMergeButton: $("#gitPullErrorMergeButton"),
+  gitPullErrorRebaseButton: $("#gitPullErrorRebaseButton"),
+  gitPullErrorReviewButton: $("#gitPullErrorReviewButton"),
+  gitPullErrorCopyButton: $("#gitPullErrorCopyButton"),
+  gitPullErrorCloseButton: $("#gitPullErrorCloseButton"),
   workspaceLoadDialog: $("#workspaceLoadDialog"),
   workspaceLoadDialogCloseButton: $("#workspaceLoadDialogCloseButton"),
   workspaceLoadDialogStatus: $("#workspaceLoadDialogStatus"),
@@ -376,6 +466,16 @@ const elements = {
   piReleaseNotesBody: $("#piReleaseNotesBody"),
   piReleaseNotesGithubLink: $("#piReleaseNotesGithubLink"),
   piReleaseNotesCloseButton: $("#piReleaseNotesCloseButton"),
+  piComponentUpdateStatus: $("#piComponentUpdateStatus"),
+  piComponentUpdateButton: $("#piComponentUpdateButton"),
+  webuiPackageDialog: $("#webuiPackageDialog"),
+  webuiPackageTitle: $("#webuiPackageTitle"),
+  webuiPackageCurrentVersion: $("#webuiPackageCurrentVersion"),
+  webuiPackageLatestVersion: $("#webuiPackageLatestVersion"),
+  webuiPackageNpmButton: $("#webuiPackageNpmButton"),
+  webuiPackageCloseButton: $("#webuiPackageCloseButton"),
+  webuiComponentUpdateStatus: $("#webuiComponentUpdateStatus"),
+  webuiComponentUpdateButton: $("#webuiComponentUpdateButton"),
   dialog: $("#extensionDialog"),
   dialogTitle: $("#dialogTitle"),
   dialogMessage: $("#dialogMessage"),
@@ -437,6 +537,13 @@ const elements = {
   statsOverlayCloseButton: $("#statsOverlayCloseButton"),
 };
 
+// Transcript content keeps its own DOM ownership and selection policy. The
+// controller below continues to own data, scroll/follow, and visual rendering.
+const transcriptRenderer = createTranscriptRenderer({
+  chat: elements.chat,
+  contextKey: () => chatTextSelectionContextKey(),
+});
+
 const PI_WEBUI_NPM_URL = "https://www.npmjs.com/package/@firstpick/pi-package-webui";
 
 let currentState = null;
@@ -448,6 +555,7 @@ let tabAttachments = new Map();
 let activeTextAttachmentEditor = null;
 let activeSkillEditor = null;
 let fileTreeState = { root: "", entriesByPath: new Map(), expanded: new Set(), loading: new Set(), selectedPath: "", requestSerial: 0, searchQuery: "", searchEntries: [], searchLoading: false, searchTruncated: false, searchTotal: 0, gitStatusRoot: "", gitStatusByPath: new Map() };
+let fileTreeLastRenderSignature = "";
 let activeFileViewer = null;
 let fileViewersByTab = new Map();
 let fileViewerOpenRequestSerial = 0;
@@ -461,6 +569,16 @@ let fileViewerSearchTimer = null;
 let fileViewerSearchHighlightElement = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
+let gitFooterContextMenuState = null;
+let sidePanelSectionPointerDrag = null;
+let sidePanelSectionLastDragOverKey = "";
+let sidePanelSectionSuppressClickUntil = 0;
+let composerActionPointerDrag = null;
+let composerActionLastDragOverKey = "";
+let composerActionSuppressClickUntil = 0;
+let composerActionSlotLayout = new Map();
+let composerActionLayoutColumns = 0;
+let composerActionLayoutRestoreFrame = null;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let sidePanelResizeState = null;
@@ -477,8 +595,6 @@ let streamThinkingRawText = "";
 let streamDerivedTextCache = { rawText: null, assistantText: "", thinkingFormat: null, finalText: "" };
 let streamBubbleVisibleSince = 0;
 let streamBubbleHideTimer = null;
-let streamTextRenderTimer = null;
-let streamTextRenderFrame = null;
 let streamToolCallSeen = false;
 let streamToolCallBubble = null;
 let streamToolCallText = null;
@@ -502,6 +618,97 @@ let outputModeAcknowledged = false;
 let eventSourceOutputModeRequest = "auto";
 let eventSourceOutputModeFallbackAttempted = false;
 const compactLiveScheduler = createSustainedFlushScheduler({ flush: () => flushCompactLiveOutput() });
+const STREAM_ISOLATION_DEBUG_LIMIT = 4096;
+const STREAM_ISOLATION_DEBUG_ENABLED = globalThis.__PI_STREAM_ISOLATION_DEBUG__ === true
+  || new URLSearchParams(window.location.search).get("streamIsolationDebug") === "1";
+const streamIsolationDebugLedger = STREAM_ISOLATION_DEBUG_ENABLED ? {
+  version: 1,
+  counters: {
+    receivedEvents: 0,
+    appliedEvents: 0,
+    sinkCalls: 0,
+    batches: 0,
+    barriers: 0,
+    overflows: 0,
+    unknownEvents: 0,
+    staleEvents: 0,
+    highWaterPendingCount: 0,
+    highWaterPendingBytes: 0,
+  },
+  receivedIndexes: [],
+  appliedIndexes: [],
+  records: [],
+  unknownEvidence: [],
+} : null;
+const UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT = 32;
+const UNKNOWN_TRANSCRIPT_EVIDENCE_TEXT_LIMIT = 512;
+const unknownTranscriptEvidence = [];
+const unknownTranscriptOwnersPendingReconcile = new Set();
+
+function appendBoundedStreamDiagnostic(list, value, limit = STREAM_ISOLATION_DEBUG_LIMIT) {
+  list.push(value);
+  if (list.length > limit) list.splice(0, list.length - limit);
+}
+
+function recordStreamIsolationDiagnostic(record) {
+  const ledger = streamIsolationDebugLedger;
+  if (!ledger || !record) return;
+  const counters = ledger.counters;
+  if (record.type === "receipt") {
+    counters.receivedEvents += 1;
+    if (Number.isSafeInteger(record.index)) appendBoundedStreamDiagnostic(ledger.receivedIndexes, record.index);
+  } else if (record.type === "apply") {
+    if (record.applied) {
+      counters.appliedEvents += Number(record.sourceCount) || 0;
+      counters.sinkCalls += 1;
+      for (const index of record.sourceIndexes || []) {
+        if (Number.isSafeInteger(index)) appendBoundedStreamDiagnostic(ledger.appliedIndexes, index);
+      }
+    }
+    if (record.kind === "unknown-message-update") counters.unknownEvents += Number(record.sourceCount) || 1;
+  } else if (record.type === "batch") {
+    counters.batches += 1;
+  } else if (record.type === "barrier") {
+    counters.barriers += 1;
+  } else if (record.type === "overflow") {
+    counters.overflows += 1;
+  } else if (record.type === "stale") {
+    counters.staleEvents += 1;
+  }
+  if (record.type === "queued") {
+    counters.highWaterPendingCount = Math.max(counters.highWaterPendingCount, Number(record.pendingCount) || 0);
+    counters.highWaterPendingBytes = Math.max(counters.highWaterPendingBytes, Number(record.pendingBytes) || 0);
+  }
+  appendBoundedStreamDiagnostic(ledger.records, {
+    ...record,
+    sourceIndexes: Array.isArray(record.sourceIndexes) ? [...record.sourceIndexes] : undefined,
+  });
+}
+
+if (streamIsolationDebugLedger) {
+  Object.defineProperty(globalThis, "__piStreamIsolationDebug", {
+    configurable: true,
+    enumerable: false,
+    value: streamIsolationDebugLedger,
+  });
+}
+
+const streamOutputController = createStreamOutputController({
+  isOwnerCurrent: (owner) => owner === transcriptStreamOwner(),
+  applyTextUpdate: (event) => handleMessageUpdate(event),
+  applyThinkingUpdate: (event) => handleMessageUpdate(event),
+  applyToolCallUpdate: (event) => handleMessageUpdate(event),
+  applyToolExecutionUpdate: (event) => {
+    if (!compactOutputActive()) applyTranscriptToolExecutionUpdate(event);
+  },
+  applyStreamError: (event) => handleMessageUpdate(event),
+  applyFollowScroll: () => {
+    if (compactOutputActive()) flushCompactLiveOutput();
+    scheduleChatFollowScroll();
+  },
+  onUnknownStreamEvent: preserveUnknownTranscriptEvidence,
+  onDiagnostic: streamIsolationDebugLedger ? recordStreamIsolationDiagnostic : undefined,
+});
 let assistantErrorSurfacedThisRun = false;
 let runIndicatorBubble = null;
 let runIndicatorText = null;
@@ -511,7 +718,31 @@ let runIndicatorRenderFrame = null;
 let runIndicatorRenderScroll = false;
 let runIndicatorGraceCheckTimer = null;
 let runIndicatorLastStateCheckAt = 0;
+// Lifecycle ownership is deliberately separate from the transcript-owned
+// activity label: the transcript ticker only repaints its own elapsed-time
+// node, while this watchdog owns the low-frequency canonical state recheck.
+let lifecycleStateWatchdogTimer = null;
+let lifecycleComposerSignature = null;
+// Bounded dedupe of semantic tool-boundary records (skill tags, event log),
+// partitioned by agent-run epoch so provider tool IDs may be reused next turn.
+const TOOL_BOUNDARY_RECORD_LIMIT = 400;
+const recordedToolBoundaryKeys = new Set();
+const toolBoundaryRunEpochByTab = new Map();
+// Dirty flags owned by the coalesced semantic reconciler. Requests remain
+// partitioned by originating tab generation; raw stream deltas never reach it.
+const SEMANTIC_RECONCILE_FLAGS = Object.freeze([
+  "messages",
+  "state",
+  "footer",
+  "footerData",
+  "feedback",
+  "usage",
+  "workflow",
+]);
+const semanticReconcilePending = new Map();
+let semanticReconcileFrame = null;
 let runIndicatorLocallyActive = false;
+let runIndicatorRemovalDeferred = false;
 let runIndicatorStartedAt = null;
 let runIndicatorActivity = "Waiting for output or action…";
 let refreshMessagesTimer = null;
@@ -527,6 +758,7 @@ const supervisorGapWarnings = new Set();
 const supervisorContinuityRefreshes = new Map();
 const supervisorEnvelopeWarnings = new Set();
 let activeDialog = null;
+let activeDialogCancel = null;
 let activeConfirmationResolve = null;
 let activeWorkspaceReplacementResolve = null;
 let workspaceLoadPickerFocusReturn = null;
@@ -554,6 +786,10 @@ let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
 let nativeSettingsDirty = false;
+let sessionSummaryOverlayTabId = null;
+let sessionSummaryOverlayFocusReturn = null;
+let sessionSummaryOverlayFocusReturnKey = "";
+const sessionSummaryByTab = new Map();
 let pathPickerState = null;
 let firstTerminalCwdPromptShown = false;
 let pathFastPicks = [];
@@ -582,9 +818,23 @@ let appRunnerSearchPathDraft = "";
 let appRunnerSearchPathFeedback = { type: "", message: "" };
 let appRunnerDirectoryBrowserState = { open: false, loading: false, path: "", data: null, error: "" };
 let optionsMenuOpen = false;
+const OPTIONS_SUBMENU_GROUP_SELECTOR = "[data-options-submenu]";
+const OPTIONS_SUBMENU_TRIGGER_SELECTOR = "[data-options-submenu-trigger]";
+const OPTIONS_SUBMENU_PANEL_SELECTOR = "[data-options-submenu-panel]";
+const OPTIONS_SUBMENU_BACK_SELECTOR = "[data-options-submenu-back]";
+const OPTIONS_SUBMENU_LEFT_CLASS = "opens-left";
+const OPTIONS_SUBMENU_DRILL_IN_QUERY = "(hover: none), (pointer: coarse)";
+const OPTIONS_MENU_LABEL_SELECTOR = '.composer-options-menu-item > span:not([aria-hidden="true"]):not(.composer-options-submenu-chevron)';
+const OPTIONS_MENU_LABEL_FONT_SIZE_PROPERTY = "--options-menu-label-font-size";
+const OPTIONS_MENU_LABEL_MIN_FONT_SIZE_PX = 12;
+let openOptionsSubmenuGroup = null;
+let optionsSubmenuObserver = null;
+let optionsSubmenuSyncing = false;
+let optionsMenuLabelFitFrame = 0;
 let availableCommands = [];
 let rawAvailableCommands = [];
 const commandCatalogsByTab = new Map();
+const commandCatalogRefreshesByTab = new Map();
 let commandSuggestions = [];
 let pathSuggestions = [];
 let bangSuggestions = [];
@@ -623,14 +873,18 @@ let codexUsageError = null;
 let codexUsageLoading = false;
 let refreshCodexUsageTimer = null;
 let codexUsageRenderTimer = null;
+let codexUsageRenderSignature = "";
 let latestClaudeUsage = null;
 let claudeUsageError = null;
 let claudeUsageLoading = false;
 let refreshClaudeUsageTimer = null;
 let claudeUsageRenderTimer = null;
+let claudeUsageRenderSignature = "";
 let latestSubagents = null;
 let subagentsError = null;
 let subagentsLoading = false;
+let subagentsClearingFinished = false;
+let subagentAutoClearEnabled = false;
 let refreshSubagentsTimer = null;
 const dismissedSubagentGateKeys = new Set();
 let subagentOverlaySelection = null;
@@ -657,12 +911,24 @@ let subagentLaunchSlotRequestSerial = 0;
 let subagentLaunchSlotReloadRequired = false;
 const subagentLaunchSlotReloadTabs = new Set();
 let subagentLaunchSlotFocusTarget = null;
+let samplingParametersState = null;
+let samplingParametersStateTabId = null;
+const samplingParametersDrafts = new Map();
+let samplingParametersLoading = false;
+let samplingParametersBusy = false;
+let samplingParametersError = "";
+let samplingParametersNotice = "";
+let samplingParametersFeedbackTabId = null;
+let samplingParametersRequestSerial = 0;
 let backendOffline = false;
 let serverRestartInProgress = false;
 let updateRequestInProgress = false;
 let latestUpdateStatus = null;
+let serverBootIdentity = "";
 let updateStatusRefreshTimer = null;
 let updateNotificationHideTimer = null;
+let componentUpdatePollTimer = null;
+let componentUpdateStartInProgress = false;
 let backendOfflineNoticeShown = false;
 let latestMessages = [];
 let latestMessagesSessionKey = "";
@@ -710,12 +976,10 @@ let chatFollowFrame = null;
 let chatFollowSettleTimer = null;
 let chatFollowNeedsSettle = false;
 let liveWidgetRenderFrame = null;
-let liveTodoProgressSyncFrame = null;
-let liveTodoProgressPendingText = "";
-let liveTodoProgressPendingTabId = null;
 let lastChatProgrammaticScrollAt = 0;
 let chatUserScrollIntentUntil = 0;
 let chatUserScrollAwayIntentUntil = 0;
+let chatPausedScrollRestoreUntil = 0;
 let chatLastTouchClientY = null;
 let mobileFooterExpanded = false;
 let footerModelPickerOpen = false;
@@ -750,6 +1014,7 @@ let commandPaletteItems = [];
 let activeEditRetry = null;
 let activePointerActivation = null;
 let pointerActivationTimeout = null;
+let deferredUiRenderSafetyTimeout = null;
 let deferredChatFollowScroll = false;
 const deferredUiRenderCallbacks = new Map();
 let abortLongPressTimer = null;
@@ -767,15 +1032,28 @@ const SIDE_PANEL_STORAGE_KEY = "pi-webui-side-panel-collapsed";
 const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
+const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
+const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
+const COMPOSER_ACTION_ORDER_STORAGE_KEY = "pi-webui-composer-action-order-v1";
+const COMPOSER_ACTION_LAYOUT_STORAGE_KEY = "pi-webui-composer-action-layout-v2";
+const COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const TAB_STORAGE_KEY = "pi-webui-active-tab";
 const PATH_FAST_PICKS_STORAGE_KEY = "pi-webui-path-fast-picks";
 const AGENT_DONE_NOTIFICATIONS_STORAGE_KEY = "pi-webui-agent-done-notifications";
 const UPDATE_NOTIFICATION_DISMISS_STORAGE_KEY = "pi-webui-update-notification-dismissed";
+const OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY = "pi-webui-optional-feature-migration-dismissed";
+const MOBILE_CONTINUITY_STORAGE_KEY = "pi-webui-mobile-continuity-v1";
+const MOBILE_INSTALL_EDUCATION_STORAGE_KEY = "pi-webui-mobile-install-education-v1";
+const MOBILE_CONTINUITY_MAX_SESSIONS = 24;
+const MOBILE_CONTINUITY_PERSIST_DEBOUNCE_MS = 400;
+const MOBILE_FAILED_SEND_RECOVERY_TTL_MS = 10 * 60 * 1000;
+const MOBILE_DIAGNOSTIC_EVENT_LIMIT = 40;
 const THINKING_VISIBILITY_STORAGE_KEY = "pi-webui-thinking-visible";
 const BUSY_PROMPT_BEHAVIOR_STORAGE_KEY = "pi-webui-busy-prompt-behavior";
 const SKILL_USAGE_STORAGE_KEY = "pi-webui-skill-usage-v1";
 const TERMINAL_TABS_LAYOUT_STORAGE_KEY = "pi-webui-terminal-tabs-layout";
 const SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode";
+const SUBAGENT_AUTO_CLEAR_STORAGE_KEY = "pi-webui-subagent-auto-clear";
 const TERMINAL_CUSTOM_GROUPS_STORAGE_KEY = "pi-webui-terminal-custom-groups-v1";
 const TERMINAL_TAB_DRAG_MIME = "application/x-pi-terminal-tab-id";
 const FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY = "pi-webui-footer-scoped-model-order-v1";
@@ -873,7 +1151,10 @@ const WORKFLOW_INSPECTOR_PAYLOAD_PREFIX = "WORKFLOW_RPC_PAYLOAD ";
 const WORKFLOW_INSPECTOR_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.inspector";
 const WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1;
 const WORKFLOW_MODE_STATUS_KEY = "workflow-mode";
+const FEATURE_DECISION_OUTPUT_STATUS_KEY = "feature-decision-output";
 const FEATURE_CATEGORY_STATUS_KEY = "feature-category";
+const FEATURE_DECISION_PAYLOAD_MAX_CHARS = 4096;
+const FEATURE_DECISION_REASON_MAX_CHARS = 500;
 const WORKFLOW_MODE_RPC_WIDGET_KEY = "workflow-mode:rpc";
 const WORKFLOW_MODE_RPC_PAYLOAD_PREFIX = "WORKFLOW_MODE_RPC_PAYLOAD ";
 const WORKFLOW_MODE_RPC_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.mode";
@@ -901,6 +1182,9 @@ const FILE_TREE_ROOT_PATH = "";
 const FILE_TREE_DRAG_MIME = "application/x-pi-webui-file-path";
 const POINTER_ACTIVATION_SELECTOR = "button, a[href], input, select, textarea, summary, [role='button'], [tabindex]:not([tabindex='-1'])";
 const POINTER_ACTIVATION_RENDER_DEFER_MAX_MS = 1200;
+const INTERACTIVE_SURFACE_RENDER_DEFER_MAX_MS = 1200;
+const SCOPED_SCROLL_CONTINUITY_LIMIT = 96;
+const SCOPED_SCROLL_USER_INTENT_MS = 350;
 const PROMPT_HISTORY_LIMIT_PER_TAB = 50;
 const ATTACHMENT_MAX_FILES = 12;
 const ATTACHMENT_MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -923,6 +1207,9 @@ const THEME_LIGHT_DEFAULT = "catppuccin-latte";
 const THEME_DARK_DEFAULT = "catppuccin-mocha";
 const THEME_SCHEME_MODES = new Set(["light", "dark", "auto"]);
 let themeSchemeMode = "light"; // "light" | "dark" | "auto"; finalized in initializeThemes
+let themeCatalogScopes = { global: { available: true }, project: { available: false, trusted: false } };
+let themeCustomizerGeneration = 0;
+let themeCustomizerState = null;
 const TERMINAL_TABS_LAYOUTS = new Set(["top", "left"]);
 const TERMINAL_TABS_LAYOUT_LABELS = { top: "Top bar", left: "Left sidebar" };
 const SUBAGENT_OPEN_MODES = new Set(["overlay", "tab"]);
@@ -947,6 +1234,7 @@ const SUBAGENTS_IDLE_REFRESH_MS = 4000;
 const SUBAGENTS_HIDDEN_REFRESH_MS = 10_000;
 const SUBAGENT_OVERLAY_REFRESH_MS = 1000;
 const UPDATE_STATUS_REFRESH_MS = 6 * 60 * 60 * 1000;
+const COMPONENT_UPDATE_POLL_MS = 1000;
 const UPDATE_STATUS_INITIAL_DELAY_MS = 1800;
 const RUN_INDICATOR_TICK_MS = 1000;
 const RUN_INDICATOR_START_GRACE_MS = 2500;
@@ -956,9 +1244,7 @@ const ABORT_LONG_PRESS_TICK_MS = 100;
 const ABORT_LONG_PRESS_RELEASE_GRACE_MS = 350;
 const EMPTY_PROMPT_ESCAPE_AFTER_ABORT_GRACE_MS = 1000;
 const STREAM_OUTPUT_HIDE_DELAY_MS = 300;
-const STREAM_OUTPUT_TOOLCALL_GUARD_MS = 220;
 const STREAM_OUTPUT_MIN_VISIBLE_MS = 900;
-const TOOL_LIVE_UPDATE_THROTTLE_MS = 80;
 const UNEXPOSED_THINKING_TEXT = "No thinking content was exposed by the provider.";
 const THINKING_FORMAT_OPEN_TAG_REGEX = /^<think\b[^>]*>/i;
 const THINKING_FORMAT_CLOSE_TAG_REGEX = /<\/think\s*>/i;
@@ -980,8 +1266,1112 @@ const colorSchemeMedia = window.matchMedia?.("(prefers-color-scheme: dark)") || 
 const initialUrlParams = new URLSearchParams(window.location.search);
 const embeddedSplitMode = initialUrlParams.get("embed") === "split";
 document.body.classList.toggle("embedded-split", embeddedSplitMode);
+
+function readMobileShellPreference() {
+  try {
+    return localStorage.getItem(MOBILE_SHELL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function mobileShellViewport() {
+  return {
+    width: window.innerWidth || document.documentElement.clientWidth || 0,
+    height: window.innerHeight || document.documentElement.clientHeight || 0,
+    coarsePointer: window.matchMedia?.("(pointer: coarse)")?.matches === true,
+    hover: window.matchMedia?.("(hover: hover)")?.matches === true,
+  };
+}
+
+function readTabletShellPreference() {
+  try {
+    return localStorage.getItem(TABLET_SHELL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+let mobileShellState = createMobileShellState({
+  viewport: mobileShellViewport(),
+  featureMode: resolveMobileShellFeatureMode({ urlValue: initialUrlParams.get("mobileShell"), storedValue: readMobileShellPreference() }),
+  tabletFeatureMode: resolveTabletShellFeatureMode({ urlValue: initialUrlParams.get("tabletShell"), storedValue: readTabletShellPreference() }),
+});
+
+function isMobileShellV2Active() {
+  return isMobileShellV2Enabled(mobileShellState.featureMode, mobileShellState.viewportMode, mobileShellState.tabletFeatureMode);
+}
+
+function isTabletShellV2Active() {
+  return isMobileShellV2Active() && mobileShellState.viewportMode === "tablet";
+}
+
+function syncMobileShellRoot() {
+  const root = document.documentElement;
+  if (mobileShellState.featureMode === "legacy") root.removeAttribute("data-mobile-shell");
+  else root.dataset.mobileShell = "v2";
+  if (mobileShellState.tabletFeatureMode === "legacy") root.removeAttribute("data-tablet-shell");
+  else root.dataset.tabletShell = "v2";
+  root.dataset.mobileShellRoute = mobileShellState.route;
+}
+
+let mobilePhoneExperienceInstalled = false;
+let mobilePresentation = "essential";
+let mobileProjectTopic = "files";
+let mobileCanonicalMount = null;
+let mobileWidgetAreaMount = null;
+let mobileLifecycleSignature = "";
+let mobileLifecycleInitialized = false;
+let mobileConnectionState = navigator.onLine === false ? "offline" : "online";
+let mobileConnectionLabel = mobileConnectionState === "offline" ? "Paused/offline" : "Online";
+let mobileConnectionLabelResetTimer = null;
+let mobileContinuityPersistTimer = null;
+let mobileSurfaceFocusReturn = null;
+let mobileSurfaceRenderFocus = null;
+let mobileSurfaceUserFocusIntentUntil = 0;
+let pendingMobileNavigationTarget = null;
+let mobileFailedSend = null;
+let mobileInstallPrompt = null;
+let mobileInstallEducation = { visits: 0, dismissed: false };
+const mobileDiagnosticEvents = [];
+const mobileDismissedActivityKeys = new Set();
+
+function applyMobileShellEvent(event) {
+  mobileShellState = reduceMobileShellState(mobileShellState, event);
+  syncMobileShellRoot();
+  if (mobilePhoneExperienceInstalled) renderMobilePhoneExperience();
+  return mobileShellState;
+}
+
+function mobileShellElement(id) {
+  return document.getElementById(id);
+}
+
+function readMobilePresentation() {
+  try {
+    const value = localStorage.getItem("pi-webui-mobile-presentation-v1");
+    return value === "detailed" ? "detailed" : "essential";
+  } catch {
+    return "essential";
+  }
+}
+
+function setMobilePresentation(value) {
+  mobilePresentation = value === "detailed" ? "detailed" : "essential";
+  document.documentElement.dataset.mobilePresentation = mobilePresentation;
+  try { localStorage.setItem("pi-webui-mobile-presentation-v1", mobilePresentation); } catch {}
+  renderMobilePhoneExperience();
+}
+
+function readMobileContinuityState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MOBILE_CONTINUITY_STORAGE_KEY) || "null");
+    return parsed && parsed.v === 1 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function mobileAttachmentMetadata(attachment) {
+  return {
+    name: String(attachment?.name || "attachment").slice(0, 180),
+    mimeType: String(attachment?.mimeType || "application/octet-stream").slice(0, 120),
+    size: Math.max(0, Number(attachment?.size) || 0),
+    kind: ["image", "video", "audio", "doc", "file"].includes(attachment?.kind) ? attachment.kind : "file",
+  };
+}
+
+function persistMobileContinuityState() {
+  clearTimeout(mobileContinuityPersistTimer);
+  mobileContinuityPersistTimer = null;
+  if (!isMobileShellV2Active()) return;
+  if (activeTabId) tabDrafts.set(activeTabId, elements.promptInput?.value || "");
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  const orderedIds = [activeTabId, ...tabs.map((tab) => tab.id)].filter((id, index, values) => id && liveIds.has(id) && values.indexOf(id) === index).slice(0, MOBILE_CONTINUITY_MAX_SESSIONS);
+  const drafts = {};
+  const attachments = {};
+  for (const tabId of orderedIds) {
+    const draft = String(tabDrafts.get(tabId) || "");
+    if (draft) drafts[tabId] = draft.slice(0, 200_000);
+    const metadata = attachmentsForTab(tabId).map(mobileAttachmentMetadata).slice(0, ATTACHMENT_MAX_FILES);
+    if (metadata.length) attachments[tabId] = metadata;
+  }
+  const failedSend = mobileFailedSend && (!Array.isArray(mobileFailedSend.body?.images) || mobileFailedSend.body.images.length === 0) ? {
+    kind: mobileFailedSend.kind,
+    tabId: mobileFailedSend.tabId,
+    inputMessage: String(mobileFailedSend.inputMessage || "").slice(0, 200_000),
+    body: { ...mobileFailedSend.body },
+  } : null;
+  try {
+    localStorage.setItem(MOBILE_CONTINUITY_STORAGE_KEY, JSON.stringify({ v: 1, route: mobileShellState.route, drafts, attachments, failedSend, savedAt: Date.now() }));
+  } catch (error) {
+    recordMobileDiagnostic("continuity storage unavailable", error?.message || String(error));
+  }
+}
+
+function scheduleMobileContinuityPersist() {
+  clearTimeout(mobileContinuityPersistTimer);
+  mobileContinuityPersistTimer = setTimeout(persistMobileContinuityState, MOBILE_CONTINUITY_PERSIST_DEBOUNCE_MS);
+}
+
+function restoreMobileContinuityState() {
+  const stored = readMobileContinuityState();
+  if (!stored) return;
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  for (const [tabId, draft] of Object.entries(stored.drafts || {})) {
+    if (liveIds.has(tabId) && !tabDrafts.has(tabId) && typeof draft === "string") tabDrafts.set(tabId, draft);
+  }
+  for (const [tabId, metadata] of Object.entries(stored.attachments || {})) {
+    if (!liveIds.has(tabId) || tabAttachments.has(tabId) || !Array.isArray(metadata)) continue;
+    const restored = metadata.slice(0, ATTACHMENT_MAX_FILES).map((item, index) => ({
+      id: `restored-${index}-${Date.now()}`,
+      ...mobileAttachmentMetadata(item),
+      source: "restored metadata",
+      requiresReselect: true,
+      file: null,
+    }));
+    if (restored.length) tabAttachments.set(tabId, restored);
+  }
+  if (!initialUrlParams.has("mobileRoute") && !pendingMobileNavigationTarget && ["chat", "sessions", "activity", "project"].includes(stored.route)) {
+    mobileShellState = reduceMobileShellState(mobileShellState, { type: "route", route: stored.route, replace: true });
+  }
+  const failed = stored.failedSend;
+  const recoveryAgeMs = Date.now() - Number(stored.savedAt || 0);
+  if (failed && recoveryAgeMs >= 0 && recoveryAgeMs <= MOBILE_FAILED_SEND_RECOVERY_TTL_MS && liveIds.has(failed.tabId) && failed.kind === "prompt" && failed.body && typeof failed.body === "object" && (!Array.isArray(failed.body.images) || failed.body.images.length === 0)) {
+    mobileFailedSend = { kind: failed.kind, tabId: failed.tabId, inputMessage: String(failed.inputMessage || ""), body: failed.body, retrying: false };
+  }
+}
+
+function scrubMobileDiagnosticDetail(detail = "") {
+  const text = String(detail || "").slice(0, 240);
+  if (!text) return "";
+  if (/(?:https?:\/\/|file:\/\/|[A-Za-z]:[\\/]|(?:^|\s)[/~.]?[^\s]*[\\/][^\s]*|token|password|credential|authorization)/i.test(text)) return "[redacted potentially sensitive detail]";
+  return text;
+}
+
+function recordMobileDiagnostic(event, detail = "") {
+  mobileDiagnosticEvents.push({ at: new Date().toISOString(), event: String(event || "event").slice(0, 120), detail: scrubMobileDiagnosticDetail(detail) });
+  if (mobileDiagnosticEvents.length > MOBILE_DIAGNOSTIC_EVENT_LIMIT) mobileDiagnosticEvents.splice(0, mobileDiagnosticEvents.length - MOBILE_DIAGNOSTIC_EVENT_LIMIT);
+}
+
+function mobileDiagnosticsText() {
+  const permission = browserNotificationPermission();
+  const lines = [
+    "Pi Web UI local mobile diagnostics v1",
+    `captured=${new Date().toISOString()}`,
+    `viewport=${mobileShellState.viewportMode}/${mobileShellState.posture}`,
+    `route=${mobileShellState.route}`,
+    `connection=${mobileConnectionState}`,
+    `notification=${permission}`,
+    `standalone=${isStandalonePwaWindow()}`,
+    `serviceWorker=${navigator.serviceWorker?.controller ? "controlled" : "not-controlled"}`,
+    `failedSend=${mobileFailedSend ? "awaiting-manual-action" : "none"}`,
+    "events:",
+    ...mobileDiagnosticEvents.map((item) => `${item.at} ${item.event}${item.detail ? ` (${item.detail})` : ""}`),
+  ];
+  return lines.join("\n");
+}
+
+function readMobileInstallEducation() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MOBILE_INSTALL_EDUCATION_STORAGE_KEY) || "null");
+    return parsed && typeof parsed === "object" ? { visits: Math.max(0, Number(parsed.visits) || 0), dismissed: parsed.dismissed === true } : { visits: 0, dismissed: false };
+  } catch {
+    return { visits: 0, dismissed: false };
+  }
+}
+
+function persistMobileInstallEducation() {
+  try { localStorage.setItem(MOBILE_INSTALL_EDUCATION_STORAGE_KEY, JSON.stringify(mobileInstallEducation)); } catch {}
+}
+
+function renderMobileFailedSendRecovery() {
+  if (!elements.mobileFailedSendRecovery) return;
+  const visible = isMobileShellV2Active() && !!mobileFailedSend;
+  elements.mobileFailedSendRecovery.hidden = !visible;
+  if (elements.mobileFailedSendRetryButton) elements.mobileFailedSendRetryButton.disabled = mobileFailedSend?.retrying === true;
+  if (elements.mobileFailedSendDiscardButton) elements.mobileFailedSendDiscardButton.disabled = mobileFailedSend?.retrying === true;
+}
+
+function mobileCanonicalUnmount() {
+  if (!mobileCanonicalMount) return;
+  for (const record of mobileCanonicalMount.records) {
+    record.content.hidden = record.contentHidden;
+    record.section.hidden = record.sectionHidden;
+    record.section.className = record.sectionClassName;
+    record.button?.setAttribute("aria-expanded", record.ariaExpanded);
+    if (record.nextSibling?.parentNode === record.parent) record.parent.insertBefore(record.content, record.nextSibling);
+    else record.parent.append(record.content);
+  }
+  mobileCanonicalMount = null;
+}
+
+function mobileWidgetAreaUnmount() {
+  if (!mobileWidgetAreaMount) return;
+  const { node, parent, nextSibling } = mobileWidgetAreaMount;
+  if (nextSibling?.parentNode === parent) parent.insertBefore(node, nextSibling);
+  else parent.append(node);
+  mobileWidgetAreaMount = null;
+}
+
+function mobileWidgetAreaMountContent(host, prefix) {
+  const node = elements.widgetArea;
+  if (!host || !node) return;
+  if (!mobileWidgetAreaMount) mobileWidgetAreaMount = { node, parent: node.parentNode, nextSibling: node.nextSibling };
+  host.replaceChildren(prefix, node);
+}
+
+function mobileCanonicalMountContent(host, contentIds, key) {
+  if (!host) return;
+  if (mobileCanonicalMount?.host === host && mobileCanonicalMount.key === key) return;
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  const records = [];
+  for (const id of contentIds) {
+    const content = mobileShellElement(id);
+    const section = content?.closest?.("[data-side-panel-section]");
+    if (!content || !section || !content.parentNode) continue;
+    const button = section.querySelector("[data-side-panel-section-toggle]");
+    records.push({
+      content,
+      parent: content.parentNode,
+      nextSibling: content.nextSibling,
+      contentHidden: content.hidden,
+      section,
+      sectionHidden: section.hidden,
+      sectionClassName: section.className,
+      button,
+      ariaExpanded: button?.getAttribute("aria-expanded") || "false",
+    });
+    section.hidden = false;
+    section.classList.remove("collapsed");
+    content.hidden = false;
+    button?.setAttribute("aria-expanded", "true");
+    host.append(content);
+  }
+  mobileCanonicalMount = { host, key, records };
+}
+
+function mobileButton(label, className = "", onClick = null, { continuityKey = "" } = {}) {
+  const button = make("button", className, label);
+  button.type = "button";
+  if (continuityKey) button.dataset.mobileContinuityKey = continuityKey;
+  if (onClick) button.addEventListener("click", onClick);
+  return button;
+}
+
+function mobileSetBadge(id, count, label) {
+  const badge = mobileShellElement(id);
+  const safeCount = Math.max(0, Number(count) || 0);
+  if (badge) {
+    badge.hidden = safeCount === 0;
+    badge.textContent = safeCount ? String(safeCount) : "";
+    badge.removeAttribute("aria-label");
+  }
+  return safeCount ? label(safeCount) : "";
+}
+
+function mobileSetText(node, text) {
+  const value = String(text || "");
+  if (node && node.textContent !== value) node.textContent = value;
+}
+
+function mobileTabActivityState(tab) {
+  const indicator = tabIndicator(tab);
+  const activity = activityForTab(tab);
+  if (indicator.state === "blocked") return "blocked";
+  if (activity.status === "failed" || tab?.failed === true) return "failed";
+  if (indicator.state === "working" || tabAppRunnerRunningRun(tab) || workflowRunningCountForTab(tab?.id)) return "running";
+  if (indicator.state === "done" || activity.completionSerial > 0) return "completed";
+  return "idle";
+}
+
+function mobileTabCwdLabel(tab) {
+  const cwd = String(tab?.cwd || "").replace(/\\\\/g, "/").replace(/\/+$/, "");
+  return cwd.split("/").filter(Boolean).pop() || "No folder";
+}
+
+function mobileSwitchToTab(tabId, { route = "chat", focus = false } = {}) {
+  if (!tabId) return;
+  Promise.resolve(switchTab(tabId)).then(() => {
+    mobileNavigate(route);
+    if (focus && route === "chat") focusPromptInput({ defer: true });
+  }).catch((error) => addEvent(error.message || String(error), "error"));
+}
+
+function mobileShellHistoryState() {
+  const { route, surface, surfacePage, routeHistory } = mobileShellState;
+  return { route, surface, surfacePage, routeHistory };
+}
+
+function mobileNavigate(route, { replace = false, focus = true } = {}) {
+  if (!isMobileShellV2Active()) return;
+  const current = mobileShellState;
+  const next = reduceMobileShellState(current, { type: "route", route, replace });
+  if (next.route === current.route && current.surface === "none") return;
+  mobileShellState = next;
+  syncMobileShellRoot();
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  persistMobileContinuityState();
+  renderMobilePhoneExperience({ focus });
+}
+
+function mobileOpenSurface(surface, page = "root", { focus = true } = {}) {
+  if (!isMobileShellV2Active()) return;
+  const openSurface = mobileShellElement("mobileShellSurface");
+  if (mobileShellState.surface === "none" && document.activeElement instanceof HTMLElement && !openSurface?.contains(document.activeElement)) {
+    mobileSurfaceFocusReturn = document.activeElement;
+  }
+  mobileShellState = reduceMobileShellState(mobileShellState, { type: "surface", surface, page });
+  syncMobileShellRoot();
+  window.history.pushState({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  renderMobilePhoneExperience({ focus });
+}
+
+function mobileSetSurfacePage(page) {
+  mobileShellState = reduceMobileShellState(mobileShellState, { type: "surface-page", page });
+  syncMobileShellRoot();
+  window.history.pushState({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  renderMobilePhoneExperience({ focus: true });
+}
+
+function mobileBack() {
+  if (!isMobileShellV2Active()) return false;
+  if (mobileShellState.surface !== "none" || mobileShellState.routeHistory.length) {
+    window.history.back();
+    return true;
+  }
+  return false;
+}
+
+function mobileRenderSessions() {
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  const list = mobileShellElement("mobileSessionsList");
+  const status = mobileShellElement("mobileSessionsStatus");
+  if (!list || !status) return;
+  const query = String(mobileShellElement("mobileSessionsSearchInput")?.value || "").trim().toLocaleLowerCase();
+  const ordered = [...tabs].sort((a, b) => {
+    const priority = { blocked: 0, running: 1, failed: 2, completed: 3, idle: 4 };
+    return (priority[mobileTabActivityState(a)] ?? 5) - (priority[mobileTabActivityState(b)] ?? 5);
+  });
+  const visible = ordered.filter((tab) => !query || [tab.title, tab.cwd, tab.model, mobileTabCwdLabel(tab)].filter(Boolean).join(" ").toLocaleLowerCase().includes(query));
+  list.replaceChildren();
+  if (!visible.length) {
+    mobileSetText(status, tabs.length ? "No sessions match this search." : "No sessions are open. Start one in the current folder or choose a folder.");
+    return;
+  }
+  const priorityTabs = visible.filter((tab) => ["blocked", "running"].includes(mobileTabActivityState(tab)));
+  const priorityIds = new Set(priorityTabs.map((tab) => tab.id));
+  const groups = new Map();
+  for (const tab of visible) {
+    if (priorityIds.has(tab.id)) continue;
+    const key = mobileTabCwdLabel(tab);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(tab);
+  }
+  mobileSetText(status, `${visible.length} session${visible.length === 1 ? "" : "s"}. Needs-input and running sessions are in Priority.`);
+  const renderGroup = (group, groupTabs) => {
+    const section = make("section", "mobile-session-group");
+    const heading = make("h2", "mobile-session-group-heading", group);
+    section.append(heading);
+    for (const tab of groupTabs) {
+      const state = mobileTabActivityState(tab);
+      const row = make("article", `mobile-session-row is-${state}${tab.id === activeTabId ? " is-active" : ""}`);
+      const select = mobileButton("", "mobile-session-select", () => mobileSwitchToTab(tab.id, { focus: true }));
+      select.setAttribute("aria-current", tab.id === activeTabId ? "page" : "false");
+      select.setAttribute("aria-label", `${tab.title || "Untitled session"}, ${state}${tab.id === activeTabId ? ", current session" : ""}`);
+      select.append(
+        make("span", "mobile-state-glyph", state === "blocked" ? "!" : state === "running" ? "●" : state === "failed" ? "×" : state === "completed" ? "✓" : "○"),
+        make("span", "mobile-session-copy", ""),
+      );
+      const copy = select.querySelector(".mobile-session-copy");
+      copy.append(make("strong", undefined, tab.title || "Untitled session"), make("span", "muted", `${mobileTabCwdLabel(tab)} · ${state}`));
+      const more = mobileButton("Close", "mobile-row-action", (event) => {
+        event.stopPropagation();
+        void closeTerminalTab(tab.id);
+      });
+      more.setAttribute("aria-label", `Close ${tab.title || "session"}`);
+      row.append(select, more);
+      section.append(row);
+    }
+    list.append(section);
+  };
+  if (priorityTabs.length) renderGroup("Priority", priorityTabs);
+  for (const [group, groupTabs] of groups) renderGroup(group, groupTabs);
+}
+
+function mobileRenderActivity() {
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  const list = mobileShellElement("mobileActivityList");
+  const status = mobileShellElement("mobileActivityStatus");
+  if (!list || !status) return;
+  const grouped = new Map([["Needs input", []], ["Running", []], ["Failed", []], ["Completed", []]]);
+  for (const tab of tabs) {
+    const state = mobileTabActivityState(tab);
+    const key = state === "blocked" ? "Needs input" : state === "running" ? "Running" : state === "failed" ? "Failed" : state === "completed" ? "Completed" : "";
+    const itemKey = `${tab.id}:${state}:${activityForTab(tab).completionSerial || 0}`;
+    if (key && !mobileDismissedActivityKeys.has(itemKey)) grouped.get(key).push({ tab, state, itemKey });
+    if (tabAppRunnerRunningRun(tab) && !mobileDismissedActivityKeys.has(`${tab.id}:app`)) grouped.get("Running").push({ tab, state: "running", itemKey: `${tab.id}:app`, kind: "app" });
+    if (workflowRunningCountForTab(tab.id) && !mobileDismissedActivityKeys.has(`${tab.id}:workflow`)) grouped.get("Running").push({ tab, state: "running", itemKey: `${tab.id}:workflow`, kind: "workflow" });
+  }
+  list.replaceChildren();
+  let total = 0;
+  for (const [label, items] of grouped) {
+    if (!items.length) continue;
+    total += items.length;
+    const section = make("section", `mobile-activity-group ${label.toLowerCase().replaceAll(" ", "-")}`);
+    section.append(make("h2", "mobile-session-group-heading", `${label} (${items.length})`));
+    for (const item of items) {
+      const { tab, state, itemKey, kind } = item;
+      const row = make("article", `mobile-activity-item is-${state}`);
+      const heading = kind === "workflow" ? "Workflow run" : kind === "app" ? "App runner" : tab.title || "Untitled session";
+      const detail = kind === "workflow" ? `${workflowRunningCountForTab(tab.id)} workflow run${workflowRunningCountForTab(tab.id) === 1 ? "" : "s"} active` : kind === "app" ? "App runner is active" : state === "blocked" ? `${tabPendingBlockerCount(tab)} decision${tabPendingBlockerCount(tab) === 1 ? "" : "s"} need attention` : `${mobileTabCwdLabel(tab)} · ${state}`;
+      row.append(make("strong", undefined, heading), make("p", "muted", detail));
+      const actions = make("div", "mobile-activity-actions");
+      const open = mobileButton(state === "blocked" ? "Review" : kind ? "Open" : "View", "primary", () => {
+        if (kind) {
+          mobileProjectTopic = "workflows";
+          mobileSwitchToTab(tab.id, { route: "project" });
+        } else {
+          mobileSwitchToTab(tab.id, { route: "chat", focus: state !== "blocked" });
+          if (state === "blocked") requestAnimationFrame(() => elements.widgetArea?.scrollIntoView({ block: "start" }));
+        }
+      });
+      actions.append(open);
+      if (state === "completed" || state === "failed") actions.append(mobileButton("Dismiss", "mobile-row-action", () => {
+        mobileDismissedActivityKeys.add(itemKey);
+        mobileRenderActivity();
+      }));
+      row.append(actions);
+      section.append(row);
+    }
+    list.append(section);
+  }
+  mobileSetText(status, total ? `${total} work item${total === 1 ? "" : "s"}; opening an item uses its existing tab, blocker, workflow, or app-runner action.` : "No current, failed, or recently completed work. Sessions stay available in Sessions.");
+}
+
+function mobileRenderProject() {
+  const host = mobileShellElement("mobileProjectContent");
+  const projectName = mobileShellElement("mobileProjectName");
+  if (!host) return;
+  if (projectName) projectName.textContent = mobileTabCwdLabel(activeTab());
+  for (const button of document.querySelectorAll("[data-mobile-project-topic]")) {
+    const selected = button.dataset.mobileProjectTopic === mobileProjectTopic;
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+    button.tabIndex = selected ? 0 : -1;
+  }
+  if (mobileProjectTopic === "files") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalMountContent(host, ["sidePanelSectionFiles"], "project:files");
+    return;
+  }
+  if (mobileProjectTopic === "git") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalMountContent(host, ["sidePanelSectionGit"], "project:git");
+    renderGitPanel();
+    return;
+  }
+  if (mobileProjectTopic === "queue") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalMountContent(host, ["sidePanelSectionQueue"], "project:queue");
+    return;
+  }
+  mobileCanonicalUnmount();
+  const actions = make("div", "mobile-project-workflow-actions");
+  actions.append(
+    mobileButton("Workflow Mode", "primary", () => elements.workflowModeButton?.click()),
+    mobileButton("App runners", "", () => elements.appRunnerMenuButton?.click()),
+    mobileButton("Guided Git workflow", "", () => elements.gitWorkflowButton?.click()),
+  );
+  mobileWidgetAreaMountContent(host, actions);
+  if (!elements.widgetArea.childElementCount) host.append(make("p", "mobile-route-status muted", "No workflow or app-runner output is active. Start a workflow, app runner, or guided Git workflow from the existing actions above."));
+}
+
+function mobileRenderMore() {
+  const root = mobileShellElement("mobileSurfaceRoot");
+  const host = mobileShellElement("mobileSurfaceContent");
+  const title = mobileShellElement("mobileSurfaceTitle");
+  const back = mobileShellElement("mobileSurfaceBackButton");
+  if (!root || !host || !title || !back) return;
+  const page = mobileShellState.surfacePage || "root";
+  const topics = {
+    session: ["Session", ["sidePanelSectionSession"]],
+    sampling: ["Sampling parameters", ["sidePanelSectionSampling"]],
+    usage: ["Usage", ["sidePanelSectionCodexUsage", "sidePanelSectionClaudeUsage"]],
+    extensions: ["Extensions", ["sidePanelSectionOptionalFeatures"]],
+    settings: ["Settings", ["sidePanelSectionControls"]],
+    commands: ["Commands", ["sidePanelSectionCommands"]],
+    diagnostics: ["Diagnostics", ["sidePanelSectionEvents"]],
+    agents: ["Subagents", ["sidePanelSectionSubagents"]],
+  };
+  root.replaceChildren();
+  host.replaceChildren();
+  if (page === "root") {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalUnmount();
+    title.textContent = "More";
+    back.hidden = true;
+    const presentation = make("section", "mobile-more-presentation");
+    presentation.append(make("h2", undefined, "Presentation"), make("p", "muted", "Essential keeps final answers and consequential warnings visible while reducing process chrome. Detailed restores process detail. This does not enable compact-v1 or change transcript content."));
+    const choices = make("div", "mobile-presentation-choices");
+    for (const value of ["essential", "detailed"]) {
+      const choice = mobileButton(value === "essential" ? "Essential" : "Detailed", value === mobilePresentation ? "primary" : "", () => setMobilePresentation(value), { continuityKey: `presentation:${value}` });
+      choice.setAttribute("aria-pressed", value === mobilePresentation ? "true" : "false");
+      choices.append(choice);
+    }
+    presentation.append(choices);
+    root.append(presentation);
+    for (const [id, [label]] of Object.entries(topics)) root.append(mobileButton(label, "mobile-more-topic", () => mobileSetSurfacePage(id), { continuityKey: `more:${id}` }));
+    root.append(
+      mobileButton("Install app", "mobile-more-topic", () => mobileSetSurfacePage("install"), { continuityKey: "more:install" }),
+      mobileButton("Continuity & diagnostics", "mobile-more-topic", () => mobileSetSurfacePage("continuity"), { continuityKey: "more:continuity" }),
+    );
+    if (!mobileInstallEducation.dismissed && mobileInstallEducation.visits >= 3 && !isStandalonePwaWindow()) {
+      const education = make("section", "mobile-more-presentation mobile-install-education");
+      education.append(make("h2", undefined, "Use Pi Web UI like an app"), make("p", "muted", mobileInstallGuidanceText()), mobileButton("Learn how", "primary", () => mobileSetSurfacePage("install"), { continuityKey: "more:learn-install" }));
+      root.prepend(education);
+    }
+    return;
+  }
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  if (page === "install") {
+    renderMobileInstallPage(root, title, back);
+    return;
+  }
+  if (page === "continuity") {
+    renderMobileDiagnosticsPage(root, title, back);
+    return;
+  }
+  const topic = topics[page] || topics.settings;
+  title.textContent = topic[0];
+  back.hidden = false;
+  mobileCanonicalMountContent(host, topic[1], `more:${page}`);
+  if (page === "sampling") ensureSamplingParametersLoaded();
+  if (page === "commands") mobileShellElement("commandSearchInput")?.focus({ preventScroll: true });
+}
+
+function openMobileAttachmentPicker(kind = "files") {
+  if (!elements.attachmentInput) return;
+  const config = kind === "camera"
+    ? { accept: "image/*", capture: "environment", source: "camera" }
+    : kind === "photos"
+      ? { accept: "image/*", capture: "", source: "photo library" }
+      : { accept: "image/*,video/*,audio/*,text/*,application/pdf,application/json,application/xml,.md,.csv,.ts,.tsx,.js,.mjs,.py,.rs,.go,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.log", capture: "", source: "file picker" };
+  elements.attachmentInput.accept = config.accept;
+  elements.attachmentInput.dataset.mobileAttachmentSource = config.source;
+  if (config.capture) elements.attachmentInput.setAttribute("capture", config.capture);
+  else elements.attachmentInput.removeAttribute("capture");
+  try {
+    elements.attachmentInput.click();
+  } catch (error) {
+    addEvent(`${kind} is unavailable in this browser: ${error.message || String(error)}`, "warn");
+  }
+}
+
+function addMobilePastedText(textarea) {
+  const text = normalizeTextAttachmentContent(textarea?.value || "");
+  if (!text.trim()) {
+    textarea?.focus();
+    return;
+  }
+  const result = addAttachmentFiles([makeTextAttachmentFile(text)], "pasted text");
+  if (result.added) {
+    textarea.value = "";
+    mobileBack();
+  }
+}
+
+function mobileInstallGuidanceText() {
+  if (isStandalonePwaWindow()) return "Pi Web UI is already running as an installed app on this device.";
+  if (mobileInstallPrompt) return "Install this local Web UI for a dedicated window and offline shell. Agent work still depends on the Pi Web UI server, and notifications are active-client only.";
+  const ua = navigator.userAgent || "";
+  if (/iPad|iPhone|iPod/.test(ua)) return "In Safari, use Share → Add to Home Screen. Installation does not enable notifications after all Web UI clients close.";
+  return "Use your browser menu’s Install app or Add to Home screen action when available. Browser support varies; core Web UI use does not require installation.";
+}
+
+async function requestMobileInstall() {
+  if (!mobileInstallPrompt) {
+    addEvent("Install prompt is not available; use the browser menu guidance shown here.", "warn");
+    return;
+  }
+  try {
+    mobileInstallPrompt.prompt();
+    const choice = await mobileInstallPrompt.userChoice;
+    recordMobileDiagnostic("install prompt", choice?.outcome || "unknown");
+  } catch (error) {
+    addEvent(`Install prompt failed: ${error.message || String(error)}`, "warn");
+  } finally {
+    mobileInstallPrompt = null;
+    renderMobilePhoneExperience();
+  }
+}
+
+function renderMobileInstallPage(root, title, back) {
+  title.textContent = "Install app";
+  back.hidden = false;
+  const card = make("section", "mobile-more-presentation");
+  card.append(make("h2", undefined, "Install education"), make("p", "muted", mobileInstallGuidanceText()));
+  const actions = make("div", "mobile-presentation-choices");
+  const install = mobileButton("Install when available", "primary", requestMobileInstall, { continuityKey: "install:request" });
+  install.disabled = !mobileInstallPrompt || isStandalonePwaWindow();
+  actions.append(install, mobileButton("Dismiss guidance", "", () => {
+    mobileInstallEducation.dismissed = true;
+    persistMobileInstallEducation();
+    mobileBack();
+  }, { continuityKey: "install:dismiss" }));
+  card.append(actions);
+  root.append(card);
+}
+
+function renderMobileDiagnosticsPage(root, title, back) {
+  title.textContent = "Continuity & diagnostics";
+  back.hidden = false;
+  const card = make("section", "mobile-more-presentation");
+  card.append(
+    make("h2", undefined, "Local diagnostics"),
+    make("p", "muted", "This report contains local shell, connection, permission, and feature state only. It excludes prompts, transcript text, paths, filenames, and credentials."),
+    make("pre", "mobile-diagnostics-preview", mobileDiagnosticsText()),
+  );
+  const actions = make("div", "mobile-presentation-choices");
+  actions.append(
+    mobileButton("Copy diagnostics", "primary", async () => {
+      try { await copyText(mobileDiagnosticsText()); addEvent("copied local mobile diagnostics", "info"); }
+      catch (error) { addEvent(`diagnostics copy failed: ${error.message || String(error)}`, "warn"); }
+    }, { continuityKey: "continuity:copy" }),
+    mobileButton("Clear diagnostics", "", () => {
+      mobileDiagnosticEvents.length = 0;
+      renderMobileMore();
+    }, { continuityKey: "continuity:clear" }),
+  );
+  card.append(actions);
+  root.append(card);
+}
+
+function mobileRenderActionSheet() {
+  const root = mobileShellElement("mobileSurfaceRoot");
+  const host = mobileShellElement("mobileSurfaceContent");
+  const title = mobileShellElement("mobileSurfaceTitle");
+  const back = mobileShellElement("mobileSurfaceBackButton");
+  if (!root || !host || !title || !back) return;
+  mobileWidgetAreaUnmount();
+  mobileCanonicalUnmount();
+  root.replaceChildren();
+  host.replaceChildren();
+  const page = mobileShellState.surfacePage || "root";
+  title.textContent = page === "voice" ? "Voice" : page === "session" ? "Session actions" : page === "queue" ? "Queue" : page === "context" ? "Add Context" : "Actions";
+  back.hidden = page === "root";
+  if (page === "root") {
+    root.append(
+      mobileButton("Add Context", "primary mobile-more-topic", () => mobileSetSurfacePage("context"), { continuityKey: "actions:context" }),
+      mobileButton("Session actions", "mobile-more-topic", () => mobileSetSurfacePage("session"), { continuityKey: "actions:session" }),
+      mobileButton("Voice", "mobile-more-topic", () => mobileSetSurfacePage("voice"), { continuityKey: "actions:voice" }),
+      mobileButton("Queue", "mobile-more-topic", () => mobileSetSurfacePage("queue"), { continuityKey: "actions:queue" }),
+    );
+    if (isAbortAvailable()) root.append(mobileButton("Abort active run…", "danger mobile-abort-confirm", async () => {
+      const confirmed = await appConfirm({ title: "Abort active run?", summary: "Pi will be told to stop the active run. Any partial answer remains in the canonical transcript.", affected: "This active tab only", undoable: false, confirmLabel: "Abort run" });
+      if (confirmed) abortActiveRun({ source: "mobile confirm" });
+    }, { continuityKey: "actions:abort" }));
+    return;
+  }
+  if (page === "session") {
+    root.append(
+      mobileButton("New session", "primary", () => elements.newSessionButton?.click(), { continuityKey: "session:new" }),
+      mobileButton("Compact context", "", () => elements.compactButton?.click(), { continuityKey: "session:compact" }),
+      mobileButton("Command palette", "", () => openCommandPalette(), { continuityKey: "session:command-palette" }),
+      mobileButton("Guided Git workflow", "", () => elements.gitWorkflowButton?.click(), { continuityKey: "session:guided-git" }),
+    );
+    return;
+  }
+  if (page === "voice") {
+    root.append(
+      mobileButton("Start or end conversation", "primary", () => elements.optionsConversationModeButton?.click(), { continuityKey: "voice:toggle" }),
+      mobileButton("Choose voice", "", () => elements.conversationVoiceButton?.click(), { continuityKey: "voice:choose" }),
+      make("p", "mobile-route-status muted", "Voice uses the existing browser voice controls and keeps its transcript in this session. Remote microphone warnings remain visible before audio is sent."),
+    );
+    return;
+  }
+  if (page === "context") {
+    root.append(make("p", "mobile-route-status muted", "Choose a source. Camera and photo access are requested by your browser only after you select them; Pi Web UI uses the selected files as context for this session. Denied or unavailable sources can be replaced with Files or Paste text."));
+    const actions = make("div", "mobile-context-actions");
+    actions.append(
+      mobileButton("Camera", "", () => openMobileAttachmentPicker("camera"), { continuityKey: "context:camera" }),
+      mobileButton("Photos", "", () => openMobileAttachmentPicker("photos"), { continuityKey: "context:photos" }),
+      mobileButton("Files", "", () => openMobileAttachmentPicker("files"), { continuityKey: "context:files" }),
+    );
+    const pasteLabel = make("label", "mobile-paste-context-label", "Paste text");
+    const textarea = make("textarea", "mobile-paste-context-text");
+    textarea.rows = 7;
+    textarea.placeholder = "Paste text to attach without changing the prompt";
+    textarea.dataset.mobileContinuityKey = "context:paste-text";
+    textarea.dataset.mobileDraftAuthority = "dom";
+    pasteLabel.append(textarea);
+    root.append(actions, pasteLabel, mobileButton("Add pasted text", "primary", () => addMobilePastedText(textarea), { continuityKey: "context:add-paste" }));
+    return;
+  }
+  mobileCanonicalMountContent(host, ["sidePanelSectionQueue"], "sheet:queue");
+}
+
+function syncMobileShellInteractivity() {
+  const active = isMobileShellV2Active();
+  const layout = document.querySelector(".layout");
+  const destination = mobileShellElement("mobileShellDestination");
+  const surface = mobileShellElement("mobileShellSurface");
+  const fileViewerOpen = document.body.classList.contains("file-viewer-open");
+  const surfaceOpen = active && mobileShellState.surface !== "none";
+  const routeOwnsMain = active && mobileShellState.route !== "chat" && !surfaceOpen && !fileViewerOpen;
+  const layoutObscured = active && !fileViewerOpen && (mobileShellState.route !== "chat" || surfaceOpen);
+  if (layout) {
+    layout.inert = layoutObscured;
+    if (layoutObscured) layout.setAttribute("aria-hidden", "true");
+    else layout.removeAttribute("aria-hidden");
+  }
+  if (destination) {
+    destination.inert = active && (surfaceOpen || fileViewerOpen);
+    if (routeOwnsMain) destination.setAttribute("role", "main");
+    else destination.removeAttribute("role");
+    if (destination.inert) destination.setAttribute("aria-hidden", "true");
+    else destination.removeAttribute("aria-hidden");
+  }
+  if (surface) {
+    if (surfaceOpen) {
+      surface.setAttribute("role", "dialog");
+      surface.setAttribute("aria-modal", "true");
+    } else {
+      surface.removeAttribute("role");
+      surface.removeAttribute("aria-modal");
+    }
+  }
+  if (elements.chat) {
+    if (active) elements.chat.removeAttribute("aria-live");
+    else elements.chat.setAttribute("aria-live", "polite");
+  }
+}
+
+function restoreMobileSurfaceFocus() {
+  const fallback = document.querySelector(`[data-mobile-route-button="${mobileShellState.route}"]`);
+  const target = mobileSurfaceFocusReturn?.isConnected && !mobileSurfaceFocusReturn.closest?.("[inert]") ? mobileSurfaceFocusReturn : fallback;
+  mobileSurfaceFocusReturn = null;
+  requestAnimationFrame(() => target?.focus?.({ preventScroll: true }));
+}
+
+function mobileSurfaceFocusKey(node) {
+  if (node?.id) return `id:${node.id}`;
+  return node?.dataset?.mobileContinuityKey ? `mobile:${node.dataset.mobileContinuityKey}` : "";
+}
+
+function captureMobileSurfaceRenderFocus(surface) {
+  const active = document.activeElement;
+  const userDirected = Date.now() <= mobileSurfaceUserFocusIntentUntil;
+  const targetKey = mobileSurfaceFocusKey(active);
+  if (active instanceof HTMLElement && targetKey && surface?.contains(active) && (!mobileSurfaceRenderFocus || active === mobileSurfaceRenderFocus.element || userDirected)) {
+    const domDraft = active.dataset.mobileDraftAuthority === "dom" && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement);
+    mobileSurfaceRenderFocus = {
+      element: active,
+      targetKey,
+      ...(domDraft ? {
+        value: active.value,
+        selectionStart: active.selectionStart ?? active.value.length,
+        selectionEnd: active.selectionEnd ?? active.value.length,
+        selectionDirection: active.selectionDirection,
+        scrollTop: active.scrollTop,
+        scrollLeft: active.scrollLeft,
+      } : {}),
+    };
+  }
+  return mobileSurfaceRenderFocus;
+}
+
+function restoreMobileSurfaceRenderFocus(surface, snapshot) {
+  if (!snapshot || mobileShellState.surface === "none" || document.activeElement === snapshot.element) return;
+  let target = snapshot.element?.isConnected && surface?.contains(snapshot.element) ? snapshot.element : null;
+  if (!target && snapshot.targetKey.startsWith("id:")) {
+    const candidate = document.getElementById(snapshot.targetKey.slice(3));
+    target = candidate && surface?.contains(candidate) ? candidate : null;
+  }
+  if (!target && snapshot.targetKey.startsWith("mobile:")) {
+    const key = snapshot.targetKey.slice(7);
+    target = [...(surface?.querySelectorAll("[data-mobile-continuity-key]") || [])]
+      .find((node) => node.dataset.mobileContinuityKey === key) || null;
+  }
+  if (!target) return;
+  if (typeof snapshot.value === "string" && target.dataset.mobileDraftAuthority === "dom" && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+    target.value = snapshot.value;
+    const start = Math.min(Math.max(0, snapshot.selectionStart ?? target.value.length), target.value.length);
+    const end = Math.min(Math.max(0, snapshot.selectionEnd ?? target.value.length), target.value.length);
+    target.setSelectionRange(start, end, snapshot.selectionDirection || "none");
+    target.scrollTop = Math.max(0, snapshot.scrollTop || 0);
+    target.scrollLeft = Math.max(0, snapshot.scrollLeft || 0);
+  }
+  target.focus({ preventScroll: true });
+  mobileSurfaceRenderFocus = { ...snapshot, element: target };
+}
+
+function mobileRenderLifecycle() {
+  const announcer = mobileShellElement("mobileLifecycleAnnouncer");
+  if (!announcer) return;
+  const active = activeTab();
+  const state = active ? mobileTabActivityState(active) : "idle";
+  const offline = elements.serverOfflinePanel && !elements.serverOfflinePanel.hidden;
+  const signature = `${active?.id || "none"}:${state}:${offline ? "offline" : "online"}`;
+  if (!mobileLifecycleInitialized) {
+    mobileLifecycleInitialized = true;
+    mobileLifecycleSignature = signature;
+    return;
+  }
+  if (signature === mobileLifecycleSignature) return;
+  mobileLifecycleSignature = signature;
+  const session = active?.title || "Current session";
+  announcer.textContent = offline ? "Pi Web UI is offline; your draft remains in the composer." : state === "blocked" ? `${session} needs your decision.` : state === "running" ? `${session} is running.` : state === "completed" ? `${session} completed.` : state === "failed" ? `${session} failed. Review the session for details.` : `${session} is idle.`;
+}
+
+function renderMobilePhoneExperience({ focus = false } = {}) {
+  const shell = mobileShellElement("mobileShellV2");
+  if (!shell) return;
+  const active = isMobileShellV2Active();
+  shell.hidden = !active;
+  if (!active) {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalUnmount();
+    document.documentElement.removeAttribute("data-mobile-presentation");
+    syncMobileShellInteractivity();
+    return;
+  }
+  document.documentElement.dataset.mobilePresentation = mobilePresentation;
+  const route = mobileShellState.route;
+  const activeTabRecord = activeTab();
+  const activeState = activeTabRecord ? mobileTabActivityState(activeTabRecord) : "idle";
+  const title = mobileShellElement("mobileSessionTitle");
+  const state = mobileShellElement("mobileSessionStatus");
+  if (title) title.textContent = activeTabRecord?.title || "Choose a session";
+  if (state) state.textContent = activeState === "blocked" ? "!" : activeState === "running" ? "●" : activeState === "failed" ? "×" : activeState === "completed" ? "✓" : "○";
+  const sessionButton = mobileShellElement("mobileSessionButton");
+  if (sessionButton) sessionButton.setAttribute("aria-label", `${title?.textContent || "Choose a session"}, ${activeState}. Open Sessions.`);
+  const attention = tabs.filter((tab) => mobileTabActivityState(tab) === "blocked").length;
+  const activity = tabs.filter((tab) => ["blocked", "running", "failed"].includes(mobileTabActivityState(tab))).length;
+  const projectErrors = tabs.filter((tab) => mobileTabActivityState(tab) === "failed").length;
+  const badgeLabels = {
+    sessions: mobileSetBadge("mobileSessionsBadge", attention, (count) => `${count} session${count === 1 ? "" : "s"} need attention`),
+    activity: mobileSetBadge("mobileActivityBadge", activity, (count) => `${count} active or failed work item${count === 1 ? "" : "s"}`),
+    project: mobileSetBadge("mobileProjectBadge", projectErrors, (count) => `${count} project error${count === 1 ? "" : "s"}`),
+  };
+  for (const button of document.querySelectorAll("[data-mobile-route-button]")) {
+    const selected = button.dataset.mobileRouteButton === route;
+    const base = button.dataset.mobileRouteButton?.replace(/^./, (value) => value.toUpperCase()) || "Destination";
+    const badgeLabel = badgeLabels[button.dataset.mobileRouteButton] || "";
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-current", selected ? "page" : "false");
+    button.setAttribute("aria-label", badgeLabel ? `${base}, ${badgeLabel}` : base);
+  }
+  const indicators = mobileShellElement("mobileShellIndicators");
+  if (indicators) {
+    const remoteOpen = elements.remoteAccessIndicator && !elements.remoteAccessIndicator.hidden;
+    const indicatorSignature = JSON.stringify([remoteOpen, mobileConnectionState, mobileConnectionLabel, attention]);
+    if (indicators.dataset.signature !== indicatorSignature) {
+      indicators.dataset.signature = indicatorSignature;
+      indicators.replaceChildren();
+      if (remoteOpen) indicators.append(make("span", "mobile-indicator warning", "Remote access open"));
+      indicators.append(make("span", `mobile-indicator ${mobileConnectionState === "offline" ? "error" : mobileConnectionState === "reconnecting" ? "warning" : ""}`.trim(), mobileConnectionLabel));
+      if (attention) indicators.append(make("span", "mobile-indicator warning", `${attention} needs input`));
+    }
+  }
+  for (const node of shell.querySelectorAll("[data-mobile-route]")) node.hidden = node.dataset.mobileRoute !== route;
+  const destination = mobileShellElement("mobileShellDestination");
+  destination?.classList.toggle("mobile-chat-route", route === "chat");
+  if (route === "sessions") mobileRenderSessions();
+  else if (route === "activity") mobileRenderActivity();
+  else if (route === "project") mobileRenderProject();
+  else {
+    mobileWidgetAreaUnmount();
+    mobileCanonicalUnmount();
+  }
+  const surface = mobileShellElement("mobileShellSurface");
+  const surfaceFocusSnapshot = captureMobileSurfaceRenderFocus(surface);
+  if (mobileShellState.surface === "none") mobileSurfaceRenderFocus = null;
+  if (surface) {
+    surface.hidden = mobileShellState.surface === "none";
+    if (mobileShellState.surface === "more") mobileRenderMore();
+    else if (mobileShellState.surface === "actionSheet") mobileRenderActionSheet();
+  }
+  if (!focus) restoreMobileSurfaceRenderFocus(surface, surfaceFocusSnapshot);
+  mobileShellElement("mobileMoreButton")?.setAttribute("aria-expanded", mobileShellState.surface === "more" ? "true" : "false");
+  const nav = shell.querySelector(".mobile-shell-nav");
+  nav?.setAttribute("aria-label", isTabletShellV2Active() ? "Tablet destinations" : "Phone destinations");
+  shell.querySelector(".mobile-shell-appbar")?.setAttribute("aria-label", isTabletShellV2Active() ? "Tablet app bar" : "Phone app bar");
+  renderMobileFailedSendRecovery();
+  mobileRenderLifecycle();
+  syncMobileShellInteractivity();
+  if (focus) requestAnimationFrame(() => {
+    const heading = mobileShellState.surface !== "none"
+      ? shell.querySelector(".mobile-surface-header h1")
+      : shell.querySelector(`[data-mobile-route="${route}"] h1`);
+    const fallback = route === "chat" ? document.querySelector('[data-mobile-route-button="chat"]') : destination;
+    (heading || fallback)?.focus?.({ preventScroll: true });
+  });
+}
+
+function installMobilePhoneExperience() {
+  mobilePhoneExperienceInstalled = true;
+  mobilePresentation = readMobilePresentation();
+  const shell = mobileShellElement("mobileShellV2");
+  if (!shell) return;
+  const routeButtons = [...shell.querySelectorAll("[data-mobile-route-button]")];
+  for (const button of routeButtons) {
+    button.addEventListener("click", () => mobileNavigate(button.dataset.mobileRouteButton));
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const current = routeButtons.indexOf(button);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? routeButtons.length - 1 : (current + (["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1) + routeButtons.length) % routeButtons.length;
+      routeButtons[next]?.focus({ preventScroll: true });
+    });
+  }
+  const mobileSurface = mobileShellElement("mobileShellSurface");
+  const noteMobileSurfaceFocusIntent = () => { mobileSurfaceUserFocusIntentUntil = Date.now() + 750; };
+  mobileSurface?.addEventListener("pointerdown", noteMobileSurfaceFocusIntent, { capture: true });
+  mobileSurface?.addEventListener("keydown", noteMobileSurfaceFocusIntent, { capture: true });
+  mobileSurface?.addEventListener("focusin", () => {
+    if (Date.now() <= mobileSurfaceUserFocusIntentUntil) captureMobileSurfaceRenderFocus(mobileSurface);
+  });
+  mobileSurface?.addEventListener("focusout", () => requestAnimationFrame(() => {
+    if (mobileShellState.surface === "none" || Date.now() <= mobileSurfaceUserFocusIntentUntil || document.querySelector("dialog[open]") || document.body.classList.contains("file-viewer-open") || document.activeElement === mobileSurfaceRenderFocus?.element) return;
+    restoreMobileSurfaceRenderFocus(mobileSurface, mobileSurfaceRenderFocus);
+  }));
+  mobileShellElement("mobileSessionButton")?.addEventListener("click", () => mobileNavigate("sessions"));
+  mobileShellElement("mobileSearchButton")?.addEventListener("click", () => openCommandPalette());
+  mobileShellElement("mobileMoreButton")?.addEventListener("click", () => mobileOpenSurface("more"));
+  mobileShellElement("mobileSurfaceCloseButton")?.addEventListener("click", mobileBack);
+  mobileShellElement("mobileSurfaceBackButton")?.addEventListener("click", mobileBack);
+  mobileShellElement("mobileSessionsSearchInput")?.addEventListener("input", mobileRenderSessions);
+  mobileShellElement("mobileSessionsCloseAllButton")?.addEventListener("click", () => elements.closeAllTabsButton?.click());
+  mobileShellElement("mobileNewCurrentDirectoryButton")?.addEventListener("click", () => createTerminalTab());
+  mobileShellElement("mobileNewDirectoryButton")?.addEventListener("click", () => createTerminalTabFromChosenDirectory());
+  mobileShellElement("mobileNewWorktreeButton")?.addEventListener("click", () => elements.newTabWorktreeButton?.click());
+  mobileShellElement("mobileResumeSessionButton")?.addEventListener("click", () => elements.optionsResumeButton?.click());
+  mobileShellElement("mobileActivityRefreshButton")?.addEventListener("click", () => reconcileForegroundState("mobile activity").catch((error) => addEvent(error.message || String(error), "error")));
+  const projectTopics = mobileShellElement("mobileProjectTopics");
+  const projectTopicButtons = [...(projectTopics?.querySelectorAll("[data-mobile-project-topic]") || [])];
+  const activateProjectTopic = (button, { focus = false } = {}) => {
+    if (!button) return;
+    mobileProjectTopic = button.dataset.mobileProjectTopic || "files";
+    mobileRenderProject();
+    if (focus) button.focus({ preventScroll: true });
+  };
+  projectTopics?.addEventListener("click", (event) => activateProjectTopic(event.target.closest?.("[data-mobile-project-topic]")));
+  projectTopics?.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "].includes(event.key)) return;
+    const button = event.target.closest?.("[data-mobile-project-topic]");
+    if (!button) return;
+    event.preventDefault();
+    if (event.key === "Enter" || event.key === " ") {
+      activateProjectTopic(button, { focus: true });
+      return;
+    }
+    const current = projectTopicButtons.indexOf(button);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? projectTopicButtons.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + projectTopicButtons.length) % projectTopicButtons.length;
+    activateProjectTopic(projectTopicButtons[next], { focus: true });
+  });
+  elements.composerActionsButton?.addEventListener("click", (event) => {
+    if (!isMobileShellV2Active()) return;
+    event.preventDefault();
+    mobileOpenSurface("actionSheet");
+  });
+  window.addEventListener("popstate", (event) => {
+    const state = event.state?.mobileShellState;
+    if (!event.state?.piMobileShellV2 || !state || !isMobileShellV2Active()) return;
+    const previousSurface = mobileShellState.surface;
+    let restored = createMobileShellState({ viewport: mobileShellViewport(), featureMode: mobileShellState.featureMode, tabletFeatureMode: mobileShellState.tabletFeatureMode, route: state.route });
+    restored = reduceMobileShellState({ ...restored, routeHistory: state.routeHistory }, {});
+    if (state.surface && state.surface !== "none") restored = reduceMobileShellState(restored, { type: "surface", surface: state.surface, page: state.surfacePage });
+    mobileShellState = restored;
+    syncMobileShellRoot();
+    renderMobilePhoneExperience({ focus: previousSurface === "none" });
+    if (previousSurface !== "none" && mobileShellState.surface === "none") restoreMobileSurfaceFocus();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!isMobileShellV2Active() || event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    if (mobileShellState.surface !== "none") {
+      event.preventDefault();
+      event.stopPropagation();
+      mobileBack();
+    }
+  }, { capture: true });
+  history.replaceState({ ...(history.state || {}), piMobileShellV2: true, mobileShellState: mobileShellHistoryState() }, "");
+  renderMobilePhoneExperience();
+}
+
+function applyMobileShellViewport() {
+  const wasActive = isMobileShellV2Active();
+  applyMobileShellEvent({ type: "viewport", viewport: mobileShellViewport() });
+  if (wasActive !== isMobileShellV2Active() && isMobileShellV2Active()) {
+    document.body.classList.remove("composer-actions-open", "footer-details-expanded", "mobile-tabs-expanded", "mobile-keyboard-open");
+  }
+}
+
+function setMobileContinuityNotice(message = "", level = "info") {
+  const notice = mobileShellElement("mobileContinuityNotice");
+  if (!notice) return;
+  notice.textContent = message;
+  notice.className = `mobile-continuity-notice ${level}`;
+  notice.hidden = !message;
+}
+
+function mobileTargetBlockerExists(blockerId) {
+  if (!blockerId) return true;
+  return String(activeDialog?.id || "") === blockerId || dialogQueue.some((request) => String(request?.id || "") === blockerId);
+}
+
+async function applyPendingMobileNavigationTarget() {
+  const target = pendingMobileNavigationTarget;
+  if (!target) return;
+  pendingMobileNavigationTarget = null;
+  const targetTab = target.tabId ? tabs.find((tab) => tab.id === target.tabId) : target.runId ? tabs.find((tab) => activityForTab(tab).runId === target.runId) : null;
+  const runValid = !target.runId || (targetTab && activityForTab(targetTab).runId === target.runId);
+  const showStaleTargetFallback = () => {
+    const fallback = target.runId || target.blockerId ? "activity" : "sessions";
+    applyMobileShellEvent({ type: "route", route: fallback });
+    const message = `That notification target is no longer available. Showing ${fallback === "activity" ? "current Activity" : "available Sessions"} instead.`;
+    setMobileContinuityNotice(message, "warning");
+    if (!isMobileShellV2Active()) addEvent(message, "warn");
+    recordMobileDiagnostic("stale navigation target", fallback);
+  };
+  if (!targetTab || !runValid) {
+    showStaleTargetFallback();
+    return;
+  }
+  if (targetTab.id !== activeTabId) await switchTab(targetTab.id);
+  if (target.blockerId && !mobileTargetBlockerExists(target.blockerId)) {
+    // Pending blocker dialogs for a background tab are replayed only after the
+    // tab switch. A live, reconciled tab target is therefore authoritative;
+    // do not mislabel it stale while its exact dialog is still arriving.
+    recordMobileDiagnostic("blocker target awaiting replay");
+  }
+  applyMobileShellEvent({ type: "route", route: target.route });
+  setMobileContinuityNotice("Opened after reconnecting and checking current server state.", "success");
+  document.documentElement.dataset.mobileNavigationTarget = JSON.stringify(target);
+  recordMobileDiagnostic("navigation target reconciled", target.route);
+}
+
+function receiveMobileNavigationTarget(value) {
+  const target = normalizeMobileNavigationTarget(value);
+  if (!target) return false;
+  pendingMobileNavigationTarget = target;
+  setMobileContinuityNotice("Reconnecting and checking this notification target…", "info");
+  mobileConnectionState = "reconnecting";
+  mobileConnectionLabel = "Reconnecting";
+  renderMobilePhoneExperience();
+  scheduleForegroundReconcile("mobile navigation target", 0);
+  return true;
+}
+
+syncMobileShellRoot();
 const statusEntries = new Map();
 const featureCategoryByTab = new Map();
+const featureDecisionOutputByTab = new Map();
+let featureDecisionDialogTabId = null;
 const widgets = new Map();
 const widgetsByTab = new Map();
 const todoProgressWidgetExpandedByTab = new Map();
@@ -1001,10 +2391,9 @@ const workflowInspectorSelectionByTab = new Map();
 const workflowInspectorMinimizedByTab = new Set();
 const appRunnerInputDraftByRun = new Map();
 const appRunnerContextLineDraftByRun = new Map();
+const scopedScrollContinuityByKey = new Map();
 const liveToolRuns = new Map();
 const liveToolCards = new Map();
-const liveToolRenderQueue = new Map();
-let liveToolRenderTimer = null;
 // Optional feature detection intentionally checks loaded Pi capabilities (RPC-visible
 // commands and live widget events), not npm package folders. This keeps local dev
 // symlinks and independently installed packages working.
@@ -1017,6 +2406,7 @@ const optionalFeatureAvailability = {
   releaseAur: false,
   aurReview: false,
   workflows: false,
+  featureSystemPrompt: false,
   safetyGuard: false,
   statsCommand: false,
   gitFooterStatus: false,
@@ -1024,6 +2414,7 @@ const optionalFeatureAvailability = {
   todoProgressWidget: false,
   tuiToolsCommand: false,
   remoteWebui: false,
+  questionnaire: false,
   naturalConversation: false,
   codexFastMode: false,
   themeBundle: false,
@@ -1089,6 +2480,13 @@ const OPTIONAL_FEATURES = [
     description: "Modular workflow runner with live subprocess output shown in a non-blocking Web UI widget.",
   },
   {
+    id: "featureSystemPrompt",
+    label: "Feature workflow routing",
+    packageName: "@firstpick/pi-extension-feature-system-prompt",
+    capabilityLabel: "feature-category or feature-decision-output status event",
+    description: "Classify feature requests and show lightweight or complex routing decisions in the composer.",
+  },
+  {
     id: "safetyGuard",
     label: "Safety guard",
     packageName: "@firstpick/pi-extension-safety-guard",
@@ -1122,6 +2520,14 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-package-remote-webui",
     capabilityLabel: "/remote",
     description: "Trusted-LAN QR helper for opening the Web UI from mobile browsers.",
+  },
+  {
+    id: "questionnaire",
+    label: "Native questionnaires",
+    packageName: "@firstpick/pi-package-questionnaire",
+    capabilityLabel: "questionnaire tool in /tools",
+    description: "Native TUI and WebUI single- or multi-select question series with Other answers and resumable clarification.",
+    manageWith: "tools",
   },
   {
     id: "naturalConversation",
@@ -1559,7 +2965,7 @@ const OPTIONAL_FEATURE_SECTIONS = [
     id: "workflows-releases",
     label: "Workflows & releases",
     description: "Guided workflows, task runners, and publishing actions with visible execution state.",
-    featureIds: ["gitWorkflow", "workflows", "releaseNpm", "releaseAur", "aurReview"],
+    featureIds: ["gitWorkflow", "workflows", "featureSystemPrompt", "releaseNpm", "releaseAur", "aurReview"],
   },
   {
     id: "safety-access",
@@ -1571,7 +2977,7 @@ const OPTIONAL_FEATURE_SECTIONS = [
     id: "widgets-native-parity",
     label: "UI widgets & native parity",
     description: "Status widgets, dashboards, themes, and browser access to terminal-native controls.",
-    featureIds: ["tuiSkillsCommand", "todoProgressWidget", "tuiToolsCommand", "gitFooterStatus", "statsCommand", "themeBundle"],
+    featureIds: ["tuiSkillsCommand", "todoProgressWidget", "tuiToolsCommand", "questionnaire", "gitFooterStatus", "statsCommand", "themeBundle"],
   },
   {
     id: "conversation",
@@ -1614,7 +3020,11 @@ const HIDDEN_COMMAND_NAMES = new Set(["webui-tree-navigate", "webui-helper"]);
 HIDDEN_COMMAND_NAMES.add("stats-webui");
 HIDDEN_COMMAND_NAMES.add("btw-status");
 HIDDEN_COMMAND_NAMES.add("btw-transfer");
-const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "workflow-setup", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
+const SESSION_SUMMARY_PROTOCOL_VERSION = 1;
+const SESSION_SUMMARY_MARKDOWN_MAX_CHARS = 16 * 1024;
+const SESSION_SUMMARY_PROMPT_MAX_CHARS = 8 * 1024;
+const SESSION_SUMMARY_REQUEST_TIMEOUT_MS = 110 * 1000;
+const NATIVE_SELECTOR_COMMANDS = new Set(["model", "settings", "summary", "summary-setup", "workflow-setup", "safety-guard-setup", "git-workflow-setup", "theme", "fork", "clone", "name", "resume", "tree", "login", "logout", "scoped-models", "tools", "skills"]);
 const SETTINGS_THINKING_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SETTINGS_TRANSPORT_OPTIONS = ["sse", "websocket", "websocket-cached", "auto"];
 const SETTINGS_HTTP_IDLE_TIMEOUT_OPTIONS = [
@@ -1642,12 +3052,39 @@ const optionalFeaturePackageStatuses = new Map();
 const optionalFeatureInstallMessages = new Map();
 const optionalFeatureInstallStates = new Map();
 const optionalFeatureInstallProgressTimers = new Map();
+const optionalFeatureMigrationResultEvents = new Set();
+const OPTIONAL_FEATURE_READY_AUTO_DISMISS_MS = 5_000;
+let optionalFeatureBatchState = null;
+let optionalFeatureMigrationSnapshot = {
+  phase: "checking",
+  revision: "pending",
+  installKind: "unknown",
+  summary: { ready: 0, migratable: 0, missing: 0, conflicts: 0, disabled: 0, unknown: 0 },
+  features: [],
+  progress: null,
+  completedAt: null,
+  diagnostic: null,
+};
+let optionalFeatureMigrationCheckingStartedAt = Date.now();
+let optionalFeatureMigrationRenderTimer = null;
+let optionalFeatureMigrationReadyDismissTimer = null;
+let optionalFeatureMigrationPendingReadyDismissKey = "";
+let optionalFeatureMigrationDismissedReadyKey = "";
+let optionalFeatureMigrationDismissedCompletionKey = "";
+let optionalFeatureMigrationDismissedNoticeKey = "";
+let optionalFeatureMigrationDialogState = null;
+let optionalFeatureMigrationLastPhase = "";
+let optionalFeatureMigrationCompletionFocusKey = "";
+let optionalFeatureRestartNotice = null;
+let optionalFeaturePackageStatusesLoaded = false;
 let optionalFeaturePackageStatusError = "";
 const gitFooterPayloadRefreshInFlightByTab = new Set();
 const gitFooterPayloadStateByTab = new Map();
 const gitFooterPayloadSettlementTimersByTab = new Map();
 const gitFooterPayloadRequestSerialByTab = new Map();
-const gitFooterSyncPushInFlightByTab = new Set();
+const gitFooterSyncInFlightByTab = new Set();
+let gitPullErrorText = "";
+let gitPullErrorContext = { code: "", tabId: null, syncValue: "", busy: false, requestId: 0 };
 const gitFooterPiCalibrationInFlightByTab = new Set();
 let gitFooterVisibilityApplyInFlight = false;
 let gitFooterVisibilityDirty = false;
@@ -1931,6 +3368,13 @@ function deferUiRenderDuringPointerActivation(key, callback) {
   return true;
 }
 
+function deferUiRenderDuringInteractiveSurface(key, callback) {
+  if (!isInteractiveDropdownOpen()) return false;
+  deferredUiRenderCallbacks.set(key, callback);
+  scheduleDeferredUiFlushAfterDropdownClose();
+  return true;
+}
+
 function deferChatFollowScrollDuringPointerActivation({ force = false } = {}) {
   if (force || !shouldDeferUiRenderForPointerActivation()) return false;
   deferredChatFollowScroll = true;
@@ -1968,9 +3412,13 @@ function scheduleDeferredUiFlushAfterDropdownClose() {
   };
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
   else setTimeout(flush, 0);
+  clearTimeout(deferredUiRenderSafetyTimeout);
+  deferredUiRenderSafetyTimeout = setTimeout(flushDeferredUiRenders, INTERACTIVE_SURFACE_RENDER_DEFER_MAX_MS);
 }
 
 function flushDeferredUiRenders() {
+  clearTimeout(deferredUiRenderSafetyTimeout);
+  deferredUiRenderSafetyTimeout = null;
   const callbacks = [...deferredUiRenderCallbacks.values()];
   deferredUiRenderCallbacks.clear();
   const shouldScroll = deferredChatFollowScroll;
@@ -1984,6 +3432,128 @@ function flushDeferredUiRenders() {
     }
   }
   if (shouldScroll) scrollChatToBottom();
+}
+
+function isMeaningfulConnectedFocus(node) {
+  return node instanceof HTMLElement
+    && node.isConnected
+    && node !== document.body
+    && node !== document.documentElement;
+}
+
+function captureScopedControlContinuity(root, contextKey, targetKeyFor) {
+  const source = document.activeElement;
+  if (!(source instanceof HTMLElement) || !root?.contains(source)) return null;
+  const targetKey = targetKeyFor?.(source);
+  if (!targetKey) return null;
+  const textControl = source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement;
+  return {
+    source,
+    contextKey,
+    targetKey,
+    selectionStart: textControl ? source.selectionStart : null,
+    selectionEnd: textControl ? source.selectionEnd : null,
+    selectionDirection: textControl ? source.selectionDirection : null,
+    scrollTop: source.scrollTop,
+    scrollLeft: source.scrollLeft,
+  };
+}
+
+function restoreScopedControlContinuity(root, contextKey, snapshot, targetForKey) {
+  if (!snapshot || snapshot.contextKey !== contextKey || document.activeElement === snapshot.source) return;
+  if (isMeaningfulConnectedFocus(document.activeElement)) return;
+  const target = snapshot.source.isConnected && root?.contains(snapshot.source)
+    ? snapshot.source
+    : targetForKey?.(snapshot.targetKey);
+  if (!(target instanceof HTMLElement) || !root?.contains(target) || target.disabled) return;
+  try {
+    target.focus({ preventScroll: true });
+  } catch {
+    target.focus();
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    const length = target.value.length;
+    const start = Math.min(Math.max(0, snapshot.selectionStart ?? length), length);
+    const end = Math.min(Math.max(0, snapshot.selectionEnd ?? start), length);
+    try {
+      target.setSelectionRange(start, end, snapshot.selectionDirection || "none");
+    } catch {
+      // Non-text input types do not support a selection range.
+    }
+  }
+  target.scrollTop = Math.min(Math.max(0, snapshot.scrollTop || 0), Math.max(0, target.scrollHeight - target.clientHeight));
+  target.scrollLeft = Math.min(Math.max(0, snapshot.scrollLeft || 0), Math.max(0, target.scrollWidth - target.clientWidth));
+}
+
+function setScopedScrollContinuity(key, state) {
+  scopedScrollContinuityByKey.delete(key);
+  scopedScrollContinuityByKey.set(key, state);
+  while (scopedScrollContinuityByKey.size > SCOPED_SCROLL_CONTINUITY_LIMIT) {
+    scopedScrollContinuityByKey.delete(scopedScrollContinuityByKey.keys().next().value);
+  }
+}
+
+function rememberScopedScrollContinuity(node, key = node?.dataset?.continuityScrollKey, { allowPendingRestore = false, preserveMode = false } = {}) {
+  if (!node?.isConnected || !key || (node._scopedScrollContinuityPendingRestore && !allowPendingRestore)) return;
+  if (node._scopedScrollContinuityPendingRestore) {
+    node._scopedScrollContinuityRestoreToken = (node._scopedScrollContinuityRestoreToken || 0) + 1;
+    node._scopedScrollContinuityPendingRestore = false;
+  }
+  const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+  const previous = scopedScrollContinuityByKey.get(key);
+  const mode = preserveMode && previous ? previous.mode : maxScrollTop - node.scrollTop <= 24 ? "follow-end" : "position";
+  node.dataset.continuityScrollMode = mode;
+  setScopedScrollContinuity(key, {
+    mode,
+    scrollTop: node.scrollTop,
+    scrollLeft: node.scrollLeft,
+  });
+}
+
+function captureScopedScrollContinuity(root) {
+  for (const node of root?.querySelectorAll?.("[data-continuity-scroll-key]") || []) {
+    rememberScopedScrollContinuity(node, undefined, { preserveMode: true });
+  }
+}
+
+function bindScopedScrollContinuity(node, key) {
+  if (!node || !key) return;
+  node.dataset.continuityScrollKey = key;
+  node.dataset.preserveScrollOnToggle = "true";
+  if (node._scopedScrollContinuityBound) return;
+  node._scopedScrollContinuityBound = true;
+  const noteUserIntent = (event) => {
+    if (event.type === "keydown" && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+    node._scopedScrollContinuityUserIntentUntil = performance.now() + SCOPED_SCROLL_USER_INTENT_MS;
+  };
+  node.addEventListener("wheel", noteUserIntent, { passive: true });
+  node.addEventListener("touchstart", noteUserIntent, { passive: true });
+  node.addEventListener("pointerdown", noteUserIntent, { passive: true });
+  node.addEventListener("keydown", noteUserIntent);
+  node.addEventListener("scroll", () => {
+    const userInitiated = performance.now() <= (node._scopedScrollContinuityUserIntentUntil || 0);
+    rememberScopedScrollContinuity(node, undefined, { allowPendingRestore: userInitiated, preserveMode: !userInitiated });
+  }, { passive: true });
+}
+
+function restoreScopedScrollContinuity(node, key) {
+  if (!node || !scopedScrollContinuityByKey.has(key)) return;
+  const restoreToken = (node._scopedScrollContinuityRestoreToken || 0) + 1;
+  node._scopedScrollContinuityRestoreToken = restoreToken;
+  node._scopedScrollContinuityPendingRestore = true;
+  requestAnimationFrame(() => {
+    try {
+      if (node._scopedScrollContinuityRestoreToken !== restoreToken || !node.isConnected || node.dataset.continuityScrollKey !== key) return;
+      const state = scopedScrollContinuityByKey.get(key);
+      if (!state) return;
+      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.dataset.continuityScrollMode = state.mode;
+      node.scrollTop = state.mode === "follow-end" ? maxScrollTop : Math.min(Math.max(0, state.scrollTop), maxScrollTop);
+      node.scrollLeft = Math.min(Math.max(0, state.scrollLeft), Math.max(0, node.scrollWidth - node.clientWidth));
+    } finally {
+      if (node._scopedScrollContinuityRestoreToken === restoreToken) node._scopedScrollContinuityPendingRestore = false;
+    }
+  });
 }
 
 function beginPointerActivation(event) {
@@ -2017,6 +3587,41 @@ function cancelPointerActivation() {
   pointerActivationTimeout = null;
   activePointerActivation = null;
   flushDeferredUiRenders();
+}
+
+function tooltipTargetKey(target) {
+  return target?.dataset?.tooltipTargetKey || (target?.id ? `id:${target.id}` : "");
+}
+
+function captureTooltipContinuity(root) {
+  const pending = !footerTooltipTarget && !!footerTooltipPendingTarget;
+  const target = footerTooltipTarget || footerTooltipPendingTarget;
+  if (!target || !root?.contains(target)) return null;
+  const key = tooltipTargetKey(target);
+  if (!key) return null;
+  const hovered = target.matches?.(":hover") === true;
+  const focused = document.activeElement === target;
+  return hovered || focused ? {
+    target,
+    key,
+    hovered,
+    focused,
+    pending,
+    remainingDelay: pending ? Math.max(0, footerTooltipHoverDeadline - performance.now()) : 0,
+  } : null;
+}
+
+function restoreTooltipContinuity(root, snapshot) {
+  if (!snapshot) return;
+  const target = [...(root?.querySelectorAll?.("[data-tooltip-target-key]") || [])]
+    .find((node) => tooltipTargetKey(node) === snapshot.key) || null;
+  if (!target || !target.hasAttribute("data-tooltip") || (snapshot.hovered && !snapshot.focused && !target.matches(":hover"))) {
+    hideFooterTooltip(snapshot.target);
+    return;
+  }
+  if (!snapshot.hovered && !snapshot.focused) return;
+  if (snapshot.pending) scheduleFooterTooltip(target, snapshot.remainingDelay);
+  else showFooterTooltip(target);
 }
 
 function isMobileView() {
@@ -2079,6 +3684,132 @@ function sidePanelSectionRecords() {
     .filter((record) => record.id && record.button && record.content);
 }
 
+function readStoredSidePanelSectionOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? [...new Set(parsed.filter((id) => typeof id === "string" && id.trim()))] : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSidePanelSectionOrder() {
+  try {
+    localStorage.setItem(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(sidePanelSectionRecords().map(({ id }) => id)));
+  } catch {
+    // Ignore storage failures; ordering should still work for this page load.
+  }
+  markDurableUiLayoutDirty("sidePanel", "sectionOrder");
+}
+
+function restoreSidePanelSectionOrder() {
+  if (sidePanelSectionPointerDrag?.active) return;
+  const records = sidePanelSectionRecords();
+  const parent = records[0]?.section.parentElement;
+  if (!parent || records.some(({ section }) => section.parentElement !== parent)) return;
+  const rank = new Map(readStoredSidePanelSectionOrder().map((id, index) => [id, index]));
+  records.sort((a, b) => {
+    const aRank = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER;
+    const bRank = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER;
+    return aRank - bRank;
+  });
+  for (const { section } of records) parent.append(section);
+}
+
+function visibleSidePanelSectionRecords() {
+  return sidePanelSectionRecords().filter(({ section }) => !section.hidden);
+}
+
+function clearSidePanelSectionDragMarkers() {
+  for (const { section } of sidePanelSectionRecords()) {
+    section.classList.remove("drag-over-before", "drag-over-after");
+  }
+}
+
+function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
+  const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === fromId);
+  if (!sourceRecord || !targetRecord || sourceRecord.section === targetRecord.section) return false;
+  const parent = sourceRecord.section.parentElement;
+  if (!parent || targetRecord.section.parentElement !== parent) return false;
+  clearSidePanelSectionDragMarkers();
+  targetRecord.section.classList.add(insertBefore ? "drag-over-before" : "drag-over-after");
+  sidePanelSectionLastDragOverKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  if (insertBefore) parent.insertBefore(sourceRecord.section, targetRecord.section);
+  else parent.insertBefore(sourceRecord.section, targetRecord.section.nextSibling);
+  persistSidePanelSectionOrder();
+  return true;
+}
+
+function moveSidePanelSectionByOffset(sectionId, offset) {
+  const records = visibleSidePanelSectionRecords();
+  const fromIndex = records.findIndex(({ id }) => id === sectionId);
+  const toIndex = fromIndex + offset;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= records.length) return false;
+  const targetRecord = records[toIndex];
+  const moved = moveSidePanelSectionRelative(sectionId, targetRecord, offset < 0);
+  clearSidePanelSectionDragMarkers();
+  if (moved) queueMicrotask(() => sidePanelSectionRecords().find(({ id }) => id === sectionId)?.button.focus({ preventScroll: true }));
+  return moved;
+}
+
+function sidePanelSectionToggleFromPoint(clientX, clientY) {
+  return document.elementFromPoint(clientX, clientY)?.closest?.("[data-side-panel-section-toggle]") || null;
+}
+
+function beginSidePanelSectionPointerDrag(event, sectionId) {
+  if (event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
+  sidePanelSectionPointerDrag = { sectionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
+  window.addEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
+  window.addEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
+  window.addEventListener("pointercancel", endSidePanelSectionPointerDrag, { capture: true });
+}
+
+function updateSidePanelSectionPointerDrag(event) {
+  const drag = sidePanelSectionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+  if (!drag.active && distance < SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX) return;
+  event.preventDefault();
+  if (!drag.active) {
+    drag.active = true;
+    sidePanelSectionLastDragOverKey = "";
+    clearTimeout(pointerActivationTimeout);
+    pointerActivationTimeout = null;
+    activePointerActivation = null;
+    const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === drag.sectionId);
+    sourceRecord?.section.classList.add("dragging");
+  }
+  const targetToggle = sidePanelSectionToggleFromPoint(event.clientX, event.clientY);
+  const targetRecord = targetToggle
+    ? sidePanelSectionRecords().find(({ button }) => button === targetToggle)
+    : null;
+  if (!targetRecord || targetRecord.id === drag.sectionId || targetRecord.section.hidden) return;
+  const rect = targetToggle.getBoundingClientRect();
+  const insertBefore = event.clientY < rect.top + rect.height / 2;
+  const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  if (markerKey === sidePanelSectionLastDragOverKey) return;
+  moveSidePanelSectionRelative(drag.sectionId, targetRecord, insertBefore);
+}
+
+function endSidePanelSectionPointerDrag(event) {
+  const drag = sidePanelSectionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  window.removeEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
+  window.removeEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
+  window.removeEventListener("pointercancel", endSidePanelSectionPointerDrag, { capture: true });
+  const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === drag.sectionId);
+  sidePanelSectionPointerDrag = null;
+  sidePanelSectionLastDragOverKey = "";
+  clearSidePanelSectionDragMarkers();
+  sourceRecord?.section.classList.remove("dragging");
+  if (drag.active) {
+    sidePanelSectionSuppressClickUntil = Date.now() + 250;
+    event.preventDefault();
+    persistSidePanelSectionOrder();
+    queueMicrotask(() => sourceRecord?.button.focus({ preventScroll: true }));
+  }
+}
+
 function readStoredSidePanelSectionCollapsedIds() {
   try {
     const stored = localStorage.getItem(SIDE_PANEL_SECTION_STORAGE_KEY);
@@ -2099,6 +3830,7 @@ function persistSidePanelSectionState() {
   } catch {
     // Ignore storage failures; section toggles should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "collapsedSectionIds");
 }
 
 function readStoredSidePanelSectionHiddenIds() {
@@ -2121,6 +3853,7 @@ function persistSidePanelSectionVisibility() {
   } catch {
     // Ignore storage failures; visibility toggles should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "hiddenSectionIds");
 }
 
 function setSidePanelSectionVisible(record, visible, { persist = true } = {}) {
@@ -2130,6 +3863,9 @@ function setSidePanelSectionVisible(record, visible, { persist = true } = {}) {
       renderGitPanel();
       ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
     });
+  }
+  if (visible && record.id === "sampling" && !record.section.classList.contains("collapsed")) {
+    queueMicrotask(() => ensureSamplingParametersLoaded());
   }
   if (persist) persistSidePanelSectionVisibility();
 }
@@ -2147,12 +3883,15 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
   record.content.hidden = collapsed;
   record.button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   record.button.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
-  record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
+  record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section · drag to reorder · Alt+↑/↓ moves`);
   if (!collapsed && record.id === "git" && !record.section.hidden) {
     queueMicrotask(() => {
       renderGitPanel();
       ensureGitPanelRepositoriesDiscovered({ retryUnavailable: true });
     });
+  }
+  if (!collapsed && record.id === "sampling" && !record.section.hidden) {
+    queueMicrotask(() => ensureSamplingParametersLoaded());
   }
   if (persist) persistSidePanelSectionState();
 }
@@ -2229,13 +3968,498 @@ function showSidePanelContextMenu(event) {
 
 function bindSidePanelSectionToggles() {
   for (const record of sidePanelSectionRecords()) {
-    record.button.addEventListener("click", () => {
+    record.button.addEventListener("click", (event) => {
+      if (Date.now() < sidePanelSectionSuppressClickUntil) {
+        event.preventDefault();
+        return;
+      }
       if (record.section.classList.contains("collapsed")) {
         setOnlySidePanelSectionExpanded(record);
       } else {
         setSidePanelSectionCollapsed(record, true);
       }
     });
+    record.button.addEventListener("keydown", (event) => {
+      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      event.preventDefault();
+      moveSidePanelSectionByOffset(record.id, event.key === "ArrowUp" ? -1 : 1);
+    });
+    record.button.addEventListener("pointerdown", (event) => beginSidePanelSectionPointerDrag(event, record.id));
+  }
+}
+
+function composerActionRecords() {
+  return Array.from(elements.composerRow?.querySelectorAll("[data-composer-action-id]") || [])
+    .map((root, domIndex) => {
+      const id = root.dataset.composerActionId || "";
+      const focusTarget = root.matches("button") ? root : root.querySelector("button");
+      const rawStoredOrder = root.style.getPropertyValue("--composer-action-order");
+      const storedOrder = Number(rawStoredOrder);
+      const order = rawStoredOrder !== "" && Number.isFinite(storedOrder) ? storedOrder : domIndex;
+      const span = Number(root.dataset.composerActionSpan) === 2 ? 2 : 1;
+      return { id, root, focusTarget, domIndex, order, span };
+    })
+    .filter((record) => record.id && record.focusTarget);
+}
+
+function orderedComposerActionRecords({ visibleOnly = false } = {}) {
+  return composerActionRecords()
+    .filter(({ root }) => !visibleOnly || (!root.hidden && root.getClientRects().length > 0))
+    .sort((a, b) => a.order - b.order || a.domIndex - b.domIndex);
+}
+
+function readStoredComposerActionOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COMPOSER_ACTION_ORDER_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? [...new Set(parsed.filter((id) => typeof id === "string" && id.trim()))] : [];
+  } catch {
+    return [];
+  }
+}
+
+function applyComposerActionOrder(orderIds) {
+  const records = composerActionRecords();
+  const knownIds = new Set(records.map(({ id }) => id));
+  const completeOrder = [
+    ...new Set(orderIds.filter((id) => knownIds.has(id))),
+    ...records.map(({ id }) => id).filter((id) => !orderIds.includes(id)),
+  ];
+  const rank = new Map(completeOrder.map((id, index) => [id, index]));
+  for (const record of records) record.root.style.setProperty("--composer-action-order", String(rank.get(record.id)));
+  return completeOrder;
+}
+
+function restoreComposerActionOrder() {
+  if (composerActionPointerDrag?.active) return;
+  applyComposerActionOrder(readStoredComposerActionOrder());
+}
+
+function persistComposerActionOrder() {
+  try {
+    localStorage.setItem(COMPOSER_ACTION_ORDER_STORAGE_KEY, JSON.stringify(orderedComposerActionRecords().map(({ id }) => id)));
+  } catch {
+    // Ignore storage failures; ordering should still work for this page load.
+  }
+  markDurableUiLayoutDirty("composerActions");
+}
+
+function composerActionGridColumnCount() {
+  const row = elements.composerRow;
+  const style = getComputedStyle(row);
+  const rawMinWidth = style.getPropertyValue("--composer-action-cell-min-width").trim();
+  const numericMinWidth = Number.parseFloat(rawMinWidth);
+  const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const rowFontSize = Number.parseFloat(style.fontSize) || rootFontSize;
+  const minWidth = rawMinWidth.endsWith("rem")
+    ? numericMinWidth * rootFontSize
+    : rawMinWidth.endsWith("em")
+      ? numericMinWidth * rowFontSize
+      : numericMinWidth;
+  const gap = Number.parseFloat(style.columnGap || style.gap) || 0;
+  const availableWidth = row.clientWidth || row.getBoundingClientRect().width;
+  if (!Number.isFinite(minWidth) || minWidth <= 0 || !Number.isFinite(availableWidth) || availableWidth <= 0) return 1;
+  return Math.max(1, Math.floor((availableWidth + gap) / (minWidth + gap)));
+}
+
+function readStoredComposerActionLayout() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COMPOSER_ACTION_LAYOUT_STORAGE_KEY) || "null");
+    if (!parsed || parsed.version !== 2 || !Number.isInteger(parsed.columns) || parsed.columns < 1 || !parsed.positions || typeof parsed.positions !== "object") return null;
+    const positions = new Map();
+    for (const [id, slot] of Object.entries(parsed.positions)) {
+      if (typeof id === "string" && id && Number.isInteger(slot) && slot >= 0) positions.set(id, slot);
+    }
+    return { columns: parsed.columns, positions };
+  } catch {
+    return null;
+  }
+}
+
+function composerActionSlotCanFit(record, slot, layout = composerActionSlotLayout, columns = composerActionLayoutColumns) {
+  if (!record || !Number.isInteger(slot) || slot < 0 || columns < 1) return false;
+  const column = slot % columns;
+  if (column + record.span > columns) return false;
+  const row = Math.floor(slot / columns);
+  for (const [otherId, otherSlot] of layout) {
+    if (otherId === record.id) continue;
+    const other = composerActionRecords().find(({ id, root }) => id === otherId && !root.hidden && root.getClientRects().length > 0);
+    if (!other || Math.floor(otherSlot / columns) !== row) continue;
+    const otherColumn = otherSlot % columns;
+    if (column < otherColumn + other.span && otherColumn < column + record.span) return false;
+  }
+  return true;
+}
+
+function applyComposerActionSlotLayout() {
+  for (const record of composerActionRecords()) {
+    const slot = composerActionSlotLayout.get(record.id);
+    if (!Number.isInteger(slot) || composerActionLayoutColumns < 1 || record.root.hidden) {
+      record.root.style.removeProperty("--composer-action-grid-column");
+      record.root.style.removeProperty("--composer-action-grid-row");
+      continue;
+    }
+    record.root.style.setProperty("--composer-action-grid-column", String((slot % composerActionLayoutColumns) + 1));
+    record.root.style.setProperty("--composer-action-grid-row", String(Math.floor(slot / composerActionLayoutColumns) + 1));
+  }
+}
+
+function persistComposerActionSlotLayout() {
+  if (composerActionLayoutColumns < 1 || !composerActionSlotLayout.size) return;
+  try {
+    localStorage.setItem(COMPOSER_ACTION_LAYOUT_STORAGE_KEY, JSON.stringify({
+      version: 2,
+      columns: composerActionLayoutColumns,
+      positions: Object.fromEntries(composerActionSlotLayout),
+    }));
+  } catch {
+    // Ignore storage failures; sparse placement should still work for this page load.
+  }
+  markDurableUiLayoutDirty("composerActions");
+}
+
+function remapComposerActionSlot(record, slot, sourceColumns, targetColumns) {
+  const sourceRow = Math.floor(slot / sourceColumns);
+  const sourceColumn = slot % sourceColumns;
+  const sourceMaxColumn = Math.max(0, sourceColumns - record.span);
+  const targetMaxColumn = Math.max(0, targetColumns - record.span);
+  const relativeColumn = sourceMaxColumn > 0 ? Math.min(sourceColumn, sourceMaxColumn) / sourceMaxColumn : 0;
+  return sourceRow * targetColumns + Math.round(relativeColumn * targetMaxColumn);
+}
+
+function nearestAvailableComposerActionSlot(record, preferredSlot, layout, columns) {
+  if (record.span > columns) return null;
+  const preferredRow = Math.floor(preferredSlot / columns);
+  const preferredColumn = preferredSlot % columns;
+  const maxColumn = columns - record.span;
+  const columnsByDistance = Array.from({ length: maxColumn + 1 }, (_, column) => column)
+    .sort((a, b) => Math.abs(a - preferredColumn) - Math.abs(b - preferredColumn) || a - b);
+  const maxRow = preferredRow + composerActionRecords().length;
+  for (let row = preferredRow; row <= maxRow; row += 1) {
+    for (const column of columnsByDistance) {
+      const candidate = row * columns + column;
+      if (composerActionSlotCanFit(record, candidate, layout, columns)) return candidate;
+    }
+  }
+  return null;
+}
+
+function restoreComposerActionSlotLayout() {
+  if (isMobileView()) return;
+  const stored = readStoredComposerActionLayout();
+  const columns = composerActionGridColumnCount();
+  composerActionSlotLayout = new Map();
+  composerActionLayoutColumns = columns;
+  if (!stored) {
+    applyComposerActionSlotLayout();
+    return;
+  }
+  const records = new Map(composerActionRecords().map((record) => [record.id, record]));
+  for (const [id, storedSlot] of [...stored.positions].sort((a, b) => a[1] - b[1])) {
+    const record = records.get(id);
+    if (!record || record.root.hidden || !record.root.getClientRects().length) continue;
+    const preferredSlot = stored.columns === columns
+      ? storedSlot
+      : remapComposerActionSlot(record, storedSlot, stored.columns, columns);
+    const slot = nearestAvailableComposerActionSlot(record, preferredSlot, composerActionSlotLayout, columns);
+    if (slot !== null) composerActionSlotLayout.set(id, slot);
+  }
+  applyComposerActionSlotLayout();
+}
+
+function scheduleComposerActionSlotLayoutRestore() {
+  if (composerActionPointerDrag?.active || composerActionLayoutRestoreFrame !== null) return;
+  const restore = () => {
+    composerActionLayoutRestoreFrame = null;
+    if (!composerActionPointerDrag?.active) restoreComposerActionSlotLayout();
+  };
+  composerActionLayoutRestoreFrame = typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(restore)
+    : setTimeout(restore, 0);
+}
+
+function captureComposerActionSlotLayout() {
+  const cells = Array.from(elements.composerActionGridGuide?.children || []);
+  if (!cells.length) return;
+  composerActionLayoutColumns = composerActionGridColumnCount();
+  const nextLayout = new Map();
+  for (const record of orderedComposerActionRecords({ visibleOnly: true })) {
+    const actionRect = record.root.getBoundingClientRect();
+    const slot = cells.findIndex((cell) => {
+      const rect = cell.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      return centerX >= actionRect.left - 1 && centerX <= actionRect.right + 1 && centerY >= actionRect.top - 1 && centerY <= actionRect.bottom + 1;
+    });
+    if (slot >= 0) nextLayout.set(record.id, slot);
+  }
+  composerActionSlotLayout = nextLayout;
+  applyComposerActionSlotLayout();
+}
+
+function repackComposerActionSlotLayout() {
+  if (composerActionLayoutColumns < 1) return;
+  const nextLayout = new Map();
+  let slot = 0;
+  for (const record of orderedComposerActionRecords({ visibleOnly: true })) {
+    const column = slot % composerActionLayoutColumns;
+    if (column + record.span > composerActionLayoutColumns) slot += composerActionLayoutColumns - column;
+    nextLayout.set(record.id, slot);
+    slot += record.span;
+  }
+  composerActionSlotLayout = nextLayout;
+  applyComposerActionSlotLayout();
+  persistComposerActionSlotLayout();
+}
+
+function syncComposerActionOrderFromSlots() {
+  const visibleIds = orderedComposerActionRecords({ visibleOnly: true })
+    .filter(({ id }) => composerActionSlotLayout.has(id))
+    .sort((a, b) => composerActionSlotLayout.get(a.id) - composerActionSlotLayout.get(b.id))
+    .map(({ id }) => id);
+  const completeOrder = [
+    ...visibleIds,
+    ...orderedComposerActionRecords().map(({ id }) => id).filter((id) => !visibleIds.includes(id)),
+  ];
+  applyComposerActionOrder(completeOrder);
+  persistComposerActionOrder();
+}
+
+function moveComposerActionToGridCell(actionId, cell) {
+  const record = composerActionRecords().find(({ id }) => id === actionId);
+  const slot = Number(cell?.dataset.composerActionGridCell);
+  if (!record || !Number.isInteger(slot)) return false;
+  const nextLayout = new Map(composerActionSlotLayout);
+  nextLayout.delete(actionId);
+  if (!composerActionSlotCanFit(record, slot, nextLayout)) return false;
+  nextLayout.set(actionId, slot);
+  composerActionSlotLayout = nextLayout;
+  applyComposerActionSlotLayout();
+  syncComposerActionOrderFromSlots();
+  clearComposerActionDragMarkers();
+  cell.classList.add("composer-action-grid-cell-target");
+  composerActionLastDragOverKey = `cell:${slot}`;
+  persistComposerActionSlotLayout();
+  return true;
+}
+
+function clearComposerActionDragMarkers() {
+  for (const { root } of composerActionRecords()) {
+    root.classList.remove("composer-action-drag-before", "composer-action-drag-after");
+  }
+  for (const cell of elements.composerActionGridGuide?.children || []) {
+    cell.classList.remove("composer-action-grid-cell-target");
+  }
+}
+
+function showComposerActionGridGuide() {
+  const row = elements.composerRow;
+  const guide = elements.composerActionGridGuide;
+  if (!row || !guide) return;
+  const columnCount = composerActionGridColumnCount();
+  const rowTops = orderedComposerActionRecords({ visibleOnly: true })
+    .map(({ root }) => root.getBoundingClientRect().top)
+    .sort((a, b) => a - b)
+    .reduce((groups, top) => {
+      if (!groups.length || top - groups.at(-1) > 4) groups.push(top);
+      return groups;
+    }, []);
+  const rowCount = Math.max(1, rowTops.length);
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < columnCount * rowCount; index += 1) {
+    const cell = document.createElement("span");
+    cell.className = "composer-action-grid-cell";
+    cell.dataset.composerActionGridCell = String(index);
+    fragment.append(cell);
+  }
+  guide.style.setProperty("--composer-action-grid-rows", String(rowCount));
+  guide.replaceChildren(fragment);
+  guide.hidden = false;
+  document.body.classList.add("composer-action-drag-active");
+}
+
+function hideComposerActionGridGuide() {
+  document.body.classList.remove("composer-action-drag-active");
+  if (elements.composerActionGridGuide) elements.composerActionGridGuide.hidden = true;
+}
+
+function composerActionGridCellFromPoint(clientX, clientY) {
+  for (const cell of elements.composerActionGridGuide?.children || []) {
+    const rect = cell.getBoundingClientRect();
+    if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) return cell;
+  }
+  return null;
+}
+
+function moveComposerActionRelative(fromId, targetId, insertBefore) {
+  if (!fromId || !targetId || fromId === targetId) return false;
+  const order = orderedComposerActionRecords().map(({ id }) => id).filter((id) => id !== fromId);
+  const targetIndex = order.indexOf(targetId);
+  if (targetIndex < 0) return false;
+  order.splice(targetIndex + (insertBefore ? 0 : 1), 0, fromId);
+  applyComposerActionOrder(order);
+  if (composerActionSlotLayout.size) repackComposerActionSlotLayout();
+  clearComposerActionDragMarkers();
+  const targetRecord = composerActionRecords().find(({ id }) => id === targetId);
+  targetRecord?.root.classList.add(insertBefore ? "composer-action-drag-before" : "composer-action-drag-after");
+  composerActionLastDragOverKey = `${targetId}:${insertBefore ? "before" : "after"}`;
+  persistComposerActionOrder();
+  return true;
+}
+
+function composerActionLabel(record) {
+  return record?.focusTarget?.getAttribute("aria-label")
+    || record?.focusTarget?.textContent?.trim()
+    || record?.focusTarget?.getAttribute("title")
+    || record?.id
+    || "Action";
+}
+
+function announceComposerActionPosition(actionId) {
+  if (!elements.composerActionOrderStatus) return;
+  const records = orderedComposerActionRecords({ visibleOnly: true });
+  const index = records.findIndex(({ id }) => id === actionId);
+  const record = records[index];
+  if (!record || index < 0) return;
+  elements.composerActionOrderStatus.textContent = `${composerActionLabel(record)} moved to position ${index + 1} of ${records.length}.`;
+}
+
+function moveComposerActionByOffset(actionId, offset) {
+  const records = orderedComposerActionRecords({ visibleOnly: true });
+  const fromIndex = records.findIndex(({ id }) => id === actionId);
+  const toIndex = fromIndex + offset;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= records.length) return false;
+  const moved = moveComposerActionRelative(actionId, records[toIndex].id, offset < 0);
+  clearComposerActionDragMarkers();
+  if (moved) {
+    announceComposerActionPosition(actionId);
+    queueMicrotask(() => composerActionRecords().find(({ id }) => id === actionId)?.focusTarget.focus({ preventScroll: true }));
+  }
+  return moved;
+}
+
+function composerActionRootFromPoint(clientX, clientY) {
+  return document.elementFromPoint(clientX, clientY)?.closest?.("[data-composer-action-id]") || null;
+}
+
+function beginComposerActionPointerDrag(event, actionId) {
+  if (event.button !== 0 || isMobileView() || !actionId || composerActionPointerDrag) return;
+  if (event.target?.closest?.(".composer-publish-menu-panel, input, select, textarea, a")) return;
+  composerActionPointerDrag = { actionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
+  window.addEventListener("pointermove", updateComposerActionPointerDrag, { capture: true });
+  window.addEventListener("pointerup", endComposerActionPointerDrag, { capture: true });
+  window.addEventListener("pointercancel", endComposerActionPointerDrag, { capture: true });
+}
+
+function updateComposerActionPointerDrag(event) {
+  const drag = composerActionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+  if (!drag.active && distance < COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX) return;
+  event.preventDefault();
+  if (!drag.active) {
+    drag.active = true;
+    composerActionLastDragOverKey = "";
+    clearTimeout(pointerActivationTimeout);
+    pointerActivationTimeout = null;
+    activePointerActivation = null;
+    composerActionRecords().find(({ id }) => id === drag.actionId)?.root.classList.add("composer-action-dragging");
+    showComposerActionGridGuide();
+    captureComposerActionSlotLayout();
+  }
+  const targetRoot = composerActionRootFromPoint(event.clientX, event.clientY);
+  const targetRecord = targetRoot
+    ? composerActionRecords().find(({ root }) => root === targetRoot)
+    : null;
+  if (targetRecord?.id === drag.actionId) {
+    drag.pendingRelative = null;
+    if (!composerActionLastDragOverKey.startsWith("cell:")) {
+      clearComposerActionDragMarkers();
+      composerActionLastDragOverKey = "";
+    }
+    return;
+  }
+  if (targetRecord && !targetRecord.root.hidden) {
+    const rect = targetRoot.getBoundingClientRect();
+    const insertBefore = event.clientX < rect.left + rect.width / 2;
+    const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+    if (markerKey === composerActionLastDragOverKey) return;
+    clearComposerActionDragMarkers();
+    targetRecord.root.classList.add(insertBefore ? "composer-action-drag-before" : "composer-action-drag-after");
+    composerActionLastDragOverKey = markerKey;
+    drag.pendingRelative = { targetId: targetRecord.id, insertBefore };
+    return;
+  }
+  const gridCell = composerActionGridCellFromPoint(event.clientX, event.clientY);
+  if (!gridCell) return;
+  const markerKey = `cell:${gridCell.dataset.composerActionGridCell}`;
+  if (markerKey === composerActionLastDragOverKey) return;
+  drag.pendingRelative = null;
+  moveComposerActionToGridCell(drag.actionId, gridCell);
+}
+
+function endComposerActionPointerDrag(event) {
+  const drag = composerActionPointerDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  window.removeEventListener("pointermove", updateComposerActionPointerDrag, { capture: true });
+  window.removeEventListener("pointerup", endComposerActionPointerDrag, { capture: true });
+  window.removeEventListener("pointercancel", endComposerActionPointerDrag, { capture: true });
+  const sourceRecord = composerActionRecords().find(({ id }) => id === drag.actionId);
+  if (drag.active && event.type === "pointerup" && drag.pendingRelative) {
+    moveComposerActionRelative(drag.actionId, drag.pendingRelative.targetId, drag.pendingRelative.insertBefore);
+  }
+  composerActionPointerDrag = null;
+  composerActionLastDragOverKey = "";
+  clearComposerActionDragMarkers();
+  sourceRecord?.root.classList.remove("composer-action-dragging");
+  hideComposerActionGridGuide();
+  if (drag.active) {
+    composerActionSuppressClickUntil = Date.now() + 250;
+    event.preventDefault();
+    persistComposerActionOrder();
+    persistComposerActionSlotLayout();
+    announceComposerActionPosition(drag.actionId);
+    queueMicrotask(() => sourceRecord?.focusTarget.focus({ preventScroll: true }));
+  }
+}
+
+function syncComposerActionGridAvailability() {
+  document.body.classList.toggle("composer-action-grid-enabled", !isMobileView());
+}
+
+function initializeComposerActionOrdering() {
+  syncComposerActionGridAvailability();
+  restoreComposerActionOrder();
+  restoreComposerActionSlotLayout();
+  const layoutObserver = new MutationObserver((mutations) => {
+    if (mutations.some((mutation) => mutation.type === "childList" || mutation.target.matches?.("[data-composer-action-id]"))) {
+      scheduleComposerActionSlotLayoutRestore();
+    }
+  });
+  layoutObserver.observe(elements.composerRow, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  if (typeof ResizeObserver === "function") {
+    let observedRowWidth = elements.composerRow.getBoundingClientRect().width;
+    const rowResizeObserver = new ResizeObserver(([entry]) => {
+      const nextWidth = entry?.contentRect?.width ?? elements.composerRow.getBoundingClientRect().width;
+      if (Math.abs(nextWidth - observedRowWidth) < 0.5) return;
+      observedRowWidth = nextWidth;
+      scheduleComposerActionSlotLayoutRestore();
+    });
+    rowResizeObserver.observe(elements.composerRow);
+  }
+  window.addEventListener("resize", scheduleComposerActionSlotLayoutRestore);
+  for (const record of composerActionRecords()) {
+    record.focusTarget.setAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown");
+    record.focusTarget.addEventListener("keydown", (event) => {
+      if (isMobileView() || !event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      moveComposerActionByOffset(record.id, ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 1);
+    });
+    record.root.addEventListener("pointerdown", (event) => beginComposerActionPointerDrag(event, record.id));
+    record.root.addEventListener("click", (event) => {
+      if (Date.now() >= composerActionSuppressClickUntil) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, { capture: true });
   }
 }
 
@@ -2273,11 +4497,11 @@ function persistAgentDoneNotificationsEnabled(enabled) {
 }
 
 function agentDoneNotificationsStatusText() {
-  if (!browserNotificationSupported()) return "Unavailable here";
+  if (!browserNotificationSupported()) return "Unavailable here · Activity remains available";
   const permission = browserNotificationPermission();
-  if (permission === "denied") return "Permission denied";
-  if (agentDoneNotificationsEnabled) return permission === "granted" ? "On" : "Permission needed";
-  return permission === "granted" ? "Off · permission granted" : "Off";
+  if (permission === "denied") return "Permission denied · Activity remains available";
+  if (agentDoneNotificationsEnabled) return permission === "granted" ? "On · active Web UI clients only" : "Permission needed";
+  return permission === "granted" ? "Off · permission granted · active clients only" : "Off · active clients only";
 }
 
 function renderAgentDoneNotificationsToggle() {
@@ -2357,6 +4581,7 @@ function persistTerminalTabsLayout(layout) {
   } catch {
     // Ignore storage failures; the layout control should still work for this page load.
   }
+  markDurableUiLayoutDirty("terminalTabs", "layout");
 }
 
 function readStoredToolOutputExpanded() {
@@ -2450,6 +4675,36 @@ function restoreSubagentOpenModeSetting() {
   setSubagentOpenMode(readStoredSubagentOpenMode(), { persist: false });
 }
 
+function readStoredSubagentAutoClearEnabled() {
+  try {
+    return localStorage.getItem(SUBAGENT_AUTO_CLEAR_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistSubagentAutoClearEnabled(enabled) {
+  try {
+    localStorage.setItem(SUBAGENT_AUTO_CLEAR_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {
+    // Ignore storage failures; the preference still applies for this page load.
+  }
+}
+
+function setSubagentAutoClearEnabled(enabled, { persist = true, announce = false } = {}) {
+  subagentAutoClearEnabled = Boolean(enabled);
+  if (persist) persistSubagentAutoClearEnabled(subagentAutoClearEnabled);
+  renderSubagents();
+  if (announce) addEvent(`subagent auto-clear ${subagentAutoClearEnabled ? "enabled" : "disabled"}`, "info");
+  if (subagentAutoClearEnabled && !subagentsLoading && !subagentsClearingFinished && finishedSubagentRunSelections().length) {
+    void clearFinishedSubagentRuns({ automatic: true });
+  }
+}
+
+function restoreSubagentAutoClearSetting() {
+  setSubagentAutoClearEnabled(readStoredSubagentAutoClearEnabled(), { persist: false });
+}
+
 function normalizeTerminalCustomGroupTitle(value, fallback = "Custom group") {
   const title = String(value || "").replace(/\s+/g, " ").trim();
   return (title || fallback).slice(0, 40);
@@ -2511,6 +4766,7 @@ function persistTerminalCustomGroups() {
   } catch {
     // Ignore storage failures; custom tab groups still work for this page load.
   }
+  markDurableUiLayoutDirty("terminalTabs", "customGroups");
 }
 
 function workspaceGroupsForSave() {
@@ -3011,7 +5267,7 @@ function bindTerminalTabDragAndDrop(element, { sourceTabId = "", target = null }
     element.draggable = true;
     element.dataset.dragTabId = sourceTabId;
     element.addEventListener("dragstart", (event) => {
-      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-group-add")) {
+      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-actions, .terminal-tab-group-add")) {
         event.preventDefault();
         return;
       }
@@ -3074,8 +5330,19 @@ function handleTerminalTabDrop(sourceTabId, target) {
   addEvent(`added ${sourceTab.title || "tab"} to ${normalizeTerminalCustomGroupTitle(group.title).toLowerCase()}`, "info");
 }
 
+function removeLiveTranscriptBubble(bubble, key = "live-output") {
+  if (!bubble?.isConnected) return;
+  transcriptRenderer.commitTranscriptMutation({
+    key: `live-remove:${key}`,
+    kind: "authoritative",
+    surfaces: [bubble],
+    invalidateSelection: true,
+    mutate: () => bubble.remove(),
+  });
+}
+
 function removeStreamingThinkingBubble() {
-  streamThinkingBubble?.remove();
+  removeLiveTranscriptBubble(streamThinkingBubble, "thinking");
   streamThinkingBubble = null;
   streamThinking = null;
   renderRunIndicator({ scroll: false });
@@ -3379,22 +5646,139 @@ function normalizeFeatureCategory(value) {
   return value === "lightweight-feature" || value === "complex-feature" ? value : "";
 }
 
+function normalizeFeatureDecisionKind(value) {
+  return value === "feature_lightweight" || value === "feature_complex" ? value : "";
+}
+
+function normalizeFeatureDecisionReason(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, FEATURE_DECISION_REASON_MAX_CHARS)
+    .trimEnd();
+}
+
+// Accepts the structured {kind,reason} classifier payload and the legacy exact label.
+// Every other payload fails closed so the popup stays unavailable.
+function parseFeatureDecisionPayload(value) {
+  if (typeof value !== "string" || !value || value.length > FEATURE_DECISION_PAYLOAD_MAX_CHARS) return null;
+  const legacyKind = normalizeFeatureDecisionKind(value);
+  if (legacyKind) return { kind: legacyKind, reason: "" };
+  if (!value.startsWith("{")) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const keys = Object.keys(parsed);
+  if (keys.length !== 2 || !keys.includes("kind") || !keys.includes("reason")) return null;
+  if (typeof parsed.reason !== "string") return null;
+  const kind = normalizeFeatureDecisionKind(parsed.kind);
+  const reason = normalizeFeatureDecisionReason(parsed.reason);
+  return kind && reason ? { kind, reason } : null;
+}
+
+function featureDecisionKindLabel(kind) {
+  return kind === "feature_complex" ? "Complex feature" : "Lightweight feature";
+}
+
+function formatFeatureDecisionText(decision) {
+  if (!decision) return "";
+  const reason = decision.reason || `The classifier reported ${decision.kind} without a reason.`;
+  return `Decision: ${featureDecisionKindLabel(decision.kind)} (${decision.kind})\nReason: ${reason}`;
+}
+
+function featureDecisionForTab(tabId) {
+  const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
+  const decision = featureDecisionOutputByTab.get(tabId) || null;
+  if (!decision || !normalizeFeatureDecisionKind(decision.kind)) return null;
+  if (category === "lightweight-feature" && decision.kind === "feature_lightweight") return decision;
+  if (category === "complex-feature" && decision.kind === "feature_complex") return decision;
+  return null;
+}
+
+function featureDecisionOutputForTab(tabId) {
+  return formatFeatureDecisionText(featureDecisionForTab(tabId));
+}
+
+function closeFeatureDecisionDialog({ restoreFocus = true } = {}) {
+  const dialog = elements.featureDecisionDialog;
+  if (!dialog?.open) {
+    featureDecisionDialogTabId = null;
+    if (elements.featureDecisionDialogOutput) elements.featureDecisionDialogOutput.textContent = "";
+    return;
+  }
+  if (!restoreFocus) modalSurfaceState.delete(dialog);
+  dialog.close();
+}
+
+function syncFeatureDecisionDialog() {
+  const dialog = elements.featureDecisionDialog;
+  if (!dialog?.open) return;
+  const output = featureDecisionOutputForTab(featureDecisionDialogTabId);
+  if (featureDecisionDialogTabId !== activeTabId || !output || elements.featureDecisionDialogOutput?.textContent !== output) {
+    closeFeatureDecisionDialog({ restoreFocus: false });
+  }
+}
+
+function openFeatureDecisionDialog() {
+  const tabId = activeTabId;
+  const output = featureDecisionOutputForTab(tabId);
+  const dialog = elements.featureDecisionDialog;
+  if (!tabId || !output || !dialog || !elements.featureDecisionDialogOutput) return;
+  featureDecisionDialogTabId = tabId;
+  elements.featureDecisionDialogOutput.textContent = output;
+  if (!dialog.open) dialog.showModal();
+  queueMicrotask(() => elements.featureDecisionDialogCloseButton?.focus({ preventScroll: true }));
+}
+
+function clearFeatureDecisionStateForTab(tabId, { render = false } = {}) {
+  if (!tabId) return;
+  featureCategoryByTab.delete(tabId);
+  featureDecisionOutputByTab.delete(tabId);
+  if (featureDecisionDialogTabId === tabId) closeFeatureDecisionDialog({ restoreFocus: false });
+  if (render && tabId === activeTabId) renderFeatureCategoryTag(tabId);
+}
+
 function renderFeatureCategoryTag(tabId = activeTabId) {
   const tag = elements.featureCategoryTag;
   if (!tag) return;
-  const category = normalizeFeatureCategory(featureCategoryByTab.get(tabId));
+  const enabled = isOptionalFeatureEnabled("featureSystemPrompt");
+  const category = enabled ? normalizeFeatureCategory(featureCategoryByTab.get(tabId)) : "";
+  const output = enabled ? featureDecisionOutputForTab(tabId) : "";
   tag.hidden = !category;
+  tag.disabled = !output;
   tag.textContent = category;
+  tag.setAttribute("aria-label", output ? `Show classifier decision and reason for ${category}` : category || "Feature category");
   tag.classList.toggle("lightweight-feature", category === "lightweight-feature");
   tag.classList.toggle("complex-feature", category === "complex-feature");
+  syncFeatureDecisionDialog();
+}
+
+function handleFeatureDecisionOutputStatus(statusText, tabId = activeTabId) {
+  if (!tabId) return;
+  optionalFeatureAvailability.featureSystemPrompt = true;
+  const decision = parseFeatureDecisionPayload(statusText);
+  if (decision) featureDecisionOutputByTab.set(tabId, decision);
+  else featureDecisionOutputByTab.delete(tabId);
+  renderOptionalFeatureControls();
+  if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
+  else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
 }
 
 function handleFeatureCategoryStatus(statusText, tabId = activeTabId) {
   if (!tabId) return;
+  optionalFeatureAvailability.featureSystemPrompt = true;
   const category = normalizeFeatureCategory(statusText);
   if (category) featureCategoryByTab.set(tabId, category);
-  else featureCategoryByTab.delete(tabId);
+  else clearFeatureDecisionStateForTab(tabId);
+  renderOptionalFeatureControls();
   if (tabId === activeTabId) renderFeatureCategoryTag(tabId);
+  else if (featureDecisionDialogTabId === tabId) syncFeatureDecisionDialog();
 }
 
 function trackSkillUsage(tabId, skillName, kind = "used", source = "", details = {}) {
@@ -3429,29 +5813,31 @@ function trackSkillsFromText(tabId, text, { kind = "used", source = "" } = {}) {
 }
 
 function trackSkillsFromValue(tabId, value, { keyHint = "", kind = "used", source = "", depth = 0 } = {}) {
-  if (!tabId || value === undefined || value === null || depth > 5) return;
+  if (!tabId || value === undefined || value === null || depth > 5) return 0;
   if (Array.isArray(value)) {
-    for (const item of value) trackSkillsFromValue(tabId, item, { keyHint, kind, source, depth: depth + 1 });
-    return;
+    return value.reduce((count, item) => count + trackSkillsFromValue(tabId, item, { keyHint, kind, source, depth: depth + 1 }), 0);
   }
   if (typeof value === "string") {
     const skillInfo = skillInfoFromPath(value);
-    if (skillInfo) trackSkillUsage(tabId, skillInfo.name, "read", source, { path: skillInfo.path });
-    return;
+    if (!skillInfo) return 0;
+    trackSkillUsage(tabId, skillInfo.name, "read", source, { path: skillInfo.path });
+    return 1;
   }
-  if (typeof value !== "object") return;
+  if (typeof value !== "object") return 0;
+  let tracked = 0;
   for (const [key, nested] of Object.entries(value)) {
     const hint = String(key || "").toLowerCase();
-    trackSkillsFromValue(tabId, nested, { keyHint: hint, kind, source, depth: depth + 1 });
+    tracked += trackSkillsFromValue(tabId, nested, { keyHint: hint, kind, source, depth: depth + 1 });
   }
+  return tracked;
 }
 
 function trackSkillsFromToolInvocation(tabId, toolName, args, { sourcePrefix = "tool" } = {}) {
-  if (!tabId) return;
+  if (!tabId) return false;
   const name = String(toolName || "").trim();
-  if (name.toLowerCase() !== "read") return;
+  if (name.toLowerCase() !== "read") return false;
   const source = `${sourcePrefix}:${name}`;
-  trackSkillsFromValue(tabId, args, { kind: "read", source });
+  return trackSkillsFromValue(tabId, args, { kind: "read", source }) > 0;
 }
 
 function trackSkillsFromMessage(tabId, message) {
@@ -3478,26 +5864,67 @@ function assistantMessageUpdateType(event) {
   return event?.assistantMessageEvent?.type || "";
 }
 
+// Skill usage is recorded only at semantic tool boundaries. Argument/output
+// delta cadence (`toolcall_*`, `tool_execution_update`) must never enter skill
+// tracking: those raw fragments are transcript-owned stream content.
 function eventMayAffectSkillUsage(event) {
   const type = event?.type || "";
-  return ["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(type)
-    || (type === "message_update" && assistantMessageUpdateType(event) === "toolcall_start")
+  return ["tool_execution_start", "tool_execution_end"].includes(type)
     || (type === "response" && event.command === "new_session");
+}
+
+function beginToolBoundaryRun(event) {
+  const tabId = event?.tabId || activeTabId || "";
+  if (!tabId || event?.replayed === true) return;
+  toolBoundaryRunEpochByTab.set(tabId, (toolBoundaryRunEpochByTab.get(tabId) || 0) + 1);
+}
+
+function toolBoundaryRunIdentity(event, tabId) {
+  const explicit = String(event?.agentRunId || event?.turnId || "").trim();
+  return explicit || `epoch-${toolBoundaryRunEpochByTab.get(tabId) || 0}`;
+}
+
+function toolBoundaryRecordKey(event, phase) {
+  const tabId = event?.tabId || activeTabId || "";
+  const toolCallId = String(event?.toolCallId || event?.id || "").trim();
+  if (!toolCallId) return "";
+  return `${tabId}:${toolBoundaryRunIdentity(event, tabId)}:${toolCallId}:${phase}`;
+}
+
+function rememberToolBoundaryRecordKey(key) {
+  if (!key || recordedToolBoundaryKeys.has(key)) return false;
+  recordedToolBoundaryKeys.add(key);
+  while (recordedToolBoundaryKeys.size > TOOL_BOUNDARY_RECORD_LIMIT) {
+    const oldest = recordedToolBoundaryKeys.values().next().value;
+    if (oldest === undefined) break;
+    recordedToolBoundaryKeys.delete(oldest);
+  }
+  return true;
+}
+
+// One record per tool boundary within an agent run. Redelivered or replayed
+// boundaries must not duplicate skill tags or event-log lines.
+function claimToolBoundaryRecord(event, phase) {
+  const key = toolBoundaryRecordKey(event, phase);
+  return key ? rememberToolBoundaryRecordKey(key) : true;
 }
 
 function trackSkillsFromEvent(event) {
   const tabId = event?.tabId || activeTabId;
   if (!tabId || !event) return;
-  if (["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(event.type)) {
-    trackSkillsFromToolInvocation(tabId, event.toolName, event.args, { sourcePrefix: `event:${event.type}` });
-    return;
-  }
-  if (assistantMessageUpdateType(event) === "toolcall_start") {
-    const update = event.assistantMessageEvent || {};
-    trackSkillsFromToolInvocation(tabId, update.name || update.toolName || update.toolCall?.name, update.arguments || update.args || update.toolCall?.arguments || {}, { sourcePrefix: "event:message_update" });
+  if (["tool_execution_start", "tool_execution_end"].includes(event.type)) {
+    // Start is preferred, but unusable start args do not consume the claim;
+    // completion may still provide the authoritative invocation arguments.
+    const key = toolBoundaryRecordKey(event, "skills");
+    if (key && recordedToolBoundaryKeys.has(key)) return;
+    const args = event.args ?? event.arguments ?? event.invocation?.args;
+    const tracked = trackSkillsFromToolInvocation(tabId, event.toolName, args, { sourcePrefix: `event:${event.type}` });
+    if (tracked && key) rememberToolBoundaryRecordKey(key);
     return;
   }
   if (event.type === "response" && event.command === "new_session") {
+    recordedToolBoundaryKeys.clear();
+    toolBoundaryRunEpochByTab.delete(tabId);
     clearSkillUsageForTab(tabId);
   }
 }
@@ -3688,6 +6115,7 @@ async function refreshNativeSettings(tabContext = activeTabContext()) {
 }
 
 function setComposerActionsOpen(open) {
+  if (isMobileShellV2Active()) return;
   const shouldOpen = open && isMobileView();
   if (shouldOpen && followUpQueueOpen) setFollowUpQueueOpen(false);
   document.body.classList.toggle("composer-actions-open", shouldOpen);
@@ -3779,6 +6207,7 @@ function updateComposerModeButtons() {
   }
   renderBusyPromptBehaviorTag();
   document.body.classList.toggle("pi-run-active", runActive || abortAvailable);
+  scheduleComposerActionSlotLayoutRestore();
 }
 
 function scheduleComposerModeButtonsUpdate() {
@@ -3809,6 +6238,10 @@ function clearFooterPickerPosition() {
 }
 
 function updateFooterModelPickerPosition() {
+  if (isMobileShellV2Active()) {
+    clearFooterPickerPosition();
+    return;
+  }
   if (!isFooterPickerOpen()) {
     clearFooterPickerPosition();
     return;
@@ -3843,6 +6276,7 @@ function updateFooterModelPickerPosition() {
 }
 
 function setMobileFooterExpanded(expanded) {
+  if (isMobileShellV2Active()) return;
   mobileFooterExpanded = expanded && isMobileView();
   if (mobileFooterExpanded && isFooterPickerOpen()) {
     footerModelPickerOpen = false;
@@ -3861,6 +6295,7 @@ function setMobileFooterExpanded(expanded) {
 }
 
 function setMobileTabsExpanded(expanded) {
+  if (isMobileShellV2Active()) return;
   mobileTabsExpanded = expanded && isMobileView();
   document.body.classList.toggle("mobile-tabs-expanded", mobileTabsExpanded);
   elements.terminalTabsToggleButton.setAttribute("aria-expanded", mobileTabsExpanded ? "true" : "false");
@@ -4098,15 +6533,17 @@ function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false }
   } catch {
     // Ignore storage failures; the toggle should still work for this page load.
   }
+  markDurableUiLayoutDirty("sidePanel", "collapsed");
 }
 
 function restoreSidePanelState() {
+  if (isMobileShellV2Active()) return;
   if (isSidePanelOverlayView()) {
     setSidePanelCollapsed(true, { persist: false });
     return;
   }
   const stored = readStoredSidePanelCollapsed();
-  setSidePanelCollapsed(stored ?? false, { persist: stored !== null });
+  setSidePanelCollapsed(stored ?? false, { persist: false });
 }
 
 function readStoredWorkspaceDashboardCollapsed() {
@@ -4173,6 +6610,9 @@ function restoreInterfaceDensity() {
 function bindMobileViewChanges() {
   if (!mobileViewMedia) return;
   const syncForViewport = (event) => {
+    applyMobileShellViewport();
+    syncComposerActionGridAvailability();
+    if (isMobileShellV2Active()) return;
     setComposerActionsOpen(false);
     setMobileFooterExpanded(false);
     setMobileTabsExpanded(false);
@@ -4190,6 +6630,8 @@ function bindMobileViewChanges() {
 function bindSidePanelOverlayViewChanges() {
   if (!sidePanelOverlayMedia || sidePanelOverlayMedia === mobileViewMedia) return;
   const syncForViewport = (event) => {
+    applyMobileShellViewport();
+    if (isMobileShellV2Active()) return;
     if (event.matches) {
       setSidePanelCollapsed(true, { persist: false });
       updateTerminalSplitUi();
@@ -4216,7 +6658,7 @@ function updateVisualViewportVars() {
   document.documentElement.style.setProperty("--visual-viewport-offset-top", `${Math.round(offsetTop)}px`);
   document.documentElement.style.setProperty("--keyboard-inset-bottom", `${keyboardInset}px`);
   document.body.classList.toggle("mobile-keyboard-open", keyboardOpen);
-  if (keyboardOpen) {
+  if (keyboardOpen && !isMobileShellV2Active()) {
     setComposerActionsOpen(false);
     setMobileTabsExpanded(false);
     setMobileFooterExpanded(false);
@@ -4235,6 +6677,14 @@ function installViewportHandlers() {
   window.visualViewport?.addEventListener("scroll", update, { passive: true });
   window.addEventListener("resize", update, { passive: true });
   window.addEventListener("orientationchange", () => setTimeout(update, 80));
+}
+
+function installMobileShellNavigationBridge() {
+  const urlTarget = mobileNavigationTargetFromSearch(window.location.search);
+  if (urlTarget) receiveMobileNavigationTarget(urlTarget);
+  navigator.serviceWorker?.addEventListener("message", (event) => {
+    if (event.data?.type === "pi-webui:navigate:v1") receiveMobileNavigationTarget(event.data.target);
+  });
 }
 
 function registerPwaServiceWorker() {
@@ -4303,6 +6753,9 @@ function setServerRestartOverlay(active, message = "Waiting for the server to co
 
 function setBackendOffline(offline, error) {
   backendOffline = !!offline;
+  mobileConnectionState = backendOffline ? "offline" : mobileConnectionState === "reconnecting" ? "reconnecting" : "online";
+  mobileConnectionLabel = backendOffline ? "Paused/offline" : mobileConnectionState === "reconnecting" ? "Reconnecting" : "Online";
+  recordMobileDiagnostic(backendOffline ? "backend offline" : "backend online", error?.message || "");
   const showOfflinePanel = backendOffline && !serverRestartInProgress;
   document.body.classList.toggle("server-offline", showOfflinePanel);
   if (elements.serverOfflinePanel) elements.serverOfflinePanel.hidden = !showOfflinePanel;
@@ -4313,10 +6766,12 @@ function setBackendOffline(offline, error) {
       backendOfflineNoticeShown = true;
       addEvent(`Pi Web UI server is offline${error?.message ? `: ${error.message}` : ""}`, "warn");
     }
+    renderMobilePhoneExperience();
     return;
   }
   if (backendOfflineNoticeShown) addEvent("Pi Web UI server is back online", "info");
   backendOfflineNoticeShown = false;
+  renderMobilePhoneExperience();
 }
 
 async function copyText(text) {
@@ -4772,9 +7227,14 @@ function renderPiVersionButton() {
   const label = formatWebuiVersion(piVersion);
   button.hidden = !label;
   button.textContent = label ? `Pi ${label}` : "";
+  const state = componentUpdateTagState("pi");
+  const stateText = componentUpdateTagStateText(state);
+  if (state) button.dataset.updateState = state;
+  else delete button.dataset.updateState;
   if (label) {
-    button.title = `View Pi ${label} release notes`;
-    button.setAttribute("aria-label", `View Pi ${label} release notes`);
+    const base = `View Pi ${label} release notes`;
+    button.title = stateText ? `${base} — ${stateText}` : base;
+    button.setAttribute("aria-label", stateText ? `${base}, ${stateText}` : base);
   }
 }
 
@@ -4784,9 +7244,14 @@ function renderWebuiVersionButton() {
   const label = formatWebuiVersion(webuiVersion);
   button.hidden = !label;
   button.textContent = label ? `Web UI ${label}` : "";
+  const state = componentUpdateTagState("webui");
+  const stateText = componentUpdateTagStateText(state);
+  if (state) button.dataset.updateState = state;
+  else delete button.dataset.updateState;
   if (label) {
-    button.title = `Open Pi Web UI ${label} on npm`;
-    button.setAttribute("aria-label", `Open Pi Web UI ${label} package page`);
+    const base = `Open Pi Web UI ${label} package and update details`;
+    button.title = stateText ? `${base} — ${stateText}` : base;
+    button.setAttribute("aria-label", stateText ? `${base}, ${stateText}` : base);
   }
 }
 
@@ -4871,22 +7336,25 @@ async function confirmOpenWebuiNpmPage() {
 async function openPiReleaseNotes() {
   const dialog = elements.piReleaseNotesDialog;
   if (!dialog) return;
-  const requestedVersion = piVersion;
-  const label = formatWebuiVersion(requestedVersion);
+  const installedVersion = piVersion;
+  const availableVersion = latestUpdateStatus?.pi?.updateAvailable ? latestUpdateStatus.pi.latestVersion : "";
+  const displayedVersion = availableVersion || installedVersion;
+  const label = formatWebuiVersion(displayedVersion);
   elements.piReleaseNotesTitle.textContent = label ? `Pi ${label} release notes` : "Pi release notes";
   elements.piReleaseNotesStatus.textContent = "Loading release notes from GitHub…";
   elements.piReleaseNotesBody.setAttribute("aria-busy", "true");
   elements.piReleaseNotesBody.replaceChildren(make("p", "muted", "Loading…"));
-  setPiReleaseNotesLink(piReleasePageUrl(requestedVersion));
+  setPiReleaseNotesLink(piReleasePageUrl(displayedVersion));
+  renderComponentUpdateDialogs();
   if (!dialog.open) dialog.showModal();
+  refreshUpdateStatus({ notify: false }).catch((error) => addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn"));
 
   try {
     const response = await api("/api/pi-release-notes", { scoped: false });
-    if (requestedVersion !== piVersion) return;
+    if (installedVersion !== piVersion) return;
     const release = response.data || {};
     const releaseVersion = String(release.version || "").trim().replace(/^v/i, "");
-    if (requestedVersion && releaseVersion !== requestedVersion) throw new Error(`Expected Pi ${formatWebuiVersion(requestedVersion)} release notes but received ${formatWebuiVersion(releaseVersion) || "an unknown version"}`);
-    const releaseLabel = formatWebuiVersion(releaseVersion || requestedVersion);
+    const releaseLabel = formatWebuiVersion(releaseVersion || displayedVersion);
     elements.piReleaseNotesTitle.textContent = releaseLabel ? `Pi ${releaseLabel} release notes` : (release.title || "Pi release notes");
     renderMarkdown(elements.piReleaseNotesBody, release.body || "No release notes were provided for this release.");
     const published = formatPiReleaseDate(release.publishedAt);
@@ -4902,6 +7370,7 @@ async function openPiReleaseNotes() {
 
 async function refreshWebuiVersion() {
   const health = await api("/api/health", { scoped: false });
+  if (health.bootIdentity) serverBootIdentity = health.bootIdentity;
   setWebuiVersion(health.webuiVersion);
   setPiVersion(health.piVersion);
   setWebuiDevServer(isWebuiDevMetadata(health));
@@ -4976,15 +7445,15 @@ function renderUpdateNotification(status = latestUpdateStatus, { force = false }
   if (elements.updateNotificationMessage) {
     let message = "Updates are available. Direct Web UI updates are only enabled from localhost on the host machine.";
     if (canRunUpdate) {
-      if (hasPiUpdate && hasPackageUpdate) message = "Run pi update --self for Pi only, or update all to use pi update --all when supported and include Web UI, Optional Features, configured Pi packages, and detected Pi package roots, then restart this Web UI server automatically.";
-      else if (hasPackageUpdate) message = "Update all checks for pi update --all support, then refreshes Web UI/package entries, Optional Features, configured Pi packages, and detected Pi package roots before restarting this Web UI server automatically.";
-      else message = "Run pi update --self for Pi only, then restart this Web UI server automatically.";
+      if (hasPiUpdate && hasPackageUpdate) message = "Create and confirm an exact combined update plan for eligible Pi, Web UI, and Pi-owned Optional Features; managed runtimes are staged, verified, activated, and restarted with rollback protection.";
+      else if (hasPackageUpdate) message = "Create and confirm an exact package update plan; managed Web UI runtimes are staged, verified, activated, and restarted with rollback protection.";
+      else message = "Create and confirm an exact Pi update plan; bundled Pi is staged with the Web UI, while an independent Pi executable is delegated to and verified.";
     }
     elements.updateNotificationMessage.textContent = message;
   }
   const details = [
     items.join(" · "),
-    latestUpdateStatus.webuiDev && latestUpdateStatus.webui?.updateAvailable ? "The current Web UI is a dev checkout; update all also refreshes detected Web UI/Optional Feature Pi package dependencies when possible." : "",
+    latestUpdateStatus.webuiDev && latestUpdateStatus.webui?.updateAvailable ? "The current Web UI is a source checkout and remains untouched; only separately verified, eligible targets can enter the exact update plan." : "",
     latestUpdateStatus.packages?.note || "",
   ].filter(Boolean).join(" ");
   if (elements.updateNotificationDetail) elements.updateNotificationDetail.textContent = details;
@@ -5008,7 +7477,11 @@ async function refreshUpdateStatus({ force = false, notify = true } = {}) {
   const path = force ? "/api/update-status?refresh=1" : "/api/update-status";
   const response = await api(path, { scoped: false });
   latestUpdateStatus = response.data || null;
+  if (latestUpdateStatus?.pi?.currentVersion) setPiVersion(latestUpdateStatus.pi.currentVersion);
   if (notify) renderUpdateNotification(latestUpdateStatus);
+  renderComponentUpdateIndicators();
+  renderComponentUpdateDialogs();
+  syncComponentUpdatePolling();
   return latestUpdateStatus;
 }
 
@@ -5021,6 +7494,207 @@ function scheduleUpdateStatusRefresh() {
   }, UPDATE_STATUS_REFRESH_MS);
 }
 
+const COMPONENT_UPDATE_TARGETS = ["pi", "webui"];
+
+function componentUpdateLabel(target) {
+  return target === "pi" ? "Pi" : "Web UI";
+}
+
+function componentUpdateJob(target) {
+  const job = latestUpdateStatus?.componentUpdates?.[target];
+  return job && typeof job === "object" ? job : null;
+}
+
+function componentUpdateTagState(target) {
+  const job = componentUpdateJob(target);
+  if (job?.state === "running") return "running";
+  if (job?.state === "failed") return "failed";
+  if (job?.state === "succeeded") return "succeeded";
+  if (latestUpdateStatus?.[target]?.updateAvailable) return "available";
+  return "";
+}
+
+function componentUpdateTagStateText(state) {
+  switch (state) {
+    case "running": return "update running";
+    case "failed": return "update failed";
+    case "succeeded": return "update succeeded";
+    case "available": return "update available";
+    default: return "";
+  }
+}
+
+function anyComponentUpdateRunning() {
+  return COMPONENT_UPDATE_TARGETS.some((target) => componentUpdateJob(target)?.state === "running");
+}
+
+function renderComponentUpdateIndicators() {
+  renderPiVersionButton();
+  renderWebuiVersionButton();
+}
+
+function componentUpdateStatusText(target) {
+  const label = componentUpdateLabel(target);
+  const job = componentUpdateJob(target);
+  const pkg = latestUpdateStatus?.[target] || {};
+  const current = formatWebuiVersion(pkg.currentVersion || (target === "pi" ? piVersion : webuiVersion) || "");
+  const latest = formatWebuiVersion(pkg.latestVersion || "");
+  if (job?.state === "running") return { text: job.message || `Updating ${label}…`, level: "warn" };
+  if (job?.state === "succeeded") {
+    const activation = target === "pi"
+      ? "New or reloaded Pi sessions use the update; already-running tabs keep their current runtime until restarted."
+      : "The managed Web UI runtime was activated automatically; the browser reconnects after the verified restart.";
+    return { text: `${job.message || `${label} update completed.`} ${activation}`, level: "success" };
+  }
+  if (job?.state === "failed") {
+    const detail = job.error ? ` ${job.error}` : "";
+    return { text: `${job.message || `${label} update failed.`}${detail} You can retry the update.`, level: "error" };
+  }
+  const availability = pkg.updateAvailable
+    ? (latest ? `${label} ${current || "current"} → ${latest} is available.` : `${label} update is available.`)
+    : "";
+  if (job && job.canStart === false && job.unavailableReason) {
+    return { text: [availability, job.unavailableReason].filter(Boolean).join(" "), level: "warn" };
+  }
+  if (availability) return { text: availability, level: "info" };
+  if (pkg.checked && latest) return { text: `${label} is up to date.`, level: "info" };
+  if (pkg.skippedReason) return { text: `Update check skipped: ${pkg.skippedReason}.`, level: "info" };
+  return { text: "", level: "info" };
+}
+
+function componentUpdateButtonState(target) {
+  const label = componentUpdateLabel(target);
+  const job = componentUpdateJob(target);
+  const pkg = latestUpdateStatus?.[target] || {};
+  if (job?.state === "running") return { disabled: true, label: "Updating…" };
+  if (job && job.canStart === false) return { disabled: true, label: `Update ${label}` };
+  if (componentUpdateStartInProgress || updateRequestInProgress || latestUpdateStatus?.updateInProgress || anyComponentUpdateRunning()) {
+    return { disabled: true, label: `Update ${label}` };
+  }
+  if (job?.state === "failed") return { disabled: false, label: `Retry ${label} update` };
+  if (pkg.checked && !pkg.updateAvailable) return { disabled: true, label: "Up to date" };
+  return { disabled: false, label: `Update ${label}` };
+}
+
+function renderComponentUpdatePanel(target, statusElement, buttonElement) {
+  if (!statusElement || !buttonElement) return;
+  const { text, level } = componentUpdateStatusText(target);
+  statusElement.hidden = false;
+  statusElement.textContent = text;
+  statusElement.dataset.level = level;
+  const buttonState = componentUpdateButtonState(target);
+  buttonElement.disabled = buttonState.disabled;
+  buttonElement.textContent = buttonState.label;
+}
+
+function renderComponentUpdateDialogs() {
+  renderComponentUpdatePanel("pi", elements.piComponentUpdateStatus, elements.piComponentUpdateButton);
+  const pkg = latestUpdateStatus?.webui || {};
+  if (elements.webuiPackageCurrentVersion) {
+    elements.webuiPackageCurrentVersion.textContent = formatWebuiVersion(pkg.currentVersion || webuiVersion || "") || "Unknown";
+  }
+  if (elements.webuiPackageLatestVersion) {
+    elements.webuiPackageLatestVersion.textContent = formatWebuiVersion(pkg.latestVersion || "") || (pkg.checked ? "Unknown" : "Not checked");
+  }
+  renderComponentUpdatePanel("webui", elements.webuiComponentUpdateStatus, elements.webuiComponentUpdateButton);
+}
+
+function syncComponentUpdatePolling() {
+  if (anyComponentUpdateRunning()) {
+    if (componentUpdatePollTimer === null) {
+      componentUpdatePollTimer = setTimeout(() => {
+        componentUpdatePollTimer = null;
+        refreshUpdateStatus({ notify: false }).catch((error) => {
+          addEvent(`Component update status check failed: ${error.message || String(error)}`, "warn");
+          if (anyComponentUpdateRunning()) syncComponentUpdatePolling();
+        });
+      }, COMPONENT_UPDATE_POLL_MS);
+    }
+  } else if (componentUpdatePollTimer !== null) {
+    clearTimeout(componentUpdatePollTimer);
+    componentUpdatePollTimer = null;
+  }
+}
+
+function separatePathPiPlanNotice(plan) {
+  const identities = Array.isArray(plan?.identities) ? plan.identities : [];
+  const activePi = identities.find((identity) => identity?.kind === "pi" && identity.source !== "path");
+  const pathPi = identities.find((identity) => identity?.kind === "pi" && identity.source === "path" && identity.canonicalId !== activePi?.canonicalId);
+  return pathPi ? `PATH Pi${pathPi.version ? ` v${pathPi.version}` : ""} is a separate installation and will remain untouched. Run pi update in a terminal to update it.` : "";
+}
+
+function componentUpdateConfirmationText(target) {
+  const pkg = latestUpdateStatus?.[target] || {};
+  const versionText = pkg.updateAvailable ? `\n\nDetected update: ${packageUpdateText(componentUpdateLabel(target), pkg)}.` : "";
+  if (target === "pi") {
+    return `Create and apply an exact Pi update plan now?${versionText}\n\nBundled Pi updates are staged with the current Web UI in a side-by-side managed runtime and activated with a health-gated restart. A verified independent Pi executable delegates to that exact executable and is rejected if it cannot reach the confirmed version.`;
+  }
+  return `Create and apply an exact Web UI update plan now?${versionText}\n\nThe confirmed Web UI and Pi versions are staged outside the live installation, probed, and activated through the stable launcher. Activation restarts the Web UI automatically and rolls back the runtime pointer if health verification fails.`;
+}
+
+async function startComponentUpdate(target) {
+  if (componentUpdateStartInProgress) return;
+  const label = componentUpdateLabel(target);
+  const job = componentUpdateJob(target);
+  if (job?.state === "running" || anyComponentUpdateRunning() || updateRequestInProgress || latestUpdateStatus?.updateInProgress) return;
+  if (job && job.canStart === false) {
+    addEvent(job.unavailableReason || `${label} update is currently unavailable.`, "warn");
+    renderComponentUpdateDialogs();
+    return;
+  }
+  let plan;
+  try {
+    plan = (await api("/api/update/plan", { method: "POST", body: { targets: [target] }, scoped: false }))?.data?.plan;
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    return;
+  }
+  const planNotice = separatePathPiPlanNotice(plan);
+  const confirmed = await appConfirmText(`${componentUpdateConfirmationText(target)}${planNotice ? `\n\n${planNotice}` : ""}\n\nExact plan digest: ${plan.digest}`, {
+    affected: target === "pi" ? "The verified active Pi installation on the Web UI host" : "A side-by-side managed Web UI runtime",
+    confirmLabel: job?.state === "failed" ? `Retry ${label} update` : `Apply exact ${label} plan`,
+    danger: false,
+  });
+  if (!confirmed) return;
+  componentUpdateStartInProgress = true;
+  renderComponentUpdateDialogs();
+  try {
+    const response = await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false });
+    const acceptedState = ["applying", "verifying", "activating"].includes(response?.data?.state)
+      ? "running"
+      : response?.data?.outcome === "success" ? "succeeded" : "failed";
+    const accepted = { target, state: acceptedState, canStart: false, message: `Exact ${label} update ${response?.data?.state || response?.data?.outcome || "accepted"}.`, receipts: response?.data?.receipts || [] };
+    if (accepted && typeof accepted === "object") {
+      latestUpdateStatus = {
+        ...(latestUpdateStatus || {}),
+        updateInProgress: true,
+        componentUpdates: { ...(latestUpdateStatus?.componentUpdates || {}), [target]: accepted },
+      };
+    }
+    addEvent(`${label} update started in the background`, "info");
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    if (error?.statusCode === 409) await refreshUpdateStatus({ notify: false }).catch(() => {});
+  } finally {
+    componentUpdateStartInProgress = false;
+    renderComponentUpdateIndicators();
+    renderComponentUpdateDialogs();
+    syncComponentUpdatePolling();
+  }
+}
+
+async function openWebuiPackageDialog() {
+  const dialog = elements.webuiPackageDialog;
+  if (!dialog) return;
+  renderComponentUpdateDialogs();
+  if (!dialog.open) dialog.showModal();
+  try {
+    await refreshUpdateStatus({ notify: false });
+  } catch (error) {
+    addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn");
+  }
+}
+
 function initializeUpdateNotifications() {
   setTimeout(() => {
     refreshUpdateStatus().catch((error) => addEvent(`Pi/Web UI update check failed: ${error.message || String(error)}`, "warn"));
@@ -5028,14 +7702,16 @@ function initializeUpdateNotifications() {
   }, UPDATE_STATUS_INITIAL_DELAY_MS);
 }
 
-function piUpdateConfirmationText({ all = false } = {}) {
+function piUpdateConfirmationText({ all = false, plan = null } = {}) {
   const items = updateNotificationItems();
   const workingWarning = hasWorkingTab() ? "\n\nOne or more Pi tabs look busy or blocked. Finish or abort in-flight work before updating if you need to preserve it." : "";
   const versionText = items.length ? `\n\nDetected update: ${items.join(" · ")}.` : "";
-  const commandText = all ? '"pi update --all" when supported, otherwise "pi update --self" followed by "pi update --extensions"' : '"pi update --self"';
-  const scope = all ? "Pi, configured packages, Optional Features, and detected Pi package roots" : "Pi only";
-  const extra = all ? " It will also run npm/bun package updates for detected Web UI, Optional Feature, agent, project, and global Pi package roots." : "";
-  return `Run ${scope} now?${versionText}\n\nThis will run ${commandText} on the Web UI host.${extra} After it finishes, Pi Web UI will restart itself. Browser clients will briefly disconnect, and managed Pi tabs/RPC processes will be restarted from saved session state when possible.${workingWarning}`;
+  const scope = all ? "the verified active Pi and Web UI targets" : "the verified active Pi target";
+  const refusals = Array.isArray(plan?.refusals) && plan.refusals.length ? `\n\nRefused automatic targets: ${plan.refusals.map((item) => `${item.id}: ${item.guidance}`).join(" · ")}` : "";
+  const separatePathPi = separatePathPiPlanNotice(plan);
+  const pathNotice = separatePathPi ? `\n\n${separatePathPi}` : "";
+  const digest = plan?.digest ? `\n\nExact immutable plan digest: ${plan.digest}` : "";
+  return `Apply ${scope} now?${versionText}${refusals}${pathNotice}${digest}\n\nThe server will use only this persisted exact-target plan; it will not re-resolve latest or scan package roots. Managed Web UI activation is health-gated and automatically rolls back on failure.${workingWarning}`;
 }
 
 async function runPiUpdateAndRestart({ all = false } = {}) {
@@ -5045,16 +7721,23 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
     renderUpdateNotification(latestUpdateStatus, { force: true });
     return;
   }
-  if (!(await appConfirmText(piUpdateConfirmationText({ all }), { affected: "The Pi Web UI server and all managed Pi tabs", confirmLabel: all ? "Update all and restart" : "Update Pi and restart" }))) return;
+  let plan;
+  try {
+    plan = (await api("/api/update/plan", { method: "POST", body: { targets: all ? ["pi", "webui"] : ["pi"] }, scoped: false }))?.data?.plan;
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+    return;
+  }
+  if (!(await appConfirmText(piUpdateConfirmationText({ all, plan }), { affected: "Only targets accepted by the exact server-owned plan", confirmLabel: all ? "Apply exact update plan" : "Apply exact Pi plan" }))) return;
 
-  const updateLabel = all ? "Pi and package updates" : "Pi update";
+  const updateLabel = all ? "Pi and Web UI exact updates" : "Pi exact update";
   updateRequestInProgress = true;
   hideUpdateNotification();
   setServerActionBusy("Updating…");
   setServerActionStatus(`Running ${updateLabel}. The server will restart after the update completes…`, "warn");
   setServerRestartOverlay(true, `Running ${updateLabel}. The server will restart after the update completes…`);
   try {
-    await api(all ? "/api/update?all=1" : "/api/update", { method: "POST", scoped: false });
+    await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false });
     addEvent(`${updateLabel} completed; Pi Web UI server restart requested`, "warn");
   } catch (error) {
     if (!error?.backendOffline) {
@@ -5071,7 +7754,7 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
   }
 
   setBackendOffline(true, new Error("update requested from side panel"));
-  const restarted = await waitForServerRestart();
+  const restarted = await waitForServerRestart(serverBootIdentity);
   updateRequestInProgress = false;
   resetServerActionControls();
   if (restarted) {
@@ -5188,7 +7871,7 @@ function ensureAttachmentsForTab(tabId = activeTabId) {
 }
 
 function hasComposerPayload() {
-  return !!elements.promptInput.value.trim() || attachmentsForTab().length > 0;
+  return !!elements.promptInput.value.trim() || attachmentsForTab().some((attachment) => !attachment.requiresReselect);
 }
 
 function renderAttachmentTray() {
@@ -5201,11 +7884,12 @@ function renderAttachmentTray() {
 
   for (const attachment of attachments) {
     const pill = make("span", "attachment-pill");
-    pill.title = `${attachment.name}\n${attachment.mimeType}\n${formatBytes(attachment.size)}`;
+    pill.title = attachment.requiresReselect ? `${attachment.name}\nReselect required; only metadata was restored.` : `${attachment.name}\n${attachment.mimeType}\n${formatBytes(attachment.size)}`;
+    pill.classList.toggle("requires-reselect", attachment.requiresReselect === true);
     const icon = make("span", "attachment-pill-icon", attachmentIcon(attachment.kind));
     const name = make("span", "attachment-pill-name", attachment.name);
-    const meta = make("span", "attachment-pill-meta", `${attachment.kind} · ${formatBytes(attachment.size)}`);
-    const edit = isEditableTextAttachment(attachment) ? make("button", "attachment-edit-button", "Edit") : null;
+    const meta = make("span", "attachment-pill-meta", attachment.requiresReselect ? `${attachment.kind} · ${formatBytes(attachment.size)} · Reselect required` : `${attachment.kind} · ${formatBytes(attachment.size)}`);
+    const edit = !attachment.requiresReselect && isEditableTextAttachment(attachment) ? make("button", "attachment-edit-button", "Edit") : null;
     if (edit) {
       edit.type = "button";
       edit.setAttribute("aria-label", `Open and edit ${attachment.name}`);
@@ -5217,6 +7901,13 @@ function renderAttachmentTray() {
     remove.addEventListener("click", () => removeAttachment(attachment.id));
     pill.append(icon, name, meta);
     if (edit) pill.append(edit);
+    if (attachment.requiresReselect) {
+      const reselect = make("button", "attachment-edit-button", "Reselect");
+      reselect.type = "button";
+      reselect.setAttribute("aria-label", `Reselect ${attachment.name}`);
+      reselect.addEventListener("click", () => openMobileAttachmentPicker("files"));
+      pill.append(reselect);
+    }
     pill.append(remove);
     tray.append(pill);
   }
@@ -5231,6 +7922,7 @@ function removeAttachment(id, tabId = activeTabId) {
   if (activeTextAttachmentEditor?.tabId === tabId && activeTextAttachmentEditor?.attachmentId === id) closeTextAttachmentEditor();
   if (attachments.length === 0) tabAttachments.delete(tabId);
   if (tabId === activeTabId) renderAttachmentTray();
+  persistMobileContinuityState();
 }
 
 function clearAttachments(tabId = activeTabId) {
@@ -5241,6 +7933,7 @@ function clearAttachments(tabId = activeTabId) {
   if (activeTextAttachmentEditor?.tabId === tabId) closeTextAttachmentEditor();
   if (tabId) tabAttachments.delete(tabId);
   if (tabId === activeTabId) renderAttachmentTray();
+  persistMobileContinuityState();
 }
 
 function addAttachmentFiles(fileList, source = "picker") {
@@ -5248,6 +7941,9 @@ function addAttachmentFiles(fileList, source = "picker") {
   if (!files.length) return { added: 0, skipped: [] };
   const attachments = ensureAttachmentsForTab();
   if (!attachments.length && !activeTabId) return { added: 0, skipped: ["no active tab"] };
+  if (attachments.some((attachment) => attachment.requiresReselect)) {
+    attachments.splice(0, attachments.length, ...attachments.filter((attachment) => !attachment.requiresReselect));
+  }
   let totalBytes = attachments.reduce((sum, attachment) => sum + attachment.size, 0);
   let added = 0;
   const skipped = [];
@@ -5283,6 +7979,7 @@ function addAttachmentFiles(fileList, source = "picker") {
   }
 
   renderAttachmentTray();
+  persistMobileContinuityState();
   if (added) addEvent(`attached ${added} ${added === 1 ? "file" : "files"} from ${source}`, "info");
   if (skipped.length) addEvent(`skipped attachments: ${skipped.join("; ")}`, "warn");
   return { added, skipped };
@@ -6250,7 +8947,7 @@ function conversationModeCommandName() {
 }
 
 function conversationModeButtonLabel(mode = activeConversationMode()) {
-  return mode.enabled ? "End Conversation" : "Start Conversation";
+  return mode.enabled ? "End Conversation" : "Start Natural Conversation";
 }
 
 function conversationModePartialPreview(text = "") {
@@ -6852,11 +9549,11 @@ async function handleVoiceConversationTurnEnd(tabContext = activeTabContext()) {
 
 function renderOptionalFeatureDependentDisplays() {
   renderOptionalFeatureControls();
+  if (elements.optionalFeatureMigrationDialog?.open) renderOptionalFeatureMigrationDialog();
   renderThemeSelect();
   renderWidgets();
   renderStatus();
   renderCommands();
-  cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
   streamBubble?.remove();
   streamBubble = null;
@@ -6875,6 +9572,12 @@ function setOptionalFeatureDisabled(featureId, disabled) {
     statusEntries.delete(GIT_FOOTER_WEBUI_STATUS_KEY);
     clearGitFooterWebuiPayloadCache();
     for (const tabId of new Set([...gitFooterPayloadStateByTab.keys(), ...gitFooterPayloadSettlementTimersByTab.keys(), ...gitFooterPayloadRefreshInFlightByTab])) clearGitFooterPayloadState(tabId);
+  }
+  if (featureId === "featureSystemPrompt") {
+    if (disabled) {
+      for (const tabId of new Set([...featureCategoryByTab.keys(), ...featureDecisionOutputByTab.keys()])) clearFeatureDecisionStateForTab(tabId);
+    }
+    renderFeatureCategoryTag();
   }
   if (featureId === "btwCommand") {
     statusEntries.delete(BTW_WEBUI_STATUS_KEY);
@@ -6921,7 +9624,14 @@ function displayThemeName(name) {
 }
 
 function resolveThemeValue(theme, value, fallback, seen = new Set()) {
-  const raw = String(value || "").trim();
+  if (Number.isInteger(value)) {
+    try {
+      return themeColorToRgb(value, theme?.vars || {}, fallback);
+    } catch {
+      return fallback;
+    }
+  }
+  const raw = String(value ?? "").trim();
   if (!raw) return fallback;
   if (/^(#|rgb\(|rgba\(|hsl\(|hsla\()/i.test(raw)) return raw;
   if (seen.has(raw)) return fallback;
@@ -7232,7 +9942,10 @@ function renderThemeSearchResults(themes = []) {
     button.title = themeSearchText(theme);
     const title = make("span", "theme-search-result-title");
     title.append(make("span", "model-search-result-main", themeDisplayLabel(theme)));
-    title.append(make("span", `theme-search-result-scheme ${themeIsLight(theme) ? "light" : "dark"}`, themeIsLight(theme) ? "Light" : "Dark"));
+    const badges = make("span", "theme-search-result-badges");
+    badges.append(make("span", `theme-search-result-scheme ${themeIsLight(theme) ? "light" : "dark"}`, themeIsLight(theme) ? "Light" : "Dark"));
+    if (theme.custom) badges.append(make("span", `theme-scope-badge ${theme.scope}`, themeScopeLabel(theme.scope)));
+    title.append(badges);
     button.append(title);
     button.addEventListener("click", () => {
       if (elements.themeSelect) elements.themeSelect.value = theme.name;
@@ -7282,6 +9995,422 @@ function toggleThemeSearchInput() {
   else hideThemeSearchInput();
 }
 
+function themeScopeLabel(scope) {
+  if (scope === "project") return "Project";
+  if (scope === "global") return "Global";
+  return "Bundled";
+}
+
+function cloneThemeDraft(theme) {
+  return JSON.parse(JSON.stringify(theme));
+}
+
+function themeDraftFromCatalog(theme, name = theme?.name) {
+  return {
+    name,
+    ...(theme?.vars && Object.keys(theme.vars).length ? { vars: cloneThemeDraft(theme.vars) } : {}),
+    colors: cloneThemeDraft(theme?.colors || {}),
+    ...(theme?.export && Object.keys(theme.export).length ? { export: cloneThemeDraft(theme.export) } : {}),
+  };
+}
+
+function themeCustomizerValue(raw) {
+  const value = String(raw ?? "").trim();
+  if (/^(?:0|[1-9]\d{0,2})$/.test(value)) return Number(value);
+  return value;
+}
+
+function themeCustomizerDraftSignature(state = themeCustomizerState) {
+  if (!state?.validTheme) return "";
+  return JSON.stringify({
+    scope: elements.themeCustomizerScope?.value || "",
+    fileName: `${elements.themeCustomizerName?.value.trim() || ""}.json`,
+    theme: state.validTheme,
+  });
+}
+
+function setThemeCustomizerStatus(message, kind = "muted") {
+  if (!elements.themeCustomizerStatus) return;
+  const urgent = kind === "error";
+  elements.themeCustomizerStatus.textContent = message;
+  elements.themeCustomizerStatus.className = `theme-customizer-status ${kind}`;
+  elements.themeCustomizerStatus.setAttribute("role", urgent ? "alert" : "status");
+  elements.themeCustomizerStatus.setAttribute("aria-live", urgent ? "assertive" : "polite");
+}
+
+function invalidateThemeCustomizerOverwrite() {
+  if (themeCustomizerState) themeCustomizerState.overwrite = null;
+  if (elements.themeCustomizerOverwrite) elements.themeCustomizerOverwrite.hidden = true;
+}
+
+function updateThemeCustomizerActions() {
+  const state = themeCustomizerState;
+  const name = elements.themeCustomizerName?.value.trim() || "";
+  const validName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,74}$/.test(name) && !name.includes("..");
+  const scope = elements.themeCustomizerScope?.value;
+  const projectUnavailable = scope === "project" && !themeCatalogScopes.project?.trusted;
+  if (elements.themeCustomizerSaveButton) {
+    elements.themeCustomizerSaveButton.disabled = !state?.draftValid || !validName || projectUnavailable || !!state?.saving || !!state?.overwrite;
+    elements.themeCustomizerSaveButton.textContent = state?.saving ? "Saving…" : "Save theme";
+  }
+  if (elements.themeCustomizerOverwriteButton) elements.themeCustomizerOverwriteButton.disabled = !!state?.saving;
+  if (elements.themeCustomizerCancelButton) elements.themeCustomizerCancelButton.disabled = !!state?.saving;
+  if (elements.themeCustomizerResetButton) elements.themeCustomizerResetButton.disabled = !!state?.saving;
+  if (!validName) setThemeCustomizerStatus("Use 1–75 letters, numbers, dots, underscores, or hyphens; consecutive dots are not allowed.", "error");
+  else if (projectUnavailable) setThemeCustomizerStatus("This project is not saved as trusted in Pi. Choose Global themes or trust the project in Pi first.", "warn");
+}
+
+function themeCustomizerColor(theme, token) {
+  try {
+    return themeColorToRgb(theme.colors[token], theme.vars || {}, "#000000");
+  } catch {
+    return "#000000";
+  }
+}
+
+function renderThemeCustomizerVisualFields(theme) {
+  const container = elements.themeCustomizerVisualFields;
+  if (!container || !theme) return;
+  const groups = THEME_TOKEN_GROUPS.map((group) => {
+    const fieldset = make("fieldset", "theme-token-group");
+    fieldset.dataset.themeTokenGroup = group.id;
+    fieldset.append(make("legend", undefined, group.label));
+    const grid = make("div", "theme-token-grid");
+    for (const { name, label } of group.tokens) {
+      const row = make("div", "theme-token-row");
+      row.dataset.themeToken = name;
+      const inputId = `theme-token-${name}`;
+      const copy = document.createElement("label");
+      copy.className = "theme-token-label";
+      copy.htmlFor = inputId;
+      copy.append(document.createTextNode(label), make("code", undefined, name));
+      const swatch = document.createElement("input");
+      swatch.className = "theme-token-swatch";
+      swatch.type = "color";
+      const value = document.createElement("input");
+      value.id = inputId;
+      value.className = "theme-token-value";
+      value.type = "text";
+      value.autocomplete = "off";
+      value.spellcheck = false;
+      value.value = String(theme.colors[name] ?? "");
+      value.setAttribute("aria-label", `${label} value`);
+      const swatchNote = make("span", "theme-token-swatch-note");
+      const syncSwatch = () => {
+        const raw = value.value.trim();
+        const directValue = themeCustomizerValue(raw);
+        const direct = /^#[0-9a-f]{6}$/i.test(raw) || (typeof directValue === "number" && directValue >= 0 && directValue <= 255);
+        swatch.disabled = !direct;
+        swatch.value = direct ? themeColorToRgb(directValue, {}, "#000000") : themeCustomizerColor(theme, name);
+        swatch.setAttribute("aria-label", direct
+          ? `Choose ${label} color`
+          : `${label} uses ${raw ? `variable ${raw}` : "the terminal default"}. Edit the raw value to replace it with a color.`);
+        swatchNote.hidden = direct;
+        swatchNote.textContent = raw ? `Variable ${raw}; edit the value to replace it.` : "Terminal default; edit the value to replace it.";
+      };
+      value.addEventListener("input", () => {
+        syncSwatch();
+        updateThemeCustomizerFromVisual();
+      });
+      swatch.addEventListener("input", () => {
+        value.value = swatch.value;
+        syncSwatch();
+        updateThemeCustomizerFromVisual();
+      });
+      syncSwatch();
+      row.append(copy, swatch, value, swatchNote);
+      grid.append(row);
+    }
+    fieldset.append(grid);
+    return fieldset;
+  });
+  container.replaceChildren(...groups);
+}
+
+function renderThemeCustomizerOptionalFields(theme) {
+  if (!theme) return;
+  if (elements.themeCustomizerThinkingMax) elements.themeCustomizerThinkingMax.value = String(theme.colors.thinkingMax ?? "");
+  if (elements.themeCustomizerVars) elements.themeCustomizerVars.value = JSON.stringify(theme.vars || {}, null, 2);
+  if (elements.themeCustomizerExportFields) {
+    const fields = PI_THEME_EXPORT_FIELDS.map((name) => {
+      const label = document.createElement("label");
+      label.textContent = name;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.dataset.themeExport = name;
+      input.value = String(theme.export?.[name] ?? "");
+      input.addEventListener("input", updateThemeCustomizerFromVisual);
+      label.append(input);
+      return label;
+    });
+    elements.themeCustomizerExportFields.replaceChildren(...fields);
+  }
+}
+
+function themeCustomizerCandidateFromVisual() {
+  const state = themeCustomizerState;
+  if (!state?.validTheme) throw new Error("No valid theme draft is available.");
+  const candidate = cloneThemeDraft(state.validTheme);
+  candidate.name = elements.themeCustomizerName.value.trim();
+  candidate.colors = { ...candidate.colors };
+  for (const input of elements.themeCustomizerVisualFields.querySelectorAll("[data-theme-token] .theme-token-value")) {
+    candidate.colors[input.closest("[data-theme-token]").dataset.themeToken] = themeCustomizerValue(input.value);
+  }
+  const thinkingMax = elements.themeCustomizerThinkingMax.value.trim();
+  if (thinkingMax) candidate.colors.thinkingMax = themeCustomizerValue(thinkingMax);
+  else delete candidate.colors.thinkingMax;
+  let vars;
+  try {
+    vars = JSON.parse(elements.themeCustomizerVars.value || "{}");
+  } catch (error) {
+    throw new Error(`Variables JSON is invalid: ${error.message}`);
+  }
+  if (!vars || typeof vars !== "object" || Array.isArray(vars)) throw new Error("Variables must be a JSON object.");
+  if (Object.keys(vars).length) candidate.vars = vars;
+  else delete candidate.vars;
+  const exportColors = {};
+  for (const input of elements.themeCustomizerExportFields.querySelectorAll("[data-theme-export]")) {
+    if (input.value.trim()) exportColors[input.dataset.themeExport] = themeCustomizerValue(input.value);
+  }
+  if (Object.keys(exportColors).length) candidate.export = exportColors;
+  else delete candidate.export;
+  return candidate;
+}
+
+function acceptThemeCustomizerDraft(candidate, { syncJson = true, syncControls = false } = {}) {
+  const state = themeCustomizerState;
+  if (!state) return false;
+  const validation = validateTheme(candidate, { allowWebuiExport: true });
+  if (!validation.ok) {
+    state.draftValid = false;
+    invalidateThemeCustomizerOverwrite();
+    setThemeCustomizerStatus(validation.issues.map(({ path, message }) => `${path}: ${message}`).join(" · "), "error");
+    updateThemeCustomizerActions();
+    return false;
+  }
+  const canonical = canonicalizeTheme(candidate, { allowWebuiExport: true });
+  state.validTheme = canonical;
+  state.draftValid = true;
+  invalidateThemeCustomizerOverwrite();
+  if (syncJson && elements.themeCustomizerJson) elements.themeCustomizerJson.value = serializeTheme(canonical, { allowWebuiExport: true });
+  if (syncControls) {
+    elements.themeCustomizerName.value = canonical.name;
+    renderThemeCustomizerVisualFields(canonical);
+    renderThemeCustomizerOptionalFields(canonical);
+  }
+  applyTheme(canonical, { persist: false });
+  setThemeCustomizerStatus("Valid draft previewed. Nothing has been written to browser storage or disk.", "success");
+  updateThemeCustomizerActions();
+  return true;
+}
+
+function updateThemeCustomizerFromVisual() {
+  if (!themeCustomizerState) return;
+  invalidateThemeCustomizerOverwrite();
+  try {
+    acceptThemeCustomizerDraft(themeCustomizerCandidateFromVisual(), { syncJson: true });
+  } catch (error) {
+    themeCustomizerState.draftValid = false;
+    setThemeCustomizerStatus(error.message || String(error), "error");
+    updateThemeCustomizerActions();
+  }
+}
+
+function updateThemeCustomizerFromJson() {
+  if (!themeCustomizerState) return;
+  invalidateThemeCustomizerOverwrite();
+  let candidate;
+  try {
+    candidate = JSON.parse(elements.themeCustomizerJson.value);
+  } catch (error) {
+    themeCustomizerState.draftValid = false;
+    setThemeCustomizerStatus(`Advanced JSON is invalid: ${error.message}. The last valid preview remains active.`, "error");
+    updateThemeCustomizerActions();
+    return;
+  }
+  acceptThemeCustomizerDraft(candidate, { syncJson: false, syncControls: true });
+}
+
+function restoreThemeCustomizerOpeningState(generation) {
+  const state = themeCustomizerState;
+  if (!state || state.generation !== generation || state.restored) return;
+  state.restored = true;
+  applyTheme(state.opening.theme, { persist: false });
+  setCustomBackgroundRecord(state.opening.background);
+  customBackgroundLoading = false;
+  applyCustomBackgroundOverride();
+  renderThemeSelect();
+}
+
+function closeThemeCustomizer({ restore = true } = {}) {
+  const state = themeCustomizerState;
+  if (!state) {
+    if (elements.themeCustomizerDialog?.open) elements.themeCustomizerDialog.close();
+    return;
+  }
+  if (state.saving) {
+    setThemeCustomizerStatus("Wait for the theme save to finish before closing or switching tabs.", "warn");
+    return false;
+  }
+  const generation = state.generation;
+  state.closing = true;
+  if (restore) restoreThemeCustomizerOpeningState(generation);
+  themeCustomizerState = null;
+  if (elements.themeCustomizerDialog?.open) elements.themeCustomizerDialog.close();
+  return true;
+}
+
+function themeCustomizerNameForSource(theme) {
+  const raw = theme?.custom ? theme.name : `${theme?.name || "custom-theme"}-custom`;
+  return raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "").slice(0, 75) || "custom-theme";
+}
+
+function installThemeCatalog(data) {
+  availableThemes = Array.isArray(data?.themes) ? data.themes : [];
+  themeCatalogScopes = data?.scopes && typeof data.scopes === "object" ? data.scopes : themeCatalogScopes;
+  optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
+  renderOptionalFeatureControls();
+  renderThemeSelect();
+}
+
+async function refreshThemeCatalog(tabContext = activeTabContext()) {
+  const response = await api("/api/themes", { tabId: tabContext.tabId });
+  if (tabContext.tabId && !isCurrentTabContext(tabContext)) return response.data;
+  installThemeCatalog(response.data || {});
+  return response.data || {};
+}
+
+async function openThemeCustomizer() {
+  if (!elements.themeCustomizerDialog || !availableThemes.length) return;
+  const generation = ++themeCustomizerGeneration;
+  const tabContext = activeTabContext();
+  const openingTheme = availableThemes.find((theme) => theme.name === currentThemeName) || availableThemes[0];
+  const opening = {
+    theme: cloneThemeDraft(openingTheme),
+    background: customBackground ? cloneThemeDraft(customBackground) : null,
+  };
+  themeCustomizerState = { generation, tabContext, opening, validTheme: null, draftValid: false, initialTheme: null, overwrite: null, saving: false, restored: false };
+  setThemeCustomizerStatus("Loading project and global theme destinations…");
+  try {
+    await refreshThemeCatalog(tabContext);
+  } catch (error) {
+    if (themeCustomizerState?.generation === generation) setThemeCustomizerStatus(`Theme catalog refresh failed: ${error.message || String(error)}`, "warn");
+  }
+  if (themeCustomizerState?.generation !== generation) return;
+  const source = availableThemes.find((theme) => theme.name === openingTheme.name) || openingTheme;
+  const draft = canonicalizeTheme(themeDraftFromCatalog(source, themeCustomizerNameForSource(source)), { allowWebuiExport: true });
+  themeCustomizerState.source = source;
+  themeCustomizerState.initialTheme = cloneThemeDraft(draft);
+  const projectTrusted = themeCatalogScopes.project?.trusted === true;
+  elements.themeCustomizerProjectOption.disabled = !projectTrusted;
+  elements.themeCustomizerScope.value = source.custom ? source.scope : projectTrusted ? "project" : "global";
+  elements.themeCustomizerScopeHint.textContent = projectTrusted
+    ? "Project saves use this active trusted tab’s .pi/themes directory; global saves use Pi’s agent themes directory."
+    : "This active project is not saved as trusted in Pi, so only Global themes is available.";
+  elements.themeCustomizerSourceBadge.textContent = `${themeScopeLabel(source.scope)} source`;
+  elements.themeCustomizerSourceBadge.className = `theme-scope-badge ${source.scope || "bundled"}`;
+  elements.themeCustomizerName.value = draft.name;
+  renderThemeCustomizerVisualFields(draft);
+  renderThemeCustomizerOptionalFields(draft);
+  elements.themeCustomizerJson.value = serializeTheme(draft, { allowWebuiExport: true });
+  themeCustomizerState.validTheme = draft;
+  themeCustomizerState.draftValid = true;
+  invalidateThemeCustomizerOverwrite();
+  applyTheme(draft, { persist: false });
+  setThemeCustomizerStatus("Valid draft previewed. Nothing has been written to browser storage or disk.", "success");
+  updateThemeCustomizerActions();
+  if (!elements.themeCustomizerDialog.open) elements.themeCustomizerDialog.showModal();
+  queueMicrotask(() => elements.themeCustomizerName?.focus({ preventScroll: true }));
+}
+
+function showThemeCustomizerOverwrite(details) {
+  const state = themeCustomizerState;
+  if (!state) return;
+  const scope = details?.scope;
+  const fileName = details?.fileName;
+  if (scope !== elements.themeCustomizerScope.value || fileName !== `${elements.themeCustomizerName.value.trim()}.json` || !Number.isFinite(details?.mtimeMs)) {
+    setThemeCustomizerStatus("The server returned conflict details for a different target. Refresh the catalog and try again.", "error");
+    return;
+  }
+  state.overwrite = { signature: themeCustomizerDraftSignature(state), scope, fileName, mtimeMs: details.mtimeMs };
+  elements.themeCustomizerOverwriteMessage.textContent = `${themeScopeLabel(scope)} themes / ${fileName} already exists. Replace only this file with the current unchanged draft?`;
+  elements.themeCustomizerOverwrite.hidden = false;
+  setThemeCustomizerStatus("Review the exact target, then confirm replacement. Any draft, name, or destination change cancels this confirmation.", "warn");
+  updateThemeCustomizerActions();
+  elements.themeCustomizerOverwriteButton.focus();
+}
+
+async function saveThemeCustomizer({ overwrite = false } = {}) {
+  const state = themeCustomizerState;
+  if (!state?.draftValid || !state.validTheme || state.saving) return;
+  if (!isCurrentTabContext(state.tabContext)) {
+    setThemeCustomizerStatus("The active tab changed. Cancel and reopen Customize so the project destination is bound to the intended tab.", "warn");
+    return;
+  }
+  const confirmation = state.overwrite;
+  if (overwrite && (!confirmation || confirmation.signature !== themeCustomizerDraftSignature(state))) {
+    invalidateThemeCustomizerOverwrite();
+    setThemeCustomizerStatus("The overwrite confirmation no longer matches this target and draft. Save again to request a fresh confirmation.", "warn");
+    updateThemeCustomizerActions();
+    return;
+  }
+  const name = elements.themeCustomizerName.value.trim();
+  const scope = elements.themeCustomizerScope.value;
+  state.saving = true;
+  updateThemeCustomizerActions();
+  try {
+    const response = await api("/api/themes/custom", {
+      method: "POST",
+      tabId: state.tabContext.tabId,
+      body: {
+        scope,
+        fileName: `${name}.json`,
+        theme: state.validTheme,
+        overwrite,
+        expectedMtimeMs: overwrite ? confirmation.mtimeMs : null,
+      },
+    });
+    if (themeCustomizerState?.generation !== state.generation) return;
+    invalidateThemeCustomizerOverwrite();
+    await refreshThemeCatalog(state.tabContext);
+    if (themeCustomizerState?.generation !== state.generation) return;
+    applyTheme(state.validTheme, { persist: false });
+    elements.themeCustomizerSourceBadge.textContent = `${themeScopeLabel(scope)} saved`;
+    elements.themeCustomizerSourceBadge.className = `theme-scope-badge ${scope}`;
+    setThemeCustomizerStatus(`Saved ${response.data?.fileName || `${name}.json`} to ${themeScopeLabel(scope)} themes. The WebUI catalog is refreshed. In Pi TUI, run /reload or restart, then choose it with /theme. No Pi or browser theme setting was changed.`, "success");
+  } catch (error) {
+    if (themeCustomizerState?.generation !== state.generation) return;
+    const code = error.data?.code;
+    if (code === "THEME_EXISTS") showThemeCustomizerOverwrite(error.data?.details);
+    else if (code === "THEME_CHANGED") {
+      invalidateThemeCustomizerOverwrite();
+      setThemeCustomizerStatus("The target changed after confirmation and was not overwritten. Review the current file, then save again for a fresh target-bound confirmation.", "error");
+    } else {
+      const issues = error.data?.details?.issues;
+      setThemeCustomizerStatus(Array.isArray(issues) && issues.length
+        ? issues.map(({ path, message }) => `${path}: ${message}`).join(" · ")
+        : error.message || String(error), "error");
+    }
+  } finally {
+    if (themeCustomizerState?.generation === state.generation) {
+      state.saving = false;
+      updateThemeCustomizerActions();
+    }
+  }
+}
+
+function resetThemeCustomizerDraft() {
+  const state = themeCustomizerState;
+  if (!state?.initialTheme) return;
+  const reset = cloneThemeDraft(state.initialTheme);
+  elements.themeCustomizerName.value = reset.name;
+  renderThemeCustomizerVisualFields(reset);
+  renderThemeCustomizerOptionalFields(reset);
+  acceptThemeCustomizerDraft(reset, { syncJson: true });
+}
+
 function renderThemeSelect({ unavailableLabel = "Theme bundle unavailable" } = {}) {
   if (!elements.themeSelect) return;
   elements.themeSelect.replaceChildren();
@@ -7290,6 +10419,7 @@ function renderThemeSelect({ unavailableLabel = "Theme bundle unavailable" } = {
     option.value = "";
     elements.themeSelect.append(option);
     elements.themeSelect.disabled = true;
+    if (elements.themeCustomizeButton) elements.themeCustomizeButton.disabled = true;
     return;
   }
   if (!availableThemes.length) {
@@ -7297,11 +10427,14 @@ function renderThemeSelect({ unavailableLabel = "Theme bundle unavailable" } = {
     option.value = "";
     elements.themeSelect.append(option);
     elements.themeSelect.disabled = true;
+    if (elements.themeCustomizeButton) elements.themeCustomizeButton.disabled = true;
     return;
   }
   elements.themeSelect.disabled = false;
+  if (elements.themeCustomizeButton) elements.themeCustomizeButton.disabled = false;
   for (const theme of availableThemes) {
-    const option = make("option", undefined, theme.label || displayThemeName(theme.name) || theme.name);
+    const suffix = theme.custom ? ` · ${themeScopeLabel(theme.scope)}` : "";
+    const option = make("option", undefined, `${theme.label || displayThemeName(theme.name) || theme.name}${suffix}`);
     option.value = theme.name;
     elements.themeSelect.append(option);
   }
@@ -7336,6 +10469,7 @@ async function initializeThemes() {
     throw error;
   }
   availableThemes = Array.isArray(response.data?.themes) ? response.data.themes : [];
+  themeCatalogScopes = response.data?.scopes && typeof response.data.scopes === "object" ? response.data.scopes : themeCatalogScopes;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   renderOptionalFeatureControls();
   themeSchemeMode = storedThemeMode() ?? seedThemeSchemeFromStoredTheme();
@@ -7354,12 +10488,64 @@ function activeTabContext(tabId = activeTabId) {
   return { tabId: tabId || null, generation: activeTabGeneration };
 }
 
+function transcriptStreamOwner(tabId = activeTabId, generation = activeTabGeneration) {
+  return `${tabId || ""}:${generation}`;
+}
+
+function unknownTranscriptEvidenceText(event) {
+  const update = event?.assistantMessageEvent || {};
+  const value = update.delta ?? update.content ?? update.text ?? update.thinking ?? "";
+  if (typeof value === "string") return value.slice(0, UNKNOWN_TRANSCRIPT_EVIDENCE_TEXT_LIMIT);
+  try {
+    return JSON.stringify(value).slice(0, UNKNOWN_TRANSCRIPT_EVIDENCE_TEXT_LIMIT);
+  } catch {
+    return "[unserializable transcript evidence]";
+  }
+}
+
+function preserveUnknownTranscriptEvidence(event, classification, owner) {
+  const update = event?.assistantMessageEvent || {};
+  const evidence = {
+    owner: String(owner || ""),
+    subtype: classification?.subtype || "(missing)",
+    fields: Object.keys(update).slice(0, 16),
+    text: unknownTranscriptEvidenceText(event),
+    receivedAt: Date.now(),
+  };
+  appendBoundedStreamDiagnostic(unknownTranscriptEvidence, evidence, UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT);
+  if (owner) {
+    unknownTranscriptOwnersPendingReconcile.add(owner);
+    while (unknownTranscriptOwnersPendingReconcile.size > UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT) {
+      const oldest = unknownTranscriptOwnersPendingReconcile.values().next().value;
+      if (oldest === undefined) break;
+      unknownTranscriptOwnersPendingReconcile.delete(oldest);
+    }
+  }
+  if (streamIsolationDebugLedger) {
+    appendBoundedStreamDiagnostic(streamIsolationDebugLedger.unknownEvidence, evidence, UNKNOWN_TRANSCRIPT_EVIDENCE_LIMIT);
+  }
+}
+
+function reconcileUnknownTranscriptEvidenceAtBarrier(event) {
+  const tabContext = activeTabContext(event?.tabId || activeTabId);
+  const owner = transcriptStreamOwner(tabContext.tabId, tabContext.generation);
+  if (!unknownTranscriptOwnersPendingReconcile.delete(owner)) return false;
+  if (!isCurrentTabContext(tabContext)) return false;
+  scheduleSemanticReconcile({ messages: true }, tabContext);
+  return true;
+}
+
 function setActiveTabId(tabId, { remember = false } = {}) {
   const nextTabId = tabId || null;
-  if (nextTabId !== activeTabId) activeTabGeneration += 1;
+  if (nextTabId !== activeTabId) {
+    activeTabGeneration += 1;
+    closeFeatureDecisionDialog({ restoreFocus: false });
+    closeSessionSummaryOverlay({ restoreFocus: false });
+  }
   activeTabId = nextTabId;
   bindGitWorkflowToActiveTab();
   renderFeatureCategoryTag(nextTabId);
+  renderSessionSummaryControls();
   if (remember) rememberActiveTab();
   return activeTabContext(nextTabId);
 }
@@ -7504,6 +10690,7 @@ function resetFileTreeState() {
   fileTreeSearchTimer = null;
   fileTreeSearchRequestSerial += 1;
   fileTreeState = emptyFileTreeState(fileTreeState.requestSerial + 1);
+  fileTreeLastRenderSignature = "";
   if (elements.fileTreeSearchInput) elements.fileTreeSearchInput.value = "";
   updateFileTreeSearchControls();
   renderFileTree();
@@ -7519,9 +10706,55 @@ function fileEntryByPath(filePath = "") {
   return null;
 }
 
+function fileTreeControlKey(node) {
+  const path = normalizeFileTreePath(node?.dataset?.path || "");
+  return node?.classList?.contains("file-tree-item") && path ? `file-tree:${path}` : "";
+}
+
+function fileTreeEntryRenderSignature(entry = {}) {
+  return [
+    normalizeFileTreePath(entry.path || ""),
+    String(entry.name || ""),
+    String(entry.type || ""),
+    entry.directory === true,
+    String(entry.extension || ""),
+    String(entry.error || ""),
+  ];
+}
+
+function fileTreeRenderSignature() {
+  const entriesByPath = [...fileTreeState.entriesByPath.entries()]
+    .map(([path, entries]) => [normalizeFileTreePath(path), (Array.isArray(entries) ? entries : []).map(fileTreeEntryRenderSignature)])
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const gitStatusByPath = [...fileTreeState.gitStatusByPath.entries()]
+    .map(([path, status]) => [normalizeFileTreePath(path), normalizeFileTreeGitStatus(status)])
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return JSON.stringify({
+    context: `${activeTabId || ""}:${activeTabGeneration}`,
+    root: fileTreeState.root || "",
+    displayCwd: fileTreeState.root || latestWorkspace?.displayCwd || activeTab()?.cwd || "",
+    entriesByPath,
+    expanded: [...fileTreeState.expanded].map(normalizeFileTreePath).sort(),
+    loading: [...fileTreeState.loading].map(normalizeFileTreePath).sort(),
+    selectedPath: normalizeFileTreePath(fileTreeState.selectedPath || ""),
+    searchQuery: fileTreeState.searchQuery || fileTreeSearchQueryText(),
+    searchEntries: fileTreeState.searchEntries.map(fileTreeEntryRenderSignature),
+    searchLoading: fileTreeState.searchLoading,
+    gitStatusRoot: fileTreeState.gitStatusRoot || "",
+    gitStatusByPath,
+  });
+}
+
 function renderFileTree() {
+  if (deferUiRenderDuringPointerActivation("file-tree", renderFileTree)) return;
   const root = elements.fileTreeRoot;
   if (!root) return;
+  const renderSignature = fileTreeRenderSignature();
+  if (renderSignature === fileTreeLastRenderSignature) return;
+  fileTreeLastRenderSignature = renderSignature;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${fileTreeState.root || ""}`;
+  const focusSnapshot = captureScopedControlContinuity(root, continuityContextKey, fileTreeControlKey);
+  const restoreFocus = () => restoreScopedControlContinuity(root, continuityContextKey, focusSnapshot, (key) => [...root.querySelectorAll(".file-tree-item[data-path]")].find((node) => fileTreeControlKey(node) === key));
   root.replaceChildren();
   updateFileTreeSearchControls();
   if (elements.fileTreeCwd) elements.fileTreeCwd.textContent = fileTreeState.root || latestWorkspace?.displayCwd || activeTab()?.cwd || "";
@@ -7530,10 +10763,12 @@ function renderFileTree() {
   if (searchQuery) {
     if (fileTreeState.searchLoading) {
       root.append(make("div", "file-tree-loading muted", `Searching for “${searchQuery}”…`));
+      restoreFocus();
       return;
     }
     if (!fileTreeState.searchEntries.length) {
       root.append(make("div", "file-tree-empty muted", `No files or folders match “${searchQuery}”.`));
+      restoreFocus();
       return;
     }
     const list = make("ul", "file-tree-list root search-results");
@@ -7541,11 +10776,13 @@ function renderFileTree() {
     for (const entry of fileTreeState.searchEntries) appendFileSearchEntry(list, entry);
     root.append(list);
     syncFileTreeRovingTabindex();
+    restoreFocus();
     return;
   }
   const entries = fileTreeState.entriesByPath.get(FILE_TREE_ROOT_PATH) || [];
   if (!entries.length) {
     root.append(make("div", "file-tree-empty muted", fileTreeState.loading.has(FILE_TREE_ROOT_PATH) ? "Loading files…" : "No files loaded."));
+    restoreFocus();
     return;
   }
   const list = make("ul", "file-tree-list root");
@@ -7553,6 +10790,7 @@ function renderFileTree() {
   for (const entry of entries) appendFileTreeEntry(list, entry, 0);
   root.append(list);
   syncFileTreeRovingTabindex();
+  restoreFocus();
 }
 
 function visibleFileTreeItems() {
@@ -7710,15 +10948,18 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   parent.append(item);
 }
 
-async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false } = {}) {
+async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false, renderResult = true } = {}) {
   const normalized = normalizeFileTreePath(path);
   if (!force && fileTreeState.entriesByPath.has(normalized)) return fileTreeState.entriesByPath.get(normalized);
   const tabContext = activeTabContext();
   if (!tabContext.tabId || fileTreeState.loading.has(normalized)) return [];
   const serial = ++fileTreeState.requestSerial;
+  const hadCachedEntries = fileTreeState.entriesByPath.has(normalized);
   fileTreeState.loading.add(normalized);
-  setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
-  renderFileTree();
+  if (!hadCachedEntries) {
+    setFileTreeStatus(normalized ? `Loading ${normalized}…` : "Loading workspace files…");
+    renderFileTree();
+  }
   try {
     const response = await api(fileApiPath("/api/files", normalized), { tabId: tabContext.tabId });
     if (!isCurrentTabContext(tabContext) || serial < fileTreeState.requestSerial) return [];
@@ -7731,7 +10972,9 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
     const entries = Array.isArray(data.entries) ? data.entries : [];
     updateFileTreeGitStatus(data.gitStatus, entries);
     fileTreeState.entriesByPath.set(normalized, entries);
-    setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length }));
+    if (!normalized || !hadCachedEntries) {
+      setFileTreeStatus(fileTreeEntriesStatus(entries, { truncated: data.truncated, total: data.total || entries.length }));
+    }
     return entries;
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
@@ -7741,7 +10984,7 @@ async function loadFileTreeDirectory(path = FILE_TREE_ROOT_PATH, { force = false
     return [];
   } finally {
     fileTreeState.loading.delete(normalized);
-    if (isCurrentTabContext(tabContext)) renderFileTree();
+    if (renderResult && isCurrentTabContext(tabContext)) renderFileTree();
   }
 }
 
@@ -7762,7 +11005,7 @@ function clearFileTreeSearch({ focus = false } = {}) {
   if (focus) elements.fileTreeSearchInput?.focus();
 }
 
-async function runFileTreeSearch() {
+async function runFileTreeSearch({ background = false } = {}) {
   clearTimeout(fileTreeSearchTimer);
   fileTreeSearchTimer = null;
   const query = fileTreeSearchQueryText();
@@ -7775,12 +11018,14 @@ async function runFileTreeSearch() {
   const tabContext = activeTabContext();
   if (!tabContext.tabId) return [];
   fileTreeState.searchQuery = query;
-  fileTreeState.searchLoading = true;
-  fileTreeState.searchEntries = [];
-  fileTreeState.searchTruncated = false;
-  fileTreeState.searchTotal = 0;
-  setFileTreeStatus(`Searching for “${query}”…`);
-  renderFileTree();
+  if (!background) {
+    fileTreeState.searchLoading = true;
+    fileTreeState.searchEntries = [];
+    fileTreeState.searchTruncated = false;
+    fileTreeState.searchTotal = 0;
+    setFileTreeStatus(`Searching for “${query}”…`);
+    renderFileTree();
+  }
   try {
     const response = await api(fileSearchApiPath(query), { tabId: tabContext.tabId });
     if (!isCurrentTabContext(tabContext) || serial !== fileTreeSearchRequestSerial) return [];
@@ -7797,8 +11042,10 @@ async function runFileTreeSearch() {
     return entries;
   } catch (error) {
     if (isCurrentTabContext(tabContext) && serial === fileTreeSearchRequestSerial) {
-      fileTreeState.searchLoading = false;
-      fileTreeState.searchEntries = [];
+      if (!background) {
+        fileTreeState.searchLoading = false;
+        fileTreeState.searchEntries = [];
+      }
       setFileTreeStatus(error.message || String(error), "error");
       addEvent(`file search failed: ${error.message || String(error)}`, "error");
     }
@@ -7831,6 +11078,83 @@ async function refreshFileTreeRoot(tabContext = activeTabContext()) {
   if (!isCurrentTabContext(tabContext)) return;
   if (fileTreeSearchQueryText()) await runFileTreeSearch();
   else await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true });
+}
+
+let fileTreeLiveRefreshInProgress = false;
+let fileTreeLiveRefreshPendingContext = null;
+let fileTreeLiveRefreshRetryTimer = null;
+
+async function refreshLoadedFileTreeDirectories(tabContext = activeTabContext()) {
+  const knownDirectories = new Set();
+  const collectDirectories = (path) => {
+    for (const entry of fileTreeState.entriesByPath.get(path) || []) {
+      if (entry.type === "directory" || entry.directory === true) knownDirectories.add(normalizeFileTreePath(entry.path || ""));
+    }
+  };
+  if (fileTreeState.loading.has(FILE_TREE_ROOT_PATH)) return true;
+  await loadFileTreeDirectory(FILE_TREE_ROOT_PATH, { force: true, renderResult: false });
+  if (!isCurrentTabContext(tabContext)) return false;
+  collectDirectories(FILE_TREE_ROOT_PATH);
+  const cachedDirectories = [...fileTreeState.entriesByPath.keys()]
+    .filter((path) => path !== FILE_TREE_ROOT_PATH)
+    .sort((a, b) => a.split("/").length - b.split("/").length || (a < b ? -1 : a > b ? 1 : 0));
+  let skippedLoadingDirectory = false;
+  for (const path of cachedDirectories) {
+    if (!isCurrentTabContext(tabContext)) return false;
+    if (!knownDirectories.has(path)) {
+      clearFileTreeEntryCache(path);
+      continue;
+    }
+    if (fileTreeState.loading.has(path)) {
+      skippedLoadingDirectory = true;
+      collectDirectories(path);
+      continue;
+    }
+    await loadFileTreeDirectory(path, { force: true, renderResult: false });
+    if (!isCurrentTabContext(tabContext)) return false;
+    collectDirectories(path);
+  }
+  renderFileTree();
+  return skippedLoadingDirectory;
+}
+
+async function refreshFileTreeLive(tabContext = activeTabContext()) {
+  if (!tabContext.tabId || !elements.fileTreeRoot) return;
+  if (!isCurrentTabContext(tabContext)) return;
+  clearTimeout(fileTreeLiveRefreshRetryTimer);
+  fileTreeLiveRefreshRetryTimer = null;
+  if (fileTreeLiveRefreshInProgress) {
+    fileTreeLiveRefreshPendingContext = tabContext;
+    return;
+  }
+  fileTreeLiveRefreshInProgress = true;
+  let retryContext = null;
+  try {
+    let refreshContext = tabContext;
+    while (refreshContext && isCurrentTabContext(refreshContext)) {
+      fileTreeLiveRefreshPendingContext = null;
+      let skippedLoadingDirectory = false;
+      if (fileTreeSearchQueryText()) await runFileTreeSearch({ background: true });
+      else skippedLoadingDirectory = await refreshLoadedFileTreeDirectories(refreshContext);
+      if (skippedLoadingDirectory && isCurrentTabContext(refreshContext)) retryContext = refreshContext;
+      refreshContext = fileTreeLiveRefreshPendingContext;
+    }
+  } finally {
+    fileTreeLiveRefreshInProgress = false;
+    const pendingContext = fileTreeLiveRefreshPendingContext;
+    fileTreeLiveRefreshPendingContext = null;
+    const nextContext = pendingContext && isCurrentTabContext(pendingContext)
+      ? pendingContext
+      : retryContext && isCurrentTabContext(retryContext)
+        ? retryContext
+        : null;
+    if (nextContext) {
+      fileTreeLiveRefreshRetryTimer = setTimeout(() => {
+        fileTreeLiveRefreshRetryTimer = null;
+        refreshFileTreeLive(nextContext).catch((error) => addEvent(error.message || String(error), "error"));
+      }, 50);
+    }
+  }
 }
 
 async function toggleFileTreeDirectory(path = "", { force = false } = {}) {
@@ -8303,6 +11627,610 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
   await moveFileTreeEntryToDestination(entry, destinationPath, { confirmMove: true });
 }
 
+// --- Durable UI layout settings -------------------------------------------
+// Browser storage stays the immediate, offline-capable cache while the durable
+// per-user layout lives in the WebUI settings file behind
+// GET/PUT /api/interface-preferences. Local writes always apply first; server
+// reconciliation is non-blocking, coalesced, and revision guarded.
+const UI_LAYOUT_SCHEMA_VERSION = 1;
+const UI_LAYOUT_ENDPOINT = "/api/interface-preferences";
+const UI_LAYOUT_SAVE_DEBOUNCE_MS = 250;
+const UI_LAYOUT_MAX_CONFLICT_RETRIES = 1;
+const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
+const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"];
+const REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
+const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
+const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups"];
+const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
+const UI_LAYOUT_PENDING_WRITER_ID = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+let durableLayoutPendingMutationSerial = 0;
+const UI_LAYOUT_ID_MAX_LENGTH = 256;
+const UI_LAYOUT_TITLE_MAX_LENGTH = 160;
+const UI_LAYOUT_LIST_MAX_ITEMS = 128;
+const UI_LAYOUT_GROUP_MAX_COUNT = 32;
+const UI_LAYOUT_GRID_MAX_COLUMNS = 24;
+const UI_LAYOUT_GRID_MAX_SLOTS = 4096;
+const UI_LAYOUT_FILE_VIEWER_WIDTH_MAX_PX = 4096;
+const UI_LAYOUT_UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const UI_LAYOUT_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+let durableLayoutRevision = null;
+const durableLayoutGenerations = new Map();
+const durableLayoutDirtyFields = new Map();
+let durableLayoutSaveTimer = null;
+let durableLayoutSaveInFlight = false;
+let durableLayoutConflictAttempts = 0;
+let durableLayoutWarned = false;
+let durableLayoutReadEpoch = 0;
+let durableLayoutAppliedReadEpoch = 0;
+let durableLayoutWriteFenceReadEpoch = 0;
+
+function readDurableLayoutCache(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeDurableLayoutCache(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Browser storage is only the local cache for the durable layout settings.
+  }
+}
+
+function durableLayoutIdList(value) {
+  if (!Array.isArray(value)) return null;
+  const ids = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || id.length > UI_LAYOUT_ID_MAX_LENGTH || UI_LAYOUT_CONTROL_CHARACTERS.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= UI_LAYOUT_LIST_MAX_ITEMS) break;
+  }
+  return ids;
+}
+
+function durableLayoutStoredIdList(key) {
+  const raw = readDurableLayoutCache(key);
+  if (raw === null) return null;
+  try {
+    return durableLayoutIdList(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function collectDurableSidePanelLayout() {
+  const collapsed = readStoredSidePanelCollapsed();
+  return {
+    sectionOrder: durableLayoutStoredIdList(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY),
+    collapsedSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_STORAGE_KEY),
+    hiddenSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY),
+    collapsed: typeof collapsed === "boolean" ? collapsed : null,
+  };
+}
+
+function collectDurableComposerActionsLayout() {
+  const stored = readStoredComposerActionLayout();
+  let grid = null;
+  if (stored && Number.isInteger(stored.columns) && stored.columns >= 1 && stored.columns <= UI_LAYOUT_GRID_MAX_COLUMNS) {
+    const positions = {};
+    const usedSlots = new Set();
+    let count = 0;
+    for (const [rawId, slot] of stored.positions) {
+      const id = typeof rawId === "string" ? rawId.trim() : "";
+      if (!id || id.length > UI_LAYOUT_ID_MAX_LENGTH || UI_LAYOUT_CONTROL_CHARACTERS.test(id) || UI_LAYOUT_UNSAFE_KEYS.has(id)) continue;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= UI_LAYOUT_GRID_MAX_SLOTS || usedSlots.has(slot)) continue;
+      usedSlots.add(slot);
+      positions[id] = slot;
+      count += 1;
+      if (count >= UI_LAYOUT_LIST_MAX_ITEMS) break;
+    }
+    grid = { version: 2, columns: stored.columns, positions };
+  }
+  // Composer order and sparse grid always travel together as one logical update.
+  return { order: durableLayoutStoredIdList(COMPOSER_ACTION_ORDER_STORAGE_KEY), grid };
+}
+
+function collectDurableTerminalTabsLayout() {
+  const rawLayout = readDurableLayoutCache(TERMINAL_TABS_LAYOUT_STORAGE_KEY);
+  const rawGroups = readDurableLayoutCache(TERMINAL_CUSTOM_GROUPS_STORAGE_KEY);
+  let customGroups = null;
+  if (rawGroups !== null) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawGroups);
+    } catch {
+      parsed = null;
+    }
+    const records = Array.isArray(parsed?.groups) ? parsed.groups : Array.isArray(parsed) ? parsed : [];
+    const groups = [];
+    const groupIds = new Set();
+    const claimedTabIds = new Set();
+    for (const record of records) {
+      const id = String(record?.id || "").trim();
+      if (!id || id.length > UI_LAYOUT_ID_MAX_LENGTH || UI_LAYOUT_CONTROL_CHARACTERS.test(id) || groupIds.has(id)) continue;
+      const title = normalizeTerminalCustomGroupTitle(record?.title).slice(0, UI_LAYOUT_TITLE_MAX_LENGTH).trim();
+      const tabIds = (durableLayoutIdList(normalizeTerminalCustomGroupTabIds(record?.tabIds)) || []).filter((tabId) => {
+        if (claimedTabIds.has(tabId)) return false;
+        claimedTabIds.add(tabId);
+        return true;
+      });
+      if (!title || tabIds.length < 2) continue;
+      groupIds.add(id);
+      groups.push({ id, title, tabIds });
+      if (groups.length >= UI_LAYOUT_GROUP_MAX_COUNT) break;
+    }
+    customGroups = { version: 1, groups };
+  }
+  return { layout: TERMINAL_TABS_LAYOUTS.has(rawLayout) ? rawLayout : null, customGroups };
+}
+
+function collectDurableFileViewerWidth() {
+  const width = readStoredFileViewerWidth();
+  if (!Number.isFinite(width)) return null;
+  const rounded = Math.round(width);
+  return rounded >= FILE_VIEWER_WIDTH_MIN_PX && rounded <= UI_LAYOUT_FILE_VIEWER_WIDTH_MAX_PX ? rounded : null;
+}
+
+function collectDurableUiLayoutField(field) {
+  switch (field) {
+    case "sidePanel":
+      return collectDurableSidePanelLayout();
+    case "composerActions":
+      return collectDurableComposerActionsLayout();
+    case "footerScopedModelOrder":
+      return durableLayoutStoredIdList(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY);
+    case "terminalTabs":
+      return collectDurableTerminalTabsLayout();
+    case "fileViewerWidth":
+      return collectDurableFileViewerWidth();
+    default:
+      return null;
+  }
+}
+
+function durableUiLayoutSubFields(field) {
+  if (field === "sidePanel") return UI_LAYOUT_SIDE_PANEL_FIELDS;
+  if (field === "composerActions") return UI_LAYOUT_COMPOSER_FIELDS;
+  if (field === "terminalTabs") return UI_LAYOUT_TERMINAL_FIELDS;
+  return null;
+}
+
+function durableUiLayoutValuePresent(value) {
+  return value !== null && value !== undefined;
+}
+
+function durableUiLayoutMutationValue(field, subfield = null) {
+  const value = collectDurableUiLayoutField(field);
+  return subfield ? value?.[subfield] ?? null : value;
+}
+
+function durableUiLayoutEntryPatch(field, entry) {
+  if (!entry?.subfields?.size) return entry?.value ?? null;
+  return Object.fromEntries([...entry.subfields].map((subfield) => [subfield, entry.value?.[subfield] ?? null]));
+}
+
+function durableUiLayoutPendingMutationRecords() {
+  const records = [];
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(UI_LAYOUT_PENDING_STORAGE_PREFIX)) continue;
+      let value;
+      try {
+        value = JSON.parse(localStorage.getItem(key) || "null");
+      } catch {
+        continue;
+      }
+      if (!value || value.version !== 3 || !UI_LAYOUT_FIELDS.includes(value.field)) continue;
+      const allowedSubfields = durableUiLayoutSubFields(value.field);
+      const subfield = typeof value.subfield === "string" ? value.subfield : null;
+      if (subfield && !allowedSubfields?.includes(subfield)) continue;
+      if (allowedSubfields && value.field !== "composerActions" && !subfield) continue;
+      records.push({
+        key,
+        field: value.field,
+        subfield,
+        value: value.value,
+        updatedAt: Number(value.updatedAt) || 0,
+      });
+    }
+  } catch {
+    return [];
+  }
+  return records;
+}
+
+function writeDurableUiLayoutPendingMutation(field, subfield, value) {
+  try {
+    durableLayoutPendingMutationSerial += 1;
+    const key = `${UI_LAYOUT_PENDING_STORAGE_PREFIX}${UI_LAYOUT_PENDING_WRITER_ID}:${Date.now().toString(36)}:${durableLayoutPendingMutationSerial.toString(36)}`;
+    localStorage.setItem(key, JSON.stringify({
+      version: 3,
+      field,
+      subfield,
+      value,
+      updatedAt: Date.now(),
+    }));
+    return key;
+  } catch {
+    return null;
+  }
+}
+
+function removeDurableUiLayoutPendingMutation(key) {
+  if (!key) return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // A later startup can retry an immutable mutation record that remains.
+  }
+}
+
+function clearRemovedSidePanelSectionHeightState() {
+  try {
+    localStorage.removeItem(REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY);
+  } catch {
+    // Removed layout state may remain when browser storage is unavailable.
+  }
+  for (const record of durableUiLayoutPendingMutationRecords()) {
+    if (record.field === "sidePanel" && record.subfield === "sectionHeights") {
+      removeDurableUiLayoutPendingMutation(record.key);
+    }
+  }
+}
+
+function clearAcknowledgedDurableUiLayoutPendingMutations(snapshot) {
+  for (const entry of snapshot.values()) {
+    if (entry.subfieldMutationIds?.size) {
+      for (const mutationId of entry.subfieldMutationIds.values()) removeDurableUiLayoutPendingMutation(mutationId);
+    } else {
+      removeDurableUiLayoutPendingMutation(entry.mutationId);
+    }
+  }
+}
+
+function restoreDurableUiLayoutPendingJournal() {
+  const records = durableUiLayoutPendingMutationRecords();
+  const candidates = new Map();
+  for (const record of records) {
+    const path = record.subfield ? `${record.field}.${record.subfield}` : record.field;
+    const previous = candidates.get(path);
+    if (!previous || record.updatedAt > previous.updatedAt || (record.updatedAt === previous.updatedAt && record.key > previous.key)) {
+      candidates.set(path, record);
+    }
+  }
+  // Mutation records are immutable. Once a newer record exists for the same
+  // path, older records are safely superseded and can never be rewritten.
+  for (const record of records) {
+    const path = record.subfield ? `${record.field}.${record.subfield}` : record.field;
+    if (candidates.get(path)?.key !== record.key) removeDurableUiLayoutPendingMutation(record.key);
+  }
+
+  for (const field of UI_LAYOUT_FIELDS) {
+    const allowedSubfields = durableUiLayoutSubFields(field);
+    const fieldCandidates = allowedSubfields && field !== "composerActions"
+      ? allowedSubfields.map((subfield) => candidates.get(`${field}.${subfield}`)).filter(Boolean)
+      : [candidates.get(field)].filter(Boolean);
+    if (!fieldCandidates.length) continue;
+    const patch = allowedSubfields && field !== "composerActions"
+      ? Object.fromEntries(fieldCandidates.map((candidate) => [candidate.subfield, candidate.value]))
+      : fieldCandidates[0].value;
+    applyDurableUiLayoutField(field, patch);
+    const generation = durableUiLayoutGeneration(field) + 1;
+    const subfields = allowedSubfields && field !== "composerActions"
+      ? new Set(fieldCandidates.map((candidate) => candidate.subfield))
+      : null;
+    const subfieldGenerations = subfields
+      ? new Map([...subfields].map((subfield) => [subfield, generation]))
+      : null;
+    const subfieldMutationIds = subfields
+      ? new Map(fieldCandidates.map((candidate) => [candidate.subfield, candidate.key]))
+      : null;
+    durableLayoutGenerations.set(field, generation);
+    durableLayoutDirtyFields.set(field, {
+      generation,
+      value: collectDurableUiLayoutField(field),
+      subfields,
+      subfieldGenerations,
+      subfieldMutationIds,
+      mutationId: subfields ? null : fieldCandidates[0].key,
+    });
+  }
+  if (durableLayoutDirtyFields.size) scheduleDurableUiLayoutSave();
+}
+
+function applyDurableSidePanelLayout(value) {
+  if (!value) return;
+  if (Array.isArray(value.sectionOrder)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(value.sectionOrder));
+    restoreSidePanelSectionOrder();
+  }
+  if (Array.isArray(value.hiddenSectionIds)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY, JSON.stringify(value.hiddenSectionIds));
+    restoreSidePanelSectionVisibility();
+  }
+  if (Array.isArray(value.collapsedSectionIds)) {
+    writeDurableLayoutCache(SIDE_PANEL_SECTION_STORAGE_KEY, JSON.stringify(value.collapsedSectionIds));
+    restoreSidePanelSectionState();
+  }
+  if (typeof value.collapsed === "boolean") {
+    writeDurableLayoutCache(SIDE_PANEL_STORAGE_KEY, value.collapsed ? "1" : "0");
+    restoreSidePanelState();
+  }
+}
+
+function applyDurableComposerActionsLayout(value) {
+  if (!value) return;
+  if (Array.isArray(value.order)) {
+    writeDurableLayoutCache(COMPOSER_ACTION_ORDER_STORAGE_KEY, JSON.stringify(value.order));
+    restoreComposerActionOrder();
+  }
+  if (value.grid && value.grid.version === 2) {
+    // Keep the saved geometry as the canonical layout. Restore projects its
+    // horizontal positions into the current responsive grid without rewriting
+    // the source slots, so resizing back restores the exact original cells.
+    writeDurableLayoutCache(COMPOSER_ACTION_LAYOUT_STORAGE_KEY, JSON.stringify(value.grid));
+    restoreComposerActionSlotLayout();
+  }
+}
+
+function applyDurableFooterScopedModelOrder(value) {
+  if (!Array.isArray(value)) return;
+  writeDurableLayoutCache(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY, JSON.stringify(value));
+  footerScopedModels = orderedFooterScopedModels();
+  renderFooter();
+}
+
+function applyDurableTerminalTabsLayout(value) {
+  if (!value) return;
+  if (TERMINAL_TABS_LAYOUTS.has(value.layout)) {
+    writeDurableLayoutCache(TERMINAL_TABS_LAYOUT_STORAGE_KEY, value.layout);
+    setTerminalTabsLayout(value.layout, { persist: false });
+  }
+  if (value.customGroups && value.customGroups.version === 1) {
+    writeDurableLayoutCache(TERMINAL_CUSTOM_GROUPS_STORAGE_KEY, JSON.stringify(value.customGroups));
+    restoreTerminalCustomGroups();
+    syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
+    renderTabs();
+  }
+}
+
+function applyDurableFileViewerWidth(value) {
+  if (!Number.isFinite(value)) return;
+  const width = Math.round(value);
+  if (width < FILE_VIEWER_WIDTH_MIN_PX) return;
+  writeDurableLayoutCache(FILE_VIEWER_WIDTH_STORAGE_KEY, String(width));
+  restoreFileViewerWidthPreference();
+  if (activeFileViewer && !isSidePanelOverlayView()) applyFileViewerWidth(width);
+}
+
+function applyDurableUiLayoutField(field, value) {
+  if (field === "sidePanel") applyDurableSidePanelLayout(value);
+  else if (field === "composerActions") applyDurableComposerActionsLayout(value);
+  else if (field === "footerScopedModelOrder") applyDurableFooterScopedModelOrder(value);
+  else if (field === "terminalTabs") applyDurableTerminalTabsLayout(value);
+  else if (field === "fileViewerWidth") applyDurableFileViewerWidth(value);
+}
+
+function durableUiLayoutInteractionActive(field = null) {
+  const activeByField = {
+    sidePanel: Boolean(sidePanelSectionPointerDrag?.active),
+    composerActions: Boolean(composerActionPointerDrag?.active),
+    footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
+    terminalTabs: Boolean(terminalTabDragId),
+    fileViewerWidth: Boolean(fileViewerResizeState),
+  };
+  return field ? activeByField[field] === true : Object.values(activeByField).some(Boolean);
+}
+
+function durableUiLayoutGeneration(field) {
+  return durableLayoutGenerations.get(field) || 0;
+}
+
+function warnDurableUiLayoutOnce(message) {
+  if (durableLayoutWarned) return;
+  durableLayoutWarned = true;
+  addEvent(message, "warn");
+}
+
+function scheduleDurableUiLayoutSave(delay = UI_LAYOUT_SAVE_DEBOUNCE_MS) {
+  // One coalescing writer: repeated drag-over commits only reset this timer.
+  if (durableLayoutSaveTimer !== null) clearTimeout(durableLayoutSaveTimer);
+  durableLayoutSaveTimer = setTimeout(() => {
+    durableLayoutSaveTimer = null;
+    flushDurableUiLayoutSave();
+  }, delay);
+}
+
+function markDurableUiLayoutDirty(field, subfield = null) {
+  if (!UI_LAYOUT_FIELDS.includes(field)) return;
+  const allowedSubfields = durableUiLayoutSubFields(field);
+  if (subfield && !allowedSubfields?.includes(subfield)) return;
+  const generation = durableUiLayoutGeneration(field) + 1;
+  const previous = durableLayoutDirtyFields.get(field);
+  const value = collectDurableUiLayoutField(field);
+  let subfields = null;
+  let subfieldGenerations = null;
+  let subfieldMutationIds = null;
+  let mutationId = null;
+  if (allowedSubfields && field !== "composerActions") {
+    subfields = new Set(previous?.subfields || []);
+    subfieldGenerations = new Map(previous?.subfieldGenerations || []);
+    subfieldMutationIds = new Map(previous?.subfieldMutationIds || []);
+    const changedSubfields = subfield ? [subfield] : allowedSubfields;
+    for (const key of changedSubfields) {
+      const nextMutationId = writeDurableUiLayoutPendingMutation(field, key, value?.[key] ?? null);
+      if (nextMutationId) {
+        removeDurableUiLayoutPendingMutation(subfieldMutationIds.get(key));
+        subfieldMutationIds.set(key, nextMutationId);
+      }
+      subfields.add(key);
+      subfieldGenerations.set(key, generation);
+    }
+  } else {
+    mutationId = writeDurableUiLayoutPendingMutation(field, null, value);
+    if (mutationId) removeDurableUiLayoutPendingMutation(previous?.mutationId);
+    else mutationId = previous?.mutationId || null;
+  }
+  durableLayoutGenerations.set(field, generation);
+  durableLayoutDirtyFields.set(field, {
+    generation,
+    value,
+    subfields,
+    subfieldGenerations,
+    subfieldMutationIds,
+    mutationId,
+  });
+  durableLayoutConflictAttempts = 0;
+  scheduleDurableUiLayoutSave();
+}
+
+function applyDurableUiLayoutSnapshot(data, { generations = null, readEpoch = 0 } = {}) {
+  if (!data || typeof data !== "object") return false;
+  if (readEpoch && readEpoch <= durableLayoutWriteFenceReadEpoch) return false;
+  if (readEpoch && readEpoch < durableLayoutAppliedReadEpoch) return false;
+  if (readEpoch) durableLayoutAppliedReadEpoch = readEpoch;
+  if (typeof data.layoutRevision === "string" && data.layoutRevision) durableLayoutRevision = data.layoutRevision;
+  const layout = data.layout && typeof data.layout === "object" ? data.layout : null;
+  if (!layout || layout.version !== UI_LAYOUT_SCHEMA_VERSION) return Boolean(durableLayoutRevision);
+  for (const field of UI_LAYOUT_FIELDS) {
+    const requestedGeneration = generations ? generations.get(field) ?? 0 : durableUiLayoutGeneration(field);
+    const generationChanged = durableUiLayoutGeneration(field) !== requestedGeneration;
+    const dirtyEntry = durableLayoutDirtyFields.get(field);
+    const serverValue = layout[field] ?? null;
+    const localValue = collectDurableUiLayoutField(field);
+    const subfields = durableUiLayoutSubFields(field);
+    const dirtySubfields = dirtyEntry?.subfields;
+
+    if (field === "sidePanel" && durableUiLayoutInteractionActive(field)) continue;
+
+    if (subfields && field !== "composerActions") {
+      const applicable = {};
+      let hasApplicable = false;
+      for (const subfield of subfields) {
+        const isDirty = dirtySubfields?.has(subfield) === true;
+        const remote = serverValue?.[subfield] ?? null;
+        const local = localValue?.[subfield] ?? null;
+        if (!isDirty && !generationChanged && !durableUiLayoutInteractionActive(field) && durableUiLayoutValuePresent(remote)) {
+          applicable[subfield] = remote;
+          hasApplicable = true;
+        }
+        if (!isDirty && !durableUiLayoutValuePresent(remote) && durableUiLayoutValuePresent(local)) {
+          markDurableUiLayoutDirty(field, subfield);
+        }
+      }
+      if (hasApplicable) applyDurableUiLayoutField(field, applicable);
+      continue;
+    }
+
+    if (!dirtyEntry && !generationChanged && !durableUiLayoutInteractionActive(field) && durableUiLayoutValuePresent(serverValue)) {
+      applyDurableUiLayoutField(field, serverValue);
+    }
+    if (!dirtyEntry && !durableUiLayoutValuePresent(serverValue) && durableUiLayoutValuePresent(localValue)) {
+      markDurableUiLayoutDirty(field);
+    }
+  }
+  return true;
+}
+
+async function refreshDurableUiLayoutFromServer() {
+  const generations = new Map(UI_LAYOUT_FIELDS.map((field) => [field, durableUiLayoutGeneration(field)]));
+  const readEpoch = ++durableLayoutReadEpoch;
+  try {
+    const response = await api(UI_LAYOUT_ENDPOINT, { scoped: false });
+    return applyDurableUiLayoutSnapshot(response.data, { generations, readEpoch });
+  } catch {
+    // Keep the local cache authoritative until the settings file is reachable.
+    return false;
+  }
+}
+
+async function flushDurableUiLayoutSave() {
+  if (durableLayoutSaveInFlight || !durableLayoutDirtyFields.size) return;
+  if ([...durableLayoutDirtyFields.keys()].some((field) => durableUiLayoutInteractionActive(field))) {
+    scheduleDurableUiLayoutSave();
+    return;
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  durableLayoutSaveInFlight = true;
+  let snapshot = new Map();
+  let retryImmediately = false;
+  try {
+    if (!durableLayoutRevision) await refreshDurableUiLayoutFromServer();
+    if (!durableLayoutRevision || !durableLayoutDirtyFields.size) return;
+    snapshot = new Map([...durableLayoutDirtyFields].map(([field, entry]) => [field, {
+      ...entry,
+      subfields: entry.subfields ? new Set(entry.subfields) : null,
+      subfieldGenerations: entry.subfieldGenerations ? new Map(entry.subfieldGenerations) : null,
+      subfieldMutationIds: entry.subfieldMutationIds ? new Map(entry.subfieldMutationIds) : null,
+    }]));
+    const patch = { version: UI_LAYOUT_SCHEMA_VERSION };
+    for (const [field, entry] of snapshot) patch[field] = durableUiLayoutEntryPatch(field, entry);
+    const response = await api(UI_LAYOUT_ENDPOINT, {
+      method: "PUT",
+      scoped: false,
+      body: { layout: patch, expectedLayoutRevision: durableLayoutRevision },
+    });
+    // A successful write is newer than every GET that began before this
+    // acknowledgement, even if one of those reads completes afterward.
+    durableLayoutWriteFenceReadEpoch = Math.max(durableLayoutWriteFenceReadEpoch, durableLayoutReadEpoch);
+    if (typeof response.data?.layoutRevision === "string" && response.data.layoutRevision) durableLayoutRevision = response.data.layoutRevision;
+    for (const [field, entry] of snapshot) {
+      const current = durableLayoutDirtyFields.get(field);
+      if (!current) continue;
+      if (entry.subfields?.size) {
+        for (const subfield of entry.subfields) {
+          if (current.subfieldGenerations?.get(subfield) !== entry.subfieldGenerations?.get(subfield)) continue;
+          if (current.subfieldMutationIds?.get(subfield) !== entry.subfieldMutationIds?.get(subfield)) continue;
+          current.subfields.delete(subfield);
+          current.subfieldGenerations.delete(subfield);
+          current.subfieldMutationIds.delete(subfield);
+        }
+        if (!current.subfields.size) durableLayoutDirtyFields.delete(field);
+        else current.value = collectDurableUiLayoutField(field);
+      } else if (current.generation === entry.generation && current.mutationId === entry.mutationId) {
+        durableLayoutDirtyFields.delete(field);
+      }
+    }
+    clearAcknowledgedDurableUiLayoutPendingMutations(snapshot);
+    durableLayoutConflictAttempts = 0;
+    durableLayoutWarned = false;
+  } catch (error) {
+    const status = Number(error?.statusCode) || 0;
+    if (status === 409) {
+      durableLayoutConflictAttempts += 1;
+      await refreshDurableUiLayoutFromServer();
+      if (durableLayoutConflictAttempts <= UI_LAYOUT_MAX_CONFLICT_RETRIES) retryImmediately = durableLayoutDirtyFields.size > 0;
+      else warnDurableUiLayoutOnce("Durable layout changes stayed in this browser because the saved layout kept changing elsewhere.");
+    } else if (status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429) {
+      // Keep the pending journal for recovery, but do not retry a rejected
+      // payload until another user/lifecycle event supplies a new opportunity.
+      warnDurableUiLayoutOnce(`Could not save the durable UI layout: ${error?.message || String(error)}`);
+    }
+    // Offline and server failures keep the newest dirty state for the next
+    // mutation, online event, or foreground reconciliation.
+  } finally {
+    durableLayoutSaveInFlight = false;
+  }
+  const hasNewerMutation = [...durableLayoutDirtyFields].some(([field, entry]) => snapshot.get(field)?.generation !== entry.generation);
+  if (retryImmediately || hasNewerMutation) scheduleDurableUiLayoutSave(retryImmediately ? 0 : UI_LAYOUT_SAVE_DEBOUNCE_MS);
+}
+
+function reconcileDurableUiLayout() {
+  if (durableUiLayoutInteractionActive()) return;
+  refreshDurableUiLayoutFromServer().then((ready) => {
+    if (ready && durableLayoutDirtyFields.size) scheduleDurableUiLayoutSave(0);
+  });
+}
+
 function readStoredSidePanelWidth() {
   try {
     const width = Number.parseFloat(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY) || "");
@@ -8386,8 +12314,13 @@ async function restoreSidePanelWidthPreference() {
   else updateSidePanelResizeHandle(localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX);
 
   const restoreRevision = sidePanelWidthPreferenceRevision;
+  const layoutGenerations = new Map(UI_LAYOUT_FIELDS.map((field) => [field, durableUiLayoutGeneration(field)]));
+  const readEpoch = ++durableLayoutReadEpoch;
   try {
+    // One non-blocking unscoped read hydrates both the width preference and the
+    // durable layout after the synchronous local-cache startup pass.
     const response = await api("/api/interface-preferences", { scoped: false });
+    applyDurableUiLayoutSnapshot(response.data, { generations: layoutGenerations, readEpoch });
     if (restoreRevision !== sidePanelWidthPreferenceRevision) return;
     const userWidth = Number(response.data?.preferences?.sidePanelWidth);
     if (Number.isFinite(userWidth) && userWidth >= SIDE_PANEL_WIDTH_MIN_PX) {
@@ -8455,7 +12388,10 @@ function syncSidePanelWidthForViewport() {
     updateSidePanelResizeHandle();
     return;
   }
-  applySidePanelWidth(currentSidePanelWidth());
+  // Keep viewport/layout reconciliation anchored to the durable preference.
+  // Reading the rendered width here can capture an in-progress CSS transition
+  // during hard-reset startup and permanently freeze the panel below its saved width.
+  applySidePanelWidth(readStoredSidePanelWidth() || currentSidePanelWidth());
 }
 
 function readStoredFileViewerWidth() {
@@ -8473,6 +12409,7 @@ function persistFileViewerWidth(width) {
   } catch {
     // Ignore storage failures; resizing should still work for this page load.
   }
+  markDurableUiLayoutDirty("fileViewerWidth");
 }
 
 function fileViewerMaxWidth() {
@@ -8635,6 +12572,7 @@ function setFileViewerDirty(dirty) {
 function updateFileViewerUi() {
   const open = !!activeFileViewer;
   document.body.classList.toggle("file-viewer-open", open);
+  syncMobileShellInteractivity();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
   updateFileViewerResizeHandle();
@@ -8644,6 +12582,7 @@ function updateFileViewerUi() {
   }
   if (!isSidePanelOverlayView()) applyFileViewerWidth(currentFileViewerWidth());
   const viewer = activeFileViewer;
+  captureFileViewerEditorContinuity(viewer);
   const isMarkdown = viewer.language === "markdown";
   const hasChanges = !!viewer.gitChanges;
   const sourceAvailable = viewer.sourceAvailable !== false;
@@ -8677,6 +12616,8 @@ function updateFileViewerUi() {
     elements.fileViewerEditor.hidden = mode !== "source";
     elements.fileViewerEditor.readOnly = viewer.readOnly === true;
     if (elements.fileViewerEditor.value !== viewer.content) elements.fileViewerEditor.value = viewer.content || "";
+    elements.fileViewerEditor.dataset.fileViewerPath = viewer.path || "";
+    if (mode === "source") restoreFileViewerEditorContinuity(viewer);
   }
   if (elements.fileViewerPreview) {
     elements.fileViewerPreview.hidden = mode !== "preview";
@@ -9037,8 +12978,43 @@ async function sendFileSelectionToSession() {
   }
 }
 
+function captureFileViewerEditorContinuity(viewer = activeFileViewer) {
+  const editor = elements.fileViewerEditor;
+  if (!viewer || !editor || editor.hidden || editor.dataset.fileViewerPath !== viewer.path) return;
+  viewer.editorContinuity = {
+    path: viewer.path,
+    content: viewer.content,
+    selectionStart: editor.selectionStart ?? editor.value.length,
+    selectionEnd: editor.selectionEnd ?? editor.value.length,
+    selectionDirection: editor.selectionDirection,
+    scrollTop: editor.scrollTop,
+    scrollLeft: editor.scrollLeft,
+    focused: document.activeElement === editor,
+  };
+}
+
+function restoreFileViewerEditorContinuity(viewer = activeFileViewer) {
+  const editor = elements.fileViewerEditor;
+  const state = viewer?.editorContinuity;
+  if (!editor || !state || state.path !== viewer.path || state.content !== viewer.content || editor.dataset.fileViewerPath !== viewer.path) return;
+  const length = editor.value.length;
+  const start = Math.min(Math.max(0, state.selectionStart), length);
+  const end = Math.min(Math.max(0, state.selectionEnd), length);
+  try {
+    editor.setSelectionRange(start, end, state.selectionDirection || "none");
+  } catch {
+    // A stale browser selection should not block the validated file restore.
+  }
+  editor.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), Math.max(0, editor.scrollHeight - editor.clientHeight));
+  editor.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), Math.max(0, editor.scrollWidth - editor.clientWidth));
+  if (state.focused && !isMeaningfulConnectedFocus(document.activeElement)) {
+    editor.focus({ preventScroll: true });
+  }
+}
+
 function cacheActiveFileViewerForTab(tabId = activeTabId) {
   if (!tabId) return;
+  captureFileViewerEditorContinuity();
   if (activeFileViewer) fileViewersByTab.set(tabId, activeFileViewer);
   else fileViewersByTab.delete(tabId);
   if (fileViewerSelection) fileViewerSelectionsByTab.set(tabId, fileViewerSelection);
@@ -9050,12 +13026,14 @@ function resetFileViewerUi() {
   activeFileViewer = null;
   clearFileViewerSelection();
   document.body.classList.remove("file-viewer-open");
+  syncMobileShellInteractivity();
   updateFileViewerResizeHandle();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
   if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.dataset.path = "";
   if (elements.fileViewerEditor) {
     elements.fileViewerEditor.value = "";
+    delete elements.fileViewerEditor.dataset.fileViewerPath;
     elements.fileViewerEditor.readOnly = false;
   }
   if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
@@ -9267,7 +13245,7 @@ function eventTargetsActiveTab(event) {
 }
 
 function normalizeTabActivity(activity = {}) {
-  const status = activity.status === "working" || activity.isWorking ? "working" : activity.status === "done" ? "done" : "idle";
+  const status = activity.status === "working" || activity.isWorking ? "working" : activity.status === "failed" ? "failed" : activity.status === "done" ? "done" : "idle";
   const completionSerial = Number(activity.completionSerial);
   return {
     ...activity,
@@ -9328,6 +13306,7 @@ function syncTabMetadata(nextTabs = []) {
     setTabActivity(tab.id, tab.activity);
     if (Object.prototype.hasOwnProperty.call(tab, "appRunner")) setAppRunnerData(tab.id, { activeRun: tab.appRunner });
     if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
+    if (tab.sessionSummary) updateSessionSummaryForTab(tab.id, tab.sessionSummary);
   }
   for (const tabId of tabActivities.keys()) {
     if (!liveIds.has(tabId)) {
@@ -9337,7 +13316,7 @@ function syncTabMetadata(nextTabs = []) {
       suppressPendingAgentDoneNotificationsForTab(tabId, { markSeen: false });
       actionFeedbackByTab.delete(tabId);
       skillUsageByTab.delete(tabId);
-      featureCategoryByTab.delete(tabId);
+      clearFeatureDecisionStateForTab(tabId);
       tabMessagesCache.delete(tabId);
       widgetsByTab.delete(tabId);
       appRunnerDataByTab.delete(tabId);
@@ -9354,6 +13333,8 @@ function syncTabMetadata(nextTabs = []) {
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
       commandCatalogsByTab.delete(tabId);
+      sessionSummaryByTab.delete(tabId);
+      if (sessionSummaryOverlayTabId === tabId) closeSessionSummaryOverlay({ restoreFocus: false });
       clearGitFooterPayloadState(tabId);
       gitFooterPayloadRequestSerialByTab.delete(tabId);
     }
@@ -9371,8 +13352,10 @@ function applyTabMetadata(tab) {
   else tabs[index] = { ...tabs[index], ...tab };
   if (tab.activity) setTabActivity(tab.id, tab.activity);
   if (Object.prototype.hasOwnProperty.call(tab, "conversationMode")) updateConversationModeForTab(tab.id, tab.conversationMode, { render: false });
+  if (tab.sessionSummary) updateSessionSummaryForTab(tab.id, tab.sessionSummary);
   renderConversationModeControls();
   renderWorkflowModeControls();
+  renderSessionSummaryControls();
   renderTabs();
   return true;
 }
@@ -9515,6 +13498,7 @@ function syncActiveTabActivityFromState(state = currentState) {
     return false;
   }
   if (stateHasVisibleWork(state)) {
+    if (state.isStreaming) promptRoutingTabs.delete(tab.id);
     if (!activity.isWorking || (state.isStreaming && !activity.runStarted)) {
       return markTabWorkingLocally(tab.id, { runStarted: state.isStreaming === true });
     }
@@ -9615,6 +13599,7 @@ function updateDocumentTitle() {
 
 function saveActiveDraft() {
   if (activeTabId) tabDrafts.set(activeTabId, elements.promptInput.value || "");
+  persistMobileContinuityState();
 }
 
 function restoreActiveDraft() {
@@ -9661,6 +13646,7 @@ function cancelPendingDialogs() {
     }).catch((error) => console.warn("failed to cancel stale extension dialog", error));
   }
   activeDialog = null;
+  activeDialogCancel = null;
   if (elements.dialog.open) elements.dialog.close();
 }
 
@@ -9759,7 +13745,6 @@ function clearWidgetsForTab(tabId = activeTabId) {
 
 function resetActiveTabUi() {
   clearRefreshTimers();
-  clearLiveToolRenderQueue();
   eventSource?.close();
   eventSource = null;
   currentState = null;
@@ -9807,10 +13792,11 @@ function resetActiveTabUi() {
   renderAppRunnerControls();
   renderWidgets();
   renderGitWorkflow();
-  if (!restoreCachedMessagesForActiveTab()) {
-    renderFooter();
-    renderFeedbackTray();
-  }
+  // renderMessages() is transcript-only, so tab-level chrome is rendered here
+  // explicitly whether or not a cached transcript was restored.
+  restoreCachedMessagesForActiveTab();
+  renderFooter();
+  renderFeedbackTray();
 }
 
 function tabGroupStatusRank(state) {
@@ -10143,11 +14129,16 @@ function gitPanelContextMenuItems(context) {
     ];
   }
   const target = kind === "folder" ? "folder" : "file";
+  const ignoreAction = target === "folder" ? "ignore-folder" : "ignore-file";
+  const ignoreItem = { label: "Add to .gitignore", disabled: gitPanelActionBusy(card, ignoreAction, path), run: () => runGitPanelAction(card, ignoreAction, path) };
   if (category === "staged") {
-    return [{ label: `Unstage ${target}`, disabled: gitPanelActionBusy(card, "unstage", path), run: () => runGitPanelAction(card, "unstage", path) }];
+    return [
+      { label: `Unstage ${target}`, disabled: gitPanelActionBusy(card, "unstage", path), run: () => runGitPanelAction(card, "unstage", path) },
+      ignoreItem,
+    ];
   }
   const stageLabel = category === "conflicted" ? `Stage ${target} / mark resolved` : `Stage ${target}`;
-  const items = [{ label: stageLabel, disabled: gitPanelActionBusy(card, "stage", path), run: () => runGitPanelAction(card, "stage", path) }];
+  const items = [{ label: stageLabel, disabled: gitPanelActionBusy(card, "stage", path), run: () => runGitPanelAction(card, "stage", path) }, ignoreItem];
   if (kind === "file" && category === "changes") {
     items.push({ label: "Discard changes…", danger: true, disabled: gitPanelActionBusy(card, "discard", path), run: () => runGitPanelAction(card, "discard", path) });
   }
@@ -10213,6 +14204,13 @@ function gitPanelActionBusy(card, action, path = "") {
 }
 
 async function runGitPanelAction(card, action, path = "") {
+  const gitignoreAction = (kind) => ({
+    url: "/api/git-changes/add-to-gitignore",
+    body: { path, kind },
+    done: (data) => `${data?.added
+      ? `Added ${data?.entry || path} to .gitignore.`
+      : `${data?.entry || path} is already in .gitignore.`} Tracked files stay tracked until removed from the index.`,
+  });
   const config = {
     stage: { url: "/api/git-changes/stage-file", body: { path }, past: `Staged ${path}.` },
     unstage: { url: "/api/git-changes/unstage-file", body: { path }, past: `Unstaged ${path}.` },
@@ -10232,6 +14230,8 @@ async function runGitPanelAction(card, action, path = "") {
       confirm: `Delete untracked file ${path}?\n\nRepository: ${card.root}\n\nThis permanently removes the file from disk.`,
       confirmLabel: "Delete file",
     },
+    "ignore-file": gitignoreAction("file"),
+    "ignore-folder": gitignoreAction("folder"),
   }[action];
   if (!config || !card?.root || !card.tabId) return;
   if (config.confirm && !(await appConfirmText(config.confirm, { affected: path || card.root, confirmLabel: config.confirmLabel }))) return;
@@ -10242,7 +14242,7 @@ async function runGitPanelAction(card, action, path = "") {
   try {
     const response = await api(config.url, { method: "POST", body: config.body, tabId: card.tabId });
     if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || `Git ${action} failed`);
-    addEvent(config.past, "success");
+    addEvent(typeof config.done === "function" ? config.done(response.data) : config.past, "success");
     await loadGitPanelRepository(card, { force: true });
     requestGitFooterWebuiPayload({ tabId: card.tabId }, { force: true });
   } catch (error) {
@@ -10265,6 +14265,7 @@ function renderGitPanelFolder(node, card, category, depth = 0) {
     else gitPanelState.openFolders.set(folderKey, details.open);
   });
   const summary = make("summary", "git-side-panel-folder-summary");
+  summary.dataset.gitPanelContinuityKey = `folder:${card.root}:${category}:${node.path}`;
   summary.title = `${node.path} · Right-click for Git actions`;
   const chevron = make("span", "git-side-panel-folder-chevron", "›");
   chevron.setAttribute("aria-hidden", "true");
@@ -10287,6 +14288,7 @@ function renderGitPanelFolder(node, card, category, depth = 0) {
 
 function renderGitPanelFile(entry, card, category) {
   const row = make("div", `git-side-panel-file ${category}`);
+  row.dataset.gitPanelContinuityKey = `file:${card.root}:${category}:${entry.path}`;
   const fullPath = entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path;
   row.title = `${fullPath} · Open in WebUI · Right-click for Git actions`;
   row.tabIndex = 0;
@@ -10377,6 +14379,7 @@ function renderGitPanelHistory(card, data) {
   for (const commit of history) {
     const button = make("button", "git-side-panel-commit");
     button.type = "button";
+    button.dataset.gitPanelContinuityKey = `commit:${card.root}:${commit.hash}`;
     button.title = `View commit ${commit.hash}`;
     button.append(
       make("code", "git-side-panel-commit-hash", commit.shortHash || String(commit.hash || "").slice(0, 12)),
@@ -10411,6 +14414,7 @@ function renderGitPanelRepositoryContent(card, snapshot) {
     const button = make("button", "git-side-panel-tab", label);
     button.id = `git-side-panel-${view}-tab`;
     button.type = "button";
+    button.dataset.gitPanelContinuityKey = `view:${card.root}:${view}`;
     button.setAttribute("role", "tab");
     button.setAttribute("aria-controls", `git-side-panel-${view}-panel`);
     button.setAttribute("aria-selected", activeView === view ? "true" : "false");
@@ -10471,6 +14475,7 @@ function renderGitPanelRepositoryCard(card) {
   section.dataset.gitRoot = card.root;
   const button = make("button", "git-side-panel-repository-toggle");
   button.type = "button";
+  button.dataset.gitPanelContinuityKey = `repository:${card.root}`;
   button.setAttribute("aria-expanded", expanded ? "true" : "false");
   button.title = `${expanded ? "Collapse" : "Expand"} ${card.root} · Right-click for repository actions`;
   const count = gitPanelChangeCount(snapshot?.data);
@@ -10490,6 +14495,7 @@ function renderGitPanelRepositoryCard(card) {
 
 function renderGitPanel() {
   if (!elements.gitPanelGroups || !gitPanelSectionExpanded()) return;
+  if (deferUiRenderDuringPointerActivation("git-panel", renderGitPanel)) return;
   if (gitPanelContextMenuState && !elements.gitPanelContextMenu?.hidden) return;
   const groups = gitPanelTerminalGroups();
   const candidates = gitPanelCandidates(groups);
@@ -10526,8 +14532,16 @@ function renderGitPanel() {
     ensureGitPanelVisibleRepositoriesFresh(cards);
     return;
   }
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:git-panel`;
+  const focusSnapshot = captureScopedControlContinuity(elements.gitPanelGroups, continuityContextKey, (node) => node?.dataset?.gitPanelContinuityKey || "");
+  const scrollTop = elements.gitPanelGroups.scrollTop;
+  const scrollLeft = elements.gitPanelGroups.scrollLeft;
   gitPanelRenderSignature = signature;
   elements.gitPanelGroups.replaceChildren(...cards.map(renderGitPanelRepositoryCard));
+  restoreScopedControlContinuity(elements.gitPanelGroups, continuityContextKey, focusSnapshot, (key) => [...elements.gitPanelGroups.querySelectorAll("[data-git-panel-continuity-key]")]
+    .find((node) => node.dataset.gitPanelContinuityKey === key));
+  elements.gitPanelGroups.scrollTop = scrollTop;
+  elements.gitPanelGroups.scrollLeft = scrollLeft;
   if (elements.gitPanelCountBadge) {
     elements.gitPanelCountBadge.textContent = String(repositoryCount);
     elements.gitPanelCountBadge.hidden = repositoryCount === 0;
@@ -10701,17 +14715,17 @@ function renderTerminalTab(tab) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace" });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
-  wrapper.append(button);
+  wrapper.append(button, createTerminalTabActions(tab));
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close", "×");
     close.type = "button";
     close.draggable = false;
     const closeTooltip = `Close ${tab.title}`;
-    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip, targetKey: `terminal-tab:${tab.id}:close` });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTab(tab.id);
@@ -10740,20 +14754,20 @@ function renderTerminalTabGroupItem(tab, group) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace" });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     switchTab(tab.id);
   });
-  item.append(button);
+  item.append(button, createTerminalTabActions(tab));
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close terminal-tab-group-item-close", "×");
     close.type = "button";
     close.draggable = false;
     const closeTooltip = `Close ${tab.title}`;
-    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip, targetKey: `terminal-tab:${tab.id}:close` });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTab(tab.id);
@@ -10803,7 +14817,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
   button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}`);
-  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace" });
+  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace", targetKey: `terminal-group:${group.key}:switch` });
   appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(activeGroupTab.id));
   wrapper.append(button);
@@ -10813,7 +14827,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
     close.type = "button";
     close.draggable = false;
     const closeTooltip = `Close ${groupTitle} group`;
-    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip });
+    applyStyledTooltip(close, closeTooltip, { ariaLabel: closeTooltip, targetKey: `terminal-group:${group.key}:close` });
     close.addEventListener("click", (event) => {
       event.stopPropagation();
       closeTerminalTabGroup(group);
@@ -10830,7 +14844,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   add.type = "button";
   add.draggable = false;
   const addTooltip = `Add tab in ${groupTitle}`;
-  applyStyledTooltip(add, addTooltip, { ariaLabel: addTooltip });
+  applyStyledTooltip(add, addTooltip, { ariaLabel: addTooltip, targetKey: `terminal-group:${group.key}:add` });
   add.addEventListener("click", (event) => {
     event.stopPropagation();
     createTerminalTab(activeGroupTab?.cwd || group.cwd || currentDirectoryForNewTab(), { triggerButton: add, customGroupId: group.customGroupId || null });
@@ -10872,7 +14886,6 @@ function setNewTabMenuOpen(open) {
 
 function initializeTerminalHeaderTooltips() {
   applyStyledTooltip(elements.newTabButton, "Start a separate isolated Pi terminal", { ariaLabel: "Start a separate isolated Pi terminal" });
-  applyStyledTooltip(elements.splitTabButton, "Split the active terminal to the right", { ariaLabel: "Split the active terminal to the right" });
   applyStyledTooltip(elements.closeAllTabsButton, "Close all terminal tabs", { ariaLabel: "Close all terminal tabs" });
 }
 
@@ -10912,8 +14925,28 @@ function scheduleTabsRender() {
   else tabsRenderFrame = setTimeout(flush, 0);
 }
 
+function terminalTabControlKey(node) {
+  if (node?.id && elements.newTabMenu?.contains(node)) return `terminal-new-tab:${node.id}`;
+  const tabId = node?.closest?.("[data-tab-id]")?.dataset?.tabId;
+  if (tabId) {
+    if (node.classList.contains("terminal-tab-close")) return `terminal-tab:${tabId}:close`;
+    if (node.classList.contains("terminal-tab-split-button")) return `terminal-tab:${tabId}:split`;
+    if (node.classList.contains("terminal-tab-summary-button")) return `terminal-tab:${tabId}:summary`;
+    if (node.classList.contains("terminal-tab-button")) return `terminal-tab:${tabId}:switch`;
+  }
+  const groupKey = node?.closest?.("[data-group-key]")?.dataset?.groupKey;
+  if (!groupKey) return "";
+  if (node.classList.contains("terminal-tab-group-close")) return `terminal-group:${groupKey}:close`;
+  if (node.classList.contains("terminal-tab-group-add")) return `terminal-group:${groupKey}:add`;
+  if (node.classList.contains("terminal-tab-group-button")) return `terminal-group:${groupKey}:switch`;
+  return "";
+}
+
 function renderTabs() {
   if (deferUiRenderDuringPointerActivation("tabs", renderTabs)) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${activeSubagentTerminalId || ""}`;
+  const focusSnapshot = captureScopedControlContinuity(elements.tabBar, continuityContextKey, terminalTabControlKey);
+  const tooltipSnapshot = captureTooltipContinuity(elements.tabBar);
   const activeSubagent = activeSubagentTerminalView();
   const active = activeSubagent || activeTab();
   const activeIndicator = activeSubagent ? { glyph: "◉", label: "Subagent view" } : active ? tabIndicator(active) : null;
@@ -10921,13 +14954,17 @@ function renderTabs() {
   const totalTabCount = tabs.length + subagentTerminalViews.size;
   elements.terminalTabsToggleButton.textContent = active ? `${activeIndicator.glyph} ${activeTitle}${totalTabCount > 1 ? ` · ${totalTabCount}` : ""}` : "Tabs";
   const toggleTooltip = active ? `Show terminal tabs · active: ${activeTitle} · ${activeIndicator.label}` : "Show terminal tabs";
-  applyStyledTooltip(elements.terminalTabsToggleButton, toggleTooltip, { ariaLabel: toggleTooltip });
-  if (footerTooltipTarget && elements.tabBar.contains(footerTooltipTarget)) hideFooterTooltip();
+  applyStyledTooltip(elements.terminalTabsToggleButton, toggleTooltip, { ariaLabel: toggleTooltip, targetKey: "terminal-tabs-toggle" });
+  if (footerTooltipTarget && elements.tabBar.contains(footerTooltipTarget) && !tooltipSnapshot) hideFooterTooltip();
   elements.tabBar.replaceChildren();
   elements.tabBar.dataset.tabCount = String(totalTabCount);
   elements.tabBar.classList.toggle("terminal-tabs-dense", totalTabCount >= 10);
   const groups = tabCwdGroups();
-  const renderedGroupKeys = new Set(groups.filter((group) => shouldRenderTerminalTabGroup(group, groups.length)).map((group) => group.key));
+  const subagentGroups = subagentTerminalViewGroups();
+  const renderedGroupKeys = new Set([
+    ...groups.filter((group) => shouldRenderTerminalTabGroup(group, groups.length)).map((group) => group.key),
+    ...subagentGroups.filter((group) => group.views.length > 1).map((group) => group.key),
+  ]);
   if (openTerminalTabGroupKey && !renderedGroupKeys.has(openTerminalTabGroupKey)) openTerminalTabGroupKey = null;
   for (const group of groups) {
     if (shouldRenderTerminalTabGroup(group, groups.length)) {
@@ -10936,10 +14973,13 @@ function renderTabs() {
       for (const tab of group.tabs) elements.tabBar.append(renderTerminalTab(tab));
     }
   }
-  for (const view of [...subagentTerminalViews.values()].sort((a, b) => a.openedAt - b.openedAt)) {
-    elements.tabBar.append(renderSubagentTerminalTab(view));
+  for (const group of subagentGroups) {
+    if (group.views.length > 1) elements.tabBar.append(renderSubagentTerminalTabGroup(group));
+    else elements.tabBar.append(renderSubagentTerminalTab(group.views[0]));
   }
   elements.tabBar.append(elements.newTabMenu);
+  restoreScopedControlContinuity(elements.tabBar, continuityContextKey, focusSnapshot, (key) => [...elements.tabBar.querySelectorAll("button")].find((node) => terminalTabControlKey(node) === key));
+  restoreTooltipContinuity(elements.tabBar, tooltipSnapshot);
   elements.closeAllTabsButton.disabled = tabs.length === 0;
   if (elements.workspaceSaveButton) {
     const canSave = tabs.length > 0;
@@ -10957,6 +14997,19 @@ function renderTabs() {
   renderGitPanel();
   if (elements.commandPaletteDialog?.open) renderCommandPalette({ preserveScroll: true });
   syncTabPolling();
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
+}
+
+function prefetchInactiveTabCommandCatalogs() {
+  for (const tab of tabs) {
+    if (!tab?.id || tab.id === activeTabId || commandCatalogsByTab.has(tab.id) || commandCatalogRefreshesByTab.has(tab.id)) continue;
+    const refresh = refreshCommands(activeTabContext(tab.id))
+      .catch(() => {})
+      .finally(() => {
+        if (commandCatalogRefreshesByTab.get(tab.id) === refresh) commandCatalogRefreshesByTab.delete(tab.id);
+      });
+    commandCatalogRefreshesByTab.set(tab.id, refresh);
+  }
 }
 
 async function refreshTabs({ selectStored = false } = {}) {
@@ -10983,6 +15036,7 @@ async function refreshTabs({ selectStored = false } = {}) {
   }
   renderSessionSkillTags(activeTabId);
   renderTabs();
+  prefetchInactiveTabCommandCatalogs();
   return tabs;
 }
 
@@ -10992,7 +15046,12 @@ async function switchTab(tabId) {
     if (activeSubagentTerminalId) deactivateSubagentTerminalView({ focusParent: true });
     return;
   }
+  if (themeCustomizerState?.saving) {
+    setThemeCustomizerStatus("Wait for the theme save to finish before switching tabs.", "warn");
+    return;
+  }
   if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
+  if (themeCustomizerState) closeThemeCustomizer({ restore: true });
   clearOpenTerminalTabGroup(null, { force: true });
   setFollowUpQueueOpen(false);
   setFollowUpQueueStatus("");
@@ -11015,11 +15074,13 @@ async function switchTab(tabId) {
   connectEvents(tabContext);
   await refreshAll(tabContext);
   if (isCurrentTabContext(tabContext)) markTabOutputSeen();
+  await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
   if (!subagentLaunchSlotDraftIsDirty()) {
     loadSubagentLaunchSlotConfig({ tabId }).catch(() => {});
   } else {
     renderSubagentLaunchSlots();
   }
+  refreshSamplingParametersForTabContext(tabContext);
 }
 
 function currentDirectoryForNewTab() {
@@ -11037,19 +15098,28 @@ function terminalSplitFrameUrl(tabId) {
   return `${url.pathname}${url.search}`;
 }
 
+function updateTerminalSplitControls(canShowSplit, splitTab = terminalSplitTab()) {
+  elements.tabBar?.querySelectorAll(".terminal-tab-split-button").forEach((button) => {
+    const tabId = button.closest("[data-tab-id]")?.dataset?.tabId || "";
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    const isOpenSplit = canShowSplit && tabId === splitTab?.id;
+    button.disabled = embeddedSplitMode || isSidePanelOverlayView() || !tab;
+    button.setAttribute("aria-pressed", isOpenSplit ? "true" : "false");
+    button.dataset.splitState = isOpenSplit ? "unsplit" : "split";
+    const label = isOpenSplit
+      ? `Close split view for ${tab?.title || "Pi terminal"}`
+      : `Split ${tab?.title || "Pi terminal"} to the right`;
+    applyStyledTooltip(button, label, { ariaLabel: label, targetKey: tabId ? `terminal-tab:${tabId}:split` : "" });
+  });
+}
+
 function updateTerminalSplitUi() {
   const tab = terminalSplitTab();
   const canShowSplit = !!tab && !embeddedSplitMode && !isSidePanelOverlayView();
   document.body.classList.toggle("terminal-split-open", canShowSplit);
   if (elements.terminalSplitShell) elements.terminalSplitShell.hidden = !canShowSplit;
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
-  if (elements.splitTabButton) {
-    elements.splitTabButton.disabled = embeddedSplitMode || isSidePanelOverlayView() || !activeTab();
-    elements.splitTabButton.setAttribute("aria-pressed", canShowSplit ? "true" : "false");
-    elements.splitTabButton.dataset.splitState = canShowSplit ? "unsplit" : "split";
-    const label = canShowSplit ? `Close split view for ${tab.title}` : "Split the active terminal to the right";
-    applyStyledTooltip(elements.splitTabButton, label, { ariaLabel: label });
-  }
+  updateTerminalSplitControls(canShowSplit, tab);
   if (!canShowSplit) return;
   if (elements.terminalSplitTitle) elements.terminalSplitTitle.textContent = tab.title || "Split terminal";
   if (elements.terminalSplitMeta) elements.terminalSplitMeta.textContent = [tab.running ? `pid ${tab.pid || "starting"}` : "stopped", normalizeDisplayPath(tab.cwd || "")].filter(Boolean).join(" · ");
@@ -11082,22 +15152,23 @@ function reconcileTerminalSplitState() {
   updateTerminalSplitUi();
 }
 
-async function splitActiveTerminalTab({ triggerButton = elements.splitTabButton } = {}) {
+async function splitTerminalTab(tabId, { triggerButton = null } = {}) {
   if (embeddedSplitMode) return;
-  if (splitTabId) {
+  if (splitTabId === tabId) {
     closeTerminalSplitView();
     return;
   }
-  const sourceTab = activeTab();
-  let resolvedCwd = latestWorkspace?.cwd || sourceTab?.cwd || currentDirectoryForNewTab();
+  const sourceTab = tabs.find((tab) => tab.id === tabId);
+  if (!sourceTab) return;
+  if (splitTabId) closeTerminalSplitView();
+  let resolvedCwd = sourceTab.cwd || latestWorkspace?.cwd || currentDirectoryForNewTab();
   setMobileTabsExpanded(false);
   setNewTabMenuOpen(false);
   if (!resolvedCwd) {
-    resolvedCwd = await pickCwd(sourceTab || { id: "split-terminal", title: "split terminal" }, "", { title: "Choose CWD for split terminal" });
+    resolvedCwd = await pickCwd(sourceTab, "", { title: "Choose CWD for split terminal" });
     if (!resolvedCwd) return;
   }
-  const disabledButtons = new Set([elements.splitTabButton, triggerButton].filter(Boolean));
-  for (const button of disabledButtons) button.disabled = true;
+  if (triggerButton) triggerButton.disabled = true;
   try {
     const response = await api("/api/tabs", { method: "POST", body: { cwd: resolvedCwd }, scoped: false });
     tabs = response.data?.tabs || tabs;
@@ -11106,12 +15177,12 @@ async function splitActiveTerminalTab({ triggerButton = elements.splitTabButton 
     if (tab?.id) {
       setTerminalSplitTab(tab.id);
       renderTabs();
-      addEvent(`split ${sourceTab?.title || "terminal"} into independent ${tab.title}`, "info");
+      addEvent(`split ${sourceTab.title || "terminal"} into independent ${tab.title}`, "info");
     }
   } catch (error) {
     addEvent(error.message, "error");
   } finally {
-    for (const button of disabledButtons) button.disabled = false;
+    if (triggerButton) triggerButton.disabled = false;
     updateTerminalSplitUi();
   }
 }
@@ -11227,7 +15298,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
       tabDrafts.delete(id);
       clearAttachments(id);
       clearGitWorkflowForTab(id);
-      featureCategoryByTab.delete(id);
+      clearFeatureDecisionStateForTab(id);
       commandCatalogsByTab.delete(id);
       appRunnerDataByTab.delete(id);
       tabMessagesCache.delete(id);
@@ -11280,6 +15351,11 @@ async function closeAllTerminalTabs() {
 
 async function initializeTabs() {
   const loadedTabs = await refreshTabs({ selectStored: true });
+  // Durable groups can arrive before the initial tab catalog. Rehydrate them
+  // after tabs load so valid memberships are not filtered against an empty set.
+  restoreTerminalCustomGroups();
+  syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
+  restoreMobileContinuityState();
   resetActiveTabUi();
   renderTabs();
   restoreActiveDraft();
@@ -11290,6 +15366,7 @@ async function initializeTabs() {
       return [];
     });
     if (!saved.length) await createFirstTerminalTabFromChosenDirectory();
+    await refreshThemeCatalog(activeTabContext()).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
     return;
   }
   focusPromptInput({ defer: true });
@@ -11301,6 +15378,8 @@ async function initializeTabs() {
     if (!subagentLaunchSlotDraftIsDirty() || subagentLaunchSlotConfigTabId !== activeTabId) {
       loadSubagentLaunchSlotConfig().catch(() => {});
     }
+    refreshSamplingParametersForTabContext(tabContext);
+    await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
   }
 }
 
@@ -11438,13 +15517,17 @@ function blockedTabNotificationKey(tabId, request) {
   return request?.id ? `${tabId}:${request.id}` : `${tabId}:blocked`;
 }
 
+function mobileNotificationTarget({ route = "activity", tabId, runId, blockerId } = {}) {
+  return normalizeMobileNavigationTarget({ v: 1, route, tabId, runId, blockerId });
+}
+
 function clearBlockedTabNotificationKeys(tabId) {
   if (!tabId) return;
   const prefix = `${tabId}:`;
   blockedTabNotificationKeys = new Set([...blockedTabNotificationKeys].filter((key) => !key.startsWith(prefix)));
 }
 
-async function showBlockedTabBrowserNotification({ tabId, title, body, method, count }) {
+async function showBlockedTabBrowserNotification({ tabId, title, body, method, count, blockerId }) {
   if (!blockedTabNotificationSupported()) {
     noteBlockedTabNotificationFallback("requires HTTPS or localhost");
     return false;
@@ -11462,7 +15545,7 @@ async function showBlockedTabBrowserNotification({ tabId, title, body, method, c
     requireInteraction: true,
     icon: BLOCKED_TAB_NOTIFICATION_ICON,
     badge: BLOCKED_TAB_NOTIFICATION_ICON,
-    data: { tabId, method, count, url: location.href },
+    data: { target: mobileNotificationTarget({ route: "activity", tabId, blockerId }) },
   };
 
   try {
@@ -11478,7 +15561,8 @@ async function showBlockedTabBrowserNotification({ tabId, title, body, method, c
     const notification = new Notification(title, options);
     notification.onclick = () => {
       window.focus();
-      if (tabId && tabId !== activeTabId) switchTab(tabId).catch((error) => addEvent(error.message, "error"));
+      const target = mobileNotificationTarget({ route: "activity", tabId, blockerId });
+      if (target) receiveMobileNavigationTarget(target);
       notification.close();
     };
     return true;
@@ -11503,7 +15587,7 @@ function notifyBlockedTab(tabOrId, { request = null, count } = {}) {
   const title = "Pi needs your response";
   const body = `${tabTitle} is blocked, ${detail}.`;
   addEvent(`${tabTitle} blocked: ${detail}`, "warn");
-  showBlockedTabBrowserNotification({ tabId, title, body, method, count: pendingCount });
+  showBlockedTabBrowserNotification({ tabId, title, body, method, count: pendingCount, blockerId: request?.id });
 }
 
 function noteAgentDoneNotificationFallback(reason) {
@@ -11512,7 +15596,7 @@ function noteAgentDoneNotificationFallback(reason) {
   addEvent(`browser notifications unavailable for completed agent work: ${reason}`, "warn");
 }
 
-async function showAgentDoneBrowserNotification({ tabId, title, body }) {
+async function showAgentDoneBrowserNotification({ tabId, title, body, runId }) {
   if (!agentDoneNotificationsEnabled) return false;
   if (!browserNotificationSupported()) {
     noteAgentDoneNotificationFallback("requires HTTPS or localhost");
@@ -11537,7 +15621,7 @@ async function showAgentDoneBrowserNotification({ tabId, title, body }) {
     requireInteraction: false,
     icon: BLOCKED_TAB_NOTIFICATION_ICON,
     badge: BLOCKED_TAB_NOTIFICATION_ICON,
-    data: { tabId, url: location.href },
+    data: { target: mobileNotificationTarget({ route: "activity", tabId, runId }) },
   };
 
   try {
@@ -11553,7 +15637,8 @@ async function showAgentDoneBrowserNotification({ tabId, title, body }) {
     const notification = new Notification(title, options);
     notification.onclick = () => {
       window.focus();
-      if (tabId && tabId !== activeTabId) switchTab(tabId).catch((error) => addEvent(error.message, "error"));
+      const target = mobileNotificationTarget({ route: "activity", tabId, runId });
+      if (target) receiveMobileNavigationTarget(target);
       notification.close();
     };
     return true;
@@ -11588,13 +15673,13 @@ function suppressPendingAgentDoneNotificationsForTab(tabId, { markSeen = true } 
   }
 }
 
-function queueAgentDoneBrowserNotification({ key, tabId, title, body }) {
+function queueAgentDoneBrowserNotification({ key, tabId, title, body, runId }) {
   clearPendingAgentDoneNotification(key);
   const timer = setTimeout(() => {
     pendingAgentDoneNotificationTimers.delete(key);
     const tab = tabs.find((item) => item.id === tabId);
     if (isAutoRetryingTab(tabId) || promptRoutingTabs.has(tabId) || activityForTab(tab).isWorking) return;
-    showAgentDoneBrowserNotification({ tabId, title, body });
+    showAgentDoneBrowserNotification({ tabId, title, body, runId });
   }, AGENT_DONE_NOTIFICATION_RETRY_GRACE_MS);
   pendingAgentDoneNotificationTimers.set(key, { tabId, timer });
 }
@@ -11612,11 +15697,13 @@ function notifyAgentDone(tabOrId, { activity = null, tabTitle = "" } = {}) {
   if (isAutoRetryingTab(tabId)) return;
 
   const displayTitle = tabTitle || tab?.title || "terminal";
+  const failed = normalizedActivity.status === "failed" || normalizedActivity.failed === true || tab?.failed === true;
   queueAgentDoneBrowserNotification({
     key,
     tabId,
-    title: "Pi finished work",
-    body: `${displayTitle} finished its agent run.`,
+    title: failed ? "Pi work failed" : "Pi finished work",
+    body: failed ? `${displayTitle} failed. Open Activity to review.` : `${displayTitle} finished its agent run.`,
+    runId: normalizedActivity.runId,
   });
 }
 
@@ -11626,7 +15713,7 @@ function syncAgentDoneNotificationsFromTabs(nextTabs = [], previousTabs = []) {
   for (const tab of nextTabs) {
     if (!tab?.id || !previousSerials.has(tab.id)) continue;
     const activity = normalizeTabActivity(tab.activity);
-    if (!activity.isWorking && activity.completionSerial > previousSerials.get(tab.id)) notifyAgentDone(tab, { activity });
+    if (!activity.isWorking && activity.completionSerial > previousSerials.get(tab.id)) notifyAgentDone(tab, { activity: tab.failed === true ? { ...activity, failed: true } : activity });
   }
 }
 
@@ -12100,6 +16187,7 @@ let footerTooltipTarget = null;
 let footerTooltipEventsBound = false;
 let footerTooltipHoverTimer = null;
 let footerTooltipPendingTarget = null;
+let footerTooltipHoverDeadline = 0;
 
 function ensureFooterTooltipNode() {
   if (!footerTooltipNode) {
@@ -12158,6 +16246,7 @@ function clearFooterTooltipHoverTimer(target) {
   if (footerTooltipHoverTimer) clearTimeout(footerTooltipHoverTimer);
   footerTooltipHoverTimer = null;
   footerTooltipPendingTarget = null;
+  footerTooltipHoverDeadline = 0;
 }
 
 function showFooterTooltip(target) {
@@ -12175,17 +16264,19 @@ function showFooterTooltip(target) {
   positionFooterTooltip(target);
 }
 
-function scheduleFooterTooltip(target) {
+function scheduleFooterTooltip(target, delay = TOOLTIP_HOVER_DELAY_MS) {
   const text = target?.getAttribute("data-tooltip");
   if (!text) return;
   clearFooterTooltipHoverTimer();
+  const boundedDelay = Math.max(0, Math.min(TOOLTIP_HOVER_DELAY_MS, Number(delay) || 0));
   footerTooltipPendingTarget = target;
+  footerTooltipHoverDeadline = performance.now() + boundedDelay;
   footerTooltipHoverTimer = setTimeout(() => {
     const pendingTarget = footerTooltipPendingTarget;
     clearFooterTooltipHoverTimer();
     if (!pendingTarget?.isConnected || !pendingTarget.matches?.(":hover")) return;
     showFooterTooltip(pendingTarget);
-  }, TOOLTIP_HOVER_DELAY_MS);
+  }, boundedDelay);
 }
 
 function hideFooterTooltip(target) {
@@ -12229,6 +16320,9 @@ function applyStyledTooltip(node, tooltip, options = {}) {
     const describedBy = [node.getAttribute("aria-describedby"), description.id].filter(Boolean).join(" ");
     node.setAttribute("aria-describedby", describedBy);
   }
+  const targetKey = String(options.targetKey || (node.id ? `id:${node.id}` : "")).trim();
+  if (targetKey) node.dataset.tooltipTargetKey = targetKey;
+  else delete node.dataset.tooltipTargetKey;
   if (options.align) node.setAttribute("data-tooltip-align", options.align);
   if (options.placement) node.setAttribute("data-tooltip-placement", options.placement);
   if (options.variant) node.setAttribute("data-tooltip-variant", options.variant);
@@ -12250,7 +16344,7 @@ function footerMetric(icon, label, value, tone = "", options = {}) {
     if (options.ariaBusy) node.setAttribute("aria-busy", "true");
   }
   node.append(make("span", "footer-metric-icon", icon), make("span", "footer-metric-label", label), make("span", "footer-metric-value", value));
-  return applyFooterTooltip(node, options.title || `${label}: ${value}`, { align: options.tooltipAlign });
+  return applyFooterTooltip(node, options.title || `${label}: ${value}`, { align: options.tooltipAlign, targetKey: options.targetKey });
 }
 
 function contextUsageActiveColor(percent) {
@@ -12284,6 +16378,27 @@ function applyFooterContextUsage(node, contextUsage) {
     node.style.setProperty("--context-usage", `${clampedPercent.toFixed(1)}%`);
     node.style.setProperty("--context-active-color", activeColor.color);
     node.style.setProperty("--context-active-glow", activeColor.glow);
+  }
+  return node;
+}
+
+// Dedicated Usage visual apply path: sets two independent lane widths (top =
+// primary/first window, bottom = secondary/second window) plus a max-window
+// active foreground/glow reusing the Context color interpolation. Clamps
+// defensively to 0..100; exact text and tooltip remain untouched.
+function applyFooterUsageWindows(node, usageWindows) {
+  node.classList.add("footer-usage-card");
+  const primaryPercent = typeof usageWindows?.primaryPercent === "number" ? usageWindows.primaryPercent : Number.NaN;
+  const secondaryPercent = typeof usageWindows?.secondaryPercent === "number" ? usageWindows.secondaryPercent : Number.NaN;
+  if (Number.isFinite(primaryPercent) && Number.isFinite(secondaryPercent)) {
+    const clampedPrimary = Math.min(100, Math.max(0, primaryPercent));
+    const clampedSecondary = Math.min(100, Math.max(0, secondaryPercent));
+    const activeColor = contextUsageActiveColor(Math.max(clampedPrimary, clampedSecondary));
+    node.classList.add("has-usage-windows");
+    node.style.setProperty("--usage-primary", `${clampedPrimary.toFixed(1)}%`);
+    node.style.setProperty("--usage-secondary", `${clampedSecondary.toFixed(1)}%`);
+    node.style.setProperty("--usage-active-color", activeColor.color);
+    node.style.setProperty("--usage-active-glow", activeColor.glow);
   }
   return node;
 }
@@ -12375,10 +16490,11 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   speed: "Assistant streaming speed. Shows live output tokens for the current reply and current or last tokens per second.",
   cost: "Estimated session cost. sub means subscription-backed provider; api means metered API usage.",
   context: "Context window pressure. Shows percent used over the model limit; auto means auto-compaction is enabled.",
+  usage: "Provider subscription usage. Shows the used share of the provider-reported primary and secondary rate windows.",
   cwd: "Active working directory for this Web UI tab.",
   git: "Current Git branch. detached means HEAD is not on a branch; no repo means the cwd is outside a Git work tree.",
   "git-state": "Active Git operation or detached state. Finish or abort rebase/merge/cherry-pick/revert/bisect before normal commits.",
-  sync: "Remote tracking divergence. ↑ means local commits ahead; ↓ means remote commits to pull. Click when ↑ appears to run git push for this tab.",
+  sync: "Remote tracking divergence. ↑ means local commits to push; ↓ means remote commits to pull. Incoming-only Sync pulls from origin; outgoing Sync uses the confirmed push flow, including the guarded force-with-lease fallback when needed.",
   changes: "Working tree and fetched remote summary. 🟢 staged, ✏️ modified unstaged, ➕ untracked, ⚠️ conflicted; ⬇️ means fetched remote commits to pull; 🔄/✓/⚠️ fetch shows the tab git fetch state; ✅ means no changes.",
   "git-extra": "Extra Git signals. 📦 stash, 🧩 dirty submodules, 🌳 worktrees, 🏷️ tag at HEAD, 🕒 last commit age, 🔓 signing mismatch.",
   worktree: "Git worktree checkout for this tab. Use branch worktrees to work on branches in parallel without switching this checkout.",
@@ -12455,7 +16571,7 @@ const GIT_FOOTER_VISIBILITY_LABELS = Object.freeze({
   "webui-context-auto-compaction": "Auto-compaction action",
   "webui-branch-picker": "Branch/worktree picker",
   "webui-git-init": "Git init affordance",
-  "webui-sync-push": "Sync push action",
+  "webui-sync-push": "Sync pull/push action",
   "webui-changes-modal": "Changes modal",
   "webui-git-tools-modal": "Git tools modal",
   "webui-model-picker": "Model picker",
@@ -12492,7 +16608,7 @@ const GIT_FOOTER_VISIBILITY_HINTS = Object.freeze({
   "webui-context-auto-compaction": "Click action on context chips for auto-compaction.",
   "webui-branch-picker": "Click action on the git branch/worktree chips.",
   "webui-git-init": "Git initialization affordance when a tab has no repository.",
-  "webui-sync-push": "Click-to-push action on outgoing sync chips.",
+  "webui-sync-push": "Compatibility visibility key for incoming pull and outgoing push actions on Sync chips.",
   "webui-changes-modal": "Click action opening the changes/conflicts modal.",
   "webui-git-tools-modal": "Click action opening extra git tools.",
   "webui-model-picker": "Click action opening the footer model picker.",
@@ -12664,6 +16780,7 @@ function setGitFooterVisibilitySelection(checked) {
 function openGitFooterVisibilityDialog() {
   if (!elements.gitFooterVisibilityDialog) return;
   setOptionsMenuOpen(false);
+  closeGitFooterContextMenu({ returnFocus: false });
   hideFooterTooltip();
   gitFooterVisibilityDirty = false;
   renderGitFooterVisibilityDialog();
@@ -12675,6 +16792,65 @@ function closeGitFooterVisibilityDialog() {
   gitFooterVisibilityDirty = false;
   gitFooterVisibilityApplyInFlight = false;
   if (elements.gitFooterVisibilityDialog?.open) elements.gitFooterVisibilityDialog.close();
+}
+
+function closeGitFooterContextMenu({ returnFocus = true } = {}) {
+  const trigger = gitFooterContextMenuState?.trigger;
+  gitFooterContextMenuState = null;
+  if (elements.gitFooterContextMenu) elements.gitFooterContextMenu.hidden = true;
+  if (returnFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus?.({ preventScroll: true }));
+}
+
+function showGitFooterContextMenu(event, chip, trigger) {
+  const menu = elements.gitFooterContextMenu;
+  const key = cleanStatusText(chip?.key);
+  if (!menu || !key) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeFileContextMenu({ returnFocus: false });
+  closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
+  closeGitFooterContextMenu({ returnFocus: false });
+  hideFooterTooltip();
+
+  const label = cleanStatusText(chip?.label) || gitFooterVisibilityLabel(key);
+  gitFooterContextMenuState = { key, label, trigger };
+  const disableButton = menu.querySelector('[data-git-footer-menu-action="disable"]');
+  if (disableButton) disableButton.textContent = `Disable ${label} box`;
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, Math.max(8, window.innerWidth - rect.width - 8));
+  const top = Math.min(event.clientY, Math.max(8, window.innerHeight - rect.height - 8));
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
+}
+
+function bindGitFooterContextMenu(node, chip) {
+  if (!node || !chip?.key) return node;
+  node.setAttribute("aria-keyshortcuts", "ContextMenu Shift+F10");
+  node.addEventListener("contextmenu", (event) => showGitFooterContextMenu(event, chip, node));
+  node.addEventListener("keydown", (event) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+    const rect = node.getBoundingClientRect();
+    showGitFooterContextMenu({
+      preventDefault: () => event.preventDefault(),
+      stopPropagation: () => event.stopPropagation(),
+      clientX: rect.left + Math.min(rect.width, 24),
+      clientY: rect.bottom,
+    }, chip, node);
+  });
+  return node;
+}
+
+async function disableGitFooterContextChip(key, label) {
+  try {
+    await runGitFooterVisibilityCommand("hide", [key]);
+    addEvent(`Disabled the ${label || key} Git footer box.`, "success");
+    requestGitFooterWebuiPayload(activeTabContext(), { force: true, allowDuringRun: true });
+  } catch (error) {
+    addEvent(error.message || String(error), "error");
+  }
 }
 
 function cleanFooterPayloadText(value, fallback = "", maxLength = 240) {
@@ -12752,6 +16928,13 @@ function normalizeFooterPayloadChip(value, index) {
       percent: Number.isFinite(percent) ? percent : null,
       contextWindow: Number.isFinite(contextWindow) ? contextWindow : 0,
     };
+  }
+  if (value.usageWindows && typeof value.usageWindows === "object") {
+    const primaryPercent = typeof value.usageWindows.primaryPercent === "number" ? value.usageWindows.primaryPercent : Number.NaN;
+    const secondaryPercent = typeof value.usageWindows.secondaryPercent === "number" ? value.usageWindows.secondaryPercent : Number.NaN;
+    if (Number.isFinite(primaryPercent) && Number.isFinite(secondaryPercent)) {
+      chip.usageWindows = { primaryPercent, secondaryPercent };
+    }
   }
   return chip;
 }
@@ -13049,22 +17232,34 @@ function applyFooterChangedFilesDropdown(node, chip, payload) {
 }
 
 function renderGitFooterPayloadMetric(chip, payload) {
-  const options = { tooltipAlign: gitFooterTooltipAlign(chip) };
+  const options = { tooltipAlign: gitFooterTooltipAlign(chip), targetKey: `git-footer:metric:${chip.key}` };
   const piAction = gitFooterPayloadVisible(payload, "webui-pi-calibration") ? applyGitFooterPiCalibrationOptions(chip, options) : "";
   const contextAction = gitFooterPayloadVisible(payload, "webui-context-auto-compaction") ? applyGitFooterContextToggleOptions(chip, options) : "";
   const action = piAction || contextAction;
   options.title = gitFooterPayloadTooltip(chip, { action });
   const node = footerMetric(chip.icon || "•", chip.label, chip.value, chip.tone ? `tone-${chip.tone}` : "", options);
-  return chip.contextUsage ? applyFooterContextUsage(node, chip.contextUsage) : node;
+  if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
+  if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
+  return bindGitFooterContextMenu(node, chip);
 }
 
-function gitFooterSyncOutgoingCount(value) {
-  const match = String(value || "").match(/[↑⇡]\s*(\d+)/u);
-  return match ? Number.parseInt(match[1] || "0", 10) || 0 : 0;
+function gitFooterSyncCounts(value) {
+  const text = String(value || "");
+  const aheadMatch = text.match(/[↑⇡]\s*(\d+)/u);
+  const behindMatch = text.match(/[↓⇣]\s*(\d+)/u);
+  return {
+    ahead: aheadMatch ? Number.parseInt(aheadMatch[1] || "0", 10) || 0 : 0,
+    behind: behindMatch ? Number.parseInt(behindMatch[1] || "0", 10) || 0 : 0,
+  };
 }
 
-function gitFooterSyncChipHasOutgoing(chip) {
-  return chip?.key === "sync" && gitFooterSyncOutgoingCount(chip.value) > 0;
+function gitFooterSyncAction(chip) {
+  if (chip?.key !== "sync") return "";
+  const { ahead, behind } = gitFooterSyncCounts(chip.value);
+  if (behind > 0 && ahead > 0) return "pull-push";
+  if (behind > 0) return "pull";
+  if (ahead > 0) return "push";
+  return "";
 }
 
 function gitFooterCurrentBranch() {
@@ -13073,10 +17268,209 @@ function gitFooterCurrentBranch() {
   return value && value !== "no repo" ? cleanFooterPayloadText(gitChip.value, "") : "";
 }
 
+function gitFailureDisplayText(response, fallback = "Git operation failed") {
+  const errorText = String(response?.error || "").trim();
+  const hintText = String(response?.hint || "").trim();
+  const result = response?.data && typeof response.data === "object" ? { ...response.data } : null;
+  if (result && errorText) {
+    if (String(result.stderr || "").trim() === errorText) result.stderr = "";
+    if (String(result.stdout || "").trim() === errorText) result.stdout = "";
+  }
+  const parts = [errorText || fallback, hintText, formatGitCommandResult(result)].map((part) => String(part || "").trim()).filter(Boolean);
+  const seen = new Set();
+  return parts.filter((part) => {
+    const key = part.replace(/\r\n/g, "\n");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join("\n\n");
+}
+
+function setGitPullErrorBusy(busy) {
+  gitPullErrorContext = { ...gitPullErrorContext, busy: !!busy };
+  for (const button of [elements.gitPullErrorMergeButton, elements.gitPullErrorRebaseButton, elements.gitPullErrorReviewButton, elements.gitPullErrorCloseButton]) {
+    if (button) button.disabled = !!busy;
+  }
+  if (elements.gitPullErrorDialog) elements.gitPullErrorDialog.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
+function closeGitPullErrorDialog() {
+  if (gitPullErrorContext.busy) return;
+  if (elements.gitPullErrorDialog?.open) elements.gitPullErrorDialog.close();
+}
+
+function openGitPullErrorDialog(message, { code = "", tabId = null, syncValue = "" } = {}) {
+  const text = String(message || "git pull from origin failed").trim();
+  const diverged = code === "DIVERGED";
+  gitPullErrorText = text;
+  gitPullErrorContext = {
+    code,
+    tabId: typeof tabId === "string" && tabId ? tabId : null,
+    syncValue: String(syncValue || ""),
+    busy: false,
+    requestId: gitPullErrorContext.requestId + 1,
+  };
+  if (!elements.gitPullErrorDialog?.showModal || !elements.gitPullErrorOutput) {
+    window.alert(`${diverged ? "Branches diverged" : "Git pull failed"}\n\n${text}`);
+    return;
+  }
+  if (elements.gitPullErrorDialogTitle) elements.gitPullErrorDialogTitle.textContent = diverged ? "Branches diverged" : "Git pull failed";
+  if (elements.gitPullErrorDialogDescription) {
+    elements.gitPullErrorDialogDescription.textContent = diverged
+      ? "Local and remote contain unique commits. This does not mean conflicts exist; conflicts are known only after a merge or rebase is attempted."
+      : "The repository was not changed by the failed pull. Review or copy the complete error output below.";
+  }
+  elements.gitPullErrorOutput.textContent = text;
+  if (elements.gitPullErrorRecovery) elements.gitPullErrorRecovery.hidden = !diverged;
+  elements.gitPullErrorCloseButton?.classList.toggle("primary", !diverged);
+  if (elements.gitPullErrorStatus) {
+    elements.gitPullErrorStatus.textContent = diverged
+      ? "Review the incoming changes, merge them, or rebase your local commits. No integration runs without confirmation."
+      : "Select the output or use Copy error output.";
+    elements.gitPullErrorStatus.classList.remove("error", "success");
+  }
+  setGitPullErrorBusy(false);
+  if (!elements.gitPullErrorDialog.open) elements.gitPullErrorDialog.showModal();
+  queueMicrotask(() => (diverged ? elements.gitPullErrorReviewButton : elements.gitPullErrorCopyButton)?.focus({ preventScroll: true }));
+}
+
+async function copyGitPullErrorOutput() {
+  if (!gitPullErrorText) return;
+  if (elements.gitPullErrorCopyButton) elements.gitPullErrorCopyButton.disabled = true;
+  try {
+    await copyText(gitPullErrorText);
+    if (elements.gitPullErrorStatus) {
+      elements.gitPullErrorStatus.textContent = "Error output copied to the clipboard.";
+      elements.gitPullErrorStatus.classList.add("success");
+      elements.gitPullErrorStatus.classList.remove("error");
+    }
+    addEvent("copied Git pull error output", "info");
+  } catch (error) {
+    const message = `Copy failed: ${error.message || String(error)}`;
+    if (elements.gitPullErrorStatus) {
+      elements.gitPullErrorStatus.textContent = message;
+      elements.gitPullErrorStatus.classList.add("error");
+      elements.gitPullErrorStatus.classList.remove("success");
+    }
+    addEvent(`Git pull error output copy failed: ${error.message || String(error)}`, "error");
+  } finally {
+    if (elements.gitPullErrorCopyButton) elements.gitPullErrorCopyButton.disabled = false;
+  }
+}
+
+function reviewGitPullDivergence() {
+  if (gitPullErrorContext.code !== "DIVERGED" || !gitPullErrorContext.tabId || gitPullErrorContext.busy) return;
+  const tabId = gitPullErrorContext.tabId;
+  closeGitPullErrorDialog();
+  openGitChangesDialog(tabId);
+}
+
+async function integrateGitPullDivergence(mode) {
+  if (!["merge", "rebase"].includes(mode) || gitPullErrorContext.code !== "DIVERGED" || !gitPullErrorContext.tabId || gitPullErrorContext.busy) return false;
+  const { tabId, syncValue, requestId } = gitPullErrorContext;
+  const targetTab = tabs.find((tab) => tab.id === tabId);
+  const activeBranch = tabId === activeTabId ? gitFooterCurrentBranch() : "";
+  const target = activeBranch || targetTab?.title || targetTab?.cwd || "the selected branch";
+  const merge = mode === "merge";
+  const confirmed = await appConfirmText([
+    `${merge ? "Merge upstream changes into" : "Rebase local commits onto the upstream of"} ${target}?`,
+    "",
+    merge
+      ? "This preserves both histories and may create a merge commit. Conflicts are possible but are not currently known."
+      : "This replays local commits on top of upstream and rewrites their commit IDs. Conflicts are possible but are not currently known.",
+  ].join("\n"), {
+    affected: `Git history for ${target}`,
+    confirmLabel: merge ? "Merge changes" : "Rebase commits",
+    danger: !merge,
+  });
+  if (!confirmed || gitPullErrorContext.requestId !== requestId) return false;
+
+  const tabContext = activeTabContext(tabId);
+  let pushSyncValue = "";
+  setGitPullErrorBusy(true);
+  gitFooterSyncInFlightByTab.add(tabId);
+  if (isCurrentTabContext(tabContext)) renderFooter();
+  if (elements.gitPullErrorStatus) elements.gitPullErrorStatus.textContent = merge ? "Merging upstream changes…" : "Rebasing local commits…";
+  try {
+    const response = await api("/api/git-changes/integrate", { method: "POST", body: { mode, confirmed: true }, tabId });
+    if (gitPullErrorContext.requestId !== requestId) return false;
+    if (!response.ok) {
+      const message = gitFailureDisplayText(response, `git ${mode} failed`);
+      addEvent(message, "error");
+      setGitPullErrorBusy(false);
+      if (response.code === "CONFLICTS") {
+        closeGitPullErrorDialog();
+        openGitChangesDialog(tabId);
+        return false;
+      }
+      openGitPullErrorDialog(message, { code: response.code || "", tabId, syncValue });
+      return false;
+    }
+    setGitPullErrorBusy(false);
+    closeGitPullErrorDialog();
+    addEvent(`${merge ? "Merged" : "Rebased"} upstream changes.`, "success");
+    requestGitFooterWebuiPayload(tabContext, { force: true });
+    const freshAheadValue = response.data?.changes?.summary?.ahead;
+    const freshAhead = Number(freshAheadValue);
+    if (freshAheadValue !== undefined) {
+      if (Number.isFinite(freshAhead) && freshAhead > 0) pushSyncValue = `⇡${freshAhead}`;
+    } else if (gitFooterSyncCounts(syncValue).ahead > 0) {
+      pushSyncValue = syncValue;
+    }
+  } catch (error) {
+    if (gitPullErrorContext.requestId !== requestId) return false;
+    const message = error.message || String(error);
+    addEvent(message, "error");
+    setGitPullErrorBusy(false);
+    openGitPullErrorDialog(message, { tabId, syncValue });
+    return false;
+  } finally {
+    gitFooterSyncInFlightByTab.delete(tabId);
+    if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+  if (pushSyncValue) await pushGitFooterSync(tabId, pushSyncValue);
+  return true;
+}
+
+async function pullGitFooterSync(tabId = activeTabId, { syncValue = "" } = {}) {
+  if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return false;
+  const tabContext = activeTabContext(tabId);
+  hideFooterTooltip();
+  gitFooterSyncInFlightByTab.add(tabId);
+  if (isCurrentTabContext(tabContext)) renderFooter();
+  try {
+    const response = await api("/api/git-changes/pull", { method: "POST", body: { remote: "origin" }, tabId });
+    if (!response.ok) {
+      const message = gitFailureDisplayText(response, "git pull from origin failed");
+      addEvent(message, "error");
+      openGitPullErrorDialog(message, { code: response.code || "", tabId, syncValue });
+      return false;
+    }
+    addEvent("Pulled Git changes from origin.", "success");
+    requestGitFooterWebuiPayload(tabContext, { force: true });
+    return true;
+  } catch (error) {
+    const message = error.message || String(error);
+    addEvent(message, "error");
+    openGitPullErrorDialog(message, { code: error?.code || "", tabId, syncValue });
+    return false;
+  } finally {
+    gitFooterSyncInFlightByTab.delete(tabId);
+    if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+}
+
+async function pullThenPushGitFooterSync(tabId = activeTabId, syncValue = "") {
+  const pulled = await pullGitFooterSync(tabId, { syncValue });
+  if (!pulled) return;
+  await pushGitFooterSync(tabId, syncValue);
+}
+
 async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
-  if (!tabId || gitFooterSyncPushInFlightByTab.has(tabId)) return;
-  const outgoing = gitFooterSyncOutgoingCount(syncValue);
+  if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return;
+  const outgoing = gitFooterSyncCounts(syncValue).ahead;
   if (outgoing <= 0) return;
+  let recoverWithPullFirst = false;
   const tabContext = activeTabContext(tabId);
   const tab = tabs.find((item) => item.id === tabId);
   const target = tab?.title || tab?.cwd || "this tab";
@@ -13087,7 +17481,7 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
     : "";
   if (!(await appConfirmText(`Run git push for ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"} in ${target}?${protectedWarning}`, { affected: `Remote Git branch ${branch || "current branch"}`, confirmLabel: "Push commits" }))) return;
 
-  gitFooterSyncPushInFlightByTab.add(tabId);
+  gitFooterSyncInFlightByTab.add(tabId);
   if (isCurrentTabContext(tabContext)) renderFooter();
   try {
     const response = await api("/api/git-workflow/push", { method: "POST", body: {}, tabId });
@@ -13104,38 +17498,29 @@ async function pushGitFooterSync(tabId = activeTabId, syncValue = "") {
         throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
       }
       if (response.code === "NON_FAST_FORWARD") {
-        const forcePush = await appConfirmText([
-          response.error,
-          "",
-          response.hint || "",
-          "",
-          "Recommended: open the Git Changes dialog, fetch, and review the incoming diff first.",
-          `DANGER: force-push ${branch || "the current branch"} with --force-with-lease instead? This rewrites the remote branch (but still refuses if the remote moved past what you fetched).`,
-        ].join("\n"));
-        if (forcePush) {
-          const forceResponse = await api("/api/git-workflow/push", { method: "POST", body: { forceWithLease: true, confirmed: true }, tabId });
-          if (!forceResponse.ok) throw new Error([forceResponse.error, forceResponse.hint].filter(Boolean).join("\n"));
-          addEvent("Force-pushed with --force-with-lease.", "success");
-          requestGitFooterWebuiPayload(tabContext, { force: true });
-          return;
-        }
-        throw new Error([response.error, response.hint].filter(Boolean).join("\n"));
+        recoverWithPullFirst = true;
+      } else {
+        const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
+        throw new Error(detail || "git push failed");
       }
-      const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
-      throw new Error(detail || "git push failed");
+    } else {
+      addEvent(`Pushed ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"}.`, "success");
+      requestGitFooterWebuiPayload(tabContext, { force: true });
     }
-    addEvent(`Pushed ${outgoing} outgoing commit${outgoing === 1 ? "" : "s"}.`, "success");
-    requestGitFooterWebuiPayload(tabContext, { force: true });
   } catch (error) {
     addEvent(error.message || String(error), "error");
   } finally {
-    gitFooterSyncPushInFlightByTab.delete(tabId);
+    gitFooterSyncInFlightByTab.delete(tabId);
     if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+  if (recoverWithPullFirst) {
+    addEvent("Push found incoming commits. Starting pull-first recovery.", "info");
+    await pullThenPushGitFooterSync(tabId, syncValue);
   }
 }
 
 function renderGitFooterPayloadMeta(chip, tab, payload) {
-  const options = {};
+  const options = { targetKey: `git-footer:meta:${chip.key}` };
   const visible = (key) => gitFooterPayloadVisible(payload, key);
   let action = "";
   if (chip.key === "cwd" && tab && visible("webui-cwd-picker")) {
@@ -13150,13 +17535,22 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
   } else if (chip.key === "worktree" && visible("webui-branch-picker")) {
     options.onClick = () => setFooterBranchPickerOpen(!footerBranchPickerOpen);
     action = "Click to manage branch worktrees for this repository.";
-  } else if (chip.key === "sync" && visible("webui-sync-push") && gitFooterSyncChipHasOutgoing(chip)) {
+  } else if (chip.key === "sync" && visible("webui-sync-push")) {
     const tabId = tab?.id || activeTabId;
-    const inFlight = tabId ? gitFooterSyncPushInFlightByTab.has(tabId) : false;
-    options.onClick = () => pushGitFooterSync(tabId, chip.value);
+    const syncAction = gitFooterSyncAction(chip);
+    const inFlight = tabId ? gitFooterSyncInFlightByTab.has(tabId) : false;
+    if (syncAction === "pull") {
+      options.onClick = () => pullGitFooterSync(tabId);
+      action = inFlight ? "Pulling from origin." : "Click to pull from origin with fast-forward only.";
+    } else if (syncAction === "pull-push") {
+      options.onClick = () => pullThenPushGitFooterSync(tabId, chip.value);
+      action = inFlight ? "Pulling from origin before pushing local commits." : "Click to pull from origin with fast-forward only, then push if the pull succeeds.";
+    } else if (syncAction === "push") {
+      options.onClick = () => pushGitFooterSync(tabId, chip.value);
+      action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
+    }
     options.ariaBusy = inFlight;
     options.disabled = inFlight;
-    action = inFlight ? "Pushing local commits to the configured remote." : "Click to push local commits to the configured remote.";
   } else if (chip.key === "changes" && visible("webui-changes-modal")) {
     options.onClick = () => openGitChangesDialog(tab?.id || activeTabId);
     action = "Click to view the current git diff.";
@@ -13184,7 +17578,9 @@ function renderGitFooterPayloadMeta(chip, tab, payload) {
     node.setAttribute("aria-haspopup", "listbox");
     node.setAttribute("aria-expanded", footerBranchPickerOpen ? "true" : "false");
   }
-  return chip.contextUsage ? applyFooterContextUsage(node, chip.contextUsage) : node;
+  if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
+  if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
+  return bindGitFooterContextMenu(node, chip);
 }
 
 // Shape key for a footer chip with the frequently-changing fields removed, so
@@ -13194,8 +17590,15 @@ function gitFooterChipShapeKey(chip) {
   const shape = {};
   for (const [key, value] of Object.entries(chip || {})) {
     if (key === "value") continue;
+    // Usage percentages/reset details make its title dynamic. The fast path
+    // refreshes the complete tooltip and aria-label in place below.
+    if (key === "title" && chip?.key === "usage") continue;
     if (key === "contextUsage") {
       shape.contextUsage = value ? true : false;
+      continue;
+    }
+    if (key === "usageWindows") {
+      shape.usageWindows = value ? true : false;
       continue;
     }
     shape[key] = value;
@@ -13213,10 +17616,10 @@ function footerBranchPickerRenderKey() {
 function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
-  const syncPushInFlight = tabContext.tabId ? gitFooterSyncPushInFlightByTab.has(tabContext.tabId) : false;
+  const syncInFlight = tabContext.tabId ? gitFooterSyncInFlightByTab.has(tabContext.tabId) : false;
   const piCalibrationInFlight = tabContext.tabId ? gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncPushInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -13232,7 +17635,22 @@ function updateGitFooterChipNodeValue(node, chip, valueSelector) {
       valueNode.textContent = nextValue;
     }
   }
+  const previousTooltip = node.getAttribute("data-tooltip");
+  if (previousTooltip) {
+    const nextTooltip = chip.key === "usage"
+      ? gitFooterPayloadTooltip(chip)
+      : previousTooltip.replace(/Current: [^\n]*/u, `Current: ${cleanFooterPayloadText(chip.value, "—")}`);
+    if (nextTooltip !== previousTooltip) {
+      node.setAttribute("data-tooltip", nextTooltip);
+      node.setAttribute("aria-label", nextTooltip.replace(/\s+/g, " "));
+      if (footerTooltipTarget === node && footerTooltipNode && !footerTooltipNode.hidden) {
+        footerTooltipNode.textContent = nextTooltip;
+        positionFooterTooltip(node);
+      }
+    }
+  }
   if (chip.contextUsage) applyFooterContextUsage(node, chip.contextUsage);
+  if (chip.usageWindows) applyFooterUsageWindows(node, chip.usageWindows);
 }
 
 let gitFooterRenderCache = null;
@@ -13306,7 +17724,7 @@ function renderGitFooterPayload(payload) {
     return;
   }
 
-  hideFooterTooltip();
+  closeGitFooterContextMenu({ returnFocus: false });
   elements.statusBar.replaceChildren();
   elements.statusBar.classList.remove("statusbar-tui-footer");
   elements.statusBar.classList.add("statusbar-git-footer");
@@ -15027,7 +19445,6 @@ function gitFooterFallbackMessage() {
 
 function renderMinimalFooter() {
   invalidateGitFooterRenderCache();
-  hideFooterTooltip();
   const tab = activeTab();
   const workspaceLabel = latestWorkspace?.displayCwd || (tab?.cwd ? normalizeDisplayPath(tab.cwd) : "loading…");
   const modelLine = footerModelLine();
@@ -15964,6 +20381,7 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   const fields = make("div", "footer-branch-create-fields");
   const typeField = make("div", "footer-branch-create-type-field");
   const typeInput = make("input", "footer-branch-create-dropdown-inputfield");
+  typeInput.id = "footerBranchCreateType";
   typeInput.type = "text";
   typeInput.value = footerBranchCreateType();
   typeInput.placeholder = "type";
@@ -16000,6 +20418,7 @@ function renderFooterBranchCreateForm(state = footerBranchPickerState) {
   const slash = make("span", "footer-branch-create-slash", "/");
 
   const nameInput = make("input", "footer-branch-create-input-field");
+  nameInput.id = "footerBranchCreateName";
   nameInput.type = "text";
   nameInput.value = footerBranchCreateDraft.name;
   nameInput.placeholder = "short-feature-name";
@@ -16316,6 +20735,7 @@ function writeFooterScopedModelOrder(order) {
   try {
     localStorage.setItem(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY, JSON.stringify([...new Set(order.filter(Boolean))]));
   } catch {}
+  markDurableUiLayoutDirty("footerScopedModelOrder");
 }
 
 function orderedFooterScopedModels() {
@@ -16985,14 +21405,23 @@ async function changeActiveTabCwd() {
   if (response.data?.changed !== false) addTransientMessage({ role: "native", title: "Working folder changed", content: `${tab.title} restarted in ${changedCwd}.`, level: "info" });
 }
 
+function footerControlKey(node) {
+  if (node?.id) return `footer:id:${node.id}`;
+  if (node?.dataset?.footerModelKey) return `footer:model:${node.dataset.footerModelKey}`;
+  return "";
+}
+
 function renderFooter() {
   if (deferUiRenderDuringPointerActivation("footer", renderFooter)) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}:${footerBranchPickerOpen ? footerBranchPickerState.tabId || activeTabId || "" : ""}`;
+  const focusSnapshot = captureScopedControlContinuity(elements.statusBar, continuityContextKey, footerControlKey);
+  const tooltipSnapshot = captureTooltipContinuity(elements.statusBar);
   const gitFooterPayload = parseGitFooterWebuiPayload();
-  if (gitFooterPayload) {
-    renderGitFooterPayload(footerPayloadWithLiveModel(gitFooterPayload));
-    return;
-  }
-  renderMinimalFooter();
+  if (gitFooterPayload) renderGitFooterPayload(footerPayloadWithLiveModel(gitFooterPayload));
+  else renderMinimalFooter();
+  if (!tooltipSnapshot && footerTooltipTarget && !footerTooltipTarget.isConnected) hideFooterTooltip();
+  restoreScopedControlContinuity(elements.statusBar, continuityContextKey, focusSnapshot, (key) => [...elements.statusBar.querySelectorAll("input, textarea, select, button")].find((node) => footerControlKey(node) === key));
+  restoreTooltipContinuity(elements.statusBar, tooltipSnapshot);
 }
 
 function scheduleRefreshMessages(delay = 120, tabContext = activeTabContext()) {
@@ -17023,6 +21452,84 @@ function scheduleRefreshFooter(delay = 300, tabContext = activeTabContext()) {
       if (isCurrentTabContext(tabContext)) addEvent(error.message, "error");
     });
   }, delay);
+}
+
+function semanticReconcileContextKey(tabContext = {}) {
+  return `${tabContext.tabId || ""}:${Number(tabContext.generation) || 0}`;
+}
+
+function mergeSemanticReconcileRequest(pendingByContext, dirty = {}, tabContext = {}) {
+  const key = semanticReconcileContextKey(tabContext);
+  let request = pendingByContext.get(key);
+  if (!request) {
+    request = { tabContext: { tabId: tabContext.tabId || null, generation: Number(tabContext.generation) || 0 }, dirty: {} };
+  }
+  let requested = false;
+  for (const flag of SEMANTIC_RECONCILE_FLAGS) {
+    if (!dirty[flag]) continue;
+    request.dirty[flag] = true;
+    requested = true;
+  }
+  if (requested) pendingByContext.set(key, request);
+  return requested;
+}
+
+function takeSemanticReconcileRequests(pendingByContext) {
+  const requests = Array.from(pendingByContext.values());
+  pendingByContext.clear();
+  return requests;
+}
+
+// Coalesced semantic reconciliation. Lifecycle boundaries declare which
+// non-transcript surfaces became dirty; each tab generation retains its own
+// request until the frame flush. Raw stream deltas never reach here.
+function scheduleSemanticReconcile(dirty = {}, tabContext = activeTabContext()) {
+  if (!mergeSemanticReconcileRequest(semanticReconcilePending, dirty, tabContext)) return;
+  if (semanticReconcileFrame !== null) return;
+  const flush = () => {
+    semanticReconcileFrame = null;
+    flushSemanticReconcile();
+  };
+  if (typeof requestAnimationFrame === "function") semanticReconcileFrame = requestAnimationFrame(flush);
+  else semanticReconcileFrame = setTimeout(flush, 0);
+}
+
+function flushSemanticReconcile() {
+  for (const { dirty, tabContext } of takeSemanticReconcileRequests(semanticReconcilePending)) {
+    // Originating-tab settlement work is never reassigned. Workflow continuation
+    // is tab-scoped and may run after the user has switched away.
+    if (dirty.workflow) reconcileGitWorkflowContinuation(tabContext.tabId);
+    if (dirty.usage) {
+      scheduleRefreshCodexUsage(2200);
+      scheduleRefreshClaudeUsage(2200);
+    }
+
+    // DOM and active-session fetches are valid only for the still-current tab
+    // generation; resetActiveTabUi/refreshAll owns the newly active tab.
+    if (!isCurrentTabContext(tabContext)) continue;
+    if (dirty.messages) scheduleRefreshMessages(120, tabContext);
+    if (dirty.state) scheduleRefreshState(120, tabContext);
+    if (dirty.footerData) scheduleRefreshFooter(300, tabContext);
+    if (dirty.footer) renderFooter();
+    if (dirty.feedback) renderFeedbackTray();
+    if (dirty.usage) {
+      refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
+    }
+  }
+}
+
+// Continue a guided git workflow that was waiting on the agent turn. This is a
+// settlement-boundary concern, not a streaming concern.
+function reconcileGitWorkflowContinuation(workflowTabId = activeTabId) {
+  const workflow = gitWorkflowForTab(workflowTabId, { create: false });
+  if (!workflow?.active) return;
+  if (workflow.step === "generating") {
+    loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
+  } else if (workflow.step === "branchNaming") {
+    loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+  } else if (workflow.step === "prGenerating") {
+    loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+  }
 }
 
 function formatCodexPlanType(value) {
@@ -17124,6 +21631,39 @@ function codexUsageBuckets(data) {
   return buckets.slice(0, 6);
 }
 
+function codexUsageStructureSignature() {
+  if (!latestCodexUsage) return JSON.stringify({ state: codexUsageLoading ? "loading" : codexUsageError ? "error" : "empty", error: codexUsageError?.message || String(codexUsageError || "") });
+  return JSON.stringify({
+    state: "data",
+    plan: formatCodexPlanType(latestCodexUsage.planType),
+    buckets: codexUsageBuckets(latestCodexUsage).map((bucket) => [bucket.key, bucket.label]),
+    rateLimitReachedType: latestCodexUsage.rateLimitReachedType || "",
+    error: codexUsageError?.message || String(codexUsageError || ""),
+  });
+}
+
+function updateCodexUsageValues(box, buckets) {
+  if (!latestCodexUsage || !box.querySelector(".codex-usage-summary")) return false;
+  const fetched = box.querySelector(".codex-usage-fetched");
+  if (fetched) fetched.textContent = latestCodexUsage.fetchedAt ? `updated ${formatDurationParts(Date.now() - new Date(latestCodexUsage.fetchedAt).getTime())} ago` : "updated now";
+  const rendered = [...box.querySelectorAll(".codex-usage-bucket[data-codex-usage-key]")];
+  if (rendered.length !== buckets.length) return false;
+  for (const bucket of buckets) {
+    const item = rendered.find((node) => node.dataset.codexUsageKey === bucket.key);
+    if (!item) return false;
+    const usedPercent = Number(bucket.window?.usedPercent);
+    const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
+    const percent = item.querySelector(".codex-usage-percent");
+    const fill = item.querySelector(".codex-usage-meter-fill");
+    const reset = item.querySelector(".codex-usage-reset");
+    if (!percent || !fill || !reset) return false;
+    percent.textContent = formatCodexPercent(usedPercent);
+    fill.style.width = `${fillPercent}%`;
+    reset.textContent = formatCodexReset(bucket.window);
+  }
+  return true;
+}
+
 function renderCodexUsage() {
   const box = elements.codexUsageBox;
   if (!box) return;
@@ -17132,6 +21672,13 @@ function renderCodexUsage() {
     elements.refreshCodexUsageButton.textContent = codexUsageLoading ? "Refreshing…" : "Refresh usage";
   }
 
+  const buckets = codexUsageBuckets(latestCodexUsage);
+  const structureSignature = codexUsageStructureSignature();
+  if (structureSignature === codexUsageRenderSignature && updateCodexUsageValues(box, buckets)) {
+    box.classList.toggle("muted", !latestCodexUsage);
+    return;
+  }
+  codexUsageRenderSignature = structureSignature;
   box.replaceChildren();
   box.classList.toggle("muted", !latestCodexUsage);
 
@@ -17157,7 +21704,6 @@ function renderCodexUsage() {
   );
   box.append(header);
 
-  const buckets = codexUsageBuckets(latestCodexUsage);
   if (buckets.length === 0) {
     box.append(make("div", "codex-usage-detail", "No Codex rate-limit windows were returned."));
   } else {
@@ -17165,6 +21711,7 @@ function renderCodexUsage() {
       const usedPercent = Number(bucket.window?.usedPercent);
       const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
       const item = make("div", "codex-usage-bucket");
+      item.dataset.codexUsageKey = bucket.key;
       const row = make("div", "codex-usage-row");
       row.append(
         make("span", "codex-usage-label", bucket.label),
@@ -17224,18 +21771,14 @@ function codexFastModeControlDisabled() {
 function codexFastModeStatusText() {
   if (codexFastModeNotice) return codexFastModeNotice;
   if (!isOptionalFeatureEnabled("codexFastMode")) return optionalFeatureUnavailableMessage("codexFastMode");
-  if (!codexFastModeLoaded) return "Checking Codex Fast mode…";
+  if (!codexFastModeLoaded) return "Checking…";
   if (!codexFastModeState.available) return codexFastModeState.unavailableReason || optionalFeatureUnavailableMessage("codexFastMode");
-  const parts = [];
-  parts.push(codexFastModeState.statusKnown
-    ? `Session mode: ${codexFastModeState.enabled ? "Fast" : "Normal"}.`
-    : "Session mode: unknown until /fast-mode reports status.");
-  if (codexFastModeState.busy) parts.push("This tab is busy; the mode cannot change during a running turn.");
-  if (codexFastModeState.model && !codexFastModeState.modelEligible) {
-    parts.push(`Active model ${codexFastModeState.model.provider}/${codexFastModeState.model.id} is not a subscription-backed openai-codex model, so Fast mode stays armed but unused.`);
+  if (!codexFastModeState.statusKnown) return "Status unknown · This tab";
+  if (codexFastModeState.busy) return `${codexFastModeState.enabled ? "Fast" : "Normal"} · Busy`;
+  if (codexFastModeState.enabled && codexFastModeState.model && !codexFastModeState.modelEligible) {
+    return "Fast · Inactive for current model";
   }
-  if (codexFastModeState.creditNotice) parts.push(codexFastModeState.creditNotice);
-  return parts.join(" ");
+  return `${codexFastModeState.enabled ? "Fast" : "Normal"} · This tab`;
 }
 
 function renderCodexFastModeControl({ syncSelection = true } = {}) {
@@ -17410,10 +21953,11 @@ function formatClaudeUsageReset(window) {
   return window?.resetText ? `resets ${window.resetText}` : "reset unknown";
 }
 
-function renderClaudeUsageWindow(box, window) {
+function renderClaudeUsageWindow(box, window, key = "") {
   const usedPercent = Number(window?.usedPercent);
   const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
   const item = make("div", "claude-usage-bucket");
+  if (key) item.dataset.claudeUsageKey = key;
   const row = make("div", "claude-usage-row");
   row.append(
     make("span", "claude-usage-label", window?.label || "Usage window"),
@@ -17446,6 +21990,42 @@ function renderClaudeUsageActivity(box, activity) {
   }
 }
 
+function claudeUsageStructureSignature() {
+  if (!latestClaudeUsage) return JSON.stringify({ state: claudeUsageLoading ? "loading" : claudeUsageError ? "error" : "empty", error: claudeUsageError?.message || String(claudeUsageError || "") });
+  const windows = Array.isArray(latestClaudeUsage.windows) ? latestClaudeUsage.windows : [];
+  return JSON.stringify({
+    state: "data",
+    summary: latestClaudeUsage.summary || "",
+    windows: windows.slice(0, 6).map((window, index) => [String(window?.id || index), window?.label || "Usage window"]),
+    activityTitle: latestClaudeUsage.activityTitle || "",
+    activity: latestClaudeUsage.activity || [],
+    error: claudeUsageError?.message || String(claudeUsageError || ""),
+  });
+}
+
+function updateClaudeUsageValues(box, windows) {
+  if (!latestClaudeUsage || !box.querySelector(".claude-usage-summary")) return false;
+  const fetched = box.querySelector(".claude-usage-fetched");
+  if (fetched) fetched.textContent = latestClaudeUsage.fetchedAt ? `updated ${formatDurationParts(Date.now() - new Date(latestClaudeUsage.fetchedAt).getTime())} ago` : "updated now";
+  const rendered = [...box.querySelectorAll(".claude-usage-bucket[data-claude-usage-key]")];
+  if (rendered.length !== windows.length) return false;
+  for (const [index, window] of windows.entries()) {
+    const key = String(window?.id || index);
+    const item = rendered.find((node) => node.dataset.claudeUsageKey === key);
+    if (!item) return false;
+    const usedPercent = Number(window?.usedPercent);
+    const fillPercent = Number.isFinite(usedPercent) ? Math.max(0, Math.min(100, usedPercent)) : 0;
+    const percent = item.querySelector(".claude-usage-percent");
+    const fill = item.querySelector(".claude-usage-meter-fill");
+    const reset = item.querySelector(".claude-usage-reset");
+    if (!percent || !fill || !reset) return false;
+    percent.textContent = formatCodexPercent(usedPercent);
+    fill.style.width = `${fillPercent}%`;
+    reset.textContent = formatClaudeUsageReset(window);
+  }
+  return true;
+}
+
 function renderClaudeUsage() {
   const box = elements.claudeUsageBox;
   if (!box) return;
@@ -17454,6 +22034,13 @@ function renderClaudeUsage() {
     elements.refreshClaudeUsageButton.textContent = claudeUsageLoading ? "Refreshing…" : "Refresh usage";
   }
 
+  const windows = Array.isArray(latestClaudeUsage?.windows) ? latestClaudeUsage.windows.slice(0, 6) : [];
+  const structureSignature = claudeUsageStructureSignature();
+  if (structureSignature === claudeUsageRenderSignature && updateClaudeUsageValues(box, windows)) {
+    box.classList.toggle("muted", !latestClaudeUsage);
+    return;
+  }
+  claudeUsageRenderSignature = structureSignature;
   box.replaceChildren();
   box.classList.toggle("muted", !latestClaudeUsage);
 
@@ -17480,11 +22067,10 @@ function renderClaudeUsage() {
   box.append(header);
 
   if (latestClaudeUsage.summary) box.append(make("div", "claude-usage-detail", latestClaudeUsage.summary));
-  const windows = Array.isArray(latestClaudeUsage.windows) ? latestClaudeUsage.windows : [];
   if (windows.length === 0) {
     box.append(make("div", "claude-usage-detail", "No Claude usage windows were returned."));
   } else {
-    for (const window of windows.slice(0, 6)) renderClaudeUsageWindow(box, window);
+    for (const [index, window] of windows.entries()) renderClaudeUsageWindow(box, window, String(window?.id || index));
   }
 
   renderClaudeUsageActivity(box, latestClaudeUsage.activity);
@@ -17529,9 +22115,10 @@ function subagentTabsWithRunningAgents() {
   return (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [])
     .map((tab) => {
       const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
-      return { ...tab, gates, gateCount: gates.length };
+      const displayRuns = ungatedSubagentRuns(tab);
+      return { ...tab, gates, gateCount: gates.length, displayRuns };
     })
-    .filter((tab) => (Array.isArray(tab?.runs) && tab.runs.length > 0) || Number(tab?.gateCount || 0) > 0)
+    .filter((tab) => tab.displayRuns.length > 0 || Number(tab?.gateCount || 0) > 0)
     .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
 }
 
@@ -17555,14 +22142,29 @@ function subagentSourceLabel(source = "") {
   return source === "foreground" || source === "workflow" ? source : "async";
 }
 
-function subagentExecutionFacts(agent = {}) {
+function subagentExecutionValues(agent = {}) {
   const thinking = String(agent?.thinking || "").trim();
   let model = String(agent?.model || "").trim();
   const suffixIndex = model.lastIndexOf(":");
   if (thinking && suffixIndex > model.indexOf("/") && model.slice(suffixIndex + 1).toLowerCase() === thinking.toLowerCase()) {
     model = model.slice(0, suffixIndex);
   }
-  return [`model ${model || "unknown"}`, `reasoning ${thinking || "unknown"}`];
+  return [model || "unknown", thinking || "unknown"];
+}
+
+function subagentExecutionFacts(agent = {}) {
+  const [model, thinking] = subagentExecutionValues(agent);
+  return [`model ${model}`, `reasoning ${thinking}`];
+}
+
+function subagentGateAttemptViewFacts(attempt) {
+  if (!attempt) return [];
+  return [
+    `gate attempt ${attempt.attempt || 1}/${attempt.maxAttempts || 1}`,
+    attempt.phase ? `phase ${attempt.phase}` : "",
+    attempt.failureKind ? `failure ${attempt.failureKind}` : "",
+    attempt.error ? `gate error ${attempt.error}` : "",
+  ].filter(Boolean);
 }
 
 function subagentRunIsRunning(run = {}, agent = null) {
@@ -17673,6 +22275,47 @@ async function dismissSubagentRun(tab, run) {
   } catch (error) {
     addEvent(`subagent dismiss failed: ${error.message || String(error)}`, "error");
   }
+}
+
+function finishedSubagentRunSelections(data = latestSubagents) {
+  return (Array.isArray(data?.tabs) ? data.tabs : []).flatMap((tab) => (
+    ungatedSubagentRuns(tab)
+      .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow")
+      .map((run) => ({ tabId: tab.tabId, runId: run.id }))
+      .filter((selection) => selection.tabId && selection.runId)
+  ));
+}
+
+async function clearFinishedSubagentRuns({ automatic = false } = {}) {
+  if (subagentsClearingFinished || subagentsLoading) return;
+  const selections = finishedSubagentRunSelections();
+  if (!selections.length) return;
+  clearTimeout(refreshSubagentsTimer);
+  subagentsClearingFinished = true;
+  renderSubagents();
+  let dismissed = 0;
+  const failures = [];
+  try {
+    for (const selection of selections) {
+      try {
+        await api("/api/subagents/dismiss", {
+          method: "POST",
+          scoped: false,
+          body: { tab: selection.tabId, runId: selection.runId },
+        });
+        dismissed += 1;
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    await refreshSubagents();
+  } finally {
+    subagentsClearingFinished = false;
+    renderSubagents();
+    scheduleRefreshSubagents();
+  }
+  if (dismissed) addEvent(`${automatic ? "auto-cleared" : "cleared"} ${dismissed} finished subagent ${dismissed === 1 ? "run" : "runs"}`, "info");
+  if (failures.length) addEvent(`could not ${automatic ? "auto-clear" : "clear"} ${failures.length} finished subagent ${failures.length === 1 ? "run" : "runs"}`, "warn");
 }
 
 function subagentOverlayTranscriptMessages(data = subagentOverlayData) {
@@ -17810,6 +22453,7 @@ function subagentOverlayStateFacts(data = subagentOverlayData) {
     subagentSourceLabel(data?.source || run.source),
     agent.nested ? "nested" : "",
     ...subagentExecutionFacts(agent),
+    ...subagentGateAttemptViewFacts(subagentOverlaySelection?.gateAttempt),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
     Number.isFinite(agent.turnCount) ? `${agent.turnCount} turns` : "",
     Number.isFinite(agent.toolCount) ? `${agent.toolCount} tools` : "",
@@ -17921,8 +22565,10 @@ function renderSubagentOverlayWidget() {
   ].filter(Boolean);
   controls.append(actions, make("span", `app-runner-output-meta${subagentOverlayError ? " warning" : ""}`, details.join(" · ")));
   const outputDetails = renderReleaseNpmOutputDetails(`subagent:${selection.tabId}:${selection.agentId}`, streamHeader, output, controls);
+  const scrollKey = `subagent-overlay:${selection.tabId}:${selection.runId}:${selection.agentId}`;
+  bindScopedScrollContinuity(output, scrollKey);
   widget.append(header, outputDetails);
-  requestAnimationFrame(() => { if (outputDetails.open) output.scrollTop = output.scrollHeight; });
+  restoreScopedScrollContinuity(output, scrollKey);
   return widget;
 }
 
@@ -17974,6 +22620,7 @@ async function openSubagentOverlay(tab, run, agent) {
       agent,
       runId: run.id,
       agentId: agent.id,
+      gateAttempt: run.gateAttempt || null,
       finished: false,
     };
     subagentOverlayData = null;
@@ -18047,6 +22694,39 @@ function updateSubagentTerminalRefreshState(view, { running = subagentTerminalVi
   elements.subagentTerminalRefreshButton.textContent = view.loading ? "Refreshing…" : "Refresh";
 }
 
+function subagentTerminalTelemetryNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function formatSubagentTerminalTelemetryTokens(value) {
+  const tokens = subagentTerminalTelemetryNumber(value);
+  return tokens === null ? "—" : formatFooterTokenCount(tokens);
+}
+
+function formatSubagentTerminalTelemetryText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "unknown";
+}
+
+function renderSubagentTerminalCards(agent) {
+  const telemetry = agent?.telemetry && typeof agent.telemetry === "object" && !Array.isArray(agent.telemetry)
+    ? agent.telemetry
+    : {};
+  const contextTokens = formatSubagentTerminalTelemetryTokens(telemetry.contextTokens);
+  const contextWindow = subagentTerminalTelemetryNumber(telemetry.contextWindow);
+
+  if (elements.subagentTerminalCardPi) elements.subagentTerminalCardPi.textContent = formatSubagentTerminalTelemetryTokens(telemetry.promptInjectionTokens);
+  if (elements.subagentTerminalCardSpeed) {
+    const speed = subagentTerminalTelemetryNumber(telemetry.tokenSpeed);
+    elements.subagentTerminalCardSpeed.textContent = speed === null ? "—" : `${formatFooterTokenCount(speed)} tok/s`;
+  }
+  if (elements.subagentTerminalCardContext) elements.subagentTerminalCardContext.textContent = `${contextTokens} / ${contextWindow === null ? "unknown" : formatFooterTokenCount(contextWindow)}`;
+  if (elements.subagentTerminalCardModel) elements.subagentTerminalCardModel.textContent = formatSubagentTerminalTelemetryText(telemetry.model);
+  if (elements.subagentTerminalCardEffort) elements.subagentTerminalCardEffort.textContent = formatSubagentTerminalTelemetryText(telemetry.effort);
+  if (elements.subagentTerminalCardTokens) {
+    elements.subagentTerminalCardTokens.textContent = `↑${formatSubagentTerminalTelemetryTokens(telemetry.inputTokens)} · ↓${formatSubagentTerminalTelemetryTokens(telemetry.outputTokens)}`;
+  }
+}
+
 function renderSubagentTerminalView() {
   const view = activeSubagentTerminalView();
   const active = !!view;
@@ -18062,21 +22742,27 @@ function renderSubagentTerminalView() {
   const outputText = subagentOverlayOutputText({ agent });
   const fallbackText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
   const parent = tabs.find((tab) => tab.id === view.parentTabId);
+  const elapsed = subagentRunElapsed(view.run);
   const facts = [
-    view.finished ? "finished" : running ? "running" : subagentRunStateLabel(view.run),
+    view.finished ? "finished" : running ? `running${elapsed ? ` ${elapsed}` : ""}` : subagentRunStateLabel(view.run),
     view.run?.mode,
     subagentSourceLabel(view.data?.source || view.run?.source),
     agent.nested ? "nested" : "",
     ...subagentExecutionFacts(agent),
+    ...subagentGateAttemptViewFacts(view.gateAttempt),
     agent.currentTool ? `tool ${agent.currentTool}` : "",
   ].filter(Boolean);
 
+  const transcript = elements.subagentTerminalTranscript;
+  const scrollKey = `subagent-terminal:${view.id}`;
+  if (transcript.dataset.continuityScrollKey === scrollKey) rememberScopedScrollContinuity(transcript, scrollKey);
+  else if (!scopedScrollContinuityByKey.has(scrollKey)) scopedScrollContinuityByKey.set(scrollKey, { mode: "follow-end", scrollTop: 0, scrollLeft: 0 });
   elements.subagentTerminalTitle.textContent = subagentTerminalViewTitle(view);
   elements.subagentTerminalMeta.textContent = `${facts.join(" · ")} · parent ${parent?.title || view.parentTitle || "terminal"} · run ${view.runId}`;
-  const shouldFollowOutput = elements.subagentTerminalTranscript.scrollHeight - elements.subagentTerminalTranscript.clientHeight - elements.subagentTerminalTranscript.scrollTop < CHAT_BOTTOM_THRESHOLD_PX;
-  elements.subagentTerminalTranscript.replaceChildren();
-  elements.subagentTerminalTranscript.setAttribute("aria-live", running ? "polite" : "off");
-  const rendered = appendSubagentOverlayTranscript(elements.subagentTerminalTranscript, transcriptMessages);
+  renderSubagentTerminalCards(agent);
+  transcript.replaceChildren();
+  transcript.setAttribute("aria-live", running ? "polite" : "off");
+  const rendered = appendSubagentOverlayTranscript(transcript, transcriptMessages);
   const emptyTranscriptFallback = hasStructuredTranscript && rendered === 0 ? subagentOverlayEmptyTranscriptText(transcriptMessages) : "";
   const visibleFallbackText = !hasStructuredTranscript ? fallbackText : emptyTranscriptFallback;
   if (visibleFallbackText) {
@@ -18087,7 +22773,7 @@ function renderSubagentTerminalView() {
       content: visibleFallbackText,
     }, { streaming: running && !hasStructuredTranscript, transient: true });
     bubble.classList.add("subagent-overlay-message", "subagent-overlay-empty-fallback");
-    elements.subagentTerminalTranscript.append(bubble);
+    transcript.append(bubble);
   }
   if (running) appendSubagentRunIndicator(elements.subagentTerminalTranscript, { agent, run: view.run });
 
@@ -18098,7 +22784,8 @@ function renderSubagentTerminalView() {
     elements.subagentTerminalCancelButton.hidden = !cancellable;
     elements.subagentTerminalCancelButton.disabled = !cancellable;
   }
-  if (shouldFollowOutput) requestAnimationFrame(() => { elements.subagentTerminalTranscript.scrollTop = elements.subagentTerminalTranscript.scrollHeight; });
+  bindScopedScrollContinuity(transcript, scrollKey);
+  restoreScopedScrollContinuity(transcript, scrollKey);
 }
 
 function scheduleSubagentTerminalRefresh(delay = SUBAGENT_OVERLAY_REFRESH_MS) {
@@ -18180,6 +22867,7 @@ function ensureSubagentTerminalView(tab, run, agent) {
     existing.run = run;
     existing.agent = agent;
     existing.parentTitle = tab.tabTitle;
+    if (run.gateAttempt) existing.gateAttempt = run.gateAttempt;
     return existing;
   }
   const view = {
@@ -18192,6 +22880,7 @@ function ensureSubagentTerminalView(tab, run, agent) {
     agent,
     runId: run.id,
     agentId: agent.id,
+    gateAttempt: run.gateAttempt || null,
     data: null,
     error: "",
     loading: false,
@@ -18221,6 +22910,19 @@ function closeSubagentTerminalTab(viewId) {
   if (activeSubagentTerminalId === viewId) deactivateSubagentTerminalView({ render: false, focusParent: true });
   renderTabs();
   addEvent(`closed subagent view for ${subagentTerminalViewTitle(view)}; the child run was not stopped`, "info");
+}
+
+function closeSubagentTerminalGroup(group) {
+  const groupViews = Array.isArray(group?.views) ? group.views : [];
+  if (!groupViews.length) return;
+  const viewIds = new Set(groupViews.map((view) => view.id));
+  for (const view of groupViews) {
+    view.requestSerial += 1;
+    subagentTerminalViews.delete(view.id);
+  }
+  if (viewIds.has(activeSubagentTerminalId)) deactivateSubagentTerminalView({ render: false, focusParent: true });
+  renderTabs();
+  addEvent(`closed ${groupViews.length} subagent views for ${group.parentTitle || "workspace"}; the child runs were not stopped`, "info");
 }
 
 async function copySubagentTerminalOutput() {
@@ -18299,7 +23001,7 @@ function materializeRetainedSubagentTerminalViews() {
     const restoreKey = `${tab.tabId}\u0000${tab.sessionFile || ""}`;
     if (subagentTerminalRestoredParentTabs.has(restoreKey)) continue;
     subagentTerminalRestoredParentTabs.add(restoreKey);
-    for (const run of Array.isArray(tab.runs) ? tab.runs : []) {
+    for (const run of ungatedSubagentRuns(tab)) {
       if (run?.status === "running" || run?.source === "workflow") continue;
       for (const agent of Array.isArray(run.agents) ? run.agents : []) {
         const id = subagentTerminalViewId(tab, run, agent);
@@ -18311,13 +23013,36 @@ function materializeRetainedSubagentTerminalViews() {
   return materialized;
 }
 
-function renderSubagentTerminalTab(view) {
+function subagentTerminalViewGroups() {
+  const groups = [];
+  const byParent = new Map();
+  const views = [...subagentTerminalViews.values()].sort((a, b) => a.openedAt - b.openedAt || String(a.id).localeCompare(String(b.id)));
+  for (const view of views) {
+    const parentTabId = view.parentTabId || view.id;
+    let group = byParent.get(parentTabId);
+    if (!group) {
+      group = {
+        key: `subagents:${parentTabId}`,
+        parentTabId,
+        parentTitle: view.parentTitle || "workspace",
+        views: [],
+      };
+      byParent.set(parentTabId, group);
+      groups.push(group);
+    }
+    group.parentTitle = view.parentTitle || group.parentTitle;
+    group.views.push(view);
+  }
+  return groups;
+}
+
+function renderSubagentTerminalTab(view, { groupItem = false } = {}) {
   const active = view.id === activeSubagentTerminalId;
   const running = subagentTerminalViewIsRunning(view);
   const stateClass = running ? "activity-working" : view.error && !view.data ? "stopped" : "activity-done";
-  const wrapper = make("div", `terminal-tab terminal-tab-subagent ${stateClass}${active ? " active" : ""}`);
+  const wrapper = make("div", `${groupItem ? "terminal-tab-group-item" : "terminal-tab"} terminal-tab-subagent ${stateClass}${active ? " active" : ""}`);
   wrapper.dataset.subagentViewId = view.id;
-  const button = make("button", "terminal-tab-button");
+  const button = make("button", `terminal-tab-button${groupItem ? " terminal-tab-group-item-button" : ""}`);
   button.type = "button";
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", active ? "true" : "false");
@@ -18328,8 +23053,11 @@ function renderSubagentTerminalTab(view) {
     meta: ["Subagent", subagentSourceLabel(view.data?.source || view.run?.source), ...subagentExecutionFacts(view.data?.agent || view.agent), view.parentTitle || "parent terminal"].join(" · "),
     subagent: true,
   });
-  button.addEventListener("click", () => activateSubagentTerminalView(view.id));
-  const close = make("button", "terminal-tab-close", "×");
+  button.addEventListener("click", (event) => {
+    if (groupItem) event.stopPropagation();
+    activateSubagentTerminalView(view.id);
+  });
+  const close = make("button", `terminal-tab-close${groupItem ? " terminal-tab-group-item-close" : ""}`, "×");
   close.type = "button";
   applyStyledTooltip(close, `Close ${subagentTerminalViewTitle(view)} view without stopping the subagent`, { ariaLabel: `Close ${subagentTerminalViewTitle(view)} subagent view` });
   close.addEventListener("click", (event) => {
@@ -18340,32 +23068,83 @@ function renderSubagentTerminalTab(view) {
   return wrapper;
 }
 
+function renderSubagentTerminalTabGroup(group) {
+  const groupViews = group.views;
+  const activeView = groupViews.find((view) => view.id === activeSubagentTerminalId) || groupViews.at(-1);
+  const active = groupViews.some((view) => view.id === activeSubagentTerminalId);
+  const runningCount = groupViews.filter(subagentTerminalViewIsRunning).length;
+  const stateClass = runningCount ? "activity-working" : "activity-done";
+  const groupTitle = group.parentTitle || "workspace";
+  const wrapper = make("div", `terminal-tab terminal-tab-group terminal-tab-subagent terminal-tab-subagent-group ${stateClass}${active ? " active" : ""}`);
+  wrapper.dataset.groupKey = group.key;
+  wrapper.addEventListener("pointerenter", () => setOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("pointerleave", () => clearOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("focusin", () => setOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!wrapper.contains(document.activeElement)) clearOpenTerminalTabGroup(group.key);
+    }, 0);
+  });
+
+  const button = make("button", "terminal-tab-button terminal-tab-group-button");
+  button.type = "button";
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-selected", active ? "true" : "false");
+  button.setAttribute("aria-haspopup", "true");
+  button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
+  button.setAttribute("aria-label", `${groupTitle} workspace subagents: ${groupViews.length} views, ${runningCount} running. Active ${subagentTerminalViewTitle(activeView)}`);
+  applyStyledTooltip(button, `${groupTitle} · ${groupViews.length} subagent views\n${runningCount ? `${runningCount} running` : "All finished"}\nActive: ${subagentTerminalViewTitle(activeView)}`, { ariaLabel: false, description: true, placement: "right", variant: "workspace" });
+  appendTerminalTabContent(button, {
+    title: groupTitle,
+    indicator: { state: runningCount ? "working" : "done" },
+    meta: `${groupViews.length} subagents · ${runningCount ? `${runningCount} running` : "finished"}`,
+    count: groupViews.length,
+    subagent: true,
+  });
+  button.addEventListener("click", () => activateSubagentTerminalView(activeView.id));
+  wrapper.append(button);
+
+  const close = make("button", "terminal-tab-close terminal-tab-group-close", "×");
+  close.type = "button";
+  applyStyledTooltip(close, `Close all ${groupViews.length} ${groupTitle} subagent views without stopping them`, { ariaLabel: `Close ${groupTitle} subagent view group` });
+  close.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeSubagentTerminalGroup(group);
+  });
+  wrapper.append(close);
+
+  const menu = make("div", "terminal-tab-group-menu");
+  menu.setAttribute("role", "group");
+  menu.setAttribute("aria-label", `${groupTitle} subagent views`);
+  for (const view of groupViews) menu.append(renderSubagentTerminalTab(view, { groupItem: true }));
+  wrapper.append(menu);
+  return wrapper;
+}
+
 function openSubagentOutput(tab, run, agent) {
   return subagentOpenMode === "tab" ? openSubagentTerminal(tab, run, agent) : openSubagentOverlay(tab, run, agent);
 }
 
 function renderSubagentAgent(tab, run, agent) {
   const running = subagentRunIsRunning(run, agent);
+  const name = agent?.name || "subagent";
+  const [model, thinking] = subagentExecutionValues(agent);
   const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}`);
   row.type = "button";
+  row.dataset.subagentContinuityKey = `agent:${tab?.tabId || ""}:${run?.id || ""}:${agent?.id || ""}`;
   const dot = make("span", running ? "subagent-running-dot" : `subagent-state-dot ${agent?.status || "done"}`);
   dot.setAttribute("aria-hidden", "true");
-  const content = make("div", "subagent-agent-content");
-  content.append(make("strong", "subagent-agent-name", agent?.name || "subagent"));
-  const elapsed = subagentRunElapsed(run);
-  const facts = [
-    agent?.nested ? "nested" : "",
-    run?.mode && run.mode !== "single" ? run.mode : "",
-    subagentSourceLabel(run?.source),
-    ...subagentExecutionFacts(agent),
-    agent?.currentTool ? `tool: ${agent.currentTool}` : "",
-    running && elapsed ? `running ${elapsed}` : agent?.status || subagentRunStateLabel(run),
-  ].filter(Boolean);
-  content.append(make("span", "subagent-agent-meta", facts.join(" · ")));
-  row.append(dot, content);
+  const identity = make("span", "subagent-agent-identity");
+  identity.append(
+    make("strong", "subagent-agent-name", name),
+    make("span", "subagent-agent-inline-meta", `· ${model} · ${thinking}`),
+  );
+  const open = make("span", "subagent-agent-open", "›");
+  open.setAttribute("aria-hidden", "true");
+  row.append(dot, identity, open);
   const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
-  row.title = `${agent?.name || "subagent"} · ${facts.join(" · ")} · run ${run?.id || "unknown"} · open ${destination}`;
-  row.setAttribute("aria-label", `Open ${destination} for ${agent?.name || "subagent"} in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
+  row.title = `${name} · ${model} · ${thinking} · open ${destination}`;
+  row.setAttribute("aria-label", `Open ${destination} for ${name}, model ${model}, reasoning ${thinking}, in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
   row.addEventListener("click", () => openSubagentOutput(tab, run, agent));
   return row;
 }
@@ -18373,38 +23152,32 @@ function renderSubagentAgent(tab, run, agent) {
 function renderSubagentRun(tab, run) {
   const running = subagentRunIsRunning(run);
   const card = make("section", `subagent-run ${running ? "running" : run?.status || "done"}`);
-  const header = make("div", "subagent-run-header");
-  const title = make("div", "subagent-run-title");
-  const elapsed = subagentRunElapsed(run);
-  title.append(
-    make("strong", undefined, `Run ${run?.id || "unknown"}`),
-    make("span", "subagent-run-meta", [subagentSourceLabel(run?.source), run?.mode, running && elapsed ? `running ${elapsed}` : ""].filter(Boolean).join(" · ")),
-  );
-  const actions = make("div", "subagent-run-actions");
-  if (subagentRunCanCancel(run)) {
-    const cancel = make("button", "subagent-run-cancel", "Cancel…");
-    cancel.type = "button";
-    cancel.addEventListener("click", () => openSubagentCancelDialog(tab, run));
-    actions.append(cancel);
-  } else if (!running) {
-    actions.append(make("span", `subagent-run-state ${run?.status || "done"}`, subagentRunStateLabel(run)));
-    if (run?.source !== "workflow") {
-      const dismiss = make("button", "subagent-run-dismiss", "×");
-      dismiss.type = "button";
-      applyStyledTooltip(dismiss, "Dismiss finished run", { ariaLabel: "Dismiss finished run" });
-      dismiss.addEventListener("click", () => dismissSubagentRun(tab, run));
-      actions.append(dismiss);
-    }
-  }
-  header.append(title, actions);
-  card.append(header);
   const agents = (Array.isArray(run?.agents) ? run.agents : [])
     .slice()
     .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || String(a.name || "").localeCompare(String(b.name || "")));
+  card.setAttribute("aria-label", `Subagent run with ${agents.length} ${agents.length === 1 ? "agent" : "agents"}`);
   const list = make("div", "subagent-run-agents");
   for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
-  if (!list.childElementCount) list.append(make("div", "subagents-empty", "No agent details were captured for this run."));
+  if (!list.childElementCount) list.append(make("div", "subagents-empty", "No agents were captured."));
   card.append(list);
+
+  const actions = make("div", "subagent-run-actions");
+  if (subagentRunCanCancel(run)) {
+    const cancel = make("button", "subagent-run-cancel", "■");
+    cancel.type = "button";
+    cancel.dataset.subagentContinuityKey = `run:${tab?.tabId || ""}:${run?.id || ""}:cancel`;
+    applyStyledTooltip(cancel, "Cancel entire subagent run…", { ariaLabel: "Cancel entire subagent run" });
+    cancel.addEventListener("click", () => openSubagentCancelDialog(tab, run));
+    actions.append(cancel);
+  } else if (!running && run?.source !== "workflow") {
+    const dismiss = make("button", "subagent-run-dismiss", "×");
+    dismiss.type = "button";
+    dismiss.dataset.subagentContinuityKey = `run:${tab?.tabId || ""}:${run?.id || ""}:dismiss`;
+    applyStyledTooltip(dismiss, "Dismiss finished run", { ariaLabel: "Dismiss finished run" });
+    dismiss.addEventListener("click", () => dismissSubagentRun(tab, run));
+    actions.append(dismiss);
+  }
+  if (actions.childElementCount) card.append(actions);
   return card;
 }
 
@@ -18412,25 +23185,55 @@ function subagentGateStatusLabel(status) {
   return status === "satisfied" ? "satisfied" : status === "running" ? "running" : status === "cancelled" ? "cancelled" : "failed";
 }
 
-function renderSubagentGateAttempt(attempt) {
-  const row = make("div", `subagent-gate-attempt ${attempt?.status || "failed"}`);
+function subagentGateAttemptTarget(tab, attempt) {
+  if (!tab?.tabId || !attempt?.runId) return null;
+  const run = (Array.isArray(tab.runs) ? tab.runs : []).find((candidate) => candidate?.id === attempt.runId);
+  if (!run) return null;
+  const agents = Array.isArray(run.agents) ? run.agents : [];
+  let agent = agents.find((candidate) => candidate?.name === attempt.agent);
+  if (!agent && agents.length === 1) [agent] = agents;
+  return agent?.id ? { run, agent } : null;
+}
+
+function subagentGateAttemptExecutionValues(attempt = {}) {
+  let model = String(attempt?.model || "").trim();
+  let thinking = String(attempt?.thinking || "").trim().toLowerCase();
+  const suffixIndex = model.lastIndexOf(":");
+  const suffix = suffixIndex > model.indexOf("/") ? model.slice(suffixIndex + 1).toLowerCase() : "";
+  if (!thinking && SETTINGS_THINKING_OPTIONS.includes(suffix)) thinking = suffix;
+  if (thinking && suffix === thinking) model = model.slice(0, suffixIndex);
+  const provider = String(attempt?.provider || "").trim().toLowerCase();
+  if (provider && model && !model.toLowerCase().startsWith(`${provider}/`)) model = `${provider}/${model}`;
+  return [model || provider || "unknown", thinking || "unknown"];
+}
+
+function openSubagentGateAttemptOutput(tab, target, attempt) {
+  return openSubagentOutput(tab, { ...target.run, gateAttempt: attempt }, target.agent);
+}
+
+function renderSubagentGateAttempt(tab, attempt) {
+  const target = subagentGateAttemptTarget(tab, attempt);
+  const row = make(target ? "button" : "div", `subagent-gate-attempt ${attempt?.status || "failed"}${target ? " openable" : ""}`);
+  const title = attempt?.label || attempt?.agent || "subagent";
+  if (target) {
+    row.type = "button";
+    row.dataset.subagentContinuityKey = `gate:${tab?.tabId || ""}:${attempt?.runId || ""}:${target.agent?.id || ""}`;
+    const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
+    row.title = `${title} · open ${destination}`;
+    row.setAttribute("aria-label", `Open ${destination} for ${title}, ${attempt?.status || "unknown"}, ${attempt?.retrySafety || "may-write"}`);
+    row.addEventListener("click", () => openSubagentGateAttemptOutput(tab, target, attempt));
+  }
   const marker = make("span", "subagent-gate-attempt-marker");
   marker.setAttribute("aria-hidden", "true");
-  const content = make("div", "subagent-gate-attempt-content");
-  const title = attempt?.label || attempt?.agent || "subagent";
-  content.append(make("strong", undefined, `${title} · attempt ${attempt?.attempt || 1}/${attempt?.maxAttempts || 1}`));
-  const facts = [
-    attempt?.status,
-    attempt?.phase ? `phase ${attempt.phase}` : "",
-    attempt?.provider ? `provider ${attempt.provider}` : "provider unknown",
-    attempt?.model ? `model ${attempt.model}` : "model unknown",
-    attempt?.retrySafety,
-    attempt?.failureKind ? `failure ${attempt.failureKind}` : "",
-    attempt?.runId ? `run ${attempt.runId}` : "",
-  ].filter(Boolean);
-  content.append(make("span", "subagent-gate-attempt-meta", facts.join(" · ")));
-  if (attempt?.error) content.append(make("span", "subagent-gate-attempt-error", attempt.error));
-  row.append(marker, content);
+  const identity = make("span", "subagent-gate-attempt-identity");
+  const [model, thinking] = subagentGateAttemptExecutionValues(attempt);
+  identity.append(
+    make("strong", "subagent-gate-attempt-name", title),
+    make("span", "subagent-gate-attempt-meta", `· ${attempt?.status || "unknown"} · ${model} · ${thinking} · ${attempt?.retrySafety || "may-write"}`),
+  );
+  const open = target ? make("span", "subagent-gate-attempt-open", "›") : null;
+  open?.setAttribute("aria-hidden", "true");
+  row.append(marker, identity, ...(open ? [open] : []));
   return row;
 }
 
@@ -18440,11 +23243,10 @@ function renderSubagentGate(tab, gate) {
   const header = make("div", "subagent-gate-header");
   const title = make("div", "subagent-gate-title");
   title.append(
-    make("strong", undefined, `Retry gate · ${gate?.qualifyingSuccesses || 0}/${gate?.requiredSuccesses || 1}`),
-    make("span", undefined, `${status}${gate?.requireDistinctProviders ? " · distinct providers" : ""}`),
+    make("strong", undefined, "Retry gate"),
+    make("span", undefined, `${gate?.qualifyingSuccesses || 0}/${gate?.requiredSuccesses || 1} · ${status}${gate?.requireDistinctProviders ? " · distinct providers" : ""}`),
   );
   const actions = make("div", "subagent-gate-actions");
-  actions.append(make("span", `subagent-gate-status ${status}`, status));
   if (subagentGateIsTerminal(gate)) {
     const close = make("button", "subagent-gate-close", "×");
     close.type = "button";
@@ -18463,7 +23265,7 @@ function renderSubagentGate(tab, gate) {
   header.append(title, actions);
   card.append(header);
   const attempts = make("div", "subagent-gate-attempts");
-  for (const attempt of Array.isArray(gate?.attempts) ? gate.attempts : []) attempts.append(renderSubagentGateAttempt(attempt));
+  for (const attempt of Array.isArray(gate?.attempts) ? gate.attempts : []) attempts.append(renderSubagentGateAttempt(tab, attempt));
   if (!attempts.childElementCount) attempts.append(make("div", "subagents-empty", "Waiting for the first attempt…"));
   card.append(attempts);
   return card;
@@ -18473,13 +23275,14 @@ function renderSubagentTabGroup(tab) {
   const group = make("section", `subagent-tab-group${tab.tabId === activeTabId ? " active" : ""}`);
   const header = make("button", "subagent-tab-header");
   header.type = "button";
+  header.dataset.subagentContinuityKey = `tab:${tab?.tabId || ""}`;
   header.setAttribute("aria-label", `Open ${tab.tabTitle || `Terminal ${tab.tabIndex || ""}`}`);
   const title = make("span", "subagent-tab-title");
   title.append(
     make("strong", undefined, tab.tabTitle || `Terminal ${tab.tabIndex || "?"}`),
     make("span", "subagent-tab-session", `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
   );
-  const runs = (Array.isArray(tab.runs) ? tab.runs : [])
+  const runs = (Array.isArray(tab.displayRuns) ? tab.displayRuns : ungatedSubagentRuns(tab))
     .slice()
     .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
   const runningAgents = Number(tab.runningAgents || 0);
@@ -18502,19 +23305,42 @@ function renderSubagentTabGroup(tab) {
   return group;
 }
 
+function subagentPanelControlKey(node) {
+  return node?.dataset?.subagentContinuityKey || "";
+}
+
 function renderSubagents() {
+  if (deferUiRenderDuringPointerActivation("subagents", renderSubagents)) return;
   const box = elements.subagentsBox;
   if (!box) return;
+  const continuityContextKey = `${activeTabId || ""}:${activeTabGeneration}`;
+  const focusSnapshot = captureScopedControlContinuity(box, continuityContextKey, subagentPanelControlKey);
+  const restoreFocus = () => restoreScopedControlContinuity(box, continuityContextKey, focusSnapshot, (key) => [...box.querySelectorAll("[data-subagent-continuity-key]")].find((node) => subagentPanelControlKey(node) === key));
   const activeTabs = subagentTabsWithRunningAgents();
+  const finishedRuns = finishedSubagentRunSelections();
   const totalAgents = Number(latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
-  const totalRuns = Number(latestSubagents?.totalRuns || 0);
-  const runningRuns = Number(latestSubagents?.runningRuns || 0);
+  const totalRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.length, 0);
+  const runningRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.filter((run) => run?.status === "running").length, 0);
   const retainedRuns = Math.max(0, totalRuns - runningRuns);
   const totalGates = activeTabs.reduce((count, tab) => count + Number(tab.gateCount || 0), 0);
   const hasItems = activeTabs.length > 0;
   if (elements.subagentCountBadge) {
     elements.subagentCountBadge.textContent = String(totalAgents);
     elements.subagentCountBadge.hidden = totalAgents === 0;
+  }
+  if (elements.subagentsAutoClearButton) {
+    elements.subagentsAutoClearButton.setAttribute("aria-pressed", subagentAutoClearEnabled ? "true" : "false");
+    elements.subagentsAutoClearButton.classList.toggle("selected", subagentAutoClearEnabled);
+    elements.subagentsAutoClearButton.title = subagentAutoClearEnabled
+      ? "Auto-Clear is on: finished subagent runs are removed automatically"
+      : "Auto-Clear is off: keep finished subagent runs until they are cleared manually";
+  }
+  if (elements.subagentsClearFinishedButton) {
+    elements.subagentsClearFinishedButton.disabled = subagentsLoading || subagentsClearingFinished || finishedRuns.length === 0;
+    elements.subagentsClearFinishedButton.textContent = subagentsClearingFinished ? "Clearing…" : "Clear finished";
+    elements.subagentsClearFinishedButton.title = finishedRuns.length
+      ? `Clear ${finishedRuns.length} finished subagent ${finishedRuns.length === 1 ? "run" : "runs"}`
+      : "No finished subagent runs to clear";
   }
   if (elements.subagentsStatus) {
     elements.subagentsStatus.textContent = hasItems
@@ -18529,14 +23355,17 @@ function renderSubagents() {
   box.classList.toggle("has-items", hasItems);
   if (!hasItems) {
     box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running and retained subagents will appear here, grouped by terminal and session."));
+    restoreFocus();
     return;
   }
   for (const tab of activeTabs) box.append(renderSubagentTabGroup(tab));
   if (subagentsError) box.append(make("div", "subagents-stale muted", `Latest refresh failed: ${subagentsError.message || subagentsError}`));
+  restoreFocus();
 }
 
 async function refreshSubagents() {
   if (subagentsLoading) return;
+  let refreshed = false;
   let subagentViewsChanged = false;
   let materializedTerminalViews = false;
   subagentsLoading = true;
@@ -18548,6 +23377,7 @@ async function refreshSubagents() {
     subagentViewsChanged = syncSubagentTerminalViewsFromOverview();
     materializedTerminalViews = materializeRetainedSubagentTerminalViews();
     subagentsError = null;
+    refreshed = true;
   } catch (error) {
     subagentsError = error;
   } finally {
@@ -18559,6 +23389,9 @@ async function refreshSubagents() {
       scheduleSubagentTerminalRefresh();
     }
     if (subagentViewsChanged || materializedTerminalViews) renderTabs();
+  }
+  if (refreshed && subagentAutoClearEnabled && finishedSubagentRunSelections().length) {
+    await clearFinishedSubagentRuns({ automatic: true });
   }
 }
 
@@ -18653,14 +23486,11 @@ function renderSubagentLaunchSlotCard(role, slots) {
   const roleId = String(role?.id || "");
   const card = make("section", "subagent-launch-slot-role");
   card.setAttribute("aria-labelledby", `subagent-launch-slot-role-${roleId}`);
+  if (role?.purpose) card.title = role.purpose;
   const header = make("header", "subagent-launch-slot-role-header");
-  const heading = make("div", "subagent-launch-slot-role-heading");
-  heading.append(
-    make("h4", undefined, role?.title || roleId),
-    make("p", undefined, role?.purpose || "Configure launch-slot defaults for this role."),
-  );
-  heading.querySelector("h4")?.setAttribute("id", `subagent-launch-slot-role-${roleId}`);
-  header.append(heading, make("span", "subagent-launch-slot-count", `${slots.length}/${limits.slotsPerRole} slots`));
+  const heading = make("h4", "subagent-launch-slot-role-heading", role?.title || roleId);
+  heading.id = `subagent-launch-slot-role-${roleId}`;
+  header.append(heading, make("span", "subagent-launch-slot-count", `${slots.length}/${limits.slotsPerRole}`));
   card.append(header);
 
   const list = make("div", "subagent-launch-slot-list");
@@ -18669,9 +23499,10 @@ function renderSubagentLaunchSlotCard(role, slots) {
     const slotLabel = `${role?.title || roleId} slot ${ordinal}`;
     const row = make("section", "subagent-launch-slot-row");
     row.setAttribute("aria-label", slotLabel);
-    const rowHeader = make("div", "subagent-launch-slot-row-header");
-    rowHeader.append(make("strong", undefined, `Slot ${ordinal}`), make("span", "subagent-launch-slot-id", slot.id));
-    row.append(rowHeader);
+    if (slots.length > 1) {
+      const rowHeader = make("strong", "subagent-launch-slot-row-header", `Slot ${ordinal}`);
+      row.append(rowHeader);
+    }
 
     const controls = make("div", "subagent-launch-slot-controls");
     const modelField = make("label", "subagent-launch-slot-field");
@@ -18728,10 +23559,6 @@ function renderSubagentLaunchSlotCard(role, slots) {
     thinkingField.append(thinkingSelect);
     controls.append(modelField, thinkingField);
     row.append(controls);
-    const metadata = slot.model
-      ? `${slot.model}${slot.thinking ? ` · ${slot.thinking}` : " · thinking default"}`
-      : "Inherits the model and thinking default.";
-    row.append(make("p", "subagent-launch-slot-meta", metadata));
     if (slot.id !== `${roleId}:base`) {
       const remove = make("button", "subagent-launch-slot-remove", "Remove");
       remove.type = "button";
@@ -18787,6 +23614,14 @@ function renderSubagentLaunchSlots() {
   const config = subagentLaunchSlotConfig;
   const dirty = subagentLaunchSlotDraftIsDirty();
   const activeConfigTab = !!subagentLaunchSlotConfigTabId && subagentLaunchSlotConfigTabId === activeTabId;
+  const saveState = subagentLaunchSlotSaveState({
+    hasConfig: !!config,
+    hasDraft: !!subagentLaunchSlotDraft,
+    dirty,
+    loading: subagentLaunchSlotLoading,
+    saving: subagentLaunchSlotSaving,
+    activeConfigTab,
+  });
   if (elements.subagentLaunchSlotsSummaryStatus) {
     const roleCount = Array.isArray(config?.roleMetadata) ? config.roleMetadata.length : 8;
     elements.subagentLaunchSlotsSummaryStatus.textContent = subagentLaunchSlotError
@@ -18836,11 +23671,13 @@ function renderSubagentLaunchSlots() {
     elements.subagentLaunchSlotsStatus.classList.toggle("error", !!subagentLaunchSlotError);
   }
   if (elements.subagentLaunchSlotsSave) {
-    elements.subagentLaunchSlotsSave.disabled = !config || !subagentLaunchSlotDraft || !dirty || subagentLaunchSlotLoading || subagentLaunchSlotSaving || !activeConfigTab;
+    elements.subagentLaunchSlotsSave.disabled = saveState.disabled;
     elements.subagentLaunchSlotsSave.textContent = subagentLaunchSlotSaving ? "Saving…" : "Save agent models";
   }
   if (elements.subagentLaunchSlotsDirty) {
-    elements.subagentLaunchSlotsDirty.textContent = dirty ? "Unsaved changes" : "No unsaved changes";
+    elements.subagentLaunchSlotsDirty.textContent = dirty
+      ? `Unsaved changes · ${saveState.reason}`
+      : saveState.reason;
   }
   if (elements.subagentLaunchSlotsReloadActions) {
     elements.subagentLaunchSlotsReloadActions.hidden = !(subagentLaunchSlotReloadRequired && activeConfigTab);
@@ -18986,6 +23823,499 @@ async function reloadActiveTabForSubagentLaunchSlots() {
 function initializeSubagentLaunchSlots() {
   renderSubagentLaunchSlots();
   if (activeTabId) loadSubagentLaunchSlotConfig().catch(() => {});
+}
+
+function samplingParametersPath(tabId) {
+  return `/api/tabs/${encodeURIComponent(tabId)}/sampling-parameters`;
+}
+
+const samplingParameterControlElements = new Map();
+let samplingParameterTooltipDismissalInstalled = false;
+
+function samplingParameterTooltipBoundary(row) {
+  const viewportHeight = globalThis.innerHeight || document.documentElement?.clientHeight || 0;
+  const clippingRects = [row?.closest?.(".side-panel-section-content"), row?.closest?.(".side-panel-body")]
+    .map((node) => node?.getBoundingClientRect?.())
+    .filter(Boolean);
+  return {
+    top: Math.max(8, ...clippingRects.map((rect) => rect.top)),
+    bottom: Math.min(viewportHeight - 8, ...clippingRects.map((rect) => rect.bottom)),
+  };
+}
+
+function updateSamplingParameterTooltipPlacement(row, tooltip) {
+  if (!row?.classList.contains("unsupported") || tooltip?.hidden || !row.getBoundingClientRect || !tooltip.getBoundingClientRect) return;
+  tooltip.classList.remove("sampling-tooltip-below");
+  tooltip.style?.removeProperty("--sampling-tooltip-max-height");
+  const rowRect = row.getBoundingClientRect();
+  const naturalHeight = Math.max(tooltip.scrollHeight || 0, tooltip.getBoundingClientRect().height || 0);
+  const boundary = samplingParameterTooltipBoundary(row);
+  const spaceAbove = Math.max(0, rowRect.top - boundary.top - 6);
+  const spaceBelow = Math.max(0, boundary.bottom - rowRect.bottom - 6);
+  const placeBelow = spaceAbove < naturalHeight && spaceBelow > spaceAbove;
+  const availableHeight = placeBelow ? spaceBelow : spaceAbove;
+  tooltip.classList.toggle("sampling-tooltip-below", placeBelow);
+  tooltip.style?.setProperty("--sampling-tooltip-max-height", `${Math.floor(availableHeight)}px`);
+}
+
+function resetSamplingParameterTooltip(row, tooltip) {
+  row?.classList.remove("sampling-tooltip-dismissed");
+  updateSamplingParameterTooltipPlacement(row, tooltip);
+}
+
+function dismissSamplingParameterTooltip(row, event) {
+  if (!row?.classList.contains("unsupported") || row.classList.contains("sampling-tooltip-dismissed")) return false;
+  row.classList.add("sampling-tooltip-dismissed");
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  return true;
+}
+
+function initializeSamplingParameterTooltipDismissal() {
+  if (samplingParameterTooltipDismissalInstalled || typeof document.addEventListener !== "function") return;
+  samplingParameterTooltipDismissalInstalled = true;
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.target?.closest?.(".sampling-parameter-control.unsupported")) return;
+    const hovered = document.querySelector?.(".sampling-parameter-control.unsupported:hover:not(.sampling-tooltip-dismissed)");
+    if (hovered) dismissSamplingParameterTooltip(hovered, event);
+  });
+}
+
+function cloneSamplingControlDraft(draft) {
+  return draft ? JSON.parse(JSON.stringify(draft)) : null;
+}
+
+function samplingParametersBaseDraft(tabId = activeTabId) {
+  if (!tabId || samplingParametersStateTabId !== tabId || !samplingParametersState) return null;
+  return createSamplingControlDraft(samplingParametersState.session || {}, {
+    defaults: samplingParametersState.defaults || {},
+  });
+}
+
+function samplingParametersDraft(tabId = activeTabId) {
+  return tabId ? samplingParametersDrafts.get(tabId) ?? null : null;
+}
+
+function setSamplingParametersDraft(draft, tabId = activeTabId) {
+  if (!tabId) return;
+  if (draft === null) samplingParametersDrafts.delete(tabId);
+  else samplingParametersDrafts.set(tabId, cloneSamplingControlDraft(draft));
+}
+
+function samplingParametersEditableDraft(tabId = activeTabId) {
+  return samplingParametersDraft(tabId) || samplingParametersBaseDraft(tabId);
+}
+
+// Drafts are keyed by Pi tab so background refreshes and tab switches cannot
+// overwrite or expose another session's unsaved controls.
+function samplingParametersDraftIsDirty(tabId = activeTabId) {
+  const draft = samplingParametersDraft(tabId);
+  if (!draft) return false;
+  const baseline = samplingParametersBaseDraft(tabId);
+  return !baseline || !samplingControlDraftEquals(draft, baseline);
+}
+
+function samplingParametersSectionRecord() {
+  return sidePanelSectionRecords().find(({ id }) => id === "sampling") || null;
+}
+
+function samplingParametersSectionActive() {
+  const record = samplingParametersSectionRecord();
+  return !!record && !record.section.hidden && !record.section.classList.contains("collapsed");
+}
+
+function samplingParametersSupportText() {
+  const state = samplingParametersStateTabId === activeTabId ? samplingParametersState : null;
+  const support = state?.support;
+  if (!support) return samplingParametersLoading ? "Loading sampling support…" : "Select a running Pi tab to load sampling parameters.";
+  const modelLabel = support.model?.provider && support.model?.id ? `(${support.model.provider}) ${support.model.id}` : "unknown model";
+  const apiLabel = support.api || "unknown API";
+  if (support.supported) return `${modelLabel} · ${apiLabel} · ${support.message || "Sampling parameters apply to subsequent provider requests."}`;
+  const compatible = Array.isArray(support.compatibleApis) && support.compatibleApis.length
+    ? ` Sampling-capable APIs: ${support.compatibleApis.join(", ")}.`
+    : "";
+  return `${modelLabel} · ${apiLabel} · ${support.message || "Sampling parameters are stored but not applied."}${compatible}`;
+}
+
+// Success and error text describes one tab's last action, so it is suppressed as soon
+// as another tab becomes active instead of leaking into the new tab's status line.
+function samplingParametersFeedbackIsCurrent() {
+  return samplingParametersFeedbackTabId === activeTabId;
+}
+
+function setSamplingParametersFeedback({ error = "", notice = "" } = {}) {
+  samplingParametersError = error;
+  samplingParametersNotice = notice;
+  samplingParametersFeedbackTabId = error || notice ? activeTabId : null;
+}
+
+function samplingParametersStatusText({ dirty, unsupported, validation, loadedForActiveTab }) {
+  const feedbackCurrent = samplingParametersFeedbackIsCurrent();
+  if (samplingParametersError && feedbackCurrent) return samplingParametersError;
+  if (samplingParametersBusy) return "Applying sampling parameters…";
+  if (samplingParametersLoading) return "Loading session sampling parameters…";
+  if (!activeTabId) return "Select a running Pi tab to edit sampling parameters.";
+  if (samplingParametersNotice && feedbackCurrent) return samplingParametersNotice;
+  if (!loadedForActiveTab) return "Sampling parameters are not loaded for this tab.";
+  if (!validation.valid) return Object.values(validation.errors)[0] || "Correct invalid sampling values before applying.";
+  if (unsupported) return "This model has no verified sampling parameters, so applying them is disabled.";
+  if (dirty) return "Unsaved controls · Apply stores enabled values for this session only.";
+  return "Saved for this Pi session · unchecked parameters inherit model defaults.";
+}
+
+function samplingParameterCapabilities(state) {
+  return Object.fromEntries(SAMPLING_PARAMETER_CATALOG.map(({ key }) => [
+    key,
+    samplingParameterCapability(state?.support?.parameters, key),
+  ]));
+}
+
+function samplingParameterDomId(key, suffix) {
+  return `samplingParameter${key.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("")}${suffix}`;
+}
+
+function samplingParameterDisplayValue(parameters, key) {
+  if (!parameters || typeof parameters !== "object" || !Object.hasOwn(parameters, key)) return "Inherited";
+  const value = parameters[key];
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "Invalid or unsupported value";
+}
+
+function updateSamplingParameterControl(key, mutate) {
+  const baseline = samplingParametersEditableDraft();
+  if (!baseline || samplingParametersStateTabId !== activeTabId) return;
+  const next = cloneSamplingControlDraft(baseline);
+  mutate(next.controls[key]);
+  setSamplingParametersDraft(next);
+  setSamplingParametersFeedback();
+  renderSamplingParameters();
+}
+
+function initializeSamplingParameterControls() {
+  if (!elements.samplingParametersControls || samplingParameterControlElements.size) return;
+  initializeSamplingParameterTooltipDismissal();
+  const groups = new Map();
+  for (const [name, label] of [["core", "OpenAI-compatible controls"], ["server-extension", "Server extensions"]]) {
+    const section = document.createElement("section");
+    section.className = "sampling-parameter-group";
+    section.dataset.samplingParameterGroup = name;
+    const heading = document.createElement("h3");
+    heading.textContent = label;
+    section.append(heading);
+    elements.samplingParametersControls.append(section);
+    groups.set(name, section);
+  }
+
+  for (const definition of SAMPLING_PARAMETER_CATALOG) {
+    const row = document.createElement("div");
+    row.className = "sampling-parameter-control";
+    row.dataset.samplingParameter = definition.key;
+    row.setAttribute("role", "group");
+
+    const enableId = samplingParameterDomId(definition.key, "Enabled");
+    const valueId = samplingParameterDomId(definition.key, "Value");
+    const rangeId = samplingParameterDomId(definition.key, "Range");
+    const descriptionId = samplingParameterDomId(definition.key, "Description");
+    const errorId = samplingParameterDomId(definition.key, "Error");
+    const tooltipId = samplingParameterDomId(definition.key, "UnsupportedReason");
+    row.setAttribute("aria-labelledby", `${enableId}Label`);
+
+    const header = document.createElement("div");
+    header.className = "sampling-parameter-control-header";
+    const enable = document.createElement("input");
+    enable.id = enableId;
+    enable.type = "checkbox";
+    const label = document.createElement("label");
+    label.id = `${enableId}Label`;
+    label.htmlFor = enableId;
+    label.textContent = definition.label;
+    const scope = document.createElement("span");
+    scope.className = "sampling-parameter-scope";
+    scope.textContent = definition.scopeLabel;
+    header.append(enable, label, scope);
+
+    const description = document.createElement("p");
+    description.id = descriptionId;
+    description.className = "sampling-parameter-description";
+    description.textContent = definition.description;
+
+    const editor = document.createElement("div");
+    editor.className = "sampling-parameter-editor";
+    const number = document.createElement("input");
+    number.id = valueId;
+    number.className = "sampling-parameter-number";
+    number.type = "number";
+    number.inputMode = definition.kind === "integer" ? "numeric" : "decimal";
+    number.step = String(definition.step);
+    if (definition.min !== undefined && !definition.minExclusive) number.min = String(definition.min);
+    if (definition.max !== undefined) number.max = String(definition.max);
+    number.setAttribute("aria-label", `${definition.label} exact value`);
+    number.setAttribute("aria-describedby", `${descriptionId} ${errorId}`);
+    const range = document.createElement("input");
+    range.id = rangeId;
+    range.className = "sampling-parameter-range";
+    range.type = "range";
+    range.min = String(definition.slider.min);
+    range.max = String(definition.slider.max);
+    range.step = String(definition.slider.step);
+    range.setAttribute("aria-label", `${definition.label} common-range slider`);
+    range.setAttribute("aria-describedby", descriptionId);
+    editor.append(number, range);
+
+    const context = document.createElement("dl");
+    context.className = "sampling-parameter-context";
+    const defaultTerm = document.createElement("dt");
+    defaultTerm.textContent = "Model default";
+    const defaultValue = document.createElement("dd");
+    const effectiveTerm = document.createElement("dt");
+    effectiveTerm.textContent = "Effective";
+    const effectiveValue = document.createElement("dd");
+    context.append(defaultTerm, defaultValue, effectiveTerm, effectiveValue);
+
+    const error = document.createElement("p");
+    error.id = errorId;
+    error.className = "sampling-parameter-error";
+    error.setAttribute("aria-live", "polite");
+
+    const tooltip = document.createElement("p");
+    tooltip.id = tooltipId;
+    tooltip.className = "sampling-parameter-unsupported-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+
+    enable.addEventListener("change", () => updateSamplingParameterControl(definition.key, (control) => {
+      control.enabled = enable.checked;
+    }));
+    number.addEventListener("input", () => updateSamplingParameterControl(definition.key, (control) => {
+      control.value = number.value;
+    }));
+    range.addEventListener("input", () => updateSamplingParameterControl(definition.key, (control) => {
+      control.value = range.value;
+    }));
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") dismissSamplingParameterTooltip(row, event);
+    });
+    row.addEventListener("pointerenter", () => resetSamplingParameterTooltip(row, tooltip));
+    row.addEventListener("focusin", () => resetSamplingParameterTooltip(row, tooltip));
+    row.addEventListener("focusout", (event) => {
+      if (!row.contains?.(event.relatedTarget) && !row.matches?.(":hover")) row.classList.remove("sampling-tooltip-dismissed");
+    });
+
+    row.append(header, description, editor, context, error, tooltip);
+    groups.get(definition.group)?.append(row);
+    samplingParameterControlElements.set(definition.key, { row, enable, number, range, defaultValue, effectiveValue, error, tooltip });
+  }
+}
+
+function renderSamplingParameters() {
+  initializeSamplingParameterControls();
+  const loadedForActiveTab = !!samplingParametersState && samplingParametersStateTabId === activeTabId;
+  const activeState = loadedForActiveTab ? samplingParametersState : null;
+  const editableDraft = samplingParametersEditableDraft()
+    || createSamplingControlDraft({}, { defaults: activeState?.defaults || {} });
+  const validation = validateSamplingControlDraft(editableDraft);
+  const dirty = samplingParametersDraftIsDirty();
+  const capabilities = samplingParameterCapabilities(activeState);
+  const unsupported = !Object.values(capabilities).some(({ supported }) => supported);
+  const feedbackError = !!samplingParametersError && samplingParametersFeedbackIsCurrent();
+  const showError = feedbackError || !validation.valid;
+  const defaults = splitSamplingParameters(activeState?.defaults || {}).known;
+  const effective = splitSamplingParameters(activeState?.effective || {}).known;
+  const controlsDisabled = samplingParametersBusy || samplingParametersLoading || !activeTabId || !loadedForActiveTab;
+
+  for (const definition of SAMPLING_PARAMETER_CATALOG) {
+    const refs = samplingParameterControlElements.get(definition.key);
+    if (!refs) continue;
+    const control = editableDraft.controls[definition.key];
+    const capability = capabilities[definition.key];
+    const parameterUnsupported = !capability.supported;
+    const error = validation.errors[definition.key] || "";
+    const valueText = typeof control.value === "number" || typeof control.value === "string" ? String(control.value) : "";
+    const tooltipId = samplingParameterDomId(definition.key, "UnsupportedReason");
+    refs.enable.checked = control.enabled;
+    refs.enable.disabled = controlsDisabled || parameterUnsupported;
+    refs.number.disabled = controlsDisabled || parameterUnsupported || !control.enabled;
+    refs.range.disabled = controlsDisabled || parameterUnsupported || !control.enabled;
+    if (refs.number.value !== valueText) refs.number.value = valueText;
+    refs.range.value = String(samplingParameterSliderValue(definition.key, control.value));
+    refs.number.setAttribute("aria-invalid", error ? "true" : "false");
+    refs.row.classList.toggle("enabled", control.enabled);
+    refs.row.classList.toggle("invalid", !!error);
+    refs.row.classList.toggle("unsupported", parameterUnsupported);
+    refs.row.tabIndex = parameterUnsupported ? 0 : -1;
+    if (parameterUnsupported) {
+      refs.row.setAttribute("aria-disabled", "true");
+      refs.row.setAttribute("aria-describedby", tooltipId);
+      refs.enable.setAttribute("aria-describedby", tooltipId);
+    } else {
+      refs.row.removeAttribute("aria-disabled");
+      refs.row.removeAttribute("aria-describedby");
+      refs.enable.removeAttribute("aria-describedby");
+      refs.row.classList.remove("sampling-tooltip-dismissed");
+    }
+    refs.defaultValue.textContent = samplingParameterDisplayValue(defaults, definition.key);
+    refs.effectiveValue.textContent = samplingParameterDisplayValue(effective, definition.key);
+    refs.error.textContent = error;
+    refs.error.hidden = !error;
+    refs.tooltip.hidden = !parameterUnsupported;
+    refs.tooltip.textContent = parameterUnsupported ? capability.reason : "";
+  }
+
+  if (elements.samplingParametersSupport) {
+    elements.samplingParametersSupport.textContent = samplingParametersSupportText();
+    elements.samplingParametersSupport.classList.toggle("warning", unsupported);
+  }
+  if (elements.samplingParametersPreserved) {
+    elements.samplingParametersPreserved.textContent = loadedForActiveTab
+      ? summarizePreservedSamplingParameters(editableDraft.preservedUnknown).text
+      : samplingParametersLoading ? "Loading additional parameter state…" : "Additional parameter state is not loaded for this tab.";
+  }
+  if (elements.applySamplingParametersButton) {
+    elements.applySamplingParametersButton.disabled = samplingParametersBusy
+      || samplingParametersLoading
+      || !activeTabId
+      || !loadedForActiveTab
+      || unsupported
+      || !validation.valid;
+    elements.applySamplingParametersButton.textContent = samplingParametersBusy ? "Applying…" : "Apply";
+  }
+  if (elements.resetSamplingParametersButton) {
+    elements.resetSamplingParametersButton.disabled = samplingParametersBusy
+      || samplingParametersLoading
+      || !activeTabId
+      || !loadedForActiveTab;
+  }
+  if (elements.reloadSamplingParametersButton) {
+    elements.reloadSamplingParametersButton.disabled = samplingParametersBusy || samplingParametersLoading || !activeTabId;
+  }
+  if (elements.samplingParametersStatus) {
+    elements.samplingParametersStatus.textContent = samplingParametersStatusText({ dirty, unsupported, validation, loadedForActiveTab });
+    elements.samplingParametersStatus.classList.toggle("error", showError);
+    elements.samplingParametersStatus.classList.toggle("warning", !showError && unsupported);
+  }
+}
+
+function applySamplingParametersResponse(data, tabId) {
+  const existingDraft = samplingParametersDraft(tabId);
+  samplingParametersState = data || null;
+  samplingParametersStateTabId = tabId;
+  if (existingDraft) {
+    const loadedDraft = samplingParametersBaseDraft(tabId);
+    existingDraft.preservedUnknown = cloneSamplingControlDraft(loadedDraft)?.preservedUnknown || {};
+    setSamplingParametersDraft(existingDraft, tabId);
+  }
+  if (!samplingParametersDraftIsDirty(tabId)) setSamplingParametersDraft(null, tabId);
+}
+
+async function loadSamplingParameters({ tabId = activeTabId, force = false } = {}) {
+  if (!tabId) {
+    samplingParametersState = null;
+    samplingParametersStateTabId = null;
+    renderSamplingParameters();
+    return;
+  }
+  // Structured drafts are stored separately from loaded state, so a background
+  // refresh can update support/default/hidden-key context without discarding edits.
+  if (force) setSamplingParametersDraft(null, tabId);
+  const requestSerial = ++samplingParametersRequestSerial;
+  samplingParametersLoading = true;
+  setSamplingParametersFeedback();
+  renderSamplingParameters();
+  try {
+    const response = await api(samplingParametersPath(tabId), { scoped: false });
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    applySamplingParametersResponse(response.data, tabId);
+  } catch (error) {
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    setSamplingParametersFeedback({ error: `Could not load sampling parameters: ${error.message || String(error)}` });
+  } finally {
+    if (requestSerial === samplingParametersRequestSerial) {
+      samplingParametersLoading = false;
+      renderSamplingParameters();
+    }
+  }
+}
+
+// Background refresh for tab and model changes. It stays quiet until the section has
+// been opened once, so collapsed panels never pay for helper round-trips.
+function refreshSamplingParametersForTabContext(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return;
+  if (!samplingParametersState && !samplingParametersSectionActive()) return;
+  return loadSamplingParameters({ tabId: tabContext.tabId }).catch(() => {});
+}
+
+async function writeSamplingParameters(samplingParams, { successNotice }) {
+  const tabId = activeTabId;
+  if (!tabId) return;
+  const requestSerial = ++samplingParametersRequestSerial;
+  samplingParametersBusy = true;
+  setSamplingParametersFeedback();
+  renderSamplingParameters();
+  try {
+    const response = await api(samplingParametersPath(tabId), { method: "PUT", body: samplingParams, scoped: false });
+    setSamplingParametersDraft(null, tabId);
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    applySamplingParametersResponse(response.data, tabId);
+    setSamplingParametersFeedback({ notice: successNotice });
+  } catch (error) {
+    if (requestSerial !== samplingParametersRequestSerial || tabId !== activeTabId) return;
+    setSamplingParametersFeedback({ error: `Could not save sampling parameters: ${error.message || String(error)}` });
+  } finally {
+    // Writes are serialized by the busy guard. A tab/model refresh may supersede
+    // the response serial, but it must never strand the section in a busy state.
+    samplingParametersBusy = false;
+    renderSamplingParameters();
+  }
+}
+
+async function applySamplingParameters() {
+  if (!activeTabId || samplingParametersBusy) return;
+  if (!samplingParametersState || samplingParametersStateTabId !== activeTabId) {
+    setSamplingParametersFeedback({ error: "Wait for this tab's sampling parameters to load before applying changes." });
+    renderSamplingParameters();
+    return;
+  }
+  const capabilities = samplingParameterCapabilities(samplingParametersState);
+  if (!Object.values(capabilities).some(({ supported }) => supported)) {
+    setSamplingParametersFeedback({ error: "This model has no verified sampling parameters, so nothing was sent." });
+    renderSamplingParameters();
+    return;
+  }
+  const draft = samplingParametersEditableDraft();
+  const validation = validateSamplingControlDraft(draft);
+  if (!validation.valid) {
+    setSamplingParametersFeedback({ error: Object.values(validation.errors)[0] || "Correct invalid sampling values before applying." });
+    renderSamplingParameters();
+    return;
+  }
+  const samplingParams = buildSamplingParametersFromDraft(draft);
+  await writeSamplingParameters(samplingParams, {
+    successNotice: Object.keys(samplingParams).length
+      ? "Applied to this Pi session · affects subsequent provider requests."
+      : "Session override cleared · model defaults apply.",
+  });
+}
+
+async function resetSamplingParameters() {
+  if (!activeTabId || samplingParametersBusy) return;
+  if (!samplingParametersState || samplingParametersStateTabId !== activeTabId) {
+    setSamplingParametersFeedback({ error: "Wait for this tab's sampling parameters to load before resetting them." });
+    renderSamplingParameters();
+    return;
+  }
+  await writeSamplingParameters({}, { successNotice: "Session override cleared · model defaults apply." });
+}
+
+// Lazy loader for surfaces that reveal the section (side-panel expand/visibility,
+// mobile canonical mount) after the initial page load.
+function ensureSamplingParametersLoaded() {
+  if (!activeTabId || samplingParametersLoading || samplingParametersBusy) return;
+  if (samplingParametersState && samplingParametersStateTabId === activeTabId) return;
+  loadSamplingParameters().catch(() => {});
+}
+
+function initializeSamplingParameters() {
+  initializeSamplingParameterControls();
+  renderSamplingParameters();
+  if (samplingParametersSectionActive()) ensureSamplingParametersLoaded();
 }
 
 function sessionCopyButton(label, value) {
@@ -19168,6 +24498,166 @@ function releaseDialogLineClass(plainLine, section) {
   return "";
 }
 
+// Enter inside a native input dialog must never fall through to the browser's
+// implicit `method="dialog"` submission. "ignore" leaves IME composition alone,
+// "suppress" only blocks the implicit close, and "submit" sends one response.
+function dialogInputEnterIntent(event) {
+  if (!event || event.key !== "Enter") return "ignore";
+  if (event.isComposing || event.keyCode === 229) return "ignore";
+  if (event.repeat) return "suppress";
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return "suppress";
+  return "submit";
+}
+
+const QUESTIONNAIRE_TITLE_PATTERN = /^Question\s+([1-9]\d*)\s+of\s+([1-9]\d*):\s+\S.*$/;
+const QUESTIONNAIRE_ROW_PATTERN = /^(\d{2})\.\s(.*)$/;
+const QUESTIONNAIRE_STATE_PATTERN = /^(\[ \]|\[x\]|\[selected\])\s(.*)$/;
+const QUESTIONNAIRE_MAX_QUESTIONS = 20;
+const QUESTIONNAIRE_MAX_OPTIONS = 50;
+
+function isQuestionnaireChangeOtherAction(value) {
+  const prefix = "Change Other… (currently ";
+  if (!value.startsWith(prefix) || !value.endsWith(")")) return false;
+  const encoded = value.slice(prefix.length, -1);
+  try {
+    const other = JSON.parse(encoded);
+    return typeof other === "string" && JSON.stringify(other) === encoded;
+  } catch {
+    return false;
+  }
+}
+
+// Bounded, presentation-only grammar for the native questionnaire runtime's
+// action strings. Anything outside this list stays a generic option.
+function questionnaireContinueCount(text) {
+  const match = String(text || "").match(/^Continue with (0|[1-9]\d*) selection\(s\)$/);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isSafeInteger(count) && count <= QUESTIONNAIRE_MAX_OPTIONS + 1 ? count : null;
+}
+
+function questionnaireActionKind(text) {
+  const value = String(text || "");
+  if (value === "Cancel questionnaire") return "cancel";
+  if (value === "Ask Pi to clarify…") return "clarify";
+  if (value === "Remove Other answer") return "remove-other";
+  if (value === "Other… (enter a custom answer)" || value === "Add Other…") return "other";
+  if (isQuestionnaireChangeOtherAction(value)) return "other";
+  if (questionnaireContinueCount(value) !== null) return "continue";
+  return null;
+}
+
+// Parses one native option string for presentation only; the caller always
+// transports the untouched original string back to the extension.
+function parseQuestionnaireOption(text) {
+  const value = String(text || "");
+  const action = questionnaireActionKind(value);
+  if (action) return { kind: "action", action, value };
+
+  const row = value.match(QUESTIONNAIRE_ROW_PATTERN);
+  if (!row) return null;
+  const number = row[1];
+  const state = row[2].match(QUESTIONNAIRE_STATE_PATTERN);
+  const marker = state ? (state[1] === "[ ]" ? "unselected" : "selected") : "none";
+  const body = state ? state[2] : row[2];
+  if (!body.trim()) return null;
+
+  const separator = body.indexOf(" — ");
+  const label = separator === -1 ? body : body.slice(0, separator);
+  const description = separator === -1 ? "" : body.slice(separator + 3);
+  if (!label.trim()) return null;
+  return { kind: "option", marker, number, label, description, value };
+}
+
+function questionnaireActionSequenceMatches(mode, actionRows) {
+  const values = actionRows.map((row) => row.value);
+  if (mode === "single") {
+    const expected = values[0] === "Other… (enter a custom answer)"
+      ? ["Other… (enter a custom answer)", "Ask Pi to clarify…", "Cancel questionnaire"]
+      : ["Ask Pi to clarify…", "Cancel questionnaire"];
+    return values.length === expected.length && values.every((value, index) => value === expected[index]);
+  }
+
+  let index = 0;
+  if (values[index] === "Add Other…") {
+    index += 1;
+  } else if (isQuestionnaireChangeOtherAction(values[index] || "")) {
+    index += 1;
+    if (values[index] !== "Remove Other answer") return false;
+    index += 1;
+  }
+  if (values[index] !== "Ask Pi to clarify…") return false;
+  index += 1;
+  if (questionnaireContinueCount(values[index]) === null) return false;
+  index += 1;
+  return values[index] === "Cancel questionnaire" && index === values.length - 1;
+}
+
+// Detection requires the complete runtime title, contiguous numbered rows, one
+// consistent state-marker mode, and the exact ordered action tail. This keeps
+// lookalike extension selects on the generic renderer.
+function questionnaireSelectParts(prompt, options) {
+  if (!Array.isArray(options) || options.length < 3 || options.length > QUESTIONNAIRE_MAX_OPTIONS + 5) return null;
+  const title = stripAnsi(prompt?.title || "").trim();
+  const titleMatch = title.match(QUESTIONNAIRE_TITLE_PATTERN);
+  if (!titleMatch) return null;
+  const current = Number(titleMatch[1]);
+  const total = Number(titleMatch[2]);
+  if (current > total || total > QUESTIONNAIRE_MAX_QUESTIONS) return null;
+
+  const rows = [];
+  for (const option of options) {
+    const parsed = parseQuestionnaireOption(String(option));
+    if (!parsed) return null;
+    rows.push(parsed);
+  }
+
+  const firstAction = rows.findIndex((row) => row.kind === "action");
+  if (firstAction < 1 || firstAction > QUESTIONNAIRE_MAX_OPTIONS) return null;
+  const optionRows = rows.slice(0, firstAction);
+  const actionRows = rows.slice(firstAction);
+  if (actionRows.some((row) => row.kind !== "action")) return null;
+  if (!optionRows.every((row, index) => row.kind === "option" && row.number === String(index + 1).padStart(2, "0"))) return null;
+
+  const single = optionRows.every((row) => row.marker === "none");
+  const multi = optionRows.every((row) => row.marker !== "none");
+  if (!single && !multi) return null;
+  const mode = multi ? "multi" : "single";
+  if (!questionnaireActionSequenceMatches(mode, actionRows)) return null;
+  return { rows, mode };
+}
+
+function renderQuestionnaireOptionButton(row, mode) {
+  const classNames = ["questionnaire-option", `questionnaire-option-${mode}`];
+  if (row.marker === "selected") classNames.push("is-selected");
+  const button = make("button", classNames.join(" "));
+  button.type = "button";
+  // The visible text is split into semantic parts, so the accessible name keeps
+  // the exact native string that click transport sends back.
+  button.setAttribute("aria-label", row.value);
+  if (row.marker !== "none") button.setAttribute("aria-pressed", String(row.marker === "selected"));
+
+  button.append(make("span", "questionnaire-option-number", row.number));
+  if (row.marker !== "none") {
+    const state = make("span", "questionnaire-option-state", row.marker === "selected" ? "✓" : "");
+    state.setAttribute("aria-hidden", "true");
+    button.append(state);
+  }
+  const text = make("span", "questionnaire-option-text");
+  text.append(make("span", "questionnaire-option-label", row.label));
+  if (row.description) text.append(make("span", "questionnaire-option-description", row.description));
+  button.append(text);
+  return button;
+}
+
+function renderQuestionnaireActionButton(row) {
+  const classNames = ["questionnaire-action", `questionnaire-action-${row.action}`];
+  if (row.action === "continue") classNames.push("primary");
+  const button = make("button", classNames.join(" "), row.value);
+  button.type = "button";
+  return button;
+}
+
 function renderReleaseDialogMessage(parent, text) {
   parent.replaceChildren();
   let section = "";
@@ -19284,10 +24774,10 @@ function liveTodoProgressWidgetLinesFromText(text, tabId = activeTabId) {
   return lines;
 }
 
-// Coalesce live widget rebuilds to one per animation frame. The streaming
-// output handler calls into here on every text token, but the widget area
-// must not be torn down/rebuilt per token (that is UI reacting to the agent
-// output stream). One render per frame keeps streaming transcript-local.
+// Coalesce widget rebuilds to one per animation frame. Todo-progress records
+// are now derived only at authoritative message reconciliation, but several
+// semantic boundaries can land in the same frame, so the widget area must
+// still never be torn down/rebuilt more than once per frame.
 function scheduleLiveWidgetRender() {
   if (liveWidgetRenderFrame !== null) return;
   const flush = () => {
@@ -19298,20 +24788,25 @@ function scheduleLiveWidgetRender() {
   else liveWidgetRenderFrame = setTimeout(flush, 0);
 }
 
-function scheduleLiveTodoProgressWidgetSync(text, tabId = activeTabId) {
-  liveTodoProgressPendingText = String(text || "");
-  liveTodoProgressPendingTabId = tabId || activeTabId;
-  if (liveTodoProgressSyncFrame !== null) return;
-  const flush = () => {
-    const pendingText = liveTodoProgressPendingText;
-    const pendingTabId = liveTodoProgressPendingTabId || activeTabId;
-    liveTodoProgressSyncFrame = null;
-    liveTodoProgressPendingText = "";
-    liveTodoProgressPendingTabId = null;
-    syncLiveTodoProgressWidgetFromText(pendingText, pendingTabId);
-  };
-  if (typeof requestAnimationFrame === "function") liveTodoProgressSyncFrame = requestAnimationFrame(flush);
-  else liveTodoProgressSyncFrame = setTimeout(flush, 0);
+// Authoritative source for the todo-progress record: the settled assistant
+// text that message reconciliation just fetched. Raw stream tokens never
+// reach this path, so widget records change at most once per reconciliation
+// and only when the parsed checklist value actually differs.
+function authoritativeTodoProgressSourceText(messages = latestMessages) {
+  for (let index = (messages?.length || 0) - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const text = textFromContent(message.content);
+    if (String(text || "").trim()) return text;
+  }
+  return "";
+}
+
+function reconcileTodoProgressFromMessages(messages = latestMessages, tabId = activeTabId) {
+  if (!tabId) return false;
+  const text = authoritativeTodoProgressSourceText(messages);
+  if (!text) return false;
+  return syncLiveTodoProgressWidgetFromText(text, tabId);
 }
 
 function syncLiveTodoProgressWidgetFromText(text, tabId = activeTabId) {
@@ -19321,7 +24816,7 @@ function syncLiveTodoProgressWidgetFromText(text, tabId = activeTabId) {
   if (tabId && todoProgressSignatureByTab.get(tabId) === signature) return false;
   // liveTodoProgressWidgetLinesFromText already short-circuits unless the
   // feature is enabled, so detection is settled here. Do NOT run
-  // updateOptionalFeatureAvailability() per token: it triggers git-footer
+  // updateOptionalFeatureAvailability() from this path: it triggers git-footer
   // payload reconciliation and a full optional-feature control rebuild.
   // Availability is reconciled on command/state refreshes and RPC widget
   // updates instead, keeping streaming output decoupled from chrome UI.
@@ -19692,6 +25187,7 @@ function renderAurReviewWidget() {
   if (!isOptionalFeatureEnabled("aurReview")) return null;
   const payload = parseAurReviewPayload(getWidgetLines(AUR_REVIEW_RPC_WIDGET_KEY));
   if (!payload || payload.decision.state === "closed") return null;
+  if (payload.origin === "guided-git" && payload.scope === "staged" && payload.decision.state === "approved") return null;
 
   const node = make("section", "widget aur-review-widget");
   node.setAttribute("aria-label", "Manual repository review");
@@ -20350,27 +25846,38 @@ function renderAppRunnerContextForm(run) {
 
 function captureAppRunnerInputFocus() {
   const input = document.activeElement;
-  if (!input?.classList?.contains("app-runner-stdin-input")) return null;
+  if (!input?.classList?.contains("app-runner-stdin-input") || !elements.widgetArea?.contains(input)) return null;
   return {
+    source: input,
+    context: activeTabContext(),
     runId: input.dataset.runId || "",
     value: input.value || "",
     selectionStart: input.selectionStart ?? input.value.length,
     selectionEnd: input.selectionEnd ?? input.value.length,
+    selectionDirection: input.selectionDirection,
+    scrollTop: input.scrollTop,
+    scrollLeft: input.scrollLeft,
   };
 }
 
 function restoreAppRunnerInputFocus(state) {
-  if (!state?.runId) return;
-  const input = document.querySelector(".app-runner-stdin-input");
-  if (!input || input.dataset.runId !== state.runId) return;
+  if (!state?.runId || !isCurrentTabContext(state.context) || state.source?.isConnected) return;
+  if (isMeaningfulConnectedFocus(document.activeElement)) return;
+  const input = [...elements.widgetArea.querySelectorAll(".app-runner-stdin-input")]
+    .find((candidate) => candidate.dataset.runId === state.runId);
+  if (!input) return;
   appRunnerInputDraftByRun.set(state.runId, state.value);
   input.value = state.value;
+  const selectionStart = Math.min(Math.max(0, state.selectionStart), input.value.length);
+  const selectionEnd = Math.min(Math.max(0, state.selectionEnd), input.value.length);
   try {
     input.focus({ preventScroll: true });
-    input.setSelectionRange(state.selectionStart, state.selectionEnd);
+    input.setSelectionRange(selectionStart, selectionEnd, state.selectionDirection || "none");
   } catch {
     input.focus();
   }
+  input.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), Math.max(0, input.scrollHeight - input.clientHeight));
+  input.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), Math.max(0, input.scrollWidth - input.clientWidth));
 }
 
 async function copyAppRunnerOutput(run) {
@@ -21015,6 +26522,7 @@ function renderAppRunnerControls() {
     item.append(label, command);
     panel.append(item);
   }
+  scheduleComposerActionSlotLayoutRestore();
 }
 
 function renderAppRunnerInfoDialog() {
@@ -21164,8 +26672,10 @@ function renderAppRunnerWidget() {
   if (inputForm) controls.append(inputForm);
   controls.append(pills, make("span", "app-runner-output-meta", controlParts.join(" · ")));
   const outputDetails = renderReleaseNpmOutputDetails(`app-runner:${run.id || run.runnerId || "active"}`, streamHeader, terminal, controls);
+  const scrollKey = `app-runner:${activeTabId || ""}:${run.id || run.runnerId || "active"}`;
+  bindScopedScrollContinuity(terminal, scrollKey);
   node.append(header, outputDetails);
-  requestAnimationFrame(() => { if (outputDetails.open) terminal.scrollTop = terminal.scrollHeight; });
+  restoreScopedScrollContinuity(terminal, scrollKey);
   return node;
 }
 
@@ -21205,6 +26715,117 @@ function formatStatsCost(value) {
 
 function formatStatsPercent(value) {
   return `${statsNumber(value).toFixed(1)}%`;
+}
+
+function statsArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function statsNullableNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatStatsNullablePercent(value) {
+  const number = statsNullableNumber(value);
+  return number === null ? "n/a" : `${number.toFixed(1)}%`;
+}
+
+function formatStatsNullableCost(value) {
+  const number = statsNullableNumber(value);
+  return number === null ? "n/a" : formatStatsCost(number);
+}
+
+function formatStatsNullableTokens(value) {
+  const number = statsNullableNumber(value);
+  return number === null ? "n/a" : `${formatStatsTokens(number)} tok`;
+}
+
+function formatStatsSignedCost(value) {
+  const number = statsNullableNumber(value);
+  if (number === null) return "n/a";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}${formatStatsCost(Math.abs(number))}`;
+}
+
+function statsSummaryHas(summary, key) {
+  return !!summary && typeof summary === "object" && key in summary;
+}
+
+function statsCostShareOf(cost, totalCost) {
+  const total = statsNumber(totalCost);
+  return total > 0 ? (statsNumber(cost) / total) * 100 : null;
+}
+
+function statsCachedInputShare(summary, totals) {
+  if (statsSummaryHas(summary, "cachedInputShare")) return statsNullableNumber(summary.cachedInputShare);
+  // Legacy v1 payload fallback: compute the cached-input share client-side.
+  const denominator = statsNumber(totals?.input) + statsNumber(totals?.cacheRead) + statsNumber(totals?.cacheWrite);
+  return denominator > 0 ? (statsNumber(totals?.cacheRead) / denominator) * 100 : null;
+}
+
+function statsPromptSideTokens(summary, totals) {
+  if (statsSummaryHas(summary, "promptSideTokens")) return statsNumber(summary.promptSideTokens);
+  return statsNumber(totals?.input) + statsNumber(totals?.cacheRead) + statsNumber(totals?.cacheWrite);
+}
+
+function statsEffectiveCostRate(summary, totals) {
+  if (statsSummaryHas(summary, "effectiveCostPerMillionTokens")) return statsNullableNumber(summary.effectiveCostPerMillionTokens);
+  // Legacy v1 payload fallback: blended cost per million total tokens.
+  return statsNumber(totals?.total) > 0 ? (statsNumber(totals?.cost) / statsNumber(totals.total)) * 1_000_000 : null;
+}
+
+function statsScopedSessionCount(payload) {
+  const scoped = statsNullableNumber(payload?.scopedSessionCount);
+  if (scoped !== null) return scoped;
+  // Legacy v1 payload fallback: only the session-file count is available.
+  return statsNullableNumber(payload?.sessionCount);
+}
+
+function statsAverageCostPerSession(summary, payload) {
+  if (statsSummaryHas(summary, "averageCostPerSession")) return statsNullableNumber(summary.averageCostPerSession);
+  const sessions = statsScopedSessionCount(payload);
+  return sessions && sessions > 0 ? statsNumber(payload?.totals?.cost) / sessions : null;
+}
+
+function statsAverageTokensPerSession(summary, payload) {
+  if (statsSummaryHas(summary, "averageTokensPerSession")) return statsNullableNumber(summary.averageTokensPerSession);
+  const sessions = statsScopedSessionCount(payload);
+  return sessions && sessions > 0 ? statsNumber(payload?.totals?.total) / sessions : null;
+}
+
+function statsSpendComparison(summary) {
+  const comparison = statsSummaryHas(summary, "spendComparison") ? summary.spendComparison : null;
+  if (!comparison || typeof comparison !== "object") return null;
+  const windowDays = statsNumber(comparison.windowDays);
+  if (windowDays <= 0) return null;
+  return {
+    windowDays,
+    recentStartDay: typeof comparison.recentStartDay === "string" ? comparison.recentStartDay : "",
+    recentEndDay: typeof comparison.recentEndDay === "string" ? comparison.recentEndDay : "",
+    recentCost: statsNumber(comparison.recentCost),
+    priorCost: statsNumber(comparison.priorCost),
+    changeCost: statsNullableNumber(comparison.changeCost),
+    changePercent: statsNullableNumber(comparison.changePercent),
+  };
+}
+
+function statsModelDriverEntries(payload) {
+  const totalCost = statsNumber(payload?.totals?.cost);
+  return statsArray(payload?.models).map((model) => ({
+    name: model?.model || "unknown",
+    cost: statsNumber(model?.cost),
+    share: statsCostShareOf(model?.cost, totalCost),
+  }));
+}
+
+function statsSessionDriverEntries(payload) {
+  const totalCost = statsNumber(payload?.totals?.cost);
+  return statsArray(payload?.expensiveSessions).map((session) => ({
+    name: session?.displayName || session?.sessionId || "unknown",
+    cost: statsNumber(session?.cost),
+    share: statsCostShareOf(session?.cost, totalCost),
+  }));
 }
 
 function parseStatsWebuiPayloadRaw(raw) {
@@ -21281,13 +26902,18 @@ function statsLineBlock(lines = []) {
   return pre;
 }
 
-function renderStatsTable(headers, rows, emptyText = "No data.") {
+function renderStatsTable(headers, rows, emptyText = "No data.", caption = "") {
   if (!rows.length) return make("p", "stats-overlay-empty muted", emptyText);
   const wrapper = make("div", "stats-overlay-table-wrap");
   const table = make("table", "stats-overlay-table");
+  if (caption) table.append(make("caption", "stats-overlay-table-caption", caption));
   const thead = make("thead");
   const headRow = make("tr");
-  for (const header of headers) headRow.append(make("th", undefined, header));
+  for (const header of headers) {
+    const th = make("th", undefined, header);
+    th.scope = "col";
+    headRow.append(th);
+  }
   thead.append(headRow);
   const tbody = make("tbody");
   for (const row of rows) {
@@ -21300,18 +26926,57 @@ function renderStatsTable(headers, rows, emptyText = "No data.") {
   return wrapper;
 }
 
+const STATS_CHART_POINT_LIMIT = 31;
+
+function statsChartWindow(rows = []) {
+  const list = statsArray(rows);
+  const capped = list.length > STATS_CHART_POINT_LIMIT ? list.slice(-STATS_CHART_POINT_LIMIT) : list;
+  return { capped, total: list.length, truncated: list.length > capped.length };
+}
+
+function statsChartWindowNote({ total, truncated }, noun = "days") {
+  if (!truncated) return null;
+  return make("p", "stats-overlay-chart-note muted", `Showing the latest ${STATS_CHART_POINT_LIMIT} of ${total} ${noun}; the Daily tab lists every recorded day.`);
+}
+
+function statsLegendItem(seriesClass, label) {
+  const item = make("span", "stats-overlay-legend-item");
+  item.append(make("span", `stats-overlay-legend-swatch ${seriesClass}`), label);
+  return item;
+}
+
 function renderStatsBarRows(daily = []) {
-  const rows = daily.filter((row) => statsNumber(row.total) > 0 || statsNumber(row.cost) > 0);
+  const rows = statsArray(daily).filter((row) => statsNumber(row?.total) > 0 || statsNumber(row?.cost) > 0);
   if (!rows.length) return make("p", "stats-overlay-empty muted", "No non-zero usage in this range.");
-  const maxTokens = Math.max(1, ...rows.map((row) => statsNumber(row.total)));
+  const windowed = statsChartWindow(rows);
+  const capped = windowed.capped;
+  const maxTokens = Math.max(1, ...capped.map((row) => statsNumber(row.total)));
+  const maxCost = Math.max(0.0001, ...capped.map((row) => statsNumber(row.cost)));
+  const peakTokens = capped.reduce((best, row) => (statsNumber(row.total) > statsNumber(best?.total) ? row : best), capped[0]);
+  const peakCost = capped.reduce((best, row) => (statsNumber(row.cost) > statsNumber(best?.cost) ? row : best), capped[0]);
+  const wrapper = make("div", "stats-overlay-bars-panel");
+  const legend = make("p", "stats-overlay-legend");
+  legend.append(
+    statsLegendItem("tokens", "Tokens"),
+    statsLegendItem("cost", "Cost"),
+    make("span", "stats-overlay-legend-note muted", "token and cost bars use independent scales"),
+  );
   const list = make("div", "stats-overlay-bars");
-  for (const row of rows) {
-    const tokenRatio = Math.max(0.015, statsNumber(row.total) / maxTokens);
+  for (const row of capped) {
+    const tokenRatio = Math.min(100, Math.max(statsNumber(row.total) > 0 ? 1.5 : 0, (statsNumber(row.total) / maxTokens) * 100));
+    const costRatio = Math.min(100, Math.max(statsNumber(row.cost) > 0 ? 1.5 : 0, (statsNumber(row.cost) / maxCost) * 100));
     const item = make("div", "stats-overlay-bar-row");
     const bar = make("span", "stats-overlay-bar");
-    const fill = make("span", "stats-overlay-bar-fill");
-    fill.style.width = `${Math.min(100, tokenRatio * 100)}%`;
-    bar.append(fill);
+    bar.setAttribute("aria-hidden", "true");
+    const tokenLane = make("span", "stats-overlay-bar-lane");
+    const tokenFill = make("span", "stats-overlay-bar-fill");
+    tokenFill.style.width = `${tokenRatio}%`;
+    tokenLane.append(tokenFill);
+    const costLane = make("span", "stats-overlay-bar-lane");
+    const costFill = make("span", "stats-overlay-bar-fill cost");
+    costFill.style.width = `${costRatio}%`;
+    costLane.append(costFill);
+    bar.append(tokenLane, costLane);
     item.append(
       make("span", "stats-overlay-bar-day", row.day || "—"),
       bar,
@@ -21320,7 +26985,114 @@ function renderStatsBarRows(daily = []) {
     );
     list.append(item);
   }
+  wrapper.append(
+    legend,
+    list,
+    make("p", "stats-overlay-chart-caption muted", `${capped[0]?.day || "—"} → ${capped.at(-1)?.day || "—"} · peak ${formatStatsTokens(peakTokens?.total)} tok on ${peakTokens?.day || "—"} · peak spend ${formatStatsCost(peakCost?.cost)} on ${peakCost?.day || "—"}`),
+  );
+  const note = statsChartWindowNote(windowed, "active days");
+  if (note) wrapper.append(note);
+  return wrapper;
+}
+
+function renderStatsSpendChart(daily = []) {
+  const rows = statsArray(daily).map((row) => ({ day: String(row?.day || "—"), cost: Math.max(0, statsNumber(row?.cost)) }));
+  if (!rows.length) return make("p", "stats-overlay-empty muted", "No daily usage in this range.");
+  const windowed = statsChartWindow(rows);
+  const capped = windowed.capped;
+  const maxCost = Math.max(0, ...capped.map((row) => row.cost));
+  const total = capped.reduce((acc, row) => acc + row.cost, 0);
+  if (total <= 0) return make("p", "stats-overlay-empty muted", "No spend recorded in this range.");
+  const peak = capped.reduce((best, row) => (row.cost > (best?.cost ?? -1) ? row : best), null);
+  const wrapper = make("div", "stats-overlay-spend");
+  const chart = make("div", "stats-overlay-spend-chart");
+  chart.setAttribute("role", "img");
+  chart.setAttribute("aria-label", `Daily spend bar chart from ${capped[0].day} to ${capped.at(-1).day}. Total ${formatStatsCost(total)}; peak ${formatStatsCost(peak?.cost)} on ${peak?.day}.`);
+  for (const row of capped) {
+    const col = make("span", "stats-overlay-spend-col");
+    const bar = make("span", "stats-overlay-spend-bar");
+    const height = maxCost > 0 ? Math.min(100, Math.max(row.cost > 0 ? 3 : 0, (row.cost / maxCost) * 100)) : 0;
+    bar.style.height = `${height}%`;
+    col.title = `${row.day}: ${formatStatsCost(row.cost)}`;
+    col.append(bar);
+    chart.append(col);
+  }
+  const caption = make("p", "stats-overlay-chart-caption muted", `Daily spend ${capped[0].day} → ${capped.at(-1).day} · total ${formatStatsCost(total)} · peak ${formatStatsCost(peak?.cost ?? 0)} on ${peak?.day ?? "—"}${windowed.truncated ? ` · latest ${capped.length} of ${windowed.total} days` : ""}`);
+  wrapper.append(chart, caption);
+  return wrapper;
+}
+
+function renderStatsComposition(totals = {}) {
+  const segments = [
+    { key: "seg-input", label: "Input", value: Math.max(0, statsNumber(totals.input)) },
+    { key: "seg-output", label: "Output", value: Math.max(0, statsNumber(totals.output)) },
+    { key: "seg-cache-read", label: "Cache read", value: Math.max(0, statsNumber(totals.cacheRead)) },
+    { key: "seg-cache-write", label: "Cache write", value: Math.max(0, statsNumber(totals.cacheWrite)) },
+  ];
+  const total = segments.reduce((acc, segment) => acc + segment.value, 0);
+  if (total <= 0) return make("p", "stats-overlay-empty muted", "No token usage in this range.");
+  const shareText = (value) => `${((value / total) * 100).toFixed(1)}%`;
+  const wrapper = make("div", "stats-overlay-composition");
+  const track = make("div", "stats-overlay-composition-track");
+  track.setAttribute("role", "img");
+  track.setAttribute("aria-label", `Token composition: ${segments.map((segment) => `${segment.label} ${shareText(segment.value)}`).join(", ")}.`);
+  for (const segment of segments) {
+    if (segment.value <= 0) continue;
+    const node = make("span", `stats-overlay-composition-segment ${segment.key}`);
+    node.style.width = `${Math.min(100, Math.max(0, (segment.value / total) * 100))}%`;
+    node.title = `${segment.label}: ${formatStatsTokens(segment.value)} tok (${shareText(segment.value)})`;
+    track.append(node);
+  }
+  const legend = make("ul", "stats-overlay-legend stats-overlay-composition-legend");
+  for (const segment of segments) {
+    const item = make("li", "stats-overlay-legend-item");
+    item.append(make("span", `stats-overlay-legend-swatch ${segment.key}`), `${segment.label} ${formatStatsTokens(segment.value)} tok · ${shareText(segment.value)}`);
+    legend.append(item);
+  }
+  wrapper.append(track, legend);
+  return wrapper;
+}
+
+function renderStatsDriverList(entries = [], emptyText = "No cost drivers in this range.") {
+  const rows = statsArray(entries)
+    .map((entry) => ({ name: entry?.name || "unknown", cost: Math.max(0, statsNumber(entry?.cost)), share: statsNullableNumber(entry?.share) }))
+    .filter((entry) => entry.cost > 0)
+    .slice(0, 8);
+  if (!rows.length) return make("p", "stats-overlay-empty muted", emptyText);
+  const maxCost = Math.max(...rows.map((entry) => entry.cost));
+  const list = make("div", "stats-overlay-driver-list");
+  for (const [index, entry] of rows.entries()) {
+    const ratio = maxCost > 0 ? Math.min(100, Math.max(2, (entry.cost / maxCost) * 100)) : 0;
+    const row = make("div", "stats-overlay-driver-row");
+    const bar = make("span", "stats-overlay-driver-bar");
+    bar.setAttribute("aria-hidden", "true");
+    const fill = make("span", "stats-overlay-driver-bar-fill");
+    fill.style.width = `${ratio}%`;
+    bar.append(fill);
+    row.append(
+      make("span", "stats-overlay-driver-rank", String(index + 1)),
+      make("span", "stats-overlay-driver-name", entry.name),
+      bar,
+      make("span", "stats-overlay-driver-value", `${formatStatsCost(entry.cost)} · ${formatStatsNullablePercent(entry.share)}`),
+    );
+    list.append(row);
+  }
   return list;
+}
+
+function renderStatsDriverSection(title, entries, emptyText) {
+  const section = make("section", "stats-overlay-driver-section");
+  section.append(make("h4", undefined, title), renderStatsDriverList(entries, emptyText));
+  return section;
+}
+
+function renderStatsTopDrivers(payload) {
+  const grid = make("div", "stats-overlay-drivers");
+  grid.append(
+    renderStatsDriverSection("Models by spend", statsModelDriverEntries(payload), "No model spend in this range."),
+    renderStatsDriverSection("Sessions by spend", statsSessionDriverEntries(payload), "No session spend in this range."),
+  );
+  return grid;
 }
 
 function renderStatsOverview(payload) {
@@ -21328,25 +27100,29 @@ function renderStatsOverview(payload) {
   const totals = payload?.totals || {};
   const summary = payload?.summary || {};
   const highest = summary.highestDay;
+  const scopedSessions = statsNullableNumber(payload?.scopedSessionCount);
+  const sessionDetail = scopedSessions !== null ? `${scopedSessions} sessions in range` : `${payload?.sessionCount ?? 0} session files`;
+  const cachedShare = statsCachedInputShare(summary, totals);
   const cards = make("div", "stats-overlay-cards");
   cards.append(
     statsMetricCard("Total tokens", formatStatsTokens(totals.total), `↑${formatStatsTokens(totals.input)} ↓${formatStatsTokens(totals.output)}`, "tone-blue"),
     statsMetricCard("Cost", formatStatsCost(totals.cost), `projected 30d ${formatStatsCost(summary.projected30DayCost)}`, "tone-green"),
-    statsMetricCard("Messages", String(statsNumber(totals.messages)), `${payload?.sessionCount ?? 0} sessions`, "tone-mauve"),
+    statsMetricCard("Effective $/1M", formatStatsNullableCost(statsEffectiveCostRate(summary, totals)), "blended rate, not provider list pricing", "tone-sky"),
+    statsMetricCard("Messages", String(statsNumber(totals.messages)), sessionDetail, "tone-mauve"),
     statsMetricCard("PI initial prompt", `~${formatStatsTokens(payload?.promptEstimate?.total)} tok`, `${statsPromptEstimateSourceLabel(payload?.promptEstimate)} · ${payload?.promptEstimate?.confidence || "estimate"}`, "tone-yellow"),
-    statsMetricCard("Cache hit", formatStatsPercent(summary.cacheHitRate), `reads ${formatStatsTokens(totals.cacheRead)} · writes ${formatStatsTokens(totals.cacheWrite)}`, "tone-teal"),
+    statsMetricCard("Cached-input share", formatStatsNullablePercent(cachedShare), `reads ${formatStatsTokens(totals.cacheRead)} · writes ${formatStatsTokens(totals.cacheWrite)} of ${formatStatsTokens(statsPromptSideTokens(summary, totals))} prompt-side tok`, "tone-teal"),
     statsMetricCard("Active days", `${payload?.activeDayCount ?? 0}/${payload?.dayCount ?? 0}`, highest ? `peak ${highest.day} · ${formatStatsCost(highest.cost)}` : "no peak yet", "tone-pink"),
   );
-  node.append(cards, make("h3", undefined, "Daily usage"), renderStatsBarRows(payload?.daily || []));
+  node.append(cards, make("h3", undefined, "Daily usage"), renderStatsBarRows(payload?.daily));
   return node;
 }
 
 function renderStatsDaily(payload) {
   const node = make("div", "stats-overlay-pane");
-  node.append(make("h3", undefined, "Daily token and cost trend"), renderStatsBarRows(payload?.daily || []));
+  node.append(make("h3", undefined, "Daily token and cost trend"), renderStatsBarRows(payload?.daily));
   node.append(renderStatsTable(
     ["Day", "Tokens", "Cost", "Input", "Output", "Cache R/W", "Msgs"],
-    (payload?.daily || []).map((row) => [
+    statsArray(payload?.daily).map((row) => [
       row.day || "—",
       formatStatsTokens(row.total),
       formatStatsCost(row.cost),
@@ -21355,14 +27131,21 @@ function renderStatsDaily(payload) {
       `${formatStatsTokens(row.cacheRead)} / ${formatStatsTokens(row.cacheWrite)}`,
       String(statsNumber(row.messages)),
     ]),
+    "No data.",
+    "Daily tokens and cost by UTC day",
   ));
   return node;
 }
 
 function renderStatsModels(payload) {
-  return renderStatsTable(
+  const node = make("div", "stats-overlay-pane");
+  node.append(
+    make("h3", undefined, "Model spend ranks"),
+    renderStatsDriverList(statsModelDriverEntries(payload), "No model spend in this range."),
+  );
+  node.append(renderStatsTable(
     ["Model", "Tokens", "Token %", "Cost", "Spend %", "$/1M", "Avg out", "Msgs"],
-    (payload?.models || []).map((model) => [
+    statsArray(payload?.models).map((model) => [
       model.model || "unknown",
       formatStatsTokens(model.tokens),
       formatStatsPercent(model.percent),
@@ -21373,13 +27156,20 @@ function renderStatsModels(payload) {
       String(statsNumber(model.messages)),
     ]),
     "No model usage in this range.",
-  );
+    "Model token and cost comparison",
+  ));
+  return node;
 }
 
 function renderStatsSessions(payload) {
-  return renderStatsTable(
+  const node = make("div", "stats-overlay-pane");
+  node.append(
+    make("h3", undefined, "Session spend ranks"),
+    renderStatsDriverList(statsSessionDriverEntries(payload), "No session spend in this range."),
+  );
+  node.append(renderStatsTable(
     ["Day", "Session", "Cost", "Tokens", "Model"],
-    (payload?.expensiveSessions || []).map((session) => [
+    statsArray(payload?.expensiveSessions).map((session) => [
       session.day || "—",
       session.displayName || session.sessionId || "unknown",
       formatStatsCost(session.cost),
@@ -21387,21 +27177,43 @@ function renderStatsSessions(payload) {
       session.model || "unknown",
     ]),
     "No session usage in this range.",
-  );
+    "Most expensive sessions in the selected range",
+  ));
+  return node;
 }
 
 function renderStatsCostCache(payload) {
   const node = make("div", "stats-overlay-pane");
   const totals = payload?.totals || {};
   const summary = payload?.summary || {};
+  const comparison = statsSpendComparison(summary);
+  const scopedSessions = statsNullableNumber(payload?.scopedSessionCount);
+  const sessionDetail = scopedSessions !== null ? `per session in range (${scopedSessions})` : "per session file (legacy count)";
   const cards = make("div", "stats-overlay-cards compact");
   cards.append(
     statsMetricCard("Avg/day", formatStatsCost(summary.calendarAvgCost), "calendar average", "tone-green"),
     statsMetricCard("Active avg", formatStatsCost(summary.activeAvgCost), "per active day", "tone-teal"),
-    statsMetricCard("Non-cache", formatStatsTokens(summary.nonCacheTokens), `${formatStatsTokens(totals.total)} total`, "tone-blue"),
-    statsMetricCard("Cache hit", formatStatsPercent(summary.cacheHitRate), `${formatStatsTokens(totals.cacheRead)} read tokens`, "tone-yellow"),
+    statsMetricCard("Effective $/1M", formatStatsNullableCost(statsEffectiveCostRate(summary, totals)), "blended rate, not provider list pricing", "tone-blue"),
+    statsMetricCard("Cached-input share", formatStatsNullablePercent(statsCachedInputShare(summary, totals)), `reads ${formatStatsTokens(totals.cacheRead)} of ${formatStatsTokens(statsPromptSideTokens(summary, totals))} prompt-side tok`, "tone-yellow"),
+    statsMetricCard("Avg cost/session", formatStatsNullableCost(statsAverageCostPerSession(summary, payload)), `${formatStatsNullableTokens(statsAverageTokensPerSession(summary, payload))} · ${sessionDetail}`, "tone-mauve"),
+    statsMetricCard(
+      "Recent spend",
+      comparison ? formatStatsCost(comparison.recentCost) : "n/a",
+      comparison
+        ? `${comparison.recentStartDay} → ${comparison.recentEndDay} (${comparison.windowDays}d) vs prior ${comparison.windowDays}d ${formatStatsCost(comparison.priorCost)} · ${formatStatsSignedCost(comparison.changeCost)} (${formatStatsNullablePercent(comparison.changePercent)})`
+        : "requires the latest stats extension",
+      "tone-pink",
+    ),
   );
-  node.append(cards, make("h3", undefined, "Cost trend"), statsLineBlock(payload?.lines?.costTrend), make("h3", undefined, "Cache efficiency"), statsLineBlock(payload?.lines?.cache));
+  node.append(
+    cards,
+    make("h3", undefined, "Daily spend"),
+    renderStatsSpendChart(payload?.daily),
+    make("h3", undefined, "Token & cache composition"),
+    renderStatsComposition(totals),
+    make("h3", undefined, "Top cost drivers"),
+    renderStatsTopDrivers(payload),
+  );
   return node;
 }
 
@@ -21432,24 +27244,429 @@ function renderStatsCalibrationPanel(payload) {
   return panel;
 }
 
-function renderStatsPrompt(payload) {
-  const node = make("div", "stats-overlay-pane");
-  const cards = make("div", "stats-overlay-cards compact");
-  cards.append(
-    statsMetricCard("PI estimate", `~${formatStatsTokens(payload?.promptEstimate?.total)} tok`, `${statsPromptEstimateSourceLabel(payload?.promptEstimate)} · ${payload?.promptEstimate?.confidence || "estimate"}`, "tone-yellow"),
-    statsMetricCard("Prompt chars", statsNumber(payload?.promptEstimate?.systemPromptChars).toLocaleString(), `${statsNumber(payload?.promptEstimate?.activeToolSchemas)} active tool schemas`, "tone-blue"),
-    statsMetricCard("Calibration", `×${statsNumber(payload?.promptEstimate?.calibrationMultiplier, 1).toFixed(2)}`, `${statsNumber(payload?.promptEstimate?.calibrationSamples)} samples`, "tone-teal"),
-    statsMetricCard("Attempts", String(statsNumber(payload?.promptEstimate?.attempts)), payload?.promptEstimate?.settled ? "settled" : "live fallback", "tone-mauve"),
-  );
+const STATS_PROMPT_SOURCE_LIMIT = 24;
+const STATS_PROMPT_TOOL_LIMIT = 12;
+const STATS_PROMPT_TOOL_ENTRY_LIMIT = 24;
+const STATS_PROMPT_SKILL_LIMIT = 10;
+const STATS_PROMPT_CONTEXT_FILE_LIMIT = 8;
+const STATS_PROMPT_SOURCE_KINDS = new Set([
+  "system-prompt", "tools-prompt", "custom-prompt", "append-system", "context-file", "skills",
+  "tool-schemas", "framing", "user-messages", "assistant-messages", "assistant-tool-calls",
+  "tool-results", "other",
+]);
+
+function statsPromptRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function statsPromptText(value, maxLength = 240) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return value.trim().slice(0, maxLength);
+}
+
+function statsPromptNullableText(value, maxLength = 240) {
+  if (value === null) return null;
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : undefined;
+}
+
+function statsPromptMetric(value, { integer = false, signed = false } = {}) {
+  if (typeof value !== "number" || !Number.isFinite(value) || (!signed && value < 0)) return null;
+  if (integer && !Number.isInteger(value)) return null;
+  return value;
+}
+
+function statsPromptNullableMetric(value, options = {}) {
+  if (value === null) return null;
+  const metric = statsPromptMetric(value, options);
+  return metric === null ? undefined : metric;
+}
+
+function statsPromptPercent(value) {
+  const percent = statsPromptNullableMetric(value);
+  return percent === undefined || (percent !== null && percent > 100) ? undefined : percent;
+}
+
+function formatStatsPromptNullablePercent(value) {
+  return value === null ? "n/a" : `${value.toFixed(1)}%`;
+}
+
+function formatStatsPromptNullableTokens(value) {
+  return value === null ? "n/a" : `${formatStatsTokens(value)} tok`;
+}
+
+function statsPromptList(value, limit, normalize) {
+  if (!Array.isArray(value)) return null;
+  const result = [];
+  for (const entry of value.slice(0, limit)) {
+    const normalized = normalize(entry);
+    if (!normalized) return null;
+    result.push(normalized);
+  }
+  return result;
+}
+
+function normalizeStatsPromptSource(value, tokenKey, { charsNullable = false } = {}) {
+  const source = statsPromptRecord(value);
+  if (!source) return null;
+  const id = statsPromptText(source.id, 120);
+  const kind = statsPromptText(source.kind, 80);
+  const label = statsPromptText(source.label, 240);
+  const chars = charsNullable ? statsPromptNullableMetric(source.chars) : statsPromptMetric(source.chars);
+  const tokens = statsPromptMetric(source[tokenKey]);
+  const percent = statsPromptPercent(source.percent);
+  if (!id || !kind || !STATS_PROMPT_SOURCE_KINDS.has(kind) || !label || chars === undefined || tokens === null || percent === undefined) return null;
+  return { id, kind, label, chars, [tokenKey]: tokens, percent };
+}
+
+function normalizeStatsPromptInitial(value) {
+  const section = statsPromptRecord(value);
+  if (!section) return null;
+  const totalTokens = statsPromptMetric(section.totalTokens);
+  const lowTokens = statsPromptMetric(section.lowTokens);
+  const highTokens = statsPromptMetric(section.highTokens);
+  const confidence = statsPromptText(section.confidence, 80);
+  const source = statsPromptText(section.source, 80);
+  const warning = statsPromptNullableText(section.warning, 360);
+  const estimateMethod = statsPromptText(section.estimateMethod, 160);
+  const components = statsPromptList(section.components, STATS_PROMPT_SOURCE_LIMIT, (entry) => {
+    const component = normalizeStatsPromptSource(entry, "tokens", { charsNullable: true });
+    if (!component) return null;
+    const uncalibratedTokens = statsPromptMetric(entry.uncalibratedTokens);
+    return uncalibratedTokens === null ? null : { ...component, uncalibratedTokens };
+  });
+  if (totalTokens === null || lowTokens === null || highTokens === null || !confidence || !source || warning === undefined || !estimateMethod || !components) return null;
+  const componentTotal = components.reduce((sum, component) => sum + component.tokens, 0);
+  if (componentTotal !== totalTokens) return null;
+  return { totalTokens, lowTokens, highTokens, confidence, source, warning, estimateMethod, components };
+}
+
+function normalizeStatsPromptInventory(value, limit, itemKey, normalizeItem) {
+  const inventory = statsPromptRecord(value);
+  if (!inventory) return null;
+  const totalCount = statsPromptMetric(inventory.totalCount, { integer: true });
+  const omittedCount = statsPromptMetric(inventory.omittedCount, { integer: true });
+  const items = statsPromptList(inventory[itemKey], limit, normalizeItem);
+  if (totalCount === null || omittedCount === null || !items) return null;
+  return { totalCount, omittedCount, items };
+}
+
+function normalizeStatsPromptSnapshot(value) {
+  const section = statsPromptRecord(value);
+  const estimates = statsPromptRecord(section?.estimateComponents);
+  const calibration = statsPromptRecord(estimates?.calibration);
+  const metadata = statsPromptRecord(section?.metadata);
+  if (!section || !estimates || !calibration || !metadata) return null;
+
+  const source = statsPromptText(section.source, 80);
+  const settled = typeof section.settled === "boolean" ? section.settled : null;
+  const attempts = statsPromptMetric(section.attempts, { integer: true });
+  const warning = statsPromptNullableText(section.warning, 360);
+  const systemPromptChars = statsPromptMetric(section.systemPromptChars, { integer: true });
+  const promptText = statsPromptMetric(estimates.promptText);
+  const toolSchemas = statsPromptMetric(estimates.toolSchemas);
+  const framing = statsPromptMetric(estimates.framing);
+  const multiplier = statsPromptMetric(calibration.multiplier);
+  const samples = statsPromptMetric(calibration.samples, { integer: true });
+  const currentDate = statsPromptNullableText(metadata.currentDate, 120);
+  const cwdDisplay = statsPromptNullableText(metadata.cwdDisplay, 120);
+  const extraGuidelineCount = statsPromptMetric(metadata.extraGuidelineCount, { integer: true });
+
+  const tools = normalizeStatsPromptInventory(section.tools, STATS_PROMPT_TOOL_LIMIT, "items", (value) => {
+    const item = statsPromptRecord(value);
+    if (!item) return null;
+    const name = statsPromptText(item.name, 120);
+    const description = statsPromptNullableText(item.description, 360);
+    const parameterSummary = statsPromptText(item.parameterSummary, 120);
+    const estimatedTokens = statsPromptMetric(item.estimatedTokens);
+    return !name || description === undefined || !parameterSummary || estimatedTokens === null
+      ? null
+      : { name, description, parameterSummary, estimatedTokens };
+  });
+  const toolPromptEntries = normalizeStatsPromptInventory(section.toolPromptEntries, STATS_PROMPT_TOOL_ENTRY_LIMIT, "names", (name) => {
+    const normalized = statsPromptText(name, 120);
+    return normalized ? { name: normalized } : null;
+  });
+  const skills = normalizeStatsPromptInventory(section.skills, STATS_PROMPT_SKILL_LIMIT, "items", (value) => {
+    const item = statsPromptRecord(value);
+    if (!item) return null;
+    const name = statsPromptText(item.name, 120);
+    const description = statsPromptNullableText(item.description, 360);
+    return !name || description === undefined ? null : { name, description };
+  });
+  const contextFiles = normalizeStatsPromptInventory(section.contextFiles, STATS_PROMPT_CONTEXT_FILE_LIMIT, "items", (value) => {
+    const item = statsPromptRecord(value);
+    if (!item) return null;
+    const displayPath = statsPromptText(item.displayPath, 240);
+    const chars = statsPromptNullableMetric(item.chars);
+    return !displayPath || chars === undefined ? null : { displayPath, chars };
+  });
+
+  if (!source || settled === null || attempts === null || warning === undefined || systemPromptChars === null
+    || promptText === null || toolSchemas === null || framing === null || multiplier === null || samples === null
+    || currentDate === undefined || cwdDisplay === undefined || extraGuidelineCount === null
+    || !tools || !toolPromptEntries || !skills || !contextFiles) return null;
+  return {
+    source, settled, attempts, warning, systemPromptChars,
+    estimateComponents: { promptText, toolSchemas, framing, calibration: { multiplier, samples } },
+    metadata: { currentDate, cwdDisplay, extraGuidelineCount },
+    tools, toolPromptEntries, skills, contextFiles,
+  };
+}
+
+function normalizeStatsPromptCurrent(value) {
+  const section = statsPromptRecord(value);
+  const usage = statsPromptRecord(section?.usage);
+  const breakdown = statsPromptRecord(section?.breakdown);
+  if (!section || !usage || !breakdown) return null;
+  const tokens = statsPromptNullableMetric(usage.tokens);
+  const contextWindow = statsPromptNullableMetric(usage.contextWindow);
+  const percent = statsPromptNullableMetric(usage.percent);
+  const estimateMethod = statsPromptText(breakdown.estimateMethod, 160);
+  const reconstruction = statsPromptText(breakdown.reconstruction, 40);
+  const estimatedTotalTokens = statsPromptMetric(breakdown.estimatedTotalTokens);
+  const actualMinusEstimatedTokens = statsPromptNullableMetric(breakdown.actualMinusEstimatedTokens, { signed: true });
+  const sources = statsPromptList(breakdown.sources, STATS_PROMPT_SOURCE_LIMIT, (entry) => normalizeStatsPromptSource(entry, "estimatedTokens"));
+  if (tokens === undefined || contextWindow === undefined || percent === undefined || !estimateMethod
+    || !["complete", "unavailable"].includes(reconstruction) || estimatedTotalTokens === null
+    || actualMinusEstimatedTokens === undefined || !sources) return null;
+  return { usage: { tokens, contextWindow, percent }, breakdown: { estimateMethod, reconstruction, estimatedTotalTokens, actualMinusEstimatedTokens, sources } };
+}
+
+function statsPromptKindLabel(kind) {
+  return ({
+    "system-prompt": "System prompt", "tools-prompt": "Tools prompt", "custom-prompt": "Custom prompt",
+    "append-system": "Append system", "context-file": "Context file", skills: "Skills",
+    "tool-schemas": "Tool schemas", framing: "Framing", "user-messages": "User messages",
+    "assistant-messages": "Assistant messages", "assistant-tool-calls": "Assistant + tool calls",
+    "tool-results": "Tool results", other: "Other",
+  })[kind] || kind;
+}
+
+function statsPromptSectionHeading(title, eyebrow) {
+  const header = make("div", "stats-prompt-section-heading");
+  const text = make("div");
+  text.append(make("span", "stats-prompt-eyebrow", eyebrow), make("h3", undefined, title));
+  header.append(text);
+  return header;
+}
+
+function statsPromptLegacyFallback(title, lines) {
+  const section = make("section", "stats-prompt-section stats-prompt-legacy-fallback");
+  const heading = statsPromptSectionHeading(title, "Legacy fallback");
+  heading.append(make("span", "stats-prompt-badge warning", "Structured data unavailable"));
+  section.append(heading, make("p", "stats-prompt-note muted", "Showing the matching legacy command output for this section."), statsLineBlock(lines));
+  return section;
+}
+
+function statsPromptCompositionTrack(rows, tokenKey, totalTokens, label) {
+  const figure = make("figure", "stats-prompt-composition");
+  const track = make("div", "stats-prompt-composition-track");
+  const describedRows = rows.slice(0, 6);
+  const described = describedRows.map((row) => `${row.label} ${formatStatsPromptNullablePercent(row.percent)}`).join(", ");
+  const remaining = rows.length - describedRows.length;
+  track.setAttribute("role", "img");
+  track.setAttribute("aria-label", `${label}: ${described || "no estimated tokens"}${remaining > 0 ? `, and ${remaining} more sources` : ""}.`);
+  for (const row of rows) {
+    if (row[tokenKey] <= 0 || row.percent === null) continue;
+    const segment = make("span", "stats-prompt-composition-segment");
+    segment.dataset.promptKind = row.kind;
+    segment.style.width = `${Math.min(100, row.percent)}%`;
+    segment.title = `${row.label}: ${formatStatsTokens(row[tokenKey])} tok (${formatStatsPromptNullablePercent(row.percent)})`;
+    track.append(segment);
+  }
+  figure.append(track, make("figcaption", "stats-prompt-note muted", `${formatStatsTokens(totalTokens)} estimated tokens · numeric values are repeated in the table below.`));
+  return figure;
+}
+
+function statsPromptTable(headers, rows, caption) {
+  const wrapper = make("div", "stats-overlay-table-wrap stats-prompt-table-wrap");
+  const table = make("table", "stats-overlay-table stats-prompt-table");
+  table.append(make("caption", "stats-overlay-table-caption", caption));
+  const thead = make("thead");
+  const headRow = make("tr");
+  for (const header of headers) {
+    const th = make("th", undefined, header);
+    th.scope = "col";
+    headRow.append(th);
+  }
+  thead.append(headRow);
+  const tbody = make("tbody");
+  for (const row of rows) {
+    const tr = make("tr");
+    row.forEach((value, index) => {
+      const cell = make("td", undefined, value);
+      cell.dataset.label = headers[index];
+      tr.append(cell);
+    });
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  wrapper.append(table);
+  return wrapper;
+}
+
+function renderStatsPromptInitial(section) {
+  const node = make("section", "stats-prompt-section stats-prompt-initial");
+  const heading = statsPromptSectionHeading("Initial prompt composition", "Calibrated estimate");
+  heading.append(make("span", "stats-prompt-badge", `${formatStatsTokens(section.totalTokens)} tok`));
+  const summary = make("p", "stats-prompt-note muted", `Range ${formatStatsTokens(section.lowTokens)}–${formatStatsTokens(section.highTokens)} tok · ${section.confidence} · ${statsPromptEstimateSourceLabel(section)}`);
+  node.append(heading, summary);
+  if (section.warning) node.append(make("p", "stats-prompt-warning", section.warning));
   node.append(
-    cards,
+    statsPromptCompositionTrack(section.components, "tokens", section.totalTokens, "Initial prompt composition"),
+    statsPromptTable(
+      ["Rank", "Source", "Kind", "Chars", "Uncalibrated", "Tokens", "Share"],
+      section.components.map((component, index) => [
+        String(index + 1), component.label, statsPromptKindLabel(component.kind),
+        component.chars === null ? "n/a" : component.chars.toLocaleString(),
+        `${formatStatsTokens(component.uncalibratedTokens)} tok`, `${formatStatsTokens(component.tokens)} tok`,
+        formatStatsPromptNullablePercent(component.percent),
+      ]),
+      "Ranked initial-prompt token composition. Calibrated component tokens sum to the displayed total.",
+    ),
+  );
+  return node;
+}
+
+function statsPromptInventoryDetails(title, inventory, renderBody) {
+  const details = make("details", "stats-prompt-inventory-details");
+  const shown = inventory.items.length;
+  const count = `${shown} shown / ${inventory.totalCount} total${inventory.omittedCount ? ` · ${inventory.omittedCount} omitted` : ""}`;
+  const summary = make("summary");
+  summary.append(make("span", undefined, title), make("span", "stats-prompt-details-count", count));
+  details.append(summary);
+  const body = make("div", "stats-prompt-details-body");
+  body.append(renderBody(inventory.items));
+  if (inventory.omittedCount) body.append(make("p", "stats-prompt-note muted", `${inventory.omittedCount} additional ${title.toLowerCase()} omitted by the producer cap.`));
+  details.append(body);
+  return details;
+}
+
+function statsPromptDefinitionList(entries) {
+  const list = make("dl", "stats-prompt-definition-list");
+  for (const [term, description] of entries) list.append(make("dt", undefined, term), make("dd", undefined, description));
+  return list;
+}
+
+function renderStatsPromptSnapshot(section) {
+  const node = make("section", "stats-prompt-section stats-prompt-snapshot");
+  const heading = statsPromptSectionHeading("Prompt inventory", "Export-backed snapshot");
+  heading.append(make("span", "stats-prompt-badge", `${section.systemPromptChars.toLocaleString()} chars`));
+  node.append(heading);
+  if (section.warning) node.append(make("p", "stats-prompt-warning", section.warning));
+
+  const estimates = section.estimateComponents;
+  const cards = make("div", "stats-prompt-estimate-cards");
+  cards.append(
+    statsMetricCard("Prompt text", `${formatStatsTokens(estimates.promptText)} tok`, "character-derived estimate", "tone-blue"),
+    statsMetricCard("Tool schemas", `${formatStatsTokens(estimates.toolSchemas)} tok`, "active schema estimate", "tone-teal"),
+    statsMetricCard("Framing", `${formatStatsTokens(estimates.framing)} tok`, "provider/request allowance", "tone-mauve"),
+    statsMetricCard("Calibration", `×${estimates.calibration.multiplier.toFixed(2)}`, `${estimates.calibration.samples} samples`, "tone-yellow"),
+  );
+  node.append(cards);
+
+  const metadataDetails = make("details", "stats-prompt-inventory-details");
+  const metadataSummary = make("summary");
+  metadataSummary.append(make("span", undefined, "Prompt metadata"), make("span", "stats-prompt-details-count", section.settled ? "settled snapshot" : "live fallback"));
+  metadataDetails.append(metadataSummary, make("div", "stats-prompt-details-body"));
+  metadataDetails.lastElementChild.append(statsPromptDefinitionList([
+    ["Source", statsPromptEstimateSourceLabel(section)], ["Attempts", section.attempts.toLocaleString()],
+    ["Current date", section.metadata.currentDate ?? "n/a"], ["Working directory", section.metadata.cwdDisplay ?? "n/a"],
+    ["Extra guidelines", section.metadata.extraGuidelineCount.toLocaleString()],
+  ]));
+
+  const inventory = make("div", "stats-prompt-inventory");
+  inventory.append(
+    metadataDetails,
+    statsPromptInventoryDetails("Active tool schemas", section.tools, (items) => {
+      const list = make("ul", "stats-prompt-card-list");
+      for (const item of items) {
+        const li = make("li");
+        li.append(make("strong", undefined, item.name), make("span", "stats-prompt-item-meta", `${formatStatsTokens(item.estimatedTokens)} tok · ${item.parameterSummary}`));
+        if (item.description) li.append(make("span", "stats-prompt-item-description", item.description));
+        list.append(li);
+      }
+      return list;
+    }),
+    statsPromptInventoryDetails("Available-tool prompt entries", section.toolPromptEntries, (items) => {
+      const list = make("ul", "stats-prompt-chip-list");
+      for (const item of items) list.append(make("li", undefined, item.name));
+      return list;
+    }),
+    statsPromptInventoryDetails("Skills", section.skills, (items) => {
+      const list = make("ul", "stats-prompt-card-list");
+      for (const item of items) {
+        const li = make("li");
+        li.append(make("strong", undefined, item.name));
+        if (item.description) li.append(make("span", "stats-prompt-item-description", item.description));
+        list.append(li);
+      }
+      return list;
+    }),
+    statsPromptInventoryDetails("Context files", section.contextFiles, (items) => {
+      const list = make("ul", "stats-prompt-file-list");
+      for (const item of items) {
+        const row = make("li");
+        row.append(make("span", undefined, item.displayPath), make("span", undefined, item.chars === null ? "n/a" : `${item.chars.toLocaleString()} chars`));
+        list.append(row);
+      }
+      return list;
+    }),
+  );
+  node.append(inventory);
+  return node;
+}
+
+function renderStatsPromptCurrent(section) {
+  const node = make("section", "stats-prompt-section stats-prompt-current");
+  const heading = statsPromptSectionHeading("Current context", "Actual utilization + heuristic composition");
+  heading.append(make("span", "stats-prompt-badge", section.usage.percent === null ? "usage n/a" : formatStatsPromptNullablePercent(section.usage.percent)));
+  node.append(heading);
+
+  const utilization = make("div", "stats-prompt-utilization");
+  const progress = make("progress", "stats-prompt-progress");
+  progress.max = 100;
+  if (section.usage.percent !== null) progress.value = Math.min(100, section.usage.percent);
+  const usageText = `${formatStatsPromptNullableTokens(section.usage.tokens)} used / ${formatStatsPromptNullableTokens(section.usage.contextWindow)} window · ${formatStatsPromptNullablePercent(section.usage.percent)}`;
+  progress.setAttribute("aria-label", "Actual current context utilization");
+  progress.setAttribute("aria-valuetext", usageText);
+  utilization.append(progress, make("p", "stats-prompt-utilization-text", usageText));
+  node.append(utilization);
+
+  const breakdown = section.breakdown;
+  const cards = make("div", "stats-prompt-estimate-cards compact");
+  cards.append(
+    statsMetricCard("Actual usage", formatStatsPromptNullableTokens(section.usage.tokens), "provider/context usage", "tone-green"),
+    statsMetricCard("Context window", formatStatsPromptNullableTokens(section.usage.contextWindow), "provider/context limit", "tone-blue"),
+    statsMetricCard("Heuristic estimate", `${formatStatsTokens(breakdown.estimatedTotalTokens)} tok`, breakdown.reconstruction === "complete" ? "complete reconstruction" : "partial: reconstruction unavailable", "tone-mauve"),
+    statsMetricCard("Actual − estimate", breakdown.actualMinusEstimatedTokens === null ? "n/a" : `${breakdown.actualMinusEstimatedTokens > 0 ? "+" : ""}${formatStatsTokens(breakdown.actualMinusEstimatedTokens)} tok`, "comparison only; not source attribution", "tone-yellow"),
+  );
+  node.append(cards, make("p", "stats-prompt-note muted", "Source composition below is a character-derived heuristic. Shares use the estimated total, independently of actual provider utilization."));
+  node.append(
+    statsPromptCompositionTrack(breakdown.sources, "estimatedTokens", breakdown.estimatedTotalTokens, "Estimated current-source composition"),
+    statsPromptTable(
+      ["Rank", "Source", "Kind", "Chars", "Estimated tokens", "Estimated share"],
+      breakdown.sources.map((source, index) => [
+        String(index + 1), source.label, statsPromptKindLabel(source.kind), source.chars.toLocaleString(),
+        `${formatStatsTokens(source.estimatedTokens)} tok`, formatStatsPromptNullablePercent(source.percent),
+      ]),
+      "Ranked heuristic current-context source composition. Percentages use the estimated total, not actual usage.",
+    ),
+  );
+  return node;
+}
+
+function renderStatsPrompt(payload) {
+  const node = make("div", "stats-overlay-pane stats-prompt-pane");
+  const context = statsPromptRecord(payload?.promptContext);
+  const initialPrompt = normalizeStatsPromptInitial(context?.initialPrompt);
+  const snapshot = normalizeStatsPromptSnapshot(context?.snapshot);
+  const currentContext = normalizeStatsPromptCurrent(context?.currentContext);
+  node.append(
     renderStatsCalibrationPanel(payload),
-    make("h3", undefined, "PI prompt estimate"),
-    statsLineBlock(payload?.lines?.promptInjection),
-    make("h3", undefined, "Detailed prompt snapshot"),
-    statsLineBlock(payload?.lines?.promptDetailed),
-    make("h3", undefined, "Current context token breakdown"),
-    statsLineBlock(payload?.lines?.tokenBreakdown),
+    initialPrompt ? renderStatsPromptInitial(initialPrompt) : statsPromptLegacyFallback("Initial prompt composition", payload?.lines?.promptInjection),
+    snapshot ? renderStatsPromptSnapshot(snapshot) : statsPromptLegacyFallback("Prompt inventory", payload?.lines?.promptDetailed),
+    currentContext ? renderStatsPromptCurrent(currentContext) : statsPromptLegacyFallback("Current context", payload?.lines?.tokenBreakdown),
   );
   return node;
 }
@@ -21471,8 +27688,9 @@ function renderStatsRaw(payload) {
     statsCommandOutputSection("Model comparison", "/stats-model-compare [days|all]", "Token share, spend share, average cost, and average output by model.", payload?.lines?.modelComparison),
     statsCommandOutputSection("Most expensive sessions", "/stats-most-expense [days|all]", "Highest-cost sessions in the selected range.", payload?.lines?.expensiveSessions),
     statsCommandOutputSection("Cost trend", "/stats-cost-trend [days|all]", "Daily averages, 30-day projection, highest day, and latest active day.", payload?.lines?.costTrend),
-    statsCommandOutputSection("Cache efficiency", "/stats-cache [days|all]", "Cache hit rate, cache read/write tokens, estimated savings, and token mix.", payload?.lines?.cache),
+    statsCommandOutputSection("Cache efficiency", "/stats-cache [days|all]", "Cached-input token share, cache read/write tokens, and token mix.", payload?.lines?.cache),
     statsCommandOutputSection("PI prompt breakdown", "/stats-pi detailed", "Export-backed initial prompt estimate with detailed prompt snapshot sections.", [...(payload?.lines?.promptInjection || []), "", ...(payload?.lines?.promptDetailed || [])]),
+    statsCommandOutputSection("Current context breakdown", "/stats tokens", "Actual context usage plus the estimated source breakdown.", payload?.lines?.tokenBreakdown),
   );
   return node;
 }
@@ -21490,6 +27708,13 @@ function renderStatsOverlayPane(payload) {
   }
 }
 
+function activateStatsOverlayTab(tabId, { focus = false } = {}) {
+  if (!STATS_OVERLAY_TABS.some((tab) => tab.id === tabId)) return;
+  statsOverlayActiveTab = tabId;
+  renderStatsOverlay();
+  if (focus) document.getElementById(`statsOverlayTab-${tabId}`)?.focus();
+}
+
 function renderStatsOverlay() {
   const payload = currentStatsOverlayPayload();
   if (!elements.statsOverlayDialog) return;
@@ -21498,8 +27723,10 @@ function renderStatsOverlay() {
   syncStatsScopeControls(statsOverlayLoading ? null : payload);
 
   const generated = payload?.generatedAt ? new Date(payload.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "not loaded";
+  const scopedSessions = payload ? statsNullableNumber(payload?.scopedSessionCount) : null;
+  const sessionText = scopedSessions !== null ? `${scopedSessions} sessions in range` : `${payload?.sessionCount ?? 0} session files`;
   elements.statsOverlaySubtitle.textContent = payload
-    ? `${payload.scopeLabel || "stats"} · ${payload.sessionCount ?? 0} sessions · updated ${generated}`
+    ? `${payload.scopeLabel || "stats"} · ${sessionText} · updated ${generated}`
     : "Run stats to load the browser dashboard.";
 
   elements.statsOverlayStatus.textContent = statsOverlayError || (statsOverlayLoading ? "Loading stats from the Pi stats extension…" : statsOverlayCalibrationMessage || (payload ? "" : "No stats payload loaded yet."));
@@ -21508,16 +27735,18 @@ function renderStatsOverlay() {
 
   elements.statsOverlayTabs.replaceChildren();
   for (const tab of STATS_OVERLAY_TABS) {
-    const button = make("button", tab.id === statsOverlayActiveTab ? "active" : "", tab.label);
+    const active = tab.id === statsOverlayActiveTab;
+    const button = make("button", active ? "active" : "", tab.label);
     button.type = "button";
+    button.id = `statsOverlayTab-${tab.id}`;
     button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", tab.id === statsOverlayActiveTab ? "true" : "false");
-    button.addEventListener("click", () => {
-      statsOverlayActiveTab = tab.id;
-      renderStatsOverlay();
-    });
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.setAttribute("aria-controls", "statsOverlayBody");
+    button.tabIndex = active ? 0 : -1;
+    button.addEventListener("click", () => activateStatsOverlayTab(tab.id, { focus: true }));
     elements.statsOverlayTabs.append(button);
   }
+  elements.statsOverlayBody.setAttribute("aria-labelledby", `statsOverlayTab-${statsOverlayActiveTab}`);
 
   elements.statsOverlayRefreshButton.disabled = statsOverlayLoading;
   elements.statsOverlayBody.replaceChildren(renderStatsOverlayPane(payload));
@@ -22274,6 +28503,7 @@ function attachWorkflowOverlayCloseButton(widget) {
 function renderWidgets() {
   if (deferUiRenderDuringPointerActivation("widgets", renderWidgets)) return;
   const appRunnerInputFocus = captureAppRunnerInputFocus();
+  captureScopedScrollContinuity(elements.widgetArea);
   elements.widgetArea.replaceChildren();
   const releaseOutput = renderReleaseNpmOutputWidget();
   if (releaseOutput) elements.widgetArea.append(releaseOutput);
@@ -22319,6 +28549,7 @@ function renderWidgets() {
     elements.widgetArea.append(node);
   }
   restoreAppRunnerInputFocus(appRunnerInputFocus);
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
 }
 
 function setGitWorkflow(patch, { tabId = activeTabId } = {}) {
@@ -22986,7 +29217,42 @@ function renderGitInitWorkflowActions() {
   }
 }
 
+function captureGitWorkflowInputFocus() {
+  const input = document.activeElement;
+  if (input?.id !== "gitWorkflowManualCommitMessage" || !elements.gitWorkflowActions?.contains(input)) return null;
+  return {
+    source: input,
+    context: activeTabContext(),
+    tabId: activeTabId,
+    runId: gitWorkflow?.runId,
+    selectionStart: input.selectionStart ?? input.value.length,
+    selectionEnd: input.selectionEnd ?? input.value.length,
+    selectionDirection: input.selectionDirection,
+    scrollTop: input.scrollTop,
+    scrollLeft: input.scrollLeft,
+  };
+}
+
+function restoreGitWorkflowInputFocus(state) {
+  if (!state || state.tabId !== activeTabId || state.runId !== gitWorkflow?.runId || !isCurrentTabContext(state.context) || state.source?.isConnected) return;
+  if (isMeaningfulConnectedFocus(document.activeElement)) return;
+  const input = document.getElementById("gitWorkflowManualCommitMessage");
+  if (!input || !elements.gitWorkflowActions?.contains(input)) return;
+  const selectionStart = Math.min(Math.max(0, state.selectionStart), input.value.length);
+  const selectionEnd = Math.min(Math.max(0, state.selectionEnd), input.value.length);
+  try {
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(selectionStart, selectionEnd, state.selectionDirection || "none");
+  } catch {
+    input.focus();
+  }
+  input.scrollTop = Math.min(Math.max(0, state.scrollTop || 0), Math.max(0, input.scrollHeight - input.clientHeight));
+  input.scrollLeft = Math.min(Math.max(0, state.scrollLeft || 0), Math.max(0, input.scrollWidth - input.clientWidth));
+}
+
 function renderGitWorkflow() {
+  const inputFocus = captureGitWorkflowInputFocus();
+  if (deferUiRenderDuringPointerActivation("git-workflow", renderGitWorkflow)) return;
   elements.gitWorkflowPanel.hidden = !gitWorkflow.active;
   if (!gitWorkflow.active) return;
 
@@ -22998,10 +29264,11 @@ function renderGitWorkflow() {
   elements.gitWorkflowSteps.replaceChildren();
   elements.gitWorkflowActions.replaceChildren();
 
-  // Once a flow required manual review, keep its recovery step visible even
-  // if the extension was disabled or disappeared. Hiding it would suggest a
-  // legacy fallback that is no longer authorized for this flow.
-  const reviewStepAvailable = guidedGitReviewAvailable(activeTabId) || gitWorkflow.guidedReviewRequired === true;
+  const preferences = gitWorkflow.preferences || gitWorkflowPreferences || {};
+  // The saved option controls new workflows, while an already-required review
+  // remains visible and fail-closed if setup or extension availability changes.
+  const reviewStepAvailable = (preferences.reviewProcessEnabled !== false && guidedGitReviewAvailable(activeTabId))
+    || gitWorkflow.guidedReviewRequired === true;
   const standardProcesses = reviewStepAvailable ? GIT_WORKFLOW_PROCESSES : GIT_WORKFLOW_PROCESSES.filter((process) => process.value !== "review");
   const processes = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_PROCESSES : standardProcesses;
   const activeIndexMap = gitWorkflow.mode === "initRepo" ? GIT_INIT_WORKFLOW_ACTIVE_INDEX : GIT_WORKFLOW_ACTIVE_INDEX;
@@ -23024,10 +29291,10 @@ function renderGitWorkflow() {
 
   if (gitWorkflow.mode === "initRepo") {
     renderGitInitWorkflowActions();
+    restoreGitWorkflowInputFocus(inputFocus);
     return;
   }
 
-  const preferences = gitWorkflow.preferences || gitWorkflowPreferences || {};
   if (gitWorkflow.step === "add") {
     if (preferences.stagingPolicy === "all") {
       addGitWorkflowAction("Run git add .", () => runGitAdd(), "primary", false);
@@ -23094,6 +29361,7 @@ function renderGitWorkflow() {
     addGitWorkflowAction("Close", () => setGitWorkflow({ active: false }), "primary", false);
     addGitWorkflowAction("Restart", () => startGitWorkflow(), "", false);
   }
+  restoreGitWorkflowInputFocus(inputFocus);
 }
 
 async function gitWorkflowRequest(path, { method = "POST", body = {}, runId, tabId = activeTabId } = {}) {
@@ -23408,10 +29676,9 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
     pr: null,
     prRequestedAt: 0,
     ...resetGuidedGitReviewPatch({ retainDeclinedStagedContentHash: false }),
-    // Availability at the moment this new standard flow begins determines
-    // whether it is a required-review flow; later extension loss cannot turn
-    // an already-required flow into the legacy path.
-    guidedReviewRequired: guidedGitReviewAvailable(tabId),
+    // The saved option and current capability decide whether a new flow requires
+    // review; once required, later setup or extension changes cannot bypass it.
+    guidedReviewRequired: preferences.reviewProcessEnabled !== false && guidedGitReviewAvailable(tabId),
     preferences,
     verificationConfirmed: false,
   }, { tabId });
@@ -23743,7 +30010,7 @@ async function runGitAdd(tabId = gitWorkflowActionTabId()) {
     const result = await gitWorkflowRequest("/api/git-workflow/add", { runId, tabId });
     if (!result) return;
     const output = `${formatGitCommandResult(result)}\n\nStaged.`;
-    if (guidedGitReviewAvailable(tabId) || workflow.guidedReviewRequired === true) {
+    if ((workflow.preferences?.reviewProcessEnabled !== false && guidedGitReviewAvailable(tabId)) || workflow.guidedReviewRequired === true) {
       // A required gate never falls through to the legacy message flow just
       // because its extension was disabled or disappeared after staging.
       await requestGuidedGitReview(tabId, { output });
@@ -23767,7 +30034,7 @@ async function acceptCurrentGitStaging(tabId = gitWorkflowActionTabId()) {
     const staged = Number(response.data?.summary?.staged || 0);
     if (staged <= 0) throw new Error("No staged files are available. Use Review/select changes to stage the intended files first.");
     const output = `Using the current staged set (${staged} file${staged === 1 ? "" : "s"}).`;
-    if (guidedGitReviewAvailable(tabId) || workflow.guidedReviewRequired === true) {
+    if ((workflow.preferences?.reviewProcessEnabled !== false && guidedGitReviewAvailable(tabId)) || workflow.guidedReviewRequired === true) {
       await requestGuidedGitReview(tabId, { output });
     } else {
       setGitWorkflow({
@@ -24660,7 +30927,14 @@ async function mutateQueuedFollowUp(operation, tabId = activeTabId) {
     return false;
   }
   setFollowUpQueueMutationInFlight(tabId, true);
-  if (isCurrentTabContext(tabContext)) setFollowUpQueueStatus(operation.type === "edit" ? "Saving queued follow-up…" : "Reordering queued follow-ups…");
+  if (isCurrentTabContext(tabContext)) {
+    const pendingStatus = operation.type === "edit"
+      ? "Saving queued follow-up…"
+      : operation.type === "delete"
+        ? "Removing queued follow-up…"
+        : "Reordering queued follow-ups…";
+    setFollowUpQueueStatus(pendingStatus);
+  }
   try {
     const response = await api("/api/queue/mutate", { method: "POST", body: queueMutationBody(snapshot, operation), tabId });
     const result = response?.data || {};
@@ -24672,7 +30946,9 @@ async function mutateQueuedFollowUp(operation, tabId = activeTabId) {
     if (isCurrentTabContext(tabContext)) {
       const message = operation.type === "edit"
         ? `Saved queued follow-up ${operation.index + 1}.`
-        : `Moved queued follow-up ${operation.from + 1} to position ${operation.to + 1}.`;
+        : operation.type === "delete"
+          ? `Removed queued follow-up ${operation.index + 1}.`
+          : `Moved queued follow-up ${operation.from + 1} to position ${operation.to + 1}.`;
       setFollowUpQueueStatus(message, "success");
     }
     return true;
@@ -24784,7 +31060,20 @@ function renderFollowUpQueueOverlay() {
     moveDown.title = `Move queued follow-up ${index + 1} down`;
     moveDown.setAttribute("aria-label", `Move queued follow-up ${index + 1} down`);
     moveDown.addEventListener("click", () => void mutateQueuedFollowUp({ type: "move", from: index, to: index + 1, expectedText: item }));
-    controls.append(moveUp, moveDown);
+    const remove = make("button", "follow-up-queue-remove-button", "Remove");
+    remove.type = "button";
+    remove.dataset.followUpQueueMutationControl = "true";
+    remove.title = `Remove queued follow-up ${index + 1}`;
+    remove.setAttribute("aria-label", `Remove queued follow-up ${index + 1}`);
+    remove.addEventListener("pointerdown", () => { followUpQueueSuppressBlurFor = textarea; });
+    remove.addEventListener("pointercancel", () => {
+      if (followUpQueueSuppressBlurFor === textarea) followUpQueueSuppressBlurFor = null;
+    });
+    remove.addEventListener("click", () => {
+      if (followUpQueueSuppressBlurFor === textarea) followUpQueueSuppressBlurFor = null;
+      void removeQueuedFollowUpPrompt(index, item);
+    });
+    controls.append(moveUp, moveDown, remove);
     row.append(dragHandle, textarea, controls);
     row.addEventListener("dragstart", (event) => {
       if (unavailable || event.target?.closest?.(".follow-up-queue-drag-handle") !== dragHandle) {
@@ -24844,24 +31133,11 @@ function renderFollowUpQueueOverlay() {
 }
 
 async function removeQueuedFollowUpPrompt(index, message, tabId = activeTabId) {
-  if (!tabId || queuedSnapshotForTab(tabId).source !== "pi-runtime") return false;
+  if (!tabId) return false;
   const tabContext = queueTabContext(tabId);
-  try {
-    const response = await api("/api/queue/remove", { method: "POST", body: { kind: "followUp", index, message }, tabId });
-    const data = response?.data || {};
-    if (data.queue) applyAuthoritativeQueuedSnapshot(tabContext, data.queue);
-    if (data.removed) {
-      if (isCurrentTabContext(tabContext)) addEvent(`removed queued follow-up #${index + 1}`);
-      scheduleRefreshState(120, tabContext);
-      return true;
-    }
-    if (isCurrentTabContext(tabContext)) addEvent("queued follow-up changed before it could be removed; refreshed queue", "warn");
-    scheduleRefreshState(120, tabContext);
-    return false;
-  } catch (error) {
-    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
-    return false;
-  }
+  const removed = await mutateQueuedFollowUp({ type: "delete", index, expectedText: message }, tabId);
+  if (removed && isCurrentTabContext(tabContext)) addEvent(`removed queued follow-up #${index + 1}`);
+  return removed;
 }
 
 function renderQueueGroup(label, items, tone, { removable = false, tabId } = {}) {
@@ -24875,6 +31151,7 @@ function renderQueueGroup(label, items, tone, { removable = false, tabId } = {})
     if (removable) {
       const removeButton = make("button", "queue-remove-button", "Remove");
       removeButton.type = "button";
+      removeButton.dataset.queueContinuityKey = `remove:${tabId || ""}:${index}:${item}`;
       removeButton.title = `Remove queued follow-up #${index + 1}`;
       removeButton.setAttribute("aria-label", `Remove queued follow-up #${index + 1}`);
       removeButton.addEventListener("click", async () => {
@@ -24900,6 +31177,16 @@ function renderQueue(event) {
   const tabId = event?.tabId || activeTabId;
   if (tabId) latestQueuedMessagesByTab.set(tabId, snapshot);
   if (tabId && tabId !== activeTabId) return;
+  const continuityContextKey = `${tabId || activeTabId || ""}:${activeTabGeneration}:queue`;
+  const focusSnapshot = captureScopedControlContinuity(elements.queueBox, continuityContextKey, (node) => node?.dataset?.queueContinuityKey || "");
+  const scrollTop = elements.queueBox.scrollTop;
+  const scrollLeft = elements.queueBox.scrollLeft;
+  const restoreContinuity = () => {
+    restoreScopedControlContinuity(elements.queueBox, continuityContextKey, focusSnapshot, (key) => [...elements.queueBox.querySelectorAll("[data-queue-continuity-key]")]
+      .find((node) => node.dataset.queueContinuityKey === key));
+    elements.queueBox.scrollTop = scrollTop;
+    elements.queueBox.scrollLeft = scrollLeft;
+  };
   const steering = snapshot.steering;
   const followUp = snapshot.followUp;
   const total = queueMessageCount(snapshot);
@@ -24911,6 +31198,7 @@ function renderQueue(event) {
     elements.queueBox.append(make("div", "queue-empty", "No queued messages."));
     if (tabId === activeTabId) renderFollowUpQueueOverlay();
     updateStickyUserPromptButton();
+    restoreContinuity();
     return;
   }
 
@@ -24923,12 +31211,14 @@ function renderQueue(event) {
 
   elements.queueBox.append(summary);
   if (steering.length) elements.queueBox.append(renderQueueGroup("Steering", steering, "steering", { tabId }));
-  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: snapshot.source === "pi-runtime", tabId }));
+  if (followUp.length) elements.queueBox.append(renderQueueGroup("Follow-up", followUp, "follow-up", { removable: !snapshot.draining, tabId }));
   elements.queueBox.append(make("div", "queue-hint", snapshot.source === "pi-runtime"
     ? "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Use Remove beside follow-ups to drop them from the queue."
-    : "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Edit and reorder compaction-held follow-ups with the composer Queue control."));
+    : "Alt+Up restores this queue snapshot to the composer without clearing Pi's queue. Edit, reorder, or remove compaction-held follow-ups with the composer Queue control."));
   if (tabId === activeTabId) renderFollowUpQueueOverlay();
   updateStickyUserPromptButton();
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
+  restoreContinuity();
 }
 
 function queuedMessagesForComposer(tabId = activeTabId) {
@@ -25645,17 +31935,33 @@ async function renderMermaidDiagram(diagram, status, source) {
     const id = `mermaid-${token.replace(/[^a-z0-9_-]/gi, "-")}`;
     const { svg, bindFunctions } = await mermaid.render(id, source);
     if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
-    diagram.innerHTML = svg;
-    bindFunctions?.(diagram);
-    diagram.classList.add("rendered");
-    status.textContent = "";
-    status.hidden = true;
+    transcriptRenderer.commitTranscriptMutation({
+      key: `mermaid:${token}`,
+      kind: "destructive",
+      surfaces: [diagram],
+      mutate: () => {
+        if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
+        transcriptRenderer.replaceHtml(diagram, svg);
+        bindFunctions?.(diagram);
+        diagram.classList.add("rendered");
+        status.textContent = "";
+        status.hidden = true;
+      },
+    });
   } catch (error) {
     if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
-    diagram.classList.add("render-error");
-    status.hidden = false;
-    status.classList.add("error");
-    status.textContent = `Mermaid render failed: ${mermaidRenderErrorMessage(error)}`;
+    transcriptRenderer.commitTranscriptMutation({
+      key: `mermaid:${token}`,
+      kind: "destructive",
+      surfaces: [diagram, status],
+      mutate: () => {
+        if (!diagram.isConnected || diagram.dataset.mermaidRenderToken !== token) return;
+        diagram.classList.add("render-error");
+        status.hidden = false;
+        status.classList.add("error");
+        status.textContent = `Mermaid render failed: ${mermaidRenderErrorMessage(error)}`;
+      },
+    });
   }
 }
 
@@ -25664,6 +31970,7 @@ function appendMarkdownMermaidBlock(parent, code) {
   const wrapper = make("div", "markdown-code-block markdown-mermaid-block");
   wrapper.append(make("div", "markdown-code-language", "mermaid"));
   const diagram = make("div", "markdown-mermaid-diagram");
+  transcriptRenderer.ownSurface(diagram, { kind: "diagram-rendered", segment: "0" });
   diagram.setAttribute("role", "img");
   diagram.setAttribute("aria-label", "Mermaid diagram");
   const status = make("div", "markdown-mermaid-status muted", "Rendering Mermaid diagram…");
@@ -25901,33 +32208,18 @@ function clearStreamingMarkdownBlock(block) {
 }
 
 function renderStreamingMarkdown(block, text) {
-  let state = streamMarkdownState;
-  if (!state || state.block !== block) {
-    clearStreamingMarkdownBlock(block);
-    state = streamMarkdownState = { block, stableText: "", tailNodes: [] };
-  }
-  if (!text.startsWith(state.stableText)) {
-    // Derived streaming text should be append-only; if a provider still sends a
-    // retroactive rewrite, reset the streaming renderer without replaceChildren
-    // so this path cannot tear down external chrome or widget nodes.
-    clearStreamingMarkdownBlock(block);
-    state.stableText = "";
-    state.tailNodes = [];
-  }
-  for (const node of state.tailNodes) node.remove();
-  state.tailNodes = [];
-  const boundary = streamingMarkdownStableBoundary(text);
-  if (boundary > state.stableText.length) {
-    renderMarkdownInto(block, text.slice(state.stableText.length, boundary));
-    state.stableText = text.slice(0, boundary);
-  }
-  const tail = text.slice(state.stableText.length);
-  if (tail.trim()) {
-    const fragment = document.createDocumentFragment();
-    renderMarkdownInto(fragment, tail);
-    state.tailNodes = [...fragment.childNodes];
-    block.append(fragment);
-  }
+  const selectionSnapshot = captureChatTextSelection(block);
+  const bubble = block?.closest(".message");
+  transcriptRenderer.reconcileMarkdownSurface({
+    key: `stream:${bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "assistant"}`,
+    surface: block,
+    messageKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live:assistant",
+    kind: "assistant-final",
+    text,
+    stableBoundary: streamingMarkdownStableBoundary,
+    renderInto: renderMarkdownInto,
+  });
+  restoreChatTextSelection(selectionSnapshot);
 }
 
 function appendImage(parent, part) {
@@ -26275,7 +32567,18 @@ function visibleThinkingText(text) {
 function renderThinkingMarkdown(block, text) {
   if (!block) return;
   block._rawThinkingText = String(text || "");
-  renderMarkdown(block, block._rawThinkingText);
+  const selectionSnapshot = captureChatTextSelection(block);
+  const bubble = block.closest(".message");
+  transcriptRenderer.reconcileMarkdownSurface({
+    key: `thinking:${bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live"}`,
+    surface: block,
+    messageKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live:thinking",
+    kind: "assistant-thinking",
+    text: block._rawThinkingText,
+    stableBoundary: streamingMarkdownStableBoundary,
+    renderInto: renderMarkdownInto,
+  });
+  restoreChatTextSelection(selectionSnapshot);
 }
 
 function appendThinkingMarkdown(parent, text) {
@@ -26716,21 +33019,35 @@ function stickyUserPromptViewportGap() {
   return Math.ceil(button.getBoundingClientRect().height) + STICKY_USER_PROMPT_TOP_GAP_PX;
 }
 
+function standaloneLiveTranscriptBubbles() {
+  const bubbles = new Set([
+    streamThinkingBubble,
+    streamToolCallBubble,
+    streamBubble,
+    compactThinkingBubble,
+    compactTextBubble,
+  ].filter(Boolean));
+  for (const shell of compactToolShells.values()) {
+    if (shell?.bubble) bubbles.add(shell.bubble);
+  }
+  return bubbles;
+}
+
 function resetChatOutput() {
   liveToolCards.clear();
   renderedTranscriptState = { epoch: "", entries: [] };
-  const preservedNodes = [];
-  if (elements.stickyUserPromptButton) preservedNodes.push(elements.stickyUserPromptButton);
-  if (runIndicatorBubble?.parentElement === elements.chat) preservedNodes.push(runIndicatorBubble);
-  elements.chat.replaceChildren(...preservedNodes);
+  const liveBubbles = standaloneLiveTranscriptBubbles();
+  const preservedNodes = [...elements.chat.children]
+    .filter((child) => child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child));
+  transcriptRenderer.replaceChildren(elements.chat, ...preservedNodes);
 }
 
-function appendChatMessageBubble(bubble) {
-  if (runIndicatorBubble?.parentElement === elements.chat && bubble !== runIndicatorBubble) {
-    elements.chat.insertBefore(bubble, runIndicatorBubble);
-  } else {
-    elements.chat.append(bubble);
-  }
+function appendChatMessageBubble(bubble, { liveTail = false } = {}) {
+  const liveBubbles = standaloneLiveTranscriptBubbles();
+  const tailAnchor = [...elements.chat.children]
+    .find((child) => child !== bubble && (child === runIndicatorBubble || (!liveTail && liveBubbles.has(child))));
+  if (tailAnchor) elements.chat.insertBefore(bubble, tailAnchor);
+  else elements.chat.append(bubble);
 }
 
 function emptyStartRecentWorkspaces() {
@@ -27063,7 +33380,8 @@ function appendToolOutput(parent, text, { label = "output", previewLines = 10, p
     const details = make("details", "tool-output-details");
     details.open = open || toolOutputGloballyExpanded;
     details.append(make("summary", "tool-output-summary", `${label} (${lines.length} lines; expand)`));
-    appendText(details, clean, "code-block tool-output-code");
+    const output = appendText(details, clean, "code-block tool-output-code");
+    bindToolDetailsScrollMode(output);
     parent.append(details);
 
     const preview = make("div", "tool-output-preview");
@@ -27166,8 +33484,10 @@ function toolRawDetailsReplacer(key, value) {
 function appendToolRawDetails(parent, tool) {
   const raw = JSON.stringify({ arguments: tool.args ?? {}, result: tool.result ?? null, details: tool.details ?? {} }, toolRawDetailsReplacer, 2);
   const details = make("details", "tool-raw-details");
+  details.open = toolOutputGloballyExpanded;
   details.append(make("summary", "tool-raw-summary", "raw tool data"));
-  appendText(details, raw, "code-block tool-raw-code");
+  const output = appendText(details, raw, "code-block tool-raw-code");
+  bindToolDetailsScrollMode(output);
   parent.append(details);
 }
 
@@ -27370,7 +33690,7 @@ function renderWorkflowStatusStack(parent, message) {
     : `latest ${snapshot.fallback}`;
 
   const details = make("details", "workflow-status-stack-details");
-  details.open = !!message.isError;
+  details.open = !!message.isError || toolOutputGloballyExpanded;
   const summary = make("summary", "workflow-status-stack-summary");
   summary.setAttribute("aria-label", `Workflow status updates, ${countLabel}; ${latestLabel}${message.isError ? "; contains an error" : ""}`);
   const heading = make("span", "workflow-status-stack-heading");
@@ -27460,21 +33780,166 @@ function toolDetailsStateKey(details, counts) {
   return `${base}|${index}`;
 }
 
-function captureToolDetailsOpenState(root) {
-  const state = new Set();
+function toolDetailsScrollStateKey(node, counts) {
+  const classKey = Array.from(node.classList || []).sort().join(".") || node.tagName.toLowerCase();
+  const index = counts.get(classKey) || 0;
+  counts.set(classKey, index + 1);
+  return `${classKey}|${index}`;
+}
+
+function bindToolDetailsScrollMode(node) {
+  if (!node) return;
+  node.dataset.toolScrollMode ||= "position";
+  ensureToolInteractionDelegation();
+}
+
+function captureToolDetailsInteractionState(root) {
+  const state = new Map();
   const counts = new Map();
   for (const details of root.querySelectorAll("details")) {
     const key = toolDetailsStateKey(details, counts);
-    if (details.open) state.add(key);
+    const summary = details.querySelector(":scope > summary");
+    const scroll = new Map();
+    const scrollCounts = new Map();
+    if (details.open) {
+      for (const node of details.querySelectorAll(".tool-output-code, .tool-raw-code, :scope > .message-body")) {
+        bindToolDetailsScrollMode(node);
+        scroll.set(toolDetailsScrollStateKey(node, scrollCounts), {
+          source: node,
+          mode: node.dataset.toolScrollMode || "position",
+          scrollTop: node.scrollTop,
+          scrollLeft: node.scrollLeft,
+        });
+      }
+    }
+    state.set(key, {
+      open: details.open,
+      summarySource: summary,
+      summaryFocused: document.activeElement === summary,
+      scroll,
+    });
   }
   return state;
 }
 
-function restoreToolDetailsOpenState(root, state) {
+function restoreToolDetailsInteractionState(root, state) {
   if (!state?.size) return;
   const counts = new Map();
   for (const details of root.querySelectorAll("details")) {
-    if (state.has(toolDetailsStateKey(details, counts))) details.open = true;
+    const snapshot = state.get(toolDetailsStateKey(details, counts));
+    if (!snapshot) continue;
+    details.open = snapshot.open;
+    const summary = details.querySelector(":scope > summary");
+    if (snapshot.summaryFocused && document.activeElement !== summary && !isMeaningfulConnectedFocus(document.activeElement)) {
+      try {
+        summary?.focus({ preventScroll: true });
+      } catch {
+        summary?.focus();
+      }
+    }
+    const scrollCounts = new Map();
+    for (const node of details.querySelectorAll(".tool-output-code, .tool-raw-code, :scope > .message-body")) {
+      bindToolDetailsScrollMode(node);
+      const scrollSnapshot = snapshot.scroll.get(toolDetailsScrollStateKey(node, scrollCounts));
+      if (!scrollSnapshot || (node === scrollSnapshot.source && node.scrollTop === scrollSnapshot.scrollTop && node.scrollLeft === scrollSnapshot.scrollLeft)) continue;
+      node.dataset.toolScrollMode = scrollSnapshot.mode;
+      requestAnimationFrame(() => {
+        if (!node.isConnected) return;
+        const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
+        node.scrollTop = scrollSnapshot.mode === "follow-end"
+          ? maxScrollTop
+          : Math.min(Math.max(0, scrollSnapshot.scrollTop), maxScrollTop);
+        node.scrollLeft = Math.min(Math.max(0, scrollSnapshot.scrollLeft), maxScrollLeft);
+      });
+    }
+  }
+}
+
+const INTERACTED_TOOL_BUBBLE_LIMIT = 16;
+const TOOL_INTERACTION_BUBBLE_SELECTOR = ".message.toolCall, .message.toolExecution, .message.toolResult, .message.bashExecution, .message.workflowStatusStack, .message.compactionSummary";
+const TOOL_INTERACTION_SCROLL_SELECTOR = ".tool-output-code, .tool-raw-code, .message-collapse > .message-body";
+const interactedToolBubbles = new Set();
+let toolInteractionDelegationBound = false;
+
+function markInteractedToolBubble(bubble) {
+  if (!bubble?.matches?.(TOOL_INTERACTION_BUBBLE_SELECTOR)) return;
+  interactedToolBubbles.delete(bubble);
+  interactedToolBubbles.add(bubble);
+  while (interactedToolBubbles.size > INTERACTED_TOOL_BUBBLE_LIMIT) {
+    interactedToolBubbles.delete(interactedToolBubbles.values().next().value);
+  }
+}
+
+function ensureToolInteractionDelegation() {
+  if (toolInteractionDelegationBound || !elements.chat) return;
+  toolInteractionDelegationBound = true;
+  const markFromEvent = (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const bubble = target?.closest?.(TOOL_INTERACTION_BUBBLE_SELECTOR);
+    if (bubble && elements.chat.contains(bubble)) markInteractedToolBubble(bubble);
+  };
+  elements.chat.addEventListener("toggle", markFromEvent, true);
+  elements.chat.addEventListener("focusin", markFromEvent);
+  elements.chat.addEventListener("scroll", (event) => {
+    const node = event.target instanceof HTMLElement ? event.target : null;
+    if (node?.matches?.(TOOL_INTERACTION_SCROLL_SELECTOR)) {
+      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.dataset.toolScrollMode = maxScrollTop > 0 && maxScrollTop - node.scrollTop <= 24 ? "follow-end" : "position";
+    }
+    markFromEvent(event);
+  }, true);
+}
+
+function toolInteractionBubbleIdentity(bubble) {
+  const role = ["toolCall", "toolExecution", "toolResult", "bashExecution", "workflowStatusStack", "compactionSummary"]
+    .find((candidate) => bubble.classList.contains(candidate)) || "tool";
+  return {
+    role,
+    toolCallId: bubble.dataset.toolCallId || "",
+    itemKey: bubble.dataset.itemKey || "",
+    transcriptMessageKey: bubble.dataset.transcriptMessageKey || "",
+    messageIndex: bubble.dataset.messageIndex || "",
+  };
+}
+
+function captureInteractedToolInteractionState() {
+  const snapshots = [];
+  for (const bubble of [...interactedToolBubbles]) {
+    if (!bubble.isConnected || !elements.chat.contains(bubble)) {
+      interactedToolBubbles.delete(bubble);
+      continue;
+    }
+    snapshots.push({
+      source: bubble,
+      identity: toolInteractionBubbleIdentity(bubble),
+      details: captureToolDetailsInteractionState(bubble),
+    });
+  }
+  return snapshots;
+}
+
+function toolInteractionBubbleForSnapshot(snapshot) {
+  if (snapshot.source?.isConnected && elements.chat.contains(snapshot.source)) return snapshot.source;
+  const { role, toolCallId, itemKey, transcriptMessageKey, messageIndex } = snapshot.identity || {};
+  const selector = `.message.${CSS.escape(role || "tool")}`;
+  for (const bubble of elements.chat.querySelectorAll(selector)) {
+    if (toolCallId && bubble.dataset.toolCallId === toolCallId) return bubble;
+    if (!toolCallId && itemKey && bubble.dataset.itemKey === itemKey) return bubble;
+    if (!toolCallId && !itemKey && transcriptMessageKey && bubble.dataset.transcriptMessageKey === transcriptMessageKey) return bubble;
+    if (!toolCallId && !itemKey && !transcriptMessageKey && messageIndex && bubble.dataset.messageIndex === messageIndex) return bubble;
+  }
+  return null;
+}
+
+function restoreInteractedToolInteractionState(snapshots) {
+  for (const snapshot of snapshots || []) {
+    const bubble = toolInteractionBubbleForSnapshot(snapshot);
+    if (!bubble) continue;
+    ensureToolInteractionDelegation();
+    restoreToolDetailsInteractionState(bubble, snapshot.details);
+    interactedToolBubbles.delete(snapshot.source);
+    markInteractedToolBubble(bubble);
   }
 }
 
@@ -27522,51 +33987,28 @@ function updateLiveToolCard(bubble, message) {
   if (timestamp) timestamp.textContent = formatDate(message.timestamp);
   const nextRenderSignature = toolExecutionRenderSignature(message);
   if (bubble._toolRenderSignature === nextRenderSignature && body.childElementCount > 0) return true;
-  const detailsOpenState = captureToolDetailsOpenState(body);
-  body.replaceChildren();
-  renderToolExecution(body, message);
-  restoreToolDetailsOpenState(body, detailsOpenState);
-  bubble._toolRenderSignature = nextRenderSignature;
+  const messageKey = bubble.dataset.transcriptMessageKey || bubble.dataset.itemKey || `live:tool:${message.toolCallId || "output"}`;
+  transcriptRenderer.ownMessage(bubble, { key: messageKey, role: "toolExecution" });
+  transcriptRenderer.ownSurface(body, { messageKey, kind: "tool-execution", segment: "0" });
+  transcriptRenderer.commitTranscriptMutation({
+    key: `tool:${message.toolCallId || messageKey}`,
+    kind: "reconcile",
+    surfaces: [body],
+    mutate: () => {
+      const detailsInteractionState = captureToolDetailsInteractionState(body);
+      transcriptRenderer.replaceChildren(body);
+      renderToolExecution(body, message);
+      restoreToolDetailsInteractionState(body, detailsInteractionState);
+      transcriptRenderer.ownSurface(body, { messageKey, kind: "tool-execution", segment: "0" });
+      bubble._toolRenderSignature = nextRenderSignature;
+    },
+  });
   return true;
-}
-
-function cancelQueuedLiveToolRunRender(toolCallId = "") {
-  if (toolCallId) liveToolRenderQueue.delete(String(toolCallId));
-  else liveToolRenderQueue.clear();
-  if (liveToolRenderQueue.size === 0) {
-    clearTimeout(liveToolRenderTimer);
-    liveToolRenderTimer = null;
-  }
-}
-
-function clearLiveToolRenderQueue() {
-  cancelQueuedLiveToolRunRender();
-}
-
-function flushLiveToolRunRenderQueue() {
-  const entries = Array.from(liveToolRenderQueue.values());
-  clearLiveToolRenderQueue();
-  for (const entry of entries) renderLiveToolRun(entry.run, { scroll: entry.scroll });
-}
-
-function scheduleLiveToolRunRender(run, { scroll = false } = {}) {
-  if (!run?.toolCallId) return;
-  const id = String(run.toolCallId);
-  const existing = liveToolRenderQueue.get(id);
-  liveToolRenderQueue.set(id, { run, scroll: !!(existing?.scroll || scroll) });
-  if (liveToolRenderTimer) return;
-  liveToolRenderTimer = setTimeout(() => {
-    liveToolRenderTimer = null;
-    const flush = () => flushLiveToolRunRenderQueue();
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(flush);
-    else flush();
-  }, TOOL_LIVE_UPDATE_THROTTLE_MS);
 }
 
 function renderLiveToolRun(run, { scroll = true } = {}) {
   if (!run?.toolCallId) return;
   const id = String(run.toolCallId);
-  cancelQueuedLiveToolRunRender(id);
   const existing = liveToolCards.get(id);
   const existingConnected = !!(existing?.isConnected && existing.parentElement === elements.chat);
   const shouldFollow = scroll && (autoFollowChat || isChatNearBottom());
@@ -27577,8 +34019,15 @@ function renderLiveToolRun(run, { scroll = true } = {}) {
     if (shouldFollow) scrollChatToBottom();
     return;
   }
-  const created = appendMessage(message, { transient: true, animateEntry: !existingConnected });
-  if (existingConnected && existing !== created.bubble) existing.replaceWith(created.bubble);
+  const created = appendMessage(message, { transient: true, animateEntry: !existingConnected, itemKey: `live:tool:${id}` });
+  if (existingConnected && existing !== created.bubble) {
+    transcriptRenderer.commitTranscriptMutation({
+      key: `tool-replace:${id}`,
+      kind: "reconcile",
+      surfaces: [existing],
+      mutate: () => existing.replaceWith(created.bubble),
+    });
+  }
   renderRunIndicator({ scroll: false });
   if (shouldFollow) scrollChatToBottom();
 }
@@ -27609,10 +34058,10 @@ function handleToolExecutionStart(event) {
   if (run) renderLiveToolRun(run);
 }
 
-function handleToolExecutionUpdate(event) {
+function applyTranscriptToolExecutionUpdate(event) {
   const result = { ...(event.partialResult || {}), isError: false };
   const run = upsertLiveToolRun(event, { result, isPartial: true, isError: false });
-  if (run) scheduleLiveToolRunRender(run, { scroll: false });
+  if (run) renderLiveToolRun(run, { scroll: false });
 }
 
 function handleToolExecutionEnd(event) {
@@ -27682,7 +34131,36 @@ function clearCompactThinkingDisclosureState(key) {
   if (disclosureState?.size === 0) compactThinkingDisclosureStateByTab.delete(tabId);
 }
 
-function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "" } = {}) {
+function transcriptSurfaceKind(message) {
+  if (message?.role === "thinking") return "assistant-thinking";
+  if (message?.role === "toolCall") return "tool-execution";
+  if (message?.role === "toolExecution") return "tool-execution";
+  if (message?.role === "toolResult") return "tool-result";
+  if (message?.role === "bashExecution") return "tool-result";
+  if (message?.role === "compactionSummary") return "compaction-summary";
+  return "assistant-final";
+}
+
+function ownTranscriptBubble(bubble, body, message, { itemKey = "", streaming = false, transient = false, segmentId = "0" } = {}) {
+  if (!bubble || !body) return "";
+  const role = String(message?.role || "message");
+  const fallbackKey = streaming || transient
+    ? `live:${role}:${message?.toolCallId || segmentId}`
+    : `message:${role}:${segmentId}`;
+  const messageKey = transcriptRenderer.ownMessage(bubble, { key: itemKey || bubble.dataset.itemKey || fallbackKey, role });
+  const markdownSurfaces = [...body.querySelectorAll(".markdown-body, .compact-live-text")];
+  const selectableBodyRoles = new Set(["toolCall", "toolExecution", "toolResult", "bashExecution", "compactionSummary"]);
+  const surfaces = markdownSurfaces.length || !selectableBodyRoles.has(role) ? markdownSurfaces : [body];
+  const kind = transcriptSurfaceKind(message);
+  surfaces.forEach((surface, index) => transcriptRenderer.ownSurface(surface, {
+    messageKey,
+    kind,
+    segment: `${segmentId}:${index}`,
+  }));
+  return messageKey;
+}
+
+function createMessageBubble(message, { streaming = false, messageIndex = -1, transient = false, animateEntry = false, itemKey = "", segmentId = "0" } = {}) {
   const role = String(message.role || "message");
   const safeRole = role.replace(/[^a-z0-9_-]/gi, "");
   const compactTranscript = compactOutputActive() && !streaming;
@@ -27732,6 +34210,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
 
   if (isCollapsibleOutput) {
     const details = make("details", `message-collapse${compactThinkingAggregate ? " compact-thinking-disclosure" : ""}`);
+    bindToolDetailsScrollMode(body);
     if (compactThinkingAggregate) {
       const defaultExpanded = message.compactThinkingDefaultExpanded === true;
       details.open = compactThinkingDisclosureExpanded(message.compactThinkingKey, defaultExpanded);
@@ -27749,6 +34228,8 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
   } else {
     bubble.append(header, body);
   }
+  ownTranscriptBubble(bubble, body, message, { itemKey, streaming, transient, segmentId });
+  ensureToolInteractionDelegation();
   if (message.role !== "workflowStatusStack") attachMessageCopyButton(bubble, message, body);
   attachMessageEditRetryButton(bubble, message, messageIndex, { streaming, transient });
   if (!streaming && !transient) renderActionFeedbackControls(bubble, message, messageIndex);
@@ -27762,21 +34243,54 @@ function appendMessage(message, options = {}) {
     transient = false,
     reusableToolCards = null,
     itemKey = "",
+    segmentId = "0",
   } = options;
   const reused = reuseToolExecutionBubble(reusableToolCards, message, { streaming, messageIndex, transient });
   if (reused) {
     if (itemKey) reused.bubble.dataset.itemKey = itemKey;
     return reused;
   }
-  const created = createMessageBubble(message, options);
-  appendChatMessageBubble(created.bubble);
+  const created = createMessageBubble(message, { ...options, segmentId });
+  appendChatMessageBubble(created.bubble, { liveTail: streaming || message?.live === true });
   return created;
+}
+
+function persistedUserMessageCount(messages = latestMessages) {
+  return (messages || []).reduce((count, message) => count + (message?.role === "user" ? 1 : 0), 0);
+}
+
+function discardOptimisticUserPrompt(promptId, { render = true } = {}) {
+  if (!promptId) return false;
+  const next = transientMessages.filter((message) => message?.optimisticPromptId !== promptId);
+  if (next.length === transientMessages.length) return false;
+  transientMessages = next;
+  if (render) renderAllMessages({ preserveScroll: true });
+  return true;
+}
+
+function reconcileOptimisticUserPrompts(messages = latestMessages) {
+  const persistedUserCount = persistedUserMessageCount(messages);
+  transientMessages = transientMessages.filter((message) => {
+    if (!message?.optimisticPromptId) return true;
+    return persistedUserCount <= Number(message.optimisticBaselineUserCount || 0);
+  });
 }
 
 function appendOptimisticUserPrompt(message, attachmentCount = 0) {
   const text = String(message || "").trim() || `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
-  appendMessage({ role: "user", title: "you", timestamp: Date.now(), content: text }, { transient: true, animateEntry: true });
+  const optimisticPromptId = createBrowserPromptRequestId();
+  transientMessages.push({
+    role: "user",
+    title: "you",
+    timestamp: Date.now(),
+    content: text,
+    optimisticPromptId,
+    optimisticBaselineUserCount: persistedUserMessageCount(),
+  });
+  if (transientMessages.length > 80) transientMessages.splice(0, transientMessages.length - 80);
+  renderAllMessages();
   if (autoFollowChat || isChatNearBottom()) scrollChatToBottom({ force: true });
+  return optimisticPromptId;
 }
 
 function toolExecutionMessageFromCall(displayMessage, { result = toolResultForCallId(displayMessage?.toolCallId), liveRun = liveToolRuns.get(displayMessage?.toolCallId) } = {}) {
@@ -27802,7 +34316,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
   let finalOutput = null;
   const compactTranscript = compactOutputActive();
   const displayMessages = assistantDisplayMessages(message);
-  displayMessages.forEach((displayMessage) => {
+  displayMessages.forEach((displayMessage, segmentIndex) => {
     let transcriptMessage = displayMessage;
     if (displayMessage.role === "toolCall" && displayMessage.toolCallId) {
       transcriptMessage = toolExecutionMessageFromCall(displayMessage);
@@ -27816,6 +34330,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
       animateEntry: animateEntry && isActionTranscriptMessage(transcriptMessage),
       reusableToolCards,
       itemKey,
+      segmentId: String(segmentIndex),
     });
     if (transcriptMessage.role === "assistant") finalOutput = created;
   });
@@ -27827,7 +34342,7 @@ function stateHasRunIndicatorActivity(state = currentState) {
 }
 
 function runIndicatorIsActive() {
-  return runIndicatorLocallyActive || stateHasRunIndicatorActivity(currentState) || isUserBashActive();
+  return promptRoutingTabs.has(activeTabId) || runIndicatorLocallyActive || stateHasRunIndicatorActivity(currentState) || isUserBashActive();
 }
 
 function clearRunIndicatorGraceCheck() {
@@ -27877,13 +34392,21 @@ function runIndicatorShowsElapsed() {
   return !/^Abort requested/i.test(runIndicatorActivity || "");
 }
 
+function runIndicatorActivityIsRouting(activity = runIndicatorActivity) {
+  return /^(?:Preparing attachments for routing|Routing prompt|Routing complete)/i.test(String(activity || "").trim());
+}
+
 function runIndicatorDetail() {
   if (runIndicatorActivity) return runIndicatorActivity;
   if (currentState?.isCompacting && !currentState?.isStreaming) return "Compacting context…";
   return "Waiting for output or action…";
 }
 
+// Transcript-owned ticker: it may only repaint the run-indicator bubble's own
+// stable text nodes. Canonical state reconciliation belongs to the separate
+// lifecycle watchdog below, so transcript rendering never issues network work.
 function startRunIndicatorTicker() {
+  startLifecycleStateWatchdog();
   if (runIndicatorTimer) return;
   runIndicatorTimer = setInterval(() => {
     if (!runIndicatorIsActive()) {
@@ -27891,17 +34414,39 @@ function startRunIndicatorTicker() {
       return;
     }
     updateRunIndicatorBubble();
-    maybeRefreshRunIndicatorState();
   }, RUN_INDICATOR_TICK_MS);
 }
 
 function stopRunIndicatorTicker() {
   clearInterval(runIndicatorTimer);
   runIndicatorTimer = null;
+  stopLifecycleStateWatchdog();
+}
+
+// Lifecycle-owned watchdog. It runs while a run is active and performs the
+// bounded canonical state recheck that keeps Stop/idle honest when a terminal
+// lifecycle event is dropped. It is time-driven, never output/token-driven.
+function startLifecycleStateWatchdog() {
+  if (lifecycleStateWatchdogTimer) return;
+  lifecycleStateWatchdogTimer = setInterval(() => {
+    if (!runIndicatorIsActive()) {
+      stopLifecycleStateWatchdog();
+      return;
+    }
+    maybeRefreshRunIndicatorState();
+  }, RUN_INDICATOR_STATE_RECHECK_MS);
+}
+
+function stopLifecycleStateWatchdog() {
+  clearInterval(lifecycleStateWatchdogTimer);
+  lifecycleStateWatchdogTimer = null;
 }
 
 function createRunIndicatorBubble() {
   runIndicatorBubble = make("article", "message runIndicator run-indicator-message streaming");
+  // Stable transcript-owned activity root: streaming activity updates rewrite
+  // only this bubble's own text nodes, never composer or chrome surfaces.
+  runIndicatorBubble.dataset.streamOwned = "run-indicator";
   runIndicatorBubble.setAttribute("aria-live", "polite");
   runIndicatorBubble.setAttribute("aria-label", "Agent is running:");
 
@@ -27942,6 +34487,7 @@ function removeRunIndicatorBubble() {
 
 function renderRunIndicator({ scroll = false } = {}) {
   if (!runIndicatorIsActive()) {
+    if (runIndicatorRemovalDeferred && runIndicatorBubble?.parentElement === elements.chat) return;
     removeRunIndicatorBubble();
     return;
   }
@@ -27970,23 +34516,49 @@ function setRunIndicatorActivity(activity, { active = true, scroll = true } = {}
   const hadRunIndicatorBubble = runIndicatorBubble?.parentElement === elements.chat;
   if (active) {
     runIndicatorLocallyActive = true;
+    runIndicatorRemovalDeferred = false;
     if (!runIndicatorStartedAt) runIndicatorStartedAt = performance.now();
   }
   runIndicatorActivity = activity || runIndicatorActivity || "Waiting for output or action…";
   const needsRender = scroll || !hadRunIndicatorBubble || wasLocallyActive !== runIndicatorLocallyActive || previousActivity !== runIndicatorActivity;
   if (needsRender) scheduleRunIndicatorRender({ scroll });
   else if (runIndicatorIsActive()) startRunIndicatorTicker();
-  scheduleComposerModeButtonsUpdate();
+  // Activity wording is transcript-owned. Composer/Stop chrome is reconciled
+  // only when the lifecycle enum itself changes, so wording updates can never
+  // reparent Steer/Follow-up controls or rewrite the run-active body class.
+  syncLifecycleComposerState();
   if (active) scheduleRunIndicatorGraceCheck();
 }
 
-function clearRunIndicatorActivity({ render = true } = {}) {
+function currentLifecycleComposerSignature() {
+  return [
+    activeTabGeneration,
+    isRunActive() ? "run" : "idle",
+    isAbortAvailable() ? "abort" : "no-abort",
+    abortRequestInFlight ? "aborting" : "ready",
+    busyPromptBehavior,
+  ].join("|");
+}
+
+function syncLifecycleComposerState({ force = false } = {}) {
+  const signature = currentLifecycleComposerSignature();
+  if (!force && signature === lifecycleComposerSignature) return false;
+  lifecycleComposerSignature = signature;
+  scheduleComposerModeButtonsUpdate();
+  return true;
+}
+
+function clearRunIndicatorActivity({ render = true, deferRemoval = false } = {}) {
   clearRunIndicatorGraceCheck();
   runIndicatorLastStateCheckAt = 0;
   runIndicatorLocallyActive = false;
   runIndicatorStartedAt = null;
   runIndicatorActivity = "Waiting for output or action…";
-  if (render) renderRunIndicator();
+  runIndicatorRemovalDeferred = deferRemoval && runIndicatorBubble?.parentElement === elements.chat;
+  if (runIndicatorRemovalDeferred) stopRunIndicatorTicker();
+  else if (render) renderRunIndicator();
+  stopLifecycleStateWatchdog();
+  lifecycleComposerSignature = currentLifecycleComposerSignature();
   updateComposerModeButtons();
 }
 
@@ -27995,10 +34567,15 @@ function syncRunIndicatorFromState(state = currentState) {
     clearRunIndicatorGraceCheck();
     runIndicatorLocallyActive = true;
     if (!runIndicatorStartedAt) runIndicatorStartedAt = performance.now();
-    if (state.isCompacting && !state.isStreaming && runIndicatorActivity === "Waiting for output or action…") {
+    if (state.isStreaming && runIndicatorActivityIsRouting()) {
+      runIndicatorActivity = "Agent run confirmed; waiting for first output or action…";
+    } else if (state.isCompacting && !state.isStreaming && (runIndicatorActivity === "Waiting for output or action…" || runIndicatorActivityIsRouting())) {
       runIndicatorActivity = "Compacting context…";
     }
     renderRunIndicator({ scroll: true });
+  } else if (promptRoutingTabs.has(activeTabId)) {
+    renderRunIndicator({ scroll: true });
+    scheduleRunIndicatorGraceCheck();
   } else if (runIndicatorLocallyActive && runIndicatorStartedAt && performance.now() - runIndicatorStartedAt < RUN_INDICATOR_START_GRACE_MS) {
     renderRunIndicator({ scroll: true });
     scheduleRunIndicatorGraceCheck();
@@ -28007,6 +34584,7 @@ function syncRunIndicatorFromState(state = currentState) {
   } else {
     renderRunIndicator();
   }
+  lifecycleComposerSignature = currentLifecycleComposerSignature();
   updateComposerModeButtons();
 }
 
@@ -28211,6 +34789,13 @@ function orderedTranscriptItems() {
  * (typically the last one or two items), instead of rebuilding every bubble.
  */
 let renderedTranscriptState = { epoch: "", entries: [] };
+const pendingTranscriptAdoptions = new Map();
+
+function prunePendingTranscriptAdoptions() {
+  for (const [key, bubble] of pendingTranscriptAdoptions) {
+    if (!bubble?.isConnected || bubble.parentElement !== elements.chat) pendingTranscriptAdoptions.delete(key);
+  }
+}
 
 function transcriptRenderEpoch() {
   return `${activeTabId || ""}|${thinkingOutputVisible ? 1 : 0}|${compactOutputActive() ? "compact" : "normal"}`;
@@ -28326,10 +34911,186 @@ function transcriptItemSignature(item) {
   return sig.join("|");
 }
 
+function chatTextSelectionContextKey() {
+  return `${activeTabId || ""}:${activeTabGeneration}:${transcriptRenderEpoch()}`;
+}
+
+function chatTextSelectionSurface(node) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  const surface = element?.closest?.(".message [data-transcript-surface], .message .markdown-body, .message .compact-live-text") || null;
+  return surface && elements.chat.contains(surface) ? surface : null;
+}
+
+function chatTextSelectionOffset(surface, node, offset) {
+  if (!surface || !node || (node !== surface && !surface.contains(node))) return null;
+  const range = document.createRange();
+  try {
+    range.selectNodeContents(surface);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
+function chatTextSelectionPoint(surface, offset) {
+  const targetOffset = Math.max(0, Number(offset) || 0);
+  const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  let last = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const next = consumed + node.data.length;
+    if (targetOffset <= next) return { node, offset: Math.max(0, targetOffset - consumed) };
+    consumed = next;
+    last = node;
+  }
+  return last ? { node: last, offset: last.data.length } : { node: surface, offset: 0 };
+}
+
+function chatTextSelectionEndpoint(surface, node, offset) {
+  const textOffset = chatTextSelectionOffset(surface, node, offset);
+  if (textOffset === null) return null;
+  const bubble = surface.closest(".message");
+  const surfaceText = surface.textContent || "";
+  const contextRadius = 48;
+  return {
+    source: surface,
+    itemKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "",
+    surfaceKey: surface.dataset?.transcriptSurfaceKey || "",
+    streaming: bubble?.classList?.contains("streaming") === true || bubble?.classList?.contains("compact-live-output") === true,
+    offset: textOffset,
+    before: surfaceText.slice(Math.max(0, textOffset - contextRadius), textOffset),
+    after: surfaceText.slice(textOffset, textOffset + contextRadius),
+  };
+}
+
+function captureChatTextSelection(expectedSurface = null) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const anchorSurface = chatTextSelectionSurface(selection.anchorNode);
+  const focusSurface = chatTextSelectionSurface(selection.focusNode);
+  if (!anchorSurface || !focusSurface || (expectedSurface && (anchorSurface !== expectedSurface || focusSurface !== expectedSurface))) return null;
+  const anchor = chatTextSelectionEndpoint(anchorSurface, selection.anchorNode, selection.anchorOffset);
+  const focus = chatTextSelectionEndpoint(focusSurface, selection.focusNode, selection.focusOffset);
+  const text = selection.toString();
+  if (!anchor || !focus || !text) return null;
+  return {
+    contextKey: chatTextSelectionContextKey(),
+    source: anchor.source,
+    itemKey: anchor.itemKey === focus.itemKey ? anchor.itemKey : "",
+    streaming: anchor.streaming || focus.streaming,
+    anchorOffset: anchor.offset,
+    focusOffset: focus.offset,
+    anchor,
+    focus,
+    text,
+  };
+}
+
+function chatTextSelectionEndpointPoint(surface, endpoint) {
+  const surfaceText = surface.textContent || "";
+  const contextMatches = (offset) => surfaceText.slice(Math.max(0, offset - endpoint.before.length), offset) === endpoint.before
+    && surfaceText.slice(offset, offset + endpoint.after.length) === endpoint.after;
+  let offset = endpoint.offset;
+  if (!contextMatches(offset)) {
+    const context = `${endpoint.before}${endpoint.after}`;
+    const index = context ? surfaceText.indexOf(context) : -1;
+    if (index < 0 || surfaceText.indexOf(context, index + 1) !== -1) return null;
+    offset = index + endpoint.before.length;
+    if (!contextMatches(offset)) return null;
+  }
+  return chatTextSelectionPoint(surface, offset);
+}
+
+function chatTextSelectionPointPrecedes(anchor, focus) {
+  if (anchor.node === focus.node) return anchor.offset <= focus.offset;
+  return !!(anchor.node.compareDocumentPosition(focus.node) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function chatTextSelectionSpansSurfaces(snapshot) {
+  return snapshot.anchor.itemKey !== snapshot.focus.itemKey || snapshot.anchor.surfaceKey !== snapshot.focus.surfaceKey;
+}
+
+function chatTextSelectionMatch(anchorSurface, focusSurface, snapshot) {
+  const anchor = chatTextSelectionEndpointPoint(anchorSurface, snapshot.anchor);
+  const focus = chatTextSelectionEndpointPoint(focusSurface, snapshot.focus);
+  if (!anchor || !focus) return null;
+  const range = document.createRange();
+  const anchorFirst = chatTextSelectionPointPrecedes(anchor, focus);
+  try {
+    range.setStart(anchorFirst ? anchor.node : focus.node, anchorFirst ? anchor.offset : focus.offset);
+    range.setEnd(anchorFirst ? focus.node : anchor.node, anchorFirst ? focus.offset : anchor.offset);
+  } catch {
+    return null;
+  }
+  const text = range.toString();
+  return text && (chatTextSelectionSpansSurfaces(snapshot) || text === snapshot.text) ? { anchor, focus, range } : null;
+}
+
+function chatTextSelectionCandidates(snapshot, endpointName) {
+  const endpoint = snapshot?.[endpointName];
+  if (!endpoint) return [];
+  const candidates = [];
+  const add = (surface) => {
+    if (surface && elements.chat.contains(surface) && !candidates.includes(surface)) candidates.push(surface);
+  };
+  add(endpoint.source?.isConnected ? endpoint.source : null);
+  if (endpoint.surfaceKey) {
+    for (const surface of elements.chat.querySelectorAll("[data-transcript-surface-key]")) {
+      if (surface.dataset.transcriptSurfaceKey === endpoint.surfaceKey) add(surface);
+    }
+  }
+  if (endpoint.itemKey) {
+    for (const bubble of elements.chat.querySelectorAll(".message[data-item-key], .message[data-transcript-message-key]")) {
+      const key = bubble.dataset.transcriptMessageKey || bubble.dataset.itemKey || "";
+      if (key !== endpoint.itemKey) continue;
+      for (const surface of bubble.querySelectorAll("[data-transcript-surface], .markdown-body, .compact-live-text")) add(surface);
+    }
+  }
+  if (endpoint.streaming) {
+    const liveReplacement = [...elements.chat.querySelectorAll(".message.assistant [data-transcript-surface], .message.assistant .markdown-body, .message.assistant .compact-live-text")].reverse();
+    for (const surface of liveReplacement) add(surface);
+  }
+  return candidates;
+}
+
+function restoreChatTextSelection(snapshot) {
+  if (!snapshot || snapshot.contextKey !== chatTextSelectionContextKey()) return;
+  const selection = window.getSelection?.();
+  if (!selection) return;
+  const currentText = selection.rangeCount && !selection.isCollapsed ? selection.toString() : "";
+  const currentAnchorSurface = chatTextSelectionSurface(selection.anchorNode);
+  const currentFocusSurface = chatTextSelectionSurface(selection.focusNode);
+  const anchorCandidates = chatTextSelectionCandidates(snapshot, "anchor");
+  const focusCandidates = chatTextSelectionCandidates(snapshot, "focus");
+  const currentEndpointsMatch = anchorCandidates.includes(currentAnchorSurface) && focusCandidates.includes(currentFocusSurface);
+  if (currentEndpointsMatch && (chatTextSelectionSpansSurfaces(snapshot) ? !!currentText : currentText === snapshot.text)) return;
+  if (currentText && currentAnchorSurface && currentFocusSurface) return;
+  for (const anchorSurface of anchorCandidates) {
+    for (const focusSurface of focusCandidates) {
+      const match = chatTextSelectionMatch(anchorSurface, focusSurface, snapshot);
+      if (!match) continue;
+      try {
+        selection.removeAllRanges();
+        if (typeof selection.setBaseAndExtent === "function") {
+          selection.setBaseAndExtent(match.anchor.node, match.anchor.offset, match.focus.node, match.focus.offset);
+        } else {
+          selection.addRange(match.range);
+        }
+      } catch {
+        // A stale DOM range should not interfere with the authoritative transcript render.
+      }
+      return;
+    }
+  }
+}
+
 function removeChatBubblesAfterPrefix(keptKeys) {
+  const liveBubbles = standaloneLiveTranscriptBubbles();
   for (const child of [...elements.chat.children]) {
-    if (child === elements.stickyUserPromptButton || child === runIndicatorBubble) continue;
-    const key = child.dataset?.itemKey;
+    if (child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child)) continue;
+    const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
     if (key && keptKeys.has(key)) continue;
     child.remove();
   }
@@ -28342,12 +35103,16 @@ function pruneDisconnectedLiveToolCards() {
 }
 
 function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}) {
-  if (deferUiRenderDuringPointerActivation("messages", () => renderAllMessages({ preserveScroll, forceRebuild }))) return;
+  const selectionSnapshot = captureChatTextSelection();
+  const toolInteractionSnapshots = captureInteractedToolInteractionState();
   const shouldFollow = !preserveScroll && (autoFollowChat || isChatNearBottom());
   const previousScrollTop = elements.chat.scrollTop;
+  if (!autoFollowChat) chatPausedScrollRestoreUntil = performance.now() + CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
   const transcriptItems = orderedTranscriptItems();
   const epoch = transcriptRenderEpoch();
   const nextEntries = transcriptItems.map((item) => ({ item, key: transcriptItemKey(item), sig: transcriptItemSignature(item) }));
+  if (forceRebuild) pendingTranscriptAdoptions.clear();
+  else prunePendingTranscriptAdoptions();
   let prefixLength = 0;
   if (!forceRebuild && epoch === renderedTranscriptState.epoch) {
     const previous = renderedTranscriptState.entries;
@@ -28356,34 +35121,73 @@ function renderAllMessages({ preserveScroll = false, forceRebuild = false } = {}
       prefixLength += 1;
     }
   }
-  const reusableToolCards = captureReusableToolCards();
-  if (prefixLength === 0) resetChatOutput();
-  else removeChatBubblesAfterPrefix(new Set(nextEntries.slice(0, prefixLength).map((entry) => entry.key)));
-  for (let index = prefixLength; index < nextEntries.length; index += 1) {
-    const entry = nextEntries[index];
-    appendTranscriptMessage(entry.item.message, {
-      messageIndex: entry.item.messageIndex,
-      transient: entry.item.transient,
-      animateEntry: shouldAnimateActionEntry(entry.item),
-      reusableToolCards,
-      itemKey: entry.key,
+  const prefixKeys = new Set(nextEntries.slice(0, prefixLength).map((entry) => entry.key));
+  const adoptedKeys = new Set([...pendingTranscriptAdoptions.entries()]
+    .filter(([, bubble]) => bubble?.isConnected && bubble.parentElement === elements.chat)
+    .map(([key]) => key));
+  const liveBubbles = standaloneLiveTranscriptBubbles();
+  const affectedSurfaces = prefixLength === 0 && adoptedKeys.size === 0
+    ? [elements.chat]
+    : [...elements.chat.children].filter((child) => {
+      if (child === elements.stickyUserPromptButton || child === runIndicatorBubble || liveBubbles.has(child)) return false;
+      const key = child.dataset?.itemKey || child.dataset?.transcriptMessageKey;
+      return !prefixKeys.has(key) && !adoptedKeys.has(key);
     });
-  }
-  pruneDisconnectedLiveToolCards();
-  if (nextEntries.length === 0 && !runIndicatorIsActive()) renderEmptyStartState();
-  else if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = workspaceDashboardCollapsed;
-  renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
-  rememberActionEntries(transcriptItems);
-  applyToolOutputExpansionToDom();
-  renderRunIndicator({ scroll: false });
-  updateStickyUserPromptButton();
-  if (shouldFollow) scrollChatToBottom({ force: true });
-  else {
-    elements.chat.scrollTop = Math.min(previousScrollTop, elements.chat.scrollHeight);
-    autoFollowChat = isChatNearBottom();
-    updateJumpToLatestButton();
-  }
-  updateStickyUserPromptButton();
+  const reusableToolCards = captureReusableToolCards();
+  const commit = transcriptRenderer.commitTranscriptMutation({
+    key: "messages",
+    kind: forceRebuild ? "authoritative" : "reconcile",
+    surfaces: affectedSurfaces,
+    invalidateSelection: forceRebuild,
+    mutate: () => {
+      if (prefixLength === 0) {
+        if (adoptedKeys.size) removeChatBubblesAfterPrefix(adoptedKeys);
+        else resetChatOutput();
+      } else {
+        removeChatBubblesAfterPrefix(new Set([...prefixKeys, ...adoptedKeys]));
+      }
+      for (let index = prefixLength; index < nextEntries.length; index += 1) {
+        const entry = nextEntries[index];
+        const adoptedBubble = pendingTranscriptAdoptions.get(entry.key);
+        if (adoptedBubble?.isConnected && adoptedBubble.parentElement === elements.chat) {
+          adoptedBubble.classList.remove("streaming");
+          adoptedBubble.dataset.itemKey = entry.key;
+          if (entry.item.messageIndex >= 0) adoptedBubble.dataset.messageIndex = String(entry.item.messageIndex);
+          finalizeAdoptedAssistantBubble(adoptedBubble, entry.item.message, entry.key);
+          ownTranscriptBubble(adoptedBubble, adoptedBubble.querySelector(":scope > .message-body"), entry.item.message, { itemKey: entry.key });
+          if (!entry.item.transient && entry.item.messageIndex >= 0) renderActionFeedbackControls(adoptedBubble, entry.item.message, entry.item.messageIndex);
+          appendChatMessageBubble(adoptedBubble);
+          pendingTranscriptAdoptions.delete(entry.key);
+          continue;
+        }
+        appendTranscriptMessage(entry.item.message, {
+          messageIndex: entry.item.messageIndex,
+          transient: entry.item.transient,
+          animateEntry: shouldAnimateActionEntry(entry.item),
+          reusableToolCards,
+          itemKey: entry.key,
+        });
+      }
+      pruneDisconnectedLiveToolCards();
+      if (nextEntries.length === 0 && !runIndicatorIsActive()) renderEmptyStartState();
+      else if (elements.workspaceDashboard) elements.workspaceDashboard.hidden = workspaceDashboardCollapsed;
+      renderedTranscriptState = { epoch, entries: nextEntries.map(({ key, sig }) => ({ key, sig })) };
+      rememberActionEntries(transcriptItems);
+      restoreInteractedToolInteractionState(toolInteractionSnapshots);
+      runIndicatorRemovalDeferred = false;
+      renderRunIndicator({ scroll: false });
+      updateStickyUserPromptButton();
+      if (shouldFollow) scrollChatToBottom({ force: true });
+      else {
+        lastChatProgrammaticScrollAt = performance.now();
+        setChatScrollTopInstant(Math.min(previousScrollTop, elements.chat.scrollHeight));
+        updateJumpToLatestButton();
+      }
+      updateStickyUserPromptButton();
+    },
+  });
+  if (commit.deferred) return;
+  restoreChatTextSelection(selectionSnapshot);
 }
 
 function applyNativeSlashCommandEffects(response, message, tabContext = activeTabContext()) {
@@ -28537,6 +35341,7 @@ function clearChatTouchIntent() {
 
 function isChatScrollAwayIntent(event) {
   if (event?.type === "wheel") return event.deltaY < 0;
+  if (event?.type === "middle-drag") return event.deltaY > 0;
   if (event?.type === "touchmove") {
     const clientY = Number(event?.touches?.[0]?.clientY);
     const scrollAway = !Number.isFinite(clientY) || chatLastTouchClientY === null || clientY > chatLastTouchClientY;
@@ -28553,6 +35358,7 @@ function noteChatUserScrollIntent(event) {
   chatUserScrollIntentUntil = now + CHAT_USER_SCROLL_INTENT_MS;
   if (!isChatScrollAwayIntent(event)) {
     chatUserScrollAwayIntentUntil = 0;
+    chatPausedScrollRestoreUntil = 0;
     return;
   }
   chatUserScrollAwayIntentUntil = now + CHAT_USER_SCROLL_INTENT_MS;
@@ -28617,9 +35423,13 @@ function scrollChatToBottom({ force = false } = {}) {
 function syncAutoFollowFromChatScroll() {
   const nearBottom = isChatNearBottom();
   const recentProgrammaticScroll = performance.now() - lastChatProgrammaticScrollAt <= CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
-  if (isChatUserScrollAwayIntentActive()) {
+  if (performance.now() <= chatPausedScrollRestoreUntil) {
     autoFollowChat = false;
-  } else if (nearBottom || isChatUserScrollIntentActive() || !autoFollowChat || !recentProgrammaticScroll) {
+  } else if (isChatUserScrollAwayIntentActive()) {
+    autoFollowChat = false;
+  } else if (!autoFollowChat) {
+    if (nearBottom && (isChatUserScrollIntentActive() || !recentProgrammaticScroll)) autoFollowChat = true;
+  } else if (nearBottom || isChatUserScrollIntentActive() || !recentProgrammaticScroll) {
     autoFollowChat = nearBottom;
   } else {
     scheduleChatFollowScroll();
@@ -28634,7 +35444,7 @@ function jumpToLatest() {
 }
 
 function syncMobileChatToBottomForInput() {
-  if (!isMobileView()) return;
+  if (!isMobileView() || isMobileShellV2Active()) return;
   scrollChatToBottom({ force: true });
   requestAnimationFrame(() => scrollChatToBottom({ force: true }));
   setTimeout(() => scrollChatToBottom({ force: true }), 140);
@@ -28728,8 +35538,283 @@ function setOptionsMenuOpen(open) {
   elements.optionsMenuButton.setAttribute("aria-expanded", optionsMenuOpen ? "true" : "false");
   elements.optionsMenuButton.classList.toggle("menu-open", optionsMenuOpen);
   elements.optionsMenuButton.parentElement?.classList.toggle("open", optionsMenuOpen);
+  if (optionsMenuOpen) syncOptionsSubmenuAvailability();
+  else closeOptionsSubmenus();
+  if (optionsMenuOpen) scheduleOptionsMenuLabelFit();
   scheduleMobileDropdownScrollBoundsUpdate();
   if (!optionsMenuOpen) scheduleDeferredUiFlushAfterDropdownClose();
+}
+
+function optionsSubmenuGroups() {
+  if (!elements.optionsMenu) return [];
+  return Array.from(elements.optionsMenu.querySelectorAll(OPTIONS_SUBMENU_GROUP_SELECTOR));
+}
+
+function optionsSubmenuTrigger(group) {
+  if (!group?.querySelector) return null;
+  return group.querySelector(OPTIONS_SUBMENU_TRIGGER_SELECTOR) || group.querySelector('button[aria-haspopup="menu"]');
+}
+
+function optionsSubmenuPanel(group) {
+  if (!group?.querySelector) return null;
+  const controlledId = optionsSubmenuTrigger(group)?.getAttribute("aria-controls");
+  const controlled = controlledId ? document.getElementById(controlledId) : null;
+  if (controlled) return controlled;
+  return group.querySelector(OPTIONS_SUBMENU_PANEL_SELECTOR) || group.querySelector('[role="menu"]');
+}
+
+function optionsSubmenuBackButton(group) {
+  return optionsSubmenuPanel(group)?.querySelector(OPTIONS_SUBMENU_BACK_SELECTOR) || null;
+}
+
+function isOptionsSubmenuPanelItem(item) {
+  const panel = item?.closest?.(OPTIONS_SUBMENU_PANEL_SELECTOR);
+  return !!panel && !!elements.optionsMenu?.contains(panel);
+}
+
+function isVisibleOptionsMenuItem(item) {
+  if (!item || item.hidden || item.disabled) return false;
+  if (item.getAttribute?.("aria-hidden") === "true") return false;
+  return !item.closest?.("[hidden]");
+}
+
+function optionsSubmenuActionItems(group) {
+  const panel = optionsSubmenuPanel(group);
+  if (!panel) return [];
+  const back = optionsSubmenuBackButton(group);
+  return Array.from(panel.querySelectorAll('[role="menuitem"]')).filter((item) => item !== back);
+}
+
+function optionsSubmenuHasVisibleActions(group) {
+  return optionsSubmenuActionItems(group).some((item) => !item.hidden && !item.disabled && item.getAttribute("aria-hidden") !== "true");
+}
+
+function optionsSubmenuItems(group) {
+  const panel = optionsSubmenuPanel(group);
+  if (!panel) return [];
+  const back = optionsSubmenuBackButton(group);
+  return Array.from(panel.querySelectorAll('[role="menuitem"]')).filter((item) => item !== back && !item.hidden && !item.disabled && item.getAttribute("aria-hidden") !== "true");
+}
+
+function optionsMenuRootItems() {
+  if (!elements.optionsMenu) return [];
+  return Array.from(elements.optionsMenu.querySelectorAll('[role="menuitem"]'))
+    .filter((item) => !isOptionsSubmenuPanelItem(item) && isVisibleOptionsMenuItem(item));
+}
+
+function focusOptionsMenuItem(item) {
+  item?.focus?.({ preventScroll: true });
+}
+
+function optionsSubmenuUsesDrillIn() {
+  if (isMobileView()) return true;
+  return window.matchMedia?.(OPTIONS_SUBMENU_DRILL_IN_QUERY)?.matches === true;
+}
+
+function syncOptionsSubmenuAvailability() {
+  if (optionsSubmenuSyncing) return;
+  optionsSubmenuSyncing = true;
+  try {
+    for (const group of optionsSubmenuGroups()) {
+      const available = optionsSubmenuHasVisibleActions(group);
+      const unavailable = !available;
+      const trigger = optionsSubmenuTrigger(group);
+      if (group.hidden !== unavailable) group.hidden = unavailable;
+      if (trigger) {
+        if (trigger.hidden !== unavailable) trigger.hidden = unavailable;
+        if (trigger.disabled !== unavailable) trigger.disabled = unavailable;
+      }
+      if (!available && openOptionsSubmenuGroup === group) setOptionsSubmenuOpen(group, false);
+    }
+  } finally {
+    optionsSubmenuSyncing = false;
+  }
+}
+
+function fitOptionsMenuLabels() {
+  if (!elements.optionsMenu) return;
+  const labels = elements.optionsMenu.querySelectorAll(OPTIONS_MENU_LABEL_SELECTOR);
+  for (const label of labels) {
+    label.style.removeProperty(OPTIONS_MENU_LABEL_FONT_SIZE_PROPERTY);
+    label.removeAttribute("data-options-menu-label-fitted");
+    const availableWidth = label.clientWidth;
+    const requiredWidth = label.scrollWidth;
+    if (availableWidth <= 0 || requiredWidth <= availableWidth + 0.5) continue;
+    const baseFontSize = Number.parseFloat(window.getComputedStyle(label).fontSize);
+    if (!Number.isFinite(baseFontSize) || baseFontSize <= 0) continue;
+    const fittedFontSize = Math.max(
+      OPTIONS_MENU_LABEL_MIN_FONT_SIZE_PX,
+      Math.floor(baseFontSize * (availableWidth / requiredWidth) * 98) / 100,
+    );
+    if (fittedFontSize >= baseFontSize) continue;
+    label.style.setProperty(OPTIONS_MENU_LABEL_FONT_SIZE_PROPERTY, `${fittedFontSize}px`);
+    label.setAttribute("data-options-menu-label-fitted", "");
+  }
+}
+
+function scheduleOptionsMenuLabelFit() {
+  if (!elements.optionsMenu) return;
+  if (optionsMenuLabelFitFrame) window.cancelAnimationFrame(optionsMenuLabelFitFrame);
+  optionsMenuLabelFitFrame = window.requestAnimationFrame(() => {
+    optionsMenuLabelFitFrame = 0;
+    fitOptionsMenuLabels();
+  });
+}
+
+function updateOptionsSubmenuPlacement(group) {
+  const panel = optionsSubmenuPanel(group);
+  if (!group || !panel) return;
+  if (optionsSubmenuUsesDrillIn()) {
+    group.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+    panel.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+    return;
+  }
+  const anchorRect = (optionsSubmenuTrigger(group) || group).getBoundingClientRect?.();
+  if (!anchorRect) return;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const panelWidth = panel.offsetWidth || panel.getBoundingClientRect?.().width || 0;
+  const spaceRight = viewportWidth - anchorRect.right;
+  const flipLeft = panelWidth > 0 && spaceRight < panelWidth && anchorRect.left > spaceRight;
+  group.classList.toggle(OPTIONS_SUBMENU_LEFT_CLASS, flipLeft);
+  panel.classList.toggle(OPTIONS_SUBMENU_LEFT_CLASS, flipLeft);
+}
+
+function setOptionsSubmenuOpen(group, open, { focusFirstItem = false, restoreFocus = false } = {}) {
+  if (!group) return;
+  const trigger = optionsSubmenuTrigger(group);
+  const panel = optionsSubmenuPanel(group);
+  const shouldOpen = !!open && !trigger?.disabled && !trigger?.hidden && !group.hidden;
+  if (shouldOpen) {
+    for (const sibling of optionsSubmenuGroups()) {
+      if (sibling !== group) setOptionsSubmenuOpen(sibling, false);
+    }
+  }
+  if (shouldOpen) openOptionsSubmenuGroup = group;
+  else if (openOptionsSubmenuGroup === group) openOptionsSubmenuGroup = null;
+  group.classList.toggle("open", shouldOpen);
+  trigger?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  trigger?.classList.toggle("menu-open", shouldOpen);
+  if (panel) panel.hidden = !shouldOpen;
+  if (elements.optionsMenu) {
+    elements.optionsMenu.classList.toggle("submenu-open", !!openOptionsSubmenuGroup);
+    const openGroupId = openOptionsSubmenuGroup?.dataset?.optionsSubmenu || "";
+    if (openGroupId) elements.optionsMenu.dataset.openGroup = openGroupId;
+    else delete elements.optionsMenu.dataset.openGroup;
+  }
+  if (shouldOpen) updateOptionsSubmenuPlacement(group);
+  else {
+    group.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+    panel?.classList.remove(OPTIONS_SUBMENU_LEFT_CLASS);
+  }
+  if (shouldOpen && focusFirstItem) focusOptionsMenuItem(optionsSubmenuItems(group)[0]);
+  if (!shouldOpen && restoreFocus) focusOptionsMenuItem(trigger);
+  if (shouldOpen) scheduleOptionsMenuLabelFit();
+  scheduleMobileDropdownScrollBoundsUpdate();
+}
+
+function closeOptionsSubmenus({ restoreFocus = false } = {}) {
+  const previous = openOptionsSubmenuGroup;
+  for (const group of optionsSubmenuGroups()) setOptionsSubmenuOpen(group, false);
+  openOptionsSubmenuGroup = null;
+  if (restoreFocus && previous) focusOptionsMenuItem(optionsSubmenuTrigger(previous));
+}
+
+function moveOptionsMenuFocus(items, currentIndex, offset) {
+  if (!items.length) return;
+  const nextIndex = currentIndex < 0
+    ? (offset > 0 ? 0 : items.length - 1)
+    : (currentIndex + offset + items.length) % items.length;
+  focusOptionsMenuItem(items[nextIndex]);
+}
+
+function handleOptionsMenuKeydown(event) {
+  const target = event.target;
+  if (!target?.closest || !elements.optionsMenu?.contains(target)) return;
+  const panelGroup = isOptionsSubmenuPanelItem(target) ? target.closest(OPTIONS_SUBMENU_GROUP_SELECTOR) : null;
+  const items = panelGroup ? optionsSubmenuItems(panelGroup) : optionsMenuRootItems();
+  const index = items.indexOf(target);
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    moveOptionsMenuFocus(items, index, event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    focusOptionsMenuItem(event.key === "Home" ? items[0] : items[items.length - 1]);
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    const group = panelGroup ? null : target.closest(OPTIONS_SUBMENU_GROUP_SELECTOR);
+    if (group && optionsSubmenuTrigger(group) === target) {
+      event.preventDefault();
+      setOptionsSubmenuOpen(group, true, { focusFirstItem: true });
+    }
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    if (!panelGroup) return;
+    event.preventDefault();
+    setOptionsSubmenuOpen(panelGroup, false, { restoreFocus: true });
+    return;
+  }
+  if (event.key !== "Escape") return;
+  if (panelGroup || openOptionsSubmenuGroup) {
+    // Escape closes only the deepest open level; the root menu stays open.
+    event.preventDefault();
+    event.stopPropagation();
+    if (panelGroup) setOptionsSubmenuOpen(panelGroup, false, { restoreFocus: true });
+    else closeOptionsSubmenus({ restoreFocus: true });
+    return;
+  }
+  closeOptionsSubmenus();
+  focusOptionsMenuItem(elements.optionsMenuButton);
+}
+
+function handleOptionsSubmenuClick(event) {
+  const back = event.target?.closest?.(OPTIONS_SUBMENU_BACK_SELECTOR);
+  if (back && elements.optionsMenu?.contains(back)) {
+    event.preventDefault();
+    event.stopPropagation();
+    setOptionsSubmenuOpen(back.closest(OPTIONS_SUBMENU_GROUP_SELECTOR), false, { restoreFocus: true });
+    return;
+  }
+  const trigger = event.target?.closest?.(OPTIONS_SUBMENU_TRIGGER_SELECTOR);
+  if (!trigger || !elements.optionsMenu?.contains(trigger)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const group = trigger.closest(OPTIONS_SUBMENU_GROUP_SELECTOR);
+  const shouldOpen = openOptionsSubmenuGroup !== group;
+  setOptionsSubmenuOpen(group, shouldOpen, { focusFirstItem: shouldOpen });
+}
+
+function initializeOptionsSubmenus() {
+  const groups = optionsSubmenuGroups();
+  if (!elements.optionsMenu || !groups.length) return;
+  for (const group of groups) {
+    group.addEventListener("pointerenter", (event) => {
+      if (event.pointerType === "touch" || optionsSubmenuUsesDrillIn()) return;
+      setOptionsSubmenuOpen(group, true);
+    });
+    group.addEventListener("pointerleave", (event) => {
+      if (event.pointerType === "touch" || optionsSubmenuUsesDrillIn()) return;
+      if (group.contains(document.activeElement)) return;
+      setOptionsSubmenuOpen(group, false);
+    });
+  }
+  const rootMenuContainer = elements.optionsMenu.parentElement;
+  rootMenuContainer?.addEventListener("pointerenter", scheduleOptionsMenuLabelFit);
+  rootMenuContainer?.addEventListener("focusin", scheduleOptionsMenuLabelFit);
+  elements.optionsMenu.addEventListener("click", handleOptionsSubmenuClick);
+  elements.optionsMenu.addEventListener("keydown", handleOptionsMenuKeydown);
+  optionsSubmenuObserver?.disconnect();
+  optionsSubmenuObserver = new MutationObserver(() => syncOptionsSubmenuAvailability());
+  optionsSubmenuObserver.observe(elements.optionsMenu, { subtree: true, attributes: true, attributeFilter: ["hidden", "disabled", "aria-hidden"] });
+  window.addEventListener("resize", () => {
+    if (openOptionsSubmenuGroup) updateOptionsSubmenuPlacement(openOptionsSubmenuGroup);
+    scheduleOptionsMenuLabelFit();
+  });
+  closeOptionsSubmenus();
+  syncOptionsSubmenuAvailability();
 }
 
 function optionalFeatureIdForCommand(name) {
@@ -28831,10 +35916,31 @@ function resetOptionalFeatureAvailability() {
   for (const key of Object.keys(optionalFeatureAvailability)) optionalFeatureAvailability[key] = false;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
   renderOptionalFeatureControls();
+  if (activeTabId) queueMicrotask(() => refreshQuestionnaireFeatureAvailability());
 }
 
 function optionalFeaturePackageStatus(featureId) {
   return optionalFeaturePackageStatuses.get(featureId) || null;
+}
+
+function optionalFeatureManualInstallCommand(feature) {
+  return feature?.packageName ? `pi install npm:${feature.packageName}` : "";
+}
+
+function optionalFeatureNeedsInstall(feature) {
+  const status = optionalFeaturePackageStatus(feature?.id);
+  if (!status || isOptionalFeatureDisabled(feature?.id)) return false;
+  const legacyNeedsInstall = status.ready !== true && status.resourceConflict !== true;
+  if (status.state) return ["missing", "legacy-migratable"].includes(status.state) && status.resourceConflict !== true;
+  return legacyNeedsInstall;
+}
+
+function optionalFeatureBatchCandidates(features = OPTIONAL_FEATURES) {
+  return features.filter((feature) => optionalFeatureNeedsInstall(feature));
+}
+
+function optionalFeatureBatchIsActive() {
+  return optionalFeatureBatchState?.phase === "running";
 }
 
 function optionalFeaturePackageVersionLabel(status) {
@@ -28901,13 +36007,24 @@ function optionalFeatureInstallFailureFromError(error) {
   const message = details.message || error?.message || String(error);
   const hint = details.hint || (error?.backendOffline
     ? "The Web UI server connection failed. Check that pi-webui is still running, then retry."
-    : "Run the shown npm command manually from the Web UI host to inspect the full package-manager output.");
+    : "Run the shown Pi command manually from the Web UI host to inspect the full installer output.");
   return { ...details, message, hint, statusCode: error?.statusCode };
 }
 
+function optionalFeatureInstallFailureFromBatchResult(result, feature) {
+  const details = result?.optionalFeatureInstall || {};
+  return {
+    ...details,
+    message: details.message || result?.error || `Pi could not install ${feature.packageName}`,
+    hint: details.hint || "Run the shown Pi command manually from the Web UI host to inspect the full installer output.",
+    command: details.command || optionalFeatureManualInstallCommand(feature),
+  };
+}
+
 async function copyOptionalFeatureInstallCommand(featureId) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
   const state = optionalFeatureInstallState(featureId);
-  const command = String(state?.command || "").trim();
+  const command = String(state?.command || optionalFeatureManualInstallCommand(feature)).trim();
   if (!command) {
     addEvent("optional feature install command is not available yet", "warn");
     return;
@@ -28920,17 +36037,580 @@ async function copyOptionalFeatureInstallCommand(featureId) {
   }
 }
 
+function optionalFeatureAuditFeature(featureId) {
+  return optionalFeatureMigrationSnapshot.features.find((feature) => feature?.featureId === featureId) || null;
+}
+
+function optionalFeatureDisplayLabel(featureId, packageName = "") {
+  return OPTIONAL_FEATURE_BY_ID.get(featureId)?.label || packageName || featureId || "optional feature";
+}
+
+function optionalFeatureCandidateSignature(snapshot, featureIds) {
+  const requested = new Set(featureIds || []);
+  return (snapshot?.features || [])
+    .filter((feature) => requested.has(feature.featureId))
+    .map((feature) => `${feature.featureId}:${feature.state}:${feature.sourceKind}:${feature.previouslyEnabled === true}`)
+    .sort()
+    .join("|");
+}
+
+function optionalFeatureMigrationCandidates(featureIds = null, { includeBrowserDisabled = false } = {}) {
+  const requested = featureIds ? new Set(featureIds) : null;
+  return (optionalFeatureMigrationSnapshot.features || []).filter((feature) => {
+    if (feature?.state !== "legacy-migratable") return false;
+    if (requested && !requested.has(feature.featureId)) return false;
+    return includeBrowserDisabled || !isOptionalFeatureDisabled(feature.featureId);
+  });
+}
+
+function optionalFeatureMigrationElapsedMs() {
+  const progress = optionalFeatureMigrationSnapshot.progress;
+  if (progress?.startedAt) {
+    const startedAt = Date.parse(progress.startedAt);
+    if (Number.isFinite(startedAt)) return Math.max(Number(progress.elapsedMs) || 0, Date.now() - startedAt);
+  }
+  if (optionalFeatureMigrationSnapshot.phase === "checking") return Date.now() - optionalFeatureMigrationCheckingStartedAt;
+  return Number(progress?.elapsedMs) || 0;
+}
+
+function optionalFeatureMigrationProgressText(progress = optionalFeatureMigrationSnapshot.progress) {
+  if (!progress) return "";
+  const elapsed = formatDuration(optionalFeatureMigrationElapsedMs());
+  if (progress.phase === "migrating" && progress.currentFeatureId) {
+    const label = optionalFeatureDisplayLabel(progress.currentFeatureId, progress.currentPackageName);
+    return `Installing ${progress.index || (progress.completed || 0) + 1} of ${progress.total || 0}: ${label}${elapsed ? ` · elapsed ${elapsed}` : ""}`;
+  }
+  if (progress.phase === "partial") return `${progress.succeeded || 0} succeeded · ${progress.failed || 0} failed${elapsed ? ` · finished after ${elapsed}` : ""}`;
+  if (progress.phase === "complete") return `${progress.succeeded || progress.total || 0} installed successfully${elapsed ? ` · finished after ${elapsed}` : ""}`;
+  return "";
+}
+
+function optionalFeatureMigrationPhaseMessage(phase) {
+  switch (phase) {
+    case "checking": return "checking optional features";
+    case "ready": return "optional feature audit ready";
+    case "action-required": return "optional feature audit needs attention";
+    case "migrating": return "optional feature migration started";
+    case "partial": return "optional feature migration finished with failures";
+    case "complete": return "optional feature migration completed";
+    case "degraded": return "optional feature audit degraded; Web UI is running core-only";
+    default: return "";
+  }
+}
+
+function rememberOptionalFeatureMigrationEvent(key) {
+  optionalFeatureMigrationResultEvents.add(key);
+  while (optionalFeatureMigrationResultEvents.size > 256) optionalFeatureMigrationResultEvents.delete(optionalFeatureMigrationResultEvents.values().next().value);
+}
+
+function announceOptionalFeatureMigrationSnapshot(snapshot) {
+  if (snapshot.phase !== optionalFeatureMigrationLastPhase) {
+    optionalFeatureMigrationLastPhase = snapshot.phase;
+    const message = optionalFeatureMigrationPhaseMessage(snapshot.phase);
+    if (message) addEvent(message, ["degraded", "action-required", "partial"].includes(snapshot.phase) ? "warn" : "info");
+  }
+  const progress = snapshot.progress;
+  if (progress?.phase === "migrating" && progress.currentFeatureId) {
+    const startKey = `${progress.startedAt || snapshot.revision}:start:${progress.currentFeatureId}`;
+    if (!optionalFeatureMigrationResultEvents.has(startKey)) {
+      rememberOptionalFeatureMigrationEvent(startKey);
+      addEvent(optionalFeatureMigrationProgressText(progress), "info");
+    }
+  }
+  for (const result of progress?.results || []) {
+    const key = `${progress.startedAt || snapshot.revision}:${result.featureId}:${result.ok}:${result.kind || ""}`;
+    if (optionalFeatureMigrationResultEvents.has(key)) continue;
+    rememberOptionalFeatureMigrationEvent(key);
+    const label = optionalFeatureDisplayLabel(result.featureId, result.packageName);
+    addEvent(`${label}: ${result.ok ? "installed and verified" : result.message || "installation failed"}`, result.ok ? "info" : "error");
+  }
+}
+
+function applyOptionalFeatureProgressStates(snapshot) {
+  const progress = snapshot.progress;
+  if (!progress) return;
+  const startedAt = Number.isFinite(Date.parse(progress.startedAt || "")) ? Date.parse(progress.startedAt) : Date.now();
+  for (const result of progress.results || []) {
+    const feature = OPTIONAL_FEATURE_BY_ID.get(result.featureId);
+    const previous = optionalFeatureInstallState(result.featureId) || {};
+    optionalFeatureInstallStates.set(result.featureId, {
+      ...previous,
+      phase: result.ok ? "done" : "failed",
+      actionLabel: progress.migration ? "Migrate" : "Install",
+      startedAt: previous.startedAt || startedAt,
+      endedAt: progress.completedAt ? Date.parse(progress.completedAt) || Date.now() : Date.now(),
+      detail: result.message || (result.ok ? "Installed and verified" : "Installation failed"),
+      hint: result.ok ? "The server verified this package registration." : "Retry this package or run the copied Pi command on the Web UI host.",
+      command: previous.command || optionalFeatureManualInstallCommand(feature),
+      errorKind: result.kind || previous.errorKind || "",
+    });
+  }
+  if (progress.phase === "migrating" && progress.currentFeatureId) {
+    const current = OPTIONAL_FEATURE_BY_ID.get(progress.currentFeatureId);
+    const previous = optionalFeatureInstallState(progress.currentFeatureId) || {};
+    optionalFeatureInstallStates.set(progress.currentFeatureId, {
+      ...previous,
+      phase: "installing",
+      actionLabel: progress.migration ? "Migrate" : "Install",
+      startedAt: previous.startedAt || startedAt,
+      endedAt: 0,
+      detail: optionalFeatureMigrationProgressText(progress),
+      hint: "Pi installs packages sequentially. This operation continues if the browser disconnects.",
+      command: previous.command || optionalFeatureManualInstallCommand(current),
+    });
+  }
+  if (progress.restartDeferred === true) {
+    optionalFeatureRestartNotice = { autoRestarted: false, restartDeferred: true, tabId: activeTabId };
+  } else if (progress.autoRestarted === true && !optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
+    optionalFeatureRestartNotice = { autoRestarted: true, restartDeferred: false, tabId: activeTabId };
+  } else if (optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
+    optionalFeatureRestartNotice = null;
+  }
+  optionalFeatureBatchState = {
+    phase: progress.phase === "migrating" ? "running" : progress.phase === "partial" ? "failed" : "done",
+    scopeLabel: progress.migration ? "previous optional features" : "optional features",
+    total: progress.total || 0,
+    succeeded: progress.succeeded ?? (progress.results || []).filter((result) => result.ok).length,
+    failed: progress.failed ?? (progress.results || []).filter((result) => !result.ok).length,
+    startedAt,
+    endedAt: progress.completedAt ? Date.parse(progress.completedAt) || Date.now() : 0,
+  };
+}
+
+function refreshOptionalFeatureMigrationElapsedText() {
+  const detail = elements.optionalFeatureMigrationSurface?.querySelector(".optional-feature-migration-detail");
+  if (!detail) return;
+  if (optionalFeatureMigrationSnapshot.phase === "checking") {
+    const elapsed = optionalFeatureMigrationElapsedMs();
+    detail.textContent = elapsed >= 1000 ? `Read-only startup audit · elapsed ${formatDuration(elapsed)}` : "Read-only startup audit";
+  } else if (optionalFeatureMigrationSnapshot.phase === "migrating") {
+    detail.textContent = optionalFeatureMigrationProgressText(optionalFeatureMigrationSnapshot.progress) || "Preparing sequential Pi installs…";
+  }
+}
+
+function ensureOptionalFeatureMigrationRenderTimer() {
+  const timed = ["checking", "migrating"].includes(optionalFeatureMigrationSnapshot.phase);
+  if (timed && !optionalFeatureMigrationRenderTimer) {
+    optionalFeatureMigrationRenderTimer = setInterval(() => {
+      refreshOptionalFeatureMigrationElapsedText();
+      if (optionalFeatureMigrationSnapshot.phase === "migrating") renderOptionalFeaturePanel();
+    }, 1000);
+  } else if (!timed && optionalFeatureMigrationRenderTimer) {
+    clearInterval(optionalFeatureMigrationRenderTimer);
+    optionalFeatureMigrationRenderTimer = null;
+  }
+}
+
+function clearOptionalFeatureReadyDismissTimer() {
+  if (optionalFeatureMigrationReadyDismissTimer) clearTimeout(optionalFeatureMigrationReadyDismissTimer);
+  optionalFeatureMigrationReadyDismissTimer = null;
+  optionalFeatureMigrationPendingReadyDismissKey = "";
+}
+
+function optionalFeatureReadyDismissKey(snapshot = optionalFeatureMigrationSnapshot) {
+  return snapshot.phase === "ready" ? String(snapshot.revision || "pending") : "";
+}
+
+function optionalFeatureMigrationCompletionKey(snapshot = optionalFeatureMigrationSnapshot) {
+  if (snapshot.phase !== "complete") return "";
+  const completedAt = String(snapshot.progress?.completedAt || snapshot.completedAt || "");
+  return completedAt ? `${snapshot.revision || "pending"}:${completedAt}` : "";
+}
+
+function optionalFeatureMigrationNoticeDismissKey(snapshot = optionalFeatureMigrationSnapshot) {
+  if (snapshot.phase !== "degraded") return "";
+  return JSON.stringify([snapshot.revision || "pending", snapshot.diagnostic?.message || ""]);
+}
+
+function storedDismissedOptionalFeatureMigrationKey() {
+  try {
+    return localStorage.getItem(OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function optionalFeatureMigrationCompletionIsDismissed(snapshot = optionalFeatureMigrationSnapshot) {
+  const key = optionalFeatureMigrationCompletionKey(snapshot);
+  return Boolean(key && (optionalFeatureMigrationDismissedCompletionKey === key || storedDismissedOptionalFeatureMigrationKey() === key));
+}
+
+function rememberDismissedOptionalFeatureMigration(key) {
+  if (!key) return;
+  optionalFeatureMigrationDismissedCompletionKey = key;
+  try {
+    localStorage.setItem(OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY, key);
+  } catch {
+    // Keep the dismissal page-local when browser storage is unavailable.
+  }
+}
+
+function dismissOptionalFeatureMigrationCompletion() {
+  rememberDismissedOptionalFeatureMigration(optionalFeatureMigrationCompletionKey());
+  optionalFeatureRestartNotice = null;
+  renderOptionalFeatureMigrationSurface();
+}
+
+function dismissOptionalFeatureMigrationNotice() {
+  const key = optionalFeatureMigrationNoticeDismissKey();
+  if (!key) return;
+  optionalFeatureMigrationDismissedNoticeKey = key;
+  clearOptionalFeatureReadyDismissTimer();
+  renderOptionalFeatureMigrationSurface();
+}
+
+function scheduleOptionalFeatureReadyDismiss(key) {
+  if (!key) {
+    clearOptionalFeatureReadyDismissTimer();
+    if (optionalFeatureMigrationSnapshot.phase !== "ready") optionalFeatureMigrationDismissedReadyKey = "";
+    return;
+  }
+  if (optionalFeatureMigrationDismissedReadyKey === key) return;
+  if (optionalFeatureMigrationReadyDismissTimer && optionalFeatureMigrationPendingReadyDismissKey === key) return;
+  clearOptionalFeatureReadyDismissTimer();
+  optionalFeatureMigrationPendingReadyDismissKey = key;
+  optionalFeatureMigrationReadyDismissTimer = setTimeout(() => {
+    optionalFeatureMigrationReadyDismissTimer = null;
+    optionalFeatureMigrationPendingReadyDismissKey = "";
+    if (optionalFeatureReadyDismissKey() !== key || optionalFeatureRestartNotice) return;
+    optionalFeatureMigrationDismissedReadyKey = key;
+    const surface = elements.optionalFeatureMigrationSurface;
+    if (!surface) return;
+    surface.replaceChildren();
+    surface.hidden = true;
+  }, OPTIONAL_FEATURE_READY_AUTO_DISMISS_MS);
+}
+
+function optionalFeatureMigrationAction(label, handler, className = "") {
+  const button = make("button", className, label);
+  button.type = "button";
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function optionalFeatureConflictDescription(feature) {
+  return `${optionalFeatureDisplayLabel(feature.featureId, feature.packageName)}: Pi package + top-level resource; the top-level copy was safely excluded.`;
+}
+
+async function copyOptionalFeatureConflictFix(feature) {
+  const text = [
+    `Recommended fix for ${feature.packageName}:`,
+    "Keep the registered Pi package as the canonical source.",
+    "Disable or remove the duplicate top-level extension/skill/prompt/theme alias, then use Recheck in Pi Web UI.",
+  ].join("\n");
+  try {
+    await copyText(text);
+    addEvent(`copied recommended conflict fix for ${optionalFeatureDisplayLabel(feature.featureId, feature.packageName)}`, "info");
+  } catch (error) {
+    addEvent(`could not copy optional feature conflict fix: ${error.message || String(error)}`, "warn");
+  }
+}
+
+function optionalFeatureFailureOutputTail() {
+  const tails = [];
+  for (const [featureId, state] of optionalFeatureInstallStates) {
+    if (state?.phase !== "failed" || !state.outputTail) continue;
+    tails.push(`${optionalFeatureDisplayLabel(featureId)}\n${String(state.outputTail).slice(-2000)}`);
+  }
+  return tails.join("\n\n").slice(-4000);
+}
+
+async function restartOptionalFeatureTab() {
+  const tabId = optionalFeatureRestartNotice?.tabId || activeTabId;
+  try {
+    await sendPrompt("prompt", "/reload", { targetTabId: tabId, throwOnError: true });
+    optionalFeatureRestartNotice = null;
+    renderOptionalFeatureMigrationSurface();
+  } catch (error) {
+    addEvent(`optional feature tab restart failed: ${error.message || String(error)}`, "error");
+  }
+}
+
+function renderOptionalFeatureMigrationSurface() {
+  const surface = elements.optionalFeatureMigrationSurface;
+  if (!surface) return;
+  const snapshot = optionalFeatureMigrationSnapshot;
+  const summary = snapshot.summary || {};
+  const conflicts = (snapshot.features || []).filter((feature) => feature.state === "conflict");
+  const progress = snapshot.progress;
+  const readyDismissKey = optionalFeatureReadyDismissKey(snapshot);
+  const noticeDismissKey = optionalFeatureMigrationNoticeDismissKey(snapshot);
+  const readyCanAutoDismiss = Boolean(readyDismissKey && !optionalFeatureRestartNotice);
+  if (optionalFeatureMigrationCompletionIsDismissed(snapshot)) {
+    clearOptionalFeatureReadyDismissTimer();
+    optionalFeatureRestartNotice = null;
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
+  if (readyCanAutoDismiss && optionalFeatureMigrationDismissedReadyKey === readyDismissKey) {
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
+  if (noticeDismissKey && optionalFeatureMigrationDismissedNoticeKey === noticeDismissKey) {
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
+  const card = make("div", `optional-feature-migration-card phase-${snapshot.phase}`);
+  const copy = make("div", "optional-feature-migration-copy");
+  const title = make("strong", "optional-feature-migration-title");
+  const detail = make("span", "optional-feature-migration-detail");
+  const actions = make("div", "optional-feature-migration-actions");
+
+  if (snapshot.phase === "checking") {
+    title.textContent = "Checking optional features…";
+    const elapsed = optionalFeatureMigrationElapsedMs();
+    detail.textContent = elapsed >= 1000 ? `Read-only startup audit · elapsed ${formatDuration(elapsed)}` : "Read-only startup audit";
+  } else if (snapshot.phase === "degraded") {
+    title.textContent = "Web UI started safely without optional companions";
+    detail.textContent = snapshot.diagnostic?.message || "The optional-feature audit could not establish a safe configuration.";
+    actions.append(optionalFeatureMigrationAction("Recheck", () => recheckOptionalFeatureMigration(), "primary"));
+  } else if (snapshot.phase === "migrating") {
+    title.textContent = "Migrating optional features";
+    detail.textContent = optionalFeatureMigrationProgressText(progress) || "Preparing sequential Pi installs…";
+  } else if (snapshot.phase === "partial") {
+    title.textContent = "Optional feature migration needs attention";
+    detail.textContent = optionalFeatureMigrationProgressText(progress);
+    const failedIds = (progress?.results || []).filter((result) => !result.ok).map((result) => result.featureId);
+    if (failedIds.length) actions.append(optionalFeatureMigrationAction("Retry failed", () => openOptionalFeatureMigrationDialog({ featureIds: failedIds, retryFailed: true }), "primary"));
+    actions.append(optionalFeatureMigrationAction("Copy commands", () => copyFailedOptionalFeatureCommands()));
+  } else if (snapshot.phase === "complete") {
+    title.textContent = "Optional feature migration complete";
+    detail.textContent = optionalFeatureMigrationProgressText(progress) || `${summary.ready || 0} optional features ready`;
+    if (!optionalFeatureRestartNotice) actions.append(optionalFeatureMigrationAction("Dismiss", dismissOptionalFeatureMigrationCompletion));
+  } else if (snapshot.phase === "action-required") {
+    title.textContent = conflicts.length ? "Optional feature conflicts were safely excluded" : "Previous optional features need migration";
+    detail.textContent = conflicts.length
+      ? conflicts.map(optionalFeatureConflictDescription).join(" ")
+      : `${summary.migratable || 0} previously available companion${summary.migratable === 1 ? "" : "s"} can be restored${snapshot.installKind === "upgrade" ? " after this Web UI upgrade" : ""}.`;
+    if (summary.migratable > 0) {
+      actions.append(optionalFeatureMigrationAction("Migrate…", () => openOptionalFeatureMigrationDialog(), "primary"));
+      actions.append(optionalFeatureMigrationAction("Later", () => dismissOptionalFeatureMigration()));
+    }
+    for (const conflict of conflicts) actions.append(optionalFeatureMigrationAction("Copy recommended fix", () => copyOptionalFeatureConflictFix(conflict)));
+    if (conflicts.length) actions.append(optionalFeatureMigrationAction("Recheck", () => recheckOptionalFeatureMigration()));
+  } else {
+    title.textContent = `Core ready · ${summary.ready || 0} optional feature${summary.ready === 1 ? "" : "s"} ready`;
+    detail.textContent = summary.migratable > 0
+      ? "Migration was deferred. Restore remains available in Optional features."
+      : summary.missing > 0 ? `${summary.missing} optional companion${summary.missing === 1 ? " is" : "s are"} not installed.` : "Optional feature audit complete.";
+  }
+
+  copy.append(title, detail);
+  card.append(copy);
+  if (actions.childElementCount) card.append(actions);
+  if (noticeDismissKey) {
+    const dismissButton = optionalFeatureMigrationAction("×", dismissOptionalFeatureMigrationNotice, "optional-feature-migration-dismiss");
+    dismissButton.setAttribute("aria-label", "Close optional feature startup notice");
+    dismissButton.title = "Close";
+    card.append(dismissButton);
+  }
+
+  if (conflicts.length) {
+    const alert = make("div", "optional-feature-migration-alert sr-only", "Optional feature conflict detected; duplicate top-level resources were safely excluded.");
+    alert.setAttribute("role", "alert");
+    card.append(alert);
+  }
+  if (snapshot.phase === "partial") {
+    const alert = make("div", "optional-feature-migration-alert sr-only", `${progress?.failed || 0} optional feature installations failed.`);
+    alert.setAttribute("role", "alert");
+    card.append(alert);
+  }
+  const outputTail = optionalFeatureFailureOutputTail();
+  if (outputTail && snapshot.phase === "partial") card.append(make("pre", "optional-feature-migration-output", outputTail));
+
+  if (optionalFeatureRestartNotice) {
+    const notice = make("div", "optional-feature-restart-notice");
+    const noticeText = optionalFeatureRestartNotice.restartDeferred
+      ? "New optional features are ready. Restart is deferred because the affected tab was busy."
+      : "Restarted tab to load new features.";
+    notice.append(make("span", undefined, noticeText));
+    if (optionalFeatureRestartNotice.restartDeferred) {
+      notice.append(optionalFeatureMigrationAction("Restart tab", () => restartOptionalFeatureTab(), "primary"));
+    } else {
+      notice.append(optionalFeatureMigrationAction("Dismiss", dismissOptionalFeatureMigrationCompletion));
+    }
+    card.append(notice);
+  }
+
+  const focusKey = ["complete", "partial"].includes(snapshot.phase) ? `${snapshot.revision}:${snapshot.phase}:${progress?.completedAt || ""}` : "";
+  if (focusKey) {
+    card.tabIndex = -1;
+    card.classList.add("optional-feature-migration-completion-summary");
+  }
+  surface.replaceChildren(card);
+  surface.hidden = false;
+  ensureOptionalFeatureMigrationRenderTimer();
+  scheduleOptionalFeatureReadyDismiss(readyCanAutoDismiss ? readyDismissKey : "");
+  if (focusKey && focusKey !== optionalFeatureMigrationCompletionFocusKey) {
+    optionalFeatureMigrationCompletionFocusKey = focusKey;
+    queueMicrotask(() => card.isConnected && card.focus({ preventScroll: true }));
+  }
+}
+
+function applyOptionalFeatureMigrationSnapshot(snapshot, { announce = true } = {}) {
+  if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.features)) return false;
+  if (snapshot.phase === "checking" && optionalFeatureMigrationSnapshot.phase !== "checking") optionalFeatureMigrationCheckingStartedAt = Date.now();
+  optionalFeatureMigrationSnapshot = snapshot;
+  optionalFeaturePackageStatuses.clear();
+  for (const status of snapshot.features) {
+    if (status?.featureId) optionalFeaturePackageStatuses.set(status.featureId, status);
+  }
+  optionalFeaturePackageStatusesLoaded = true;
+  optionalFeaturePackageStatusError = "";
+  applyOptionalFeatureProgressStates(snapshot);
+  if (announce) announceOptionalFeatureMigrationSnapshot(snapshot);
+  renderOptionalFeatureMigrationSurface();
+  renderOptionalFeatureControls();
+  return true;
+}
+
+async function recheckOptionalFeatureMigration() {
+  addEvent("rechecking optional features", "info");
+  try {
+    const response = await api("/api/optional-feature-migration/recheck", { method: "POST", body: {}, scoped: false });
+    applyOptionalFeatureMigrationSnapshot(response.data);
+  } catch (error) {
+    addEvent(`optional feature recheck failed: ${error.message || String(error)}`, "error");
+  }
+}
+
+async function dismissOptionalFeatureMigration({ closeDialog = false, retryOnStale = true } = {}) {
+  const revision = optionalFeatureMigrationSnapshot.revision;
+  try {
+    const response = await api("/api/optional-feature-migration/dismiss", { method: "POST", body: { revision }, scoped: false });
+    applyOptionalFeatureMigrationSnapshot(response.data);
+    if (closeDialog && elements.optionalFeatureMigrationDialog?.open) elements.optionalFeatureMigrationDialog.close();
+    addEvent("optional feature migration deferred; the Migrate action remains available in Optional features", "info");
+  } catch (error) {
+    if (retryOnStale && error.statusCode === 409 && /stale|revision/i.test(error.message || "")) {
+      await refreshOptionalFeaturePackageStatuses();
+      return dismissOptionalFeatureMigration({ closeDialog, retryOnStale: false });
+    }
+    addEvent(`could not defer optional feature migration: ${error.message || String(error)}`, "error");
+  }
+}
+
+function renderOptionalFeatureMigrationDialog() {
+  const state = optionalFeatureMigrationDialogState;
+  if (!state || !elements.optionalFeatureMigrationChoices) return;
+  const features = optionalFeatureMigrationCandidates(state.featureIds, { includeBrowserDisabled: true });
+  const availableIds = new Set(features.map((feature) => feature.featureId));
+  state.selected = new Set([...state.selected].filter((featureId) => availableIds.has(featureId) && !isOptionalFeatureDisabled(featureId)));
+  elements.optionalFeatureMigrationChoices.replaceChildren();
+
+  for (const feature of features) {
+    const item = make("div", "optional-feature-migration-choice");
+    const choice = make("label", "optional-feature-migration-choice-label");
+    const input = make("input");
+    input.type = "checkbox";
+    input.value = feature.featureId;
+    input.checked = state.selected.has(feature.featureId);
+    input.disabled = isOptionalFeatureDisabled(feature.featureId);
+    input.addEventListener("change", () => {
+      if (input.checked) state.selected.add(feature.featureId);
+      else state.selected.delete(feature.featureId);
+      renderOptionalFeatureMigrationDialog();
+    });
+    const label = make("span");
+    label.append(make("strong", undefined, optionalFeatureDisplayLabel(feature.featureId, feature.packageName)));
+    label.append(make("span", "optional-feature-migration-choice-package", feature.packageName));
+    choice.append(input, label);
+    const details = make("details", "optional-feature-migration-choice-details");
+    details.append(
+      make("summary", undefined, "Details"),
+      make("span", undefined, `${feature.previouslyEnabled ? "Previously enabled" : "Previously disabled"} · source: ${feature.sourceKind || "legacy evidence"} · Pi will install ${feature.expectedSpec || feature.packageName}.`),
+    );
+    item.append(choice, details);
+    elements.optionalFeatureMigrationChoices.append(item);
+  }
+
+  const selectedFeatures = features.filter((feature) => state.selected.has(feature.featureId));
+  elements.optionalFeatureMigrationDialogTitle.textContent = state.retryFailed ? "Retry failed optional features" : "Migrate optional features";
+  elements.optionalFeatureMigrationDialogMessage.textContent = state.retryFailed
+    ? "Retry only the failed packages. Successful packages stay installed. This is the only confirmation before retry."
+    : "Previously enabled features are selected unless they are disabled in this browser. Pi installs the confirmed selection sequentially.";
+  elements.optionalFeatureMigrationDialogSummary.textContent = selectedFeatures.length
+    ? `${selectedFeatures.length} selected: ${selectedFeatures.map((feature) => optionalFeatureDisplayLabel(feature.featureId, feature.packageName)).join(", ")}. Pi may download code and update its package registration.`
+    : "No features selected. Browser-disabled and previously disabled features remain unselected.";
+  elements.optionalFeatureMigrationConfirmButton.textContent = state.retryFailed ? "Retry selected" : "Migrate selected";
+  elements.optionalFeatureMigrationConfirmButton.disabled = selectedFeatures.length === 0 || optionalFeatureBatchIsActive();
+  elements.optionalFeatureMigrationLaterButton.hidden = state.retryFailed;
+  elements.optionalFeatureMigrationDialogError.hidden = !state.error;
+  elements.optionalFeatureMigrationDialogError.textContent = state.error || "";
+  elements.optionalFeatureMigrationChooseDetails.querySelector("summary").textContent = `Choose features (${selectedFeatures.length} selected)`;
+}
+
+function openOptionalFeatureMigrationDialog({ featureIds = null, retryFailed = false } = {}) {
+  const features = optionalFeatureMigrationCandidates(featureIds, { includeBrowserDisabled: true });
+  if (!features.length) {
+    addEvent("no migratable optional features are currently available", "info");
+    return;
+  }
+  const selected = new Set(features
+    .filter((feature) => retryFailed || feature.selectedByDefault === true)
+    .filter((feature) => !isOptionalFeatureDisabled(feature.featureId))
+    .map((feature) => feature.featureId));
+  optionalFeatureMigrationDialogState = {
+    featureIds: features.map((feature) => feature.featureId),
+    selected,
+    retryFailed,
+    error: "",
+    signature: optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, features.map((feature) => feature.featureId)),
+  };
+  renderOptionalFeatureMigrationDialog();
+  if (!elements.optionalFeatureMigrationDialog.open) elements.optionalFeatureMigrationDialog.showModal();
+  queueMicrotask(() => elements.optionalFeatureMigrationConfirmButton?.focus({ preventScroll: true }));
+}
+
+async function copyFailedOptionalFeatureCommands() {
+  const commands = [...optionalFeatureInstallStates]
+    .filter(([, state]) => state?.phase === "failed")
+    .map(([featureId, state]) => state.command || optionalFeatureManualInstallCommand(OPTIONAL_FEATURE_BY_ID.get(featureId)))
+    .filter(Boolean);
+  if (!commands.length) {
+    addEvent("no failed optional feature commands are available", "warn");
+    return;
+  }
+  try {
+    await copyText([...new Set(commands)].join("\n"));
+    addEvent(`copied ${new Set(commands).size} failed optional feature command${new Set(commands).size === 1 ? "" : "s"}`, "info");
+  } catch (error) {
+    addEvent(`could not copy failed optional feature commands: ${error.message || String(error)}`, "warn");
+  }
+}
+
+async function refreshQuestionnaireFeatureAvailability(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return false;
+  try {
+    const response = await api("/api/tools?scope=session", { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return false;
+    optionalFeatureAvailability.questionnaire = Array.isArray(response.data?.tools)
+      && response.data.tools.some((tool) => tool?.name === "questionnaire");
+    renderOptionalFeatureControls();
+    return true;
+  } catch {
+    if (isCurrentTabContext(tabContext)) {
+      optionalFeatureAvailability.questionnaire = false;
+      renderOptionalFeatureControls();
+    }
+    return false;
+  }
+}
+
 async function refreshOptionalFeaturePackageStatuses({ announce = false } = {}) {
   try {
     const response = await api("/api/optional-features", { scoped: false });
-    optionalFeaturePackageStatusError = "";
-    optionalFeaturePackageStatuses.clear();
-    for (const status of response.data?.features || []) {
-      if (status?.featureId) optionalFeaturePackageStatuses.set(status.featureId, status);
-    }
-    renderOptionalFeatureControls();
+    applyOptionalFeatureMigrationSnapshot(response.data, { announce: true });
+    await refreshQuestionnaireFeatureAvailability();
     return true;
   } catch (error) {
+    optionalFeaturePackageStatusesLoaded = false;
     optionalFeaturePackageStatusError = error.message || String(error);
     renderOptionalFeatureControls();
     if (announce) addEvent(`optional feature package status check failed: ${optionalFeaturePackageStatusError}`, "warn");
@@ -29045,8 +36725,10 @@ function updateOptionalFeatureAvailability() {
 }
 
 function optionalFeatureStatus(featureId) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
   const detected = isOptionalFeatureDetected(featureId);
-  const disabled = isOptionalFeatureDisabled(featureId);
+  const managedWithTools = feature?.manageWith === "tools";
+  const disabled = managedWithTools ? false : isOptionalFeatureDisabled(featureId);
   const packageStatus = optionalFeaturePackageStatus(featureId);
   const installMessage = optionalFeatureInstallMessages.get(featureId);
   const installState = optionalFeatureInstallState(featureId);
@@ -29057,26 +36739,52 @@ function optionalFeatureStatus(featureId) {
     return {
       label: optionalFeatureInstallPhaseLabel(installState),
       className: "updating",
-      detail: optionalFeatureInstallDetail(installState, installMessage || "npm install is running; waiting for package-manager output"),
-      hint: "The package manager may be quiet for a while; elapsed time updates here until npm exits.",
-      command: installState?.command || "",
+      detail: optionalFeatureInstallDetail(installState, installMessage || "Pi install is running; waiting for installer output"),
+      hint: "Pi may be quiet while resolving the package; elapsed time updates here until it exits.",
+      command: installState?.command || optionalFeatureManualInstallCommand(feature),
     };
   }
   if (installState?.phase === "failed") {
     return {
       label: optionalFeatureInstallPhaseLabel(installState),
       className: "failed",
-      detail: optionalFeatureInstallDetail(installState, installState.detail || installMessage || "npm install failed"),
-      hint: installState.hint || "Copy the npm command and run it manually from the Web UI host for full diagnostics.",
-      command: installState.command || "",
+      detail: optionalFeatureInstallDetail(installState, installState.detail || installMessage || "Pi install failed"),
+      hint: installState.hint || "Copy the Pi command and run it manually from the Web UI host for full diagnostics.",
+      command: installState.command || optionalFeatureManualInstallCommand(feature),
     };
   }
   const doneDetail = installState?.phase === "done" ? optionalFeatureInstallDetail(installState, installMessage) : "";
+  if (disabled) return {
+    label: "Disabled",
+    className: "disabled",
+    detail: `Disabled in this browser and excluded from migration selection${versionSuffix}`,
+    hint: "Enable it in Optional features before installing or restoring it.",
+  };
+  if (!packageStatus && !detected) return { label: "Checking", className: "updating", detail: "Checking Pi installation and registration status…" };
+  if (packageStatus?.resourceConflict) return {
+    label: "Duplicate conflict",
+    className: "failed",
+    detail: `Configured both as a Pi package and as a top-level resource; remove one registration before reloading${versionSuffix}`,
+    hint: "Do not install again. Keep either the package entry or the extensions/skills/prompts/themes alias, not both.",
+  };
   if (packageStatus?.updateAvailable) return { label: "Update available", className: "updating", detail: packageStatus.updateReason || `Installed package is older than the Web UI expects${versionSuffix}` };
+  if (detected && managedWithTools) return { label: "Loaded", className: "enabled", detail: doneDetail || `Detected in the active Pi tab; manage access in Tools${versionSuffix}`, command: installState?.command || "" };
   if (detected && !disabled) return { label: "Enabled", className: "enabled", detail: doneDetail || `Detected and enabled in Web UI${versionSuffix}`, command: installState?.command || "" };
   if (detected && disabled) return { label: "Disabled", className: "disabled", detail: `Detected, but disabled in Web UI${versionSuffix}` };
-  if (packageStatus?.installed) return { label: "Installed", className: "installed", detail: doneDetail || `Package is installed but not loaded in the active Pi tab${versionSuffix}`, command: installState?.command || "" };
-  return { label: "Install needed", className: "missing", detail: installMessage || "Package is not installed or not visible from the Web UI package root" };
+  if (packageStatus?.locallyConfigured) return { label: "Available locally", className: "installed", detail: doneDetail || `Enabled as a top-level Pi resource; reload this tab if the capability is not detected yet${versionSuffix}` };
+  if (packageStatus?.installed && packageStatus?.configured) return { label: "Installed", className: "installed", detail: doneDetail || `Registered with Pi but not loaded in the active tab${versionSuffix}`, command: installState?.command || "" };
+  if (packageStatus?.installed && !packageStatus?.configured) return {
+    label: "Registration needed",
+    className: "missing",
+    detail: doneDetail || `Package files exist, but the package is not registered in Pi settings${versionSuffix}`,
+    command: optionalFeatureManualInstallCommand(feature),
+  };
+  return {
+    label: "Install needed",
+    className: "missing",
+    detail: installMessage || "Package is not installed and registered with Pi",
+    command: optionalFeatureManualInstallCommand(feature),
+  };
 }
 
 function optionalFeatureTooltip(feature, status) {
@@ -29109,10 +36817,52 @@ function optionalFeatureWidgetHasSpecializedRenderer(key) {
   return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === AUR_REVIEW_RPC_WIDGET_KEY || key === "workflow:subprocess" || key === WORKFLOW_INSPECTOR_WIDGET_KEY;
 }
 
+function renderOptionalFeatureBatchToolbar() {
+  const candidates = optionalFeatureBatchCandidates();
+  const migratable = optionalFeatureMigrationCandidates();
+  const busy = optionalFeatureBatchIsActive();
+  const toolbar = make("div", "optional-feature-batch-toolbar");
+  const action = make("button", "optional-feature-batch-action", busy ? "Installing…" : "Install all");
+  action.type = "button";
+  action.disabled = busy || optionalFeatureInstallInProgress.size > 0 || !optionalFeaturePackageStatusesLoaded || candidates.length === 0 || !!optionalFeaturePackageStatusError;
+  action.setAttribute("aria-label", candidates.length
+    ? `Install all ${candidates.length} missing or unregistered optional features`
+    : "All optional features are installed and registered");
+  if (busy) action.setAttribute("aria-busy", "true");
+  action.addEventListener("click", () => installOptionalFeatureBatch(OPTIONAL_FEATURES, { scopeLabel: "all optional features" }));
+
+  const actionGroup = make("div", "optional-feature-batch-actions");
+  if (migratable.length) {
+    const migrate = make("button", "optional-feature-batch-action primary", "Migrate…");
+    migrate.type = "button";
+    migrate.disabled = busy || optionalFeatureInstallInProgress.size > 0;
+    migrate.setAttribute("aria-label", `Migrate ${migratable.length} previously available optional feature${migratable.length === 1 ? "" : "s"}`);
+    migrate.addEventListener("click", () => openOptionalFeatureMigrationDialog());
+    actionGroup.append(migrate);
+  }
+  actionGroup.append(action);
+
+  let summary = !optionalFeaturePackageStatusesLoaded
+    ? optionalFeaturePackageStatusError ? "Install availability unknown" : "Checking Pi package status…"
+    : candidates.length ? `${candidates.length} missing or unregistered` : "All installed and registered";
+  if (optionalFeatureMigrationSnapshot.phase === "checking") summary = "Checking optional features…";
+  if (optionalFeatureBatchState?.phase === "running") {
+    summary = optionalFeatureMigrationProgressText() || `Installing ${optionalFeatureBatchState.total} sequentially with Pi…`;
+  } else if (["done", "failed"].includes(optionalFeatureBatchState?.phase)) {
+    summary = `Batch finished: ${optionalFeatureBatchState.succeeded} succeeded, ${optionalFeatureBatchState.failed} failed.`;
+  }
+  const status = make("div", `optional-feature-batch-status${optionalFeatureBatchState?.failed ? " warning" : ""}`, summary);
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  toolbar.append(status, actionGroup);
+  return toolbar;
+}
+
 function renderOptionalFeaturePanel() {
   if (!elements.optionalFeaturesBox) return;
   elements.optionalFeaturesBox.replaceChildren();
   elements.optionalFeaturesBox.classList.remove("muted");
+  elements.optionalFeaturesBox.append(renderOptionalFeatureBatchToolbar());
 
   if (optionalFeaturePackageStatusError) {
     const notice = make("div", "optional-feature-panel-notice error");
@@ -29153,10 +36903,18 @@ function renderOptionalFeatureSection(section, features) {
   sectionNode.dataset.optionalFeatureSection = section.id;
 
   const header = make("div", "optional-feature-section-header");
-  header.append(
-    make("div", "optional-feature-section-title", section.label),
-    make("span", "optional-feature-section-count", String(features.length)),
-  );
+  const headerActions = make("div", "optional-feature-section-actions");
+  const candidates = optionalFeatureBatchCandidates(features);
+  const installMissing = make("button", "optional-feature-section-install", optionalFeatureBatchIsActive() ? "Installing…" : "Install missing");
+  installMissing.type = "button";
+  installMissing.disabled = optionalFeatureBatchIsActive() || optionalFeatureInstallInProgress.size > 0 || !optionalFeaturePackageStatusesLoaded || candidates.length === 0 || !!optionalFeaturePackageStatusError;
+  installMissing.setAttribute("aria-label", candidates.length
+    ? `Install ${candidates.length} missing or unregistered features in ${section.label}`
+    : `All features in ${section.label} are installed and registered`);
+  if (optionalFeatureBatchIsActive()) installMissing.setAttribute("aria-busy", "true");
+  installMissing.addEventListener("click", () => installOptionalFeatureBatch(features, { scopeLabel: section.label }));
+  headerActions.append(make("span", "optional-feature-section-count", String(features.length)), installMissing);
+  header.append(make("div", "optional-feature-section-title", section.label), headerActions);
   sectionNode.append(header);
   if (section.description) sectionNode.append(make("div", "optional-feature-section-description", section.description));
 
@@ -29178,6 +36936,7 @@ function renderOptionalFeatureRow(feature) {
   const tooltip = optionalFeatureTooltip(feature, status);
   row.dataset.tooltip = tooltip;
   row.setAttribute("aria-label", tooltip.replace(/\s+/g, " "));
+  if (installing) row.setAttribute("aria-busy", "true");
   row.tabIndex = 0;
 
   const main = make("div", "optional-feature-main");
@@ -29186,7 +36945,8 @@ function renderOptionalFeatureRow(feature) {
   main.append(title);
   if (status.detail) {
     const detail = make("div", `optional-feature-detail ${status.className === "failed" ? "error" : ""}`.trim(), status.detail);
-    detail.setAttribute("aria-live", installing ? "polite" : "off");
+    if (status.className === "failed" && !installing) detail.setAttribute("role", "alert");
+    else detail.setAttribute("aria-live", installing ? "polite" : "off");
     main.append(detail);
   }
   if (installing) {
@@ -29206,7 +36966,7 @@ function renderOptionalFeatureRow(feature) {
   const actions = make("div", "optional-feature-actions");
   const action = make("button", "optional-feature-action");
   action.type = "button";
-  action.disabled = installing;
+  action.disabled = installing || optionalFeatureBatchIsActive() || (!optionalFeaturePackageStatusesLoaded && !detected);
   if (installing) {
     action.textContent = installState?.actionLabel === "Update" ? "Updating…" : "Installing…";
     action.setAttribute("aria-busy", "true");
@@ -29215,10 +36975,19 @@ function renderOptionalFeatureRow(feature) {
     action.textContent = "Retry…";
     action.classList.add(retryAsUpdate ? "update" : "install");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: retryAsUpdate }));
+  } else if (isOptionalFeatureDisabled(feature.id)) {
+    action.textContent = "Enable";
+    action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, false));
+  } else if (packageStatus?.resourceConflict) {
+    action.textContent = "Conflict";
+    action.disabled = true;
   } else if (packageStatus?.updateAvailable) {
     action.textContent = "Update…";
     action.classList.add("update");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
+  } else if (detected && feature.manageWith === "tools") {
+    action.textContent = "Tools…";
+    action.addEventListener("click", () => openNativeToolsSelector());
   } else if (detected) {
     action.textContent = enabled ? "Disable" : "Enable";
     action.addEventListener("click", async () => {
@@ -29247,7 +37016,7 @@ function renderOptionalFeatureRow(feature) {
         successMessage: `${feature.label} was ${disabled ? "re-enabled" : "disabled again"}.`,
       });
     });
-  } else if (packageStatus?.installed) {
+  } else if (packageStatus?.ready) {
     action.textContent = "Reload";
     action.addEventListener("click", () => sendPrompt("prompt", "/reload"));
   } else {
@@ -29256,9 +37025,21 @@ function renderOptionalFeatureRow(feature) {
     action.addEventListener("click", () => installOptionalFeature(feature.id));
   }
   actions.append(action);
+  if (failed) {
+    const retryFailed = make("button", "optional-feature-action install", "Retry failed");
+    retryFailed.type = "button";
+    retryFailed.disabled = optionalFeatureBatchIsActive();
+    retryFailed.addEventListener("click", () => {
+      const audit = optionalFeatureAuditFeature(feature.id);
+      if (audit?.state === "legacy-migratable") openOptionalFeatureMigrationDialog({ featureIds: [feature.id], retryFailed: true });
+      else installOptionalFeature(feature.id, { update: packageStatus?.updateAvailable === true });
+    });
+    actions.replaceChildren(retryFailed);
+  }
   if (status.command) {
     const copyCommand = make("button", "optional-feature-action copy-command", "Copy cmd");
     copyCommand.type = "button";
+    copyCommand.disabled = optionalFeatureBatchIsActive();
     copyCommand.addEventListener("click", () => copyOptionalFeatureInstallCommand(feature.id));
     actions.append(copyCommand);
   }
@@ -29393,16 +37174,16 @@ function commandUnavailableMessage(commandName) {
 
 async function installOptionalFeature(featureId, { update = false } = {}) {
   const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
-  if (!feature || optionalFeatureInstallInProgress.has(featureId)) return;
+  if (!feature || optionalFeatureInstallInProgress.has(featureId) || optionalFeatureBatchIsActive()) return;
 
   const actionLabel = update ? "Update" : "Install";
   const warning = [
     `${actionLabel} optional feature: ${feature.label}?`,
     "",
-    `This will run npm install for ${feature.packageName} in the Web UI package install root.`,
-    "It can download code from npm and modify the local Pi/Web UI npm installation.",
-    "Progress, elapsed time, the npm command, and actionable failures will be shown in the optional-features row and activity log.",
-    "If this feature is already installed but disabled in Pi settings, cancel and enable it there instead.",
+    `This will run ${optionalFeatureManualInstallCommand(feature)} with the selected Pi CLI.`,
+    "Pi can download code from npm and update its user package registration and package storage.",
+    "Progress, elapsed time, the Pi command, and actionable failures will be shown in the optional-features row and activity log.",
+    "Re-running the same Pi install command is the supported update path.",
     "",
     "Continue?",
   ].join("\n");
@@ -29410,34 +37191,34 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
 
   const startedAt = Date.now();
   optionalFeatureInstallInProgress.add(featureId);
-  optionalFeatureInstallMessages.set(featureId, `${actionLabel} preparing; resolving Web UI package install root…`);
+  optionalFeatureInstallMessages.set(featureId, `${actionLabel} preparing with Pi…`);
   setOptionalFeatureInstallState(featureId, {
     phase: "preparing",
     actionLabel,
     startedAt,
     endedAt: 0,
-    detail: "Resolving safe Web UI package install root…",
-    hint: "The package manager has not started yet.",
-    command: "",
+    detail: "Resolving the selected Pi CLI…",
+    hint: "The Pi installer has not started yet.",
+    command: optionalFeatureManualInstallCommand(feature),
     outputTail: "",
   });
   startOptionalFeatureInstallProgressTimer(featureId);
-  addEvent(`${update ? "updating" : "installing"} optional feature ${feature.label} (${feature.packageName})…`, "warn");
+  addEvent(`${update ? "updating" : "installing"} optional feature ${feature.label} (${feature.packageName}) with Pi…`, "warn");
   setTimeout(() => {
     const state = optionalFeatureInstallState(featureId);
     if (optionalFeatureInstallInProgress.has(featureId) && state?.startedAt === startedAt && state.phase === "preparing") {
-      optionalFeatureInstallMessages.set(featureId, `${actionLabel} running via npm; waiting for package-manager output…`);
+      optionalFeatureInstallMessages.set(featureId, `${actionLabel} running via Pi; waiting for installer output…`);
       setOptionalFeatureInstallState(featureId, {
         phase: "installing",
-        detail: "npm install is running; waiting for package-manager output…",
-        hint: "npm can be quiet while resolving packages. Keep this page open; elapsed time updates here.",
+        detail: "Pi install is running; waiting for installer output…",
+        hint: "Pi may be quiet while resolving the npm package. Keep this page open; elapsed time updates here.",
       });
     }
   }, 1200);
 
   try {
     const response = await api("/api/optional-feature-install", { method: "POST", body: { featureId }, scoped: false });
-    const command = response.data?.command || "";
+    const command = response.data?.command || optionalFeatureManualInstallCommand(feature);
     disabledOptionalFeatures.delete(featureId);
     storeDisabledOptionalFeatures();
     optionalFeatureInstallMessages.set(featureId, response.data?.message || `${actionLabel} finished`);
@@ -29445,24 +37226,24 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
       phase: "refreshing",
       actionLabel,
       startedAt,
-      detail: "npm finished; checking package status and refreshed Web UI capabilities…",
-      hint: "If the package is installed but not detected, reload the active Pi tab.",
+      detail: "Pi finished; checking installation and registration status…",
+      hint: "Reload the active Pi tab to load newly registered resources.",
       command,
       outputTail: "",
     });
-    addEvent(response.data?.message || `${update ? "updated" : "installed"} ${feature.packageName}`, "info");
+    addEvent(response.data?.message || `${update ? "updated" : "installed"} ${feature.packageName} with Pi`, "info");
     const output = [response.data?.stderr, response.data?.stdout].filter(Boolean).join("\n").trim();
-    if (output) addEvent(`npm output for ${feature.packageName}:\n${output.slice(-4000)}`, "info");
+    if (output) addEvent(`Pi install output for ${feature.packageName}:\n${output.slice(-4000)}`, "info");
     await refreshOptionalFeaturePackageStatuses({ announce: true });
     setOptionalFeatureInstallState(featureId, {
       phase: "done",
       actionLabel,
       endedAt: Date.now(),
-      detail: response.data?.message || `${actionLabel} finished. Reload the active Pi tab to load newly installed resources.`,
+      detail: response.data?.message || `${actionLabel} finished. Reload the active Pi tab to load newly registered resources.`,
       hint: "Use Reload if this row still says Installed instead of Enabled.",
       command,
     });
-    if (await appConfirmText(`${feature.label} ${actionLabel.toLowerCase()} finished. Reload the active Pi tab now to enable newly loaded resources?`, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
+    if (await appConfirmText(`${feature.label} ${actionLabel.toLowerCase()} finished. Reload the active Pi tab now to load its resources?`, { affected: "The active Pi tab", confirmLabel: "Reload tab", danger: false })) {
       sendPrompt("prompt", "/reload");
     } else {
       const tabContext = activeTabContext();
@@ -29478,7 +37259,7 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
       endedAt: Date.now(),
       detail: failure.message,
       hint: failure.hint,
-      command: failure.command || optionalFeatureInstallState(featureId)?.command || "",
+      command: failure.command || optionalFeatureInstallState(featureId)?.command || optionalFeatureManualInstallCommand(feature),
       outputTail: failure.outputTail || "",
       errorKind: failure.kind || "unknown",
     });
@@ -29488,6 +37269,221 @@ async function installOptionalFeature(featureId, { update = false } = {}) {
     clearOptionalFeatureInstallProgressTimer(featureId);
     renderOptionalFeatureControls();
   }
+}
+
+async function installOptionalFeatureBatch(features, { scopeLabel = "optional features" } = {}) {
+  if (optionalFeatureBatchIsActive() || optionalFeatureInstallInProgress.size > 0) return;
+  const candidates = optionalFeatureBatchCandidates(features);
+  if (!candidates.length) {
+    addEvent(`no missing or unregistered ${scopeLabel} to install`, "info");
+    return;
+  }
+
+  const warning = [
+    `Install ${candidates.length} missing or unregistered ${scopeLabel}?`,
+    "",
+    "The selected Pi CLI will run one install command at a time:",
+    ...candidates.map((feature) => optionalFeatureManualInstallCommand(feature)),
+    "",
+    "Pi can download code from npm and update its user package registration and package storage.",
+    "The batch continues after individual failures and reports every result.",
+    "The affected tab restarts automatically only when idle; busy work is never interrupted.",
+    "",
+    "Continue?",
+  ].join("\n");
+  if (!(await appConfirmText(warning, {
+    affected: `${candidates.length} optional feature package${candidates.length === 1 ? "" : "s"}`,
+    confirmLabel: candidates.length === 1 ? "Install feature" : "Install features",
+  }))) return;
+
+  await runOptionalFeatureBatch(candidates, {
+    scopeLabel,
+    migration: false,
+    signatureFeatureIds: candidates.map((feature) => feature.id),
+    candidateSignature: optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, candidates.map((feature) => feature.id)),
+    reopen: () => installOptionalFeatureBatch(features, { scopeLabel }),
+  });
+}
+
+async function postOptionalFeatureBatch({ featureIds, migration, signatureFeatureIds, candidateSignature, retryOnStale = true }) {
+  const submit = () => api("/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: activeTabId, featureIds, revision: optionalFeatureMigrationSnapshot.revision, migration },
+    scoped: false,
+  });
+  try {
+    return await submit();
+  } catch (error) {
+    const staleRevision = error.statusCode === 409 && /stale|revision/i.test(error.message || "");
+    if (!staleRevision || !retryOnStale) throw error;
+    await refreshOptionalFeaturePackageStatuses();
+    const refreshedSignature = optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, signatureFeatureIds);
+    if (refreshedSignature !== candidateSignature) {
+      error.optionalFeatureCandidatesChanged = true;
+      throw error;
+    }
+    try {
+      return await submit();
+    } catch (retryError) {
+      const stillStale = retryError.statusCode === 409 && /stale|revision/i.test(retryError.message || "");
+      if (stillStale) retryError.optionalFeatureRevisionChurn = true;
+      throw retryError;
+    }
+  }
+}
+
+function restoreOptionalFeatureInstallStates(previousStates) {
+  for (const [featureId, state] of previousStates) {
+    if (state) optionalFeatureInstallStates.set(featureId, state);
+    else optionalFeatureInstallStates.delete(featureId);
+  }
+}
+
+async function runOptionalFeatureBatch(candidates, {
+  scopeLabel = "optional features",
+  migration = false,
+  signatureFeatureIds = candidates.map((feature) => feature.id),
+  candidateSignature = optionalFeatureCandidateSignature(optionalFeatureMigrationSnapshot, signatureFeatureIds),
+  reopen = null,
+} = {}) {
+  if (!candidates.length || optionalFeatureBatchIsActive() || optionalFeatureInstallInProgress.size > 0) return;
+  const startedAt = Date.now();
+  const actionLabel = migration ? "Migrate" : "Install";
+  const featureIds = candidates.map((feature) => feature.id);
+  const previousStates = new Map(candidates.map((feature) => [feature.id, optionalFeatureInstallState(feature.id)]));
+  optionalFeatureBatchState = { phase: "running", scopeLabel, total: candidates.length, succeeded: 0, failed: 0, startedAt };
+  candidates.forEach((feature, index) => {
+    optionalFeatureInstallInProgress.add(feature.id);
+    optionalFeatureInstallMessages.set(feature.id, `Queued (${index + 1} of ${candidates.length})…`);
+    setOptionalFeatureInstallState(feature.id, {
+      phase: "installing",
+      actionLabel,
+      startedAt,
+      endedAt: 0,
+      detail: `Installing ${index + 1} of ${candidates.length}: ${feature.label}`,
+      hint: "Pi installs sequentially and continues after individual failures.",
+      command: optionalFeatureManualInstallCommand(feature),
+      outputTail: "",
+    });
+    startOptionalFeatureInstallProgressTimer(feature.id);
+  });
+  addEvent(`installing ${candidates.length} ${scopeLabel} sequentially with Pi`, "warn");
+
+  try {
+    const response = await postOptionalFeatureBatch({ featureIds, migration, signatureFeatureIds, candidateSignature });
+    const results = Array.isArray(response.data?.results) ? response.data.results : [];
+    const resultByFeatureId = new Map(results.map((result) => [result?.featureId, result]));
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const feature of candidates) {
+      const result = resultByFeatureId.get(feature.id);
+      if (result?.ok === true) {
+        succeeded += 1;
+        const data = result.data || {};
+        const command = data.command || optionalFeatureManualInstallCommand(feature);
+        optionalFeatureInstallMessages.set(feature.id, data.message || "Installed and registered with Pi");
+        setOptionalFeatureInstallState(feature.id, {
+          phase: "done",
+          actionLabel,
+          startedAt,
+          endedAt: Date.now(),
+          detail: data.message || "Installed and verified with Pi.",
+          hint: response.data?.restart?.autoRestarted ? "The affected tab restarted automatically." : "The server verified this package registration.",
+          command,
+          outputTail: "",
+        });
+        const output = [data.stderr, data.stdout].filter(Boolean).join("\n").trim().slice(-4000);
+        if (output) addEvent(`Pi install output for ${feature.packageName}:\n${output}`, "info");
+        addEvent(data.message || `installed ${feature.packageName} with Pi`, "info");
+      } else {
+        failed += 1;
+        const failure = optionalFeatureInstallFailureFromBatchResult(result, feature);
+        optionalFeatureInstallMessages.set(feature.id, `${actionLabel} failed: ${failure.message}`);
+        setOptionalFeatureInstallState(feature.id, {
+          phase: "failed",
+          actionLabel,
+          startedAt,
+          endedAt: Date.now(),
+          detail: failure.message,
+          hint: failure.hint,
+          command: failure.command,
+          outputTail: String(failure.outputTail || "").slice(-4000),
+          errorKind: failure.kind || "unknown",
+        });
+        addEvent(`${actionLabel.toLowerCase()} optional feature ${feature.label} failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
+      }
+    }
+
+    optionalFeatureBatchState = { phase: failed ? "failed" : "done", scopeLabel, total: candidates.length, succeeded, failed, startedAt, endedAt: Date.now() };
+    const restart = response.data?.restart || {};
+    if (restart.autoRestarted || restart.restartDeferred) {
+      optionalFeatureRestartNotice = { ...restart, tabId: activeTabId };
+      addEvent(restart.autoRestarted ? "restarted tab to load new optional features" : "optional feature restart deferred because the tab is busy", restart.restartDeferred ? "warn" : "info");
+    }
+    await refreshOptionalFeaturePackageStatuses({ announce: true });
+    addEvent(`optional feature batch finished: ${succeeded} succeeded, ${failed} failed`, failed ? "warn" : "info");
+    renderOptionalFeatureMigrationSurface();
+    // Backend-owned idle restart replaces the legacy post-batch prompt (formerly confirmLabel: "Reload tab").
+  } catch (error) {
+    if (error.optionalFeatureCandidatesChanged || error.optionalFeatureRevisionChurn) {
+      restoreOptionalFeatureInstallStates(previousStates);
+      optionalFeatureBatchState = null;
+      if (error.optionalFeatureRevisionChurn) await refreshOptionalFeaturePackageStatuses();
+      addEvent(error.optionalFeatureRevisionChurn
+        ? "optional feature audit changed repeatedly; refreshed the plan before asking again"
+        : "optional feature choices changed while confirmation was open; refreshed the current migration plan", "warn");
+      if (typeof reopen === "function") setTimeout(reopen, 0);
+    } else if (error.statusCode === 409 && /already in progress|mutation|busy/i.test(error.message || "")) {
+      restoreOptionalFeatureInstallStates(previousStates);
+      optionalFeatureBatchState = null;
+      await refreshOptionalFeaturePackageStatuses();
+      addEvent("another optional feature operation is already running; recovered its server-owned progress", "warn");
+    } else {
+      const failure = optionalFeatureInstallFailureFromError(error);
+      for (const feature of candidates) {
+        optionalFeatureInstallMessages.set(feature.id, `Batch request failed: ${failure.message}`);
+        setOptionalFeatureInstallState(feature.id, {
+          phase: "failed",
+          actionLabel,
+          startedAt,
+          endedAt: Date.now(),
+          detail: failure.message,
+          hint: failure.hint,
+          command: failure.command || optionalFeatureManualInstallCommand(feature),
+          outputTail: String(failure.outputTail || "").slice(-4000),
+          errorKind: failure.kind || "batch-request",
+        });
+      }
+      optionalFeatureBatchState = { phase: "failed", scopeLabel, total: candidates.length, succeeded: 0, failed: candidates.length, startedAt, endedAt: Date.now() };
+      addEvent(`optional feature batch request failed: ${failure.message}${failure.hint ? `\nHint: ${failure.hint}` : ""}`, "error");
+    }
+  } finally {
+    for (const feature of candidates) {
+      optionalFeatureInstallInProgress.delete(feature.id);
+      clearOptionalFeatureInstallProgressTimer(feature.id);
+    }
+    renderOptionalFeatureControls();
+    renderOptionalFeatureMigrationSurface();
+  }
+}
+
+async function migrateSelectedOptionalFeatures() {
+  const state = optionalFeatureMigrationDialogState;
+  if (!state || optionalFeatureBatchIsActive()) return;
+  const selectedIds = [...state.selected].filter((featureId) => !isOptionalFeatureDisabled(featureId));
+  const candidates = selectedIds.map((featureId) => OPTIONAL_FEATURE_BY_ID.get(featureId)).filter(Boolean);
+  if (!candidates.length) return;
+  elements.optionalFeatureMigrationConfirmButton.disabled = true;
+  elements.optionalFeatureMigrationDialogError.hidden = true;
+  elements.optionalFeatureMigrationDialog.close();
+  await runOptionalFeatureBatch(candidates, {
+    scopeLabel: state.retryFailed ? "failed optional features" : "previous optional features",
+    migration: true,
+    signatureFeatureIds: state.featureIds,
+    candidateSignature: state.signature,
+    reopen: () => openOptionalFeatureMigrationDialog({ featureIds: state.featureIds, retryFailed: state.retryFailed }),
+  });
 }
 
 function runPublishWorkflow(command) {
@@ -29530,6 +37526,276 @@ async function runNativeCommandMenu(command) {
   }
   if (await handleNativeSlashSelectorCommand(command)) return;
   await sendPrompt("prompt", command);
+}
+
+function normalizeSessionSummaryClientState(value, previous = null, { resetProjection = false } = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== SESSION_SUMMARY_PROTOCOL_VERSION) return null;
+  const status = ["idle", "generating", "success", "failure"].includes(value.status) ? value.status : "idle";
+  const title = typeof value.title === "string" && value.title.length <= 44 && !/[\r\n]/.test(value.title) ? value.title.trim() : "";
+  const summaryMarkdown = typeof value.summaryMarkdown === "string" && value.summaryMarkdown.length <= SESSION_SUMMARY_MARKDOWN_MAX_CHARS
+    ? value.summaryMarkdown.trim()
+    : "";
+  const message = typeof value.message === "string" ? value.message.replace(/[\r\n]+/g, " ").slice(0, 512).trim() : "";
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.slice(0, 128) : previous?.sessionId || "";
+  const sessionChanged = !!(sessionId && previous?.sessionId && sessionId !== previous.sessionId);
+  const inherited = resetProjection || sessionChanged ? null : previous;
+  return {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status,
+    configured: value.configured === true,
+    enabled: value.enabled === true,
+    durable: value.durable === true,
+    sessionId,
+    title: title || inherited?.title || "",
+    summaryMarkdown: summaryMarkdown || inherited?.summaryMarkdown || "",
+    message,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
+  };
+}
+
+function sessionSummaryStateForTab(tabId = activeTabId) {
+  if (!tabId) return null;
+  const cached = sessionSummaryByTab.get(tabId);
+  if (cached) return cached;
+  const metadata = tabs.find((tab) => tab.id === tabId)?.sessionSummary;
+  const normalized = normalizeSessionSummaryClientState(metadata);
+  if (normalized) sessionSummaryByTab.set(tabId, normalized);
+  return normalized;
+}
+
+function sessionSummaryControlStatus(tabId) {
+  const state = sessionSummaryStateForTab(tabId);
+  if (state?.status === "generating") return "Generating session summary…";
+  if (state?.status === "failure") return `Session summary failed: ${state.message || "unknown error"}`;
+  if (state?.summaryMarkdown) return "Open the latest session summary";
+  return "Open or create a session summary";
+}
+
+function createTerminalTabSplitButton(tab) {
+  const button = make("button", "terminal-tab-split-button");
+  button.type = "button";
+  button.draggable = false;
+  const isOpenSplit = splitTabId === tab.id && !embeddedSplitMode && !isSidePanelOverlayView();
+  button.disabled = embeddedSplitMode || isSidePanelOverlayView();
+  button.setAttribute("aria-pressed", isOpenSplit ? "true" : "false");
+  button.dataset.splitState = isOpenSplit ? "unsplit" : "split";
+  const label = isOpenSplit ? `Close split view for ${tab.title || "Pi terminal"}` : `Split ${tab.title || "Pi terminal"} to the right`;
+  applyStyledTooltip(button, label, { ariaLabel: label, targetKey: `terminal-tab:${tab.id}:split` });
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  icon.setAttribute("class", "terminal-tab-action-icon terminal-tab-split-icon");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const frame = document.createElementNS(ns, "rect");
+  frame.setAttribute("x", "4");
+  frame.setAttribute("y", "5");
+  frame.setAttribute("width", "16");
+  frame.setAttribute("height", "14");
+  frame.setAttribute("rx", "2");
+  frame.setAttribute("fill", "none");
+  frame.setAttribute("stroke", "currentColor");
+  frame.setAttribute("stroke-width", "2");
+  const divider = document.createElementNS(ns, "path");
+  divider.setAttribute("d", "M12 5v14M15 12h4m0 0-2-2m2 2-2 2");
+  divider.setAttribute("fill", "none");
+  divider.setAttribute("stroke", "currentColor");
+  divider.setAttribute("stroke-width", "2");
+  divider.setAttribute("stroke-linecap", "round");
+  divider.setAttribute("stroke-linejoin", "round");
+  icon.append(frame, divider);
+  button.append(icon);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void splitTerminalTab(tab.id, { triggerButton: button });
+  });
+  return button;
+}
+
+function createTerminalTabActions(tab) {
+  const actions = make("div", "terminal-tab-actions");
+  actions.setAttribute("role", "group");
+  actions.setAttribute("aria-label", `Actions for ${tab.title || "Pi terminal"}`);
+  actions.append(createTerminalTabSplitButton(tab));
+  const summary = createTerminalTabSessionSummaryButton(tab);
+  if (summary) actions.append(summary);
+  return actions;
+}
+
+function createTerminalTabSessionSummaryButton(tab) {
+  if (!tab?.id || !hasAvailableCommand("summary", { tabId: tab.id })) return null;
+  const state = sessionSummaryStateForTab(tab.id);
+  const status = sessionSummaryControlStatus(tab.id);
+  const button = make("button", "terminal-tab-summary-button");
+  button.type = "button";
+  button.draggable = false;
+  button.disabled = state?.status === "generating";
+  button.setAttribute("aria-busy", state?.status === "generating" ? "true" : "false");
+  button.setAttribute("aria-controls", "sessionSummaryOverlay");
+  const label = `${status} for ${tab.title || "Pi terminal"}`;
+  applyStyledTooltip(button, status, { ariaLabel: label, targetKey: `terminal-tab:${tab.id}:summary` });
+  const ns = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(ns, "svg");
+  icon.setAttribute("class", "composer-icon");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const page = document.createElementNS(ns, "path");
+  page.setAttribute("d", "M5 4h14v16H5z");
+  page.setAttribute("fill", "none");
+  page.setAttribute("stroke", "currentColor");
+  page.setAttribute("stroke-width", "2");
+  page.setAttribute("stroke-linejoin", "round");
+  const lines = document.createElementNS(ns, "path");
+  lines.setAttribute("d", "M8 8h8M8 12h8M8 16h5");
+  lines.setAttribute("fill", "none");
+  lines.setAttribute("stroke", "currentColor");
+  lines.setAttribute("stroke-width", "2");
+  lines.setAttribute("stroke-linecap", "round");
+  icon.append(page, lines);
+  button.append(icon);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void openSessionSummaryForTab(tab.id, { focusReturnKey: `terminal-tab:${tab.id}:summary` }).catch((error) => addEvent(error.message || String(error), "error"));
+  });
+  return button;
+}
+
+function renderSessionSummaryControls() {
+  const setupAvailable = !!activeTabId && hasAvailableCommand("summary-setup", { tabId: activeTabId });
+  if (elements.optionsSummarySetupButton) elements.optionsSummarySetupButton.hidden = !setupAvailable;
+  scheduleTabsRender();
+}
+
+function closeSessionSummaryOverlay({ restoreFocus = true } = {}) {
+  const overlay = elements.sessionSummaryOverlay;
+  if (!overlay || overlay.hidden) return;
+  overlay.hidden = true;
+  const focusReturn = sessionSummaryOverlayFocusReturn;
+  const focusReturnKey = sessionSummaryOverlayFocusReturnKey;
+  const keyedFocusReturn = focusReturnKey
+    ? [...elements.tabBar.querySelectorAll("button")].find((node) => terminalTabControlKey(node) === focusReturnKey)
+    : null;
+  const connectedFocusReturn = keyedFocusReturn || (focusReturn?.isConnected ? focusReturn : null);
+  sessionSummaryOverlayTabId = null;
+  sessionSummaryOverlayFocusReturn = null;
+  sessionSummaryOverlayFocusReturnKey = "";
+  if (restoreFocus && connectedFocusReturn) {
+    const groupKey = connectedFocusReturn.closest?.("[data-group-key]")?.dataset?.groupKey;
+    if (groupKey) setOpenTerminalTabGroup(groupKey);
+    queueMicrotask(() => connectedFocusReturn.focus({ preventScroll: true }));
+  }
+}
+
+function renderSessionSummaryOverlay() {
+  const overlay = elements.sessionSummaryOverlay;
+  if (!overlay || overlay.hidden || !sessionSummaryOverlayTabId) return;
+  const tab = tabs.find((item) => item.id === sessionSummaryOverlayTabId);
+  const state = sessionSummaryStateForTab(sessionSummaryOverlayTabId);
+  elements.sessionSummaryOverlayTitle.textContent = state?.title || "Session summary";
+  elements.sessionSummaryOverlayMeta.textContent = `${tab?.title || "Pi terminal"}${state?.durable === false ? " · in-memory session" : ""}`;
+  const generating = state?.status === "generating";
+  const failed = state?.status === "failure";
+  elements.sessionSummaryOverlayStatus.textContent = generating
+    ? "Generating with the configured background model…"
+    : failed
+      ? state.message || "Summary generation failed. The previous successful summary is preserved."
+      : state?.summaryMarkdown
+        ? "Latest successful active-branch summary."
+        : "No successful summary is available yet.";
+  elements.sessionSummaryOverlayStatus.classList.toggle("error", failed);
+  elements.sessionSummaryOverlayBody.replaceChildren();
+  if (state?.summaryMarkdown) renderMarkdown(elements.sessionSummaryOverlayBody, state.summaryMarkdown);
+  else elements.sessionSummaryOverlayBody.append(make("p", "muted", generating ? "Waiting for the first validated Markdown result…" : "Generate a summary to populate this view."));
+  elements.sessionSummaryOverlayCopyButton.disabled = !state?.summaryMarkdown;
+  elements.sessionSummaryOverlayRefreshButton.disabled = generating;
+  elements.sessionSummaryOverlayRefreshButton.textContent = generating ? "Generating…" : "Refresh";
+}
+
+function openSessionSummaryOverlay(tabId, { loading = false, focusReturnKey = "" } = {}) {
+  if (!tabId || !elements.sessionSummaryOverlay) return;
+  sessionSummaryOverlayFocusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  sessionSummaryOverlayFocusReturnKey = focusReturnKey || terminalTabControlKey(sessionSummaryOverlayFocusReturn);
+  sessionSummaryOverlayTabId = tabId;
+  if (loading) {
+    const previous = sessionSummaryStateForTab(tabId);
+    sessionSummaryByTab.set(tabId, normalizeSessionSummaryClientState({
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "generating",
+      configured: true,
+      enabled: previous?.enabled === true,
+      durable: previous?.durable === true,
+      updatedAt: new Date().toISOString(),
+    }, previous));
+  }
+  elements.sessionSummaryOverlay.hidden = false;
+  renderSessionSummaryOverlay();
+}
+
+function updateSessionSummaryForTab(tabId, value, { resetProjection = false } = {}) {
+  if (!tabId) return null;
+  const normalized = normalizeSessionSummaryClientState(value, sessionSummaryByTab.get(tabId), { resetProjection });
+  if (!normalized) return null;
+  sessionSummaryByTab.set(tabId, normalized);
+  renderSessionSummaryControls();
+  if (sessionSummaryOverlayTabId === tabId) renderSessionSummaryOverlay();
+  return normalized;
+}
+
+async function requestSessionSummaryGeneration(tabId, { refresh = false } = {}) {
+  const previous = sessionSummaryStateForTab(tabId);
+  updateSessionSummaryForTab(tabId, {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: "generating",
+    configured: true,
+    enabled: previous?.enabled === true,
+    durable: previous?.durable === true,
+    updatedAt: new Date().toISOString(),
+  });
+  try {
+    const signal = globalThis.AbortSignal?.timeout?.(SESSION_SUMMARY_REQUEST_TIMEOUT_MS);
+    const response = await api("/api/session-summary/generate", { method: "POST", body: { refresh }, tabId, signal });
+    if (response.data?.summary) updateSessionSummaryForTab(tabId, response.data.summary);
+    if (response.data?.tab) applyTabMetadata(response.data.tab);
+    return response;
+  } catch (error) {
+    updateSessionSummaryForTab(tabId, {
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "failure",
+      configured: true,
+      enabled: previous?.enabled === true,
+      durable: previous?.durable === true,
+      message: error.message || String(error),
+      updatedAt: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+async function openSessionSummaryForTab(tabId = activeTabId, { refresh = false, focusReturnKey = "" } = {}) {
+  if (!tabId || !hasAvailableCommand("summary", { tabId })) return;
+  let state = sessionSummaryStateForTab(tabId);
+  if (!state?.configured) {
+    const response = await api("/api/session-summary/preferences", { tabId });
+    state = updateSessionSummaryForTab(tabId, response.data?.summary || {
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "idle",
+      configured: response.data?.preferences?.configured === true,
+      enabled: response.data?.preferences?.enabled === true,
+      durable: false,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!response.data?.preferences?.configured) {
+      await openNativeSessionSummarySetupDialog({ initialData: response.data, tabId, focusReturnKey });
+      return;
+    }
+  }
+  openSessionSummaryOverlay(tabId, { loading: refresh || !state?.summaryMarkdown, focusReturnKey });
+  if (refresh || !state?.summaryMarkdown) await requestSessionSummaryGeneration(tabId, { refresh }).catch(() => {});
+}
+
+function handleSessionSummaryEvent(event) {
+  updateSessionSummaryForTab(event?.tabId, event?.summary, { resetProjection: event?.kind === "state" });
 }
 
 function slashCommandName(message) {
@@ -29796,6 +38062,19 @@ function nativeSettingToggle(label, checked, hint, badge) {
   return { field, input };
 }
 
+function nativeSettingTextarea(label, value, hint, { maxLength = SESSION_SUMMARY_PROMPT_MAX_CHARS, rows = 6, badge } = {}) {
+  const field = make("label", "native-settings-field native-settings-textarea-field");
+  field.append(nativeSettingsLabelRow(label, badge));
+  const textarea = make("textarea", "dialog-editor native-settings-textarea");
+  textarea.value = String(value || "");
+  textarea.maxLength = maxLength;
+  textarea.rows = rows;
+  textarea.spellcheck = true;
+  field.append(textarea);
+  if (hint) field.append(make("span", "native-settings-hint", hint));
+  return { field, textarea };
+}
+
 function nativeSettingsSection(title, description, controls, { open = true, badge } = {}) {
   const section = make("details", "native-settings-section");
   section.open = !!open;
@@ -29998,7 +38277,7 @@ async function openNativeSettingsDialog() {
       { value: "compact", label: "Compact" },
     ], "Compact reduces spacing while preserving the 12 px text floor.", { label: "browser", tone: "browser" }),
     thinkingOutput: nativeSettingToggle("Show thinking output", settings.hideThinkingBlock !== true, "Browser transcript visibility; also writes Pi's hide-thinking setting.", { label: "browser", tone: "browser" }),
-    doneNotifications: nativeSettingToggle("Agent done notifications", agentDoneNotificationsEnabled, "Browser notification after background tab work completes.", { label: "browser", tone: "browser" }),
+    doneNotifications: nativeSettingToggle("Agent done notifications", agentDoneNotificationsEnabled, "Active-client-only browser notification after background tab work completes or fails. Activity remains the fallback; this is not Web Push after every client closes.", { label: "browser", tone: "browser" }),
     autocompleteMax: nativeSettingSelect("Autocomplete max items", settings.autocompleteMaxVisible ?? autocompleteMaxVisible, SETTINGS_AUTOCOMPLETE_OPTIONS, "Maximum visible slash/path suggestions.", { label: "browser", tone: "browser" }),
     doubleEscape: nativeSettingSelect("Double-escape action", settings.doubleEscapeAction || doubleEscapeAction, SETTINGS_DOUBLE_ESCAPE_OPTIONS, "Action when pressing Escape twice with an empty composer.", { label: "browser", tone: "browser" }),
     treeFilter: nativeSettingSelect("Tree filter mode", settings.treeFilterMode || treeFilterMode, SETTINGS_TREE_FILTER_OPTIONS, "Default filter when opening /tree.", { label: "browser", tone: "browser" }),
@@ -30201,9 +38480,9 @@ const SAFETY_GUARD_CATEGORY_LABELS = Object.freeze({
 async function openNativeSafetyGuardSetupDialog() {
   openNativeCommandDialog({
     title: "/safety-guard-setup",
-    message: "Configure persistent command categories, protected-path checks, and the context shown around dangerous matches.",
+    message: "Configure persistent command categories, protected-path checks, preview context, and optional model auto-review.",
   });
-  renderNativeLoading("Loading safety guard setup…");
+  renderNativeLoading("Loading safety guard setup and authenticated models…");
 
   let data;
   try {
@@ -30217,6 +38496,7 @@ async function openNativeSafetyGuardSetupDialog() {
 
   const config = data.config || {};
   const defaults = data.defaults || {};
+  const models = Array.isArray(data.models) ? data.models : [];
   const categories = Array.isArray(data.categories) && data.categories.length
     ? data.categories
     : Object.keys(SAFETY_GUARD_CATEGORY_LABELS);
@@ -30226,6 +38506,17 @@ async function openNativeSafetyGuardSetupDialog() {
     { length: Math.max(1, maximumContext - minimumContext + 1) },
     (_, index) => String(index + minimumContext),
   );
+  const modelKey = (model) => model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+  const configuredModelKey = config.autoReview?.model?.provider && config.autoReview?.model?.modelId
+    ? `${config.autoReview.model.provider}/${config.autoReview.model.modelId}`
+    : "";
+  const modelOptions = [
+    { value: "", label: models.length ? "Select an authenticated model" : "No authenticated models available" },
+    ...models.map((model) => ({
+      value: modelKey(model),
+      label: `${modelKey(model)}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}`,
+    })),
+  ];
   const categoryControls = Object.fromEntries(categories.map((category) => [
     category,
     nativeSettingToggle(
@@ -30237,38 +38528,105 @@ async function openNativeSafetyGuardSetupDialog() {
   ]));
   const controls = {
     enabled: nativeSettingToggle("Safety guard enabled", config.enabled !== false, "Master switch for command and protected-path guards.", { label: "global", tone: "safety" }),
+    autoReview: nativeSettingToggle("Automatic model review", config.autoReview?.enabled === true, "Off by default. When enabled, matched operations wait for this model's allow/block verdict; failures return to the existing prompt.", { label: "opt-in", tone: "safety" }),
+    autoReviewModel: nativeSettingSelect("Review model", configuredModelKey, modelOptions, "Authenticated provider/model used only for safety preflight. There is no provider fallback.", { label: "required when on", tone: "safety" }),
+    autoReviewThinking: nativeSettingSelect("Review thinking", config.autoReview?.model?.thinkingLevel || "off", data.thinkingLevels || SETTINGS_THINKING_OPTIONS, "Only levels supported by the selected model are offered.", { label: "required when on", tone: "safety" }),
     before: nativeSettingSelect("Lines before a match", config.contextLines?.before ?? 3, contextOptions, "Number of command lines shown before each matched line.", { label: "preview", tone: "browser" }),
     after: nativeSettingSelect("Lines after a match", config.contextLines?.after ?? 3, contextOptions, "Number of command lines shown after each matched line.", { label: "preview", tone: "browser" }),
     protectedWrite: nativeSettingToggle("Guard protected-path writes", config.protectedPaths?.write !== false, "Prompt before write calls target credentials, private keys, or environment files.", { label: "write", tone: "safety" }),
     protectedEdit: nativeSettingToggle("Guard protected-path edits", config.protectedPaths?.edit !== false, "Prompt before edit calls target credentials, private keys, or environment files.", { label: "edit", tone: "safety" }),
   };
+  controls.autoReviewModel.select.options[0].disabled = true;
+  if (configuredModelKey && !models.some((model) => modelKey(model) === configuredModelKey)) {
+    const unavailable = make("option", undefined, `Unavailable: ${configuredModelKey}`);
+    unavailable.value = configuredModelKey;
+    unavailable.disabled = true;
+    controls.autoReviewModel.select.append(unavailable);
+    controls.autoReviewModel.select.value = configuredModelKey;
+  }
 
-  const collectConfig = () => ({
-    version: data.version || 1,
-    enabled: controls.enabled.input.checked,
-    categories: Object.fromEntries(categories.map((category) => [category, categoryControls[category].input.checked])),
-    protectedPaths: {
-      write: controls.protectedWrite.input.checked,
-      edit: controls.protectedEdit.input.checked,
-    },
-    contextLines: {
-      before: Number.parseInt(controls.before.select.value, 10),
-      after: Number.parseInt(controls.after.select.value, 10),
-    },
-  });
+  const autoReviewAvailability = nativeSettingsNote("Auto-review availability", "");
+  const autoReviewAvailabilityText = autoReviewAvailability.querySelector("span");
+  const thinkingLevelsForModel = (selectedModelKey) => {
+    const levels = data.modelThinkingLevels?.[selectedModelKey];
+    return Array.isArray(levels) && levels.length ? levels : [];
+  };
+  const syncAutoReviewControls = ({ preferredThinking, preserveUnavailable = false } = {}) => {
+    const enabled = controls.autoReview.input.checked;
+    const selectedModelKey = controls.autoReviewModel.select.value;
+    const selectedAvailable = models.some((model) => modelKey(model) === selectedModelKey);
+    const levels = thinkingLevelsForModel(selectedModelKey);
+    const preferred = preferredThinking ?? controls.autoReviewThinking.select.value ?? "off";
+    replaceNativeSettingSelectOptions(controls.autoReviewThinking.select, levels.length ? levels : ["off"], preferred);
+    if (preserveUnavailable && preferred && !levels.includes(preferred) && preferred !== "off") {
+      const unavailable = make("option", undefined, `Unavailable: ${preferred}`);
+      unavailable.value = preferred;
+      unavailable.disabled = true;
+      controls.autoReviewThinking.select.append(unavailable);
+      controls.autoReviewThinking.select.value = preferred;
+    }
+    controls.autoReviewModel.select.disabled = !models.length;
+    controls.autoReviewThinking.select.disabled = !selectedAvailable;
+    autoReviewAvailability.classList.toggle("warning", enabled && (!selectedAvailable || !levels.includes(controls.autoReviewThinking.select.value)));
+    autoReviewAvailabilityText.textContent = !enabled
+      ? "Off. Matched operations use the existing interactive prompt; model and thinking can still be preselected before enabling auto-review."
+      : !models.length
+        ? "Unavailable: no authenticated Pi models are available. Run /login or configure a provider before enabling auto-review."
+        : !selectedAvailable
+          ? "Unavailable: select one of the authenticated models from this active tab."
+          : `Ready: ${selectedModelKey} supports ${levels.join(", ")} thinking.`;
+  };
+  controls.autoReview.input.addEventListener("change", () => syncAutoReviewControls());
+  controls.autoReviewModel.select.addEventListener("change", () => syncAutoReviewControls({ preferredThinking: "off" }));
+  syncAutoReviewControls({ preferredThinking: config.autoReview?.model?.thinkingLevel || "off", preserveUnavailable: true });
+
+  const collectConfig = () => {
+    const selectedModelKey = controls.autoReviewModel.select.value;
+    const selectedModel = models.find((model) => modelKey(model) === selectedModelKey);
+    const persistedModel = selectedModelKey === configuredModelKey ? config.autoReview?.model : null;
+    return {
+      version: data.version || 1,
+      enabled: controls.enabled.input.checked,
+      categories: Object.fromEntries(categories.map((category) => [category, categoryControls[category].input.checked])),
+      protectedPaths: {
+        write: controls.protectedWrite.input.checked,
+        edit: controls.protectedEdit.input.checked,
+      },
+      contextLines: {
+        before: Number.parseInt(controls.before.select.value, 10),
+        after: Number.parseInt(controls.after.select.value, 10),
+      },
+      autoReview: {
+        enabled: controls.autoReview.input.checked,
+        model: {
+          provider: selectedModel?.provider || persistedModel?.provider || "",
+          modelId: selectedModel?.id || persistedModel?.modelId || "",
+          thinkingLevel: controls.autoReviewThinking.select.value || "off",
+        },
+      },
+    };
+  };
   const applyConfig = (value) => {
     controls.enabled.input.checked = value?.enabled !== false;
     controls.before.select.value = String(value?.contextLines?.before ?? 3);
     controls.after.select.value = String(value?.contextLines?.after ?? 3);
     controls.protectedWrite.input.checked = value?.protectedPaths?.write !== false;
     controls.protectedEdit.input.checked = value?.protectedPaths?.edit !== false;
+    controls.autoReview.input.checked = value?.autoReview?.enabled === true;
+    const nextModelKey = value?.autoReview?.model?.provider && value?.autoReview?.model?.modelId
+      ? `${value.autoReview.model.provider}/${value.autoReview.model.modelId}`
+      : "";
+    controls.autoReviewModel.select.value = [...controls.autoReviewModel.select.options].some((option) => option.value === nextModelKey) ? nextModelKey : "";
     for (const category of categories) categoryControls[category].input.checked = value?.categories?.[category] !== false;
+    syncAutoReviewControls({ preferredThinking: value?.autoReview?.model?.thinkingLevel || "off", preserveUnavailable: true });
   };
 
   const body = make("div", "native-settings-panel");
   body.append(
     nativeSettingsNote("Persistence", `Saved globally in ${data.path || "~/.pi/agent/safety-guard.json"}. Changes are reloaded before guard checks.`),
     nativeSettingsSection("General", "Enable or disable all guard behavior.", [controls.enabled], { open: true }),
+    nativeSettingsSection("Automatic review", "Opt in to a dedicated authenticated model for non-modal allow/block preflight. Provider failures and invalid verdicts return to the existing prompt.", [controls.autoReview, controls.autoReviewModel, controls.autoReviewThinking], { open: true }),
+    autoReviewAvailability,
     nativeSettingsSection("Command preview", "Choose independent context limits before and after each dangerous matched line.", [controls.before, controls.after], { open: true }),
     nativeSettingsSection("Command categories", "Disable only categories you intentionally do not want guarded.", categories.map((category) => categoryControls[category]), { open: true }),
     nativeSettingsSection("Protected paths", "Control write/edit prompts for secret-bearing files and credential paths.", [controls.protectedWrite, controls.protectedEdit], { open: true }),
@@ -30285,16 +38643,28 @@ async function openNativeSafetyGuardSetupDialog() {
     setNativeActionBusy(save, true, "Saving…");
     setNativeCommandError("");
     try {
+      const submitted = collectConfig();
+      const selectedModelKey = controls.autoReviewModel.select.value;
+      const supportedLevels = thinkingLevelsForModel(selectedModelKey);
+      if (submitted.autoReview.enabled && !models.some((model) => modelKey(model) === selectedModelKey)) {
+        throw new Error("Select an authenticated auto-review model from this active tab.");
+      }
+      if (submitted.autoReview.enabled && !supportedLevels.includes(submitted.autoReview.model.thinkingLevel)) {
+        throw new Error(`${selectedModelKey} does not support thinking level ${submitted.autoReview.model.thinkingLevel}.`);
+      }
       const response = await nativeCommandApi("/api/safety-guard/config", {
         method: "POST",
-        body: { config: collectConfig() },
+        body: { config: submitted },
       });
-      const saved = response.data?.config || collectConfig();
+      const saved = response.data?.config || submitted;
       const activeCategories = categories.filter((category) => saved.categories?.[category]).length;
+      const autoReviewSummary = saved.autoReview?.enabled
+        ? `auto-review ${saved.autoReview.model.provider}/${saved.autoReview.model.modelId} at ${saved.autoReview.model.thinkingLevel}`
+        : "auto-review off";
       addTransientMessage({
         role: "native",
         title: "/safety-guard-setup",
-        content: `Safety guard ${saved.enabled ? "enabled" : "disabled"}; ${activeCategories}/${categories.length} command categories active; preview ${saved.contextLines?.before ?? 3} before and ${saved.contextLines?.after ?? 3} after.`,
+        content: `Safety guard ${saved.enabled ? "enabled" : "disabled"}; ${activeCategories}/${categories.length} command categories active; ${autoReviewSummary}; preview ${saved.contextLines?.before ?? 3} before and ${saved.contextLines?.after ?? 3} after.`,
         level: saved.enabled ? "info" : "warn",
       });
       closeNativeCommandDialog();
@@ -30308,6 +38678,150 @@ async function openNativeSafetyGuardSetupDialog() {
 
 function gitWorkflowSetupModelKey(model) {
   return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved, tabId = activeTabId, focusReturnKey = "" } = {}) {
+  nativeCommandTabId = tabId;
+  openNativeCommandDialog({
+    title: "/summary-setup",
+    message: "Configure persistent background titles and Markdown summaries. Saving confirms the disclosure below, then immediately generates and opens the first summary.",
+  });
+  renderNativeLoading("Loading session summary preferences and available models…");
+
+  let data = initialData;
+  if (!data) {
+    try {
+      const response = await nativeCommandApi("/api/session-summary/preferences");
+      data = response.data || {};
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+      elements.nativeCommandBody.replaceChildren();
+      return;
+    }
+  }
+
+  const preferences = data.preferences || {};
+  const models = Array.isArray(data.models) ? data.models : [];
+  if (!models.length) {
+    setNativeCommandError("No authenticated Pi models are available. Run /login or configure a provider first.");
+    elements.nativeCommandBody.replaceChildren();
+    return;
+  }
+  const configuredKey = `${preferences.model?.provider || ""}/${preferences.model?.modelId || ""}`;
+  const defaultKey = "openai-codex/gpt-5.6-luna";
+  const modelKeys = new Set(models.map(gitWorkflowSetupModelKey));
+  const initialModelKey = modelKeys.has(configuredKey) ? configuredKey : modelKeys.has(defaultKey) ? defaultKey : gitWorkflowSetupModelKey(models[0]);
+  const modelOptions = models.map((model) => ({
+    value: gitWorkflowSetupModelKey(model),
+    label: `${gitWorkflowSetupModelKey(model)}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}`,
+  }));
+  const controls = {
+    model: nativeSettingSelect("Summary model", initialModelKey, modelOptions, "Dedicated authenticated provider/model. No fallback is used.", { label: "required", tone: "safety" }),
+    thinking: nativeSettingSelect("Reasoning effort", preferences.model?.thinkingLevel || "low", SETTINGS_THINKING_OPTIONS, "Only levels supported by the selected model are offered.", { label: "required", tone: "safety" }),
+    automatic: nativeSettingToggle("Generate automatically", preferences.enabled === true, "After eligible settled turns; automatic updates remain silent.", { label: "cost", tone: "safety" }),
+    titleEnabled: nativeSettingToggle("Update generated titles", preferences.title?.enabled !== false, "Only default/automatic tab titles are eligible. Explicit names always win.", { label: "safe", tone: "safety" }),
+    cadence: nativeSettingSelect("Title update cadence", preferences.title?.minSettledTurns || 3, [1, 2, 3, 5, 10, 20].map((value) => ({ value: String(value), label: `${value} settled user turn${value === 1 ? "" : "s"}` })), "Minimum turns between changed generated titles after the first title.", { label: "saved", tone: "browser" }),
+    injectLatest: nativeSettingToggle("Inject latest summary into main-agent context", preferences.context?.injectLatest === true, "Off by default. When enabled, exactly one latest active-branch summary is injected as reference-only data.", { label: "privacy", tone: "safety" }),
+    titlePrompt: nativeSettingTextarea("Editable title prompt", preferences.prompts?.title, "Maximum 8 KiB. This text is untrusted data, not system authority.", { rows: 4, badge: { label: "prompt", tone: "browser" } }),
+    summaryPrompt: nativeSettingTextarea("Editable Markdown summary prompt", preferences.prompts?.summary, "Maximum 8 KiB. Generated Markdown is validated and capped at 16 KiB.", { rows: 7, badge: { label: "prompt", tone: "browser" } }),
+  };
+  const thinkingLevelsForModel = (modelKey) => {
+    const levels = data.modelThinkingLevels?.[modelKey];
+    return Array.isArray(levels) && levels.length ? levels : ["off"];
+  };
+  const syncThinkingLevels = () => {
+    const current = controls.thinking.select.value || preferences.model?.thinkingLevel || "low";
+    replaceNativeSettingSelectOptions(controls.thinking.select, thinkingLevelsForModel(controls.model.select.value), current);
+  };
+  controls.model.select.addEventListener("change", syncThinkingLevels);
+  syncThinkingLevels();
+
+  const disclosure = data.disclosure || {};
+  const body = make("div", "native-settings-panel session-summary-setup-panel");
+  body.append(
+    nativeSettingsNote("Privacy scope", disclosure.scope || "Active-branch user text, final assistant text, and tool names only. Thinking, images, tool arguments/results, credentials, and prior summaries are excluded."),
+    nativeSettingsNote("Cost and provider behavior", disclosure.cost || "One configured-model request per eligible refresh; no provider fallback or automatic retry."),
+    nativeSettingsNote("Persistence and context", disclosure.persistence || "Preferences and generated output are local. Main-agent context injection is off unless enabled."),
+    nativeSettingsSection("Generation profile", "Choose the dedicated model, effort, and automatic-generation policy.", [controls.model, controls.thinking, controls.automatic], { open: true }),
+    nativeSettingsSection("Titles", "Generated names never replace explicit session or browser names.", [controls.titleEnabled, controls.cadence], { open: true }),
+    nativeSettingsSection("Prompts", "Editable instructions are bounded and treated as untrusted data.", [controls.titlePrompt, controls.summaryPrompt], { open: true }),
+    nativeSettingsSection("Privacy and context", "The transcript scope is fixed to text and tool names; injection is separately opt-in.", [controls.injectLatest], { open: true }),
+  );
+  elements.nativeCommandBody.replaceChildren(body);
+  elements.nativeCommandActions.replaceChildren();
+  addNativeCommandAction("Cancel", closeNativeCommandDialog);
+
+  const signature = () => JSON.stringify({
+    model: controls.model.select.value,
+    thinking: controls.thinking.select.value,
+    automatic: controls.automatic.input.checked,
+    titleEnabled: controls.titleEnabled.input.checked,
+    cadence: controls.cadence.select.value,
+    injectLatest: controls.injectLatest.input.checked,
+    titlePrompt: controls.titlePrompt.textarea.value,
+    summaryPrompt: controls.summaryPrompt.textarea.value,
+  });
+  const initialSignature = signature();
+  const updateDirty = () => { nativeSettingsDirty = signature() !== initialSignature; };
+  for (const control of [controls.model.select, controls.thinking.select, controls.automatic.input, controls.titleEnabled.input, controls.cadence.select, controls.injectLatest.input, controls.titlePrompt.textarea, controls.summaryPrompt.textarea]) {
+    control.addEventListener("input", updateDirty);
+    control.addEventListener("change", updateDirty);
+  }
+
+  const save = addNativeCommandAction("Save and generate", async () => {
+    setNativeActionBusy(save, true, "Saving…");
+    setNativeCommandError("");
+    try {
+      const selectedModel = models.find((model) => gitWorkflowSetupModelKey(model) === controls.model.select.value);
+      if (!selectedModel) throw new Error("Select an available session summary model.");
+      const titlePrompt = controls.titlePrompt.textarea.value.trim();
+      const summaryPrompt = controls.summaryPrompt.textarea.value.trim();
+      if (!titlePrompt || !summaryPrompt) throw new Error("Both editable prompts are required.");
+      if (titlePrompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS || summaryPrompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS) throw new Error("Each editable prompt must not exceed 8 KiB.");
+      const targetTabId = nativeCommandTabId || tabId || activeTabId;
+      const reviewed = await appConfirm({
+        title: "Save session summary setup?",
+        summary: `${disclosure.scope || "Selected active-branch text and tool names will be sent to the configured model."}\n\n${disclosure.cost || "Generation may incur provider usage."}`,
+        affected: "Global session-summary preferences and the selected tab's first generated summary",
+        undoable: false,
+        confirmLabel: "Save and generate",
+        danger: false,
+      });
+      if (!reviewed) return;
+      const response = await nativeCommandApi("/api/session-summary/preferences", {
+        method: "PUT",
+        tabId: targetTabId,
+        body: {
+          confirmed: true,
+          preferences: {
+            enabled: controls.automatic.input.checked,
+            model: { provider: selectedModel.provider, modelId: selectedModel.id, thinkingLevel: controls.thinking.select.value },
+            prompts: { title: titlePrompt, summary: summaryPrompt },
+            input: { scope: "text-and-tool-names" },
+            context: { injectLatest: controls.injectLatest.input.checked },
+            title: { enabled: controls.titleEnabled.input.checked, minSettledTurns: Number(controls.cadence.select.value) },
+          },
+        },
+      });
+      updateSessionSummaryForTab(targetTabId, response.data?.summary || {
+        version: SESSION_SUMMARY_PROTOCOL_VERSION,
+        status: "idle",
+        configured: true,
+        enabled: controls.automatic.input.checked,
+        durable: false,
+        updatedAt: new Date().toISOString(),
+      });
+      nativeSettingsDirty = false;
+      closeNativeCommandDialog({ force: true });
+      openSessionSummaryOverlay(targetTabId, { loading: true, focusReturnKey });
+      await requestSessionSummaryGeneration(targetTabId, { refresh: true }).catch(() => {});
+      if (typeof onSaved === "function") await onSaved(response.data?.preferences);
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+    } finally {
+      setNativeActionBusy(save, false);
+    }
+  }, "primary");
 }
 
 async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
@@ -30369,6 +38883,10 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
       { value: "preserve", label: "Use current staged set" },
       { value: "all", label: "Stage all with git add ." },
     ], "Review/select is the safe default and opens Git Changes for per-file staging.", { label: "safety", tone: "safety" }),
+    reviewProcess: nativeSettingSelect("Manual review process", preferences.reviewProcessEnabled !== false ? "enabled" : "disabled", [
+      { value: "enabled", label: "Enabled when aur-review is available" },
+      { value: "disabled", label: "Disabled — continue to message generation" },
+    ], "When enabled, staged changes require explicit approval before message, worktree, or commit actions.", { label: "safety", tone: "safety" }),
     delivery: nativeSettingSelect("Delivery path", preferences.deliveryMode || "ask", [
       { value: "ask", label: "Ask each workflow" },
       { value: "current", label: "Prefer current branch" },
@@ -30397,7 +38915,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
     nativeSettingsNote("Persistence", `Saved globally in ${data.path || "the Pi Web UI settings file"}. Credentials are never stored here.`),
     nativeSettingsSection("Generation profile", "Required model and effort for generated Git text.", [controls.model, controls.thinking], { open: true }),
     nativeSettingsSection("Commit style", "Conventional Commit output preferences.", [controls.language, controls.defaultVariant, controls.scope], { open: true }),
-    nativeSettingsSection("Workflow safety", "Staging, delivery, and verification defaults; push and PR confirmation remain mandatory.", [controls.staging, controls.delivery, controls.verification], { open: true }),
+    nativeSettingsSection("Workflow safety", "Staging, review, delivery, and verification defaults; push and PR confirmation remain mandatory.", [controls.staging, controls.reviewProcess, controls.delivery, controls.verification], { open: true }),
   );
   elements.nativeCommandBody.replaceChildren(body);
   elements.nativeCommandActions.replaceChildren();
@@ -30425,6 +38943,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
               scope: controls.scope.select.value,
             },
             stagingPolicy: controls.staging.select.value,
+            reviewProcessEnabled: controls.reviewProcess.select.value === "enabled",
             deliveryMode: controls.delivery.select.value,
             verificationPolicy: controls.verification.select.value,
           },
@@ -31323,10 +39842,11 @@ async function openNativeAuthSelector(mode) {
 }
 
 async function handleNativeSlashSelectorCommand(message, { usesPromptInput = false } = {}) {
-  const name = slashCommandName(message);
+  const summaryMatch = String(message || "").trim().match(/^\/summary(?:\s+(refresh))?$/i);
+  const name = summaryMatch ? "summary" : slashCommandName(message);
   if (!NATIVE_SELECTOR_COMMANDS.has(name)) return false;
   const featureId = optionalFeatureIdForCommand(name);
-  if (name === "workflow-setup" && !hasLoadedRpcCommand(name)) {
+  if ((name === "workflow-setup" || name === "summary" || name === "summary-setup") && !hasLoadedRpcCommand(name)) {
     const tabContext = activeTabContext();
     addEvent(commandUnavailableMessage(name), "warn");
     refreshCommands(tabContext).catch((error) => {
@@ -31354,6 +39874,12 @@ async function handleNativeSlashSelectorCommand(message, { usesPromptInput = fal
       return true;
     case "settings":
       await openNativeSettingsDialog();
+      return true;
+    case "summary":
+      await openSessionSummaryForTab(activeTabId, { refresh: summaryMatch?.[1]?.toLowerCase() === "refresh" });
+      return true;
+    case "summary-setup":
+      await openNativeSessionSummarySetupDialog();
       return true;
     case "workflow-setup":
       await openNativeWorkflowSetupDialog();
@@ -31421,15 +39947,17 @@ function insertNumpadDecimal(event) {
   return true;
 }
 
+// Transcript-only. Message rendering may reconcile transcript state and the
+// transcript DOM, but never footer/feedback/widget chrome: those surfaces are
+// owned by the coalesced semantic reconciler.
 function renderMessages(messages) {
   latestMessages = messages || [];
+  reconcileOptimisticUserPrompts(latestMessages);
   cleanupLiveToolRunsForMessages(latestMessages);
   syncLastUserPromptFromMessages(latestMessages);
   syncPromptHistoryFromMessages(latestMessages);
   trackSkillsFromMessages(latestMessages, activeTabId);
   renderAllMessages();
-  renderFooter();
-  renderFeedbackTray();
 }
 
 function cancelStreamBubbleHide() {
@@ -31448,7 +39976,8 @@ function outputModeAcknowledgement(event) {
 }
 
 function removeCompactLiveBubble(bubble) {
-  bubble?.remove();
+  const messageKey = bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "compact-live";
+  removeLiveTranscriptBubble(bubble, messageKey);
 }
 
 function clearCompactToolShells() {
@@ -31475,22 +40004,24 @@ function resetCompactLiveOutput({ remove = true } = {}) {
 
 function ensureCompactTextBubble() {
   if (compactTextBubble?.parentElement === elements.chat && compactTextNode) return;
-  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true, itemKey: "live:compact-output" });
   compactTextBubble = created.bubble;
   compactTextBubble.classList.add("compact-live-output");
   compactTextNode = make("div", "compact-live-text");
   created.body.append(compactTextNode);
+  transcriptRenderer.ownSurface(compactTextNode, { messageKey: "live:compact-output", kind: "compact-output", segment: "0" });
   renderRunIndicator({ scroll: false });
 }
 
 function ensureCompactThinkingBubble() {
   if (!thinkingOutputVisible) return false;
   if (compactThinkingBubble?.parentElement === elements.chat && compactThinkingNode) return true;
-  const created = appendMessage({ role: "thinking", title: "thinking (live)", timestamp: Date.now(), content: "", compactThinkingAggregate: true, compactThinkingKey: "live", compactThinkingDefaultExpanded: true }, { streaming: true });
+  const created = appendMessage({ role: "thinking", title: "thinking (live)", timestamp: Date.now(), content: "", compactThinkingAggregate: true, compactThinkingKey: "live", compactThinkingDefaultExpanded: true }, { streaming: true, itemKey: "live:compact-thinking" });
   compactThinkingBubble = created.bubble;
   compactThinkingBubble.classList.add("compact-live-output");
   compactThinkingNode = make("div", "markdown-body thinking-text compact-live-thinking");
   created.body.append(compactThinkingNode);
+  transcriptRenderer.ownSurface(compactThinkingNode, { messageKey: "live:compact-thinking", kind: "assistant-thinking", segment: "0" });
   renderRunIndicator({ scroll: false });
   return true;
 }
@@ -31515,15 +40046,24 @@ function renderCompactToolShell(event, { complete = false } = {}) {
     body.append(status);
     bubble.append(header, body);
     bubble.dataset.toolCallId = id;
-    appendChatMessageBubble(bubble);
+    transcriptRenderer.ownMessage(bubble, { key: `live:compact-tool:${id}`, role: "toolExecution" });
+    transcriptRenderer.ownSurface(body, { messageKey: `live:compact-tool:${id}`, kind: "tool-execution", segment: "0" });
+    transcriptRenderer.ownSurface(status, { messageKey: `live:compact-tool:${id}`, kind: "tool-execution", segment: "status" });
+    appendChatMessageBubble(bubble, { liveTail: true });
     shell = { bubble, role, status };
     compactToolShells.set(id, shell);
   }
   const name = String(event?.toolName || event?.name || "tool");
   shell.role.textContent = `tool: ${name}`;
-  shell.status.textContent = complete
-    ? event?.isError ? "failed" : "done"
-    : "running";
+  transcriptRenderer.updateTextSurface({
+    key: `compact-tool:${id}`,
+    surface: shell.status,
+    messageKey: `live:compact-tool:${id}`,
+    kind: "tool-execution",
+    text: complete
+      ? event?.isError ? "failed" : "done"
+      : "running",
+  });
   shell.bubble.classList.toggle("tool-error", !!event?.isError);
   shell.bubble.classList.toggle("tool-running", !complete);
   shell.bubble.classList.toggle("tool-success", complete && !event?.isError);
@@ -31533,7 +40073,17 @@ function renderCompactToolShell(event, { complete = false } = {}) {
 function flushCompactLiveOutput() {
   if (compactLiveState.text) {
     ensureCompactTextBubble();
-    if (compactTextNode?.textContent !== compactLiveState.text) compactTextNode.textContent = compactLiveState.text;
+    if (compactTextNode?.textContent !== compactLiveState.text) {
+      const selectionSnapshot = captureChatTextSelection(compactTextNode);
+      transcriptRenderer.updateTextSurface({
+        key: "compact-output",
+        surface: compactTextNode,
+        messageKey: "live:compact-output",
+        kind: "compact-output",
+        text: compactLiveState.text,
+      });
+      restoreChatTextSelection(selectionSnapshot);
+    }
   }
   if (compactLiveState.thinking && ensureCompactThinkingBubble()) {
     if (compactThinkingNode?._rawThinkingText !== compactLiveState.thinking) renderThinkingMarkdown(compactThinkingNode, compactLiveState.thinking);
@@ -31552,10 +40102,6 @@ function handleCompactMessageUpdate(event) {
   if (!reduced.changed) return true;
   compactLiveState = reduced.state;
   clearCompactToolShells();
-  if (reduced.kind.startsWith("thinking")) setRunIndicatorActivity("Thinking…", { scroll: false });
-  else if (reduced.kind.startsWith("toolcall")) setRunIndicatorActivity("Building tool call…", { scroll: false });
-  else setRunIndicatorActivity("Writing response…", { scroll: false });
-  compactLiveScheduler.request();
   return true;
 }
 
@@ -31615,17 +40161,9 @@ function applyOutputModeControl(event, tabContext = activeTabContext()) {
   return true;
 }
 
-function cancelStreamingAssistantTextRender() {
-  clearTimeout(streamTextRenderTimer);
-  streamTextRenderTimer = null;
-  if (streamTextRenderFrame !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(streamTextRenderFrame);
-  streamTextRenderFrame = null;
-}
-
 function removeStreamBubble() {
-  cancelStreamingAssistantTextRender();
   cancelStreamBubbleHide();
-  streamBubble?.remove();
+  removeLiveTranscriptBubble(streamBubble, "assistant");
   streamBubble = null;
   streamText = null;
   streamBubbleVisibleSince = 0;
@@ -31682,6 +40220,62 @@ function streamRenderableAssistantText() {
   return streamDerivedText().finalText;
 }
 
+function authoritativeAssistantTextForAdoption(message) {
+  if (message?.role !== "assistant") return null;
+  const finalParts = assistantDisplayMessages(message).filter((part) => part?.role === "assistant");
+  // A live bubble can only be adopted without a structural map when the
+  // authoritative message has exactly one final-output surface. Multi-part
+  // settlement remains an explicit invalidation/mapping follow-up.
+  if (finalParts.length !== 1) return null;
+  return stripTodoProgressLines(textFromContent(finalParts[0].content), { streaming: false });
+}
+
+function adoptLiveAssistantBubble(messages) {
+  const compactCandidate = compactTextBubble?.isConnected && compactTextBubble.parentElement === elements.chat && compactTextNode
+    ? {
+        bubble: compactTextBubble,
+        surface: compactTextNode,
+        text: stripTodoProgressLines(compactLiveState.text, { streaming: true }),
+        kind: "compact",
+      }
+    : null;
+  const normalCandidate = streamBubble?.isConnected && streamBubble.parentElement === elements.chat && streamText
+    ? { bubble: streamBubble, surface: streamText, text: streamRenderableAssistantText(), kind: "normal" }
+    : null;
+  const candidate = compactCandidate?.text ? compactCandidate : normalCandidate?.text ? normalCandidate : null;
+  if (!candidate) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const authoritativeText = authoritativeAssistantTextForAdoption(messages[index]);
+    if (authoritativeText !== candidate.text) continue;
+    const key = `m:${index}`;
+    candidate.bubble.dataset.itemKey = key;
+    transcriptRenderer.ownMessage(candidate.bubble, { key, role: "assistant" });
+    transcriptRenderer.ownSurface(candidate.surface, { messageKey: key, kind: "assistant-final", segment: "0" });
+    pendingTranscriptAdoptions.set(key, candidate.bubble);
+    return candidate.kind;
+  }
+  return "";
+}
+
+function finalizeAdoptedAssistantBubble(bubble, message, key) {
+  const compactSurface = bubble?.querySelector?.(".compact-live-text");
+  if (!compactSurface) return;
+  const authoritativeText = authoritativeAssistantTextForAdoption(message);
+  if (authoritativeText === null) return;
+  bubble.classList.remove("compact-live-output");
+  compactSurface.classList.remove("compact-live-text");
+  compactSurface.classList.add("markdown-body", "compact-transcript-text");
+  transcriptRenderer.reconcileMarkdownSurface({
+    key: `compact-settlement:${key}`,
+    surface: compactSurface,
+    messageKey: key,
+    kind: "assistant-final",
+    text: authoritativeText,
+    stableBoundary: (value) => value.length,
+    renderInto: renderMarkdownInto,
+  });
+}
+
 function scheduleStreamBubbleHide() {
   if (!streamBubble) return;
   const visibleForMs = streamBubbleVisibleSince ? performance.now() - streamBubbleVisibleSince : STREAM_OUTPUT_MIN_VISIBLE_MS;
@@ -31712,18 +40306,6 @@ function renderStreamingAssistantText() {
   } else {
     scheduleStreamBubbleHide();
   }
-}
-
-function scheduleStreamingAssistantTextRender({ immediate = false } = {}) {
-  if (streamTextRenderTimer || streamTextRenderFrame !== null) return;
-  const flush = () => {
-    streamTextRenderTimer = null;
-    streamTextRenderFrame = null;
-    renderStreamingAssistantText();
-    scheduleChatFollowScroll();
-  };
-  if (immediate && typeof requestAnimationFrame === "function") streamTextRenderFrame = requestAnimationFrame(flush);
-  else streamTextRenderTimer = setTimeout(flush, immediate ? 0 : STREAM_OUTPUT_TOOLCALL_GUARD_MS);
 }
 
 function suppressStreamingAssistantTextBeforeToolCall() {
@@ -31763,14 +40345,23 @@ function renderStreamingToolCallCard({ scroll = false } = {}) {
   const message = streamingToolCallMessage();
   const displayText = streamToolCallRawArguments || (streamToolCallComplete ? "{}" : "(waiting for argument stream…)");
   if (!streamToolCallBubble?.parentElement || !streamToolCallText) {
-    const created = appendMessage(message, { streaming: true });
+    const created = appendMessage(message, { streaming: true, itemKey: `live:tool-call:${streamToolCallId || "pending"}` });
     streamToolCallBubble = created.bubble;
     streamToolCallText = created.body.querySelector(".tool-call-arguments") || created.body.querySelector(".code-block");
+    transcriptRenderer.ownSurface(streamToolCallText, { messageKey: streamToolCallBubble.dataset.transcriptMessageKey, kind: "tool-execution", segment: "0" });
   }
   streamToolCallBubble._copyMessage = message;
   const role = streamToolCallBubble.querySelector(":scope > .message-header .message-role");
   if (role && role.textContent !== message.title) role.textContent = message.title;
-  if (streamToolCallText && streamToolCallText.textContent !== displayText) streamToolCallText.textContent = displayText;
+  if (streamToolCallText && streamToolCallText.textContent !== displayText) {
+    transcriptRenderer.updateTextSurface({
+      key: `tool-call:${streamToolCallId || "pending"}`,
+      surface: streamToolCallText,
+      messageKey: streamToolCallBubble.dataset.transcriptMessageKey,
+      kind: "tool-execution",
+      text: displayText,
+    });
+  }
   renderRunIndicator({ scroll: false });
   if (scroll) scrollChatToBottom();
 }
@@ -31783,10 +40374,11 @@ function removeStreamingToolCallCard() {
 function ensureStreamBubble() {
   cancelStreamBubbleHide();
   if (streamBubble?.parentElement === elements.chat) return;
-  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "assistant", title: "final output", timestamp: Date.now(), content: "" }, { streaming: true, itemKey: "live:assistant" });
   streamBubble = created.bubble;
   streamText = make("div", "markdown-body streaming-markdown");
   created.body.append(streamText);
+  transcriptRenderer.ownSurface(streamText, { messageKey: "live:assistant", kind: "assistant-final", segment: "0" });
   streamBubbleVisibleSince = performance.now();
   renderRunIndicator({ scroll: false });
   scrollChatToBottom();
@@ -31795,10 +40387,11 @@ function ensureStreamBubble() {
 function ensureStreamingThinkingBubble() {
   if (!thinkingOutputVisible) return false;
   if (streamThinkingBubble?.parentElement === elements.chat) return true;
-  const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true });
+  const created = appendMessage({ role: "thinking", title: "thinking", timestamp: Date.now(), content: "" }, { streaming: true, itemKey: "live:thinking" });
   streamThinkingBubble = created.bubble;
   streamThinking = make("div", "markdown-body thinking-text");
   created.body.append(streamThinking);
+  transcriptRenderer.ownSurface(streamThinking, { messageKey: "live:thinking", kind: "assistant-thinking", segment: "0" });
   renderRunIndicator({ scroll: false });
   scrollChatToBottom();
   return true;
@@ -31809,9 +40402,8 @@ function showStreamingThinking(initialText = "") {
   if (initialText && !streamThinking.textContent) renderThinkingMarkdown(streamThinking, initialText);
 }
 
-function resetStreamBubble() {
-  resetCompactLiveOutput();
-  cancelStreamingAssistantTextRender();
+function resetStreamBubble({ preserveCompact = false } = {}) {
+  resetCompactLiveOutput({ remove: !preserveCompact });
   cancelStreamBubbleHide();
   streamBubble = null;
   streamText = null;
@@ -31849,26 +40441,38 @@ function restoreCompactLiveOutputAfterChatRebuild() {
   compactThinkingBubble = null;
   compactThinkingNode = null;
   if (streamMessageActive) flushCompactLiveOutput();
-  for (const shell of compactToolShells.values()) appendChatMessageBubble(shell.bubble);
+  for (const shell of compactToolShells.values()) appendChatMessageBubble(shell.bubble, { liveTail: true });
   renderRunIndicator({ scroll: false });
 }
 
 /**
- * The chat DOM was rebuilt while an assistant message is still streaming:
- * drop references to the detached nodes but keep stream text state, then
- * re-append the live thinking/text bubbles so no partial output is lost.
+ * Reconcile live stream surfaces after an authoritative transcript render.
+ * Transcript resets intentionally keep mounted live-tail bubbles, so reuse
+ * those nodes and only rebuild a surface when it was actually detached.
  */
 function restoreStreamRenderAfterChatRebuild() {
   const thinkingText = streamThinking?._rawThinkingText || streamThinking?.textContent || "";
   const thinkingComplete = streamThinkingBubble?.classList.contains("complete") === true;
   const toolCallWasVisible = !!(streamToolCallBubble?.parentElement === elements.chat || streamToolCallRawArguments || streamToolCallName);
-  streamBubble = null;
-  streamText = null;
-  streamThinkingBubble = null;
-  streamThinking = null;
-  streamToolCallBubble = null;
-  streamToolCallText = null;
-  streamBubbleVisibleSince = 0;
+  const streamOutputMounted = !!(streamBubble?.parentElement === elements.chat && streamText?.isConnected && streamBubble.contains(streamText));
+  const thinkingOutputMounted = !!(streamThinkingBubble?.parentElement === elements.chat && streamThinking?.isConnected && streamThinkingBubble.contains(streamThinking));
+  const toolCallOutputMounted = !!(streamToolCallBubble?.parentElement === elements.chat && streamToolCallText?.isConnected && streamToolCallBubble.contains(streamToolCallText));
+  if (!streamOutputMounted) {
+    removeLiveTranscriptBubble(streamBubble, "assistant-rebuild");
+    streamBubble = null;
+    streamText = null;
+    streamBubbleVisibleSince = 0;
+  }
+  if (!thinkingOutputMounted) {
+    removeLiveTranscriptBubble(streamThinkingBubble, "thinking-rebuild");
+    streamThinkingBubble = null;
+    streamThinking = null;
+  }
+  if (!toolCallOutputMounted) {
+    removeLiveTranscriptBubble(streamToolCallBubble, "tool-call-rebuild");
+    streamToolCallBubble = null;
+    streamToolCallText = null;
+  }
   if (thinkingText && setStreamingThinkingText(thinkingText) && thinkingComplete) {
     streamThinkingBubble?.classList.add("complete");
   }
@@ -32038,52 +40642,35 @@ function handleMessageUpdate(event) {
   if (compactOutputActive() && handleCompactMessageUpdate(event)) return;
   const update = event.assistantMessageEvent || {};
   if (update.type === "thinking_start") {
-    setRunIndicatorActivity("Thinking…", { scroll: false });
     syncStreamingThinkingFromUpdate(event, update);
-    scheduleChatFollowScroll();
   } else if (update.type === "thinking_delta") {
     const delta = thinkingDeltaText(update);
-    setRunIndicatorActivity("Thinking…", { scroll: false });
     const synced = syncStreamingThinkingFromUpdate(event, update);
     if (thinkingOutputVisible && delta && (!synced || !streamThinking?.textContent)) {
       showStreamingThinking("");
       if (streamThinking) renderThinkingMarkdown(streamThinking, `${streamThinking._rawThinkingText || ""}${delta}`);
     }
-    scheduleChatFollowScroll();
   } else if (update.type === "thinking_end") {
     if (syncStreamingThinkingFromUpdate(event, update)) streamThinkingBubble?.classList.add("complete");
-    setRunIndicatorActivity("Finished thinking; waiting for the next output or action…", { scroll: false });
   } else if (update.type === "text_delta" || update.type === "text_end") {
     syncStreamRawTextFromUpdate(event, update);
-    scheduleLiveTodoProgressWidgetSync(streamRawText, event.tabId || activeTabId);
-    setRunIndicatorActivity("Writing response…", { scroll: false });
-    scheduleStreamingAssistantTextRender({ immediate: !!(streamToolCallSeen || streamBubble) });
-    // Streaming output must stay transcript-local. Full footer/status
-    // reconciliation happens on message/state refreshes, not per token.
-    scheduleChatFollowScroll();
+    renderStreamingAssistantText();
   } else if (update.type === "toolcall_start") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = updateStreamingToolCallFromEvent(event, { reset: true, scroll: true });
-    setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
-    addEvent(`tool call started in assistant message`, "info");
+    updateStreamingToolCallFromEvent(event, { reset: true });
   } else if (update.type === "toolcall_delta") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = updateStreamingToolCallFromEvent(event, { appendDelta: true });
-    setRunIndicatorActivity(`Building tool call: ${name}…`, { scroll: false });
-    scheduleChatFollowScroll();
+    updateStreamingToolCallFromEvent(event, { appendDelta: true });
   } else if (update.type === "toolcall_end") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
-    const name = updateStreamingToolCallFromEvent(event, { complete: true, scroll: true });
-    setRunIndicatorActivity(`Tool call ready: ${name}; waiting to run…`, { scroll: false });
+    updateStreamingToolCallFromEvent(event, { complete: true });
   } else if (update.type === "error") {
     streamProviderErrorText = assistantStreamErrorMessage(event, update);
-    setRunIndicatorActivity("Assistant stream reported an error…");
     appendMessage({ role: "error", title: "assistant error", timestamp: Date.now(), content: streamProviderErrorText, level: "error" }, { streaming: true });
     renderRunIndicator({ scroll: false });
-    scheduleChatFollowScroll();
   }
 }
 
@@ -32110,7 +40697,13 @@ async function refreshState(tabContext = activeTabContext()) {
   syncActiveTabActivityFromState(currentState);
   syncRunIndicatorFromState(currentState);
   renderStatus();
+  if (mobilePhoneExperienceInstalled && isMobileShellV2Active()) renderMobilePhoneExperience();
   requestGitFooterWebuiPayload(tabContext, { force: shouldRefreshGitFooter });
+  // Sampling support and effective values depend on the active model, so refresh
+  // them whenever the session reports a different model.
+  if (modelStateKey(previousState?.model) !== modelStateKey(currentState?.model)) {
+    refreshSamplingParametersForTabContext(tabContext);
+  }
 }
 
 async function refreshStats(tabContext = activeTabContext()) {
@@ -32366,14 +40959,25 @@ async function refreshMessages(tabContext = activeTabContext(), { authoritative 
   latestMessages = nextMessages;
   latestMessagesSessionKey = sessionKey;
   cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);
+  const selectionSnapshot = captureChatTextSelection();
   const preserveCompactStream = compactLiveStreamRenderActive();
   const preserveNormalStream = !preserveCompactStream && liveStreamRenderActive();
-  if (!preserveCompactStream && !preserveNormalStream) resetStreamBubble();
+  if (!preserveCompactStream && !preserveNormalStream) {
+    const adoptedOutput = adoptLiveAssistantBubble(latestMessages);
+    resetStreamBubble({ preserveCompact: adoptedOutput === "compact" });
+  }
   renderMessages(latestMessages);
   if (preserveCompactStream) restoreCompactLiveOutputAfterChatRebuild();
   else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
+  restoreChatTextSelection(selectionSnapshot);
   markTabOutputSeen();
-  renderFooter();
+  // Authoritative content just landed: derive the todo-progress record once
+  // here instead of from raw token cadence, and let the coalesced semantic
+  // reconciler own the footer/widget chrome that message data can change.
+  // syncLiveTodoProgressWidgetFromText owns the frame-coalesced widget render
+  // and only fires when the parsed checklist value actually changed.
+  reconcileTodoProgressFromMessages(latestMessages, tabContext.tabId);
+  scheduleSemanticReconcile({ footer: true }, tabContext);
 }
 
 async function refreshModels(tabContext = activeTabContext()) {
@@ -33158,6 +41762,7 @@ function renderCommands() {
 async function refreshCommands(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return;
   const response = await api("/api/commands", { tabId: tabContext.tabId });
+  if (!tabs.some((tab) => tab.id === tabContext.tabId)) return;
   const catalog = {
     raw: normalizeCommands(response.data?.commands || [], { dedupe: false }),
     available: normalizeCommands(response.data?.commands || []),
@@ -33166,10 +41771,12 @@ async function refreshCommands(tabContext = activeTabContext()) {
   // while this request was in flight. Guided Git must never borrow another
   // tab's extension availability or duplicate-command alias.
   commandCatalogsByTab.set(tabContext.tabId, catalog);
+  scheduleTabsRender();
   if (!isCurrentTabContext(tabContext)) return;
   rawAvailableCommands = catalog.raw;
   availableCommands = catalog.available;
   updateOptionalFeatureAvailability();
+  renderSessionSummaryControls();
   renderCommands();
   if (elements.commandPaletteDialog?.open) renderCommandPalette({ preserveScroll: true });
 }
@@ -33375,6 +41982,11 @@ function ensureActiveEventStream(tabContext = activeTabContext()) {
 async function reconcileForegroundState(reason = "resume") {
   if (document.visibilityState === "hidden") return;
 
+  const wasAway = mobileConnectionState === "away";
+  mobileConnectionState = navigator.onLine === false ? "offline" : "reconnecting";
+  mobileConnectionLabel = mobileConnectionState === "offline" ? "Paused/offline" : "Reconnecting";
+  recordMobileDiagnostic("foreground reconcile", reason);
+  renderMobilePhoneExperience();
   const tabResult = await Promise.allSettled([refreshTabs()]);
   const tabContext = activeTabContext();
   ensureActiveEventStream(tabContext);
@@ -33383,9 +41995,25 @@ async function reconcileForegroundState(reason = "resume") {
   if (tabContext.tabId) results.push(...(await Promise.allSettled([refreshAll(tabContext)])));
   if (!isCurrentTabContext(tabContext)) return;
 
+  const failed = results.some((result) => result.status === "rejected");
   for (const result of results) {
     if (result.status === "rejected") addEvent(`foreground refresh failed after ${reason}: ${result.reason?.message || String(result.reason)}`, "error");
   }
+  if (failed || backendOffline || navigator.onLine === false) {
+    mobileConnectionState = "offline";
+    mobileConnectionLabel = "Paused/offline";
+  } else {
+    mobileConnectionState = "online";
+    mobileConnectionLabel = wasAway ? "Continued while away · reconciled" : "Online · reconciled";
+    clearTimeout(mobileConnectionLabelResetTimer);
+    mobileConnectionLabelResetTimer = setTimeout(() => {
+      if (mobileConnectionState !== "online") return;
+      mobileConnectionLabel = "Online";
+      renderMobilePhoneExperience();
+    }, 45_000);
+    await applyPendingMobileNavigationTarget();
+  }
+  renderMobilePhoneExperience();
 }
 
 function scheduleForegroundReconcile(reason = "resume", delay = FOREGROUND_RECONCILE_DELAY_MS) {
@@ -33463,8 +42091,8 @@ function updateServerActionButton() {
   button.textContent = action === "restart" ? "Restart" : action === "update" || action === "update-all" ? "Update" : action === "stop" ? "Stop" : "Run";
   button.classList.toggle("danger", action === "stop");
   if (action === "restart") setServerActionStatus("Ready to restart the Web UI server.", "info");
-  else if (action === "update") setServerActionStatus("Ready to run pi update --self for Pi only, then restart the Web UI server.", "info");
-  else if (action === "update-all") setServerActionStatus("Ready to check pi update --all support, use the compatible fallback when needed, update detected Web UI/Optional Feature Pi package roots, then restart the Web UI server.", "info");
+  else if (action === "update") setServerActionStatus("Ready to create and confirm an exact Pi-only update plan.", "info");
+  else if (action === "update-all") setServerActionStatus("Ready to create and confirm an exact combined update plan for eligible Pi, Web UI, and Pi-owned Optional Features.", "info");
   else if (action === "stop") setServerActionStatus("Ready to stop the Web UI server.", "info");
   else setServerActionStatus();
 }
@@ -33485,19 +42113,25 @@ function resetServerActionControls() {
   updateServerActionButton();
 }
 
-async function waitForServerRestart() {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    await delay(attempt === 0 ? 900 : 500);
-    const message = `Restarting… reconnect attempt ${attempt + 1}/40`;
+async function waitForServerRestart(previousBootIdentity = serverBootIdentity) {
+  const deadline = Date.now() + 90_000;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    await delay(attempt === 1 ? 900 : 500);
+    const remainingSeconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    const message = `Restarting… waiting for changed server identity (${remainingSeconds}s remaining)`;
     setServerActionStatus(message, "warn");
     setServerRestartOverlay(true, message);
     try {
-      await api("/api/health", { scoped: false });
+      const health = await api("/api/health", { scoped: false });
+      if (!health.bootIdentity || health.bootIdentity === previousBootIdentity) continue;
+      serverBootIdentity = health.bootIdentity;
       setBackendOffline(false);
       await initializeTabs();
       setServerRestartOverlay(false);
       setServerActionStatus("Server restarted and reconnected.", "success");
-      addEvent("Pi Web UI server restarted", "warn");
+      addEvent("Pi Web UI server restarted with a changed boot identity", "warn");
       return true;
     } catch (error) {
       setBackendOffline(true, error);
@@ -33537,7 +42171,7 @@ async function restartServer() {
   }
 
   setBackendOffline(true, new Error("restart requested from side panel"));
-  const restarted = await waitForServerRestart();
+  const restarted = await waitForServerRestart(serverBootIdentity);
   if (elements.serverActionSelect) {
     elements.serverActionSelect.disabled = false;
     elements.serverActionSelect.value = "";
@@ -33802,6 +42436,51 @@ function restorePromptInputAfterRoutingError(message, { usesPromptInput, targetT
   if (!tabDrafts.get(targetTabId)) tabDrafts.set(targetTabId, message);
 }
 
+function createBrowserPromptRequestId() {
+  const generated = globalThis.crypto?.randomUUID?.();
+  if (generated) return generated;
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function retryMobileFailedSend() {
+  const pending = mobileFailedSend;
+  if (!pending || pending.retrying) return;
+  pending.retrying = true;
+  renderMobileFailedSendRecovery();
+  recordMobileDiagnostic("manual send retry", pending.kind);
+  try {
+    const path = pending.kind === "steer" ? "/api/steer" : pending.kind === "follow-up" ? "/api/follow-up" : "/api/prompt";
+    const response = await api(path, { method: "POST", body: pending.body, tabId: pending.tabId });
+    applyResponseTab(response);
+    if (pending.tabId === activeTabId && elements.promptInput.value.trim() === pending.inputMessage.trim()) {
+      elements.promptInput.value = "";
+      tabDrafts.set(pending.tabId, "");
+      resizePromptInput();
+    }
+    clearAttachments(pending.tabId);
+    mobileFailedSend = null;
+    renderMobileFailedSendRecovery();
+    persistMobileContinuityState();
+    addEvent("failed send retried manually with the original request identity", "info");
+    scheduleForegroundReconcile("manual failed-send retry", 0);
+  } catch (error) {
+    pending.retrying = false;
+    renderMobileFailedSendRecovery();
+    addEvent(`manual retry was not confirmed: ${error.message || String(error)}`, "error");
+  }
+}
+
+function discardMobileFailedSend() {
+  if (!mobileFailedSend) return;
+  mobileFailedSend = null;
+  renderMobileFailedSendRecovery();
+  persistMobileContinuityState();
+  addEvent("discarded failed-send recovery; the composer draft remains available", "warn");
+  recordMobileDiagnostic("failed send discarded");
+}
+
 async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = activeTabId, throwOnError = false, streamingBehavior } = {}) {
   const usesPromptInput = explicitMessage === undefined;
   const rawMessage = usesPromptInput ? elements.promptInput.value : explicitMessage;
@@ -33811,6 +42490,12 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   if (voiceConversationActiveFor(targetTabId)) voiceConversation.handleUserActivity();
   const tabContext = activeTabContext(targetTabId);
   const attachments = usesPromptInput ? [...attachmentsForTab(targetTabId)] : [];
+  const unavailableAttachments = attachments.filter((attachment) => attachment.requiresReselect);
+  if (unavailableAttachments.length) {
+    addEvent(`${unavailableAttachments.length} restored attachment${unavailableAttachments.length === 1 ? " requires" : "s require"} reselection before sending.`, "warn");
+    if (isMobileShellV2Active()) mobileOpenSurface("actionSheet", "context");
+    return;
+  }
   if (!originalMessage && attachments.length === 0) return;
   if (kind === "prompt" && attachments.length === 0 && await handleNativeSlashSelectorCommand(originalMessage, { usesPromptInput })) return;
   const userBash = kind === "prompt" && attachments.length === 0 ? parseUserBashInput(originalMessage) : null;
@@ -33824,6 +42509,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
   const targetWasBusy = targetWasStreaming || targetWasCompacting;
   const busyBehavior = normalizeBusyPromptBehavior(busyPromptBehavior);
   const startsRun = kind === "prompt" && !targetWasBusy;
+  let optimisticPromptId = "";
   clearPromptInputForRouting({ usesPromptInput, targetTabId, tabContext });
   resumeChatAutoFollow();
   updateJumpToLatestButton();
@@ -33832,12 +42518,13 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     promptRoutingTabs.add(targetTabId);
     markTabWorkingLocally(targetTabId);
     if (isCurrentTabContext(tabContext)) {
-      appendOptimisticUserPrompt(originalMessage, attachments.length);
+      optimisticPromptId = appendOptimisticUserPrompt(originalMessage, attachments.length);
       setRunIndicatorActivity(attachments.length ? "Preparing attachments for routing…" : "Routing prompt to the selected agent…");
     }
   }
 
   let message = originalMessage;
+  let dispatchedRequest = null;
   try {
     const prepared = attachments.length ? await prepareAttachmentsForPrompt(attachments, targetTabId) : { images: [], uploadedFiles: [], inlineImageIds: new Set() };
     message = composeMessageWithAttachments(originalMessage, prepared.uploadedFiles, prepared.inlineImageIds);
@@ -33845,6 +42532,10 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     // to become active while attachments/requests were resolving.
     if (kind === "prompt" && attachments.length === 0) message = resolveRpcSlashCommandMessage(message, { tabId: targetTabId });
     const bodyBase = { message };
+    // The ID is generated once per browser dispatch and scoped by the server to
+    // targetTabId. This implementation intentionally never retries an
+    // ambiguous mutation automatically.
+    if (kind === "prompt") bodyBase.requestId = createBrowserPromptRequestId();
     if (prepared.images.length) bodyBase.images = prepared.images;
     if (!message.startsWith("/")) {
       rememberPromptHistory(message, { tabId: targetTabId });
@@ -33860,13 +42551,18 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     } else {
       const body = { ...bodyBase };
       if (targetWasBusy) body.streamingBehavior = streamingBehavior || busyBehavior;
+      dispatchedRequest = { kind, body, tabId: targetTabId, inputMessage };
       response = await api("/api/prompt", { method: "POST", body, tabId: targetTabId });
     }
     applyResponseTab(response);
+    // A successful RPC response ends prompt-routing ownership even when an
+    // extension command handled the input without starting an agent turn.
+    // Canonical streaming state keeps real agent runs active after this handoff.
     if (startsRun) promptRoutingTabs.delete(targetTabId);
     if (response?.command === "native_slash_command" && /^\/new(?:\s|$)/.test(message)) forgetLastUserPrompt(targetTabId);
     const targetStillActive = isCurrentTabContext(tabContext);
     if (startsRun && response?.command === "native_slash_command") {
+      discardOptimisticUserPrompt(optimisticPromptId);
       markTabIdleLocally(targetTabId);
       if (targetStillActive) clearRunIndicatorActivity();
     } else if (targetStillActive && response?.data?.queuedFor === "compaction") {
@@ -33881,6 +42577,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       applyNativeSlashCommandEffects(response, message, tabContext);
     }
     if (usesPromptInput) clearAttachments(targetTabId);
+    persistMobileContinuityState();
     if (targetStillActive) {
       hideCommandSuggestions();
       if (response?.command !== "native_slash_command") scheduleRefreshState(120, tabContext);
@@ -33889,8 +42586,15 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     }
   } catch (error) {
     restorePromptInputAfterRoutingError(inputMessage, { usesPromptInput, targetTabId, tabContext });
+    if (dispatchedRequest?.kind === "prompt" && dispatchedRequest.body?.requestId && error?.backendOffline === true && isMobileShellV2Active()) {
+      mobileFailedSend = { ...dispatchedRequest, retrying: false };
+      renderMobileFailedSendRecovery();
+      recordMobileDiagnostic("send not confirmed", kind);
+      persistMobileContinuityState();
+    }
     if (startsRun) {
       promptRoutingTabs.delete(targetTabId);
+      discardOptimisticUserPrompt(optimisticPromptId, { render: false });
       markTabIdleLocally(targetTabId);
       if (isCurrentTabContext(tabContext)) clearRunIndicatorActivity();
     }
@@ -33917,6 +42621,7 @@ function removeQueuedDialogRequests(ids = []) {
   if (activeDialog && idSet.has(String(activeDialog.id || ""))) {
     if (elements.dialog.open) elements.dialog.close();
     activeDialog = null;
+    activeDialogCancel = null;
     showNextDialog();
     return true;
   }
@@ -33935,6 +42640,10 @@ function handleExtensionUiRequest(request) {
     }
     case "setStatus": {
       const statusKey = request.statusKey || "extension";
+      if (statusKey === FEATURE_DECISION_OUTPUT_STATUS_KEY) {
+        handleFeatureDecisionOutputStatus(request.statusText, request.tabId || activeTabId);
+        return;
+      }
       if (statusKey === FEATURE_CATEGORY_STATUS_KEY) {
         handleFeatureCategoryStatus(request.statusText, request.tabId || activeTabId);
         return;
@@ -33963,10 +42672,7 @@ function handleExtensionUiRequest(request) {
       updateOptionalFeatureAvailability();
       if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) {
         if (currentState?.isStreaming || runIndicatorLocallyActive) return;
-        if (isInteractiveDropdownOpen()) {
-          deferredUiRenderCallbacks.set("footer", renderFooter);
-          return;
-        }
+        if (deferUiRenderDuringInteractiveSurface("footer", renderFooter)) return;
         renderFooter();
         return;
       }
@@ -34060,9 +42766,33 @@ async function sendDialogResponse(payload) {
     if (responseId && activeDialog && String(activeDialog.id || "") !== responseId) return;
     if (elements.dialog.open) elements.dialog.close();
     activeDialog = null;
-    if (runIndicatorIsActive()) setRunIndicatorActivity("Continuing after your response…");
+    activeDialogCancel = null;
+    if (runIndicatorIsActive()) {
+      setRunIndicatorActivity("Continuing after your response…");
+      // Extension commands can continue background work after Pi has already
+      // returned to an idle canonical state. Reconcile promptly so this local
+      // handoff label cannot survive the workflow that requested the dialog.
+      scheduleRefreshState(120, tabContext);
+    }
     showNextDialog();
   }
+}
+
+function cancelActiveExtensionDialog(event) {
+  if (!activeDialog || typeof activeDialogCancel !== "function") return false;
+  event?.preventDefault?.();
+  return activeDialogCancel();
+}
+
+function createDialogResponder(sendResponse) {
+  let responseSent = false;
+  return (response, onAccept) => {
+    if (responseSent) return false;
+    responseSent = true;
+    onAccept?.();
+    sendResponse(response);
+    return true;
+  };
 }
 
 function addDialogButton(label, handler, className) {
@@ -34100,7 +42830,7 @@ function appendWorkflowScriptTokens(parent, line) {
   if (start < line.length) parent.append(document.createTextNode(line.slice(start)));
 }
 
-function renderWorkflowScriptPreview(request) {
+function renderWorkflowScriptPreview(request, respondToDialog) {
   const source = request.prefill ?? "";
   const sourceLines = source.split("\n");
   const searchableLines = sourceLines.map((line) => line.toLocaleLowerCase());
@@ -34242,14 +42972,15 @@ function renderWorkflowScriptPreview(request) {
 
   preview.append(metadata, toolbar, codeViewer);
   elements.dialogBody.append(preview);
-  addDialogButton("Cancel workflow", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, cancelled: true, tabId: request.tabId }));
-  addDialogButton("Back to approval", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: request.prefill, tabId: request.tabId }), "primary");
+  addDialogButton("Cancel workflow", () => respondToDialog({ cancelled: true }));
+  addDialogButton("Back to approval", () => respondToDialog({ value: request.prefill }), "primary");
   setTimeout(() => codeViewer.focus(), 0);
 }
 
 function showNextDialog() {
   if (activeDialog || dialogQueue.length === 0) return;
   activeDialog = dialogQueue.shift();
+  activeDialogCancel = null;
   const request = activeDialog;
 
   const prompt = normalizeDialogPrompt(request);
@@ -34259,9 +42990,11 @@ function showNextDialog() {
   const isGuardrailDialog = isGuardrailDialogPrompt(displayPrompt);
   const isReleaseDialog = !!releasePrompt;
   const isWorkflowScriptPreview = isWorkflowScriptPreviewRequest(request, prompt);
+  const questionnaire = request.method === "select" && !isReleaseDialog ? questionnaireSelectParts(prompt, request.options) : null;
   elements.dialog.classList.toggle("guardrail-dialog", isGuardrailDialog);
   elements.dialog.classList.toggle("release-dialog", isReleaseDialog);
   elements.dialog.classList.toggle("workflow-script-dialog", isWorkflowScriptPreview);
+  elements.dialog.classList.toggle("questionnaire-dialog", !!questionnaire);
   elements.dialogTitle.textContent = displayPrompt.title;
   if (isReleaseDialog) renderReleaseDialogMessage(elements.dialogMessage, displayPrompt.message);
   else renderAnsiText(elements.dialogMessage, displayPrompt.message);
@@ -34269,9 +43002,33 @@ function showNextDialog() {
   elements.dialogBody.replaceChildren();
   elements.dialogActions.replaceChildren();
 
-  const cancel = () => sendDialogResponse({ type: "extension_ui_response", id: request.id, cancelled: true, tabId: request.tabId });
+  const respondToDialog = createDialogResponder((response) => {
+    sendDialogResponse({ type: "extension_ui_response", id: request.id, tabId: request.tabId, ...response });
+  });
+  const cancel = () => respondToDialog({ cancelled: true });
+  activeDialogCancel = cancel;
 
-  if (request.method === "select") {
+  if (questionnaire) {
+    const options = make("div", "dialog-options questionnaire-options");
+    const respondToQuestionnaire = (response) => respondToDialog(response, () => {
+      options.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      elements.dialogActions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    });
+    activeDialogCancel = () => respondToQuestionnaire({ cancelled: true });
+    (request.options || []).forEach((option, index) => {
+      const optionLabel = String(option);
+      const row = questionnaire.rows[index];
+      const button = row.kind === "action"
+        ? renderQuestionnaireActionButton(row)
+        : renderQuestionnaireOptionButton(row, questionnaire.mode);
+      // Presentation is derived, but the response always carries the exact
+      // native option string the questionnaire runtime produced.
+      button.addEventListener("click", () => respondToQuestionnaire({ value: optionLabel }));
+      options.append(button);
+    });
+    elements.dialogBody.append(options);
+    addDialogButton("Cancel", () => respondToQuestionnaire({ cancelled: true }), "questionnaire-dialog-cancel");
+  } else if (request.method === "select") {
     const options = make("div", "dialog-options");
     for (const option of request.options || []) {
       const optionLabel = String(option);
@@ -34284,36 +43041,54 @@ function showNextDialog() {
       if (isReleaseDialog && /^\[x\]/.test(optionLabel)) button.classList.add("release-target-option", "release-target-selected");
       if (isReleaseDialog && /^\[ \]/.test(optionLabel)) button.classList.add("release-target-option");
       if (isReleaseDialog && /^(?:No|Cancel)$/i.test(optionLabel)) button.classList.add("release-cancel-action");
-      button.addEventListener("click", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: optionLabel, tabId: request.tabId }));
+      button.addEventListener("click", () => respondToDialog({ value: optionLabel }));
       options.append(button);
     }
     elements.dialogBody.append(options);
     addDialogButton("Cancel", cancel);
   } else if (request.method === "confirm") {
     addDialogButton("Cancel", cancel);
-    addDialogButton("No", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, confirmed: false, tabId: request.tabId }));
-    addDialogButton("Yes", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, confirmed: true, tabId: request.tabId }), "primary");
+    addDialogButton("No", () => respondToDialog({ confirmed: false }));
+    addDialogButton("Yes", () => respondToDialog({ confirmed: true }), "primary");
   } else if (request.method === "input") {
     const input = make("input", "dialog-input");
     input.value = request.prefill || "";
     input.placeholder = request.placeholder || "";
     elements.dialogBody.append(input);
-    addDialogButton("Cancel", cancel);
-    addDialogButton("Submit", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: input.value, tabId: request.tabId }), "primary");
+    // The dialog form uses method="dialog", so an unhandled Enter would close it
+    // implicitly without ever sending a response and leave the extension blocked.
+    // Keyboard, click, and cancel paths therefore share one guarded one-shot closure.
+    const respondToInput = (response) => respondToDialog(response, () => {
+      input.disabled = true;
+      elements.dialogActions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    });
+    const submitInput = () => respondToInput({ value: input.value });
+    activeDialogCancel = () => respondToInput({ cancelled: true });
+    input.addEventListener("keydown", (event) => {
+      const intent = dialogInputEnterIntent(event);
+      if (intent === "ignore") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (intent === "submit") submitInput();
+    });
+    addDialogButton("Cancel", () => respondToInput({ cancelled: true }));
+    addDialogButton("Submit", submitInput, "primary");
     setTimeout(() => input.focus(), 0);
   } else if (isWorkflowScriptPreview) {
-    renderWorkflowScriptPreview(request);
+    renderWorkflowScriptPreview(request, respondToDialog);
   } else if (request.method === "editor") {
     const textarea = make("textarea", "dialog-editor");
     textarea.value = request.prefill || "";
     elements.dialogBody.append(textarea);
     addDialogButton("Cancel", cancel);
-    addDialogButton("Submit", () => sendDialogResponse({ type: "extension_ui_response", id: request.id, value: textarea.value, tabId: request.tabId }), "primary");
+    addDialogButton("Submit", () => respondToDialog({ value: textarea.value }), "primary");
     setTimeout(() => textarea.focus(), 0);
   }
 
   elements.dialog.showModal();
 }
+
+elements.dialog.addEventListener("cancel", cancelActiveExtensionDialog);
 
 function supervisorEventEnvelope(event, fallbackTabId = activeTabId) {
   if (!event || typeof event !== "object") return null;
@@ -34436,9 +43211,65 @@ function handleInactiveTabEvent(event) {
   }
 }
 
+const TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES = new Set([
+  "agent_start",
+  "message_start",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_end",
+  "agent_end",
+  "agent_settled",
+  "auto_retry_start",
+  "auto_retry_end",
+  "compaction_start",
+  "compaction_end",
+  "webui_output_mode",
+  "pi_process_exit",
+  "pi_process_error",
+]);
+
+function dispatchTranscriptStreamEvent(event) {
+  return streamOutputController.dispatch(event, {
+    owner: transcriptStreamOwner(event?.tabId || activeTabId),
+  });
+}
+
+function flushTranscriptStreamBarrier(event) {
+  if (!TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES.has(event?.type)) return;
+  streamOutputController.barrier(event.type);
+  reconcileUnknownTranscriptEvidenceAtBarrier(event);
+  if (event.type === "pi_process_exit" || event.type === "pi_process_error") streamOutputController.cancel();
+}
+
 function handleEvent(event) {
+  if (dispatchTranscriptStreamEvent(event)) return;
+  flushTranscriptStreamBarrier(event);
+  if (event?.type === "webui_session_summary") {
+    handleSessionSummaryEvent(event);
+    return;
+  }
+  if (event?.type === "webui_optional_feature_migration") {
+    applyOptionalFeatureMigrationSnapshot(event.snapshot);
+    return;
+  }
+  if (["webui_optional_feature_restart_completed", "webui_optional_feature_restart_deferred"].includes(event?.type)) {
+    optionalFeatureRestartNotice = {
+      tabId: event.tabId || activeTabId,
+      tabTitle: event.tabTitle || "terminal",
+      autoRestarted: event.autoRestarted === true,
+      restartDeferred: event.restartDeferred === true,
+      reason: event.reason || "",
+    };
+    addEvent(event.autoRestarted ? "restarted tab to load new optional features" : "optional feature restart deferred because the tab is busy", event.restartDeferred ? "warn" : "info");
+    renderOptionalFeatureMigrationSurface();
+    return;
+  }
   if (eventHasTabActivityPayload(event)) ingestEventTabActivity(event);
   if (event?.type === "auto_retry_start" || event?.type === "auto_retry_end") trackAutoRetryStateFromEvent(event);
+  // Advance the fallback tool-boundary epoch before inactive-tab routing.
+  // Inactive tool boundaries are still tracked, so their agent_start must own
+  // the same run identity semantics as the foreground tab.
+  if (event?.type === "agent_start") beginToolBoundaryRun(event);
   if (eventMayAffectSkillUsage(event)) trackSkillsFromEvent(event);
   if (!eventTargetsActiveTab(event)) {
     handleInactiveTabEvent(event);
@@ -34448,8 +43279,7 @@ function handleEvent(event) {
   switch (event.type) {
     case "webui_connected": {
       const connectedTabId = event.tabId || activeTabId;
-      featureCategoryByTab.delete(connectedTabId);
-      if (connectedTabId === activeTabId) renderFeatureCategoryTag(connectedTabId);
+      clearFeatureDecisionStateForTab(connectedTabId, { render: true });
       acceptOutputModeAcknowledgement(event);
       setWebuiVersion(event.version);
       setPiVersion(event.piVersion);
@@ -34537,6 +43367,10 @@ function handleEvent(event) {
     case "webui_git_changed":
       invalidateGitPanelRepository(event.root);
       break;
+    case "webui_workspace_files_changed":
+      if (event.tabId && event.tabId !== activeTabId) break;
+      refreshFileTreeLive(tabContext).catch((error) => addEvent(error.message || String(error), "error"));
+      break;
     case "webui_cwd_changed":
       addEvent(`${event.tabTitle || "terminal"} cwd changed to ${event.cwd}`);
       setAppRunnerData(event.tabId || activeTabId, { cwd: event.cwd, activeRun: null, runners: [] });
@@ -34612,15 +43446,15 @@ function handleEvent(event) {
       scheduleRefreshState();
       break;
     case "agent_start":
+      promptRoutingTabs.delete(event.tabId || activeTabId);
       assistantErrorSurfacedThisRun = false;
       markTabWorkingLocally(event.tabId || activeTabId, { runStarted: true });
       if (currentState) currentState = { ...currentState, isStreaming: true };
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ streaming: true });
       setRunIndicatorActivity("Agent run started; waiting for first output or action…");
       addEvent("agent started");
-      scheduleRefreshState();
-      renderFooter();
-      renderFeedbackTray();
+      syncLifecycleComposerState({ force: true });
+      scheduleSemanticReconcile({ state: true, footer: true, feedback: true }, tabContext);
       break;
     case "agent_end":
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
@@ -34634,9 +43468,7 @@ function handleEvent(event) {
       }
       addEvent("agent run ended; waiting for settlement");
       if (runIndicatorIsActive()) setRunIndicatorActivity("Agent run ended; checking for retry or continuation…", { scroll: false });
-      scheduleRefreshMessages();
-      scheduleRefreshState();
-      scheduleRefreshFooter();
+      scheduleSemanticReconcile({ messages: true, state: true, footerData: true }, tabContext);
       break;
     case "message_start":
       if (event.message?.role === "assistant") {
@@ -34644,9 +43476,6 @@ function handleEvent(event) {
         streamMessageActive = true;
         setRunIndicatorActivity("Starting assistant message…", { scroll: false });
       }
-      break;
-    case "message_update":
-      handleMessageUpdate(event);
       break;
     case "message_end": {
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
@@ -34658,9 +43487,9 @@ function handleEvent(event) {
       }
       streamProviderErrorText = "";
       if (runIndicatorIsActive()) setRunIndicatorActivity("Assistant message finished; waiting for the next step…", { scroll: false });
-      scheduleRefreshMessages();
-      scheduleRefreshState();
-      scheduleRefreshFooter();
+      // Authoritative message reconciliation derives the todo-progress record;
+      // raw assistant tokens never rebuild widgets.
+      scheduleSemanticReconcile({ messages: true, state: true, footerData: true }, tabContext);
       break;
     }
     case "tool_execution_start":
@@ -34675,11 +43504,7 @@ function handleEvent(event) {
         handleToolExecutionStart(event);
       }
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
-      addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
-      break;
-    case "tool_execution_update":
-      if (!compactOutputActive()) handleToolExecutionUpdate(event);
-      setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`, { scroll: false });
+      if (claimToolBoundaryRecord(event, "log:start")) addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
       break;
     case "tool_execution_end": {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
@@ -34693,10 +43518,10 @@ function handleEvent(event) {
         handleToolExecutionEnd(event);
       }
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
-      addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
+      if (claimToolBoundaryRecord(event, "log:end")) addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
       // Compact tool shells deliberately defer rich body construction to the
       // final transcript reconciliation; normal mode retains its live card.
-      scheduleRefreshFooter();
+      scheduleSemanticReconcile({ footerData: true }, tabContext);
       break;
     }
     case "compaction_start":
@@ -34716,11 +43541,10 @@ function handleEvent(event) {
       if (!currentState?.isStreaming) clearRunIndicatorActivity();
       markTabOutputSeen();
       renderStatus();
-      scheduleRefreshState();
-      scheduleRefreshMessages();
-      scheduleRefreshFooter();
+      scheduleSemanticReconcile({ state: true, messages: true, footerData: true }, tabContext);
       break;
     case "agent_settled":
+      promptRoutingTabs.delete(event.tabId || activeTabId);
       if (compactOutputActive()) finishCompactLiveOutput(tabContext);
       streamMessageActive = false;
       addEvent("agent finished");
@@ -34731,27 +43555,20 @@ function handleEvent(event) {
       // flushes queued interruptions itself; calling setAssistantActivity here
       // first would flush the queue and then speak the interrupted answer.
       if (voiceConversationActiveFor(event.tabId || activeTabId)) void handleVoiceConversationTurnEnd(tabContext);
-      clearRunIndicatorActivity();
+      clearRunIndicatorActivity({ deferRemoval: !autoFollowChat || !isChatNearBottom() });
       markTabOutputSeen();
       requestGitFooterWebuiPayload(tabContext, { force: true });
-      scheduleRefreshState();
-      scheduleRefreshMessages();
-      scheduleRefreshFooter();
-      scheduleRefreshCodexUsage(2200);
-      scheduleRefreshClaudeUsage(2200);
-      refreshCodexFastMode(tabContext).catch((error) => addEvent(`Codex Fast mode refresh failed: ${error.message || String(error)}`, "warn"));
-      renderFeedbackTray();
-      {
-        const workflowTabId = event.tabId || activeTabId;
-        const workflow = gitWorkflowForTab(workflowTabId, { create: false });
-        if (workflow?.active && workflow.step === "generating") {
-          loadGitWorkflowMessage({ requireFresh: true, generationId: workflow.messageGenerationId, runId: workflow.runId, tabId: workflowTabId });
-        } else if (workflow?.active && workflow.step === "branchNaming") {
-          loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
-        } else if (workflow?.active && workflow.step === "prGenerating") {
-          loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
-        }
-      }
+      // Settlement is the one boundary allowed to reconcile the full changed
+      // set; it runs once here through the coalesced semantic scheduler.
+      syncLifecycleComposerState({ force: true });
+      scheduleSemanticReconcile({
+        state: true,
+        messages: true,
+        footerData: true,
+        feedback: true,
+        usage: true,
+        workflow: true,
+      }, tabContext);
       break;
     case "auto_retry_start": {
       const seconds = Math.max(0, Math.ceil(Number(event.delayMs || 0) / 1000));
@@ -34812,6 +43629,7 @@ function handleEvent(event) {
 function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto", fallbackAttempted = false } = {}) {
   eventSource?.close();
   eventSource = null;
+  streamOutputController.cancel();
   resetCompactLiveOutput();
   activeOutputMode = "normal";
   outputModeAcknowledged = false;
@@ -34825,6 +43643,10 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   });
   const source = new EventSource(`/api/events?${parameters.toString()}`);
   eventSource = source;
+  source.onopen = () => {
+    if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
+    refreshOptionalFeaturePackageStatuses().catch(() => {});
+  };
   source.onmessage = (message) => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
     try {
@@ -34837,6 +43659,8 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   };
   source.onerror = () => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
+    streamOutputController.flush();
+    streamOutputController.cancel();
     if (compactOutputActive()) compactLiveScheduler.flushNow();
     addEvent("event stream disconnected; browser will retry", "warn");
     fetch("/api/health", { cache: "no-store" }).catch((error) => setBackendOffline(true, error));
@@ -34896,11 +43720,18 @@ elements.skillEditorDialog?.addEventListener("keydown", (event) => {
   if (!elements.skillEditorSaveButton?.disabled) saveSkillEditor();
 });
 elements.skillEditorDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
+elements.featureCategoryTag?.addEventListener("click", openFeatureDecisionDialog);
+elements.featureDecisionDialog?.addEventListener("close", () => {
+  featureDecisionDialogTabId = null;
+  if (elements.featureDecisionDialogOutput) elements.featureDecisionDialogOutput.textContent = "";
+});
 elements.sendFeedbackButton.addEventListener("click", () => submitQueuedActionFeedback());
 elements.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   sendPrompt("prompt");
 });
+elements.mobileFailedSendRetryButton?.addEventListener("click", retryMobileFailedSend);
+elements.mobileFailedSendDiscardButton?.addEventListener("click", discardMobileFailedSend);
 elements.followUpQueueTrigger?.addEventListener("click", () => {
   setFollowUpQueueOpen(!followUpQueueOpen);
 });
@@ -35006,7 +43837,6 @@ elements.newTabMenu?.addEventListener("focusout", () => {
 elements.newTabCurrentDirectoryButton?.addEventListener("click", () => createTerminalTab(currentDirectoryForNewTab(), { triggerButton: elements.newTabCurrentDirectoryButton }));
 elements.newTabChooseDirectoryButton?.addEventListener("click", () => createTerminalTabFromChosenDirectory({ triggerButton: elements.newTabChooseDirectoryButton }));
 elements.newTabWorktreeButton?.addEventListener("click", () => openBranchWorktreePicker());
-elements.splitTabButton?.addEventListener("click", () => splitActiveTerminalTab());
 elements.workspaceSaveButton?.addEventListener("click", () => saveWebuiWorkspace());
 elements.terminalSplitCloseButton?.addEventListener("click", () => closeTerminalSplitView());
 elements.closeAllTabsButton.addEventListener("click", () => closeAllTerminalTabs());
@@ -35133,6 +43963,17 @@ optionsMenuContainer?.addEventListener("focusout", () => {
     if (!optionsMenuContainer?.contains(document.activeElement)) setOptionsMenuOpen(false);
   }, 0);
 });
+elements.optionsMenuButton.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  setPublishMenuOpen(false);
+  setNativeCommandMenuOpen(false);
+  setAppRunnerMenuOpen(false);
+  setOptionsMenuOpen(true);
+  const items = optionsMenuRootItems();
+  focusOptionsMenuItem(event.key === "ArrowDown" ? items[0] : items[items.length - 1]);
+});
+initializeOptionsSubmenus();
 elements.releaseNpmButton.addEventListener("click", () => runPublishWorkflow("/release-npm"));
 elements.releaseAurButton.addEventListener("click", () => runPublishWorkflow("/release-aur"));
 elements.nativeSkillsButton.addEventListener("click", () => runNativeCommandMenu("/skills"));
@@ -35169,6 +44010,7 @@ elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsNameButton.addEventListener("click", () => runNativeCommandMenu("/name"));
 elements.optionsCloneButton.addEventListener("click", () => runNativeCommandMenu("/clone"));
 elements.optionsSettingsButton.addEventListener("click", () => runNativeCommandMenu("/settings"));
+elements.optionsSummarySetupButton?.addEventListener("click", () => runNativeCommandMenu("/summary-setup"));
 elements.optionsWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/workflow-setup"));
 elements.optionsSafetyGuardSetupButton?.addEventListener("click", () => runNativeCommandMenu("/safety-guard-setup"));
 elements.optionsGitWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/git-workflow-setup"));
@@ -35177,6 +44019,28 @@ elements.optionsForkButton.addEventListener("click", () => runNativeCommandMenu(
 elements.optionsTreeButton.addEventListener("click", () => runNativeCommandMenu("/tree"));
 elements.optionsStatsButton?.addEventListener("click", () => openStatsOverlay({ refresh: true }));
 elements.optionsFooterVisibilityButton?.addEventListener("click", openGitFooterVisibilityDialog);
+elements.sessionSummaryOverlayCloseButton?.addEventListener("click", () => closeSessionSummaryOverlay());
+elements.sessionSummaryOverlayCopyButton?.addEventListener("click", async () => {
+  const state = sessionSummaryStateForTab(sessionSummaryOverlayTabId);
+  if (!state?.summaryMarkdown) return;
+  try {
+    await copyText(state.summaryMarkdown);
+    elements.sessionSummaryOverlayStatus.textContent = "Markdown copied to the clipboard.";
+  } catch (error) {
+    elements.sessionSummaryOverlayStatus.textContent = `Copy failed: ${error.message || String(error)}`;
+    elements.sessionSummaryOverlayStatus.classList.add("error");
+  }
+});
+elements.sessionSummaryOverlayRefreshButton?.addEventListener("click", () => {
+  const tabId = sessionSummaryOverlayTabId;
+  if (tabId) void requestSessionSummaryGeneration(tabId, { refresh: true }).catch(() => {});
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || elements.sessionSummaryOverlay?.hidden || document.querySelector("dialog[open]")) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  closeSessionSummaryOverlay();
+}, true);
 elements.gitFooterVisibilitySelectAllButton?.addEventListener("click", () => setGitFooterVisibilitySelection(true));
 elements.gitFooterVisibilitySelectNoneButton?.addEventListener("click", () => setGitFooterVisibilitySelection(false));
 elements.gitFooterVisibilityCloseButton?.addEventListener("click", closeGitFooterVisibilityDialog);
@@ -35202,6 +44066,18 @@ elements.statsOverlayCustomDays?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   requestStatsOverlayRefresh();
+});
+elements.statsOverlayTabs?.addEventListener("keydown", (event) => {
+  const index = STATS_OVERLAY_TABS.findIndex((tab) => tab.id === statsOverlayActiveTab);
+  if (index < 0) return;
+  let nextIndex = -1;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % STATS_OVERLAY_TABS.length;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + STATS_OVERLAY_TABS.length) % STATS_OVERLAY_TABS.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = STATS_OVERLAY_TABS.length - 1;
+  if (nextIndex < 0) return;
+  event.preventDefault();
+  activateStatsOverlayTab(STATS_OVERLAY_TABS[nextIndex].id, { focus: true });
 });
 elements.statsOverlayCloseButton?.addEventListener("click", () => elements.statsOverlayDialog?.close());
 elements.statsOverlayDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
@@ -35245,6 +44121,14 @@ elements.undoToastButton?.addEventListener("click", () => runOfferedUndo());
 elements.undoToastDismissButton?.addEventListener("click", dismissUndoToast);
 elements.confirmationCancelButton?.addEventListener("click", () => finishApplicationConfirmation(false));
 elements.confirmationConfirmButton?.addEventListener("click", () => finishApplicationConfirmation(true));
+elements.gitPullErrorMergeButton?.addEventListener("click", () => integrateGitPullDivergence("merge"));
+elements.gitPullErrorRebaseButton?.addEventListener("click", () => integrateGitPullDivergence("rebase"));
+elements.gitPullErrorReviewButton?.addEventListener("click", reviewGitPullDivergence);
+elements.gitPullErrorCopyButton?.addEventListener("click", () => copyGitPullErrorOutput());
+elements.gitPullErrorCloseButton?.addEventListener("click", closeGitPullErrorDialog);
+elements.gitPullErrorDialog?.addEventListener("cancel", (event) => {
+  if (gitPullErrorContext.busy) event.preventDefault();
+});
 elements.confirmationDialog?.addEventListener("cancel", (event) => {
   event.preventDefault();
   finishApplicationConfirmation(false);
@@ -35450,6 +44334,8 @@ function resetAbortLongPressAffordance() {
 async function abortActiveRun({ source = "button" } = {}) {
   if (abortRequestInFlight || !isAbortAvailable()) return;
   const tabContext = activeTabContext();
+  streamOutputController.barrier("user-abort");
+  reconcileUnknownTranscriptEvidenceAtBarrier({ type: "user_abort", tabId: tabContext.tabId });
   abortRequestInFlight = true;
   resetAbortLongPressAffordance();
   updateComposerModeButtons();
@@ -35466,6 +44352,9 @@ async function abortActiveRun({ source = "button" } = {}) {
     }
     if (hadActiveRun) setRunIndicatorActivity(`Abort requested${source === "escape" ? " from Esc" : source === "long-press" ? " from long-press" : ""}; checking whether Pi stopped…`);
     await api("/api/abort", { method: "POST", body: {}, tabId: tabContext.tabId });
+    // Abort also terminates an in-flight local routing handoff. Without this,
+    // canonical idle state cannot clear a stale extension-command indicator.
+    promptRoutingTabs.delete(tabContext.tabId);
     if (!isCurrentTabContext(tabContext)) return;
     addAbortTranscriptNotice({ activeRun: hadActiveRun });
     scheduleAbortStateChecks(tabContext);
@@ -35646,6 +44535,33 @@ elements.themeSchemeToggle?.querySelectorAll("[data-scheme-mode]").forEach((butt
     setThemeSchemeMode(button.dataset.schemeMode, { announce: true }).catch((error) => addEvent(error.message || String(error), "error"));
   });
 });
+elements.themeCustomizeButton?.addEventListener("click", () => openThemeCustomizer().catch((error) => addEvent(error.message || String(error), "error")));
+elements.themeCustomizerName?.addEventListener("input", updateThemeCustomizerFromVisual);
+elements.themeCustomizerScope?.addEventListener("change", () => {
+  invalidateThemeCustomizerOverwrite();
+  updateThemeCustomizerActions();
+});
+elements.themeCustomizerThinkingMax?.addEventListener("input", updateThemeCustomizerFromVisual);
+elements.themeCustomizerVars?.addEventListener("input", updateThemeCustomizerFromVisual);
+elements.themeCustomizerJson?.addEventListener("input", updateThemeCustomizerFromJson);
+elements.themeCustomizerCancelButton?.addEventListener("click", () => closeThemeCustomizer({ restore: true }));
+elements.themeCustomizerResetButton?.addEventListener("click", resetThemeCustomizerDraft);
+elements.themeCustomizerSaveButton?.addEventListener("click", () => saveThemeCustomizer().catch((error) => setThemeCustomizerStatus(error.message || String(error), "error")));
+elements.themeCustomizerOverwriteButton?.addEventListener("click", () => saveThemeCustomizer({ overwrite: true }).catch((error) => setThemeCustomizerStatus(error.message || String(error), "error")));
+elements.themeCustomizerDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (themeCustomizerState?.saving) {
+    setThemeCustomizerStatus("Wait for the theme save to finish before closing.", "warn");
+    return;
+  }
+  closeThemeCustomizer({ restore: true });
+});
+elements.themeCustomizerDialog?.addEventListener("close", () => {
+  const state = themeCustomizerState;
+  if (!state || state.closing) return;
+  restoreThemeCustomizerOpeningState(state.generation);
+  themeCustomizerState = null;
+});
 if (elements.backgroundChooseButton && elements.backgroundInput) {
   elements.backgroundChooseButton.addEventListener("click", () => elements.backgroundInput.click());
   elements.backgroundInput.addEventListener("change", () => {
@@ -35708,6 +44624,12 @@ if (elements.subagentOpenModeSelect) {
     setSubagentOpenMode(elements.subagentOpenModeSelect.value, { announce: true });
   });
 }
+elements.subagentsAutoClearButton?.addEventListener("click", () => {
+  setSubagentAutoClearEnabled(!subagentAutoClearEnabled, { announce: true });
+});
+elements.subagentsClearFinishedButton?.addEventListener("click", () => {
+  void clearFinishedSubagentRuns();
+});
 elements.subagentLaunchSlotScope?.addEventListener("change", () => {
   selectSubagentLaunchSlotScope(elements.subagentLaunchSlotScope.value).catch((error) => {
     subagentLaunchSlotError = error.message || String(error);
@@ -35743,6 +44665,24 @@ elements.subagentLaunchSlotsLater?.addEventListener("click", () => {
   setSubagentLaunchSlotAnnouncement("Agent models are saved. Reload this tab later before relying on them for future launches.");
   renderSubagentLaunchSlots();
 });
+elements.applySamplingParametersButton?.addEventListener("click", () => {
+  applySamplingParameters().catch((error) => {
+    setSamplingParametersFeedback({ error: error.message || String(error) });
+    renderSamplingParameters();
+  });
+});
+elements.resetSamplingParametersButton?.addEventListener("click", () => {
+  resetSamplingParameters().catch((error) => {
+    setSamplingParametersFeedback({ error: error.message || String(error) });
+    renderSamplingParameters();
+  });
+});
+elements.reloadSamplingParametersButton?.addEventListener("click", () => {
+  loadSamplingParameters({ force: true }).catch((error) => {
+    setSamplingParametersFeedback({ error: error.message || String(error) });
+    renderSamplingParameters();
+  });
+});
 elements.subagentTerminalCopyButton?.addEventListener("click", () => copySubagentTerminalOutput());
 elements.subagentTerminalRefreshButton?.addEventListener("click", () => {
   refreshSubagentTerminalView(activeSubagentTerminalId, { showLoading: true }).finally(() => scheduleSubagentTerminalRefresh());
@@ -35768,8 +44708,18 @@ elements.piVersionButton?.addEventListener("click", () => {
   openPiReleaseNotes().catch((error) => addEvent(error.message || String(error), "error"));
 });
 elements.webuiVersionButton?.addEventListener("click", () => {
+  openWebuiPackageDialog().catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.piComponentUpdateButton?.addEventListener("click", () => {
+  startComponentUpdate("pi").catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.webuiComponentUpdateButton?.addEventListener("click", () => {
+  startComponentUpdate("webui").catch((error) => addEvent(error.message || String(error), "error"));
+});
+elements.webuiPackageNpmButton?.addEventListener("click", () => {
   confirmOpenWebuiNpmPage().catch((error) => addEvent(error.message || String(error), "error"));
 });
+elements.webuiPackageCloseButton?.addEventListener("click", () => elements.webuiPackageDialog?.close());
 elements.piReleaseNotesCloseButton?.addEventListener("click", () => elements.piReleaseNotesDialog?.close());
 elements.toggleSidePanelButton.addEventListener("click", () => {
   setSidePanelCollapsed(true);
@@ -35848,6 +44798,9 @@ document.addEventListener("pointerdown", (event) => {
   }
   if (elements.sidePanelContextMenu && !elements.sidePanelContextMenu.hidden && !event.target?.closest?.(".side-panel-context-menu")) {
     closeSidePanelContextMenu();
+  }
+  if (elements.gitFooterContextMenu && !elements.gitFooterContextMenu.hidden && !event.target?.closest?.(".git-footer-context-menu")) {
+    closeGitFooterContextMenu();
   }
 }, { passive: true });
 document.addEventListener("pointermove", (event) => {
@@ -36040,6 +44993,11 @@ document.addEventListener("visibilitychange", () => {
     scheduleForegroundReconcile("visibility resume", 0);
     refreshSubagents().finally(() => scheduleRefreshSubagents());
   } else {
+    mobileConnectionState = "away";
+    mobileConnectionLabel = "Backgrounded · run state unverified";
+    persistMobileContinuityState();
+    recordMobileDiagnostic("page backgrounded");
+    renderMobilePhoneExperience();
     resetAbortLongPressAffordance();
     scheduleRefreshSubagents();
   }
@@ -36047,13 +45005,50 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pageshow", () => scheduleForegroundReconcile("page show", 0));
 window.addEventListener("focus", () => scheduleForegroundReconcile("window focus"));
 window.addEventListener("online", () => scheduleForegroundReconcile("network online", 0));
+window.addEventListener("offline", () => {
+  mobileConnectionState = "offline";
+  mobileConnectionLabel = "Paused/offline";
+  recordMobileDiagnostic("browser offline");
+  renderMobilePhoneExperience();
+});
+window.addEventListener("beforeunload", persistMobileContinuityState);
 window.addEventListener("storage", (event) => {
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
+  if (event.key === OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY && optionalFeatureMigrationCompletionIsDismissed()) {
+    optionalFeatureRestartNotice = null;
+    renderOptionalFeatureMigrationSurface();
+  }
   if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
+  if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
+  if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
+  if (event.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY) restoreComposerActionSlotLayout();
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
     const width = readStoredSidePanelWidth();
     if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
   }
+  // Another same-origin tab already saved these durable fields, so receiving
+  // tabs only adopt the shared local cache without repeating the server write.
+  if (event.key === SIDE_PANEL_SECTION_STORAGE_KEY) restoreSidePanelSectionState();
+  if (event.key === SIDE_PANEL_STORAGE_KEY) restoreSidePanelState();
+  if (event.key === TERMINAL_TABS_LAYOUT_STORAGE_KEY) restoreTerminalTabsLayoutSetting();
+  if (event.key === TERMINAL_CUSTOM_GROUPS_STORAGE_KEY) {
+    restoreTerminalCustomGroups();
+    syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
+    renderTabs();
+  }
+  if (event.key === FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY) {
+    footerScopedModels = orderedFooterScopedModels();
+    renderFooter();
+  }
+  if (event.key === FILE_VIEWER_WIDTH_STORAGE_KEY) restoreFileViewerWidthPreference();
+});
+// Durable layout reconciliation runs on its own foreground/online lifecycle
+// listeners so retained dirty state retries without changing the existing
+// transcript/session reconciliation contracts.
+window.addEventListener("online", () => reconcileDurableUiLayout());
+window.addEventListener("pageshow", () => reconcileDurableUiLayout());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") reconcileDurableUiLayout();
 });
 window.addEventListener("resize", syncResizablePanelWidthsForViewport, { passive: true });
 window.addEventListener("keydown", (event) => {
@@ -36253,6 +45248,30 @@ elements.sidePanelContextMenu?.addEventListener("keydown", (event) => {
     items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
   }
 });
+elements.gitFooterContextMenu?.addEventListener("keydown", (event) => {
+  const items = [...elements.gitFooterContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeGitFooterContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+elements.gitFooterContextMenu?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-git-footer-menu-action]");
+  const state = gitFooterContextMenuState;
+  if (!button || !state) return;
+  const action = button.dataset.gitFooterMenuAction;
+  closeGitFooterContextMenu({ returnFocus: action !== "visibility" });
+  if (action === "disable") void disableGitFooterContextChip(state.key, state.label);
+  else if (action === "visibility") openGitFooterVisibilityDialog();
+});
 elements.fileContextMenu?.addEventListener("click", (event) => {
   const button = event.target?.closest?.("[data-file-menu-action]");
   if (!button) return;
@@ -36350,10 +45369,20 @@ elements.pathPickerDialog.addEventListener("close", () => {
 });
 
 if (elements.attachButton && elements.attachmentInput) {
-  elements.attachButton.addEventListener("click", () => elements.attachmentInput.click());
+  elements.attachButton.addEventListener("click", (event) => {
+    if (isMobileShellV2Active()) {
+      event.preventDefault();
+      mobileOpenSurface("actionSheet", "context");
+      return;
+    }
+    elements.attachmentInput.click();
+  });
   elements.attachmentInput.addEventListener("change", () => {
-    addAttachmentFiles(elements.attachmentInput.files, "picker");
+    const source = elements.attachmentInput.dataset.mobileAttachmentSource || "picker";
+    addAttachmentFiles(elements.attachmentInput.files, source);
     elements.attachmentInput.value = "";
+    elements.attachmentInput.removeAttribute("capture");
+    delete elements.attachmentInput.dataset.mobileAttachmentSource;
   });
 }
 elements.promptInput.addEventListener("paste", handleAttachmentPaste);
@@ -36406,6 +45435,7 @@ elements.promptInput.addEventListener("input", () => {
   if (moveLongPromptInputToAttachment()) return;
   resizePromptInput();
   renderCommandSuggestions();
+  scheduleMobileContinuityPersist();
 });
 elements.promptInput.addEventListener("focus", () => {
   syncMobileChatToBottomForInput();
@@ -36428,9 +45458,24 @@ elements.promptInput.addEventListener("blur", () => {
   }, 120);
 });
 
+elements.optionalFeatureMigrationCancelButton?.addEventListener("click", () => elements.optionalFeatureMigrationDialog?.close());
+elements.optionalFeatureMigrationLaterButton?.addEventListener("click", () => dismissOptionalFeatureMigration({ closeDialog: true }));
+elements.optionalFeatureMigrationConfirmButton?.addEventListener("click", migrateSelectedOptionalFeatures);
+elements.optionalFeatureMigrationDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  elements.optionalFeatureMigrationDialog.close();
+});
+
 installModalPrimitives();
+installMiddleButtonDragScroll({
+  onDirection: ({ target, offsetY }) => {
+    if (target === elements.chat) noteChatUserScrollIntent({ type: "middle-drag", deltaY: offsetY });
+  },
+});
 initializeIssueWizard();
 resizePromptInput();
+clearRemovedSidePanelSectionHeightState();
+restoreDurableUiLayoutPendingJournal();
 restoreSidePanelWidthPreference();
 restoreFileViewerWidthPreference();
 focusPromptInput({ defer: true });
@@ -36439,6 +45484,7 @@ restoreBusyPromptBehaviorSetting();
 updateComposerModeButtons();
 installSessionSkillTagResizeHandling();
 updateOptionalFeatureAvailability();
+renderOptionalFeatureMigrationSurface();
 refreshOptionalFeaturePackageStatuses({ announce: true });
 renderAppRunnerControls();
 renderLoadedPromptListPreview();
@@ -36456,11 +45502,14 @@ restoreAgentDoneNotificationsSetting();
 restoreThinkingVisibilitySetting();
 restoreTerminalTabsLayoutSetting();
 restoreSubagentOpenModeSetting();
+restoreSubagentAutoClearSetting();
 restoreTerminalCustomGroups();
 restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
 restoreInterfaceDensity();
 initializeTerminalHeaderTooltips();
+initializeComposerActionOrdering();
+restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
 bindSidePanelSectionToggles();
@@ -36469,9 +45518,30 @@ initializeCodexUsage();
 initializeClaudeUsage();
 initializeSubagents();
 initializeSubagentLaunchSlots();
+initializeSamplingParameters();
 initializeUpdateNotifications();
 bindMobileViewChanges();
 bindSidePanelOverlayViewChanges();
+mobileInstallEducation = readMobileInstallEducation();
+if (isMobileShellV2Active()) {
+  mobileInstallEducation.visits += 1;
+  persistMobileInstallEducation();
+}
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  mobileInstallPrompt = event;
+  recordMobileDiagnostic("install prompt available");
+  renderMobilePhoneExperience();
+});
+window.addEventListener("appinstalled", () => {
+  mobileInstallPrompt = null;
+  mobileInstallEducation.dismissed = true;
+  persistMobileInstallEducation();
+  recordMobileDiagnostic("app installed");
+  renderMobilePhoneExperience();
+});
+installMobileShellNavigationBridge();
+installMobilePhoneExperience();
 registerPwaServiceWorker();
 renderServerOfflinePanel();
 refreshSidebarOutputMode().catch((error) => addEvent(error.message || String(error), "error"));

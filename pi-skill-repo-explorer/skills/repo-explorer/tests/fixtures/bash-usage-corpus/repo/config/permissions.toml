@@ -1,0 +1,5 @@
+[roles.reader]
+permissions = ["session:read"]
+
+[roles.operator]
+permissions = ["session:read", "session:revoke"]

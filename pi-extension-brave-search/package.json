@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-brave-search",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Brave Search tool for Pi with API key resolution from env and .env files.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-brave-search#readme",

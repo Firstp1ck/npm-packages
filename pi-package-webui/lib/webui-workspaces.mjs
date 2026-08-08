@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 export const WEBUI_WORKSPACES_VERSION = 1;
 export const WEBUI_WORKSPACE_LIMIT = 20;
@@ -152,13 +153,28 @@ export async function listWebuiWorkspaces(storageFile = webuiWorkspacesFile(), o
   return document.workspaces.slice().reverse().map(workspaceMetadata).filter(Boolean);
 }
 
+async function renameWithWindowsRetry(source, target) {
+  let lastError;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (process.platform !== "win32" || !["EACCES", "EBUSY", "EPERM"].includes(error?.code)) throw error;
+      await delay(25 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 async function writeWorkspaceDocument(document, storageFile) {
   const normalized = normalizeWebuiWorkspaces(document);
   await mkdir(path.dirname(storageFile), { recursive: true });
   const temporaryFile = `${storageFile}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryFile, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporaryFile, storageFile);
+    await renameWithWindowsRetry(temporaryFile, storageFile);
   } catch (error) {
     await rm(temporaryFile, { force: true }).catch(() => {});
     throw error;

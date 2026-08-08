@@ -1,13 +1,32 @@
-# @firstpick/pi-skill-dolt-database-version-control
+# Dolt Database Version Control
 
-A portable Agent Skill / Pi package for researching, evaluating, and applying [Dolt](https://github.com/dolthub/dolt), the Git-like version-controlled SQL database.
+Explore Git-like history, branches, and merging for database data with Dolt.
 
-## What it does
+## Helpful when
 
-- Adds the `dolt-database-version-control` skill to Pi's skill library.
-- Guides agents through how, when, why, and where to use Dolt for database branching, merging, diffs, rollback, audit history, and versioned MySQL replica workflows.
-- Includes a source-backed Dolt reference guide at `skills/dolt-database-version-control/references/dolt-guide.md`.
-- Bundles contract tests for frontmatter, required sections, and reference integrity.
+- You want auditable database history.
+- Teams need separate data branches for testing or review.
+- You are considering Dolt and need to understand the trade-offs.
+
+## What to share with Pi
+
+- Your current database and data size
+- How changes are made and reviewed
+- Recovery, performance, and compatibility needs
+
+## Try asking
+
+> Evaluate Dolt for our staging workflow. Explain where it helps, where it may not fit, and propose a small safe trial.
+
+## What you’ll get
+
+- A fit assessment for your situation
+- Benefits, limitations, and migration concerns
+- A small proof-of-concept plan
+
+## Keep in mind
+
+Changing a database can put important data at risk. Backups and a tested migration plan are essential before real adoption.
 
 ## Install
 
@@ -15,32 +34,8 @@ A portable Agent Skill / Pi package for researching, evaluating, and applying [D
 pi install npm:@firstpick/pi-skill-dolt-database-version-control
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-The skill may ask to verify current Dolt details from official docs before making version-, platform-, or production-readiness claims.
-
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Development checks
-
-```bash
-npm test
-npm pack --dry-run
-```
-
-`npm test` requires Python 3 and uses only the standard library.
-
-## Example view
-
-```text
-User: Should we use Dolt for branchable customer configuration data?
-Agent: Invokes `dolt-database-version-control`, checks the use case against Dolt fit criteria, proposes an adoption shape, lists risks, and recommends validation steps.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-dolt-database-version-control/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

@@ -1,58 +1,36 @@
-# hyprland-wiki-local Pi extension
+# Hyprland Wiki Local for Pi
 
-Local Hyprland Wiki retrieval tools backed by the official GitHub wiki repository:
+Lets Pi search a local copy of the official Hyprland Wiki first.
 
-```txt
-https://github.com/hyprwm/hyprland-wiki.git
-```
+## What you can do
 
-Repository path:
+- Searches a local copy of the official Hyprland Wiki.
+- Returns focused sections with local source paths.
+- Helps with monitors, input, rules, plugins, and common Wayland issues.
+- Includes setup, status, and quick health checks.
 
-```txt
-~/.hyprwiki
-```
+## Install
 
-Cache path:
-
-```txt
-~/.cache/pi/hyprland-wiki-local/
-├── pages.json
-└── metadata.json
-```
-
-## Setup
-
-Run the Pi command:
-
-```txt
-/hyprwiki-local-setup
-```
-
-The setup command does not install OS packages. It creates/clones the wiki repository at `~/.hyprwiki` using:
+Install it through Pi:
 
 ```bash
-git clone https://github.com/hyprwm/hyprland-wiki.git ~/.hyprwiki
+pi install npm:@firstpick/pi-extension-hyprland-wiki-local
 ```
 
-If `~/.hyprwiki` is already a Git checkout, setup runs `git pull --ff-only` to refresh it.
+Restart Pi if the package does not appear in your current session.
 
-## Registered commands
+## How to use it
+
+Run `/hyprwiki-local-setup` once. Then ask Pi about a Hyprland problem normally; use `/hyprwiki-status` if you want to check the local documentation copy.
 
 - `/hyprwiki-status` — reports repository path, Git remote/revision, page count, and cache freshness.
 - `/hyprwiki-local-setup` — clones or fast-forward updates `~/.hyprwiki`.
 - `/hyprwiki-smoke-test` — runs compact parser/search/extract/read checks against representative Hyprland topics.
 
-## Registered tools
+## Before you start
 
-- `hyprwiki_search` — searches local Hyprland Wiki Markdown pages with query expansions, stopword/downweight tuning, compact output by default, and optional snippets.
-- `hyprwiki_read` — reads a page as clean Markdown text with local path citation.
-- `hyprwiki_sections` — lists extracted headings with `maxSections` and omitted-count metadata.
-- `hyprwiki_extract` — extracts a named or query-relevant section with `maxSections`, truncation, and omitted-count metadata.
-- `hyprwiki_related` — returns local Hyprland Wiki pages linked from a page.
-- `hyprwiki_smoke_test` — runs parser/search/extract/read smoke checks.
+Run `/hyprwiki-local-setup` once. It downloads the official Hyprland Wiki to `~/.hyprwiki` and updates that copy on later runs.
 
-## Notes
+## Technical details
 
-The first tool call builds the cache through the shared `pi-utils` local-wiki engine. Cache invalidation uses schema version, docs path, page count, and newest source mtime. Markdown parsing uses frontmatter titles and ignores headings inside fenced code blocks.
-
-If `~/.hyprwiki` is missing or empty, tools warn that `/hyprwiki-local-setup` is required and stop instead of falling back silently.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-hyprland-wiki-local/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

@@ -84,15 +84,17 @@ assert.doesNotMatch(compactUpdate, /event\.message|assistantMessageEvent\.partia
 assert.match(compactUpdate, /reduceFastOutputLiveEvent\(compactLiveState, event\)/, "compact deltas should use the pure reducer");
 assert.match(compactUpdate, /shouldConsumeFastOutputLiveEvent\(reduced\)/, "recognized compact empty end variants should be consumed instead of reaching normal handlers with stripped snapshots");
 assert.match(helper, /function shouldConsumeFastOutputLiveEvent\(reduction = \{\}\)[\s\S]*?"text-end"[\s\S]*?"thinking-end"[\s\S]*?"toolcall-end"/, "the reducer policy should consume only recognized compact end variants when no DOM state changes");
-assert.match(compactFlush, /\.textContent = compactLiveState\.text/, "compact assistant text must render through a stable plain-text node while streaming");
+assert.match(compactFlush, /transcriptRenderer\.updateTextSurface\(\{[\s\S]*?surface: compactTextNode,[\s\S]*?text: compactLiveState\.text/, "compact assistant text must update through the stable transcript text surface");
+assert.doesNotMatch(compactFlush, /compactTextNode\.textContent\s*=/, "compact assistant streaming must not replace its selected text node");
 assert.match(compactThinkingBubble, /title: "thinking \(live\)"[\s\S]*?compactThinkingAggregate: true[\s\S]*?compactThinkingKey: "live"[\s\S]*?compactThinkingDefaultExpanded: true[\s\S]*?make\("div", "markdown-body thinking-text compact-live-thinking"\)/, "compact live thinking should use one expanded-by-default aggregate disclosure with a stable key and established Markdown styles");
 assert.match(resetCompactLiveOutput, /clearCompactThinkingDisclosureState\("live"\)/, "a new compact stream should clear any explicit live override and restore its expanded default");
 assert.match(compactFlush, /compactThinkingNode\?\._rawThinkingText !== compactLiveState\.thinking[\s\S]*?renderThinkingMarkdown\(compactThinkingNode, compactLiveState\.thinking\)/, "compact live thinking should preserve Markdown formatting");
 assert.doesNotMatch(compactFlush, /compactThinkingNode\.textContent|renderStreamingMarkdown|renderToolExecution|normalizeToolExecution/, "compact thinking must not fall back to plain text or invoke rich tool renderers");
 assert.doesNotMatch(compactToolShell, /normalizeToolExecution|toolExecutionRenderSignature|renderToolExecution|handleToolExecutionUpdate|JSON\.stringify/, "compact tool shells must defer rich bodies and raw serialization");
-assert.match(app, /case "tool_execution_update":\s+if \(!compactOutputActive\(\)\) handleToolExecutionUpdate\(event\);/, "compact mode should not build intermediate rich tool updates");
+assert.match(app, /applyToolExecutionUpdate: \(event\) => \{\s+if \(!compactOutputActive\(\)\) applyTranscriptToolExecutionUpdate\(event\);/, "compact mode should not build intermediate rich tool updates");
+assert.doesNotMatch(app, /case "tool_execution_update":/, "raw tool updates should have only the controller-owned dispatch path");
 assert.match(app, /case "tool_execution_end":[\s\S]*?compactLiveScheduler\.flushNow\(\)[\s\S]*?renderCompactToolShell\(event, \{ complete: true \}\)[\s\S]*?finishCompactLiveOutput\(tabContext\)/, "compact tool completion should remain lightweight and request final reconciliation");
-assert.match(resetStream, /resetCompactLiveOutput\(\)/, "reset and tab changes should cancel compact pending work");
+assert.match(resetStream, /resetCompactLiveOutput\(\{ remove: !preserveCompact \}\)/, "reset and tab changes should cancel compact pending work while exact compact settlement may retain its adopted owner");
 assert.match(app, /case "message_end": \{\s+if \(compactOutputActive\(\)\) finishCompactLiveOutput\(tabContext\);/, "message ends should synchronously flush compact output before reconciliation");
 assert.match(app, /case "agent_end":\s+if \(compactOutputActive\(\)\) finishCompactLiveOutput\(tabContext\);/, "agent ends should synchronously flush compact output before reconciliation");
 assert.match(compactTranscript, /message\.role !== "assistant"[\s\S]*?appendMarkdown\(body, output \|\| "_\[non-text output omitted in compact mode\]_"\)[\s\S]*?classList\.add\("compact-transcript-text"\)/, "reconciled compact-mode assistant output should preserve Markdown and explain omitted non-text output");
@@ -115,13 +117,14 @@ assert.match(orderedTranscriptItems, /if \(!compactOutputActive\(\)\) \{[\s\S]*?
 assert.match(transcriptRenderEpoch, /compactOutputActive\(\) \? "compact" : "normal"/, "mode changes should invalidate the keyed transcript renderer");
 assert.match(clearCompactToolShells, /removeCompactLiveBubble\(shell\?\.bubble\)[\s\S]*?compactToolShells\.clear\(\)/, "fast mode should remove previous transient tool shells from the DOM and registry");
 assert.match(compactToolShell, /if \(!shell\) \{\s+clearCompactToolShells\(\)/, "a newly-started tool should replace the previous transient tool shell");
-assert.match(compactToolShell, /shell\.status\.textContent = complete[\s\S]*?event\?\.isError \? "failed" : "done"[\s\S]*?: "running"/, "the current transient tool shell should expose only a non-duplicated status");
+assert.match(compactToolShell, /transcriptRenderer\.updateTextSurface\(\{[\s\S]*?surface: shell\.status[\s\S]*?text: complete[\s\S]*?event\?\.isError \? "failed" : "done"[\s\S]*?: "running"/, "the current transient tool shell should expose only a non-duplicated status through its stable transcript text surface");
+assert.doesNotMatch(compactToolShell, /shell\.status\.textContent\s*=/, "compact tool status updates must not replace selected text nodes");
 assert.match(styles, /\.message\.compact-tool-shell\s*\{[\s\S]*?display: grid[\s\S]*?grid-template-columns:[\s\S]*?padding: 0\.46rem 0\.62rem[\s\S]*?box-shadow: none/, "fast-mode tool activity should render as a compact horizontal row");
 assert.match(styles, /\.compact-tool-shell \.compact-tool-status\s*\{[\s\S]*?display: inline-flex[\s\S]*?border-radius: 999px[\s\S]*?font-size: 0\.7rem[\s\S]*?text-transform: uppercase/, "the minimal tool status should remain visually distinct as a small pill");
 assert.match(styles, /\.compact-tool-shell\.tool-running \.compact-tool-status[\s\S]*?\.compact-tool-shell\.tool-success \.compact-tool-status[\s\S]*?\.compact-tool-shell\.tool-error \.compact-tool-status/, "running, success, and failure tool states should have distinct visual tones");
 assert.match(compactUpdate, /compactLiveState = reduced\.state;\s+clearCompactToolShells\(\)/, "new assistant or tool-call deltas should clear the preceding transient tool shell");
 assert.match(compactLiveStreamActive, /messageOutputActive = streamMessageActive && Boolean\([\s\S]*?compactLiveState\.text[\s\S]*?compactLiveState\.thinking[\s\S]*?compactOutputActive\(\) && currentState\?\.isStreaming === true && Boolean\(compactToolShells\.size \|\| messageOutputActive\)/, "mid-stream reconciliation should preserve active compact message output or a current tool shell, but not completed final text");
-assert.match(restoreCompactStream, /compactTextBubble = null[\s\S]*?compactThinkingBubble = null[\s\S]*?if \(streamMessageActive\) flushCompactLiveOutput\(\)[\s\S]*?compactToolShells\.values\(\)[\s\S]*?appendChatMessageBubble\(shell\.bubble\)/, "compact message state should be restored only while its message is active, while the current shell can survive between messages");
+assert.match(restoreCompactStream, /compactTextBubble = null[\s\S]*?compactThinkingBubble = null[\s\S]*?if \(streamMessageActive\) flushCompactLiveOutput\(\)[\s\S]*?compactToolShells\.values\(\)[\s\S]*?appendChatMessageBubble\(shell\.bubble, \{ liveTail: true \}\)/, "compact message state should be restored only while its message is active, while the current shell survives in chronological live-tail order between messages");
 assert.match(refreshMessages, /preserveCompactStream = compactLiveStreamRenderActive\(\)[\s\S]*?!preserveCompactStream && !preserveNormalStream[\s\S]*?renderMessages\(latestMessages\)[\s\S]*?preserveCompactStream\) restoreCompactLiveOutputAfterChatRebuild\(\)/, "message refreshes must not reset active compact output before rebuilding the transcript");
 
 assert.match(app, /const SETTINGS_OUTPUT_MODE_OPTIONS = \[[\s\S]*?value: "normal"[\s\S]*?value: "compact-v1"/, "settings should offer normal and compact-v1 server defaults");
@@ -152,7 +155,8 @@ assert.match(helper, /FAST_OUTPUT_FLUSH_INTERVAL_MS = 100/, "the live scheduler 
 assert.match(worker, /pi-webui-pwa-v\d+[\s\S]*?"\/fast-output-live\.mjs"/, "PWA cache identity and app shell should include the compact helper");
 assert.match(html, /<label for="fastOutputModeSelect">Compact mode \(Experimental\)<\/label>/, "the sidebar should mark compact mode as experimental");
 assert.match(html, /Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed/, "the sidebar should distinguish compact rendering from model inference");
-assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=94"/, "the guarded PWA entry point should cache-bust browser wiring");
+// Intent preserved: the guarded PWA entry point must advance whenever app wiring changes.
+assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=120"/, "the guarded PWA entry point should cache-bust browser wiring");
 assert.match(JSON.parse(packageRaw).scripts.check, /node --check public\/fast-output-live\.mjs/, "package checks should parse the compact helper");
 
 const events = createFastModeOutputEvents();

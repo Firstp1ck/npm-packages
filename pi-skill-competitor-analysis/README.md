@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-competitor-analysis
+# Competitor Analysis
 
-A Pi skill for tasks involving comparing competing products, services, libraries, tools, vendors, or approaches for market/product positioning, feature matrices, strategic trade-offs, pricing, adoption, or differentiation.
+Compare products, services, or approaches using the criteria that matter to you.
 
-## What it does
+## Helpful when
 
-- Adds the `competitor-analysis` skill to Pi's skill library.
-- Guides agents to invoke the skill when comparing competing products, services, libraries, tools, vendors, or approaches for market/product positioning, feature matrices, strategic trade-offs, pricing, adoption, or differentiation.
-- Bundles `skills/competitor-analysis/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You are choosing between several products.
+- You want to understand how an offering stands out.
+- You need a fair comparison for a decision or presentation.
+
+## What to share with Pi
+
+- The options to compare
+- Who the decision is for
+- Your priorities, limits, and budget when relevant
+
+## Try asking
+
+> Compare these three options for a small team. Focus on ease of use, cost, support, and long-term risk, then recommend the best fit.
+
+## What you’ll get
+
+- A side-by-side comparison
+- Strengths, weaknesses, and missing information
+- A recommendation tied to your priorities
+
+## Keep in mind
+
+Products, prices, and policies change. Time-sensitive conclusions should be checked against current official information.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving comparing competing products, services, libraries
 pi install npm:@firstpick/pi-skill-competitor-analysis
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `competitor-analysis`.
-Agent: Invokes the `competitor-analysis` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-competitor-analysis/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

@@ -62,6 +62,8 @@ TRACE_GOAL_TERMS = {
     "dependency", "dependencies", "route", "routes",
 }
 
+SHORT_GOAL_TERMS = {"ci", "go", "js"}
+
 SECRET_PATTERNS = [
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),
     re.compile(r"ghp_[a-zA-Z0-9]{36,}"),
@@ -102,6 +104,8 @@ KEYWORD_SYNONYMS = {
     "authentication": {"auth", "authenticate", "login", "session", "user"},
     "authenticate": {"auth", "authentication", "login", "session", "user"},
     "login": {"auth", "authenticate", "authentication", "session", "user"},
+    "configuration": {"config", "settings"},
+    "config": {"configuration", "settings"},
     "token": {"budget", "compact", "output", "efficiency"},
     "efficiency": {"budget", "compact", "output", "token"},
     "test": {"tests", "testing", "pytest", "unittest"},
@@ -136,7 +140,10 @@ def goal_keywords(goal: str) -> list[str]:
         "understand", "explore", "map", "trace", "identify",
     }
     words = tokenize_text(goal)
-    return [w for w in words if w not in stop_words and len(w) > 2]
+    return [
+        word for word in words
+        if word not in stop_words and (len(word) > 2 or word in SHORT_GOAL_TERMS)
+    ]
 
 
 def expand_keywords(keywords: list[str]) -> set[str]:
@@ -229,7 +236,27 @@ def normalize_rel_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def resolve_internal_import(source_rel: str, target: str, lang: str, rel_paths: set[str]) -> str | None:
+def discover_go_modules(files: list[dict]) -> set[str]:
+    modules = set()
+    for file_entry in files:
+        if normalize_rel_path(file_entry.get("relative_path", "")).endswith("go.mod"):
+            try:
+                content = Path(file_entry["path"]).read_text(encoding="utf-8", errors="replace")
+            except (OSError, PermissionError, KeyError):
+                continue
+            match = re.search(r"^\s*module\s+(\S+)\s*$", content, re.MULTILINE)
+            if match:
+                modules.add(match.group(1))
+    return modules
+
+
+def resolve_internal_import(
+    source_rel: str,
+    target: str,
+    lang: str,
+    rel_paths: set[str],
+    go_modules: set[str] | None = None,
+) -> str | None:
     source = PurePosixPath(normalize_rel_path(source_rel))
     source_dir = source.parent
     candidates = []
@@ -251,6 +278,26 @@ def resolve_internal_import(source_rel: str, target: str, lang: str, rel_paths: 
         module_path = PurePosixPath(*target.split("::"))
         add_candidates(source_dir / module_path)
     elif lang == "go" and "/" in target:
+        for module in sorted(go_modules or set(), key=len, reverse=True):
+            if target == module:
+                package_dir = ""
+            elif target.startswith(f"{module}/"):
+                package_dir = target[len(module) + 1:]
+            else:
+                continue
+            package_files = sorted(
+                rel_path for rel_path in rel_paths
+                if PurePosixPath(rel_path).parent.as_posix() == package_dir
+                and rel_path.endswith(".go")
+                and not rel_path.endswith("_test.go")
+            )
+            if package_files:
+                package_name = PurePosixPath(package_dir).name
+                preferred = next(
+                    (path for path in package_files if PurePosixPath(path).stem == package_name),
+                    package_files[0],
+                )
+                return preferred
         add_candidates(PurePosixPath(target))
 
     for candidate in candidates:
@@ -277,11 +324,16 @@ def score_file(file_entry: dict, keywords: list[str]) -> float:
             score += 4.0
             matched_goal = True
 
+    direct_keywords = set(keywords)
     for sym in file_entry.get("symbols", []):
-        sym_tokens = set(tokenize_text(sym.get("name", "")))
+        symbol_name = sym.get("name", "")
+        sym_tokens = set(tokenize_text(symbol_name))
+        direct_split_hits = (
+            set(tokenize_text(symbol_name.replace("_", " "))) - sym_tokens
+        ) & direct_keywords
         hits = sym_tokens & expanded
-        if hits:
-            score += 3.0 * len(hits)
+        if hits or direct_split_hits:
+            score += 3.0 * len(hits | direct_split_hits)
             matched_goal = True
 
     content_score = content_keyword_score(file_entry, expanded)
@@ -301,7 +353,9 @@ def score_file(file_entry: dict, keywords: list[str]) -> float:
 
 def score_symbol(sym: dict, file_entry: dict, keywords: list[str]) -> float:
     expanded = expand_keywords(keywords)
-    name_tokens = set(tokenize_text(sym.get("name", "")))
+    symbol_name = sym.get("name", "")
+    name_tokens = set(tokenize_text(symbol_name))
+    name_tokens.update(tokenize_text(symbol_name.replace("_", " ")))
     score = 0.0
 
     for kw in expanded:
@@ -471,6 +525,7 @@ def build_handoff(index: dict, goal: str, depth: str, target_paths: list[str], b
     seen_deps = set()
     key_file_paths = {item["path"] for item in key_files}
     rel_paths = {normalize_rel_path(f.get("relative_path", "")) for f in files}
+    go_modules = discover_go_modules(files)
     top_files_for_dependencies = [] if depth == "shallow" else selected_file_entries
     for f, _ in top_files_for_dependencies:
         if key_file_paths and f["path"] not in key_file_paths:
@@ -502,10 +557,11 @@ def build_handoff(index: dict, goal: str, depth: str, target_paths: list[str], b
         elif lang == "rust":
             import_patterns = [
                 re.compile(r"^\s*use\s+([\w:]+)"),
-                re.compile(r"^\s*mod\s+(\w+)"),
+                re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)"),
             ]
         elif lang == "go":
             import_patterns = [
+                re.compile(r"""^\s*import\s+"([^"]+)"""),
                 re.compile(r"""^\s*"([^"]+)"\s*$"""),
             ]
 
@@ -517,7 +573,9 @@ def build_handoff(index: dict, goal: str, depth: str, target_paths: list[str], b
                 if m:
                     target = m.group(1)
                     source_rel = normalize_rel_path(f.get("relative_path", f["path"]))
-                    internal_target = resolve_internal_import(source_rel, target, lang, rel_paths)
+                    internal_target = resolve_internal_import(
+                        source_rel, target, lang, rel_paths, go_modules
+                    )
                     if depth != "deep" and internal_target is None:
                         continue
                     display_target = internal_target or target

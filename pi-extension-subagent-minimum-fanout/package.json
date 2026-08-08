@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-subagent-minimum-fanout",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Enforce Pi subagent fanout and reviewer provider/model diversity.",
   "type": "module",
   "license": "MIT",

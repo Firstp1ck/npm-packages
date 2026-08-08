@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-tech-deep-dive
+# Technology Deep Dive
 
-A Pi skill for tasks involving choosing or evaluating libraries, frameworks, tools, platforms, models, databases, APIs, or architectures for a use case. Produces criteria scoring, ecosystem assessment, and recommendations.
+Compare technologies against your real needs and choose with evidence instead of hype.
 
-## What it does
+## Helpful when
 
-- Adds the `tech-deep-dive` skill to Pi's skill library.
-- Guides agents to invoke the skill when choosing or evaluating libraries, frameworks, tools, platforms, models, databases, APIs, or architectures for a use case. Produces criteria scoring, ecosystem assessment, and recommendations.
-- Bundles `skills/tech-deep-dive/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- You are choosing a library, framework, service, model, or database.
+- Several options look similar.
+- The long-term ecosystem and maintenance risk matter.
+
+## What to share with Pi
+
+- The decision and options being considered
+- Must-have needs and deal-breakers
+- Budget, team experience, and time horizon
+
+## Try asking
+
+> Compare these database options for our offline desktop app. Score them against our needs and recommend the best fit.
+
+## What you’ll get
+
+- Decision criteria and a scored comparison
+- Ecosystem, maintenance, and adoption risks
+- A recommendation with alternatives
+
+## Keep in mind
+
+A recommendation can change when priorities change. Make important constraints explicit so the comparison reflects your situation.
 
 ## Install
 
@@ -14,21 +34,8 @@ A Pi skill for tasks involving choosing or evaluating libraries, frameworks, too
 pi install npm:@firstpick/pi-skill-tech-deep-dive
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `tech-deep-dive`.
-Agent: Invokes the `tech-deep-dive` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-tech-deep-dive/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

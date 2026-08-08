@@ -1,13 +1,32 @@
-# @firstpick/pi-skill-shoo-auth
+# Shoo Authentication
 
-A Pi skill for evaluating, implementing, reviewing, and debugging Shoo auth (`shoo.dev`) Google sign-in in browser apps.
+Add or troubleshoot Google sign-in through Shoo in a browser application.
 
-## What it does
+## Helpful when
 
-- Adds the `shoo-auth` skill to Pi's skill library.
-- Guides agents through deterministic fit checks for Shoo versus other auth systems.
-- Covers React (`@shoojs/react`), vanilla/framework-agnostic (`@shoojs/auth`), hosted `shoo.js`, Next.js callback routing, Convex custom JWT integration, session/revocation checks, and server-side `id_token` verification.
-- Bundles `skills/shoo-auth/SKILL.md` and `skills/shoo-auth/references/shoo-docs-summary.md`.
+- You are adding Shoo sign-in to a new app.
+- The sign-in callback or session check fails.
+- The browser and server disagree about whether a user is signed in.
+
+## What to share with Pi
+
+- The relevant app and server code
+- The exact sign-in problem or desired flow
+- Error messages with secrets removed
+
+## Try asking
+
+> Help me add Shoo Google sign-in to this app. Check the callback, session handling, and server-side identity verification.
+
+## What you’ll get
+
+- A clear sign-in flow
+- Likely causes for broken authentication
+- Implementation or fix steps with checks
+
+## Keep in mind
+
+The shipped workflow identifies itself as a draft. Verify current Shoo documentation and adoption risk before production use, and never paste passwords, private keys, or live access tokens into the request.
 
 ## Install
 
@@ -15,29 +34,8 @@ A Pi skill for evaluating, implementing, reviewing, and debugging Shoo auth (`sh
 pi install npm:@firstpick/pi-skill-shoo-auth
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required Pi configuration.
+## Technical details
 
-Shoo implementation tasks may require project-specific app origins, callback paths, and a server runtime that can verify JWTs against Shoo's JWKS endpoint.
-
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Test
-
-```bash
-npm test
-```
-
-## Example view
-
-```text
-User: Add Shoo sign-in to this React app and verify tokens server-side.
-Agent: Invokes the `shoo-auth` skill, chooses the React path, adds callback handling, and enforces server-side JWT verification.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-shoo-auth/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

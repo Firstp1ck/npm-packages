@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-upgrade-extensions",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Upgrade npm-installed Pi extensions with up-to-date checks.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-upgrade-extensions#readme",

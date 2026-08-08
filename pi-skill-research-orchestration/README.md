@@ -1,12 +1,32 @@
-# @firstpick/pi-skill-research-orchestration
+# Research Orchestration
 
-A Pi skill for broad multi-claim research projects needing planning, parallel investigation, source merging, gap closure, citation audit, and final synthesis when narrower research skills are insufficient.
+Organize a broad research project so separate questions, sources, and conclusions fit together.
 
-## What it does
+## Helpful when
 
-- Adds the `research-orchestration` skill to Pi's skill library.
-- Guides agents to invoke the skill for broad multi-claim research projects needing planning, parallel investigation, source merging, gap closure, citation audit, and final synthesis when narrower research skills are insufficient.
-- Bundles `skills/research-orchestration/SKILL.md` plus any supporting references, scripts, tests, fixtures, or assets used by the skill.
+- A decision depends on several different topics.
+- Multiple researchers or passes need coordination.
+- You need a final check for gaps and weak citations.
+
+## What to share with Pi
+
+- The main decision or final deliverable
+- The questions that must be answered
+- Required source quality, date range, and boundaries
+
+## Try asking
+
+> Research this platform decision across security, cost, ease of use, and operations. Combine the evidence and check the final citations.
+
+## What you’ll get
+
+- A clear research breakdown
+- Combined findings without duplicated work
+- Gap, source, and citation checks
+
+## Keep in mind
+
+Broader research takes longer and may still leave unanswered questions. The shipped workflow expects the host’s `workspace-researcher/AGENTS.md` and `APPEND_SYSTEM.md`, uses web search/fetching when needed, and appends a research-history row to `workspace-researcher/MEMORY.md`; those steps are unavailable when the host files or tools are missing.
 
 ## Install
 
@@ -14,50 +34,8 @@ A Pi skill for broad multi-claim research projects needing planning, parallel in
 pi install npm:@firstpick/pi-skill-research-orchestration
 ```
 
-## Configuration
+Restart Pi if the skill does not appear in your current session.
 
-No required configuration.
+## Technical details
 
-## Bundled helper scripts
-
-This package ships the `research-orchestration` skill plus its scout helper scripts:
-
-```text
-skills/research-orchestration/
-  SKILL.md
-  scripts/
-    README.md
-    policy.json
-    scout_query_plan.py
-    scout_normalize_sources.py
-    scout_evidence_bundle.py
-    scout_citation_audit.py
-    _lib/
-      normalize.py
-```
-
-Run helpers from `skills/research-orchestration/` or use absolute paths. By default, scripts read `./scripts/policy.json`; pass `--policy /path/to/policy.json` to override.
-
-Examples:
-
-```bash
-python3 ./scripts/scout_query_plan.py --topic "local-first AI notes" --task-class standard -o query-plan.json
-python3 ./scripts/scout_normalize_sources.py --input sources.json -o normalized-sources.json
-python3 ./scripts/scout_evidence_bundle.py --input fetch-records.jsonl -o evidence_bundle.json
-python3 ./scripts/scout_citation_audit.py --report final-report.json
-```
-
-## Commands
-
-None.
-
-## Tools
-
-None.
-
-## Example view
-
-```text
-User: Review this change for the concerns covered by `research-orchestration`.
-Agent: Invokes the `research-orchestration` skill, follows its workflow, and reports the result.
-```
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-research-orchestration/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.

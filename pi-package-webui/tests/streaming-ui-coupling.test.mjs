@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = await readFile(join(root, "public", "app.js"), "utf8");
+const transcriptRenderer = await readFile(join(root, "public", "transcript-renderer.mjs"), "utf8");
 
 const SELF_CONTAINED_THEORY_TITLES = new Map([
   [0, "Live todo-progress widget rebuild"],
@@ -155,7 +156,12 @@ futureInvariant("theory #2: streaming assistant render must not derive all views
 });
 
 futureInvariant("theory #3: streaming markdown must not full-rebuild when earlier derived text changes", () => {
-  assert.doesNotMatch(renderStreamingMarkdown, /!text\.startsWith\(state\.stableText\)[\s\S]*?block\.replaceChildren\(\)/, "retroactive todo/thinking rewrites should be confined to an unstable tail, not block.replaceChildren()");
+  const reconcileMarkdownSurface = findFunctionBody(transcriptRenderer, "reconcileMarkdownSurface");
+  assert.match(renderStreamingMarkdown, /transcriptRenderer\.reconcileMarkdownSurface\(\{[\s\S]*?stableBoundary: streamingMarkdownStableBoundary[\s\S]*?renderInto: renderMarkdownInto/, "streaming markdown must route through the coordinator's committed-block/mutable-tail reconciler");
+  assert.doesNotMatch(renderStreamingMarkdown, /block\.replaceChildren\(\)/, "streaming markdown must not replace the whole block directly");
+  assert.match(reconcileMarkdownSurface, /!value\.startsWith\(state\.stableText\)[\s\S]*?invalidateSelection: diverged/, "retroactive todo/thinking rewrites must be explicit invalidations, not silent full rebuilds");
+  assert.match(reconcileMarkdownSurface, /if \(boundary > state\.stableText\.length\)/, "committed blocks must stay mounted for append-only updates");
+  assert.match(reconcileMarkdownSurface, /for \(const node of state\.tailNodes\) node\.remove\(\)/, "only the mutable tail may be re-parsed per delta batch");
 });
 
 futureInvariant("theory #4: run-indicator activity changes must not render/scroll synchronously from token paths", () => {
@@ -194,6 +200,56 @@ assert.match(trackAutoRetryStateFromEvent, /event\.type === "auto_retry_start"/,
 assert.match(requestGitFooterWebuiPayload, /currentState\?\.isStreaming \|\| currentState\?\.isCompacting/, "theory #8: git-footer steer refresh must remain guarded during active streaming/compaction");
 assert.match(findCaseBody(handleEvent, "agent_settled"), /currentState\) currentState = \{ \.\.\.currentState, isStreaming: false \};[\s\S]*?requestGitFooterWebuiPayload\(tabContext, \{ force: true \}\)/, "theory #8: forced git-footer refresh should only happen after agent settlement clears streaming state");
 assert.doesNotMatch(findCaseBody(handleEvent, "agent_end"), /isStreaming: false|requestGitFooterWebuiPayload/, "theory #8: low-level agent_end must not expose an idle window before retry or continuation");
+
+// --- WS2a: lifecycle / chrome / todo ownership separation ---
+// These are hard invariants, not future theories: raw stream output may not own
+// lifecycle chrome, and lifecycle chrome may not be driven by token cadence.
+
+const renderMessages = findFunctionBody(app, "renderMessages");
+const refreshMessages = findFunctionBody(app, "refreshMessages");
+const setRunIndicatorActivityBody = findFunctionBody(app, "setRunIndicatorActivity");
+const startRunIndicatorTicker = findFunctionBody(app, "startRunIndicatorTicker");
+const startLifecycleStateWatchdog = findFunctionBody(app, "startLifecycleStateWatchdog");
+const reconcileTodoProgressFromMessages = findFunctionBody(app, "reconcileTodoProgressFromMessages");
+const eventMayAffectSkillUsage = findFunctionBody(app, "eventMayAffectSkillUsage");
+const flushSemanticReconcile = findFunctionBody(app, "flushSemanticReconcile");
+
+// (1) Transcript rendering is transcript-only; chrome belongs to the reconciler.
+assert.doesNotMatch(renderMessages, /renderFooter\(\)|renderFeedbackTray\(\)|renderWidgets\(\)|renderStatus\(\)/, "WS2a: renderMessages must be transcript-only and must not render footer/feedback/widget/status chrome");
+assert.match(renderMessages, /renderAllMessages\(\)/, "WS2a: renderMessages must still own transcript rendering");
+
+// (2) Todo progress derives from authoritative content, never token cadence.
+assert.doesNotMatch(app, /function scheduleLiveTodoProgressWidgetSync/, "WS2a: the token-driven todo-progress scheduler must be removed");
+assert.doesNotMatch(app, /scheduleLiveTodoProgressWidgetSync\(/, "WS2a: nothing may schedule token-driven todo-progress syncs");
+assert.match(reconcileTodoProgressFromMessages, /authoritativeTodoProgressSourceText\([\s\S]*?syncLiveTodoProgressWidgetFromText\(/, "WS2a: todo progress must be derived from authoritative assistant content");
+assert.match(refreshMessages, /reconcileTodoProgressFromMessages\(latestMessages, tabContext\.tabId\)/, "WS2a: todo progress must be derived once at authoritative message reconciliation");
+assert.match(findFunctionBody(app, "syncLiveTodoProgressWidgetFromText"), /todoProgressSignatureByTab\.get\(tabId\) === signature\) return false/, "WS2a: the todo widget record may change only when its semantic value changes");
+
+// (3) Activity wording is transcript-owned; composer/Stop changes on transitions.
+assert.doesNotMatch(setRunIndicatorActivityBody, /^\s*scheduleComposerModeButtonsUpdate\(\);/m, "WS2a: activity wording must not unconditionally reconcile composer chrome");
+assert.match(setRunIndicatorActivityBody, /syncLifecycleComposerState\(\)/, "WS2a: composer/Stop reconciliation must be gated on a lifecycle signature change");
+assert.match(findFunctionBody(app, "syncLifecycleComposerState"), /signature === lifecycleComposerSignature\) return false/, "WS2a: an unchanged lifecycle signature must not schedule composer work");
+assert.match(app, /runIndicatorBubble\.dataset\.streamOwned = "run-indicator"/, "WS2a: the live activity root must be a stable transcript-owned node");
+
+// (4) The transcript ticker must not perform lifecycle/network reconciliation.
+assert.doesNotMatch(startRunIndicatorTicker, /maybeRefreshRunIndicatorState\(\)/, "WS2a: the transcript-owned ticker must only repaint its own node");
+assert.match(startLifecycleStateWatchdog, /maybeRefreshRunIndicatorState\(\)/, "WS2a: canonical state rechecks belong to the lifecycle watchdog");
+
+// (5) Skills and event-log records happen once at semantic tool boundaries.
+assert.doesNotMatch(eventMayAffectSkillUsage, /tool_execution_update|toolcall_start/, "WS2a: skill tracking must not be reachable from tool update/argument cadence");
+assert.match(eventMayAffectSkillUsage, /"tool_execution_start", "tool_execution_end"/, "WS2a: skill tracking must run at semantic tool boundaries");
+assert.match(trackSkillsFromEvent, /recordedToolBoundaryKeys\.has\(key\)[\s\S]*?trackSkillsFromToolInvocation[\s\S]*?if \(tracked && key\) rememberToolBoundaryRecordKey\(key\)/, "WS2a: usable tool skill records must be deduplicated without consuming a missing-args fallback");
+assert.match(findCaseBody(handleEvent, "tool_execution_start"), /claimToolBoundaryRecord\(event, "log:start"\)\) addEvent\(/, "WS2a: tool start event-log records must be deduplicated by tool boundary");
+assert.match(findCaseBody(handleEvent, "tool_execution_end"), /claimToolBoundaryRecord\(event, "log:end"\)\) addEvent\(/, "WS2a: tool end event-log records must be deduplicated by tool boundary");
+
+// (6) Lifecycle boundaries reconcile chrome through one coalesced scheduler.
+assert.match(findFunctionBody(app, "scheduleSemanticReconcile"), /mergeSemanticReconcileRequest\(semanticReconcilePending, dirty, tabContext\)[\s\S]*?semanticReconcileFrame !== null\) return;/, "WS2a: semantic reconciliation must coalesce partitioned requests to one pending flush");
+assert.match(findFunctionBody(app, "mergeSemanticReconcileRequest"), /semanticReconcileContextKey\(tabContext\)[\s\S]*?pendingByContext\.set\(key, request\)/, "WS2a: semantic dirty flags must remain partitioned by tab generation");
+assert.match(flushSemanticReconcile, /if \(dirty\.workflow\) reconcileGitWorkflowContinuation\(tabContext\.tabId\);[\s\S]*?if \(!isCurrentTabContext\(tabContext\)\) continue;/, "WS2a: originating workflow settlement must run before stale active-DOM work no-ops");
+for (const [caseLabel, flag] of [["agent_start", "state: true"], ["agent_end", "messages: true"], ["message_end", "messages: true"], ["agent_settled", "messages: true"]]) {
+  assert.match(findCaseBody(handleEvent, caseLabel), new RegExp(`scheduleSemanticReconcile\\(\\{[\\s\\S]*?${flag}`), `WS2a: ${caseLabel} must reconcile chrome through the coalesced semantic scheduler`);
+}
+assert.match(findCaseBody(handleEvent, "agent_settled"), /usage: true,[\s\S]*?workflow: true,/, "WS2a: settlement must own the coalesced post-turn usage/workflow reconciliation");
 
 if (futureFailures.length) {
   assert.fail(`streaming/UI coupling invariants still failing (${futureFailures.length}):\n\n${futureFailures.map((failure, index) => `${index + 1}. ${failure}`).join("\n\n")}`);

@@ -1,8 +1,27 @@
-# @firstpick/pi-prompts-git-pr
+# Prompts Git PR for Pi
 
-Reusable prompt templates for commit messages, pull request descriptions, and branch review workflows.
+Adds ready-made prompts for commits, pull requests, and PR reviews.
 
-## Included prompts
+## What you can do
+
+- Generates commit messages from staged changes.
+- Creates branch names and pull-request descriptions.
+- Reviews pull requests without editing them.
+- Can help apply valid review suggestions safely.
+
+## Install
+
+Install it through Pi:
+
+```bash
+pi install npm:@firstpick/pi-prompts-git-pr
+```
+
+Restart Pi if the package does not appear in your current session.
+
+## How to use it
+
+Stage or prepare the relevant Git changes, then choose a prompt such as `/git-staged-msg`, `/pr`, or `/pr-review-branch`. Review generated text before committing or publishing it.
 
 - `/check-pr` — audit PR commits by author/branch/URL and identify risks.
 - `/git-staged-msg` — generate short and long conventional commit messages from staged changes.
@@ -12,36 +31,6 @@ Reusable prompt templates for commit messages, pull request descriptions, and br
 - `/pr-review-implement` — safely implement valid PR review suggestions.
 - `/pr-update` — append new branch changes to an existing PR draft.
 
-## Install
+## Technical details
 
-```bash
-pi install npm:@firstpick/pi-prompts-git-pr
-```
-
-For local testing from this repository root:
-
-```bash
-pi install ./pi-package-prompts-git-pr
-```
-
-## Configuration
-
-No required configuration. After installation, type `/` in Pi to autocomplete the prompt templates.
-
-`/git-staged-msg` accepts optional output preferences:
-
-```text
-/git-staged-msg [language: en|de] [scope: auto|never|required]
-```
-
-`/pr` accepts an optional output language:
-
-```text
-/pr [language: en|de]
-```
-
-Defaults remain English with automatic scope selection, so existing invocations without arguments continue to work. The prompt resolves the Git repository root before reading staged changes and always writes its output under the root-level `dev/COMMIT` directory, including when invoked from a nested subdirectory.
-
-## Dependencies
-
-No repository-local Pi extensions, tools, skills, or other prompt packages are required. This bundle only contributes prompt templates through `pi.prompts`.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-package-prompts-git-pr/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.

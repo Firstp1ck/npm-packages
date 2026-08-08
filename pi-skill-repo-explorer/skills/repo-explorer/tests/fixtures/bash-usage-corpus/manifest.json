@@ -1,0 +1,113 @@
+{
+  "schema_version": "1.0",
+  "corpus_id": "repo-explorer-bash-usage-v1",
+  "description": "Deterministic polyglot corpus for agent-visible Bash event accounting.",
+  "coverage_tags": [
+    "typescript",
+    "javascript",
+    "python",
+    "rust",
+    "go",
+    "configuration",
+    "documentation",
+    "ci",
+    "tests",
+    "re_exports",
+    "internal_imports",
+    "sensitive_files",
+    "decoys"
+  ],
+  "scenarios": [
+    {
+      "id": "typescript-session-flow",
+      "goal": "trace typescript login authentication session flow imports",
+      "depth": "standard",
+      "index_state": "missing",
+      "required_facts": [
+        {"id": "ts-controller-file", "category": "file", "path": "src/typescript/auth/controller.ts"},
+        {"id": "ts-session-file", "category": "file", "path": "src/typescript/auth/session.ts"},
+        {"id": "ts-login-symbol", "category": "symbol", "path": "src/typescript/auth/controller.ts", "name": "loginUser"},
+        {"id": "ts-session-symbol", "category": "symbol", "path": "src/typescript/auth/session.ts", "name": "createSession"},
+        {"id": "ts-session-import", "category": "dependency", "source": "src/typescript/auth/controller.ts", "target": "src/typescript/auth/session.ts", "kind": "import", "marker": "from './session'"},
+        {"id": "ts-reexport", "category": "dependency", "source": "src/typescript/auth/index.ts", "target": "src/typescript/auth/controller.ts", "kind": "import", "marker": "from './controller'"},
+        {"id": "ts-login-evidence", "category": "evidence", "path": "src/typescript/auth/controller.ts", "contains": "createSession"}
+      ]
+    },
+    {
+      "id": "python-token-flow",
+      "goal": "trace python authenticate user token store flow",
+      "depth": "standard",
+      "index_state": "fresh",
+      "required_facts": [
+        {"id": "py-service-file", "category": "file", "path": "src/python/acme/auth/service.py"},
+        {"id": "py-store-file", "category": "file", "path": "src/python/acme/auth/token_store.py"},
+        {"id": "py-auth-symbol", "category": "symbol", "path": "src/python/acme/auth/service.py", "name": "authenticate_user"},
+        {"id": "py-save-symbol", "category": "symbol", "path": "src/python/acme/auth/token_store.py", "name": "save_token"},
+        {"id": "py-store-import", "category": "dependency", "source": "src/python/acme/auth/service.py", "target": "src/python/acme/auth/token_store.py", "kind": "import", "marker": "from token_store import save_token"},
+        {"id": "py-auth-evidence", "category": "evidence", "path": "src/python/acme/auth/service.py", "contains": "save_token"}
+      ]
+    },
+    {
+      "id": "rust-module-flow",
+      "goal": "trace rust authenticate request module flow",
+      "depth": "standard",
+      "index_state": "fresh",
+      "required_facts": [
+        {"id": "rust-lib-file", "category": "file", "path": "src/rust/lib.rs"},
+        {"id": "rust-auth-file", "category": "file", "path": "src/rust/auth.rs"},
+        {"id": "rust-auth-symbol", "category": "symbol", "path": "src/rust/auth.rs", "name": "authenticate_request"},
+        {"id": "rust-module-edge", "category": "dependency", "source": "src/rust/lib.rs", "target": "src/rust/auth.rs", "kind": "import", "marker": "mod auth;"}
+      ]
+    },
+    {
+      "id": "go-router-flow",
+      "goal": "trace go server health router wiring",
+      "depth": "deep",
+      "index_state": "missing",
+      "required_facts": [
+        {"id": "go-main-file", "category": "file", "path": "cmd/server/main.go"},
+        {"id": "go-router-file", "category": "file", "path": "internal/router/router.go"},
+        {"id": "go-router-symbol", "category": "symbol", "path": "internal/router/router.go", "name": "NewHealthRouter"},
+        {"id": "go-router-edge", "category": "dependency", "source": "cmd/server/main.go", "target": "internal/router/router.go", "kind": "import", "marker": "example.com/benchmark/internal/router"}
+      ]
+    },
+    {
+      "id": "javascript-audit-flow",
+      "goal": "trace javascript legacy login audit dependency",
+      "depth": "standard",
+      "index_state": "fresh",
+      "required_facts": [
+        {"id": "js-auth-file", "category": "file", "path": "src/javascript/legacy-auth.js"},
+        {"id": "js-audit-file", "category": "file", "path": "src/javascript/audit.js"},
+        {"id": "js-login-symbol", "category": "symbol", "path": "src/javascript/legacy-auth.js", "name": "legacyLogin"},
+        {"id": "js-audit-edge", "category": "dependency", "source": "src/javascript/legacy-auth.js", "target": "src/javascript/audit.js", "kind": "import", "marker": "require('./audit')"}
+      ]
+    },
+    {
+      "id": "operations-contract",
+      "goal": "find ci tests configuration and architecture documentation contracts",
+      "depth": "standard",
+      "index_state": "fresh",
+      "required_facts": [
+        {"id": "ci-file", "category": "file", "path": ".github/workflows/ci.yml"},
+        {"id": "config-file", "category": "file", "path": "config/app.yaml"},
+        {"id": "docs-file", "category": "file", "path": "docs/architecture.md"},
+        {"id": "ts-test-file", "category": "file", "path": "tests/auth.test.ts"},
+        {"id": "py-test-file", "category": "file", "path": "tests/test_auth.py"},
+        {"id": "ci-evidence", "category": "evidence", "path": ".github/workflows/ci.yml", "contains": "scripts/check.sh"}
+      ]
+    },
+    {
+      "id": "sensitive-decoy-boundary",
+      "goal": "find benchmark token redaction guard without selecting archived decoys",
+      "depth": "standard",
+      "index_state": "missing",
+      "include_evidence": true,
+      "required_facts": [
+        {"id": "security-file", "category": "file", "path": "src/security/token_guard.py"},
+        {"id": "security-symbol", "category": "symbol", "path": "src/security/token_guard.py", "name": "scrub_benchmark_token"},
+        {"id": "security-redaction", "category": "evidence", "path": "src/security/token_guard.py", "contains": "token =", "handoff_contains": "[REDACTED]"}
+      ]
+    }
+  ]
+}

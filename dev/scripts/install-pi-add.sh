@@ -4,8 +4,9 @@
 # What this script does:
 # - Discovers local Pi package.json files in this repository for extensions, skills, and packages
 #   (pi-extension-*/, pi-skill-*/, pi-package-*/).
-# - Lets you choose which packages to install/update (interactive by default), or installs all actionable packages with --non-interactive/--all.
-# - Compares npm latest versions with Pi-installed versions and hides unchanged ones unless --force is used.
+# - Lets you choose which packages to register/install/update (interactive by default), or processes all actionable packages with --non-interactive/--all.
+# - Compares npm latest versions with Pi-installed versions and hides unchanged, registered ones unless --force is used.
+# - Repairs packages that exist in node_modules but are not registered in Pi's user settings.
 # - Runs `pi install npm:<package>` for each selected package (or only prints commands with --dry-run).
 #
 # How to use:
@@ -33,7 +34,7 @@ Usage:
 Discovers local Pi extension/skill/package npm packages and installs their npm-published versions as unpinned Pi package sources.
 
 Options:
-  --non-interactive  Install/update all actionable packages without prompting
+  --non-interactive  Register/install/update all actionable packages without prompting
   --all              Alias for --non-interactive
   --dry-run          Print install commands without running them
   --force            Show and allow reinstalling packages already at the latest npm version
@@ -153,16 +154,14 @@ npm_latest_version_for() {
 }
 
 PACKAGE_JSON_FILES=()
-for pattern in \
+for package_json in \
   "$ROOT_DIR"/pi-extension-*/package.json \
   "$ROOT_DIR"/pi-skill-*/package.json \
   "$ROOT_DIR"/pi-package-*/package.json
-  do
-  for package_json in $pattern; do
-    if [[ -f "$package_json" ]]; then
-      PACKAGE_JSON_FILES+=("$package_json")
-    fi
-  done
+do
+  if [[ -f "$package_json" ]]; then
+    PACKAGE_JSON_FILES+=("$package_json")
+  fi
 done
 
 if [[ ${#PACKAGE_JSON_FILES[@]} -eq 0 ]]; then
@@ -170,10 +169,19 @@ if [[ ${#PACKAGE_JSON_FILES[@]} -eq 0 ]]; then
   exit 0
 fi
 
-PI_USER_NPM_NODE_MODULES="$(
-  node <<'NODE'
+LEGACY_NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null || true)"
+LEGACY_NPM_GLOBAL_ROOT="${LEGACY_NPM_GLOBAL_ROOT//$'\r'/}"
+
+pi_user_package_state_for() {
+  local package_name="$1"
+
+  node - "$package_name" "$LEGACY_NPM_GLOBAL_ROOT" <<'NODE'
+const fs = require("node:fs");
 const { homedir } = require("node:os");
 const { join } = require("node:path");
+
+const packageName = process.argv[2];
+const legacyNpmRoot = process.argv[3] || "";
 
 let agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 if (agentDir === "~") {
@@ -182,10 +190,58 @@ if (agentDir === "~") {
   agentDir = join(homedir(), agentDir.slice(2));
 }
 
-process.stdout.write(join(agentDir, "npm", "node_modules"));
+function npmPackageName(source) {
+  if (typeof source !== "string" || !source.startsWith("npm:")) return null;
+  const spec = source.slice("npm:".length);
+  if (spec.startsWith("@")) {
+    const slashIndex = spec.indexOf("/");
+    if (slashIndex < 0) return null;
+    const versionIndex = spec.indexOf("@", slashIndex + 1);
+    return versionIndex < 0 ? spec : spec.slice(0, versionIndex);
+  }
+  const versionIndex = spec.indexOf("@");
+  return versionIndex < 0 ? spec : spec.slice(0, versionIndex);
+}
+
+const managedPackageJson = join(agentDir, "npm", "node_modules", ...packageName.split("/"), "package.json");
+const legacyPackageJson = legacyNpmRoot
+  ? join(legacyNpmRoot, ...packageName.split("/"), "package.json")
+  : "";
+const installedPackageJson = fs.existsSync(managedPackageJson)
+  ? managedPackageJson
+  : legacyPackageJson && fs.existsSync(legacyPackageJson)
+    ? legacyPackageJson
+    : "";
+
+let installedVersion = "";
+if (installedPackageJson) {
+  try {
+    installedVersion = String(JSON.parse(fs.readFileSync(installedPackageJson, "utf8")).version || "");
+  } catch {
+    installedVersion = "";
+  }
+}
+
+const settingsFile = join(agentDir, "settings.json");
+let configured = false;
+if (fs.existsSync(settingsFile)) {
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+  } catch (error) {
+    console.error(`ERROR: could not parse Pi user settings at ${settingsFile}: ${error.message}`);
+    process.exit(1);
+  }
+  const packages = Array.isArray(settings.packages) ? settings.packages : [];
+  configured = packages.some((entry) => {
+    const source = typeof entry === "string" ? entry : entry && typeof entry === "object" ? entry.source : null;
+    return npmPackageName(source) === packageName;
+  });
+}
+
+process.stdout.write(`${configured ? "1" : "0"}\t${installedVersion}`);
 NODE
-)"
-LEGACY_NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null || true)"
+}
 
 echo "Discovered ${#PACKAGE_JSON_FILES[@]} local Pi package(s) (extensions/skills/packages)."
 
@@ -194,7 +250,9 @@ PACKAGE_REPO_VERSIONS=()
 PACKAGE_NPM_LATEST_VERSIONS=()
 PACKAGE_KINDS=()
 PACKAGE_INSTALLED_VERSIONS=()
+PACKAGE_CONFIGURED=()
 PACKAGE_STATUS_LABELS=()
+REGISTRATION_CANDIDATES=()
 NEW_INSTALL_CANDIDATES=()
 UPDATE_CANDIDATES=()
 UP_TO_DATE_CANDIDATES=()
@@ -268,25 +326,10 @@ for package_json in "${PACKAGE_JSON_FILES[@]}"; do
   PACKAGE_NPM_LATEST_VERSIONS+=("$npm_latest_version")
   PACKAGE_KINDS+=("$package_kind")
 
-  installed_package_json=""
-  pi_package_json="$PI_USER_NPM_NODE_MODULES/$package_name/package.json"
-  legacy_package_json=""
-  if [[ -n "$LEGACY_NPM_GLOBAL_ROOT" ]]; then
-    legacy_package_json="$LEGACY_NPM_GLOBAL_ROOT/$package_name/package.json"
-  fi
-
-  # Pi installs user-scoped npm packages under ~/.pi/agent/npm/node_modules.
-  # Fall back to the legacy global npm root only when no managed Pi install exists.
-  if [[ -f "$pi_package_json" ]]; then
-    installed_package_json="$pi_package_json"
-  elif [[ -n "$legacy_package_json" && -f "$legacy_package_json" ]]; then
-    installed_package_json="$legacy_package_json"
-  fi
-
-  installed_version=""
-  if [[ -n "$installed_package_json" ]]; then
-    installed_version="$(node -p "require(process.argv[1]).version" "$installed_package_json" 2>/dev/null || true)"
-  fi
+  package_state="$(pi_user_package_state_for "$package_name")"
+  IFS=$'\t' read -r package_configured installed_version <<< "$package_state"
+  package_configured="${package_configured:-0}"
+  installed_version="${installed_version:-}"
 
   target_version="$npm_latest_version"
   version_note=""
@@ -295,8 +338,17 @@ for package_json in "${PACKAGE_JSON_FILES[@]}"; do
   fi
 
   PACKAGE_INSTALLED_VERSIONS+=("$installed_version")
-  if [[ -z "$installed_version" ]]; then
-    PACKAGE_STATUS_LABELS+=("new install -> $target_version$version_note")
+  PACKAGE_CONFIGURED+=("$package_configured")
+  if [[ "$package_configured" != "1" ]]; then
+    installed_note=""
+    if [[ -n "$installed_version" ]]; then
+      installed_note=" (files already present at $installed_version)"
+    fi
+    PACKAGE_STATUS_LABELS+=("register with Pi -> $target_version$installed_note$version_note")
+    REGISTRATION_CANDIDATES+=("${package_name}@${target_version}")
+    SELECTABLE_PACKAGE_INDEXES+=("$package_index")
+  elif [[ -z "$installed_version" ]]; then
+    PACKAGE_STATUS_LABELS+=("repair missing install -> $target_version$version_note")
     NEW_INSTALL_CANDIDATES+=("${package_name}@${target_version}")
     SELECTABLE_PACKAGE_INDEXES+=("$package_index")
   elif [[ "$installed_version" == "$target_version" ]]; then
@@ -329,7 +381,8 @@ if [[ ${#PACKAGE_NAMES[@]} -eq 0 ]]; then
 fi
 
 echo "Status before selection:"
-echo "  New installs available: ${#NEW_INSTALL_CANDIDATES[@]}"
+echo "  Packages requiring Pi registration: ${#REGISTRATION_CANDIDATES[@]}"
+echo "  Missing installs to repair: ${#NEW_INSTALL_CANDIDATES[@]}"
 echo "  Updates available: ${#UPDATE_CANDIDATES[@]}"
 if [[ $FORCE_INSTALL -eq 1 ]]; then
   echo "  Force reinstalls available: ${#FORCE_REINSTALL_CANDIDATES[@]}"
@@ -340,9 +393,9 @@ echo "  Skipped (npm latest unavailable): ${#NPM_QUERY_FAILED_CANDIDATES[@]}"
 
 if [[ ${#SELECTABLE_PACKAGE_INDEXES[@]} -eq 0 ]]; then
   if [[ $FORCE_INSTALL -eq 1 ]]; then
-    echo "No packages available to install/update/reinstall. Exiting."
+    echo "No packages available to register/install/update/reinstall. Exiting."
   else
-    echo "No packages to install/update. Use --force to show/reinstall already up-to-date packages."
+    echo "No packages to register/install/update. Use --force to show/reinstall already up-to-date packages."
   fi
   exit 0
 fi
@@ -359,9 +412,9 @@ else
   fi
 
   if [[ $FORCE_INSTALL -eq 1 ]]; then
-    echo "Select package numbers to install/update/reinstall (space/comma separated), or type 'all':"
+    echo "Select package numbers to register/install/update/reinstall (space/comma separated), or type 'all':"
   else
-    echo "Select package numbers to install/update (space/comma separated), or type 'all':"
+    echo "Select package numbers to register/install/update (space/comma separated), or type 'all':"
   fi
   for display_idx in "${!SELECTABLE_PACKAGE_INDEXES[@]}"; do
     package_index="${SELECTABLE_PACKAGE_INDEXES[$display_idx]}"
@@ -406,6 +459,7 @@ fi
 NEWLY_INSTALLED=()
 UPDATED_PACKAGES=()
 REINSTALLED_PACKAGES=()
+REGISTERED_PACKAGES=()
 SKIPPED_UP_TO_DATE=()
 
 for package_name in "${SELECTED_PACKAGES[@]}"; do
@@ -424,9 +478,10 @@ for package_name in "${SELECTED_PACKAGES[@]}"; do
   repo_version="${PACKAGE_REPO_VERSIONS[$package_index]}"
   target_version="${PACKAGE_NPM_LATEST_VERSIONS[$package_index]}"
   installed_version="${PACKAGE_INSTALLED_VERSIONS[$package_index]}"
+  package_configured="${PACKAGE_CONFIGURED[$package_index]}"
   package_kind="${PACKAGE_KINDS[$package_index]}"
 
-  if [[ $FORCE_INSTALL -eq 0 && -n "$installed_version" && "$installed_version" == "$target_version" ]]; then
+  if [[ $FORCE_INSTALL -eq 0 && "$package_configured" == "1" && -n "$installed_version" && "$installed_version" == "$target_version" ]]; then
     echo "Skipping ${package_kind} npm:${package_name} (already installed at latest npm version $installed_version)"
     SKIPPED_UP_TO_DATE+=("${package_name}@${installed_version}")
     continue
@@ -438,7 +493,14 @@ for package_name in "${SELECTED_PACKAGES[@]}"; do
     repo_note=" (repo package.json $repo_version)"
   fi
 
-  if [[ $FORCE_INSTALL -eq 1 && -n "$installed_version" && "$installed_version" == "$target_version" ]]; then
+  if [[ "$package_configured" != "1" ]]; then
+    installed_note=""
+    if [[ -n "$installed_version" ]]; then
+      installed_note="; files already present at $installed_version"
+    fi
+    echo "Installing ${package_kind} $install_target (registering with Pi at $target_version$installed_note$repo_note)"
+    REGISTERED_PACKAGES+=("${package_name}@${target_version}")
+  elif [[ $FORCE_INSTALL -eq 1 && -n "$installed_version" && "$installed_version" == "$target_version" ]]; then
     echo "Installing ${package_kind} $install_target (force reinstall version $target_version$repo_note)"
     REINSTALLED_PACKAGES+=("${package_name}@${target_version}")
   elif [[ -n "$installed_version" ]]; then
@@ -458,6 +520,10 @@ done
 
 echo
 echo "Summary:"
+echo "  Registered with Pi: ${#REGISTERED_PACKAGES[@]}"
+for entry in ${REGISTERED_PACKAGES[@]+"${REGISTERED_PACKAGES[@]}"}; do
+  echo "    - $entry"
+done
 echo "  Newly installed: ${#NEWLY_INSTALLED[@]}"
 for entry in ${NEWLY_INSTALLED[@]+"${NEWLY_INSTALLED[@]}"}; do
   echo "    - $entry"

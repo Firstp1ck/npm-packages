@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import path from "node:path";
+import { homedir } from "node:os";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -7,6 +8,7 @@ import { delay, takeValue, tokenizeArgs } from "@firstpick/pi-utils";
 import { detachChildProcess as releaseStartedChild, isProcessRunning, terminateChildProcess as terminateFailedChild } from "@firstpick/pi-utils/process";
 import { fetchJsonWithTimeout as fetchJsonWithTimeoutBase } from "@firstpick/pi-utils/http";
 import { registerSubagentGate } from "./lib/subagent-gate.mjs";
+import { createRestoreFile } from "./lib/update/supervisor.mjs";
 import {
   gitWorkflowPreferencesSummary,
   readGitWorkflowPreferences,
@@ -16,7 +18,8 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = __dirname;
-const webuiBin = path.join(packageRoot, "bin", "pi-webui.mjs");
+const webuiBin = path.join(packageRoot, "bin", "pi-webui-launcher.mjs");
+const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 31415;
@@ -216,7 +219,7 @@ function restorableTabsFromStatus(tabs: unknown, options: StartWebuiOptions): Re
     if (!options.noSession) restoreTab.sessionFile = boundedString(state.sessionFile || tab.sessionFile, 4096);
 
     restored.push(restoreTab);
-    if (restored.length >= 30) break;
+    if (restored.length >= 256) break;
   }
   return restored;
 }
@@ -247,7 +250,7 @@ function mergeRestorableTabsFromStatusSources(sources: unknown[], options: Start
       const keys = restorableTabKeys(tab);
       const existingIndex = keys.map((key) => keyToIndex.get(key)).find((index): index is number => index !== undefined);
       if (existingIndex === undefined) {
-        if (merged.length >= 30) continue;
+        if (merged.length >= 256) continue;
         const index = merged.length;
         merged.push(tab);
         for (const key of keys) keyToIndex.set(key, index);
@@ -258,7 +261,7 @@ function mergeRestorableTabsFromStatusSources(sources: unknown[], options: Start
     }
   }
 
-  return merged.slice(0, 30);
+  return merged.slice(0, 256);
 }
 
 async function fetchRestorableTabs(url: string, existing: ExistingWebui, options: StartWebuiOptions): Promise<RestorableWebuiTab[]> {
@@ -463,7 +466,7 @@ async function startWebui(options: StartWebuiOptions, ctx: ExtensionCommandConte
   if (options.piArgs.length > 0) args.push("--", ...options.piArgs);
 
   const env = { ...process.env };
-  if (restoreTabs.length > 0) env.PI_WEBUI_RESTORE_TABS = JSON.stringify(restoreTabs);
+  if (restoreTabs.length > 0) env.PI_WEBUI_RESTORE_FILE = (await createRestoreFile(agentDir, restoreTabs)).file;
 
   const child = spawn(process.execPath, args, {
     cwd: ctx.cwd,
@@ -824,6 +827,12 @@ async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> 
     ], current.stagingPolicy);
     if (!stagingPolicy) return;
 
+    const reviewProcess = await selectGitWorkflowSetupValue(ctx, "Manual review process", [
+      { value: "enabled", label: "Enabled when aur-review is available" },
+      { value: "disabled", label: "Disabled — continue directly to message generation" },
+    ], current.reviewProcessEnabled ? "enabled" : "disabled");
+    if (!reviewProcess) return;
+
     const deliveryMode = await selectGitWorkflowSetupValue(ctx, "Default delivery path", [
       { value: "ask", label: "Ask each workflow" },
       { value: "current", label: "Prefer the current branch" },
@@ -846,6 +855,7 @@ async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> 
       },
       commit: { language, defaultVariant, scope },
       stagingPolicy,
+      reviewProcessEnabled: reviewProcess === "enabled",
       deliveryMode,
       verificationPolicy,
     };
@@ -896,7 +906,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.registerCommand("git-workflow-setup", {
-    description: "Configure the model, reasoning effort, staging, and commit defaults for guided Git",
+    description: "Configure the model, reasoning effort, staging, review process, and commit defaults for guided Git",
     handler: async (_args, ctx) => runGitWorkflowSetup(ctx),
   });
 

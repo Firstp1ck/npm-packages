@@ -2,7 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expandTilde } from "@firstpick/pi-utils/paths";
+
+function expandTilde(input, homeDir = os.homedir()) {
+  if (input === "~" || input === "$HOME") return homeDir;
+  if (input.startsWith("~/")) return path.join(homeDir, input.slice(2));
+  if (input.startsWith("$HOME/")) return path.join(homeDir, input.slice(6));
+  return input;
+}
 
 export const WORKFLOW_POLICY_SCHEMA_VERSION = 1;
 export const WORKFLOW_POLICY_FILENAME = "workflow-policy.json";

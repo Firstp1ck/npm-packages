@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-git-footer-status",
-  "version": "0.4.4",
+  "version": "0.4.7",
   "description": "Enhanced Pi footer with git status, token usage, context usage, and model telemetry.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-git-footer-status#readme",
@@ -31,6 +31,7 @@
   },
   "files": [
     "index.ts",
+    "provider-usage.ts",
     "images",
     "README.md",
     "LICENSE"

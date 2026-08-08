@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-bang-command-autocomplete",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Autocomplete for !<command> in Pi, with optional shell-history indexing.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-bang-command-autocomplete#readme",

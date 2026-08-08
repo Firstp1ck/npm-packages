@@ -4,12 +4,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [app, css, pkg, server, payloadParser] = await Promise.all([
+const [app, css, pkg, server, payloadParser, optionalFeatureCatalog] = await Promise.all([
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
   readFile(join(root, "public", "aur-review-payload.mjs"), "utf8"),
+  readFile(join(root, "lib", "optional-feature-catalog.mjs"), "utf8"),
 ]);
 
 assert.match(app, /const AUR_REVIEW_RPC_WIDGET_KEY = "aur-review:rpc"[\s\S]*AUR_REVIEW_RPC_PAYLOAD_PREFIX = "AUR_REVIEW_RPC_PAYLOAD "[\s\S]*AUR_REVIEW_RPC_PAYLOAD_TYPE = "firstpick\.pi-extension-aur-review\.review"[\s\S]*AUR_REVIEW_RPC_PAYLOAD_VERSION = 3/, "WebUI should identify the versioned AUR review payload");
@@ -20,6 +21,7 @@ assert.match(payloadParser, /decision\.reviewedFingerprint !== payload\.fingerpr
 assert.match(payloadParser, /stagedPayload \? decision\.reviewedStagedContentHash !== payload\.stagedContentHash/, "payload parsing should bind staged terminal decisions to the staged-content hash");
 assert.match(payloadParser, /payload\.changedFiles\.length >= payload\.changedFileTotal/, "payload parsing should reject equality at the truncated-file boundary");
 assert.match(app, /function renderAurReviewWidget\(\)[\s\S]*Review changes[\s\S]*Refresh[\s\S]*Approve[\s\S]*Decline[\s\S]*Close[\s\S]*openAurReviewReportInViewer\(reportPath, payload\.repoRoot\)/, "renderer should open reports against the payload's repo root rather than the tab cwd");
+assert.match(app, /payload\.origin === "guided-git" && payload\.scope === "staged" && payload\.decision\.state === "approved"[\s\S]*return null/, "an approved Guided Git staged review should close its manual review card");
 assert.match(app, /async function openAurReviewReportInViewer\(path = "", repoRoot = ""\)[\s\S]*\/api\/aur-review\/report-content[\s\S]*readOnly: true/s, "report viewing must use the narrow read-only canonical-root endpoint");
 assert.match(app, /viewer\.readOnly === true \|\| !viewer\.dirty[\s\S]*viewer\.readOnly === true \|\| !viewerPath/s, "repo-root report views must not enable generic save or default-editor actions");
 assert.match(app, /function aurReviewActionButton\(label, action, className = ""\)[\s\S]*action === "review"[\s\S]*openGitChangesDialog\(\)[\s\S]*`\/aur-review \$\{action\}`/, "Review changes should reuse the current Git diff dialog and other controls should call canonical extension commands");
@@ -30,8 +32,8 @@ assert.match(app, /if \(key === AUR_REVIEW_RPC_WIDGET_KEY\) return "aurReview"[\
 assert.match(css, /\.aur-review-widget \{[\s\S]*\.aur-review-actions[\s\S]*\.aur-review-file-list[\s\S]*@media \(max-width: 720px\)[\s\S]*\.aur-review-action,[\s\S]*\.aur-review-report/, "AUR review card should be styled responsively for desktop and mobile");
 assert.equal(JSON.parse(pkg).optionalDependencies?.["@firstpick/pi-extension-aur-review"], undefined, "WebUI must not reference the unpublished review extension from clean npm installs");
 assert.equal(JSON.parse(pkg).pi?.extensions?.some((entry) => String(entry).includes("pi-extension-aur-review")), false, "WebUI must not bundle an unpublished nested review extension path");
-assert.match(server, /\["aurReview", "@firstpick\/pi-extension-aur-review"\]/, "optional-feature installer should retain the future/local review companion mapping");
-assert.match(server, /"aur-review-payload\.mjs", "guided-git-command-state\.mjs", "guided-git-review-state\.mjs"/, "server must serve every browser module used by the review gate");
+assert.match(optionalFeatureCatalog, /\["aurReview", "@firstpick\/pi-extension-aur-review", "\^0\.1\.1"\]/, "optional-feature catalog should retain the future/local review companion mapping without bundling it");
+assert.match(server, /STATIC_PUBLIC_FILE_EXTENSIONS[\s\S]*"\.mjs"/, "server must serve typed browser modules from the public asset boundary");
 assert.match(server, /STAGED_CONTENT_HASH_DOMAIN = "firstpick\/aur-review\/staged-content\/v1\\0"[\s\S]*git diff --cached[\s\S]*\/api\/git-workflow\/staged-content/, "server must expose the bounded read-only staged-content hash helper");
 assert.match(server, /async function getAurReviewReportContentData\(tab, \{ path: requestedPath = "", repoRoot = "" \} = \{\}\)[\s\S]*repoRoot !== root[\s\S]*lstat\(targetPath\)[\s\S]*isSymbolicLink\(\)[\s\S]*readBoundedAurReviewReport[\s\S]*\/api\/aur-review\/report-content/s, "server must bind report reads to the canonical Git root and reject symlinked paths through a dedicated read-only route");
 assert.match(server, /entry\.name\.startsWith\("pi-"\)[\s\S]*packageNameForResourcePath\(path\.join\(candidate, "package\.json"\)\)/, "workspace optional-package discovery must recognize the pi-extension-aur-review sibling by manifest name");

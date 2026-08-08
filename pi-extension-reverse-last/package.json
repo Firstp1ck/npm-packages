@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-reverse-last",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Session-aware undo for Pi write/edit tool changes via /reverse-last.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-reverse-last#readme",

@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-plan-executor",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Autonomous PLAN.md execution loop for Pi that continues until all checklist items are complete.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-plan-executor#readme",

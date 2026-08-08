@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { terminateProcessTree } from "../lib/process-tree.mjs";
+import { readSupervisorState, supervisorPaths, supervisorPidIsAlive } from "../lib/rpc-supervisor-state.mjs";
+import { REQUIRED_THEME_TOKENS, serializeTheme } from "../public/theme-contract.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const serverScript = join(root, "bin", "pi-webui.mjs");
 const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
 const port = 30000 + Math.floor(Math.random() * 20000);
+const optionalFeatureFocus = process.env.PI_WEBUI_OPTIONAL_FEATURES_FOCUS === "1";
+
+function themeFixture(name, color = "#123456") {
+  return {
+    name,
+    colors: Object.fromEntries(REQUIRED_THEME_TOKENS.map((token) => [token, color])),
+    export: { pageBg: color, cardBg: color, infoBg: color },
+  };
+}
 
 function lanAddress() {
   for (const entries of Object.values(networkInterfaces())) {
@@ -76,14 +88,14 @@ async function waitForSseEvent(tabId, predicate, trigger) {
 
 async function rmWithRetry(target) {
   let lastError;
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
       await rm(target, { recursive: true, force: true });
       return;
     } catch (error) {
       lastError = error;
       if (error?.code !== "EBUSY" && error?.code !== "EPERM" && error?.code !== "ENOTEMPTY") throw error;
-      await delay(150 * (attempt + 1));
+      await delay(Math.min(500, 150 * (attempt + 1)));
     }
   }
   throw lastError;
@@ -118,7 +130,10 @@ const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
 const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-side-effects-"));
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const workflowPolicyAgentDir = path.join(harnessSideEffectsRoot, "agent");
+const managedThemePackageRoot = path.join(workflowPolicyAgentDir, "npm", "node_modules", "@firstpick", "pi-themes-bundle");
+const managedThemeDir = path.join(managedThemePackageRoot, "themes");
 const workflowPolicyFile = path.join(workflowPolicyAgentDir, "workflow-policy.json");
+const sessionSummaryConfigFile = path.join(workflowPolicyAgentDir, "session-summary.json");
 const canonicalWorkflowPolicySuggestions = {
   shellAllowlist: ["git", "node", "npm"],
   networkAllowlist: ["api.github.com", "registry.npmjs.org"],
@@ -126,6 +141,8 @@ const canonicalWorkflowPolicySuggestions = {
 };
 const openCommandLog = path.join(harnessSideEffectsRoot, "open-default.log");
 const fakePiCommandLog = path.join(harnessSideEffectsRoot, "fake-pi-commands.jsonl");
+const fakePiCliLog = path.join(harnessSideEffectsRoot, "fake-pi-cli.jsonl");
+const fakePiCli = path.join(harnessSideEffectsRoot, "fake-pi-cli.mjs");
 const recoveryEndpointToken = "test-recovery-token-6e1cc61d22d44c8dbf3c";
 const openCommandScript = path.join(harnessSideEffectsRoot, "fake-open-default.mjs");
 const fakeOpenBinDir = path.join(harnessSideEffectsRoot, "bin");
@@ -134,6 +151,10 @@ await mkdir(artifactDir, { recursive: true });
 await writeFile(artifactDownload, Buffer.from("fixture docx download bytes"));
 await writeFile(artifactPage, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 await writeFile(artifactManifest, JSON.stringify({ artifact: { schema: "pi.artifact/v1", kind: "document", id: "fixture-document-artifact", revisionId: "fixture-revision", title: "fixture.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pageCount: 1, manifestPath: artifactManifest, downloadPath: artifactDownload, expiresAt: artifactExpiresAt }, sourcePath: "/private/source.docx", sourceSha256: "a".repeat(64), renderer: { engine: "fixture" }, pages: [{ pageNum: 1, width: 10, height: 20, outputPath: artifactPage }], warnings: [] }));
+await mkdir(managedThemeDir, { recursive: true });
+await writeFile(path.join(managedThemePackageRoot, "package.json"), JSON.stringify({ name: "@firstpick/pi-themes-bundle", version: "0.0.0-test", pi: { themes: ["./themes"] } }));
+await writeFile(path.join(managedThemeDir, "managed-fixture.json"), serializeTheme(themeFixture("managed-fixture")));
+await writeFile(path.join(workflowPolicyAgentDir, "trust.json"), `${JSON.stringify({ [cwd]: true }, null, 2)}\n`);
 await chmod(fakePi, 0o755);
 await mkdir(fakeOpenBinDir, { recursive: true });
 await writeFile(openCommandScript, `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "custom-open\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
@@ -142,7 +163,47 @@ await writeFile(path.join(fakeOpenBinDir, "xdg-open"), `#!/usr/bin/env node\nimp
 await writeFile(path.join(fakeOpenBinDir, "gio"), `#!/usr/bin/env node\nimport { appendFile } from "node:fs/promises";\nawait appendFile(process.env.PI_WEBUI_OPEN_LOG, "gio\\t" + process.argv.slice(2).join("\\t") + "\\n", "utf8");\n`, "utf8");
 await writeFile(path.join(fakeOpenBinDir, "xdg-mime"), `#!/usr/bin/env node\nconst [,, verb, mode, value = ""] = process.argv;\nif (verb === "query" && mode === "filetype") {\n  if (value.endsWith(".piunknown")) console.log("application/x-pi-unknown");\n  else if (value.endsWith(".md")) console.log("text/markdown");\n  else console.log("text/plain");\n  process.exit(0);\n}\nif (verb === "query" && mode === "default") {\n  if (value === "text/plain") console.log("fake-text-editor.desktop");\n  process.exit(0);\n}\nprocess.exit(1);\n`, "utf8");
 await Promise.all(["xdg-open", "gio", "xdg-mime"].map((name) => chmod(path.join(fakeOpenBinDir, name), 0o755)));
+await writeFile(fakePiCli, `#!/usr/bin/env node
+import { appendFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+const args = process.argv.slice(2);
+const log = async (entry) => appendFile(process.env.FAKE_PI_CLI_LOG, JSON.stringify({ at: Date.now(), ...entry }) + "\\n", "utf8");
+process.on("SIGTERM", () => process.exit(143));
+process.on("SIGINT", () => process.exit(130));
+if (args[0] === "--version") {
+  console.log("0.84.0");
+} else if (args[0] === "install") {
+  const source = String(args[1] || "");
+  await log({ event: "start", args });
+  if (source === "npm:@firstpick/pi-extension-stats") {
+    console.error("fixture Pi install failure for stats");
+    await log({ event: "finish", args, exitCode: 17 });
+    process.exitCode = 17;
+  } else {
+    const packageName = source.startsWith("npm:") ? source.slice(4) : "";
+    const sourceRoot = path.join(${JSON.stringify(path.dirname(root))}, packageName.split("/").at(-1));
+    const installRoot = path.join(process.env.PI_CODING_AGENT_DIR, "npm", "node_modules", ...packageName.split("/"));
+    await mkdir(path.dirname(installRoot), { recursive: true });
+    await rm(installRoot, { recursive: true, force: true });
+    await cp(sourceRoot, installRoot, { recursive: true });
+    const settingsPath = path.join(process.env.PI_CODING_AGENT_DIR, "settings.json");
+    const settings = JSON.parse(await readFile(settingsPath, "utf8").catch(() => "{}"));
+    const packages = Array.isArray(settings.packages) ? settings.packages : [];
+    if (!packages.some((entry) => (typeof entry === "string" ? entry : entry?.source) === source)) packages.push(source);
+    settings.packages = packages;
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\\n", "utf8");
+    console.log("installed " + source);
+    await log({ event: "finish", args, exitCode: 0 });
+  }
+} else {
+  await log({ event: "rpc", args });
+  await import(${JSON.stringify(pathToFileURL(fakePi).href)});
+}
+`, "utf8");
+await chmod(fakePiCli, 0o755);
 
+const latestPiVersion = "999.0.0";
 const voiceProviderRequests = [];
 const voiceProvider = createServer(async (req, res) => {
   const chunks = [];
@@ -157,6 +218,11 @@ const voiceProvider = createServer(async (req, res) => {
   if (req.url === "/tts") {
     res.writeHead(200, { "content-type": "audio/mpeg" });
     res.end(Buffer.from("fake mp3 bytes"));
+    return;
+  }
+  if (req.url === "/pi-latest") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ version: latestPiVersion, packageName: "@earendil-works/pi-coding-agent" }));
     return;
   }
   if (req.url?.startsWith("/pi-releases/")) {
@@ -176,7 +242,7 @@ const voiceProvider = createServer(async (req, res) => {
 await new Promise((resolve) => voiceProvider.listen(0, "127.0.0.1", resolve));
 const voiceProviderPort = voiceProvider.address().port;
 
-const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.0.0.0", "--port", String(port), "--pi", fakePi], {
+const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.0.0.0", "--port", String(port), "--pi", fakePiCli], {
   stdio: ["ignore", "pipe", "pipe"],
   env: {
     ...process.env,
@@ -187,6 +253,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     PATH: `${fakeOpenBinDir}${path.delimiter}${process.env.PATH || ""}`,
     PI_CODING_AGENT_DIR: workflowPolicyAgentDir,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
+    PI_SESSION_SUMMARY_CONFIG_FILE: sessionSummaryConfigFile,
     PI_WEBUI_RPC_SUPERVISOR: "1",
     ...(process.platform === "linux" ? {} : { PI_WEBUI_OPEN_COMMAND: openCommandScript }),
     PI_WEBUI_OPEN_LOG: openCommandLog,
@@ -194,11 +261,13 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     FAKE_PI_ARTIFACT_MANIFEST: artifactManifest,
     FAKE_PI_ARTIFACT_DOWNLOAD: artifactDownload,
     FAKE_PI_LOG_FILE: fakePiCommandLog,
+    FAKE_PI_CLI_LOG: fakePiCliLog,
     FAKE_PI_VOICE_SCRIPTS: "1",
     FAKE_PI_LARGE_PAYLOADS: "1",
     PI_WEBUI_RECOVERY_TOKEN: recoveryEndpointToken,
     PI_VOICE_STT_URL: `http://127.0.0.1:${voiceProviderPort}/stt`,
     PI_VOICE_TTS_URL: `http://127.0.0.1:${voiceProviderPort}/tts`,
+    PI_WEBUI_PI_LATEST_VERSION_URL: `http://127.0.0.1:${voiceProviderPort}/pi-latest`,
     PI_WEBUI_PI_RELEASES_API_BASE_URL: `http://127.0.0.1:${voiceProviderPort}/pi-releases`,
   },
 });
@@ -209,6 +278,174 @@ child.stdout.on("data", (chunk) => {
 child.stderr.on("data", (chunk) => {
   serverOutput += String(chunk);
 });
+
+async function verifyTopLevelOptionalFeatureProtection(tabId) {
+  const extensionsDir = path.join(workflowPolicyAgentDir, "extensions");
+  const aliasPath = path.join(extensionsDir, "aur-review-local");
+  await mkdir(extensionsDir, { recursive: true });
+  await rm(aliasPath, { recursive: true, force: true });
+  await symlink(path.join(path.dirname(root), "pi-extension-aur-review"), aliasPath, process.platform === "win32" ? "junction" : "dir");
+  try {
+    const recheckResponse = await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+    assert.equal(recheckResponse.status, 200, recheckResponse.body?.error);
+    const statusResponse = await request("127.0.0.1", "/api/optional-features");
+    const status = statusResponse.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
+    assert.equal(statusResponse.status, 200);
+    assert.equal(status?.configured, false, "a top-level resource should remain distinct from package registration");
+    assert.equal(status?.locallyConfigured, true, "an enabled top-level resource should be recognized as locally configured");
+    assert.equal(status?.ready, true, "an installed top-level resource should be ready without duplicate package registration");
+    assert.equal(status?.resourceConflict, false);
+    assert.equal(Object.hasOwn(status || {}, "installedRoot"), false, "browser audit payloads must not expose install paths");
+    assert.equal(Object.hasOwn(status || {}, "topLevelResources"), false, "browser audit payloads must not expose resource paths");
+    assert.equal(status?.state, "local-resource");
+
+    const logOffset = (await readJsonLines(fakePiCliLog)).length;
+    const installResponse = await request("127.0.0.1", "/api/optional-feature-install", {
+      method: "POST",
+      body: { tab: tabId, featureId: "aurReview" },
+    });
+    assert.equal(installResponse.status, 409, "npm registration should be blocked before it can duplicate an enabled top-level resource");
+    assert.equal(installResponse.body?.optionalFeatureInstall?.kind, "local-resource-conflict");
+    assert.equal((await readJsonLines(fakePiCliLog)).length, logOffset, "a blocked duplicate registration must not launch Pi install");
+  } finally {
+    await rm(aliasPath, { recursive: true, force: true });
+    await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+  }
+}
+
+async function runOptionalFeatureFocus() {
+  const tabs = await request("127.0.0.1", "/api/tabs");
+  const tabId = tabs.body?.data?.tabs?.[0]?.id;
+  assert.ok(tabId, "focused optional-feature checks require the startup tab");
+
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.deepEqual(manifest.optionalDependencies, { "node-pty": "^1.1.0" });
+  assert.equal(manifest.dependencies?.["@firstpick/pi-utils"], "^0.2.5");
+  assert.equal(JSON.stringify(manifest.pi).includes("node_modules/@firstpick"), false);
+
+  const initial = await request("127.0.0.1", "/api/optional-features");
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body?.data?.features?.length, 20);
+  const aurBefore = initial.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
+  assert.deepEqual({ installed: aurBefore?.installed, configured: aurBefore?.configured, ready: aurBefore?.ready }, { installed: true, configured: false, ready: false });
+  assert.equal(aurBefore?.expectedSpec, "^0.1.1");
+  await verifyTopLevelOptionalFeatureProtection(tabId);
+
+  const single = await request("127.0.0.1", "/api/optional-feature-install", {
+    method: "POST",
+    body: { tab: tabId, featureId: "aurReview" },
+    timeoutMs: 10_000,
+  });
+  assert.equal(single.status, 200, single.body?.error);
+  assert.match(single.body?.data?.command || "", /install npm:@firstpick\/pi-extension-aur-review$/);
+  assert.deepEqual({
+    installed: single.body?.data?.status?.installed,
+    configured: single.body?.data?.status?.configured,
+    ready: single.body?.data?.status?.ready,
+  }, { installed: true, configured: true, ready: true });
+
+  const conflictExtensionsDir = path.join(workflowPolicyAgentDir, "extensions");
+  const conflictAliasPath = path.join(conflictExtensionsDir, "aur-review-conflict");
+  await mkdir(conflictExtensionsDir, { recursive: true });
+  await symlink(path.join(path.dirname(root), "pi-extension-aur-review"), conflictAliasPath, process.platform === "win32" ? "junction" : "dir");
+  try {
+    const conflictAudit = await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+    const conflictFeature = conflictAudit.body?.data?.features?.find(({ featureId }) => featureId === "aurReview");
+    assert.equal(conflictFeature?.state, "conflict");
+    assert.equal(conflictFeature?.resourceConflict, true);
+    const conflictTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "conflict-safe optional package" } });
+    assert.equal(conflictTab.status, 201, conflictTab.body?.error);
+    const conflictRpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
+    const normalizedConflictArgs = conflictRpcArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+    assert.equal(normalizedConflictArgs.some((arg) => arg.includes("/extensions/aur-review-conflict/")), false, "conflicting top-level alias must be excluded from RPC args");
+    assert.equal(normalizedConflictArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1, "registered package remains canonical during a conflict");
+    await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [conflictTab.body?.data?.tab?.id] } });
+  } finally {
+    await rm(conflictAliasPath, { recursive: true, force: true });
+    await request("127.0.0.1", "/api/optional-feature-migration/recheck", { method: "POST", body: {} });
+  }
+
+  const summaryFileAlias = path.join(workflowPolicyAgentDir, "extensions", "session-summary.ts");
+  await mkdir(path.dirname(summaryFileAlias), { recursive: true });
+  await symlink(path.join(root, "session-summary.ts"), summaryFileAlias);
+  try {
+    const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
+    assert.equal(resourceTab.status, 201, resourceTab.body?.error);
+    const rpcArgs = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").at(-1)?.args || [];
+    const normalizedArgs = rpcArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+    const normalizedSummaryAlias = summaryFileAlias.replace(/\\/g, "/");
+    assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1);
+    assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1);
+    assert.equal(normalizedArgs.filter((arg) => arg.endsWith("/pi-package-webui/session-summary.ts")).length, 1, "the started WebUI package should contribute one canonical summary extension");
+    assert.equal(normalizedArgs.includes(normalizedSummaryAlias), false, "a top-level file symlink into the WebUI package must not duplicate the canonical summary extension");
+    await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTab.body?.data?.tab?.id] } });
+  } finally {
+    await rm(summaryFileAlias, { force: true });
+  }
+
+  const batchPlan = await request("127.0.0.1", "/api/optional-features");
+  const batchRevision = batchPlan.body?.data?.revision;
+  assert.match(batchRevision || "", /^sha256:[a-f0-9]{64}$/);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: "aurReview" } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: ["not-allowlisted"] } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: Array(20).fill("aurReview") } })).status, 400);
+  assert.equal((await request("127.0.0.1", "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: "sha256:stale", featureIds: ["aurReview"] } })).status, 409);
+
+  const logOffset = (await readJsonLines(fakePiCliLog)).length;
+  const batch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: batchRevision, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
+    timeoutMs: 20_000,
+  });
+  assert.equal(batch.status, 200, batch.body?.error);
+  assert.deepEqual(batch.body?.data?.featureIds, ["bangCommandAutocomplete", "statsCommand", "gitFooterStatus"]);
+  assert.deepEqual(batch.body?.data?.results?.map(({ featureId, ok }) => [featureId, ok]), [
+    ["bangCommandAutocomplete", true], ["statsCommand", false], ["gitFooterStatus", true],
+  ]);
+  assert.deepEqual([batch.body?.data?.total, batch.body?.data?.succeeded, batch.body?.data?.failed], [3, 2, 1]);
+  assert.equal(batch.body?.data?.results?.[1]?.optionalFeatureInstall?.exitCode, 17);
+  assert.match(batch.body?.data?.results?.[1]?.optionalFeatureInstall?.outputTail || "", /fixture Pi install failure/);
+  const sequence = (await readJsonLines(fakePiCliLog)).slice(logOffset).filter(({ event }) => event === "start" || event === "finish");
+  assert.deepEqual(sequence.map(({ event, args, exitCode }) => [event, args?.[1], exitCode]), [
+    ["start", "npm:@firstpick/pi-extension-bang-command-autocomplete", undefined],
+    ["finish", "npm:@firstpick/pi-extension-bang-command-autocomplete", 0],
+    ["start", "npm:@firstpick/pi-extension-stats", undefined],
+    ["finish", "npm:@firstpick/pi-extension-stats", 17],
+    ["start", "npm:@firstpick/pi-extension-git-footer-status", undefined],
+    ["finish", "npm:@firstpick/pi-extension-git-footer-status", 0],
+  ]);
+
+  const progressSnapshot = (await request("127.0.0.1", "/api/optional-features")).body?.data;
+  assert.equal(progressSnapshot?.phase, "partial");
+  assert.deepEqual([progressSnapshot?.progress?.succeeded, progressSnapshot?.progress?.failed], [2, 1]);
+  assert.equal(progressSnapshot?.progress?.results?.length, 3);
+
+  const rpcLaunchCountBeforeSuccess = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").length;
+  const successfulBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: progressSnapshot.revision, featureIds: ["releaseAur"] },
+    timeoutMs: 20_000,
+  });
+  assert.equal(successfulBatch.status, 200, successfulBatch.body?.error);
+  assert.deepEqual(successfulBatch.body?.data?.restart, { autoRestarted: true, restartDeferred: false });
+  let rpcLaunchCountAfterSuccess = rpcLaunchCountBeforeSuccess;
+  for (let attempt = 0; attempt < 20 && rpcLaunchCountAfterSuccess === rpcLaunchCountBeforeSuccess; attempt++) {
+    await delay(50);
+    rpcLaunchCountAfterSuccess = (await readJsonLines(fakePiCliLog)).filter(({ event }) => event === "rpc").length;
+  }
+  assert.equal(rpcLaunchCountAfterSuccess, rpcLaunchCountBeforeSuccess + 1, "an idle tab should restart automatically after a fully successful batch");
+  const completedSnapshot = (await request("127.0.0.1", "/api/optional-features")).body?.data;
+  assert.equal(completedSnapshot?.phase, "complete");
+  assert.equal(completedSnapshot?.progress?.autoRestarted, true);
+
+  const lanHost = lanAddress();
+  if (lanHost) assert.equal((await request(lanHost, "/api/optional-feature-install-batch", { method: "POST", body: { tab: tabId, revision: batchRevision, featureIds: ["aurReview"] } })).status, 403);
+
+  const shutdownResponse = await request("127.0.0.1", "/api/shutdown", { method: "POST", body: {} });
+  assert.equal(shutdownResponse.status, 200);
+  for (let attempt = 0; attempt < 50 && child.exitCode === null; attempt++) await delay(100);
+  assert.notEqual(child.exitCode, null);
+}
 
 try {
   // Wait for the HTTP server to accept requests.
@@ -228,16 +465,325 @@ try {
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
   assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
 
+  const managedThemesResponse = await request("127.0.0.1", "/api/themes");
+  assert.equal(managedThemesResponse.status, 200, managedThemesResponse.body?.error);
+  assert.equal(managedThemesResponse.body?.data?.source, "@firstpick/pi-themes-bundle");
+  assert.deepEqual(managedThemesResponse.body?.data?.themes?.map(({ name }) => name), ["managed-fixture"], "themes installed only under PI_CODING_AGENT_DIR/npm/node_modules should be exposed to the browser");
+  assert.equal(managedThemesResponse.body?.data?.themes?.[0]?.colors?.accent, "#123456");
+  assert.equal(managedThemesResponse.body?.data?.themes?.[0]?.scope, "bundled");
+
+  const themeTabs = await request("127.0.0.1", "/api/tabs");
+  const themeTabId = themeTabs.body?.data?.tabs?.[0]?.id;
+  assert.ok(themeTabId, "custom theme endpoint checks require the startup tab");
+  const customThemePath = `/api/themes/custom?tab=${encodeURIComponent(themeTabId)}`;
+  const globalTheme = themeFixture("global-fixture", "#224466");
+  const createdGlobalTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(createdGlobalTheme.status, 201, createdGlobalTheme.body?.error);
+  assert.deepEqual({ created: createdGlobalTheme.body?.data?.created, overwritten: createdGlobalTheme.body?.data?.overwritten }, { created: true, overwritten: false });
+  assert.equal(Object.hasOwn(createdGlobalTheme.body?.data || {}, "path"), false, "theme save responses must not disclose host paths");
+  const globalThemeFile = path.join(workflowPolicyAgentDir, "themes", "global-fixture.json");
+  assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(globalTheme), "global themes must use canonical Pi JSON bytes");
+  if (process.platform !== "win32") assert.equal((await stat(globalThemeFile)).mode & 0o777, 0o600, "saved themes must have private permissions");
+
+  const projectTheme = themeFixture("project-fixture", "#335577");
+  const createdProjectTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    headers: { "Sec-Fetch-Site": "same-site" },
+    body: { scope: "project", fileName: "project-fixture.json", theme: projectTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(createdProjectTheme.status, 201, createdProjectTheme.body?.error);
+  assert.equal(await readFile(path.join(cwd, ".pi", "themes", "project-fixture.json"), "utf8"), serializeTheme(projectTheme));
+
+  const customCatalog = await request("127.0.0.1", `/api/themes?tab=${encodeURIComponent(themeTabId)}`);
+  assert.equal(customCatalog.status, 200);
+  assert.deepEqual(customCatalog.body?.data?.themes?.map(({ name }) => name), ["managed-fixture", "global-fixture", "project-fixture"]);
+  assert.deepEqual(customCatalog.body?.data?.themes?.map(({ scope }) => scope), ["bundled", "global", "project"]);
+  assert.equal(customCatalog.body?.data?.scopes?.project?.trusted, true);
+
+  const bundledCollision = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "managed-fixture.json", theme: themeFixture("managed-fixture"), overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(bundledCollision.status, 409);
+  assert.equal(bundledCollision.body?.code, "THEME_NAME_COLLISION");
+  const oppositeScopeCollision = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "project-fixture.json", theme: projectTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(oppositeScopeCollision.status, 409);
+  assert.equal(oppositeScopeCollision.body?.code, "THEME_NAME_COLLISION");
+
+  const existingGlobalTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(existingGlobalTheme.status, 409);
+  assert.equal(existingGlobalTheme.body?.code, "THEME_EXISTS");
+  assert.deepEqual(
+    { scope: existingGlobalTheme.body?.details?.scope, fileName: existingGlobalTheme.body?.details?.fileName },
+    { scope: "global", fileName: "global-fixture.json" },
+  );
+  assert.equal(typeof existingGlobalTheme.body?.details?.mtimeMs, "number");
+  await delay(25);
+  await writeFile(globalThemeFile, serializeTheme(themeFixture("global-fixture", "#446688")), { mode: 0o600 });
+  const staleOverwrite = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: true, expectedMtimeMs: existingGlobalTheme.body.details.mtimeMs },
+  });
+  assert.equal(staleOverwrite.status, 409);
+  assert.equal(staleOverwrite.body?.code, "THEME_CHANGED");
+  assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(themeFixture("global-fixture", "#446688")), "a stale overwrite must preserve current bytes");
+  const refreshedConflict = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: false, expectedMtimeMs: null },
+  });
+  const overwrittenGlobalTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    body: { scope: "global", fileName: "global-fixture.json", theme: globalTheme, overwrite: true, expectedMtimeMs: refreshedConflict.body?.details?.mtimeMs },
+  });
+  assert.equal(overwrittenGlobalTheme.status, 200, overwrittenGlobalTheme.body?.error);
+  assert.deepEqual({ created: overwrittenGlobalTheme.body?.data?.created, overwritten: overwrittenGlobalTheme.body?.data?.overwritten }, { created: false, overwritten: true });
+  assert.equal(await readFile(globalThemeFile, "utf8"), serializeTheme(globalTheme));
+  assert.equal((await readdir(path.dirname(globalThemeFile))).some((name) => name.endsWith(".tmp")), false, "atomic theme saves must clean temporary artifacts");
+
+  const rejectedThemeBodies = [
+    { body: { scope: "global", fileName: "bad-name.json", theme: themeFixture("different-name"), overwrite: false, expectedMtimeMs: null }, code: "THEME_NAME_MISMATCH" },
+    { body: { scope: "global", fileName: "path-field.json", theme: themeFixture("path-field"), overwrite: false, expectedMtimeMs: null, path: "/tmp/escape" }, code: "THEME_REQUEST_INVALID" },
+    { body: { scope: "elsewhere", fileName: "scope.json", theme: themeFixture("scope"), overwrite: false, expectedMtimeMs: null }, code: "THEME_SCOPE_INVALID" },
+    { body: { scope: "global", fileName: "invalid.json", theme: { name: "invalid", colors: {} }, overwrite: false, expectedMtimeMs: null }, code: "THEME_INVALID" },
+  ];
+  for (const { body, code } of rejectedThemeBodies) {
+    const rejected = await request("127.0.0.1", customThemePath, { method: "POST", body });
+    assert.equal(rejected.status, 400, rejected.body?.error);
+    assert.equal(rejected.body?.code, code);
+  }
+  const nonJsonTheme = await fetch(`http://127.0.0.1:${port}${customThemePath}`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" });
+  assert.equal(nonJsonTheme.status, 415);
+  const crossSiteTheme = await request("127.0.0.1", customThemePath, {
+    method: "POST",
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    body: { scope: "global", fileName: "cross-site.json", theme: themeFixture("cross-site"), overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(crossSiteTheme.status, 403);
+  assert.equal(crossSiteTheme.body?.code, "THEME_CROSS_SITE_BLOCKED");
+  const malformedThemeJson = await fetch(`http://127.0.0.1:${port}${customThemePath}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
+  assert.equal(malformedThemeJson.status, 400);
+  assert.equal((await malformedThemeJson.json()).code, "THEME_JSON_INVALID");
+  const oversizedTheme = await fetch(`http://127.0.0.1:${port}${customThemePath}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(257 * 1024) }),
+  });
+  assert.equal(oversizedTheme.status, 413);
+
+  const untrustedThemeCwd = await mkdtemp(path.join(harnessSideEffectsRoot, "untrusted-theme-"));
+  const untrustedTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: untrustedThemeCwd, title: "untrusted theme fixture" } });
+  assert.equal(untrustedTab.status, 201, untrustedTab.body?.error);
+  const untrustedTabId = untrustedTab.body?.data?.tab?.id;
+  const untrustedSave = await request("127.0.0.1", `/api/themes/custom?tab=${encodeURIComponent(untrustedTabId)}`, {
+    method: "POST",
+    body: { scope: "project", fileName: "untrusted.json", theme: themeFixture("untrusted"), overwrite: false, expectedMtimeMs: null },
+  });
+  assert.equal(untrustedSave.status, 403);
+  assert.equal(untrustedSave.body?.code, "THEME_PROJECT_UNTRUSTED");
+  assert.equal(await pathExists(path.join(untrustedThemeCwd, ".pi", "themes")), false, "untrusted project saves must not create .pi/themes");
+  await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [untrustedTabId] } });
+
+  const outsideTheme = path.join(harnessSideEffectsRoot, "outside-theme.json");
+  await writeFile(outsideTheme, "outside bytes", "utf8");
+  const symlinkThemeTarget = path.join(workflowPolicyAgentDir, "themes", "symlink-fixture.json");
+  try {
+    await symlink(outsideTheme, symlinkThemeTarget);
+    const symlinkSave = await request("127.0.0.1", customThemePath, {
+      method: "POST",
+      body: { scope: "global", fileName: "symlink-fixture.json", theme: themeFixture("symlink-fixture"), overwrite: false, expectedMtimeMs: null },
+    });
+    assert.equal(symlinkSave.status, 409);
+    assert.equal(symlinkSave.body?.code, "THEME_UNSAFE_TARGET");
+    assert.equal(await readFile(outsideTheme, "utf8"), "outside bytes", "theme saves must never follow a target symlink");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+    console.log(`http-endpoints-harness: symlink unavailable (${error.code}); skipping theme target symlink check`);
+  } finally {
+    await rm(symlinkThemeTarget, { force: true });
+  }
+
+  const symlinkProjectCwd = await mkdtemp(path.join(harnessSideEffectsRoot, "symlink-theme-project-"));
+  const outsideProjectPi = await mkdtemp(path.join(harnessSideEffectsRoot, "outside-project-pi-"));
+  const symlinkProjectPi = path.join(symlinkProjectCwd, ".pi");
+  let symlinkProjectTabId;
+  try {
+    await symlink(outsideProjectPi, symlinkProjectPi, process.platform === "win32" ? "junction" : "dir");
+    await writeFile(path.join(workflowPolicyAgentDir, "trust.json"), `${JSON.stringify({ [cwd]: true, [symlinkProjectCwd]: true }, null, 2)}\n`);
+    const symlinkProjectTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd: symlinkProjectCwd, title: "symlink theme project" } });
+    assert.equal(symlinkProjectTab.status, 201, symlinkProjectTab.body?.error);
+    symlinkProjectTabId = symlinkProjectTab.body?.data?.tab?.id;
+    const symlinkProjectSave = await request("127.0.0.1", `/api/themes/custom?tab=${encodeURIComponent(symlinkProjectTabId)}`, {
+      method: "POST",
+      body: { scope: "project", fileName: "escaped.json", theme: themeFixture("escaped"), overwrite: false, expectedMtimeMs: null },
+    });
+    assert.equal(symlinkProjectSave.status, 409);
+    assert.equal(symlinkProjectSave.body?.code, "THEME_UNSAFE_TARGET");
+    assert.equal(await pathExists(path.join(outsideProjectPi, "themes")), false, "a symlinked .pi directory must not receive theme writes");
+  } catch (error) {
+    if (!["EPERM", "EACCES", "EINVAL", "ENOTSUP"].includes(error?.code)) throw error;
+    console.log(`http-endpoints-harness: directory symlink unavailable (${error.code}); skipping theme root symlink check`);
+  } finally {
+    if (symlinkProjectTabId) await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [symlinkProjectTabId] } });
+    await rm(symlinkProjectPi, { force: true });
+  }
+
+  const themeLanHost = lanAddress();
+  if (themeLanHost) {
+    const remoteThemeSave = await request(themeLanHost, customThemePath, {
+      method: "POST",
+      body: { scope: "global", fileName: "remote.json", theme: themeFixture("remote"), overwrite: false, expectedMtimeMs: null },
+    });
+    assert.equal(remoteThemeSave.status, 403, "custom theme saves must be localhost-only");
+  }
+  // Keep this focused persistence fixture out of the later git-workflow fixture.
+  await rm(path.join(cwd, ".pi"), { recursive: true, force: true });
+
+  if (optionalFeatureFocus) {
+    await runOptionalFeatureFocus();
+  } else {
+  const summaryTabs = await request("127.0.0.1", "/api/tabs");
+  const summaryTabId = summaryTabs.body?.data?.tabs?.[0]?.id;
+  assert.ok(summaryTabId, "session-summary endpoint checks require the startup tab");
+
+  const samplingPath = `/api/tabs/${encodeURIComponent(summaryTabId)}/sampling-parameters`;
+  const initialSampling = await request("127.0.0.1", samplingPath);
+  assert.equal(initialSampling.status, 200, initialSampling.body?.error);
+  assert.equal(initialSampling.headers.get("cache-control"), "private, no-store");
+  assert.equal(initialSampling.body?.data?.support?.supported, true);
+  assert.equal(initialSampling.body?.data?.support?.api, "openai-completions");
+  assert.deepEqual(initialSampling.body?.data?.support?.model, { provider: "fake", id: "fake-model", name: "Fake Model" });
+  assert.equal(initialSampling.body?.data?.support?.parameters?.temperature?.supported, true);
+  assert.equal(initialSampling.body?.data?.support?.parameters?.top_k?.supported, false);
+  assert.equal(initialSampling.body?.data?.support?.parameters?.min_p?.source, "unsupported");
+  assert.ok(Array.isArray(initialSampling.body?.data?.support?.compatibleApis), "legacy support diagnostics must remain available");
+
+  const savedSampling = await request("127.0.0.1", samplingPath, {
+    method: "PUT",
+    body: { temperature: 0.3, top_k: 32, vendor_mode: "strict" },
+  });
+  assert.equal(savedSampling.status, 200, savedSampling.body?.error);
+  assert.deepEqual(savedSampling.body?.data?.session, { temperature: 0.3, top_k: 32, vendor_mode: "strict" });
+  assert.deepEqual(savedSampling.body?.data?.effective, { temperature: 0.3 }, "unsupported stored sampling values must remain inert");
+  assert.equal(savedSampling.body?.data?.support?.parameters?.top_k?.supported, false);
+  const resetSampling = await request("127.0.0.1", samplingPath, { method: "PUT", body: {} });
+  assert.equal(resetSampling.status, 200, resetSampling.body?.error);
+  assert.deepEqual(resetSampling.body?.data?.session, {});
+  assert.deepEqual(resetSampling.body?.data?.effective, { temperature: 0.7 });
+
+  const summaryPath = `/api/session-summary/preferences?tab=${encodeURIComponent(summaryTabId)}`;
+  const initialSummaryPreferences = await request("127.0.0.1", summaryPath);
+  assert.equal(initialSummaryPreferences.status, 200, initialSummaryPreferences.body?.error);
+  assert.equal(initialSummaryPreferences.headers.get("cache-control"), "private, no-store", "summary preferences must not be cached by shared or browser caches");
+  assert.equal(initialSummaryPreferences.body?.data?.version, 1);
+  assert.equal(initialSummaryPreferences.body?.data?.preferences?.configured, false, "first read should not silently save setup defaults");
+  assert.deepEqual(initialSummaryPreferences.body?.data?.models?.map(({ provider, id }) => [provider, id]), [["fake", "fake-model"]]);
+  assert.deepEqual(initialSummaryPreferences.body?.data?.modelThinkingLevels?.["fake/fake-model"], ["off"]);
+  assert.match(initialSummaryPreferences.body?.data?.disclosure?.scope || "", /user text, final assistant text, and tool names only/i);
+  assert.equal(await pathExists(sessionSummaryConfigFile), false, "reading unconfigured summary setup must not create a preference file");
+
+  const unconfiguredSummaryGenerate = await request("127.0.0.1", `/api/session-summary/generate?tab=${encodeURIComponent(summaryTabId)}`, { method: "POST", body: { refresh: true } });
+  assert.equal(unconfiguredSummaryGenerate.status, 409, "direct generation must not bypass explicit setup confirmation");
+  assert.match(unconfiguredSummaryGenerate.body?.error || "", /setup must be confirmed/i);
+
+  const nonJsonSummarySave = await fetch(`http://127.0.0.1:${port}${summaryPath}`, {
+    method: "PUT",
+    headers: { "content-type": "text/plain" },
+    body: "{}",
+  });
+  assert.equal(nonJsonSummarySave.status, 415, "summary setup must reject cross-origin-simple content types");
+  const crossSiteSummarySave = await fetch(`http://127.0.0.1:${port}${summaryPath}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" },
+    body: JSON.stringify({ confirmed: true, preferences: {} }),
+  });
+  assert.equal(crossSiteSummarySave.status, 403, "summary setup must reject explicit cross-site mutations");
+  const unconfirmedSummarySave = await request("127.0.0.1", summaryPath, { method: "PUT", body: { confirmed: false, preferences: {} } });
+  assert.equal(unconfirmedSummarySave.status, 409, "summary setup must require explicit privacy and cost confirmation");
+  assert.equal(await pathExists(sessionSummaryConfigFile), false, "rejected summary setup must not persist defaults");
+
+  const validSummaryPreferences = {
+    enabled: true,
+    model: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" },
+    prompts: { title: "Fixture title prompt", summary: "Fixture Markdown summary prompt" },
+    input: { scope: "text-and-tool-names" },
+    context: { injectLatest: false },
+    title: { enabled: true, minSettledTurns: 3 },
+  };
+  const invalidSummaryShape = await request("127.0.0.1", summaryPath, {
+    method: "PUT",
+    body: { confirmed: true, preferences: { ...validSummaryPreferences, credentials: "forbidden" } },
+  });
+  assert.equal(invalidSummaryShape.status, 400, "summary setup must reject unknown fields rather than retaining secrets or future client authority");
+  const invalidSummaryModel = await request("127.0.0.1", summaryPath, {
+    method: "PUT",
+    body: { confirmed: true, preferences: { ...validSummaryPreferences, model: { provider: "fake", modelId: "missing", thinkingLevel: "off" } } },
+  });
+  assert.equal(invalidSummaryModel.status, 400, "summary setup must validate against the active tab's authenticated model registry");
+  const savedSummaryPreferences = await request("127.0.0.1", summaryPath, {
+    method: "PUT",
+    body: { confirmed: true, preferences: validSummaryPreferences },
+  });
+  assert.equal(savedSummaryPreferences.status, 200, savedSummaryPreferences.body?.error);
+  assert.equal(savedSummaryPreferences.headers.get("cache-control"), "private, no-store");
+  assert.equal(savedSummaryPreferences.body?.data?.preferences?.configured, true);
+  assert.equal(savedSummaryPreferences.body?.data?.summary?.configured, true);
+  const summaryReplay = await waitForSseEvent(summaryTabId, (event) => event.type === "webui_session_summary" && event.kind === "replay");
+  assert.equal(summaryReplay.event.tabId, summaryTabId, "summary replay must remain scoped to the requested tab");
+  assert.equal(summaryReplay.event.summary?.configured, true);
+  assert.equal(Object.hasOwn(summaryReplay.event, "preferences"), false, "summary SSE replay must not expose setup prompts or model preferences");
+  const persistedSummaryPreferences = JSON.parse(await readFile(sessionSummaryConfigFile, "utf8"));
+  assert.equal(persistedSummaryPreferences.configured, true);
+  assert.equal(persistedSummaryPreferences.model.modelId, "fake-model");
+  assert.equal(Object.hasOwn(persistedSummaryPreferences, "credentials"), false, "summary preferences must not persist credentials");
+  if (process.platform !== "win32") assert.equal((await stat(sessionSummaryConfigFile)).mode & 0o777, 0o600, "summary preferences must be private");
+  persistedSummaryPreferences.credentials = "fixture-secret-must-not-cross-http";
+  persistedSummaryPreferences.model.providerToken = "fixture-provider-token";
+  await writeFile(sessionSummaryConfigFile, `${JSON.stringify(persistedSummaryPreferences, null, 2)}\n`, { mode: 0o600 });
+  const sanitizedSummaryPreferences = await request("127.0.0.1", summaryPath);
+  assert.equal(sanitizedSummaryPreferences.status, 200);
+  assert.equal(Object.hasOwn(sanitizedSummaryPreferences.body?.data?.preferences || {}, "credentials"), false, "unknown persisted keys must not cross the browser API boundary");
+  assert.equal(Object.hasOwn(sanitizedSummaryPreferences.body?.data?.preferences?.model || {}, "providerToken"), false, "unknown nested model keys must not cross the browser API boundary");
+  assert.equal(JSON.parse(await readFile(sessionSummaryConfigFile, "utf8")).credentials, "fixture-secret-must-not-cross-http", "sanitized reads must not destroy unknown future persisted keys");
+
+  const summaryPromptCountBefore = (await readJsonLines(fakePiCommandLog)).filter(({ direction, type, message }) => direction === "command" && type === "prompt" && String(message || "").startsWith("/summary")).length;
+  const unavailableSummaryGenerate = await request("127.0.0.1", `/api/session-summary/generate?tab=${encodeURIComponent(summaryTabId)}`, { method: "POST", body: { refresh: true } });
+  assert.equal(unavailableSummaryGenerate.status, 409, "generation should fail closed when /summary is absent from the active tab command catalog");
+  const summaryPromptCountAfter = (await readJsonLines(fakePiCommandLog)).filter(({ direction, type, message }) => direction === "command" && type === "prompt" && String(message || "").startsWith("/summary")).length;
+  assert.equal(summaryPromptCountAfter, summaryPromptCountBefore, "an unavailable summary command must not start a model-facing agent prompt");
+  const malformedSummaryGenerate = await request("127.0.0.1", `/api/session-summary/generate?tab=${encodeURIComponent(summaryTabId)}`, { method: "POST", body: { refresh: "yes" } });
+  assert.equal(malformedSummaryGenerate.status, 400, "summary refresh must be a strict boolean");
+  const oversizedSummarySave = await fetch(`http://127.0.0.1:${port}${summaryPath}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirmed: true, padding: "x".repeat(33 * 1024) }),
+  });
+  assert.equal(oversizedSummarySave.status, 413, "summary mutations over 32 KiB must be rejected before validation");
+
   const initialInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
   assert.equal(initialInterfacePreferences.status, 200);
   assert.equal(initialInterfacePreferences.body?.data?.preferences?.sidePanelWidth, null, "a user without a saved width should receive the default preference");
+  assert.equal(initialInterfacePreferences.body?.data?.layout?.version, 1);
+  assert.equal(initialInterfacePreferences.body?.data?.layout?.sidePanel?.sectionOrder, null);
+  assert.match(initialInterfacePreferences.body?.data?.layoutRevision || "", /^[a-f0-9]{64}$/);
   assert.equal(Object.hasOwn(initialInterfacePreferences.body?.data || {}, "path"), false, "preference responses must not disclose the user's settings-file path");
+  const initialLayoutRevision = initialInterfacePreferences.body.data.layoutRevision;
+
   const savedInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences", {
     method: "PUT",
     body: { sidePanelWidth: 612.4 },
   });
   assert.equal(savedInterfacePreferences.status, 200);
   assert.equal(savedInterfacePreferences.body?.data?.preferences?.sidePanelWidth, 612, "saved side-panel widths should be normalized to whole pixels");
+  assert.equal(savedInterfacePreferences.body?.data?.layoutRevision, initialLayoutRevision, "width-only compatibility writes must not revise layout state");
   assert.equal(JSON.parse(await readFile(settingsFile, "utf8")).interfacePreferences?.sidePanelWidth, 612, "the side-panel width should be saved in the private user settings file");
   const reloadedInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
   assert.equal(reloadedInterfacePreferences.body?.data?.preferences?.sidePanelWidth, 612, "the saved width should survive subsequent user preference reads");
@@ -247,6 +793,87 @@ try {
   });
   assert.equal(invalidInterfacePreferences.status, 400, "out-of-range side-panel widths should be rejected");
   assert.equal((await request("127.0.0.1", "/api/interface-preferences")).body?.data?.preferences?.sidePanelWidth, 612, "invalid saves must preserve the last valid user width");
+
+  const savedLayout = await request("127.0.0.1", "/api/interface-preferences", {
+    method: "PUT",
+    body: {
+      sidePanelWidth: 620,
+      expectedLayoutRevision: initialLayoutRevision,
+      layout: {
+        version: 1,
+        sidePanel: { sectionOrder: ["files", "controls", "git"], collapsedSectionIds: ["git"], hiddenSectionIds: [], collapsed: false },
+        composerActions: { order: ["new", "git", "send"], grid: { version: 2, columns: 12, positions: { new: 0, git: 1, send: 10 } } },
+        footerScopedModelOrder: ["openai-codex/gpt-5.6-sol"],
+        terminalTabs: { layout: "left", customGroups: { version: 1, groups: [{ id: "group-1", title: "Group 1", tabIds: ["tab-a", "tab-b"] }] } },
+        fileViewerWidth: 560,
+      },
+    },
+  });
+  assert.equal(savedLayout.status, 200, savedLayout.body?.error);
+  assert.equal(savedLayout.body?.data?.preferences?.sidePanelWidth, 620);
+  assert.deepEqual(savedLayout.body?.data?.layout?.composerActions?.order, ["new", "git", "send"]);
+  assert.equal(savedLayout.body?.data?.layout?.terminalTabs?.layout, "left");
+  assert.notEqual(savedLayout.body?.data?.layoutRevision, initialLayoutRevision);
+  assert.equal(JSON.stringify(savedLayout.body).includes(settingsFile), false, "successful layout responses must not disclose the settings path");
+  const savedLayoutRevision = savedLayout.body.data.layoutRevision;
+  const persistedLayoutSettings = JSON.parse(await readFile(settingsFile, "utf8"));
+  assert.equal(persistedLayoutSettings.version, 6);
+  assert.equal(persistedLayoutSettings.uiLayout.fileViewerWidth, 560);
+  assert.deepEqual(persistedLayoutSettings.uiLayout.composerActions.grid.positions, { new: 0, git: 1, send: 10 });
+
+  const staleLayout = await request("127.0.0.1", "/api/interface-preferences", {
+    method: "PUT",
+    body: { expectedLayoutRevision: initialLayoutRevision, layout: { sidePanel: { collapsed: true } } },
+  });
+  assert.equal(staleLayout.status, 409, "stale layout revisions must be rejected without mutation");
+  assert.equal(JSON.stringify(staleLayout.body).includes(settingsFile), false, "conflict errors must not disclose the settings path");
+  assert.equal((await request("127.0.0.1", "/api/interface-preferences")).body?.data?.layout?.sidePanel?.collapsed, false);
+
+  const partialLayout = await request("127.0.0.1", "/api/interface-preferences", {
+    method: "PUT",
+    body: { expectedLayoutRevision: savedLayoutRevision, layout: { sidePanel: { collapsed: true }, fileViewerWidth: null } },
+  });
+  assert.equal(partialLayout.status, 200, partialLayout.body?.error);
+  assert.equal(partialLayout.body?.data?.layout?.sidePanel?.collapsed, true);
+  assert.deepEqual(partialLayout.body?.data?.layout?.sidePanel?.sectionOrder, ["files", "controls", "git"], "partial layout patches must preserve omitted fields");
+  assert.equal(partialLayout.body?.data?.layout?.fileViewerWidth, null);
+  assert.deepEqual(partialLayout.body?.data?.layout?.composerActions?.order, ["new", "git", "send"]);
+
+  const invalidLayoutBodies = [
+    { layout: { sidePanel: { collapsed: false } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { composerActions: { order: ["send"] } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { unknown: true } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { terminalTabs: { layout: "bottom" } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { fileViewerWidth: 1 } },
+    { sidePanelWidth: 700, unexpected: true },
+    {},
+  ];
+  for (const body of invalidLayoutBodies) {
+    const invalid = await request("127.0.0.1", "/api/interface-preferences", { method: "PUT", body });
+    assert.equal(invalid.status, 400, `invalid layout input must fail closed: ${JSON.stringify(body)}`);
+  }
+  const afterInvalidLayout = await request("127.0.0.1", "/api/interface-preferences");
+  assert.equal(afterInvalidLayout.body?.data?.layoutRevision, partialLayout.body.data.layoutRevision, "invalid requests must not mutate layout state");
+  assert.equal(afterInvalidLayout.body?.data?.preferences?.sidePanelWidth, 620, "invalid mixed requests must not mutate width state");
+
+  const wrongContentType = await fetch(`http://127.0.0.1:${port}/api/interface-preferences`, {
+    method: "PUT",
+    headers: { "content-type": "text/plain" },
+    body: JSON.stringify({ sidePanelWidth: 700 }),
+  });
+  assert.equal(wrongContentType.status, 415, "non-JSON layout writes must be rejected");
+  const malformedJson = await fetch(`http://127.0.0.1:${port}/api/interface-preferences`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: "{",
+  });
+  assert.equal(malformedJson.status, 400, "malformed JSON must be rejected as client input");
+  const oversizedLayout = await fetch(`http://127.0.0.1:${port}/api/interface-preferences`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(33 * 1024) }),
+  });
+  assert.equal(oversizedLayout.status, 413, "layout request bodies over 32 KiB must be rejected before validation");
 
   // Workflow policy setup is server-scoped: missing policy reads as canonical
   // deny-default state without creating PI_CODING_AGENT_DIR or its policy file.
@@ -285,7 +912,7 @@ try {
   assert.deepEqual(persistedWorkflowPolicy, savedWorkflowPolicy.body?.data?.policy, "workflow policy file should contain exactly the canonical saved policy");
   assert.equal(Object.hasOwn(savedWorkflowPolicy.body?.data?.policy || {}, "suggestions"), false, "saved v1 response policy must not persist advisory suggestions");
   assert.equal(Object.hasOwn(persistedWorkflowPolicy, "suggestions"), false, "saved v1 file must not persist advisory suggestions");
-  assert.equal((await stat(workflowPolicyFile)).mode & 0o777, 0o600, "workflow policy file must be private");
+  if (process.platform !== "win32") assert.equal((await stat(workflowPolicyFile)).mode & 0o777, 0o600, "workflow policy file must be private");
 
   const readWorkflowPolicy = await request("127.0.0.1", "/api/workflow-policy");
   assert.equal(readWorkflowPolicy.status, 200, `saved workflow policy should reload: ${readWorkflowPolicy.body?.error || ""}`);
@@ -335,15 +962,16 @@ try {
 
   const releaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
   assert.equal(releaseNotes.status, 200, `Pi release notes should load through the server: ${releaseNotes.body?.error || ""}`);
-  assert.equal(releaseNotes.body?.data?.version, health.body.piVersion);
-  assert.equal(releaseNotes.body?.data?.tagName, `v${health.body.piVersion}`);
-  assert.equal(releaseNotes.body?.data?.title, `Pi v${health.body.piVersion} test release`);
+  assert.equal(releaseNotes.body?.data?.version, latestPiVersion, "an available update should select the latest Pi release");
+  assert.equal(releaseNotes.body?.data?.tagName, `v${latestPiVersion}`);
+  assert.equal(releaseNotes.body?.data?.title, `Pi v${latestPiVersion} test release`);
   assert.match(releaseNotes.body?.data?.body || "", /Release notes from the test GitHub endpoint/);
-  assert.equal(releaseNotes.body?.data?.url, `https://github.com/earendil-works/pi/releases/tag/v${health.body.piVersion}`);
+  assert.equal(releaseNotes.body?.data?.url, `https://github.com/earendil-works/pi/releases/tag/v${latestPiVersion}`);
   assert.equal(releaseNotes.headers.get("cache-control"), "private, no-store", "browser caches should not retain notes across Pi upgrades");
   const cachedReleaseNotes = await request("127.0.0.1", "/api/pi-release-notes");
-  assert.equal(cachedReleaseNotes.body?.data?.tagName, `v${health.body.piVersion}`);
-  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${health.body.piVersion}`).length, 1, "the server should fetch each installed Pi release only once");
+  assert.equal(cachedReleaseNotes.body?.data?.tagName, `v${latestPiVersion}`);
+  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${latestPiVersion}`).length, 1, "the server should fetch the available Pi release only once");
+  assert.equal(voiceProviderRequests.filter((item) => item.url === `/pi-releases/v${health.body.piVersion}`).length, 0, "the installed Pi release should not be fetched while a newer release is available");
 
   // Static assets: brotli/gzip compression plus ETag revalidation (P0-2).
   const brotliResponse = await fetch(`http://127.0.0.1:${port}/app.js`, {
@@ -383,12 +1011,16 @@ try {
   const appSource = await readFile(join(root, "public", "app.js"), "utf8");
   const startupModuleNames = [...new Set([...appSource.matchAll(/(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']\.\/([^"'?]+)(?:\?[^"']*)?["']/g)].map((match) => match[1]))];
   assert.ok(startupModuleNames.length >= 1, "the startup-module harness should discover app.js imports");
-  for (const moduleName of startupModuleNames) {
-    const response = await fetch(`http://127.0.0.1:${port}/${moduleName}`, { signal: AbortSignal.timeout(5_000) });
-    assert.equal(response.status, 200, `${moduleName} is imported by app.js and must be served by the WebUI`);
-    assert.match(response.headers.get("content-type") || "", /text\/javascript/, `${moduleName} should use a JavaScript MIME type`);
-    assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served startup module ${moduleName} must match its source file`);
+  const startupHosts = [...new Set(["127.0.0.1", lanAddress()].filter(Boolean))];
+  for (const host of startupHosts) {
+    for (const moduleName of startupModuleNames) {
+      const response = await fetch(`http://${host}:${port}/${moduleName}`, { signal: AbortSignal.timeout(5_000) });
+      assert.equal(response.status, 200, `${moduleName} is imported by app.js and must be served by the WebUI on ${host}`);
+      assert.match(response.headers.get("content-type") || "", /text\/javascript/, `${moduleName} should use a JavaScript MIME type on ${host}`);
+      assert.equal(await response.text(), await readFile(join(root, "public", moduleName), "utf8"), `served startup module ${moduleName} must match its source file on ${host}`);
+    }
   }
+  assert.ok(startupModuleNames.includes("stream-output-controller.mjs"), "the remote startup regression must exercise the stream output controller import");
 
   const mermaidModuleResponse = await fetch(`http://127.0.0.1:${port}/vendor/mermaid/mermaid.esm.min.mjs`, {
     signal: AbortSignal.timeout(5_000),
@@ -410,6 +1042,26 @@ try {
   assert.equal(tabList.length, 1, "startup should create one tab for --cwd");
   const tabId = tabList[0].id;
   assert.ok(tabId, "tab should have an id");
+
+  const dedupTabResponse = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "mobile-request-dedup" } });
+  assert.equal(dedupTabResponse.status, 201, "mobile request deduplication test tab should open");
+  const dedupTabId = dedupTabResponse.body?.data?.tab?.id;
+  const requestId = "mobile_request_1234567890";
+  const requestBody = { tab: dedupTabId, message: "mobile request dedup fixture", requestId };
+  const [firstPrompt, duplicatePrompt] = await Promise.all([
+    request("127.0.0.1", "/api/prompt", { method: "POST", body: requestBody }),
+    request("127.0.0.1", "/api/prompt", { method: "POST", body: requestBody }),
+  ]);
+  assert.equal(firstPrompt.status, 200, "the first browser-identified prompt should dispatch");
+  assert.equal(duplicatePrompt.status, 200, "a known browser request should return the retained result");
+  const duplicateReuse = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { ...requestBody, message: "different prompt" } });
+  assert.equal(duplicateReuse.status, 409, "a request ID cannot be reused for a different mutation");
+  const dedupCommands = (await readJsonLines(fakePiCommandLog)).filter((entry) => entry.direction === "command" && entry.message === "mobile request dedup fixture");
+  assert.equal(dedupCommands.length, 1, "duplicate browser prompt identities must reach Pi exactly once");
+  const dedupTabs = await request("127.0.0.1", "/api/tabs");
+  const dedupActivity = dedupTabs.body?.data?.tabs?.find((tab) => tab.id === dedupTabId)?.activity;
+  assert.match(dedupActivity?.runId || "", /^[0-9a-f-]{36}$/i, "active parent work must expose a server-issued opaque run ID");
+  assert.equal((await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [dedupTabId] } })).status, 200, "mobile request deduplication test tab should close");
 
   const runtimeQueueBefore = { steering: ["runtime steering"], followUp: ["runtime first", "runtime second", "runtime third"] };
   const runtimeQueueEdit = await waitForSseEvent(
@@ -462,6 +1114,19 @@ try {
   assert.equal(runtimeQueueMove.status, 200, "runtime queue moves should use final zero-based indices");
   assert.deepEqual(runtimeQueueMove.body?.data?.queue?.followUp, ["runtime second", "runtime third", "runtime edited"]);
 
+  const runtimeQueueDelete = await request("127.0.0.1", "/api/queue/mutate", {
+    method: "POST",
+    body: {
+      tab: tabId,
+      source: "pi-runtime",
+      kind: "followUp",
+      expected: { steering: ["runtime steering"], followUp: ["runtime second", "runtime third", "runtime edited"] },
+      operation: { type: "delete", index: 1, expectedText: "runtime third" },
+    },
+  });
+  assert.equal(runtimeQueueDelete.status, 200, "runtime queue deletion should remove the selected follow-up");
+  assert.deepEqual(runtimeQueueDelete.body?.data?.queue?.followUp, ["runtime second", "runtime edited"]);
+
   const invalidRuntimeQueueMutation = await request("127.0.0.1", "/api/queue/mutate", {
     method: "POST",
     body: { tab: tabId, source: "pi-runtime", kind: "steering", expected: { steering: [], followUp: [] }, operation: { type: "edit", index: 0, expectedText: "x", text: "y" } },
@@ -513,7 +1178,7 @@ try {
   assert.equal(savedUserLaunchSlots.body?.data?.reloadRequired, true, "a changed save must require active-tab reload before helper guidance changes");
   assert.deepEqual(savedUserLaunchSlots.body?.data?.roles?.reviewer, userLaunchDraft.reviewer, "same-role launch slots must retain independent explicit model specs");
   const persistedLaunchSlots = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persistedLaunchSlots.version, 5, "launch-slot persistence should upgrade the private WebUI settings envelope");
+  assert.equal(persistedLaunchSlots.version, 6, "launch-slot persistence should retain the current private WebUI settings envelope");
   assert.deepEqual(persistedLaunchSlots.subagentLaunchSlots?.user?.roles?.reviewer, userLaunchDraft.reviewer);
 
   const inheritedProjectLaunchSlots = await request("127.0.0.1", `/api/subagents/config?tab=${encodeURIComponent(tabId)}&scope=project`);
@@ -585,11 +1250,114 @@ try {
   const validImageCommand = imageCommands.find((entry) => entry.direction === "command" && entry.message === "canonical inline image fixture");
   assert.deepEqual(validImageCommand?.images, [{ type: "image", data: canonicalPng, mimeType: "image/png" }], "canonical image bytes and MIME type should be forwarded unchanged");
 
+  const webuiManifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.deepEqual(webuiManifest.optionalDependencies, { "node-pty": "^1.1.0" }, "node-pty should be the only optional dependency");
+  assert.equal(webuiManifest.dependencies?.["@firstpick/pi-utils"], "^0.2.5", "the required pi-utils runtime dependency must remain regular");
+  assert.equal(JSON.stringify(webuiManifest.pi).includes("node_modules/@firstpick"), false, "the WebUI manifest must not claim optional companion resources");
+
   const optionalFeatures = await request("127.0.0.1", "/api/optional-features");
   assert.equal(optionalFeatures.status, 200, "optional feature status should load");
+  assert.equal(optionalFeatures.body?.data?.features?.length, 20, "the explicit server catalog should expose every allowlisted feature");
   const aurReviewFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
+  assert.equal(aurReviewFeature?.expectedSpec, "^0.1.1", "status should expose the catalog-owned compatibility spec");
   assert.equal(aurReviewFeature?.installed, true, "workspace discovery should find the local pi-extension-aur-review sibling without an npm dependency");
-  assert.equal(path.basename(aurReviewFeature?.installedRoot || ""), "pi-extension-aur-review", "aur-review discovery must validate the exact sibling manifest/name");
+  assert.equal(aurReviewFeature?.configured, false, "physical discovery alone must not imply Pi registration");
+  assert.equal(aurReviewFeature?.ready, false, "a physical but unregistered companion must not be ready after reload");
+  assert.equal(aurReviewFeature?.state, "unknown", "physical discovery without canonical ownership must remain unknown");
+  assert.equal(Object.hasOwn(aurReviewFeature || {}, "installedRoot"), false, "browser status must not expose the validated host package path");
+  await verifyTopLevelOptionalFeatureProtection(tabId);
+
+  const invalidSingleFeature = await request("127.0.0.1", "/api/optional-feature-install", {
+    method: "POST",
+    body: { tab: tabId, featureId: "not-allowlisted" },
+  });
+  assert.equal(invalidSingleFeature.status, 400, "single installs must reject feature IDs outside the server catalog");
+
+  const installedAurReview = await request("127.0.0.1", "/api/optional-feature-install", {
+    method: "POST",
+    body: { tab: tabId, featureId: "aurReview" },
+    timeoutMs: 10_000,
+  });
+  assert.equal(installedAurReview.status, 200, installedAurReview.body?.error);
+  assert.match(installedAurReview.body?.data?.command || "", /install npm:@firstpick\/pi-extension-aur-review$/, "the selected Pi CLI should receive the exact unpinned npm source");
+  assert.equal(installedAurReview.body?.data?.status?.installed, true);
+  assert.equal(installedAurReview.body?.data?.status?.configured, true);
+  assert.equal(installedAurReview.body?.data?.status?.ready, true, "successful Pi installation must verify physical presence and registration");
+  const aurInstallCommands = (await readJsonLines(fakePiCliLog)).filter((entry) => entry.event === "start" && entry.args?.[1] === "npm:@firstpick/pi-extension-aur-review");
+  assert.deepEqual(aurInstallCommands.map((entry) => entry.args), [["install", "npm:@firstpick/pi-extension-aur-review"]], "the feature path must invoke Pi install exactly once without npm CLI flags");
+
+  const registeredOptionalFeatures = await request("127.0.0.1", "/api/optional-features");
+  const registeredAurReview = registeredOptionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
+  assert.equal(registeredAurReview?.ready, true, "Pi registration should survive a fresh status-manager read");
+
+  const resourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "configured optional package" } });
+  assert.equal(resourceTab.status, 201, resourceTab.body?.error);
+  const resourceTabId = resourceTab.body?.data?.tab?.id;
+  const rpcLaunches = (await readJsonLines(fakePiCliLog)).filter((entry) => entry.event === "rpc");
+  const configuredLaunchArgs = rpcLaunches.at(-1)?.args || [];
+  const normalizedLaunchArgs = configuredLaunchArgs.map((arg) => String(arg).replace(/\\/g, "/"));
+  assert.equal(normalizedLaunchArgs.filter((arg) => arg.endsWith("/pi-extension-aur-review/index.ts")).length, 1, "a separately configured optional extension should load once in a WebUI RPC tab");
+  assert.equal(normalizedLaunchArgs.filter((arg) => arg.endsWith("/pi-package-webui/index.ts")).length, 1, "the WebUI package itself should remain loaded exactly once");
+  assert.equal((await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [resourceTabId] } })).status, 200);
+
+  const currentBatchPlan = await request("127.0.0.1", "/api/optional-features");
+  const currentBatchRevision = currentBatchPlan.body?.data?.revision;
+  const malformedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: "aurReview" },
+  });
+  assert.equal(malformedBatch.status, 400, "batch installs must require an array");
+  const unknownBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: ["aurReview", "not-allowlisted"] },
+  });
+  assert.equal(unknownBatch.status, 400, "batch installs must reject unknown IDs before starting any command");
+  const oversizedBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: Array.from({ length: 21 }, () => "aurReview") },
+  });
+  assert.equal(oversizedBatch.status, 400, "batch installs must cap raw input to the catalog size");
+  const staleBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: "sha256:stale", featureIds: ["aurReview"] },
+  });
+  assert.equal(staleBatch.status, 409, "batch installs must reject stale audit revisions");
+
+  const batchLogStart = (await readJsonLines(fakePiCliLog)).length;
+  const partialBatch = await request("127.0.0.1", "/api/optional-feature-install-batch", {
+    method: "POST",
+    body: { tab: tabId, revision: currentBatchRevision, featureIds: ["bangCommandAutocomplete", "statsCommand", "bangCommandAutocomplete", "gitFooterStatus"] },
+    timeoutMs: 20_000,
+  });
+  assert.equal(partialBatch.status, 200, partialBatch.body?.error);
+  assert.deepEqual(partialBatch.body?.data?.featureIds, ["bangCommandAutocomplete", "statsCommand", "gitFooterStatus"], "batch input should be deduplicated without reordering");
+  assert.deepEqual(partialBatch.body?.data?.results?.map(({ featureId, ok }) => [featureId, ok]), [
+    ["bangCommandAutocomplete", true],
+    ["statsCommand", false],
+    ["gitFooterStatus", true],
+  ], "a failed Pi install must not stop later allowlisted installs");
+  assert.deepEqual({ total: partialBatch.body?.data?.total, succeeded: partialBatch.body?.data?.succeeded, failed: partialBatch.body?.data?.failed }, { total: 3, succeeded: 2, failed: 1 });
+  assert.equal(partialBatch.body?.data?.results?.[1]?.optionalFeatureInstall?.exitCode, 17, "batch failures should retain exit diagnostics");
+  assert.match(partialBatch.body?.data?.results?.[1]?.optionalFeatureInstall?.command || "", /install npm:@firstpick\/pi-extension-stats$/, "batch failures should retain a copyable Pi command");
+  assert.match(partialBatch.body?.data?.results?.[1]?.optionalFeatureInstall?.outputTail || "", /fixture Pi install failure/, "batch failures should retain bounded output diagnostics");
+  const batchLog = (await readJsonLines(fakePiCliLog)).slice(batchLogStart).filter((entry) => entry.event === "start" || entry.event === "finish");
+  assert.deepEqual(batchLog.map((entry) => [entry.event, entry.args?.[1], entry.exitCode]), [
+    ["start", "npm:@firstpick/pi-extension-bang-command-autocomplete", undefined],
+    ["finish", "npm:@firstpick/pi-extension-bang-command-autocomplete", 0],
+    ["start", "npm:@firstpick/pi-extension-stats", undefined],
+    ["finish", "npm:@firstpick/pi-extension-stats", 17],
+    ["start", "npm:@firstpick/pi-extension-git-footer-status", undefined],
+    ["finish", "npm:@firstpick/pi-extension-git-footer-status", 0],
+  ], "batch commands should execute sequentially in request order");
+
+  const lanHost = lanAddress();
+  if (lanHost) {
+    const remoteBatch = await request(lanHost, "/api/optional-feature-install-batch", {
+      method: "POST",
+      body: { tab: tabId, revision: currentBatchRevision, featureIds: ["aurReview"] },
+    });
+    assert.equal(remoteBatch.status, 403, "batch installs must remain localhost-only");
+  }
 
   const sessionToolsBefore = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=session`);
   assert.equal(sessionToolsBefore.status, 200);
@@ -722,6 +1490,17 @@ try {
   assert.equal(subagentOutputResponse.body?.data?.agent?.currentToolArgs, "README.md", "subagent output should include current tool state");
   assert.equal(subagentOutputResponse.body?.data?.agent?.model, "anthropic/claude-opus-4-8:high", "subagent output should preserve the effective model");
   assert.equal(subagentOutputResponse.body?.data?.agent?.thinking, "high", "subagent output should preserve the effective reasoning effort");
+  assert.deepEqual(subagentOutputResponse.body?.data?.agent?.telemetry, {
+    promptInjectionTokens: 1234,
+    inputTokens: 300,
+    outputTokens: 100,
+    tokenSpeed: 20,
+    contextTokens: 240,
+    contextWindow: 200_000,
+    model: "anthropic/claude-opus-4-8:high",
+    effort: "high",
+  }, "selected output should preserve only the normalized additive telemetry contract");
+  assert.equal(Object.hasOwn(subagentOutputResponse.body?.data?.agent?.telemetry || {}, "rawSessionPayload"), false, "selected output must not leak raw child-session/custom payloads");
   assert.deepEqual(subagentOutputResponse.body?.data?.agent?.transcript, [
     {
       role: "assistant",
@@ -854,6 +1633,29 @@ try {
   const state = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(tabId)}`);
   assert.equal(state.status, 200);
   assert.equal(state.body?.data?.model?.provider, "fake", "state should come from the fake pi RPC");
+
+  const newSessionTitleTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd } });
+  assert.equal(newSessionTitleTab.status, 201, `new-session title test tab should open: ${newSessionTitleTab.body?.error || ""}`);
+  const newSessionTitleTabId = newSessionTitleTab.body?.data?.tab?.id;
+  const defaultNewSessionTabTitle = newSessionTitleTab.body?.data?.tab?.title;
+  assert.ok(newSessionTitleTabId && defaultNewSessionTabTitle, "new-session title test tab should include default metadata");
+  const autoNamedTab = await request("127.0.0.1", "/api/prompt", {
+    method: "POST",
+    body: { tab: newSessionTitleTabId, message: "verify new session terminal title refresh" },
+  });
+  assert.equal(autoNamedTab.status, 200, "the title test prompt should be accepted");
+  assert.notEqual(autoNamedTab.body?.tab?.title, defaultNewSessionTabTitle, "the first prompt should auto-name the test tab");
+  assert.equal(autoNamedTab.body?.tab?.titleSource, "auto", "the generated title should be marked automatic");
+  const freshSession = await request("127.0.0.1", "/api/new-session", {
+    method: "POST",
+    body: { tab: newSessionTitleTabId },
+  });
+  assert.equal(freshSession.status, 200, `new session should succeed: ${freshSession.body?.error || ""}`);
+  assert.equal(freshSession.body?.tab?.title, defaultNewSessionTabTitle, "new-session responses should immediately reset automatic terminal-tab titles");
+  assert.equal(freshSession.body?.tab?.titleSource, "default", "a reset title should be eligible for the new session's first-prompt naming");
+  assert.equal(freshSession.body?.tab?.conversationStarted, false, "the new session should reset conversation-title tracking");
+  const closeNewSessionTitleTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [newSessionTitleTabId] } });
+  assert.equal(closeNewSessionTitleTab.status, 200, "new-session title test tab should close before later endpoint checks");
 
   const forkSourceTab = await request("127.0.0.1", "/api/tabs", { method: "POST", body: { cwd, title: "fork-running-source" } });
   assert.equal(forkSourceTab.status, 201, `fork source tab should open: ${forkSourceTab.body?.error || ""}`);
@@ -1397,6 +2199,165 @@ try {
       assert.ok(id, `${title} tab should have an id`);
       return id;
     };
+    const addToGitignore = (tab, targetPath, kind) => request("127.0.0.1", "/api/git-changes/add-to-gitignore", {
+      method: "POST",
+      body: { tab, path: targetPath, kind },
+    });
+
+    // Add-to-gitignore mutation: literal entries, idempotence, line endings, validation, and target safety.
+    const gitignoreRepo = await makeFixtureRepo("add-to-gitignore");
+    const gitignoreTab = await openFixtureTab(gitignoreRepo, "add-to-gitignore-fixture");
+    await mkdir(path.join(gitignoreRepo, "generated"), { recursive: true });
+    await writeFile(path.join(gitignoreRepo, "generated", "output.log"), "generated\n");
+    await mkdir(path.join(gitignoreRepo, "build"), { recursive: true });
+    await writeFile(path.join(gitignoreRepo, "build", "bundle.js"), "bundle\n");
+    const indexBeforeGitignore = runGitFixture(["diff", "--cached", "--raw"], gitignoreRepo, "gitignore fixture should start with an unchanged index");
+
+    const addIgnoredFile = await addToGitignore(gitignoreTab, "generated/output.log", "file");
+    assert.equal(addIgnoredFile.status, 200);
+    assert.equal(addIgnoredFile.body?.ok, true, `adding a file to .gitignore should succeed: ${addIgnoredFile.body?.error || ""}`);
+    assert.deepEqual({
+      root: addIgnoredFile.body?.data?.root,
+      path: addIgnoredFile.body?.data?.path,
+      kind: addIgnoredFile.body?.data?.kind,
+      entry: addIgnoredFile.body?.data?.entry,
+      added: addIgnoredFile.body?.data?.added,
+    }, {
+      root: gitignoreRepo,
+      path: "generated/output.log",
+      kind: "file",
+      entry: "/generated/output.log",
+      added: true,
+    }, "file mutations should return the approved normalized contract");
+    assert.equal((await readFile(path.join(gitignoreRepo, ".gitignore"), "utf8")), "/generated/output.log\n", "a missing root .gitignore should be created with one LF-terminated entry");
+    assert.equal(addIgnoredFile.body?.data?.changes?.untracked?.some((entry) => entry.path === ".gitignore"), true, "the mutation response should contain refreshed Git status including .gitignore");
+    assert.equal(addIgnoredFile.body?.data?.changes?.untracked?.some((entry) => entry.path === "generated/output.log"), false, "the refreshed snapshot should no longer list the newly ignored file");
+
+    const bytesBeforeRepeat = await readFile(path.join(gitignoreRepo, ".gitignore"));
+    const repeatIgnoredFile = await addToGitignore(gitignoreTab, "generated/output.log", "file");
+    assert.equal(repeatIgnoredFile.body?.data?.added, false, "an exact repeated entry should report a no-op");
+    assert.deepEqual(await readFile(path.join(gitignoreRepo, ".gitignore")), bytesBeforeRepeat, "an exact repeated entry must be byte-idempotent");
+
+    const addIgnoredFolder = await addToGitignore(gitignoreTab, "build", "folder");
+    assert.equal(addIgnoredFolder.body?.data?.entry, "/build/", "folder entries should receive exactly one trailing slash");
+    assert.equal(await readFile(path.join(gitignoreRepo, ".gitignore"), "utf8"), "/generated/output.log\n/build/\n", "folder entries should append without rewriting existing content");
+
+    const concurrentResults = await Promise.all([
+      addToGitignore(gitignoreTab, "concurrent/cache.bin", "file"),
+      addToGitignore(gitignoreTab, "concurrent/cache.bin", "file"),
+    ]);
+    assert.deepEqual(concurrentResults.map((result) => result.body?.data?.added).sort(), [false, true], "per-repository serialization should add one copy under concurrent requests");
+    assert.equal((await readFile(path.join(gitignoreRepo, ".gitignore"), "utf8")).split("/concurrent/cache.bin").length - 1, 1, "serialized concurrent requests should leave one exact line");
+
+    const normalizedSeparators = await addToGitignore(gitignoreTab, "nested\\windows.log", "file");
+    assert.equal(normalizedSeparators.body?.data?.path, "nested/windows.log", "backslash separators should normalize to repository-style slashes");
+    assert.equal(normalizedSeparators.body?.data?.entry, "/nested/windows.log");
+
+    await writeFile(path.join(gitignoreRepo, "file.txt"), "tracked modification\n");
+    const addTrackedFile = await addToGitignore(gitignoreTab, "file.txt", "file");
+    assert.equal(addTrackedFile.body?.data?.added, true, "a tracked path may receive an ignore entry");
+    assert.equal(runGitFixture(["ls-files", "--error-unmatch", "--", "file.txt"], gitignoreRepo, "tracked file must remain in the index"), "file.txt", "adding a tracked path to .gitignore must not untrack it");
+    assert.match(addTrackedFile.body?.data?.changes?.status || "", /(^|\n) M file\.txt(?=\n|$)/, "the refreshed snapshot should keep a modified tracked file visible after adding its ignore entry");
+
+    assert.equal(runGitFixture(["diff", "--cached", "--raw"], gitignoreRepo, "gitignore mutation must not change the index"), indexBeforeGitignore, "add-to-gitignore must not stage any files");
+    assert.equal(runGitFixture(["ls-files", "--stage", "--", ".gitignore"], gitignoreRepo, "gitignore mutation must leave .gitignore untracked"), "", ".gitignore must remain unstaged and untracked");
+
+    const lfRepo = await makeFixtureRepo("gitignore-lf");
+    const lfTab = await openFixtureTab(lfRepo, "gitignore-lf-fixture");
+    await writeFile(path.join(lfRepo, ".gitignore"), "# existing\n", "utf8");
+    assert.equal((await addToGitignore(lfTab, "lf-output.txt", "file")).body?.data?.added, true);
+    assert.equal(await readFile(path.join(lfRepo, ".gitignore"), "utf8"), "# existing\n/lf-output.txt\n", "LF files should retain LF when appending");
+
+    const noFinalNewlineRepo = await makeFixtureRepo("gitignore-no-final-newline");
+    const noFinalNewlineTab = await openFixtureTab(noFinalNewlineRepo, "gitignore-no-final-newline-fixture");
+    await writeFile(path.join(noFinalNewlineRepo, ".gitignore"), "# existing", "utf8");
+    await addToGitignore(noFinalNewlineTab, "separated.txt", "file");
+    assert.equal(await readFile(path.join(noFinalNewlineRepo, ".gitignore"), "utf8"), "# existing\n/separated.txt\n", "append should add a separator when existing content has no final newline");
+
+    const crlfRepo = await makeFixtureRepo("gitignore-crlf");
+    const crlfTab = await openFixtureTab(crlfRepo, "gitignore-crlf-fixture");
+    await writeFile(path.join(crlfRepo, ".gitignore"), Buffer.from("# existing\r\n", "utf8"));
+    await addToGitignore(crlfTab, "crlf-output.txt", "file");
+    assert.deepEqual(await readFile(path.join(crlfRepo, ".gitignore")), Buffer.from("# existing\r\n/crlf-output.txt\r\n", "utf8"), "CRLF files should retain CRLF when appending");
+
+    const literalRepo = await makeFixtureRepo("gitignore-literal-pattern");
+    const literalTab = await openFixtureTab(literalRepo, "gitignore-literal-pattern-fixture");
+    const literalPath = "literal [x] *?.txt";
+    const addLiteral = await addToGitignore(literalTab, literalPath, "file");
+    assert.equal(addLiteral.body?.data?.entry, "/literal\\ \\[x\\]\\ \\*\\?.txt", "spaces and Git pattern metacharacters should be escaped literally");
+    assert.equal(await readFile(path.join(literalRepo, ".gitignore"), "utf8"), "/literal\\ \\[x\\]\\ \\*\\?.txt\n");
+    const intendedLiteralCheck = spawnSync("git", ["check-ignore", "-q", "--no-index", "--", literalPath], { cwd: literalRepo });
+    assert.equal(intendedLiteralCheck.status, 0, "the escaped entry should ignore the intended special-character path");
+    const broaderLiteralCheck = spawnSync("git", ["check-ignore", "-q", "--no-index", "--", "literal x anything.txt"], { cwd: literalRepo });
+    assert.notEqual(broaderLiteralCheck.status, 0, "the escaped entry must not broaden into wildcard or character-class matching");
+
+    const outsideMarker = path.join(gitFixturesRoot, "outside-gitignore-marker.txt");
+    await writeFile(outsideMarker, "outside unchanged\n");
+    const validationBytesBefore = await readFile(path.join(gitignoreRepo, ".gitignore"));
+    const rejectedGitignoreInputs = [
+      { path: "", kind: "file", label: "empty path" },
+      { path: ".", kind: "folder", label: "repository root" },
+      { path: "/absolute.txt", kind: "file", label: "POSIX absolute path" },
+      { path: "C:\\absolute.txt", kind: "file", label: "Windows absolute path" },
+      { path: "../outside-gitignore-marker.txt", kind: "file", label: "traversal" },
+      { path: "nested/../outside.txt", kind: "file", label: "embedded traversal" },
+      { path: "bad\npath.txt", kind: "file", label: "newline control character" },
+      { path: "bad\0path.txt", kind: "file", label: "NUL control character" },
+      { path: "valid.txt", kind: "directory", label: "invalid kind" },
+      { path: "valid.txt", kind: "", label: "empty kind" },
+    ];
+    for (const invalid of rejectedGitignoreInputs) {
+      const rejected = await addToGitignore(gitignoreTab, invalid.path, invalid.kind);
+      assert.equal(rejected.status, 400, `${invalid.label} should be rejected`);
+      assert.equal(rejected.body?.ok, false, `${invalid.label} should return a structured failure`);
+    }
+    assert.deepEqual(await readFile(path.join(gitignoreRepo, ".gitignore")), validationBytesBefore, "validation failures must leave .gitignore byte-for-byte unchanged");
+    assert.equal(await readFile(outsideMarker, "utf8"), "outside unchanged\n", "traversal attempts must not write outside the repository");
+
+    const unsafeRepo = await makeFixtureRepo("gitignore-unsafe-target");
+    const unsafeTab = await openFixtureTab(unsafeRepo, "gitignore-unsafe-target-fixture");
+    const unsafeGitignore = path.join(unsafeRepo, ".gitignore");
+    await mkdir(unsafeGitignore);
+    const directoryTarget = await addToGitignore(unsafeTab, "blocked.txt", "file");
+    assert.equal(directoryTarget.status, 409, "a non-regular root .gitignore target should fail closed");
+    await rm(unsafeGitignore, { recursive: true, force: true });
+
+    const hardlinkTarget = path.join(gitFixturesRoot, "outside-hardlink-target.txt");
+    await writeFile(hardlinkTarget, "hard-link target unchanged\n");
+    let hardlinkSupported = true;
+    try {
+      await link(hardlinkTarget, unsafeGitignore);
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "ENOSYS" || error?.code === "EXDEV") hardlinkSupported = false;
+      else throw error;
+    }
+    if (hardlinkSupported) {
+      const hardlinkResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
+      assert.equal(hardlinkResponse.status, 409, "a root .gitignore hard link should fail closed");
+      assert.equal(await readFile(hardlinkTarget, "utf8"), "hard-link target unchanged\n", "a rejected .gitignore hard link must not modify its outside target");
+      await rm(unsafeGitignore, { force: true });
+    }
+
+    const symlinkTarget = path.join(gitFixturesRoot, "outside-symlink-target.txt");
+    await writeFile(symlinkTarget, "symlink target unchanged\n");
+    let symlinkSupported = true;
+    try {
+      await symlink(symlinkTarget, unsafeGitignore, "file");
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "ENOSYS") symlinkSupported = false;
+      else throw error;
+    }
+    if (symlinkSupported) {
+      const symlinkResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
+      assert.equal(symlinkResponse.status, 409, "a root .gitignore symlink should fail closed");
+      assert.equal(await readFile(symlinkTarget, "utf8"), "symlink target unchanged\n", "a rejected .gitignore symlink must not be followed");
+      await rm(unsafeGitignore, { force: true });
+    }
+
+    await writeFile(unsafeGitignore, Buffer.alloc(5 * 1024 * 1024 + 1, 0x23));
+    const oversizedResponse = await addToGitignore(unsafeTab, "blocked.txt", "file");
+    assert.equal(oversizedResponse.status, 409, "an oversized root .gitignore should be rejected as an unsafe server-side file state before it is read into memory");
+    assert.equal((await stat(unsafeGitignore)).size, 5 * 1024 * 1024 + 1, "oversized refusal must leave .gitignore unchanged");
 
     // File-scoped Git diff endpoint: staged, unstaged, untracked, empty, deleted, and rejected inputs.
     const fileDiffRepo = await makeFixtureRepo("file-diff");
@@ -1612,9 +2573,11 @@ try {
     assert.equal(operationSnapshot.body?.data?.conflicts?.[0]?.preview?.hasMarkers, true, "conflict preview should detect conflict markers");
 
     const conflictAgent = await request("127.0.0.1", "/api/git-operation/resolve-with-agent", { method: "POST", body: { tab: mergeTab }, timeoutMs: 20_000 });
+    const conflictAgentTabId = conflictAgent.body?.data?.tab?.id;
     assert.equal(conflictAgent.status, 200);
     assert.equal(conflictAgent.body?.ok, true, `conflict handoff should open an agent tab: ${conflictAgent.body?.error || ""}`);
-    assert.notEqual(conflictAgent.body?.data?.tab?.id, mergeTab, "conflict handoff should create a separate tab");
+    assert.ok(conflictAgentTabId, "conflict handoff should create a separate tab");
+    assert.notEqual(conflictAgentTabId, mergeTab, "conflict handoff should create a separate tab");
     assert.equal(conflictAgent.body?.data?.tab?.cwd, mergeRepo, "conflict agent should use the conflicted repository root");
     assert.equal(conflictAgent.body?.data?.tab?.title, "Resolve merge conflicts");
     assert.deepEqual(conflictAgent.body?.data?.operation?.conflicts, [{ path: "file.txt", status: "UU" }]);
@@ -1820,7 +2783,7 @@ try {
     const pruneConfirmed = await request("127.0.0.1", "/api/git-worktrees/prune", { method: "POST", body: { tab: undoTab, confirmed: true }, timeoutMs: 20_000 });
     assert.equal(pruneConfirmed.body?.ok, true, `confirmed prune should succeed: ${pruneConfirmed.body?.error || ""}`);
 
-    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [stagingTab, truncationTab, mergeTab, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
+    const closeGitActionTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [gitignoreTab, lfTab, noFinalNewlineTab, crlfTab, literalTab, unsafeTab, fileDiffTab, stagingTab, truncationTab, mergeTab, conflictAgentTabId, abortTab, rebaseTab, bisectTab, stashTab, undoTab] }, timeoutMs: 10_000 });
     assert.equal(closeGitActionTabs.status, 200, "git action fixture tabs should close");
     await rmWithRetry(gitFixturesRoot);
 
@@ -2108,7 +3071,10 @@ try {
         nestedSearchState = await request("127.0.0.1", `/api/app-runners?tab=${encodeURIComponent(nestedSearchTabId)}`, { timeoutMs: 5_000 });
       }
       assert.equal(nestedSearchState.body?.data?.activeRun?.status, "done", "configured shell runner should complete");
-      assert.match((nestedSearchState.body?.data?.activeRun?.lines || []).join("\n"), new RegExp(`configured alpha cwd=${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "configured shell runners should execute at the project root");
+      const expectedShellCwd = process.platform === "win32"
+        ? cwd.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive) => `/${drive.toLowerCase()}`)
+        : cwd;
+      assert.match((nestedSearchState.body?.data?.activeRun?.lines || []).join("\n"), new RegExp(`configured alpha cwd=${expectedShellCwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "configured shell runners should execute at the project root");
     } finally {
       if (nestedSearchTabId) await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [nestedSearchTabId] }, timeoutMs: 10_000 });
     }
@@ -2730,6 +3696,15 @@ try {
     const remoteWorkflowPolicyRead = await request(lan, "/api/workflow-policy");
     assert.equal(remoteWorkflowPolicyRead.status, 403, "workflow policy reads must be localhost-only");
 
+    const remoteUpdatePlan = await request(lan, "/api/update/plan", { method: "POST", body: { targets: ["pi"] } });
+    assert.equal(remoteUpdatePlan.status, 403, "update plans must be localhost-only before target resolution");
+    const remoteUpdateApply = await request(lan, "/api/update/apply", { method: "POST", body: { transactionId: "remote", planDigest: "a".repeat(64) } });
+    assert.equal(remoteUpdateApply.status, 403, "update apply must be localhost-only before journal lookup");
+    const remoteUpdateTransaction = await request(lan, "/api/update/transactions/remote");
+    assert.equal(remoteUpdateTransaction.status, 403, "update transaction receipts must be localhost-only");
+    const remoteUpdateRollback = await request(lan, "/api/update/rollback", { method: "POST", body: { transactionId: "remote", planDigest: "a".repeat(64) } });
+    assert.equal(remoteUpdateRollback.status, 403, "update rollback must be localhost-only before pointer mutation");
+
     const remoteWorkflowPolicySave = await request(lan, "/api/workflow-policy", {
       method: "POST",
       body: { policy: workflowPolicyToSave, expectedRevision: savedWorkflowPolicy.body?.data?.revision },
@@ -2928,12 +3903,27 @@ try {
     await delay(100);
   }
   assert.notEqual(child.exitCode, null, "server should exit after /api/shutdown");
+  }
 } finally {
   if (child.exitCode === null) {
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("exit", resolve));
   }
   await new Promise((resolve) => voiceProvider.close(() => resolve()));
+  const testSupervisorPaths = await supervisorPaths({ agentDir: workflowPolicyAgentDir, port });
+  const testSupervisorState = await readSupervisorState(testSupervisorPaths);
+  if (testSupervisorState && supervisorPidIsAlive(testSupervisorState.pid)) {
+    terminateProcessTree({
+      pid: testSupervisorState.pid,
+      exitCode: null,
+      signalCode: null,
+      kill: (signal) => {
+        process.kill(testSupervisorState.pid, signal);
+        return true;
+      },
+    }, "SIGKILL");
+    for (let attempt = 0; attempt < 50 && supervisorPidIsAlive(testSupervisorState.pid); attempt++) await delay(100);
+  }
   await rmWithRetry(cwd);
   await rmWithRetry(harnessSideEffectsRoot);
 }

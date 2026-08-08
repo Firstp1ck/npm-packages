@@ -26,28 +26,30 @@ The caller provides a request (natural language or structured). Extract:
 
 If the request is natural language, infer these fields before proceeding.
 
-### Step 2: Prefer Native Tool When Available
+### Step 2: Use the Native Tool for Routine Exploration
 
-If the `repo_explorer_explore` tool is available, call it first with `budget: "compact"` and `includeEvidence: false` unless exact snippets are needed. It wraps index refresh/build, budget-aware extraction, validation, report writing, and compact output in one tool call.
+Call `repo_explorer_explore` first with `budget: "compact"` and `includeEvidence: false` unless the request already requires exact snippets. The native tool is the routine path: it refreshes or builds the index, performs budget-aware extraction, validates the handoff, writes the effectiveness report, and returns compact results in one agent-visible call.
 
-Use the script workflow below only when the native tool is unavailable or you need to debug the helper scripts directly.
+Do not use Bash to preflight tool availability, refresh/build an index, run the helper sequence, or duplicate a successful native result. Tool availability is determined from the registered tool set. Bash is diagnostic-only after `repo_explorer_explore` is unavailable or an invocation fails; it is not an alternate routine exploration path.
+
+When diagnosing a native failure, these helpers may reproduce the failing index stage:
 
 ```bash
-# Check if persistent index exists and is fresh
 python3 ./scripts/refresh_repo_index.py --repo "<target_path>" --data-dir data/
-
-# If no index exists, build from scratch
 python3 ./scripts/build_repo_index.py --repo "<target_path>" --output data/<repo-name>-index.json
 ```
 
-### Step 3: Targeted Exploration
+After diagnostics, report the native limitation or failure. Do not continue with broad shell exploration.
 
-Using the index as a map, perform targeted reads and searches:
+### Step 3: Follow Up Only on Explicit Gaps
 
-1. Identify entry points (main files, config, build manifests)
-2. Follow imports/dependencies relevant to the goal
-3. Locate symbols, functions, and modules the caller needs
-4. Collect short evidence snippets (max 20 lines each)
+Treat a valid native handoff as the exploration result; do not repeat it with broad searches. If its `explorer_limitations`, `errors`, or `omitted` metadata identifies a gap that blocks the stated goal:
+
+1. Prefer another `repo_explorer_explore` call with a narrower target, `budget: "normal"`/`"full"`, or `includeEvidence: true` as appropriate.
+2. If a precise fact is still missing, call the specialized non-shell `read`, `grep`, `find`, or `ls` tool directly and scope it to that reported gap.
+3. Preserve the validated handoff, redaction rules, evidence bounds, and hard limits when reporting follow-up facts.
+
+Do not use Bash as a targeted search fallback. Do not run any follow-up when the compact native result already answers the goal.
 
 Depth semantics:
 
@@ -59,9 +61,11 @@ Depth semantics:
 
 Do NOT read entire files. Read only the sections relevant to the goal.
 
-### Step 4: Assemble Handoff
+### Step 4: Keep the Handoff Validated
 
-Prefer the bundled extractor for a first-pass handoff, then manually refine only when the goal requires deeper tracing than the index can provide:
+`repo_explorer_explore` assembles and validates the handoff automatically. Do not invoke the extractor or validator after a successful native call.
+
+Only while diagnosing a native failure, reproduce the extraction/validation stage with the same compact-first parameters:
 
 ```bash
 python3 ./scripts/extract_explorer_handoff.py \
@@ -72,11 +76,6 @@ python3 ./scripts/extract_explorer_handoff.py \
   --include-evidence false \
   --target-paths "<target_path>" \
   > /tmp/repo-explorer-handoff.json
-```
-
-Validate the final JSON. Use `--input -` for portable stdin, or pass a file path:
-
-```bash
 python3 ./scripts/validate_handoff.py --input /tmp/repo-explorer-handoff.json
 ```
 
@@ -88,7 +87,7 @@ After every repo-explorer invocation, save a Markdown effectiveness report in th
 skills/repo-explorer/repo-explorer-effectiveness-<timestamp>-<repo-key>.md
 ```
 
-If the native `repo_explorer_explore` tool is used, it writes this report automatically and returns the report path as `effectiveness_report`. If you use the script/manual workflow, create the Markdown report yourself before returning.
+The native `repo_explorer_explore` tool writes this report automatically and returns the path as `effectiveness_report`; failed invocations include the failure report path in the error. Diagnostic helper commands only reproduce a failed stage and do not replace the native invocation or its report.
 
 The report must summarize:
 
@@ -272,6 +271,21 @@ Replace any matches with `[REDACTED]` and add a `redacted_secret` error entry.
 - Redact secrets before returning handoffs or writing effectiveness reports.
 - Effectiveness reports are local Markdown artifacts written under `skills/repo-explorer/`; they must not include raw secret values.
 - Do not run destructive commands while exploring; use read-only indexing, search, and validation commands.
+- Do not use routine Bash exploration. Bash is limited to diagnosing native-tool unavailability or failure; explicit handoff gaps use targeted non-shell tools.
+
+## Benchmark Contract
+
+From the package directory, run the bundled deterministic benchmark with:
+
+```bash
+python3 skills/repo-explorer/scripts/benchmark_bash_usage.py \
+  --json-out /tmp/repo-explorer-benchmark.json \
+  --markdown-out /tmp/repo-explorer-benchmark.md
+```
+
+This is an executed strategy replay and event-ledger measurement over the bundled fixtures, not live or stochastic LLM telemetry. Each strategy independently runs the real refresh/build/extract/validate helper stages in an isolated cache, and required facts are credited only from validated handoffs or bounded adapter observations. The ledger then applies modeled agent-visible attribution: legacy helper stages are model-issued `bash` events; native helper processes are `model_issued: false` internal events; and an allowed evidence-only follow-up is a model-issued `read` after an explicit evidence omission for an already discovered file.
+
+Interpret `reduction.baseline_bash_calls` and `improved_bash_calls` as those modeled model-visible event counts. `scenarios[].strategies.*.fallback_categories` exposes initial gaps, while `events` records the executed follow-up result and whether it is model-visible or internal. The percentage passes only when both strategies have valid handoffs, complete final required-fact coverage, and complete direct non-evidence coverage. `corpus_config_id` identifies the corpus digest, threshold, and strategy versions; `result_content_digest_sha256` identifies the normalized result content. Neither field turns this fixture replay into a claim about model behavior.
 
 ## Verification
 

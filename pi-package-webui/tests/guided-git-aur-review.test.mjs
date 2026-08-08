@@ -148,8 +148,8 @@ assert.equal(resolveRpcSlashCommandForTabCatalog(catalogByTab.get("tab-b"), "/au
 
 const runGitAdd = app.slice(app.indexOf("async function runGitAdd"), app.indexOf("async function acceptCurrentGitStaging"));
 const acceptStaging = app.slice(app.indexOf("async function acceptCurrentGitStaging"), app.indexOf("async function loadGitWorkflowDefaultCommitMessage"));
-assert.match(runGitAdd, /guidedGitReviewAvailable\(tabId\) \|\| workflow\.guidedReviewRequired === true[\s\S]*await requestGuidedGitReview\(tabId, \{ output \}\)/s, "git add . must keep an already-required review gate fail-closed while preserving disabled-from-start fallback");
-assert.match(acceptStaging, /guidedGitReviewAvailable\(tabId\) \|\| workflow\.guidedReviewRequired === true[\s\S]*await requestGuidedGitReview\(tabId, \{ output \}\)/s, "accepting a staged set must keep an already-required review gate fail-closed");
+assert.match(runGitAdd, /workflow\.preferences\?\.reviewProcessEnabled !== false && guidedGitReviewAvailable\(tabId\)[\s\S]*\|\| workflow\.guidedReviewRequired === true[\s\S]*await requestGuidedGitReview\(tabId, \{ output \}\)/s, "git add . must honor the saved review-process option while keeping an already-required gate fail-closed");
+assert.match(acceptStaging, /workflow\.preferences\?\.reviewProcessEnabled !== false && guidedGitReviewAvailable\(tabId\)[\s\S]*\|\| workflow\.guidedReviewRequired === true[\s\S]*await requestGuidedGitReview\(tabId, \{ output \}\)/s, "accepting a staged set must honor the saved review-process option while keeping an already-required gate fail-closed");
 const reconcileReview = app.slice(app.indexOf("function reconcileGuidedGitReviewPayload"), app.indexOf("async function startGitWorkflow"));
 assert.match(reconcileReview, /transition === "approved"[\s\S]*step: "generate"[\s\S]*guidedReviewDeclinedStagedContentHash: ""/s, "only approval advances to message generation and clears an older decline binding");
 assert.match(reconcileReview, /transition === "pending"[\s\S]*guidedReviewDeclinedStagedContentHash[\s\S]*same staged content that was declined/s, "extension payload replay cannot retry an unchanged declined staged hash");
@@ -158,12 +158,13 @@ assert.match(reconcileReview, /function reconcileGuidedGitReviewWidgetRemoval[\s
 const resetReviewToStaging = app.slice(app.indexOf("function resetGuidedGitReviewToStaging"), app.indexOf("function reconcileGuidedGitReviewPayload"));
 assert.match(resetReviewToStaging, /step: "add"[\s\S]*stage: false/s, "decline and close return the flow to staging and require restaging");
 const workflowRender = app.slice(app.indexOf("function renderGitWorkflow"), app.indexOf("async function gitWorkflowRequest"));
+assert.match(workflowRender, /preferences\.reviewProcessEnabled !== false && guidedGitReviewAvailable\(activeTabId\)[\s\S]*\|\| gitWorkflow\.guidedReviewRequired === true/, "the Review process should be shown only when enabled and available, while an active required gate remains visible");
 assert.match(workflowRender, /item\.disabled = !!gitWorkflow\.busy \|\| !guidedGitReviewProcessNavigationAllowed\(gitWorkflow, process\.value\);/, "the UI must disable later process buttons while the review gate is active");
 const processSelection = app.slice(app.indexOf("function selectGitWorkflowProcess"), app.indexOf("function gitWorkflowTitle"));
 assert.match(processSelection, /const guidedReviewPatch = guidedGitReviewProcessSelectionPatch\(workflow, process\);[\s\S]*if \(!guidedReviewPatch\) return;[\s\S]*\.\.\.guidedReviewPatch/s, "process selection must use the tested patch that preserves approval or re-arms review");
 assert.doesNotMatch(processSelection, /resetGuidedGitReviewPatch/, "process selection must not share a reset that drops an approved binding during later navigation");
 const startWorkflow = app.slice(app.indexOf("async function startGitWorkflow"), app.indexOf("async function startGitInitWorkflow"));
-assert.match(startWorkflow, /guidedReviewRequired: guidedGitReviewAvailable\(tabId\)/, "a fresh standard flow must require review when aur-review is available in its originating tab");
+assert.match(startWorkflow, /guidedReviewRequired: preferences\.reviewProcessEnabled !== false && guidedGitReviewAvailable\(tabId\)/, "a fresh standard flow must require review only when setup enables it and aur-review is available in its originating tab");
 assert.match(app, /function guidedGitReviewAvailable\(tabId = activeTabId\)[\s\S]*commandCatalogForTab\(tabId\)/, "Guided Git availability must read the originating tab catalog");
 assert.match(app, /resolveRpcSlashCommandMessage\(guidedGitReviewCommand\(\), \{ tabId \}\)/, "Guided Git review requests must resolve aliases from the originating tab catalog");
 assert.match(app, /message = resolveRpcSlashCommandMessage\(message, \{ tabId: targetTabId \}\)/, "generic targeted slash-command dispatch must resolve aliases from its captured target tab");

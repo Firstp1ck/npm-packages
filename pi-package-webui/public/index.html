@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=86" />
+    <link rel="stylesheet" href="/styles.css?v=104" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -126,6 +126,72 @@
       </div>
     </section>
 
+    <section id="optionalFeatureMigrationSurface" class="optional-feature-migration-surface" role="status" aria-live="polite" aria-atomic="false" hidden></section>
+
+    <!-- Flagged phone/tablet shell: route content reuses the canonical nodes below. -->
+    <div id="mobileShellV2" class="mobile-shell-v2" hidden>
+      <p id="mobileLifecycleAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+      <p id="mobileContinuityNotice" class="mobile-continuity-notice" role="status" hidden></p>
+      <header class="mobile-shell-appbar" aria-label="Phone app bar">
+        <button id="mobileSessionButton" class="mobile-shell-session-button" type="button" aria-label="Open Sessions"><span id="mobileSessionStatus" aria-hidden="true">○</span><span id="mobileSessionTitle">Session</span></button>
+        <div id="mobileShellIndicators" class="mobile-shell-indicators" role="group" aria-label="Connection and attention status"></div>
+        <button id="mobileSearchButton" class="mobile-shell-icon-button" type="button" aria-label="Open command palette">Search</button>
+        <button id="mobileMoreButton" class="mobile-shell-icon-button" type="button" aria-expanded="false" aria-controls="mobileShellSurface">More</button>
+      </header>
+      <div id="mobileShellDestination" class="mobile-shell-destination" tabindex="-1">
+        <section id="mobileSessionsRoute" class="mobile-route" data-mobile-route="sessions" aria-labelledby="mobileSessionsTitle" hidden>
+          <header class="mobile-route-header"><h1 id="mobileSessionsTitle" tabindex="-1">Sessions</h1><button id="mobileSessionsCloseAllButton" type="button">Close all</button></header>
+          <div class="mobile-session-actions" aria-label="New session actions">
+            <button id="mobileNewCurrentDirectoryButton" class="primary" type="button">New here</button><button id="mobileNewDirectoryButton" type="button">Choose folder</button><button id="mobileNewWorktreeButton" type="button">Worktree</button><button id="mobileResumeSessionButton" type="button">Resume</button>
+          </div>
+          <label class="mobile-search-field" for="mobileSessionsSearchInput">Search sessions<input id="mobileSessionsSearchInput" type="search" placeholder="Search sessions" autocomplete="off" /></label>
+          <p id="mobileSessionsStatus" class="mobile-route-status muted" role="status"></p>
+          <div id="mobileSessionsList" class="mobile-session-list"></div>
+        </section>
+        <section id="mobileActivityRoute" class="mobile-route" data-mobile-route="activity" aria-labelledby="mobileActivityTitle" hidden>
+          <header class="mobile-route-header"><h1 id="mobileActivityTitle" tabindex="-1">Activity</h1><button id="mobileActivityRefreshButton" type="button">Refresh</button></header>
+          <p id="mobileActivityStatus" class="mobile-route-status muted" role="status"></p>
+          <div id="mobileActivityList" class="mobile-activity-list"></div>
+        </section>
+        <section id="mobileProjectRoute" class="mobile-route" data-mobile-route="project" aria-labelledby="mobileProjectTitle" hidden>
+          <header class="mobile-route-header"><h1 id="mobileProjectTitle" tabindex="-1">Project</h1><span id="mobileProjectName" class="muted"></span></header>
+          <div id="mobileProjectTopics" class="mobile-topic-tabs" role="tablist" aria-label="Project topics">
+            <button type="button" role="tab" data-mobile-project-topic="files">Files</button><button type="button" role="tab" data-mobile-project-topic="git">Git</button><button type="button" role="tab" data-mobile-project-topic="queue">Queue</button><button type="button" role="tab" data-mobile-project-topic="workflows">Workflows</button>
+          </div>
+          <section id="mobileProjectContent" class="mobile-canonical-host" aria-live="off"></section>
+        </section>
+      </div>
+      <nav class="mobile-shell-nav" aria-label="Phone destinations">
+        <button type="button" data-mobile-route-button="chat"><span aria-hidden="true">●</span>Chat</button>
+        <button type="button" data-mobile-route-button="sessions"><span aria-hidden="true">▤</span>Sessions<span id="mobileSessionsBadge" class="mobile-nav-badge" hidden></span></button>
+        <button type="button" data-mobile-route-button="activity"><span aria-hidden="true">◌</span>Activity<span id="mobileActivityBadge" class="mobile-nav-badge" hidden></span></button>
+        <button type="button" data-mobile-route-button="project"><span aria-hidden="true">▣</span>Project<span id="mobileProjectBadge" class="mobile-nav-badge" hidden></span></button>
+      </nav>
+      <section id="mobileShellSurface" class="mobile-shell-surface" aria-label="Mobile actions" hidden>
+        <header class="mobile-surface-header"><button id="mobileSurfaceBackButton" type="button" hidden>Back</button><h1 id="mobileSurfaceTitle" tabindex="-1">More</h1><button id="mobileSurfaceCloseButton" type="button">Close</button></header>
+        <div id="mobileSurfaceRoot" class="mobile-surface-root"></div>
+        <section id="mobileSurfaceContent" class="mobile-canonical-host" aria-live="off"></section>
+      </section>
+    </div>
+
+    <dialog id="optionalFeatureMigrationDialog" class="optional-feature-migration-dialog" aria-labelledby="optionalFeatureMigrationDialogTitle" aria-describedby="optionalFeatureMigrationDialogMessage">
+      <div class="optional-feature-migration-dialog-content">
+        <h2 id="optionalFeatureMigrationDialogTitle">Migrate optional features</h2>
+        <p id="optionalFeatureMigrationDialogMessage" class="muted">Choose the previously available companions to restore. This is the only confirmation before Pi installs them sequentially.</p>
+        <div id="optionalFeatureMigrationDialogSummary" class="optional-feature-migration-dialog-summary" role="status" aria-live="polite"></div>
+        <details id="optionalFeatureMigrationChooseDetails" class="optional-feature-migration-choose">
+          <summary>Choose features</summary>
+          <div id="optionalFeatureMigrationChoices" class="optional-feature-migration-choices"></div>
+        </details>
+        <div id="optionalFeatureMigrationDialogError" class="optional-feature-migration-dialog-error" role="alert" hidden></div>
+        <menu>
+          <button id="optionalFeatureMigrationCancelButton" type="button">Cancel</button>
+          <button id="optionalFeatureMigrationLaterButton" type="button">Later</button>
+          <button id="optionalFeatureMigrationConfirmButton" class="primary" type="button">Migrate selected</button>
+        </menu>
+      </div>
+    </dialog>
+
     <main class="layout">
       <section class="chat-panel">
         <header class="terminal-tabs-shell">
@@ -141,10 +207,9 @@
             </div>
           </div>
           <div class="terminal-sidebar-actions" aria-label="Tab and workspace actions">
-            <button id="splitTabButton" class="terminal-split-button" type="button" aria-label="Split the active terminal to the right" aria-pressed="false"><svg class="terminal-split-icon terminal-split-icon-split" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M15 12h4m0 0-2-2m2 2-2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg class="terminal-split-icon terminal-split-icon-unsplit" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 5v14M19 12h-4m0 0 2-2m-2 2 2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label terminal-sidebar-action-label-split">Split</span><span class="terminal-sidebar-action-label terminal-sidebar-action-label-unsplit">Unsplit</span></button>
-            <button id="workspaceSaveButton" class="terminal-workspace-save-button" type="button" aria-label="Save workspace" data-tooltip="Save workspace:&#10;• Captures all open tabs, sessions, order, custom groups, and the active tab.&#10;• Available when at least one tab is open."><svg class="terminal-workspace-save-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 4v6h7V4M8 19v-5h8v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label">Save workspace</span></button>
-            <button id="commandPaletteButton" class="terminal-command-palette-button" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label">Commands</span></button>
-            <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="terminal-sidebar-action-label">Overview</span></button>
+            <button id="workspaceSaveButton" class="terminal-workspace-save-button" type="button" aria-label="Save workspace" data-tooltip="Save workspace:&#10;• Captures all open tabs, sessions, order, custom groups, and the active tab.&#10;• Available when at least one tab is open."><svg class="terminal-workspace-save-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 4v6h7V4M8 19v-5h8v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
+            <button id="commandPaletteButton" class="terminal-command-palette-button" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </div>
           <div id="remoteAccessIndicator" class="remote-access-indicator" role="status" aria-live="polite" hidden>Remote access open</div>
           <button id="closeAllTabsButton" class="terminal-close-all-button" type="button" aria-label="Close all terminal tabs">Close all Tabs</button>
@@ -166,6 +231,40 @@
           </header>
           <div id="subagentTerminalTranscript" class="subagent-terminal-transcript" role="log" aria-live="polite"></div>
           <p id="subagentTerminalStatus" class="subagent-terminal-status muted" aria-live="off"></p>
+          <footer id="subagentTerminalCards" class="subagent-terminal-cards" aria-label="Subagent session telemetry">
+            <dl class="subagent-terminal-card-list">
+              <div class="subagent-terminal-card" data-subagent-card="pi" title="Initial Pi prompt tokens injected into this child session.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">π</span>
+                <dt class="subagent-terminal-card-label">PI</dt>
+                <dd id="subagentTerminalCardPi" class="subagent-terminal-card-value">—</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="speed" title="Output tokens per second across completed child responses.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">⚡</span>
+                <dt class="subagent-terminal-card-label">Speed</dt>
+                <dd id="subagentTerminalCardSpeed" class="subagent-terminal-card-value">—</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="context" title="Latest child context load over its model context window.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">🧠</span>
+                <dt class="subagent-terminal-card-label">Context</dt>
+                <dd id="subagentTerminalCardContext" class="subagent-terminal-card-value">—</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="model" title="Effective model for this child run.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">🤖</span>
+                <dt class="subagent-terminal-card-label">Model</dt>
+                <dd id="subagentTerminalCardModel" class="subagent-terminal-card-value">unknown</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="effort" title="Effective reasoning effort for this child run.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">⚙</span>
+                <dt class="subagent-terminal-card-label">Effort</dt>
+                <dd id="subagentTerminalCardEffort" class="subagent-terminal-card-value">unknown</dd>
+              </div>
+              <div class="subagent-terminal-card" data-subagent-card="tokens" title="Input and output tokens found in the bounded recent child-session scan.">
+                <span class="subagent-terminal-card-icon" aria-hidden="true">🪙</span>
+                <dt class="subagent-terminal-card-label">Tokens</dt>
+                <dd id="subagentTerminalCardTokens" class="subagent-terminal-card-value">—</dd>
+              </div>
+            </dl>
+          </footer>
           <div class="subagent-terminal-composer" aria-label="Subagent input unavailable">
             <textarea id="subagentTerminalInput" rows="1" placeholder="View only — send messages from the parent terminal" aria-describedby="subagentTerminalInputHint" disabled></textarea>
             <button type="button" disabled>View only</button>
@@ -203,6 +302,11 @@
           <div id="gitWorkflowActions" class="git-workflow-actions"></div>
         </section>
         <form id="composer" class="composer">
+          <section id="mobileFailedSendRecovery" class="mobile-failed-send-recovery" role="status" hidden>
+            <span><strong>Not sent.</strong> Pi did not confirm this request. It will never retry automatically.</span>
+            <button id="mobileFailedSendRetryButton" type="button">Retry</button>
+            <button id="mobileFailedSendDiscardButton" type="button">Discard</button>
+          </section>
           <div id="commandSuggest" class="command-suggest" role="listbox" aria-label="Command and path suggestions" hidden></div>
           <div class="composer-input-row">
             <div id="workflowModeControls" class="composer-workflow-mode-dock" role="group" aria-label="Workflow Mode controls" hidden>
@@ -237,7 +341,7 @@
                 aria-live="polite"
               >Follow-up</button>
               <div id="sessionSkillTags" class="composer-skill-tags" aria-live="polite" hidden></div>
-              <span id="featureCategoryTag" class="composer-feature-category-tag" aria-live="polite" aria-atomic="true" hidden></span>
+              <button id="featureCategoryTag" class="composer-feature-category-tag" type="button" aria-haspopup="dialog" aria-controls="featureDecisionDialog" aria-live="polite" aria-atomic="true" disabled hidden></button>
               <button id="conversationModeChip" class="composer-conversation-mode-chip" type="button" aria-live="polite" hidden>Voice: off</button>
               <button id="workflowModeChip" class="composer-workflow-mode-chip" type="button" aria-live="polite" aria-pressed="true" hidden>Workflow: on</button>
             </div>
@@ -277,18 +381,20 @@
           <div class="composer-row">
             <button id="composerActionsButton" class="composer-actions-button" type="button" aria-controls="composerActionsPanel" aria-expanded="false" title="Open session, workflow, and follow-up actions">Actions</button>
             <div id="composerActionsPanel" class="composer-actions-panel" aria-label="Composer actions">
-              <button id="newSessionButton" class="composer-new-button" type="button">New</button>
-              <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context">Compact</button>
+              <button id="newSessionButton" class="composer-new-button" type="button" data-composer-action-id="new" data-composer-action-span="1">New</button>
+              <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context" data-composer-action-id="compact" data-composer-action-span="2">Compact</button>
               <button
                 id="gitWorkflowButton"
                 class="composer-icon-button composer-git-button"
+                data-composer-action-id="git"
+                data-composer-action-span="1"
                 type="button"
                 hidden
                 title="Guided Git workflow"
                 aria-label="Start guided Git workflow: stage all changes, generate and preview staged commit messages, optionally open a PR branch worktree, commit short or long there, then push or create a pull request. Cancel is available at each step."
                 data-tooltip="Guided Git workflow:&#10;1. Stage all changes with git add .&#10;2. Generate and preview staged commit messages.&#10;3. Optional: create or type a PR branch worktree before committing.&#10;4. Commit with the short or long message in the worktree tab.&#10;5. Push normally, or push the PR worktree branch, generate/review /pr, and create the PR.&#10;Cancel is available at each step."
               ><svg class="composer-icon composer-icon-github" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></button>
-              <div class="composer-publish-menu" hidden>
+              <div class="composer-publish-menu" data-composer-action-id="publish" data-composer-action-span="1" hidden>
                 <button
                   id="publishButton"
                   class="composer-icon-button composer-publish-button"
@@ -309,7 +415,7 @@
                   </button>
                 </div>
               </div>
-              <div class="composer-publish-menu composer-native-command-menu" hidden>
+              <div class="composer-publish-menu composer-native-command-menu" data-composer-action-id="native-command" data-composer-action-span="1" hidden>
                 <button
                   id="nativeCommandMenuButton"
                   class="composer-icon-button composer-publish-button composer-native-command-button"
@@ -330,7 +436,7 @@
                   </button>
                 </div>
               </div>
-              <div class="composer-publish-menu composer-options-menu">
+              <div class="composer-publish-menu composer-options-menu" data-composer-action-id="options" data-composer-action-span="1">
                 <button
                   id="optionsMenuButton"
                   class="composer-icon-button composer-publish-button composer-options-button"
@@ -346,54 +452,107 @@
                   <button id="optionsCommandPaletteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem">
                     <span>Command Palette</span>
                   </button>
-                  <button id="optionsConversationModeButton" class="composer-publish-menu-item composer-options-menu-item composer-conversation-menu-item" type="button" role="menuitem" data-command="/talk" hidden>
-                    <span>Start Conversation</span>
-                  </button>
-                  <button id="optionsTreeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/tree">
-                    <span>Tree</span>
-                  </button>
-                  <button id="optionsStatsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/stats-webui" hidden>
-                    <span>Stats Dashboard</span>
-                  </button>
-                  <button id="optionsFooterVisibilityButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" hidden>
-                    <span>Git-footer Visibility</span>
-                  </button>
-                  <button id="optionsForkButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/fork">
-                    <span>Fork</span>
-                  </button>
-                  <button id="optionsExportButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/export">
-                    <span>Export</span>
-                  </button>
                   <button id="optionsSettingsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/settings">
                     <span>Settings</span>
                   </button>
-                  <button id="optionsWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/workflow-setup" hidden>
-                    <span>Workflow Permission Setup</span>
+                  <button id="optionsConversationModeButton" class="composer-publish-menu-item composer-options-menu-item composer-conversation-menu-item" type="button" role="menuitem" data-command="/talk" hidden>
+                    <span>Start Natural Conversation</span>
                   </button>
-                  <button id="optionsSafetyGuardSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/safety-guard-setup" hidden>
-                    <span>Safety Guard Setup</span>
-                  </button>
-                  <button id="optionsGitWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/git-workflow-setup">
-                    <span>Guided Git Setup</span>
-                  </button>
-                  <button id="optionsCloneButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/clone">
-                    <span>Clone Session</span>
-                  </button>
-                  <button id="optionsNameButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/name">
-                    <span>Name Session</span>
-                  </button>
-                  <button id="optionsRemoteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/remote" hidden>
-                    <span>Open Remote</span>
-                  </button>
-                  <button id="optionsReloadButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/reload">
-                    <span>Reload Pi</span>
-                  </button>
-                  <button id="optionsResumeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/resume">
-                    <span>Resume Session</span>
-                  </button>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="session">
+                    <button id="optionsSessionSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsSessionSubmenu" data-options-submenu-trigger>
+                      <span>Session</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsSessionSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsSessionSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsResumeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/resume">
+                        <span>Resume Session</span>
+                      </button>
+                      <button id="optionsNameButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/name">
+                        <span>Name Session</span>
+                      </button>
+                      <button id="optionsCloneButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/clone">
+                        <span>Clone Session</span>
+                      </button>
+                      <button id="optionsForkButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/fork">
+                        <span>Fork</span>
+                      </button>
+                      <button id="optionsTreeButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/tree">
+                        <span>Tree</span>
+                      </button>
+                      <button id="optionsExportButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/export">
+                        <span>Export</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="feature-setup">
+                    <button id="optionsFeatureSetupSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsFeatureSetupSubmenu" data-options-submenu-trigger>
+                      <span>Feature Setup</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsFeatureSetupSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsFeatureSetupSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsSummarySetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/summary-setup" hidden>
+                        <span>Session Summary Setup</span>
+                      </button>
+                      <button id="optionsGitWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/git-workflow-setup">
+                        <span>Guided Git Setup</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="safety-permissions">
+                    <button id="optionsSafetyPermissionsSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsSafetyPermissionsSubmenu" data-options-submenu-trigger>
+                      <span>Safety &amp; Permissions</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsSafetyPermissionsSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsSafetyPermissionsSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsWorkflowSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/workflow-setup" hidden>
+                        <span>Workflow Permission Setup</span>
+                      </button>
+                      <button id="optionsSafetyGuardSetupButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/safety-guard-setup" hidden>
+                        <span>Safety Guard Setup</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="view-diagnostics">
+                    <button id="optionsViewDiagnosticsSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsViewDiagnosticsSubmenu" data-options-submenu-trigger>
+                      <span>View &amp; Diagnostics</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsViewDiagnosticsSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsViewDiagnosticsSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsStatsButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/stats-webui" hidden>
+                        <span>Stats Dashboard</span>
+                      </button>
+                      <button id="optionsFooterVisibilityButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" hidden>
+                        <span>Git-footer Visibility</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="composer-options-submenu" role="none" data-options-submenu="remote-system">
+                    <button id="optionsRemoteSystemSubmenuButton" class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-trigger" type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false" aria-controls="optionsRemoteSystemSubmenu" data-options-submenu-trigger>
+                      <span>Remote &amp; System</span><span class="composer-options-submenu-chevron" aria-hidden="true">›</span>
+                    </button>
+                    <div id="optionsRemoteSystemSubmenu" class="composer-options-submenu-panel" role="menu" aria-labelledby="optionsRemoteSystemSubmenuButton" data-options-submenu-panel>
+                      <button class="composer-publish-menu-item composer-options-menu-item composer-options-submenu-back" type="button" role="menuitem" data-options-submenu-back>
+                        <span aria-hidden="true">‹</span><span>Back</span>
+                      </button>
+                      <button id="optionsRemoteButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/remote" hidden>
+                        <span>Open Remote</span>
+                      </button>
+                      <button id="optionsReloadButton" class="composer-publish-menu-item composer-options-menu-item" type="button" role="menuitem" data-command="/reload">
+                        <span>Reload Pi</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" hidden>
+              <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" data-composer-action-id="app-runner" data-composer-action-span="2" hidden>
                 <button
                   id="appRunnerInfoButton"
                   class="composer-icon-button composer-app-runner-info-button"
@@ -422,6 +581,8 @@
             <button
               id="steerButton"
               type="button"
+              data-composer-action-id="steer"
+              data-composer-action-span="2"
               title="Type your message first, then tap Steer to guide the active Pi run without sending a normal prompt. Use it for corrections or direction changes while Pi is working."
               aria-label="Steer: type your message first, then tap this button to guide the active Pi run."
               data-tooltip="Steer usage:&#10;1. Type your steering message in the textarea.&#10;2. Tap Steer to guide the active Pi run.&#10;Use for corrections or direction changes while Pi is working."
@@ -429,27 +590,33 @@
             <button
               id="followUpButton"
               type="button"
+              data-composer-action-id="follow-up"
+              data-composer-action-span="2"
               title="Type your message first, then tap Follow-up to send it as a follow-up instead of a normal prompt. Use it to add extra context or the next request."
               aria-label="Follow-up: type your message first, then tap this button to send it as a follow-up."
               data-tooltip="Follow-up usage:&#10;1. Type your message in the textarea.&#10;2. Tap Follow-up to send it as a follow-up.&#10;Use for extra context or the next request."
             >Follow-up</button>
-            <div id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" hidden>
+            <div id="conversationVoiceMenu" class="composer-publish-menu composer-conversation-voice-menu" data-composer-action-id="conversation-voice" data-composer-action-span="1" hidden>
               <button id="conversationVoiceButton" class="composer-publish-button composer-conversation-voice-button" type="button" title="Switch the spoken Piper voice. Voices marked with a size are downloaded when selected; progress shows on the voice chip." aria-label="Conversation voice" aria-haspopup="menu" aria-expanded="false" aria-controls="conversationVoiceMenuPanel"><span id="conversationVoiceButtonLabel">Voice</span></button>
               <div id="conversationVoiceMenuPanel" class="composer-publish-menu-panel composer-conversation-voice-menu-panel" role="menu" aria-label="Conversation voices"></div>
             </div>
-            <button id="conversationModeEndButton" class="composer-conversation-end-button" type="button" title="End Natural Conversation Mode for this Pi tab" aria-label="End Natural Conversation Mode" hidden>End conversation</button>
-            <button id="abortButton" class="composer-abort-button danger" type="button" title="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" aria-label="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" hidden disabled>Abort</button>
+            <button id="conversationModeEndButton" class="composer-conversation-end-button" type="button" title="End Natural Conversation Mode for this Pi tab" aria-label="End Natural Conversation Mode" data-composer-action-id="end-conversation" data-composer-action-span="1" hidden>End conversation</button>
+            <button id="abortButton" class="composer-abort-button danger" type="button" title="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" aria-label="Hold Esc or the Abort button for 3 seconds to abort the active Pi run" data-composer-action-id="abort" data-composer-action-span="2" hidden disabled>Abort</button>
             <button
               id="btwButton"
               class="composer-icon-button composer-btw-button"
+              data-composer-action-id="btw"
+              data-composer-action-span="1"
               type="button"
               title="Ask as a /btw side question"
               aria-label="Ask the current composer text as a /btw side question"
               data-tooltip="/btw side question:&#10;Type a question, then tap /btw to ask without adding it to the main conversation."
               hidden
             ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5.5 6.5h10.75a2.25 2.25 0 0 1 2.25 2.25v4.5a2.25 2.25 0 0 1-2.25 2.25h-4.4L8 18.25V15.5H5.5a2.25 2.25 0 0 1-2.25-2.25v-4.5A2.25 2.25 0 0 1 5.5 6.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="m15.75 5.25 1.1-2.1 1.1 2.1 2.3 1.1-2.3 1.1-1.1 2.1-1.1-2.1-2.3-1.1 2.3-1.1Z" fill="currentColor"/><path d="M7.25 10.25h5.8M7.25 12.75h4.1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
-            <button id="sendButton" type="submit" class="primary" title="Send prompt">Send</button>
+            <button id="sendButton" type="submit" class="primary" title="Send prompt" data-composer-action-id="send" data-composer-action-span="2">Send</button>
+            <div id="composerActionGridGuide" class="composer-action-grid-guide" aria-hidden="true" hidden></div>
           </div>
+          <p id="composerActionOrderStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
         </form>
         <div id="remoteMicStreamingConsent" class="composer-remote-mic-consent" role="alert" hidden>
           <span id="remoteMicStreamingConsentText" class="composer-remote-mic-consent-text"></span>
@@ -523,7 +690,7 @@
             <strong class="side-panel-title">Control Deck</strong>
             <div class="side-panel-version-row" aria-label="Version and build information">
               <button id="piVersionButton" class="pi-version-button" type="button" aria-label="View Pi release notes" aria-haspopup="dialog" aria-controls="piReleaseNotesDialog" hidden></button>
-              <button id="webuiVersionButton" class="webui-version-button" type="button" aria-label="Open Pi Web UI package page" aria-haspopup="dialog" aria-controls="confirmationDialog" hidden></button>
+              <button id="webuiVersionButton" class="webui-version-button" type="button" aria-label="Open Pi Web UI package and update details" aria-haspopup="dialog" aria-controls="webuiPackageDialog" hidden></button>
               <span id="webuiDevBadge" class="webui-dev-badge" aria-label="Pi Web UI dev server" hidden>DEV</span>
             </div>
           </div>
@@ -544,13 +711,13 @@
             </h2>
             <div id="sidePanelSectionControls" class="side-panel-section-content" hidden>
               <div class="side-panel-controls">
-                <p class="controls-intro">Session controls affect the active Pi tab. Interface preferences are saved in this browser. Output processing is a shared server default.</p>
+                <p class="controls-intro">Settings apply to this tab, this browser, or the server.</p>
 
                 <section class="control-group" aria-labelledby="sessionControlsTitle">
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="sessionControlsTitle">Active session</h3>
-                      <p>Choose how Pi responds in the current tab.</p>
+                      <p>Model, effort, and transcript.</p>
                     </div>
                     <span class="control-scope-badge">This tab</span>
                   </div>
@@ -603,7 +770,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="interfaceControlsTitle">Interface</h3>
-                      <p>Personalise layout, appearance, and alerts.</p>
+                      <p>Layout, theme, and alerts.</p>
                     </div>
                     <span class="control-scope-badge">This browser</span>
                   </div>
@@ -629,6 +796,7 @@
                     </div>
                     <input id="themeSearchInput" class="model-search-input theme-search-input" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
                     <select id="themeSelect" title="Theme"></select>
+                    <button id="themeCustomizeButton" class="theme-customize-button" type="button" aria-haspopup="dialog" aria-controls="themeCustomizerDialog">Customize…</button>
                     <div id="themeSearchResults" class="model-search-results theme-search-results" role="listbox" aria-label="Theme search results" hidden></div>
                   </div>
 
@@ -658,7 +826,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="outputProcessingControlsTitle">Output processing</h3>
-                      <p>Choose the default live-output path for auto-negotiated Web UI connections.</p>
+                      <p>Default rendering for new Web UI connections.</p>
                     </div>
                     <span class="control-scope-badge">Server</span>
                   </div>
@@ -682,7 +850,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="remoteAccessControlsTitle">Remote access</h3>
-                      <p>Control trusted-LAN access and PIN protection.</p>
+                      <p>LAN access and PIN protection.</p>
                     </div>
                     <span class="control-scope-badge warning">Network</span>
                   </div>
@@ -704,7 +872,7 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="serverControlsTitle">Server</h3>
-                      <p>Maintenance actions may interrupt every open tab.</p>
+                      <p>Maintenance actions affect every open tab.</p>
                     </div>
                     <span class="control-scope-badge danger">System</span>
                   </div>
@@ -714,8 +882,8 @@
                       <select id="serverActionSelect" title="Server action" aria-label="Server action">
                         <option value="" selected>Choose action…</option>
                         <option value="restart">Restart Server</option>
-                        <option value="update">Update Pi &amp; Restart</option>
-                        <option value="update-all">Update Pi + Packages &amp; Restart</option>
+                        <option value="update">Apply exact Pi update</option>
+                        <option value="update-all">Apply exact Pi + Web UI update</option>
                         <option value="stop">Stop Server</option>
                       </select>
                       <button id="runServerActionButton" type="button" disabled>Run</button>
@@ -795,13 +963,14 @@
               </button>
             </h2>
             <div id="sidePanelSectionCodexUsage" class="side-panel-section-content" hidden>
+              <div class="codex-usage-actions">
+                <button id="refreshCodexUsageButton" type="button">Refresh usage</button>
+              </div>
+              <div id="codexUsageBox" class="codex-usage-box muted">Checking Codex usage…</div>
               <div class="control-field codex-fast-mode-control" aria-labelledby="codexFastModeLabel">
-                <div class="control-field-header">
-                  <label id="codexFastModeLabel" for="codexFastModeSelect">Fast mode</label>
-                  <span class="control-field-context">Subscription-backed Codex requests · This tab</span>
-                </div>
-                <div class="control-action-row">
-                  <select id="codexFastModeSelect" title="Codex subscription request tier" aria-describedby="codexFastModeStatus" disabled>
+                <div class="codex-fast-mode-row">
+                  <label id="codexFastModeLabel" for="codexFastModeSelect" title="Fast mode for subscription-backed Codex requests on this tab">Fast mode</label>
+                  <select id="codexFastModeSelect" title="Codex subscription request tier for this tab" aria-describedby="codexFastModeStatus" disabled>
                     <option value="normal">Normal</option>
                     <option value="fast">Fast</option>
                   </select>
@@ -809,10 +978,6 @@
                 </div>
                 <div id="codexFastModeStatus" class="toggle-control-hint" role="status" aria-live="polite">Checking Codex Fast mode…</div>
               </div>
-              <div class="codex-usage-actions">
-                <button id="refreshCodexUsageButton" type="button">Refresh usage</button>
-              </div>
-              <div id="codexUsageBox" class="codex-usage-box muted">Checking Codex usage…</div>
             </div>
           </section>
           <section class="side-panel-section collapsed" data-side-panel-section="claude-usage">
@@ -840,6 +1005,28 @@
               <div id="stateDetails" class="session-details" aria-label="Current session details"></div>
             </div>
           </section>
+          <section class="side-panel-section collapsed" data-side-panel-section="sampling">
+            <h2>
+              <button id="sidePanelSectionToggleSampling" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionSampling" aria-label="Expand Sampling parameters section" title="Expand Sampling parameters section" data-side-panel-section-toggle="sampling">
+                <span class="side-panel-section-label">Sampling parameters</span>
+                <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+              </button>
+            </h2>
+            <div id="sidePanelSectionSampling" class="side-panel-section-content" hidden>
+              <div class="sampling-parameters" aria-label="Session sampling parameters">
+                <p class="sampling-parameters-intro">Enable only the values this Pi session should override. Unchecked controls inherit model defaults; server-extension support varies by provider and model.</p>
+                <p id="samplingParametersSupport" class="sampling-parameters-support muted" role="status" aria-live="polite">Loading sampling support…</p>
+                <div id="samplingParametersControls" class="sampling-parameter-groups" aria-describedby="samplingParametersStatus"></div>
+                <p id="samplingParametersPreserved" class="sampling-parameters-preserved muted">No additional parameters are preserved outside this editor.</p>
+                <div class="sampling-parameters-actions">
+                  <button id="applySamplingParametersButton" class="primary" type="button" aria-describedby="samplingParametersStatus" disabled>Apply</button>
+                  <button id="resetSamplingParametersButton" type="button" aria-describedby="samplingParametersStatus" disabled>Reset</button>
+                  <button id="reloadSamplingParametersButton" type="button" aria-label="Reload session sampling parameters">Reload</button>
+                </div>
+                <p id="samplingParametersStatus" class="sampling-parameters-status muted" role="status" aria-live="polite">Loading session sampling parameters…</p>
+              </div>
+            </div>
+          </section>
           <section class="side-panel-section collapsed" data-side-panel-section="subagents">
             <h2>
               <button id="sidePanelSectionToggleSubagents" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionSubagents" aria-label="Expand Subagents section" title="Expand Subagents section" data-side-panel-section-toggle="subagents">
@@ -862,8 +1049,8 @@
                 </summary>
                 <div class="subagent-launch-slots-body">
                   <div class="subagent-launch-slots-intro">
-                    <p>Choose model and thinking presets for future same-role launches. Running children are not changed.</p>
-                    <button id="subagentLaunchSlotsRefresh" type="button">Refresh models</button>
+                    <p>Presets for future launches; running children stay unchanged.</p>
+                    <button id="subagentLaunchSlotsRefresh" type="button" aria-label="Refresh available agent models">Refresh</button>
                   </div>
                   <div class="subagent-launch-slot-scope">
                     <label for="subagentLaunchSlotScope">Apply to</label>
@@ -877,8 +1064,8 @@
                   <p id="subagentLaunchSlotsStatus" class="subagent-launch-slots-status muted" role="status" aria-live="polite">Loading agent models…</p>
                   <div id="subagentLaunchSlotRoles" class="subagent-launch-slot-roles" aria-busy="true"></div>
                   <div class="subagent-launch-slots-actions">
-                    <button id="subagentLaunchSlotsSave" class="primary" type="button" disabled>Save agent models</button>
-                    <span id="subagentLaunchSlotsDirty" class="muted">No unsaved changes</span>
+                    <button id="subagentLaunchSlotsSave" class="primary" type="button" aria-describedby="subagentLaunchSlotsDirty" disabled>Save agent models</button>
+                    <span id="subagentLaunchSlotsDirty" class="muted" role="status" aria-live="polite">Agent model configuration is not available for this tab.</span>
                   </div>
                   <div id="subagentLaunchSlotsReloadActions" class="subagent-launch-slots-reload-actions" hidden>
                     <span>Saved changes apply to future launches after this tab reloads.</span>
@@ -896,7 +1083,11 @@
                 </select>
                 <span id="subagentOpenModeStatus" class="muted">Overlay · saved in this browser</span>
               </div>
-              <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
+              <div class="subagents-status-row">
+                <button id="subagentsAutoClearButton" class="subagents-auto-clear-button" type="button" aria-pressed="false" aria-describedby="subagentsStatus">Auto-Clear</button>
+                <p id="subagentsStatus" class="subagents-status muted" role="status" aria-live="polite">Checking running subagents…</p>
+                <button id="subagentsClearFinishedButton" class="subagents-clear-finished-button" type="button" aria-describedby="subagentsStatus" disabled>Clear finished</button>
+              </div>
               <div id="subagentsBox" class="subagents-box muted">Checking running subagents…</div>
             </div>
           </section>
@@ -960,6 +1151,10 @@
     </div>
     <div id="gitPanelContextMenu" class="file-context-menu git-side-panel-context-menu" role="menu" aria-label="Git actions" hidden></div>
     <div id="sidePanelContextMenu" class="file-context-menu side-panel-context-menu" role="menu" aria-label="Choose visible side panel sections" hidden></div>
+    <div id="gitFooterContextMenu" class="file-context-menu git-footer-context-menu" role="menu" aria-label="Git footer box actions" hidden>
+      <button type="button" role="menuitem" data-git-footer-menu-action="disable">Disable this box</button>
+      <button type="button" role="menuitem" data-git-footer-menu-action="visibility">Open Git-footer Visibility</button>
+    </div>
 
     <aside id="undoToast" class="undo-toast" aria-live="polite" aria-atomic="true" hidden>
       <span id="undoToastMessage" class="undo-toast-message"></span>
@@ -1020,10 +1215,117 @@
           <button id="piReleaseNotesCloseButton" type="button" aria-label="Close Pi release notes">Close</button>
         </div>
         <p id="piReleaseNotesStatus" class="pi-release-notes-status muted" role="status" aria-live="polite"></p>
+        <section class="component-update-panel" aria-label="Pi background update">
+          <p id="piComponentUpdateStatus" class="component-update-status muted" role="status" aria-live="polite"></p>
+          <button id="piComponentUpdateButton" class="component-update-button primary" type="button">Update Pi</button>
+        </section>
         <div id="piReleaseNotesBody" class="pi-release-notes-body markdown-body"></div>
         <menu>
           <a id="piReleaseNotesGithubLink" class="pi-release-notes-link" target="_blank" rel="noopener noreferrer" hidden>View on GitHub</a>
           <button value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="webuiPackageDialog" class="extension-dialog webui-package-dialog" aria-labelledby="webuiPackageTitle">
+      <form method="dialog">
+        <div class="webui-package-header">
+          <div>
+            <span class="webui-package-kicker">Web UI package</span>
+            <h2 id="webuiPackageTitle">Pi Web UI package</h2>
+          </div>
+          <button id="webuiPackageCloseButton" type="button" aria-label="Close Web UI package details">Close</button>
+        </div>
+        <dl class="webui-package-versions">
+          <div class="webui-package-version-row">
+            <dt>Installed</dt>
+            <dd id="webuiPackageCurrentVersion">Unknown</dd>
+          </div>
+          <div class="webui-package-version-row">
+            <dt>Latest on npm</dt>
+            <dd id="webuiPackageLatestVersion">Not checked</dd>
+          </div>
+        </dl>
+        <p id="webuiComponentUpdateStatus" class="component-update-status muted" role="status" aria-live="polite"></p>
+        <menu>
+          <button id="webuiPackageNpmButton" class="webui-package-npm-link" type="button">View on npm</button>
+          <button id="webuiComponentUpdateButton" class="component-update-button primary" type="button">Update Web UI</button>
+          <button value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="themeCustomizerDialog" class="extension-dialog theme-customizer-dialog" aria-labelledby="themeCustomizerTitle" aria-describedby="themeCustomizerDescription">
+      <form class="theme-customizer-shell" method="dialog">
+        <header class="theme-customizer-header">
+          <div>
+            <span class="theme-customizer-kicker">Pi-native theme</span>
+            <h2 id="themeCustomizerTitle">Customize theme</h2>
+            <p id="themeCustomizerDescription" class="muted">Preview changes in this browser, then save a JSON theme file without changing your Light, Dark, or Auto selection.</p>
+          </div>
+          <span id="themeCustomizerSourceBadge" class="theme-scope-badge">Bundled source</span>
+        </header>
+
+        <div class="theme-customizer-scroll">
+          <section class="theme-customizer-identity" aria-label="Theme destination">
+            <label for="themeCustomizerName">Theme name
+              <input id="themeCustomizerName" type="text" maxlength="75" autocomplete="off" spellcheck="false" aria-describedby="themeCustomizerNameHint" />
+            </label>
+            <p id="themeCustomizerNameHint" class="muted">Saved as this exact name plus <code>.json</code>.</p>
+            <label for="themeCustomizerScope">Save destination
+              <select id="themeCustomizerScope" aria-describedby="themeCustomizerScopeHint">
+                <option id="themeCustomizerProjectOption" value="project">This project</option>
+                <option value="global">Global themes</option>
+              </select>
+            </label>
+            <p id="themeCustomizerScopeHint" class="muted">Project themes require the active project to be trusted by Pi.</p>
+          </section>
+
+          <section id="themeCustomizerPreview" class="theme-customizer-preview" aria-label="Live theme sample">
+            <strong>Live sample</strong>
+            <p>Valid drafts preview across WebUI. <a href="#themeCustomizerJson">Links</a>, <code>inline code</code>, and status colours update without writing storage or disk.</p>
+            <div><span class="success">Success</span><span class="warning">Warning</span><span class="error">Error</span></div>
+          </section>
+
+          <details open>
+            <summary>Visual colors <span class="muted">51 required tokens</span></summary>
+            <div id="themeCustomizerVisualFields" class="theme-customizer-visual-fields"></div>
+          </details>
+
+          <details>
+            <summary>Optional fields</summary>
+            <div class="theme-customizer-optional-fields">
+              <label for="themeCustomizerThinkingMax">thinkingMax <span class="muted">optional; blank uses thinkingXhigh</span>
+                <input id="themeCustomizerThinkingMax" type="text" autocomplete="off" spellcheck="false" />
+              </label>
+              <label for="themeCustomizerVars">Variables <span class="muted">JSON object</span>
+                <textarea id="themeCustomizerVars" rows="5" spellcheck="false">{}</textarea>
+              </label>
+              <fieldset>
+                <legend>Export colors</legend>
+                <div id="themeCustomizerExportFields" class="theme-customizer-export-fields"></div>
+              </fieldset>
+            </div>
+          </details>
+
+          <details>
+            <summary>Advanced JSON</summary>
+            <label class="sr-only" for="themeCustomizerJson">Advanced Pi theme JSON</label>
+            <textarea id="themeCustomizerJson" class="theme-customizer-json" rows="18" spellcheck="false" aria-describedby="themeCustomizerStatus"></textarea>
+          </details>
+
+          <section id="themeCustomizerOverwrite" class="theme-customizer-overwrite" role="alert" hidden>
+            <strong>Replace this exact target?</strong>
+            <p id="themeCustomizerOverwriteMessage"></p>
+            <button id="themeCustomizerOverwriteButton" class="danger" type="button">Replace existing file</button>
+          </section>
+          <p id="themeCustomizerStatus" class="theme-customizer-status muted" role="status" aria-live="polite" aria-atomic="true">Valid changes preview immediately.</p>
+        </div>
+
+        <menu class="theme-customizer-actions">
+          <button id="themeCustomizerCancelButton" type="button">Cancel</button>
+          <button id="themeCustomizerResetButton" type="button">Reset draft</button>
+          <button id="themeCustomizerSaveButton" class="primary" type="button">Save theme</button>
         </menu>
       </form>
     </dialog>
@@ -1039,6 +1341,28 @@
         <menu>
           <button id="confirmationCancelButton" type="button">Cancel</button>
           <button id="confirmationConfirmButton" class="danger" type="button">Continue</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="gitPullErrorDialog" class="extension-dialog git-pull-error-dialog" aria-labelledby="gitPullErrorDialogTitle" aria-describedby="gitPullErrorDialogDescription gitPullErrorOutput">
+      <form method="dialog">
+        <h2 id="gitPullErrorDialogTitle">Git pull failed</h2>
+        <p id="gitPullErrorDialogDescription" class="muted">The repository was not changed by the failed pull. Review or copy the complete error output below.</p>
+        <pre id="gitPullErrorOutput" class="git-pull-error-output" tabindex="0"></pre>
+        <section id="gitPullErrorRecovery" class="git-pull-error-recovery" aria-labelledby="gitPullErrorRecoveryTitle" hidden>
+          <strong id="gitPullErrorRecoveryTitle">Choose how to integrate the histories</strong>
+          <p>Merge preserves both histories and is the default. Rebase rewrites local commit IDs. Neither action runs without confirmation.</p>
+          <div class="git-pull-error-recovery-actions">
+            <button id="gitPullErrorReviewButton" type="button">Review changes</button>
+            <button id="gitPullErrorRebaseButton" type="button">Rebase commits</button>
+            <button id="gitPullErrorMergeButton" class="primary" type="button">Merge changes</button>
+          </div>
+        </section>
+        <p id="gitPullErrorStatus" class="git-pull-error-status muted" role="status" aria-live="polite" aria-atomic="true"></p>
+        <menu>
+          <button id="gitPullErrorCopyButton" type="button">Copy error output</button>
+          <button id="gitPullErrorCloseButton" type="button">Close</button>
         </menu>
       </form>
     </dialog>
@@ -1105,7 +1429,34 @@
       </form>
     </dialog>
 
-    <dialog id="extensionDialog" class="extension-dialog">
+    <dialog id="featureDecisionDialog" class="extension-dialog feature-decision-dialog" aria-labelledby="featureDecisionDialogTitle">
+      <form method="dialog">
+        <h2 id="featureDecisionDialogTitle">Classifier output</h2>
+        <pre id="featureDecisionDialogOutput" class="feature-decision-dialog-output"></pre>
+        <menu>
+          <button id="featureDecisionDialogCloseButton" type="submit" value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <section id="sessionSummaryOverlay" class="session-summary-overlay" role="dialog" aria-modal="false" aria-labelledby="sessionSummaryOverlayTitle" aria-describedby="sessionSummaryOverlayStatus" hidden>
+      <header class="session-summary-overlay-header">
+        <div>
+          <span class="session-summary-overlay-kicker">Session summary</span>
+          <h2 id="sessionSummaryOverlayTitle">Session summary</h2>
+          <p id="sessionSummaryOverlayMeta" class="muted"></p>
+        </div>
+        <button id="sessionSummaryOverlayCloseButton" class="session-summary-overlay-close" type="button" aria-label="Close session summary">Close</button>
+      </header>
+      <p id="sessionSummaryOverlayStatus" class="session-summary-overlay-status muted" role="status" aria-live="polite"></p>
+      <div id="sessionSummaryOverlayBody" class="session-summary-overlay-body"></div>
+      <footer class="session-summary-overlay-actions">
+        <button id="sessionSummaryOverlayCopyButton" type="button">Copy Markdown</button>
+        <button id="sessionSummaryOverlayRefreshButton" class="primary" type="button">Refresh</button>
+      </footer>
+    </section>
+
+    <dialog id="extensionDialog" class="extension-dialog" aria-labelledby="dialogTitle" aria-describedby="dialogMessage">
       <form id="dialogForm" method="dialog">
         <h2 id="dialogTitle">Pi request</h2>
         <p id="dialogMessage" class="muted"></p>
@@ -1180,7 +1531,7 @@
         </div>
         <p id="statsOverlayStatus" class="stats-overlay-status muted" role="status" aria-live="polite" hidden></p>
         <div id="statsOverlayTabs" class="stats-overlay-tabs" role="tablist" aria-label="Stats dashboard views"></div>
-        <div id="statsOverlayBody" class="stats-overlay-body"></div>
+        <div id="statsOverlayBody" class="stats-overlay-body" role="tabpanel" tabindex="0"></div>
       </form>
     </dialog>
 
@@ -1383,7 +1734,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=94">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=120">
       (() => {
         "use strict";
 
@@ -1396,6 +1747,8 @@
         const copyStatus = document.querySelector("#webuiBootFailureCopyStatus");
         const appSource = loader?.dataset?.appSrc || "/app.js";
         const bootStartedAt = new Date();
+        const DIAGNOSTIC_REQUEST_TIMEOUT_MS = 3_000;
+        const JAVASCRIPT_CONTENT_TYPES = ["text/javascript", "application/javascript"];
         let bootSettled = false;
         let bootFailed = false;
         let watchdog = null;
@@ -1422,29 +1775,64 @@
           return boundedSafeText(error);
         }
 
-        async function responseSummary(url, label, { parseHealth = false, readSource = false } = {}) {
+        async function responseSummary(url, label, { parseHealth = false, readSource = false, expectedTypes = [] } = {}) {
           const safeUrl = sanitizedUrl(url);
+          const controller = typeof AbortController === "function" ? new AbortController() : null;
+          let timedOut = false;
+          let timeoutId = null;
           try {
-            const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
-            const type = String(response.headers?.get?.("content-type") || "unknown").split(";", 1)[0];
-            let suffix = "";
-            let source = "";
-            if (parseHealth && response.ok) {
-              const data = await response.clone().json().catch(() => null);
-              const fields = [data?.ok === true ? "ok=true" : "", data?.webuiVersion ? `webuiVersion=${boundedSafeText(data.webuiVersion, 80)}` : ""].filter(Boolean);
-              if (fields.length) suffix = ` (${fields.join(", ")})`;
-            }
-            if (readSource && response.ok) source = await response.text();
-            else response.body?.cancel?.().catch?.(() => {});
-            return { ok: response.ok, status: response.status, type, safeUrl, label, line: `- ${label}: HTTP ${response.status} ${type}${suffix} — ${safeUrl}`, source };
+            const request = (async () => {
+              const response = await fetch(url, { cache: "no-store", credentials: "same-origin", ...(controller ? { signal: controller.signal } : {}) });
+              const type = String(response.headers?.get?.("content-type") || "unknown").split(";", 1)[0].trim().toLowerCase();
+              const contentTypeMismatch = response.ok && expectedTypes.length > 0 && !expectedTypes.includes(type);
+              let suffix = contentTypeMismatch ? ` (expected ${expectedTypes.join(" or ")})` : "";
+              let source = "";
+              let invalidJson = false;
+              if (parseHealth && response.ok) {
+                const data = await response.clone().json().catch(() => null);
+                invalidJson = !data || typeof data !== "object";
+                const fields = [data?.ok === true ? "ok=true" : "", data?.webuiVersion ? `webuiVersion=${boundedSafeText(data.webuiVersion, 80)}` : ""].filter(Boolean);
+                if (fields.length) suffix += ` (${fields.join(", ")})`;
+                if (invalidJson) suffix += " (invalid JSON)";
+              }
+              if (readSource && response.ok) source = await response.text();
+              else response.body?.cancel?.().catch?.(() => {});
+              return {
+                ok: response.ok && !contentTypeMismatch && !invalidJson,
+                status: response.status,
+                type,
+                safeUrl,
+                label,
+                contentTypeMismatch,
+                invalidJson,
+                timedOut: false,
+                line: `- ${label}: HTTP ${response.status} ${type}${suffix} — ${safeUrl}`,
+                source,
+              };
+            })();
+            const timeout = new Promise((_, reject) => {
+              timeoutId = setTimeout(() => {
+                timedOut = true;
+                controller?.abort();
+                const timeoutError = new Error(`Diagnostic request timed out after ${DIAGNOSTIC_REQUEST_TIMEOUT_MS / 1_000} seconds`);
+                timeoutError.name = "DiagnosticTimeoutError";
+                reject(timeoutError);
+              }, DIAGNOSTIC_REQUEST_TIMEOUT_MS);
+            });
+            return await Promise.race([request, timeout]);
           } catch (error) {
-            return { ok: false, status: null, type: "unknown", safeUrl, label, line: `- ${label}: request failed (${boundedSafeText(errorText(error), 240)}) — ${safeUrl}`, source: "" };
+            const detail = timedOut
+              ? `diagnostic timed out after ${DIAGNOSTIC_REQUEST_TIMEOUT_MS / 1_000} seconds`
+              : `request failed (${boundedSafeText(errorText(error), 240)})`;
+            return { ok: false, status: null, type: "unknown", safeUrl, label, timedOut, contentTypeMismatch: false, invalidJson: false, line: `- ${label}: ${detail} — ${safeUrl}`, source: "" };
+          } finally {
+            clearTimeout(timeoutId);
           }
         }
 
         async function startupAssetReport() {
           const appUrl = new URL(appSource, window.location.href);
-          const app = await responseSummary(appUrl.href, "entry module", { readSource: true });
+          const app = await responseSummary(appUrl.href, "entry module", { readSource: true, expectedTypes: JAVASCRIPT_CONTENT_TYPES });
           if (!app.source) return { probes: [app], lines: [app.line], failures: app.ok ? [] : [app] };
 
           const imported = [];
@@ -1457,15 +1845,30 @@
             if (imported.length >= 24) break;
           }
 
-          const importedProbes = await Promise.all(imported.map((item) => responseSummary(item.url, "imported module")));
+          const importedProbes = await Promise.all(imported.map((item) => responseSummary(item.url, "imported module", { expectedTypes: JAVASCRIPT_CONTENT_TYPES })));
           const probes = [app, ...importedProbes];
           return { probes, lines: probes.map((probe) => probe.line), failures: probes.filter((probe) => !probe.ok) };
         }
 
-        function startupAssessment(health, assets, error) {
+        async function webManifestReport() {
+          const probe = await responseSummary(new URL("/manifest.webmanifest", window.location.href).href, "optional web manifest", {
+            readSource: true,
+            expectedTypes: ["application/manifest+json", "application/json"],
+          });
+          if (!probe.ok || !probe.source) return { ...probe, validJson: false };
+          try {
+            JSON.parse(probe.source);
+            return { ...probe, validJson: true };
+          } catch (error) {
+            return { ...probe, validJson: false, line: `${probe.line} (invalid JSON: ${boundedSafeText(errorText(error), 160)})` };
+          }
+        }
+
+        function startupAssessment(health, assets, reason, error) {
           const missingImports = assets.failures.filter((probe) => probe.label === "imported module" && probe.status === 404);
           const firstFailure = assets.failures[0] || (!health.ok ? health : null);
           const originalError = boundedSafeText(errorText(error));
+          const failureText = `${boundedSafeText(reason)}\n${originalError}`;
           if (missingImports.length) {
             const paths = missingImports.map((probe) => new URL(probe.safeUrl).pathname);
             return {
@@ -1477,8 +1880,25 @@
             };
           }
           if (firstFailure) {
+            const path = new URL(firstFailure.safeUrl).pathname;
+            if (firstFailure.timedOut) {
+              return {
+                summary: `A diagnostic check timed out while probing ${path}.`,
+                likelyCause: firstFailure.label === "backend health"
+                  ? "The browser shell loaded, but the backend or browser network service did not answer the bounded health check."
+                  : "The startup asset request remained pending; check the backend, service worker, or browser network state.",
+                failingUrls: [firstFailure.safeUrl],
+              };
+            }
+            if (firstFailure.contentTypeMismatch) {
+              return {
+                summary: `Wrong content type for startup asset ${path}: ${firstFailure.type}.`,
+                likelyCause: "The URL responded, but it did not serve JavaScript with an executable MIME type; a fallback HTML/error response or stale server route is likely.",
+                failingUrls: [firstFailure.safeUrl],
+              };
+            }
             return {
-              summary: `Startup request failed: ${new URL(firstFailure.safeUrl).pathname}${firstFailure.status ? ` (HTTP ${firstFailure.status})` : ""}.`,
+              summary: `Startup request failed: ${path}${firstFailure.status ? ` (HTTP ${firstFailure.status})` : ""}.`,
               likelyCause: firstFailure.label === "backend health"
                 ? "The browser shell loaded, but the WebUI backend is unavailable or unreachable."
                 : "A startup asset is unavailable, blocked, or served with an unsuccessful response.",
@@ -1487,6 +1907,20 @@
           }
           if (/critical stylesheet/i.test(originalError)) {
             return { summary: "The critical stylesheet failed to load.", likelyCause: "The stylesheet request failed even though the startup-module probes succeeded.", failingUrls: [] };
+          }
+          if (/\bSyntaxError\b|unexpected token|unexpected identifier|already been declared|invalid or unexpected token|missing[ )\]}]/i.test(failureText)) {
+            return {
+              summary: `JavaScript failed during startup: ${boundedSafeText(originalError, 180)}.`,
+              likelyCause: "The entry module is reachable, but the browser could not parse or evaluate it. During development this commonly means a source file was briefly incomplete while being edited; otherwise check for stale mixed-version assets.",
+              failingUrls: [],
+            };
+          }
+          if (/watchdog timed out|startup did not finish/i.test(failureText)) {
+            return {
+              summary: "WebUI startup stalled even though the current HTTP checks succeeded.",
+              likelyCause: "The entry-module import, stylesheet, or top-level module evaluation remained pending. During development, a file changing while the browser loads it can cause a transient mixed-version startup.",
+              failingUrls: [],
+            };
           }
           return {
             summary: "All probed startup URLs currently respond successfully, but module evaluation still failed.",
@@ -1497,9 +1931,16 @@
 
         async function troubleshootingReport(reason, error) {
           const pageUrl = sanitizedUrl(window.location.href);
-          const health = await responseSummary(new URL("/api/health", window.location.href).href, "backend health", { parseHealth: true });
-          const assets = await startupAssetReport();
-          const assessment = startupAssessment(health, assets, error);
+          const [health, assets, manifest] = await Promise.all([
+            responseSummary(new URL("/api/health", window.location.href).href, "backend health", { parseHealth: true, expectedTypes: ["application/json"] }),
+            startupAssetReport(),
+            webManifestReport(),
+          ]);
+          const assessment = startupAssessment(health, assets, reason, error);
+          const manifestHasIssue = !manifest.ok || !manifest.validJson;
+          const manifestImpact = manifestHasIssue
+            ? "The web manifest has a separate problem that can produce DevTools console errors, but it does not execute or block app.js startup."
+            : "The optional web manifest is valid and is not the startup blocker.";
           const failedProbes = [...(!health.ok ? [health] : []), ...assets.failures];
           const failingChecks = failedProbes.length
             ? failedProbes.map((probe) => probe.line)
@@ -1532,14 +1973,20 @@
             health.line,
             ...assets.lines,
             "",
+            "Related browser checks",
+            "----------------------",
+            manifest.line,
+            `- manifest impact: ${manifestImpact}`,
+            "",
             "Suggested troubleshooting",
             "-------------------------",
             "1. In Pi, run: /webui-status detailed",
             `2. Check the backend: curl -i ${new URL("/api/health", pageUrl).href}`,
             failingAssetCommand,
             "4. For an imported-module 404, synchronize the WebUI static allowlist and PWA app shell with app.js imports.",
-            "5. After correcting files, run /webui-start again to restart the server and restore tabs.",
-            "6. Share this complete report with your troubleshooting assistant.",
+            "5. For a JavaScript syntax/evaluation error during development, finish or revert the incomplete edit and run the package syntax check before reloading.",
+            "6. After correcting files, run /webui-start again to restart the server and restore tabs.",
+            "7. Share this complete report with your troubleshooting assistant.",
           ].join("\n");
           return { text, summary: assessment.summary };
         }

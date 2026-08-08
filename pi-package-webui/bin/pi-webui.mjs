@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
+import { constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { access, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -12,9 +12,22 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
+import {
+  ThemeContractError,
+  canonicalizeTheme,
+  normalizeThemeFileName,
+  serializeTheme,
+  themeNameFromFileName,
+  validateTheme,
+} from "../public/theme-contract.mjs";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
+import {
+  readSessionSummaryPreferences,
+  supportedSessionSummaryThinkingLevels,
+  writeSessionSummaryPreferences,
+} from "../lib/session-summary-preferences.mjs";
 import {
   deleteWebuiWorkspace,
   getWebuiWorkspace,
@@ -33,13 +46,25 @@ import {
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
+import { ThinkingStreamRecovery } from "../lib/thinking-stream-recovery.mjs";
 import {
   classifyGitPathFailure,
   findWindowsReservedGitPath,
   windowsReservedGitPathFailure,
 } from "../lib/git-command-errors.mjs";
-import { piUpdateCommandSteps, piUpdateCommandText, piUpdateHelpSupportsAll } from "../lib/update-commands.mjs";
-import { prependedPathEnvironment, resolveCommandDirectory, resolveNpmCommandInvocation, resolvePiCommandInvocation } from "../lib/npm-command.mjs";
+import { ComponentUpdateState, sanitizeComponentUpdateError, validateComponentUpdateRequest, validateUpdateApplyRequest, validateUpdatePlanRequest } from "../lib/component-update-state.mjs";
+import { resolveCanonicalPiRuntime, resolveWebuiRuntimeIdentity } from "../lib/update/resolver.mjs";
+import { createUpdatePlan, assertPlanIdentity, assertUpdatePlanDigest } from "../lib/update/plan.mjs";
+import { executeCommand, executePlanTargets } from "../lib/update/executor.mjs";
+import { verifyTargetResult } from "../lib/update/verify.mjs";
+import { acquireInstallLock, createUpdateJournal, readUpdateJournal, reconcileInterruptedUpdates, releaseInstallLock, transferInstallLock, transitionUpdateJournal } from "../lib/update/journal.mjs";
+import { collectManagedRuntimes, createRestoreFile, listenWithRetry, managedRuntimePaths, probeCandidateRuntime, readRestoreFileOnce, readRuntimePointer, rollbackRuntimePointer, sweepRestoreFiles } from "../lib/update/supervisor.mjs";
+import { OPTIONAL_FEATURE_BY_ID, OPTIONAL_FEATURE_CATALOG } from "../lib/optional-feature-catalog.mjs";
+import {
+  OptionalFeatureAuditCoordinator,
+  OptionalFeatureMigrationStore,
+} from "../lib/optional-feature-migration.mjs";
+import { resolveNpmCommandInvocation, resolvePiCommandInvocation } from "../lib/npm-command.mjs";
 import {
   GIT_WORKFLOW_DEFAULT_VARIANTS,
   GIT_WORKFLOW_DELIVERY_MODES,
@@ -60,6 +85,12 @@ import {
   writeGitWorkflowPreferences,
   writeWebuiSettings,
 } from "../lib/git-workflow-preferences.mjs";
+import {
+  UI_LAYOUT_REQUEST_MAX_BYTES,
+  mergeUiLayout,
+  uiLayoutRevision,
+  validateUiLayoutPatch,
+} from "../lib/ui-layout-settings.mjs";
 import {
   SUBAGENT_LAUNCH_SLOT_LIMITS,
   SUBAGENT_LAUNCH_SLOT_ROLE_CATALOG,
@@ -87,6 +118,7 @@ import {
   evaluateDispatchTrustGuards,
   guardsForNativeCommand,
   isLocalRequest,
+  projectTrustDecision,
   remoteShellTrustWarning,
   requireLocalhost,
   requireLocalhostRoute,
@@ -110,6 +142,7 @@ import {
   removeGitWorktree,
 } from "../lib/git-worktrees.mjs";
 import { createGitLiveWatcher } from "../lib/git-live-watcher.mjs";
+import { createWorkspaceFilesLiveWatcher } from "../lib/workspace-files-live-watcher.mjs";
 import {
   gitMessageArtifactPairReadiness,
   readStableGitMessageArtifactPair,
@@ -121,6 +154,7 @@ const require = createRequire(import.meta.url);
 const packageRoot = path.resolve(__dirname, "..");
 const publicDir = path.join(packageRoot, "public");
 const webuiHelperExtensionPath = path.join(packageRoot, "webui-rpc-helper.mjs");
+const sessionSummaryExtensionPath = path.join(packageRoot, "session-summary.ts");
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
 const OPTIONAL_FEATURE_INSTALL_ROOT_ENV = "PI_WEBUI_OPTIONAL_FEATURE_INSTALL_ROOT";
 const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
@@ -146,6 +180,7 @@ const PROMPT_REQUEST_TIMEOUT_MS = Math.max(REQUEST_TIMEOUT_MS, Number.parseInt(p
 const WEBUI_HELPER_TIMEOUT_MS = 8 * 1000;
 const WEBUI_HELPER_COMMAND = "webui-helper";
 const WEBUI_HELPER_RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
+const SAMPLING_PARAMS_HTTP_MAX_BYTES = 20 * 1024;
 const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
 const WEBUI_SUBAGENT_RUN_LIMIT = 128;
@@ -154,6 +189,9 @@ const WEBUI_SUBAGENT_GATE_LIMIT = 32;
 const WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT = 100;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
+const WEBUI_SUBAGENT_TELEMETRY_TOKEN_LIMIT = 1_000_000_000;
+const WEBUI_SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT = 16_000_000;
+const WEBUI_SUBAGENT_TELEMETRY_SPEED_LIMIT = 1_000_000;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const WEBUI_PACKAGE = packageJson.name || "@firstpick/pi-package-webui";
 const PI_LATEST_VERSION_URL = process.env.PI_WEBUI_PI_LATEST_VERSION_URL || "https://pi.dev/api/latest-version";
@@ -176,6 +214,17 @@ const CLAUDE_USAGE_OUTPUT_MAX_CHARS = 60_000;
 const CLAUDE_USAGE_COMMAND = process.env.PI_WEBUI_CLAUDE_BIN || "claude";
 const CLAUDE_USAGE_ARGS = ["--safe-mode", "--no-session-persistence", "-p", "/usage", "--output-format", "json"];
 const BODY_LIMIT_BYTES = 1024 * 1024;
+const CUSTOM_THEME_BODY_LIMIT_BYTES = 256 * 1024;
+const SESSION_SUMMARY_REQUEST_MAX_BYTES = 32 * 1024;
+const SESSION_SUMMARY_RPC_TYPE = "firstpick:session-summary-rpc";
+const SESSION_SUMMARY_DISPLAY_TYPE = "firstpick:session-summary-display";
+const SESSION_SUMMARY_PROTOCOL_VERSION = 1;
+const SESSION_SUMMARY_TITLE_MAX_CHARS = 44;
+const SESSION_SUMMARY_MARKDOWN_MAX_CHARS = 16 * 1024;
+const SESSION_SUMMARY_PROMPT_MAX_CHARS = 8 * 1024;
+const SESSION_SUMMARY_FAILURE_MAX_CHARS = 512;
+const SESSION_SUMMARY_GENERATE_TIMEOUT_MS = 105 * 1000;
+const SESSION_SUMMARY_KINDS = new Set(["setup", "state", "generating", "success", "failure", "title"]);
 const RECOVERY_ENDPOINT_PATH = "/api/recovery/plan";
 const RECOVERY_BODY_LIMIT_BYTES = 256 * 1024;
 const RECOVERY_PROMPT_MAX_CHARS = 200_000;
@@ -238,7 +287,9 @@ const PATH_SUGGESTION_QUERY_LIMIT = 512;
 const PATH_SUGGESTION_SCAN_LIMIT = 5000;
 const PATH_SUGGESTION_MAX_OUTPUT_LENGTH = 300000;
 const PATH_SUGGESTION_EXCLUDED_DIRS = new Set([".git", "node_modules"]);
-const RESTORE_TAB_LIMIT = 30;
+const RESTORE_TAB_LIMIT = 256;
+const UPDATE_HEALTH_GATE_MS = Math.max(90_000, Number.parseInt(process.env.PI_WEBUI_UPDATE_HEALTH_GATE_MS || "90000", 10) || 90_000);
+const bootIdentity = randomUUID();
 const SESSION_SELECTOR_LIMIT = 200;
 const TREE_SELECTOR_TEXT_LIMIT = 260;
 const NETWORK_REBIND_DELAY_MS = 100;
@@ -250,6 +301,7 @@ const UPLOAD_TEMP_TTL_MS = 24 * 60 * 60 * 1000;
 const NATIVE_EXPORT_TEMP_TTL_MS = 60 * 60 * 1000;
 const TEMP_ARTIFACT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const AUTO_TAB_TITLE_MAX_LENGTH = 44;
+const AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH = 160;
 const AUTO_TAB_TITLE_WORD_LIMIT = 8;
 const AUTO_TAB_TITLE_STOP_WORDS = new Set([
   "a",
@@ -363,37 +415,13 @@ function parseSlashCommand(message) {
   return parseNativeSlashCommand(message, NATIVE_SLASH_COMMAND_NAMES);
 }
 const NATURAL_CONVERSATION_FEATURE_ID = "naturalConversation";
-const OPTIONAL_FEATURE_PACKAGES = new Map([
-  ["bangCommandAutocomplete", "@firstpick/pi-extension-bang-command-autocomplete"],
-  ["fishUserBash", "@firstpick/pi-extension-fish-user-bash"],
-  ["btwCommand", "@firstpick/pi-extension-btw"],
-  ["gitWorkflow", "@firstpick/pi-prompts-git-pr"],
-  ["releaseNpm", "@firstpick/pi-extension-release-npm"],
-  ["releaseAur", "@firstpick/pi-extension-release-aur"],
-  ["aurReview", "@firstpick/pi-extension-aur-review"],
-  ["workflows", "@firstpick/pi-extension-workflows"],
-  ["safetyGuard", "@firstpick/pi-extension-safety-guard"],
-  ["tuiSkillsCommand", "@firstpick/pi-extension-setup-skills"],
-  ["todoProgressWidget", "@firstpick/pi-extension-todo-progress"],
-  ["tuiToolsCommand", "@firstpick/pi-extension-tools"],
-  ["remoteWebui", "@firstpick/pi-package-remote-webui"],
-  ["naturalConversation", "@firstpick/pi-package-natural-conversation"],
-  ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status"],
-  ["statsCommand", "@firstpick/pi-extension-stats"],
-  ["codexFastMode", "@firstpick/pi-extension-codex-fast-mode"],
-  ["themeBundle", "@firstpick/pi-themes-bundle"],
-]);
-const WEBUI_CONTROLLED_PACKAGES = new Set([
-  WEBUI_PACKAGE,
-  ...[...OPTIONAL_FEATURE_PACKAGES.entries()]
-    .filter(([featureId]) => featureId !== NATURAL_CONVERSATION_FEATURE_ID)
-    .map(([, packageName]) => packageName),
-]);
-const UPDATE_PACKAGE_NAMES = [...new Set([
-  ...CORE_UPDATE_PACKAGE_NAMES,
-  ...WEBUI_CONTROLLED_PACKAGES,
-  ...OPTIONAL_FEATURE_PACKAGES.values(),
-])].sort();
+const OPTIONAL_FEATURE_PACKAGES = new Map(OPTIONAL_FEATURE_CATALOG.map(({ featureId, packageName }) => [featureId, packageName]));
+const OPTIONAL_FEATURE_PACKAGE_NAMES = new Set(OPTIONAL_FEATURE_PACKAGES.values());
+const WEBUI_RESOURCE_EXCLUDED_PACKAGES = new Set([WEBUI_PACKAGE]);
+let optionalFeatureMigrationStore;
+let optionalFeatureAuditCoordinator;
+let optionalFeatureStartupReady = false;
+const UPDATE_PACKAGE_NAMES = [...CORE_UPDATE_PACKAGE_NAMES].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
 // Codex subscription Fast mode is owned by the optional @firstpick/pi-extension-codex-fast-mode
@@ -425,6 +453,8 @@ Options:
   --remote-auth       Enable startup PIN authentication for non-local clients
   --no-remote-auth    Disable startup PIN authentication
   --output-mode <mode>  Web UI output default: normal or compact-v1
+  --migrate-optional-features  Migrate audit-selected legacy optional features
+  --migration-dry-run  Print the startup migration plan without package mutation
   -h, --help          Show this help
   -v, --version       Print version
 
@@ -474,6 +504,8 @@ function parseArgs(argv) {
     remoteAuthExplicit: process.env.PI_WEBUI_REMOTE_AUTH !== undefined,
     outputMode: undefined,
     envOutputMode: process.env.PI_WEBUI_OUTPUT_MODE === undefined ? undefined : requiredOutputMode(process.env.PI_WEBUI_OUTPUT_MODE, "PI_WEBUI_OUTPUT_MODE"),
+    migrateOptionalFeatures: false,
+    migrationDryRun: false,
     piArgs: [],
     help: false,
     version: false,
@@ -531,6 +563,14 @@ function parseArgs(argv) {
     if (arg === "--output-mode") {
       options.outputMode = requiredOutputMode(takeValue(argv, i, arg), "--output-mode");
       i++;
+      continue;
+    }
+    if (arg === "--migrate-optional-features") {
+      options.migrateOptionalFeatures = true;
+      continue;
+    }
+    if (arg === "--migration-dry-run") {
+      options.migrationDryRun = true;
       continue;
     }
     if (arg === "--remote-auth") {
@@ -672,12 +712,12 @@ async function fetchJsonWithTimeout(url, { timeoutMs = UPDATE_STATUS_TIMEOUT_MS,
   return response.json();
 }
 
-function installedPiRelease() {
-  const version = String(piPackageJson.version || "").trim().replace(/^v/i, "");
-  if (!parsePackageVersion(version)) throw makeHttpError(503, "The installed Pi version could not be determined");
-  const tagName = `v${version}`;
+function piRelease(version = piPackageJson.version) {
+  const cleanVersion = String(version || "").trim().replace(/^v/i, "");
+  if (!parsePackageVersion(cleanVersion)) throw makeHttpError(503, "The Pi release version could not be determined");
+  const tagName = `v${cleanVersion}`;
   return {
-    version,
+    version: cleanVersion,
     tagName,
     apiUrl: `${PI_RELEASES_API_BASE_URL}/${encodeURIComponent(tagName)}`,
     pageUrl: `${PI_RELEASES_PAGE_BASE_URL}/${encodeURIComponent(tagName)}`,
@@ -686,8 +726,14 @@ function installedPiRelease() {
 
 let piReleaseNotesCache = null;
 
-async function installedPiReleaseNotes() {
-  const release = installedPiRelease();
+async function piReleaseNotes() {
+  const cachedUpdateStatus = updateStatusCache && Date.now() - updateStatusCacheAt < UPDATE_STATUS_CACHE_MS
+    ? updateStatusCache.pi
+    : null;
+  const piStatus = cachedUpdateStatus || await checkLatestPiReleaseStatus();
+  const currentVersion = String(piStatus?.currentVersion || piPackageJson.version || "").trim().replace(/^v/i, "");
+  const latestVersion = String(piStatus?.latestVersion || "").trim().replace(/^v/i, "");
+  const release = piRelease(piStatus?.updateAvailable && parsePackageVersion(latestVersion) ? latestVersion : currentVersion);
   if (piReleaseNotesCache?.tagName === release.tagName) return piReleaseNotesCache;
   if (process.env.PI_OFFLINE) throw makeHttpError(503, "Pi release notes are unavailable while PI_OFFLINE is set");
 
@@ -1092,6 +1138,9 @@ function makeHttpError(statusCode, message) {
 function sendError(res, statusCode, error) {
   const message = statusCode >= 500 ? sanitizeError(error) : formatCliError(error);
   const payload = { ok: false, error: message };
+  const isThemeError = typeof error?.code === "string" && error.code.startsWith("THEME_");
+  if (isThemeError) payload.code = error.code;
+  if (isThemeError && error?.details && typeof error.details === "object") payload.details = error.details;
   if (error?.optionalFeatureInstall) payload.optionalFeatureInstall = error.optionalFeatureInstall;
   sendJson(res, statusCode, payload);
 }
@@ -1108,7 +1157,7 @@ function formatBytes(bytes) {
   return `${value} B`;
 }
 
-async function readJsonBody(req, { limitBytes = BODY_LIMIT_BYTES } = {}) {
+async function readJsonBody(req, { limitBytes = BODY_LIMIT_BYTES, emptyError } = {}) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -1116,9 +1165,15 @@ async function readJsonBody(req, { limitBytes = BODY_LIMIT_BYTES } = {}) {
     if (size > limitBytes) throw makeHttpError(413, `Request body too large (limit ${formatBytes(limitBytes)})`);
     chunks.push(chunk);
   }
-  if (chunks.length === 0) return {};
+  if (chunks.length === 0) {
+    if (emptyError) throw makeHttpError(400, emptyError);
+    return {};
+  }
   const text = Buffer.concat(chunks).toString("utf8");
-  if (!text.trim()) return {};
+  if (!text.trim()) {
+    if (emptyError) throw makeHttpError(400, emptyError);
+    return {};
+  }
   return JSON.parse(text);
 }
 
@@ -1269,12 +1324,104 @@ function sendRemoteAuthRequired(req, res, url) {
   sendJson(res, 401, { ok: false, error: "Remote PIN required", remoteAuthRequired: true }, { "www-authenticate": "PiRemotePin" });
 }
 
-function sendSse(client, event) {
+// A false ServerResponse.write() result means the frame was accepted but the
+// writable buffer crossed its high-water mark. Treating that as a dead client
+// disconnects healthy Chromium EventSource streams as soon as a frame exceeds
+// roughly 16 KiB. Queue subsequent frames until "drain", with strict bounds so
+// a client that truly stops reading cannot grow server memory indefinitely.
+const SSE_BACKPRESSURE_MAX_PENDING_BYTES = 4 * 1024 * 1024;
+const SSE_BACKPRESSURE_MAX_PENDING_FRAMES = 256;
+const SSE_BACKPRESSURE_TIMEOUT_MS = 10_000;
+
+function clearSseBackpressureTimer(client) {
+  if (!client?.backpressureTimer) return;
+  clearTimeout(client.backpressureTimer);
+  client.backpressureTimer = undefined;
+}
+
+function evictSlowSseClient(client) {
+  if (!client || client.evicted) return;
+  client.evicted = true;
+  client.backpressured = false;
+  clearSseBackpressureTimer(client);
+  client.pendingFrames = [];
+  client.pendingFrameBytes = 0;
+  client.tab?.sseClients?.delete(client);
+  try {
+    // Complete the chunked response so Chromium can reconnect without
+    // ERR_INCOMPLETE_CHUNKED_ENCODING.
+    client.res?.end();
+  } catch {
+    // A closed browser socket needs no further cleanup.
+  }
+}
+
+function scheduleSseBackpressureTimeout(client) {
+  clearSseBackpressureTimer(client);
+  client.backpressureTimer = setTimeout(() => evictSlowSseClient(client), SSE_BACKPRESSURE_TIMEOUT_MS);
+  client.backpressureTimer.unref?.();
+}
+
+function flushSseClient(client) {
+  const res = client?.res;
+  if (!client || client.evicted) return;
+  if (!res || res.destroyed || res.writableEnded) {
+    evictSlowSseClient(client);
+    return;
+  }
+  client.backpressured = false;
+  clearSseBackpressureTimer(client);
+  while (client.pendingFrames?.length) {
+    const frame = client.pendingFrames.shift();
+    client.pendingFrameBytes -= Buffer.byteLength(frame);
+    try {
+      if (!res.write(frame)) {
+        client.backpressured = true;
+        scheduleSseBackpressureTimeout(client);
+        res.once("drain", () => flushSseClient(client));
+        return;
+      }
+    } catch {
+      evictSlowSseClient(client);
+      return;
+    }
+  }
+  client.pendingFrameBytes = 0;
+}
+
+function writeSseFrame(client, frame) {
   const res = client?.res || client;
+  if (!res || res.destroyed || res.writableEnded || client?.evicted) return false;
+  if (client?.res && client.backpressured) {
+    const frameBytes = Buffer.byteLength(frame);
+    const pendingFrames = client.pendingFrames || (client.pendingFrames = []);
+    const pendingBytes = Number(client.pendingFrameBytes) || 0;
+    if (pendingFrames.length >= SSE_BACKPRESSURE_MAX_PENDING_FRAMES || pendingBytes + frameBytes > SSE_BACKPRESSURE_MAX_PENDING_BYTES) {
+      evictSlowSseClient(client);
+      return false;
+    }
+    pendingFrames.push(frame);
+    client.pendingFrameBytes = pendingBytes + frameBytes;
+    return true;
+  }
+  try {
+    if (!res.write(frame) && client?.res) {
+      client.backpressured = true;
+      scheduleSseBackpressureTimeout(client);
+      res.once("drain", () => flushSseClient(client));
+    }
+    // write() returning false still accepted this frame.
+    return true;
+  } catch {
+    if (client?.res) evictSlowSseClient(client);
+    return false;
+  }
+}
+
+function sendSse(client, event) {
   const payload = encodeBrowserSseEvent(event, { outputMode: client?.activeMode || OUTPUT_MODE_NORMAL });
   if (payload === undefined) return false;
-  res.write(`data: ${payload}\n\n`);
-  return true;
+  return writeSseFrame(client, `data: ${payload}\n\n`);
 }
 
 function rpcSuccess(command, data = {}) {
@@ -1621,7 +1768,7 @@ function generatedTabTitleFromPrompt(message) {
   const words = cleaned.split(/\s+/).map((word) => word.replace(/^[^\w]+|[^\w]+$/g, "")).filter(Boolean);
   const meaningfulWords = words.filter((word) => !AUTO_TAB_TITLE_STOP_WORDS.has(word.toLowerCase()));
   const selectedWords = (meaningfulWords.length >= 3 ? meaningfulWords : words).slice(0, AUTO_TAB_TITLE_WORD_LIMIT);
-  return truncateTabTitle(titleCaseTabTitle(selectedWords.join(" ")));
+  return truncateTabTitle(titleCaseTabTitle(selectedWords.join(" ")), AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH);
 }
 
 function uniqueTabTitle(title, currentTab, maxLength = AUTO_TAB_TITLE_MAX_LENGTH) {
@@ -1749,6 +1896,10 @@ function nodeModulesParentForPackageRoot(root = packageRoot) {
   return root;
 }
 
+function packageNodeModulesPath(nodeModulesRoot, packageName) {
+  return path.join(nodeModulesRoot, ...String(packageName).split("/").filter(Boolean));
+}
+
 function prependNodePathEntries(entries) {
   const existing = String(process.env.NODE_PATH || "").split(path.delimiter).filter(Boolean);
   const seen = new Set();
@@ -1783,36 +1934,9 @@ function declaredDependencySpec(pkg, packageName) {
   );
 }
 
-async function installRootDeclaresPackage(root, packageName) {
-  const pkg = await readJsonFileIfExists(path.join(root, "package.json"));
-  return declaredDependencySpec(pkg, packageName) !== undefined;
-}
-
-async function installRootContainsPackage(root, packageName) {
-  return directoryExists(packageNodeModulesPath(path.join(root, "node_modules"), packageName));
-}
-
 function configuredAgentNpmRoot() {
   const root = process.env.PI_CODING_AGENT_DIR ? path.resolve(expandUserPath(process.env.PI_CODING_AGENT_DIR)) : agentDir;
   return path.join(root, "npm");
-}
-
-async function optionalDependencyInstallRoot() {
-  const configuredRoot = process.env[OPTIONAL_FEATURE_INSTALL_ROOT_ENV];
-  if (configuredRoot) return path.resolve(expandUserPath(configuredRoot));
-
-  const installRoot = nodeModulesParentForPackageRoot(packageRoot);
-  if (await installRootDeclaresPackage(installRoot, "@firstpick/pi-package-webui") || await installRootContainsPackage(installRoot, "@firstpick/pi-package-webui")) return installRoot;
-
-  const agentNpmRoot = configuredAgentNpmRoot();
-  if (installRoot !== agentNpmRoot && (await installRootDeclaresPackage(agentNpmRoot, "@firstpick/pi-package-webui") || await installRootContainsPackage(agentNpmRoot, "@firstpick/pi-package-webui"))) return agentNpmRoot;
-
-  if (webuiDevServer) return installRoot;
-
-  throw makeHttpError(
-    500,
-    `Could not determine a safe optional feature install root. Set ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} to the Pi package root.`,
-  );
 }
 
 function minimumPackageVersionFromSpec(spec) {
@@ -1827,6 +1951,25 @@ function packageVersionBelowSpec(currentVersion, spec) {
 
 function formatCommandForDisplay(command, args) {
   return [command, ...args].map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(" ");
+}
+
+async function npmGlobalNodeModulesRoot() {
+  const invocation = resolveNpmCommandInvocation(["root", "-g"]);
+  const result = await runCommand(invocation.command, invocation.args, { timeoutMs: 10_000, maxOutputLength: 8_000 });
+  if (result.exitCode !== 0 || result.timedOut || result.error) return null;
+  return result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || null;
+}
+
+async function bunGlobalNodeModulesRoots() {
+  const available = await runCommand("bun", ["--version"], { timeoutMs: 10_000, maxOutputLength: 2_000 });
+  if (available.exitCode !== 0 || available.timedOut || available.error) return [];
+  const roots = new Set([path.join(homedir(), ".bun", "install", "global", "node_modules")]);
+  const binResult = await runCommand("bun", ["pm", "bin", "-g"], { timeoutMs: 10_000, maxOutputLength: 8_000 });
+  if (binResult.exitCode === 0 && !binResult.timedOut && !binResult.error) {
+    const binDir = binResult.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
+    if (binDir) roots.add(path.join(path.dirname(binDir), "install", "global", "node_modules"));
+  }
+  return [...roots];
 }
 
 let optionalPackageNodeModulesRootsCache = null;
@@ -1878,33 +2021,124 @@ async function resolveInstalledPackageSubpath(packageName, subpath = "") {
   }
 }
 
-function optionalFeatureDeclaredSpec(packageName) {
-  return declaredDependencySpec(packageJson, packageName) || "";
+function npmPackageNameFromPiSource(source) {
+  const spec = String(source || "").trim();
+  if (!spec.startsWith("npm:")) return "";
+  const npmSpec = spec.slice("npm:".length);
+  if (!npmSpec) return "";
+  if (npmSpec.startsWith("@")) {
+    const slashIndex = npmSpec.indexOf("/");
+    if (slashIndex < 2) return "";
+    const versionIndex = npmSpec.indexOf("@", slashIndex);
+    return versionIndex === -1 ? npmSpec : npmSpec.slice(0, versionIndex);
+  }
+  const versionIndex = npmSpec.indexOf("@");
+  return versionIndex === -1 ? npmSpec : npmSpec.slice(0, versionIndex);
 }
 
-async function optionalFeaturePackageStatus(featureId) {
-  const packageName = OPTIONAL_FEATURE_PACKAGES.get(featureId);
-  if (!packageName) throw makeHttpError(400, `Unknown optional feature: ${featureId}`);
-  const declaredSpec = optionalFeatureDeclaredSpec(packageName);
-  const installedRoot = await resolveInstalledPackageRoot(packageName);
+async function configuredOptionalFeaturePackages(packageName, cwd = options.cwd) {
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+  const matches = [];
+  for (const configuredPackage of packageManager.listConfiguredPackages()) {
+    if (npmPackageNameFromPiSource(configuredPackage.source) === packageName) {
+      matches.push(configuredPackage);
+      continue;
+    }
+    const manifest = configuredPackage.installedPath
+      ? await readJsonFileIfExists(path.join(configuredPackage.installedPath, "package.json"))
+      : null;
+    if (manifest?.name === packageName) matches.push(configuredPackage);
+  }
+  return matches;
+}
+
+async function topLevelOptionalFeatureResourceIndex(cwd = options.cwd) {
+  const settingsManager = SettingsManager.create(cwd, agentDir);
+  const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+  const resolved = await packageManager.resolve(async () => "skip");
+  const resourcesByPackage = new Map();
+  for (const resourceType of ["extensions", "skills", "prompts", "themes"]) {
+    for (const resource of resolved[resourceType] || []) {
+      if (!resource.enabled || resource.metadata?.origin === "package") continue;
+      let ownershipPath = resource.path;
+      try {
+        ownershipPath = await realpath(resource.path);
+      } catch {
+        // Keep the reported path when the resource disappears during status collection.
+      }
+      const packageName = await packageNameForResourcePath(ownershipPath);
+      if (!packageName) continue;
+      const resourcePaths = resourcesByPackage.get(packageName) || [];
+      resourcePaths.push(resource.path);
+      resourcesByPackage.set(packageName, resourcePaths);
+    }
+  }
+  return resourcesByPackage;
+}
+
+async function topLevelOptionalFeatureResources(packageName, cwd = options.cwd, resourceIndex) {
+  const resourcesByPackage = resourceIndex || await topLevelOptionalFeatureResourceIndex(cwd);
+  return [...new Set(resourcesByPackage.get(packageName) || [])];
+}
+
+async function installedOptionalFeatureRoot(packageName, configuredPackages) {
+  const discoveredRoot = await resolveInstalledPackageRoot(packageName);
+  const candidates = [discoveredRoot, ...configuredPackages.map(({ installedPath }) => installedPath)].filter(Boolean);
+  for (const candidate of candidates) {
+    const manifest = await readJsonFileIfExists(path.join(candidate, "package.json"));
+    if (manifest?.name === packageName) return candidate;
+  }
+  return null;
+}
+
+async function optionalFeaturePackageStatus(featureId, cwd = options.cwd, topLevelResourceIndex) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
+  if (!feature) throw makeHttpError(400, `Unknown optional feature: ${featureId}`);
+  const { packageName, expectedSpec } = feature;
+  const [configuredPackages, topLevelResources] = await Promise.all([
+    configuredOptionalFeaturePackages(packageName, cwd),
+    topLevelOptionalFeatureResources(packageName, cwd, topLevelResourceIndex),
+  ]);
+  const installedRoot = await installedOptionalFeatureRoot(packageName, configuredPackages);
   const manifest = installedRoot ? await readJsonFileIfExists(path.join(installedRoot, "package.json")) : null;
   const installedVersion = typeof manifest?.version === "string" ? manifest.version : "";
-  const updateAvailable = !!(installedVersion && packageVersionBelowSpec(installedVersion, declaredSpec));
+  const installed = !!installedRoot;
+  const configured = configuredPackages.length > 0;
+  const locallyConfigured = topLevelResources.length > 0;
+  const legacyRoot = path.join(packageRoot, "node_modules", ...packageName.split("/"));
+  const legacyManifest = await readJsonFileIfExists(path.join(legacyRoot, "package.json"));
+  const legacyEvidence = legacyManifest?.name === packageName;
+  const disabled = configuredPackages.length > 0 && configuredPackages.every((entry) => entry.enabled === false);
+  const resourceConflict = configured && locallyConfigured;
+  const ready = installed && (configured || locallyConfigured) && !resourceConflict;
+  const updateAvailable = !!(installedVersion && packageVersionBelowSpec(installedVersion, expectedSpec));
   return {
     featureId,
     packageName,
-    declaredSpec,
-    installed: !!installedRoot,
+    expectedSpec,
+    declaredSpec: expectedSpec,
+    installed,
+    configured,
+    locallyConfigured,
+    resourceConflict,
+    ready,
     installedVersion,
     installedRoot,
+    topLevelResources,
+    legacyEvidence,
+    disabled,
     updateAvailable,
-    updateReason: updateAvailable ? `installed ${installedVersion} is older than Web UI expects (${declaredSpec})` : "",
+    updateReason: updateAvailable ? `installed ${installedVersion} is older than Web UI expects (${expectedSpec})` : "",
   };
 }
 
-async function optionalFeaturePackageStatuses() {
+async function optionalFeaturePackageStatuses(cwd = options.cwd) {
   const features = [];
-  for (const featureId of OPTIONAL_FEATURE_PACKAGES.keys()) features.push(await optionalFeaturePackageStatus(featureId));
+  const topLevelResourceIndex = await topLevelOptionalFeatureResourceIndex(cwd);
+  for (const { featureId } of OPTIONAL_FEATURE_CATALOG) {
+    features.push(await optionalFeaturePackageStatus(featureId, cwd, topLevelResourceIndex));
+  }
   return { features };
 }
 
@@ -1917,28 +2151,28 @@ function optionalFeatureInstallOutputTail(result, maxLength = 4000) {
 function optionalFeatureInstallFailureKind(result, message = "") {
   const combined = `${message}\n${result?.error || ""}\n${result?.stderr || ""}\n${result?.stdout || ""}`;
   if (result?.timedOut) return "timeout";
-  if (/\b(?:ENOENT|command not found|not recognized|spawn\s+\S+\s+ENOENT)\b/i.test(combined)) return "npm-not-found";
+  if (/\b(?:ENOENT|command not found|not recognized|spawn\s+\S+\s+ENOENT)\b/i.test(combined)) return "pi-not-found";
   if (/\b(?:EACCES|EPERM|permission denied|access denied)\b/i.test(combined)) return "permission";
   if (/\b(?:EAI_AGAIN|ENOTFOUND|ECONNRESET|ETIMEDOUT|network timeout|registry\.npmjs\.org|fetch failed)\b/i.test(combined)) return "network";
-  return "npm-exit";
+  return "pi-exit";
 }
 
-function optionalFeatureInstallFailureHint(kind, { command, installRoot } = {}) {
+function optionalFeatureInstallFailureHint(kind, { command } = {}) {
   switch (kind) {
-    case "install-root":
-      return `Set ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} to the Pi/Web UI npm package root, then retry.`;
-    case "npm-not-found":
-      return "npm could not be started. Install npm or set PI_WEBUI_NPM_BIN to an absolute npm-compatible executable path.";
+    case "pi-not-found":
+      return "The selected Pi CLI could not be started. Check --pi or PI_WEBUI_PI_BIN, then restart the Web UI.";
     case "permission":
-      return `The Web UI process cannot write to ${installRoot || "the selected npm prefix"}. Retry from the owning user or use ${OPTIONAL_FEATURE_INSTALL_ROOT_ENV} with a writable package root.`;
+      return "Pi could not update its user package root or settings. Retry as the owning user or run the copied command manually.";
     case "network":
-      return "npm could not reach the registry reliably. Check network/proxy/registry settings, then retry or run the copied command manually.";
+      return "Pi could not reach the npm registry reliably. Check network/proxy/registry settings, then retry or run the copied command manually.";
     case "timeout":
-      return "npm did not finish within 5 minutes. Check for a stuck package manager, lock contention, or slow network, then retry manually.";
+      return "Pi did not finish within 5 minutes. Check for a stuck package manager, lock contention, or slow network, then retry manually.";
+    case "local-resource-conflict":
+      return "This companion is already enabled as a top-level Pi resource. Keep that local resource, or disable/remove its extensions/skills/prompts/themes alias before registering the npm package.";
     case "status-check":
-      return "npm finished, but Web UI could not verify the package status. Reload the Web UI and recheck Optional features.";
+      return "Pi finished, but Web UI could not verify both installation and registration. Reload the Web UI and recheck Optional features.";
     default:
-      return command ? "Run the copied npm command manually on the Web UI host to see full package-manager diagnostics." : "Check the activity log and npm output, then retry.";
+      return command ? "Run the copied Pi command manually on the Web UI host to see full diagnostics." : "Check the activity log and Pi output, then retry.";
   }
 }
 
@@ -1959,27 +2193,26 @@ function makeOptionalFeatureInstallError(statusCode, message, details = {}) {
   return error;
 }
 
-async function installOptionalFeaturePackage(featureId) {
-  const beforeStatus = await optionalFeaturePackageStatus(featureId);
+async function installOptionalFeaturePackage(featureId, cwd = options.cwd) {
+  const beforeStatus = await optionalFeaturePackageStatus(featureId, cwd);
   const packageName = beforeStatus.packageName;
-
-  let installRoot;
-  try {
-    installRoot = await optionalDependencyInstallRoot();
-  } catch (error) {
-    const message = formatCliError(error);
-    throw makeOptionalFeatureInstallError(error?.statusCode || 500, message, {
-      kind: "install-root",
+  const source = `npm:${packageName}`;
+  if (beforeStatus.locallyConfigured) {
+    const message = beforeStatus.resourceConflict
+      ? `${packageName} is configured both as a Pi package and as a top-level resource; installing it again would preserve the duplicate-load conflict`
+      : `${packageName} is already enabled as a top-level Pi resource; installing the npm package would load it twice`;
+    throw makeOptionalFeatureInstallError(409, message, {
+      kind: "local-resource-conflict",
       featureId,
       packageName,
-      hint: optionalFeatureInstallFailureHint("install-root"),
+      command: `pi install ${source}`,
+      hint: optionalFeatureInstallFailureHint("local-resource-conflict"),
     });
   }
-
-  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, packageName]);
-  const command = npmCommand.displayCommand;
-  const result = await runCommand(npmCommand.command, npmCommand.args, {
-    cwd: installRoot,
+  const piCommand = await resolvePiCommand(["install", source]);
+  const command = piCommand.displayCommand;
+  const result = await runCommand(piCommand.command, piCommand.args, {
+    cwd,
     timeoutMs: 5 * 60 * 1000,
     maxOutputLength: 80000,
   });
@@ -1995,38 +2228,165 @@ async function installOptionalFeaturePackage(featureId) {
       kind,
       featureId,
       packageName,
-      installRoot,
       command,
       exitCode: result.exitCode,
       timedOut: result.timedOut,
       outputTail: optionalFeatureInstallOutputTail(result),
     });
   }
+
   let afterStatus;
   try {
-    afterStatus = await optionalFeaturePackageStatus(featureId);
+    afterStatus = await optionalFeaturePackageStatus(featureId, cwd);
+    if (!afterStatus.ready) {
+      throw new Error(`Pi did not leave ${packageName} both installed and registered`);
+    }
   } catch (error) {
     const message = `Optional feature install finished, but status verification failed: ${formatCliError(error)}`;
     throw makeOptionalFeatureInstallError(error?.statusCode || 500, message, {
       kind: "status-check",
       featureId,
       packageName,
-      installRoot,
       command,
       outputTail: optionalFeatureInstallOutputTail(result),
     });
   }
-  const operation = beforeStatus.installed ? "Updated" : "Installed";
+
+  const operation = beforeStatus.ready ? "Updated" : beforeStatus.installed ? "Registered" : "Installed";
   return {
     featureId,
     packageName,
-    installRoot,
+    source,
     command,
     stdout: result.stdout,
     stderr: result.stderr,
     status: afterStatus,
-    message: `${operation} optional feature package ${packageName}${afterStatus.installedVersion ? ` to ${afterStatus.installedVersion}` : ""}. Reload the active Pi tab to load new resources.`,
+    message: `${operation} optional feature package ${packageName}${afterStatus.installedVersion ? ` at ${afterStatus.installedVersion}` : ""} with Pi. Reload the active Pi tab to load new resources.`,
   };
+}
+
+function validateOptionalFeatureBatch(featureIds) {
+  if (!Array.isArray(featureIds)) throw makeHttpError(400, "featureIds must be an array");
+  if (featureIds.length > OPTIONAL_FEATURE_CATALOG.length) {
+    throw makeHttpError(400, `featureIds must contain at most ${OPTIONAL_FEATURE_CATALOG.length} entries`);
+  }
+  const deduplicated = [];
+  const seen = new Set();
+  for (const value of featureIds) {
+    if (typeof value !== "string" || !OPTIONAL_FEATURE_BY_ID.has(value)) {
+      throw makeHttpError(400, `Unknown optional feature: ${String(value || "")}`);
+    }
+    if (seen.has(value)) continue;
+    seen.add(value);
+    deduplicated.push(value);
+  }
+  return deduplicated;
+}
+
+async function installOptionalFeaturePackages(featureIds, cwd = options.cwd) {
+  const requestedFeatureIds = validateOptionalFeatureBatch(featureIds);
+  const results = [];
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const migration = optionalFeatureAuditCoordinator.current().progress?.migration === true;
+  let index = 0;
+  for (const featureId of requestedFeatureIds) {
+    const packageName = OPTIONAL_FEATURE_BY_ID.get(featureId)?.packageName || "";
+    optionalFeatureAuditCoordinator.setProgress({
+      phase: "migrating",
+      migration,
+      startedAt,
+      elapsedMs: Date.now() - startedAtMs,
+      currentFeatureId: featureId,
+      currentPackageName: packageName,
+      index: index + 1,
+      total: requestedFeatureIds.length,
+      completed: index,
+      remaining: requestedFeatureIds.length - index,
+      results: results.map(optionalFeatureProgressResult),
+    });
+    try {
+      results.push({ ok: true, featureId, data: await installOptionalFeaturePackage(featureId, cwd) });
+    } catch (error) {
+      results.push({
+        ok: false,
+        featureId,
+        packageName,
+        error: formatCliError(error),
+        optionalFeatureInstall: error?.optionalFeatureInstall || null,
+      });
+    }
+    index++;
+  }
+  const succeeded = results.filter((result) => result.ok).length;
+  return {
+    featureIds: requestedFeatureIds,
+    results,
+    total: results.length,
+    succeeded,
+    failed: results.length - succeeded,
+  };
+}
+
+function optionalFeatureProgressResult(result) {
+  return {
+    featureId: result.featureId,
+    packageName: result.packageName || result.data?.packageName || "",
+    ok: result.ok,
+    kind: result.optionalFeatureInstall?.kind || "",
+    message: result.ok ? result.data?.message || "Installed and verified" : "Installation failed; see the localhost response for details",
+  };
+}
+
+async function runOptionalFeatureBatchMutation({ revision, featureIds, cwd = options.cwd, migration = false, tab = null, install = null }) {
+  return optionalFeatureAuditCoordinator.runMutation(revision, async () => {
+    optionalFeatureAuditCoordinator.setProgress({ phase: "migrating", migration, startedAt: new Date().toISOString(), completed: 0, remaining: Array.isArray(featureIds) ? featureIds.length : 0, total: Array.isArray(featureIds) ? featureIds.length : 0, results: [] });
+    const batch = install ? await install() : await installOptionalFeaturePackages(featureIds, cwd);
+    if (migration && batch.failed === 0) await optionalFeatureMigrationStore.completeMigration();
+    await optionalFeatureAuditCoordinator.recheck({ reason: migration ? "post-migration" : "post-install" });
+    const restart = { autoRestarted: false, restartDeferred: false };
+    if (batch.failed === 0 && batch.total > 0 && tab) {
+      const busy = tab.activity?.isWorking === true
+        || pendingExtensionUiRequests(tab).length > 0
+        || (tab.browserPromptRequests?.size || 0) > 0
+        || (tab.bashQueue?.length || 0) > 0
+        || (tab.compactionQueue?.length || 0) > 0;
+      if (busy) {
+        restart.restartDeferred = true;
+      } else {
+        try {
+          await restartTabRpc(tab, "optional-feature-migration");
+          restart.autoRestarted = true;
+        } catch (error) {
+          restart.restartDeferred = true;
+          restart.reason = error?.statusCode === 409 ? "tab-busy" : "restart-failed";
+        }
+      }
+      broadcastTabEvent(tab, {
+        type: restart.autoRestarted ? "webui_optional_feature_restart_completed" : "webui_optional_feature_restart_deferred",
+        tabId: tab.id,
+        tabTitle: tab.title,
+        ...restart,
+      });
+    }
+    batch.restart = restart;
+    optionalFeatureAuditCoordinator.setProgress({
+      phase: batch.failed ? "partial" : "complete",
+      migration,
+      completedAt: new Date().toISOString(),
+      currentFeatureId: null,
+      currentPackageName: null,
+      index: batch.total,
+      total: batch.total,
+      completed: batch.total,
+      remaining: 0,
+      succeeded: batch.succeeded,
+      failed: batch.failed,
+      results: batch.results.map(optionalFeatureProgressResult),
+      ...restart,
+    });
+    return batch;
+  });
 }
 
 function displayPath(cwd) {
@@ -2186,6 +2546,15 @@ function requireWorkflowPolicyJsonRequest(req) {
   }
 }
 
+function requireSessionSummaryJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw makeHttpError(415, "Session summary changes require Content-Type: application/json.");
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw makeHttpError(403, "Cross-origin session summary changes are blocked.");
+  }
+}
+
 function workflowPolicySaveBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw makeHttpError(400, "Workflow policy save body must be an object with only policy and expectedRevision.");
@@ -2228,9 +2597,25 @@ async function safetyGuardConfigModule() {
         new URL("../../pi-extension-safety-guard/src/config.mjs", import.meta.url).href,
       ];
       const failures = [];
+      const requiredExports = [
+        "SAFETY_GUARD_CATEGORIES",
+        "SAFETY_GUARD_CONTEXT_LINES_MAX",
+        "SAFETY_GUARD_CONTEXT_LINES_MIN",
+        "SAFETY_GUARD_CONFIG_VERSION",
+        "SAFETY_GUARD_THINKING_LEVELS",
+        "assertSafetyGuardConfigPatch",
+        "defaultSafetyGuardConfig",
+        "mergeSafetyGuardConfig",
+        "readSafetyGuardConfig",
+        "safetyGuardConfigFile",
+        "writeSafetyGuardConfig",
+      ];
       for (const specifier of specifiers) {
         try {
-          return await import(specifier);
+          const module = await import(specifier);
+          const missing = requiredExports.filter((name) => module[name] === undefined);
+          if (missing.length) throw new Error(`missing ${missing.join(", ")}`);
+          return module;
         } catch (error) {
           failures.push(error instanceof Error ? error.message : String(error));
         }
@@ -2244,9 +2629,14 @@ async function safetyGuardConfigModule() {
   return safetyGuardConfigModulePromise;
 }
 
-async function safetyGuardConfigData() {
+function safetyGuardModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function safetyGuardConfigData(tab, { config: suppliedConfig, models: suppliedModels } = {}) {
   const settingsModule = await safetyGuardConfigModule();
-  const config = settingsModule.readSafetyGuardConfig();
+  const config = suppliedConfig || settingsModule.readSafetyGuardConfig();
+  const models = suppliedModels || await availableGitWorkflowModels(tab);
   return {
     config,
     defaults: settingsModule.defaultSafetyGuardConfig(),
@@ -2255,12 +2645,18 @@ async function safetyGuardConfigData() {
       min: settingsModule.SAFETY_GUARD_CONTEXT_LINES_MIN,
       max: settingsModule.SAFETY_GUARD_CONTEXT_LINES_MAX,
     },
+    models,
+    modelThinkingLevels: Object.fromEntries(models.map((model) => [
+      safetyGuardModelKey(model),
+      supportedGitWorkflowThinkingLevels(model),
+    ])),
+    thinkingLevels: [...settingsModule.SAFETY_GUARD_THINKING_LEVELS],
     version: settingsModule.SAFETY_GUARD_CONFIG_VERSION,
     path: settingsModule.safetyGuardConfigFile(),
   };
 }
 
-async function saveSafetyGuardConfigData(body = {}) {
+async function saveSafetyGuardConfigData(tab, body = {}) {
   const settingsModule = await safetyGuardConfigModule();
   const submitted = body.config && typeof body.config === "object" ? body.config : body;
   try {
@@ -2269,12 +2665,27 @@ async function saveSafetyGuardConfigData(body = {}) {
     throw makeHttpError(400, error instanceof Error ? error.message : String(error));
   }
 
+  const next = settingsModule.mergeSafetyGuardConfig(settingsModule.readSafetyGuardConfig(), submitted);
+  let models;
+  if (next.autoReview.enabled) {
+    models = await availableGitWorkflowModels(tab);
+    const provider = next.autoReview.model.provider;
+    const modelId = next.autoReview.model.modelId;
+    const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId);
+    if (!model) throw makeHttpError(400, `Selected auto-review model is not currently available: ${provider || "unset"}/${modelId || "unset"}`);
+    const supportedLevels = supportedGitWorkflowThinkingLevels(model);
+    if (!supportedLevels.includes(next.autoReview.model.thinkingLevel)) {
+      throw makeHttpError(400, `${provider}/${modelId} does not support thinking level ${next.autoReview.model.thinkingLevel}`);
+    }
+  }
+
+  let config;
   try {
-    const config = settingsModule.writeSafetyGuardConfig(submitted);
-    return { ...(await safetyGuardConfigData()), config };
+    config = settingsModule.writeSafetyGuardConfig(submitted);
   } catch (error) {
     throw makeHttpError(500, error instanceof Error ? error.message : String(error));
   }
+  return safetyGuardConfigData(tab, { config, models });
 }
 
 function requireSubagentLaunchSlotScope(value) {
@@ -2383,8 +2794,8 @@ function gitWorkflowModelKey(model) {
 }
 
 async function availableGitWorkflowModels(tab) {
-  const response = await safeRpcData(tab, { type: "get_available_models" });
-  if (!response.ok) throw makeHttpError(400, response.error || "Failed to load available models");
+  const response = await safeRpcResponse(tab, { type: "get_available_models" });
+  if (response.success === false) throw makeHttpError(400, response.error || "Failed to load available models");
   return (Array.isArray(response.data?.models) ? response.data.models : [])
     .filter((model) => model?.provider && model?.id)
     .sort((left, right) => gitWorkflowModelKey(left).localeCompare(gitWorkflowModelKey(right)));
@@ -2423,6 +2834,11 @@ function requireGitWorkflowChoice(value, key, choices) {
   return text;
 }
 
+function requireGitWorkflowBoolean(value, key) {
+  if (typeof value !== "boolean") throw makeHttpError(400, `${key} must be a boolean`);
+  return value;
+}
+
 async function saveGitWorkflowPreferencesData(tab, body = {}) {
   const submitted = body.preferences && typeof body.preferences === "object" ? body.preferences : body;
   if (submitted.generation?.thinkingLevel !== undefined) requireGitWorkflowChoice(submitted.generation.thinkingLevel, "generation.thinkingLevel", GIT_WORKFLOW_THINKING_LEVELS);
@@ -2430,6 +2846,7 @@ async function saveGitWorkflowPreferencesData(tab, body = {}) {
   if (submitted.commit?.defaultVariant !== undefined) requireGitWorkflowChoice(submitted.commit.defaultVariant, "commit.defaultVariant", GIT_WORKFLOW_DEFAULT_VARIANTS);
   if (submitted.commit?.scope !== undefined) requireGitWorkflowChoice(submitted.commit.scope, "commit.scope", GIT_WORKFLOW_SCOPE_POLICIES);
   if (submitted.stagingPolicy !== undefined) requireGitWorkflowChoice(submitted.stagingPolicy, "stagingPolicy", GIT_WORKFLOW_STAGING_POLICIES);
+  if (submitted.reviewProcessEnabled !== undefined) requireGitWorkflowBoolean(submitted.reviewProcessEnabled, "reviewProcessEnabled");
   if (submitted.deliveryMode !== undefined) requireGitWorkflowChoice(submitted.deliveryMode, "deliveryMode", GIT_WORKFLOW_DELIVERY_MODES);
   if (submitted.verificationPolicy !== undefined) requireGitWorkflowChoice(submitted.verificationPolicy, "verificationPolicy", GIT_WORKFLOW_VERIFICATION_POLICIES);
 
@@ -2449,6 +2866,172 @@ async function saveGitWorkflowPreferencesData(tab, body = {}) {
 
   await writeGitWorkflowPreferences(next);
   return gitWorkflowPreferencesData(tab);
+}
+
+function sessionSummaryModelKey(model) {
+  return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
+}
+
+async function availableSessionSummaryModels(tab) {
+  const models = await availableGitWorkflowModels(tab);
+  return models.map((model) => ({
+    provider: model.provider,
+    id: model.id,
+    ...(model.name ? { name: String(model.name).slice(0, 240) } : {}),
+    reasoning: model.reasoning === true,
+    ...(model.thinkingLevelMap && typeof model.thinkingLevelMap === "object" ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+  }));
+}
+
+function publicSessionSummaryPreferences(value) {
+  return {
+    version: 1,
+    configured: value?.configured === true,
+    enabled: value?.enabled === true,
+    model: {
+      provider: String(value?.model?.provider || ""),
+      modelId: String(value?.model?.modelId || ""),
+      thinkingLevel: String(value?.model?.thinkingLevel || "off"),
+    },
+    prompts: {
+      title: String(value?.prompts?.title || "").slice(0, SESSION_SUMMARY_PROMPT_MAX_CHARS),
+      summary: String(value?.prompts?.summary || "").slice(0, SESSION_SUMMARY_PROMPT_MAX_CHARS),
+    },
+    input: { scope: "text-and-tool-names" },
+    context: { injectLatest: value?.context?.injectLatest === true },
+    title: {
+      enabled: value?.title?.enabled !== false,
+      minSettledTurns: Number.isInteger(value?.title?.minSettledTurns) ? value.title.minSettledTurns : 3,
+    },
+  };
+}
+
+async function sessionSummaryPreferencesData(tab) {
+  const [storedPreferences, models] = await Promise.all([
+    readSessionSummaryPreferences(),
+    availableSessionSummaryModels(tab),
+  ]);
+  return {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    preferences: publicSessionSummaryPreferences(storedPreferences),
+    models,
+    modelThinkingLevels: Object.fromEntries(models.map((model) => [sessionSummaryModelKey(model), supportedSessionSummaryThinkingLevels(model)])),
+    disclosure: {
+      scope: "Active-branch user text, final assistant text, and tool names only. Thinking, images, tool arguments/results, credentials, and prior summary messages are excluded.",
+      cost: "Automatic generation makes one request to the selected model after each eligible settled refresh. There is no provider fallback or automatic provider retry.",
+      persistence: "Preferences and generated output are stored locally. Main-agent context injection is off unless explicitly enabled.",
+    },
+    summary: publicSessionSummaryState(tab),
+  };
+}
+
+function requiredSessionSummaryObject(value, label, allowedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw makeHttpError(400, `${label} must be an object`);
+  const unexpected = Object.keys(value).filter((key) => !allowedKeys.includes(key));
+  if (unexpected.length) throw makeHttpError(400, `${label} contains unsupported field${unexpected.length === 1 ? "" : "s"}: ${unexpected.join(", ")}`);
+  return value;
+}
+
+function requiredSessionSummaryBoolean(value, label) {
+  if (typeof value !== "boolean") throw makeHttpError(400, `${label} must be true or false`);
+  return value;
+}
+
+function requiredSessionSummaryPrompt(value, label) {
+  if (typeof value !== "string") throw makeHttpError(400, `${label} must be a string`);
+  const prompt = value.trim();
+  if (!prompt) throw makeHttpError(400, `${label} must not be empty`);
+  if (prompt.length > SESSION_SUMMARY_PROMPT_MAX_CHARS) throw makeHttpError(400, `${label} must not exceed 8 KiB`);
+  return prompt;
+}
+
+async function saveSessionSummaryPreferencesData(tab, body = {}) {
+  requiredSessionSummaryObject(body, "request", ["confirmed", "preferences", "tab"]);
+  if (body.confirmed !== true) throw makeHttpError(409, "Session summary setup requires explicit privacy and cost confirmation (confirmed: true).");
+  const submitted = requiredSessionSummaryObject(body.preferences, "preferences", ["enabled", "model", "prompts", "input", "context", "title"]);
+  const submittedModel = requiredSessionSummaryObject(submitted.model, "preferences.model", ["provider", "modelId", "thinkingLevel"]);
+  const submittedPrompts = requiredSessionSummaryObject(submitted.prompts, "preferences.prompts", ["title", "summary"]);
+  const submittedInput = requiredSessionSummaryObject(submitted.input, "preferences.input", ["scope"]);
+  const submittedContext = requiredSessionSummaryObject(submitted.context, "preferences.context", ["injectLatest"]);
+  const submittedTitle = requiredSessionSummaryObject(submitted.title, "preferences.title", ["enabled", "minSettledTurns"]);
+  const provider = String(submittedModel.provider || "").trim();
+  const modelId = String(submittedModel.modelId || "").trim();
+  const thinkingLevel = String(submittedModel.thinkingLevel || "").trim();
+  if (!provider || provider.length > 160 || !modelId || modelId.length > 512) throw makeHttpError(400, "Select an available session summary model");
+  const models = await availableSessionSummaryModels(tab);
+  const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId);
+  if (!model) throw makeHttpError(400, `Selected session summary model is not currently available: ${provider}/${modelId}`);
+  const supportedLevels = supportedSessionSummaryThinkingLevels(model);
+  if (!supportedLevels.includes(thinkingLevel)) throw makeHttpError(400, `${provider}/${modelId} does not support thinking level ${thinkingLevel}`);
+  if (submittedInput.scope !== "text-and-tool-names") throw makeHttpError(400, "input.scope must be text-and-tool-names");
+  const minSettledTurns = Number(submittedTitle.minSettledTurns);
+  if (!Number.isInteger(minSettledTurns) || minSettledTurns < 1 || minSettledTurns > 20) throw makeHttpError(400, "title.minSettledTurns must be an integer from 1 to 20");
+
+  const saved = await writeSessionSummaryPreferences({
+    configured: true,
+    enabled: requiredSessionSummaryBoolean(submitted.enabled, "enabled"),
+    model: { provider, modelId, thinkingLevel },
+    prompts: {
+      title: requiredSessionSummaryPrompt(submittedPrompts.title, "prompts.title"),
+      summary: requiredSessionSummaryPrompt(submittedPrompts.summary, "prompts.summary"),
+    },
+    input: { scope: "text-and-tool-names" },
+    context: { injectLatest: requiredSessionSummaryBoolean(submittedContext.injectLatest, "context.injectLatest") },
+    title: {
+      enabled: requiredSessionSummaryBoolean(submittedTitle.enabled, "title.enabled"),
+      minSettledTurns,
+    },
+  });
+  tab.sessionSummary = {
+    ...(tab.sessionSummary || {}),
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: tab.sessionSummary?.status || "idle",
+    configured: true,
+    enabled: saved.enabled === true,
+    durable: tab.sessionSummary?.durable === true,
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSessionSummaryState(tab, "setup");
+  return sessionSummaryPreferencesData(tab);
+}
+
+async function triggerSessionSummary(tab, { refresh = false } = {}) {
+  const preferences = await readSessionSummaryPreferences();
+  if (!preferences.configured) throw makeHttpError(409, "Session summary setup must be confirmed before generation.");
+  const commands = await safeRpcData(tab, { type: "get_commands" }, STATUS_RPC_TIMEOUT_MS);
+  const available = Array.isArray(commands.data?.commands) && commands.data.commands.some((command) => String(command?.name || "").replace(/:\d+$/, "") === "summary");
+  if (!commands.ok || !available) throw makeHttpError(409, "The /summary extension command is not loaded in this Pi tab. Reload the tab and retry.");
+  tab.sessionSummary = {
+    ...(tab.sessionSummary || {}),
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: "generating",
+    configured: true,
+    message: "",
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSessionSummaryState(tab, "generating");
+  try {
+    const response = await tab.rpc.send(
+      { type: "prompt", message: refresh ? "/summary refresh" : "/summary" },
+      SESSION_SUMMARY_GENERATE_TIMEOUT_MS,
+    );
+    if (response.success === false) throw makeHttpError(400, response.error || "Session summary generation failed");
+    return { requested: true, refresh: refresh === true, summary: publicSessionSummaryState(tab), tab: tabMeta(tab) };
+  } catch (error) {
+    const message = (sanitizeError(error) || "Session summary generation failed")
+      .replace(/[\r\n]+/g, " ")
+      .slice(0, SESSION_SUMMARY_FAILURE_MAX_CHARS)
+      .trim();
+    tab.sessionSummary = {
+      ...(tab.sessionSummary || {}),
+      version: SESSION_SUMMARY_PROTOCOL_VERSION,
+      status: "failure",
+      message: message || "Session summary generation failed",
+      updatedAt: new Date().toISOString(),
+    };
+    broadcastSessionSummaryState(tab, "failure");
+    throw error;
+  }
 }
 
 function gitWorkflowGenerationPrompt(kind, preferences) {
@@ -2804,7 +3387,12 @@ function appRunnerCandidate({ id, label, kind, command, args = [], projectFile =
 
 function addAppRunner(runners, runner) {
   if (!runner?.id || !runner.command) return;
-  if (runners.some((item) => item.id === runner.id || item.displayCommand === runner.displayCommand)) return;
+  if (runners.some((item) => item.id === runner.id)) return;
+  const duplicateIndex = runners.findIndex((item) => item.displayCommand === runner.displayCommand);
+  if (duplicateIndex >= 0) {
+    if (runner.custom && !runners[duplicateIndex].custom) runners.splice(duplicateIndex, 1, runner);
+    return;
+  }
   runners.push(runner);
 }
 
@@ -5511,6 +6099,117 @@ function normalizeGitRelativePath(root, relativePath) {
   return path.relative(root, resolved).split(path.sep).join("/");
 }
 
+const GITIGNORE_MAX_BYTES = 5 * 1024 * 1024;
+const gitignoreMutationQueues = new Map();
+
+function serializeGitignoreMutation(root, mutation) {
+  const previous = gitignoreMutationQueues.get(root) || Promise.resolve();
+  const current = previous.catch(() => {}).then(mutation);
+  gitignoreMutationQueues.set(root, current);
+  return current.finally(() => {
+    if (gitignoreMutationQueues.get(root) === current) gitignoreMutationQueues.delete(root);
+  });
+}
+
+function gitignoreEntryForTarget(root, requestedPath, kind) {
+  if (kind !== "file" && kind !== "folder") throw makeHttpError(400, "Gitignore target kind must be file or folder");
+  if (typeof requestedPath !== "string" || requestedPath.length === 0) throw makeHttpError(400, "Gitignore target path is required");
+  if (/[\0-\x1f\x7f]/.test(requestedPath)) throw makeHttpError(400, "Gitignore target path cannot contain control characters");
+
+  const slashPath = requestedPath.replace(/\\/g, "/");
+  if (path.posix.isAbsolute(slashPath) || path.win32.isAbsolute(requestedPath) || /^[A-Za-z]:/.test(requestedPath)) {
+    throw makeHttpError(400, "Gitignore target path must be repository-relative");
+  }
+  const segments = slashPath.split("/").filter(Boolean);
+  if (!segments.length || segments.some((segment) => segment === "." || segment === "..")) {
+    throw makeHttpError(400, "Gitignore target path cannot be the repository root or contain traversal segments");
+  }
+
+  const normalized = segments.join("/");
+  const target = path.resolve(root, ...segments);
+  const relative = path.relative(root, target);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw makeHttpError(400, "Gitignore target path must stay inside the repository");
+  }
+  const escaped = normalized.replace(/([*?\[\] ])/g, "\\$1");
+  return { path: normalized, kind, entry: `/${escaped}${kind === "folder" ? "/" : ""}` };
+}
+
+function sameFileIdentity(first, second) {
+  return first?.dev === second?.dev && first?.ino === second?.ino;
+}
+
+function gitignoreHasExactEntry(content, entry) {
+  const existing = content.toString("latin1").split(/\r\n|\n|\r/);
+  return existing.includes(Buffer.from(entry, "utf8").toString("latin1"));
+}
+
+async function appendGitignoreEntry(root, entry) {
+  const target = path.join(root, ".gitignore");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let before;
+    try {
+      before = await lstat(target);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      before = null;
+    }
+
+    if (!before) {
+      let handle;
+      try {
+        handle = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW || 0), 0o666);
+        await handle.writeFile(`${entry}\n`, "utf8");
+        return true;
+      } catch (error) {
+        if (error?.code === "EEXIST" && attempt === 0) continue;
+        throw error;
+      } finally {
+        await handle?.close();
+      }
+    }
+
+    if (before.isSymbolicLink() || !before.isFile()) throw makeHttpError(409, "Repository .gitignore must be a regular file and cannot be a symbolic link");
+    if (before.nlink !== 1) throw makeHttpError(409, "Repository .gitignore must have exactly one hard link; replace linked copies with a regular file before retrying");
+
+    let handle;
+    try {
+      handle = await open(target, fsConstants.O_RDWR | fsConstants.O_APPEND | (fsConstants.O_NOFOLLOW || 0));
+      const opened = await handle.stat();
+      if (!opened.isFile() || !sameFileIdentity(before, opened)) throw makeHttpError(409, "Repository .gitignore changed while it was being opened");
+      if (opened.nlink !== 1) throw makeHttpError(409, "Repository .gitignore must have exactly one hard link; replace linked copies with a regular file before retrying");
+      if (opened.size > GITIGNORE_MAX_BYTES) throw makeHttpError(409, `Repository .gitignore exceeds the ${formatBytes(GITIGNORE_MAX_BYTES)} safe modification limit`);
+      const content = await handle.readFile();
+      if (gitignoreHasExactEntry(content, entry)) return false;
+      const newline = content.includes(Buffer.from("\r\n")) ? "\r\n" : "\n";
+      const lastByte = content.length ? content[content.length - 1] : null;
+      const separator = content.length && lastByte !== 0x0a && lastByte !== 0x0d ? newline : "";
+      await handle.writeFile(`${separator}${entry}${newline}`, "utf8");
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT" && attempt === 0) continue;
+      if (error?.code === "ELOOP") throw makeHttpError(409, "Repository .gitignore cannot be a symbolic link");
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+  }
+}
+
+async function addGitignoreEntry(cwd, body = {}) {
+  try {
+    const root = await realpath(await getGitRoot(cwd));
+    const target = gitignoreEntryForTarget(root, body.path, body.kind);
+    const added = await serializeGitignoreMutation(root, () => appendGitignoreEntry(root, target.entry));
+    return { root, ...target, added, changes: await readGitChanges(root) };
+  } catch (error) {
+    if (error?.statusCode) throw error;
+    const wrapped = makeHttpError(500, formatCliError(error));
+    if (error?.code) wrapped.code = error.code;
+    throw wrapped;
+  }
+}
+
 async function readGitUntrackedEntry(root, file, { maxBytes = Number.POSITIVE_INFINITY } = {}) {
   const normalized = normalizeGitRelativePath(root, file);
   const filePath = resolveGitRelativePath(root, normalized);
@@ -5644,9 +6343,12 @@ async function readGitIncomingChanges(root, summary) {
   }
 }
 
-async function pullGitChanges(cwd) {
+async function pullGitChanges(cwd, { remote } = {}) {
   const root = await getGitRoot(cwd);
-  const payload = await runGuardedGitMutation(["pull", "--ff-only"], { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
+  const pullArgs = ["pull", "--ff-only"];
+  if (remote === "origin") pullArgs.push("origin");
+  else if (remote) throw new Error(`Unsupported Git pull remote: ${String(remote)}`);
+  const payload = await runGuardedGitMutation(pullArgs, { cwd: root, timeoutMs: GIT_PULL_TIMEOUT_MS });
   if (payload.data) payload.data.root = root;
   if (payload.ok) payload.data.changes = await readGitChanges(root);
   else {
@@ -7700,15 +8402,6 @@ function themeLabel(name) {
     .join(" ");
 }
 
-function stringRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const record = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") record[key] = String(item);
-  }
-  return record;
-}
-
 async function directoryExists(dir) {
   try {
     const info = await stat(dir);
@@ -7719,7 +8412,9 @@ async function directoryExists(dir) {
 }
 
 async function resolveBundledThemesDir() {
-  const candidates = [];
+  // Pi-managed packages are the user's canonical installation. Prefer them to
+  // any duplicate that happens to be visible from the WebUI's npm prefix.
+  const candidates = [path.join(configuredAgentNpmRoot(), "node_modules", "@firstpick", "pi-themes-bundle", "themes")];
   try {
     const manifestPath = require.resolve("@firstpick/pi-themes-bundle/package.json");
     const root = path.dirname(manifestPath);
@@ -7729,8 +8424,9 @@ async function resolveBundledThemesDir() {
       if (typeof entry === "string" && entry.trim()) candidates.push(path.resolve(root, entry));
     }
   } catch {
-    // In repo development the bundle may be a sibling package rather than an installed dependency.
+    // The bundle may live outside this package's Node resolution tree.
   }
+  // In repo development the bundle may be a sibling package instead.
   candidates.push(path.resolve(packageRoot, "..", "pi-package-themes-bundle", "themes"));
 
   for (const candidate of candidates) {
@@ -7739,39 +8435,350 @@ async function resolveBundledThemesDir() {
   return null;
 }
 
-function sanitizeBundledTheme(theme, fileName) {
-  const name = typeof theme?.name === "string" && theme.name.trim() ? theme.name.trim() : path.basename(fileName, ".json");
-  return {
-    name,
-    label: themeLabel(name),
-    vars: stringRecord(theme?.vars),
-    colors: stringRecord(theme?.colors),
-    export: stringRecord(theme?.export),
+function themeHttpError(statusCode, code, message, details) {
+  const error = makeHttpError(statusCode, message);
+  error.code = code;
+  if (details) error.details = details;
+  return error;
+}
+
+function catalogTheme(theme, fileName, scope) {
+  const validation = validateTheme(theme, { allowWebuiExport: scope === "bundled" });
+  if (!validation.ok) throw new ThemeContractError("Theme does not satisfy the installed Pi theme contract", validation.issues);
+  const native = canonicalizeTheme(theme, { allowWebuiExport: scope === "bundled" });
+  if (scope === "bundled" && theme.export) {
+    native.export = { ...(native.export || {}) };
+    for (const [key, value] of Object.entries(theme.export)) {
+      if (typeof value === "string" && !Object.hasOwn(native.export, key)) native.export[key] = value;
+    }
+  }
+  const entry = {
+    name: native.name,
+    label: themeLabel(native.name),
+    vars: native.vars || {},
+    colors: native.colors,
+    export: native.export || {},
+    scope,
+    custom: scope !== "bundled",
   };
+  if (scope !== "bundled") entry.fileName = fileName;
+  return entry;
+}
+
+function themePathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+async function existingThemeRoot(baseDir, segments) {
+  let root;
+  try {
+    root = await realpath(baseDir);
+  } catch {
+    return null;
+  }
+  const confinementRoot = root;
+  for (const segment of segments) {
+    const candidate = path.join(root, segment);
+    let info;
+    try {
+      info = await lstat(candidate);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    root = await realpath(candidate);
+    if (!themePathInside(confinementRoot, root)) return null;
+  }
+  return root;
+}
+
+async function ensureThemeRoot(baseDir, segments) {
+  await mkdir(baseDir, { recursive: true, mode: 0o700 });
+  const baseInfo = await stat(baseDir);
+  if (!baseInfo.isDirectory()) throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The server-derived theme base is not a directory.");
+  let root = await realpath(baseDir);
+  const confinementRoot = root;
+  for (const segment of segments) {
+    const candidate = path.join(root, segment);
+    try {
+      await mkdir(candidate, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    const info = await lstat(candidate);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The server-derived theme directory contains a symlink or non-directory component.");
+    }
+    root = await realpath(candidate);
+    if (!themePathInside(confinementRoot, root)) {
+      throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The server-derived theme directory escapes its allowed root.");
+    }
+  }
+  return root;
+}
+
+async function readThemeDirectory(baseDir, segments, scope) {
+  const root = await existingThemeRoot(baseDir, segments);
+  if (!root) return [];
+  const entries = [];
+  let files;
+  try {
+    files = await readdir(root);
+  } catch {
+    return [];
+  }
+  for (const fileName of files.filter((name) => name.endsWith(".json")).sort((a, b) => a.localeCompare(b))) {
+    try {
+      const target = path.join(root, fileName);
+      const info = await lstat(target);
+      if (info.isSymbolicLink() || !info.isFile()) continue;
+      const resolved = await realpath(target);
+      if (!themePathInside(root, resolved)) continue;
+      entries.push(catalogTheme(JSON.parse(await readFile(resolved, "utf8")), fileName, scope));
+    } catch (error) {
+      console.error(`Skipping invalid ${scope} theme ${fileName}: ${sanitizeError(error)}`);
+    }
+  }
+  return entries.sort((a, b) => a.label.localeCompare(b.label) || a.fileName.localeCompare(b.fileName));
 }
 
 async function readBundledThemes() {
   const dir = await resolveBundledThemesDir();
   if (!dir) return { source: "@firstpick/pi-themes-bundle", themes: [] };
-
-  const files = (await readdir(dir)).filter((file) => file.endsWith(".json")).sort((a, b) => a.localeCompare(b));
   const themes = [];
-  for (const file of files) {
+  for (const fileName of (await readdir(dir)).filter((file) => file.endsWith(".json")).sort((a, b) => a.localeCompare(b))) {
     try {
-      const raw = await readFile(path.join(dir, file), "utf8");
-      themes.push(sanitizeBundledTheme(JSON.parse(raw), file));
+      const target = path.join(dir, fileName);
+      const info = await lstat(target);
+      if (info.isSymbolicLink() || !info.isFile()) continue;
+      themes.push(catalogTheme(JSON.parse(await readFile(target, "utf8")), fileName, "bundled"));
     } catch (error) {
-      console.error(`Skipping invalid theme ${file}: ${sanitizeError(error)}`);
+      console.error(`Skipping invalid bundled theme ${fileName}: ${sanitizeError(error)}`);
     }
   }
   themes.sort((a, b) => a.label.localeCompare(b.label));
   return { source: "@firstpick/pi-themes-bundle", themes };
 }
 
+function customThemeRoots(tab) {
+  const projectTrusted = !!tab && projectTrustDecision(tab.cwd, agentDir);
+  return {
+    global: { baseDir: agentDir, segments: ["themes"] },
+    project: { baseDir: tab?.cwd, segments: [".pi", "themes"], trusted: projectTrusted },
+  };
+}
+
+async function readThemeCatalog(tab) {
+  const bundled = await readBundledThemes();
+  const roots = customThemeRoots(tab);
+  const globalThemes = await readThemeDirectory(roots.global.baseDir, roots.global.segments, "global");
+  const projectThemes = roots.project.trusted
+    ? await readThemeDirectory(roots.project.baseDir, roots.project.segments, "project")
+    : [];
+  const themes = [];
+  const names = new Map();
+  const collisions = [];
+  for (const entry of [...bundled.themes, ...globalThemes, ...projectThemes]) {
+    const previous = names.get(entry.name);
+    if (previous) {
+      collisions.push({ name: entry.name, keptScope: previous.scope, skippedScope: entry.scope });
+      continue;
+    }
+    names.set(entry.name, entry);
+    themes.push(entry);
+  }
+  return {
+    source: bundled.source,
+    themes,
+    collisions,
+    scopes: {
+      global: { available: true },
+      project: { available: !!tab, trusted: roots.project.trusted },
+    },
+  };
+}
+
+function requireCustomThemeJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw themeHttpError(415, "THEME_JSON_REQUIRED", "Custom theme saves require Content-Type: application/json.");
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (fetchSite && !["same-origin", "same-site", "none"].includes(fetchSite)) {
+    throw themeHttpError(403, "THEME_CROSS_SITE_BLOCKED", "Cross-site custom theme saves are blocked.");
+  }
+}
+
+function validateCustomThemeSaveBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "Custom theme save body must be an object.");
+  }
+  const allowed = new Set(["scope", "fileName", "theme", "overwrite", "expectedMtimeMs"]);
+  const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+  if (unknown.length) throw themeHttpError(400, "THEME_REQUEST_INVALID", `Unsupported custom theme save field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`);
+  if (body.scope !== "global" && body.scope !== "project") throw themeHttpError(400, "THEME_SCOPE_INVALID", "scope must be global or project.");
+  let fileName;
+  let theme;
+  try {
+    fileName = normalizeThemeFileName(body.fileName);
+    theme = canonicalizeTheme(body.theme, { allowWebuiExport: true });
+  } catch (error) {
+    if (error instanceof ThemeContractError) throw themeHttpError(400, "THEME_INVALID", error.message, { issues: error.issues || [] });
+    throw error;
+  }
+  if (theme.name !== themeNameFromFileName(fileName)) {
+    throw themeHttpError(400, "THEME_NAME_MISMATCH", "Theme name must exactly match fileName without the .json suffix.");
+  }
+  if (typeof body.overwrite !== "boolean") throw themeHttpError(400, "THEME_REQUEST_INVALID", "overwrite must be a boolean.");
+  if (body.expectedMtimeMs !== null && (typeof body.expectedMtimeMs !== "number" || !Number.isFinite(body.expectedMtimeMs) || body.expectedMtimeMs < 0)) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "expectedMtimeMs must be a non-negative number or null.");
+  }
+  if (!body.overwrite && body.expectedMtimeMs !== null) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "expectedMtimeMs must be null until overwrite is explicitly confirmed.");
+  }
+  if (body.overwrite && body.expectedMtimeMs === null) {
+    throw themeHttpError(400, "THEME_REQUEST_INVALID", "An overwrite requires the target mtime returned by THEME_EXISTS.");
+  }
+  return { scope: body.scope, fileName, theme, overwrite: body.overwrite, expectedMtimeMs: body.expectedMtimeMs };
+}
+
+async function customThemeCollision(request, tab) {
+  const bundled = await readBundledThemes();
+  if (bundled.themes.some(({ name }) => name === request.theme.name)) return { scope: "bundled" };
+  const roots = customThemeRoots(tab);
+  for (const scope of ["global", "project"]) {
+    if (scope === "project" && !roots.project.trusted) continue;
+    const root = roots[scope];
+    const entries = await readThemeDirectory(root.baseDir, root.segments, scope);
+    for (const entry of entries) {
+      if (entry.name !== request.theme.name) continue;
+      if (scope === request.scope && entry.fileName === request.fileName) continue;
+      if (scope === request.scope) {
+        const directory = await existingThemeRoot(root.baseDir, root.segments);
+        if (directory) {
+          try {
+            const [existingPath, requestedPath] = await Promise.all([
+              realpath(path.join(directory, entry.fileName)),
+              realpath(path.join(directory, request.fileName)),
+            ]);
+            if (existingPath === requestedPath) continue;
+          } catch {
+            // A missing differently-cased path is a real collision on a case-sensitive filesystem.
+          }
+        }
+      }
+      return { scope, fileName: entry.fileName };
+    }
+  }
+  return null;
+}
+
+let customThemeMutationQueue = Promise.resolve();
+
+function queueCustomThemeMutation(operation) {
+  const result = customThemeMutationQueue.catch(() => {}).then(operation);
+  customThemeMutationQueue = result.catch(() => {});
+  return result;
+}
+
+async function saveCustomTheme(tab, request) {
+  return queueCustomThemeMutation(async () => {
+    const roots = customThemeRoots(tab);
+    if (request.scope === "project" && !roots.project.trusted) {
+      throw themeHttpError(403, "THEME_PROJECT_UNTRUSTED", "Project theme saves require a saved trusted-project decision in Pi.");
+    }
+    const collision = await customThemeCollision(request, tab);
+    if (collision) {
+      throw themeHttpError(409, "THEME_NAME_COLLISION", "A bundled or opposite-scope theme already uses this name.", {
+        scope: collision.scope,
+        ...(collision.fileName ? { fileName: collision.fileName } : {}),
+      });
+    }
+    const selected = roots[request.scope];
+    const root = await ensureThemeRoot(selected.baseDir, selected.segments);
+    const target = path.join(root, request.fileName);
+    if (!themePathInside(root, target)) throw themeHttpError(409, "THEME_UNSAFE_TARGET", "Theme target escapes its server-derived root.");
+
+    let before = null;
+    try {
+      before = await lstat(target);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (before?.isSymbolicLink() || (before && !before.isFile())) {
+      throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The theme target is a symlink or non-file entry.");
+    }
+    if (before && !request.overwrite) {
+      throw themeHttpError(409, "THEME_EXISTS", "The custom theme already exists and requires explicit overwrite confirmation.", {
+        scope: request.scope,
+        fileName: request.fileName,
+        mtimeMs: before.mtimeMs,
+      });
+    }
+    if ((!before && request.overwrite) || (before && before.mtimeMs !== request.expectedMtimeMs)) {
+      throw themeHttpError(409, "THEME_CHANGED", "The custom theme changed after overwrite confirmation.", {
+        scope: request.scope,
+        fileName: request.fileName,
+        ...(before ? { mtimeMs: before.mtimeMs } : {}),
+      });
+    }
+
+    const bytes = serializeTheme(request.theme, { allowWebuiExport: false });
+    const temp = path.join(root, `.${request.fileName}.${randomUUID()}.tmp`);
+    let handle;
+    try {
+      handle = await open(temp, "wx", 0o600);
+      await handle.writeFile(bytes, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+
+      const verifiedRoot = await existingThemeRoot(selected.baseDir, selected.segments);
+      if (verifiedRoot !== root) throw themeHttpError(409, "THEME_UNSAFE_TARGET", "Theme directory changed during save.");
+      let finalState = null;
+      try {
+        finalState = await lstat(target);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      if (finalState?.isSymbolicLink() || (finalState && !finalState.isFile())) {
+        throw themeHttpError(409, "THEME_UNSAFE_TARGET", "The theme target changed to an unsafe entry during save.");
+      }
+      if ((before && (!finalState || finalState.mtimeMs !== request.expectedMtimeMs)) || (!before && finalState)) {
+        throw themeHttpError(409, "THEME_CHANGED", "The custom theme changed during save.", {
+          scope: request.scope,
+          fileName: request.fileName,
+          ...(finalState ? { mtimeMs: finalState.mtimeMs } : {}),
+        });
+      }
+      await rename(temp, target);
+    } finally {
+      await handle?.close().catch(() => {});
+      await rm(temp, { force: true }).catch(() => {});
+    }
+    const saved = await stat(target);
+    return {
+      scope: request.scope,
+      fileName: request.fileName,
+      themeName: request.theme.name,
+      created: !before,
+      overwritten: !!before,
+      mtimeMs: saved.mtimeMs,
+      reloadRequired: true,
+    };
+  });
+}
+
+const STATIC_PUBLIC_FILE_EXTENSIONS = new Set([".html", ".css", ".js", ".mjs", ".svg", ".png", ".webp", ".webmanifest"]);
+
 function normalizeStaticPath(urlPath) {
   if (urlPath === "/") return "index.html";
   const name = urlPath.startsWith("/") ? urlPath.slice(1) : urlPath;
-  if (!["index.html", "app.js", "issue-wizard-state.mjs", "issue-bot-client.mjs", "fast-output-live.mjs", "subagent-launch-slot-state.mjs", "subagent-gate-visibility.mjs", "workflow-status-stack.mjs", "voice-conversation.mjs", "aur-review-payload.mjs", "guided-git-command-state.mjs", "guided-git-review-state.mjs", "styles.css", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "catppuccin-mocha-background.png", "matrix-background.webp", "manifest.webmanifest", "service-worker.js"].includes(name)) return undefined;
+  // public/ is the package's explicit browser-asset boundary. Accept any safe,
+  // flat asset name from it so a newly imported module cannot outrun a second
+  // manually maintained server allowlist during an in-place package update.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return undefined;
+  if (!STATIC_PUBLIC_FILE_EXTENSIONS.has(path.extname(name))) return undefined;
   return name;
 }
 
@@ -8067,6 +9074,12 @@ function commandFromGet(pathname) {
   }
 }
 
+const candidateProbeRequested = process.argv.length === 3 && process.argv[2] === "--candidate-probe";
+if (candidateProbeRequested) {
+  process.stdout.write(`${JSON.stringify({ ok: true, packageName: WEBUI_PACKAGE, version: packageJson.version, piVersion: piPackageJson.version, serverEntry: fileURLToPath(import.meta.url) })}\n`);
+  process.exit(0);
+}
+
 let options;
 try {
   options = parseArgs(process.argv.slice(2));
@@ -8123,7 +9136,7 @@ if (Number.isFinite(startupDelayMs) && startupDelayMs > 0) {
   await delay(Math.min(startupDelayMs, 10_000));
 }
 
-const restoreTabs = readRestoreTabsFromEnv();
+const restoreTabs = await readRestoreTabsFromEnv();
 const supervisorAttachCursor = readSupervisorCursorFromEnv();
 
 function normalizedRestoreString(value, maxLength) {
@@ -8151,18 +9164,17 @@ function normalizeRestoreTabDescriptor(item, seenIds) {
   return descriptor;
 }
 
-function readRestoreTabsFromEnv() {
-  const raw = process.env.PI_WEBUI_RESTORE_TABS;
+async function readRestoreTabsFromEnv() {
+  const restoreFile = process.env.PI_WEBUI_RESTORE_FILE;
+  delete process.env.PI_WEBUI_RESTORE_FILE;
   delete process.env.PI_WEBUI_RESTORE_TABS;
-  if (!raw) return [];
-
+  if (!restoreFile) return [];
   try {
-    const parsed = JSON.parse(raw);
-    const items = Array.isArray(parsed) ? parsed : [];
+    const items = await readRestoreFileOnce(restoreFile, agentDir);
     const seenIds = new Set();
     return items.map((item) => normalizeRestoreTabDescriptor(item, seenIds)).filter(Boolean).slice(0, RESTORE_TAB_LIMIT);
   } catch (error) {
-    console.warn(`failed to parse PI_WEBUI_RESTORE_TABS: ${sanitizeError(error)}`);
+    console.warn(`failed to read private restore descriptor: ${sanitizeError(error)}`);
     return [];
   }
 }
@@ -8181,7 +9193,14 @@ function readSupervisorCursorFromEnv() {
 }
 
 async function packageNameForResourcePath(resourcePath) {
-  let current = path.dirname(resourcePath);
+  let canonicalResourcePath = resourcePath;
+  try {
+    canonicalResourcePath = await realpath(resourcePath);
+  } catch {
+    // Keep lexical lookup for missing or virtual resources.
+  }
+
+  let current = path.dirname(canonicalResourcePath);
   while (current && current !== path.dirname(current)) {
     if (PACKAGE_NAME_CACHE.has(current)) return PACKAGE_NAME_CACHE.get(current) || undefined;
     try {
@@ -8252,7 +9271,7 @@ function parseNodeModulesPackageRef(manifestEntry) {
 
 async function resolveStartedWebuiManifestResource(manifestEntry) {
   const nodeModulesRef = parseNodeModulesPackageRef(manifestEntry);
-  if (nodeModulesRef && WEBUI_CONTROLLED_PACKAGES.has(nodeModulesRef.packageName)) {
+  if (nodeModulesRef && WEBUI_RESOURCE_EXCLUDED_PACKAGES.has(nodeModulesRef.packageName)) {
     const installedCandidate = await resolveInstalledPackageSubpath(nodeModulesRef.packageName, nodeModulesRef.subpath);
     if (installedCandidate) return installedCandidate;
   }
@@ -8301,10 +9320,15 @@ async function resolvedNormalPiResourcesForTab(cwd) {
 async function normalPiResourcePathsForTab(resolved, resourceType) {
   if (piArgsDisableResourceDiscovery(resourceType)) return [];
   const resourcePaths = [];
+  const auditExcludedPackages = optionalFeatureAuditCoordinator?.excludedPackageNames?.() || new Set();
+  const coreOnly = optionalFeatureAuditCoordinator?.current?.().phase === "checking" || optionalFeatureAuditCoordinator?.current?.().phase === "degraded";
   for (const resource of resolved[resourceType] || []) {
     if (!resource.enabled) continue;
     const packageName = await packageNameForResourcePath(resource.path);
-    if (packageName && WEBUI_CONTROLLED_PACKAGES.has(packageName)) continue;
+    if (packageName && WEBUI_RESOURCE_EXCLUDED_PACKAGES.has(packageName)) continue;
+    if (packageName && auditExcludedPackages.has(packageName)) {
+      if (coreOnly || resource.metadata?.origin !== "package") continue;
+    }
     resourcePaths.push(resource.path);
   }
   return resourcePaths;
@@ -8328,6 +9352,11 @@ async function buildPiArgsForTab(tabIndex, title, tabCwd = options.cwd) {
   await appendCuratedResourceArgs(args, normalResources, "skills", "--skill");
   await appendCuratedResourceArgs(args, normalResources, "prompts", "--prompt-template");
   await appendCuratedResourceArgs(args, normalResources, "themes", "--theme");
+
+  // The package manifest is resolved above, but keep session-summary explicit:
+  // curated child discovery intentionally excludes package-owned resources in
+  // some installations. Avoid a duplicate when the manifest path was retained.
+  if (!args.includes(sessionSummaryExtensionPath)) args.push("--extension", sessionSummaryExtensionPath);
 
   // Load a browser-safe RPC helper into every Web UI tab. It exposes hidden
   // extension commands for Web UI-native /tools and /skills selectors without
@@ -8370,19 +9399,43 @@ function resolveSelectedPiCommand(piArgs) {
   };
 }
 
-async function resolvePiCommand(piArgs) {
-  if (options.piBinExplicit) return resolveSelectedPiCommand(piArgs);
+let canonicalPiRuntimePromise = null;
+let canonicalPiRuntimeProbeVersion = null;
 
-  const bundledCli = await resolvedPiCliScript();
-  if (bundledCli) {
-    return {
-      command: process.execPath,
-      args: [bundledCli, ...piArgs],
-      displayCommand: `${process.execPath} ${bundledCli} ${piArgs.join(" ")}`,
-    };
+async function canonicalPiRuntimeIdentity({ force = false, probeVersion = true } = {}) {
+  if (force || canonicalPiRuntimeProbeVersion !== probeVersion) canonicalPiRuntimePromise = null;
+  if (!canonicalPiRuntimePromise) {
+    canonicalPiRuntimeProbeVersion = probeVersion;
+    canonicalPiRuntimePromise = (async () => resolveCanonicalPiRuntime({
+      explicitCommand: options.piBinExplicit ? options.piBin : "",
+      bundledCli: await resolvedPiCliScript(),
+      pathCommand: options.piBin || "pi",
+      runCommand,
+      timeoutMs: 10_000,
+      probeVersion,
+    }))().catch((error) => {
+      canonicalPiRuntimePromise = null;
+      throw error;
+    });
   }
+  return canonicalPiRuntimePromise;
+}
 
-  return resolveSelectedPiCommand(piArgs);
+function invalidateCanonicalPiRuntime() {
+  canonicalPiRuntimePromise = null;
+  canonicalPiRuntimeProbeVersion = null;
+}
+
+async function resolvePiCommand(piArgs) {
+  const resolution = await canonicalPiRuntimeIdentity({ probeVersion: false });
+  const active = resolution.active;
+  if (!active) throw new Error(resolution.refusal?.message || "No supported active Pi runtime could be verified.");
+  const args = [...(active.invocation?.args || []), ...piArgs];
+  return {
+    command: active.invocation.command,
+    args,
+    displayCommand: formatCommandForDisplay(active.invocation.command, args),
+  };
 }
 
 const tabs = new Map();
@@ -8660,6 +9713,10 @@ function createTabActivity(now = new Date().toISOString()) {
     status: "idle",
     isWorking: false,
     runStarted: false,
+    // Opaque server-issued identity for the current/recent parent turn. It is
+    // deliberately separate from subagent/workflow IDs and contains no prompt,
+    // title, cwd, or user-derived data.
+    runId: null,
     completionSerial: 0,
     lastChangedAt: now,
     lastStartedAt: null,
@@ -8712,6 +9769,133 @@ function clearExtensionStatuses(tab) {
 
 function clearExtensionWidgets(tab) {
   tab?.extensionWidgets?.clear();
+}
+
+function normalizedSessionSummaryTitle(value) {
+  if (typeof value !== "string" || value.length > SESSION_SUMMARY_TITLE_MAX_CHARS) return "";
+  const title = value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  return title.length <= SESSION_SUMMARY_TITLE_MAX_CHARS ? title : "";
+}
+
+function normalizedSessionSummaryRpcDetails(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== SESSION_SUMMARY_PROTOCOL_VERSION) return null;
+  const kind = String(value.kind || "");
+  if (!SESSION_SUMMARY_KINDS.has(kind)) return null;
+  const details = { version: SESSION_SUMMARY_PROTOCOL_VERSION, kind };
+  if (value.sessionId !== undefined) {
+    if (typeof value.sessionId !== "string" || value.sessionId.length > 128) return null;
+    details.sessionId = value.sessionId;
+  }
+  if (value.title !== undefined) {
+    const title = normalizedSessionSummaryTitle(value.title);
+    if (!title) return null;
+    details.title = title;
+  }
+  if (value.summaryMarkdown !== undefined) {
+    if (typeof value.summaryMarkdown !== "string" || !value.summaryMarkdown.trim() || value.summaryMarkdown.length > SESSION_SUMMARY_MARKDOWN_MAX_CHARS) return null;
+    details.summaryMarkdown = value.summaryMarkdown.trim();
+  }
+  if (value.message !== undefined) {
+    if (typeof value.message !== "string" || value.message.length > SESSION_SUMMARY_FAILURE_MAX_CHARS) return null;
+    details.message = value.message.replace(/[\r\n]+/g, " ").trim();
+  }
+  for (const key of ["configured", "enabled", "durable"]) {
+    if (value[key] !== undefined) {
+      if (typeof value[key] !== "boolean") return null;
+      details[key] = value[key];
+    }
+  }
+  if ((kind === "success" && !details.summaryMarkdown) || (kind === "failure" && !details.message) || (kind === "title" && !details.title)) return null;
+  return details;
+}
+
+function publicSessionSummaryState(tab) {
+  const value = tab?.sessionSummary;
+  if (!value) return null;
+  return {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: value.status || "idle",
+    configured: value.configured === true,
+    enabled: value.enabled === true,
+    durable: value.durable === true,
+    ...(value.sessionId ? { sessionId: value.sessionId } : {}),
+    ...(value.title ? { title: value.title } : {}),
+    ...(value.summaryMarkdown ? { summaryMarkdown: value.summaryMarkdown } : {}),
+    ...(value.message ? { message: value.message } : {}),
+    updatedAt: value.updatedAt || new Date(0).toISOString(),
+  };
+}
+
+function broadcastSessionSummaryState(tab, kind) {
+  broadcastTabEvent(tab, {
+    type: "webui_session_summary",
+    kind,
+    tabId: tab.id,
+    tabTitle: tab.title,
+    summary: publicSessionSummaryState(tab),
+  });
+}
+
+function applySessionSummaryRpcDetails(tab, details) {
+  const previous = tab.sessionSummary?.sessionId && details.sessionId && tab.sessionSummary.sessionId !== details.sessionId
+    ? null
+    : tab.sessionSummary;
+  const next = {
+    version: SESSION_SUMMARY_PROTOCOL_VERSION,
+    status: previous?.status || "idle",
+    configured: previous?.configured === true,
+    enabled: previous?.enabled === true,
+    durable: previous?.durable === true,
+    sessionId: details.sessionId || previous?.sessionId || "",
+    title: previous?.title || "",
+    summaryMarkdown: previous?.summaryMarkdown || "",
+    message: "",
+    updatedAt: new Date().toISOString(),
+  };
+  if (details.configured !== undefined) next.configured = details.configured;
+  if (details.enabled !== undefined) next.enabled = details.enabled;
+  if (details.durable !== undefined) next.durable = details.durable;
+  if (details.kind === "state") {
+    next.status = details.summaryMarkdown ? "success" : "idle";
+    next.title = details.title || "";
+    next.summaryMarkdown = details.summaryMarkdown || "";
+  } else if (details.kind === "setup") {
+    next.status = "idle";
+  } else if (details.kind === "generating") {
+    next.status = "generating";
+  } else if (details.kind === "success") {
+    next.status = "success";
+    next.title = details.title || next.title;
+    next.summaryMarkdown = details.summaryMarkdown;
+  } else if (details.kind === "failure") {
+    next.status = "failure";
+    next.message = details.message;
+  } else if (details.kind === "title") {
+    next.title = details.title;
+    if (tab.titleSource === "default" || tab.titleSource === "auto") {
+      renameTab(tab, details.title, { source: "auto", maxLength: SESSION_SUMMARY_TITLE_MAX_CHARS });
+    }
+  }
+  tab.sessionSummary = next;
+  broadcastSessionSummaryState(tab, details.kind);
+}
+
+function consumeSessionSummaryRpcEvent(tab, event) {
+  const message = event?.message;
+  if ((event?.type !== "message_start" && event?.type !== "message_end") || message?.role !== "custom") return false;
+  if (message.customType === SESSION_SUMMARY_DISPLAY_TYPE) return true;
+  if (message.customType !== SESSION_SUMMARY_RPC_TYPE) return false;
+  if (event.type === "message_end") {
+    const details = normalizedSessionSummaryRpcDetails(message.details);
+    if (details) applySessionSummaryRpcDetails(tab, details);
+  }
+  return true;
+}
+
+function filterSessionSummaryTranscriptMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).filter((message) => !(
+    message?.role === "custom" && (message.customType === SESSION_SUMMARY_RPC_TYPE || message.customType === SESSION_SUMMARY_DISPLAY_TYPE)
+  ));
 }
 
 function clearWebuiSubagents(tab) {
@@ -9029,8 +10213,10 @@ function queueMutationRequest(body) {
   } else if (request.operation.type === "move") {
     request.operation.from = queueMutationIndex(operation.from, "operation.from");
     request.operation.to = queueMutationIndex(operation.to, "operation.to");
+  } else if (request.operation.type === "delete") {
+    request.operation.index = queueMutationIndex(operation.index, "operation.index");
   } else {
-    throw makeHttpError(400, "Queue mutation operation type must be edit or move");
+    throw makeHttpError(400, "Queue mutation operation type must be edit, move, or delete");
   }
   if (source === "webui-compaction") {
     if (!Number.isSafeInteger(body.revision) || body.revision < 0) throw makeHttpError(400, "Compaction queue mutation requires a non-negative revision");
@@ -9116,13 +10302,18 @@ function mutateCompactionFollowUpQueue(tab, request) {
   if (operation.type === "edit") {
     if (operation.index >= slots.length || current.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
     queue[slots[operation.index]].command.message = operation.text;
-  } else {
+  } else if (operation.type === "move") {
     if (operation.from >= slots.length || operation.to >= slots.length || operation.from === operation.to
       || current.followUp[operation.from] !== operation.expectedText) return failed("invalid-request");
     const followUps = slots.map((index) => queue[index]);
     const [moved] = followUps.splice(operation.from, 1);
     followUps.splice(operation.to, 0, moved);
     slots.forEach((slot, index) => { queue[slot] = followUps[index]; });
+  } else if (operation.type === "delete") {
+    if (operation.index >= slots.length || current.followUp[operation.index] !== operation.expectedText) return failed("invalid-request");
+    queue.splice(slots[operation.index], 1);
+  } else {
+    return failed("invalid-request");
   }
 
   advanceCompactionQueueRevision(tab);
@@ -9394,6 +10585,7 @@ async function cancelPendingExtensionUiRequests(tab) {
 
 function markTabWorking(tab, timestamp = new Date().toISOString(), { runStarted = false } = {}) {
   const activity = tab.activity || createTabActivity(timestamp);
+  if (!activity.isWorking || !activity.runId) activity.runId = randomUUID();
   activity.status = "working";
   activity.isWorking = true;
   activity.runStarted = activity.runStarted === true || runStarted === true;
@@ -9413,10 +10605,24 @@ function markTabDone(tab, timestamp = new Date().toISOString()) {
   tab.activity = activity;
 }
 
+function markTabFailed(tab, timestamp = new Date().toISOString()) {
+  const activity = tab.activity || createTabActivity(timestamp);
+  activity.status = "failed";
+  activity.isWorking = false;
+  activity.runStarted = false;
+  activity.completionSerial = (Number(activity.completionSerial) || 0) + 1;
+  activity.lastCompletedAt = timestamp;
+  activity.lastChangedAt = timestamp;
+  tab.activity = activity;
+}
+
 function markTabIdle(tab, timestamp = new Date().toISOString()) {
   const activity = tab.activity || createTabActivity(timestamp);
   activity.status = "idle";
   activity.isWorking = false;
+  // An idle pre-start operation never became a parent turn. Completed turns
+  // retain their opaque ID so a later Activity view can resolve recent work.
+  if (!activity.runStarted) activity.runId = null;
   activity.runStarted = false;
   activity.lastChangedAt = timestamp;
   tab.activity = activity;
@@ -9486,19 +10692,30 @@ function updateTabActivityFromEvent(tab, event) {
   switch (event?.type) {
     case "agent_start":
       patchTabState(tab, { isStreaming: true });
+      tab.pendingTurnFailure = false;
       markTabWorking(tab, timestamp, { runStarted: true });
       break;
     case "compaction_start":
       patchTabState(tab, { isCompacting: true });
       markTabWorking(tab, timestamp);
       break;
-    case "agent_end":
+    case "agent_end": {
       // A low-level run ended, but Pi may still retry, compact, or process a follow-up.
+      const assistant = Array.isArray(event.messages) ? event.messages.findLast((item) => item?.role === "assistant") : null;
+      if (event.willRetry === true) tab.pendingTurnFailure = false;
+      else if (assistant?.stopReason === "error") tab.pendingTurnFailure = true;
+      break;
+    }
+    case "message_end":
+      if (event.message?.role === "assistant" && event.message.stopReason === "error") tab.pendingTurnFailure = true;
       break;
     case "agent_settled":
       patchTabState(tab, { isStreaming: false });
-      if (tab.activity?.runStarted) markTabDone(tab, timestamp);
-      else if (tab.activity?.isWorking) markTabIdle(tab, timestamp);
+      if (tab.activity?.runStarted) {
+        if (tab.pendingTurnFailure) markTabFailed(tab, timestamp);
+        else markTabDone(tab, timestamp);
+      } else if (tab.activity?.isWorking) markTabIdle(tab, timestamp);
+      tab.pendingTurnFailure = false;
       break;
     case "compaction_end":
       patchTabState(tab, { isCompacting: false });
@@ -9508,8 +10725,14 @@ function updateTabActivityFromEvent(tab, event) {
       patchTabState(tab, { pendingMessageCount: (event.steering?.length || 0) + (event.followUp?.length || 0) });
       break;
     case "pi_process_exit":
+      if (tab.activity?.runStarted && (Number(event.code) !== 0 || event.signal)) markTabFailed(tab, timestamp);
+      else markTabIdle(tab, timestamp);
+      tab.pendingTurnFailure = false;
+      break;
     case "pi_process_error":
-      markTabIdle(tab, timestamp);
+      if (tab.activity?.runStarted) markTabFailed(tab, timestamp);
+      else markTabIdle(tab, timestamp);
+      tab.pendingTurnFailure = false;
       break;
     case "response":
       if (event.command === "get_state" && event.success !== false) {
@@ -9544,8 +10767,9 @@ async function primeTabRpc(tab) {
 function attachRpcToTab(tab, rpc) {
   tab.rpcUnsubscribe?.();
   tab.rpc = rpc;
-  tab.rpcUnsubscribe = rpc.onEvent((event) => {
-    if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event)) return;
+  tab.rpcUnsubscribe = rpc.onEvent((rawEvent) => {
+    const event = tab.thinkingStreamRecovery.ingest(rawEvent);
+    if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event) || consumeSessionSummaryRpcEvent(tab, event)) return;
     updateTabActivityFromEvent(tab, event);
     let scopedEvent = eventForTabClients(tab, event);
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
@@ -9584,13 +10808,17 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     gitWorkspace: gitWorkspace || null,
     lastState: null,
     pendingThinkingLevel: undefined,
+    thinkingStreamRecovery: new ThinkingStreamRecovery(),
     gitWorkflowGenerationRestore: null,
     gitWorkflowMessageGeneration: null,
     activity: createTabActivity(createdAt),
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
     extensionWidgets: new Map(),
+    sessionSummary: null,
     webuiSubagents: null,
+    subagentDisplayTitle: undefined,
+    subagentDisplayTitlePromise: undefined,
     webuiHelperRequests: new Map(),
     webuiHelperResponseIds: new Set(),
     bashQueue: [],
@@ -9602,6 +10830,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     rpc,
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
+    browserPromptRequests: new Map(),
   };
   resetNaturalConversationMode(tab);
   resetCodexFastMode(tab);
@@ -9639,6 +10868,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
 
   attachRpcToTab(tab, rpc);
   tabs.set(id, tab);
+  workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
   try {
     if (rpc instanceof SupervisorPiRpcProcess) {
       const snapshot = await rpcSupervisor.createTab({
@@ -9656,6 +10886,7 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
       tab.rpcUnsubscribe?.();
       rpc.dispose?.();
       gitLiveWatcher.unsubscribe(id);
+      workspaceFilesLiveWatcher.unsubscribe(id);
       tabs.delete(id);
       throw new Error(`Pi RPC process failed while starting ${tabTitle}: ${sanitizeError(error)}`);
     }
@@ -9701,12 +10932,14 @@ async function hydrateManagedTabs(snapshot) {
       });
       attachRpcToTab(tab, rpc);
       tabs.set(tab.id, tab);
+      workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
       hydrated.push(tab);
     }
   } catch (error) {
     for (const tab of hydrated) {
       tab.rpcUnsubscribe?.();
       tab.rpc.dispose?.();
+      workspaceFilesLiveWatcher.unsubscribe(tab.id);
       tabs.delete(tab.id);
     }
     throw error;
@@ -9741,6 +10974,7 @@ function tabMeta(tab) {
     activity: tabActivitySnapshot(tab),
     appRunner: publicAppRunnerState(tab.appRunner),
     conversationMode: naturalConversationModeSnapshot(tab),
+    sessionSummary: publicSessionSummaryState(tab),
   };
 }
 
@@ -9748,16 +10982,37 @@ function listTabs() {
   return [...tabs.values()].map(tabMeta);
 }
 
-function webuiSubagentsData() {
+async function resolveSubagentDisplayTitle(tab) {
+  const fallback = tab?.title || "";
+  if (!tab || tab.titleSource !== "auto") return fallback;
+  if (tab.subagentDisplayTitle) return tab.subagentDisplayTitle;
+  if (!tab.subagentDisplayTitlePromise) {
+    tab.subagentDisplayTitlePromise = safeRpcResponse(tab, { type: "get_messages" }, TAB_ACTIVITY_STATE_RECONCILE_TIMEOUT_MS)
+      .then((response) => {
+        const firstUserMessage = (Array.isArray(response.data?.messages) ? response.data.messages : []).find((message) => message?.role === "user");
+        const title = generatedTabTitleFromPrompt(extractSessionTextContent(firstUserMessage?.content)) || fallback;
+        tab.subagentDisplayTitle = title;
+        return title;
+      })
+      .catch(() => {
+        tab.subagentDisplayTitle = fallback;
+        return fallback;
+      });
+  }
+  return tab.subagentDisplayTitlePromise;
+}
+
+async function webuiSubagentsData() {
   const sortedTabs = [...tabs.values()].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title));
-  const tabSummaries = sortedTabs.map((tab) => {
+  const tabSummaries = await Promise.all(sortedTabs.map(async (tab) => {
     const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [], gates: [] };
     const runs = Array.isArray(status.runs) ? status.runs : [];
     const gates = Array.isArray(status.gates) ? status.gates : [];
+    const tabTitle = runs.length || gates.length ? await resolveSubagentDisplayTitle(tab) : tab.title;
     return {
       tabId: tab.id,
       tabIndex: tab.index,
-      tabTitle: tab.title,
+      tabTitle,
       cwd: tab.cwd,
       sessionName: normalizeWebuiSubagentText(tab.lastState?.sessionName || tab.title, 160),
       sessionFile: tabRestorableSessionFile(tab) || null,
@@ -9772,7 +11027,7 @@ function webuiSubagentsData() {
       runningAgents: runs.reduce((count, run) => count + run.agents.filter((agent) => agent.status === "running").length, 0),
       gateCount: gates.length,
     };
-  });
+  }));
   return {
     version: 1,
     updatedAt: Date.now(),
@@ -9859,6 +11114,29 @@ function normalizeWebuiSubagentTranscript(value) {
   return messages;
 }
 
+function normalizeWebuiSubagentTelemetry(value, fallback = {}) {
+  const telemetry = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const number = (candidate, limit = WEBUI_SUBAGENT_TELEMETRY_TOKEN_LIMIT) => (
+    typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 && candidate <= limit ? candidate : null
+  );
+  const model = normalizeWebuiSubagentText(telemetry?.model, 240)
+    || normalizeWebuiSubagentText(fallback.model, 240)
+    || null;
+  const effort = normalizeWebuiSubagentText(telemetry?.effort, 40)
+    || normalizeWebuiSubagentText(fallback.effort, 40)
+    || null;
+  return {
+    promptInjectionTokens: number(telemetry?.promptInjectionTokens),
+    inputTokens: number(telemetry?.inputTokens),
+    outputTokens: number(telemetry?.outputTokens),
+    tokenSpeed: number(telemetry?.tokenSpeed, WEBUI_SUBAGENT_TELEMETRY_SPEED_LIMIT),
+    contextTokens: number(telemetry?.contextTokens),
+    contextWindow: number(telemetry?.contextWindow, WEBUI_SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT),
+    model,
+    effort,
+  };
+}
+
 function normalizeWebuiSubagentOutput(value, selection) {
   if (!value || typeof value !== "object" || value.version !== 1) throw makeHttpError(502, "Invalid subagent output response from Web UI helper");
   const rawAgent = value.agent && typeof value.agent === "object" ? value.agent : {};
@@ -9893,6 +11171,10 @@ function normalizeWebuiSubagentOutput(value, selection) {
       tokens: Number.isFinite(rawAgent.tokens) ? rawAgent.tokens : undefined,
       model: normalizeWebuiSubagentText(rawAgent.model, 240) || selection.agent.model || undefined,
       thinking: normalizeWebuiSubagentText(rawAgent.thinking, 40) || selection.agent.thinking || undefined,
+      telemetry: normalizeWebuiSubagentTelemetry(rawAgent.telemetry, {
+        model: normalizeWebuiSubagentText(rawAgent.model, 240) || selection.agent.model,
+        effort: normalizeWebuiSubagentText(rawAgent.thinking, 40) || selection.agent.thinking,
+      }),
       recentTools,
       recentOutput,
       transcript,
@@ -10093,17 +11375,19 @@ async function loadWebuiWorkspace(id, body = {}) {
   }
 }
 
-function spawnRestartServer(restorableTabs, supervisorCursor) {
+async function spawnRestartServer(restorableTabs, supervisorCursor) {
+  const restore = await createRestoreFile(agentDir, restorableTabs || []);
   const env = {
     ...process.env,
-    PI_WEBUI_RESTORE_TABS: JSON.stringify(restorableTabs || []),
+    PI_WEBUI_RESTORE_FILE: restore.file,
     PI_WEBUI_START_DELAY_MS: "1200",
   };
   if (supervisorCursor) env.PI_WEBUI_RPC_SUPERVISOR_CURSOR = JSON.stringify(supervisorCursor);
   else delete env.PI_WEBUI_RPC_SUPERVISOR_CURSOR;
   if (webuiDevServer) env.PI_WEBUI_DEV = "1";
   else delete env.PI_WEBUI_DEV;
-  const child = spawn(process.execPath, process.argv.slice(1), {
+  const launcher = path.join(packageRoot, "bin", "pi-webui-launcher.mjs");
+  const child = spawn(process.execPath, [launcher, ...process.argv.slice(2)], {
     cwd: process.cwd(),
     env,
     detached: true,
@@ -10117,6 +11401,301 @@ function spawnRestartServer(restorableTabs, supervisorCursor) {
 let updateStatusCache = null;
 let updateStatusCacheAt = 0;
 let piUpdateInProgress = false;
+const componentUpdateState = new ComponentUpdateState();
+
+async function canonicalUpdateIdentities({ forcePi = false } = {}) {
+  const pi = await canonicalPiRuntimeIdentity({ force: forcePi });
+  const webui = resolveWebuiRuntimeIdentity({
+    packageRoot,
+    packageName: WEBUI_PACKAGE,
+    version: packageJson.version,
+    owner: { manager: webuiDevServer ? "source" : "managed-bootstrap" },
+  });
+  return { pi, webui };
+}
+
+function updateOwnerForTarget(target, identities) {
+  if (target === "webui") {
+    const sourceCheckout = webuiDevServer || !String(packageRoot).split(path.sep).includes("node_modules");
+    return sourceCheckout
+      ? { manager: "unknown", packageRoot, ownerRoot: packageRoot, sourceCheckout: true }
+      : { manager: "npm", packageRoot, ownerRoot: nodeModulesParentForPackageRoot(packageRoot), topLevel: true };
+  }
+  const active = identities.pi.active;
+  const piRoot = active?.packageRoot || "";
+  const installRoot = piRoot ? nodeModulesParentForPackageRoot(piRoot) : "";
+  const bundled = piRoot && exactUpdatePathInside(path.join(packageRoot, "node_modules"), piRoot);
+  if (bundled && webuiDevServer) return { manager: "unknown", packageRoot: piRoot, ownerRoot: packageRoot, sourceCheckout: true };
+  if (bundled) return { manager: "npm", packageRoot: piRoot, ownerRoot: installRoot, topLevel: true };
+  if ((active?.source === "explicit" || active?.source === "path") && piRoot) {
+    return { manager: "pi", packageRoot: piRoot, ownerRoot: piRoot, topLevel: true };
+  }
+  return { manager: "unknown", packageRoot: piRoot, ownerRoot: "", topLevel: true };
+}
+
+async function createServerOwnedUpdatePlan(targets) {
+  if (privilegedUpdateInProgress()) throw makeHttpError(409, "Another privileged update is already running.");
+  const identities = await canonicalUpdateIdentities({ forcePi: true });
+  const transactionId = randomUUID();
+  const statePaths = managedRuntimePaths(agentDir);
+  const status = await getUpdateStatus({ force: true });
+  for (const target of targets) {
+    if (!status[target]?.checked || !status[target]?.latestVersion) throw makeHttpError(409, `${target} exact target metadata is unavailable.`);
+  }
+  const piRoot = identities.pi.active?.packageRoot || "";
+  const bundledPi = Boolean(piRoot && exactUpdatePathInside(path.join(packageRoot, "node_modules"), piRoot));
+  const requested = new Set(targets);
+  const desiredPiVersion = requested.has("pi") ? status.pi.latestVersion : identities.pi.active?.version;
+  const desiredWebuiVersion = requested.has("webui") ? status.webui.latestVersion : identities.webui.version;
+  const separatePathPi = identities.pi.path?.canonicalId && identities.pi.path.canonicalId !== identities.pi.active?.canonicalId
+    ? identities.pi.path
+    : null;
+  const managedRuntimeRoot = path.join(statePaths.runtimesDir, `txn-${transactionId}`);
+  const candidates = [];
+  for (const target of targets) {
+    const identity = target === "pi" ? identities.pi.active : identities.webui;
+    if (!identity) throw makeHttpError(409, identities.pi.refusal?.message || `The ${target} runtime identity could not be verified.`);
+    const managedRuntime = target === "webui" || (target === "pi" && bundledPi);
+    candidates.push({
+      id: target,
+      kind: target,
+      packageName: target === "pi" ? PI_CODING_AGENT_PACKAGE : WEBUI_PACKAGE,
+      currentVersion: identity.version,
+      identityId: identity.canonicalId,
+      requested: "latest",
+      registry: NPM_REGISTRY_URL,
+      strategy: managedRuntime ? "managed-side-by-side" : "delegate-exact-pi",
+      owner: updateOwnerForTarget(target, identities),
+      exactTargetVersion: status[target].latestVersion,
+      managedRuntime,
+      runtimeRoot: managedRuntime ? managedRuntimeRoot : "",
+      commandForVersion: async (version, registry) => {
+        if (!managedRuntime) {
+          const invocation = identity.invocation;
+          if (!invocation?.command) throw new Error("The exact active Pi executable cannot own its update.");
+          return { command: invocation.command, args: [...(invocation.args || []), "update", "--self"] };
+        }
+        const piVersion = target === "pi" ? version : desiredPiVersion;
+        const webuiVersion = target === "webui" ? version : desiredWebuiVersion;
+        const npm = resolvedNpmCommandForExactUpdate([
+          "install", "--prefix", managedRuntimeRoot, "--ignore-scripts", "--no-save", "--package-lock=false", "--registry", registry,
+          `${WEBUI_PACKAGE}@${webuiVersion}`,
+          `${PI_CODING_AGENT_PACKAGE}@${piVersion}`,
+        ]);
+        return { command: npm.command, args: npm.args };
+      },
+    });
+  }
+
+  if (requested.has("pi") && requested.has("webui") && identities.pi.active) {
+    const optionalStatuses = await optionalFeaturePackageStatuses(options.cwd);
+    for (const feature of optionalStatuses.features) {
+      if (!feature.configured || !feature.ready || !feature.installedVersion || !feature.installedRoot) continue;
+      const latest = await checkLatestNpmPackageStatus(feature.packageName, feature.installedVersion);
+      if (!latest.checked || !latest.updateAvailable || !latest.latestVersion) continue;
+      const invocation = identities.pi.active.invocation;
+      candidates.push({
+        id: `optional:${feature.featureId}`,
+        kind: "optional",
+        packageName: feature.packageName,
+        currentVersion: feature.installedVersion,
+        identityId: identities.pi.active.canonicalId,
+        requested: "latest",
+        registry: NPM_REGISTRY_URL,
+        strategy: "pi-owned-optional",
+        owner: {
+          manager: "pi",
+          packageRoot: feature.installedRoot,
+          ownerRoot: configuredAgentNpmRoot(),
+          topLevel: true,
+          optional: true,
+          piOwned: true,
+        },
+        exactTargetVersion: latest.latestVersion,
+        optionalFeature: true,
+        featureId: feature.featureId,
+        commandForVersion: async (version) => ({
+          command: invocation.command,
+          args: [...(invocation.args || []), "install", `npm:${feature.packageName}@${version}`],
+        }),
+      });
+    }
+  }
+
+  const plan = await createUpdatePlan({
+    transactionId,
+    registry: NPM_REGISTRY_URL,
+    identities: [identities.pi.active, separatePathPi, identities.webui].filter(Boolean),
+    candidates,
+    resolveExactTarget: async ({ id, registry }) => {
+      const candidate = candidates.find((item) => item.id === id);
+      const targetVersion = candidate?.exactTargetVersion;
+      if (!candidate || !targetVersion) throw new Error(`${id} exact target metadata is unavailable.`);
+      let metadata = { delegatedExecutable: true };
+      if (candidate.managedRuntime) {
+        metadata = {
+          managedRuntime: true,
+          runtimeRoot: candidate.runtimeRoot,
+          webuiVersion: id === "webui" ? targetVersion : desiredWebuiVersion,
+          piVersion: id === "pi" ? targetVersion : desiredPiVersion,
+        };
+      } else if (candidate.optionalFeature) {
+        metadata = { optionalFeature: true, featureId: candidate.featureId };
+      }
+      return { version: targetVersion, registry, metadata };
+    },
+  });
+  await createUpdateJournal(agentDir, plan);
+  return plan;
+}
+
+async function activeIdentityForTarget(target) {
+  const usesPiIdentity = target.id === "pi" || target.metadata?.optionalFeature === true;
+  const identities = await canonicalUpdateIdentities({ forcePi: usesPiIdentity });
+  return usesPiIdentity ? identities.pi.active : identities.webui;
+}
+
+async function launchManagedActivation(journal, target, lock, outcome) {
+  const runtimeRoot = path.resolve(target.metadata.runtimeRoot);
+  const serverEntry = path.join(runtimeRoot, "node_modules", ...WEBUI_PACKAGE.split("/"), "bin", "pi-webui.mjs");
+  const probe = await probeCandidateRuntime(serverEntry, { expectedVersion: target.metadata.webuiVersion, expectedPiVersion: target.metadata.piVersion });
+  if (!probe.ok) throw new Error(probe.error || "Managed Web UI candidate probe failed.");
+  if (target.metadata.webuiVersion !== packageJson.version) {
+    const snapshot = await optionalFeatureAuditCoordinator.recheck({ reason: "pre-activation" });
+    const featureIds = snapshot.features
+      .filter(({ state }) => !["missing", "unknown", "disabled"].includes(state))
+      .map(({ featureId }) => featureId);
+    await optionalFeatureMigrationStore.markPendingUpgrade({ fromVersion: packageJson.version, featureIds });
+  }
+  const restore = await createRestoreFile(agentDir, await restorableTabsForRestart());
+  const supervisorCursor = await prepareRpcSupervisorHandoff();
+  const helper = path.join(packageRoot, "bin", "pi-webui-update-supervisor.mjs");
+  const host = formatUrlHost(currentHost);
+  const helperArgs = [
+    helper,
+    "--agent-dir", agentDir,
+    "--runtime-root", runtimeRoot,
+    "--server-entry", serverEntry,
+    "--version", target.metadata.webuiVersion,
+    "--pi-version", target.metadata.piVersion,
+    "--outcome", outcome,
+    "--transaction", journal.transactionId,
+    "--url", `http://${host}:${options.port}/`,
+    "--old-boot", bootIdentity,
+    "--timeout-ms", String(UPDATE_HEALTH_GATE_MS),
+    "--server-args", Buffer.from(JSON.stringify(process.argv.slice(2))).toString("base64url"),
+  ];
+  const env = { ...process.env, PI_WEBUI_RESTORE_FILE: restore.file, PI_WEBUI_START_DELAY_MS: "300", PI_WEBUI_UPDATE_LOCK_TOKEN: lock.token };
+  if (supervisorCursor) env.PI_WEBUI_RPC_SUPERVISOR_CURSOR = JSON.stringify(supervisorCursor);
+  const child = spawn(process.execPath, helperArgs, { cwd: process.cwd(), env, detached: true, stdio: "ignore", windowsHide: true });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  await transferInstallLock(lock, child.pid);
+  child.unref();
+  return { pid: child.pid, runtimeRoot, serverEntry };
+}
+
+async function applyServerOwnedUpdate(transactionId, planDigest) {
+  if (privilegedUpdateInProgress()) throw makeHttpError(409, "Another privileged update is already running.");
+  const journal = await readUpdateJournal(agentDir, transactionId);
+  if (!journal) throw makeHttpError(404, "Update transaction was not found.");
+  assertUpdatePlanDigest(journal.plan, planDigest);
+  if (journal.state !== "planned") throw makeHttpError(409, `Update transaction is already ${journal.state}.`);
+  piUpdateInProgress = true;
+  let lock = null;
+  let lockTransferred = false;
+  let state = "planned";
+  try {
+    lock = await acquireInstallLock(agentDir);
+    await transitionUpdateJournal(agentDir, transactionId, "applying");
+    state = "applying";
+    let installedManagedRuntime = "";
+    const result = await executePlanTargets(journal.plan, {
+      runner: async (command, args, { target }) => {
+        if (target.metadata?.managedRuntime && installedManagedRuntime === target.metadata.runtimeRoot) {
+          return { exitCode: 0, timedOut: false, error: "", stdout: "Managed runtime exact package set already staged by the preceding target.", stderr: "", skippedDuplicate: true };
+        }
+        const commandResult = await executeCommand(command, args, { cwd: target.metadata?.runtimeRoot || process.cwd(), timeoutMs: PACKAGE_UPDATE_TIMEOUT_MS, maxOutputLength: PACKAGE_UPDATE_OUTPUT_MAX_CHARS });
+        if (target.metadata?.managedRuntime && commandResult.exitCode === 0 && !commandResult.timedOut && !commandResult.error) installedManagedRuntime = target.metadata.runtimeRoot;
+        return commandResult;
+      },
+      beforeTarget: async (target) => {
+        const active = await activeIdentityForTarget(target);
+        assertPlanIdentity(target, active);
+        if (target.metadata?.managedRuntime) {
+          await mkdir(target.metadata.runtimeRoot, { recursive: true, mode: 0o700 });
+          try {
+            await writeFile(path.join(target.metadata.runtimeRoot, "package.json"), `${JSON.stringify({ private: true })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+          } catch (error) {
+            if (error?.code !== "EEXIST") throw error;
+          }
+        }
+      },
+      verifyTarget: async (target, command) => {
+        if (target.metadata?.optionalFeature) {
+          const [afterIdentity, afterStatus] = await Promise.all([
+            activeIdentityForTarget(target),
+            optionalFeaturePackageStatus(target.metadata.featureId, options.cwd),
+          ]);
+          return verifyTargetResult(target, { beforeIdentity: { canonicalId: target.identityId }, afterIdentity, beforeVersion: target.currentVersion, afterVersion: afterStatus.ready ? afterStatus.installedVersion : "", command });
+        }
+        if (target.metadata?.managedRuntime) {
+          const serverEntry = path.join(target.metadata.runtimeRoot, "node_modules", ...WEBUI_PACKAGE.split("/"), "bin", "pi-webui.mjs");
+          const probe = await probeCandidateRuntime(serverEntry, { expectedVersion: target.metadata.webuiVersion, expectedPiVersion: target.metadata.piVersion });
+          const afterVersion = target.id === "pi" ? probe.data?.piVersion : probe.data?.version;
+          return verifyTargetResult(target, { beforeIdentity: { canonicalId: target.identityId }, afterIdentity: { canonicalId: target.identityId }, beforeVersion: target.currentVersion, afterVersion: probe.ok ? afterVersion : "", command });
+        }
+        const after = await activeIdentityForTarget(target);
+        return verifyTargetResult(target, { beforeIdentity: { canonicalId: target.identityId }, afterIdentity: after, beforeVersion: target.currentVersion, afterVersion: after?.version, command });
+      },
+    });
+    await transitionUpdateJournal(agentDir, transactionId, "verifying", { outcome: result.outcome, receipts: result.receipts });
+    state = "verifying";
+    const managedTargets = journal.plan.targets.filter((target) => target.metadata?.managedRuntime);
+    const managedTargetsVerified = managedTargets.length > 0 && managedTargets.every((target) => result.receipts.find((receipt) => receipt.targetId === target.id)?.status === "success");
+    const activationTarget = managedTargetsVerified ? managedTargets[0] : null;
+    if (activationTarget) {
+      const activation = await launchManagedActivation(journal, activationTarget, lock, result.outcome);
+      lockTransferred = true;
+      return { transactionId, planDigest, state: "activating", outcome: result.outcome, receipts: result.receipts, activation };
+    }
+    const terminal = result.outcome === "success" ? "success" : result.outcome === "partial" ? "partial" : "failed";
+    const completed = await transitionUpdateJournal(agentDir, transactionId, terminal, { outcome: result.outcome, receipts: result.receipts });
+    return completed;
+  } catch (error) {
+    if (state === "applying" || state === "verifying") await transitionUpdateJournal(agentDir, transactionId, "failed", { error: sanitizeComponentUpdateError(error), outcome: "failed" }).catch(() => {});
+    throw error;
+  } finally {
+    if (lock && !lockTransferred) await releaseInstallLock(lock);
+    piUpdateInProgress = false;
+    invalidateCanonicalPiRuntime();
+    updateStatusCache = null;
+    updateStatusCacheAt = 0;
+  }
+}
+
+function webuiComponentUpdateUnavailableReason() {
+  if (webuiDevServer || !String(packageRoot).split(path.sep).includes("node_modules")) {
+    return "Automatic Web UI update is unavailable from a source or development checkout.";
+  }
+  return "";
+}
+
+function privilegedUpdateInProgress() {
+  return piUpdateInProgress || componentUpdateState.hasRunning();
+}
+
+function componentUpdatesForRequest(req) {
+  const webuiUnavailableReason = webuiComponentUpdateUnavailableReason();
+  return componentUpdateState.publicStates({
+    localRequest: isLocalRequest(req),
+    updateInProgress: privilegedUpdateInProgress(),
+    webuiAvailable: !webuiUnavailableReason,
+    webuiUnavailableReason,
+  });
+}
 
 function updateChecksSkippedReason() {
   if (process.env.PI_OFFLINE) return "PI_OFFLINE is set";
@@ -10137,8 +11716,17 @@ function basePackageUpdateStatus(packageName, currentVersion) {
   };
 }
 
+async function currentPiRuntimeVersion() {
+  try {
+    return (await canonicalUpdateIdentities({ forcePi: true })).pi.active?.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 async function checkLatestPiReleaseStatus() {
-  const status = basePackageUpdateStatus(PI_CODING_AGENT_PACKAGE, piPackageJson.version);
+  const currentVersion = await currentPiRuntimeVersion();
+  const status = basePackageUpdateStatus(PI_CODING_AGENT_PACKAGE, currentVersion);
   const skippedReason = updateChecksSkippedReason();
   if (skippedReason) {
     status.skipped = true;
@@ -10148,7 +11736,7 @@ async function checkLatestPiReleaseStatus() {
   try {
     const data = await fetchJsonWithTimeout(PI_LATEST_VERSION_URL, {
       headers: {
-        "User-Agent": `pi-webui/${packageJson.version} pi/${piPackageJson.version || "unknown"}`,
+        "User-Agent": `pi-webui/${packageJson.version} pi/${currentVersion || "unknown"}`,
         accept: "application/json",
       },
     });
@@ -10199,7 +11787,8 @@ function updateStatusForRequest(status, req) {
   return {
     ...status,
     canRunUpdate: isLocalRequest(req),
-    updateInProgress: piUpdateInProgress,
+    updateInProgress: privilegedUpdateInProgress(),
+    componentUpdates: componentUpdatesForRequest(req),
   };
 }
 
@@ -10215,381 +11804,28 @@ async function getUpdateStatus({ force = false } = {}) {
     checkedAt: new Date(now).toISOString(),
     updateAvailable,
     restartRequired: true,
-    command: piUpdateCommandText(),
-    allCommand: piUpdateCommandText({ all: true, supportsAll: true }),
-    allFallbackCommand: piUpdateCommandText({ all: true }),
+    planEndpoint: "/api/update/plan",
+    applyEndpoint: "/api/update/apply",
     webuiDev: webuiDevServer,
     pi: piStatus,
     webui: webuiStatus,
     packages: {
       checked: false,
-      note: "Update all checks whether the selected Pi executable supports pi update --all. If not, it falls back to pi update --self followed by pi update --extensions."
+      note: "Automatic updates use only persisted exact-target plans. Unsupported or unproven owners are reported as refusals and never scanned or mutated."
     },
   };
   updateStatusCacheAt = now;
   return updateStatusCache;
 }
 
-async function piUpdateCommandSupportsAll(command) {
-  const result = await runCommand(command.command, command.args || [], {
-    cwd: process.cwd(),
-    timeoutMs: 5000,
-    maxOutputLength: 20_000,
-  });
-  if (result.exitCode !== 0 || result.timedOut || result.error) return false;
-  return piUpdateHelpSupportsAll(`${result.stdout}\n${result.stderr}`);
+function resolvedNpmCommandForExactUpdate(args) {
+  const invocation = resolveNpmCommandInvocation(args);
+  return { command: invocation.command, args: invocation.args };
 }
 
-async function resolvePiUpdateCommands({ all = false } = {}) {
-  let resolveCommand;
-  let labelPrefix = "";
-  let useBundledPi = false;
-
-  if (options.piBinExplicit) {
-    resolveCommand = (args) => resolvePiCommand(args);
-  } else {
-    const selectedPi = resolveSelectedPiCommand(["--version"]);
-    const pathPi = await runCommand(selectedPi.command, selectedPi.args, { timeoutMs: 3000, maxOutputLength: 4000 });
-    if (pathPi.exitCode === 0 && !pathPi.timedOut && !pathPi.error) {
-      resolveCommand = async (args) => resolveSelectedPiCommand(args);
-    } else {
-      resolveCommand = (args) => resolvePiCommand(args);
-      labelPrefix = "bundled ";
-      useBundledPi = true;
-    }
-  }
-
-  const supportsAll = all && await piUpdateCommandSupportsAll(await resolveCommand(["update", "--help"]));
-  const steps = piUpdateCommandSteps({ all, supportsAll });
-  return Promise.all(steps.map(async (step) => {
-    const command = await resolveCommand(step.args);
-    const selectedPiDirectory = useBundledPi || isNodeScriptCommand(options.piBin) ? "" : resolveCommandDirectory(options.piBin);
-    const piInstallDirectory = selectedPiDirectory || resolveCommandDirectory(command.command);
-    return {
-      ...command,
-      label: `${labelPrefix}${step.label}`,
-      timeoutMs: PI_UPDATE_TIMEOUT_MS,
-      maxOutputLength: PI_UPDATE_OUTPUT_MAX_CHARS,
-      piInstallDirectory,
-      env: piInstallDirectory ? prependedPathEnvironment(piInstallDirectory) : undefined,
-    };
-  }));
-}
-
-function packageNodeModulesPath(nodeModulesRoot, packageName) {
-  return path.join(nodeModulesRoot, ...String(packageName || "").split("/").filter(Boolean));
-}
-
-function isWebuiOrPiPackageName(packageName) {
-  const name = String(packageName || "").trim();
-  return UPDATE_PACKAGE_NAMES.includes(name)
-    || /^@firstpick\/pi(?:-|$)/.test(name)
-    || /^@earendil-works\/pi(?:-|$)/.test(name)
-    || /^@firstpick\/.*webui/i.test(name);
-}
-
-function declaredWebuiPiPackageNames(manifest) {
-  const names = new Set();
-  for (const section of [manifest?.dependencies, manifest?.optionalDependencies, manifest?.devDependencies]) {
-    for (const packageName of Object.keys(section || {})) {
-      if (isWebuiOrPiPackageName(packageName)) names.add(packageName);
-    }
-  }
-  return [...names].sort();
-}
-
-async function packagesPresentInNodeModulesRoot(nodeModulesRoot, packageNames = UPDATE_PACKAGE_NAMES) {
-  const found = new Set();
-  if (!nodeModulesRoot || !await directoryExists(nodeModulesRoot)) return [];
-  for (const packageName of packageNames) {
-    if (await directoryExists(packageNodeModulesPath(nodeModulesRoot, packageName))) found.add(packageName);
-  }
-
-  let entries = [];
-  try {
-    entries = await readdir(nodeModulesRoot, { withFileTypes: true });
-  } catch {
-    return [...found].sort();
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (entry.name.startsWith("@")) {
-      let scopedEntries = [];
-      try {
-        scopedEntries = await readdir(path.join(nodeModulesRoot, entry.name), { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const scopedEntry of scopedEntries) {
-        if (!scopedEntry.isDirectory()) continue;
-        const packageName = `${entry.name}/${scopedEntry.name}`;
-        if (isWebuiOrPiPackageName(packageName)) found.add(packageName);
-      }
-      continue;
-    }
-    if (isWebuiOrPiPackageName(entry.name)) found.add(entry.name);
-  }
-  return [...found].sort();
-}
-
-async function packagesPresentInInstallPrefix(installRoot, packageNames = UPDATE_PACKAGE_NAMES) {
-  const found = new Set();
-  if (!installRoot || !await directoryExists(installRoot)) return [];
-  const manifest = await readJsonFileIfExists(path.join(installRoot, "package.json"));
-  for (const packageName of packageNames) {
-    if (declaredDependencySpec(manifest, packageName) !== undefined) found.add(packageName);
-  }
-  for (const packageName of declaredWebuiPiPackageNames(manifest)) found.add(packageName);
-  for (const packageName of await packagesPresentInNodeModulesRoot(path.join(installRoot, "node_modules"), packageNames)) {
-    found.add(packageName);
-  }
-  return [...found].sort();
-}
-
-function packageInstallSpecs(packageNames) {
-  return packageNames.map((packageName) => `${packageName}@latest`);
-}
-
-function resolvedNpmCommand(args, runtime = {}) {
-  const invocation = resolveNpmCommandInvocation(args, runtime);
-  return {
-    command: invocation.command,
-    args: invocation.args,
-    displayCommand: formatCommandForDisplay(invocation.displayCommand, invocation.displayArgs),
-  };
-}
-
-function npmPrefixUpdateTask(label, installRoot, packageNames, npmRuntime = {}) {
-  if (!packageNames.length) return null;
-  const npmCommand = resolvedNpmCommand(["install", "--prefix", installRoot, "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packageNames)], npmRuntime);
-  return {
-    label,
-    command: npmCommand.command,
-    args: npmCommand.args,
-    displayCommand: npmCommand.displayCommand,
-    cwd: installRoot,
-  };
-}
-
-async function currentWebuiPackageUpdateTask(npmRuntime = {}) {
-  const sourceCheckout = webuiDevServer || !String(packageRoot).split(path.sep).includes("node_modules");
-  if (sourceCheckout) {
-    const manifest = await readJsonFileIfExists(path.join(packageRoot, "package.json"));
-    const packages = declaredWebuiPiPackageNames(manifest);
-    return npmPrefixUpdateTask("current Web UI checkout package dependencies", packageRoot, packages, npmRuntime);
-  }
-
-  const installRoot = nodeModulesParentForPackageRoot(packageRoot);
-  const packages = await packagesPresentInInstallPrefix(installRoot);
-  return npmPrefixUpdateTask("current Web UI install root", installRoot, packages, npmRuntime);
-}
-
-async function agentPackageRootUpdateTask(npmRuntime = {}) {
-  const installRoot = configuredAgentNpmRoot();
-  const packages = await packagesPresentInInstallPrefix(installRoot);
-  return npmPrefixUpdateTask("Pi agent npm package root", installRoot, packages, npmRuntime);
-}
-
-async function optionalFeatureInstallRootUpdateTask(npmRuntime = {}) {
-  const configuredRoot = process.env[OPTIONAL_FEATURE_INSTALL_ROOT_ENV];
-  if (!configuredRoot) return null;
-  const installRoot = path.resolve(expandUserPath(configuredRoot));
-  const packages = await packagesPresentInInstallPrefix(installRoot);
-  return npmPrefixUpdateTask("configured optional-feature npm root", installRoot, packages, npmRuntime);
-}
-
-function activeProjectPackageRoots() {
-  const roots = new Set();
-  const add = (cwd) => {
-    if (!cwd) return;
-    roots.add(path.join(path.resolve(cwd), ".pi", "npm"));
-  };
-  add(options.cwd);
-  for (const tab of tabs.values()) add(tab.cwd);
-  for (const tab of closedRestorableTabs) add(tab.cwd);
-  return [...roots].sort();
-}
-
-async function projectPackageRootUpdateTasks(npmRuntime = {}) {
-  const tasks = [];
-  for (const installRoot of activeProjectPackageRoots()) {
-    const packages = await packagesPresentInInstallPrefix(installRoot);
-    const task = npmPrefixUpdateTask(`project Pi package root (${displayPath(path.dirname(installRoot))})`, installRoot, packages, npmRuntime);
-    if (task) tasks.push(task);
-  }
-  return tasks;
-}
-
-async function npmGlobalNodeModulesRoot(npmRuntime = {}) {
-  const npmCommand = resolvedNpmCommand(["root", "-g"], npmRuntime);
-  const result = await runCommand(npmCommand.command, npmCommand.args, { timeoutMs: 5000, maxOutputLength: 8000 });
-  if (result.exitCode !== 0 || result.timedOut || result.error) return null;
-  return result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || null;
-}
-
-async function npmGlobalPackageRootUpdateTask(npmRuntime = {}) {
-  const nodeModulesRoot = await npmGlobalNodeModulesRoot(npmRuntime);
-  const packages = await packagesPresentInNodeModulesRoot(nodeModulesRoot);
-  if (!packages.length) return null;
-  const npmCommand = resolvedNpmCommand(["install", "-g", "--ignore-scripts", "--min-release-age=0", ...packageInstallSpecs(packages)], npmRuntime);
-  return {
-    label: "global npm package root",
-    command: npmCommand.command,
-    args: npmCommand.args,
-    displayCommand: npmCommand.displayCommand,
-    cwd: nodeModulesRoot ? path.dirname(nodeModulesRoot) : process.cwd(),
-  };
-}
-
-async function bunGlobalNodeModulesRoots() {
-  const available = await runCommand("bun", ["--version"], { timeoutMs: 3000, maxOutputLength: 2000 });
-  if (available.exitCode !== 0 || available.timedOut || available.error) return [];
-
-  const roots = new Set([path.join(homedir(), ".bun", "install", "global", "node_modules")]);
-  const binResult = await runCommand("bun", ["pm", "bin", "-g"], { timeoutMs: 3000, maxOutputLength: 8000 });
-  if (binResult.exitCode === 0 && !binResult.timedOut && !binResult.error) {
-    const binDir = binResult.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
-    if (binDir) roots.add(path.join(path.dirname(binDir), "install", "global", "node_modules"));
-  }
-  return [...roots];
-}
-
-async function bunGlobalPackageRootUpdateTask() {
-  const packages = new Set();
-  for (const nodeModulesRoot of await bunGlobalNodeModulesRoots()) {
-    for (const packageName of await packagesPresentInNodeModulesRoot(nodeModulesRoot)) packages.add(packageName);
-  }
-  if (!packages.size) return null;
-  return {
-    label: "global Bun package root",
-    command: "bun",
-    args: ["install", "-g", "--ignore-scripts", "--minimum-release-age=0", ...packageInstallSpecs([...packages])],
-    cwd: homedir(),
-  };
-}
-
-function updateTaskDisplay(task) {
-  return task.displayCommand || formatCommandForDisplay(task.command, task.args || []);
-}
-
-function uniqueUpdateTasks(tasks) {
-  const unique = [];
-  const seen = new Set();
-  for (const task of tasks.filter(Boolean)) {
-    const key = [task.command, JSON.stringify(task.args || []), task.cwd || ""].join("\u0000");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(task);
-  }
-  return unique;
-}
-
-async function resolveUpdateTasks({ all = false } = {}) {
-  const piTasks = await resolvePiUpdateCommands({ all });
-  if (!all) return uniqueUpdateTasks(piTasks);
-
-  const npmRuntime = {
-    preferredDirectories: [...new Set(piTasks.map((task) => task.piInstallDirectory).filter(Boolean))],
-  };
-  const [
-    currentWebuiTask,
-    agentTask,
-    optionalFeatureTask,
-    projectTasks,
-    globalNpmTask,
-    globalBunTask,
-  ] = await Promise.all([
-    currentWebuiPackageUpdateTask(npmRuntime),
-    agentPackageRootUpdateTask(npmRuntime),
-    optionalFeatureInstallRootUpdateTask(npmRuntime),
-    projectPackageRootUpdateTasks(npmRuntime),
-    npmGlobalPackageRootUpdateTask(npmRuntime),
-    bunGlobalPackageRootUpdateTask(),
-  ]);
-
-  return uniqueUpdateTasks([
-    ...piTasks,
-    currentWebuiTask,
-    agentTask,
-    optionalFeatureTask,
-    ...projectTasks,
-    globalNpmTask,
-    globalBunTask,
-  ]);
-}
-
-function updateFailureDetails(result) {
-  return [result.error, result.timedOut ? "timed out" : undefined, result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join("\n");
-}
-
-async function runUpdateTask(task) {
-  const command = updateTaskDisplay(task);
-  recordEvent({ type: "webui_update_step_started", command });
-  const result = await runCommand(task.command, task.args || [], {
-    cwd: task.cwd || process.cwd(),
-    timeoutMs: task.timeoutMs || PACKAGE_UPDATE_TIMEOUT_MS,
-    maxOutputLength: task.maxOutputLength || PACKAGE_UPDATE_OUTPUT_MAX_CHARS,
-    env: task.env,
-  });
-  const ok = result.exitCode === 0 && !result.timedOut && !result.error;
-  if (!ok) {
-    const details = updateFailureDetails(result);
-    recordEvent({ type: "webui_update_step_failed", command, error: truncateStatusText(details || `exit code ${result.exitCode ?? "unknown"}`) });
-    throw makeHttpError(500, truncateLongText(`Update step failed (${task.label || "package update"}): ${command}${details ? `\n${details}` : ""}`));
-  }
-  recordEvent({ type: "webui_update_step_completed", command });
-  return {
-    label: task.label || "package update",
-    command,
-    stdout: result.stdout,
-    stderr: result.stderr,
-  };
-}
-
-function combinedUpdateOutput(results, field) {
-  return results
-    .map((result) => {
-      const output = String(result?.[field] || "").trim();
-      return output ? `# ${result.label}\n${output}` : "";
-    })
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-async function runPiUpdateAndPrepareRestart({ all = false } = {}) {
-  if (piUpdateInProgress) throw makeHttpError(409, "A Pi update is already running.");
-  piUpdateInProgress = true;
-  let restartPrepared = false;
-  try {
-    const restorableTabs = await restorableTabsForRestart();
-    const updateTasks = await resolveUpdateTasks({ all });
-    if (!updateTasks.length) throw makeHttpError(500, "No Pi update command could be resolved.");
-    const command = updateTasks.map(updateTaskDisplay).join(" && ");
-    const updateLabel = all ? "Pi and package updates" : "Pi update";
-    recordEvent({ type: "webui_update_started", command, updateAll: all, restorableTabCount: restorableTabs.length });
-    const results = [];
-    for (const task of updateTasks) results.push(await runUpdateTask(task));
-
-    updateStatusCache = null;
-    updateStatusCacheAt = 0;
-    const supervisorCursor = await prepareRpcSupervisorHandoff();
-    const child = spawnRestartServer(restorableTabs, supervisorCursor);
-    restartPrepared = true;
-    recordEvent({ type: "webui_update_restarting", command, updateAll: all, nextWebuiPid: child.pid, restorableTabCount: restorableTabs.length });
-    return {
-      message: `${updateLabel} completed. Pi Web UI is restarting.`,
-      command,
-      commands: results.map((result) => ({ label: result.label, command: result.command })),
-      stdout: combinedUpdateOutput(results, "stdout"),
-      stderr: combinedUpdateOutput(results, "stderr"),
-      webuiPid: process.pid,
-      nextWebuiPid: child.pid,
-      restorableTabCount: restorableTabs.length,
-    };
-  } finally {
-    if (!restartPrepared) piUpdateInProgress = false;
-  }
+function exactUpdatePathInside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 function rememberClosedRestorableTab(tab, state = null) {
@@ -10627,6 +11863,21 @@ const gitLiveWatcher = createGitLiveWatcher({
   },
 });
 
+const workspaceFilesLiveWatcher = createWorkspaceFilesLiveWatcher({
+  onChange: ({ root, tabIds, changedAt }) => {
+    for (const tabId of tabIds) {
+      const tab = tabs.get(tabId);
+      if (!tab || workspaceFilesLiveWatcher.subscribedRootForTab(tab.id) !== root) continue;
+      broadcastTabEvent(tab, { type: "webui_workspace_files_changed", tabId: tab.id, root, changedAt });
+    }
+  },
+  onError: ({ root, error }) => {
+    const message = sanitizeError(error);
+    recordEvent({ type: "webui_workspace_files_watch_error", root, error: message });
+    console.warn(`Workspace files live watcher disabled for ${root}: ${message}`);
+  },
+});
+
 function trackGitRepositoryForTab(tab, root) {
   if (tab?.id && root) gitLiveWatcher.subscribe(tab.id, root);
   return root;
@@ -10641,6 +11892,8 @@ function renameTab(tab, title, { source = "explicit", maxLength, unique = source
   const previousTitle = tab.title;
   tab.title = nextTitle;
   tab.titleSource = source;
+  tab.subagentDisplayTitle = source === "auto" ? truncateTabTitle(title, AUTO_TAB_TITLE_DISPLAY_MAX_LENGTH) : undefined;
+  tab.subagentDisplayTitlePromise = undefined;
   if (previousTitle === nextTitle) return false;
   scheduleSupervisorMetadataUpdate(tab);
 
@@ -10664,6 +11917,11 @@ function maybeNameTabForConversation(tab, command) {
   if (!shouldRename) return false;
   const title = generatedTabTitleFromPrompt(command.message) || `Conversation ${tab.index}`;
   return renameTab(tab, title, { source: "auto", maxLength: AUTO_TAB_TITLE_MAX_LENGTH });
+}
+
+function resetAutomaticTabTitleForNewSession(tab) {
+  if (!tab || tab.titleSource === "explicit") return false;
+  return renameTab(tab, defaultTabTitle(tab.index), { source: "default", unique: false });
 }
 
 function responseWithTab(response, tab) {
@@ -10743,6 +12001,8 @@ async function performTabCwdUpdate(tab, cwd) {
   attachRpcToTab(tab, rpc);
   if (startDirectRpc) rpc.start();
   gitLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
   // Non-fatal: a failed start surfaces through pi_process_error/exit events.
   await primeTabRpc(tab).catch(() => {});
 
@@ -10841,7 +12101,14 @@ function fallbackRpcResponse(tab, command, error) {
 
 async function safeRpcResponse(tab, command, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
-    return rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs)));
+    const response = rewriteArtifactsForTab(tab, responseWithPendingThinking(tab, await tab.rpc.send(command, timeoutMs)));
+    if (command?.type === "get_messages" && Array.isArray(response?.data?.messages)) {
+      response.data = {
+        ...response.data,
+        messages: filterSessionSummaryTranscriptMessages(tab.thinkingStreamRecovery.applyToMessages(response.data.messages)),
+      };
+    }
+    return response;
   } catch (error) {
     const message = sanitizeError(error);
     if (/Pi RPC process is not running/i.test(message)) return responseWithPendingThinking(tab, fallbackRpcResponse(tab, command, error));
@@ -12328,9 +13595,15 @@ async function moveFileSystemEntryData(tab, body = {}) {
 }
 
 function defaultEditorCommand(targetPath) {
+  if (process.env.PI_WEBUI_OPEN_COMMAND) {
+    const override = process.env.PI_WEBUI_OPEN_COMMAND;
+    return [".js", ".cjs", ".mjs"].includes(path.extname(override).toLowerCase())
+      ? { command: process.execPath, args: [override, targetPath] }
+      : { command: override, args: [targetPath] };
+  }
   if (platform() === "win32") return { command: "cmd", args: ["/c", "start", "", targetPath] };
   if (platform() === "darwin") return { command: "open", args: [targetPath] };
-  return { command: process.env.PI_WEBUI_OPEN_COMMAND || "xdg-open", args: [targetPath] };
+  return { command: "xdg-open", args: [targetPath] };
 }
 
 function firstCommandOutputLine(value = "") {
@@ -12917,6 +14190,7 @@ async function handleNativeSlashCommand(tab, body, req) {
       const response = await tab.rpc.send({ type: "new_session" });
       if (response.success === false) return response;
       tab.conversationStarted = false;
+      resetAutomaticTabTitleForNewSession(tab);
       forgetTabState(tab);
       rememberTabState(tab, response.data);
       clearPendingExtensionUiRequests(tab);
@@ -13016,6 +14290,7 @@ async function closeTab(id, { allowLast = false } = {}) {
   }
   rememberClosedRestorableTab(tab, restorableState);
   gitLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.unsubscribe(tab.id);
 
   const closingEvent = { type: "webui_tab_closing", tabId: tab.id, tabTitle: tab.title };
   recordEvent(closingEvent);
@@ -13036,6 +14311,7 @@ async function closeTab(id, { allowLast = false } = {}) {
 async function discardTab(tab) {
   if (!tab || !tabs.has(tab.id)) return;
   gitLiveWatcher.unsubscribe(tab.id);
+  workspaceFilesLiveWatcher.unsubscribe(tab.id);
   tab.rpcUnsubscribe?.();
   rejectTabBashQueue(tab, new Error("Pi recovery tab initialization failed"));
   stopAppRunnerForTab(tab, "recovery initialization failed", { force: true });
@@ -13159,12 +14435,16 @@ const serverStartedAt = new Date().toISOString();
 const persistedStartupSettings = await readWebuiSettings(undefined, { reportInvalidOutputMode: true });
 let persistedRemoteAuthEnabled = persistedStartupSettings.remoteAuthEnabled === true;
 let persistedOutputModeDefault = persistedStartupSettings.outputModeDefault;
-rpcSupervisor = await initializeRpcSupervisor();
-rpcSupervisorSnapshot = rpcSupervisor?.snapshot || null;
-installRpcSupervisorEventDispatch(rpcSupervisorSnapshot);
-const initialTabs = await createInitialTabs();
-await finishRpcSupervisorStartup(initialTabs);
-const initialTab = initialTabs[0];
+optionalFeatureMigrationStore = new OptionalFeatureMigrationStore({
+  filePath: process.env.PI_WEBUI_OPTIONAL_FEATURE_MIGRATION_FILE || path.join(agentDir, "webui", "optional-feature-migration.json"),
+});
+optionalFeatureAuditCoordinator = new OptionalFeatureAuditCoordinator({
+  catalog: OPTIONAL_FEATURE_CATALOG,
+  collectStatuses: async () => (await optionalFeaturePackageStatuses(options.cwd)).features,
+  store: optionalFeatureMigrationStore,
+  webuiVersion: packageJson.version,
+  onEvent: (event) => broadcastServerEvent(event),
+});
 let currentHost = options.host;
 let networkRebindInProgress = false;
 let networkRebindTargetHost = null;
@@ -13209,8 +14489,9 @@ function activateOutputMode(client, activeMode, reason = "server-default-change"
 }
 
 function sendSseToClient(client, event) {
-  sendSse(client, event);
-  if (client?.pendingMode && isOutputModeSemanticBarrier(event)) activateOutputMode(client, client.pendingMode);
+  const sent = sendSse(client, event);
+  if (sent && client?.pendingMode && isOutputModeSemanticBarrier(event)) activateOutputMode(client, client.pendingMode);
+  return sent;
 }
 
 function refreshAutoOutputModes() {
@@ -13230,6 +14511,58 @@ function refreshAutoOutputModes() {
   }
 }
 
+const BROWSER_PROMPT_REQUEST_ID = /^[A-Za-z0-9_-]{16,128}$/;
+const BROWSER_PROMPT_REQUEST_TTL_MS = 10 * 60 * 1000;
+const BROWSER_PROMPT_REQUEST_LIMIT = 256;
+
+function browserPromptRequestId(value) {
+  if (value === undefined) return null;
+  const id = String(value || "");
+  if (!BROWSER_PROMPT_REQUEST_ID.test(id)) throw makeHttpError(400, "requestId must be an opaque 16-128 character identifier");
+  return id;
+}
+
+function browserPromptFingerprint(body) {
+  return createHash("sha256").update(JSON.stringify({
+    message: String(body?.message || ""),
+    streamingBehavior: body?.streamingBehavior === "steer" || body?.streamingBehavior === "followUp" ? body.streamingBehavior : "",
+    images: Array.isArray(body?.images) ? body.images : [],
+  })).digest("base64url");
+}
+
+function pruneBrowserPromptRequests(tab, now = Date.now()) {
+  const requests = tab?.browserPromptRequests;
+  if (!requests) return;
+  for (const [id, entry] of requests) {
+    if (entry.settledAt && entry.settledAt + BROWSER_PROMPT_REQUEST_TTL_MS <= now) requests.delete(id);
+  }
+}
+
+async function deduplicateBrowserPromptRequest(tab, body, dispatch) {
+  const requestId = browserPromptRequestId(body?.requestId);
+  if (!requestId) return dispatch();
+  const requests = tab.browserPromptRequests || (tab.browserPromptRequests = new Map());
+  const fingerprint = browserPromptFingerprint(body);
+  pruneBrowserPromptRequests(tab);
+  const known = requests.get(requestId);
+  if (known) {
+    if (known.fingerprint !== fingerprint) throw makeHttpError(409, "requestId was already used for a different prompt");
+    return known.promise;
+  }
+  while (requests.size >= BROWSER_PROMPT_REQUEST_LIMIT) {
+    const settled = [...requests.entries()].find(([, entry]) => entry.settledAt);
+    if (!settled) throw makeHttpError(429, "too many in-flight prompt requests for this tab");
+    requests.delete(settled[0]);
+  }
+  const entry = { fingerprint, settledAt: 0, promise: null };
+  entry.promise = Promise.resolve().then(dispatch).finally(() => {
+    entry.settledAt = Date.now();
+    pruneBrowserPromptRequests(tab, entry.settledAt);
+  });
+  requests.set(requestId, entry);
+  return entry.promise;
+}
+
 async function saveOutputModeDefault(value) {
   let mode;
   try {
@@ -13243,18 +14576,73 @@ async function saveOutputModeDefault(value) {
   return outputModeMetadata();
 }
 
+function interfacePreferencesResponse(settings) {
+  return {
+    preferences: settings.interfacePreferences,
+    layout: settings.uiLayout,
+    layoutRevision: uiLayoutRevision(settings.uiLayout),
+  };
+}
+
+function interfacePreferencesRequestError(error, operation) {
+  if (error?.statusCode) return error;
+  if (error?.code === "UI_LAYOUT_INVALID" || error instanceof TypeError) return makeHttpError(400, formatCliError(error));
+  if (error?.code === "UI_LAYOUT_STALE_REVISION") return makeHttpError(409, "The interface layout changed after it was read; refresh and retry.");
+  const message = error?.code === "WEBUI_SETTINGS_LOCK_TIMEOUT"
+    ? "Interface preferences are busy; retry shortly."
+    : `Could not ${operation} interface preferences.`;
+  const wrapped = makeHttpError(error?.code === "WEBUI_SETTINGS_LOCK_TIMEOUT" ? 503 : 500, message);
+  wrapped.userMessage = message;
+  return wrapped;
+}
+
+function requireInterfacePreferencesJsonRequest(req) {
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") throw makeHttpError(415, "Interface preference saves require Content-Type: application/json.");
+}
+
+function validateInterfacePreferencesBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw makeHttpError(400, "Interface preference save body must be an object.");
+  const allowed = new Set(["sidePanelWidth", "layout", "expectedLayoutRevision"]);
+  const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+  if (unknown.length) throw makeHttpError(400, `Interface preference save contains unsupported field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`);
+  const hasWidth = Object.hasOwn(body, "sidePanelWidth");
+  const hasLayout = Object.hasOwn(body, "layout");
+  if (!hasWidth && !hasLayout) throw makeHttpError(400, "Interface preference save must include sidePanelWidth or layout.");
+  if (hasWidth) {
+    if (typeof body.sidePanelWidth !== "number" || !Number.isFinite(body.sidePanelWidth) || body.sidePanelWidth < WEBUI_SIDE_PANEL_WIDTH_MIN_PX || body.sidePanelWidth > WEBUI_SIDE_PANEL_WIDTH_MAX_PX) {
+      throw makeHttpError(400, `sidePanelWidth must be between ${WEBUI_SIDE_PANEL_WIDTH_MIN_PX} and ${WEBUI_SIDE_PANEL_WIDTH_MAX_PX} pixels`);
+    }
+  }
+  if (hasLayout) {
+    if (!Object.hasOwn(body, "expectedLayoutRevision") || typeof body.expectedLayoutRevision !== "string" || !/^[a-f0-9]{64}$/u.test(body.expectedLayoutRevision)) {
+      throw makeHttpError(400, "layout saves require the latest layoutRevision as expectedLayoutRevision.");
+    }
+    validateUiLayoutPatch(body.layout);
+  } else if (Object.hasOwn(body, "expectedLayoutRevision")) {
+    throw makeHttpError(400, "expectedLayoutRevision is only valid with a layout save.");
+  }
+  return { hasWidth, hasLayout };
+}
+
 async function interfacePreferencesData() {
-  const settings = await readWebuiSettings();
-  return { preferences: settings.interfacePreferences };
+  return interfacePreferencesResponse(await readWebuiSettings());
 }
 
 async function saveInterfacePreferences(body = {}) {
-  const sidePanelWidth = Number(body.sidePanelWidth);
-  if (!Number.isFinite(sidePanelWidth) || sidePanelWidth < WEBUI_SIDE_PANEL_WIDTH_MIN_PX || sidePanelWidth > WEBUI_SIDE_PANEL_WIDTH_MAX_PX) {
-    throw makeHttpError(400, `sidePanelWidth must be between ${WEBUI_SIDE_PANEL_WIDTH_MIN_PX} and ${WEBUI_SIDE_PANEL_WIDTH_MAX_PX} pixels`);
-  }
-  const settings = await writeWebuiSettings({ interfacePreferences: { sidePanelWidth: Math.round(sidePanelWidth) } });
-  return { preferences: settings.interfacePreferences };
+  const { hasWidth, hasLayout } = validateInterfacePreferencesBody(body);
+  const settings = await updateWebuiSettings((current) => {
+    if (hasLayout && body.expectedLayoutRevision !== uiLayoutRevision(current.uiLayout)) {
+      const error = new Error("stale interface layout revision");
+      error.code = "UI_LAYOUT_STALE_REVISION";
+      throw error;
+    }
+    const patch = {};
+    if (hasWidth) patch.interfacePreferences = { sidePanelWidth: Math.round(body.sidePanelWidth) };
+    if (hasLayout) patch.uiLayout = mergeUiLayout(current.uiLayout, body.layout);
+    return patch;
+  });
+  return interfacePreferencesResponse(settings);
 }
 
 const remoteAuth = {
@@ -13635,6 +15023,36 @@ async function webuiStatus({ detailed = false, eventLimit = 40, includeAuthPin =
   return data;
 }
 
+async function handlePromptRequest(tab, body, req) {
+  if (isNaturalConversationActive(tab) && naturalConversationSlashCommandName(body.message) && !isNaturalConversationSlashCommand(body.message)) {
+    blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
+  }
+  const nativeResponse = await handleNativeSlashCommand(tab, body, req);
+  if (nativeResponse) {
+    return { status: nativeResponse.success === false ? 400 : 200, payload: responseWithTab(nativeResponse, tab) };
+  }
+  const command = commandFromPost("/api/prompt", body);
+  enforceNaturalConversationCommandAllowed(tab, command);
+  const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
+  if (queuedForCompaction) return { status: 202, payload: responseWithTab(queuedForCompaction, tab) };
+  const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
+  if (naturalConversationSafetyResponse?.success === false) {
+    return { status: 400, payload: responseWithTab(naturalConversationSafetyResponse, tab) };
+  }
+  const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
+  if (pendingThinkingResponse?.success === false) {
+    return { status: 400, payload: responseWithTab(pendingThinkingResponse, tab) };
+  }
+  const startsVisibleWork = commandStartsVisibleWork(command);
+  if (startsVisibleWork) {
+    maybeNameTabForConversation(tab, command);
+    markTabWorking(tab);
+  }
+  const response = await tab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
+  if (response.success === false && startsVisibleWork) markTabIdle(tab);
+  return { status: response.success === false ? 400 : 200, payload: responseWithTab(response, tab) };
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -13667,6 +15085,30 @@ const server = createServer(async (req, res) => {
 
     if (shouldChallengeRemoteAuth(req, url)) {
       sendRemoteAuthRequired(req, res, url);
+      return;
+    }
+
+    if (url.pathname === "/api/session-summary/preferences" && req.method === "GET") {
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await sessionSummaryPreferencesData(tab) }, { "cache-control": "private, no-store" });
+      return;
+    }
+
+    if (url.pathname === "/api/session-summary/preferences" && req.method === "PUT") {
+      requireSessionSummaryJsonRequest(req);
+      const body = await readJsonBody(req, { limitBytes: SESSION_SUMMARY_REQUEST_MAX_BYTES });
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await saveSessionSummaryPreferencesData(tab, body) }, { "cache-control": "private, no-store" });
+      return;
+    }
+
+    if (url.pathname === "/api/session-summary/generate" && req.method === "POST") {
+      requireSessionSummaryJsonRequest(req);
+      const body = await readJsonBody(req, { limitBytes: SESSION_SUMMARY_REQUEST_MAX_BYTES });
+      requiredSessionSummaryObject(body, "request", ["refresh", "tab"]);
+      if (body.refresh !== undefined && typeof body.refresh !== "boolean") throw makeHttpError(400, "refresh must be true or false");
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await triggerSessionSummary(tab, { refresh: body.refresh === true }) }, { "cache-control": "private, no-store" });
       return;
     }
 
@@ -13729,17 +15171,60 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/interface-preferences" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await interfacePreferencesData() });
+      try {
+        sendJson(res, 200, { ok: true, data: await interfacePreferencesData() });
+      } catch (error) {
+        throw interfacePreferencesRequestError(error, "read");
+      }
       return;
     }
 
     if (url.pathname === "/api/interface-preferences" && req.method === "PUT") {
-      sendJson(res, 200, { ok: true, data: await saveInterfacePreferences(await readJsonBody(req)) });
+      requireInterfacePreferencesJsonRequest(req);
+      try {
+        let body;
+        try {
+          body = await readJsonBody(req, { limitBytes: UI_LAYOUT_REQUEST_MAX_BYTES });
+        } catch (error) {
+          if (error instanceof SyntaxError) throw makeHttpError(400, "Interface preference save body must be valid JSON.");
+          throw error;
+        }
+        sendJson(res, 200, { ok: true, data: await saveInterfacePreferences(body) });
+      } catch (error) {
+        throw interfacePreferencesRequestError(error, "save");
+      }
       return;
     }
 
     if (url.pathname === "/api/tabs" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: { tabs: await listTabsWithReconciledActivity() } });
+      return;
+    }
+
+    const samplingParametersRoute = /^\/api\/tabs\/([^/]+)\/sampling-parameters$/.exec(url.pathname);
+    if (samplingParametersRoute && (req.method === "GET" || req.method === "PUT")) {
+      const tabId = decodeURIComponent(samplingParametersRoute[1]);
+      const tab = tabs.get(tabId);
+      if (!tab) throw makeHttpError(404, `Unknown Pi tab: ${tabId}`);
+      if (req.method === "GET") {
+        sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "sampling-state") }, { "cache-control": "private, no-store" });
+        return;
+      }
+      let samplingParams;
+      try {
+        samplingParams = await readJsonBody(req, {
+          limitBytes: SAMPLING_PARAMS_HTTP_MAX_BYTES,
+          emptyError: "Sampling parameters body must be a JSON object.",
+        });
+      } catch (error) {
+        if (error instanceof SyntaxError) throw makeHttpError(400, "Sampling parameters body must be valid JSON.");
+        throw error;
+      }
+      const action = samplingParams && typeof samplingParams === "object" && !Array.isArray(samplingParams) && Object.keys(samplingParams).length === 0
+        ? "sampling-reset"
+        : "sampling-set";
+      const payload = action === "sampling-set" ? { samplingParams } : {};
+      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, action, payload) }, { "cache-control": "private, no-store" });
       return;
     }
 
@@ -13795,7 +15280,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/subagents" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: webuiSubagentsData() });
+      sendJson(res, 200, { ok: true, data: await webuiSubagentsData() });
       return;
     }
 
@@ -13843,6 +15328,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/tabs" && req.method === "POST") {
+      if (!optionalFeatureStartupReady) throw makeHttpError(503, "Optional feature startup audit is still checking; retry after /api/health is ready");
       const body = await readJsonBody(req);
       const tab = await createTab({ title: body.title, cwd: body.cwd });
       sendJson(res, 201, { ok: true, data: { tab: tabMeta(tab), tabs: listTabs() } });
@@ -13881,6 +15367,7 @@ const server = createServer(async (req, res) => {
       });
       const client = {
         res,
+        tab,
         requestedMode: negotiated.requestedMode,
         protocolVersion: negotiated.protocolVersion,
         activeMode: negotiated.activeMode,
@@ -13936,19 +15423,31 @@ const server = createServer(async (req, res) => {
       }
       replayExtensionStatuses(tab, client);
       replayExtensionWidgets(tab, client);
+      if (tab.sessionSummary) {
+        sendSseToClient(client, {
+          type: "webui_session_summary",
+          kind: "replay",
+          tabId: tab.id,
+          tabTitle: tab.title,
+          summary: publicSessionSummaryState(tab),
+          replayed: true,
+        });
+      }
       replayPendingExtensionUiRequests(tab, client);
-      const keepAlive = setInterval(() => res.write(": keepalive\n\n"), 15000);
+      const keepAlive = setInterval(() => writeSseFrame(client, ": keepalive\n\n"), 15000);
       req.on("close", () => {
         clearInterval(keepAlive);
-        tab.sseClients.delete(client);
+        evictSlowSseClient(client);
       });
       return;
     }
 
     if (url.pathname === "/api/health" && req.method === "GET") {
       const status = await webuiStatus({ includeAuthPin: isLocalRequest(req) });
-      sendJson(res, 200, {
-        ok: true,
+      sendJson(res, optionalFeatureStartupReady ? 200 : 503, {
+        ok: optionalFeatureStartupReady,
+        bootIdentity,
+        startupPhase: optionalFeatureAuditCoordinator.current().phase,
         webuiVersion: status.webuiVersion,
         piVersion: status.piVersion,
         webuiDev: status.webuiDev,
@@ -13967,7 +15466,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/pi-release-notes" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await installedPiReleaseNotes() }, { "cache-control": "private, no-store" });
+      sendJson(res, 200, { ok: true, data: await piReleaseNotes() }, { "cache-control": "private, no-store" });
       return;
     }
 
@@ -14017,7 +15516,25 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/themes" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await readBundledThemes() });
+      const tab = tabs.size ? getRequestedTab(req, url) : null;
+      sendJson(res, 200, { ok: true, data: await readThemeCatalog(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/themes/custom" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      requireCustomThemeJsonRequest(req);
+      let body;
+      try {
+        body = await readJsonBody(req, { limitBytes: CUSTOM_THEME_BODY_LIMIT_BYTES });
+      } catch (error) {
+        if (error instanceof SyntaxError) throw themeHttpError(400, "THEME_JSON_INVALID", "Custom theme save body contains malformed JSON.");
+        throw error;
+      }
+      const tab = getRequestedTab(req, url);
+      const request = validateCustomThemeSaveBody(body);
+      const data = await saveCustomTheme(tab, request);
+      sendJson(res, data.created ? 201 : 200, { ok: true, data });
       return;
     }
 
@@ -14077,21 +15594,68 @@ const server = createServer(async (req, res) => {
       requireLocalhostRoute(req, url.pathname);
       const restorableTabs = await restorableTabsForRestart();
       const supervisorCursor = await prepareRpcSupervisorHandoff();
-      const child = spawnRestartServer(restorableTabs, supervisorCursor);
+      const child = await spawnRestartServer(restorableTabs, supervisorCursor);
       sendJson(res, 200, { ok: true, message: "Pi Web UI restarting", webuiPid: process.pid, nextWebuiPid: child.pid, restorableTabCount: restorableTabs.length });
       setTimeout(() => { void shutdown("api restart", { preserveSessions: true }); }, 20).unref();
       return;
     }
 
-    if (url.pathname === "/api/update" && req.method === "POST") {
+    if (url.pathname === "/api/update/plan" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
-      const body = await readJsonBody(req);
-      const queryAll = ["1", "true", "yes", "all"].includes(String(url.searchParams.get("all") || "").toLowerCase());
-      const bodyAll = body?.all === true || String(body?.mode || "").toLowerCase() === "all";
-      const data = await runPiUpdateAndPrepareRestart({ all: queryAll || bodyAll });
-      sendJson(res, 200, { ok: true, data });
-      setTimeout(() => { void shutdown("api update", { preserveSessions: true }); }, 20).unref();
+      const validation = validateUpdatePlanRequest(await readJsonBody(req));
+      if (!validation.ok) throw makeHttpError(400, validation.error);
+      const plan = await createServerOwnedUpdatePlan(validation.targets);
+      sendJson(res, 201, { ok: true, data: { plan } });
       return;
+    }
+
+    if (url.pathname === "/api/update/apply" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const validation = validateUpdateApplyRequest(await readJsonBody(req));
+      if (!validation.ok) throw makeHttpError(400, validation.error);
+      const data = await applyServerOwnedUpdate(validation.transactionId, validation.planDigest);
+      sendJson(res, data.state === "activating" ? 202 : 200, { ok: true, data });
+      if (data.state === "activating") setTimeout(() => { void shutdown("managed Web UI activation", { preserveSessions: true }); }, 20).unref();
+      return;
+    }
+
+    const updateTransactionRoute = url.pathname.match(/^\/api\/update\/transactions\/([A-Za-z0-9._-]{1,128})$/);
+    if (updateTransactionRoute && req.method === "GET") {
+      requireLocalhost(req, "Viewing update transactions is only allowed from localhost");
+      const journal = await readUpdateJournal(agentDir, updateTransactionRoute[1]);
+      if (!journal) throw makeHttpError(404, "Update transaction was not found.");
+      sendJson(res, 200, { ok: true, data: journal });
+      return;
+    }
+
+    if (url.pathname === "/api/update/rollback" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const validation = validateUpdateApplyRequest(await readJsonBody(req));
+      if (!validation.ok) throw makeHttpError(400, validation.error);
+      const journal = await readUpdateJournal(agentDir, validation.transactionId);
+      if (!journal) throw makeHttpError(404, "Update transaction was not found.");
+      assertUpdatePlanDigest(journal.plan, validation.planDigest);
+      const webuiTarget = journal.plan.targets.find((target) => target.id === "webui");
+      if (journal.state !== "success" || !webuiTarget) throw makeHttpError(409, "Only a successfully activated Web UI transaction can be rolled back manually.");
+      const currentPointer = await readRuntimePointer(agentDir, "current");
+      if (!currentPointer || currentPointer.version !== webuiTarget.targetVersion) throw makeHttpError(409, "The active managed runtime no longer matches this rollback receipt.");
+      const lock = await acquireInstallLock(agentDir);
+      let pointer;
+      let child;
+      try {
+        pointer = await rollbackRuntimePointer(agentDir);
+        child = await spawnRestartServer(await restorableTabsForRestart(), await prepareRpcSupervisorHandoff());
+        await transitionUpdateJournal(agentDir, journal.transactionId, "rolled-back", { outcome: "rolled-back", rollback: { manual: true, at: new Date().toISOString(), pointer } });
+      } finally {
+        await releaseInstallLock(lock);
+      }
+      sendJson(res, 202, { ok: true, data: { outcome: "rolled-back", pointer, nextWebuiPid: child.pid } });
+      setTimeout(() => { void shutdown("manual update rollback", { preserveSessions: true }); }, 20).unref();
+      return;
+    }
+
+    if ((url.pathname === "/api/component-update" || url.pathname === "/api/update") && req.method === "POST") {
+      throw makeHttpError(410, "Legacy update mutation is disabled. Create an exact server-owned plan and apply its transactionId plus planDigest.");
     }
 
     if (url.pathname === "/api/shutdown" && req.method === "POST") {
@@ -14480,7 +16044,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/optional-features" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, data: await optionalFeaturePackageStatuses() });
+      sendJson(res, 200, { ok: true, data: optionalFeatureAuditCoordinator.current() });
       return;
     }
 
@@ -14489,7 +16053,48 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
-      const data = await installOptionalFeaturePackage(String(body.featureId || ""));
+      const revision = optionalFeatureAuditCoordinator.current().revision;
+      const data = await optionalFeatureAuditCoordinator.runMutation(revision, async () => {
+        try {
+          return await installOptionalFeaturePackage(String(body.featureId || ""), tab.cwd);
+        } finally {
+          await optionalFeatureAuditCoordinator.recheck({ reason: "post-install" });
+        }
+      });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/optional-feature-install-batch" && req.method === "POST") {
+      requireLocalhost(req, "Installing optional Web UI features is only allowed from localhost");
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "optional feature installs are blocked");
+      const data = await runOptionalFeatureBatchMutation({
+        revision: body.revision,
+        featureIds: body.featureIds,
+        cwd: tab.cwd,
+        migration: body.migration === true,
+        tab,
+        install: () => installOptionalFeaturePackages(body.featureIds, tab.cwd),
+      });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/optional-feature-migration/recheck" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      await readJsonBody(req);
+      optionalFeatureAuditCoordinator.assertIdle();
+      const data = await optionalFeatureAuditCoordinator.recheck({ reason: "manual" });
+      sendJson(res, 200, { ok: true, data });
+      return;
+    }
+
+    if (url.pathname === "/api/optional-feature-migration/dismiss" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const data = await optionalFeatureAuditCoordinator.dismiss(body.revision);
       sendJson(res, 200, { ok: true, data });
       return;
     }
@@ -14538,8 +16143,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/safety-guard/config" && req.method === "GET") {
-      getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await safetyGuardConfigData() });
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await safetyGuardConfigData(tab) });
       return;
     }
 
@@ -14547,7 +16152,7 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "safety guard setup changes are blocked");
-      sendJson(res, 200, { ok: true, data: await saveSafetyGuardConfigData(body) });
+      sendJson(res, 200, { ok: true, data: await saveSafetyGuardConfigData(tab, body) });
       return;
     }
 
@@ -14630,39 +16235,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/prompt" && req.method === "POST") {
       const body = await readJsonBody(req, { limitBytes: requestBodyLimitForPath(url.pathname) });
       const tab = getRequestedTab(req, url, body);
-      if (isNaturalConversationActive(tab) && naturalConversationSlashCommandName(body.message) && !isNaturalConversationSlashCommand(body.message)) {
-        blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
-      }
-      const nativeResponse = await handleNativeSlashCommand(tab, body, req);
-      if (nativeResponse) {
-        sendJson(res, nativeResponse.success === false ? 400 : 200, responseWithTab(nativeResponse, tab));
-        return;
-      }
-      const command = commandFromPost(url.pathname, body);
-      enforceNaturalConversationCommandAllowed(tab, command);
-      const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
-      if (queuedForCompaction) {
-        sendJson(res, 202, responseWithTab(queuedForCompaction, tab));
-        return;
-      }
-      const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
-      if (naturalConversationSafetyResponse?.success === false) {
-        sendJson(res, 400, responseWithTab(naturalConversationSafetyResponse, tab));
-        return;
-      }
-      const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
-      if (pendingThinkingResponse?.success === false) {
-        sendJson(res, 400, responseWithTab(pendingThinkingResponse, tab));
-        return;
-      }
-      const startsVisibleWork = commandStartsVisibleWork(command);
-      if (startsVisibleWork) {
-        maybeNameTabForConversation(tab, command);
-        markTabWorking(tab);
-      }
-      const response = await tab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
-      if (response.success === false && startsVisibleWork) markTabIdle(tab);
-      sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
+      const result = await deduplicateBrowserPromptRequest(tab, body, () => handlePromptRequest(tab, body, req));
+      sendJson(res, result.status, result.payload);
       return;
     }
 
@@ -14737,7 +16311,7 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "git pull is blocked");
       try {
-        sendJson(res, 200, await pullGitChanges(tab.cwd));
+        sendJson(res, 200, await pullGitChanges(tab.cwd, { remote: body?.remote }));
       } catch (error) {
         sendJson(res, 200, { ok: false, error: sanitizeError(error) });
       }
@@ -14848,6 +16422,7 @@ const server = createServer(async (req, res) => {
         "/api/git-changes/unstage-all": (cwd) => unstageAllGitChanges(cwd),
         "/api/git-changes/discard-file": (cwd, body) => discardGitFile(cwd, body),
         "/api/git-changes/delete-untracked": (cwd, body) => deleteGitUntrackedFile(cwd, body),
+        "/api/git-changes/add-to-gitignore": (cwd, body) => addGitignoreEntry(cwd, body),
         "/api/git-operation/continue": (cwd, body) => gitOperationAction(cwd, "continue", body),
         "/api/git-operation/skip": (cwd, body) => gitOperationAction(cwd, "skip", body),
         "/api/git-operation/abort": (cwd, body) => gitOperationAction(cwd, "abort", body),
@@ -14967,6 +16542,7 @@ const server = createServer(async (req, res) => {
         if (response.success === false && startsVisibleWork) markTabIdle(tab);
         if (response.success !== false && command.type === "new_session") {
           tab.conversationStarted = false;
+          resetAutomaticTabTitleForNewSession(tab);
           forgetTabState(tab);
           rememberTabState(tab, response.data);
           clearPendingExtensionUiRequests(tab);
@@ -14990,6 +16566,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE" && !server.listening) return;
   if (networkRebindInProgress) {
     console.error("Web UI network rebind failed:", sanitizeError(error));
     return;
@@ -15006,17 +16583,47 @@ function sweepWebuiTempArtifacts() {
 sweepWebuiTempArtifacts();
 setInterval(sweepWebuiTempArtifacts, TEMP_ARTIFACT_SWEEP_INTERVAL_MS).unref();
 
-server.listen(options.port, currentHost, () => {
-  const urlHost = formatUrlHost(currentHost);
-  console.log(`Pi Web UI: http://${urlHost}:${options.port}/`);
-  console.log(`Working directory: ${options.cwd}`);
-  if (initialTab) console.log(`Pi RPC: ${initialTab.rpc.displayCommand}`);
-  else console.log("Pi RPC: waiting for CWD selection in the Web UI");
-  if (restoreTabs.length) console.log(`Restored Web UI tabs: ${initialTabs.length}`);
-  if (!isLocalHost(currentHost)) {
-    console.warn(`WARNING: Web UI is exposed to the network. Remote PIN auth is ${remoteAuth.pin ? "enabled" : "OFF"}; only expose it on trusted networks.`);
+await listenWithRetry(server, { port: options.port, host: currentHost, attempts: 40, initialDelayMs: 250 });
+
+const urlHost = formatUrlHost(currentHost);
+console.log(`Pi Web UI: http://${urlHost}:${options.port}/`);
+console.log(`Working directory: ${options.cwd}`);
+if (!isLocalHost(currentHost)) {
+  console.warn(`WARNING: Web UI is exposed to the network. Remote PIN auth is ${remoteAuth.pin ? "enabled" : "OFF"}; only expose it on trusted networks.`);
+}
+
+await sweepRestoreFiles(agentDir).catch(() => {});
+await collectManagedRuntimes(agentDir).catch((error) => console.warn(`managed runtime retention failed: ${sanitizeError(error)}`));
+if (!process.env.PI_WEBUI_ACTIVATION_TRANSACTION) {
+  await reconcileInterruptedUpdates(agentDir, {
+    recover: async (journal) => {
+      if (journal.state !== "activating") return { state: "failed", error: "Update was interrupted before verification completed." };
+      const pointer = await rollbackRuntimePointer(agentDir);
+      return { state: "rolled-back", pointer, error: "Activation was interrupted; the previous runtime pointer was restored." };
+    },
+  }).catch((error) => console.warn(`update reconciliation failed: ${sanitizeError(error)}`));
+}
+const startupAudit = await optionalFeatureAuditCoordinator.recheck({ reason: "startup" });
+if (options.migrationDryRun) {
+  console.log(`Optional feature migration dry run:\n${JSON.stringify(startupAudit, null, 2)}`);
+} else if (options.migrateOptionalFeatures) {
+  const featureIds = startupAudit.features.filter(({ state }) => state === "legacy-migratable").map(({ featureId }) => featureId);
+  if (featureIds.length) {
+    const result = await runOptionalFeatureBatchMutation({ revision: startupAudit.revision, featureIds, cwd: options.cwd, migration: true });
+    console.log(`Optional feature migration: ${result.succeeded} succeeded, ${result.failed} failed.`);
   }
-});
+}
+
+rpcSupervisor = await initializeRpcSupervisor();
+rpcSupervisorSnapshot = rpcSupervisor?.snapshot || null;
+installRpcSupervisorEventDispatch(rpcSupervisorSnapshot);
+const initialTabs = await createInitialTabs();
+await finishRpcSupervisorStartup(initialTabs);
+const initialTab = initialTabs[0] || null;
+optionalFeatureStartupReady = true;
+if (initialTab) console.log(`Pi RPC: ${initialTab.rpc.displayCommand}`);
+else console.log("Pi RPC: waiting for CWD selection in the Web UI");
+if (restoreTabs.length) console.log(`Restored Web UI tabs: ${initialTabs.length}`);
 
 let shutdownInProgress = false;
 
@@ -15025,6 +16632,7 @@ async function shutdown(signal, { preserveSessions = false, exitCode = 0 } = {})
   shutdownInProgress = true;
   console.log(`\n${signal}: shutting down Pi Web UI...`);
   gitLiveWatcher.closeAll();
+  workspaceFilesLiveWatcher.closeAll();
   for (const tab of tabs.values()) stopAppRunnerForTab(tab, "server shutdown", { force: true });
 
   const forceExit = setTimeout(() => process.exit(exitCode), 4000);

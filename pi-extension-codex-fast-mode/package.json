@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-codex-fast-mode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Session-scoped Codex subscription Fast mode for Pi requests.",
   "type": "module",
   "license": "MIT",

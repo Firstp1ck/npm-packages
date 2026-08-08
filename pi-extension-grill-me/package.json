@@ -1,7 +1,8 @@
 {
   "name": "@firstpick/pi-extension-grill-me",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Deterministic design interview command and tools for Pi.",
+  "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-grill-me#readme",
   "repository": {
@@ -22,6 +23,11 @@
       "./index.ts"
     ]
   },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "node --experimental-strip-types --check index.ts",
+    "smoke": "node --experimental-strip-types --input-type=module -e \"import('./index.ts')\""
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
@@ -30,5 +36,8 @@
     "index.ts",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }
