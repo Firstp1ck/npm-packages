@@ -35,6 +35,7 @@ No required configuration.
 - `grill_record_turn`
   - Records exactly one interview question at a time.
   - Captures the assistant recommendation, user answer, decision status, and notes.
+  - Requires a non-empty `userAnswer` before a turn can be marked `resolved`; unresolved and codebase-check turns may omit it.
 - `grill_save_results`
   - Writes the active interview state to Markdown.
   - Defaults to `GRILL-ME.md` in the project root.

@@ -6,7 +6,7 @@ Turns an early idea into a focused design interview so important decisions are m
 
 - Turns a rough idea into a focused design interview.
 - Asks one clear decision at a time.
-- Tracks answered and unresolved questions.
+- Tracks the explicit answer for every resolved question and keeps unresolved questions separate.
 - Produces a reusable summary for planning or implementation.
 
 ## Install
@@ -21,7 +21,7 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-Run `/grill-me` with the idea you want to clarify. Answer the focused questions, then use the resulting summary as input for a plan or implementation request.
+Run `/grill-me` with the idea you want to clarify. Answer each focused question explicitly; Grill Me records that choice before marking the question resolved. Then use the resulting summary as input for a plan or implementation request.
 
 - `/grill-me [plan]` — initialize a grill session for the current project and start the interview.
 
