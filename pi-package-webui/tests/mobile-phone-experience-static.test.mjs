@@ -54,7 +54,7 @@ assert.match(app, /tabAppRunnerRunningRun\(tab\)/, "Activity must consume canoni
 assert.match(app, /installMobilePhoneExperience\(\);/, "the phone shell must be installed at boot");
 
 assert.match(css, /html\[data-mobile-shell="v2"\] \.mobile-shell-v2/, "mobile CSS must be root scoped");
-assert.match(css, /min-height: 44px/, "phone targets must preserve the 44px floor");
+assert.match(css, /--mobile-control-size:\s*40px;[\s\S]*?html\[data-mobile-shell="v2"\][\s\S]*?min-height:\s*var\(--mobile-control-size\)/, "phone v2 targets must use the selected 40px floor");
 assert.match(css, /env\(safe-area-inset-bottom\)/, "bottom controls must honor safe areas");
 assert.match(css, /data-mobile-presentation="essential"/, "Essential presentation must use progressive disclosures");
 assert.match(css, /html\[data-mobile-shell="v2"\] body\.mobile-keyboard-open \.widget-area,[\s\S]*?\.composer-actions-button \{ display: block !important; \}/, "v2 keyboard mode must keep run widgets and the actions entry available");

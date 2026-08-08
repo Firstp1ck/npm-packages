@@ -125,13 +125,18 @@ Choose the mode under **Controls → Output processing** or **Settings → Brows
 
 At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses terminal navigation and secondary composer controls by default:
 
-- Tap the current terminal summary to open a left-side drawer containing terminal tabs, new-tab choices, workspace actions, and **Close all Tabs**.
-- Close the terminal drawer with the summary button, backdrop, `Escape`, or by choosing a terminal.
+- Both legacy mobile and Mobile Experience v2 use a balanced compact scale for text, cards, padding, gaps, and navigation. Interactive controls use the user-selected 40-pixel minimum; safe-area offsets remain intact. Tablet and desktop sizing are unchanged.
+- Tap the current terminal summary to open full-screen terminal navigation containing terminal tabs, new-tab choices, workspace actions, and **Close all Tabs**.
+- On mobile, a regular or subagent terminal-group title is a dropdown button. Open it to reveal the group list, then choose an individual terminal or subagent view. Desktop group-title clicks keep switching directly to the active group member.
+- Close full-screen terminal navigation with the summary button, `Escape`, or by choosing a terminal.
+- Git footer **Details** opens as a full-screen legacy-mobile overlay. Refresh is available only inside the expanded overlay; use the top `−` button or `Escape` to minimize it. The overlay packs content at the top in two labelled grids: session metrics, then workspace, Git, and runtime metadata. Odd or long cards span both columns. Desktop refresh behavior is unchanged.
 - The compact composer keeps the prompt, attachment, Send, and applicable Abort, Follow-up, and Steer controls immediately available.
-- Tap **More** to open grouped session, workspace, command, workflow, context, and mode controls above the composer. `Escape` closes the panel and returns focus to **More**.
+- Todo progress uses one overflow-safe summary line while collapsed. Tap the line to expand the goal, progress bar, checklist, and footer; native keyboard and screen-reader disclosure behavior remains available.
+- Tap **More** to open grouped session, workspace, command, workflow, context, and mode controls in a full-screen legacy-mobile overlay. Use the accessible top-right `−` control or `Escape` to minimize it and return focus to **More**.
+- Control Deck section order is locked by default on desktop and mobile. Select **Edit** in the panel header to enable pointer or touch dragging and `Alt+ArrowUp` / `Alt+ArrowDown`; select **Done** to lock ordering again. Edit mode is transient, while the resulting order keeps using the existing durable layout preference.
 - Opening the software keyboard hides secondary disclosure chrome while retaining prompt entry and applicable primary run controls.
 - Touch pointers do not schedule hover-only tooltips or reveal latched CSS hover hints. Fine-pointer hover and keyboard-focus help remain available where supported.
-- The Control Deck, tablet layout, desktop tab placement, stored composer ordering, and command behavior are unchanged.
+- Tablet layout, desktop tab placement, stored composer ordering, and command behavior are unchanged.
 
 The optional Mobile Experience v2 shell remains separately controlled by its existing preview setting and is not changed by this legacy mobile layout.
 

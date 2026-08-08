@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = await readFile(join(root, "public", "app.js"), "utf8");
+const styles = await readFile(join(root, "public", "styles.css"), "utf8");
 const transcriptRenderer = await readFile(join(root, "public", "transcript-renderer.mjs"), "utf8");
 
 const SELF_CONTAINED_THEORY_TITLES = new Map([
@@ -85,6 +86,7 @@ assertDocTheory(8, "steer prompt");
 
 const syncLiveTodoProgressWidgetFromText = findFunctionBody(app, "syncLiveTodoProgressWidgetFromText");
 const scheduleLiveWidgetRender = findFunctionBody(app, "scheduleLiveWidgetRender");
+const appendOptimisticUserPrompt = findFunctionBody(app, "appendOptimisticUserPrompt");
 const handleMessageUpdate = findFunctionBody(app, "handleMessageUpdate");
 const scrollChatToBottom = findFunctionBody(app, "scrollChatToBottom");
 const stripTodoProgressLines = findFunctionBody(app, "stripTodoProgressLines");
@@ -125,6 +127,11 @@ assert.match(
   /isOptionalFeatureEnabled\("todoProgressWidget"\)/,
   "disabling todo-progress should still suppress the optional widget renderer itself",
 );
+
+assert.match(styles, /\.chat \{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;/, "short transcripts should use a column layout that can anchor the live tail at the composer edge");
+assert.match(styles, /\.chat > \.message:first-of-type \{ margin-top:\s*auto; \}/, "the first transcript card should consume only unused vertical space so overflowing history remains reachable");
+assert.match(appendOptimisticUserPrompt, /renderAllMessages\(\);[\s\S]*?scrollChatToBottom\(\{ force:\s*true \}\);/, "submitting a prompt should explicitly resume bottom-follow for the new turn");
+assert.doesNotMatch(appendOptimisticUserPrompt, /if \(autoFollowChat \|\| isChatNearBottom\(\)\)/, "a paused reader position should not leave a newly submitted turn off-screen");
 
 futureInvariant("theory #1: message_update streaming hot path must not call immediate scroll/layout work", () => {
   assert.doesNotMatch(handleMessageUpdate, /scrollChatToBottom\s*\(/, "handleMessageUpdate should schedule/coalesce follow-scroll instead of calling scrollChatToBottom() directly");

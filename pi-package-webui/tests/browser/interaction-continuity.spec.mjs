@@ -924,3 +924,39 @@ test("compact live output keeps the selected Text node through repeated flushes"
     await api(page, "/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
   }
 });
+
+test("submitting a new turn resumes bottom-follow and keeps the streamed tail anchored", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 420 });
+  await page.goto(baseURL);
+  await expect.poll(() => page.locator("#chat .message").count()).toBeGreaterThanOrEqual(3);
+  await page.addStyleTag({ content: "#chat > .message { min-height: 10rem; }" });
+
+  const chat = page.locator("#chat");
+  const pausedRemaining = await chat.evaluate((node) => {
+    node.style.scrollBehavior = "auto";
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new WheelEvent("wheel", { deltaY: -180, bubbles: true }));
+    node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight - 180);
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    node.style.removeProperty("scroll-behavior");
+    return node.scrollHeight - node.clientHeight - node.scrollTop;
+  });
+  assert.ok(pausedRemaining > 96, `the fixture must pause above the bottom threshold, got ${pausedRemaining}px`);
+  await expect(page.locator("#jumpToLatestButton")).toBeVisible();
+
+  await page.locator("#promptInput").fill("fixture continuity delayed stream");
+  await page.locator("#sendButton").click();
+  await expect(page.locator("#chat .message.user", { hasText: "fixture continuity delayed stream" }).last()).toBeVisible();
+  await expect.poll(() => chat.evaluate((node) => ({
+    following: document.querySelector("#jumpToLatestButton")?.hidden === true,
+    remaining: Math.round(node.scrollHeight - node.clientHeight - node.scrollTop),
+  }))).toEqual({ following: true, remaining: 0 });
+
+  const streamingOutput = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  for (const text of ["continuity", "continuity stream", "continuity stream complete"]) {
+    await expect(streamingOutput).toContainText(text);
+    await expect.poll(() => chat.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBe(0);
+  }
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => chat.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBe(0);
+});

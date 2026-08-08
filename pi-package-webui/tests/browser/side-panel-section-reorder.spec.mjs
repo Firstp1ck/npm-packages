@@ -64,15 +64,25 @@ async function sectionOrder(page) {
   ));
 }
 
-test("Control Deck sections persist pointer and keyboard reordering", async ({ page }) => {
+test("Control Deck Edit mode gates and persists pointer and keyboard reordering", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(baseURL);
   await expect(page.locator("#sidePanel")).toBeVisible();
 
   const initialOrder = await sectionOrder(page);
   expect(initialOrder.slice(0, 3)).toEqual(["controls", "files", "git"]);
+  const editButton = page.locator("#sidePanelEditButton");
+  await expect(editButton).toHaveAttribute("aria-pressed", "false");
 
   const controls = page.locator('[data-side-panel-section-toggle="controls"]');
+  await controls.focus();
+  await controls.press("Alt+ArrowDown");
+  expect((await sectionOrder(page)).slice(0, 3)).toEqual(["controls", "files", "git"]);
+  await editButton.click();
+  await expect(editButton).toHaveAttribute("aria-pressed", "true");
+  await expect(editButton).toContainText("Done");
+  await expect(page.locator("#sidePanel")).toHaveClass(/section-edit-mode/);
+  await expect(controls).toHaveAttribute("title", /drag to reorder/);
   const git = page.locator('[data-side-panel-section-toggle="git"]');
   const controlsBox = await controls.boundingBox();
   const gitBox = await git.boundingBox();
@@ -81,6 +91,7 @@ test("Control Deck sections persist pointer and keyboard reordering", async ({ p
   await page.mouse.move(controlsBox.x + controlsBox.width / 2, controlsBox.y + controlsBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(controlsBox.x + controlsBox.width / 2, controlsBox.y + controlsBox.height / 2 + 12, { steps: 2 });
+  await expect(controls.locator("xpath=../..")).toHaveClass(/dragging/);
   await page.mouse.move(gitBox.x + gitBox.width / 2, gitBox.y + gitBox.height - 4, { steps: 6 });
   await page.mouse.up();
 
@@ -89,6 +100,8 @@ test("Control Deck sections persist pointer and keyboard reordering", async ({ p
 
   await page.reload();
   await expect.poll(async () => (await sectionOrder(page)).slice(0, 3)).toEqual(["files", "git", "controls"]);
+  await expect(page.locator("#sidePanelEditButton")).toHaveAttribute("aria-pressed", "false");
+  await page.locator("#sidePanelEditButton").click();
 
   const movedControls = page.locator('[data-side-panel-section-toggle="controls"]');
   await movedControls.focus();
@@ -98,4 +111,5 @@ test("Control Deck sections persist pointer and keyboard reordering", async ({ p
 
   await page.reload();
   await expect.poll(async () => (await sectionOrder(page)).slice(0, 3)).toEqual(["files", "controls", "git"]);
+  await expect(page.locator("#sidePanelEditButton")).toHaveAttribute("aria-pressed", "false");
 });

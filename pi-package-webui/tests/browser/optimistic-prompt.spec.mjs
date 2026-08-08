@@ -77,32 +77,44 @@ test("submitted prompt remains visible during transcript reconciliation", async 
   await expect(visiblePrompt).toHaveCount(1);
 });
 
-test("run indicator remains visible until delayed agent start is confirmed", async ({ page }) => {
+test("run indicator remains visible and stable on mobile until delayed agent start is confirmed", async ({ page }) => {
   const prompt = "fixture continuity delayed start";
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(baseURL);
   await page.locator("#promptInput").fill(prompt);
   await page.locator("#sendButton").click();
 
   const runIndicator = page.locator("#chat .runIndicator");
   await expect(runIndicator).toBeVisible();
+  await delay(250);
   await page.evaluate(() => {
     window.__runIndicatorFrameGaps = 0;
+    window.__runIndicatorPositions = [];
     window.__monitorRunIndicator = true;
     const sample = () => {
       if (!window.__monitorRunIndicator) return;
-      if (!document.querySelector("#chat .runIndicator")) window.__runIndicatorFrameGaps += 1;
+      const indicator = document.querySelector("#chat .runIndicator");
+      if (!indicator) window.__runIndicatorFrameGaps += 1;
+      else window.__runIndicatorPositions.push(indicator.getBoundingClientRect().top);
       requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
   });
-  await delay(3300);
+  await delay(2000);
+  const indicatorSamples = await page.evaluate(() => {
+    window.__monitorRunIndicator = false;
+    const positions = window.__runIndicatorPositions || [];
+    return {
+      frameGaps: window.__runIndicatorFrameGaps,
+      drift: positions.length ? Math.max(...positions) - Math.min(...positions) : 0,
+      positions,
+    };
+  });
+  expect(indicatorSamples.frameGaps).toBe(0);
+  expect(indicatorSamples.drift, JSON.stringify(indicatorSamples.positions)).toBeLessThanOrEqual(1.5);
+  await delay(1300);
   await expect(runIndicator).toBeVisible();
   await expect(runIndicator).toContainText("Agent is running:");
-  const frameGaps = await page.evaluate(() => {
-    window.__monitorRunIndicator = false;
-    return window.__runIndicatorFrameGaps;
-  });
-  expect(frameGaps).toBe(0);
   await expect(page.locator("#chat .message.assistant").last()).toContainText("continuity stream complete");
 });
 

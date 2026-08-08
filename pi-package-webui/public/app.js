@@ -334,6 +334,8 @@ const elements = {
   sidePanelContextMenu: $("#sidePanelContextMenu"),
   gitFooterContextMenu: $("#gitFooterContextMenu"),
   sidePanelResizeHandle: $("#sidePanelResizeHandle"),
+  sidePanelEditButton: $("#sidePanelEditButton"),
+  sidePanelEditHint: $("#sidePanelEditHint"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
   sidePanelExpandButton: $("#sidePanelExpandButton"),
   sidePanelBackdrop: $("#sidePanelBackdrop"),
@@ -575,6 +577,7 @@ let fileViewerSearchHighlightElement = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
 let gitFooterContextMenuState = null;
+let sidePanelSectionEditMode = false;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
 let sidePanelSectionSuppressClickUntil = 0;
@@ -807,6 +810,7 @@ const mobileComposerOriginalPositions = new Map();
 let openTerminalTabGroupKey = null;
 let terminalCustomGroups = new Map();
 let terminalCustomGroupSerial = 1;
+let terminalTabGroupMenuSerial = 0;
 let savedWorkspaces = [];
 let savedWorkspacesLoaded = false;
 let savedWorkspacesLoading = false;
@@ -2315,6 +2319,9 @@ function applyMobileShellViewport() {
   const wasActive = isMobileShellV2Active();
   applyMobileShellEvent({ type: "viewport", viewport: mobileShellViewport() });
   if (wasActive !== isMobileShellV2Active() && isMobileShellV2Active()) {
+    mobileFooterExpanded = false;
+    elements.statusBar.removeAttribute("aria-label");
+    deactivateDrawerModal(elements.statusBar, { restoreFocus: false });
     document.body.classList.remove("composer-actions-open", "footer-details-expanded", "mobile-tabs-expanded", "mobile-keyboard-open");
   }
 }
@@ -3734,7 +3741,49 @@ function clearSidePanelSectionDragMarkers() {
   }
 }
 
+function updateSidePanelSectionEditAffordance(record) {
+  const collapsed = record.section.classList.contains("collapsed");
+  const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || "side panel";
+  const action = `${collapsed ? "Expand" : "Collapse"} ${label} section`;
+  record.button.setAttribute("aria-label", action);
+  record.button.setAttribute("title", sidePanelSectionEditMode
+    ? `${action} · drag to reorder · Alt+↑/↓ moves`
+    : action);
+  if (sidePanelSectionEditMode) record.button.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+  else record.button.removeAttribute("aria-keyshortcuts");
+}
+
+function cancelSidePanelSectionPointerDrag() {
+  const drag = sidePanelSectionPointerDrag;
+  if (!drag) return;
+  window.removeEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
+  window.removeEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
+  window.removeEventListener("pointercancel", endSidePanelSectionPointerDrag, { capture: true });
+  sidePanelSectionRecords().find(({ id }) => id === drag.sectionId)?.section.classList.remove("dragging");
+  sidePanelSectionPointerDrag = null;
+  sidePanelSectionLastDragOverKey = "";
+  clearSidePanelSectionDragMarkers();
+}
+
+function setSidePanelSectionEditMode(enabled) {
+  const next = !!enabled;
+  if (sidePanelSectionEditMode === next && elements.sidePanel?.classList.contains("section-edit-mode") === next) return;
+  if (!next) cancelSidePanelSectionPointerDrag();
+  sidePanelSectionEditMode = next;
+  elements.sidePanel?.classList.toggle("section-edit-mode", next);
+  if (elements.sidePanelEditButton) {
+    elements.sidePanelEditButton.setAttribute("aria-pressed", next ? "true" : "false");
+    elements.sidePanelEditButton.setAttribute("aria-label", next ? "Finish editing Control Deck section order" : "Edit Control Deck section order");
+    elements.sidePanelEditButton.setAttribute("title", next ? "Finish editing Control Deck section order" : "Edit Control Deck section order");
+    const label = elements.sidePanelEditButton.querySelector(".side-panel-edit-button-label");
+    if (label) label.textContent = next ? "Done" : "Edit";
+  }
+  if (elements.sidePanelEditHint) elements.sidePanelEditHint.hidden = !next;
+  for (const record of sidePanelSectionRecords()) updateSidePanelSectionEditAffordance(record);
+}
+
 function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
+  if (!sidePanelSectionEditMode) return false;
   const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === fromId);
   if (!sourceRecord || !targetRecord || sourceRecord.section === targetRecord.section) return false;
   const parent = sourceRecord.section.parentElement;
@@ -3749,6 +3798,7 @@ function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
 }
 
 function moveSidePanelSectionByOffset(sectionId, offset) {
+  if (!sidePanelSectionEditMode) return false;
   const records = visibleSidePanelSectionRecords();
   const fromIndex = records.findIndex(({ id }) => id === sectionId);
   const toIndex = fromIndex + offset;
@@ -3765,7 +3815,7 @@ function sidePanelSectionToggleFromPoint(clientX, clientY) {
 }
 
 function beginSidePanelSectionPointerDrag(event, sectionId) {
-  if (event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
+  if (!sidePanelSectionEditMode || event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
   sidePanelSectionPointerDrag = { sectionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
   window.addEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
   window.addEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
@@ -3886,12 +3936,10 @@ function restoreSidePanelSectionVisibility() {
 }
 
 function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}) {
-  const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || "side panel";
   record.section.classList.toggle("collapsed", collapsed);
   record.content.hidden = collapsed;
   record.button.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  record.button.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${label} section`);
-  record.button.setAttribute("title", `${collapsed ? "Expand" : "Collapse"} ${label} section · drag to reorder · Alt+↑/↓ moves`);
+  updateSidePanelSectionEditAffordance(record);
   if (!collapsed && record.id === "git" && !record.section.hidden) {
     queueMicrotask(() => {
       renderGitPanel();
@@ -3988,7 +4036,7 @@ function bindSidePanelSectionToggles() {
       }
     });
     record.button.addEventListener("keydown", (event) => {
-      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      if (!sidePanelSectionEditMode || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
       event.preventDefault();
       moveSidePanelSectionByOffset(record.id, event.key === "ArrowUp" ? -1 : 1);
     });
@@ -6173,8 +6221,9 @@ function setComposerActionsOpen(open, { restoreFocus = false } = {}) {
   }
   document.body.classList.toggle("composer-actions-open", shouldOpen);
   elements.composerActionsButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
-  elements.composerActionsButton.textContent = shouldOpen ? "Less" : "More";
-  elements.composerActionsButton.title = shouldOpen ? "Hide more composer actions" : "Show more composer actions";
+  elements.composerActionsButton.textContent = shouldOpen ? "−" : "More";
+  elements.composerActionsButton.setAttribute("aria-label", shouldOpen ? "Minimize more composer actions" : "Show more composer actions");
+  elements.composerActionsButton.title = shouldOpen ? "Minimize more composer actions" : "Show more composer actions";
   elements.composerActionsPanel.setAttribute("aria-hidden", shouldOpen || !isMobileView() ? "false" : "true");
   if (!shouldOpen) {
     setPublishMenuOpen(false);
@@ -6334,21 +6383,36 @@ function updateFooterModelPickerPosition() {
   document.documentElement.style.setProperty("--footer-model-picker-right", "auto");
 }
 
-function setMobileFooterExpanded(expanded) {
+function setMobileFooterExpanded(expanded, { restoreFocus = false } = {}) {
   if (isMobileShellV2Active()) return;
   mobileFooterExpanded = expanded && isMobileView();
-  if (mobileFooterExpanded && isFooterPickerOpen()) {
-    footerModelPickerOpen = false;
-    footerThinkingPickerOpen = false;
-    footerBranchPickerOpen = false;
-    document.body.classList.remove("footer-model-picker-open");
-    elements.statusBar.querySelectorAll(".footer-model-picker").forEach((node) => node.remove());
+  if (mobileFooterExpanded) {
+    setComposerActionsOpen(false);
+    setMobileTabsExpanded(false);
+    if (isFooterPickerOpen()) {
+      footerModelPickerOpen = false;
+      footerThinkingPickerOpen = false;
+      footerBranchPickerOpen = false;
+      document.body.classList.remove("footer-model-picker-open");
+      elements.statusBar.querySelectorAll(".footer-model-picker").forEach((node) => node.remove());
+    }
   }
   document.body.classList.toggle("footer-details-expanded", mobileFooterExpanded);
   const button = elements.statusBar.querySelector(".footer-details-toggle");
   if (button) {
-    button.textContent = mobileFooterExpanded ? "Less" : "Details";
+    button.textContent = mobileFooterExpanded ? "−" : "Details";
+    button.setAttribute("aria-label", mobileFooterExpanded ? "Minimize Git footer details" : "Show Git footer details");
+    button.setAttribute("title", mobileFooterExpanded ? "Minimize Git footer details" : "Show Git footer details");
     button.setAttribute("aria-expanded", mobileFooterExpanded ? "true" : "false");
+  }
+  if (mobileFooterExpanded && button) {
+    elements.statusBar.setAttribute("aria-label", "Git footer details");
+    activateDrawerModal(elements.statusBar, button, {
+      close: () => setMobileFooterExpanded(false, { restoreFocus: true }),
+    });
+  } else {
+    elements.statusBar.removeAttribute("aria-label");
+    deactivateDrawerModal(elements.statusBar, { restoreFocus });
   }
   updateFooterModelPickerPosition();
 }
@@ -6548,6 +6612,15 @@ function chooseGitWorktreeBase(branch) {
 function handleDrawerModalKeydown(event) {
   if (!activeDrawerModal || event.defaultPrevented) return;
   if (event.key === "Escape") {
+    if (activeDrawerModal.surface === elements.terminalTabsShell && openTerminalTabGroupKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      const openGroup = [...elements.tabBar.querySelectorAll(".terminal-tab-group")]
+        .find((group) => group.dataset.groupKey === openTerminalTabGroupKey);
+      clearOpenTerminalTabGroup(openTerminalTabGroupKey, { force: true });
+      openGroup?.querySelector(".terminal-tab-group-button")?.focus({ preventScroll: true });
+      return;
+    }
     event.preventDefault();
     activeDrawerModal.close?.();
     return;
@@ -6574,7 +6647,11 @@ function handleDrawerModalKeydown(event) {
 }
 
 function activateDrawerModal(surface, trigger, { close } = {}) {
-  if (activeDrawerModal?.surface === surface) return;
+  if (activeDrawerModal?.surface === surface) {
+    activeDrawerModal.trigger = trigger;
+    activeDrawerModal.close = close;
+    return;
+  }
   activeDrawerModal = {
     surface,
     trigger,
@@ -6617,6 +6694,7 @@ function syncMobileSidePanelState(collapsed) {
 }
 
 function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false } = {}) {
+  if (collapsed) setSidePanelSectionEditMode(false);
   document.body.classList.toggle("side-panel-collapsed", collapsed);
   elements.toggleSidePanelButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
   elements.toggleSidePanelButton.setAttribute("title", collapsed ? "Expand side panel" : "Collapse side panel");
@@ -14785,11 +14863,11 @@ function terminalTabGroupTooltip(group, groupTitle = terminalDisplayGroupTitle(g
   ];
   const active = terminalTabGroupActiveTooltip(groupTabs);
   if (active) lines.push(`Active: ${active}`);
-  lines.push("Click to switch · Drop tabs here to add");
+  lines.push(isMobileView() ? "Tap to open group terminals" : "Click to switch · Drop tabs here to add");
   return lines.join("\n");
 }
 
-function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0, subagent = false }) {
+function appendTerminalTabContent(button, { title, indicator, meta, count = null, appRunnerRun = null, conversationModeActive = false, workflowModeActive = false, workflowCount = 0, subagent = false, dropdown = false }) {
   const titleRow = make("span", "terminal-tab-title-row");
   const indicatorDot = make("span", "terminal-tab-activity-indicator");
   indicatorDot.setAttribute("aria-hidden", "true");
@@ -14799,6 +14877,11 @@ function appendTerminalTabContent(button, { title, indicator, meta, count = null
   if (conversationModeActive) titleRow.append(make("span", "terminal-tab-conversation-indicator", "voice"));
   if (workflowModeActive || workflowCount) titleRow.append(make("span", "terminal-tab-workflow-indicator", workflowCount ? `wf ${workflowCount}` : "wf"));
   if (count !== null) titleRow.append(make("span", "terminal-tab-group-count", String(count)));
+  if (dropdown) {
+    const disclosure = make("span", "terminal-tab-group-dropdown-indicator", "⌄");
+    disclosure.setAttribute("aria-hidden", "true");
+    titleRow.append(disclosure);
+  }
   button.append(titleRow, make("span", "terminal-tab-meta", meta));
 }
 
@@ -14906,10 +14989,19 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   wrapper.dataset.groupKey = group.key;
   if (group.customGroupId) wrapper.dataset.customGroupId = group.customGroupId;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: activeGroupTab?.id || "", target: { type: "group", group } });
-  wrapper.addEventListener("pointerenter", () => setOpenTerminalTabGroup(group.key));
-  wrapper.addEventListener("pointerleave", () => clearOpenTerminalTabGroup(group.key));
-  wrapper.addEventListener("focusin", () => setOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("pointerenter", (event) => {
+    if (event.pointerType === "touch") return;
+    setOpenTerminalTabGroup(group.key);
+  });
+  wrapper.addEventListener("pointerleave", (event) => {
+    if (event.pointerType === "touch") return;
+    clearOpenTerminalTabGroup(group.key);
+  });
+  wrapper.addEventListener("focusin", () => {
+    if (!isMobileView()) setOpenTerminalTabGroup(group.key);
+  });
   wrapper.addEventListener("focusout", () => {
+    if (isMobileView()) return;
     setTimeout(() => {
       if (!wrapper.contains(document.activeElement)) clearOpenTerminalTabGroup(group.key);
     }, 0);
@@ -14921,10 +15013,16 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
-  button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}`);
+  button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}. ${isMobileView() ? "Toggle group terminal list" : "Switch to the active group terminal"}`);
   applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace", targetKey: `terminal-group:${group.key}:switch` });
-  appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount });
-  button.addEventListener("click", () => switchTab(activeGroupTab.id));
+  appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount, dropdown: true });
+  button.addEventListener("click", () => {
+    if (isMobileView()) {
+      toggleOpenTerminalTabGroup(group.key);
+      return;
+    }
+    switchTab(activeGroupTab.id);
+  });
   wrapper.append(button);
 
   if (groupCount > 1 || group.custom) {
@@ -14941,8 +15039,10 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   }
 
   const menu = make("div", "terminal-tab-group-menu");
+  menu.id = `terminalTabGroupMenu${++terminalTabGroupMenuSerial}`;
   menu.setAttribute("role", "group");
   menu.setAttribute("aria-label", `${groupTitle} tabs`);
+  button.setAttribute("aria-controls", menu.id);
   for (const tab of groupTabs) menu.append(renderTerminalTabGroupItem(tab, group));
 
   const add = make("button", "terminal-tab-group-add", "+ Tab");
@@ -14971,6 +15071,12 @@ function setOpenTerminalTabGroup(groupKey) {
   if (!groupKey || openTerminalTabGroupKey === groupKey) return;
   openTerminalTabGroupKey = groupKey;
   updateTerminalTabGroupOpenState();
+}
+
+function toggleOpenTerminalTabGroup(groupKey) {
+  if (!groupKey) return;
+  if (openTerminalTabGroupKey === groupKey) clearOpenTerminalTabGroup(groupKey);
+  else setOpenTerminalTabGroup(groupKey);
 }
 
 function clearOpenTerminalTabGroup(groupKey, { force = false } = {}) {
@@ -15148,6 +15254,8 @@ async function refreshTabs({ selectStored = false } = {}) {
 async function switchTab(tabId) {
   if (!tabId || !tabs.some((tab) => tab.id === tabId)) return;
   if (tabId === activeTabId) {
+    clearOpenTerminalTabGroup(null, { force: true });
+    setMobileTabsExpanded(false);
     if (activeSubagentTerminalId) deactivateSubagentTerminalView({ focusParent: true });
     return;
   }
@@ -16442,12 +16550,17 @@ function applyFooterTooltip(node, tooltip, options = {}) {
   return applyStyledTooltip(node, tooltip, options);
 }
 
+function runFooterControlAction(action, event) {
+  if (mobileFooterExpanded) setMobileFooterExpanded(false, { restoreFocus: false });
+  return action(event);
+}
+
 function footerMetric(icon, label, value, tone = "", options = {}) {
   const isAction = typeof options.onClick === "function";
   const node = make(isAction ? "button" : "span", ["footer-metric", tone, isAction ? "footer-metric-action" : ""].filter(Boolean).join(" "));
   if (isAction) {
     node.type = "button";
-    node.addEventListener("click", options.onClick);
+    node.addEventListener("click", (event) => runFooterControlAction(options.onClick, event));
     if (options.ariaPressed !== undefined) node.setAttribute("aria-pressed", options.ariaPressed ? "true" : "false");
     if (options.ariaBusy) node.setAttribute("aria-busy", "true");
   }
@@ -16553,7 +16666,7 @@ function footerMeta(label, value, className = "", options = {}) {
   const node = make(isAction ? "button" : "span", ["footer-meta", className, isAction ? "footer-meta-action" : ""].filter(Boolean).join(" "));
   if (isAction) {
     node.type = "button";
-    node.addEventListener("click", options.onClick);
+    node.addEventListener("click", (event) => runFooterControlAction(options.onClick, event));
     if (options.ariaPressed !== undefined) node.setAttribute("aria-pressed", options.ariaPressed ? "true" : "false");
     if (options.ariaBusy) node.setAttribute("aria-busy", "true");
     if (options.disabled) {
@@ -17846,10 +17959,12 @@ function renderGitFooterPayload(payload) {
   const row2 = make("div", "footer-line footer-line-meta");
   const row2Children = [...metaNodes];
   if (gitFooterPayloadVisible(payload, "webui-details-button")) {
-    const footerToggle = make("button", "footer-details-toggle", mobileFooterExpanded ? "Less" : "Details");
+    const footerToggle = make("button", "footer-details-toggle", mobileFooterExpanded ? "−" : "Details");
     footerToggle.type = "button";
+    footerToggle.setAttribute("aria-label", mobileFooterExpanded ? "Minimize Git footer details" : "Show Git footer details");
+    footerToggle.setAttribute("title", mobileFooterExpanded ? "Minimize Git footer details" : "Show Git footer details");
     footerToggle.setAttribute("aria-expanded", mobileFooterExpanded ? "true" : "false");
-    footerToggle.addEventListener("click", () => setMobileFooterExpanded(!mobileFooterExpanded));
+    footerToggle.addEventListener("click", () => setMobileFooterExpanded(!mobileFooterExpanded, { restoreFocus: true }));
     row2Children.push(footerToggle);
   }
   row2.append(...row2Children);
@@ -22955,6 +23070,8 @@ function deactivateSubagentTerminalView({ render = true, focusParent = false } =
 async function activateSubagentTerminalView(viewId) {
   const view = subagentTerminalViews.get(viewId);
   if (!view) return;
+  clearOpenTerminalTabGroup(null, { force: true });
+  setMobileTabsExpanded(false);
   if (activeTabId !== view.parentTabId) await switchTab(view.parentTabId);
   closeSubagentOverlay();
   activeSubagentTerminalId = view.id;
@@ -23185,10 +23302,19 @@ function renderSubagentTerminalTabGroup(group) {
   const groupTitle = group.parentTitle || "workspace";
   const wrapper = make("div", `terminal-tab terminal-tab-group terminal-tab-subagent terminal-tab-subagent-group ${stateClass}${active ? " active" : ""}`);
   wrapper.dataset.groupKey = group.key;
-  wrapper.addEventListener("pointerenter", () => setOpenTerminalTabGroup(group.key));
-  wrapper.addEventListener("pointerleave", () => clearOpenTerminalTabGroup(group.key));
-  wrapper.addEventListener("focusin", () => setOpenTerminalTabGroup(group.key));
+  wrapper.addEventListener("pointerenter", (event) => {
+    if (event.pointerType === "touch") return;
+    setOpenTerminalTabGroup(group.key);
+  });
+  wrapper.addEventListener("pointerleave", (event) => {
+    if (event.pointerType === "touch") return;
+    clearOpenTerminalTabGroup(group.key);
+  });
+  wrapper.addEventListener("focusin", () => {
+    if (!isMobileView()) setOpenTerminalTabGroup(group.key);
+  });
   wrapper.addEventListener("focusout", () => {
+    if (isMobileView()) return;
     setTimeout(() => {
       if (!wrapper.contains(document.activeElement)) clearOpenTerminalTabGroup(group.key);
     }, 0);
@@ -23200,7 +23326,7 @@ function renderSubagentTerminalTabGroup(group) {
   button.setAttribute("aria-selected", active ? "true" : "false");
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
-  button.setAttribute("aria-label", `${groupTitle} workspace subagents: ${groupViews.length} views, ${runningCount} running. Active ${subagentTerminalViewTitle(activeView)}`);
+  button.setAttribute("aria-label", `${groupTitle} workspace subagents: ${groupViews.length} views, ${runningCount} running. Active ${subagentTerminalViewTitle(activeView)}. ${isMobileView() ? "Toggle subagent view list" : "Switch to the active subagent view"}`);
   applyStyledTooltip(button, `${groupTitle} · ${groupViews.length} subagent views\n${runningCount ? `${runningCount} running` : "All finished"}\nActive: ${subagentTerminalViewTitle(activeView)}`, { ariaLabel: false, description: true, placement: "right", variant: "workspace" });
   appendTerminalTabContent(button, {
     title: groupTitle,
@@ -23208,8 +23334,15 @@ function renderSubagentTerminalTabGroup(group) {
     meta: `${groupViews.length} subagents · ${runningCount ? `${runningCount} running` : "finished"}`,
     count: groupViews.length,
     subagent: true,
+    dropdown: true,
   });
-  button.addEventListener("click", () => activateSubagentTerminalView(activeView.id));
+  button.addEventListener("click", () => {
+    if (isMobileView()) {
+      toggleOpenTerminalTabGroup(group.key);
+      return;
+    }
+    activateSubagentTerminalView(activeView.id);
+  });
   wrapper.append(button);
 
   const close = make("button", "terminal-tab-close terminal-tab-group-close", "×");
@@ -23222,8 +23355,10 @@ function renderSubagentTerminalTabGroup(group) {
   wrapper.append(close);
 
   const menu = make("div", "terminal-tab-group-menu");
+  menu.id = `terminalTabGroupMenu${++terminalTabGroupMenuSerial}`;
   menu.setAttribute("role", "group");
   menu.setAttribute("aria-label", `${groupTitle} subagent views`);
+  button.setAttribute("aria-controls", menu.id);
   for (const view of groupViews) menu.append(renderSubagentTerminalTab(view, { groupItem: true }));
   wrapper.append(menu);
   return wrapper;
@@ -34397,7 +34532,9 @@ function appendOptimisticUserPrompt(message, attachmentCount = 0) {
   });
   if (transientMessages.length > 80) transientMessages.splice(0, transientMessages.length - 80);
   renderAllMessages();
-  if (autoFollowChat || isChatNearBottom()) scrollChatToBottom({ force: true });
+  // Sending a prompt is an explicit request to follow the new turn, even when
+  // the reader had previously paused auto-follow higher in the transcript.
+  scrollChatToBottom({ force: true });
   return optimisticPromptId;
 }
 
@@ -44829,6 +44966,9 @@ elements.webuiPackageNpmButton?.addEventListener("click", () => {
 });
 elements.webuiPackageCloseButton?.addEventListener("click", () => elements.webuiPackageDialog?.close());
 elements.piReleaseNotesCloseButton?.addEventListener("click", () => elements.piReleaseNotesDialog?.close());
+elements.sidePanelEditButton?.addEventListener("click", () => {
+  setSidePanelSectionEditMode(!sidePanelSectionEditMode);
+});
 elements.toggleSidePanelButton.addEventListener("click", () => {
   setSidePanelCollapsed(true);
 });
@@ -45621,6 +45761,7 @@ initializeComposerActionOrdering();
 restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
+setSidePanelSectionEditMode(false);
 bindSidePanelSectionToggles();
 restoreSidePanelState();
 initializeCodexUsage();

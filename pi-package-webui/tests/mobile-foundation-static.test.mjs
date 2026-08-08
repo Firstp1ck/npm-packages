@@ -16,9 +16,9 @@ const pkg = JSON.parse(packageRaw);
 
 const assertionIntent = [
   {
-    assertion: "legacy mobile composer controls used a 40px minimum",
-    status: "superseded",
-    reason: "Phase 0 establishes the approved 44px phone/coarse-pointer hit-area floor, including Compact density.",
+    assertion: "phone controls use the user-selected 40px minimum",
+    status: "preserved",
+    reason: "Balanced phone density restores a 40px floor while retaining safe areas and unchanged tablet and desktop sizing.",
   },
   {
     assertion: "legacy mobile tab popover remains available when the v2 flag is off",
@@ -48,7 +48,7 @@ assert.match(app, /function updateVisualViewportVars\([\s\S]*?keyboardOpen && !i
 assert.match(app, /function syncMobileChatToBottomForInput\(\) \{\n  if \(!isMobileView\(\) \|\| isMobileShellV2Active\(\)\) return;/, "v2 must suppress legacy forced chat scrolling");
 assert.match(app, /function bindMobileViewChanges\([\s\S]*?applyMobileShellViewport\(\);[\s\S]*?if \(isMobileShellV2Active\(\)\) return;/, "v2 must bypass legacy breakpoint mutations");
 assert.match(app, /function setMobileTabsExpanded\(expanded, \{ restoreFocus = false \} = \{\}\) \{\n  if \(isMobileShellV2Active\(\)\) return;/, "v2 must own surface visibility rather than the legacy tabs expander");
-assert.match(app, /function setMobileFooterExpanded\(expanded\) \{\n  if \(isMobileShellV2Active\(\)\) return;/, "v2 must suppress legacy footer expansion");
+assert.match(app, /function setMobileFooterExpanded\(expanded, \{ restoreFocus = false \} = \{\}\) \{\n  if \(isMobileShellV2Active\(\)\) return;/, "v2 must suppress legacy footer expansion");
 assert.match(app, /function createBrowserPromptRequestId\(/, "browser prompt submission must mint an opaque request identity");
 assert.match(app, /if \(kind === "prompt"\) bodyBase\.requestId = createBrowserPromptRequestId\(\)/, "the browser identity must travel with primary prompt submission and remain stable in the captured manual-retry body");
 assert.match(server, /BROWSER_PROMPT_REQUEST_LIMIT = 256/, "server request deduplication must remain bounded");
@@ -61,10 +61,10 @@ assert.match(server, /SSE_BACKPRESSURE_MAX_PENDING_BYTES = 4 \* 1024 \* 1024/, "
 assert.match(server, /res\.once\("drain", \(\) => flushSseClient\(client\)\)/, "healthy SSE clients must resume after transient write backpressure");
 assert.match(server, /client\.tab\?\.sseClients\?\.delete\(client\)/, "eviction must remove only the slow client");
 assert.match(server, /client\.res\?\.end\(\)/, "slow-client eviction must finish chunked SSE responses gracefully");
-assert.match(css, /\.terminal-tabs-toggle-button \{[\s\S]*?min-height: 44px/, "phone tab targets must meet the 44px floor");
-assert.match(css, /\.composer-attach-button \{[\s\S]*?width: 44px;[\s\S]*?min-height: 44px/, "phone attachment target must meet the 44px floor");
-assert.match(css, /\.composer-row button \{\n    width: 100%;\n    min-height: 44px/, "phone composer controls must meet the 44px floor");
-assert.match(css, /html\[data-density="compact"\] button,[\s\S]*?@media \(max-width: 720px\)[\s\S]*?min-height: 44px/, "Compact density cannot shrink phone/coarse targets below 44px");
+assert.match(css, /--mobile-control-size:\s*40px;/, "phone density should expose the selected 40px control floor");
+assert.match(css, /\.terminal-tabs-toggle-button,[\s\S]*?\.terminal-close-all-button \{ min-height:\s*var\(--mobile-control-size\)/, "phone tab targets should use the shared compact control size");
+assert.match(css, /\.side-panel-toggle-button,[\s\S]*?\.composer-attach-button,[\s\S]*?width:\s*var\(--mobile-control-size\);[\s\S]*?height:\s*var\(--mobile-control-size\);/, "phone icon controls should use the shared compact square size");
+assert.match(css, /body\.mobile-composer-disclosure \.composer-input-row \{ grid-template-columns:\s*minmax\(0, 1fr\) var\(--mobile-control-size\);/, "legacy phone composer layout should reserve only the compact attachment width");
 assert.match(css, /html\[data-mobile-shell="v2"\] \{ --mobile-shell-v2-active: 1; \}/, "new v2 CSS must be root-scoped");
 
 console.log("mobile-foundation-static.test.mjs passed");

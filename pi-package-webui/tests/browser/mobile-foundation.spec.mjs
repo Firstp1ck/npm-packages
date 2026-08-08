@@ -105,6 +105,46 @@ test("legacy phone keeps terminal navigation and secondary composer actions coll
   await expect(page.locator("#composerActionsButton")).toBeVisible();
   await expect(page.locator("#sendButton")).toBeVisible();
   await expect(page.locator("#composerActionsPanel")).toBeHidden();
+  const legacyDensity = await page.evaluate(() => ({
+    controlSize: getComputedStyle(document.documentElement).getPropertyValue("--mobile-control-size").trim(),
+    bodyFontSize: Number.parseFloat(getComputedStyle(document.body).fontSize),
+    attachSize: document.querySelector("#attachButton").getBoundingClientRect().width,
+  }));
+  assert.equal(legacyDensity.controlSize, "40px");
+  assert.ok(legacyDensity.bodyFontSize <= 14, `legacy mobile body text should use the balanced compact scale, got ${legacyDensity.bodyFontSize}px`);
+  assert.equal(legacyDensity.attachSize, 40, `legacy attachment control should use the selected 40px target, got ${legacyDensity.attachSize}px`);
+
+  await page.evaluate(() => {
+    const widget = document.createElement("details");
+    widget.id = "mobileTodoProgressFixture";
+    widget.className = "widget todo-widget";
+    widget.innerHTML = `
+      <summary class="todo-widget-summary">
+        <div class="todo-widget-goal">Goal: Keep mobile progress compact</div>
+        <div class="todo-widget-header">
+          <span class="todo-widget-toggle">›</span>
+          <span class="todo-widget-title">Todo progress</span>
+          <span class="todo-widget-count">1/3</span>
+          <span class="todo-widget-meta">active</span>
+        </div>
+        <div class="todo-widget-progress"><span class="todo-widget-progress-fill" style="width: 33%"></span></div>
+      </summary>
+      <div class="todo-widget-body"><ol class="todo-widget-list"><li class="todo-widget-item partial"><span class="todo-widget-marker">–</span><span class="todo-widget-text">Add regression coverage</span></li></ol></div>
+    `;
+    document.querySelector(".widget-area").append(widget);
+  });
+  const mobileTodo = page.locator("#mobileTodoProgressFixture");
+  const collapsedTodoSummary = await mobileTodo.locator("summary").boundingBox();
+  assert.ok(collapsedTodoSummary && collapsedTodoSummary.height <= 24, `collapsed mobile todo progress should be one line, got ${JSON.stringify(collapsedTodoSummary)}`);
+  await expect(mobileTodo.locator(".todo-widget-goal")).toBeHidden();
+  await expect(mobileTodo.locator(".todo-widget-progress")).toBeHidden();
+  await expect(mobileTodo.locator(".todo-widget-body")).toBeHidden();
+  await mobileTodo.locator("summary").tap();
+  await expect(mobileTodo).toHaveAttribute("open", "");
+  await expect(mobileTodo.locator(".todo-widget-goal")).toBeVisible();
+  await expect(mobileTodo.locator(".todo-widget-progress")).toBeVisible();
+  await expect(mobileTodo.locator(".todo-widget-body")).toBeVisible();
+  await mobileTodo.evaluate((node) => node.remove());
 
   await page.locator("#terminalTabsToggleButton").tap();
   await expect(page.locator("#footerFloatingTooltip")).toHaveCount(0);
@@ -114,8 +154,9 @@ test("legacy phone keeps terminal navigation and secondary composer actions coll
   await expect(page.locator(".terminal-sidebar-actions")).toBeVisible();
   await expect(page.locator("#closeAllTabsButton")).toBeVisible();
   const drawer = await page.locator(".terminal-tabs-shell").boundingBox();
-  assert.ok(drawer && drawer.x < 12 && drawer.width < 390, `terminal drawer should be left aligned and bounded, got ${JSON.stringify(drawer)}`);
-  await page.locator("#terminalTabsBackdrop").click({ position: { x: 385, y: 400 } });
+  assert.ok(drawer && drawer.x === 0 && drawer.y === 0 && drawer.width === 390 && drawer.height === 844, `terminal navigation should fill 390×844, got ${JSON.stringify(drawer)}`);
+  await expect(page.locator("#sidePanelExpandButton")).toBeHidden();
+  await page.locator("#terminalTabsToggleButton").tap();
   await expect(page.locator("#terminalTabsDrawerContent")).toBeHidden();
   await expect(page.locator("#terminalTabsToggleButton")).toBeFocused();
   await page.setViewportSize({ width: 320, height: 720 });
@@ -123,9 +164,79 @@ test("legacy phone keeps terminal navigation and secondary composer actions coll
   await page.keyboard.press("Enter");
   await expect(page.locator("#terminalTabsDrawerContent")).toBeVisible();
   const narrowDrawer = await page.locator(".terminal-tabs-shell").boundingBox();
-  assert.ok(narrowDrawer && narrowDrawer.x < 12 && narrowDrawer.width < 320, `terminal drawer should remain bounded at 320px, got ${JSON.stringify(narrowDrawer)}`);
+  assert.ok(narrowDrawer && narrowDrawer.x === 0 && narrowDrawer.y === 0 && narrowDrawer.width === 320 && narrowDrawer.height === 720, `terminal navigation should fill 320×720, got ${JSON.stringify(narrowDrawer)}`);
+  await expect(page.locator("#sidePanelExpandButton")).toBeHidden();
   await expect(page.locator(".terminal-tabs-shell")).toHaveAttribute("role", "dialog");
   await expect(page.locator(".terminal-tabs-shell")).toHaveAttribute("aria-modal", "true");
+
+  await page.locator("#newTabButton").tap();
+  await expect(page.locator("#newTabMenuPanel")).toBeVisible();
+  let drawerLayers = await page.evaluate(() => ({
+    drawer: Number.parseInt(getComputedStyle(document.querySelector(".terminal-tabs-shell")).zIndex, 10),
+    backdrop: Number.parseInt(getComputedStyle(document.querySelector("#terminalTabsBackdrop")).zIndex, 10),
+  }));
+  assert.ok(drawerLayers.drawer > drawerLayers.backdrop, `open + Tab options must remain above the blurred backdrop, got ${JSON.stringify(drawerLayers)}`);
+
+  await page.evaluate(() => {
+    const fixture = document.createElement("div");
+    fixture.id = "mobileGroupToggleFixture";
+    fixture.className = "terminal-tab terminal-tab-group";
+    const button = document.createElement("button");
+    button.className = "terminal-tab-button terminal-tab-group-button";
+    button.setAttribute("aria-expanded", "false");
+    button.innerHTML = '<span class="terminal-tab-title-row"><span class="terminal-tab-title">Fixture group</span><span class="terminal-tab-group-dropdown-indicator">⌄</span></span><span class="terminal-tab-meta">project-cwd · idle</span>';
+    const menu = document.createElement("div");
+    menu.className = "terminal-tab-group-menu";
+    menu.textContent = "Fixture terminal";
+    button.addEventListener("click", () => {
+      const open = !fixture.classList.contains("menu-open");
+      fixture.classList.toggle("menu-open", open);
+      button.setAttribute("aria-expanded", String(open));
+    });
+    fixture.append(button, menu);
+
+    const visibilityFixture = document.createElement("div");
+    visibilityFixture.id = "mobileGroupedTabsVisibilityFixture";
+    visibilityFixture.className = "terminal-tabs";
+    for (const label of ["group-a", "group-b"]) {
+      const group = document.createElement("div");
+      group.className = "terminal-tab terminal-tab-group";
+      group.dataset.groupKey = label;
+      visibilityFixture.append(group);
+    }
+    const overallNewTab = document.createElement("div");
+    overallNewTab.id = "mobileOverallNewTabFixture";
+    overallNewTab.className = "terminal-new-tab-menu composer-publish-menu";
+    overallNewTab.textContent = "+ Tab";
+    visibilityFixture.append(overallNewTab);
+
+    document.querySelector("#terminalTabsDrawerContent").append(fixture, visibilityFixture);
+  });
+  await expect(page.locator("#mobileOverallNewTabFixture")).toBeVisible();
+  await page.locator("#mobileGroupedTabsVisibilityFixture > .terminal-tab-group").first().evaluate((node) => node.classList.add("menu-open"));
+  await expect(page.locator("#mobileOverallNewTabFixture")).toBeHidden();
+  await page.locator("#mobileGroupedTabsVisibilityFixture > .terminal-tab-group").first().evaluate((node) => node.classList.remove("menu-open"));
+  await expect(page.locator("#mobileOverallNewTabFixture")).toBeVisible();
+  await page.locator("#mobileGroupedTabsVisibilityFixture").evaluate((node) => node.remove());
+  const mobileGroupFixture = page.locator("#mobileGroupToggleFixture");
+  const mobileGroupFixtureButton = mobileGroupFixture.locator(".terminal-tab-group-button");
+  const mobileGroupFixtureMenu = mobileGroupFixture.locator(".terminal-tab-group-menu");
+  await expect(mobileGroupFixtureButton.locator(".terminal-tab-meta")).toBeVisible();
+  await expect(mobileGroupFixtureButton.locator(".terminal-tab-meta")).toContainText("project-cwd");
+  await mobileGroupFixtureButton.tap();
+  await expect(page.locator("#newTabMenuPanel")).toBeHidden();
+  await expect(mobileGroupFixtureButton).toHaveAttribute("aria-expanded", "true");
+  await expect(mobileGroupFixtureMenu).toBeVisible();
+  drawerLayers = await page.evaluate(() => ({
+    drawer: Number.parseInt(getComputedStyle(document.querySelector(".terminal-tabs-shell")).zIndex, 10),
+    backdrop: Number.parseInt(getComputedStyle(document.querySelector("#terminalTabsBackdrop")).zIndex, 10),
+  }));
+  assert.ok(drawerLayers.drawer > drawerLayers.backdrop, `open group options must remain above the blurred backdrop, got ${JSON.stringify(drawerLayers)}`);
+  await mobileGroupFixtureButton.tap();
+  await expect(mobileGroupFixtureButton).toHaveAttribute("aria-expanded", "false");
+  await expect(mobileGroupFixtureMenu).toBeHidden();
+  await mobileGroupFixture.evaluate((node) => node.remove());
+
   await page.locator("#closeAllTabsButton").focus();
   await page.keyboard.press("Tab");
   await expect(page.locator("#terminalTabsToggleButton")).toBeFocused();
@@ -138,8 +249,14 @@ test("legacy phone keeps terminal navigation and secondary composer actions coll
 
   await page.locator("#composerActionsButton").focus();
   await page.locator("#composerActionsButton").click();
-  await expect(page.locator("#composerActionsButton")).toHaveText("Less");
+  await expect(page.locator("#composerActionsButton")).toHaveText("−");
+  await expect(page.locator("#composerActionsButton")).toHaveAttribute("aria-label", "Minimize more composer actions");
   await expect(page.locator("#composerActionsPanel")).toBeVisible();
+  await expect(page.locator("#sidePanelExpandButton")).toBeHidden();
+  const moreOverlayBox = await page.locator("#composerActionsPanel").boundingBox();
+  assert.ok(moreOverlayBox && moreOverlayBox.x === 0 && moreOverlayBox.y === 0 && moreOverlayBox.width === 320 && moreOverlayBox.height === 720, `mobile More actions should fill 320×720, got ${JSON.stringify(moreOverlayBox)}`);
+  const minimizeButtonBox = await page.locator("#composerActionsButton").boundingBox();
+  assert.ok(minimizeButtonBox && minimizeButtonBox.y < 60 && minimizeButtonBox.width === 40 && minimizeButtonBox.height === 40 && minimizeButtonBox.x + minimizeButtonBox.width <= 320, `mobile minimize should remain compact and reachable at the top-right of the full-screen overlay, got ${JSON.stringify(minimizeButtonBox)}`);
   await expect(page.getByRole("heading", { name: "Session & workspace" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Tools & commands" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Context & modes" })).toBeVisible();
@@ -149,13 +266,154 @@ test("legacy phone keeps terminal navigation and secondary composer actions coll
   await expect.poll(() => page.locator("#btwButton").evaluate((node) => node.parentElement?.id)).toBe("composerActionsPanel");
   await page.keyboard.press("Escape");
   await expect(page.locator("#composerActionsPanel")).toBeHidden();
+  await expect(page.locator("#sidePanelExpandButton")).toBeVisible();
   await expect(page.locator("#composerActionsButton")).toHaveText("More");
   await expect(page.locator("#composerActionsButton")).toBeFocused();
 
   await page.locator("#sidePanelExpandButton").click();
   await expect(page.locator("#sidePanel")).toBeVisible();
   await expect(page.getByText("Control Deck", { exact: true })).toBeVisible();
+  const editSectionsButton = page.locator("#sidePanelEditButton");
+  await expect(editSectionsButton).toHaveText(/Edit/);
+  await expect(editSectionsButton).toHaveAttribute("aria-pressed", "false");
+  const dragVisibleSections = (pointerId) => page.evaluate((id) => {
+    const sections = [...document.querySelectorAll("[data-side-panel-section]")].filter((section) => !section.hidden);
+    const source = sections[0]?.querySelector("[data-side-panel-section-toggle]");
+    const target = sections[1]?.querySelector("[data-side-panel-section-toggle]");
+    const before = sections.map((section) => section.dataset.sidePanelSection);
+    const sourceRect = source.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    source.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: id, button: 0, clientX: sourceRect.left + 10, clientY: sourceRect.top + 10 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: id, button: 0, clientX: targetRect.left + 10, clientY: targetRect.bottom - 4 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: id, button: 0, clientX: targetRect.left + 10, clientY: targetRect.bottom - 4 }));
+    return {
+      before,
+      after: [...document.querySelectorAll("[data-side-panel-section]")].filter((section) => !section.hidden).map((section) => section.dataset.sidePanelSection),
+      title: source.title,
+      touchAction: getComputedStyle(source).touchAction,
+      storedOrder: JSON.parse(localStorage.getItem("pi-webui-side-panel-section-order-v1") || "[]"),
+    };
+  }, pointerId);
+
+  const lockedDragResult = await dragVisibleSections(71);
+  assert.deepEqual(lockedDragResult.after, lockedDragResult.before, "Control Deck sections must remain locked before Edit is activated");
+  assert.doesNotMatch(lockedDragResult.title, /drag|Alt\+/i, "locked section titles should not advertise reorder controls");
+  assert.equal(lockedDragResult.touchAction, "manipulation", "locked section headers should retain native tap/scroll behavior");
+
+  await editSectionsButton.tap();
+  await expect(editSectionsButton).toHaveText(/Done/);
+  await expect(editSectionsButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#sidePanel")).toHaveClass(/section-edit-mode/);
+  await expect(page.locator("#sidePanelEditHint")).toBeVisible();
+  const editableDragResult = await dragVisibleSections(72);
+  assert.notDeepEqual(editableDragResult.after, editableDragResult.before, "Edit mode should enable touch/pointer section reordering");
+  assert.match(editableDragResult.title, /drag to reorder · Alt\+↑\/↓ moves/, "Edit mode should advertise pointer and keyboard movement");
+  assert.equal(editableDragResult.touchAction, "none", "Edit mode should reserve section-header gestures for drag movement");
+  assert.deepEqual(editableDragResult.storedOrder.slice(0, editableDragResult.after.length), editableDragResult.after, "Edit-mode drag order should persist through the existing layout preference");
+
+  const keyboardOrderBefore = await page.locator("[data-side-panel-section]:not([hidden])").evaluateAll((sections) => sections.map((section) => section.dataset.sidePanelSection));
+  await page.locator("[data-side-panel-section]:not([hidden]) [data-side-panel-section-toggle]").first().focus();
+  await page.keyboard.press("Alt+ArrowDown");
+  const keyboardOrderAfter = await page.locator("[data-side-panel-section]:not([hidden])").evaluateAll((sections) => sections.map((section) => section.dataset.sidePanelSection));
+  assert.notDeepEqual(keyboardOrderAfter, keyboardOrderBefore, "Edit mode should enable accessible Alt+Arrow section movement");
+
+  await editSectionsButton.tap();
+  await expect(editSectionsButton).toHaveText(/Edit/);
+  await expect(editSectionsButton).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#sidePanel")).not.toHaveClass(/section-edit-mode/);
+  await expect(page.locator("#sidePanelEditHint")).toBeHidden();
+  const doneDragResult = await dragVisibleSections(73);
+  assert.deepEqual(doneDragResult.after, doneDragResult.before, "Done should lock Control Deck section order again");
+
+  await editSectionsButton.tap();
   await page.locator("#toggleSidePanelButton").click();
+  await expect(editSectionsButton).toHaveAttribute("aria-pressed", "false");
+
+  await page.evaluate(() => {
+    const statusBar = document.querySelector("#statusBar");
+    statusBar.className = "statusbar statusbar-git-footer";
+    statusBar.replaceChildren();
+    const metric = (icon, label, value) => {
+      const node = document.createElement("span");
+      node.className = "footer-metric";
+      node.innerHTML = `<span class="footer-metric-icon">${icon}</span><span class="footer-metric-label">${label}</span><span class="footer-metric-value">${value}</span>`;
+      return node;
+    };
+    const meta = (className, label, value) => {
+      const node = document.createElement("span");
+      node.className = `footer-meta ${className}`;
+      node.innerHTML = `<span class="footer-meta-label">${label}</span><span class="footer-meta-value">${value}</span>`;
+      return node;
+    };
+    const main = document.createElement("div");
+    main.className = "footer-line footer-line-main";
+    main.append(
+      metric("🪙", "tokens", "↑1.1M · ↓76k"),
+      metric("π", "pi", "21k tok"),
+      metric("⚡", "speed", "76k tok @ 35.1/s"),
+      metric("🧠", "context", "59.8%/272k"),
+      metric("📊", "usage", "weekly 2% · session 8%"),
+    );
+    const details = document.createElement("button");
+    details.className = "footer-details-toggle";
+    details.textContent = "−";
+    details.setAttribute("aria-label", "Minimize Git footer details");
+    const metadata = document.createElement("div");
+    metadata.className = "footer-line footer-line-meta";
+    metadata.append(
+      meta("footer-worktree", "git+", "🕘 1h"),
+      meta("footer-workspace", "cwd", "~/npm-packages"),
+      meta("footer-context", "context", "59.8%/272k (auto)"),
+      meta("footer-branch", "git", "main"),
+      meta("footer-changes", "changes", "✏️ 13 · ✓ fetch"),
+      meta("footer-model", "model", "(openai-codex) gpt-5.6-sol"),
+      meta("footer-thinking", "effort", "high"),
+      details,
+    );
+    const refresh = document.createElement("button");
+    refresh.className = "git-footer-refresh-button";
+    refresh.textContent = "↻";
+    statusBar.append(main, metadata, refresh);
+    document.body.classList.add("footer-details-expanded");
+  });
+  const footerOverlay = page.locator("#statusBar");
+  const footerOverlayBox = await footerOverlay.boundingBox();
+  assert.ok(footerOverlayBox && footerOverlayBox.x === 0 && footerOverlayBox.y === 0 && footerOverlayBox.width === 320 && footerOverlayBox.height === 720, `mobile Git footer details should fill 320×720, got ${JSON.stringify(footerOverlayBox)}`);
+  await expect(footerOverlay.locator(".footer-details-toggle")).toHaveText("−");
+  await expect(footerOverlay.locator(".footer-details-toggle")).toHaveAttribute("aria-label", "Minimize Git footer details");
+  await expect(footerOverlay.locator(".git-footer-refresh-button")).toBeVisible();
+  const footerDetailsLayout = await footerOverlay.evaluate((node) => {
+    const main = node.querySelector(".footer-line-main");
+    const metadata = node.querySelector(".footer-line-meta");
+    const metrics = [...main.querySelectorAll(".footer-metric")].map((item) => item.getBoundingClientRect());
+    const workspace = metadata.querySelector(".footer-workspace").getBoundingClientRect();
+    const branch = metadata.querySelector(".footer-branch").getBoundingClientRect();
+    const metaCards = [...metadata.querySelectorAll(".footer-meta")].map((item) => item.getBoundingClientRect());
+    return {
+      alignContent: getComputedStyle(node).alignContent,
+      mainColumns: getComputedStyle(main).gridTemplateColumns,
+      metaColumns: getComputedStyle(metadata).gridTemplateColumns,
+      mainHeading: getComputedStyle(main, "::before").content,
+      metaHeading: getComputedStyle(metadata, "::before").content,
+      firstMetricWidth: metrics[0].width,
+      lastMetricWidth: metrics.at(-1).width,
+      maxMetricHeight: Math.max(...metrics.map((item) => item.height)),
+      workspaceWidth: workspace.width,
+      branchWidth: branch.width,
+      maxMetaHeight: Math.max(...metaCards.map((item) => item.height)),
+    };
+  });
+  assert.equal(footerDetailsLayout.alignContent, "start", "expanded footer rows should pack at the top instead of stretching across the viewport");
+  assert.match(footerDetailsLayout.mainColumns, /px .*px/, "session metrics should use two balanced columns");
+  assert.match(footerDetailsLayout.metaColumns, /px .*px/, "workspace and Git metadata should use two balanced columns");
+  assert.equal(footerDetailsLayout.mainHeading, '"Session"');
+  assert.equal(footerDetailsLayout.metaHeading, '"Workspace, Git & runtime"');
+  assert.ok(footerDetailsLayout.lastMetricWidth >= footerDetailsLayout.firstMetricWidth * 1.9, `an odd final metric should span both columns, got ${JSON.stringify(footerDetailsLayout)}`);
+  assert.ok(footerDetailsLayout.workspaceWidth >= footerDetailsLayout.branchWidth * 1.9, `long workspace metadata should span both columns, got ${JSON.stringify(footerDetailsLayout)}`);
+  assert.ok(footerDetailsLayout.maxMetricHeight <= 52 && footerDetailsLayout.maxMetaHeight <= 46, `footer cards should stay compact, got ${JSON.stringify(footerDetailsLayout)}`);
+  await expect(page.locator("#sidePanelExpandButton")).toBeHidden();
+  await page.evaluate(() => document.body.classList.remove("footer-details-expanded"));
+  await expect(footerOverlay.locator(".git-footer-refresh-button")).toBeHidden();
 
   await context.close();
 
@@ -175,10 +433,28 @@ test("phone v2 destinations, canonical actions, history, and presentation remain
   await page.goto(`${baseURL}/?mobileShell=v2`);
   await expect(page.locator("html")).toHaveAttribute("data-mobile-shell", "v2");
   await expect(page.locator("#mobileShellV2")).toBeVisible();
+  const v2Density = await page.evaluate(() => {
+    const appbar = document.querySelector(".mobile-shell-appbar");
+    const nav = document.querySelector(".mobile-shell-nav");
+    return {
+      controlSize: getComputedStyle(document.documentElement).getPropertyValue("--mobile-control-size").trim(),
+      appbarHeight: appbar.getBoundingClientRect().height,
+      appbarMinHeight: Number.parseFloat(getComputedStyle(appbar).minHeight),
+      appbarGridRows: getComputedStyle(appbar).gridTemplateRows,
+      appbarPadding: `${getComputedStyle(appbar).paddingTop} ${getComputedStyle(appbar).paddingBottom}`,
+      sessionHeight: document.querySelector("#mobileSessionButton").getBoundingClientRect().height,
+      indicatorHeight: document.querySelector("#mobileShellIndicators").getBoundingClientRect().height,
+      searchHeight: document.querySelector("#mobileSearchButton").getBoundingClientRect().height,
+      navHeight: nav.getBoundingClientRect().height,
+      navMinHeight: Number.parseFloat(getComputedStyle(nav).minHeight),
+    };
+  });
+  assert.equal(v2Density.controlSize, "40px");
+  assert.ok(v2Density.appbarHeight <= v2Density.appbarMinHeight + 2 && v2Density.navHeight <= v2Density.navMinHeight + 0.5, `v2 chrome should stay at its compact safe-area-aware minimum, got ${JSON.stringify(v2Density)}`);
   for (const selector of ["#mobileSessionButton", "#mobileSearchButton", "#mobileMoreButton", "#attachButton", "#composerActionsButton", "#sendButton"]) {
     const box = await page.locator(selector).boundingBox();
     assert.ok(box, `${selector} should have a box`);
-    assert.ok(box.width >= 44 && box.height >= 44, `${selector} should meet the 44px target floor, got ${box.width}×${box.height}`);
+    assert.ok(box.width >= 40 && box.height >= 40, `${selector} should meet the selected 40px target floor, got ${box.width}×${box.height}`);
   }
   const phoneNav = page.getByRole("navigation", { name: "Phone destinations" });
   await expect(phoneNav.getByRole("button")).toHaveCount(4);

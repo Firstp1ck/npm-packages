@@ -38,6 +38,7 @@ const sources = [
 ].join("\n");
 const terminalTabMetaSource = appFunctionSource("terminalTabMeta", "terminalTabGitTooltip");
 const renderTerminalTabGroupSource = appFunctionSource("renderTerminalTabGroup", "updateTerminalTabGroupOpenState");
+const renderSubagentTerminalTabGroupSource = appFunctionSource("renderSubagentTerminalTabGroup", "openSubagentOutput");
 
 const context = {
   normalizeDisplayPath: (value) => String(value || "").replace(/\\/g, "/"),
@@ -51,6 +52,7 @@ const context = {
   tabWorkflowModeActive: (tab) => tab.workflowMode === true,
   workflowRunningCountForTab: (id) => id === "tab-1" ? 2 : 0,
   terminalDisplayGroupTitle: () => "Workspace group",
+  isMobileView: () => false,
 };
 
 const results = vm.runInNewContext(`
@@ -90,6 +92,18 @@ assert.doesNotMatch(terminalTabMetaSource, /\bpid\b/i, "compact tab metadata sho
 assert.equal(app.match(/applyStyledTooltip\(button, terminalTabTooltip\(tab\)/g)?.length, 2, "single and grouped-item tabs should share one tooltip formatter");
 assert.match(renderTerminalTabGroupSource, /applyStyledTooltip\(button, terminalTabGroupTooltip\(group, groupTitle\), \{ ariaLabel: false, description: true, placement: "right", variant: "workspace", targetKey: `terminal-group:\$\{group\.key\}:switch` \}\)/, "group hover disclosure should use the shared floating tooltip layer with stable semantic identity to the right of its trigger");
 assert.doesNotMatch(renderTerminalTabGroupSource, /terminal-tab-group-summary|menu\.append\(summary\)/, "group hover disclosure should not render an in-flow summary that shifts group menu items");
+assert.match(renderTerminalTabGroupSource, /dropdown: true[\s\S]*button\.addEventListener\("click", \(\) => \{[\s\S]*if \(isMobileView\(\)\)[\s\S]*toggleOpenTerminalTabGroup\(group\.key\)[\s\S]*switchTab\(activeGroupTab\.id\)/, "mobile terminal group titles should toggle their dropdown while desktop titles keep switching terminals");
+assert.match(renderSubagentTerminalTabGroupSource, /dropdown: true[\s\S]*button\.addEventListener\("click", \(\) => \{[\s\S]*if \(isMobileView\(\)\)[\s\S]*toggleOpenTerminalTabGroup\(group\.key\)[\s\S]*activateSubagentTerminalView\(activeView\.id\)/, "mobile subagent group titles should toggle their dropdown while desktop titles keep switching views");
+assert.equal((`${renderTerminalTabGroupSource}\n${renderSubagentTerminalTabGroupSource}`.match(/event\.pointerType === "touch"/g) || []).length, 4, "touch pointer enter and leave should not compete with explicit dropdown taps");
+assert.match(renderTerminalTabGroupSource, /menu\.id = `terminalTabGroupMenu\$\{\+\+terminalTabGroupMenuSerial\}`[\s\S]*button\.setAttribute\("aria-controls", menu\.id\)/, "regular terminal dropdown buttons should own their generated group list");
+assert.match(renderSubagentTerminalTabGroupSource, /menu\.id = `terminalTabGroupMenu\$\{\+\+terminalTabGroupMenuSerial\}`[\s\S]*button\.setAttribute\("aria-controls", menu\.id\)/, "subagent dropdown buttons should own their generated group list");
+assert.match(styles, /\.terminal-tab-group-dropdown-indicator \{[\s\S]*display:\s*none;[\s\S]*\.terminal-tab-group-button\[aria-expanded="true"\] \.terminal-tab-group-dropdown-indicator[\s\S]*rotate\(180deg\)/, "group buttons should expose a stateful dropdown indicator");
+assert.match(styles, /\.terminal-tab-group-button \{\n\s+width:\s*100%;\n\s+min-width:\s*0;[\s\S]*\.terminal-tab-group-dropdown-indicator \{ display:\s*inline-grid; \}/, "mobile terminal groups should show the dropdown indicator and retain a full-width trigger");
+assert.match(styles, /\.terminal-tab-group:hover:not\(\.menu-open\) \.terminal-tab-group-menu,[\s\S]*\.terminal-tab-group:focus-within:not\(\.menu-open\) \.terminal-tab-group-menu \{\n\s+display:\s*none;/, "mobile focus and latched hover should not keep a toggled-closed group visible");
+assert.match(app, /if \(activeDrawerModal\.surface === elements\.terminalTabsShell && openTerminalTabGroupKey\)[\s\S]*event\.stopPropagation\(\)[\s\S]*clearOpenTerminalTabGroup\(openTerminalTabGroupKey, \{ force: true \}\)[\s\S]*terminal-tab-group-button/, "Escape should close a mobile group dropdown before closing the terminal drawer");
+assert.match(app, /if \(tabId === activeTabId\) \{\n\s+clearOpenTerminalTabGroup\(null, \{ force: true \}\);\n\s+setMobileTabsExpanded\(false\);/, "selecting the already-active regular group member should close the mobile group and drawer");
+assert.match(app, /async function activateSubagentTerminalView\(viewId\)[\s\S]*clearOpenTerminalTabGroup\(null, \{ force: true \}\);\n\s+setMobileTabsExpanded\(false\);/, "selecting a subagent group member should close the mobile group and drawer");
+assert.match(app, /lines\.push\(isMobileView\(\) \? "Tap to open group terminals" : "Click to switch · Drop tabs here to add"\)/, "group accessible descriptions should match mobile dropdown and desktop switch behavior");
 assert.match(app, /footerTooltipNode\.setAttribute\("role", "tooltip"\)/, "the shared visual tooltip should expose tooltip semantics");
 assert.match(app, /document\.addEventListener\("keydown", \(event\) => \{[\s\S]*event\.key === "Escape" && footerTooltipTarget[\s\S]*hideFooterTooltip\(footerTooltipTarget\)[\s\S]*\}, true\)/, "Escape should dismiss both hover- and focus-triggered tooltips from the document capture phase");
 assert.match(app, /node\.addEventListener\("focus", \(\) => \{[\s\S]*?!node\.matches\(":focus-visible"\)[\s\S]*?showFooterTooltip\(node\)/, "touch focus should not flash styled tooltips while keyboard focus remains supported");

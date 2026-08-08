@@ -40,7 +40,7 @@ pi-webui
 
 If no working directory is supplied, the browser asks which project to open first.
 
-On a phone, tap the current terminal name to open the left-side terminal drawer. The composer keeps the prompt, attachment, Send, and active-run controls visible; tap **More** for session, workflow, command, and mode controls. Hover-only tooltips stay hidden on touch controls, and the **Control Deck** keeps its existing expandable menu.
+On a phone, tap the current terminal name to open full-screen terminal navigation. Grouped terminals use their title as a dropdown; open the group, then choose an individual terminal. The composer keeps the prompt, attachment, Send, and active-run controls visible; tap **More** to open session, workflow, command, and mode controls in a full-screen overlay, then use the top `−` control or `Escape` to minimize it. Todo progress stays on one line until you tap it to expand the full goal, progress bar, and checklist. Git footer **Details** opens full-screen with refresh inside and a top `−` button to minimize it; session metrics and workspace, Git, and runtime details use compact grouped grids instead of stretched rows. Phone layouts use balanced compact text, spacing, cards, and 40-pixel controls so more content remains visible. Hover-only tooltips stay hidden on touch controls. In the **Control Deck**, tap **Edit** to enable section dragging or `Alt+Arrow` movement, then tap **Done** to lock the order again.
 
 ## Keep it private
 

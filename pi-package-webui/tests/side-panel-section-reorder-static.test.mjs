@@ -28,13 +28,23 @@ assert.match(
 );
 assert.match(
   app,
-  /function moveSidePanelSectionRelative\(fromId, targetRecord, insertBefore\)[\s\S]*parent\.insertBefore\(sourceRecord\.section, targetRecord\.section\)[\s\S]*targetRecord\.section\.nextSibling[\s\S]*persistSidePanelSectionOrder\(\)/,
-  "reordering should move the complete section before or after its target and persist immediately",
+  /function moveSidePanelSectionRelative\(fromId, targetRecord, insertBefore\) \{\n\s+if \(!sidePanelSectionEditMode\) return false;[\s\S]*parent\.insertBefore\(sourceRecord\.section, targetRecord\.section\)[\s\S]*targetRecord\.section\.nextSibling[\s\S]*persistSidePanelSectionOrder\(\)/,
+  "reordering should fail closed outside edit mode, then move and persist the complete section",
+);
+assert.match(
+  app,
+  /function moveSidePanelSectionByOffset\(sectionId, offset\) \{\n\s+if \(!sidePanelSectionEditMode\) return false;/,
+  "keyboard reordering should require explicit edit mode",
+);
+assert.match(
+  app,
+  /function beginSidePanelSectionPointerDrag\(event, sectionId\) \{\n\s+if \(!sidePanelSectionEditMode \|\| event\.button !== 0/,
+  "pointer and touch dragging should require explicit edit mode",
 );
 assert.match(
   app,
   /function updateSidePanelSectionPointerDrag\(event\)[\s\S]*Math\.hypot[\s\S]*SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX[\s\S]*sidePanelSectionToggleFromPoint[\s\S]*getBoundingClientRect\(\)[\s\S]*moveSidePanelSectionRelative/,
-  "pointer dragging should activate only after the threshold and use header midpoint placement",
+  "edit-mode pointer dragging should activate only after the threshold and use header midpoint placement",
 );
 assert.match(
   app,
@@ -43,8 +53,8 @@ assert.match(
 );
 assert.match(
   app,
-  /function bindSidePanelSectionToggles\(\)[\s\S]*Date\.now\(\) < sidePanelSectionSuppressClickUntil[\s\S]*event\.altKey[\s\S]*event\.key !== "ArrowUp"[\s\S]*moveSidePanelSectionByOffset[\s\S]*beginSidePanelSectionPointerDrag/,
-  "section headers should retain click toggling while supporting Alt+Arrow keyboard and pointer reordering",
+  /function bindSidePanelSectionToggles\(\)[\s\S]*Date\.now\(\) < sidePanelSectionSuppressClickUntil[\s\S]*!sidePanelSectionEditMode \|\| !event\.altKey[\s\S]*event\.key !== "ArrowUp"[\s\S]*moveSidePanelSectionByOffset[\s\S]*beginSidePanelSectionPointerDrag/,
+  "section headers should retain click toggling while edit mode gates Alt+Arrow and pointer reordering",
 );
 assert.match(
   app,
@@ -58,9 +68,12 @@ assert.match(
 );
 assert.match(
   css,
-  /\.side-panel-section-toggle\[data-side-panel-section-toggle\][\s\S]*cursor: grab[\s\S]*touch-action: none[\s\S]*\.side-panel-section\.dragging[\s\S]*cursor: grabbing[\s\S]*\.drag-over-before[\s\S]*\.drag-over-after/,
-  "section headers should expose model-picker-style grab, dragging, and insertion-marker affordances",
+  /\.side-panel-section-toggle\[data-side-panel-section-toggle\] \{\n\s+cursor: pointer;\n\s+touch-action: manipulation;[\s\S]*?\.side-panel\.section-edit-mode \.side-panel-section-toggle\[data-side-panel-section-toggle\] \{[\s\S]*?cursor: grab;[\s\S]*?touch-action: none;[\s\S]*?\.side-panel-section\.dragging[\s\S]*cursor: grabbing[\s\S]*\.drag-over-before[\s\S]*\.drag-over-after/,
+  "section headers should expose drag capture and insertion markers only in edit mode",
 );
+assert.match(html, /id="sidePanelEditButton"[^>]*aria-controls="sidePanel"[^>]*aria-pressed="false"[^>]*aria-label="Edit Control Deck section order"[\s\S]*side-panel-edit-button-label">Edit</, "Control Deck should expose an accessible Edit toggle");
+assert.match(app, /function setSidePanelSectionEditMode\(enabled\)[\s\S]*classList\.toggle\("section-edit-mode", next\)[\s\S]*aria-pressed[\s\S]*"Done" : "Edit"[\s\S]*aria-keyshortcuts/, "Edit mode should synchronize visual, button, and keyboard affordances");
+assert.match(app, /function setSidePanelCollapsed\(collapsed,[\s\S]*if \(collapsed\) setSidePanelSectionEditMode\(false\);/, "closing the Control Deck should leave transient edit mode");
 assert.match(html, /styles\.css\?v=104/, "changed side-panel styles should advance the stylesheet revision");
 assert.match(html, /app\.js\?v=120/, "changed side-panel behavior should advance the app revision");
 assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v81"/, "changed browser assets should advance the PWA cache identity");

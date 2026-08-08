@@ -694,18 +694,25 @@
               <a class="sponsor-link" href="https://github.com/sponsors/Firstp1ck" target="_blank" rel="noopener noreferrer" aria-label="Sponsor Firstp1ck on GitHub" title="Sponsor Firstp1ck on GitHub">♡</a>
             </div>
             <strong class="side-panel-title">Control Deck</strong>
+            <span id="sidePanelEditHint" class="side-panel-edit-hint" role="status" aria-live="polite" hidden>Drag sections or use Alt+↑/↓</span>
             <div class="side-panel-version-row" aria-label="Version and build information">
               <button id="piVersionButton" class="pi-version-button" type="button" aria-label="View Pi release notes" aria-haspopup="dialog" aria-controls="piReleaseNotesDialog" hidden></button>
               <button id="webuiVersionButton" class="webui-version-button" type="button" aria-label="Open Pi Web UI package and update details" aria-haspopup="dialog" aria-controls="webuiPackageDialog" hidden></button>
               <span id="webuiDevBadge" class="webui-dev-badge" aria-label="Pi Web UI dev server" hidden>DEV</span>
             </div>
           </div>
-          <button id="toggleSidePanelButton" class="side-panel-toggle-button" type="button" aria-controls="sidePanel" aria-expanded="true" aria-label="Collapse side panel" title="Collapse side panel">
-            <span class="side-panel-button-icon" aria-hidden="true">
-              <span></span><span></span><span></span>
-            </span>
-            <span class="side-panel-button-chevron" aria-hidden="true">›</span>
-          </button>
+          <div class="side-panel-header-actions">
+            <button id="sidePanelEditButton" class="side-panel-edit-button" type="button" aria-controls="sidePanel" aria-pressed="false" aria-label="Edit Control Deck section order" title="Edit Control Deck section order">
+              <span aria-hidden="true">↕</span>
+              <span class="side-panel-edit-button-label">Edit</span>
+            </button>
+            <button id="toggleSidePanelButton" class="side-panel-toggle-button" type="button" aria-controls="sidePanel" aria-expanded="true" aria-label="Collapse side panel" title="Collapse side panel">
+              <span class="side-panel-button-icon" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </span>
+              <span class="side-panel-button-chevron" aria-hidden="true">›</span>
+            </button>
+          </div>
         </div>
         <div class="side-panel-body">
           <section class="side-panel-section collapsed" data-side-panel-section="controls">
