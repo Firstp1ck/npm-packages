@@ -10912,12 +10912,44 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   user-select: text;
   white-space: pre-wrap;
 }
+.git-pull-error-recovery {
+  margin-top: 0.9rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(249, 226, 175, 0.38);
+  border-radius: 0.72rem;
+  background: rgba(249, 226, 175, 0.08);
+}
+.git-pull-error-recovery[hidden] { display: none; }
+.git-pull-error-recovery > strong { color: var(--ctp-yellow); }
+.git-pull-error-recovery > p {
+  margin: 0.4rem 0 0;
+  color: var(--ctp-subtext1);
+}
+.git-pull-error-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+.git-pull-error-dialog[aria-busy="true"] .git-pull-error-recovery {
+  opacity: 0.72;
+}
 .git-pull-error-status {
   min-height: 1.3rem;
   margin: 0.65rem 0 0;
 }
 .git-pull-error-status.success { color: var(--ctp-green); }
 .git-pull-error-status.error { color: var(--ctp-red); }
+@media (max-width: 34rem) {
+  .git-pull-error-recovery-actions,
+  .git-pull-error-dialog menu {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .git-pull-error-recovery-actions button,
+  .git-pull-error-dialog menu button { width: 100%; }
+}
 
 .extension-dialog.feature-decision-dialog {
   width: min(30rem, calc(100vw - 2rem));

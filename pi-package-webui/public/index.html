@@ -1350,10 +1350,19 @@
         <h2 id="gitPullErrorDialogTitle">Git pull failed</h2>
         <p id="gitPullErrorDialogDescription" class="muted">The repository was not changed by the failed pull. Review or copy the complete error output below.</p>
         <pre id="gitPullErrorOutput" class="git-pull-error-output" tabindex="0"></pre>
+        <section id="gitPullErrorRecovery" class="git-pull-error-recovery" aria-labelledby="gitPullErrorRecoveryTitle" hidden>
+          <strong id="gitPullErrorRecoveryTitle">Choose how to integrate the histories</strong>
+          <p>Merge preserves both histories and is the default. Rebase rewrites local commit IDs. Neither action runs without confirmation.</p>
+          <div class="git-pull-error-recovery-actions">
+            <button id="gitPullErrorReviewButton" type="button">Review changes</button>
+            <button id="gitPullErrorRebaseButton" type="button">Rebase commits</button>
+            <button id="gitPullErrorMergeButton" class="primary" type="button">Merge changes</button>
+          </div>
+        </section>
         <p id="gitPullErrorStatus" class="git-pull-error-status muted" role="status" aria-live="polite" aria-atomic="true"></p>
         <menu>
           <button id="gitPullErrorCopyButton" type="button">Copy error output</button>
-          <button id="gitPullErrorCloseButton" class="primary" type="button">Close</button>
+          <button id="gitPullErrorCloseButton" type="button">Close</button>
         </menu>
       </form>
     </dialog>

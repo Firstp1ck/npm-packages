@@ -431,8 +431,14 @@ const elements = {
   confirmationCancelButton: $("#confirmationCancelButton"),
   confirmationConfirmButton: $("#confirmationConfirmButton"),
   gitPullErrorDialog: $("#gitPullErrorDialog"),
+  gitPullErrorDialogTitle: $("#gitPullErrorDialogTitle"),
+  gitPullErrorDialogDescription: $("#gitPullErrorDialogDescription"),
   gitPullErrorOutput: $("#gitPullErrorOutput"),
   gitPullErrorStatus: $("#gitPullErrorStatus"),
+  gitPullErrorRecovery: $("#gitPullErrorRecovery"),
+  gitPullErrorMergeButton: $("#gitPullErrorMergeButton"),
+  gitPullErrorRebaseButton: $("#gitPullErrorRebaseButton"),
+  gitPullErrorReviewButton: $("#gitPullErrorReviewButton"),
   gitPullErrorCopyButton: $("#gitPullErrorCopyButton"),
   gitPullErrorCloseButton: $("#gitPullErrorCloseButton"),
   workspaceLoadDialog: $("#workspaceLoadDialog"),
@@ -3078,6 +3084,7 @@ const gitFooterPayloadSettlementTimersByTab = new Map();
 const gitFooterPayloadRequestSerialByTab = new Map();
 const gitFooterSyncInFlightByTab = new Set();
 let gitPullErrorText = "";
+let gitPullErrorContext = { code: "", tabId: null, syncValue: "", busy: false, requestId: 0 };
 const gitFooterPiCalibrationInFlightByTab = new Set();
 let gitFooterVisibilityApplyInFlight = false;
 let gitFooterVisibilityDirty = false;
@@ -17261,24 +17268,70 @@ function gitFooterCurrentBranch() {
   return value && value !== "no repo" ? cleanFooterPayloadText(gitChip.value, "") : "";
 }
 
+function gitFailureDisplayText(response, fallback = "Git operation failed") {
+  const errorText = String(response?.error || "").trim();
+  const hintText = String(response?.hint || "").trim();
+  const result = response?.data && typeof response.data === "object" ? { ...response.data } : null;
+  if (result && errorText) {
+    if (String(result.stderr || "").trim() === errorText) result.stderr = "";
+    if (String(result.stdout || "").trim() === errorText) result.stdout = "";
+  }
+  const parts = [errorText || fallback, hintText, formatGitCommandResult(result)].map((part) => String(part || "").trim()).filter(Boolean);
+  const seen = new Set();
+  return parts.filter((part) => {
+    const key = part.replace(/\r\n/g, "\n");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join("\n\n");
+}
+
+function setGitPullErrorBusy(busy) {
+  gitPullErrorContext = { ...gitPullErrorContext, busy: !!busy };
+  for (const button of [elements.gitPullErrorMergeButton, elements.gitPullErrorRebaseButton, elements.gitPullErrorReviewButton, elements.gitPullErrorCloseButton]) {
+    if (button) button.disabled = !!busy;
+  }
+  if (elements.gitPullErrorDialog) elements.gitPullErrorDialog.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
 function closeGitPullErrorDialog() {
+  if (gitPullErrorContext.busy) return;
   if (elements.gitPullErrorDialog?.open) elements.gitPullErrorDialog.close();
 }
 
-function openGitPullErrorDialog(message) {
+function openGitPullErrorDialog(message, { code = "", tabId = null, syncValue = "" } = {}) {
   const text = String(message || "git pull from origin failed").trim();
+  const diverged = code === "DIVERGED";
   gitPullErrorText = text;
+  gitPullErrorContext = {
+    code,
+    tabId: typeof tabId === "string" && tabId ? tabId : null,
+    syncValue: String(syncValue || ""),
+    busy: false,
+    requestId: gitPullErrorContext.requestId + 1,
+  };
   if (!elements.gitPullErrorDialog?.showModal || !elements.gitPullErrorOutput) {
-    window.alert(`Git pull failed\n\n${text}`);
+    window.alert(`${diverged ? "Branches diverged" : "Git pull failed"}\n\n${text}`);
     return;
   }
+  if (elements.gitPullErrorDialogTitle) elements.gitPullErrorDialogTitle.textContent = diverged ? "Branches diverged" : "Git pull failed";
+  if (elements.gitPullErrorDialogDescription) {
+    elements.gitPullErrorDialogDescription.textContent = diverged
+      ? "Local and remote contain unique commits. This does not mean conflicts exist; conflicts are known only after a merge or rebase is attempted."
+      : "The repository was not changed by the failed pull. Review or copy the complete error output below.";
+  }
   elements.gitPullErrorOutput.textContent = text;
+  if (elements.gitPullErrorRecovery) elements.gitPullErrorRecovery.hidden = !diverged;
+  elements.gitPullErrorCloseButton?.classList.toggle("primary", !diverged);
   if (elements.gitPullErrorStatus) {
-    elements.gitPullErrorStatus.textContent = "Select the output or use Copy error output.";
+    elements.gitPullErrorStatus.textContent = diverged
+      ? "Review the incoming changes, merge them, or rebase your local commits. No integration runs without confirmation."
+      : "Select the output or use Copy error output.";
     elements.gitPullErrorStatus.classList.remove("error", "success");
   }
+  setGitPullErrorBusy(false);
   if (!elements.gitPullErrorDialog.open) elements.gitPullErrorDialog.showModal();
-  queueMicrotask(() => elements.gitPullErrorCopyButton?.focus({ preventScroll: true }));
+  queueMicrotask(() => (diverged ? elements.gitPullErrorReviewButton : elements.gitPullErrorCopyButton)?.focus({ preventScroll: true }));
 }
 
 async function copyGitPullErrorOutput() {
@@ -17305,7 +17358,81 @@ async function copyGitPullErrorOutput() {
   }
 }
 
-async function pullGitFooterSync(tabId = activeTabId) {
+function reviewGitPullDivergence() {
+  if (gitPullErrorContext.code !== "DIVERGED" || !gitPullErrorContext.tabId || gitPullErrorContext.busy) return;
+  const tabId = gitPullErrorContext.tabId;
+  closeGitPullErrorDialog();
+  openGitChangesDialog(tabId);
+}
+
+async function integrateGitPullDivergence(mode) {
+  if (!["merge", "rebase"].includes(mode) || gitPullErrorContext.code !== "DIVERGED" || !gitPullErrorContext.tabId || gitPullErrorContext.busy) return false;
+  const { tabId, syncValue, requestId } = gitPullErrorContext;
+  const targetTab = tabs.find((tab) => tab.id === tabId);
+  const activeBranch = tabId === activeTabId ? gitFooterCurrentBranch() : "";
+  const target = activeBranch || targetTab?.title || targetTab?.cwd || "the selected branch";
+  const merge = mode === "merge";
+  const confirmed = await appConfirmText([
+    `${merge ? "Merge upstream changes into" : "Rebase local commits onto the upstream of"} ${target}?`,
+    "",
+    merge
+      ? "This preserves both histories and may create a merge commit. Conflicts are possible but are not currently known."
+      : "This replays local commits on top of upstream and rewrites their commit IDs. Conflicts are possible but are not currently known.",
+  ].join("\n"), {
+    affected: `Git history for ${target}`,
+    confirmLabel: merge ? "Merge changes" : "Rebase commits",
+    danger: !merge,
+  });
+  if (!confirmed || gitPullErrorContext.requestId !== requestId) return false;
+
+  const tabContext = activeTabContext(tabId);
+  let pushSyncValue = "";
+  setGitPullErrorBusy(true);
+  gitFooterSyncInFlightByTab.add(tabId);
+  if (isCurrentTabContext(tabContext)) renderFooter();
+  if (elements.gitPullErrorStatus) elements.gitPullErrorStatus.textContent = merge ? "Merging upstream changes…" : "Rebasing local commits…";
+  try {
+    const response = await api("/api/git-changes/integrate", { method: "POST", body: { mode, confirmed: true }, tabId });
+    if (gitPullErrorContext.requestId !== requestId) return false;
+    if (!response.ok) {
+      const message = gitFailureDisplayText(response, `git ${mode} failed`);
+      addEvent(message, "error");
+      setGitPullErrorBusy(false);
+      if (response.code === "CONFLICTS") {
+        closeGitPullErrorDialog();
+        openGitChangesDialog(tabId);
+        return false;
+      }
+      openGitPullErrorDialog(message, { code: response.code || "", tabId, syncValue });
+      return false;
+    }
+    setGitPullErrorBusy(false);
+    closeGitPullErrorDialog();
+    addEvent(`${merge ? "Merged" : "Rebased"} upstream changes.`, "success");
+    requestGitFooterWebuiPayload(tabContext, { force: true });
+    const freshAheadValue = response.data?.changes?.summary?.ahead;
+    const freshAhead = Number(freshAheadValue);
+    if (freshAheadValue !== undefined) {
+      if (Number.isFinite(freshAhead) && freshAhead > 0) pushSyncValue = `⇡${freshAhead}`;
+    } else if (gitFooterSyncCounts(syncValue).ahead > 0) {
+      pushSyncValue = syncValue;
+    }
+  } catch (error) {
+    if (gitPullErrorContext.requestId !== requestId) return false;
+    const message = error.message || String(error);
+    addEvent(message, "error");
+    setGitPullErrorBusy(false);
+    openGitPullErrorDialog(message, { tabId, syncValue });
+    return false;
+  } finally {
+    gitFooterSyncInFlightByTab.delete(tabId);
+    if (isCurrentTabContext(tabContext)) renderFooter();
+  }
+  if (pushSyncValue) await pushGitFooterSync(tabId, pushSyncValue);
+  return true;
+}
+
+async function pullGitFooterSync(tabId = activeTabId, { syncValue = "" } = {}) {
   if (!tabId || gitFooterSyncInFlightByTab.has(tabId)) return false;
   const tabContext = activeTabContext(tabId);
   hideFooterTooltip();
@@ -17314,8 +17441,10 @@ async function pullGitFooterSync(tabId = activeTabId) {
   try {
     const response = await api("/api/git-changes/pull", { method: "POST", body: { remote: "origin" }, tabId });
     if (!response.ok) {
-      const detail = [response.error, response.hint, formatGitCommandResult(response.data)].filter(Boolean).join("\n\n").trim();
-      throw new Error(detail || "git pull from origin failed");
+      const message = gitFailureDisplayText(response, "git pull from origin failed");
+      addEvent(message, "error");
+      openGitPullErrorDialog(message, { code: response.code || "", tabId, syncValue });
+      return false;
     }
     addEvent("Pulled Git changes from origin.", "success");
     requestGitFooterWebuiPayload(tabContext, { force: true });
@@ -17323,7 +17452,7 @@ async function pullGitFooterSync(tabId = activeTabId) {
   } catch (error) {
     const message = error.message || String(error);
     addEvent(message, "error");
-    openGitPullErrorDialog(message);
+    openGitPullErrorDialog(message, { code: error?.code || "", tabId, syncValue });
     return false;
   } finally {
     gitFooterSyncInFlightByTab.delete(tabId);
@@ -17332,7 +17461,7 @@ async function pullGitFooterSync(tabId = activeTabId) {
 }
 
 async function pullThenPushGitFooterSync(tabId = activeTabId, syncValue = "") {
-  const pulled = await pullGitFooterSync(tabId);
+  const pulled = await pullGitFooterSync(tabId, { syncValue });
   if (!pulled) return;
   await pushGitFooterSync(tabId, syncValue);
 }
@@ -44000,8 +44129,14 @@ elements.undoToastButton?.addEventListener("click", () => runOfferedUndo());
 elements.undoToastDismissButton?.addEventListener("click", dismissUndoToast);
 elements.confirmationCancelButton?.addEventListener("click", () => finishApplicationConfirmation(false));
 elements.confirmationConfirmButton?.addEventListener("click", () => finishApplicationConfirmation(true));
+elements.gitPullErrorMergeButton?.addEventListener("click", () => integrateGitPullDivergence("merge"));
+elements.gitPullErrorRebaseButton?.addEventListener("click", () => integrateGitPullDivergence("rebase"));
+elements.gitPullErrorReviewButton?.addEventListener("click", reviewGitPullDivergence);
 elements.gitPullErrorCopyButton?.addEventListener("click", () => copyGitPullErrorOutput());
 elements.gitPullErrorCloseButton?.addEventListener("click", closeGitPullErrorDialog);
+elements.gitPullErrorDialog?.addEventListener("cancel", (event) => {
+  if (gitPullErrorContext.busy) event.preventDefault();
+});
 elements.confirmationDialog?.addEventListener("cancel", (event) => {
   event.preventDefault();
   finishApplicationConfirmation(false);
