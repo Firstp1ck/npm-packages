@@ -30890,7 +30890,7 @@ async function pushGitWorkflow(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
-  if (!(await appConfirmText("Push the committed changes to the configured upstream?\n\nGuided Git never force-pushes automatically.", { affected: "The configured remote Git branch", confirmLabel: "Push commits" }))) return;
+  if (!(await appConfirmText("Push the committed changes from the current checked-out branch to the same-named remote branch and track it as the upstream?\n\nGuided Git never force-pushes automatically.", { affected: "The same-named remote Git branch and local upstream tracking", confirmLabel: "Push commits" }))) return;
   const runId = workflow.runId;
   setGitWorkflow({ step: "pushing", busy: true, error: "", output: "Running git push…" }, { tabId });
   try {

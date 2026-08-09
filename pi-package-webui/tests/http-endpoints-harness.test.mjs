@@ -2679,6 +2679,35 @@ try {
     assert.equal(stashDrop.body?.ok, true, "confirmed stash drop should succeed");
     assert.equal(stashDrop.body?.data?.stashes?.length, 0, "dropping the only stash should empty the list");
 
+    // Both footer Sync and Guided Git use this push endpoint. Even when a
+    // feature branch mistakenly tracks origin/main, push its current HEAD to
+    // the same-named remote branch without changing remote main.
+    const mismatchedPushBranch = "feature/current-branch-push";
+    const remoteMainBeforeCurrentBranchPush = runGitFixture(["rev-parse", "refs/heads/main"], remoteBare, "current-branch push fixture should record remote main");
+    runGitFixture(["switch", "-c", mismatchedPushBranch], localRepo, "current-branch push fixture should create its feature branch");
+    runGitFixture(["config", `branch.${mismatchedPushBranch}.remote`, "origin"], localRepo, "current-branch push fixture should configure the upstream remote");
+    runGitFixture(["config", `branch.${mismatchedPushBranch}.merge`, "refs/heads/main"], localRepo, "current-branch push fixture should reproduce the mismatched upstream branch");
+    await writeFile(path.join(localRepo, "current-branch-push.txt"), "feature branch only\n");
+    runGitFixture(["add", "current-branch-push.txt"], localRepo, "current-branch push fixture should stage its marker");
+    runGitFixture(["commit", "-m", "current branch push fixture"], localRepo, "current-branch push fixture should commit its marker");
+    const currentBranchHead = runGitFixture(["rev-parse", "HEAD"], localRepo, "current-branch push fixture should record feature HEAD");
+
+    const pushCurrentBranch = await request("127.0.0.1", "/api/git-workflow/push", { method: "POST", body: { tab: remoteTabId }, timeoutMs: 30_000 });
+    assert.equal(pushCurrentBranch.body?.ok, true, `push should target the checked-out branch despite a mismatched upstream: ${pushCurrentBranch.body?.error || ""}`);
+    assert.equal(pushCurrentBranch.body?.data?.branch, mismatchedPushBranch);
+    assert.equal(pushCurrentBranch.body?.data?.remote, "origin");
+    assert.equal(runGitFixture(["rev-parse", `refs/heads/${mismatchedPushBranch}`], remoteBare, "current-branch push fixture should create the same-named remote branch"), currentBranchHead);
+    assert.equal(runGitFixture(["rev-parse", "refs/heads/main"], remoteBare, "current-branch push fixture should leave remote main unchanged"), remoteMainBeforeCurrentBranchPush);
+    assert.equal(
+      runGitFixture(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], localRepo, "current-branch push fixture should read the repaired upstream"),
+      `origin/${mismatchedPushBranch}`,
+      "push should replace origin/main tracking with the same-named remote feature branch",
+    );
+    const currentBranchStatus = runGitFixture(["status", "--porcelain=v2", "--branch"], localRepo, "current-branch push fixture should read synchronized status");
+    assert.match(currentBranchStatus, new RegExp(`^# branch\\.upstream origin/${mismatchedPushBranch}$`, "m"));
+    assert.match(currentBranchStatus, /^# branch\.ab \+0 -0$/m, "the repaired upstream should leave no phantom outgoing Sync count");
+    runGitFixture(["switch", "main"], localRepo, "current-branch push fixture should restore main");
+
     // Fetch, divergence classification, integrate, push classification
     await writeFile(path.join(remoteWork, "incoming.txt"), "base\nremote one\nremote two\nremote three\n");
     runGitFixture(["commit", "-am", "remote three"], remoteWork, "remote worktree should commit third incoming change");

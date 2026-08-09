@@ -567,7 +567,7 @@ The saved setup includes:
 - ask/current-branch/PR-worktree delivery highlighting; and
 - optional pre-commit verification reminders.
 
-If the configured model or effort is unavailable, generation stops and asks you to update setup; it never silently substitutes another model. Guided Git never force-pushes automatically. Git hooks and signing configuration continue to run normally.
+If the configured model or effort is unavailable, generation stops and asks you to update setup; it never silently substitutes another model. Footer and Guided Git pushes send the active tab's current `HEAD` to the same-named branch on the preferred remote and set that branch as the upstream instead of retaining a potentially mismatched upstream. Guided Git never force-pushes automatically. Git hooks and signing configuration continue to run normally.
 
 After the message is generated, **Create PR** asks Pi to generate `dev/COMMIT/staged-branch-name.txt`, lets you confirm or edit the `type/feature-name` branch, then switches with `git switch -c` before committing. In PR mode, choose **Commit short**, **Commit long**, or type a message and use **Commit input**, then **Push and Create PR** pushes the branch, sends `/pr`, shows the generated `dev/PR/<branch>.md` description for editing/confirmation, and creates the pull request with `gh pr create`. Use **Manual branch** to skip agent branch-name generation and type the branch directly.
 

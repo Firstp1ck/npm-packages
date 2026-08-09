@@ -8339,12 +8339,20 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
         // clobber remote commits we have not seen, and requires confirmation.
         const forceWithLease = body.forceWithLease === true;
         if (forceWithLease) requireConfirmed(body, `Force-pushing ${currentBranch} (--force-with-lease) rewrites the remote branch and`);
-        const args = forceWithLease ? ["push", "--force-with-lease"] : ["push"];
-        const payload = await runGuardedGitMutation(args, { cwd: root, timeoutMs: 15 * 60 * 1000 });
+        const remotes = await gitRemoteNames(root);
+        const remote = remotes.includes("origin") ? "origin" : remotes[0];
+        const args = remote
+          ? ["push", "-u", ...(forceWithLease ? ["--force-with-lease"] : []), remote, "HEAD"]
+          : ["push", ...(forceWithLease ? ["--force-with-lease"] : [])];
+        const label = remote
+          ? `git push -u${forceWithLease ? " --force-with-lease" : ""} ${remote} HEAD`
+          : undefined;
+        const payload = await runGuardedGitMutation(args, { cwd: root, label, timeoutMs: 15 * 60 * 1000 });
         if (payload.data) {
           payload.data.branch = currentBranch;
           payload.data.protectedBranch = protectedBranch;
           payload.data.forceWithLease = forceWithLease;
+          if (remote) payload.data.remote = remote;
         }
         return applyGitSyncFailure(payload, { push: true });
       }
