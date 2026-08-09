@@ -9,6 +9,7 @@ Use Pi from a local browser with tabs, streaming responses, uploads, model contr
 - Work in several Pi sessions at once.
 - Change models and thinking effort without leaving the browser.
 - Upload files and images, use slash-command suggestions, and manage follow-up prompts.
+- Search files, transcripts, and live agent output with every match highlighted.
 - Resume sessions, switch projects, and use guided Git helpers.
 - Keep phone sessions compact with expandable terminal navigation and secondary composer actions.
 - Add optional themes, statistics, remote access, voice features, and other companion packages.
@@ -30,6 +31,10 @@ Inside Pi, run:
 ```
 
 Open the printed address, usually <http://127.0.0.1:31415/>. Check a running server with `/webui-status`.
+
+Press `Ctrl/Cmd+F` while a file, transcript, or subagent output view is active to highlight every match; use `Enter` and `Shift+Enter` to move between matches.
+
+You can leave the Web UI on another desktop workspace while Pi runs. When you return, it replaces hidden live-output updates with one current transcript snapshot so the page does not replay every intermediate render.
 
 You can also install the standalone launcher:
 

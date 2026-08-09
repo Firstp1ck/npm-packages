@@ -9,7 +9,7 @@ import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, ge
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 import { createTranscriptRenderer } from "./transcript-renderer.mjs";
-import { createStreamOutputController } from "./stream-output-controller.mjs";
+import { classifyTranscriptStreamEvent, createStreamOutputController } from "./stream-output-controller.mjs";
 import { installMiddleButtonDragScroll } from "./middle-button-drag-scroll.mjs";
 import { PI_THEME_EXPORT_FIELDS, THEME_TOKEN_GROUPS, canonicalizeTheme, serializeTheme, themeColorToRgb, validateTheme } from "./theme-contract.mjs";
 import {
@@ -318,6 +318,7 @@ const elements = {
   fileViewerSourceModeButton: $("#fileViewerSourceModeButton"),
   fileViewerPreviewModeButton: $("#fileViewerPreviewModeButton"),
   fileViewerEditor: $("#fileViewerEditor"),
+  fileViewerSearchOverlay: $("#fileViewerSearchOverlay"),
   fileViewerPreview: $("#fileViewerPreview"),
   fileViewerChanges: $("#fileViewerChanges"),
   fileViewerStatus: $("#fileViewerStatus"),
@@ -574,7 +575,6 @@ let fileViewerSearchMatches = [];
 let fileViewerSearchIndex = -1;
 let fileViewerSearchTruncated = false;
 let fileViewerSearchTimer = null;
-let fileViewerSearchHighlightElement = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
 let gitFooterContextMenuState = null;
@@ -760,6 +760,12 @@ let refreshFooterTimer = null;
 let refreshTabsTimer = null;
 let tabsRenderFrame = null;
 let foregroundReconcileTimer = null;
+let foregroundSupplementalRefreshCancel = null;
+let foregroundTranscriptCatchUpRequired = document.visibilityState === "hidden";
+let foregroundTranscriptSuppressedEvents = 0;
+let eventStreamPausedForBackground = false;
+let backgroundReconnectSnapshotFresh = false;
+let foregroundReconnectSnapshotFreshUntil = 0;
 let eventSource = null;
 const supervisorEventCursors = new Map();
 const supervisorRetiredEpochs = new Map();
@@ -12926,16 +12932,84 @@ function textOffsetPosition(root, offset) {
   return null;
 }
 
+function textOffsetRange(root, match) {
+  const start = textOffsetPosition(root, match.start);
+  const end = textOffsetPosition(root, match.end);
+  if (!start || !end) return null;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return range;
+}
+
+function syncFileViewerSearchOverlayScroll() {
+  const editor = elements.fileViewerEditor;
+  const overlay = elements.fileViewerSearchOverlay;
+  if (!editor || !overlay || overlay.hidden) return;
+  overlay.scrollTop = editor.scrollTop;
+  overlay.scrollLeft = editor.scrollLeft;
+}
+
 function clearFileViewerSearchHighlight() {
+  globalThis.CSS?.highlights?.delete("file-viewer-search-match");
   globalThis.CSS?.highlights?.delete("file-viewer-search-current");
-  fileViewerSearchHighlightElement?.classList.remove("file-viewer-search-current-fallback");
-  fileViewerSearchHighlightElement = null;
+  for (const surface of [elements.fileViewerPreview, elements.fileViewerChanges]) {
+    for (const node of surface?.querySelectorAll(".file-viewer-search-match-fallback, .file-viewer-search-current-fallback") || []) {
+      node.classList.remove("file-viewer-search-match-fallback", "file-viewer-search-current-fallback");
+    }
+  }
+  const overlay = elements.fileViewerSearchOverlay;
+  if (overlay) {
+    overlay.hidden = true;
+    overlay.replaceChildren();
+  }
+  elements.fileViewerEditor?.closest(".file-viewer-content")?.classList.remove("search-highlights-source");
+}
+
+function renderFileViewerSourceSearchHighlights() {
+  const editor = elements.fileViewerEditor;
+  const overlay = elements.fileViewerSearchOverlay;
+  if (!editor || !overlay || !fileViewerSearchMatches.length) return;
+  const text = fileViewerSearchText();
+  const fragment = document.createDocumentFragment();
+  let offset = 0;
+  fileViewerSearchMatches.forEach((match, index) => {
+    if (match.start > offset) fragment.append(document.createTextNode(text.slice(offset, match.start)));
+    const mark = make("mark", `file-viewer-search-match${index === fileViewerSearchIndex ? " current" : ""}`, text.slice(match.start, match.end));
+    fragment.append(mark);
+    offset = match.end;
+  });
+  if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+  overlay.replaceChildren(fragment);
+  overlay.hidden = false;
+  editor.closest(".file-viewer-content")?.classList.add("search-highlights-source");
+  syncFileViewerSearchOverlayScroll();
+}
+
+function renderFileViewerSearchHighlights() {
+  clearFileViewerSearchHighlight();
+  const surface = fileViewerSearchSurface();
+  if (!surface || !fileViewerSearchMatches.length) return;
+  if (surface === elements.fileViewerEditor) {
+    renderFileViewerSourceSearchHighlights();
+    return;
+  }
+  const ranges = fileViewerSearchMatches.map((match) => textOffsetRange(surface, match)).filter(Boolean);
+  const currentRange = textOffsetRange(surface, fileViewerSearchMatches[fileViewerSearchIndex]);
+  const HighlightConstructor = globalThis.Highlight;
+  if (globalThis.CSS?.highlights && typeof HighlightConstructor === "function") {
+    if (ranges.length) globalThis.CSS.highlights.set("file-viewer-search-match", new HighlightConstructor(...ranges));
+    if (currentRange) globalThis.CSS.highlights.set("file-viewer-search-current", new HighlightConstructor(currentRange));
+    return;
+  }
+  for (const match of fileViewerSearchMatches) textOffsetPosition(surface, match.start)?.node.parentElement?.classList.add("file-viewer-search-match-fallback");
+  textOffsetPosition(surface, fileViewerSearchMatches[fileViewerSearchIndex]?.start)?.node.parentElement?.classList.add("file-viewer-search-current-fallback");
 }
 
 function focusFileViewerSearchMatch() {
   const match = fileViewerSearchMatches[fileViewerSearchIndex];
   const surface = fileViewerSearchSurface();
-  clearFileViewerSearchHighlight();
+  renderFileViewerSearchHighlights();
   if (!match || !surface) return;
   if (surface === elements.fileViewerEditor) {
     surface.setSelectionRange(match.start, match.end);
@@ -12945,22 +13019,9 @@ function focusFileViewerSearchMatch() {
     const fontSize = Number.parseFloat(computedStyle.fontSize) || 14;
     const lineHeight = !parsedLineHeight ? fontSize * 1.45 : parsedLineHeight < 8 ? parsedLineHeight * fontSize : parsedLineHeight;
     surface.scrollTop = Math.max(0, (lineIndex * lineHeight) - (surface.clientHeight / 2));
+    syncFileViewerSearchOverlayScroll();
   } else {
-    const start = textOffsetPosition(surface, match.start);
-    const end = textOffsetPosition(surface, match.end);
-    if (start && end) {
-      const range = document.createRange();
-      range.setStart(start.node, start.offset);
-      range.setEnd(end.node, end.offset);
-      const HighlightConstructor = globalThis.Highlight;
-      if (globalThis.CSS?.highlights && typeof HighlightConstructor === "function") {
-        globalThis.CSS.highlights.set("file-viewer-search-current", new HighlightConstructor(range));
-      } else {
-        fileViewerSearchHighlightElement = start.node.parentElement;
-        fileViewerSearchHighlightElement?.classList.add("file-viewer-search-current-fallback");
-      }
-      start.node.parentElement?.scrollIntoView({ block: "center", behavior: "instant" });
-    }
+    textOffsetPosition(surface, match.start)?.node.parentElement?.scrollIntoView({ block: "center", behavior: "instant" });
   }
   elements.fileViewerSearchInput?.focus({ preventScroll: true });
   updateFileViewerSearchCount();
@@ -12976,6 +13037,7 @@ function runFileViewerSearch({ navigate = false } = {}) {
   else if (fileViewerSearchIndex < 0 || fileViewerSearchIndex >= fileViewerSearchMatches.length) fileViewerSearchIndex = 0;
   updateFileViewerSearchCount();
   if (navigate) focusFileViewerSearchMatch();
+  else renderFileViewerSearchHighlights();
 }
 
 function stepFileViewerSearch(step) {
@@ -42269,11 +42331,8 @@ async function executeCommandPaletteItem(item = commandPaletteItems[commandPalet
   }
 }
 
-async function refreshAll(tabContext = activeTabContext()) {
-  if (!tabContext.tabId) return;
-  const results = await Promise.allSettled([
-    refreshState(tabContext),
-    refreshMessages(tabContext),
+function supplementalRefreshRequests(tabContext) {
+  return [
     refreshModels(tabContext),
     refreshCommands(tabContext),
     refreshNaturalConversationMode(tabContext),
@@ -42285,12 +42344,45 @@ async function refreshAll(tabContext = activeTabContext()) {
     refreshNativeSettings(tabContext),
     refreshNetworkStatus(),
     refreshWebuiVersion(),
+  ];
+}
+
+function reportRefreshFailures(results, prefix = "") {
+  for (const result of results) {
+    if (result.status !== "rejected") continue;
+    addEvent(`${prefix}${result.reason?.message || String(result.reason)}`, "error");
+  }
+}
+
+async function refreshAll(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return;
+  const results = await Promise.allSettled([
+    refreshState(tabContext),
+    refreshMessages(tabContext),
+    ...supplementalRefreshRequests(tabContext),
   ]);
   if (!isCurrentTabContext(tabContext)) return;
-  for (const result of results) {
-    if (result.status === "rejected") addEvent(result.reason.message || String(result.reason), "error");
-  }
+  reportRefreshFailures(results);
   resumeGitWorkflowForActiveTab(tabContext);
+}
+
+function scheduleForegroundSupplementalRefresh(tabContext) {
+  foregroundSupplementalRefreshCancel?.();
+  const run = async () => {
+    foregroundSupplementalRefreshCancel = null;
+    if (document.visibilityState === "hidden" || !isCurrentTabContext(tabContext)) return;
+    const results = await Promise.allSettled(supplementalRefreshRequests(tabContext));
+    if (!isCurrentTabContext(tabContext)) return;
+    reportRefreshFailures(results, "foreground refresh failed: ");
+    resumeGitWorkflowForActiveTab(tabContext);
+  };
+  if (typeof globalThis.requestIdleCallback === "function") {
+    const handle = globalThis.requestIdleCallback(run, { timeout: 1_200 });
+    foregroundSupplementalRefreshCancel = () => globalThis.cancelIdleCallback?.(handle);
+  } else {
+    const handle = setTimeout(run, 250);
+    foregroundSupplementalRefreshCancel = () => clearTimeout(handle);
+  }
 }
 
 function ensureActiveEventStream(tabContext = activeTabContext()) {
@@ -42302,16 +42394,35 @@ async function reconcileForegroundState(reason = "resume") {
   if (document.visibilityState === "hidden") return;
 
   const wasAway = mobileConnectionState === "away";
+  const transcriptCatchUpRequired = foregroundTranscriptCatchUpRequired;
   mobileConnectionState = navigator.onLine === false ? "offline" : "reconnecting";
   mobileConnectionLabel = mobileConnectionState === "offline" ? "Paused/offline" : "Reconnecting";
   recordMobileDiagnostic("foreground reconcile", reason);
   renderMobilePhoneExperience();
   const tabResult = await Promise.allSettled([refreshTabs()]);
   const tabContext = activeTabContext();
-  ensureActiveEventStream(tabContext);
 
   const results = [...tabResult];
-  if (tabContext.tabId) results.push(...(await Promise.allSettled([refreshAll(tabContext)])));
+  if (tabContext.tabId && transcriptCatchUpRequired) {
+    const criticalResults = await Promise.allSettled([
+      refreshState(tabContext),
+      refreshMessages(tabContext, { authoritative: true }),
+    ]);
+    results.push(...criticalResults);
+    if (isCurrentTabContext(tabContext)) {
+      if (foregroundTranscriptSuppressedEvents > 0) {
+        recordMobileDiagnostic("foreground output coalesced", `${foregroundTranscriptSuppressedEvents} raw transcript updates replaced by one authoritative snapshot`);
+      }
+      backgroundReconnectSnapshotFresh = ![...tabResult, ...criticalResults].some((result) => result.status === "rejected");
+      foregroundTranscriptCatchUpRequired = false;
+      foregroundTranscriptSuppressedEvents = 0;
+      ensureActiveEventStream(tabContext);
+      scheduleForegroundSupplementalRefresh(tabContext);
+    }
+  } else if (tabContext.tabId) {
+    ensureActiveEventStream(tabContext);
+    results.push(...(await Promise.allSettled([refreshAll(tabContext)])));
+  }
   if (!isCurrentTabContext(tabContext)) return;
 
   const failed = results.some((result) => result.status === "rejected");
@@ -43547,7 +43658,25 @@ const TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES = new Set([
   "pi_process_error",
 ]);
 
+function beginForegroundTranscriptCatchUp() {
+  foregroundTranscriptCatchUpRequired = true;
+  backgroundReconnectSnapshotFresh = false;
+  streamOutputController.cancel();
+  if (!eventSource) return;
+  eventStreamPausedForBackground = true;
+  const source = eventSource;
+  eventSource = null;
+  source.close();
+}
+
 function dispatchTranscriptStreamEvent(event) {
+  const classification = classifyTranscriptStreamEvent(event);
+  if (classification && (document.visibilityState === "hidden" || foregroundTranscriptCatchUpRequired)) {
+    foregroundTranscriptCatchUpRequired = true;
+    foregroundTranscriptSuppressedEvents += 1;
+    streamOutputController.cancel();
+    return true;
+  }
   return streamOutputController.dispatch(event, {
     owner: transcriptStreamOwner(event?.tabId || activeTabId),
   });
@@ -43598,6 +43727,10 @@ function handleEvent(event) {
   switch (event.type) {
     case "webui_connected": {
       const connectedTabId = event.tabId || activeTabId;
+      const resumedWithFreshSnapshot = eventStreamPausedForBackground && backgroundReconnectSnapshotFresh;
+      eventStreamPausedForBackground = false;
+      backgroundReconnectSnapshotFresh = false;
+      if (resumedWithFreshSnapshot) foregroundReconnectSnapshotFreshUntil = performance.now() + 2_000;
       clearFeatureDecisionStateForTab(connectedTabId, { render: true });
       acceptOutputModeAcknowledgement(event);
       setWebuiVersion(event.version);
@@ -43609,16 +43742,16 @@ function handleEvent(event) {
         renderWidgets();
       }
       addEvent(`connected to ${event.tabTitle || "terminal"} for ${event.cwd}`);
-      if (event.supervisorReplayGap === true) scheduleSupervisorContinuityRefresh(event, { gap: true });
-      scheduleForegroundReconcile("event stream reconnect", 0);
+      if (event.supervisorReplayGap === true && !resumedWithFreshSnapshot) scheduleSupervisorContinuityRefresh(event, { gap: true });
+      if (!resumedWithFreshSnapshot) scheduleForegroundReconcile("event stream reconnect", 0);
       break;
     }
     case "webui_supervisor_reconnected":
       addEvent("reconnected to the running Pi session");
-      scheduleSupervisorContinuityRefresh(event);
+      if (performance.now() > foregroundReconnectSnapshotFreshUntil) scheduleSupervisorContinuityRefresh(event);
       break;
     case "webui_supervisor_replay_gap":
-      scheduleSupervisorContinuityRefresh(event, { gap: true });
+      if (performance.now() > foregroundReconnectSnapshotFreshUntil) scheduleSupervisorContinuityRefresh(event, { gap: true });
       break;
     case "webui_output_mode":
       applyOutputModeControl(event, tabContext);
@@ -43964,7 +44097,7 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   eventSource = source;
   source.onopen = () => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
-    refreshOptionalFeaturePackageStatuses().catch(() => {});
+    if (!eventStreamPausedForBackground) refreshOptionalFeaturePackageStatuses().catch(() => {});
   };
   source.onmessage = (message) => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
@@ -45196,27 +45329,60 @@ function handleNativeAppShortcut(event) {
   }
 }
 
-// --- Transcript search (Ctrl/Cmd+F) ---
+// --- Transcript and live agent-output search (Ctrl/Cmd+F) ---
+const CHAT_SEARCH_MATCH_LIMIT = 10_000;
 let chatSearchMatches = [];
 let chatSearchIndex = -1;
 let chatSearchTimer = null;
+let chatSearchRefreshTimer = null;
 
 function chatSearchQueryText() {
   return (elements.chatSearchInput?.value || "").trim().toLowerCase();
 }
 
+function chatSearchRoot() {
+  return elements.subagentTerminalView?.hidden === false ? elements.subagentTerminalTranscript : elements.chat;
+}
+
 function collectChatSearchMatches(query) {
   if (!query) return [];
   const matches = [];
-  for (const bubble of elements.chat.querySelectorAll(".message")) {
+  for (const bubble of chatSearchRoot()?.querySelectorAll(".message") || []) {
     if (bubble === runIndicatorBubble || bubble.classList.contains("runIndicator")) continue;
-    if ((bubble.textContent || "").toLowerCase().includes(query)) matches.push(bubble);
+    const text = (bubble.textContent || "").toLowerCase();
+    let offset = 0;
+    while (matches.length < CHAT_SEARCH_MATCH_LIMIT) {
+      const start = text.indexOf(query, offset);
+      if (start < 0) break;
+      matches.push({ bubble, start, end: start + query.length });
+      offset = start + query.length;
+    }
+    if (matches.length >= CHAT_SEARCH_MATCH_LIMIT) break;
   }
   return matches;
 }
 
 function clearChatSearchHighlights() {
-  for (const bubble of elements.chat.querySelectorAll(".message.search-current")) bubble.classList.remove("search-current");
+  globalThis.CSS?.highlights?.delete("chat-search-match");
+  globalThis.CSS?.highlights?.delete("chat-search-current");
+  for (const root of [elements.chat, elements.subagentTerminalTranscript]) {
+    for (const bubble of root?.querySelectorAll(".message.search-match, .message.search-current") || []) bubble.classList.remove("search-match", "search-current");
+  }
+}
+
+function renderChatSearchHighlights() {
+  clearChatSearchHighlights();
+  const ranges = chatSearchMatches.map((match) => textOffsetRange(match.bubble, match)).filter(Boolean);
+  const current = chatSearchMatches[chatSearchIndex];
+  const currentRange = current ? textOffsetRange(current.bubble, current) : null;
+  const HighlightConstructor = globalThis.Highlight;
+  if (globalThis.CSS?.highlights && typeof HighlightConstructor === "function") {
+    if (ranges.length) globalThis.CSS.highlights.set("chat-search-match", new HighlightConstructor(...ranges));
+    if (currentRange) globalThis.CSS.highlights.set("chat-search-current", new HighlightConstructor(currentRange));
+    return;
+  }
+  for (const match of chatSearchMatches) match.bubble.classList.add("search-match");
+  current?.bubble.classList.add("search-current");
 }
 
 function updateChatSearchCount() {
@@ -45226,36 +45392,39 @@ function updateChatSearchCount() {
 }
 
 function focusChatSearchMatch() {
-  const bubble = chatSearchMatches[chatSearchIndex];
+  const match = chatSearchMatches[chatSearchIndex];
+  const bubble = match?.bubble;
   if (!bubble) return;
   if (!bubble.isConnected) {
     runChatSearch({ navigate: false });
     return;
   }
-  clearChatSearchHighlights();
-  bubble.classList.add("search-current");
   const query = chatSearchQueryText();
   for (const details of bubble.querySelectorAll("details")) {
     if (!details.open && (details.textContent || "").toLowerCase().includes(query)) details.open = true;
   }
-  autoFollowChat = false;
-  lastChatProgrammaticScrollAt = performance.now();
+  renderChatSearchHighlights();
+  if (chatSearchRoot() === elements.chat) {
+    autoFollowChat = false;
+    lastChatProgrammaticScrollAt = performance.now();
+    updateJumpToLatestButton();
+  }
   bubble.scrollIntoView({ block: "center", behavior: "instant" });
-  updateJumpToLatestButton();
   updateChatSearchCount();
 }
 
 function runChatSearch({ navigate = false } = {}) {
   const query = chatSearchQueryText();
-  clearChatSearchHighlights();
   chatSearchMatches = collectChatSearchMatches(query);
-  if (chatSearchIndex >= chatSearchMatches.length || chatSearchIndex < 0) chatSearchIndex = chatSearchMatches.length - 1;
+  if (!chatSearchMatches.length) chatSearchIndex = -1;
+  else if (chatSearchIndex >= chatSearchMatches.length || chatSearchIndex < 0) chatSearchIndex = chatSearchMatches.length - 1;
   updateChatSearchCount();
   if (navigate) focusChatSearchMatch();
+  else renderChatSearchHighlights();
 }
 
 function stepChatSearch(step) {
-  if (chatSearchMatches.some((bubble) => !bubble.isConnected)) runChatSearch();
+  if (chatSearchMatches.some((match) => !match.bubble.isConnected)) runChatSearch();
   if (!chatSearchMatches.length) {
     runChatSearch();
     if (!chatSearchMatches.length) return;
@@ -45267,6 +45436,10 @@ function stepChatSearch(step) {
 function openChatSearch() {
   if (!elements.chatSearchBar) return;
   closeFileViewerSearch({ restoreFocus: false });
+  const searchesAgentOutput = chatSearchRoot() === elements.subagentTerminalTranscript;
+  elements.chatSearchInput.placeholder = searchesAgentOutput ? "Search agent output…" : "Search transcript…";
+  elements.chatSearchInput.setAttribute("aria-label", searchesAgentOutput ? "Search agent output" : "Search transcript");
+  if (chatSearchRoot()?.id) elements.chatSearchInput.setAttribute("aria-controls", chatSearchRoot().id);
   elements.chatSearchBar.hidden = false;
   elements.chatSearchInput?.focus();
   elements.chatSearchInput?.select();
@@ -45280,6 +45453,15 @@ function closeChatSearch() {
   chatSearchMatches = [];
   chatSearchIndex = -1;
   updateChatSearchCount();
+}
+
+const chatSearchObserver = typeof MutationObserver === "function" ? new MutationObserver(() => {
+  if (elements.chatSearchBar?.hidden || !chatSearchQueryText()) return;
+  clearTimeout(chatSearchRefreshTimer);
+  chatSearchRefreshTimer = setTimeout(() => runChatSearch({ navigate: false }), 50);
+}) : null;
+for (const root of [elements.chat, elements.subagentTerminalTranscript]) {
+  if (root && chatSearchObserver) chatSearchObserver.observe(root, { childList: true, subtree: true, characterData: true });
 }
 
 elements.chatSearchInput?.addEventListener("input", () => {
@@ -45316,6 +45498,7 @@ document.addEventListener("visibilitychange", () => {
     scheduleForegroundReconcile("visibility resume", 0);
     refreshSubagents().finally(() => scheduleRefreshSubagents());
   } else {
+    beginForegroundTranscriptCatchUp();
     mobileConnectionState = "away";
     mobileConnectionLabel = "Backgrounded · run state unverified";
     persistMobileContinuityState();
@@ -45637,6 +45820,7 @@ elements.fileViewerSearchInput?.addEventListener("keydown", (event) => {
 elements.fileViewerSearchPrevButton?.addEventListener("click", () => stepFileViewerSearch(-1));
 elements.fileViewerSearchNextButton?.addEventListener("click", () => stepFileViewerSearch(1));
 elements.fileViewerSearchCloseButton?.addEventListener("click", () => closeFileViewerSearch());
+elements.fileViewerEditor?.addEventListener("scroll", syncFileViewerSearchOverlayScroll);
 elements.fileViewerEditor?.addEventListener("input", () => {
   if (!activeFileViewer) return;
   activeFileViewer.content = elements.fileViewerEditor.value || "";

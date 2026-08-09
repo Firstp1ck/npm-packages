@@ -940,6 +940,7 @@ body.side-panel-resizing * {
 .file-viewer-editor,
 .file-viewer-preview,
 .file-viewer-changes {
+  grid-area: 1 / 1;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -950,6 +951,8 @@ body.side-panel-resizing * {
   background: rgba(var(--ctp-crust-rgb), 0.64);
 }
 .file-viewer-editor {
+  position: relative;
+  z-index: 1;
   resize: none;
   padding: 0.72rem;
   overflow-x: hidden;
@@ -960,6 +963,37 @@ body.side-panel-resizing * {
   line-height: 1.45;
   white-space: pre-wrap;
 }
+.file-viewer-search-overlay {
+  grid-area: 1 / 1;
+  z-index: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0.72rem;
+  overflow: auto;
+  border: 1px solid rgba(180, 190, 254, 0.16);
+  border-radius: 0.86rem;
+  background: rgba(var(--ctp-crust-rgb), 0.64);
+  color: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  scrollbar-width: none;
+  white-space: pre-wrap;
+}
+.file-viewer-search-overlay::-webkit-scrollbar { display: none; }
+.file-viewer-content.search-highlights-source .file-viewer-editor { background: transparent; }
+.file-viewer-search-match {
+  border-radius: 0.12rem;
+  background: rgba(249, 226, 175, 0.48);
+  color: transparent;
+}
+.file-viewer-search-match.current { background: rgba(250, 179, 135, 0.78); }
 .file-viewer-preview {
   padding: 0.85rem;
   line-height: 1.55;
@@ -11825,7 +11859,6 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
 }
 body.subagent-terminal-active .workspace-dashboard,
 body.subagent-terminal-active .widget-area,
-body.subagent-terminal-active .chat-search-bar,
 body.subagent-terminal-active .chat,
 body.subagent-terminal-active .feedback-tray,
 body.subagent-terminal-active .jump-to-latest-button,
@@ -15167,16 +15200,24 @@ button.git-workflow-step { min-height: 1.9rem; }
 }
 .chat-search-button:hover,
 .file-viewer-search-button:hover { background: var(--panel); }
-::highlight(file-viewer-search-current) {
+::highlight(file-viewer-search-match),
+::highlight(chat-search-match) {
+  color: inherit;
+  background: rgba(249, 226, 175, 0.48);
+}
+::highlight(file-viewer-search-current),
+::highlight(chat-search-current) {
   color: var(--button-primary-text);
-  background: var(--ctp-yellow);
+  background: var(--ctp-peach);
 }
-.file-viewer-search-current-fallback {
-  outline: 2px solid var(--ctp-yellow);
-  outline-offset: 2px;
+.file-viewer-search-match-fallback,
+.message.search-match {
+  outline: 1px solid rgba(249, 226, 175, 0.72);
+  outline-offset: 1px;
 }
+.file-viewer-search-current-fallback,
 .message.search-current {
-  outline: 2px solid var(--accent-2);
+  outline: 2px solid var(--ctp-peach);
   outline-offset: 2px;
 }
 

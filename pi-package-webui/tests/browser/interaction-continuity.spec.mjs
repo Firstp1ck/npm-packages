@@ -45,6 +45,11 @@ async function activeTabId(page) {
   return page.locator("#tabBar [role=\"tab\"][aria-selected=\"true\"]").evaluate((node) => node.closest("[data-tab-id]")?.dataset.tabId || "");
 }
 
+async function tabClientCount(page, tabId) {
+  const payload = await api(page, "/api/tabs");
+  return Number(payload.data?.tabs?.find((tab) => tab.id === tabId)?.clientCount || 0);
+}
+
 async function startContinuityRunner(page) {
   const tabId = await activeTabId(page) || (await tabIds(page))[0];
   const configured = await api(page, "/api/app-runner-config", {
@@ -203,6 +208,63 @@ test.afterAll(async () => {
     await new Promise((resolve) => child.once("exit", resolve));
   }
   await rm(tempRoot, { recursive: true, force: true });
+});
+
+test("only hidden pages disconnect live events and resume from one authoritative snapshot", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const tabId = await activeTabId(page) || (await tabIds(page))[0];
+  assert.ok(tabId, "the background catch-up fixture requires an active tab");
+  await expect.poll(() => tabClientCount(page, tabId)).toBe(1);
+
+  await page.evaluate(() => {
+    window.__backgroundStreamProof = { closeCalls: 0, constructions: 0 };
+    const NativeEventSource = window.EventSource;
+    const nativeClose = NativeEventSource.prototype.close;
+    NativeEventSource.prototype.close = function (...args) {
+      window.__backgroundStreamProof.closeCalls += 1;
+      return nativeClose.apply(this, args);
+    };
+    window.EventSource = new Proxy(NativeEventSource, {
+      construct(target, args, receiver) {
+        window.__backgroundStreamProof.constructions += 1;
+        return Reflect.construct(target, args, receiver);
+      },
+    });
+    window.dispatchEvent(new Event("blur"));
+  });
+  await expect.poll(() => tabClientCount(page, tabId)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__backgroundStreamProof.closeCalls)).toBe(0);
+
+  await page.evaluate(() => {
+    window.__backgroundVisibilityState = "hidden";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => window.__backgroundVisibilityState,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => tabClientCount(page, tabId)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.__backgroundStreamProof.closeCalls)).toBe(1);
+
+  const completedBefore = await page.locator("#chat .message.assistant", { hasText: "continuity stream complete" }).count();
+  await api(page, `/api/prompt?tab=${encodeURIComponent(tabId)}`, {
+    method: "POST",
+    data: { message: "fixture continuity delayed stream", requestId: `background-catch-up-${Date.now()}` },
+  });
+  await waitForFixtureSettlement(page, tabId);
+  await expect(page.locator("#chat .message.assistant", { hasText: "continuity stream complete" })).toHaveCount(completedBefore);
+
+  const resumedAt = Date.now();
+  await page.evaluate(() => {
+    window.__backgroundVisibilityState = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => tabClientCount(page, tabId)).toBe(1);
+  await expect(page.locator("#chat .message.assistant", { hasText: "continuity stream complete" })).toHaveCount(completedBefore + 1);
+  const proof = await page.evaluate(() => window.__backgroundStreamProof);
+  assert.equal(proof.constructions, 1, "foreground catch-up should create exactly one replacement EventSource");
+  assert.ok(Date.now() - resumedAt < 4_000, "the bounded snapshot resume should complete without replaying the hidden stream duration");
 });
 
 test("autosizing the main input does not move settled agent output", async ({ page }) => {

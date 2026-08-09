@@ -121,6 +121,8 @@ Normal output shows the full live tool and response stream. Compact output keeps
 
 Choose the mode under **Controls → Output processing** or **Settings → Browser workflow**. The setting affects display only; it does not change Pi prompts, tools, models, saved transcript meaning, or inference.
 
+When the browser page is hidden, the Web UI closes that page's live event stream so the browser cannot accumulate serialized output frames for later parsing and DOM rendering. Merely moving focus to another visible window does not pause streaming. On return, it first fetches authoritative tabs, state, and transcript snapshots, reconnects live events, and refreshes nonessential panels during browser idle time. Pending extension prompts are replayed by the server after reconnection, and completed output remains available from the authoritative transcript.
+
 ## Mobile layout
 
 At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses terminal navigation and secondary composer controls by default:
@@ -173,7 +175,7 @@ Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection d
 | `Alt+Enter` | Queue a follow-up |
 | `Alt+Up` | Restore the latest queued prompt |
 | Hold `Esc` | Abort active work |
-| `Ctrl/Cmd+F` | Search the transcript |
+| `Ctrl/Cmd+F` | Search the active file, transcript, or subagent output stream; all matches are highlighted |
 
 ## Troubleshooting
 

@@ -36,6 +36,24 @@ npm install
 
 The package depends on `@cursor/sdk`. Published/local `pi install` installs that dependency automatically; the repo symlink workflow needs the package-local `npm install` step because the sync script only creates symlinks. Then reload Pi with `/reload`.
 
+## Check the upstream SDK dependency
+
+The package temporarily pins the last Cursor SDK release before its vulnerable Undici dependency chain appeared. Check whether the current npm `latest` release has resolved the issue with:
+
+```bash
+npm run check:upstream
+```
+
+The command creates an isolated temporary lockfile for `@cursor/sdk@latest`, runs `npm audit` against its production graph, prints a concise human- and agent-readable evaluation, and removes the temporary directory. The evaluation states whether the issue is fixed, shows the resolved SDK/ConnectRPC/Undici versions, summarizes advisory severity, and recommends whether to keep the local SDK pin. It does not run dependency lifecycle scripts or call Cursor or Pi.
+
+Exit codes:
+
+- `0` — npm reports no vulnerable `undici` package in the latest SDK graph.
+- `1` — the vulnerable chain remains.
+- `2` — the result is indeterminate, such as a registry, npm, or malformed-response failure.
+
+The check intentionally relies on npm dependency resolution and advisory data instead of an AI judgment. Review a successful result before removing the SDK pin, then run the package tests and live Cursor smoke test.
+
 ## Configure auth
 
 Set `CURSOR_API_KEY`, or run:

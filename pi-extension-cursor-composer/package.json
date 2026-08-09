@@ -24,12 +24,13 @@
   },
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts",
+    "check:upstream": "node scripts/check-cursor-sdk-upstream.mjs",
     "smoke:cursor": "node --import tsx scripts/cursor-usage-smoke.ts",
     "benchmark:cursor": "node --import tsx scripts/cursor-truncation-benchmark.ts"
   },
   "dependencies": {
     "@connectrpc/connect-node": "^2.1.2",
-    "@cursor/sdk": "^1.0.16",
+    "@cursor/sdk": "1.0.20",
     "@firstpick/pi-utils": "^0.2.4"
   },
   "devDependencies": {

@@ -2516,9 +2516,14 @@ assert.match(app, /case "message_end": \{(?:(?!case ")[\s\S])*?scheduleSemanticR
 assert.match(html, /id="chatSearchBar"[\s\S]*?id="chatSearchInput"[\s\S]*?id="chatSearchPrevButton"[\s\S]*?id="chatSearchNextButton"[\s\S]*?id="chatSearchCloseButton"/, "transcript search bar markup should exist with navigation controls");
 assert.match(app, /function openChatSearch\(\)[\s\S]*?elements\.chatSearchInput\?\.focus\(\)/, "opening transcript search should focus the input");
 assert.match(app, /\(event\.ctrlKey \|\| event\.metaKey\) && !event\.altKey && !event\.shiftKey && event\.key\.toLowerCase\(\) === "f"/, "Ctrl\/Cmd+F should open the transcript search");
+assert.match(app, /function chatSearchRoot\(\)[\s\S]*subagentTerminalTranscript[\s\S]*elements\.chat/, "transcript search should target the active main or subagent output stream");
+assert.match(app, /function collectChatSearchMatches\(query\)[\s\S]*while \(matches\.length < CHAT_SEARCH_MATCH_LIMIT\)[\s\S]*matches\.push\(\{ bubble, start, end:/, "transcript search should collect every matching occurrence instead of only matching bubbles");
+assert.match(app, /function renderChatSearchHighlights\(\)[\s\S]*chat-search-match[\s\S]*new HighlightConstructor\(\.\.\.ranges\)[\s\S]*chat-search-current/, "transcript search should highlight all exact ranges and distinguish the current one");
 assert.match(app, /function focusChatSearchMatch\(\)[\s\S]*?details\.open = true;[\s\S]*?scrollIntoView/, "navigating to a search match should expand collapsed tool output and scroll to the bubble");
-assert.match(app, /autoFollowChat = false;\n  lastChatProgrammaticScrollAt = performance\.now\(\);/, "search navigation must not fight chat auto-follow");
-assert.match(css, /\.message\.search-current \{/, "current search match should have a highlight style");
+assert.match(app, /autoFollowChat = false;\n    lastChatProgrammaticScrollAt = performance\.now\(\);/, "main-transcript search navigation must not fight chat auto-follow");
+assert.match(app, /new MutationObserver\([\s\S]*runChatSearch\(\{ navigate: false \}\)[\s\S]*characterData: true/, "open searches should re-highlight refreshed live output without stealing navigation focus");
+assert.match(css, /::highlight\(chat-search-match\)[\s\S]*::highlight\(chat-search-current\)/, "all transcript matches and the current match should have distinct highlight styles");
+assert.doesNotMatch(css, /body\.subagent-terminal-active \.chat-search-bar/, "the search bar must remain visible while viewing a subagent output stream");
 assert.match(css, /\.chat \{[^}]*overflow:\s*auto;[^}]*overflow-anchor:\s*none;/, "the transcript should disable browser scroll anchoring because paused-reader position is controlled explicitly during live growth");
 assert.match(css, /\.chat-search-bar,\n\.file-viewer-search-bar \{/, "transcript search bar should be styled");
 

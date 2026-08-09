@@ -17,7 +17,9 @@ assert.match(
   "the file viewer should expose an accessible in-file search bar with match navigation",
 );
 assert.match(html, /id="fileViewerSearchInput"[^>]*aria-controls="fileViewerEditor"/, "the in-file search input should identify the source editor it searches");
+assert.match(html, /id="fileViewerSearchOverlay"[^>]*aria-hidden="true"[^>]*hidden/, "source search should provide a non-interactive highlight overlay");
 assert.match(app, /fileViewerSearchInput: \$\("#fileViewerSearchInput"\)/, "file search controls should be registered in the element map");
+assert.match(app, /fileViewerSearchOverlay: \$\("#fileViewerSearchOverlay"\)/, "the source highlight overlay should be registered in the element map");
 assert.match(app, /const FILE_VIEWER_SEARCH_MATCH_LIMIT = 10_000;/, "in-file search should bound match collection for large files");
 assert.match(app, /function collectFileViewerSearchMatches\([\s\S]*fileViewerSearchText\(\)\.toLowerCase\(\)[\s\S]*haystack\.indexOf\(needle, offset\)/, "in-file search should collect case-insensitive matches from the active viewer surface");
 
@@ -45,7 +47,9 @@ const truncatedMatches = JSON.parse(vm.runInNewContext(`${helperSource}\nJSON.st
 assert.equal(truncatedMatches.matches.length, 10_000, "large-file match collection should stop at the declared bound");
 assert.equal(truncatedMatches.truncated, true, "large-file match collection should disclose additional matches beyond the bound");
 assert.match(app, /function fileViewerSearchSurface\(\)[\s\S]*mode === "preview"[\s\S]*mode === "changes"[\s\S]*fileViewerEditor/, "search should stay scoped to the current Source, Preview, or Changes surface");
-assert.match(app, /function focusFileViewerSearchMatch\([\s\S]*setSelectionRange\(match\.start, match\.end\)[\s\S]*textOffsetPosition\(surface, match\.start\)[\s\S]*CSS\?\.highlights[\s\S]*scrollIntoView/, "match navigation should select source matches and highlight rendered matches without mutating the document selection");
+assert.match(app, /function renderFileViewerSourceSearchHighlights\(\)[\s\S]*fileViewerSearchMatches\.forEach[\s\S]*make\("mark", `file-viewer-search-match/, "source search should render every collected match into the synchronized overlay");
+assert.match(app, /function renderFileViewerSearchHighlights\(\)[\s\S]*new HighlightConstructor\(\.\.\.ranges\)[\s\S]*file-viewer-search-match[\s\S]*file-viewer-search-current/, "rendered file surfaces should highlight all exact ranges and distinguish the current range");
+assert.match(app, /function focusFileViewerSearchMatch\(\)[\s\S]*setSelectionRange\(match\.start, match\.end\)[\s\S]*syncFileViewerSearchOverlayScroll\(\)[\s\S]*textOffsetPosition\(surface, match\.start\)[\s\S]*scrollIntoView/, "match navigation should select and center source or rendered matches without mutating document selection");
 assert.doesNotMatch(app.slice(app.indexOf("function focusFileViewerSearchMatch("), app.indexOf("\nfunction runFileViewerSearch(", app.indexOf("function focusFileViewerSearchMatch("))), /getSelection|addRange|removeAllRanges/, "rendered file search must not overwrite selections used by the Send to Pi workflow");
 assert.match(app, /function runFileViewerSearch\([\s\S]*setAttribute\("aria-controls", surface\.id\)/, "the search input should identify the active Source, Preview, or Changes surface");
 assert.match(app, /function setFileViewerMode\([\s\S]*updateFileViewerUi\(\);[\s\S]*runFileViewerSearch\(\{ navigate: true \}\)/, "an explicit mode switch should reveal the first match on the new surface");
@@ -60,6 +64,7 @@ assert.match(
 assert.match(app, /function openChatSearch\(\)[\s\S]*closeFileViewerSearch\(\{ restoreFocus: false \}\)/, "opening transcript search should close any stale in-file search bar");
 assert.match(css, /\.chat-search-bar,\s*\.file-viewer-search-bar \{/, "file search should reuse the transcript search layout conventions");
 assert.match(css, /\.file-viewer-search-bar\[hidden\] \{ display: none; \}/, "the hidden file search bar should not consume viewer space");
-assert.match(css, /::highlight\(file-viewer-search-current\)[\s\S]*\.file-viewer-search-current-fallback/, "rendered matches should have an exact CSS Highlight and a non-destructive fallback affordance");
+assert.match(css, /\.file-viewer-search-overlay[\s\S]*\.file-viewer-content\.search-highlights-source[\s\S]*\.file-viewer-search-match\.current/, "source matches should use a scroll-synchronized visual overlay with a distinct current match");
+assert.match(css, /::highlight\(file-viewer-search-match\)[\s\S]*::highlight\(file-viewer-search-current\)[\s\S]*\.file-viewer-search-match-fallback/, "rendered matches should highlight all exact ranges with a non-destructive fallback affordance");
 
 console.log("file viewer focused search static tests passed");
