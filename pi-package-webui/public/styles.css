@@ -270,7 +270,7 @@ textarea {
 textarea::placeholder { color: rgba(var(--ctp-subtext-rgb), 0.62); }
 #promptInput {
   min-height: calc(1.5em + 1.8rem);
-  max-height: min(38vh, 18rem);
+  max-height: min(25vh, 10rem);
   resize: none;
   overflow-y: hidden;
 }
@@ -7705,9 +7705,9 @@ button.git-workflow-step:hover:not(:disabled) {
   padding: 1rem;
   scroll-behavior: smooth;
 }
-/* Keep a short transcript at the composer edge without using
-   justify-content:flex-end, which can make overflowing content unreachable. */
-.chat > .message:first-of-type { margin-top: auto; }
+/* Keep transcript cards top-anchored so textarea autosizing changes only the
+   available viewport height instead of translating settled agent output. */
+.chat > .message:first-of-type { margin-top: 0; }
 .run-indicator-host:empty { display: none; }
 .run-indicator-host {
   flex: 0 0 auto;

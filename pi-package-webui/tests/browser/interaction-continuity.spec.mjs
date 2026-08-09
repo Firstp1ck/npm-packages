@@ -205,6 +205,28 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true });
 });
 
+test("autosizing the main input does not move settled agent output", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const outputCard = page.locator("#chat > .message.assistant").last();
+  await expect(outputCard).toBeVisible();
+
+  const promptInput = page.locator("#promptInput");
+  const initial = await outputCard.evaluate((node) => ({
+    top: node.getBoundingClientRect().top,
+    inputHeight: document.querySelector("#promptInput")?.getBoundingClientRect().height || 0,
+  }));
+  await promptInput.fill("composer stability ".repeat(120));
+  await expect.poll(() => promptInput.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(initial.inputHeight + 40);
+  const expandedTop = await outputCard.evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(Math.abs(expandedTop - initial.top) <= 1, `agent output moved ${expandedTop - initial.top}px while the composer expanded`);
+
+  await promptInput.fill("short draft");
+  await expect.poll(() => promptInput.evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(initial.inputHeight + 2);
+  const collapsedTop = await outputCard.evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(Math.abs(collapsedTop - initial.top) <= 1, `agent output moved ${collapsedTop - initial.top}px while the composer collapsed`);
+});
+
 test("same-context app-runner refresh preserves directional selection, control scroll, and reader scroll mode", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(baseURL);

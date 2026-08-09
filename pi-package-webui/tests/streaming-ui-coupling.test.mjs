@@ -128,8 +128,9 @@ assert.match(
   "disabling todo-progress should still suppress the optional widget renderer itself",
 );
 
-assert.match(styles, /\.chat \{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;/, "short transcripts should use a column layout that can anchor the live tail at the composer edge");
-assert.match(styles, /\.chat > \.message:first-of-type \{ margin-top:\s*auto; \}/, "the first transcript card should consume only unused vertical space so overflowing history remains reachable");
+assert.match(styles, /\.chat \{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;/, "the transcript should retain a stable vertical flow as composer geometry changes");
+assert.match(styles, /\.chat > \.message:first-of-type \{ margin-top:\s*0; \}/, "settled transcript cards should stay top-anchored while the prompt textarea auto-resizes");
+assert.doesNotMatch(styles, /\.chat > \.message:first-of-type \{ margin-top:\s*auto; \}/, "short transcripts must not follow the moving composer edge while the user types");
 assert.match(appendOptimisticUserPrompt, /renderAllMessages\(\);[\s\S]*?scrollChatToBottom\(\{ force:\s*true \}\);/, "submitting a prompt should explicitly resume bottom-follow for the new turn");
 assert.doesNotMatch(appendOptimisticUserPrompt, /if \(autoFollowChat \|\| isChatNearBottom\(\)\)/, "a paused reader position should not leave a newly submitted turn off-screen");
 

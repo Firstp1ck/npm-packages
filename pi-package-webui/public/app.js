@@ -20430,7 +20430,8 @@ async function confirmFooterGitWorktreeAction(branch, { path = "", create = fals
     ...(trackedRemoteRef ? [`Remote ref: ${trackedRemoteRef}`, `Creates local branch ${branchName} tracking ${trackedRemoteRef}.`] : []),
     targetPath ? `Worktree: ${targetPath}` : `Default location: ${footerBranchPickerState.defaultWorktreesRoot || "repo sibling .worktrees directory"}`,
     "",
-    "This opens a separate checkout in a separate Pi tab and does not switch this tab's branch.",
+    "This creates a separate checkout without changing this tab's branch.",
+    "After creation, you can choose whether to open it in a separate Pi tab and switch to it.",
     "Ignored dependencies such as node_modules or .venv are not copied; bootstrap them manually if needed.",
     "",
     "Continue?",
@@ -20512,7 +20513,7 @@ function footerBranchCreateTooltip(branchName = footerBranchCreateName(), state 
     "",
     "What happens:",
     "• asks whether to base the new branch on origin/main (default) or this workspace's current HEAD",
-    "• opens a separate Pi tab rooted at that worktree",
+    "• creates the worktree, then asks whether to open and switch to it in a separate Pi tab",
     "• does not switch this tab's branch, commit, push, or delete anything",
     "",
     "Tip: ignored dependencies such as node_modules or .venv are not copied.",
@@ -20530,7 +20531,7 @@ async function createFooterGitBranch(branch = footerBranchCreateName()) {
   await applyFooterGitBranch(branchName, { create: true, tabContext, skipConfirm: true });
 }
 
-async function openWorktreeResponseTab(response, { branchName = "", action = "open" } = {}) {
+async function openWorktreeResponseTab(response, { branchName = "", action = "open", announce = true } = {}) {
   if (!response.ok) throw new Error(response.error || `Failed to ${action} branch worktree`);
   const payload = response.data || {};
   if (Array.isArray(payload.tabs)) {
@@ -20547,10 +20548,25 @@ async function openWorktreeResponseTab(response, { branchName = "", action = "op
   const branch = cleanStatusText(payload.worktree?.branch || payload.branch || branchName || targetTab?.gitWorkspace?.branch || "");
   const where = payload.worktree?.path || payload.path || targetTab?.cwd || "worktree";
   const prefix = payload.created ? "Created" : payload.openedExisting || payload.openedExistingTab ? "Opened existing" : "Opened";
-  addEvent(`${prefix} branch worktree${branch ? ` ${branch}` : ""} at ${normalizeDisplayPath(where)}.`, "success");
+  if (announce) addEvent(`${prefix} branch worktree${branch ? ` ${branch}` : ""} at ${normalizeDisplayPath(where)}.`, "success");
   if (payload.session?.warning) addEvent(payload.session.warning, "warn");
   if (payload.dependencyHint) addEvent(payload.dependencyHint, "info");
   requestGitFooterWebuiPayload(activeTabContext(), { force: true });
+}
+
+async function confirmSwitchToCreatedFooterGitWorktree(payload = {}, branchName = "") {
+  if (payload.created !== true) return false;
+  const branch = cleanStatusText(payload.worktree?.branch || payload.branch || branchName);
+  const worktreePath = cleanFooterPayloadText(payload.worktree?.path || payload.path, "", 4000);
+  if (!worktreePath) return false;
+  return appConfirm({
+    title: "Switch to new worktree?",
+    summary: `The${branch ? ` ${branch}` : ""} worktree was created. Open it in a separate Pi tab and switch to it now? The worktree remains available if you stay here.`,
+    affected: normalizeDisplayPath(worktreePath),
+    undoable: true,
+    confirmLabel: "Switch to worktree",
+    danger: false,
+  });
 }
 
 async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), { tabContext = activeTabContext(), skipConfirm = false, chooseBase = true, remoteRef = "", switchingLabel = "", switchingKey = "" } = {}) {
@@ -20570,9 +20586,20 @@ async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), 
     // Remote-only creation submits the exact advertised remote ref instead of a
     // base ref; the server re-verifies it and creates a local tracking branch.
     const response = trackedRemoteRef
-      ? await api("/api/git-worktrees", { method: "POST", body: { branchName, remoteRef: trackedRemoteRef, sessionMode: "fork-current", openTab: true }, tabId })
-      : await api("/api/git-worktrees", { method: "POST", body: { branchName, baseRef, sessionMode: "fork-current", openTab: true }, tabId });
-    await openWorktreeResponseTab(response, { branchName, action: "create" });
+      ? await api("/api/git-worktrees", { method: "POST", body: { branchName, remoteRef: trackedRemoteRef, sessionMode: "fork-current", openTab: false }, tabId })
+      : await api("/api/git-worktrees", { method: "POST", body: { branchName, baseRef, sessionMode: "fork-current", openTab: false }, tabId });
+    if (!response.ok) throw new Error(response.error || "Failed to create branch worktree");
+    const payload = response.data || {};
+    const worktreePath = cleanFooterPayloadText(payload.worktree?.path || payload.path, "", 4000);
+    if (!worktreePath) throw new Error("Git worktree creation did not return a path");
+    if (payload.created) {
+      await openWorktreeResponseTab(response, { branchName, action: "create" });
+      if (await confirmSwitchToCreatedFooterGitWorktree(payload, branchName)) {
+        await openFooterGitWorktree(worktreePath, { branchName, tabContext, skipConfirm: true, announce: false });
+      }
+    } else {
+      await openFooterGitWorktree(worktreePath, { branchName, tabContext, skipConfirm: true });
+    }
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
       footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", error: error.message || String(error) };
@@ -20583,7 +20610,7 @@ async function createFooterGitBranchWorktree(branch = footerBranchCreateName(), 
   }
 }
 
-async function openFooterGitWorktree(path, { branchName = "", tabContext = activeTabContext(), skipConfirm = false, switchingKey = "" } = {}) {
+async function openFooterGitWorktree(path, { branchName = "", tabContext = activeTabContext(), skipConfirm = false, switchingKey = "", announce = true } = {}) {
   const worktreePath = cleanFooterPayloadText(path, "", 4000);
   if (!worktreePath) return;
   if (!skipConfirm && !(await confirmFooterGitWorktreeAction(branchName, { path: worktreePath, requireConfirm: false }))) return;
@@ -20592,7 +20619,7 @@ async function openFooterGitWorktree(path, { branchName = "", tabContext = activ
     footerBranchPickerState = { ...footerBranchPickerState, loading: true, error: "", switching: branchName || worktreePath, switchingKey, tabId };
     renderFooter();
     const response = await api("/api/git-worktrees/open", { method: "POST", body: { path: worktreePath, sessionMode: "fork-current", openTab: true }, tabId });
-    await openWorktreeResponseTab(response, { branchName, action: "open" });
+    await openWorktreeResponseTab(response, { branchName, action: "open", announce });
   } catch (error) {
     if (isCurrentTabContext(tabContext)) {
       footerBranchPickerState = { ...footerBranchPickerState, loading: false, switching: "", switchingKey: "", error: error.message || String(error) };
