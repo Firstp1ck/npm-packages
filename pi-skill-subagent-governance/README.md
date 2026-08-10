@@ -4,7 +4,7 @@ Keep delegated AI work properly divided, isolated, reviewed, and safely recovere
 
 ## Helpful when
 
-- A task may benefit from several AI workers.
+- A task may benefit from one or more delegated specialists.
 - More than one worker could edit the same project.
 - Delegated results need review or a safe retry decision.
 
@@ -20,8 +20,8 @@ Keep delegated AI work properly divided, isolated, reviewed, and safely recovere
 
 ## What you’ll get
 
-- A direct-work or delegation decision
-- Clear ownership and safety boundaries
+- An outcome-driven decision to work directly or delegate to one or more children
+- Clear plan, ownership, sequencing, and safety boundaries
 - Rules for handoff, review, and recovery
 
 ## Keep in mind

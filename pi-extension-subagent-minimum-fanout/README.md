@@ -1,13 +1,13 @@
-# Subagent Minimum Fanout for Pi
+# Subagent Review Diversity for Pi
 
-Prevents unsafe one-off delegation patterns and checks reviewer model diversity.
+Checks that independent subagent reviewers use distinct model providers without restricting worker fanout.
 
 ## What you can do
 
-- Blocks unsupported one-worker delegation patterns.
-- Requires enough isolated writers when delegated editing is used.
-- Checks reviewer provider diversity when required.
-- Explains why a delegation request was rejected.
+- Launch one worker or several workers as the task requires.
+- Run sequential or parallel workers through normal subagent workflows.
+- Require multiple reviewers to use separate provider/model routes.
+- Get a clear explanation when reviewer diversity is rejected.
 
 ## Install
 
@@ -21,10 +21,10 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-There is no setup for everyday use. The extension checks delegation requests automatically.
+There is no setup for everyday use. The extension checks model-initiated subagent requests automatically.
 
-If a request is blocked, read the explanation shown by Pi. It normally tells the main agent to do the work directly or to divide genuinely separate work across enough safe, isolated workers. You do not need to correct the tool request yourself.
+Worker and workflow launch counts are not restricted. When one execution launches multiple reviewers, declare a different explicit provider/model route for each reviewer.
 
 ## Technical details
 
-See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-subagent-minimum-fanout/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.
+See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-subagent-minimum-fanout/TECHNICAL.md) for complete commands, compatibility, security, and troubleshooting information.

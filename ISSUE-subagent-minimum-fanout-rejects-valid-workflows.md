@@ -1,4 +1,8 @@
-# Bug: Minimum-fanout guard rejects valid two-worker `workflowScript` runs
+# Resolved: Minimum-fanout guard rejected valid `workflowScript` runs
+
+**Status:** Resolved by removing minimum child/worker cardinality enforcement in package version 0.1.5. Direct single workers, `workflowScript`, schedules, and other worker launch shapes now pass through. Reviewer provider/model diversity remains enforced for statically inspectable reviewer groups.
+
+The remainder of this document preserves the original report for historical context.
 
 ### Short Summary
 

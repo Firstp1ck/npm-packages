@@ -8,13 +8,13 @@ The installed `pi-subagents` skill is canonical for Pi delegation mechanics: the
 
 This skill is canonical for **admissibility**: whether a shape may be launched, who may write, what a worker is told, what a handoff must return, when a replacement is legal, and how a finding is dispositioned. When both are loaded, mechanics questions resolve to `pi-subagents` and admissibility questions resolve here. Neither file overrides the other, and this adapter never restates the `pi-subagents` API.
 
-Pi's active prompt policies and any static fanout enforcement extension remain separate runtime controls. A model-invoked skill does not replace them and does not claim their guarantees.
+Pi's active prompt policies and runtime enforcement extensions remain separate controls. A model-invoked skill does not replace them and does not claim their guarantees.
 
 ## 2. Discovery and launch posture
 
 1. Call the discovery action before execution and use only executable, non-disabled agents or chains it returns. Do not launch from remembered role names.
 2. Launch through the native `subagent(...)` tool. Never spawn children through `bash`, nested `pi -p` invocations, detached processes, or hand-managed session files.
-3. Apply the static minimum to Pi execution-mode aliases `single`, `parallel`, and `tasks` when their matching payload is present, matched case-insensitively. Treat `schedule` as a new deferred execution request under the same minimum. Management, control, and recovery actions remain exempt and cannot satisfy the minimum.
+3. Pi execution-mode aliases `single`, `parallel`, and `tasks`, workflow scripts, and schedules may launch one or multiple justified children. Apply the same role-fit, plan, isolation, and retry rules regardless of execution mode; cardinality is not an admissibility gate.
 4. Prefer `async: true` so runs stay trackable in the Pi UI, and give each run a clear `phase`, `label`, and role-specific task. For plan-governed work, include the workstream ID and the expected handoff artifact path.
 5. Prefer fresh context plus explicit plan and file references over hidden parent history. Forked context is a branched thread that inherits parent history, not a filtered review context.
 6. Monitor with the status action and block with `subagent_wait()` only when the current request must run to completion, or when a headless turn must receive results before it ends. Never substitute sleep or status-polling loops for lifecycle tracking.
@@ -35,7 +35,7 @@ Use these names only when live discovery reports them executable and non-disable
 | Approved implementation inside assigned ownership | `worker` |
 | Independent critique of an inspectable target | `reviewer` |
 
-`oracle` and `advisor` are one advisory capability. Never launch them together merely to manufacture fanout.
+`oracle` and `advisor` are one advisory capability. Launch both only when they have distinct, necessary advisory outcomes; aliases alone do not create separate value.
 
 ## 3. Local model defaults
 
@@ -50,7 +50,7 @@ These are **Pi-local defaults for this workstation**, not portable policy. They 
 
 Provider route preference: when a usable OpenAI Codex or Anthropic subscription is detected, prefer its subscription-backed provider route over the OpenRouter API for subagents. Use OpenRouter only when the matching subscription route is unavailable, unsuitable for the task, exhausted, or explicitly requested by the user.
 
-A model choice never changes admissibility. An unavailable default is a provider problem to solve with an eligible fallback; it is not a reason to launch one child, to duplicate a live child, or to lower a gate.
+A model choice never changes admissibility. An unavailable default is a provider problem to solve with an eligible fallback; it is not a reason to duplicate a live child, broaden a task, or lower an independent gate.
 
 ## 4. Isolation in Pi
 

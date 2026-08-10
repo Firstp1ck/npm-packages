@@ -18,7 +18,7 @@ A delegation call that reports failure may still have started children.
 
 1. Before any replacement launch, inspect status, fleet, and transcript evidence, and classify every requested logical child identity — its role plus its assigned outcome or slot — as queued, running, paused, completed, failed, or unstarted.
 2. **Never include a queued, running, paused, detached, or otherwise live child identity in a replacement payload, even when the original call reported failure.** Relaunch only failed or unstarted slots.
-3. If filtering leaves fewer children than the static minimum, do not duplicate a live child to reach it. Instead:
+3. If filtering leaves only one failed or unstarted child identity, recover or relaunch only that identity when retry safety permits. Do not duplicate a live child, add filler work, or relaunch healthy siblings. Instead:
    - wait and reconcile once the live children settle;
    - use a recovery operation for a failed persisted run; or
    - complete the missing outcome directly in the parent.

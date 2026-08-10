@@ -1,6 +1,6 @@
 ---
 name: subagent-governance
-description: Delegation admissibility governance for a parent orchestrator. Use when deciding whether to launch, replace, or accept delegated child runs, applying the zero-or-multiple fanout rule, static two-worker minimum, role-fit balance, one-writer isolation, bounded retry safety, and reviewer finding disposition. Covers admissibility only; a harness keeps its own runtime mechanics documentation.
+description: Delegation admissibility governance for a parent orchestrator. Use when deciding whether to launch, sequence, replace, or accept one or more delegated child runs while preserving role fit, plan-backed worker contracts, one-writer isolation, bounded retry safety, and reviewer finding disposition. Covers admissibility only; a harness keeps its own runtime mechanics documentation.
 license: MIT
 compatibility: Portable Agent Skills-style skill for a parent orchestrator. The portable core requires no harness-specific tool. Launch syntax, action names, context modes, and runtime behavior stay owned by the harness's own delegation documentation.
 ---
@@ -64,7 +64,7 @@ Read the matching reference before acting. Paths are relative to this `SKILL.md`
 | A child failed, was interrupted, returned nothing, was rejected, or a whole call reported failure and replacement launches are being considered | [references/RETRY-AND-RECOVERY.md](references/RETRY-AND-RECOVERY.md) |
 | Mapping this governance to Pi, including discovery, launch posture, local model defaults, retry helpers, and escalation | [references/PI-EXECUTION-ADAPTER.md](references/PI-EXECUTION-ADAPTER.md) |
 
-The launch-blocking invariants below stay in this file. References carry branch detail only; they never lower an invariant.
+The core admissibility invariants below stay in this file. References carry branch detail only; they never lower an invariant.
 
 ## Inputs and Assumptions
 
@@ -94,26 +94,24 @@ Assume nothing about a role's availability, a provider's health, or a child's su
    - Resolve material uncertainty about local context, external evidence, architecture, or planning before writes. Use reviewers only after an inspectable target exists.
    - Completion criterion: every selected role has a distinct necessary outcome, and every rejected role was rejected for lack of contribution rather than for convenience.
 
-3. **Apply the zero-or-multiple delegation invariant**
-   - Use zero or multiple children, never exactly one. If exactly one child would be useful, launch none and let the parent do the work directly.
-   - Every new execution request that delegates work must be **one** request that statically declares at least two necessary child launches. A direct one-child request is not allowed.
-   - Do not split work into separate one-child requests. Each is independently noncompliant.
-   - If a request is blocked, do not resubmit the same noncompliant shape. Work directly in the parent, or submit one statically compliant request.
-   - Deferred or scheduled execution is a new execution request and follows the same minimum. Management, control, and recovery operations are exempt from the minimum, and that exemption never lets them satisfy it.
-   - This is a preflight rule about the statically declared shape. It does not promise that providers or child processes will start or succeed, and it does not claim to cover human command surfaces or extension call paths.
-   - Completion criterion: the request declares zero children, or at least two, with no one-child request and no split-request workaround.
+3. **Choose the smallest justified delegation shape**
+   - Use zero, one, or multiple children according to the necessary outcomes. A single child is admissible when one bounded specialist outcome is useful.
+   - Prefer direct parent work when delegation adds no material value, not merely because only one child would be launched.
+   - Multiple children must each have a distinct, necessary outcome. Do not add duplicate, token, filler, or unrelated children to manufacture fanout.
+   - Sequential child launches are allowed when dependencies, shared working-tree ownership, or integration order require them. Do not force unrelated work into one request merely to increase the declared count.
+   - Workflow scripts, dynamic fanout, schedules, and direct launches have no governance-level cardinality minimum; their actual syntax and runtime behavior remain harness mechanics.
+   - Completion criterion: every delegated child has a justified outcome, and the selected shape is no larger or more concurrent than the work requires.
 
-4. **Count children statically and keep every outcome distinct and necessary**
-   - Count from the shape known at request time: declared top-level tasks and statically declared workflow-step children count, and a positive integer repeat count contributes that many launches of the named role.
-   - Dynamic fanout or runtime expansion contributes **zero** statically guaranteed launches, so it can establish neither the total-child minimum nor the worker minimum.
-   - Count total children and implementation-writer children separately. **Any request that launches an implementation writer must statically declare at least two writer launches.** Non-writer children never satisfy the writer minimum, and independently justified specialists never substitute for required implementation workers.
-   - Every counted child — and each required writer — must have a distinct, necessary outcome. Do not use duplicate, token, filler, or unrelated children to manufacture compliance.
-   - Replacements, fallbacks, resumes, and management or control calls neither count as declared children nor satisfy this intent.
-   - When only one write outcome exists, keep that write in the parent and launch only independently justified specialists, or do the whole task directly.
-   - Completion criterion: the static count is derived from the declared shape, each counted child is separately justified, and no child exists only to reach a number.
+4. **Plan and sequence implementation workers**
+   - Launch an implementation worker only after the parent has established an approved plan or bounded workstream contract with prerequisites, ownership, deliverables, validation, and stop conditions.
+   - One implementation worker is admissible for one bounded write outcome. Several workers are admissible only when their outcomes and ownership boundaries are distinct.
+   - Sequential workers may share one working tree when each predecessor has settled and the parent has inspected its state before the next launch. Concurrent writers require isolated working trees and non-overlapping ownership.
+   - Dynamic worker fanout is admissible only when its expansion source, ownership rule, concurrency bound, and integration path are explicit before expansion.
+   - Replacements, fallbacks, and resumes preserve the original workstream identity and do not create permission to broaden scope.
+   - Completion criterion: every worker is plan-backed, dependency-ready, safely sequenced or isolated, and necessary for its assigned write outcome.
 
 5. **Preserve one-writer isolation**
-   - Enforce one writer per working tree. The minimum never weakens isolation: never run concurrent writers in a shared tree merely to reach a child count.
+   - Enforce one active writer per working tree. Never run concurrent writers in a shared tree; sequence them instead.
    - Parallel writers require clean, isolated working trees plus dependency-independent, non-overlapping ownership. Writers sharing a tree run sequentially.
    - A dirty repository must not use automatic isolated-tree fanout. Clean it only with user approval, or run sequentially in the shared tree.
    - The integration owner keeps control of shared-plan updates, decisions, integration, and completion claims. Workers must not edit the canonical plan, merge one another's branches, or spawn their own children unless explicitly assigned bounded fanout.
@@ -135,7 +133,7 @@ Assume nothing about a role's availability, a provider's health, or a child's su
 8. **Replace failed children with bounded, deduplicated retries**
    - Count successful qualifying outputs, not requested tasks, launch attempts, or occupied slots.
    - Treat a call-level failure as potentially partial. Before any replacement launch, classify every requested logical child identity. **Never include a queued, running, paused, detached, or otherwise live child identity in a replacement payload, even when the original call reported failure.**
-   - If filtering leaves fewer children than the static minimum, do not duplicate a live child to reach it. Wait and reconcile, use a recovery operation for a failed persisted run, or complete the missing outcome directly in the parent.
+   - If filtering leaves one failed or unstarted child identity, recover or relaunch only that identity when retry safety permits. Never duplicate a live child or bundle unrelated work into the replacement.
    - Never automatically replace a stopped or interrupted child, and never automatically replace a writer without inspecting its actual state and obtaining parent approval.
    - Read [references/RETRY-AND-RECOVERY.md](references/RETRY-AND-RECOVERY.md) for failure classification, attempt budgets, and quorum exhaustion.
    - Completion criterion: every replacement targets only failed or unstarted slots, stays inside the attempt budget, and preserves each attempt's identity and failure class.
@@ -180,7 +178,7 @@ npm test
 npm pack --dry-run --json
 ```
 
-A governance decision is verified when the declared shape, the static counts, the writer isolation, the worker contracts, the retry provenance, and the finding dispositions are all inspectable in the record rather than asserted from memory.
+A governance decision is verified when the selected roles and outcomes, worker sequencing or isolation, worker contracts, retry provenance, and finding dispositions are all inspectable in the record rather than asserted from memory.
 
 ## Pi Adapter
 

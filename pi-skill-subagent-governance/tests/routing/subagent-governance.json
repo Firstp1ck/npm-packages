@@ -5,8 +5,8 @@
     "One of the delegated runs failed mid-call; decide what to relaunch without touching the runs that are still going.",
     "Two implementation runs finished, so decide how to integrate their work and what review it still needs.",
     "The reviewers disagree about this integrated change; decide which findings to accept before a fix pass.",
-    "Launch one agent for the API now and a second one later in a separate request; check whether that split delegation is allowed.",
-    "Use one implementation worker plus two reviewers for this feature; decide whether that satisfies the static worker minimum."
+    "Launch one specialist for this bounded API investigation and decide whether its task contract is safe.",
+    "Use one implementation worker followed by a reviewer; plan the ownership, sequencing, and handoffs."
   ],
   "should_not_trigger": [
     "What arguments does the delegation tool accept for a scheduled run?",
@@ -23,8 +23,8 @@
         "subagent-governance",
         "pi-subagents"
       ],
-      "decision": "Use this skill to decide whether the review fanout is admissible, who may write, and how findings are dispositioned; use the mechanics skill for the launch call, execution mode, and context options.",
-      "reason": "A fanout request mixes an admissibility decision with an execution-syntax question, and the two are owned by different skills.",
+      "decision": "Use this skill to decide whether each review outcome is necessary, who may write, and how findings are dispositioned; use the mechanics skill for the launch call, execution mode, and context options.",
+      "reason": "A multi-reviewer request mixes an admissibility decision with an execution-syntax question, and the two are owned by different skills.",
       "review_status": "reviewed"
     },
     {
@@ -33,8 +33,8 @@
         "subagent-governance",
         "pi-subagents"
       ],
-      "decision": "Use this skill, because a single-child delegation request is an admissibility question: either declare at least two necessary children or keep the work in the parent.",
-      "reason": "The request looks like a mechanics request but is decided by the zero-or-multiple invariant before any launch syntax matters.",
+      "decision": "Use this skill to verify that the single child has one bounded, necessary outcome and, if it writes, an approved plan-backed task contract; use the mechanics skill to launch it.",
+      "reason": "A single child is admissible, but role fit, ownership, validation, and handoff safety are still governance decisions.",
       "review_status": "reviewed"
     },
     {
@@ -43,7 +43,7 @@
         "subagent-governance",
         "feature-development-workflow"
       ],
-      "decision": "Use the feature workflow skill for the required feature outcomes, quorum size, and completion gate; use this skill for whether the delegation shape that produces them is admissible and how each finding is dispositioned.",
+      "decision": "Use the feature workflow skill for the required feature outcomes, quorum size, and completion gate; use this skill for whether each delegated outcome is justified, how workers are sequenced or isolated, and how each finding is dispositioned.",
       "reason": "Feature completion gates and delegation admissibility are separate contracts that meet in the same request.",
       "review_status": "reviewed"
     }

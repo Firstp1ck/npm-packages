@@ -29,12 +29,6 @@ export interface ReviewerDiversityAnalysis {
 	violation: boolean;
 }
 
-export const MINIMUM_FANOUT_BLOCK_REASON = [
-	"Blocked by the zero-or-multiple delegation policy: every execution needs at least two statically guaranteed child launches, and any workflow that launches the worker agent needs at least two statically guaranteed worker launches.",
-	"Do not retry a single child or hide one worker among non-worker children.",
-	"Either work directly in the main agent, or issue one statically compliant tasks or chain workflow with the required launches.",
-].join(" ");
-
 export const REVIEWER_DIVERSITY_BLOCK_REASON = [
 	"Blocked by the reviewer-diversity policy: multiple reviewer launches in one execution must each declare an explicit provider/model route.",
 	"Reviewer provider prefixes and normalized model routes must both be pairwise distinct; count-based or dynamic reviewer fanout cannot prove that and is not allowed.",
@@ -246,13 +240,6 @@ export function analyzeSubagentCall(input: unknown): SubagentFanoutAnalysis {
 	return analyzeExecution(input);
 }
 
-export function blocksForMinimumFanout(analysis: SubagentFanoutAnalysis): boolean {
-	return analysis.execution && (
-		analysis.guaranteedChildren < 2
-		|| (analysis.workerExecution && analysis.guaranteedWorkers < 2)
-	);
-}
-
 interface CollectedReviewerRoutes {
 	routes: Array<ReviewerRoute | undefined>;
 	dynamicReviewerFanout: boolean;
@@ -334,15 +321,11 @@ export default function subagentMinimumFanout(pi: ExtensionAPI): void {
 		if (!isToolCallEventType<"subagent", Record<string, unknown>>("subagent", event)) return;
 
 		try {
-			const analysis = analyzeSubagentCall(event.input);
-			if (blocksForMinimumFanout(analysis)) {
-				return { block: true, reason: MINIMUM_FANOUT_BLOCK_REASON };
-			}
 			if (analyzeReviewerDiversity(event.input).violation) {
 				return { block: true, reason: REVIEWER_DIVERSITY_BLOCK_REASON };
 			}
 		} catch {
-			return { block: true, reason: MINIMUM_FANOUT_BLOCK_REASON };
+			return { block: true, reason: REVIEWER_DIVERSITY_BLOCK_REASON };
 		}
 	});
 }

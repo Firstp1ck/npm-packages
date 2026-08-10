@@ -64,7 +64,7 @@ class SubagentGovernanceContractTests(unittest.TestCase):
         ]:
             self.assertIn(reference, router, f"router does not link {reference}")
             self.assertIn(cue, router, f"router does not state when to load {reference}")
-        self.assertIn("The launch-blocking invariants below stay in this file.", router)
+        self.assertIn("The core admissibility invariants below stay in this file.", router)
 
     def test_admissibility_versus_mechanics_boundary_is_explicit(self):
         text = SKILL.read_text(encoding="utf-8")
@@ -78,38 +78,30 @@ class SubagentGovernanceContractTests(unittest.TestCase):
         self.assertIn("This skill is canonical for **admissibility**", adapter)
         self.assertIn("this adapter never restates the `pi-subagents` API", adapter)
 
-    def test_launch_blocking_invariants_stay_inline(self):
+    def test_core_admissibility_invariants_stay_inline(self):
         text = SKILL.read_text(encoding="utf-8")
         core = text.split("## Pi Adapter", 1)[0]
         required = [
-            # zero-or-multiple delegation
-            "Use zero or multiple children, never exactly one.",
-            "launch none and let the parent do the work directly",
-            "statically declares at least two necessary child launches",
-            "Do not split work into separate one-child requests.",
-            "do not resubmit the same noncompliant shape",
-            "Deferred or scheduled execution is a new execution request",
-            "Management, control, and recovery operations are exempt from the minimum",
-            "preflight rule about the statically declared shape",
-            # static counting and the two-worker minimum
-            "a positive integer repeat count contributes that many launches",
-            "contributes **zero** statically guaranteed launches",
-            "must statically declare at least two writer launches",
-            "Non-writer children never satisfy the writer minimum",
-            "never substitute for required implementation workers",
-            # distinct necessary outcomes and anti-filler
-            "distinct, necessary outcome",
-            "duplicate, token, filler, or unrelated children to manufacture compliance",
-            "neither count as declared children nor satisfy this intent",
-            "no child exists only to reach a number",
+            # outcome-driven cardinality and sequencing
+            "Use zero, one, or multiple children according to the necessary outcomes.",
+            "A single child is admissible when one bounded specialist outcome is useful.",
+            "Prefer direct parent work when delegation adds no material value",
+            "Sequential child launches are allowed",
+            "have no governance-level cardinality minimum",
+            # plan-backed workers and anti-filler
+            "Launch an implementation worker only after the parent has established an approved plan or bounded workstream contract",
+            "One implementation worker is admissible for one bounded write outcome.",
+            "Sequential workers may share one working tree",
+            "Dynamic worker fanout is admissible only when",
+            "duplicate, token, filler, or unrelated children to manufacture fanout",
             # balanced specialist routing
             "Balance means equal consideration and opportunity-appropriate selection",
             "It is not a quota, an equal invocation count, or a correction for historical usage.",
             "Advisory challenge is **one** capability.",
             "Use reviewers only after an inspectable target exists.",
             # one-writer isolation
-            "Enforce one writer per working tree.",
-            "never run concurrent writers in a shared tree merely to reach a child count",
+            "Enforce one active writer per working tree.",
+            "Never run concurrent writers in a shared tree; sequence them instead.",
             "Writers sharing a tree run sequentially.",
             "A dirty repository must not use automatic isolated-tree fanout.",
             "Workers must not edit the canonical plan",
@@ -124,7 +116,7 @@ class SubagentGovernanceContractTests(unittest.TestCase):
             # retry safety and live-child deduplication
             "Count successful qualifying outputs, not requested tasks, launch attempts, or occupied slots.",
             "Never include a queued, running, paused, detached, or otherwise live child identity in a replacement payload",
-            "do not duplicate a live child to reach it",
+            "Never duplicate a live child or bundle unrelated work into the replacement.",
             "Never automatically replace a stopped or interrupted child",
             # reviewer dispositions
             "Reviewer output is advisory.",
@@ -132,7 +124,7 @@ class SubagentGovernanceContractTests(unittest.TestCase):
             "Never let a fix worker decide disposition",
         ]
         for phrase in required:
-            self.assertIn(phrase, core, f"launch-blocking invariant missing from the inline core: {phrase}")
+            self.assertIn(phrase, core, f"core admissibility invariant missing from the inline skill: {phrase}")
 
     def test_preflight_alias_pairing_and_live_retry_rules_resist_inversion(self):
         core = SKILL.read_text(encoding="utf-8").split("## Pi Adapter", 1)[0].lower()
@@ -148,12 +140,14 @@ class SubagentGovernanceContractTests(unittest.TestCase):
         ]:
             self.assertNotIn(permissive, core)
         self.assertIn("never launch two advisory aliases together merely to raise a child count", core)
+        self.assertIn("a single child is admissible", core)
 
         retry = RETRY.read_text(encoding="utf-8").lower()
         self.assertIn("queued, running, paused, detached, or otherwise live child identity", retry)
         self.assertIn("relaunch only failed or unstarted slots", retry)
         self.assertNotRegex(retry, r"retry (?:all|every) (?:requested )?(?:child|slot)")
-        self.assertIn("do not duplicate a live child to reach it", retry)
+        self.assertIn("do not duplicate a live child", retry)
+        self.assertIn("relaunch only that identity", retry)
 
     def test_references_carry_branch_detail_without_lowering_invariants(self):
         worker_review = WORKER_REVIEW.read_text(encoding="utf-8")
@@ -179,7 +173,7 @@ class SubagentGovernanceContractTests(unittest.TestCase):
             "Count successful qualifying outputs, not requested tasks, launch attempts, or occupied slots.",
             "Treat a call-level failure as potentially partial",
             "Never include a queued, running, paused, detached, or otherwise live child identity in a replacement payload",
-            "do not duplicate a live child to reach it",
+            "Do not duplicate a live child, add filler work, or relaunch healthy siblings.",
             "Attention signals are not lifecycle state.",
             "Never automatically relaunch a stopped or interrupted child.",
             "obtain parent approval before launching a replacement",
@@ -232,9 +226,8 @@ class SubagentGovernanceContractTests(unittest.TestCase):
         adapter = PI_ADAPTER.read_text(encoding="utf-8")
         for phrase in [
             "execution-mode aliases `single`, `parallel`, and `tasks`",
-            "matched case-insensitively",
-            "Treat `schedule` as a new deferred execution request under the same minimum",
-            "Management, control, and recovery actions remain exempt and cannot satisfy the minimum",
+            "workflow scripts, and schedules may launch one or multiple justified children",
+            "cardinality is not an admissibility gate",
             "### Specialist role mapping",
             "`scout`",
             "`context-builder`",
@@ -252,7 +245,7 @@ class SubagentGovernanceContractTests(unittest.TestCase):
             "Bounded generic independent outcome with no better specialist | `delegate`",
             "Approved implementation inside assigned ownership | `worker`",
             "Independent critique of an inspectable target | `reviewer`",
-            "Never launch them together merely to manufacture fanout",
+            "Launch both only when they have distinct, necessary advisory outcomes",
         ]:
             self.assertIn(phrase, adapter)
 

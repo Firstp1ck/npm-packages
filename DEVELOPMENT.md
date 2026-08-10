@@ -255,11 +255,11 @@ Routes feature requests to the enabled `feature-development-workflow` skill.
 - injects a short fail-closed skill bridge while preserving bounded continuation context and safe classifier fallbacks
 
 ### `@firstpick/pi-extension-subagent-minimum-fanout`
-Enforces zero-or-multiple model delegation for Pi subagent tool calls.
+Checks reviewer provider/model diversity for Pi subagent tool calls without restricting child fanout.
 
-- blocks direct and statically single-child execution requests
-- supports tasks, chains, schedules, dynamic fanout, and execution-mode aliases
-- leaves management/recovery actions available and documents slash-command/RPC boundaries
+- allows direct single workers and sequential or parallel workflows
+- checks distinct explicit reviewer routes for statically inspectable requests
+- leaves workflow scripts and management/recovery actions unrestricted
 
 ### `@firstpick/pi-utils`
 Shared helpers used by multiple Pi extensions.
