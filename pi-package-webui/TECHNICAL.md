@@ -112,6 +112,7 @@ The Web UI checks optional companion packages when it starts. Missing or older c
 - **Retry failed** retries only failed package installs.
 - **Copy commands** provides manual Pi install commands.
 - **Recheck** repeats the read-only package check.
+- Configurable loaded companions show separate **Enable/Disable** and **Setup** actions. Native questionnaires use the real active-session `questionnaire` tool state; **Setup** opens Tools Setup, where session access and global defaults can be managed.
 
 Installs run one at a time and never invent percentage progress. Busy tabs are not restarted without a visible follow-up action.
 

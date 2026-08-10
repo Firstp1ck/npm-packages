@@ -2472,6 +2472,7 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-prompts-git-pr",
     capabilityLabel: "/git-staged-msg",
     description: "Generate staged commit messages for the guided Git workflow.",
+    setup: "git-workflow",
   },
   {
     id: "releaseNpm",
@@ -2500,6 +2501,7 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-extension-workflows",
     capabilityLabel: "/workflow or workflow subprocess widget event",
     description: "Modular workflow runner with live subprocess output shown in a non-blocking Web UI widget.",
+    setup: "workflows",
   },
   {
     id: "featureSystemPrompt",
@@ -2514,6 +2516,7 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-extension-safety-guard",
     capabilityLabel: "/safety-guard or /safety-guard-setup command",
     description: "Configurable guardrails for dangerous bash commands and protected file edits.",
+    setup: "safety-guard",
   },
   {
     id: "tuiSkillsCommand",
@@ -2550,6 +2553,7 @@ const OPTIONAL_FEATURES = [
     capabilityLabel: "questionnaire tool in /tools",
     description: "Native TUI and WebUI single- or multi-select question series with Other answers and resumable clarification.",
     manageWith: "tools",
+    setup: "tools",
   },
   {
     id: "naturalConversation",
@@ -8849,6 +8853,8 @@ function loadDisabledOptionalFeatures() {
 }
 
 let disabledOptionalFeatures = new Set(loadDisabledOptionalFeatures());
+const optionalFeatureManagedAccessEnabled = new Map();
+const optionalFeatureAccessInProgress = new Set();
 
 function storeDisabledOptionalFeatures() {
   try {
@@ -8880,6 +8886,10 @@ function isOptionalFeatureDetected(featureId) {
 }
 
 function isOptionalFeatureDisabled(featureId) {
+  const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
+  if (feature?.manageWith === "tools" && optionalFeatureManagedAccessEnabled.has(featureId)) {
+    return optionalFeatureManagedAccessEnabled.get(featureId) === false;
+  }
   return disabledOptionalFeatures.has(featureId);
 }
 
@@ -35791,6 +35801,7 @@ function scheduleChatFollowScroll({ settle = true } = {}) {
 
 function resumeChatAutoFollow() {
   chatUserScrollAwayIntentUntil = 0;
+  chatPausedScrollRestoreUntil = 0;
   autoFollowChat = true;
 }
 
@@ -36296,6 +36307,7 @@ function setOptionalControlState(button, available, unavailableTitle) {
 function resetOptionalFeatureAvailability() {
   for (const key of Object.keys(optionalFeatureAvailability)) optionalFeatureAvailability[key] = false;
   optionalFeatureAvailability.themeBundle = availableThemes.length > 0;
+  optionalFeatureManagedAccessEnabled.clear();
   renderOptionalFeatureControls();
   if (activeTabId) queueMicrotask(() => refreshQuestionnaireFeatureAvailability());
 }
@@ -36971,13 +36983,18 @@ async function refreshQuestionnaireFeatureAvailability(tabContext = activeTabCon
   try {
     const response = await api("/api/tools?scope=session", { tabId: tabContext.tabId });
     if (!isCurrentTabContext(tabContext)) return false;
-    optionalFeatureAvailability.questionnaire = Array.isArray(response.data?.tools)
-      && response.data.tools.some((tool) => tool?.name === "questionnaire");
+    const questionnaireTool = Array.isArray(response.data?.tools)
+      ? response.data.tools.find((tool) => tool?.name === "questionnaire")
+      : null;
+    optionalFeatureAvailability.questionnaire = !!questionnaireTool;
+    if (questionnaireTool) optionalFeatureManagedAccessEnabled.set("questionnaire", questionnaireTool.enabled !== false);
+    else optionalFeatureManagedAccessEnabled.delete("questionnaire");
     renderOptionalFeatureControls();
     return true;
   } catch {
     if (isCurrentTabContext(tabContext)) {
       optionalFeatureAvailability.questionnaire = false;
+      optionalFeatureManagedAccessEnabled.delete("questionnaire");
       renderOptionalFeatureControls();
     }
     return false;
@@ -37109,7 +37126,7 @@ function optionalFeatureStatus(featureId) {
   const feature = OPTIONAL_FEATURE_BY_ID.get(featureId);
   const detected = isOptionalFeatureDetected(featureId);
   const managedWithTools = feature?.manageWith === "tools";
-  const disabled = managedWithTools ? false : isOptionalFeatureDisabled(featureId);
+  const disabled = isOptionalFeatureDisabled(featureId);
   const packageStatus = optionalFeaturePackageStatus(featureId);
   const installMessage = optionalFeatureInstallMessages.get(featureId);
   const installState = optionalFeatureInstallState(featureId);
@@ -37135,7 +37152,7 @@ function optionalFeatureStatus(featureId) {
     };
   }
   const doneDetail = installState?.phase === "done" ? optionalFeatureInstallDetail(installState, installMessage) : "";
-  if (disabled) return {
+  if (disabled && !managedWithTools) return {
     label: "Disabled",
     className: "disabled",
     detail: `Disabled in this browser and excluded from migration selection${versionSuffix}`,
@@ -37149,7 +37166,13 @@ function optionalFeatureStatus(featureId) {
     hint: "Do not install again. Keep either the package entry or the extensions/skills/prompts/themes alias, not both.",
   };
   if (packageStatus?.updateAvailable) return { label: "Update available", className: "updating", detail: packageStatus.updateReason || `Installed package is older than the Web UI expects${versionSuffix}` };
-  if (detected && managedWithTools) return { label: "Loaded", className: "enabled", detail: doneDetail || `Detected in the active Pi tab; manage access in Tools${versionSuffix}`, command: installState?.command || "" };
+  if (disabled && managedWithTools) return {
+    label: "Disabled",
+    className: "disabled",
+    detail: `Tool access is disabled for the active Pi session${versionSuffix}`,
+    hint: "Enable it here for this session, or use Setup to manage session and global tool defaults.",
+  };
+  if (detected && managedWithTools) return { label: "Enabled", className: "enabled", detail: doneDetail || `Tool access is enabled for the active Pi session${versionSuffix}`, hint: "Use Setup to manage session and global tool defaults.", command: installState?.command || "" };
   if (detected && !disabled) return { label: "Enabled", className: "enabled", detail: doneDetail || `Detected and enabled in Web UI${versionSuffix}`, command: installState?.command || "" };
   if (detected && disabled) return { label: "Disabled", className: "disabled", detail: `Detected, but disabled in Web UI${versionSuffix}` };
   if (packageStatus?.locallyConfigured) return { label: "Available locally", className: "installed", detail: doneDetail || `Enabled as a top-level Pi resource; reload this tab if the capability is not detected yet${versionSuffix}` };
@@ -37305,9 +37328,64 @@ function renderOptionalFeatureSection(section, features) {
   elements.optionalFeaturesBox.append(sectionNode);
 }
 
+function optionalFeatureSetupAvailable(feature) {
+  switch (feature?.setup) {
+    case "git-workflow": return hasAvailableCommand("git-workflow-setup");
+    case "workflows": return hasLoadedRpcCommand("workflow-setup");
+    case "safety-guard": return hasAvailableCommand("safety-guard-setup");
+    case "tools": return feature.manageWith !== "tools" || isOptionalFeatureDetected(feature.id);
+    default: return false;
+  }
+}
+
+function openOptionalFeatureSetup(feature) {
+  switch (feature?.setup) {
+    case "git-workflow": return openNativeGitWorkflowSetupDialog();
+    case "workflows": return openNativeWorkflowSetupDialog();
+    case "safety-guard": return openNativeSafetyGuardSetupDialog();
+    case "tools": return openNativeToolsSelector();
+    default: return undefined;
+  }
+}
+
+async function setToolManagedOptionalFeatureEnabled(feature, enabled) {
+  const toolName = feature?.manageWith === "tools" ? String(feature.managedToolName || feature.id) : "";
+  const tabContext = activeTabContext();
+  if (!toolName || !tabContext.tabId || optionalFeatureAccessInProgress.has(feature.id)) return;
+  optionalFeatureAccessInProgress.add(feature.id);
+  renderOptionalFeatureControls();
+  try {
+    const current = await api("/api/tools?scope=session", { tabId: tabContext.tabId });
+    if (!isCurrentTabContext(tabContext)) return;
+    const tools = Array.isArray(current.data?.tools) ? current.data.tools : [];
+    if (!tools.some((tool) => tool?.name === toolName)) throw new Error(`${toolName} is not available in this Pi tab`);
+    const enabledTools = new Set(tools.filter((tool) => tool?.enabled !== false).map((tool) => tool.name));
+    if (enabled) enabledTools.add(toolName);
+    else enabledTools.delete(toolName);
+    const response = await api("/api/tools", {
+      method: "POST",
+      body: { enabledTools: [...enabledTools], scope: "session" },
+      tabId: tabContext.tabId,
+    });
+    if (!isCurrentTabContext(tabContext)) return;
+    const nextTools = Array.isArray(response.data?.tools) ? response.data.tools : [];
+    const nextTool = nextTools.find((tool) => tool?.name === toolName);
+    optionalFeatureAvailability[feature.id] = !!nextTool;
+    if (nextTool) optionalFeatureManagedAccessEnabled.set(feature.id, nextTool.enabled !== false);
+    else optionalFeatureManagedAccessEnabled.delete(feature.id);
+    addEvent(`${feature.label} was ${enabled ? "enabled" : "disabled"} for this session.`, "success");
+  } catch (error) {
+    if (isCurrentTabContext(tabContext)) addEvent(`${feature.label} access was not changed: ${error.message || String(error)}`, "error");
+  } finally {
+    optionalFeatureAccessInProgress.delete(feature.id);
+    if (isCurrentTabContext(tabContext)) renderOptionalFeatureControls();
+  }
+}
+
 function renderOptionalFeatureRow(feature) {
   const detected = isOptionalFeatureDetected(feature.id);
   const enabled = isOptionalFeatureEnabled(feature.id);
+  const accessChanging = optionalFeatureAccessInProgress.has(feature.id);
   const installState = optionalFeatureInstallState(feature.id);
   const installing = optionalFeatureInstallInProgress.has(feature.id) || optionalFeatureInstallIsActive(installState);
   const failed = installState?.phase === "failed";
@@ -37317,7 +37395,7 @@ function renderOptionalFeatureRow(feature) {
   const tooltip = optionalFeatureTooltip(feature, status);
   row.dataset.tooltip = tooltip;
   row.setAttribute("aria-label", tooltip.replace(/\s+/g, " "));
-  if (installing) row.setAttribute("aria-busy", "true");
+  if (installing || accessChanging) row.setAttribute("aria-busy", "true");
   row.tabIndex = 0;
 
   const main = make("div", "optional-feature-main");
@@ -37347,8 +37425,11 @@ function renderOptionalFeatureRow(feature) {
   const actions = make("div", "optional-feature-actions");
   const action = make("button", "optional-feature-action");
   action.type = "button";
-  action.disabled = installing || optionalFeatureBatchIsActive() || (!optionalFeaturePackageStatusesLoaded && !detected);
-  if (installing) {
+  action.disabled = accessChanging || installing || optionalFeatureBatchIsActive() || (!optionalFeaturePackageStatusesLoaded && !detected);
+  if (accessChanging) {
+    action.textContent = enabled ? "Disabling…" : "Enabling…";
+    action.setAttribute("aria-busy", "true");
+  } else if (installing) {
     action.textContent = installState?.actionLabel === "Update" ? "Updating…" : "Installing…";
     action.setAttribute("aria-busy", "true");
   } else if (failed) {
@@ -37356,9 +37437,6 @@ function renderOptionalFeatureRow(feature) {
     action.textContent = "Retry…";
     action.classList.add(retryAsUpdate ? "update" : "install");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: retryAsUpdate }));
-  } else if (isOptionalFeatureDisabled(feature.id)) {
-    action.textContent = "Enable";
-    action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, false));
   } else if (packageStatus?.resourceConflict) {
     action.textContent = "Conflict";
     action.disabled = true;
@@ -37367,8 +37445,11 @@ function renderOptionalFeatureRow(feature) {
     action.classList.add("update");
     action.addEventListener("click", () => installOptionalFeature(feature.id, { update: true }));
   } else if (detected && feature.manageWith === "tools") {
-    action.textContent = "Tools…";
-    action.addEventListener("click", () => openNativeToolsSelector());
+    action.textContent = enabled ? "Disable" : "Enable";
+    action.addEventListener("click", () => setToolManagedOptionalFeatureEnabled(feature, !enabled));
+  } else if (isOptionalFeatureDisabled(feature.id)) {
+    action.textContent = "Enable";
+    action.addEventListener("click", () => setOptionalFeatureDisabled(feature.id, false));
   } else if (detected) {
     action.textContent = enabled ? "Disable" : "Enable";
     action.addEventListener("click", async () => {
@@ -37406,6 +37487,14 @@ function renderOptionalFeatureRow(feature) {
     action.addEventListener("click", () => installOptionalFeature(feature.id));
   }
   actions.append(action);
+  if (detected && feature.setup) {
+    const setup = make("button", "optional-feature-action setup", "Setup");
+    setup.type = "button";
+    setup.disabled = accessChanging || installing || optionalFeatureBatchIsActive() || !optionalFeatureSetupAvailable(feature);
+    setup.setAttribute("aria-label", `Set up ${feature.label}`);
+    setup.addEventListener("click", () => openOptionalFeatureSetup(feature));
+    actions.append(setup);
+  }
   if (failed) {
     const retryFailed = make("button", "optional-feature-action install", "Retry failed");
     retryFailed.type = "button";

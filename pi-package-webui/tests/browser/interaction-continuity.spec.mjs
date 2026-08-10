@@ -1044,3 +1044,35 @@ test("submitting a new turn resumes bottom-follow and keeps the streamed tail an
   await waitForFixtureSettlement(page);
   await expect.poll(() => chat.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBe(0);
 });
+
+test("Latest reaches the live edge during a paused transcript reconciliation", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 420 });
+  await page.goto(baseURL);
+  await expect.poll(() => page.locator("#chat .message").count()).toBeGreaterThanOrEqual(3);
+  await page.addStyleTag({ content: "#chat > .message { min-height: 10rem; }" });
+
+  const chat = page.locator("#chat");
+  const pausedRemaining = await chat.evaluate((node) => {
+    node.style.scrollBehavior = "auto";
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new WheelEvent("wheel", { deltaY: -180, bubbles: true }));
+    node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight - 180);
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    node.style.removeProperty("scroll-behavior");
+    return node.scrollHeight - node.clientHeight - node.scrollTop;
+  });
+  assert.ok(pausedRemaining > 96, `the fixture must pause above the bottom threshold, got ${pausedRemaining}px`);
+  await expect(page.locator("#jumpToLatestButton")).toBeVisible();
+
+  await triggerDelayedStream(page);
+  await expect(page.locator("#jumpToLatestButton")).toBeVisible();
+  await page.locator("#jumpToLatestButton").click();
+
+  await expect.poll(() => chat.evaluate((node) => ({
+    following: document.querySelector("#jumpToLatestButton")?.hidden === true,
+    remaining: Math.round(node.scrollHeight - node.clientHeight - node.scrollTop),
+  }))).toEqual({ following: true, remaining: 0 });
+  await expect(page.locator(".message.assistant.streaming .streaming-markdown").last()).toContainText("continuity");
+  await waitForFixtureSettlement(page);
+  await expect.poll(() => chat.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBe(0);
+});

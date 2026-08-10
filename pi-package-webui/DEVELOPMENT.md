@@ -81,8 +81,6 @@ When enabled, each click obtains a fresh Turnstile token and UUID-v4, then posts
 
 Local browser UI for [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
-![Pi Web UI main window showing multi-tab chat, streaming output, footer status, composer, and side controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_MainWindow_v0.4.8.png)
-
 Pi Web UI gives you a local browser companion for Pi: multi-tab chat, streaming output, model controls, uploads, slash-command helpers, workspace navigation, and optional extension widgets.
 
 > **Security:** Pi Web UI can control the spawned Pi session and run anything that session is allowed to run. It binds to `127.0.0.1` by default. Trusted-LAN opening/closing and Remote PIN auth controls are owned by the optional `@firstpick/pi-package-remote-webui` companion; when enabled, Remote PIN auth persists for later Web UI starts.
@@ -340,41 +338,31 @@ Sensitive native flows use shared trust-boundary guards: localhost-only APIs, tr
 | `Ctrl/Cmd+C` in an empty, focused composer | Clear the prompt. |
 | `Ctrl/Cmd+F` | Search the transcript. |
 
-## Feature gallery (screenshots from v0.4.8)
+## Interface reference
 
-These screenshots show the v0.4.8 Web UI surfaces. Current implementations include the additional native-command, shortcut, attachment, Git, app-runner, server-control, and safety features documented above. Unless noted otherwise, actions apply to the active tab and its current working directory.
+Product screenshots are maintained in the [user-facing README](README.md#feature-gallery). The notes below preserve detailed behavior for contributor reference. Unless noted otherwise, actions apply to the active tab and its current working directory.
 
 ### Main window
-
-![Pi Web UI main window showing multi-tab chat, streaming output, footer status, composer, and side controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_MainWindow_v0.4.8.png)
 
 - **What it is:** The primary Web UI workspace for Pi, with terminal tabs, chat transcript, live assistant output, footer metrics, prompt composer, attachments, and side-panel controls in one browser view.
 - **What you can do:** Run multiple Pi sessions, send prompts or follow-ups, monitor tokens/cache/cost/context/git/model state, attach files, launch quick actions, and control the active session without returning to the terminal.
 
 ### Workspace dashboard
 
-![Pi Web UI workspace dashboard showing the active project, model, session cards, and quick actions](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_Workspace_v0.4.8.png)
-
 - **What it is:** The project home base for an active Web UI tab, combining cwd, model, context, git, queue, session, and activity status.
 - **What you can do:** Start or resume work, verify the tab is pointed at the right project, jump into common session/workspace actions, and spot queued or active work before prompting.
 
 ### Control panel
-
-![Pi Web UI side control panel with model, session, workspace, theme, update, optional feature, and usage controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_ControlPanel_v0.4.8.png)
 
 - **What it is:** The side rail for Web UI state and settings, including model, thinking effort, session/workspace controls, theme, optional companions, Remote WebUI, updates, notifications, and usage widgets.
 - **What you can do:** Change model or effort, compact/manage sessions, toggle notifications, check or install optional packages, run confirmed updates/restarts, and manage remote/PIN controls when the remote companion is loaded.
 
 ### Working-directory picker
 
-![Pi Web UI working-directory picker with recent paths, saved directories, and create-directory action](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_CWDpicker_v0.4.8.png)
-
 - **What it is:** A browser-native cwd chooser used at first launch and for per-tab working-directory changes.
 - **What you can do:** Search and browse project paths, choose recent or saved directories, create a new directory, and start or move a Pi tab into the selected workspace.
 
 ### App runners
-
-![Pi Web UI app runner selector showing detected project runners and custom runner creation](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_AppRunner_v0.4.8.png)
 
 - **What it is:** A project runner detector for common stacks plus browseable custom runners and project discovery paths from `.pi-webui-runners.json`.
 - **What you can do:** Launch dev servers, tests, builds, scripts, and custom commands from the active cwd, pass arguments, watch pinned live output, and send line-oriented stdin to interactive runners. Windows runners use ConPTY through the optional `node-pty` dependency so Bash/Node scripts receive a real TTY; set `PI_WEBUI_APP_RUNNER_PTY=off` to force the pipe fallback.
@@ -394,35 +382,25 @@ These screenshots show the v0.4.8 Web UI surfaces. Current implementations inclu
 
 ### Queue manager
 
-![Pi Web UI queue panel with prompt-list controls and queued-message status](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_Queues_v0.4.8.png)
-
 - **What it is:** The queue surface for follow-up prompts, steering messages, user bash work, and loaded prompt lists while a tab is busy or ready.
 - **What you can do:** Create or load prompt lists, run batches when supported, see pending queued messages, and decide whether prompts sent during an active run should steer the current agent or wait as follow-ups.
 
 ### Thinking effort picker
-
-![Pi Web UI thinking effort picker showing off, minimal, low, medium, high, and xhigh choices](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_Effort_v0.4.8.png)
 
 - **What it is:** A browser picker for Pi's model thinking/reasoning effort setting.
 - **What you can do:** Switch between `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, confirm the effective effort in the footer, and tune speed/cost/quality before sending a prompt.
 
 ### Scoped models
 
-![Pi Web UI scoped models picker listing provider models and the current effective model](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_ScopedModels_v0.4.8.png)
-
 - **What it is:** A Web UI editor for `/scoped-models`, project/global model scope rules, and model cycling order.
 - **What you can do:** Search available models, enable or disable scoped entries, inspect the effective model source, and save model choices so future prompts and tabs use the intended provider/model.
 
 ### Tools setup
 
-![Pi Web UI tools setup dialog listing available tools with enable and disable controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_ToolsSetup_v0.4.8.png)
-
 - **What it is:** A browser-native `/tools` setup dialog for active and available Pi tools.
 - **What you can do:** Search tools, inspect descriptions and availability, then use **Session only** to change the current branch immediately or **Global default** to save the tool allowlist inherited by future sessions.
 
 ### Skills setup
-
-![Pi Web UI skills setup dialog listing installed skills and activation controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_SkillSetup_v0.4.8.png)
 
 - **What it is:** A browser-native `/skills` setup dialog for skills available in the active Pi tab.
 - **What you can do:** Find skills by name or description, then use **Session only** to change automatic invocation on the current branch or **Global default** to save the skill allowlist inherited by future sessions.
@@ -431,49 +409,35 @@ Session-specific choices always win when their branch is resumed or selected in 
 
 ### Optional features
 
-![Pi Web UI optional features list showing companion packages and install or update states](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_OptionalFeatures_v0.4.8.png)
-
 - **What it is:** A Pi package manager for Web UI-aware extensions, prompts, themes, and optional dashboards. Optional companions are separate from the Web UI core install.
-- **What you can do:** See whether each companion is enabled, disabled, registered, local, migratable, missing, conflicting, or updateable; keep per-row Install/Update actions; restore previous companions through one combined confirmation; use panel-level **Install all** or section-level **Install missing** for missing/unregistered packages only; and recover partial failures with **Retry failed** or **Copy commands**. Batches run sequentially through Pi, continue after individual failures, and auto-restart an idle affected tab while deferring **Restart tab** when it is busy.
+- **What you can do:** See whether each companion is enabled, disabled, registered, local, migratable, missing, conflicting, or updateable; use separate **Enable/Disable** and **Setup** actions for configurable loaded companions; keep per-row Install/Update actions; restore previous companions through one combined confirmation; use panel-level **Install all** or section-level **Install missing** for missing/unregistered packages only; and recover partial failures with **Retry failed** or **Copy commands**. Native questionnaires read and update the active session's real `questionnaire` tool state, while **Setup** opens the complete session/global Tools Setup dialog. Batches run sequentially through Pi, continue after individual failures, and auto-restart an idle affected tab while deferring **Restart tab** when it is busy.
 
 ### `/btw` side questions
-
-![Pi Web UI BTW widget showing a side-question input and live side-thread output](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_BTW_v0.4.8.png)
 
 - **What it is:** A Web UI widget for the optional `/btw` side-question extension, keeping quick questions separate from the main agent flow.
 - **What you can do:** Ask short side questions without derailing the main chat, inspect live output, steer or stop the side thread, and transfer useful context back into the main prompt when needed.
 
 ### Guided Git workflow
 
-![Pi Web UI guided Git workflow showing staged changes, generated commit messages, and PR controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_GitWorkflow_v0.4.8.png)
-
 - **What it is:** A guided browser workflow for staging changes, generating commit messages, committing, pushing, and optionally creating a pull request.
 - **What you can do:** Run the stage/message/commit/push steps, choose generated short or long commit messages, type a manual message, create or confirm PR branch names, review generated PR text, and push only after confirmation.
 
 ### Git branch picker
-
-![Pi Web UI git branch picker showing the current branch and create-branch action](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_GitBranches_v0.4.8.png)
 
 - **What it is:** A footer branch picker backed by the active tab's current Git repository.
 - **What you can do:** View the current branch/repo, switch local branches, create and switch to a new branch, and get warnings when a branch change could affect active agent work.
 
 ### Git diff viewer
 
-![Pi Web UI Git Changes dialog showing repository status, file list, and side-by-side diff rows](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_GitDiff_v0.4.8.png)
-
 - **What it is:** A browser diff dialog for current Git changes in the active workspace.
 - **What you can do:** Review staged, unstaged, untracked, and incoming changes; jump between files; see additions/deletions with line numbers; and inspect text previews before asking Pi to edit, commit, or create a PR.
 
 ### Codex usage
 
-![Pi Web UI Codex usage widget showing subscription usage windows and reset timers](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_CodexUsage_v0.4.8.png)
-
 - **What it is:** A side-panel usage widget for Codex-family subscription-backed models.
 - **What you can do:** Refresh usage, monitor short-window and weekly limits, see reset timing, and decide whether to switch models or delay large prompts.
 
 ### Pi stats dashboard
-
-![Pi Web UI stats dashboard showing token, cost, cache, model, and daily usage analytics](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_Pistats_v0.4.8.png)
 
 - **What it is:** The browser overlay from the optional stats companion, summarizing token, cost, cache, prompt/context, model, session, and command usage.
 - **What you can do:** Filter by time range, refresh analytics, review daily/model/session breakdowns, inspect cost and cache behavior, and calibrate prompt estimates for more accurate local usage visibility.

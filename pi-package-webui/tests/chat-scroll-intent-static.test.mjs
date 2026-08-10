@@ -57,7 +57,7 @@ assert.doesNotMatch(updateLatest, /isChatNearBottom/, "Latest must not remain hi
 assert.match(applyFollow, /if \(!autoFollowChat\)[\s\S]*return;/, "already queued streaming frames must honor the immediate follow pause");
 assert.match(app, /if \(!autoFollowChat\) chatPausedScrollRestoreUntil = performance\.now\(\) \+ CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;/, "paused transcript reconciliation should guard against scroll events from temporary DOM height changes");
 assert.match(app, /lastChatProgrammaticScrollAt = performance\.now\(\);\s*setChatScrollTopInstant\(Math\.min\(previousScrollTop, elements\.chat\.scrollHeight\)\);/, "transcript reconciliation should mark its instant reader-position restoration as programmatic");
-assert.match(resumeFollow, /chatUserScrollAwayIntentUntil = 0;[\s\S]*autoFollowChat = true;/, "explicit resume should clear stale upward intent before following again");
+assert.match(resumeFollow, /chatUserScrollAwayIntentUntil = 0;\s*chatPausedScrollRestoreUntil = 0;\s*autoFollowChat = true;/, "explicit resume should clear stale upward intent and any reconciliation guard before following again");
 assert.match(forceFollow, /if \(force\) resumeChatAutoFollow\(\)/, "Latest and other forced-bottom actions should use the explicit resume path");
 assert.match(app, /addEventListener\("touchstart", noteChatTouchStart[\s\S]*addEventListener\("touchend", clearChatTouchIntent[\s\S]*addEventListener\("touchcancel", clearChatTouchIntent/, "touch direction tracking should be initialized and cleared for each gesture");
 

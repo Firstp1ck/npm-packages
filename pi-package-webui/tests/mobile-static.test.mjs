@@ -1144,7 +1144,10 @@ assert.match(app, /function renderOptionalFeaturePanel\(\)/, "side panel should 
 assert.match(app, /const OPTIONAL_FEATURE_SECTIONS = \[[\s\S]*label: "Composer & commands"[\s\S]*label: "Workflows & releases"[\s\S]*label: "Safety & access"[\s\S]*label: "UI widgets & native parity"[\s\S]*featureIds: \[[^\]]*"questionnaire"[\s\S]*label: "Conversation"/, "optional features should be grouped into five type subsections with questionnaires under native parity");
 assert.match(app, /function renderOptionalFeatureSection\(section, features\)[\s\S]*optional-feature-section[\s\S]*optional-feature-section-title[\s\S]*optional-feature-section-list/, "optional feature panel should render subsection headers and lists");
 assert.match(app, /async function refreshQuestionnaireFeatureAvailability[\s\S]*\/api\/tools\?scope=session[\s\S]*tool\?\.name === "questionnaire"/, "questionnaire availability should be detected from the active Pi tab's loaded tool capability");
-assert.match(app, /detected && feature\.manageWith === "tools"[\s\S]*action\.textContent = "Tools…"[\s\S]*openNativeToolsSelector/, "loaded questionnaire access should be managed through the native Tools selector instead of a cosmetic WebUI disable toggle");
+assert.match(app, /async function setToolManagedOptionalFeatureEnabled\(feature, enabled\)[\s\S]*\/api\/tools\?scope=session[\s\S]*enabledTools[\s\S]*scope: "session"[\s\S]*\/api\/tools/, "the questionnaire row toggle should update the active session tool allowlist while preserving other tool states");
+assert.match(app, /detected && feature\.manageWith === "tools"[\s\S]*action\.textContent = enabled \? "Disable" : "Enable"[\s\S]*setToolManagedOptionalFeatureEnabled/, "loaded questionnaire access should expose a dedicated enable or disable action");
+assert.match(app, /if \(detected && feature\.setup\)[\s\S]*"optional-feature-action setup", "Setup"[\s\S]*openOptionalFeatureSetup/, "detected configurable optional features should expose a separate Setup action");
+assert.match(app, /case "tools": return openNativeToolsSelector\(\)/, "Native questionnaires Setup should open the browser-native Tools Setup dialog");
 assert.match(app, /function setSidePanelSectionCollapsed\(record, collapsed/, "side panel sections should have explicit collapse/expand behavior");
 assert.match(
   app,
@@ -1600,7 +1603,7 @@ assert.match(app, /id: "safetyGuard"[\s\S]*?@firstpick\/pi-extension-safety-guar
 assert.match(app, /id: "tuiSkillsCommand"[\s\S]*?@firstpick\/pi-extension-setup-skills/, "optional features should include the TUI skills command companion");
 assert.match(app, /id: "tuiToolsCommand"[\s\S]*?@firstpick\/pi-extension-tools/, "optional features should include the TUI tools command companion");
 assert.match(app, /id: "remoteWebui"[\s\S]*?@firstpick\/pi-package-remote-webui/, "optional features should include the Remote WebUI companion");
-assert.match(app, /id: "questionnaire"[\s\S]*?@firstpick\/pi-package-questionnaire[\s\S]*?capabilityLabel: "questionnaire tool in \/tools"[\s\S]*?manageWith: "tools"/, "optional features should include the native questionnaire package and delegate access control to Tools");
+assert.match(app, /id: "questionnaire"[\s\S]*?@firstpick\/pi-package-questionnaire[\s\S]*?capabilityLabel: "questionnaire tool in \/tools"[\s\S]*?manageWith: "tools"[\s\S]*?setup: "tools"/, "optional features should include the native questionnaire package with session access control and a Tools Setup entry point");
 assert.match(app, /id: "naturalConversation"[\s\S]*?@firstpick\/pi-package-natural-conversation[\s\S]*?capabilityLabel: "\/talk, \/voice, or \/conversation"/, "optional features should include the capability-detected Natural Conversation shell");
 assert.match(app, /NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "frontend should detect Natural Conversation only from RPC-visible command aliases");
 assert.match(app, /const conversationModeByTab = new Map\(\)/, "frontend should track Natural Conversation state per terminal tab");
