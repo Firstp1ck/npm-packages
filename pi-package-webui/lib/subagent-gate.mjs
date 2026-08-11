@@ -298,8 +298,8 @@ function modelForAttempt(task, attemptIndex, successfulProviders, requireDistinc
   return { model: available[Math.min(attemptIndex, available.length - 1)], exhausted: false };
 }
 
-function spawnParams(task, model, attemptTimeoutMs) {
-  return {
+function workflowScript(task, model) {
+  const childParams = {
     agent: task.agent,
     task: task.task,
     ...(model ? { model } : {}),
@@ -309,6 +309,16 @@ function spawnParams(task, model, attemptTimeoutMs) {
     ...(task.output !== undefined ? { output: task.output } : {}),
     ...(task.outputMode ? { outputMode: task.outputMode } : {}),
     ...(task.acceptance !== undefined ? { acceptance: task.acceptance } : {}),
+    // The outer workflow is asynchronous; the child must be foreground so its
+    // completed result remains the workflow result consumed by this gate.
+    async: false,
+  };
+  return `return runs.run("gate", ${JSON.stringify(childParams)});`;
+}
+
+function spawnParams(task, model, attemptTimeoutMs) {
+  return {
+    workflowScript: workflowScript(task, model),
     ...(attemptTimeoutMs ? { timeoutMs: attemptTimeoutMs } : {}),
     async: true,
   };

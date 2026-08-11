@@ -82,6 +82,15 @@ async function executeFailure(tool, params, signal = new AbortController().signa
   }
 }
 
+function workflowChildParams(request) {
+  const script = request.params?.workflowScript;
+  const prefix = 'return runs.run("gate", ';
+  assert.equal(typeof script, "string");
+  assert.ok(script.startsWith(prefix));
+  assert.ok(script.endsWith(");"));
+  return JSON.parse(script.slice(prefix.length, -2));
+}
+
 {
   const harness = createHarness([{ completeBeforeReply: true, completion: completion() }]);
   const result = await execute(harness.tool, { tasks: [{ agent: "reviewer", task: "Review" }] });
@@ -89,6 +98,44 @@ async function executeFailure(tool, params, signal = new AbortController().signa
   assert.equal(result.details.gate.status, "satisfied");
   assert.equal(result.details.gate.qualifyingSuccesses, 1);
   assert.equal(result.details.gate.attempts.length, 1, "completion emitted before the spawn reply should be recovered from the cache");
+  const spawn = harness.requests.find((request) => request.method === "spawn");
+  assert.equal(spawn.params.agent, undefined, "public RPC must not use removed direct execution");
+  assert.equal(spawn.params.task, undefined, "public RPC must not use removed direct execution");
+  assert.equal(spawn.params.async, true, "the wrapper workflow must remain asynchronous");
+  assert.deepEqual(workflowChildParams(spawn), { agent: "reviewer", task: "Review", async: false });
+  harness.dispose();
+}
+
+{
+  const harness = createHarness([{ completion: completion({ output: "All child controls preserved" }) }]);
+  await execute(harness.tool, {
+    attemptTimeoutMs: 4567,
+    tasks: [{
+      agent: "reviewer",
+      task: "Review quoted task: `x`",
+      model: "openai/gpt-5.4",
+      context: "fresh",
+      cwd: "/tmp/repo",
+      skill: ["audit"],
+      output: "summary",
+      outputMode: "inline",
+      acceptance: { verify: true },
+    }],
+  });
+  const spawn = harness.requests.find((request) => request.method === "spawn");
+  assert.equal(spawn.params.timeoutMs, 4567);
+  assert.deepEqual(workflowChildParams(spawn), {
+    agent: "reviewer",
+    task: "Review quoted task: `x`",
+    model: "openai/gpt-5.4",
+    context: "fresh",
+    cwd: "/tmp/repo",
+    skill: ["audit"],
+    output: "summary",
+    outputMode: "inline",
+    acceptance: { verify: true },
+    async: false,
+  });
   harness.dispose();
 }
 
