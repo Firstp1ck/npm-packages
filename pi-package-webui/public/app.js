@@ -16722,17 +16722,17 @@ function applyFooterContextUsage(node, contextUsage) {
   return node;
 }
 
-// Dedicated Usage visual apply path: sets two independent lane widths (top =
-// primary/first window, bottom = secondary/second window) plus a max-window
-// active foreground/glow reusing the Context color interpolation. Clamps
-// defensively to 0..100; exact text and tooltip remain untouched.
+// Dedicated Usage visual apply path: sets available independent lane widths
+// (top = primary/first window, bottom = secondary/second window) plus a
+// max-window active foreground/glow reusing the Context color interpolation.
+// Missing lanes remain empty; exact text and tooltip remain untouched.
 function applyFooterUsageWindows(node, usageWindows) {
   node.classList.add("footer-usage-card");
   const primaryPercent = typeof usageWindows?.primaryPercent === "number" ? usageWindows.primaryPercent : Number.NaN;
   const secondaryPercent = typeof usageWindows?.secondaryPercent === "number" ? usageWindows.secondaryPercent : Number.NaN;
-  if (Number.isFinite(primaryPercent) && Number.isFinite(secondaryPercent)) {
-    const clampedPrimary = Math.min(100, Math.max(0, primaryPercent));
-    const clampedSecondary = Math.min(100, Math.max(0, secondaryPercent));
+  if (Number.isFinite(primaryPercent) || Number.isFinite(secondaryPercent)) {
+    const clampedPrimary = Number.isFinite(primaryPercent) ? Math.min(100, Math.max(0, primaryPercent)) : 0;
+    const clampedSecondary = Number.isFinite(secondaryPercent) ? Math.min(100, Math.max(0, secondaryPercent)) : 0;
     const activeColor = contextUsageActiveColor(Math.max(clampedPrimary, clampedSecondary));
     node.classList.add("has-usage-windows");
     node.style.setProperty("--usage-primary", `${clampedPrimary.toFixed(1)}%`);
@@ -16830,7 +16830,7 @@ const GIT_FOOTER_TOOLTIP_COPY = {
   speed: "Assistant streaming speed. Shows live output tokens for the current reply and current or last tokens per second.",
   cost: "Estimated session cost. sub means subscription-backed provider; api means metered API usage.",
   context: "Context window pressure. Shows percent used over the model limit; auto means auto-compaction is enabled.",
-  usage: "Provider subscription usage. Shows the used share of the provider-reported primary and secondary rate windows.",
+  usage: "Provider subscription usage. Shows the used share of every available provider-reported rate window.",
   cwd: "Active working directory for this Web UI tab.",
   git: "Current Git branch. detached means HEAD is not on a branch; no repo means the cwd is outside a Git work tree.",
   "git-state": "Active Git operation or detached state. Finish or abort rebase/merge/cherry-pick/revert/bisect before normal commits.",
@@ -17272,8 +17272,11 @@ function normalizeFooterPayloadChip(value, index) {
   if (value.usageWindows && typeof value.usageWindows === "object") {
     const primaryPercent = typeof value.usageWindows.primaryPercent === "number" ? value.usageWindows.primaryPercent : Number.NaN;
     const secondaryPercent = typeof value.usageWindows.secondaryPercent === "number" ? value.usageWindows.secondaryPercent : Number.NaN;
-    if (Number.isFinite(primaryPercent) && Number.isFinite(secondaryPercent)) {
-      chip.usageWindows = { primaryPercent, secondaryPercent };
+    if (Number.isFinite(primaryPercent) || Number.isFinite(secondaryPercent)) {
+      chip.usageWindows = {
+        ...(Number.isFinite(primaryPercent) ? { primaryPercent } : {}),
+        ...(Number.isFinite(secondaryPercent) ? { secondaryPercent } : {}),
+      };
     }
   }
   return chip;

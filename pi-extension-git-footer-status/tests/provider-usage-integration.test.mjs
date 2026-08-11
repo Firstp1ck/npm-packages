@@ -203,6 +203,32 @@ test("openai-codex: captures usage and renders native segment and WebUI Usage ch
   await harness.emit("session_shutdown", {});
 });
 
+test("openai-codex: renders a valid partial usage response instead of hiding it", async () => {
+  const harness = createHarness();
+  await startSession(harness);
+
+  await harness.emit("after_provider_response", {
+    status: 200,
+    headers: {
+      "x-codex-primary-used-percent": "7",
+      "x-codex-primary-window-minutes": "10080",
+      "x-codex-primary-reset-after-seconds": "600000",
+      "x-codex-plan-type": "prolite",
+    },
+  });
+
+  const chip = usageChip(lastWebuiPayload(harness.state));
+  assert.ok(chip, "expected partial Codex usage to remain visible");
+  assert.equal(chip.value, "weekly 7%");
+  assert.deepEqual(chip.usageWindows, { primaryPercent: 7 });
+  assert.match(chip.title, /weekly window: 7% used/);
+
+  const lines = nativeLines(harness.state, harness.ctx).join("\n");
+  assert.match(lines, /weekly 7%/);
+
+  await harness.emit("session_shutdown", {});
+});
+
 test("anthropic OAuth: renders usage from unified headers", async () => {
   const harness = createHarness();
   harness.state.model = { id: "claude-opus-4.8", provider: "anthropic", contextWindow: 200000, reasoning: true };

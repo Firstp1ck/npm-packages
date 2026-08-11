@@ -21,6 +21,7 @@ import {
   formatProviderUsage,
   parseAnthropicProviderUsage,
   parseCodexProviderUsage,
+  providerUsageWindows,
   type ProviderUsageSnapshot,
   type ProviderUsageWindow,
 } from "./provider-usage.ts";
@@ -730,8 +731,8 @@ type WebuiFooterChip = {
     contextWindow: number;
   };
   usageWindows?: {
-    primaryPercent: number;
-    secondaryPercent: number;
+    primaryPercent?: number;
+    secondaryPercent?: number;
   };
 };
 
@@ -1449,9 +1450,10 @@ function buildProviderUsageTitle(usage: ProviderUsageSnapshot): string {
   const providerLabel = usage.provider === "openai-codex" ? "OpenAI Codex" : "Anthropic";
   const plan = usage.plan ? ` · plan ${usage.plan}` : "";
   return [
-    `${providerLabel} subscription usage (used share of each window)${plan}`,
-    `${usage.primary.label} window: ${Math.round(usage.primary.usedPercent)}% used · ${providerUsageResetLabel(usage.primary)}`,
-    `${usage.secondary.label} window: ${Math.round(usage.secondary.usedPercent)}% used · ${providerUsageResetLabel(usage.secondary)}`,
+    `${providerLabel} subscription usage (used share of each available window)${plan}`,
+    ...providerUsageWindows(usage).map(
+      (window) => `${window.label} window: ${Math.round(window.usedPercent)}% used · ${providerUsageResetLabel(window)}`,
+    ),
   ].join("\n");
 }
 
@@ -1562,8 +1564,8 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
       title: buildProviderUsageTitle(providerUsage),
       tone: "teal",
       usageWindows: {
-        primaryPercent: providerUsage.primary.usedPercent,
-        secondaryPercent: providerUsage.secondary.usedPercent,
+        ...(providerUsage.primary ? { primaryPercent: providerUsage.primary.usedPercent } : {}),
+        ...(providerUsage.secondary ? { secondaryPercent: providerUsage.secondary.usedPercent } : {}),
       },
     });
   }

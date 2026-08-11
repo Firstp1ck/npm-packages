@@ -26,21 +26,23 @@ assert.match(parser, /x-codex-primary-window-minutes/, "Codex parser should read
 assert.match(parser, /x-codex-secondary-window-minutes/, "Codex parser should read the secondary window duration");
 assert.match(parser, /windowMinutes === 10_080\) return "weekly"/, "Codex weekly windows should have a truthful compact label");
 assert.match(parser, /return fallback;/, "missing Codex durations should use neutral labels rather than guessed 5h\/7d labels");
-assert.match(parser, /usage\.primary\.label[\s\S]*usage\.secondary\.label/, "formatted text should use snapshot labels");
+assert.match(parser, /providerUsageWindows\(usage\)[\s\S]*\.map\(\(window\)/, "formatted text should use every available snapshot window");
 
-assert.match(producer, /usageWindows\?:\s*\{\s*primaryPercent:\s*number;\s*secondaryPercent:\s*number;/s, "producer should type the optional usageWindows contract");
-assert.match(producer, /usageWindows:\s*\{\s*primaryPercent:\s*providerUsage\.primary\.usedPercent,\s*secondaryPercent:\s*providerUsage\.secondary\.usedPercent,/s, "Usage chip should publish both normalized window percentages");
-assert.match(app, /usage:\s*"Provider subscription usage\.[^"]*provider-reported primary and secondary rate windows\./, "Usage tooltip should explain both provider-reported windows rather than using generic fallback copy");
+assert.match(producer, /usageWindows\?:\s*\{\s*primaryPercent\?:\s*number;\s*secondaryPercent\?:\s*number;/s, "producer should type each usage window as independently optional");
+assert.match(producer, /providerUsage\.primary \? \{ primaryPercent: providerUsage\.primary\.usedPercent \}/, "Usage chip should publish an available primary percentage");
+assert.match(producer, /providerUsage\.secondary \? \{ secondaryPercent: providerUsage\.secondary\.usedPercent \}/, "Usage chip should publish an available secondary percentage");
+assert.match(app, /usage:\s*"Provider subscription usage\.[^"]*every available provider-reported rate window\./, "Usage tooltip should explain that partial provider windows remain visible");
 
 assert.match(usageNormalization, /value\.usageWindows\.primaryPercent/, "consumer should read structured primary metadata");
 assert.match(usageNormalization, /value\.usageWindows\.secondaryPercent/, "consumer should read structured secondary metadata");
-assert.match(usageNormalization, /Number\.isFinite\(primaryPercent\)\s*&&\s*Number\.isFinite\(secondaryPercent\)/, "consumer should require both finite window values");
-assert.match(usageNormalization, /chip\.usageWindows\s*=\s*\{\s*primaryPercent,\s*secondaryPercent\s*\}/, "consumer should preserve the two structured values");
+assert.match(usageNormalization, /Number\.isFinite\(primaryPercent\)\s*\|\|\s*Number\.isFinite\(secondaryPercent\)/, "consumer should accept either finite window value");
+assert.match(usageNormalization, /Number\.isFinite\(primaryPercent\) \? \{ primaryPercent \}/, "consumer should preserve an available primary value");
+assert.match(usageNormalization, /Number\.isFinite\(secondaryPercent\) \? \{ secondaryPercent \}/, "consumer should preserve an available secondary value");
 assert.doesNotMatch(usageNormalization, /chip\.value|value\.value|5h.*match|7d.*match/s, "usage-window normalization must not parse display text");
 
 assert.match(app, /if \(chip\.usageWindows\) applyFooterUsageWindows\(node, chip\.usageWindows\);/, "initial rendering should apply Usage visuals");
-assert.match(applyUsage, /Math\.min\(100, Math\.max\(0, primaryPercent\)\)/, "primary visual should clamp defensively");
-assert.match(applyUsage, /Math\.min\(100, Math\.max\(0, secondaryPercent\)\)/, "secondary visual should clamp defensively");
+assert.match(applyUsage, /Number\.isFinite\(primaryPercent\) \? Math\.min\(100, Math\.max\(0, primaryPercent\)\) : 0/, "primary visual should clamp available data and leave a missing lane empty");
+assert.match(applyUsage, /Number\.isFinite\(secondaryPercent\) \? Math\.min\(100, Math\.max\(0, secondaryPercent\)\) : 0/, "secondary visual should clamp available data and leave a missing lane empty");
 assert.match(applyUsage, /--usage-primary/, "primary should have an independent CSS width variable");
 assert.match(applyUsage, /--usage-secondary/, "secondary should have an independent CSS width variable");
 assert.doesNotMatch(applyUsage, /\.value|5h.*match|7d.*match/s, "visual application must not parse display text");

@@ -15,7 +15,7 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
   - export-backed initial prompt estimate (`PI: X tok`, same estimator as `/stats-pi`, compacted as `k` for thousands; falls back to live context data if Pi HTML export is unavailable)
   - always-visible cumulative session output counter + token output speed (`tok/s`) measured from assistant streaming lifecycle events; the latest speed remains visible while idle and falls back to session history. Optional session speed stats — average (`speed-avg`), 1% low (`speed-low`, mean of the slowest 1% of samples), and max spike (`speed-max`) — are hidden by default and shown only when enabled via `/git-footer-visibility` (e.g. `/git-footer-visibility show all speed-avg speed-low speed-max`)
   - cost + context-window usage
-  - provider subscription usage captured passively from `after_provider_response` headers: Codex window labels come from provider-reported `*-window-minutes` metadata (with neutral primary/secondary fallbacks), while Anthropic uses its explicit 5h/7d unified windows; shown only for the matching active provider and hidden for API-key Anthropic auth, unavailable/malformed values, or stale snapshots
+  - provider subscription usage captured passively from `after_provider_response` headers: available Codex windows are parsed independently and labeled from provider-reported `*-window-minutes` metadata (with neutral primary/secondary fallbacks), while Anthropic uses its explicit 5h/7d unified windows; shown only for the matching active provider and hidden for API-key Anthropic auth, when no valid window is available, or for stale snapshots
   - current model and reasoning level
 - Shows git status context on the path line:
   - branch/detached state

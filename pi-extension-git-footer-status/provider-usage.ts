@@ -16,8 +16,8 @@ export type ProviderUsageWindow = {
 
 export type ProviderUsageSnapshot = {
   provider: ProviderUsageSource;
-  primary: ProviderUsageWindow;
-  secondary: ProviderUsageWindow;
+  primary?: ProviderUsageWindow;
+  secondary?: ProviderUsageWindow;
   plan?: string;
 };
 
@@ -78,7 +78,7 @@ function formatCodexWindowLabel(windowMinutes: number | undefined, fallback: "pr
 export function parseCodexProviderUsage(headers: ProviderUsageHeaders): ProviderUsageSnapshot | undefined {
   const primaryPercent = parsePercent(headers["x-codex-primary-used-percent"], 100);
   const secondaryPercent = parsePercent(headers["x-codex-secondary-used-percent"], 100);
-  if (primaryPercent === undefined || secondaryPercent === undefined) return undefined;
+  if (primaryPercent === undefined && secondaryPercent === undefined) return undefined;
 
   const primaryWindowMinutes = parseWindowMinutes(headers["x-codex-primary-window-minutes"]);
   const secondaryWindowMinutes = parseWindowMinutes(headers["x-codex-secondary-window-minutes"]);
@@ -90,20 +90,28 @@ export function parseCodexProviderUsage(headers: ProviderUsageHeaders): Provider
 
   return {
     provider: "openai-codex",
-    primary: {
-      label: formatCodexWindowLabel(primaryWindowMinutes, "primary"),
-      usedPercent: primaryPercent,
-      ...(primaryWindowMinutes !== undefined ? { windowMinutes: primaryWindowMinutes } : {}),
-      ...(primaryResetAt !== undefined ? { resetAt: primaryResetAt } : {}),
-      ...(primaryResetAfterSeconds !== undefined ? { resetAfterSeconds: primaryResetAfterSeconds } : {}),
-    },
-    secondary: {
-      label: formatCodexWindowLabel(secondaryWindowMinutes, "secondary"),
-      usedPercent: secondaryPercent,
-      ...(secondaryWindowMinutes !== undefined ? { windowMinutes: secondaryWindowMinutes } : {}),
-      ...(secondaryResetAt !== undefined ? { resetAt: secondaryResetAt } : {}),
-      ...(secondaryResetAfterSeconds !== undefined ? { resetAfterSeconds: secondaryResetAfterSeconds } : {}),
-    },
+    ...(primaryPercent !== undefined
+      ? {
+          primary: {
+            label: formatCodexWindowLabel(primaryWindowMinutes, "primary"),
+            usedPercent: primaryPercent,
+            ...(primaryWindowMinutes !== undefined ? { windowMinutes: primaryWindowMinutes } : {}),
+            ...(primaryResetAt !== undefined ? { resetAt: primaryResetAt } : {}),
+            ...(primaryResetAfterSeconds !== undefined ? { resetAfterSeconds: primaryResetAfterSeconds } : {}),
+          },
+        }
+      : {}),
+    ...(secondaryPercent !== undefined
+      ? {
+          secondary: {
+            label: formatCodexWindowLabel(secondaryWindowMinutes, "secondary"),
+            usedPercent: secondaryPercent,
+            ...(secondaryWindowMinutes !== undefined ? { windowMinutes: secondaryWindowMinutes } : {}),
+            ...(secondaryResetAt !== undefined ? { resetAt: secondaryResetAt } : {}),
+            ...(secondaryResetAfterSeconds !== undefined ? { resetAfterSeconds: secondaryResetAfterSeconds } : {}),
+          },
+        }
+      : {}),
     ...(plan !== undefined ? { plan } : {}),
   };
 }
@@ -138,7 +146,13 @@ function formatPercent(value: number): string {
   return String(Math.round(value));
 }
 
-/** Format the compact footer value. Parsed snapshots always produce finite percentages. */
+export function providerUsageWindows(usage: ProviderUsageSnapshot): ProviderUsageWindow[] {
+  return [usage.primary, usage.secondary].filter((window): window is ProviderUsageWindow => window !== undefined);
+}
+
+/** Format the compact footer value. Parsed windows always contain finite percentages. */
 export function formatProviderUsage(usage: ProviderUsageSnapshot): string {
-  return `${usage.primary.label} ${formatPercent(usage.primary.usedPercent)}% · ${usage.secondary.label} ${formatPercent(usage.secondary.usedPercent)}%`;
+  return providerUsageWindows(usage)
+    .map((window) => `${window.label} ${formatPercent(window.usedPercent)}%`)
+    .join(" · ");
 }

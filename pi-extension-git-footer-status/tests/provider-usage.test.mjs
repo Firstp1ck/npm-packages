@@ -80,10 +80,19 @@ test("parses complete Anthropic usage and normalizes fixed window labels and res
   );
 });
 
-test("rejects absent or partial utilization headers", () => {
+test("accepts each available Codex utilization window independently", () => {
   assert.equal(parseCodexProviderUsage({}), undefined);
-  assert.equal(parseCodexProviderUsage({ "x-codex-primary-used-percent": "10" }), undefined);
-  assert.equal(parseCodexProviderUsage({ "x-codex-secondary-used-percent": "10" }), undefined);
+  assert.deepEqual(
+    parseCodexProviderUsage({
+      "x-codex-primary-used-percent": "10",
+      "x-codex-primary-window-minutes": "10080",
+    }),
+    { provider: "openai-codex", primary: { label: "weekly", usedPercent: 10, windowMinutes: 10080 } },
+  );
+  assert.deepEqual(
+    parseCodexProviderUsage({ "x-codex-secondary-used-percent": "20" }),
+    { provider: "openai-codex", secondary: { label: "secondary", usedPercent: 20 } },
+  );
 
   assert.equal(parseAnthropicProviderUsage({}), undefined);
   assert.equal(parseAnthropicProviderUsage({ "anthropic-ratelimit-unified-5h-utilization": "0.1" }), undefined);
@@ -92,13 +101,13 @@ test("rejects absent or partial utilization headers", () => {
 
 test("rejects malformed and non-finite utilization", () => {
   for (const invalid of ["", " ", "not-a-number", "NaN", "Infinity", "-Infinity"]) {
-    assert.equal(
+    assert.deepEqual(
       parseCodexProviderUsage({
         "x-codex-primary-used-percent": invalid,
         "x-codex-secondary-used-percent": "20",
       }),
-      undefined,
-      `Codex should reject ${JSON.stringify(invalid)}`,
+      { provider: "openai-codex", secondary: { label: "secondary", usedPercent: 20 } },
+      `Codex should retain a valid secondary window when primary is ${JSON.stringify(invalid)}`,
     );
     assert.equal(
       parseAnthropicProviderUsage({
@@ -124,10 +133,17 @@ test("accepts utilization boundaries and rejects values outside provider ranges"
     },
   );
   for (const invalid of ["-0.01", "100.01"]) {
-    assert.equal(
+    assert.deepEqual(
       parseCodexProviderUsage({
         "x-codex-primary-used-percent": invalid,
         "x-codex-secondary-used-percent": "50",
+      }),
+      { provider: "openai-codex", secondary: { label: "secondary", usedPercent: 50 } },
+    );
+    assert.equal(
+      parseCodexProviderUsage({
+        "x-codex-primary-used-percent": invalid,
+        "x-codex-secondary-used-percent": invalid,
       }),
       undefined,
     );

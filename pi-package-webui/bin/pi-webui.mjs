@@ -47,6 +47,7 @@ import {
 } from "../lib/session-actions.mjs";
 import { sweepStaleTempEntries } from "../lib/temp-artifacts.mjs";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
+import { consumeAppRunnerTerminalChunk } from "../lib/app-runner-terminal.mjs";
 import { ThinkingStreamRecovery } from "../lib/thinking-stream-recovery.mjs";
 import {
   classifyGitPathFailure,
@@ -4437,19 +4438,27 @@ function appendAppRunnerLine(run, line) {
 function appendAppRunnerChunk(tab, run, chunk, streamName) {
   if (!run || run.status !== "running") return;
   const key = streamName === "stderr" ? "stderrRemainder" : "stdoutRemainder";
-  const normalized = `${run[key] || ""}${String(chunk).replace(/\r\n?/g, "\n")}`;
-  const lines = normalized.split("\n");
-  run[key] = lines.pop() || "";
-  for (const line of lines) appendAppRunnerLine(run, line);
+  const carriageReturnKey = streamName === "stderr" ? "stderrCarriageReturnPending" : "stdoutCarriageReturnPending";
+  const reduced = consumeAppRunnerTerminalChunk({
+    line: run[key],
+    carriageReturnPending: run[carriageReturnKey],
+  }, chunk);
+  run[key] = reduced.line;
+  run[carriageReturnKey] = reduced.carriageReturnPending;
+  for (const line of reduced.lines) appendAppRunnerLine(run, line);
   scheduleAppRunnerBroadcast(tab);
 }
 
 function flushAppRunnerRemainders(run) {
-  for (const key of ["stdoutRemainder", "stderrRemainder"]) {
+  for (const [key, carriageReturnKey] of [
+    ["stdoutRemainder", "stdoutCarriageReturnPending"],
+    ["stderrRemainder", "stderrCarriageReturnPending"],
+  ]) {
     if (run?.[key]) {
       appendAppRunnerLine(run, run[key]);
       run[key] = "";
     }
+    if (run) run[carriageReturnKey] = false;
   }
 }
 

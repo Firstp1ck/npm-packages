@@ -151,7 +151,7 @@ Find installed skills and manage session-specific or global activation.
 
 **Optional feature needed:** None — app runners are included in Pi Web UI core.
 
-Launch detected development servers, tests, builds, scripts, and project-defined runners with pinned live output.
+Launch detected development servers, tests, builds, scripts, and project-defined runners with pinned live output. ANSI colors are rendered safely, while progress written with carriage returns updates in place instead of filling the log with duplicate status lines.
 
 #### Guided Git workflow
 

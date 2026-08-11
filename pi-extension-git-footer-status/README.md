@@ -7,7 +7,7 @@ Shows Git state, token use, context use, and model information in Pi’s footer.
 ## What you can do
 
 - Shows the current Git branch and changed-file state.
-- Displays model, context, token, and cost information.
+- Displays model, context, token, cost, and every available provider subscription-usage window.
 - Warns about ongoing Git operations or sync state.
 - Refreshes automatically and can also be refreshed on demand.
 
