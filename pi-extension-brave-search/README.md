@@ -7,6 +7,7 @@ Lets Pi search the current web through the Brave Search API.
 - Lets Pi search for current information on the web.
 - Supports language, country, date, and safety filters.
 - Lets you choose how many results Pi returns by default.
+- Queues overlapping searches and spaces requests apart for low-rate API plans.
 - Includes setup and status commands for the API connection.
 
 ## Install

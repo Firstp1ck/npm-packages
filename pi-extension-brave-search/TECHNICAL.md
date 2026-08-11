@@ -12,7 +12,7 @@ Brave Search tool integration for Pi.
 - Returns formatted results plus structured metadata.
 - Supports Brave result filters, extra snippets, spellcheck, clean text output, and Goggles.
 - Deduplicates normalized URLs across returned result blocks.
-- Applies sane limits and request pacing to keep output stable, context-safe, and compatible with low-rate plans.
+- Serializes overlapping searches and waits 1.1 seconds after each completed attempt before starting the next, keeping requests compatible with low-rate plans.
 - Resolves API key in this order:
   1. `process.env.BRAVE_SEARCH_API_KEY`
   2. `./.env` (current working directory)

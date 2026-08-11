@@ -3,6 +3,7 @@ import { delay, getAgentEnvPath, getWorkspaceEnvPath, readEnvValue, upsertEnvVal
 import { Text } from "@earendil-works/pi-tui";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createSerialRequestQueue } from "./request-queue.ts";
 
 type BraveSearchResult = {
 	title?: string;
@@ -56,6 +57,7 @@ const ENV_KEY = "BRAVE_SEARCH_API_KEY";
 const DEFAULT_COUNT_ENV_KEY = "BRAVE_SEARCH_RESULT_COUNT";
 const SETUP_PROMPTED_KEY = "__piExtensionBraveSearchSetupPrompted";
 const POST_SEARCH_DELAY_MS = 1_100;
+const enqueueSearchRequest = createSerialRequestQueue(POST_SEARCH_DELAY_MS, delay);
 const API_MIN_WEB_RESULTS = 1;
 const API_MAX_WEB_RESULTS = 20;
 const DEFAULT_WEB_RESULTS = 5;
@@ -284,7 +286,7 @@ export default function braveSearchExtension(pi: ExtensionAPI): void {
 			const { apiKey } = resolveApiKey();
 			if (!apiKey) throw new Error(`${ENV_KEY} is not set. Run /brave-search-setup to configure it.`);
 
-			try {
+			return enqueueSearchRequest(async () => {
 				const url = new URL("https://api.search.brave.com/res/v1/web/search");
 				const requestedCount = params.count ?? resolveDefaultResultCount();
 				const count = Math.min(API_MAX_WEB_RESULTS, Math.max(API_MIN_WEB_RESULTS, requestedCount));
@@ -381,9 +383,7 @@ export default function braveSearchExtension(pi: ExtensionAPI): void {
 						truncation: truncation.truncated ? truncation : undefined,
 					},
 				};
-			} finally {
-				await delay(POST_SEARCH_DELAY_MS);
-			}
+			});
 		},
 	});
 }
