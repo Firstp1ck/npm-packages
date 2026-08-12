@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=107" />
+    <link rel="stylesheet" href="/styles.css?v=108" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -726,35 +726,32 @@
             </h2>
             <div id="sidePanelSectionControls" class="side-panel-section-content" hidden>
               <div class="side-panel-controls">
-                <p class="controls-intro">Settings apply to this tab, this browser, or the server.</p>
+                <p class="controls-intro">Settings apply to this tab, this browser, or the server. Point to or focus a setting name for help.</p>
 
                 <section class="control-group" aria-labelledby="sessionControlsTitle">
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="sessionControlsTitle">Active session</h3>
-                      <p>Model, effort, and transcript.</p>
                     </div>
                     <span class="control-scope-badge">This tab</span>
                   </div>
 
-                  <div class="control-field">
-                    <div class="control-field-header">
-                      <label id="modelControlLabel" for="modelSelect" title="Open or close model search" tabindex="0">Model</label>
-                      <span class="control-field-context">Provider and model</span>
-                    </div>
-                    <input id="modelSearchInput" class="model-search-input" type="search" placeholder="Search models…" autocomplete="off" spellcheck="false" hidden />
+                  <div class="control-row">
+                    <span class="control-row-label" data-tooltip="Which AI model this tab uses for new messages. Click Model to search every available model, pick one, then press Apply." aria-label="Model. Which AI model this tab uses for new messages. Click Model to search every available model, pick one, then press Apply." role="button" tabindex="0">
+                      <label id="modelControlLabel" for="modelSelect">Model</label>
+                    </span>
                     <div class="control-action-row">
                       <select id="modelSelect" title="Model"></select>
                       <button id="setModelButton" class="control-apply-button" type="button" aria-label="Apply selected model">Apply</button>
                     </div>
-                    <div id="modelSearchResults" class="model-search-results" role="listbox" aria-label="Model search results" hidden></div>
+                    <input id="modelSearchInput" class="model-search-input control-row-full" type="search" placeholder="Search models…" autocomplete="off" spellcheck="false" hidden />
+                    <div id="modelSearchResults" class="model-search-results control-row-full" role="listbox" aria-label="Model search results" hidden></div>
                   </div>
 
-                  <div class="control-field">
-                    <div class="control-field-header">
+                  <div class="control-row">
+                    <span class="control-row-label" data-tooltip="How much hidden reasoning the model may use before answering. Higher levels help with hard problems but respond slower; off answers immediately. Press Apply to activate." aria-label="Thinking effort. How much hidden reasoning the model may use before answering. Higher levels help with hard problems but respond slower; off answers immediately. Press Apply to activate." role="button" tabindex="0">
                       <label for="thinkingSelect">Thinking effort</label>
-                      <span class="control-field-context">Speed and depth</span>
-                    </div>
+                    </span>
                     <div class="control-action-row">
                       <select id="thinkingSelect" title="Thinking effort">
                         <option value="off">off</option>
@@ -769,12 +766,13 @@
                     </div>
                   </div>
 
-                  <div class="control-field thinking-visibility-control-field">
-                    <span class="control-label">Transcript</span>
+                  <div class="control-row thinking-visibility-control-field">
+                    <span class="control-row-label" data-tooltip="Show or hide the model’s reasoning in the transcript. Answers stay visible either way. Shortcut: Ctrl+T." aria-label="Thinking output. Show or hide the model’s reasoning in the transcript. Answers stay visible either way. Shortcut: Ctrl+T." role="button" tabindex="0">
+                      <label for="thinkingVisibilityToggle">Thinking output</label>
+                    </span>
                     <label class="toggle-control" for="thinkingVisibilityToggle">
-                      <input id="thinkingVisibilityToggle" type="checkbox" checked />
+                      <input id="thinkingVisibilityToggle" type="checkbox" checked aria-label="Show thinking output" />
                       <span>
-                        <span class="toggle-control-label">Show thinking output</span>
                         <span id="thinkingVisibilityStatus" class="toggle-control-hint">Visible</span>
                       </span>
                     </label>
@@ -785,52 +783,61 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="interfaceControlsTitle">Interface</h3>
-                      <p>Layout, theme, and alerts.</p>
                     </div>
                     <span class="control-scope-badge">This browser</span>
                   </div>
 
-                  <div class="control-field terminal-tabs-layout-control-field">
-                    <label for="terminalTabsLayoutSelect">Tab placement</label>
+                  <div class="control-row terminal-tabs-layout-control-field">
+                    <span class="control-row-label" data-tooltip="Where your open terminal tabs are listed: in a bar above the chat or in a sidebar on the left." aria-label="Tab placement. Where your open terminal tabs are listed: in a bar above the chat or in a sidebar on the left." role="button" tabindex="0">
+                      <label for="terminalTabsLayoutSelect">Tab placement</label>
+                    </span>
                     <select id="terminalTabsLayoutSelect" title="Terminal tabs layout" aria-describedby="terminalTabsLayoutStatus">
                       <option value="top">Top bar</option>
                       <option value="left">Left sidebar</option>
                     </select>
-                    <div id="terminalTabsLayoutStatus" class="terminal-tabs-layout-status toggle-control-hint">Top bar · saved in this browser</div>
+                    <div id="terminalTabsLayoutStatus" class="terminal-tabs-layout-status toggle-control-hint control-row-full">Top bar · saved in this browser</div>
                   </div>
 
-                  <div class="control-field theme-control-field">
-                    <div class="control-field-header">
-                      <label for="themeSelect" id="themeControlLabel" title="Open or close theme search" tabindex="0">Theme</label>
-                      <span class="control-field-context">Colour scheme</span>
-                    </div>
+                  <div class="control-row">
+                    <span class="control-row-label" data-tooltip="Choose light or dark colours, or Auto to follow your system setting." aria-label="Theme mode. Choose light or dark colours, or Auto to follow your system setting." role="button" tabindex="0">Theme mode</span>
                     <div id="themeSchemeToggle" class="theme-scheme-toggle" role="group" aria-label="Theme mode">
                       <button type="button" data-scheme-mode="light" aria-pressed="false" title="Always use your light theme">Light</button>
                       <button type="button" data-scheme-mode="dark" aria-pressed="false" title="Always use your dark theme">Dark</button>
                       <button type="button" data-scheme-mode="auto" aria-pressed="false" title="Follow your system light/dark setting">Auto</button>
                     </div>
-                    <input id="themeSearchInput" class="model-search-input theme-search-input" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
-                    <select id="themeSelect" title="Theme"></select>
-                    <button id="themeCustomizeButton" class="theme-customize-button" type="button" aria-haspopup="dialog" aria-controls="themeCustomizerDialog">Customize…</button>
-                    <div id="themeSearchResults" class="model-search-results theme-search-results" role="listbox" aria-label="Theme search results" hidden></div>
                   </div>
 
-                  <div class="control-field background-control-field">
-                    <label for="backgroundInput">Custom background</label>
+                  <div class="control-row theme-control-field">
+                    <span class="control-row-label" data-tooltip="The colour theme for this browser. Click Theme to search installed themes; Customize… lets you adjust colours or create your own." aria-label="Theme. The colour theme for this browser. Click Theme to search installed themes; Customize lets you adjust colours or create your own." role="button" tabindex="0">
+                      <label for="themeSelect" id="themeControlLabel">Theme</label>
+                    </span>
+                    <div class="control-action-row">
+                      <select id="themeSelect" title="Theme"></select>
+                      <button id="themeCustomizeButton" class="theme-customize-button" type="button" aria-haspopup="dialog" aria-controls="themeCustomizerDialog">Customize…</button>
+                    </div>
+                    <input id="themeSearchInput" class="model-search-input theme-search-input control-row-full" type="search" placeholder="Search themes…" autocomplete="off" spellcheck="false" hidden />
+                    <div id="themeSearchResults" class="model-search-results theme-search-results control-row-full" role="listbox" aria-label="Theme search results" hidden></div>
+                  </div>
+
+                  <div class="control-row background-control-field">
+                    <span class="control-row-label" data-tooltip="Show your own image behind the interface. PNG, JPEG, WebP, or GIF; press × to return to the theme default." aria-label="Background. Show your own image behind the interface. PNG, JPEG, WebP, or GIF; press remove to return to the theme default." role="button" tabindex="0">
+                      <label for="backgroundInput">Background</label>
+                    </span>
                     <input id="backgroundInput" class="background-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
-                    <div class="background-control-row">
+                    <div class="control-action-row background-control-row">
                       <button id="backgroundChooseButton" type="button">Choose image</button>
                       <button id="backgroundClearButton" class="background-clear-button" type="button" aria-label="Remove custom background" title="Remove custom background" hidden>×</button>
                     </div>
-                    <div id="backgroundStatus" class="background-status muted">Theme default</div>
+                    <div id="backgroundStatus" class="background-status muted control-row-full">Theme default</div>
                   </div>
 
-                  <div class="control-field notification-control-field">
-                    <span class="control-label">Notifications</span>
+                  <div class="control-row notification-control-field">
+                    <span class="control-row-label" data-tooltip="Show a browser notification when the agent finishes while you are away from this tab. Your browser asks for permission first." aria-label="Notifications. Show a browser notification when the agent finishes while you are away from this tab. Your browser asks for permission first." role="button" tabindex="0">
+                      <label for="agentDoneNotificationsToggle">Notifications</label>
+                    </span>
                     <label class="toggle-control" for="agentDoneNotificationsToggle">
-                      <input id="agentDoneNotificationsToggle" type="checkbox" />
+                      <input id="agentDoneNotificationsToggle" type="checkbox" aria-label="Agent done notifications" />
                       <span>
-                        <span class="toggle-control-label">Agent done notifications</span>
                         <span id="agentDoneNotificationsStatus" class="toggle-control-hint">Off</span>
                       </span>
                     </label>
@@ -841,15 +848,13 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="outputProcessingControlsTitle">Output processing</h3>
-                      <p>Default rendering for new Web UI connections.</p>
                     </div>
                     <span class="control-scope-badge">Server</span>
                   </div>
-                  <div class="control-field">
-                    <div class="control-field-header">
+                  <div class="control-row">
+                    <span class="control-row-label" data-tooltip="Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed. Experimental and faster on slow devices." aria-label="Compact mode, experimental. Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed. Faster on slow devices." role="button" tabindex="0">
                       <label for="fastOutputModeSelect">Compact mode (Experimental)</label>
-                      <span class="control-field-context">Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed</span>
-                    </div>
+                    </span>
                     <div class="control-action-row">
                       <select id="fastOutputModeSelect" title="Output processing mode" aria-describedby="fastOutputModeStatus">
                         <option value="normal">Normal</option>
@@ -857,7 +862,7 @@
                       </select>
                       <button id="setFastOutputModeButton" class="control-apply-button" type="button" aria-label="Apply selected output processing mode" disabled>Apply</button>
                     </div>
-                    <div id="fastOutputModeStatus" class="toggle-control-hint" role="status" aria-live="polite">Loading server default…</div>
+                    <div id="fastOutputModeStatus" class="toggle-control-hint control-row-full" role="status" aria-live="polite">Loading server default…</div>
                   </div>
                 </section>
 
@@ -865,21 +870,30 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="remoteAccessControlsTitle">Remote access</h3>
-                      <p>LAN access and PIN protection.</p>
                     </div>
                     <span class="control-scope-badge warning">Network</span>
                   </div>
-                  <div id="networkStatus" class="network-status closed">Local only</div>
-                  <label class="toggle-control remote-auth-toggle" for="remoteAuthToggle" hidden>
-                    <input id="remoteAuthToggle" type="checkbox" />
-                    <span>
-                      <span class="toggle-control-label">Remote PIN auth</span>
-                      <span id="remoteAuthStatus" class="toggle-control-hint">Off</span>
+                  <div class="control-row network-status-control-row">
+                    <span class="control-row-label" data-tooltip="Shows whether this Web UI is available only on this computer or also to trusted devices on your local network." aria-label="Connection. Shows whether this Web UI is available only on this computer or also to trusted devices on your local network." role="button" tabindex="0">Connection</span>
+                    <div id="networkStatus" class="network-status closed">Local only</div>
+                  </div>
+                  <div class="control-row remote-auth-control-row" hidden>
+                    <span class="control-row-label" data-tooltip="Require a PIN before another device can open this Web UI. Keep the PIN private and use remote access only on a trusted network." aria-label="PIN protection. Require a PIN before another device can open this Web UI. Keep the PIN private and use remote access only on a trusted network." role="button" tabindex="0">
+                      <label for="remoteAuthToggle">PIN protection</label>
                     </span>
-                  </label>
-                  <div class="network-action-row">
-                    <button id="openNetworkButton" type="button">Open for remote access</button>
-                    <button id="showRemoteQrButton" type="button" hidden>Open QR-Code</button>
+                    <label class="toggle-control remote-auth-toggle" for="remoteAuthToggle">
+                      <input id="remoteAuthToggle" type="checkbox" />
+                      <span>
+                        <span id="remoteAuthStatus" class="toggle-control-hint">Off</span>
+                      </span>
+                    </label>
+                  </div>
+                  <div class="control-row network-actions-control-row">
+                    <span class="control-row-label" data-tooltip="Open or close access for trusted devices on your local network. When open, use the QR code to connect another device." aria-label="Network access. Open or close access for trusted devices on your local network. When open, use the QR code to connect another device." role="button" tabindex="0">Network access</span>
+                    <div class="network-action-row">
+                      <button id="openNetworkButton" type="button">Open for remote access</button>
+                      <button id="showRemoteQrButton" type="button" hidden>Open QR-Code</button>
+                    </div>
                   </div>
                 </section>
 
@@ -887,12 +901,13 @@
                   <div class="control-group-header">
                     <div class="control-group-heading">
                       <h3 id="serverControlsTitle">Server</h3>
-                      <p>Maintenance actions affect every open tab.</p>
                     </div>
                     <span class="control-scope-badge danger">System</span>
                   </div>
-                  <div class="control-field server-control-field">
-                    <label for="serverActionSelect">Choose an action</label>
+                  <div class="control-row server-control-field">
+                    <span class="control-row-label" data-tooltip="Pick a maintenance action and press Run: restart the server, apply staged updates, or stop it completely." aria-label="Server action. Pick a maintenance action and press Run: restart the server, apply staged updates, or stop it completely." role="button" tabindex="0">
+                      <label for="serverActionSelect">Action</label>
+                    </span>
                     <div class="server-action-row">
                       <select id="serverActionSelect" title="Server action" aria-label="Server action">
                         <option value="" selected>Choose action…</option>
@@ -903,7 +918,7 @@
                       </select>
                       <button id="runServerActionButton" type="button" disabled>Run</button>
                     </div>
-                    <div id="serverActionStatus" class="server-action-status muted" role="status" aria-live="polite"></div>
+                    <div id="serverActionStatus" class="server-action-status muted control-row-full" role="status" aria-live="polite"></div>
                   </div>
                 </section>
               </div>
@@ -1749,7 +1764,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=121">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=122">
       (() => {
         "use strict";
 

@@ -83,7 +83,7 @@ assert.match(html, /id="sessionControlsTitle">Active session<[\s\S]*class="contr
 assert.match(html, /class="control-action-row">[\s\S]*id="modelSelect"[\s\S]*id="setModelButton"[^>]*>Apply<\/button>[\s\S]*id="thinkingSelect"[\s\S]*id="setThinkingButton"[^>]*>Apply<\/button>/, "model and thinking controls should keep their apply actions beside the selection");
 assert.match(css, /\.control-group-header[\s\S]*\.control-scope-badge[\s\S]*\.control-action-row/, "Controls should visually separate group headers, scope badges, and compact action rows");
 assert.match(html, /<label for="themeSelect"[^>]*id="themeControlLabel"[^>]*>Theme<\/label>/, "theme selector should be labeled in side-panel controls");
-assert.match(html, /id="themeSearchInput"[\s\S]*id="themeSelect"[\s\S]*id="themeSearchResults"/, "side-panel theme selector should expose searchable theme results");
+assert.match(html, /id="themeControlLabel"[\s\S]*id="themeSelect"[\s\S]*id="themeSearchInput"[\s\S]*id="themeSearchResults"/, "side-panel theme selector should keep the compact control row before its expandable search results");
 assert.match(html, /id="backgroundInput"[^>]*type="file"[^>]*accept="image\/png,image\/jpeg,image\/webp,image\/gif"/, "side panel should expose an image picker for custom backgrounds");
 assert.match(html, /id="backgroundClearButton"[\s\S]*?>×<\/button>/, "side-panel background control should expose an X remove button");
 assert.match(html, /id="serverActionSelect"[\s\S]*<option value="restart">Restart Server<\/option>[\s\S]*<option value="stop">Stop Server<\/option>/, "side panel should expose restart and stop server actions in a dropdown");

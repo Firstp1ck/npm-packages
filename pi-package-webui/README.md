@@ -93,7 +93,7 @@ See the active project, model, context, Git state, queue, sessions, and common a
 
 **Optional feature needed:** None — the control panel is included in Pi Web UI core. Companion-specific sections require their corresponding packages.
 
-Manage the current session, workspace, model, theme, notifications, updates, usage, and optional packages.
+Manage the current session, workspace, model, theme, notifications, updates, usage, and optional packages. The **Controls** section keeps each setting on one compact name/value row; point to or focus a setting name for plain-language help.
 
 #### Working-directory picker
 

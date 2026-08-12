@@ -15221,6 +15221,29 @@ function initializeTerminalHeaderTooltips() {
   applyStyledTooltip(elements.closeAllTabsButton, "Close all terminal tabs", { ariaLabel: "Close all terminal tabs" });
 }
 
+function initializeControlSettingTooltips() {
+  document.querySelectorAll("#sidePanelSectionControls .control-row-label[data-tooltip]").forEach((label) => {
+    bindStyledTooltipEvents(label);
+    label.addEventListener("click", (event) => {
+      const modelLabel = label.contains(elements.modelControlLabel);
+      const themeLabel = label.contains(elements.themeControlLabel);
+      showFooterTooltip(label);
+      if (!modelLabel && !themeLabel) return;
+      if (event.target === elements.modelControlLabel || event.target === elements.themeControlLabel) return;
+      event.preventDefault();
+      if (modelLabel) toggleModelSearchInput();
+      else toggleThemeSearchInput();
+    });
+    label.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      showFooterTooltip(label);
+      if (label.contains(elements.modelControlLabel)) toggleModelSearchInput();
+      else if (label.contains(elements.themeControlLabel)) toggleThemeSearchInput();
+    });
+  });
+}
+
 function openNewTabMenu() {
   setPublishMenuOpen(false);
   setNativeCommandMenuOpen(false);
@@ -41328,6 +41351,8 @@ function renderNetworkStatus() {
   const authDetail = make("div", "network-status-detail", authText);
 
   elements.networkStatus.replaceChildren(heading, detail, list, authDetail);
+  const remoteAuthRow = elements.remoteAuthToggle?.closest(".remote-auth-control-row");
+  if (remoteAuthRow) remoteAuthRow.hidden = false;
   elements.remoteAuthToggle.checked = !!auth.enabled;
   elements.remoteAuthToggle.disabled = rebinding;
   elements.remoteAuthStatus.textContent = auth.enabled
@@ -46161,6 +46186,7 @@ restoreToolOutputExpansionSetting();
 restoreWorkspaceDashboardState();
 restoreInterfaceDensity();
 initializeTerminalHeaderTooltips();
+initializeControlSettingTooltips();
 initializeComposerActionOrdering();
 restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();

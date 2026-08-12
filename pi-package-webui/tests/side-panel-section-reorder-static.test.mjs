@@ -74,8 +74,8 @@ assert.match(
 assert.match(html, /id="sidePanelEditButton"[^>]*aria-controls="sidePanel"[^>]*aria-pressed="false"[^>]*aria-label="Edit Control Deck section order"[\s\S]*side-panel-edit-button-label">Edit</, "mobile Control Deck should retain an accessible Edit toggle");
 assert.match(app, /function setSidePanelSectionEditMode\(enabled\)[\s\S]*const next = isMobileView\(\) && !!enabled;[\s\S]*classList\.toggle\("section-edit-mode", reorderingEnabled\)[\s\S]*aria-pressed[\s\S]*"Done" : "Edit"[\s\S]*aria-keyshortcuts/, "mobile Edit state and always-enabled desktop reorder affordances should stay synchronized");
 assert.match(app, /function setSidePanelCollapsed\(collapsed,[\s\S]*if \(collapsed\) setSidePanelSectionEditMode\(false\);/, "closing the Control Deck should leave transient edit mode");
-assert.match(html, /styles\.css\?v=107/, "changed side-panel styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=121/, "changed side-panel behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v84"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=108/, "changed side-panel styles should advance the stylesheet revision");
+assert.match(html, /app\.js\?v=122/, "changed side-panel behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v85"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("side-panel-section-reorder-static.test.mjs passed");
