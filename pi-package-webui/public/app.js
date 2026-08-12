@@ -902,6 +902,8 @@ let claudeUsageRenderSignature = "";
 let latestSubagents = null;
 let subagentsError = null;
 let subagentsLoading = false;
+let subagentsRefreshQueued = false;
+let subagentsRefreshPromise = null;
 let subagentsClearingFinished = false;
 let subagentAutoClearEnabled = false;
 let refreshSubagentsTimer = null;
@@ -22511,7 +22513,12 @@ function subagentRunElapsed(run) {
 }
 
 function subagentSourceLabel(source = "") {
+  if (source === "recovered") return "recovered active child";
   return source === "foreground" || source === "workflow" ? source : "async";
+}
+
+function subagentRunSupportsInteraction(run = {}) {
+  return run?.source !== "recovered" && run?.provisional !== true && run?.controllable !== false;
 }
 
 function subagentExecutionValues(agent = {}) {
@@ -22546,7 +22553,7 @@ function subagentRunIsRunning(run = {}, agent = null) {
 }
 
 function subagentRunCanCancel(run = {}, agent = null) {
-  return run?.source !== "workflow" && subagentRunIsRunning(run, agent);
+  return subagentRunSupportsInteraction(run) && run?.source !== "workflow" && subagentRunIsRunning(run, agent);
 }
 
 function subagentRunStateLabel(run = {}) {
@@ -22634,7 +22641,7 @@ async function submitSubagentCancel() {
 }
 
 async function dismissSubagentRun(tab, run) {
-  if (!tab?.tabId || !run?.id || subagentRunIsRunning(run)) return;
+  if (!tab?.tabId || !run?.id || !subagentRunSupportsInteraction(run) || subagentRunIsRunning(run)) return;
   try {
     await api("/api/subagents/dismiss", {
       method: "POST",
@@ -22652,7 +22659,7 @@ async function dismissSubagentRun(tab, run) {
 function finishedSubagentRunSelections(data = latestSubagents) {
   return (Array.isArray(data?.tabs) ? data.tabs : []).flatMap((tab) => (
     ungatedSubagentRuns(tab)
-      .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow")
+      .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow" && subagentRunSupportsInteraction(run))
       .map((run) => ({ tabId: tab.tabId, runId: run.id }))
       .filter((selection) => selection.tabId && selection.runId)
   ));
@@ -22980,7 +22987,7 @@ async function refreshSubagentOverlay() {
 }
 
 async function openSubagentOverlay(tab, run, agent) {
-  if (!tab?.tabId || !run?.id || !agent?.id) return;
+  if (!tab?.tabId || !run?.id || !agent?.id || !subagentRunSupportsInteraction(run)) return;
   if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
   try {
     if (activeTabId !== tab.tabId) await switchTab(tab.tabId);
@@ -23233,7 +23240,7 @@ async function activateSubagentTerminalView(viewId) {
 }
 
 function ensureSubagentTerminalView(tab, run, agent) {
-  if (!tab?.tabId || !run?.id || !agent?.id) return null;
+  if (!tab?.tabId || !run?.id || !agent?.id || !subagentRunSupportsInteraction(run)) return null;
   const id = subagentTerminalViewId(tab, run, agent);
   const existing = subagentTerminalViews.get(id);
   if (existing) {
@@ -23267,6 +23274,7 @@ function ensureSubagentTerminalView(tab, run, agent) {
 }
 
 async function openSubagentTerminal(tab, run, agent) {
+  if (!subagentRunSupportsInteraction(run)) return;
   const view = ensureSubagentTerminalView(tab, run, agent);
   if (!view) return;
   try {
@@ -23329,9 +23337,16 @@ function removeSubagentTerminalViewsForParent(parentTabId) {
 function syncSubagentTerminalViewsFromOverview() {
   let changed = false;
   const overviewTabs = Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [];
-  for (const view of subagentTerminalViews.values()) {
+  for (const view of [...subagentTerminalViews.values()]) {
     const tab = overviewTabs.find((candidate) => candidate.tabId === view.parentTabId);
     const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === view.runId);
+    if (run && !subagentRunSupportsInteraction(run)) {
+      view.requestSerial += 1;
+      subagentTerminalViews.delete(view.id);
+      if (activeSubagentTerminalId === view.id) activeSubagentTerminalId = null;
+      changed = true;
+      continue;
+    }
     const agent = (Array.isArray(run?.agents) ? run.agents : []).find((candidate) => candidate.id === view.agentId);
     if (tab) {
       view.tab = tab;
@@ -23352,16 +23367,27 @@ function syncSubagentTerminalViewsFromOverview() {
   if (selection) {
     const tab = overviewTabs.find((candidate) => candidate.tabId === selection.tabId);
     const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === selection.runId);
-    const agent = (Array.isArray(run?.agents) ? run.agents : []).find((candidate) => candidate.id === selection.agentId);
-    if (tab) selection.tab = tab;
-    if (run) {
-      selection.run = run;
+    if (run && !subagentRunSupportsInteraction(run)) {
+      clearTimeout(subagentOverlayRefreshTimer);
+      subagentOverlayRefreshTimer = null;
+      subagentOverlayRequestSerial += 1;
+      subagentOverlaySelection = null;
+      subagentOverlayData = null;
+      subagentOverlayError = "";
+      subagentOverlayLoading = false;
       changed = true;
-    }
-    if (agent) {
-      selection.agent = agent;
-      if (subagentOverlayData?.agent) subagentOverlayData = { ...subagentOverlayData, agent: { ...subagentOverlayData.agent, ...agent } };
-      changed = true;
+    } else {
+      const agent = (Array.isArray(run?.agents) ? run.agents : []).find((candidate) => candidate.id === selection.agentId);
+      if (tab) selection.tab = tab;
+      if (run) {
+        selection.run = run;
+        changed = true;
+      }
+      if (agent) {
+        selection.agent = agent;
+        if (subagentOverlayData?.agent) subagentOverlayData = { ...subagentOverlayData, agent: { ...subagentOverlayData.agent, ...agent } };
+        changed = true;
+      }
     }
   }
   return changed;
@@ -23376,7 +23402,7 @@ function materializeRetainedSubagentTerminalViews() {
     if (subagentTerminalRestoredParentTabs.has(restoreKey)) continue;
     subagentTerminalRestoredParentTabs.add(restoreKey);
     for (const run of ungatedSubagentRuns(tab)) {
-      if (run?.status === "running" || run?.source === "workflow") continue;
+      if (run?.status === "running" || run?.source === "workflow" || !subagentRunSupportsInteraction(run)) continue;
       for (const agent of Array.isArray(run.agents) ? run.agents : []) {
         const id = subagentTerminalViewId(tab, run, agent);
         if (subagentTerminalViews.has(id)) continue;
@@ -23514,30 +23540,38 @@ function renderSubagentTerminalTabGroup(group) {
 }
 
 function openSubagentOutput(tab, run, agent) {
+  if (!subagentRunSupportsInteraction(run)) return;
   return subagentOpenMode === "tab" ? openSubagentTerminal(tab, run, agent) : openSubagentOverlay(tab, run, agent);
 }
 
 function renderSubagentAgent(tab, run, agent) {
   const running = subagentRunIsRunning(run, agent);
+  const interactive = subagentRunSupportsInteraction(run);
   const name = agent?.name || "subagent";
   const [model, thinking] = subagentExecutionValues(agent);
-  const row = make("button", `subagent-agent-row${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}`);
-  row.type = "button";
+  const row = make(interactive ? "button" : "div", `subagent-agent-row${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}${interactive ? "" : " provisional"}`);
+  if (interactive) row.type = "button";
   row.dataset.subagentContinuityKey = `agent:${tab?.tabId || ""}:${run?.id || ""}:${agent?.id || ""}`;
   const dot = make("span", running ? "subagent-running-dot" : `subagent-state-dot ${agent?.status || "done"}`);
   dot.setAttribute("aria-hidden", "true");
   const identity = make("span", "subagent-agent-identity");
   identity.append(
     make("strong", "subagent-agent-name", name),
-    make("span", "subagent-agent-inline-meta", `· ${model} · ${thinking}`),
+    make("span", "subagent-agent-inline-meta", `· ${interactive ? "" : "recovered active · "}${model} · ${thinking}`),
   );
-  const open = make("span", "subagent-agent-open", "›");
-  open.setAttribute("aria-hidden", "true");
-  row.append(dot, identity, open);
-  const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
-  row.title = `${name} · ${model} · ${thinking} · open ${destination}`;
-  row.setAttribute("aria-label", `Open ${destination} for ${name}, model ${model}, reasoning ${thinking}, in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
-  row.addEventListener("click", () => openSubagentOutput(tab, run, agent));
+  row.append(dot, identity);
+  if (interactive) {
+    const open = make("span", "subagent-agent-open", "›");
+    open.setAttribute("aria-hidden", "true");
+    row.append(open);
+    const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
+    row.title = `${name} · ${model} · ${thinking} · open ${destination}`;
+    row.setAttribute("aria-label", `Open ${destination} for ${name}, model ${model}, reasoning ${thinking}, in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
+    row.addEventListener("click", () => openSubagentOutput(tab, run, agent));
+  } else {
+    row.title = `${name} · recovered active child · output and controls unavailable until the run is identified`;
+    row.setAttribute("aria-label", `${name}, recovered active child; output and controls are unavailable until the run is identified`);
+  }
   return row;
 }
 
@@ -23561,7 +23595,7 @@ function renderSubagentRun(tab, run) {
     applyStyledTooltip(cancel, "Cancel entire subagent run…", { ariaLabel: "Cancel entire subagent run" });
     cancel.addEventListener("click", () => openSubagentCancelDialog(tab, run));
     actions.append(cancel);
-  } else if (!running && run?.source !== "workflow") {
+  } else if (!running && run?.source !== "workflow" && subagentRunSupportsInteraction(run)) {
     const dismiss = make("button", "subagent-run-dismiss", "×");
     dismiss.type = "button";
     dismiss.dataset.subagentContinuityKey = `run:${tab?.tabId || ""}:${run?.id || ""}:dismiss`;
@@ -23580,7 +23614,7 @@ function subagentGateStatusLabel(status) {
 function subagentGateAttemptTarget(tab, attempt) {
   if (!tab?.tabId || !attempt?.runId) return null;
   const run = (Array.isArray(tab.runs) ? tab.runs : []).find((candidate) => candidate?.id === attempt.runId);
-  if (!run) return null;
+  if (!run || !subagentRunSupportsInteraction(run)) return null;
   const agents = Array.isArray(run.agents) ? run.agents : [];
   let agent = agents.find((candidate) => candidate?.name === attempt.agent);
   if (!agent && agents.length === 1) [agent] = agents;
@@ -23736,7 +23770,7 @@ function renderSubagents() {
   }
   if (elements.subagentsStatus) {
     elements.subagentsStatus.textContent = hasItems
-      ? [`${totalAgents} running`, retainedRuns ? `${retainedRuns} retained ${retainedRuns === 1 ? "run" : "runs"}` : "", totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`].filter(Boolean).join(" · ")
+      ? [`${totalAgents} running`, Number(latestSubagents?.fleet?.omitted || 0) ? `${latestSubagents.fleet.omitted} active ${latestSubagents.fleet.omitted === 1 ? "child" : "children"} omitted upstream` : "", retainedRuns ? `${retainedRuns} retained ${retainedRuns === 1 ? "run" : "runs"}` : "", totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`].filter(Boolean).join(" · ")
       : subagentsLoading && !latestSubagents
         ? "Checking subagents and retry gates…"
         : "No running subagents, retained runs, or retry gates.";
@@ -23756,32 +23790,51 @@ function renderSubagents() {
 }
 
 async function refreshSubagents() {
-  if (subagentsLoading) return;
+  if (subagentsRefreshPromise) {
+    subagentsRefreshQueued = true;
+    return subagentsRefreshPromise;
+  }
   let refreshed = false;
   let subagentViewsChanged = false;
   let materializedTerminalViews = false;
   subagentsLoading = true;
   renderSubagents();
-  try {
-    const response = await api("/api/subagents", { scoped: false });
-    latestSubagents = response.data || null;
-    pruneDismissedSubagentGateKeys(latestSubagents?.tabs, dismissedSubagentGateKeys);
-    subagentViewsChanged = syncSubagentTerminalViewsFromOverview();
-    materializedTerminalViews = materializeRetainedSubagentTerminalViews();
-    subagentsError = null;
-    refreshed = true;
-  } catch (error) {
-    subagentsError = error;
-  } finally {
-    subagentsLoading = false;
-    renderSubagents();
-    if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();
-    if (activeSubagentTerminalId) {
-      renderSubagentTerminalView();
-      scheduleSubagentTerminalRefresh();
+  let settleRefresh;
+  let rejectRefresh;
+  const refreshPromise = new Promise((resolve, reject) => {
+    settleRefresh = resolve;
+    rejectRefresh = reject;
+  });
+  subagentsRefreshPromise = refreshPromise;
+  (async () => {
+    try {
+      do {
+        subagentsRefreshQueued = false;
+        try {
+          const response = await api("/api/subagents", { scoped: false });
+          latestSubagents = response.data || null;
+          pruneDismissedSubagentGateKeys(latestSubagents?.tabs, dismissedSubagentGateKeys);
+          subagentViewsChanged = syncSubagentTerminalViewsFromOverview() || subagentViewsChanged;
+          materializedTerminalViews = materializeRetainedSubagentTerminalViews() || materializedTerminalViews;
+          subagentsError = null;
+          refreshed = true;
+        } catch (error) {
+          subagentsError = error;
+        }
+      } while (subagentsRefreshQueued);
+    } finally {
+      if (subagentsRefreshPromise === refreshPromise) subagentsRefreshPromise = null;
+      subagentsLoading = false;
+      renderSubagents();
+      if (subagentOverlaySelection?.tabId === activeTabId) renderWidgets();
+      if (activeSubagentTerminalId) {
+        renderSubagentTerminalView();
+        scheduleSubagentTerminalRefresh();
+      }
+      if (subagentViewsChanged || materializedTerminalViews) renderTabs();
     }
-    if (subagentViewsChanged || materializedTerminalViews) renderTabs();
-  }
+  })().then(settleRefresh, rejectRefresh);
+  await refreshPromise;
   if (refreshed && subagentAutoClearEnabled && finishedSubagentRunSelections().length) {
     await clearFinishedSubagentRuns({ automatic: true });
   }

@@ -22,3 +22,4 @@ services/issue-bot-gateway/.wrangler/
 /pi-package-webui/test-results/.playwright-artifacts-0/
 pi-package-webui/test-results/
 /plans/handoffs/
+/.pi/subagents/

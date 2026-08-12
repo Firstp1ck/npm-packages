@@ -17,6 +17,7 @@ The extension decides whether a request is feature work before the main agent be
 - Clear questions, reviews, research, troubleshooting, and bug fixes stay lightweight.
 - Requests that add a capability receive a short instruction to load `feature-development-workflow`.
 - Short follow-up messages can continue the previous feature decision when the connection is clear.
+- Delegated Pi child sessions skip this parent-only routing pass and follow the bounded task contract supplied by their parent.
 
 The complete feature workflow is not copied into every conversation. Pi loads it only when the request needs it.
 
@@ -30,7 +31,7 @@ Reload Pi after changing the extension, skill, or settings.
 
 If classification is unavailable or unclear, Pi receives a short fallback telling it to decide from the request and repository evidence. The full feature workflow is loaded only when that decision supports it.
 
-If the enabled skill or a required reference cannot be read, feature implementation stops with a configuration message. The extension does not silently continue with a partial policy.
+If the enabled skill or a required reference cannot be read in a parent session, feature implementation stops with a configuration message. The extension does not silently continue with a partial policy. Pi child sessions are identified by the runtime's child marker and skip this check because their inherited skill catalog may be intentionally stripped.
 
 ## Privacy and limitations
 

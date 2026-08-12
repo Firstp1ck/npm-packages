@@ -7,7 +7,8 @@ Recognizes feature requests and loads the feature workflow only when it is actua
 - Recognizes requests that add a new capability.
 - Loads the feature workflow only when it is needed.
 - Keeps bug fixes and ordinary edits lightweight.
-- Stops safely when the required feature skill is unavailable.
+- Leaves delegated child sessions to their parent-approved task contract.
+- Stops parent feature work safely when the required feature skill is unavailable.
 
 ## Install
 
@@ -21,7 +22,7 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-Use Pi normally. When you request a new capability, the extension loads the feature workflow; ordinary fixes, questions, and small edits continue without it.
+Use Pi normally. When you request a new capability in the parent session, the extension loads the feature workflow; ordinary fixes, questions, small edits, and delegated child execution continue without a second routing pass.
 
 ## Before you start
 

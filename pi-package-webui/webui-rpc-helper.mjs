@@ -52,6 +52,8 @@ const WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS = {
 };
 const SUBAGENT_STATUS_POLL_MS = 1500;
 const SUBAGENT_STATUS_RPC_TIMEOUT_MS = 900;
+const SUBAGENT_STATUS_HEARTBEAT_MS = 15_000;
+const SUBAGENT_AUTHORITATIVE_ABSENCE_LIMIT = 2;
 const FINISHED_SUBAGENT_RUN_LIMIT = 16;
 const SUBAGENT_OUTPUT_LINE_LIMIT = 120;
 const SUBAGENT_OUTPUT_LINE_LENGTH = 1000;
@@ -771,6 +773,32 @@ function subagentRunningGraphAgents(workflowGraph, runId) {
   return agents;
 }
 
+function normalizeSubagentFleet(value) {
+  if (!value || typeof value !== "object" || value.version !== 1 || !Array.isArray(value.entries)) return undefined;
+  const totalActive = Number.isSafeInteger(value.totalActive) && value.totalActive >= 0 ? value.totalActive : -1;
+  const omitted = Number.isSafeInteger(value.omitted) && value.omitted >= 0 ? value.omitted : -1;
+  if (totalActive < value.entries.length || omitted !== totalActive - value.entries.length) return undefined;
+  const entries = [];
+  const keys = new Set();
+  for (const candidate of value.entries.slice(0, 32)) {
+    const key = subagentText(candidate?.key, 160);
+    const agent = subagentAgentName(candidate?.agent);
+    const startedAt = candidate?.startedAt;
+    if (!key || !agent || keys.has(key) || !Number.isSafeInteger(startedAt) || startedAt < 0) return undefined;
+    keys.add(key);
+    entries.push({
+      key,
+      agent,
+      name: subagentAgentName(candidate?.role) || agent,
+      model: subagentModel(candidate?.model) || undefined,
+      thinking: subagentThinking(candidate?.effort) || subagentThinkingFromModel(candidate?.model) || undefined,
+      startedAt,
+    });
+  }
+  if (entries.length !== value.entries.length) return undefined;
+  return { version: 1, entries, totalActive, omitted };
+}
+
 function parseSubagentStatusText(text, previousRuns = new Map()) {
   const runs = [];
   let current = null;
@@ -840,12 +868,17 @@ export default function webuiRpcHelper(pi) {
   let subagentBridgeAvailable = false;
   let subagentPollTimer = null;
   let subagentPollGeneration = 0;
-  let subagentStatusRequestInFlight = false;
+  let subagentPollSequence = 0;
+  let subagentAppliedPollSequence = 0;
+  let subagentFleetSummary = null;
   let lastPublishedSubagentSignature = "";
+  let lastPublishedSubagentAt = 0;
   let lastPersistedRetainedSubagentSignature = "";
+  const subagentStatusRequestsInFlight = new Set();
   const asyncSubagentRuns = new Map();
   const foregroundSubagentRuns = new Map();
   const workflowSubagentRuns = new Map();
+  const recoveredSubagentRuns = new Map();
   const subagentGates = new Map();
 
   function ordinarySubagentRunEntries() {
@@ -1025,7 +1058,25 @@ export default function webuiRpcHelper(pi) {
           nested: false,
         })),
       }));
-    return [...ordinaryRuns, ...workflowRuns]
+    const recoveredRuns = [...recoveredSubagentRuns.values()].map((run) => ({
+      id: run.id,
+      source: "recovered",
+      mode: "single",
+      status: "running",
+      startedAt: run.startedAt,
+      provisional: true,
+      controllable: false,
+      agents: [{
+        id: run.agent.id,
+        name: run.agent.name,
+        status: "running",
+        index: 0,
+        model: run.agent.model,
+        thinking: run.agent.thinking,
+        nested: false,
+      }],
+    }));
+    return [...ordinaryRuns, ...workflowRuns, ...recoveredRuns]
       .filter((run) => run.id && (run.status !== "running" || run.agents.length > 0))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
@@ -1071,14 +1122,22 @@ export default function webuiRpcHelper(pi) {
     if (!subagentContext?.hasUI) return;
     const runs = publicSubagentRuns();
     const gates = publicSubagentGates();
-    const snapshot = { version: 1, available: subagentBridgeAvailable, runs, gates };
+    const snapshot = {
+      version: 1,
+      available: subagentBridgeAvailable,
+      runs,
+      gates,
+      ...(subagentFleetSummary ? { fleet: subagentFleetSummary } : {}),
+    };
     const signature = JSON.stringify(snapshot);
-    if (signature === lastPublishedSubagentSignature) return;
-    lastPublishedSubagentSignature = signature;
+    const now = Date.now();
+    if (signature === lastPublishedSubagentSignature && now - lastPublishedSubagentAt < SUBAGENT_STATUS_HEARTBEAT_MS) return;
     try {
-      subagentContext.ui.setStatus(WEBUI_SUBAGENTS_STATUS_KEY, `${WEBUI_SUBAGENTS_PAYLOAD_PREFIX}${JSON.stringify({ ...snapshot, updatedAt: Date.now() })}`);
+      subagentContext.ui.setStatus(WEBUI_SUBAGENTS_STATUS_KEY, `${WEBUI_SUBAGENTS_PAYLOAD_PREFIX}${JSON.stringify({ ...snapshot, updatedAt: now })}`);
+      lastPublishedSubagentSignature = signature;
+      lastPublishedSubagentAt = now;
     } catch {
-      // The old context may become stale while Pi replaces a session.
+      // Leave the signature uncommitted so a later poll or lifecycle event retries delivery.
     }
   }
 
@@ -1330,19 +1389,73 @@ export default function webuiRpcHelper(pi) {
     }
   }
 
-  async function refreshSubagentStatus() {
-    if (subagentStatusRequestInFlight) return;
-    subagentStatusRequestInFlight = true;
-    try {
-      const data = await requestSubagentStatus();
-      subagentBridgeAvailable = true;
-      const parsedRuns = parseSubagentStatusText(data?.text, asyncSubagentRuns);
-      const nextIds = new Set(parsedRuns.map((run) => run.id));
-      for (const run of asyncSubagentRuns.values()) {
-        if (run?.status === "running" && !nextIds.has(run.id) && Date.now() - Number(run.eventSeenAt || 0) > SUBAGENT_STATUS_POLL_MS * 2) {
-          finishSubagentRun(run, "done");
+  function reconcileSubagentFleet(fleet, parsedIds) {
+    subagentFleetSummary = fleet ? { version: 1, totalActive: fleet.totalActive, omitted: fleet.omitted } : null;
+    if (!fleet) return new Set();
+    const slots = [];
+    const addSlots = (runs, priority) => {
+      for (const run of runs) {
+        if (run?.status !== "running") continue;
+        for (const agent of Array.isArray(run.agents) ? run.agents : []) {
+          if (agent?.status !== "running" || !subagentAgentName(agent.name)) continue;
+          slots.push({ run, agent, priority: parsedIds.has(run.id) ? 0 : priority, claimed: false });
         }
       }
+    };
+    addSlots(asyncSubagentRuns.values(), 1);
+    addSlots(foregroundSubagentRuns.values(), 2);
+    slots.sort((left, right) => left.priority - right.priority);
+
+    const matchedRunIds = new Set();
+    const unmatched = [];
+    for (const entry of fleet.entries) {
+      const slot = slots.find((candidate) => !candidate.claimed && candidate.agent.name === entry.agent);
+      if (!slot) {
+        unmatched.push(entry);
+        continue;
+      }
+      slot.claimed = true;
+      matchedRunIds.add(slot.run.id);
+      recoveredSubagentRuns.delete(entry.key);
+    }
+
+    const unmatchedKeys = new Set(unmatched.map((entry) => entry.key));
+    for (const entry of unmatched) {
+      const previous = recoveredSubagentRuns.get(entry.key);
+      recoveredSubagentRuns.set(entry.key, {
+        ...previous,
+        id: `fleet:${entry.key}`,
+        startedAt: entry.startedAt,
+        absenceGeneration: subagentPollGeneration,
+        absenceCount: 0,
+        agent: {
+          id: `fleet:${entry.key}:agent`,
+          name: entry.name,
+          model: entry.model,
+          thinking: entry.thinking,
+        },
+      });
+    }
+    if (fleet.omitted === 0) {
+      for (const [key, run] of recoveredSubagentRuns) {
+        if (unmatchedKeys.has(key)) continue;
+        const count = run.absenceGeneration === subagentPollGeneration ? Number(run.absenceCount || 0) + 1 : 1;
+        if (count >= SUBAGENT_AUTHORITATIVE_ABSENCE_LIMIT) recoveredSubagentRuns.delete(key);
+        else Object.assign(run, { absenceGeneration: subagentPollGeneration, absenceCount: count });
+      }
+    }
+    return matchedRunIds;
+  }
+
+  async function refreshSubagentStatus(generation = subagentPollGeneration) {
+    if (generation !== subagentPollGeneration || subagentStatusRequestsInFlight.has(generation)) return;
+    const sequence = ++subagentPollSequence;
+    subagentStatusRequestsInFlight.add(generation);
+    try {
+      const data = await requestSubagentStatus();
+      if (generation !== subagentPollGeneration || sequence <= subagentAppliedPollSequence) return;
+      const parsedRuns = parseSubagentStatusText(data?.text, asyncSubagentRuns);
+      const nextRuns = [];
       for (const run of parsedRuns) {
         const previous = asyncSubagentRuns.get(run.id);
         if (previous?.status && previous.status !== "running") continue;
@@ -1359,16 +1472,39 @@ export default function webuiRpcHelper(pi) {
           ...previous,
           ...run,
           eventSeenAt: previous?.eventSeenAt || Date.now(),
+          authoritativeAbsenceGeneration: generation,
+          authoritativeAbsenceCount: 0,
           agents: [...completedAgents, ...runningAgents],
         };
         await enrichAsyncSubagentRun(merged);
-        asyncSubagentRuns.set(run.id, merged);
+        if (generation !== subagentPollGeneration || sequence <= subagentAppliedPollSequence) return;
+        nextRuns.push(merged);
       }
-      publishSubagentStatus();
+      if (generation !== subagentPollGeneration || sequence <= subagentAppliedPollSequence) return;
+      subagentAppliedPollSequence = sequence;
+      subagentBridgeAvailable = true;
+      for (const run of nextRuns) asyncSubagentRuns.set(run.id, run);
+      const nextIds = new Set(nextRuns.map((run) => run.id));
+      const fleet = normalizeSubagentFleet(data?.fleet);
+      const fleetRunIds = reconcileSubagentFleet(fleet, nextIds);
+      for (const run of asyncSubagentRuns.values()) {
+        if (run?.status !== "running") continue;
+        if (nextIds.has(run.id) || fleetRunIds.has(run.id)) {
+          run.authoritativeAbsenceGeneration = generation;
+          run.authoritativeAbsenceCount = 0;
+          continue;
+        }
+        if (!fleet || fleet.omitted !== 0) continue;
+        const count = run.authoritativeAbsenceGeneration === generation ? Number(run.authoritativeAbsenceCount || 0) + 1 : 1;
+        run.authoritativeAbsenceGeneration = generation;
+        run.authoritativeAbsenceCount = count;
+        if (count >= SUBAGENT_AUTHORITATIVE_ABSENCE_LIMIT) finishSubagentRun(run, "done");
+      }
     } catch {
       // The optional pi-subagents extension may not be loaded in this tab.
     } finally {
-      subagentStatusRequestInFlight = false;
+      subagentStatusRequestsInFlight.delete(generation);
+      if (generation === subagentPollGeneration) publishSubagentStatus();
     }
   }
 
@@ -1376,7 +1512,7 @@ export default function webuiRpcHelper(pi) {
     clearTimeout(subagentPollTimer);
     subagentPollTimer = setTimeout(async () => {
       if (generation !== subagentPollGeneration || !subagentContext) return;
-      await refreshSubagentStatus();
+      await refreshSubagentStatus(generation);
       scheduleSubagentStatusPoll(generation);
     }, delay);
     subagentPollTimer.unref?.();
@@ -1397,7 +1533,7 @@ export default function webuiRpcHelper(pi) {
     pi.events.on(SUBAGENT_RPC_READY_EVENT, () => {
       subagentBridgeAvailable = true;
       publishSubagentStatus();
-      void refreshSubagentStatus();
+      void refreshSubagentStatus(subagentPollGeneration);
     }),
     pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (value) => {
       const info = value && typeof value === "object" ? value : {};
@@ -1760,9 +1896,12 @@ export default function webuiRpcHelper(pi) {
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
     workflowSubagentRuns.clear();
+    recoveredSubagentRuns.clear();
     subagentGates.clear();
+    subagentFleetSummary = null;
     restoreRetainedSubagentRuns(ctx);
     lastPublishedSubagentSignature = "";
+    lastPublishedSubagentAt = 0;
     publishSubagentStatus();
     scheduleSubagentStatusPoll(subagentPollGeneration, 0);
   });
@@ -1773,11 +1912,18 @@ export default function webuiRpcHelper(pi) {
     restoreSkillsFromBranch(ctx, globalDefaults);
     restoreSamplingParamsFromBranch(ctx);
     subagentContext = ctx;
+    subagentPollGeneration += 1;
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
+    workflowSubagentRuns.clear();
+    recoveredSubagentRuns.clear();
+    subagentGates.clear();
+    subagentFleetSummary = null;
     restoreRetainedSubagentRuns(ctx);
     lastPublishedSubagentSignature = "";
+    lastPublishedSubagentAt = 0;
     publishSubagentStatus();
+    scheduleSubagentStatusPoll(subagentPollGeneration, 0);
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -1785,6 +1931,7 @@ export default function webuiRpcHelper(pi) {
     const id = subagentText(event.toolCallId, 160);
     if (!id) return;
     subagentContext = ctx;
+    const workflowProvisional = typeof event.args?.workflowScript === "string" && event.args.workflowScript.trim().length > 0;
     const initialAgents = subagentInitialAgentsFromArgs(event.args).map((agent, index) => ({
       id: `${id}:${index}:${agent.name}`,
       name: agent.name,
@@ -1794,6 +1941,9 @@ export default function webuiRpcHelper(pi) {
       thinking: agent.thinking,
       nested: false,
     }));
+    if (!initialAgents.length && workflowProvisional) {
+      initialAgents.push({ id: `${id}:0:workflow`, name: "workflow", status: "running", index: 0, nested: false });
+    }
     if (!initialAgents.length) return;
     foregroundSubagentRuns.set(id, {
       id,
@@ -1802,6 +1952,7 @@ export default function webuiRpcHelper(pi) {
       status: "running",
       startedAt: Date.now(),
       controlRunId: undefined,
+      workflowProvisional,
       agents: initialAgents,
     });
     publishSubagentStatus();
@@ -1816,6 +1967,7 @@ export default function webuiRpcHelper(pi) {
     const details = event.partialResult?.details || event.result?.details;
     const agents = subagentRunningAgentsFromDetails(details, details?.runId || id);
     if (agents.length) {
+      run.workflowProvisional = false;
       const runningAgents = agents.map((agent) => {
         const previous = run.agents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name);
         return {
@@ -1842,8 +1994,10 @@ export default function webuiRpcHelper(pi) {
   pi.on("tool_execution_end", (event) => {
     if (event.toolName !== "subagent") return;
     const toolCallId = subagentText(event.toolCallId, 160);
-    const run = [...foregroundSubagentRuns.values()].find((candidate) => candidate?.id === toolCallId) || foregroundSubagentRuns.get(toolCallId);
-    if (run) finishSubagentRun(run, event.isError === true || event.result?.isError === true ? "failed" : "done");
+    const entry = [...foregroundSubagentRuns.entries()].find(([key, candidate]) => candidate?.id === toolCallId || key === toolCallId);
+    const run = entry?.[1];
+    if (run?.workflowProvisional) foregroundSubagentRuns.delete(entry[0]);
+    else if (run) finishSubagentRun(run, event.isError === true || event.result?.isError === true ? "failed" : "done");
     publishSubagentStatus();
   });
 
@@ -1856,7 +2010,9 @@ export default function webuiRpcHelper(pi) {
     foregroundSubagentRuns.clear();
     asyncSubagentRuns.clear();
     workflowSubagentRuns.clear();
+    recoveredSubagentRuns.clear();
     subagentGates.clear();
+    subagentFleetSummary = null;
     for (const unsubscribe of subagentEventUnsubscribers) unsubscribe();
   });
 

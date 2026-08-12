@@ -186,9 +186,11 @@ Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection d
 - Use **Recheck** after fixing an optional-package or settings problem.
 - If a summary model is unavailable, sign in or choose another model in `/summary-setup`.
 - If compact mode is confusing, return to Normal under Output processing.
+- If the Subagents section labels a child **recovered active**, Pi has authoritative evidence that the child is active but cannot yet map it to a controllable run. Keep the parent session running and allow the next status refresh to reconcile it; output, cancel, dismiss, and restored terminal views remain unavailable for that provisional row. An “active children omitted upstream” count means the upstream bounded snapshot knows about more active children than it can describe individually.
 
 ## Compatibility and limitations
 
+- Subagent recovery snapshots are bounded. Omitted children are reported as an aggregate and appear individually only after a later snapshot includes enough public metadata; private child prompts and paths are never exposed by the overview.
 - App runners stop during Web UI restart and must be started again.
 - An operating-system restart cannot resume the same in-progress model request.
 - Some native Pi commands have browser-specific behavior or remain terminal-only.

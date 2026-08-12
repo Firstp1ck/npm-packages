@@ -200,6 +200,11 @@ export function buildFeatureClassificationContext(result: RequestKind): string {
 }
 
 export const FEATURE_SKILL_NAME = "feature-development-workflow";
+export const PI_SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
+
+export function isPiSubagentChild(env: Record<string, string | undefined> = process.env): boolean {
+	return env[PI_SUBAGENT_CHILD_ENV] === "1";
+}
 
 export const FEATURE_SKILL_ROUTING_BRIDGE = [
 	`Before feature implementation, use read to load and follow the enabled \`${FEATURE_SKILL_NAME}\` skill from its path in <available_skills>.`,
@@ -317,10 +322,12 @@ async function classifyRequest(input: ClassifierPromptInput, model: ActiveClassi
 
 export type RequestClassifier = (input: ClassifierPromptInput, model: ActiveClassifierModel) => Promise<ClassifierDecision | undefined>;
 export type FeatureSkillValidator = (systemPrompt: string, complexity: FeatureComplexity) => boolean;
+export type SubagentChildDetector = () => boolean;
 
 export interface FeatureSystemPromptDependencies {
 	classifyRequest?: RequestClassifier;
 	validateFeatureSkill?: FeatureSkillValidator;
+	isSubagentChild?: SubagentChildDetector;
 }
 
 export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDependencies = {}) {
@@ -336,6 +343,7 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 		};
 		const requestClassifier = dependencies.classifyRequest ?? classifyRequest;
 		const validateFeatureSkill = dependencies.validateFeatureSkill ?? featureSkillIsAvailable;
+		const isSubagentChild = dependencies.isSubagentChild ?? isPiSubagentChild;
 
 		const resetSessionState = (_event: unknown, ctx: ExtensionContext) => {
 			resetContinuationState();
@@ -346,6 +354,12 @@ export function createFeatureSystemPrompt(dependencies: FeatureSystemPromptDepen
 		pi.on("session_tree", resetSessionState);
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			if (isSubagentChild()) {
+				resetContinuationState();
+				setFeatureStatuses(ctx, undefined, undefined);
+				return;
+			}
+
 			const continuation = isLikelyContinuation(event.prompt);
 			let resolvedKind: EffectiveRequestKind | undefined = continuation ? previousEffectiveKind : classifyObviousNonFeatureRequest(event.prompt);
 			let featureDecisionOutput: FeatureDecisionOutput | undefined = continuation

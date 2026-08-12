@@ -9927,7 +9927,15 @@ function normalizeWebuiSubagentText(value, maxLength = 240) {
 }
 
 function normalizeWebuiSubagentSource(value) {
-  return value === "foreground" || value === "workflow" ? value : "async";
+  return ["foreground", "workflow", "recovered"].includes(value) ? value : "async";
+}
+
+function normalizeWebuiSubagentFleet(value) {
+  if (!value || typeof value !== "object" || value.version !== 1) return null;
+  const totalActive = Number.isSafeInteger(value.totalActive) && value.totalActive >= 0 ? value.totalActive : -1;
+  const omitted = Number.isSafeInteger(value.omitted) && value.omitted >= 0 ? value.omitted : -1;
+  if (totalActive < 0 || omitted < 0 || omitted > totalActive) return null;
+  return { version: 1, totalActive, omitted };
 }
 
 function normalizeWebuiSubagentPayload(value) {
@@ -9958,9 +9966,14 @@ function normalizeWebuiSubagentPayload(value) {
       });
     }
     if (status === "running" && !agents.length) continue;
+    const source = normalizeWebuiSubagentSource(rawRun.source);
+    const provisional = source === "recovered" || rawRun.provisional === true;
+    const controllable = source !== "recovered" && !provisional && rawRun.controllable !== false;
     runs.push({
       id,
-      source: normalizeWebuiSubagentSource(rawRun.source),
+      source,
+      ...(provisional ? { provisional: true } : {}),
+      ...(!controllable ? { controllable: false } : {}),
       mode: ["single", "parallel", "chain"].includes(rawRun.mode) ? rawRun.mode : "single",
       status,
       startedAt: Number.isFinite(rawRun.startedAt) ? rawRun.startedAt : Date.now(),
@@ -10019,6 +10032,7 @@ function normalizeWebuiSubagentPayload(value) {
     available: value.available === true,
     updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
     receivedAt: Date.now(),
+    fleet: normalizeWebuiSubagentFleet(value.fleet),
     runs: runs.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
     gates: gates.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id)),
   };
@@ -11039,6 +11053,7 @@ async function webuiSubagentsData() {
       available: status.available === true,
       updatedAt: status.updatedAt || null,
       receivedAt: status.receivedAt || null,
+      fleet: status.fleet || null,
       runs,
       gates,
       agentCount: runs.reduce((count, run) => count + run.agents.length, 0),
@@ -11047,10 +11062,16 @@ async function webuiSubagentsData() {
       gateCount: gates.length,
     };
   }));
+  const fleet = tabSummaries.reduce((summary, tab) => ({
+    version: 1,
+    totalActive: Math.min(Number.MAX_SAFE_INTEGER, summary.totalActive + Number(tab.fleet?.totalActive || 0)),
+    omitted: Math.min(Number.MAX_SAFE_INTEGER, summary.omitted + Number(tab.fleet?.omitted || 0)),
+  }), { version: 1, totalActive: 0, omitted: 0 });
   return {
     version: 1,
     updatedAt: Date.now(),
     available: tabSummaries.some((tab) => tab.available),
+    fleet,
     totalRuns: tabSummaries.reduce((count, tab) => count + tab.runs.length, 0),
     totalAgents: tabSummaries.reduce((count, tab) => count + tab.agentCount, 0),
     runningRuns: tabSummaries.reduce((count, tab) => count + tab.runningRuns, 0),
@@ -11202,10 +11223,29 @@ function normalizeWebuiSubagentOutput(value, selection) {
   };
 }
 
-async function webuiSubagentOutputData(tab, runId, agentId) {
+function webuiSubagentRunSupportsInteraction(run) {
+  return run?.source !== "recovered" && run?.provisional !== true && run?.controllable !== false;
+}
+
+function requireInteractiveWebuiSubagentRun(tab, runId) {
+  const normalizedRunId = normalizeWebuiSubagentText(runId, 160);
   const runs = Array.isArray(tab.webuiSubagents?.runs) ? tab.webuiSubagents.runs : [];
-  const run = runs.find((candidate) => candidate.id === runId);
-  if (!run) throw makeHttpError(404, `Subagent run not found: ${runId}`);
+  const run = runs.find((candidate) => candidate.id === normalizedRunId);
+  if (!run) throw makeHttpError(404, `Subagent run not found: ${normalizedRunId}`);
+  if (!webuiSubagentRunSupportsInteraction(run)) throw makeHttpError(409, "Recovered provisional subagents are status-only");
+  return run;
+}
+
+function rejectUnsupportedWebuiSubagentRun(tab, runId) {
+  const normalizedRunId = normalizeWebuiSubagentText(runId, 160);
+  const runs = Array.isArray(tab.webuiSubagents?.runs) ? tab.webuiSubagents.runs : [];
+  const run = runs.find((candidate) => candidate.id === normalizedRunId);
+  if (run && !webuiSubagentRunSupportsInteraction(run)) throw makeHttpError(409, "Recovered provisional subagents are status-only");
+  return normalizedRunId;
+}
+
+async function webuiSubagentOutputData(tab, runId, agentId) {
+  const run = requireInteractiveWebuiSubagentRun(tab, runId);
   const agent = (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate.id === agentId);
   if (!agent) throw makeHttpError(404, `Subagent not found: ${agentId}`);
   const data = await sendWebuiHelperCommand(tab, "subagent-output", { runId, agentId });
@@ -15331,8 +15371,9 @@ const server = createServer(async (req, res) => {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
+      const runId = rejectUnsupportedWebuiSubagentRun(tab, body.runId);
       sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-cancel", {
-        runId: body.runId,
+        runId,
         reason: body.reason,
         note: body.note,
       }) });
@@ -15343,7 +15384,8 @@ const server = createServer(async (req, res) => {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
-      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-dismiss", { runId: body.runId }) });
+      const runId = rejectUnsupportedWebuiSubagentRun(tab, body.runId);
+      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-dismiss", { runId }) });
       return;
     }
 

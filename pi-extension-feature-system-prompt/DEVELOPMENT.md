@@ -13,11 +13,13 @@ npm run smoke
 npm pack --dry-run --json
 ```
 
-Tests cover taxonomy and strict decision parsing, bounded classifier input and reasons, continuation decision reuse, feature-only bridge injection without reason interpolation, fail-closed language, lifecycle resets, structured RPC statuses, and inert registration.
+Tests cover taxonomy and strict decision parsing, bounded classifier input and reasons, continuation decision reuse, feature-only bridge injection without reason interpolation, parent fail-closed language, child-session bypass, lifecycle resets, structured RPC statuses, and inert registration.
 
 ## Additional implementation details
 
-Pi discovers `feature-system-prompt.ts` through the package manifest. The `feature-development-workflow` skill must also be enabled.
+Pi discovers `feature-system-prompt.ts` through the package manifest. The `feature-development-workflow` skill must also be enabled in parent sessions.
+
+The extension treats `PI_SUBAGENT_CHILD=1` as a trusted Pi runtime marker. In those child processes it clears any RPC feature statuses and skips classification plus skill-availability routing. The parent has already classified and governed the feature, while `pi-subagents` may intentionally remove the inherited skill catalog from the child prompt.
 
 - The local fast path receives only the current request and does not persist it.
 - The model classifier receives only bounded current request text and, for a conservative continuation, bounded previous request text plus its effective classification.
@@ -56,7 +58,7 @@ Reload Pi after changing the extension, skill, or settings so resource discovery
 
 If no active model is available, the classifier fails, times out, or returns malformed structured output, the extension appends a short fallback telling the parent to classify from request and repository evidence, then load the feature skill only when applicable. JSON with an unknown kind, missing or extra fields, a non-string reason, or an empty normalized reason is invalid.
 
-A successfully classified feature receives the bridge only after the availability check passes. If the enabled skill is missing from the current system prompt or a required file is unavailable, unreadable, or empty, the extension injects a configuration-error policy directing the parent not to implement the feature until configuration is restored.
+A successfully classified parent feature receives the bridge only after the availability check passes. If the enabled skill is missing from the parent system prompt or a required file is unavailable, unreadable, or empty, the extension injects a configuration-error policy directing the parent not to implement the feature until configuration is restored. Child subagent processes skip this parent-only route instead of misclassifying an intentionally stripped child prompt as broken configuration.
 
 The availability check is machine-enforced; following the loaded policy remains an agent instruction rather than an authorization system.
 

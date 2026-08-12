@@ -19,6 +19,7 @@ import featureSystemPrompt, {
 	featureSkillIsAvailable,
 	getFeatureComplexity,
 	isLikelyContinuation,
+	isPiSubagentChild,
 	MAX_CLASSIFIER_PROMPT_CHARS,
 	MAX_CLASSIFIER_REASON_CHARS,
 	parseClassifierDecision,
@@ -368,6 +369,34 @@ test("classifier invalid output, throw, and no active model inject only the shor
 	assert.ok(!FEATURE_CLASSIFICATION_FALLBACK.includes("## Feature Request Classification"));
 	assert.ok(FEATURE_CLASSIFICATION_FALLBACK.includes(`load and follow the enabled \`${FEATURE_SKILL_NAME}\` skill`));
 	assert.match(FEATURE_CLASSIFICATION_FALLBACK, /stop feature implementation and report the configuration error/);
+});
+
+test("child subagent sessions skip parent-only feature routing when skills are intentionally stripped", async () => {
+	let classifierCalls = 0;
+	let validatorCalls = 0;
+	const harness = createFeaturePromptHarness({
+		isSubagentChild: () => true,
+		classifyRequest: async () => {
+			classifierCalls += 1;
+			return classifierDecision("feature_complex");
+		},
+		validateFeatureSkill: () => {
+			validatorCalls += 1;
+			return false;
+		},
+	});
+
+	assert.equal(await harness.run("Implement the approved feature plan"), undefined);
+	assert.equal(await harness.runInRpcMode("Continue with the implementation"), undefined);
+	assert.equal(classifierCalls, 0);
+	assert.equal(validatorCalls, 0);
+	assert.deepEqual(harness.statusUpdates, [
+		{ key: FEATURE_DECISION_OUTPUT_STATUS_KEY, text: undefined },
+		{ key: FEATURE_CATEGORY_STATUS_KEY, text: undefined },
+	]);
+	assert.equal(isPiSubagentChild({ PI_SUBAGENT_CHILD: "1" }), true);
+	assert.equal(isPiSubagentChild({ PI_SUBAGENT_CHILD: "0" }), false);
+	assert.equal(isPiSubagentChild({}), false);
 });
 
 test("a successful classified feature injects a fail-closed skill-routing bridge", async () => {

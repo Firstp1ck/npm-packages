@@ -63,6 +63,8 @@ Check the server at any time with:
 4. Enter a prompt, attach context if needed, and follow the live response.
 5. Open the side panel for sessions, Git, app runners, themes, updates, and optional features.
 
+The **Subagents** section can recover active children after a status or browser timing gap. A recovered child is labelled as recovered and remains view-only until Pi identifies its owning run, so output, cancellation, and dismissal controls are not shown prematurely.
+
 Useful shortcuts:
 
 - `Ctrl/Cmd+K` opens the command palette.

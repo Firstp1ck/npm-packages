@@ -36,6 +36,7 @@ let branchEntries = [];
 let idle = true;
 let subagentStatusRequestCount = 0;
 let subagentRpcReplyHook = null;
+let setStatusFailures = 0;
 const pi = {
   events: bus,
   on(name, handler) {
@@ -77,6 +78,10 @@ const ctx = {
   },
   ui: {
     setStatus(key, text) {
+      if (setStatusFailures > 0) {
+        setStatusFailures -= 1;
+        throw new Error("simulated status delivery failure");
+      }
       statuses.push({ key, text });
     },
     notify(message, type) {
@@ -135,7 +140,7 @@ const unsubscribeRpc = bus.on("subagents:rpc:v1:request", (request) => {
   const text = request.params?.id === "run-a"
     ? `Run: run-a\nState: running\nMode: parallel\nDir: ${asyncRunDir}`
     : statusText;
-  subagentRpcReplyHook?.(request);
+  if (subagentRpcReplyHook?.(request) === true) return;
   bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
     version: 1,
     requestId: request.requestId,
@@ -199,6 +204,102 @@ assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.name, agent.curren
 assert.deepEqual(payload.runs[0].agents.map((agent) => [agent.model, agent.thinking]), [["anthropic/claude-opus-4-8:high", "high"], ["openai-codex/gpt-5.6-sol", "high"]], "async overview should publish effective lifecycle model and reasoning metadata");
 assert.deepEqual(payload.runs[1].agents.map((agent) => [agent.name, agent.nested]), [["worker", false], ["nested-oracle", true]]);
 
+const fleetStartedAt = Date.now() - 500;
+subagentRpcReplyHook = (request) => {
+  if (request.method !== "status" || Object.keys(request.params || {}).length) return false;
+  subagentRpcReplyHook = null;
+  bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+    version: 1,
+    requestId: request.requestId,
+    method: request.method,
+    success: true,
+    data: {
+      text: statusText,
+      details: { mode: "single", results: [] },
+      fleet: {
+        version: 1,
+        entries: [
+          { key: "fleet-reviewer-1", agent: "reviewer", startedAt: fleetStartedAt, tokens: { input: 0, output: 0, total: 0 } },
+          { key: "fleet-reviewer-2", agent: "reviewer", startedAt: fleetStartedAt + 1, tokens: { input: 0, output: 0, total: 0 } },
+          { key: "fleet-worker", agent: "worker", startedAt: fleetStartedAt + 2, tokens: { input: 0, output: 0, total: 0 } },
+          { key: "fleet-nested", agent: "nested-oracle", startedAt: fleetStartedAt + 3, tokens: { input: 0, output: 0, total: 0 } },
+          { key: "fleet-recovered", agent: "scout", role: "Recovery scout", model: "openai-codex/gpt-5.6-terra:xhigh", effort: "xhigh", startedAt: fleetStartedAt + 4, tokens: { input: 0, output: 0, total: 0 } },
+        ],
+        totalActive: 5,
+        omitted: 0,
+      },
+    },
+  });
+  return true;
+};
+bus.emit("subagents:rpc:v1:ready", { version: 1 });
+await new Promise((resolve) => setTimeout(resolve, 0));
+payload = latestPayload();
+assert.equal(payload.runs.filter((run) => run.id === "run-a").length, 1, "fleet recovery must not duplicate a text-parsed run");
+assert.equal(payload.runs.find((run) => run.id === "run-a")?.agents.length, 2, "fleet recovery must match repeated same-role children one-to-one");
+const recoveredFleetRun = payload.runs.find((run) => run.id === "fleet:fleet-recovered");
+assert.deepEqual(recoveredFleetRun && {
+  source: recoveredFleetRun.source,
+  provisional: recoveredFleetRun.provisional,
+  controllable: recoveredFleetRun.controllable,
+  agents: recoveredFleetRun.agents.map((agent) => [agent.name, agent.model, agent.thinking]),
+}, {
+  source: "recovered",
+  provisional: true,
+  controllable: false,
+  agents: [["Recovery scout", "openai-codex/gpt-5.6-terra:xhigh", "xhigh"]],
+}, "unmatched authoritative fleet children should publish a bounded non-controllable provisional row");
+assert.deepEqual(payload.fleet, { version: 1, totalActive: 5, omitted: 0 }, "fleet recovery should publish only bounded aggregate recovery metadata");
+
+subagentRpcReplyHook = (request) => {
+  if (request.method !== "status" || Object.keys(request.params || {}).length) return false;
+  subagentRpcReplyHook = null;
+  bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+    version: 1,
+    requestId: request.requestId,
+    method: request.method,
+    success: true,
+    data: {
+      text: statusText,
+      details: { mode: "single", results: [] },
+      fleet: { version: 1, entries: "malformed", totalActive: 99, omitted: 99 },
+    },
+  });
+  return true;
+};
+bus.emit("subagents:rpc:v1:ready", { version: 1 });
+await new Promise((resolve) => setTimeout(resolve, 0));
+payload = latestPayload();
+assert.equal("fleet" in payload, false, "a successful poll with malformed fleet data should clear stale aggregate metadata");
+assert.ok(payload.runs.some((run) => run.id === "fleet:fleet-recovered" && run.status === "running"), "malformed fleet data must not prune or finish a previously recovered live row");
+
+const retryGate = {
+  version: 1,
+  id: "gate-delivery-retry",
+  status: "running",
+  requiredSuccesses: 1,
+  qualifyingSuccesses: 0,
+  requireDistinctProviders: false,
+  startedAt: Date.now(),
+  updatedAt: Date.now(),
+  attempts: [],
+};
+const statusesBeforeFailedDelivery = statuses.length;
+setStatusFailures = 1;
+bus.emit("webui:subagent-gate:v1:update", retryGate);
+assert.equal(statuses.length, statusesBeforeFailedDelivery, "a failed setStatus delivery should not appear successful");
+bus.emit("webui:subagent-gate:v1:update", retryGate);
+assert.equal(statuses.length, statusesBeforeFailedDelivery + 1, "an unchanged snapshot should retry after setStatus throws");
+const statusesBeforeHeartbeat = statuses.length;
+const realDateNow = Date.now;
+Date.now = () => realDateNow() + 16_000;
+try {
+  bus.emit("webui:subagent-gate:v1:update", retryGate);
+} finally {
+  Date.now = realDateNow;
+}
+assert.equal(statuses.length, statusesBeforeHeartbeat + 1, "an unchanged snapshot should republish after the bounded heartbeat interval");
+
 bus.emit("webui:subagent-gate:v1:update", {
   version: 1,
   id: "gate-a",
@@ -214,9 +315,10 @@ bus.emit("webui:subagent-gate:v1:update", {
   ],
 });
 payload = latestPayload();
-assert.equal(payload.gates.length, 1, "helper should publish retry gate lifecycle alongside running children");
-assert.equal(payload.gates[0].qualifyingSuccesses, 1);
-assert.deepEqual(payload.gates[0].attempts.map((attempt) => [attempt.status, attempt.failureKind]), [["succeeded", undefined], ["failed", "transient-provider"]]);
+assert.equal(payload.gates.length, 2, "helper should publish retry gate lifecycle alongside running children");
+const publishedGate = payload.gates.find((gate) => gate.id === "gate-a");
+assert.equal(publishedGate?.qualifyingSuccesses, 1);
+assert.deepEqual(publishedGate?.attempts.map((attempt) => [attempt.status, attempt.failureKind]), [["succeeded", undefined], ["failed", "transient-provider"]]);
 
 const workflowRunId = "workflow:run-42";
 const workflowAgentId = "workflow:run-42:phase:implement:call:call-0123456789abcdef";
@@ -483,6 +585,31 @@ let foreground = payload.runs.find((run) => run.source === "foreground");
 assert.deepEqual(foreground?.agents.map((agent) => agent.name), ["tester", "reviewer"], "foreground parallel children should appear while the tool runs");
 assert.deepEqual(foreground?.agents.map((agent) => [agent.model, agent.thinking]), [["openai-codex/gpt-5.6-terra:xhigh", "xhigh"], ["anthropic/claude-opus-4-8:high", "high"]], "foreground overview should preserve run-level defaults and per-child model/reasoning overrides");
 
+for (const handler of extensionHandlers.get("tool_execution_start") || []) {
+  handler({
+    type: "tool_execution_start",
+    toolCallId: "workflow-script-provisional",
+    toolName: "subagent",
+    args: { workflowScript: "return runs.run('implementation', { agent: 'worker', task: 'Implement it' })", async: false },
+  }, ctx);
+}
+payload = latestPayload();
+const provisionalWorkflow = payload.runs.find((run) => run.id === "workflow-script-provisional");
+assert.deepEqual(provisionalWorkflow && {
+  source: provisionalWorkflow.source,
+  status: provisionalWorkflow.status,
+  agents: provisionalWorkflow.agents.map((agent) => agent.name),
+}, {
+  source: "foreground",
+  status: "running",
+  agents: ["workflow"],
+}, "a direct workflowScript lifecycle start should publish a provisional row before child details arrive");
+for (const handler of extensionHandlers.get("tool_execution_end") || []) {
+  handler({ type: "tool_execution_end", toolCallId: "workflow-script-provisional", toolName: "subagent" }, ctx);
+}
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "workflow-script-provisional"), false, "a workflow-only provisional row should not enter retained terminal history");
+
 for (const handler of extensionHandlers.get("tool_execution_update") || []) {
   handler({
     type: "tool_execution_update",
@@ -746,6 +873,31 @@ assert.deepEqual(completedAsync && {
   agentStatuses: ["done", "done"],
 }, "async completion should retain a final run rather than deleting it");
 
+bus.emit("subagent:async-started", { id: "run-authoritative-absence", mode: "single", agent: "absence-tester" });
+const replyWithEmptyAuthoritativeFleet = () => {
+  subagentRpcReplyHook = (request) => {
+    if (request.method !== "status" || Object.keys(request.params || {}).length) return false;
+    subagentRpcReplyHook = null;
+    bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+      version: 1,
+      requestId: request.requestId,
+      method: request.method,
+      success: true,
+      data: { text: "No active async runs.", details: { mode: "management", results: [] }, fleet: { version: 1, entries: [], totalActive: 0, omitted: 0 } },
+    });
+    return true;
+  };
+  bus.emit("subagents:rpc:v1:ready", { version: 1 });
+};
+replyWithEmptyAuthoritativeFleet();
+await new Promise((resolve) => setTimeout(resolve, 0));
+payload = latestPayload();
+assert.equal(payload.runs.find((run) => run.id === "run-authoritative-absence")?.status, "running", "one authoritative omission must not finish a tracked run");
+replyWithEmptyAuthoritativeFleet();
+await new Promise((resolve) => setTimeout(resolve, 0));
+payload = latestPayload();
+assert.equal(payload.runs.find((run) => run.id === "run-authoritative-absence")?.status, "done", "repeated authoritative absence in one generation should finish a tracked run");
+
 const persistedSnapshot = branchEntries.at(-1);
 assert.equal(persistedSnapshot?.customType, "webui-subagent-retained-runs-v1", "the latest parent-session custom entry should own retained run state");
 assert.equal(persistedSnapshot?.data?.version, 1);
@@ -764,6 +916,51 @@ const restoredOutput = helperResponse("restored-async-output");
 assert.equal(restoredOutput.ok, true, "retained async output should remain accessible after a parent-session resume");
 assert.equal(restoredOutput.data.agent.status, "cancelled");
 assert.equal(restoredOutput.data.agent.telemetry.inputTokens, 300, "retained runs should re-read bounded telemetry from a still-available child session locator");
+
+let staleGenerationRequest = null;
+let replacementGenerationRequest = null;
+subagentRpcReplyHook = (request) => {
+  if (request.method !== "status" || Object.keys(request.params || {}).length) return false;
+  if (!staleGenerationRequest) {
+    staleGenerationRequest = request;
+    return true;
+  }
+  replacementGenerationRequest = request;
+  subagentRpcReplyHook = null;
+  bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+    version: 1,
+    requestId: request.requestId,
+    method: request.method,
+    success: true,
+    data: { text: "No active async runs.", details: { mode: "management", results: [] }, fleet: { version: 1, entries: [], totalActive: 0, omitted: 0 } },
+  });
+  return true;
+};
+bus.emit("subagents:rpc:v1:ready", { version: 1 });
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.ok(staleGenerationRequest, "the stale-generation regression should hold an old poll response");
+for (const handler of extensionHandlers.get("session_tree") || []) await handler({ reason: "stale-poll-switch" }, ctx);
+for (let attempt = 0; attempt < 20 && !replacementGenerationRequest; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+assert.ok(replacementGenerationRequest, "session_tree should immediately poll the replacement generation");
+bus.emit(`subagents:rpc:v1:reply:${staleGenerationRequest.requestId}`, {
+  version: 1,
+  requestId: staleGenerationRequest.requestId,
+  method: staleGenerationRequest.method,
+  success: true,
+  data: {
+    text: "No active async runs.",
+    details: { mode: "management", results: [] },
+    fleet: {
+      version: 1,
+      entries: [{ key: "fleet-stale", agent: "stale-agent", startedAt: Date.now(), tokens: { input: 0, output: 0, total: 0 } }],
+      totalActive: 1,
+      omitted: 0,
+    },
+  },
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "fleet:fleet-stale"), false, "a pre-session_tree response must not overwrite the replacement generation");
 
 const retainedParentBranch = branchEntries;
 branchEntries = [];
