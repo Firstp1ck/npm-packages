@@ -772,8 +772,8 @@ try {
   const initialInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
   assert.equal(initialInterfacePreferences.status, 200);
   assert.equal(initialInterfacePreferences.body?.data?.preferences?.sidePanelWidth, null, "a user without a saved width should receive the default preference");
-  assert.equal(initialInterfacePreferences.body?.data?.layout?.version, 1);
-  assert.equal(initialInterfacePreferences.body?.data?.layout?.sidePanel?.sectionOrder, null);
+  assert.equal(initialInterfacePreferences.body?.data?.layout?.version, 2);
+  assert.deepEqual(initialInterfacePreferences.body?.data?.layout?.sidePanel?.sectionLayout, { order: null, leftSectionIds: null });
   assert.match(initialInterfacePreferences.body?.data?.layoutRevision || "", /^[a-f0-9]{64}$/);
   assert.equal(Object.hasOwn(initialInterfacePreferences.body?.data || {}, "path"), false, "preference responses must not disclose the user's settings-file path");
   const initialLayoutRevision = initialInterfacePreferences.body.data.layoutRevision;
@@ -801,8 +801,15 @@ try {
       sidePanelWidth: 620,
       expectedLayoutRevision: initialLayoutRevision,
       layout: {
-        version: 1,
-        sidePanel: { sectionOrder: ["files", "controls", "git"], collapsedSectionIds: ["git"], hiddenSectionIds: [], collapsed: false },
+        version: 2,
+        sidePanel: {
+          placement: "both",
+          sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: ["files"] },
+          collapsedSectionIds: ["git"],
+          hiddenSectionIds: [],
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 620 },
+        },
         composerActions: { order: ["new", "git", "send"], grid: { version: 2, columns: 12, positions: { new: 0, git: 1, send: 10 } } },
         footerScopedModelOrder: ["openai-codex/gpt-5.6-sol"],
         terminalTabs: { layout: "left", customGroups: { version: 1, groups: [{ id: "group-1", title: "Group 1", tabIds: ["tab-a", "tab-b"] }] } },
@@ -812,36 +819,46 @@ try {
   });
   assert.equal(savedLayout.status, 200, savedLayout.body?.error);
   assert.equal(savedLayout.body?.data?.preferences?.sidePanelWidth, 620);
+  assert.equal(savedLayout.body?.data?.layout?.sidePanel?.panelWidths?.right, 620, "one locked PUT must expose matching v2 right and legacy widths");
+  assert.deepEqual(savedLayout.body?.data?.layout?.sidePanel?.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: ["files"] });
   assert.deepEqual(savedLayout.body?.data?.layout?.composerActions?.order, ["new", "git", "send"]);
   assert.equal(savedLayout.body?.data?.layout?.terminalTabs?.layout, "left");
   assert.notEqual(savedLayout.body?.data?.layoutRevision, initialLayoutRevision);
   assert.equal(JSON.stringify(savedLayout.body).includes(settingsFile), false, "successful layout responses must not disclose the settings path");
   const savedLayoutRevision = savedLayout.body.data.layoutRevision;
   const persistedLayoutSettings = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persistedLayoutSettings.version, 6);
+  assert.equal(persistedLayoutSettings.version, 7);
+  assert.equal(persistedLayoutSettings.interfacePreferences.sidePanelWidth, 620);
+  assert.equal(persistedLayoutSettings.uiLayout.sidePanel.panelWidths.right, 620, "the v2 right width and legacy mirror must persist atomically");
   assert.equal(persistedLayoutSettings.uiLayout.fileViewerWidth, 560);
   assert.deepEqual(persistedLayoutSettings.uiLayout.composerActions.grid.positions, { new: 0, git: 1, send: 10 });
 
   const staleLayout = await request("127.0.0.1", "/api/interface-preferences", {
     method: "PUT",
-    body: { expectedLayoutRevision: initialLayoutRevision, layout: { sidePanel: { collapsed: true } } },
+    body: { expectedLayoutRevision: initialLayoutRevision, layout: { sidePanel: { collapsedPanels: { right: true } } } },
   });
   assert.equal(staleLayout.status, 409, "stale layout revisions must be rejected without mutation");
   assert.equal(JSON.stringify(staleLayout.body).includes(settingsFile), false, "conflict errors must not disclose the settings path");
-  assert.equal((await request("127.0.0.1", "/api/interface-preferences")).body?.data?.layout?.sidePanel?.collapsed, false);
+  assert.equal((await request("127.0.0.1", "/api/interface-preferences")).body?.data?.layout?.sidePanel?.collapsedPanels?.right, false);
 
   const partialLayout = await request("127.0.0.1", "/api/interface-preferences", {
     method: "PUT",
-    body: { expectedLayoutRevision: savedLayoutRevision, layout: { sidePanel: { collapsed: true }, fileViewerWidth: null } },
+    body: { expectedLayoutRevision: savedLayoutRevision, layout: { sidePanel: { collapsedPanels: { right: true } }, fileViewerWidth: null } },
   });
   assert.equal(partialLayout.status, 200, partialLayout.body?.error);
-  assert.equal(partialLayout.body?.data?.layout?.sidePanel?.collapsed, true);
-  assert.deepEqual(partialLayout.body?.data?.layout?.sidePanel?.sectionOrder, ["files", "controls", "git"], "partial layout patches must preserve omitted fields");
+  assert.deepEqual(partialLayout.body?.data?.layout?.sidePanel?.collapsedPanels, { left: false, right: true });
+  assert.deepEqual(partialLayout.body?.data?.layout?.sidePanel?.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: ["files"] }, "partial layout patches must preserve omitted fields");
+  assert.deepEqual(partialLayout.body?.data?.layout?.sidePanel?.panelWidths, { left: 384, right: 620 });
   assert.equal(partialLayout.body?.data?.layout?.fileViewerWidth, null);
   assert.deepEqual(partialLayout.body?.data?.layout?.composerActions?.order, ["new", "git", "send"]);
 
   const invalidLayoutBodies = [
-    { layout: { sidePanel: { collapsed: false } } },
+    { layout: { sidePanel: { collapsedPanels: { right: false } } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { version: 1, sidePanel: { collapsed: false } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { sidePanel: { placement: "center" } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { sidePanel: { sectionLayout: { order: ["files", "files"], leftSectionIds: [] } } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { sidePanel: { sectionLayout: { order: ["files"], leftSectionIds: ["git"] } } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { sidePanel: { panelWidths: { right: 100 } } } },
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { composerActions: { order: ["send"] } } },
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { unknown: true } },
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { terminalTabs: { layout: "bottom" } } },
@@ -1179,7 +1196,7 @@ try {
   assert.equal(savedUserLaunchSlots.body?.data?.reloadRequired, true, "a changed save must require active-tab reload before helper guidance changes");
   assert.deepEqual(savedUserLaunchSlots.body?.data?.roles?.reviewer, userLaunchDraft.reviewer, "same-role launch slots must retain independent explicit model specs");
   const persistedLaunchSlots = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persistedLaunchSlots.version, 6, "launch-slot persistence should retain the current private WebUI settings envelope");
+  assert.equal(persistedLaunchSlots.version, 7, "launch-slot persistence should retain the current private WebUI settings envelope");
   assert.deepEqual(persistedLaunchSlots.subagentLaunchSlots?.user?.roles?.reviewer, userLaunchDraft.reviewer);
 
   const inheritedProjectLaunchSlots = await request("127.0.0.1", `/api/subagents/config?tab=${encodeURIComponent(tabId)}&scope=project`);

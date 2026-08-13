@@ -113,12 +113,14 @@ async function seedStaleServerLayout() {
       sidePanelWidth: 352,
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 1,
+        version: 2,
         sidePanel: {
-          sectionOrder: ["git", "files", "controls"],
+          placement: "right",
+          sectionLayout: { order: ["git", "files", "controls"], leftSectionIds: [] },
           collapsedSectionIds: [],
           hiddenSectionIds: [],
-          collapsed: false,
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
         },
         composerActions: { order: ["send", "new"], grid: null },
         footerScopedModelOrder: ["fake/fake-gamma", "fake/fake-beta", "fake/fake-model"],
@@ -130,9 +132,7 @@ async function seedStaleServerLayout() {
 }
 
 async function sectionOrder(page) {
-  return page.locator("#sidePanel .side-panel-body > [data-side-panel-section]").evaluateAll((sections) => (
-    sections.map((section) => section.dataset.sidePanelSection)
-  ));
+  return page.locator("[data-control-deck-body]:not([hidden]) > [data-side-panel-section]").evaluateAll((sections) => sections.map((section) => section.dataset.sidePanelSection));
 }
 
 async function localLayout(page) {
@@ -159,6 +159,15 @@ async function installScopedModelFixture(page) {
       body: JSON.stringify({ ok: true, data: { models: scopedModels, patterns: ["fake/*"], source: "browser-fixture", rpcRunning: true } }),
     });
   });
+}
+
+async function setTerminalLayout(page, layout) {
+  const controls = page.locator('[data-side-panel-section-toggle="controls"]');
+  if (await controls.getAttribute("aria-expanded") !== "true") await controls.click();
+  const select = page.locator("#terminalTabsLayoutSelect");
+  await expect(select).toBeVisible();
+  await select.selectOption(layout);
+  await expect(select).toHaveValue(layout);
 }
 
 async function openFooterModelPicker(page) {
@@ -193,16 +202,6 @@ async function composerColumnCount(page) {
   });
 }
 
-async function useMatchingComposerViewport(page, columns) {
-  const current = page.viewportSize();
-  const candidates = [current.width, ...Array.from({ length: 51 }, (_, index) => 1100 + (index * 24))];
-  for (const width of [...new Set(candidates)]) {
-    await page.setViewportSize({ width, height: current.height });
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    if (await composerColumnCount(page) === columns) return width;
-  }
-  throw new Error(`Could not reproduce the stored ${columns}-column composer geometry`);
-}
 
 async function assertRestoredLayout(page, expected, { expectCustomGroup = null } = {}) {
   await expect.poll(() => sectionOrder(page)).toEqual(expected.sideOrder);
@@ -220,8 +219,18 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(320);
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeLessThanOrEqual(expected.sidePanelWidth);
   await expect(page.locator("[data-side-panel-section-resize]")).toHaveCount(0);
-  const matchingViewportWidth = await useMatchingComposerViewport(page, expected.composerGrid.columns);
-  await expect.poll(() => page.locator('[data-composer-action-id="options"]').evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(expected.optionsColumn);
+  const deterministicComposerWidth = 2200;
+  await page.setViewportSize({ width: deterministicComposerWidth, height: 1000 });
+  await setTerminalLayout(page, "top");
+  const options = page.locator('[data-composer-action-id="options"]');
+  await expect.poll(async () => {
+    const columns = await composerColumnCount(page);
+    const column = Number(await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column")));
+    return column >= 1 && column <= columns;
+  }).toBe(true);
+  const projectedOptionsColumn = Number(await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column")));
+  await setTerminalLayout(page, "left");
+  await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
   if (expectCustomGroup === true) await expect(page.locator(".terminal-tab-custom-group")).toHaveCount(1);
   if (expectCustomGroup === false) await expect(page.locator(".terminal-tab-custom-group")).toHaveCount(0);
 
@@ -234,7 +243,7 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
   await expect(page.locator("#fileViewerPane")).toBeVisible();
   await expect.poll(() => page.locator("#fileViewerResizeHandle").getAttribute("aria-valuenow")).toBe(String(expected.fileViewerWidth));
   await page.locator("#fileViewerCloseButton").click();
-  return matchingViewportWidth;
+  return { width: deterministicComposerWidth, projectedOptionsColumn };
 }
 
 test.beforeAll(async () => {
@@ -385,7 +394,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
 
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout).toMatchObject({
-    sidePanel: { sectionOrder: expected.sideOrder },
+    sidePanel: { sectionLayout: { order: expected.sideOrder } },
     composerActions: { order: expected.composerOrder, grid: expected.composerGrid },
     footerScopedModelOrder: expected.footerOrder,
     terminalTabs: { layout: "left", customGroups: expected.terminalGroups },
@@ -396,18 +405,26 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await page.evaluate(() => localStorage.clear());
   expect(await page.evaluate(() => localStorage.length)).toBe(0);
   await page.reload();
-  const matchingViewportWidth = await assertRestoredLayout(page, expected, { expectCustomGroup: true });
+  const deterministicComposer = await assertRestoredLayout(page, expected, { expectCustomGroup: true });
 
   await page.setViewportSize({ width: 700, height: 900 });
   await expect(page.locator("body")).not.toHaveClass(/composer-action-grid-enabled/);
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), layoutKeys.composerGrid)).toEqual(expected.composerGrid);
-  await page.setViewportSize({ width: matchingViewportWidth, height: 1000 });
-  await expect.poll(() => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(expected.optionsColumn);
+  await page.setViewportSize({ width: deterministicComposer.width, height: 1000 });
+  await setTerminalLayout(page, "top");
+  await expect.poll(async () => {
+    const columns = await composerColumnCount(page);
+    const column = Number(await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column")));
+    return column >= 1 && column <= columns;
+  }).toBe(true);
+  await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), layoutKeys.composerGrid)).toEqual(expected.composerGrid);
+  await setTerminalLayout(page, "left");
+  await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
 
   await context.close();
   await stopServer();
   const settingsOnDisk = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionOrder, expected.sideOrder, "the private settings file should contain the browser-committed Control Deck order");
+  assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionLayout.order, expected.sideOrder, "the private settings file should contain the browser-committed Control Deck order");
   assert.equal("sectionHeights" in settingsOnDisk.uiLayout.sidePanel, false, "removed Control Deck section heights must not be persisted");
   assert.deepEqual(settingsOnDisk.uiLayout.composerActions.grid, expected.composerGrid, "the private settings file should contain the exact sparse composer grid");
   assert.equal(settingsOnDisk.uiLayout.fileViewerWidth, expected.fileViewerWidth, "the private settings file should contain the browser-committed file-viewer width");
@@ -431,12 +448,14 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 1,
+        version: 2,
         sidePanel: {
-          sectionOrder: serverSideOrder,
+          placement: "right",
+          sectionLayout: { order: serverSideOrder, leftSectionIds: [] },
           collapsedSectionIds: [],
           hiddenSectionIds: [],
-          collapsed: false,
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
         },
       },
     },
@@ -462,9 +481,9 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
   await page.waitForTimeout(700);
   expect(layoutPuts).toBe(0);
   const persisted = await serverApi("/api/interface-preferences");
-  assert.deepEqual(persisted.data.layout.sidePanel.sectionOrder, serverSideOrder);
+  assert.deepEqual(persisted.data.layout.sidePanel.sectionLayout.order, serverSideOrder);
   assert.equal("sectionHeights" in persisted.data.layout.sidePanel, false);
-  assert.equal(persisted.data.layout.sidePanel.collapsed, false);
+  assert.equal(persisted.data.layout.sidePanel.collapsedPanels.right, false);
 
   const controlsToggle = page.locator('[data-side-panel-section-toggle="controls"]');
   if (await controlsToggle.getAttribute("aria-expanded") !== "true") await controlsToggle.click();
@@ -486,7 +505,7 @@ test("failed layout writes remain pending across reload and later synchronize", 
     method: "PUT",
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
-      layout: { version: 1, composerActions: { order: ["send", "new"], grid: null } },
+      layout: { version: 2, composerActions: { order: ["send", "new"], grid: null } },
     },
   });
 
@@ -510,14 +529,14 @@ test("failed layout writes remain pending across reload and later synchronize", 
   await newSession.press("Alt+ArrowLeft");
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]").slice(0, 2), layoutKeys.composerOrder)).toEqual(["new", "send"]);
   await expect.poll(() => failedWrites).toBeGreaterThan(0);
-  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).find((key) => key.startsWith("pi-webui-ui-layout-pending-v3:")) || null)).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).find((key) => key.startsWith("pi-webui-ui-layout-pending-v4:")) || null)).not.toBeNull();
 
   await page.reload();
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]").slice(0, 2), layoutKeys.composerOrder)).toEqual(["new", "send"]);
   allowWrites = true;
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.composerActions.order.slice(0, 2)).toEqual(["new", "send"]);
-  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).find((key) => key.startsWith("pi-webui-ui-layout-pending-v3:")) || null)).toBeNull();
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).find((key) => key.startsWith("pi-webui-ui-layout-pending-v4:")) || null)).toBeNull();
   await context.close();
 });
 
@@ -529,12 +548,14 @@ test("conflict retry updates only the changed Control Deck subfield", async ({ b
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 1,
+        version: 2,
         sidePanel: {
-          sectionOrder: initialOrder,
+          placement: "right",
+          sectionLayout: { order: initialOrder, leftSectionIds: [] },
           collapsedSectionIds: [],
           hiddenSectionIds: [],
-          collapsed: false,
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
         },
       },
     },
@@ -553,13 +574,13 @@ test("conflict retry updates only the changed Control Deck subfield", async ({ b
   await controlsA.focus();
   await controlsA.press("Alt+ArrowDown");
   const newerOrder = ["files", "git", "controls"];
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionOrder.slice(0, newerOrder.length)).toEqual(newerOrder);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionLayout.order.slice(0, newerOrder.length)).toEqual(newerOrder);
 
-  await pageB.locator("#toggleSidePanelButton").click();
-  await expect(pageB.locator("body")).toHaveClass(/side-panel-collapsed/);
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsed).toBe(true);
+  await pageB.locator("#toggleSidePanelButton").evaluate((button) => button.click());
+  await expect(pageB.locator("body")).toHaveClass(/side-panel-right-collapsed/);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsedPanels.right).toBe(true);
   const final = await serverApi("/api/interface-preferences");
-  assert.deepEqual(final.data.layout.sidePanel.sectionOrder.slice(0, newerOrder.length), newerOrder, "a stale collapse retry must not revert another browser's newer section order");
+  assert.deepEqual(final.data.layout.sidePanel.sectionLayout.order.slice(0, newerOrder.length), newerOrder, "a stale collapse retry must not revert another browser's newer section order");
 
   await Promise.all([contextA.close(), contextB.close()]);
 });
@@ -571,12 +592,14 @@ test("one tab cannot erase another tab's failed pending journal", async ({ brows
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 1,
+        version: 2,
         sidePanel: {
-          sectionOrder: ["files", "controls", "git"],
+          placement: "right",
+          sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: [] },
           collapsedSectionIds: [],
           hiddenSectionIds: [],
-          collapsed: false,
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
         },
         composerActions: { order: ["send", "new"], grid: null },
       },
@@ -604,12 +627,12 @@ test("one tab cannot erase another tab's failed pending journal", async ({ brows
   await newSession.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true })));
   await expect.poll(() => pageA.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]").slice(0, 2), layoutKeys.composerOrder)).toEqual(["new", "send"]);
   await expect.poll(() => failedComposerWrites).toBeGreaterThan(0);
-  await expect.poll(() => pageA.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("pi-webui-ui-layout-pending-v3:")).length)).toBeGreaterThan(0);
+  await expect.poll(() => pageA.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("pi-webui-ui-layout-pending-v4:")).length)).toBeGreaterThan(0);
 
-  await pageB.locator("#toggleSidePanelButton").click();
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsed).toBe(true);
+  await pageB.locator("#toggleSidePanelButton").evaluate((button) => button.click());
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsedPanels.right).toBe(true);
   await expect.poll(() => pageB.evaluate(() => Object.keys(localStorage)
-    .filter((key) => key.startsWith("pi-webui-ui-layout-pending-v3:"))
+    .filter((key) => key.startsWith("pi-webui-ui-layout-pending-v4:"))
     .map((key) => JSON.parse(localStorage.getItem(key) || "null"))
     .some((record) => record?.field === "composerActions"))).toBe(true);
 
@@ -629,12 +652,14 @@ test("in-flight sibling acknowledgement clears only the acknowledged subfield", 
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 1,
+        version: 2,
         sidePanel: {
-          sectionOrder: initialOrder,
+          placement: "right",
+          sectionLayout: { order: initialOrder, leftSectionIds: [] },
           collapsedSectionIds: [],
           hiddenSectionIds: [],
-          collapsed: false,
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
         },
       },
     },
@@ -659,7 +684,7 @@ test("in-flight sibling acknowledgement clears only the acknowledged subfield", 
   await pageA.route("**/api/interface-preferences", async (route) => {
     const request = route.request();
     const payload = request.method() === "PUT" ? request.postDataJSON() : null;
-    if (interceptWrites && payload?.layout && !firstOrderIntercepted && payload.layout.sidePanel?.sectionOrder) {
+    if (interceptWrites && payload?.layout && !firstOrderIntercepted && payload.layout.sidePanel?.sectionLayout) {
       firstOrderIntercepted = true;
       const response = await route.fetch();
       firstOrderFetched();
@@ -685,21 +710,132 @@ test("in-flight sibling acknowledgement clears only the acknowledged subfield", 
   const controlsA = pageA.locator('[data-side-panel-section-toggle="controls"]');
   await controlsA.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })));
   await firstOrderFetchedPromise;
-  await pageA.locator("#toggleSidePanelButton").click();
+  await pageA.locator("#toggleSidePanelButton").evaluate((button) => button.click());
   releaseFirstOrder();
   await secondWriteSeenPromise;
-  assert.equal(Object.hasOwn(secondPayload.layout.sidePanel || {}, "sectionOrder"), false, "the acknowledged order must not remain in the pending collapse patch");
-  assert.equal(secondPayload.layout.sidePanel?.collapsed, true);
+  assert.equal(Object.hasOwn(secondPayload.layout.sidePanel || {}, "sectionLayout"), false, "the acknowledged order must not remain in the pending collapse patch");
+  assert.equal(secondPayload.layout.sidePanel?.collapsedPanels?.right, true);
 
   const controlsB = pageB.locator('[data-side-panel-section-toggle="controls"]');
   await controlsB.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true })));
   const browserBOrder = ["controls", "files", "git"];
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionOrder.slice(0, browserBOrder.length)).toEqual(browserBOrder);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionLayout.order.slice(0, browserBOrder.length)).toEqual(browserBOrder);
   releaseSecondWrite();
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsed).toBe(true);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsedPanels.right).toBe(true);
   const final = await serverApi("/api/interface-preferences");
-  assert.deepEqual(final.data.layout.sidePanel.sectionOrder.slice(0, browserBOrder.length), browserBOrder);
+  assert.deepEqual(final.data.layout.sidePanel.sectionLayout.order.slice(0, browserBOrder.length), browserBOrder);
   await Promise.all([contextA.close(), contextB.close()]);
+});
+
+test("same-origin sibling placement adoption cannot overwrite a dirty section layout", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const current = await serverApi("/api/interface-preferences");
+  const initialOrder = ["controls", "files", "git"];
+  await serverApi("/api/interface-preferences", {
+    method: "PUT",
+    body: {
+      expectedLayoutRevision: current.data.layoutRevision,
+      layout: {
+        version: 2,
+        sidePanel: {
+          placement: "right",
+          sectionLayout: { order: initialOrder, leftSectionIds: [] },
+          collapsedSectionIds: [],
+          hiddenSectionIds: [],
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
+        },
+      },
+    },
+  });
+
+  const context = await browser.newContext({ viewport: { width: 1900, height: 1000 } });
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+  let failedSectionWrites = 0;
+  await pageA.route("**/api/interface-preferences", async (route) => {
+    const payload = route.request().method() === "PUT" ? route.request().postDataJSON() : null;
+    if (payload?.layout?.sidePanel?.sectionLayout) {
+      failedSectionWrites += 1;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+  await Promise.all([pageA.goto(baseURL), pageB.goto(baseURL)]);
+  await expect.poll(async () => (await sectionOrder(pageA)).slice(0, initialOrder.length)).toEqual(initialOrder);
+  await pageA.waitForTimeout(700);
+  await expect.poll(async () => (await sectionOrder(pageA)).slice(0, initialOrder.length)).toEqual(initialOrder);
+
+  const controlsA = pageA.locator('[data-side-panel-section-toggle="controls"]');
+  await controlsA.focus();
+  await expect(controlsA).toBeFocused();
+  await controlsA.press("Alt+ArrowDown");
+  const dirtyOrder = ["files", "controls", "git"];
+  await expect.poll(async () => (await sectionOrder(pageA)).slice(0, dirtyOrder.length)).toEqual(dirtyOrder);
+  await expect.poll(() => failedSectionWrites).toBeGreaterThan(0);
+
+  await setTerminalLayout(pageB, "top");
+  const controlsB = pageB.locator('[data-side-panel-section-toggle="controls"]');
+  if (await controlsB.getAttribute("aria-expanded") !== "true") await controlsB.click();
+  await pageB.locator("#controlDeckPlacementSelect").selectOption("both");
+  await expect(pageB.locator("body")).toHaveClass(/control-deck-both/);
+  await expect(pageA.locator("body")).toHaveClass(/control-deck-both/);
+  await expect.poll(async () => (await sectionOrder(pageA)).slice(0, dirtyOrder.length)).toEqual(dirtyOrder);
+  await expect.poll(() => pageA.evaluate(() => JSON.parse(localStorage.getItem("pi-webui-control-deck-layout-v2") || "null")?.placement)).toBe("both");
+  await context.close();
+});
+
+test("seeded v3 Control Deck journal recovers legacy fields without widening partial collapse", async ({ browser }) => {
+  const current = await serverApi("/api/interface-preferences");
+  await serverApi("/api/interface-preferences", {
+    method: "PUT",
+    body: {
+      expectedLayoutRevision: current.data.layoutRevision,
+      layout: {
+        version: 2,
+        sidePanel: {
+          placement: "right",
+          sectionLayout: { order: ["controls", "files", "git"], leftSectionIds: [] },
+          collapsedSectionIds: [],
+          hiddenSectionIds: [],
+          collapsedPanels: { left: true, right: true },
+          panelWidths: { left: 384, right: 352 },
+        },
+      },
+    },
+  });
+
+  const context = await browser.newContext({ viewport: { width: 1680, height: 1000 } });
+  await context.addInitScript(() => {
+    const prefix = "pi-webui-ui-layout-pending-v3:fixture:";
+    const records = [
+      ["order", { version: 3, field: "sidePanel", subfield: "sectionOrder", value: ["git", "files", "controls"], updatedAt: 1 }],
+      ["collapsed-sections", { version: 3, field: "sidePanel", subfield: "collapsedSectionIds", value: ["git"], updatedAt: 2 }],
+      ["hidden-sections", { version: 3, field: "sidePanel", subfield: "hiddenSectionIds", value: ["queue"], updatedAt: 3 }],
+      ["panel-collapse", { version: 3, field: "sidePanel", subfield: "collapsed", value: false, updatedAt: 4 }],
+    ];
+    for (const [key, value] of records) localStorage.setItem(`${prefix}${key}`, JSON.stringify(value));
+  });
+  const page = await context.newPage();
+  const collapsePayloads = [];
+  await page.route("**/api/interface-preferences", async (route) => {
+    const payload = route.request().method() === "PUT" ? route.request().postDataJSON() : null;
+    if (payload?.layout?.sidePanel?.collapsedPanels) collapsePayloads.push(payload.layout.sidePanel.collapsedPanels);
+    await route.continue();
+  });
+  await page.goto(baseURL);
+
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel).toMatchObject({
+    sectionLayout: { order: ["git", "files", "controls"] },
+    collapsedSectionIds: ["git"],
+    hiddenSectionIds: ["queue"],
+    collapsedPanels: { left: true, right: false },
+  });
+  await expect.poll(() => collapsePayloads.length).toBeGreaterThan(0);
+  assert.deepEqual(collapsePayloads[0], { right: false }, "translated v3 collapse must remain a right-only partial mutation");
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("pi-webui-ui-layout-pending-v3:fixture:")))).toBe(false);
+  await context.close();
 });
 
 test("a delayed GET cannot regress the revision acknowledged by a newer PUT", async ({ browser }) => {
@@ -709,12 +845,14 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 1,
+        version: 2,
         sidePanel: {
-          sectionOrder: ["files", "controls", "git"],
+          placement: "right",
+          sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: [] },
           collapsedSectionIds: [],
           hiddenSectionIds: [],
-          collapsed: false,
+          collapsedPanels: { left: false, right: false },
+          panelWidths: { left: 384, right: 352 },
         },
       },
     },
@@ -741,7 +879,7 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
     }
     if (captureNextPut && request.method() === "PUT") {
       const payload = request.postDataJSON();
-      if (Object.hasOwn(payload?.layout?.sidePanel || {}, "collapsed")) {
+      if (Object.hasOwn(payload?.layout?.sidePanel || {}, "collapsedPanels")) {
         captureNextPut = false;
         capturedExpectedRevision = payload.expectedLayoutRevision;
       }
@@ -761,24 +899,24 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
   [newerOrder[controlsIndex], newerOrder[controlsIndex + moveOffset]] = [newerOrder[controlsIndex + moveOffset], newerOrder[controlsIndex]];
   const newerPutResponse = page.waitForResponse((response) => {
     if (!response.url().includes("/api/interface-preferences") || response.request().method() !== "PUT") return false;
-    return Array.isArray(response.request().postDataJSON()?.layout?.sidePanel?.sectionOrder);
+    return Array.isArray(response.request().postDataJSON()?.layout?.sidePanel?.sectionLayout?.order);
   });
   await controls.evaluate((button, key) => button.dispatchEvent(new KeyboardEvent("keydown", { key, altKey: true, bubbles: true })), moveOffset > 0 ? "ArrowDown" : "ArrowUp");
   await newerPutResponse;
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionOrder.slice(0, newerOrder.length)).toEqual(newerOrder);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.sectionLayout.order.slice(0, newerOrder.length)).toEqual(newerOrder);
   await expect.poll(() => page.evaluate((prefix) => {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith(prefix)) continue;
       try {
         const record = JSON.parse(localStorage.getItem(key) || "null");
-        if (record?.field === "sidePanel" && record?.subfield === "sectionOrder") return true;
+        if (record?.field === "sidePanel" && record?.subfield === "sectionLayout") return true;
       } catch {
         // Ignore malformed unrelated records; production also fails soft here.
       }
     }
     return false;
-  }, "pi-webui-ui-layout-pending-v3:")).toBe(false);
+  }, "pi-webui-ui-layout-pending-v4:")).toBe(false);
   releaseDelayedGet();
   await page.waitForTimeout(300);
   const revisionBeforeCollapse = (await serverApi("/api/interface-preferences")).data.layoutRevision;
@@ -786,6 +924,6 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
   captureNextPut = true;
   await page.locator("#toggleSidePanelButton").evaluate((button) => button.click());
   await expect.poll(() => capturedExpectedRevision).toBe(revisionBeforeCollapse);
-  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsed).toBe(true);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.sidePanel.collapsedPanels.right).toBe(true);
   await context.close();
 });

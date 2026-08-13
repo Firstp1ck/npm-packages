@@ -61,7 +61,7 @@ Check the server at any time with:
 2. Confirm the working directory in the footer or choose another project.
 3. Select a model and thinking effort.
 4. Enter a prompt, attach context if needed, and follow the live response.
-5. Open the side panel for sessions, Git, app runners, themes, updates, and optional features.
+5. Open the Control Deck for sessions, Git, app runners, themes, updates, and optional features. Under **Controls → Interface**, keep terminal tabs in the **Top bar** and choose **Right**, **Left**, or **Both** for the Control Deck. Choose **Sidebar** to put the combined Control Deck on the left and the terminal rail on the right.
 
 The **Subagents** section can recover active children after a status or browser timing gap. A recovered child is labelled as recovered and remains view-only until Pi identifies its owning run, so output, cancellation, and dismissal controls are not shown prematurely.
 
@@ -72,6 +72,7 @@ Useful shortcuts:
 - `Ctrl/Cmd+F` searches the active file, transcript, or subagent output and highlights every match.
 - `Alt+Enter` queues the composer as a follow-up.
 - Hold `Esc` to abort active work.
+- In the Control Deck, use `Alt+Up` / `Alt+Down` to reorder a section. In **Both**, use `Alt+Left` / `Alt+Right` to move it between sides.
 
 ## Feature gallery
 
@@ -252,6 +253,8 @@ If you omit `--cwd`, the browser asks which project to open first.
 Use the optional Remote Web UI package when you need trusted-LAN access and PIN protection. Treat that PIN as a convenience for a trusted network, not as hardened multi-user authentication.
 
 ## Technical details
+
+> **Before downgrading:** stop the Web UI and back up `~/.pi/webui/settings.json`. Older releases do not understand the two-sided Control Deck layout and can overwrite it. Re-upgrade before restoring the backup.
 
 See [TECHNICAL.md](TECHNICAL.md) for complete commands, configuration, update and rollback behavior, session continuity, security, compatibility, mobile behavior, and troubleshooting.
 

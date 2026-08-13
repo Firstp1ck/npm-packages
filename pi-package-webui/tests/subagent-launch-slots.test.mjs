@@ -125,7 +125,7 @@ try {
   await writeFile(settingsFile, `${JSON.stringify({ version: 4, unrelated: { preserve: true }, remoteAuthEnabled: true }, null, 2)}\n`, "utf8");
   await writeWebuiSettings({ subagentLaunchSlots: config }, settingsFile);
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persisted.version, 6, "persisted launch-slot settings must retain the current version-6 envelope");
+  assert.equal(persisted.version, 7, "persisted launch-slot settings must retain the current version-7 envelope");
   assert.deepEqual(persisted.unrelated, { preserve: true }, "launch-slot saves must preserve unrelated WebUI settings");
   assert.deepEqual((await readWebuiSettings(settingsFile)).subagentLaunchSlots.projects[projectKey].roles, defaultRoles);
 

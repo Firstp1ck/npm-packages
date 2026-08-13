@@ -26,7 +26,7 @@ export function supportedGitWorkflowThinkingLevels(model) {
   });
 }
 
-const WEBUI_SETTINGS_VERSION = 6;
+const WEBUI_SETTINGS_VERSION = 7;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
 const WEBUI_SETTINGS_LOCK_TIMEOUT_MS = 2_000;
 const WEBUI_SETTINGS_LOCK_RETRY_MS = 25;
@@ -172,6 +172,12 @@ function normalizedSettingsVersion(value) {
 
 export function normalizeWebuiSettings(value) {
   const source = settingsObject(value);
+  const interfacePreferences = normalizeInterfacePreferences(source.interfacePreferences);
+  const legacyLayoutSource = source.uiLayout === undefined
+    && interfacePreferences.sidePanelWidth !== null
+    && (!Number.isInteger(source.version) || source.version < WEBUI_SETTINGS_VERSION)
+    ? { version: 1 }
+    : source.uiLayout;
   return {
     ...source,
     version: normalizedSettingsVersion(source),
@@ -179,8 +185,8 @@ export function normalizeWebuiSettings(value) {
     outputModeDefault: normalizeOutputMode(source.outputModeDefault, OUTPUT_MODE_NORMAL),
     gitWorkflow: normalizeGitWorkflowPreferences(source.gitWorkflow),
     resourceDefaults: normalizeResourceDefaults(source.resourceDefaults),
-    interfacePreferences: normalizeInterfacePreferences(source.interfacePreferences),
-    uiLayout: normalizeUiLayout(source.uiLayout),
+    interfacePreferences,
+    uiLayout: normalizeUiLayout(legacyLayoutSource, { legacySidePanelWidth: interfacePreferences.sidePanelWidth }),
     subagentLaunchSlots: normalizeSubagentLaunchSlots(source.subagentLaunchSlots),
   };
 }
@@ -466,7 +472,8 @@ function mergeWebuiSettings(rawCurrent, patch) {
     source.version = Math.max(WEBUI_SETTINGS_VERSION, Number.isInteger(raw.version) ? raw.version : 0);
   }
   const settings = normalizeWebuiSettings(source);
-  const persistedUiLayout = !Object.hasOwn(patchValue, "uiLayout") && raw.uiLayout !== undefined
+  const rawLayoutVersion = Number.isInteger(raw.uiLayout?.version) ? raw.uiLayout.version : 0;
+  const persistedUiLayout = !Object.hasOwn(patchValue, "uiLayout") && rawLayoutVersion > settings.uiLayout.version
     ? raw.uiLayout
     : settings.uiLayout;
   return { settings, persistLaunchSlots, persistedUiLayout };

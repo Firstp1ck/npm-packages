@@ -124,6 +124,22 @@ Choose the mode under **Controls → Output processing** or **Settings → Brows
 
 When the browser page is hidden, the Web UI closes that page's live event stream so the browser cannot accumulate serialized output frames for later parsing and DOM rendering. Merely moving focus to another visible window does not pause streaming. On return, it first fetches authoritative tabs, state, and transcript snapshots, reconnects live events, and refreshes nonessential panels during browser idle time. Pending extension prompts are replayed by the server after reconnection, and completed output remains available from the authoritative transcript.
 
+## Control Deck placement and persistence
+
+With **Tab placement** set to **Top bar**, choose **Right**, **Left**, or **Both** under **Controls → Interface → Control Deck placement**. Right is the default. Both keeps separate collapse state and width for each side; drag a section header or focus it and use `Alt+ArrowUp` / `Alt+ArrowDown` to reorder within its assigned side, and `Alt+ArrowLeft` / `Alt+ArrowRight` to move it between sides.
+
+The **Sidebar** tab placement keeps its compatibility setting while presenting the combined Control Deck on the left, chat in the center, and the terminal/tabs rail on the right. Your Top-bar Control Deck choice remains saved and returns when you switch back.
+
+When the viewport or active split terminal/file viewer cannot fit the selected desktop columns, Web UI uses one combined Control Deck overlay. This does not change side assignments, desktop collapse state, or saved widths. Close the overlay with its backdrop or `Escape`. Mobile **Edit** / **Done** continues to allow vertical section ordering only.
+
+Control Deck placement, side assignment/order, accordion state, visibility, side collapse, side widths, terminal placement, and the other durable interface preferences are stored in the private Web UI settings file and mirrored to browser storage for offline startup. The right width also maintains the older single-panel compatibility value; the left width never replaces it. Concurrent tabs reconcile named fields so one tab's clean placement change does not erase another tab's pending section move.
+
+### Backup, restore, and downgrade rollback
+
+Before downgrading, stop the Web UI and copy `~/.pi/webui/settings.json` to a safe local backup. The prior package treats the newer two-sided layout as unknown and may replace it with defaults on its next layout write. Retained browser compatibility values provide a usable right-only fallback but do not protect server-side left/right assignments.
+
+To restore: stop the Web UI, re-upgrade to a version that supports the two-sided Control Deck, replace `~/.pi/webui/settings.json` with the backup using the same owner and private permissions, then start the Web UI. Do not restore or edit the file while tabs are active.
+
 ## Mobile layout
 
 At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses terminal navigation and secondary composer controls by default:
@@ -177,6 +193,8 @@ Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection d
 | `Alt+Up` | Restore the latest queued prompt |
 | Hold `Esc` | Abort active work |
 | `Ctrl/Cmd+F` | Search the active file, transcript, or subagent output stream; all matches are highlighted |
+| `Alt+ArrowUp` / `Alt+ArrowDown` on a Control Deck section | Reorder among visible sections assigned to the same side |
+| `Alt+ArrowLeft` / `Alt+ArrowRight` on a Control Deck section | Move the section between sides when desktop **Both** is active |
 
 ## Troubleshooting
 

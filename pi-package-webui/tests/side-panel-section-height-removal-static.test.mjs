@@ -24,11 +24,11 @@ for (const removedToken of [
   assert.doesNotMatch(css, new RegExp(removedToken), `${removedToken} should be absent from side-panel styles`);
 }
 assert.doesNotMatch(layout, /sectionHeightMin|sectionHeightMax|validateSectionHeights|sectionHeights/, "the durable layout schema should not expose section heights");
-assert.match(app, /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"\];/, "the browser durable layout field list should omit section heights");
+assert.match(app, /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"\];/, "the browser durable layout field list should omit section heights");
 assert.match(app, /function clearRemovedSidePanelSectionHeightState\(\)[\s\S]*localStorage\.removeItem\(REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY\)[\s\S]*record\.field === "sidePanel" && record\.subfield === "sectionHeights"/, "startup should remove the retired cache and pending mutations");
 assert.match(app, /clearRemovedSidePanelSectionHeightState\(\);\s*restoreDurableUiLayoutPendingJournal\(\);/, "retired height state should be cleared before pending layout restoration");
-assert.match(html, /styles\.css\?v=108/, "removing section resize styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=122/, "removing section resize behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v85"/, "removing browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=109/, "removing section resize styles should advance the stylesheet revision");
+assert.match(html, /app\.js\?v=123/, "removing section resize behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v86"/, "removing browser assets should advance the PWA cache identity");
 
 console.log("side-panel-section-height-removal-static.test.mjs passed");

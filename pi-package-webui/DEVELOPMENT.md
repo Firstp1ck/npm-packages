@@ -4,6 +4,23 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 [Back to README](README.md) · [Advanced user technical reference](TECHNICAL.md)
 
+## Control Deck side-panel architecture
+
+The durable interface envelope is schema version 2 and the private Web UI settings envelope is version 7. `layout.sidePanel` contains `placement`, atomic `sectionLayout` (`order` plus `leftSectionIds`), `collapsedSectionIds`, `hiddenSectionIds`, side-specific `collapsedPanels`, and side-specific `panelWidths`. Validation rejects unknown patch fields, duplicate section IDs, left IDs absent from the global order, invalid placements, and widths outside 320–4096 pixels. Version-1 reads migrate to right placement, no left assignments, right-only legacy collapse/width, and preserve every unrelated layout field; stale version-1 writes are rejected.
+
+`public/index.html` owns one left shell, one central workspace wrapper, and one right shell. Each `[data-side-panel-section]` remains a singleton. `reconcileControlDeckHosts()` is the only desktop/combined owner: it derives Right/Left/Both/Sidebar/overlay presentation, moves canonical sections without cloning, rehosts singleton version/Edit/Open Issue chrome, and leaves latent side assignments unchanged. The central `.workspace-column` independently composes chat, split terminal, and file viewer. Mobile Experience v2 may temporarily project canonical section content only while the combined Control Deck is closed; opening the canonical overlay unmounts that projection first.
+
+The browser structural cache is `pi-webui-control-deck-layout-v2`. Updates are read-modify-write by named subfield. Storage events and server snapshots adopt only clean siblings; active section drag fences `sectionLayout`, active panel resize fences `panelWidths`, and dirty siblings remain local. New pending records use the v4 prefix and immutable record version 4. Startup also reads old v3 records and translates `sectionOrder`, `collapsedSectionIds`, `hiddenSectionIds`, and `collapsed`; the old key remains until the translated mutation is acknowledged. Revision-guarded PUTs retry one conflict. A right-width patch includes both v2 `panelWidths.right` and legacy `sidePanelWidth` in the same locked request; left width never writes the legacy mirror.
+
+### Control Deck validation map
+
+- `tests/control-deck-side-panels-static.test.mjs`: singleton DOM/ARIA, host reconciler, workspace/rail geometry, journal and field-aware cache contracts.
+- `tests/side-panel-section-reorder-static.test.mjs`, `tests/side-panel-resize-static.test.mjs`, and `tests/persistent-ui-layout-static.test.mjs`: movement, independent width/collapse, pending and reconciliation behavior.
+- `tests/browser/control-deck-side-panels.spec.mjs`: placement matrix, Sidebar right rail, cross-side keyboard movement, independent collapse/resize, latent accordion state, overlay, singleton ARIA, and reload.
+- `tests/browser/persistent-ui-layout.spec.mjs`: schema-v2 server ownership, stale reads, failed writes, conflicts, cache clearing, and restart.
+
+Run focused validation with `node --check public/app.js`, the static tests above, and `npx playwright test --project=chromium tests/browser/control-deck-side-panels.spec.mjs tests/browser/persistent-ui-layout.spec.mjs`. Run `npm run check` and `npm test` before integration acceptance.
+
 1. `POST /api/update/plan` resolves moving release metadata once, records exact target versions, active runtime identities, proven owners, exact argument-array commands, refusals, and a SHA-256 plan digest in the private update journal.
 2. The confirmation names that exact plan digest. `POST /api/update/apply` accepts only its `transactionId` and `planDigest`; it never accepts paths, commands, registries, versions, or `latest` from the browser.
 3. Apply acquires the cross-process install lock, revalidates active identities, executes with whole-process-tree timeouts, re-reads every changed target, and records ordered receipts with `success`, `partial`, `failed`, or `rolled-back` outcomes.

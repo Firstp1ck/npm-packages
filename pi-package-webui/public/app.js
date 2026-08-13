@@ -336,6 +336,15 @@ const elements = {
   sidePanelContextMenu: $("#sidePanelContextMenu"),
   gitFooterContextMenu: $("#gitFooterContextMenu"),
   sidePanelResizeHandle: $("#sidePanelResizeHandle"),
+  sidePanelResizeHandleLeft: $("#sidePanelLeftResizeHandle"),
+  sidePanelLeftExpandButton: $("#sidePanelLeftExpandButton"),
+  sidePanelLeft: $("#sidePanelLeft"),
+  sidePanelBodyLeft: $("#sidePanelBodyLeft"),
+  sidePanelBodyRight: $("#sidePanelBodyRight"),
+  toggleSidePanelLeftButton: $("#toggleSidePanelLeftButton"),
+  controlDeckPlacementSelect: $("#controlDeckPlacementSelect"),
+  controlDeckPlacementStatus: $("#controlDeckPlacementStatus"),
+  controlDeckMovementAnnouncer: $("#controlDeckMovementAnnouncer"),
   sidePanelEditButton: $("#sidePanelEditButton"),
   sidePanelEditHint: $("#sidePanelEditHint"),
   toggleSidePanelButton: $("#toggleSidePanelButton"),
@@ -582,6 +591,8 @@ let sidePanelSectionEditMode = false;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
 let sidePanelSectionSuppressClickUntil = 0;
+let controlDeckPresentationReconcileFrame = null;
+let controlDeckPresentationReconcileActive = false;
 let composerActionPointerDrag = null;
 let composerActionLastDragOverKey = "";
 let composerActionSuppressClickUntil = 0;
@@ -1054,6 +1065,9 @@ const INTERFACE_DENSITY_STORAGE_KEY = "pi-webui-interface-density";
 const SIDE_PANEL_SECTION_STORAGE_KEY = "pi-webui-side-panel-sections-collapsed";
 const SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY = "pi-webui-side-panel-sections-hidden";
 const SIDE_PANEL_SECTION_ORDER_STORAGE_KEY = "pi-webui-side-panel-section-order-v1";
+const CONTROL_DECK_LAYOUT_STORAGE_KEY = "pi-webui-control-deck-layout-v2";
+const CONTROL_DECK_DEFAULT_PLACEMENT = "right";
+const CONTROL_DECK_SIDES = ["left", "right"];
 const SIDE_PANEL_SECTION_POINTER_DRAG_THRESHOLD_PX = 6;
 const COMPOSER_ACTION_ORDER_STORAGE_KEY = "pi-webui-composer-action-order-v1";
 const COMPOSER_ACTION_LAYOUT_STORAGE_KEY = "pi-webui-composer-action-layout-v2";
@@ -1232,7 +1246,7 @@ let themeCatalogScopes = { global: { available: true }, project: { available: fa
 let themeCustomizerGeneration = 0;
 let themeCustomizerState = null;
 const TERMINAL_TABS_LAYOUTS = new Set(["top", "left"]);
-const TERMINAL_TABS_LAYOUT_LABELS = { top: "Top bar", left: "Left sidebar" };
+const TERMINAL_TABS_LAYOUT_LABELS = { top: "Top bar", left: "Sidebar" };
 const SUBAGENT_OPEN_MODES = new Set(["overlay", "tab"]);
 const SUBAGENT_OPEN_MODE_LABELS = { overlay: "Overlay", tab: "Tab / terminal" };
 const BUSY_PROMPT_BEHAVIOR_VALUES = new Set(["followUp", "steer"]);
@@ -3657,7 +3671,7 @@ function isMobileView() {
 }
 
 function isSidePanelOverlayView() {
-  return sidePanelOverlayMedia?.matches || false;
+  return isControlDeckOverlayPresentation();
 }
 
 function mobileDropdownViewportHeight() {
@@ -3700,8 +3714,8 @@ function readStoredSidePanelCollapsed() {
   }
 }
 
-function sidePanelSectionRecords() {
-  return Array.from(elements.sidePanel.querySelectorAll("[data-side-panel-section]"))
+function controlDeckSectionRecords() {
+  return Array.from(document.querySelectorAll("[data-side-panel-section]"))
     .map((section) => {
       const id = section.dataset.sidePanelSection || "";
       const button = section.querySelector("[data-side-panel-section-toggle]");
@@ -3710,6 +3724,127 @@ function sidePanelSectionRecords() {
       return { id, section, button, content };
     })
     .filter((record) => record.id && record.button && record.content);
+}
+
+const sidePanelSectionRecords = controlDeckSectionRecords;
+
+function isControlDeckSidebarPresentation() {
+  return terminalTabsLayout === "left";
+}
+
+function isControlDeckOverlayPresentation() {
+  if (document.body.classList.contains("embedded-split")) return false;
+  if (sidePanelOverlayMedia?.matches) return true;
+  const layout = document.querySelector(".layout");
+  if (!layout) return false;
+  const placement = normalizeControlDeckPlacement(controlDeckLayout.placement);
+  const panelCount = isControlDeckSidebarPresentation() || placement !== "both" ? 1 : 2;
+  const splitCount = document.body.classList.contains("terminal-split-open") ? 1 : 0;
+  const viewerCount = document.body.classList.contains("file-viewer-open") ? 1 : 0;
+  const terminalRail = isControlDeckSidebarPresentation() ? 208 : 0;
+  const centralMinimum = 320 + (splitCount * 320) + (viewerCount * FILE_VIEWER_WIDTH_MIN_PX) + terminalRail;
+  const columnCount = panelCount + 1 + splitCount + viewerCount;
+  const minimum = (panelCount * SIDE_PANEL_WIDTH_MIN_PX) + centralMinimum + (16 * Math.max(0, columnCount - 1)) + 32;
+  return (layout.getBoundingClientRect?.().width || window.innerWidth || 0) < minimum;
+}
+
+function effectiveControlDeckPresentation() {
+  if (document.body.classList.contains("embedded-split")) return "embedded";
+  if (isControlDeckOverlayPresentation()) return "overlay";
+  if (isControlDeckSidebarPresentation()) return "sidebar";
+  return normalizeControlDeckPlacement(controlDeckLayout.placement);
+}
+
+function controlDeckSectionSide(id) {
+  return controlDeckLayout.sectionLayout?.leftSectionIds?.includes(id) ? "left" : "right";
+}
+
+function reconcileControlDeckHosts() {
+  const records = controlDeckSectionRecords();
+  if (!records.length) return;
+  const byId = new Map(records.map((record) => [record.id, record]));
+  const known = records.map(({ id }) => id);
+  const storedOrder = Array.isArray(controlDeckLayout.sectionLayout?.order) ? controlDeckLayout.sectionLayout.order : [];
+  const completeOrder = [...storedOrder, ...known.filter((id) => !storedOrder.includes(id))];
+  const order = completeOrder.filter((id) => byId.has(id));
+  const storedLeftIds = Array.isArray(controlDeckLayout.sectionLayout?.leftSectionIds) ? controlDeckLayout.sectionLayout.leftSectionIds : [];
+  controlDeckLayout.sectionLayout = { order: completeOrder, leftSectionIds: storedLeftIds.filter((id) => completeOrder.includes(id)) };
+  const presentation = effectiveControlDeckPresentation();
+  const leftIds = new Set(controlDeckLayout.sectionLayout.leftSectionIds);
+  const leftBody = elements.sidePanelBodyLeft;
+  const rightBody = elements.sidePanelBodyRight || elements.sidePanel?.querySelector(".side-panel-body");
+  const targetBody = presentation === "left" || presentation === "sidebar" ? leftBody : rightBody;
+  for (const id of order) {
+    const record = byId.get(id);
+    if (!record) continue;
+    const body = presentation === "both" ? (leftIds.has(id) ? leftBody : rightBody) : targetBody;
+    if (body) body.append(record.section);
+  }
+  document.body.classList.toggle("control-deck-both", presentation === "both");
+  document.body.classList.toggle("control-deck-sidebar", presentation === "sidebar");
+  document.body.classList.toggle("control-deck-overlay", presentation === "overlay");
+  document.body.classList.toggle("control-deck-left", presentation === "left" || presentation === "sidebar");
+  document.body.classList.toggle("control-deck-right", presentation === "right" || presentation === "both" || presentation === "overlay");
+  if (elements.sidePanelLeft) elements.sidePanelLeft.hidden = presentation !== "both" && presentation !== "left" && presentation !== "sidebar";
+  if (elements.sidePanel) elements.sidePanel.hidden = presentation === "embedded" || presentation === "left" || presentation === "sidebar";
+  const activeShell = presentation === "left" || presentation === "sidebar" ? elements.sidePanelLeft : elements.sidePanel;
+  activeShell?.setAttribute("aria-label", presentation === "overlay" ? "Control Deck" : activeShell === elements.sidePanelLeft ? "Left Control Deck" : "Right Control Deck");
+  const sharedFooter = document.querySelector("[data-control-deck-shared-footer]");
+  const footerHost = activeShell === elements.sidePanelLeft
+    ? elements.sidePanelLeft?.querySelector("[data-control-deck-footer-slot]")
+    : elements.sidePanel;
+  if (sharedFooter && footerHost && sharedFooter.parentElement !== footerHost) footerHost.append(sharedFooter);
+  const versionRow = document.querySelector(".side-panel-version-row");
+  const versionHost = activeShell === elements.sidePanelLeft
+    ? elements.sidePanelLeft?.querySelector("[data-control-deck-version-slot]")
+    : elements.sidePanel?.querySelector(".side-panel-heading");
+  if (versionRow && versionHost && versionRow.parentElement !== versionHost) versionHost.append(versionRow);
+  const editButton = elements.sidePanelEditButton;
+  const editHost = activeShell === elements.sidePanelLeft
+    ? elements.sidePanelLeft?.querySelector("[data-control-deck-edit-slot]")
+    : elements.toggleSidePanelButton?.parentElement;
+  if (editButton && editHost && editButton.parentElement !== editHost) editHost.prepend(editButton);
+  editButton?.setAttribute("aria-controls", activeShell?.id || "sidePanel");
+  if (elements.controlDeckPlacementSelect) {
+    elements.controlDeckPlacementSelect.value = normalizeControlDeckPlacement(controlDeckLayout.placement);
+    elements.controlDeckPlacementSelect.disabled = isControlDeckSidebarPresentation();
+  }
+  if (elements.controlDeckPlacementStatus) elements.controlDeckPlacementStatus.textContent = isControlDeckSidebarPresentation()
+    ? "Sidebar placement active: Control Deck is left and terminal/tabs are right. Your Top-bar placement is preserved."
+    : `${normalizeControlDeckPlacement(controlDeckLayout.placement)[0].toUpperCase()}${normalizeControlDeckPlacement(controlDeckLayout.placement).slice(1)} · saved in WebUI layout`;
+  syncControlDeckCollapsedClasses();
+  updateSidePanelResizeHandle();
+  for (const record of records) updateSidePanelSectionEditAffordance(record);
+}
+
+function reconcileControlDeckPresentation() {
+  if (controlDeckPresentationReconcileActive) return;
+  controlDeckPresentationReconcileActive = true;
+  try {
+    const wasOverlay = document.body.classList.contains("control-deck-overlay");
+    const willOverlay = isControlDeckOverlayPresentation();
+    reconcileControlDeckHosts();
+    if (willOverlay && !wasOverlay) {
+      setSidePanelCollapsed(true, { persist: false });
+    } else if (!willOverlay && wasOverlay) {
+      restoreSidePanelState();
+    } else {
+      syncMobileSidePanelState(willOverlay ? document.body.classList.contains("side-panel-collapsed") : true);
+    }
+    if (willOverlay !== wasOverlay) updateTerminalSplitUi();
+    updateTerminalSplitControls(Boolean(terminalSplitTab()) && !embeddedSplitMode && !willOverlay);
+    syncResizablePanelWidthsForViewport();
+  } finally {
+    controlDeckPresentationReconcileActive = false;
+  }
+}
+
+function scheduleControlDeckPresentationReconciliation() {
+  if (controlDeckPresentationReconcileFrame !== null) return;
+  controlDeckPresentationReconcileFrame = requestAnimationFrame(() => {
+    controlDeckPresentationReconcileFrame = null;
+    reconcileControlDeckPresentation();
+  });
 }
 
 function readStoredSidePanelSectionOrder() {
@@ -3721,27 +3856,26 @@ function readStoredSidePanelSectionOrder() {
   }
 }
 
+function persistControlDeckSectionLayout() {
+  const known = controlDeckSectionRecords().map(({ id }) => id);
+  const previousOrder = Array.isArray(controlDeckLayout.sectionLayout?.order) ? controlDeckLayout.sectionLayout.order : [];
+  const order = [...previousOrder.filter((id) => known.includes(id)), ...known.filter((id) => !previousOrder.includes(id))];
+  const leftSectionIds = (controlDeckLayout.sectionLayout?.leftSectionIds || []).filter((id) => order.includes(id));
+  controlDeckLayout.sectionLayout = { order, leftSectionIds };
+  cacheControlDeckLayout(controlDeckLayout, "sectionLayout");
+  try { localStorage.setItem(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(order)); } catch { /* cache is best effort */ }
+  markDurableUiLayoutDirty("sidePanel", "sectionLayout");
+}
+
 function persistSidePanelSectionOrder() {
-  try {
-    localStorage.setItem(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(sidePanelSectionRecords().map(({ id }) => id)));
-  } catch {
-    // Ignore storage failures; ordering should still work for this page load.
-  }
-  markDurableUiLayoutDirty("sidePanel", "sectionOrder");
+  persistControlDeckSectionLayout();
 }
 
 function restoreSidePanelSectionOrder() {
   if (sidePanelSectionPointerDrag?.active) return;
-  const records = sidePanelSectionRecords();
-  const parent = records[0]?.section.parentElement;
-  if (!parent || records.some(({ section }) => section.parentElement !== parent)) return;
-  const rank = new Map(readStoredSidePanelSectionOrder().map((id, index) => [id, index]));
-  records.sort((a, b) => {
-    const aRank = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER;
-    const bRank = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER;
-    return aRank - bRank;
-  });
-  for (const { section } of records) parent.append(section);
+  const storedOrder = controlDeckLayout.sectionLayout?.order || readStoredSidePanelSectionOrder() || [];
+  controlDeckLayout.sectionLayout = { order: storedOrder, leftSectionIds: controlDeckLayout.sectionLayout?.leftSectionIds || [] };
+  reconcileControlDeckHosts();
 }
 
 function visibleSidePanelSectionRecords() {
@@ -3763,11 +3897,14 @@ function updateSidePanelSectionEditAffordance(record) {
   const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || "side panel";
   const action = `${collapsed ? "Expand" : "Collapse"} ${label} section`;
   const reorderingEnabled = isSidePanelSectionReorderingEnabled();
+  const horizontalEnabled = reorderingEnabled && effectiveControlDeckPresentation() === "both";
   record.button.setAttribute("aria-label", action);
   record.button.setAttribute("title", reorderingEnabled
-    ? `${action} · drag to reorder · Alt+↑/↓ moves`
+    ? `${action} · drag to reorder · ${horizontalEnabled ? "Alt+↑/↓ reorders · Alt+←/→ moves sides" : "Alt+↑/↓ moves"}`
     : action);
-  if (reorderingEnabled) record.button.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+  if (reorderingEnabled) record.button.setAttribute("aria-keyshortcuts", horizontalEnabled
+    ? "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight"
+    : "Alt+ArrowUp Alt+ArrowDown");
   else record.button.removeAttribute("aria-keyshortcuts");
 }
 
@@ -3780,6 +3917,7 @@ function cancelSidePanelSectionPointerDrag() {
   sidePanelSectionRecords().find(({ id }) => id === drag.sectionId)?.section.classList.remove("dragging");
   sidePanelSectionPointerDrag = null;
   sidePanelSectionLastDragOverKey = "";
+  document.body.classList.remove("control-deck-section-dragging");
   clearSidePanelSectionDragMarkers();
 }
 
@@ -3801,31 +3939,84 @@ function setSidePanelSectionEditMode(enabled) {
   for (const record of sidePanelSectionRecords()) updateSidePanelSectionEditAffordance(record);
 }
 
-function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore) {
+function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore, targetSide = null) {
   if (!isSidePanelSectionReorderingEnabled()) return false;
   const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === fromId);
   if (!sourceRecord || !targetRecord || sourceRecord.section === targetRecord.section) return false;
-  const parent = sourceRecord.section.parentElement;
-  if (!parent || targetRecord.section.parentElement !== parent) return false;
+  const parent = targetRecord.section.parentElement;
+  if (!parent) return false;
+  const side = targetSide || (parent === elements.sidePanelBodyLeft ? "left" : "right");
   clearSidePanelSectionDragMarkers();
   targetRecord.section.classList.add(insertBefore ? "drag-over-before" : "drag-over-after");
-  sidePanelSectionLastDragOverKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+  sidePanelSectionLastDragOverKey = `${side}:${targetRecord.id}:${insertBefore ? "before" : "after"}`;
   if (insertBefore) parent.insertBefore(sourceRecord.section, targetRecord.section);
   else parent.insertBefore(sourceRecord.section, targetRecord.section.nextSibling);
-  persistSidePanelSectionOrder();
+  controlDeckLayout.sectionLayout = controlDeckLayout.sectionLayout || { order: [], leftSectionIds: [] };
+  const order = controlDeckLayout.sectionLayout.order.filter((id) => id !== fromId);
+  const targetIndex = order.indexOf(targetRecord.id);
+  order.splice(Math.max(0, targetIndex + (insertBefore ? 0 : 1)), 0, fromId);
+  controlDeckLayout.sectionLayout.order = order;
+  if (effectiveControlDeckPresentation() === "both" && controlDeckSectionSide(fromId) !== side) {
+    const left = new Set(controlDeckLayout.sectionLayout.leftSectionIds || []);
+    if (side === "left") left.add(fromId); else left.delete(fromId);
+    controlDeckLayout.sectionLayout.leftSectionIds = [...left].filter((id) => order.includes(id));
+  }
   return true;
+}
+
+function completeControlDeckSectionSideMove(record, side) {
+  if (!record) return;
+  if (!record.section.classList.contains("collapsed")) setOnlySidePanelSectionExpanded(record);
+  const sideRecords = sidePanelSectionRecords()
+    .filter(({ id, section }) => !section.hidden && controlDeckSectionSide(id) === side)
+    .sort((a, b) => controlDeckLayout.sectionLayout.order.indexOf(a.id) - controlDeckLayout.sectionLayout.order.indexOf(b.id));
+  const ordinal = Math.max(1, sideRecords.findIndex(({ id }) => id === record.id) + 1);
+  const label = record.button.querySelector(".side-panel-section-label")?.textContent?.trim() || record.id;
+  if (elements.controlDeckMovementAnnouncer) elements.controlDeckMovementAnnouncer.textContent = `${label} moved to the ${side} Control Deck, position ${ordinal} of ${sideRecords.length}.`;
+  queueMicrotask(() => record.button.focus({ preventScroll: true }));
+}
+
+function moveSidePanelSectionToSide(sectionId, side) {
+  if (!isSidePanelSectionReorderingEnabled() || effectiveControlDeckPresentation() !== "both") return false;
+  if (controlDeckSectionSide(sectionId) === side) return false;
+  const record = sidePanelSectionRecords().find(({ id }) => id === sectionId);
+  const body = side === "left" ? elements.sidePanelBodyLeft : elements.sidePanelBodyRight;
+  if (!record || !body) return false;
+  const targetSection = [...body.querySelectorAll(":scope > [data-side-panel-section]")].at(-1);
+  let moved = false;
+  if (targetSection) {
+    const target = sidePanelSectionRecords().find(({ section }) => section === targetSection);
+    if (target) moved = moveSidePanelSectionRelative(sectionId, target, false, side);
+  } else {
+    body.append(record.section);
+    const order = controlDeckLayout.sectionLayout.order.filter((id) => id !== sectionId);
+    order.push(sectionId);
+    const left = new Set(controlDeckLayout.sectionLayout.leftSectionIds || []);
+    if (side === "left") left.add(sectionId); else left.delete(sectionId);
+    controlDeckLayout.sectionLayout = { order, leftSectionIds: [...left] };
+    moved = true;
+  }
+  if (moved && !sidePanelSectionPointerDrag?.active) completeControlDeckSectionSideMove(record, side);
+  return moved;
 }
 
 function moveSidePanelSectionByOffset(sectionId, offset) {
   if (!isSidePanelSectionReorderingEnabled()) return false;
-  const records = visibleSidePanelSectionRecords();
+  const sourceSide = controlDeckSectionSide(sectionId);
+  const rank = new Map((controlDeckLayout.sectionLayout?.order || []).map((id, index) => [id, index]));
+  const records = visibleSidePanelSectionRecords()
+    .filter(({ id }) => controlDeckSectionSide(id) === sourceSide)
+    .sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
   const fromIndex = records.findIndex(({ id }) => id === sectionId);
   const toIndex = fromIndex + offset;
   if (fromIndex < 0 || toIndex < 0 || toIndex >= records.length) return false;
   const targetRecord = records[toIndex];
   const moved = moveSidePanelSectionRelative(sectionId, targetRecord, offset < 0);
   clearSidePanelSectionDragMarkers();
-  if (moved) queueMicrotask(() => sidePanelSectionRecords().find(({ id }) => id === sectionId)?.button.focus({ preventScroll: true }));
+  if (moved) {
+    persistControlDeckSectionLayout();
+    queueMicrotask(() => sidePanelSectionRecords().find(({ id }) => id === sectionId)?.button.focus({ preventScroll: true }));
+  }
   return moved;
 }
 
@@ -3835,7 +4026,7 @@ function sidePanelSectionToggleFromPoint(clientX, clientY) {
 
 function beginSidePanelSectionPointerDrag(event, sectionId) {
   if (!isSidePanelSectionReorderingEnabled() || event.button !== 0 || !sectionId || sidePanelSectionPointerDrag) return;
-  sidePanelSectionPointerDrag = { sectionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
+  sidePanelSectionPointerDrag = { sectionId, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, startSide: controlDeckSectionSide(sectionId), active: false };
   window.addEventListener("pointermove", updateSidePanelSectionPointerDrag, { capture: true });
   window.addEventListener("pointerup", endSidePanelSectionPointerDrag, { capture: true });
   window.addEventListener("pointercancel", endSidePanelSectionPointerDrag, { capture: true });
@@ -3850,6 +4041,7 @@ function updateSidePanelSectionPointerDrag(event) {
   if (!drag.active) {
     drag.active = true;
     sidePanelSectionLastDragOverKey = "";
+    document.body.classList.add("control-deck-section-dragging");
     clearTimeout(pointerActivationTimeout);
     pointerActivationTimeout = null;
     activePointerActivation = null;
@@ -3860,12 +4052,16 @@ function updateSidePanelSectionPointerDrag(event) {
   const targetRecord = targetToggle
     ? sidePanelSectionRecords().find(({ button }) => button === targetToggle)
     : null;
-  if (!targetRecord || targetRecord.id === drag.sectionId || targetRecord.section.hidden) return;
-  const rect = targetToggle.getBoundingClientRect();
-  const insertBefore = event.clientY < rect.top + rect.height / 2;
-  const markerKey = `${targetRecord.id}:${insertBefore ? "before" : "after"}`;
-  if (markerKey === sidePanelSectionLastDragOverKey) return;
-  moveSidePanelSectionRelative(drag.sectionId, targetRecord, insertBefore);
+  if (targetRecord && targetRecord.id !== drag.sectionId && !targetRecord.section.hidden) {
+    const rect = targetToggle.getBoundingClientRect();
+    const insertBefore = event.clientY < rect.top + rect.height / 2;
+    const targetSide = targetRecord.section.parentElement === elements.sidePanelBodyLeft ? "left" : "right";
+    const markerKey = `${targetSide}:${targetRecord.id}:${insertBefore ? "before" : "after"}`;
+    if (markerKey !== sidePanelSectionLastDragOverKey) moveSidePanelSectionRelative(drag.sectionId, targetRecord, insertBefore, targetSide);
+    return;
+  }
+  const dropTarget = document.elementFromPoint(event.clientX, event.clientY)?.closest?.("[data-control-deck-drop-target]");
+  if (dropTarget) moveSidePanelSectionToSide(drag.sectionId, dropTarget.dataset.controlDeckDropTarget);
 }
 
 function endSidePanelSectionPointerDrag(event) {
@@ -3877,11 +4073,14 @@ function endSidePanelSectionPointerDrag(event) {
   const sourceRecord = sidePanelSectionRecords().find(({ id }) => id === drag.sectionId);
   sidePanelSectionPointerDrag = null;
   sidePanelSectionLastDragOverKey = "";
+  document.body.classList.remove("control-deck-section-dragging");
   clearSidePanelSectionDragMarkers();
   sourceRecord?.section.classList.remove("dragging");
   if (drag.active) {
     sidePanelSectionSuppressClickUntil = Date.now() + 250;
     event.preventDefault();
+    const destinationSide = controlDeckSectionSide(drag.sectionId);
+    if (destinationSide !== drag.startSide) completeControlDeckSectionSideMove(sourceRecord, destinationSide);
     persistSidePanelSectionOrder();
     queueMicrotask(() => sourceRecord?.button.focus({ preventScroll: true }));
   }
@@ -3973,7 +4172,9 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
 
 function setOnlySidePanelSectionExpanded(targetRecord, { persist = true } = {}) {
   const targetId = targetRecord?.id || null;
+  const targetSide = controlDeckSectionSide(targetId);
   for (const record of sidePanelSectionRecords()) {
+    if (controlDeckSectionSide(record.id) !== targetSide) continue;
     setSidePanelSectionCollapsed(record, record.id !== targetId, { persist: false });
   }
   if (persist) persistSidePanelSectionState();
@@ -3982,10 +4183,15 @@ function setOnlySidePanelSectionExpanded(targetRecord, { persist = true } = {}) 
 function restoreSidePanelSectionState() {
   const records = sidePanelSectionRecords();
   const collapsedIds = readStoredSidePanelSectionCollapsedIds();
-  const expandedRecords = collapsedIds ? records.filter(({ id }) => !collapsedIds.has(id)) : [];
-  const expandedId = expandedRecords.length === 1 ? expandedRecords[0].id : null;
+  const expandedBySide = new Map();
+  if (collapsedIds) {
+    for (const record of records) {
+      const side = controlDeckSectionSide(record.id);
+      if (!collapsedIds.has(record.id) && !expandedBySide.has(side)) expandedBySide.set(side, record.id);
+    }
+  }
   for (const record of records) {
-    setSidePanelSectionCollapsed(record, record.id !== expandedId, { persist: false });
+    setSidePanelSectionCollapsed(record, expandedBySide.get(controlDeckSectionSide(record.id)) !== record.id, { persist: false });
   }
 }
 
@@ -4055,9 +4261,16 @@ function bindSidePanelSectionToggles() {
       }
     });
     record.button.addEventListener("keydown", (event) => {
-      if (!isSidePanelSectionReorderingEnabled() || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-      event.preventDefault();
-      moveSidePanelSectionByOffset(record.id, event.key === "ArrowUp" ? -1 : 1);
+      if (!isSidePanelSectionReorderingEnabled() || !event.altKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && effectiveControlDeckPresentation() === "both") {
+        event.preventDefault();
+        if (moveSidePanelSectionToSide(record.id, event.key === "ArrowLeft" ? "left" : "right")) persistControlDeckSectionLayout();
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        moveSidePanelSectionByOffset(record.id, event.key === "ArrowUp" ? -1 : 1);
+      }
     });
     record.button.addEventListener("pointerdown", (event) => beginSidePanelSectionPointerDrag(event, record.id));
   }
@@ -4539,20 +4752,22 @@ function initializeComposerActionOrdering() {
 }
 
 function bindSidePanelContextMenu() {
-  elements.sidePanel?.addEventListener("contextmenu", showSidePanelContextMenu);
-  elements.sidePanel?.addEventListener("keydown", (event) => {
-    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-    const trigger = event.target instanceof Element ? event.target : elements.sidePanel;
-    const rect = trigger.getBoundingClientRect();
-    showSidePanelContextMenu({
-      preventDefault: () => event.preventDefault(),
-      stopPropagation: () => event.stopPropagation(),
-      clientX: rect.left + Math.min(rect.width, 24),
-      clientY: rect.bottom,
-      currentTarget: trigger,
-      target: trigger,
+  for (const shell of [elements.sidePanelLeft, elements.sidePanel]) {
+    shell?.addEventListener("contextmenu", showSidePanelContextMenu);
+    shell?.addEventListener("keydown", (event) => {
+      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+      const trigger = event.target instanceof Element ? event.target : shell;
+      const rect = trigger.getBoundingClientRect();
+      showSidePanelContextMenu({
+        preventDefault: () => event.preventDefault(),
+        stopPropagation: () => event.stopPropagation(),
+        clientX: rect.left + Math.min(rect.width, 24),
+        clientY: rect.bottom,
+        currentTarget: trigger,
+        target: trigger,
+      });
     });
-  });
+  }
 }
 
 function readStoredAgentDoneNotificationsEnabled() {
@@ -4703,6 +4918,7 @@ function setTerminalTabsLayout(layout, { persist = true, announce = false } = {}
   if (next === "left" && mobileTabsExpanded) setMobileTabsExpanded(false);
   if (persist) persistTerminalTabsLayout(next);
   renderTerminalTabsLayoutControl();
+  reconcileControlDeckHosts?.();
   if (announce) addEvent(`terminal tabs layout changed to ${terminalTabsLayoutStatusText(next).toLowerCase()}`);
 }
 
@@ -6701,50 +6917,82 @@ function deactivateDrawerModal(surface, { restoreFocus = true } = {}) {
 }
 
 function syncMobileSidePanelState(collapsed) {
-  const showBackdrop = !collapsed && isSidePanelOverlayView();
+  const overlay = isControlDeckOverlayPresentation();
+  const showBackdrop = !collapsed && overlay;
   elements.sidePanelBackdrop.hidden = !showBackdrop;
   if (showBackdrop) {
+    mobileCanonicalUnmount();
     activateDrawerModal(elements.sidePanel, elements.sidePanelExpandButton, {
       close: () => setSidePanelCollapsed(true, { persist: false }),
     });
   } else {
     deactivateDrawerModal(elements.sidePanel);
+    if (collapsed && overlay && isMobileShellV2Active()) queueMicrotask(() => renderMobilePhoneExperience());
   }
 }
 
-function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false } = {}) {
+function syncControlDeckCollapsedClasses() {
+  const presentation = effectiveControlDeckPresentation();
+  const activeSide = presentation === "left" || presentation === "sidebar" ? "left" : "right";
+  if (presentation !== "overlay") {
+    const singleCollapsed = presentation !== "both" && Boolean(controlDeckLayout.collapsedPanels?.[activeSide]);
+    document.body.classList.toggle("side-panel-collapsed", singleCollapsed);
+  }
+  const overlayClosed = presentation === "overlay" && document.body.classList.contains("side-panel-collapsed");
+  const leftCollapsed = presentation !== "overlay" && Boolean(controlDeckLayout.collapsedPanels?.left);
+  const rightCollapsed = presentation !== "overlay" && Boolean(controlDeckLayout.collapsedPanels?.right);
+  document.body.classList.toggle("side-panel-left-collapsed", leftCollapsed);
+  document.body.classList.toggle("side-panel-right-collapsed", rightCollapsed);
+  elements.toggleSidePanelButton?.setAttribute("aria-expanded", rightCollapsed ? "false" : "true");
+  elements.toggleSidePanelLeftButton?.setAttribute("aria-expanded", leftCollapsed ? "false" : "true");
+  elements.sidePanelExpandButton?.setAttribute("aria-expanded", overlayClosed || rightCollapsed ? "false" : "true");
+  elements.sidePanelLeftExpandButton?.setAttribute("aria-expanded", leftCollapsed ? "false" : "true");
+}
+
+function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false, side = null } = {}) {
   if (collapsed) setSidePanelSectionEditMode(false);
-  document.body.classList.toggle("side-panel-collapsed", collapsed);
-  elements.toggleSidePanelButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  elements.toggleSidePanelButton.setAttribute("title", collapsed ? "Expand side panel" : "Collapse side panel");
-  elements.toggleSidePanelButton.setAttribute("aria-label", collapsed ? "Expand side panel" : "Collapse side panel");
-  elements.sidePanelExpandButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  syncMobileSidePanelState(collapsed);
-  updateSidePanelResizeHandle();
+  const presentation = effectiveControlDeckPresentation();
+  const targetSide = side || (presentation === "left" || presentation === "sidebar" ? "left" : "right");
+  if (presentation === "overlay") {
+    document.body.classList.toggle("side-panel-collapsed", collapsed);
+  } else {
+    controlDeckLayout.collapsedPanels = { ...controlDeckLayout.collapsedPanels, [targetSide]: collapsed };
+    document.body.classList.toggle("side-panel-collapsed", collapsed && presentation !== "both");
+  }
+  syncControlDeckCollapsedClasses();
+  elements.toggleSidePanelButton?.setAttribute("title", controlDeckLayout.collapsedPanels.right ? "Expand right Control Deck" : "Collapse right Control Deck");
+  elements.toggleSidePanelButton?.setAttribute("aria-label", controlDeckLayout.collapsedPanels.right ? "Expand right Control Deck" : "Collapse right Control Deck");
+  elements.toggleSidePanelLeftButton?.setAttribute("title", controlDeckLayout.collapsedPanels.left ? "Expand left Control Deck" : "Collapse left Control Deck");
+  elements.toggleSidePanelLeftButton?.setAttribute("aria-label", controlDeckLayout.collapsedPanels.left ? "Expand left Control Deck" : "Collapse left Control Deck");
+  syncMobileSidePanelState(presentation === "overlay" ? collapsed : true);
+  updateSidePanelResizeHandle(currentSidePanelWidth(targetSide), targetSide);
+  reconcileControlDeckHosts();
   requestAnimationFrame(syncResizablePanelWidthsForViewport);
   if (collapsed) closeSidePanelContextMenu({ returnFocus: false });
-
-  if (!collapsed && focusPanel && isSidePanelOverlayView()) {
-    requestAnimationFrame(() => elements.toggleSidePanelButton.focus());
+  if (focusPanel && !collapsed) (targetSide === "left" ? elements.toggleSidePanelLeftButton : elements.toggleSidePanelButton)?.focus?.({ preventScroll: true });
+  if (!persist || presentation === "overlay") return;
+  if (targetSide === "right") {
+    try { localStorage.setItem(SIDE_PANEL_STORAGE_KEY, collapsed ? "1" : "0"); } catch { /* cache is best effort */ }
   }
-
-  if (!persist || isSidePanelOverlayView()) return;
-  try {
-    localStorage.setItem(SIDE_PANEL_STORAGE_KEY, collapsed ? "1" : "0");
-  } catch {
-    // Ignore storage failures; the toggle should still work for this page load.
-  }
-  markDurableUiLayoutDirty("sidePanel", "collapsed");
+  cacheControlDeckLayout(controlDeckLayout, "collapsedPanels");
+  markDurableUiLayoutDirty("sidePanel", "collapsedPanels");
 }
 
 function restoreSidePanelState() {
   if (isMobileShellV2Active()) return;
-  if (isSidePanelOverlayView()) {
+  if (isControlDeckOverlayPresentation()) {
     setSidePanelCollapsed(true, { persist: false });
     return;
   }
   const stored = readStoredSidePanelCollapsed();
-  setSidePanelCollapsed(stored ?? false, { persist: false });
+  const panels = controlDeckLayout.collapsedPanels || {};
+  if (effectiveControlDeckPresentation() === "both") {
+    setSidePanelCollapsed(Boolean(panels.right ?? stored ?? false), { persist: false, side: "right" });
+    setSidePanelCollapsed(Boolean(panels.left ?? false), { persist: false, side: "left" });
+  } else {
+    const side = effectiveControlDeckPresentation() === "left" || effectiveControlDeckPresentation() === "sidebar" ? "left" : "right";
+    setSidePanelCollapsed(Boolean(panels[side] ?? stored ?? false), { persist: false, side });
+  }
 }
 
 function readStoredWorkspaceDashboardCollapsed() {
@@ -11880,16 +12128,17 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
 // per-user layout lives in the WebUI settings file behind
 // GET/PUT /api/interface-preferences. Local writes always apply first; server
 // reconciliation is non-blocking, coalesced, and revision guarded.
-const UI_LAYOUT_SCHEMA_VERSION = 1;
+const UI_LAYOUT_SCHEMA_VERSION = 2;
 const UI_LAYOUT_ENDPOINT = "/api/interface-preferences";
 const UI_LAYOUT_SAVE_DEBOUNCE_MS = 250;
 const UI_LAYOUT_MAX_CONFLICT_RETRIES = 1;
 const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
-const UI_LAYOUT_SIDE_PANEL_FIELDS = ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"];
+const UI_LAYOUT_SIDE_PANEL_FIELDS = ["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"];
 const REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
 const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
 const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups"];
-const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
+const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v4:";
+const UI_LAYOUT_LEGACY_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
 const UI_LAYOUT_PENDING_WRITER_ID = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let durableLayoutPendingMutationSerial = 0;
 const UI_LAYOUT_ID_MAX_LENGTH = 256;
@@ -11954,13 +12203,79 @@ function durableLayoutStoredIdList(key) {
   }
 }
 
-function collectDurableSidePanelLayout() {
-  const collapsed = readStoredSidePanelCollapsed();
+function normalizeControlDeckPlacement(value) {
+  return ["right", "left", "both"].includes(value) ? value : CONTROL_DECK_DEFAULT_PLACEMENT;
+}
+
+function defaultControlDeckLayout() {
   return {
-    sectionOrder: durableLayoutStoredIdList(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY),
+    placement: CONTROL_DECK_DEFAULT_PLACEMENT,
+    sectionLayout: { order: null, leftSectionIds: [] },
+    collapsedSectionIds: null,
+    hiddenSectionIds: null,
+    collapsedPanels: { left: false, right: false },
+    panelWidths: { left: SIDE_PANEL_WIDTH_DEFAULT_PX, right: SIDE_PANEL_WIDTH_DEFAULT_PX },
+  };
+}
+
+function readStoredControlDeckLayout() {
+  const fallback = defaultControlDeckLayout();
+  try {
+    const raw = localStorage.getItem(CONTROL_DECK_LAYOUT_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        ...fallback,
+        ...parsed,
+        placement: normalizeControlDeckPlacement(parsed?.placement),
+        sectionLayout: parsed?.sectionLayout || fallback.sectionLayout,
+        collapsedPanels: { ...fallback.collapsedPanels, ...(parsed?.collapsedPanels || {}) },
+        panelWidths: { ...fallback.panelWidths, ...(parsed?.panelWidths || {}) },
+      };
+    }
+  } catch { /* fall through to legacy cache */ }
+  const order = durableLayoutStoredIdList(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY);
+  const collapsed = readStoredSidePanelCollapsed();
+  const width = readStoredSidePanelWidth();
+  const migrated = { ...fallback, sectionLayout: { order, leftSectionIds: [] } };
+  if (typeof collapsed === "boolean") migrated.collapsedPanels.right = collapsed;
+  if (width) migrated.panelWidths.right = width;
+  return migrated;
+}
+
+let controlDeckLayout = readStoredControlDeckLayout();
+
+function normalizedControlDeckLayout(next = {}) {
+  return {
+    ...defaultControlDeckLayout(),
+    ...next,
+    placement: normalizeControlDeckPlacement(next?.placement),
+    sectionLayout: next?.sectionLayout || { order: null, leftSectionIds: [] },
+    collapsedPanels: { left: false, right: false, ...(next?.collapsedPanels || {}) },
+    panelWidths: { left: SIDE_PANEL_WIDTH_DEFAULT_PX, right: SIDE_PANEL_WIDTH_DEFAULT_PX, ...(next?.panelWidths || {}) },
+  };
+}
+
+function cacheControlDeckLayout(next = controlDeckLayout, subfield = null) {
+  const incoming = normalizedControlDeckLayout(next);
+  const current = readStoredControlDeckLayout();
+  const cached = subfield ? normalizedControlDeckLayout({ ...current, [subfield]: incoming[subfield] }) : incoming;
+  writeDurableLayoutCache(CONTROL_DECK_LAYOUT_STORAGE_KEY, JSON.stringify(cached));
+  controlDeckLayout = subfield ? normalizedControlDeckLayout({ ...incoming, [subfield]: cached[subfield] }) : cached;
+  return controlDeckLayout;
+}
+
+function collectDurableSidePanelLayout() {
+  const records = typeof controlDeckSectionRecords === "function" ? controlDeckSectionRecords() : [];
+  const order = controlDeckLayout.sectionLayout?.order || records.map(({ id }) => id);
+  const left = controlDeckLayout.sectionLayout?.leftSectionIds || [];
+  return {
+    placement: normalizeControlDeckPlacement(controlDeckLayout.placement),
+    sectionLayout: { order, leftSectionIds: left.filter((id) => order.includes(id)) },
     collapsedSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_STORAGE_KEY),
     hiddenSectionIds: durableLayoutStoredIdList(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY),
-    collapsed: typeof collapsed === "boolean" ? collapsed : null,
+    collapsedPanels: controlDeckLayout.collapsedPanels,
+    panelWidths: controlDeckLayout.panelWidths,
   };
 }
 
@@ -12055,6 +12370,14 @@ function durableUiLayoutValuePresent(value) {
   return value !== null && value !== undefined;
 }
 
+function durableUiLayoutSubfieldValuePresent(field, subfield, value) {
+  if (!durableUiLayoutValuePresent(value)) return false;
+  if (field === "sidePanel" && subfield === "sectionLayout") return Array.isArray(value?.order) && Array.isArray(value?.leftSectionIds);
+  if (field === "sidePanel" && subfield === "collapsedPanels") return typeof value?.left === "boolean" || typeof value?.right === "boolean";
+  if (field === "sidePanel" && subfield === "panelWidths") return Number.isFinite(value?.left) || Number.isFinite(value?.right);
+  return true;
+}
+
 function durableUiLayoutMutationValue(field, subfield = null) {
   const value = collectDurableUiLayoutField(field);
   return subfield ? value?.[subfield] ?? null : value;
@@ -12070,23 +12393,38 @@ function durableUiLayoutPendingMutationRecords() {
   try {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
-      if (!key?.startsWith(UI_LAYOUT_PENDING_STORAGE_PREFIX)) continue;
+      if (!key?.startsWith(UI_LAYOUT_PENDING_STORAGE_PREFIX) && !key?.startsWith(UI_LAYOUT_LEGACY_PENDING_STORAGE_PREFIX)) continue;
       let value;
       try {
         value = JSON.parse(localStorage.getItem(key) || "null");
       } catch {
         continue;
       }
-      if (!value || value.version !== 3 || !UI_LAYOUT_FIELDS.includes(value.field)) continue;
+      if (!value || ![3, 4].includes(value.version) || !UI_LAYOUT_FIELDS.includes(value.field)) continue;
       const allowedSubfields = durableUiLayoutSubFields(value.field);
-      const subfield = typeof value.subfield === "string" ? value.subfield : null;
+      let subfield = typeof value.subfield === "string" ? value.subfield : null;
+      let mutationValue = value.value;
+      // v3 journals written before schema v2 used the four legacy side-panel
+      // identities below. Translate at read time and retain the old immutable
+      // key until the corresponding v2 mutation is acknowledged.
+      if (value.field === "sidePanel" && subfield === "sectionOrder") {
+        subfield = "sectionLayout";
+        mutationValue = { order: durableLayoutIdList(value.value), leftSectionIds: [] };
+      } else if (value.field === "sidePanel" && subfield === "collapsedSectionIds") {
+        mutationValue = durableLayoutIdList(value.value);
+      } else if (value.field === "sidePanel" && subfield === "hiddenSectionIds") {
+        mutationValue = durableLayoutIdList(value.value);
+      } else if (value.field === "sidePanel" && subfield === "collapsed") {
+        subfield = "collapsedPanels";
+        mutationValue = { right: typeof value.value === "boolean" ? value.value : null };
+      }
       if (subfield && !allowedSubfields?.includes(subfield)) continue;
       if (allowedSubfields && value.field !== "composerActions" && !subfield) continue;
       records.push({
         key,
         field: value.field,
         subfield,
-        value: value.value,
+        value: mutationValue,
         updatedAt: Number(value.updatedAt) || 0,
       });
     }
@@ -12101,7 +12439,7 @@ function writeDurableUiLayoutPendingMutation(field, subfield, value) {
     durableLayoutPendingMutationSerial += 1;
     const key = `${UI_LAYOUT_PENDING_STORAGE_PREFIX}${UI_LAYOUT_PENDING_WRITER_ID}:${Date.now().toString(36)}:${durableLayoutPendingMutationSerial.toString(36)}`;
     localStorage.setItem(key, JSON.stringify({
-      version: 3,
+      version: 4,
       field,
       subfield,
       value,
@@ -12183,9 +12521,13 @@ function restoreDurableUiLayoutPendingJournal() {
       ? new Map(fieldCandidates.map((candidate) => [candidate.subfield, candidate.key]))
       : null;
     durableLayoutGenerations.set(field, generation);
+    const restoredValue = collectDurableUiLayoutField(field);
+    if (subfields) {
+      for (const candidate of fieldCandidates) restoredValue[candidate.subfield] = candidate.value;
+    }
     durableLayoutDirtyFields.set(field, {
       generation,
-      value: collectDurableUiLayoutField(field),
+      value: restoredValue,
       subfields,
       subfieldGenerations,
       subfieldMutationIds,
@@ -12197,9 +12539,15 @@ function restoreDurableUiLayoutPendingJournal() {
 
 function applyDurableSidePanelLayout(value) {
   if (!value) return;
-  if (Array.isArray(value.sectionOrder)) {
-    writeDurableLayoutCache(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(value.sectionOrder));
-    restoreSidePanelSectionOrder();
+  const adoptedSubfields = [];
+  if (value.placement) {
+    controlDeckLayout.placement = normalizeControlDeckPlacement(value.placement);
+    adoptedSubfields.push("placement");
+  }
+  if (value.sectionLayout) {
+    controlDeckLayout.sectionLayout = value.sectionLayout;
+    if (Array.isArray(value.sectionLayout.order)) writeDurableLayoutCache(SIDE_PANEL_SECTION_ORDER_STORAGE_KEY, JSON.stringify(value.sectionLayout.order));
+    adoptedSubfields.push("sectionLayout");
   }
   if (Array.isArray(value.hiddenSectionIds)) {
     writeDurableLayoutCache(SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY, JSON.stringify(value.hiddenSectionIds));
@@ -12209,10 +12557,18 @@ function applyDurableSidePanelLayout(value) {
     writeDurableLayoutCache(SIDE_PANEL_SECTION_STORAGE_KEY, JSON.stringify(value.collapsedSectionIds));
     restoreSidePanelSectionState();
   }
-  if (typeof value.collapsed === "boolean") {
-    writeDurableLayoutCache(SIDE_PANEL_STORAGE_KEY, value.collapsed ? "1" : "0");
-    restoreSidePanelState();
+  if (value.collapsedPanels && typeof value.collapsedPanels === "object") {
+    controlDeckLayout.collapsedPanels = { ...controlDeckLayout.collapsedPanels, ...value.collapsedPanels };
+    adoptedSubfields.push("collapsedPanels");
   }
+  if (value.panelWidths && typeof value.panelWidths === "object") {
+    controlDeckLayout.panelWidths = { ...controlDeckLayout.panelWidths, ...value.panelWidths };
+    adoptedSubfields.push("panelWidths");
+  }
+  for (const subfield of adoptedSubfields) cacheControlDeckLayout(controlDeckLayout, subfield);
+  restoreSidePanelSectionOrder();
+  reconcileControlDeckHosts();
+  restoreSidePanelState();
 }
 
 function applyDurableComposerActionsLayout(value) {
@@ -12270,7 +12626,7 @@ function applyDurableUiLayoutField(field, value) {
 
 function durableUiLayoutInteractionActive(field = null) {
   const activeByField = {
-    sidePanel: Boolean(sidePanelSectionPointerDrag?.active),
+    sidePanel: Boolean(sidePanelSectionPointerDrag?.active || sidePanelResizeState),
     composerActions: Boolean(composerActionPointerDrag?.active),
     footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
     terminalTabs: Boolean(terminalTabDragId),
@@ -12358,20 +12714,23 @@ function applyDurableUiLayoutSnapshot(data, { generations = null, readEpoch = 0 
     const subfields = durableUiLayoutSubFields(field);
     const dirtySubfields = dirtyEntry?.subfields;
 
-    if (field === "sidePanel" && durableUiLayoutInteractionActive(field)) continue;
-
-    if (subfields && field !== "composerActions") {
+      if (subfields && field !== "composerActions") {
       const applicable = {};
       let hasApplicable = false;
       for (const subfield of subfields) {
         const isDirty = dirtySubfields?.has(subfield) === true;
+        const activelyManipulated = field === "sidePanel" && (
+          (subfield === "sectionLayout" && Boolean(sidePanelSectionPointerDrag?.active))
+          || (subfield === "panelWidths" && Boolean(sidePanelResizeState))
+        );
         const remote = serverValue?.[subfield] ?? null;
         const local = localValue?.[subfield] ?? null;
-        if (!isDirty && !generationChanged && !durableUiLayoutInteractionActive(field) && durableUiLayoutValuePresent(remote)) {
+        const remotePresent = durableUiLayoutSubfieldValuePresent(field, subfield, remote);
+        if (!isDirty && !activelyManipulated && !generationChanged && remotePresent) {
           applicable[subfield] = remote;
           hasApplicable = true;
         }
-        if (!isDirty && !durableUiLayoutValuePresent(remote) && durableUiLayoutValuePresent(local)) {
+        if (!isDirty && !remotePresent && durableUiLayoutValuePresent(local)) {
           markDurableUiLayoutDirty(field, subfield);
         }
       }
@@ -12422,10 +12781,15 @@ async function flushDurableUiLayoutSave() {
     }]));
     const patch = { version: UI_LAYOUT_SCHEMA_VERSION };
     for (const [field, entry] of snapshot) patch[field] = durableUiLayoutEntryPatch(field, entry);
+      const mixedWidth = patch.sidePanel?.panelWidths?.right;
     const response = await api(UI_LAYOUT_ENDPOINT, {
       method: "PUT",
       scoped: false,
-      body: { layout: patch, expectedLayoutRevision: durableLayoutRevision },
+      body: {
+        layout: patch,
+        ...(Number.isFinite(mixedWidth) ? { sidePanelWidth: mixedWidth } : {}),
+        expectedLayoutRevision: durableLayoutRevision,
+      },
     });
     // A successful write is newer than every GET that began before this
     // acknowledgement, even if one of those reads completes afterward.
@@ -12496,18 +12860,16 @@ function cacheSidePanelWidth(width) {
   }
 }
 
-function persistSidePanelWidth(width) {
+function persistSidePanelWidth(width, side = "right") {
   const rounded = Math.round(width);
   sidePanelWidthPreferenceRevision += 1;
-  cacheSidePanelWidth(rounded);
-  api("/api/interface-preferences", {
-    method: "PUT",
-    body: { sidePanelWidth: rounded },
-    scoped: false,
-  }).catch((error) => addEvent(`Could not save Control Deck width for this user: ${error.message || String(error)}`, "warn"));
+  if (side === "right") cacheSidePanelWidth(rounded);
+  controlDeckLayout.panelWidths = { ...controlDeckLayout.panelWidths, [side]: rounded };
+  cacheControlDeckLayout(controlDeckLayout, "panelWidths");
+  markDurableUiLayoutDirty("sidePanel", "panelWidths");
 }
 
-function sidePanelMaxWidth() {
+function sidePanelMaxWidth(side = "right") {
   const layout = document.querySelector(".layout");
   const layoutRect = layout?.getBoundingClientRect?.();
   const layoutWidth = layoutRect?.width || window.innerWidth || SIDE_PANEL_WIDTH_DEFAULT_PX;
@@ -12516,42 +12878,50 @@ function sidePanelMaxWidth() {
   const horizontalPadding = (Number.parseFloat(layoutStyle?.paddingLeft || "0") || 0) + (Number.parseFloat(layoutStyle?.paddingRight || "0") || 0);
   const contentWidth = Math.max(0, layoutWidth - horizontalPadding);
   const fileViewerVisible = !!activeFileViewer && elements.fileViewerPane && getComputedStyle(elements.fileViewerPane).display !== "none";
-  const fileViewerWidth = fileViewerVisible ? elements.fileViewerPane.getBoundingClientRect().width : 0;
+  const fileViewerWidth = fileViewerVisible ? Math.max(FILE_VIEWER_WIDTH_MIN_PX, elements.fileViewerPane.getBoundingClientRect().width) : 0;
   const splitOpen = document.body.classList.contains("terminal-split-open");
-  const primaryMinWidth = splitOpen ? 560 : 320;
-  const otherColumnCount = 1 + (splitOpen ? 1 : 0) + (fileViewerVisible ? 1 : 0);
-  const available = contentWidth - fileViewerWidth - primaryMinWidth - (gap * otherColumnCount);
+  const centralMinimum = 320 + (splitOpen ? 320 : 0) + fileViewerWidth + (isControlDeckSidebarPresentation() ? 208 : 0);
+  const otherSide = side === "left" ? "right" : "left";
+  const otherPanelVisible = effectiveControlDeckPresentation() === "both" && !controlDeckLayout.collapsedPanels?.[otherSide];
+  const otherPanelWidth = otherPanelVisible ? Math.max(SIDE_PANEL_WIDTH_MIN_PX, currentSidePanelWidth(otherSide)) : 0;
+  const otherColumnCount = 1 + (splitOpen ? 1 : 0) + (fileViewerVisible ? 1 : 0) + (otherPanelVisible ? 1 : 0);
+  const available = contentWidth - otherPanelWidth - centralMinimum - (gap * otherColumnCount);
   return Math.max(SIDE_PANEL_WIDTH_MIN_PX, Math.min(Math.floor(contentWidth * 0.72), Math.floor(available)));
 }
 
-function clampSidePanelWidth(width) {
+function clampSidePanelWidth(width, side = "right") {
   const number = Number(width);
-  const max = sidePanelMaxWidth();
-  const fallback = readStoredSidePanelWidth() || SIDE_PANEL_WIDTH_DEFAULT_PX;
+  const max = sidePanelMaxWidth(side);
+  const fallback = controlDeckLayout.panelWidths?.[side] || (side === "right" ? readStoredSidePanelWidth() : null) || SIDE_PANEL_WIDTH_DEFAULT_PX;
   return Math.max(SIDE_PANEL_WIDTH_MIN_PX, Math.min(max, Number.isFinite(number) ? number : fallback));
 }
 
-function currentSidePanelWidth() {
-  const width = elements.sidePanel?.getBoundingClientRect?.().width;
-  return Number.isFinite(width) && width > 0 ? width : readStoredSidePanelWidth() || SIDE_PANEL_WIDTH_DEFAULT_PX;
+function currentSidePanelWidth(side = "right") {
+  const shell = side === "left" ? elements.sidePanelLeft : elements.sidePanel;
+  const width = shell?.getBoundingClientRect?.().width;
+  return Number.isFinite(width) && width > 0 ? width : controlDeckLayout.panelWidths?.[side] || (side === "right" ? readStoredSidePanelWidth() : null) || SIDE_PANEL_WIDTH_DEFAULT_PX;
 }
 
-function updateSidePanelResizeHandle(width = currentSidePanelWidth()) {
-  const handle = elements.sidePanelResizeHandle;
-  if (!handle) return;
-  const resizeAvailable = !isSidePanelOverlayView() && !document.body.classList.contains("side-panel-collapsed");
-  handle.hidden = !resizeAvailable;
-  handle.setAttribute("aria-valuemin", String(SIDE_PANEL_WIDTH_MIN_PX));
-  handle.setAttribute("aria-valuemax", String(sidePanelMaxWidth()));
-  handle.setAttribute("aria-valuenow", String(Math.round(width)));
-  handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
+function updateSidePanelResizeHandle(width = currentSidePanelWidth("right"), side = "right") {
+  const handles = side === "left" ? [elements.sidePanelResizeHandleLeft] : [elements.sidePanelResizeHandle];
+  const resizeAvailable = !isControlDeckOverlayPresentation() && !(controlDeckLayout.collapsedPanels?.[side]);
+  for (const handle of handles) {
+    if (!handle) continue;
+    handle.hidden = !resizeAvailable;
+    handle.setAttribute("aria-valuemin", String(SIDE_PANEL_WIDTH_MIN_PX));
+    handle.setAttribute("aria-valuemax", String(sidePanelMaxWidth(side)));
+    handle.setAttribute("aria-valuenow", String(Math.round(width)));
+    handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
+  }
 }
 
-function applySidePanelWidth(width, { persist = false } = {}) {
-  const clamped = clampSidePanelWidth(width);
-  document.documentElement.style.setProperty("--side-panel-width", `${Math.round(clamped)}px`);
-  updateSidePanelResizeHandle(clamped);
-  if (persist) persistSidePanelWidth(clamped);
+function applySidePanelWidth(width, { persist = false, side = "right" } = {}) {
+  const clamped = clampSidePanelWidth(width, side);
+  const variable = side === "left" ? "--side-panel-left-width" : "--side-panel-right-width";
+  document.documentElement.style.setProperty(variable, `${Math.round(clamped)}px`);
+  if (side === "right") document.documentElement.style.setProperty("--side-panel-width", `${Math.round(clamped)}px`);
+  updateSidePanelResizeHandle(clamped, side);
+  if (persist) persistSidePanelWidth(clamped, side);
   return clamped;
 }
 
@@ -12584,14 +12954,15 @@ async function restoreSidePanelWidthPreference() {
   }
 }
 
-function beginSidePanelResize(event) {
-  if (isSidePanelOverlayView() || document.body.classList.contains("side-panel-collapsed")) return;
+function beginSidePanelResize(event, forcedSide = null) {
+  const side = forcedSide || (event.currentTarget === elements.sidePanelResizeHandleLeft ? "left" : "right");
+  if (isControlDeckOverlayPresentation() || controlDeckLayout.collapsedPanels?.[side]) return;
   if (event.button !== undefined && event.button !== 0) return;
   event.preventDefault();
-  const startWidth = currentSidePanelWidth();
-  sidePanelResizeState = { pointerId: event.pointerId, startX: event.clientX, startWidth, width: startWidth };
+  const startWidth = currentSidePanelWidth(side);
+  sidePanelResizeState = { side, pointerId: event.pointerId, startX: event.clientX, startWidth, width: startWidth };
   document.body.classList.add("side-panel-resizing");
-  elements.sidePanelResizeHandle?.setPointerCapture?.(event.pointerId);
+  (side === "left" ? elements.sidePanelResizeHandleLeft : elements.sidePanelResizeHandle)?.setPointerCapture?.(event.pointerId);
   window.addEventListener("pointermove", updateSidePanelResize, { passive: false });
   window.addEventListener("pointerup", finishSidePanelResize, { passive: false });
   window.addEventListener("pointercancel", finishSidePanelResize, { passive: false });
@@ -12601,34 +12972,36 @@ function updateSidePanelResize(event) {
   const state = sidePanelResizeState;
   if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
   event.preventDefault();
-  state.width = applySidePanelWidth(state.startWidth + (state.startX - event.clientX));
+  const delta = state.side === "left" ? event.clientX - state.startX : state.startX - event.clientX;
+  state.width = applySidePanelWidth(state.startWidth + delta, { side: state.side });
 }
 
 function finishSidePanelResize(event) {
   const state = sidePanelResizeState;
   if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
   event.preventDefault?.();
-  elements.sidePanelResizeHandle?.releasePointerCapture?.(state.pointerId);
+  (state.side === "left" ? elements.sidePanelResizeHandleLeft : elements.sidePanelResizeHandle)?.releasePointerCapture?.(state.pointerId);
   window.removeEventListener("pointermove", updateSidePanelResize);
   window.removeEventListener("pointerup", finishSidePanelResize);
   window.removeEventListener("pointercancel", finishSidePanelResize);
   document.body.classList.remove("side-panel-resizing");
-  applySidePanelWidth(state.width, { persist: true });
+  applySidePanelWidth(state.width, { persist: true, side: state.side });
   sidePanelResizeState = null;
 }
 
 function handleSidePanelResizeKeydown(event) {
-  if (isSidePanelOverlayView() || document.body.classList.contains("side-panel-collapsed")) return;
+  const side = event.currentTarget === elements.sidePanelResizeHandleLeft ? "left" : "right";
+  if (isControlDeckOverlayPresentation() || controlDeckLayout.collapsedPanels?.[side]) return;
   const step = event.shiftKey ? 80 : 24;
-  const current = currentSidePanelWidth();
+  const current = currentSidePanelWidth(side);
   let next = current;
-  if (event.key === "ArrowLeft") next = current + step;
-  else if (event.key === "ArrowRight") next = current - step;
+  if (event.key === "ArrowLeft") next = side === "left" ? current - step : current + step;
+  else if (event.key === "ArrowRight") next = side === "left" ? current + step : current - step;
   else if (event.key === "Home") next = SIDE_PANEL_WIDTH_MIN_PX;
-  else if (event.key === "End") next = sidePanelMaxWidth();
+  else if (event.key === "End") next = sidePanelMaxWidth(side);
   else return;
   event.preventDefault();
-  applySidePanelWidth(next, { persist: true });
+  applySidePanelWidth(next, { persist: true, side });
 }
 
 function syncSidePanelWidthForViewport() {
@@ -12639,7 +13012,8 @@ function syncSidePanelWidthForViewport() {
   // Keep viewport/layout reconciliation anchored to the durable preference.
   // Reading the rendered width here can capture an in-progress CSS transition
   // during hard-reset startup and permanently freeze the panel below its saved width.
-  applySidePanelWidth(readStoredSidePanelWidth() || currentSidePanelWidth());
+  applySidePanelWidth(controlDeckLayout.panelWidths?.right || readStoredSidePanelWidth() || currentSidePanelWidth("right"), { side: "right" });
+  if (controlDeckLayout.panelWidths?.left) applySidePanelWidth(controlDeckLayout.panelWidths.left, { side: "left" });
 }
 
 function readStoredFileViewerWidth() {
@@ -12822,7 +13196,7 @@ function updateFileViewerUi() {
   document.body.classList.toggle("file-viewer-open", open);
   syncMobileShellInteractivity();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = !open;
-  requestAnimationFrame(syncResizablePanelWidthsForViewport);
+  scheduleControlDeckPresentationReconciliation();
   updateFileViewerResizeHandle();
   if (!open) {
     closeFileViewerSearch({ restoreFocus: false });
@@ -13333,7 +13707,7 @@ function resetFileViewerUi() {
   syncMobileShellInteractivity();
   updateFileViewerResizeHandle();
   if (elements.fileViewerPane) elements.fileViewerPane.hidden = true;
-  requestAnimationFrame(syncResizablePanelWidthsForViewport);
+  scheduleControlDeckPresentationReconciliation();
   if (elements.fileViewerOpenDefaultButton) elements.fileViewerOpenDefaultButton.dataset.path = "";
   if (elements.fileViewerEditor) {
     elements.fileViewerEditor.value = "";
@@ -15472,10 +15846,11 @@ function updateTerminalSplitControls(canShowSplit, splitTab = terminalSplitTab()
 
 function updateTerminalSplitUi() {
   const tab = terminalSplitTab();
-  const canShowSplit = !!tab && !embeddedSplitMode && !isSidePanelOverlayView();
+  const overlayDrawerOpen = isControlDeckOverlayPresentation() && !document.body.classList.contains("side-panel-collapsed");
+  const canShowSplit = !!tab && !embeddedSplitMode && !overlayDrawerOpen;
   document.body.classList.toggle("terminal-split-open", canShowSplit);
   if (elements.terminalSplitShell) elements.terminalSplitShell.hidden = !canShowSplit;
-  requestAnimationFrame(syncResizablePanelWidthsForViewport);
+  scheduleControlDeckPresentationReconciliation();
   updateTerminalSplitControls(canShowSplit, tab);
   if (!canShowSplit) return;
   if (elements.terminalSplitTitle) elements.terminalSplitTitle.textContent = tab.title || "Split terminal";
@@ -45241,6 +45616,16 @@ if (elements.terminalTabsLayoutSelect) {
     setTerminalTabsLayout(elements.terminalTabsLayoutSelect.value, { announce: true });
   });
 }
+if (elements.controlDeckPlacementSelect) {
+  elements.controlDeckPlacementSelect.addEventListener("change", () => {
+    const placement = normalizeControlDeckPlacement(elements.controlDeckPlacementSelect.value);
+    controlDeckLayout.placement = placement;
+    cacheControlDeckLayout(controlDeckLayout, "placement");
+    markDurableUiLayoutDirty("sidePanel", "placement");
+    reconcileControlDeckHosts();
+    addEvent(`Control Deck placement changed to ${placement}.`);
+  });
+}
 if (elements.subagentOpenModeSelect) {
   elements.subagentOpenModeSelect.addEventListener("change", () => {
     setSubagentOpenMode(elements.subagentOpenModeSelect.value, { announce: true });
@@ -45348,10 +45733,16 @@ elements.sidePanelEditButton?.addEventListener("click", () => {
   setSidePanelSectionEditMode(!sidePanelSectionEditMode);
 });
 elements.toggleSidePanelButton.addEventListener("click", () => {
-  setSidePanelCollapsed(true);
+  setSidePanelCollapsed(true, { side: "right" });
+});
+elements.toggleSidePanelLeftButton?.addEventListener("click", () => {
+  setSidePanelCollapsed(true, { side: "left" });
 });
 elements.sidePanelExpandButton.addEventListener("click", () => {
-  setSidePanelCollapsed(false, { focusPanel: true });
+  setSidePanelCollapsed(false, { focusPanel: true, side: "right" });
+});
+elements.sidePanelLeftExpandButton?.addEventListener("click", () => {
+  setSidePanelCollapsed(false, { focusPanel: true, side: "left" });
 });
 elements.sidePanelBackdrop.addEventListener("click", () => {
   setSidePanelCollapsed(true);
@@ -45689,23 +46080,43 @@ window.addEventListener("offline", () => {
 });
 window.addEventListener("beforeunload", persistMobileContinuityState);
 window.addEventListener("storage", (event) => {
+  const sidePanelDirty = durableLayoutDirtyFields.get("sidePanel")?.subfields || new Set();
+  const hasControlDeckV2Cache = (() => {
+    try { return localStorage.getItem(CONTROL_DECK_LAYOUT_STORAGE_KEY) !== null; } catch { return false; }
+  })();
+  const ignoreLegacySidePanelEvent = (subfield, active = false) => hasControlDeckV2Cache || sidePanelDirty.has(subfield) || active;
   if (event.key === OPTIONAL_FEATURES_STORAGE_KEY) reconcileDisabledOptionalFeaturesFromStorage();
   if (event.key === OPTIONAL_FEATURE_MIGRATION_DISMISS_STORAGE_KEY && optionalFeatureMigrationCompletionIsDismissed()) {
     optionalFeatureRestartNotice = null;
     renderOptionalFeatureMigrationSurface();
   }
-  if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY) restoreSidePanelSectionVisibility();
-  if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY) restoreSidePanelSectionOrder();
+  if (event.key === SIDE_PANEL_SECTION_VISIBILITY_STORAGE_KEY && !ignoreLegacySidePanelEvent("hiddenSectionIds")) restoreSidePanelSectionVisibility();
+  if (event.key === SIDE_PANEL_SECTION_ORDER_STORAGE_KEY && !ignoreLegacySidePanelEvent("sectionLayout", Boolean(sidePanelSectionPointerDrag?.active))) {
+    controlDeckLayout.sectionLayout = { ...controlDeckLayout.sectionLayout, order: readStoredSidePanelSectionOrder() || [] };
+    restoreSidePanelSectionOrder();
+  }
+  if (event.key === CONTROL_DECK_LAYOUT_STORAGE_KEY) {
+    const incoming = readStoredControlDeckLayout();
+    const dirty = sidePanelDirty;
+    const sectionActive = Boolean(sidePanelSectionPointerDrag?.active);
+    const widthActive = Boolean(sidePanelResizeState);
+    const cleanSiblings = {};
+    for (const subfield of UI_LAYOUT_SIDE_PANEL_FIELDS) {
+      const activelyManipulated = (subfield === "sectionLayout" && sectionActive) || (subfield === "panelWidths" && widthActive);
+      if (!dirty.has(subfield) && !activelyManipulated && durableUiLayoutValuePresent(incoming?.[subfield])) cleanSiblings[subfield] = incoming[subfield];
+    }
+    applyDurableSidePanelLayout(cleanSiblings);
+  }
   if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
   if (event.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY) restoreComposerActionSlotLayout();
-  if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY) {
+  if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY && !ignoreLegacySidePanelEvent("panelWidths", Boolean(sidePanelResizeState))) {
     const width = readStoredSidePanelWidth();
     if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
   }
   // Another same-origin tab already saved these durable fields, so receiving
   // tabs only adopt the shared local cache without repeating the server write.
-  if (event.key === SIDE_PANEL_SECTION_STORAGE_KEY) restoreSidePanelSectionState();
-  if (event.key === SIDE_PANEL_STORAGE_KEY) restoreSidePanelState();
+  if (event.key === SIDE_PANEL_SECTION_STORAGE_KEY && !ignoreLegacySidePanelEvent("collapsedSectionIds")) restoreSidePanelSectionState();
+  if (event.key === SIDE_PANEL_STORAGE_KEY && !ignoreLegacySidePanelEvent("collapsedPanels")) restoreSidePanelState();
   if (event.key === TERMINAL_TABS_LAYOUT_STORAGE_KEY) restoreTerminalTabsLayoutSetting();
   if (event.key === TERMINAL_CUSTOM_GROUPS_STORAGE_KEY) {
     restoreTerminalCustomGroups();
@@ -45726,7 +46137,7 @@ window.addEventListener("pageshow", () => reconcileDurableUiLayout());
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") reconcileDurableUiLayout();
 });
-window.addEventListener("resize", syncResizablePanelWidthsForViewport, { passive: true });
+window.addEventListener("resize", scheduleControlDeckPresentationReconciliation, { passive: true });
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (event.defaultPrevented) return;
@@ -45963,6 +46374,8 @@ elements.fileContextMenu?.addEventListener("click", (event) => {
 elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(currentFileViewerPath()));
 elements.sidePanelResizeHandle?.addEventListener("pointerdown", beginSidePanelResize);
 elements.sidePanelResizeHandle?.addEventListener("keydown", handleSidePanelResizeKeydown);
+elements.sidePanelResizeHandleLeft?.addEventListener("pointerdown", (event) => beginSidePanelResize(event, "left"));
+elements.sidePanelResizeHandleLeft?.addEventListener("keydown", handleSidePanelResizeKeydown);
 elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewerResize);
 elements.fileViewerResizeHandle?.addEventListener("keydown", handleFileViewerResizeKeydown);
 elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
@@ -46191,6 +46604,7 @@ initializeComposerActionOrdering();
 restoreSidePanelSectionOrder();
 restoreSidePanelSectionVisibility();
 restoreSidePanelSectionState();
+reconcileControlDeckHosts();
 setSidePanelSectionEditMode(false);
 bindSidePanelSectionToggles();
 restoreSidePanelState();

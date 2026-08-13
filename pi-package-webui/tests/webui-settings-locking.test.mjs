@@ -36,7 +36,7 @@ try {
   assert.equal(await migrateLegacyWebuiSettings(migratedFile, legacyFile), true);
   assert.equal(await migrateLegacyWebuiSettings(migratedFile, legacyFile), false, "an existing new target must always win");
   const migrated = JSON.parse(await readFile(migratedFile, "utf8"));
-  assert.equal(migrated.version, 6);
+  assert.equal(migrated.version, 7);
   assert.equal(migrated.remoteAuthEnabled, true);
   assert.deepEqual(migrated.retained, { value: 7 }, "migration must preserve unrelated top-level settings");
   assert.equal((await readFile(legacyFile, "utf8")).includes('"retained"'), true, "migration must leave the legacy file untouched");
@@ -119,13 +119,43 @@ try {
   assert.equal(queued.interfacePreferences.sidePanelWidth, 611);
   assert.equal(queued.gitWorkflow.deliveryMode, "current");
 
-  const futureLayout = { version: 2, futureSurface: { order: ["keep-this"] } };
+  const futureLayout = { version: 3, futureSurface: { order: ["keep-this"] } };
   const futureSettings = JSON.parse(await readFile(settingsFile, "utf8"));
   futureSettings.uiLayout = futureLayout;
   await writeFile(settingsFile, `${JSON.stringify(futureSettings, null, 2)}\n`, "utf8");
   await writeWebuiSettings({ remoteAuthEnabled: false }, settingsFile);
   assert.deepEqual(JSON.parse(await readFile(settingsFile, "utf8")).uiLayout, futureLayout, "unrelated writes must preserve an unknown future layout envelope");
-  assert.deepEqual((await readWebuiSettings(settingsFile)).uiLayout.sidePanel.sectionOrder, null, "unknown layout versions must still read as safe nullable defaults");
+  assert.deepEqual((await readWebuiSettings(settingsFile)).uiLayout.sidePanel.sectionLayout, { order: null, leftSectionIds: null }, "unknown layout versions must still read as safe nullable defaults");
+
+  const atomicWidthFile = path.join(root, "atomic-width", "settings.json");
+  await writeWebuiSettings({
+    interfacePreferences: { sidePanelWidth: 612 },
+    uiLayout: {
+      version: 2,
+      sidePanel: {
+        placement: "right",
+        sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: [] },
+        collapsedSectionIds: [],
+        hiddenSectionIds: [],
+        collapsedPanels: { left: false, right: false },
+        panelWidths: { left: 384, right: 612 },
+      },
+    },
+  }, atomicWidthFile);
+  await updateWebuiSettings((current) => ({
+    interfacePreferences: { sidePanelWidth: 700 },
+    uiLayout: {
+      ...current.uiLayout,
+      sidePanel: {
+        ...current.uiLayout.sidePanel,
+        panelWidths: { ...current.uiLayout.sidePanel.panelWidths, right: 700 },
+      },
+    },
+  }), atomicWidthFile);
+  const atomicWidth = JSON.parse(await readFile(atomicWidthFile, "utf8"));
+  assert.equal(atomicWidth.interfacePreferences.sidePanelWidth, 700);
+  assert.equal(atomicWidth.uiLayout.sidePanel.panelWidths.right, 700, "one locked settings update must atomically persist the v2 right width and legacy mirror");
+  assert.equal(atomicWidth.uiLayout.sidePanel.panelWidths.left, 384);
 
   const liveLockTarget = path.join(root, "live-lock", "settings.json");
   const liveLockDirectory = `${liveLockTarget}.lock`;

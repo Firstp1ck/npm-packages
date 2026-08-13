@@ -14,7 +14,7 @@ const [html, app, serviceWorker] = await Promise.all([
 
 assert.match(
   app,
-  /const UI_LAYOUT_SCHEMA_VERSION = 1;[\s\S]*const UI_LAYOUT_ENDPOINT = "\/api\/interface-preferences";/,
+  /const UI_LAYOUT_SCHEMA_VERSION = 2;[\s\S]*const UI_LAYOUT_ENDPOINT = "\/api\/interface-preferences";/,
   "the browser controller should target the accepted version-1 layout schema on the existing interface-preferences endpoint",
 );
 assert.match(
@@ -24,7 +24,7 @@ assert.match(
 );
 assert.match(
   app,
-  /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"\];/,
+  /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"\];/,
   "Control Deck durable layout should contain only order, visibility, and collapse state",
 );
 for (const [constant, value] of [
@@ -68,12 +68,12 @@ assert.match(
 );
 assert.match(
   app,
-  /function applyDurableUiLayoutSnapshot[\s\S]*!isDirty && !generationChanged && !durableUiLayoutInteractionActive\(field\)[\s\S]*applicable\[subfield\] = remote[\s\S]*applyDurableUiLayoutField\(field, applicable\)/,
+  /function applyDurableUiLayoutSnapshot[\s\S]*const activelyManipulated[\s\S]*!isDirty && !activelyManipulated && !generationChanged[\s\S]*applicable\[subfield\] = remote[\s\S]*applyDurableUiLayoutField\(field, applicable\)/,
   "non-dirty sibling subfields should still adopt authoritative server values",
 );
 assert.match(
   app,
-  /function applyDurableUiLayoutSnapshot[\s\S]*!isDirty && !durableUiLayoutValuePresent\(remote\) && durableUiLayoutValuePresent\(local\)[\s\S]*markDurableUiLayoutDirty\(field, subfield\)/,
+  /function applyDurableUiLayoutSnapshot[\s\S]*const remotePresent = durableUiLayoutSubfieldValuePresent\(field, subfield, remote\)[\s\S]*!isDirty && !remotePresent && durableUiLayoutValuePresent\(local\)[\s\S]*markDurableUiLayoutDirty\(field, subfield\)/,
   "missing server subfields should migrate only their valid local values",
 );
 assert.match(
@@ -96,7 +96,7 @@ assert.match(
 );
 assert.match(
   app,
-  /const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";[\s\S]*function durableUiLayoutPendingMutationRecords\(\)[\s\S]*key\?\.startsWith\(UI_LAYOUT_PENDING_STORAGE_PREFIX\)[\s\S]*value\.version !== 3[\s\S]*function restoreDurableUiLayoutPendingJournal\(\)[\s\S]*candidate\.value[\s\S]*subfieldMutationIds[\s\S]*scheduleDurableUiLayoutSave\(\)/,
+  /const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v4:";[\s\S]*const UI_LAYOUT_LEGACY_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";[\s\S]*function durableUiLayoutPendingMutationRecords\(\)[\s\S]*UI_LAYOUT_LEGACY_PENDING_STORAGE_PREFIX[\s\S]*!\[3, 4\]\.includes\(value\.version\)[\s\S]*function restoreDurableUiLayoutPendingJournal\(\)[\s\S]*candidate\.value[\s\S]*subfieldMutationIds[\s\S]*scheduleDurableUiLayoutSave\(\)/,
   "per-writer pending layout values should survive reload without one tab replacing another tab's journal",
 );
 assert.match(
@@ -121,7 +121,7 @@ assert.match(
 );
 assert.match(
   app,
-  /async function flushDurableUiLayoutSave[\s\S]*body: \{ layout: patch, expectedLayoutRevision: durableLayoutRevision \}/,
+  /async function flushDurableUiLayoutSave[\s\S]*body: \{[\s\S]*layout: patch,[\s\S]*expectedLayoutRevision: durableLayoutRevision[\s\S]*\}/,
   "layout writes should submit the latest known opaque revision",
 );
 assert.match(
@@ -169,7 +169,7 @@ assert.match(
 // --- Every approved arrangement surface is durable -------------------------
 
 for (const [persistFunction, field, subfield] of [
-  ["persistSidePanelSectionOrder", "sidePanel", "sectionOrder"],
+  ["persistSidePanelSectionOrder", "sidePanel", "sectionLayout"],
   ["persistSidePanelSectionState", "sidePanel", "collapsedSectionIds"],
   ["persistSidePanelSectionVisibility", "sidePanel", "hiddenSectionIds"],
   ["persistComposerActionOrder", "composerActions", null],
@@ -184,18 +184,18 @@ for (const [persistFunction, field, subfield] of [
     : `markDurableUiLayoutDirty\\("${field}"\\)`;
   assert.match(
     app,
-    new RegExp(`function ${persistFunction}\\([^)]*\\) \\{[\\s\\S]*?${marker};\\s*\\n\\}`),
+    new RegExp(`(?:function ${persistFunction}\\([^)]*\\)|function persistControlDeckSectionLayout\\([^)]*\\)) \\{[\\s\\S]*?${marker};\\s*\\n\\}`),
     `${persistFunction} should mark only its owned durable layout value after writing the local cache`,
   );
 }
 assert.match(
   app,
-  /localStorage\.setItem\(SIDE_PANEL_STORAGE_KEY, collapsed \? "1" : "0"\);[\s\S]{0,200}markDurableUiLayoutDirty\("sidePanel", "collapsed"\)/,
+  /localStorage\.setItem\(SIDE_PANEL_STORAGE_KEY, collapsed \? "1" : "0"\);[\s\S]{0,300}markDurableUiLayoutDirty\("sidePanel", "collapsedPanels"\)/,
   "Control Deck collapse state should be durable without dirtying sibling settings",
 );
 assert.match(
   app,
-  /function restoreSidePanelState\(\)[\s\S]*setSidePanelCollapsed\(stored \?\? false, \{ persist: false \}\)/,
+  /function restoreSidePanelState\(\)[\s\S]*persist: false[\s\S]*side:/,
   "passive Control Deck restoration must not echo stale cache back to the server",
 );
 assert.doesNotMatch(
@@ -271,8 +271,8 @@ assert.match(
 
 // --- Coherent browser asset revisions --------------------------------------
 
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v85"/, "changed browser assets should advance the PWA cache identity");
-assert.match(html, /styles\.css\?v=108/, "the page should request the updated layout stylesheet revision");
-assert.match(html, /data-app-src="\/app\.js\?v=122"/, "the boot loader should request the updated app module revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v86"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=109/, "the page should request the updated layout stylesheet revision");
+assert.match(html, /data-app-src="\/app\.js\?v=123"/, "the boot loader should request the updated app module revision");
 
 console.log("persistent-ui-layout-static.test.mjs passed");

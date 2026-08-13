@@ -46,7 +46,7 @@ assert.doesNotMatch(botClient, /OPENAI_API_KEY|GITHUB_APP_|PRIVATE_KEY/, "the br
 
 assert.match(html, /__PI_WEBUI_ISSUE_BOT_CONFIG__[\s\S]*?enabled: false/, "the page must expose only disabled-by-default public runtime configuration");
 assert.match(html, /id="openIssueButton"[\s\S]*?aria-controls="issueWizardDialog"/, "the persistent Control Deck action must target the dialog");
-assert.match(html, /<footer class="side-panel-footer">[\s\S]*?id="openIssueButton"/, "the action must stay outside scrolling Control Deck content");
+assert.match(html, /<footer class="side-panel-footer" data-control-deck-shared-footer>[\s\S]*?id="openIssueButton"/, "the singleton action must stay outside scrolling Control Deck content while rehosting with the active shell");
 assert.match(html, /<dialog id="issueWizardDialog"[\s\S]*?aria-labelledby="issueWizardTitle"[\s\S]*?aria-describedby="issueWizardDescription"/, "the dialog must have an accessible name and description");
 for (const step of [1, 2, 3, 4, 5]) assert.match(html, new RegExp(`data-issue-wizard-page="${step}"`), `step ${step} markup must exist`);
 assert.match(html, /id="issueWizardStatus"[^>]*role="status"[^>]*aria-live="polite"/, "wizard progress must retain its accessible live region");
@@ -68,7 +68,7 @@ assert.match(server, /STATIC_PUBLIC_FILE_EXTENSIONS[\s\S]*"\.mjs"/, "the server 
 assert.match(serviceWorker, /"\/issue-wizard-state\.mjs"/, "the PWA shell must keep caching the pure wizard module");
 assert.match(serviceWorker, /"\/issue-bot-client\.mjs"/, "the PWA shell must cache the browser client module");
 // Intent preserved: changing the public startup graph advances the PWA cache identity.
-assert.match(serviceWorker, /pi-webui-pwa-v85/, "the PWA cache name must change with browser wiring updates");
+assert.match(serviceWorker, /pi-webui-pwa-v86/, "the PWA cache name must change with browser wiring updates");
 assert.match(packageJson, /node --check public\/issue-wizard-state\.mjs/, "the package check must keep syntax-checking the pure wizard module");
 assert.match(packageJson, /node --check public\/issue-bot-client\.mjs/, "the package check must syntax-check the browser client module");
 

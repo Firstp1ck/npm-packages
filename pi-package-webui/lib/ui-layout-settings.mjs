@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const UI_LAYOUT_VERSION = 1;
+export const UI_LAYOUT_VERSION = 2;
 export const UI_LAYOUT_REQUEST_MAX_BYTES = 32 * 1024;
 export const UI_LAYOUT_LIMITS = Object.freeze({
   idLength: 256,
@@ -9,12 +9,18 @@ export const UI_LAYOUT_LIMITS = Object.freeze({
   groups: 32,
   gridColumns: 24,
   gridSlots: 4096,
+  panelWidthMin: 320,
+  panelWidthMax: 4096,
+  panelWidthDefault: 384,
   fileViewerWidthMin: 384,
   fileViewerWidthMax: 4096,
 });
 
+const LEGACY_UI_LAYOUT_VERSION = 1;
 const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const TERMINAL_TAB_LAYOUTS = new Set(["top", "left"]);
+const CONTROL_DECK_PLACEMENTS = new Set(["right", "left", "both"]);
+const SIDES = ["left", "right"];
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -57,21 +63,85 @@ function nullable(value, validate) {
   return value === null ? null : validate(value);
 }
 
+function validatePlacement(value) {
+  if (!CONTROL_DECK_PLACEMENTS.has(value)) invalid("layout.sidePanel.placement must be right, left, both, or null");
+  return value;
+}
+
+function validateSectionLayout(value) {
+  const source = objectValue(value);
+  if (!source) invalid("layout.sidePanel.sectionLayout must be an object or null");
+  assertOnlyKeys(source, new Set(["order", "leftSectionIds"]), "layout.sidePanel.sectionLayout");
+  if (!own(source, "order") || !own(source, "leftSectionIds")) {
+    invalid("layout.sidePanel.sectionLayout must include order and leftSectionIds together");
+  }
+  const order = nullable(source.order, (entry) => boundedUniqueStringList(entry, "layout.sidePanel.sectionLayout.order"));
+  const leftSectionIds = nullable(source.leftSectionIds, (entry) => boundedUniqueStringList(entry, "layout.sidePanel.sectionLayout.leftSectionIds"));
+  if ((order === null) !== (leftSectionIds === null)) {
+    invalid("layout.sidePanel.sectionLayout order and leftSectionIds must both be arrays or both be null");
+  }
+  if (order !== null) {
+    const orderIds = new Set(order);
+    if (leftSectionIds.some((id) => !orderIds.has(id))) {
+      invalid("layout.sidePanel.sectionLayout.leftSectionIds entries must occur in order");
+    }
+  }
+  return { order, leftSectionIds };
+}
+
+function validateBooleanSides(value, label, { partial = false } = {}) {
+  const source = objectValue(value);
+  if (!source) invalid(`${label} must be an object or null`);
+  assertOnlyKeys(source, new Set(SIDES), label);
+  if (partial && Object.keys(source).length === 0) invalid(`${label} must name at least one side`);
+  const result = {};
+  for (const side of SIDES) {
+    if (!partial || own(source, side)) {
+      const state = source[side] ?? null;
+      if (state !== null && typeof state !== "boolean") invalid(`${label}.${side} must be a boolean or null`);
+      result[side] = state;
+    }
+  }
+  return result;
+}
+
+function validatePanelWidth(value, label) {
+  if (!Number.isFinite(value) || value < UI_LAYOUT_LIMITS.panelWidthMin || value > UI_LAYOUT_LIMITS.panelWidthMax) {
+    invalid(`${label} must be between ${UI_LAYOUT_LIMITS.panelWidthMin} and ${UI_LAYOUT_LIMITS.panelWidthMax} pixels or null`);
+  }
+  return Math.round(value);
+}
+
+function validatePanelWidths(value, { partial = false } = {}) {
+  const source = objectValue(value);
+  if (!source) invalid("layout.sidePanel.panelWidths must be an object or null");
+  assertOnlyKeys(source, new Set(SIDES), "layout.sidePanel.panelWidths");
+  if (partial && Object.keys(source).length === 0) invalid("layout.sidePanel.panelWidths must name at least one side");
+  const result = {};
+  for (const side of SIDES) {
+    if (!partial || own(source, side)) {
+      result[side] = nullable(source[side] ?? null, (entry) => validatePanelWidth(entry, `layout.sidePanel.panelWidths.${side}`));
+    }
+  }
+  return result;
+}
+
 function validateSidePanel(value, { partial = false } = {}) {
   const source = objectValue(value);
   if (!source) invalid("layout.sidePanel must be an object or null");
-  const fields = new Set(["sectionOrder", "collapsedSectionIds", "hiddenSectionIds", "collapsed"]);
+  const fields = new Set(["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"]);
   assertOnlyKeys(source, fields, "layout.sidePanel");
   if (partial && Object.keys(source).length === 0) invalid("layout.sidePanel must name at least one field");
   const result = {};
-  for (const field of ["sectionOrder", "collapsedSectionIds", "hiddenSectionIds"]) {
+  if (!partial || own(source, "placement")) result.placement = nullable(source.placement ?? null, validatePlacement);
+  if (!partial || own(source, "sectionLayout")) result.sectionLayout = nullable(source.sectionLayout ?? null, validateSectionLayout);
+  for (const field of ["collapsedSectionIds", "hiddenSectionIds"]) {
     if (!partial || own(source, field)) result[field] = nullable(source[field] ?? null, (entry) => boundedUniqueStringList(entry, `layout.sidePanel.${field}`));
   }
-  if (!partial || own(source, "collapsed")) {
-    const collapsed = source.collapsed ?? null;
-    if (collapsed !== null && typeof collapsed !== "boolean") invalid("layout.sidePanel.collapsed must be a boolean or null");
-    result.collapsed = collapsed;
+  if (!partial || own(source, "collapsedPanels")) {
+    result.collapsedPanels = nullable(source.collapsedPanels ?? null, (entry) => validateBooleanSides(entry, "layout.sidePanel.collapsedPanels", { partial }));
   }
+  if (!partial || own(source, "panelWidths")) result.panelWidths = nullable(source.panelWidths ?? null, (entry) => validatePanelWidths(entry, { partial }));
   return result;
 }
 
@@ -168,7 +238,14 @@ function validateFileViewerWidth(value) {
 export function defaultUiLayout() {
   return {
     version: UI_LAYOUT_VERSION,
-    sidePanel: { sectionOrder: null, collapsedSectionIds: null, hiddenSectionIds: null, collapsed: null },
+    sidePanel: {
+      placement: null,
+      sectionLayout: { order: null, leftSectionIds: null },
+      collapsedSectionIds: null,
+      hiddenSectionIds: null,
+      collapsedPanels: { left: null, right: null },
+      panelWidths: { left: null, right: null },
+    },
     composerActions: { order: null, grid: null },
     footerScopedModelOrder: null,
     terminalTabs: { layout: null, customGroups: null },
@@ -184,21 +261,12 @@ function softField(validate, fallback = null) {
   }
 }
 
-export function normalizeUiLayout(value) {
-  const source = objectValue(value);
-  const defaults = defaultUiLayout();
-  if (!source || source.version !== UI_LAYOUT_VERSION) return defaults;
-  const sidePanel = objectValue(source.sidePanel);
+function normalizeSharedLayoutFields(source, sidePanel) {
   const composerActions = objectValue(source.composerActions);
   const terminalTabs = objectValue(source.terminalTabs);
   return {
     version: UI_LAYOUT_VERSION,
-    sidePanel: {
-      sectionOrder: softField(() => nullable(sidePanel?.sectionOrder ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.sectionOrder"))),
-      collapsedSectionIds: softField(() => nullable(sidePanel?.collapsedSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.collapsedSectionIds"))),
-      hiddenSectionIds: softField(() => nullable(sidePanel?.hiddenSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.hiddenSectionIds"))),
-      collapsed: typeof sidePanel?.collapsed === "boolean" ? sidePanel.collapsed : null,
-    },
+    sidePanel,
     composerActions: {
       order: softField(() => nullable(composerActions?.order ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.composerActions.order"))),
       grid: softField(() => nullable(composerActions?.grid ?? null, validateGrid)),
@@ -210,6 +278,57 @@ export function normalizeUiLayout(value) {
     },
     fileViewerWidth: softField(() => nullable(source.fileViewerWidth ?? null, validateFileViewerWidth)),
   };
+}
+
+function normalizeSideValues(source, validate, fallback) {
+  const record = objectValue(source);
+  return Object.fromEntries(SIDES.map((side) => [side, softField(() => nullable(record?.[side] ?? null, (value) => validate(value, side)), fallback)]));
+}
+
+function normalizeVersionTwo(source) {
+  const sidePanel = objectValue(source.sidePanel);
+  return normalizeSharedLayoutFields(source, {
+    placement: CONTROL_DECK_PLACEMENTS.has(sidePanel?.placement) ? sidePanel.placement : null,
+    sectionLayout: softField(
+      () => sidePanel?.sectionLayout == null ? defaultUiLayout().sidePanel.sectionLayout : validateSectionLayout(sidePanel.sectionLayout),
+      defaultUiLayout().sidePanel.sectionLayout,
+    ),
+    collapsedSectionIds: softField(() => nullable(sidePanel?.collapsedSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.collapsedSectionIds"))),
+    hiddenSectionIds: softField(() => nullable(sidePanel?.hiddenSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.hiddenSectionIds"))),
+    collapsedPanels: normalizeSideValues(sidePanel?.collapsedPanels, (value, side) => {
+      if (typeof value !== "boolean") invalid(`uiLayout.sidePanel.collapsedPanels.${side} must be a boolean or null`);
+      return value;
+    }, null),
+    panelWidths: normalizeSideValues(sidePanel?.panelWidths, (value, side) => validatePanelWidth(value, `uiLayout.sidePanel.panelWidths.${side}`), null),
+  });
+}
+
+function migrateVersionOne(source, legacySidePanelWidth) {
+  const sidePanel = objectValue(source.sidePanel);
+  const order = softField(() => nullable(sidePanel?.sectionOrder ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.sectionOrder")));
+  const rightWidth = softField(
+    () => validatePanelWidth(legacySidePanelWidth, "interfacePreferences.sidePanelWidth"),
+    UI_LAYOUT_LIMITS.panelWidthDefault,
+  );
+  return normalizeSharedLayoutFields(source, {
+    placement: "right",
+    sectionLayout: order === null ? { order: null, leftSectionIds: null } : { order, leftSectionIds: [] },
+    collapsedSectionIds: softField(() => nullable(sidePanel?.collapsedSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.collapsedSectionIds"))),
+    hiddenSectionIds: softField(() => nullable(sidePanel?.hiddenSectionIds ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.sidePanel.hiddenSectionIds"))),
+    collapsedPanels: {
+      left: false,
+      right: typeof sidePanel?.collapsed === "boolean" ? sidePanel.collapsed : false,
+    },
+    panelWidths: { left: UI_LAYOUT_LIMITS.panelWidthDefault, right: rightWidth },
+  });
+}
+
+export function normalizeUiLayout(value, { legacySidePanelWidth = null } = {}) {
+  const source = objectValue(value);
+  if (!source) return defaultUiLayout();
+  if (source.version === UI_LAYOUT_VERSION) return normalizeVersionTwo(source);
+  if (source.version === LEGACY_UI_LAYOUT_VERSION) return migrateVersionOne(source, legacySidePanelWidth);
+  return defaultUiLayout();
 }
 
 export function validateUiLayoutPatch(value) {
@@ -234,9 +353,16 @@ export function mergeUiLayout(current, patch) {
   const value = validateUiLayoutPatch(patch);
   const merged = { ...base };
   if (own(value, "sidePanel")) {
-    merged.sidePanel = value.sidePanel === null
-      ? defaultUiLayout().sidePanel
-      : { ...base.sidePanel, ...value.sidePanel };
+    if (value.sidePanel === null) {
+      merged.sidePanel = defaultUiLayout().sidePanel;
+    } else {
+      merged.sidePanel = { ...base.sidePanel, ...value.sidePanel };
+      for (const field of ["collapsedPanels", "panelWidths"]) {
+        if (own(value.sidePanel, field) && value.sidePanel[field] !== null) {
+          merged.sidePanel[field] = { ...base.sidePanel[field], ...value.sidePanel[field] };
+        }
+      }
+    }
   }
   if (own(value, "composerActions")) merged.composerActions = value.composerActions === null ? defaultUiLayout().composerActions : value.composerActions;
   if (own(value, "footerScopedModelOrder")) merged.footerScopedModelOrder = value.footerScopedModelOrder;

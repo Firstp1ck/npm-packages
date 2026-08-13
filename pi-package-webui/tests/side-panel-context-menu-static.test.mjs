@@ -52,7 +52,7 @@ assert.match(
 );
 assert.match(
   app,
-  /function bindSidePanelContextMenu\(\)[\s\S]*addEventListener\("contextmenu", showSidePanelContextMenu\)[\s\S]*event\.key !== "ContextMenu"[\s\S]*event\.shiftKey && event\.key === "F10"/,
+  /function bindSidePanelContextMenu\(\)[\s\S]*\[elements\.sidePanelLeft, elements\.sidePanel\][\s\S]*addEventListener\("contextmenu", showSidePanelContextMenu\)[\s\S]*event\.key !== "ContextMenu"[\s\S]*event\.shiftKey && event\.key === "F10"/,
   "the menu should support pointer and standard keyboard context-menu activation",
 );
 assert.match(

@@ -34,9 +34,33 @@ const root = await mkdtemp(path.join(tmpdir(), "pi-webui-git-preferences-"));
 const settingsFile = path.join(root, "settings.json");
 
 try {
-  await writeFile(settingsFile, `${JSON.stringify({ version: 1, remoteAuthEnabled: true }, null, 2)}\n`, "utf8");
+  const completeV1Layout = {
+    version: 1,
+    sidePanel: {
+      sectionOrder: ["files", "controls", "git"],
+      collapsedSectionIds: ["git"],
+      hiddenSectionIds: ["files"],
+      collapsed: true,
+    },
+    composerActions: {
+      order: ["new", "git", "send"],
+      grid: { version: 2, columns: 12, positions: { new: 0, git: 1, send: 10 } },
+    },
+    footerScopedModelOrder: ["fake/model"],
+    terminalTabs: {
+      layout: "left",
+      customGroups: { version: 1, groups: [{ id: "group-1", title: "Group 1", tabIds: ["tab-a"] }] },
+    },
+    fileViewerWidth: 560,
+  };
+  await writeFile(settingsFile, `${JSON.stringify({
+    version: 6,
+    remoteAuthEnabled: true,
+    interfacePreferences: { sidePanelWidth: 612 },
+    uiLayout: completeV1Layout,
+  }, null, 2)}\n`, "utf8");
   const migrated = await readWebuiSettings(settingsFile);
-  assert.equal(migrated.version, 6);
+  assert.equal(migrated.version, 7);
   assert.equal(migrated.remoteAuthEnabled, true, "legacy Remote PIN state should survive schema migration");
   assert.equal(migrated.outputModeDefault, "normal", "legacy settings should default browser output to normal");
   assert.equal(isGitWorkflowSetupComplete(migrated.gitWorkflow), false);
@@ -45,10 +69,31 @@ try {
   assert.equal(migrated.gitWorkflow.stagingPolicy, "review");
   assert.equal(migrated.gitWorkflow.reviewProcessEnabled, true, "legacy settings should preserve the existing review-process behavior");
   assert.equal(migrated.gitWorkflow.generation.thinkingLevel, "low");
-  assert.equal(migrated.uiLayout.version, 1);
-  assert.equal(migrated.uiLayout.sidePanel.sectionOrder, null);
+  assert.equal(migrated.uiLayout.version, 2);
+  assert.equal(migrated.uiLayout.sidePanel.placement, "right");
+  assert.deepEqual(migrated.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
+  assert.deepEqual(migrated.uiLayout.sidePanel.collapsedSectionIds, ["git"]);
+  assert.deepEqual(migrated.uiLayout.sidePanel.hiddenSectionIds, ["files"]);
+  assert.deepEqual(migrated.uiLayout.sidePanel.collapsedPanels, { left: false, right: true });
+  assert.deepEqual(migrated.uiLayout.sidePanel.panelWidths, { left: 384, right: 612 }, "legacy width must seed the migrated right width");
+  await writeFile(path.join(root, "width-only.json"), `${JSON.stringify({ version: 6, interfacePreferences: { sidePanelWidth: 700 } })}\n`, "utf8");
+  assert.deepEqual(
+    (await readWebuiSettings(path.join(root, "width-only.json"))).uiLayout.sidePanel.panelWidths,
+    { left: 384, right: 700 },
+    "legacy width-only settings must seed v2 even without a v1 uiLayout envelope",
+  );
+  assert.deepEqual(migrated.uiLayout.composerActions, completeV1Layout.composerActions);
+  assert.deepEqual(migrated.uiLayout.footerScopedModelOrder, completeV1Layout.footerScopedModelOrder);
+  assert.deepEqual(migrated.uiLayout.terminalTabs, completeV1Layout.terminalTabs);
+  assert.equal(migrated.uiLayout.fileViewerWidth, 560);
 
-  await writeFile(settingsFile, `${JSON.stringify({ version: 4, remoteAuthEnabled: true, outputModeDefault: "unsupported" }, null, 2)}\n`, "utf8");
+  await writeFile(settingsFile, `${JSON.stringify({
+    version: 6,
+    remoteAuthEnabled: true,
+    outputModeDefault: "unsupported",
+    interfacePreferences: { sidePanelWidth: 612 },
+    uiLayout: completeV1Layout,
+  }, null, 2)}\n`, "utf8");
   assert.equal((await readWebuiSettings(settingsFile)).outputModeDefault, "normal", "invalid persisted output modes must fail closed to normal");
 
   const saved = await writeGitWorkflowPreferences({
@@ -82,7 +127,11 @@ try {
   assert.equal(partiallyUpdated.reviewProcessEnabled, false, "partial updates should preserve the review-process choice");
 
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persisted.version, 6);
+  assert.equal(persisted.version, 7);
+  assert.equal(persisted.uiLayout.version, 2, "the first unrelated locked write must persist the migrated v2 envelope");
+  assert.deepEqual(persisted.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
+  assert.deepEqual(persisted.uiLayout.composerActions, completeV1Layout.composerActions, "unchanged v1 composer fields must survive persistence");
+  assert.deepEqual(persisted.uiLayout.terminalTabs, completeV1Layout.terminalTabs, "unchanged v1 terminal fields must survive persistence");
   assert.equal(persisted.remoteAuthEnabled, true);
   assert.equal(persisted.outputModeDefault, "compact-v1", "output-mode default should persist beside existing Web UI settings");
   assert.equal(persisted.gitWorkflow.generation.provider, "fake");
