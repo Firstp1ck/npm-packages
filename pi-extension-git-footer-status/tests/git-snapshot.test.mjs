@@ -102,7 +102,7 @@ function git(args, cwd, { allowFailure = false } = {}) {
 }
 
 // Minimal pi stub whose exec runs real commands, matching the shape
-// runGit/readGitSnapshot expect.
+// runGitRead/readGitSnapshot expect.
 const realPi = {
   exec(cmd, args, opts = {}) {
     const result = spawnSync(cmd, args, { cwd: opts.cwd, encoding: "utf8", env: gitEnv });
@@ -203,6 +203,28 @@ test("reports no upstream when branch.upstream header is absent", () => {
   ].join("\n"));
   assert.equal(status.upstream, undefined);
   assert.equal(status.upstreamGone, false);
+});
+
+test("disables optional locks for every snapshot Git probe", { skip: !gitAvailable }, async () => {
+  const repo = await makeRepo();
+  cleanups.push(repo);
+  const calls = [];
+  const recordingPi = {
+    exec(cmd, args, opts) {
+      calls.push({ cmd, args: [...args] });
+      return realPi.exec(cmd, args, opts);
+    },
+  };
+
+  const snapshot = await readGitSnapshot(recordingPi, repo);
+
+  assert.equal(snapshot.branch, "main");
+  assert.ok(calls.some(({ args }) => args[1] === "status"), "snapshot should run the primary status probe");
+  assert.ok(calls.some(({ args }) => args[1] === "stash"), "snapshot should run an auxiliary read probe");
+  for (const { cmd, args } of calls) {
+    assert.equal(cmd, "git");
+    assert.equal(args[0], "--no-optional-locks", `git ${args.join(" ")} should disable optional locks`);
+  }
 });
 
 test("detects git operations in fixture repos", { skip: !gitAvailable }, async () => {
