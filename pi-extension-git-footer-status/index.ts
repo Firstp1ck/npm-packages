@@ -844,8 +844,12 @@ function formatTokenSpeed(tokensPerSecond: number): string {
   return `${Math.round(tokensPerSecond / 1000000)}M`;
 }
 
-async function runGit(pi: ExtensionAPI, cwd: string, args: string[], timeout = 2000): Promise<string | undefined> {
-  const result = await pi.exec("git", args, { cwd, timeout }).catch(() => undefined);
+function gitReadArgs(...args: string[]): string[] {
+  return ["--no-optional-locks", ...args];
+}
+
+async function runGitRead(pi: ExtensionAPI, cwd: string, args: string[], timeout = 2000): Promise<string | undefined> {
+  const result = await pi.exec("git", gitReadArgs(...args), { cwd, timeout }).catch(() => undefined);
   if (!result || result.code !== 0) return undefined;
   return result.stdout.trim();
 }
@@ -880,7 +884,7 @@ function toAgeLabel(epochSeconds: number): string | undefined {
 }
 
 export async function detectGitOperation(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
-  const gitDirRaw = await runGit(pi, cwd, ["rev-parse", "--git-dir"]);
+  const gitDirRaw = await runGitRead(pi, cwd, ["rev-parse", "--git-dir"]);
   if (!gitDirRaw) return undefined;
 
   const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : resolve(cwd, gitDirRaw);
@@ -1058,20 +1062,20 @@ let gitAuxCache: { key: string; at: number; aux: GitAuxInfo } | null = null;
 async function readGitAuxInfo(pi: ExtensionAPI, cwd: string): Promise<GitAuxInfo> {
   const [stashList, lastCommitTs, worktreeList, headTags, commitSignRequiredRaw, headSignState, remotes, toplevel] =
     await Promise.all([
-      runGit(pi, cwd, ["stash", "list", "--format=%gd"]),
-      runGit(pi, cwd, ["log", "-1", "--format=%ct"]),
-      runGit(pi, cwd, ["worktree", "list", "--porcelain"]),
-      runGit(pi, cwd, ["tag", "--points-at", "HEAD", "--sort=-creatordate"]),
-      runGit(pi, cwd, ["config", "--bool", "--get", "commit.gpgsign"]),
-      runGit(pi, cwd, ["log", "-1", "--format=%G?"]),
-      runGit(pi, cwd, ["remote"]),
-      runGit(pi, cwd, ["rev-parse", "--show-toplevel"]),
+      runGitRead(pi, cwd, ["stash", "list", "--format=%gd"]),
+      runGitRead(pi, cwd, ["log", "-1", "--format=%ct"]),
+      runGitRead(pi, cwd, ["worktree", "list", "--porcelain"]),
+      runGitRead(pi, cwd, ["tag", "--points-at", "HEAD", "--sort=-creatordate"]),
+      runGitRead(pi, cwd, ["config", "--bool", "--get", "commit.gpgsign"]),
+      runGitRead(pi, cwd, ["log", "-1", "--format=%G?"]),
+      runGitRead(pi, cwd, ["remote"]),
+      runGitRead(pi, cwd, ["rev-parse", "--show-toplevel"]),
     ]);
 
   // `submodule status --recursive` spawns per submodule and is by far the most
   // expensive probe; skip it entirely for the common no-submodule repo.
   const hasGitmodules = toplevel ? await pathExists(resolve(toplevel, ".gitmodules")) : false;
-  const submoduleStatus = hasGitmodules ? await runGit(pi, cwd, ["submodule", "status", "--recursive"]) : undefined;
+  const submoduleStatus = hasGitmodules ? await runGitRead(pi, cwd, ["submodule", "status", "--recursive"]) : undefined;
 
   const stashCount = stashList ? stashList.split(/\r?\n/).filter(Boolean).length : 0;
 
@@ -1114,7 +1118,7 @@ async function readGitAuxInfo(pi: ExtensionAPI, cwd: string): Promise<GitAuxInfo
 
 export async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<GitSnapshot | null> {
   const result = await pi
-    .exec("git", ["status", "--porcelain=2", "--branch"], { cwd, timeout: 3000 })
+    .exec("git", gitReadArgs("status", "--porcelain=2", "--branch"), { cwd, timeout: 3000 })
     .catch(() => undefined);
 
   if (!result || result.code !== 0) {
@@ -1167,10 +1171,10 @@ export async function readGitSnapshot(pi: ExtensionAPI, cwd: string): Promise<Gi
 
 async function getSigningDiagnostics(pi: ExtensionAPI, cwd: string): Promise<SigningDiagnostics> {
   const [commitSignRequiredRaw, headSignState, gpgFormatRaw, signingKeyRaw] = await Promise.all([
-    runGit(pi, cwd, ["config", "--bool", "--get", "commit.gpgsign"]),
-    runGit(pi, cwd, ["log", "-1", "--format=%G?"]),
-    runGit(pi, cwd, ["config", "--get", "gpg.format"]),
-    runGit(pi, cwd, ["config", "--get", "user.signingkey"]),
+    runGitRead(pi, cwd, ["config", "--bool", "--get", "commit.gpgsign"]),
+    runGitRead(pi, cwd, ["log", "-1", "--format=%G?"]),
+    runGitRead(pi, cwd, ["config", "--get", "gpg.format"]),
+    runGitRead(pi, cwd, ["config", "--get", "user.signingkey"]),
   ]);
 
   return {
@@ -1689,7 +1693,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
   // A captured pi/command ctx becomes stale after ctx.newSession(), ctx.fork(),
   // ctx.switchSession(), or ctx.reload() — which fresh-context subagents (e.g.
   // scout) trigger. Accessing a stale ctx (pi.exec, ctx.ui, ctx.cwd, ...)
-  // throws synchronously, which bypasses runGit's `.catch(() => undefined)`
+  // throws synchronously, which bypasses runGitRead's `.catch(() => undefined)`
   // (the throw happens before a promise exists) and surfaces as an unhandled
   // rejection from the background timers below, killing the subagent process.
   // Detect it so timer/async refresh paths can stop the dead auto-refresh and
@@ -2069,7 +2073,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     }
     if (gitInitialFetchPromise || !latestGitSnapshot) return;
 
-    const remotes = await runGit(pi, ctx.cwd, ["remote"], 2000);
+    const remotes = await runGitRead(pi, ctx.cwd, ["remote"], 2000);
     if (sessionSerial !== activeSessionSerial || !remotes) return;
 
     latestGitFetchState = { status: "fetching", startedAt: Date.now(), message: "git fetch" };

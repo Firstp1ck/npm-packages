@@ -8,6 +8,12 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 `/git-footer-pi-debug` exposes bounded prompt-estimator diagnostics, and `Ctrl+Shift+G` exposes Git signing-mismatch diagnostics. Keep these outputs free of credentials and private provider payloads.
 
+## Git inspection safety
+
+Periodic status refreshes and auxiliary Git probes are read-only background work. Run them through `runGitRead`, which invokes `git --no-optional-locks`, so inspecting a repository does not refresh its index or create optional lock contention. Keep mutations such as the startup fetch outside this helper.
+
+Run `node --test tests/git-snapshot.test.mjs` from this package directory after changing Git snapshot behavior.
+
 ## Additional implementation details
 
 - Shows compact runtime metrics in the footer:
