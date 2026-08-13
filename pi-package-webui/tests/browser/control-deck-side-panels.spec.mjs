@@ -62,6 +62,25 @@ async function selectPlacement(page, placement) {
   await expect(page.locator("#controlDeckPlacementSelect")).toHaveValue(placement);
 }
 
+async function assertSidePanelResizePillInGap(page, side) {
+  const handle = page.locator(side === "left" ? "#sidePanelLeftResizeHandle" : "#sidePanelResizeHandle");
+  const shell = page.locator(side === "left" ? "#sidePanelLeft" : "#sidePanel");
+  const [handleBox, shellBox, workspaceBox, paintedWidth] = await Promise.all([
+    handle.boundingBox(),
+    shell.boundingBox(),
+    page.locator(".workspace-column").boundingBox(),
+    handle.evaluate((node) => Number.parseFloat(getComputedStyle(node, "::after").width)),
+  ]);
+  assert.ok(handleBox && shellBox && workspaceBox && paintedWidth > 0, `${side} Control Deck resize pill should expose measurable geometry`);
+  const paintedLeft = handleBox.x + (handleBox.width - paintedWidth) / 2;
+  const paintedRight = paintedLeft + paintedWidth;
+  if (side === "right") {
+    assert.ok(paintedLeft >= workspaceBox.x + workspaceBox.width - 0.5 && paintedRight <= shellBox.x + 0.5, `right Control Deck resize pill should be fully inside the inter-column gap: ${JSON.stringify({ paintedLeft, paintedRight, workspaceBox, shellBox })}`);
+  } else {
+    assert.ok(paintedLeft >= shellBox.x + shellBox.width - 0.5 && paintedRight <= workspaceBox.x + 0.5, `left Control Deck resize pill should be fully inside the inter-column gap: ${JSON.stringify({ paintedLeft, paintedRight, workspaceBox, shellBox })}`);
+  }
+}
+
 async function assertAxeClean(page, label, selector) {
   const accessibility = await new AxeBuilder({ page }).include(selector).disableRules(["aria-required-children"]).analyze();
   const serious = accessibility.violations.filter((violation) => ["serious", "critical"].includes(violation.impact));
@@ -128,6 +147,7 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await expect(page.locator("#sidePanelLeft")).toBeHidden();
   await expect(rightResizeHandle).toBeVisible();
   await expect(leftResizeHandle).toBeHidden();
+  await assertSidePanelResizePillInGap(page, "right");
   const rightOnlyBefore = Number(await rightResizeHandle.getAttribute("aria-valuenow"));
   await rightResizeHandle.focus();
   await rightResizeHandle.press("Shift+ArrowLeft");
@@ -138,6 +158,7 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await expect(page.locator("#sidePanelLeft")).toBeVisible();
   await expect(leftResizeHandle).toBeVisible();
   await expect(rightResizeHandle).toBeHidden();
+  await assertSidePanelResizePillInGap(page, "left");
   await expect(page.locator("#openIssueButton")).toBeVisible();
   await expect(page.locator("#piVersionButton")).toHaveCount(1);
   const leftOnlyBefore = Number(await leftResizeHandle.getAttribute("aria-valuenow"));
@@ -237,10 +258,31 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await openControls(page);
   await page.locator("#terminalTabsLayoutSelect").selectOption("left");
   await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
+  const placementSelect = page.locator("#controlDeckPlacementSelect");
+  const bothPlacementOption = placementSelect.locator('option[value="both"]');
+  await expect(placementSelect).toBeEnabled();
+  await expect(bothPlacementOption).toBeDisabled();
+  await expect(placementSelect).toHaveValue("right");
+  await expect(page.locator("#sidePanel")).toBeVisible();
+  await expect(page.locator("#sidePanelLeft")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-webui-control-deck-layout-v2") || "null")?.placement)).toBe("right");
+
+  await placementSelect.selectOption("right");
+  await expect(page.locator("body")).toHaveClass(/terminal-tabs-sidebar-start/);
+  await expect(page.locator("#sidePanel")).toBeVisible();
+  await expect(page.locator("#sidePanelLeft")).toBeHidden();
+  const rightPlacementChatBox = await page.locator(".chat").boundingBox();
+  const leftRailBox = await page.locator(".terminal-tabs-shell").boundingBox();
+  assert.ok(rightPlacementChatBox && leftRailBox && leftRailBox.x < rightPlacementChatBox.x, "Right Control Deck placement should switch the terminal/tabs rail to the left of chat");
+
+  await page.locator("#controlDeckPlacementSelect").selectOption("left");
+  await expect(page.locator("body")).not.toHaveClass(/terminal-tabs-sidebar-start/);
+  await expect(page.locator("#sidePanelLeft")).toBeVisible();
+  await expect(page.locator("#sidePanel")).toBeHidden();
   const chatBox = await page.locator(".chat").boundingBox();
   const railBox = await page.locator(".terminal-tabs-shell").boundingBox();
-  assert.ok(chatBox && railBox && railBox.x > chatBox.x, "Sidebar terminal rail should render to the right of chat");
-  await expect(page.locator("#controlDeckPlacementSelect")).toBeDisabled();
+  assert.ok(chatBox && railBox && railBox.x > chatBox.x, "Left Control Deck placement should switch the terminal/tabs rail to the right of chat");
+  await expect(page.locator("#controlDeckPlacementStatus")).toContainText("Control Deck left, terminal/tabs right");
   const newTabButton = page.locator("#newTabButton");
   await newTabButton.hover();
   await expect(page.locator("#newTabMenuPanel")).toBeVisible();
@@ -259,7 +301,9 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await workspaceButton.focus();
   await expect.poll(() => workspaceButton.evaluate((button) => getComputedStyle(button, "::after").opacity)).toBe("1");
   await page.locator("#terminalTabsLayoutSelect").selectOption("top");
-  await expect(page.locator("#controlDeckPlacementSelect")).toHaveValue("both");
+  await expect(placementSelect).toHaveValue("left");
+  await expect(bothPlacementOption).toBeEnabled();
+  await placementSelect.selectOption("both");
 
   await page.setViewportSize({ width: 1500, height: 900 });
   await expect(page.locator("body")).not.toHaveClass(/control-deck-overlay/);

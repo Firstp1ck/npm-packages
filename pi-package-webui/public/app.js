@@ -3737,13 +3737,25 @@ function isControlDeckSidebarPresentation() {
   return terminalTabsLayout === "left";
 }
 
+function reconcileControlDeckPlacementConstraint() {
+  const sidebarPresentation = isControlDeckSidebarPresentation();
+  const bothOption = elements.controlDeckPlacementSelect?.querySelector('option[value="both"]');
+  if (bothOption) bothOption.disabled = sidebarPresentation;
+  const placement = normalizeControlDeckPlacement(controlDeckLayout.placement);
+  if (!sidebarPresentation || placement !== "both") return placement;
+  controlDeckLayout.placement = "right";
+  cacheControlDeckLayout(controlDeckLayout, "placement");
+  markDurableUiLayoutDirty("sidePanel", "placement");
+  return "right";
+}
+
 function isControlDeckOverlayPresentation() {
   if (document.body.classList.contains("embedded-split")) return false;
   if (sidePanelOverlayMedia?.matches) return true;
   const layout = document.querySelector(".layout");
   if (!layout) return false;
   const placement = normalizeControlDeckPlacement(controlDeckLayout.placement);
-  const panelCount = isControlDeckSidebarPresentation() || placement !== "both" ? 1 : 2;
+  const panelCount = placement === "both" ? 2 : 1;
   const splitCount = document.body.classList.contains("terminal-split-open") ? 1 : 0;
   const viewerCount = document.body.classList.contains("file-viewer-open") ? 1 : 0;
   const terminalRail = isControlDeckSidebarPresentation() ? Math.max(TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX, currentTerminalTabsSidebarWidth()) : 0;
@@ -3756,7 +3768,6 @@ function isControlDeckOverlayPresentation() {
 function effectiveControlDeckPresentation() {
   if (document.body.classList.contains("embedded-split")) return "embedded";
   if (isControlDeckOverlayPresentation()) return "overlay";
-  if (isControlDeckSidebarPresentation()) return "sidebar";
   return normalizeControlDeckPlacement(controlDeckLayout.placement);
 }
 
@@ -3774,6 +3785,7 @@ function reconcileControlDeckHosts() {
   const order = completeOrder.filter((id) => byId.has(id));
   const storedLeftIds = Array.isArray(controlDeckLayout.sectionLayout?.leftSectionIds) ? controlDeckLayout.sectionLayout.leftSectionIds : [];
   controlDeckLayout.sectionLayout = { order: completeOrder, leftSectionIds: storedLeftIds.filter((id) => completeOrder.includes(id)) };
+  const placement = reconcileControlDeckPlacementConstraint();
   const presentation = effectiveControlDeckPresentation();
   const leftIds = new Set(controlDeckLayout.sectionLayout.leftSectionIds);
   const leftBody = elements.sidePanelBodyLeft;
@@ -3785,14 +3797,16 @@ function reconcileControlDeckHosts() {
     const body = presentation === "both" ? (leftIds.has(id) ? leftBody : rightBody) : targetBody;
     if (body) body.append(record.section);
   }
+  const sidebarPresentation = isControlDeckSidebarPresentation();
   document.body.classList.toggle("control-deck-both", presentation === "both");
-  document.body.classList.toggle("control-deck-sidebar", presentation === "sidebar");
+  document.body.classList.toggle("control-deck-sidebar", sidebarPresentation);
+  document.body.classList.toggle("terminal-tabs-sidebar-start", sidebarPresentation && placement === "right");
   document.body.classList.toggle("control-deck-overlay", presentation === "overlay");
-  document.body.classList.toggle("control-deck-left", presentation === "left" || presentation === "sidebar");
+  document.body.classList.toggle("control-deck-left", presentation === "left");
   document.body.classList.toggle("control-deck-right", presentation === "right" || presentation === "both" || presentation === "overlay");
-  if (elements.sidePanelLeft) elements.sidePanelLeft.hidden = presentation !== "both" && presentation !== "left" && presentation !== "sidebar";
-  if (elements.sidePanel) elements.sidePanel.hidden = presentation === "embedded" || presentation === "left" || presentation === "sidebar";
-  const activeShell = presentation === "left" || presentation === "sidebar" ? elements.sidePanelLeft : elements.sidePanel;
+  if (elements.sidePanelLeft) elements.sidePanelLeft.hidden = presentation !== "both" && presentation !== "left";
+  if (elements.sidePanel) elements.sidePanel.hidden = presentation === "embedded" || presentation === "left";
+  const activeShell = presentation === "left" ? elements.sidePanelLeft : elements.sidePanel;
   activeShell?.setAttribute("aria-label", presentation === "overlay" ? "Control Deck" : activeShell === elements.sidePanelLeft ? "Left Control Deck" : "Right Control Deck");
   const sharedFooter = document.querySelector("[data-control-deck-shared-footer]");
   const footerHost = activeShell === elements.sidePanelLeft
@@ -3810,13 +3824,17 @@ function reconcileControlDeckHosts() {
     : elements.toggleSidePanelButton?.parentElement;
   if (editButton && editHost && editButton.parentElement !== editHost) editHost.prepend(editButton);
   editButton?.setAttribute("aria-controls", activeShell?.id || "sidePanel");
-  if (elements.controlDeckPlacementSelect) {
-    elements.controlDeckPlacementSelect.value = normalizeControlDeckPlacement(controlDeckLayout.placement);
-    elements.controlDeckPlacementSelect.disabled = isControlDeckSidebarPresentation();
+  if (elements.controlDeckPlacementSelect) elements.controlDeckPlacementSelect.value = placement;
+  if (elements.controlDeckPlacementStatus) {
+    const label = `${placement[0].toUpperCase()}${placement.slice(1)}`;
+    elements.controlDeckPlacementStatus.textContent = sidebarPresentation
+      ? placement === "right"
+        ? `${label} · Control Deck right, terminal/tabs left`
+        : placement === "left"
+          ? `${label} · Control Deck left, terminal/tabs right`
+          : `${label} · Control Deck on both sides, terminal/tabs right`
+      : `${label} · saved in WebUI layout`;
   }
-  if (elements.controlDeckPlacementStatus) elements.controlDeckPlacementStatus.textContent = isControlDeckSidebarPresentation()
-    ? "Sidebar placement active: Control Deck is left and terminal/tabs are right. Your Top-bar placement is preserved."
-    : `${normalizeControlDeckPlacement(controlDeckLayout.placement)[0].toUpperCase()}${normalizeControlDeckPlacement(controlDeckLayout.placement).slice(1)} · saved in WebUI layout`;
   syncControlDeckCollapsedClasses();
   updateSidePanelResizeHandle(controlDeckLayout.panelWidths?.left || SIDE_PANEL_WIDTH_DEFAULT_PX, "left");
   updateSidePanelResizeHandle(controlDeckLayout.panelWidths?.right || readStoredSidePanelWidth() || SIDE_PANEL_WIDTH_DEFAULT_PX, "right");
@@ -5021,7 +5039,8 @@ function updateTerminalTabsSidebarResize(event) {
   const state = terminalTabsResizeState;
   if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
   event.preventDefault();
-  state.width = applyTerminalTabsSidebarWidth(state.startWidth - (event.clientX - state.startX));
+  const delta = event.clientX - state.startX;
+  state.width = applyTerminalTabsSidebarWidth(state.startWidth + (document.body.classList.contains("terminal-tabs-sidebar-start") ? delta : -delta));
 }
 
 function finishTerminalTabsSidebarResize(event) {
@@ -5042,8 +5061,9 @@ function handleTerminalTabsSidebarResizeKeydown(event) {
   const step = event.shiftKey ? 80 : 24;
   const current = currentTerminalTabsSidebarWidth();
   let next = current;
-  if (event.key === "ArrowLeft") next = current + step;
-  else if (event.key === "ArrowRight") next = current - step;
+  const sidebarAtStart = document.body.classList.contains("terminal-tabs-sidebar-start");
+  if (event.key === "ArrowLeft") next = current + (sidebarAtStart ? -step : step);
+  else if (event.key === "ArrowRight") next = current + (sidebarAtStart ? step : -step);
   else if (event.key === "Home") next = TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX;
   else if (event.key === "End") next = terminalTabsSidebarMaxWidth();
   else return;
@@ -7066,7 +7086,7 @@ function syncMobileSidePanelState(collapsed) {
 
 function syncControlDeckCollapsedClasses() {
   const presentation = effectiveControlDeckPresentation();
-  const activeSide = presentation === "left" || presentation === "sidebar" ? "left" : "right";
+  const activeSide = presentation === "left" ? "left" : "right";
   if (presentation !== "overlay") {
     const singleCollapsed = presentation !== "both" && Boolean(controlDeckLayout.collapsedPanels?.[activeSide]);
     document.body.classList.toggle("side-panel-collapsed", singleCollapsed);
@@ -7085,7 +7105,7 @@ function syncControlDeckCollapsedClasses() {
 function setSidePanelCollapsed(collapsed, { persist = true, focusPanel = false, side = null } = {}) {
   if (collapsed) setSidePanelSectionEditMode(false);
   const presentation = effectiveControlDeckPresentation();
-  const targetSide = side || (presentation === "left" || presentation === "sidebar" ? "left" : "right");
+  const targetSide = side || (presentation === "left" ? "left" : "right");
   if (presentation === "overlay") {
     document.body.classList.toggle("side-panel-collapsed", collapsed);
   } else {
@@ -7123,7 +7143,7 @@ function restoreSidePanelState() {
     setSidePanelCollapsed(Boolean(panels.right ?? stored ?? false), { persist: false, side: "right" });
     setSidePanelCollapsed(Boolean(panels.left ?? false), { persist: false, side: "left" });
   } else {
-    const side = effectiveControlDeckPresentation() === "left" || effectiveControlDeckPresentation() === "sidebar" ? "left" : "right";
+    const side = effectiveControlDeckPresentation() === "left" ? "left" : "right";
     setSidePanelCollapsed(Boolean(panels[side] ?? stored ?? false), { persist: false, side });
   }
 }
@@ -13048,7 +13068,7 @@ function controlDeckSideResizeAvailable(side = "right") {
   const presentation = effectiveControlDeckPresentation();
   if (presentation === "overlay" || presentation === "embedded" || controlDeckLayout.collapsedPanels?.[side]) return false;
   return side === "left"
-    ? presentation === "left" || presentation === "both" || presentation === "sidebar"
+    ? presentation === "left" || presentation === "both"
     : presentation === "right" || presentation === "both";
 }
 

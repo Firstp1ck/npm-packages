@@ -126,9 +126,9 @@ When the browser page is hidden, the Web UI closes that page's live event stream
 
 ## Control Deck placement and persistence
 
-With **Tab placement** set to **Top bar**, choose **Right**, **Left**, or **Both** under **Controls → Interface → Control Deck placement**. Right is the default. Both keeps separate collapse state and width for each side; drag a section header or focus it and use `Alt+ArrowUp` / `Alt+ArrowDown` to reorder within its assigned side, and `Alt+ArrowLeft` / `Alt+ArrowRight` to move it between sides.
+Choose **Right**, **Left**, or **Both** under **Controls → Interface → Control Deck placement**. Right is the default. Both keeps separate collapse state and width for each side; drag a section header or focus it and use `Alt+ArrowUp` / `Alt+ArrowDown` to reorder within its assigned side, and `Alt+ArrowLeft` / `Alt+ArrowRight` to move it between sides.
 
-The **Sidebar** tab placement keeps its compatibility setting while presenting the combined Control Deck on the left, chat in the center, and the terminal/tabs rail on the right. Your Top-bar Control Deck choice remains saved and returns when you switch back.
+With **Tab placement** set to **Sidebar**, the placement control stays active but **Both** is unavailable. **Right** presents the terminal/tabs rail on the left and the Control Deck on the right; **Left** swaps them. If **Both** was selected before switching to Sidebar, Web UI changes the Control Deck placement to **Right** and saves that valid placement.
 
 When the viewport or active split terminal/file viewer cannot fit the selected desktop columns, Web UI uses one combined Control Deck overlay. This does not change side assignments, desktop collapse state, or saved widths. Close the overlay with its backdrop or `Escape`. Mobile **Edit** / **Done** continues to allow vertical section ordering only.
 
@@ -136,7 +136,7 @@ Control Deck placement, side assignment/order, accordion state, visibility, side
 
 ## Desktop panel sizing
 
-Every visible desktop side panel has a separator on the edge facing the workspace. This includes the right Control Deck, the Control Deck after choosing **Left**, both independently sized Control Decks after choosing **Both**, and the right terminal rail after choosing **Sidebar**. Drag a separator to resize its panel. Focus it and use the arrow keys for 24-pixel steps, hold `Shift` for 80-pixel steps, or use `Home` and `End` for the allowed minimum and maximum. Arrow direction follows the panel edge: move toward the outside to widen the panel.
+Every visible desktop side panel has a separator on the edge facing the workspace. This includes the right Control Deck, the Control Deck after choosing **Left**, both independently sized Control Decks after choosing **Both**, and the terminal/tabs rail on either side after choosing **Sidebar**. Drag a separator to resize its panel. Focus it and use the arrow keys for 24-pixel steps, hold `Shift` for 80-pixel steps, or use `Home` and `End` for the allowed minimum and maximum. Arrow direction follows the panel edge: move toward the outside to widen the panel.
 
 Panel widths are limited by the available desktop workspace so the main transcript retains usable space. Left and right Control Deck widths and the terminal-rail width are cached and saved independently in the user-scoped interface layout, then restored after reloads. Resize handles are hidden for collapsed panels and in mobile, tablet, overlay, and embedded layouts.
 

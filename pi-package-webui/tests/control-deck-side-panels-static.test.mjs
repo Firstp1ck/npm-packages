@@ -29,7 +29,10 @@ assert.match(app, /const CONTROL_DECK_LAYOUT_STORAGE_KEY = "pi-webui-control-dec
 assert.match(app, /function controlDeckSectionRecords\(\)[\s\S]*document\.querySelectorAll\("\[data-side-panel-section\]"\)/);
 assert.match(app, /function reconcileControlDeckHosts\(\)[\s\S]*effectiveControlDeckPresentation\(\)[\s\S]*body\.append\(record\.section\)/);
 assert.match(app, /function isControlDeckOverlayPresentation\(\)[\s\S]*sidePanelOverlayMedia\?\.matches[\s\S]*minimum/);
-assert.match(app, /function effectiveControlDeckPresentation\(\)[\s\S]*"overlay"[\s\S]*"sidebar"/);
+assert.match(app, /function effectiveControlDeckPresentation\(\)[\s\S]*"overlay"[\s\S]*normalizeControlDeckPlacement\(controlDeckLayout\.placement\)/);
+assert.match(app, /function reconcileControlDeckPlacementConstraint\(\)[\s\S]*querySelector\('option\[value="both"\]'\)[\s\S]*bothOption\.disabled = sidebarPresentation[\s\S]*placement !== "both"[\s\S]*controlDeckLayout\.placement = "right"[\s\S]*cacheControlDeckLayout\(controlDeckLayout, "placement"\)[\s\S]*markDurableUiLayoutDirty\("sidePanel", "placement"\)/, "Sidebar tabs should disable Both and durably reconcile an active Both placement to Right");
+assert.match(app, /function reconcileControlDeckHosts\(\)[\s\S]*const placement = reconcileControlDeckPlacementConstraint\(\)[\s\S]*controlDeckPlacementSelect\.value = placement/, "placement constraints should be reconciled before the Control Deck hosts and select are rendered");
+assert.match(app, /classList\.toggle\("terminal-tabs-sidebar-start", sidebarPresentation && placement === "right"\)/);
 assert.match(app, /function moveSidePanelSectionToSide\(sectionId, side\)/);
 assert.match(app, /\["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"\]/);
 assert.match(app, /markDurableUiLayoutDirty\("sidePanel", "sectionLayout"\)/);
@@ -47,8 +50,8 @@ assert.match(app, /activelyManipulated[\s\S]*subfield === "sectionLayout"[\s\S]*
 assert.match(app, /function controlDeckSideResizeAvailable\(side = "right"\)[\s\S]*presentation === "left"[\s\S]*presentation === "both"[\s\S]*presentation === "right"/);
 assert.match(app, /function updateSidePanelResizeHandle\(width = currentSidePanelWidth\("right"\), side = "right"\)/);
 assert.match(app, /function handleSidePanelResizeKeydown\(event\)[\s\S]*side === "left"/);
-assert.match(css, /\.side-panel-resize-handle-right \{[\s\S]*left:\s*0/);
-assert.match(css, /\.side-panel-resize-handle-left \{[\s\S]*right:\s*0;[\s\S]*left:\s*auto/);
+assert.match(css, /\.side-panel-resize-handle-right \{[\s\S]*left:\s*-1\.175rem/);
+assert.match(css, /\.side-panel-resize-handle-left \{[\s\S]*right:\s*-1\.175rem;[\s\S]*left:\s*auto/);
 assert.match(css, /--side-panel-left-width/);
 assert.match(css, /--side-panel-right-width/);
 assert.match(css, /body\.control-deck-both \.layout/);
@@ -57,6 +60,9 @@ assert.match(css, /body\.control-deck-overlay \.layout/);
 assert.match(css, /body\.terminal-tabs-left \.chat-panel[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(13rem, var\(--terminal-tabs-sidebar-width\)\)/);
 assert.match(css, /body\.terminal-tabs-left \.terminal-tabs-shell[\s\S]*grid-column:\s*2/);
 assert.match(css, /body\.terminal-tabs-left \.chat-search-bar[\s\S]*body\.terminal-tabs-left \.context-meter-bar[\s\S]*grid-column:\s*1/);
+assert.match(css, /body\.terminal-tabs-left\.terminal-tabs-sidebar-start \.chat-panel[\s\S]*grid-template-columns:\s*minmax\(13rem, var\(--terminal-tabs-sidebar-width\)\) minmax\(0, 1fr\)/);
+assert.match(css, /body\.terminal-tabs-left\.terminal-tabs-sidebar-start \.terminal-tabs-shell[\s\S]*grid-column:\s*1/);
+assert.match(css, /body\.terminal-tabs-left\.terminal-tabs-sidebar-start \.chat[\s\S]*grid-column:\s*2/);
 assert.match(css, /\.workspace-column[\s\S]*body\.terminal-split-open \.workspace-column[\s\S]*body\.file-viewer-open \.workspace-column[\s\S]*body\.terminal-split-open\.file-viewer-open \.workspace-column/);
 
 console.log("control-deck-side-panels-static.test.mjs passed");

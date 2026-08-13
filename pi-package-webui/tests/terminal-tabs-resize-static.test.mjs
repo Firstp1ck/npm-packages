@@ -20,7 +20,7 @@ test("terminal rail supports bounded pointer and keyboard resizing", () => {
   assert.match(app, /function terminalTabsSidebarResizeAvailable\(\)[\s\S]*terminalTabsLayout !== "left"[\s\S]*isSidePanelOverlayView\(\)/);
   assert.match(app, /function terminalTabsSidebarMaxWidth\(\)[\s\S]*transcriptMinWidth = 320[\s\S]*panelWidth \* 0\.72/);
   assert.match(app, /function beginTerminalTabsSidebarResize\(event\)[\s\S]*setPointerCapture[\s\S]*pointermove[\s\S]*pointercancel/);
-  assert.match(app, /function updateTerminalTabsSidebarResize\(event\)[\s\S]*state\.startWidth - \(event\.clientX - state\.startX\)/);
+  assert.match(app, /function updateTerminalTabsSidebarResize\(event\)[\s\S]*terminal-tabs-sidebar-start[\s\S]*delta/);
   assert.match(app, /function handleTerminalTabsSidebarResizeKeydown\(event\)[\s\S]*ArrowLeft[\s\S]*ArrowRight[\s\S]*Home[\s\S]*End/);
   assert.match(app, /elements\.terminalTabsResizeHandle\?\.addEventListener\("pointerdown", beginTerminalTabsSidebarResize\);\nelements\.terminalTabsResizeHandle\?\.addEventListener\("keydown", handleTerminalTabsSidebarResizeKeydown\);/);
 });

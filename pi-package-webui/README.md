@@ -61,8 +61,8 @@ Check the server at any time with:
 2. Confirm the working directory in the footer or choose another project.
 3. Select a model and thinking effort.
 4. Enter a prompt, attach context if needed, and follow the live response.
-5. Open the Control Deck for sessions, Git, app runners, themes, updates, and optional features. Under **Controls → Interface**, keep terminal tabs in the **Top bar** and choose **Right**, **Left**, or **Both** for the Control Deck. Choose **Sidebar** to put the combined Control Deck on the left and the terminal rail on the right.
-6. On desktop, drag the workspace-facing edge of any visible Control Deck—or the terminal rail in **Sidebar**—to choose a comfortable width. In **Both**, resize the left and right Control Decks independently; widths return on your next visit.
+5. Open the Control Deck for sessions, Git, app runners, themes, updates, and optional features. Under **Controls → Interface**, choose **Top bar** or **Sidebar** for terminal tabs, then choose **Right**, **Left**, or **Both** for the Control Deck. In **Sidebar**, **Both** is unavailable; choosing **Right** or **Left** swaps the Control Deck and terminal/tabs rails across the chat.
+6. On desktop, drag the workspace-facing edge of any visible Control Deck—or the terminal/tabs rail in **Sidebar**—to choose a comfortable width. In **Both**, resize the left and right Control Decks independently; widths return on your next visit.
 
 The **Subagents** section can recover active children after a status or browser timing gap. A recovered child is labelled as recovered and remains view-only until Pi identifies its owning run, so output, cancellation, and dismissal controls are not shown prematurely.
 

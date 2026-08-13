@@ -14,9 +14,11 @@ test("Control Deck exposes an accessible resize separator", () => {
   assert.match(html, /id="sidePanelResizeHandle"[^>]*role="separator"[^>]*aria-orientation="vertical"[^>]*aria-label="Resize right Control Deck width"[^>]*tabindex="0"/);
   assert.match(html, /id="sidePanelLeftResizeHandle"[^>]*role="separator"[^>]*aria-orientation="vertical"[^>]*aria-label="Resize left Control Deck width"[^>]*tabindex="0"/);
   assert.match(css, /--side-panel-width:\s*384px/);
-  assert.match(css, /\.side-panel-resize-handle[\s\S]*cursor:\s*col-resize[\s\S]*touch-action:\s*none/);
-  assert.match(css, /\.side-panel-resize-handle-right \{[\s\S]*left:\s*0/);
-  assert.match(css, /\.side-panel-resize-handle-left \{[\s\S]*right:\s*0;[\s\S]*left:\s*auto/, "the left Control Deck handle must sit on its workspace-facing right edge");
+  assert.match(css, /\.file-viewer-resize-handle,[\s\S]*\.side-panel-resize-handle,[\s\S]*\.terminal-tabs-resize-handle \{[\s\S]*width:\s*1\.35rem;[\s\S]*height:\s*5\.2rem;[\s\S]*cursor:\s*col-resize;[\s\S]*touch-action:\s*none;/, "the Control Deck handle must keep its 1.35rem hit target and pointer geometry");
+  assert.match(css, /\.side-panel-resize-handle::after \{[\s\S]*left:\s*50%;[\s\S]*width:\s*0\.8rem;[\s\S]*transform:\s*translateX\(-50%\);/, "the painted Control Deck pill should be 0.8rem wide and centered within the hit target");
+  assert.match(css, /\.side-panel-resize-handle:hover::after,[\s\S]*\.side-panel-resize-handle:focus-visible::after,[\s\S]*body\.side-panel-resizing \.side-panel-resize-handle::after \{[\s\S]*border-color:/, "hover, focus, and active resizing must style the narrow painted pill rather than the hit target");
+  assert.match(css, /\.side-panel-resize-handle-right \{[\s\S]*left:\s*-1\.175rem/);
+  assert.match(css, /\.side-panel-resize-handle-left \{[\s\S]*right:\s*-1\.175rem;[\s\S]*left:\s*auto/, "the left Control Deck handle must sit in the workspace-facing inter-column gap");
 });
 
 test("desktop layouts and Control Deck content follow the selected width", () => {
