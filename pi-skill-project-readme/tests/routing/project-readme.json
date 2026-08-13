@@ -1,0 +1,52 @@
+{
+  "skill": "project-readme",
+  "should_trigger": [
+    "Create a top-level README for this desktop app from verified repository evidence, including a safe quick start.",
+    "Update this library's project README with a minimal integration example and links to its public API documentation.",
+    "Review the repository README for unsupported feature claims, broken reader paths, and documentation-layer violations.",
+    "Harmonize this CLI project's README with the local AGENTS.md rules while preserving verified usage and warnings.",
+    "Restructure our existing project README for end users and move contributor detail only where an in-scope destination already exists."
+  ],
+  "should_not_trigger": [
+    "Write a complete REST endpoint reference with request and response schemas.",
+    "Implement the missing export feature and add integration tests.",
+    "Draft release notes for version 2.0 from these merged pull requests.",
+    "Create CONTRIBUTING.md with local development and test instructions.",
+    "Review this pull request for architecture and security defects.",
+    "Reformat every Markdown file in all sibling repositories.",
+    "Publish this package and update the npm release metadata."
+  ],
+  "ambiguous": [
+    {
+      "prompt": "Improve the docs for this project.",
+      "candidate_skills": [
+        "project-readme",
+        "tech-deep-dive",
+        "patch-md"
+      ],
+      "decision": "Use this skill only after confirming that the requested artifact is the repository's primary README and establishing whether the work is creation, update, or review; otherwise route to the workflow for the actual document.",
+      "reason": "The request does not identify a document, audience, operation, or write boundary.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "Document this package for users and developers.",
+      "candidate_skills": [
+        "project-readme",
+        "tech-deep-dive"
+      ],
+      "decision": "Classify the primary README audience and use this skill for its reader-facing entry point; separately scope API, technical, or contributor documents instead of silently combining all documentation layers in the README.",
+      "reason": "The request may span a project README and dedicated technical documents with different allowed content.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "Add screenshots to our README.",
+      "candidate_skills": [
+        "project-readme",
+        "patch-md"
+      ],
+      "decision": "Use this skill when the request is part of creating, updating, harmonizing, or reviewing the project README and requires the visual asset gate; for a precisely supplied mechanical image-link edit, use a narrow Markdown editing workflow.",
+      "reason": "The request does not reveal whether visual selection and README structure need evaluation or whether paths and placement are already decided.",
+      "review_status": "reviewed"
+    }
+  ]
+}

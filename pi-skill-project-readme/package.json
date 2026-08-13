@@ -1,0 +1,39 @@
+{
+  "name": "@firstpick/pi-skill-project-readme",
+  "version": "0.1.0",
+  "description": "Portable Agent Skill for creating, harmonizing, auditing, and updating evidence-based project READMEs for user-oriented products and developer-oriented libraries.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-project-readme#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-skill-project-readme"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "skill",
+    "agent-skill",
+    "readme",
+    "documentation",
+    "project-documentation"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "python3 -B -m unittest discover -s skills/project-readme/tests -p 'test_*.py'"
+  },
+  "files": [
+    "skills/project-readme/SKILL.md",
+    "skills/project-readme/references/PROJECT-README-TEMPLATE.md",
+    "skills/project-readme/references/SECTION-DECISIONS.md",
+    "skills/project-readme/tests/test_skill_contract.py",
+    "tests/routing/project-readme.json",
+    "README.md",
+    "LICENSE"
+  ]
+}
