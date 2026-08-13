@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=109" />
+    <link rel="stylesheet" href="/styles.css?v=110" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -209,6 +209,7 @@
       <div class="workspace-column">
       <section class="chat-panel">
         <header class="terminal-tabs-shell" aria-label="Terminal navigation">
+          <div id="terminalTabsResizeHandle" class="terminal-tabs-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize terminal sidebar width" tabindex="0" title="Drag to resize terminal sidebar" hidden></div>
           <button id="terminalTabsToggleButton" class="terminal-tabs-toggle-button" type="button" aria-controls="terminalTabsDrawerContent" aria-expanded="false">Tabs</button>
           <div id="terminalTabsDrawerContent" class="terminal-tabs-drawer-content" role="region" aria-label="Terminal navigation">
           <div id="tabBar" class="terminal-tabs" role="tablist" aria-label="Pi terminal tabs">
@@ -1793,7 +1794,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=123">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=124">
       (() => {
         "use strict";
 

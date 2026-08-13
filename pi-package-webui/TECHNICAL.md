@@ -132,7 +132,13 @@ The **Sidebar** tab placement keeps its compatibility setting while presenting t
 
 When the viewport or active split terminal/file viewer cannot fit the selected desktop columns, Web UI uses one combined Control Deck overlay. This does not change side assignments, desktop collapse state, or saved widths. Close the overlay with its backdrop or `Escape`. Mobile **Edit** / **Done** continues to allow vertical section ordering only.
 
-Control Deck placement, side assignment/order, accordion state, visibility, side collapse, side widths, terminal placement, and the other durable interface preferences are stored in the private Web UI settings file and mirrored to browser storage for offline startup. The right width also maintains the older single-panel compatibility value; the left width never replaces it. Concurrent tabs reconcile named fields so one tab's clean placement change does not erase another tab's pending section move.
+Control Deck placement, side assignment/order, accordion state, visibility, side collapse, side widths, terminal placement, terminal-rail width, and the other durable interface preferences are stored in the private Web UI settings file and mirrored to browser storage for offline startup. The right Control Deck width also maintains the older single-panel compatibility value; the left width never replaces it. Concurrent tabs reconcile named fields so one tab's clean placement change does not erase another tab's pending section move or terminal-rail resize.
+
+## Desktop panel sizing
+
+Every visible desktop side panel has a separator on the edge facing the workspace. This includes the right Control Deck, the Control Deck after choosing **Left**, both independently sized Control Decks after choosing **Both**, and the right terminal rail after choosing **Sidebar**. Drag a separator to resize its panel. Focus it and use the arrow keys for 24-pixel steps, hold `Shift` for 80-pixel steps, or use `Home` and `End` for the allowed minimum and maximum. Arrow direction follows the panel edge: move toward the outside to widen the panel.
+
+Panel widths are limited by the available desktop workspace so the main transcript retains usable space. Left and right Control Deck widths and the terminal-rail width are cached and saved independently in the user-scoped interface layout, then restored after reloads. Resize handles are hidden for collapsed panels and in mobile, tablet, overlay, and embedded layouts.
 
 ### Backup, restore, and downgrade rollback
 

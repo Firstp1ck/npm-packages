@@ -24,7 +24,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 | **Git workflows** | Inspect changes, switch branches, review diffs, stage work, generate commit messages, push, and prepare pull requests through guided steps. |
 | **Project utilities** | Launch detected app runners, manage working directories, search files and transcripts, and customize themes. |
 | **Companion features** | Add stats, remote access, voice, `/btw`, richer Git status, themes, release tools, and other supported Pi packages. |
-| **Desktop and mobile** | Use a full desktop workspace or a compact phone layout with touch-friendly navigation and controls. |
+| **Desktop and mobile** | Use a full desktop workspace with resizable left and right side panels, or a compact phone layout with touch-friendly navigation and controls. |
 
 ## Quick start
 
@@ -62,6 +62,7 @@ Check the server at any time with:
 3. Select a model and thinking effort.
 4. Enter a prompt, attach context if needed, and follow the live response.
 5. Open the Control Deck for sessions, Git, app runners, themes, updates, and optional features. Under **Controls → Interface**, keep terminal tabs in the **Top bar** and choose **Right**, **Left**, or **Both** for the Control Deck. Choose **Sidebar** to put the combined Control Deck on the left and the terminal rail on the right.
+6. On desktop, drag the workspace-facing edge of any visible Control Deck—or the terminal rail in **Sidebar**—to choose a comfortable width. In **Both**, resize the left and right Control Decks independently; widths return on your next visit.
 
 The **Subagents** section can recover active children after a status or browser timing gap. A recovered child is labelled as recovered and remains view-only until Pi identifies its owning run, so output, cancellation, and dismissal controls are not shown prematurely.
 

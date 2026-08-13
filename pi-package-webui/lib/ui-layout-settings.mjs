@@ -14,6 +14,8 @@ export const UI_LAYOUT_LIMITS = Object.freeze({
   panelWidthDefault: 384,
   fileViewerWidthMin: 384,
   fileViewerWidthMax: 4096,
+  terminalTabsSidebarWidthMin: 208,
+  terminalTabsSidebarWidthMax: 4096,
 });
 
 const LEGACY_UI_LAYOUT_VERSION = 1;
@@ -216,7 +218,7 @@ function validateCustomGroups(value) {
 function validateTerminalTabs(value, { partial = false } = {}) {
   const source = objectValue(value);
   if (!source) invalid("layout.terminalTabs must be an object or null");
-  assertOnlyKeys(source, new Set(["layout", "customGroups"]), "layout.terminalTabs");
+  assertOnlyKeys(source, new Set(["layout", "customGroups", "sidebarWidth"]), "layout.terminalTabs");
   if (partial && Object.keys(source).length === 0) invalid("layout.terminalTabs must name at least one field");
   const result = {};
   if (!partial || own(source, "layout")) {
@@ -225,14 +227,24 @@ function validateTerminalTabs(value, { partial = false } = {}) {
     result.layout = layout;
   }
   if (!partial || own(source, "customGroups")) result.customGroups = nullable(source.customGroups ?? null, validateCustomGroups);
+  if (!partial || own(source, "sidebarWidth")) {
+    result.sidebarWidth = nullable(source.sidebarWidth ?? null, (width) => validateBoundedWidth(
+      width,
+      "layout.terminalTabs.sidebarWidth",
+      UI_LAYOUT_LIMITS.terminalTabsSidebarWidthMin,
+      UI_LAYOUT_LIMITS.terminalTabsSidebarWidthMax,
+    ));
+  }
   return result;
 }
 
-function validateFileViewerWidth(value) {
-  if (!Number.isFinite(value) || value < UI_LAYOUT_LIMITS.fileViewerWidthMin || value > UI_LAYOUT_LIMITS.fileViewerWidthMax) {
-    invalid(`layout.fileViewerWidth must be between ${UI_LAYOUT_LIMITS.fileViewerWidthMin} and ${UI_LAYOUT_LIMITS.fileViewerWidthMax} pixels or null`);
-  }
+function validateBoundedWidth(value, label, min, max) {
+  if (!Number.isFinite(value) || value < min || value > max) invalid(`${label} must be between ${min} and ${max} pixels or null`);
   return Math.round(value);
+}
+
+function validateFileViewerWidth(value) {
+  return validateBoundedWidth(value, "layout.fileViewerWidth", UI_LAYOUT_LIMITS.fileViewerWidthMin, UI_LAYOUT_LIMITS.fileViewerWidthMax);
 }
 
 export function defaultUiLayout() {
@@ -248,7 +260,7 @@ export function defaultUiLayout() {
     },
     composerActions: { order: null, grid: null },
     footerScopedModelOrder: null,
-    terminalTabs: { layout: null, customGroups: null },
+    terminalTabs: { layout: null, customGroups: null, sidebarWidth: null },
     fileViewerWidth: null,
   };
 }
@@ -275,6 +287,12 @@ function normalizeSharedLayoutFields(source, sidePanel) {
     terminalTabs: {
       layout: TERMINAL_TAB_LAYOUTS.has(terminalTabs?.layout) ? terminalTabs.layout : null,
       customGroups: softField(() => nullable(terminalTabs?.customGroups ?? null, validateCustomGroups)),
+      sidebarWidth: softField(() => nullable(terminalTabs?.sidebarWidth ?? null, (width) => validateBoundedWidth(
+        width,
+        "uiLayout.terminalTabs.sidebarWidth",
+        UI_LAYOUT_LIMITS.terminalTabsSidebarWidthMin,
+        UI_LAYOUT_LIMITS.terminalTabsSidebarWidthMax,
+      ))),
     },
     fileViewerWidth: softField(() => nullable(source.fileViewerWidth ?? null, validateFileViewerWidth)),
   };

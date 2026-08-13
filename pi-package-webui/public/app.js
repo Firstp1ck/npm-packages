@@ -33,6 +33,7 @@ const elements = {
   tabBar: $("#tabBar"),
   terminalTabsToggleButton: $("#terminalTabsToggleButton"),
   terminalTabsShell: $(".terminal-tabs-shell"),
+  terminalTabsResizeHandle: $("#terminalTabsResizeHandle"),
   terminalTabsDrawerContent: $("#terminalTabsDrawerContent"),
   terminalTabsBackdrop: $("#terminalTabsBackdrop"),
   workspaceSaveButton: $("#workspaceSaveButton"),
@@ -602,6 +603,7 @@ let composerActionLayoutRestoreFrame = null;
 let fileTreeDragState = null;
 let fileViewerResizeState = null;
 let sidePanelResizeState = null;
+let terminalTabsResizeState = null;
 let sidePanelWidthPreferenceRevision = 0;
 let fileTreeSearchTimer = null;
 let fileTreeSearchRequestSerial = 0;
@@ -1087,6 +1089,7 @@ const THINKING_VISIBILITY_STORAGE_KEY = "pi-webui-thinking-visible";
 const BUSY_PROMPT_BEHAVIOR_STORAGE_KEY = "pi-webui-busy-prompt-behavior";
 const SKILL_USAGE_STORAGE_KEY = "pi-webui-skill-usage-v1";
 const TERMINAL_TABS_LAYOUT_STORAGE_KEY = "pi-webui-terminal-tabs-layout";
+const TERMINAL_TABS_SIDEBAR_WIDTH_STORAGE_KEY = "pi-webui-terminal-tabs-sidebar-width";
 const SUBAGENT_OPEN_MODE_STORAGE_KEY = "pi-webui-subagent-open-mode";
 const SUBAGENT_AUTO_CLEAR_STORAGE_KEY = "pi-webui-subagent-auto-clear";
 const TERMINAL_CUSTOM_GROUPS_STORAGE_KEY = "pi-webui-terminal-custom-groups-v1";
@@ -1212,6 +1215,8 @@ const SIDE_PANEL_WIDTH_STORAGE_KEY = "pi-webui-side-panel-width";
 const SIDE_PANEL_WIDTH_DEFAULT_PX = 384;
 const SIDE_PANEL_WIDTH_MIN_PX = 320;
 const SIDE_PANEL_WIDTH_MAX_PX = 4096;
+const TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX = 208;
+const TERMINAL_TABS_SIDEBAR_WIDTH_MAX_PX = 4096;
 const FILE_VIEWER_CONTEXT_RADIUS_LINES = 6;
 const FILE_TREE_ROOT_PATH = "";
 const FILE_TREE_DRAG_MIME = "application/x-pi-webui-file-path";
@@ -3741,7 +3746,7 @@ function isControlDeckOverlayPresentation() {
   const panelCount = isControlDeckSidebarPresentation() || placement !== "both" ? 1 : 2;
   const splitCount = document.body.classList.contains("terminal-split-open") ? 1 : 0;
   const viewerCount = document.body.classList.contains("file-viewer-open") ? 1 : 0;
-  const terminalRail = isControlDeckSidebarPresentation() ? 208 : 0;
+  const terminalRail = isControlDeckSidebarPresentation() ? Math.max(TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX, currentTerminalTabsSidebarWidth()) : 0;
   const centralMinimum = 320 + (splitCount * 320) + (viewerCount * FILE_VIEWER_WIDTH_MIN_PX) + terminalRail;
   const columnCount = panelCount + 1 + splitCount + viewerCount;
   const minimum = (panelCount * SIDE_PANEL_WIDTH_MIN_PX) + centralMinimum + (16 * Math.max(0, columnCount - 1)) + 32;
@@ -3813,7 +3818,9 @@ function reconcileControlDeckHosts() {
     ? "Sidebar placement active: Control Deck is left and terminal/tabs are right. Your Top-bar placement is preserved."
     : `${normalizeControlDeckPlacement(controlDeckLayout.placement)[0].toUpperCase()}${normalizeControlDeckPlacement(controlDeckLayout.placement).slice(1)} · saved in WebUI layout`;
   syncControlDeckCollapsedClasses();
-  updateSidePanelResizeHandle();
+  updateSidePanelResizeHandle(controlDeckLayout.panelWidths?.left || SIDE_PANEL_WIDTH_DEFAULT_PX, "left");
+  updateSidePanelResizeHandle(controlDeckLayout.panelWidths?.right || readStoredSidePanelWidth() || SIDE_PANEL_WIDTH_DEFAULT_PX, "right");
+  requestAnimationFrame(syncResizablePanelWidthsForViewport);
   for (const record of records) updateSidePanelSectionEditAffordance(record);
 }
 
@@ -4919,11 +4926,137 @@ function setTerminalTabsLayout(layout, { persist = true, announce = false } = {}
   if (persist) persistTerminalTabsLayout(next);
   renderTerminalTabsLayoutControl();
   reconcileControlDeckHosts?.();
+  requestAnimationFrame(syncTerminalTabsSidebarWidthForViewport);
   if (announce) addEvent(`terminal tabs layout changed to ${terminalTabsLayoutStatusText(next).toLowerCase()}`);
 }
 
 function restoreTerminalTabsLayoutSetting() {
   setTerminalTabsLayout(readStoredTerminalTabsLayout(), { persist: false });
+}
+
+function readStoredTerminalTabsSidebarWidth() {
+  try {
+    const width = Number.parseFloat(localStorage.getItem(TERMINAL_TABS_SIDEBAR_WIDTH_STORAGE_KEY) || "");
+    return Number.isFinite(width) && width >= TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX && width <= TERMINAL_TABS_SIDEBAR_WIDTH_MAX_PX ? width : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistTerminalTabsSidebarWidth(width) {
+  try {
+    localStorage.setItem(TERMINAL_TABS_SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch {
+    // Browser storage is only the immediate fallback for durable layout state.
+  }
+  markDurableUiLayoutDirty("terminalTabs", "sidebarWidth");
+}
+
+function terminalTabsSidebarResizeAvailable() {
+  if (terminalTabsLayout !== "left" || isSidePanelOverlayView() || isMobileShellV2Active()) return false;
+  return !!elements.terminalTabsShell && getComputedStyle(elements.terminalTabsShell).display !== "none";
+}
+
+function terminalTabsSidebarMaxWidth() {
+  const panel = elements.terminalTabsShell?.closest?.(".chat-panel");
+  const panelWidth = panel?.getBoundingClientRect?.().width || window.innerWidth || TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX;
+  const transcriptMinWidth = 320;
+  return Math.max(
+    TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX,
+    Math.min(TERMINAL_TABS_SIDEBAR_WIDTH_MAX_PX, Math.floor(panelWidth * 0.72), Math.floor(panelWidth - transcriptMinWidth)),
+  );
+}
+
+function clampTerminalTabsSidebarWidth(width) {
+  const number = Number(width);
+  const fallback = readStoredTerminalTabsSidebarWidth() || elements.terminalTabsShell?.getBoundingClientRect?.().width || TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX;
+  return Math.max(TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX, Math.min(terminalTabsSidebarMaxWidth(), Number.isFinite(number) ? number : fallback));
+}
+
+function currentTerminalTabsSidebarWidth() {
+  const width = elements.terminalTabsShell?.getBoundingClientRect?.().width;
+  return Number.isFinite(width) && width > 0 ? width : readStoredTerminalTabsSidebarWidth() || TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX;
+}
+
+function updateTerminalTabsSidebarResizeHandle(width = currentTerminalTabsSidebarWidth()) {
+  const handle = elements.terminalTabsResizeHandle;
+  if (!handle) return;
+  const resizeAvailable = terminalTabsSidebarResizeAvailable();
+  handle.hidden = !resizeAvailable;
+  handle.setAttribute("aria-valuemin", String(TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX));
+  handle.setAttribute("aria-valuemax", String(terminalTabsSidebarMaxWidth()));
+  handle.setAttribute("aria-valuenow", String(Math.round(width)));
+  handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
+}
+
+function applyTerminalTabsSidebarWidth(width, { persist = false } = {}) {
+  const clamped = clampTerminalTabsSidebarWidth(width);
+  document.documentElement.style.setProperty("--terminal-tabs-sidebar-width", `${Math.round(clamped)}px`);
+  updateTerminalTabsSidebarResizeHandle(clamped);
+  if (persist) persistTerminalTabsSidebarWidth(clamped);
+  return clamped;
+}
+
+function restoreTerminalTabsSidebarWidthPreference() {
+  const width = readStoredTerminalTabsSidebarWidth();
+  if (width) document.documentElement.style.setProperty("--terminal-tabs-sidebar-width", `${Math.round(width)}px`);
+  if (terminalTabsSidebarResizeAvailable()) applyTerminalTabsSidebarWidth(width || currentTerminalTabsSidebarWidth());
+  else updateTerminalTabsSidebarResizeHandle(width || currentTerminalTabsSidebarWidth());
+}
+
+function beginTerminalTabsSidebarResize(event) {
+  if (!terminalTabsSidebarResizeAvailable()) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  const startWidth = currentTerminalTabsSidebarWidth();
+  terminalTabsResizeState = { pointerId: event.pointerId, startX: event.clientX, startWidth, width: startWidth };
+  document.body.classList.add("terminal-tabs-resizing");
+  elements.terminalTabsResizeHandle?.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", updateTerminalTabsSidebarResize, { passive: false });
+  window.addEventListener("pointerup", finishTerminalTabsSidebarResize, { passive: false });
+  window.addEventListener("pointercancel", finishTerminalTabsSidebarResize, { passive: false });
+}
+
+function updateTerminalTabsSidebarResize(event) {
+  const state = terminalTabsResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault();
+  state.width = applyTerminalTabsSidebarWidth(state.startWidth - (event.clientX - state.startX));
+}
+
+function finishTerminalTabsSidebarResize(event) {
+  const state = terminalTabsResizeState;
+  if (!state || (event.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+  event.preventDefault?.();
+  elements.terminalTabsResizeHandle?.releasePointerCapture?.(state.pointerId);
+  window.removeEventListener("pointermove", updateTerminalTabsSidebarResize);
+  window.removeEventListener("pointerup", finishTerminalTabsSidebarResize);
+  window.removeEventListener("pointercancel", finishTerminalTabsSidebarResize);
+  document.body.classList.remove("terminal-tabs-resizing");
+  applyTerminalTabsSidebarWidth(state.width, { persist: true });
+  terminalTabsResizeState = null;
+}
+
+function handleTerminalTabsSidebarResizeKeydown(event) {
+  if (!terminalTabsSidebarResizeAvailable()) return;
+  const step = event.shiftKey ? 80 : 24;
+  const current = currentTerminalTabsSidebarWidth();
+  let next = current;
+  if (event.key === "ArrowLeft") next = current + step;
+  else if (event.key === "ArrowRight") next = current - step;
+  else if (event.key === "Home") next = TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX;
+  else if (event.key === "End") next = terminalTabsSidebarMaxWidth();
+  else return;
+  event.preventDefault();
+  applyTerminalTabsSidebarWidth(next, { persist: true });
+}
+
+function syncTerminalTabsSidebarWidthForViewport() {
+  if (!terminalTabsSidebarResizeAvailable()) {
+    updateTerminalTabsSidebarResizeHandle();
+    return;
+  }
+  applyTerminalTabsSidebarWidth(readStoredTerminalTabsSidebarWidth() || currentTerminalTabsSidebarWidth());
 }
 
 function normalizeSubagentOpenMode(value) {
@@ -12136,7 +12269,7 @@ const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrde
 const UI_LAYOUT_SIDE_PANEL_FIELDS = ["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"];
 const REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
 const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
-const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups"];
+const UI_LAYOUT_TERMINAL_FIELDS = ["layout", "customGroups", "sidebarWidth"];
 const UI_LAYOUT_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v4:";
 const UI_LAYOUT_LEGACY_PENDING_STORAGE_PREFIX = "pi-webui-ui-layout-pending-v3:";
 const UI_LAYOUT_PENDING_WRITER_ID = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -12332,7 +12465,11 @@ function collectDurableTerminalTabsLayout() {
     }
     customGroups = { version: 1, groups };
   }
-  return { layout: TERMINAL_TABS_LAYOUTS.has(rawLayout) ? rawLayout : null, customGroups };
+  return {
+    layout: TERMINAL_TABS_LAYOUTS.has(rawLayout) ? rawLayout : null,
+    customGroups,
+    sidebarWidth: readStoredTerminalTabsSidebarWidth(),
+  };
 }
 
 function collectDurableFileViewerWidth() {
@@ -12599,6 +12736,10 @@ function applyDurableTerminalTabsLayout(value) {
     writeDurableLayoutCache(TERMINAL_TABS_LAYOUT_STORAGE_KEY, value.layout);
     setTerminalTabsLayout(value.layout, { persist: false });
   }
+  if (Number.isFinite(value.sidebarWidth) && value.sidebarWidth >= TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX) {
+    writeDurableLayoutCache(TERMINAL_TABS_SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(value.sidebarWidth)));
+    restoreTerminalTabsSidebarWidthPreference();
+  }
   if (value.customGroups && value.customGroups.version === 1) {
     writeDurableLayoutCache(TERMINAL_CUSTOM_GROUPS_STORAGE_KEY, JSON.stringify(value.customGroups));
     restoreTerminalCustomGroups();
@@ -12629,7 +12770,7 @@ function durableUiLayoutInteractionActive(field = null) {
     sidePanel: Boolean(sidePanelSectionPointerDrag?.active || sidePanelResizeState),
     composerActions: Boolean(composerActionPointerDrag?.active),
     footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
-    terminalTabs: Boolean(terminalTabDragId),
+    terminalTabs: Boolean(terminalTabDragId || terminalTabsResizeState),
     fileViewerWidth: Boolean(fileViewerResizeState),
   };
   return field ? activeByField[field] === true : Object.values(activeByField).some(Boolean);
@@ -12880,7 +13021,8 @@ function sidePanelMaxWidth(side = "right") {
   const fileViewerVisible = !!activeFileViewer && elements.fileViewerPane && getComputedStyle(elements.fileViewerPane).display !== "none";
   const fileViewerWidth = fileViewerVisible ? Math.max(FILE_VIEWER_WIDTH_MIN_PX, elements.fileViewerPane.getBoundingClientRect().width) : 0;
   const splitOpen = document.body.classList.contains("terminal-split-open");
-  const centralMinimum = 320 + (splitOpen ? 320 : 0) + fileViewerWidth + (isControlDeckSidebarPresentation() ? 208 : 0);
+  const terminalRailWidth = isControlDeckSidebarPresentation() ? Math.max(TERMINAL_TABS_SIDEBAR_WIDTH_MIN_PX, currentTerminalTabsSidebarWidth()) : 0;
+  const centralMinimum = 320 + (splitOpen ? 320 : 0) + fileViewerWidth + terminalRailWidth;
   const otherSide = side === "left" ? "right" : "left";
   const otherPanelVisible = effectiveControlDeckPresentation() === "both" && !controlDeckLayout.collapsedPanels?.[otherSide];
   const otherPanelWidth = otherPanelVisible ? Math.max(SIDE_PANEL_WIDTH_MIN_PX, currentSidePanelWidth(otherSide)) : 0;
@@ -12902,17 +13044,22 @@ function currentSidePanelWidth(side = "right") {
   return Number.isFinite(width) && width > 0 ? width : controlDeckLayout.panelWidths?.[side] || (side === "right" ? readStoredSidePanelWidth() : null) || SIDE_PANEL_WIDTH_DEFAULT_PX;
 }
 
+function controlDeckSideResizeAvailable(side = "right") {
+  const presentation = effectiveControlDeckPresentation();
+  if (presentation === "overlay" || presentation === "embedded" || controlDeckLayout.collapsedPanels?.[side]) return false;
+  return side === "left"
+    ? presentation === "left" || presentation === "both" || presentation === "sidebar"
+    : presentation === "right" || presentation === "both";
+}
+
 function updateSidePanelResizeHandle(width = currentSidePanelWidth("right"), side = "right") {
-  const handles = side === "left" ? [elements.sidePanelResizeHandleLeft] : [elements.sidePanelResizeHandle];
-  const resizeAvailable = !isControlDeckOverlayPresentation() && !(controlDeckLayout.collapsedPanels?.[side]);
-  for (const handle of handles) {
-    if (!handle) continue;
-    handle.hidden = !resizeAvailable;
-    handle.setAttribute("aria-valuemin", String(SIDE_PANEL_WIDTH_MIN_PX));
-    handle.setAttribute("aria-valuemax", String(sidePanelMaxWidth(side)));
-    handle.setAttribute("aria-valuenow", String(Math.round(width)));
-    handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
-  }
+  const handle = side === "left" ? elements.sidePanelResizeHandleLeft : elements.sidePanelResizeHandle;
+  if (!handle) return;
+  handle.hidden = !controlDeckSideResizeAvailable(side);
+  handle.setAttribute("aria-valuemin", String(SIDE_PANEL_WIDTH_MIN_PX));
+  handle.setAttribute("aria-valuemax", String(sidePanelMaxWidth(side)));
+  handle.setAttribute("aria-valuenow", String(Math.round(width)));
+  handle.setAttribute("aria-valuetext", `${Math.round(width)} pixels wide`);
 }
 
 function applySidePanelWidth(width, { persist = false, side = "right" } = {}) {
@@ -12928,8 +13075,13 @@ function applySidePanelWidth(width, { persist = false, side = "right" } = {}) {
 async function restoreSidePanelWidthPreference() {
   const localWidth = readStoredSidePanelWidth();
   if (localWidth) document.documentElement.style.setProperty("--side-panel-width", `${Math.round(localWidth)}px`);
-  if (!isSidePanelOverlayView()) applySidePanelWidth(localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX);
-  else updateSidePanelResizeHandle(localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX);
+  if (!isSidePanelOverlayView()) {
+    applySidePanelWidth(controlDeckLayout.panelWidths?.left || SIDE_PANEL_WIDTH_DEFAULT_PX, { side: "left" });
+    applySidePanelWidth(controlDeckLayout.panelWidths?.right || localWidth || SIDE_PANEL_WIDTH_DEFAULT_PX, { side: "right" });
+  } else {
+    updateSidePanelResizeHandle(currentSidePanelWidth("left"), "left");
+    updateSidePanelResizeHandle(localWidth || currentSidePanelWidth("right"), "right");
+  }
 
   const restoreRevision = sidePanelWidthPreferenceRevision;
   const layoutGenerations = new Map(UI_LAYOUT_FIELDS.map((field) => [field, durableUiLayoutGeneration(field)]));
@@ -12956,7 +13108,7 @@ async function restoreSidePanelWidthPreference() {
 
 function beginSidePanelResize(event, forcedSide = null) {
   const side = forcedSide || (event.currentTarget === elements.sidePanelResizeHandleLeft ? "left" : "right");
-  if (isControlDeckOverlayPresentation() || controlDeckLayout.collapsedPanels?.[side]) return;
+  if (!controlDeckSideResizeAvailable(side)) return;
   if (event.button !== undefined && event.button !== 0) return;
   event.preventDefault();
   const startWidth = currentSidePanelWidth(side);
@@ -12991,7 +13143,7 @@ function finishSidePanelResize(event) {
 
 function handleSidePanelResizeKeydown(event) {
   const side = event.currentTarget === elements.sidePanelResizeHandleLeft ? "left" : "right";
-  if (isControlDeckOverlayPresentation() || controlDeckLayout.collapsedPanels?.[side]) return;
+  if (!controlDeckSideResizeAvailable(side)) return;
   const step = event.shiftKey ? 80 : 24;
   const current = currentSidePanelWidth(side);
   let next = current;
@@ -13005,15 +13157,16 @@ function handleSidePanelResizeKeydown(event) {
 }
 
 function syncSidePanelWidthForViewport() {
-  if (isSidePanelOverlayView() || document.body.classList.contains("side-panel-collapsed")) {
-    updateSidePanelResizeHandle();
+  if (isSidePanelOverlayView()) {
+    updateSidePanelResizeHandle(currentSidePanelWidth("left"), "left");
+    updateSidePanelResizeHandle(currentSidePanelWidth("right"), "right");
     return;
   }
-  // Keep viewport/layout reconciliation anchored to the durable preference.
-  // Reading the rendered width here can capture an in-progress CSS transition
-  // during hard-reset startup and permanently freeze the panel below its saved width.
+  // Keep viewport/layout reconciliation anchored to the durable preferences.
+  // Reading rendered widths here can capture an in-progress CSS transition
+  // during hard-reset startup and permanently freeze a panel below its saved width.
+  applySidePanelWidth(controlDeckLayout.panelWidths?.left || currentSidePanelWidth("left"), { side: "left" });
   applySidePanelWidth(controlDeckLayout.panelWidths?.right || readStoredSidePanelWidth() || currentSidePanelWidth("right"), { side: "right" });
-  if (controlDeckLayout.panelWidths?.left) applySidePanelWidth(controlDeckLayout.panelWidths.left, { side: "left" });
 }
 
 function readStoredFileViewerWidth() {
@@ -13148,6 +13301,7 @@ function syncFileViewerWidthForViewport() {
 function syncResizablePanelWidthsForViewport() {
   syncSidePanelWidthForViewport();
   syncFileViewerWidthForViewport();
+  syncTerminalTabsSidebarWidthForViewport();
 }
 
 async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
@@ -46118,6 +46272,7 @@ window.addEventListener("storage", (event) => {
   if (event.key === SIDE_PANEL_SECTION_STORAGE_KEY && !ignoreLegacySidePanelEvent("collapsedSectionIds")) restoreSidePanelSectionState();
   if (event.key === SIDE_PANEL_STORAGE_KEY && !ignoreLegacySidePanelEvent("collapsedPanels")) restoreSidePanelState();
   if (event.key === TERMINAL_TABS_LAYOUT_STORAGE_KEY) restoreTerminalTabsLayoutSetting();
+  if (event.key === TERMINAL_TABS_SIDEBAR_WIDTH_STORAGE_KEY) restoreTerminalTabsSidebarWidthPreference();
   if (event.key === TERMINAL_CUSTOM_GROUPS_STORAGE_KEY) {
     restoreTerminalCustomGroups();
     syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
@@ -46376,6 +46531,8 @@ elements.sidePanelResizeHandle?.addEventListener("pointerdown", beginSidePanelRe
 elements.sidePanelResizeHandle?.addEventListener("keydown", handleSidePanelResizeKeydown);
 elements.sidePanelResizeHandleLeft?.addEventListener("pointerdown", (event) => beginSidePanelResize(event, "left"));
 elements.sidePanelResizeHandleLeft?.addEventListener("keydown", handleSidePanelResizeKeydown);
+elements.terminalTabsResizeHandle?.addEventListener("pointerdown", beginTerminalTabsSidebarResize);
+elements.terminalTabsResizeHandle?.addEventListener("keydown", handleTerminalTabsSidebarResizeKeydown);
 elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewerResize);
 elements.fileViewerResizeHandle?.addEventListener("keydown", handleFileViewerResizeKeydown);
 elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
@@ -46568,6 +46725,7 @@ clearRemovedSidePanelSectionHeightState();
 restoreDurableUiLayoutPendingJournal();
 restoreSidePanelWidthPreference();
 restoreFileViewerWidthPreference();
+restoreTerminalTabsSidebarWidthPreference();
 focusPromptInput({ defer: true });
 restoreStoredSkillUsage();
 restoreBusyPromptBehaviorSetting();

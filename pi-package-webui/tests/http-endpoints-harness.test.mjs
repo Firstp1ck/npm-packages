@@ -812,7 +812,7 @@ try {
         },
         composerActions: { order: ["new", "git", "send"], grid: { version: 2, columns: 12, positions: { new: 0, git: 1, send: 10 } } },
         footerScopedModelOrder: ["openai-codex/gpt-5.6-sol"],
-        terminalTabs: { layout: "left", customGroups: { version: 1, groups: [{ id: "group-1", title: "Group 1", tabIds: ["tab-a", "tab-b"] }] } },
+        terminalTabs: { layout: "left", customGroups: { version: 1, groups: [{ id: "group-1", title: "Group 1", tabIds: ["tab-a", "tab-b"] }] }, sidebarWidth: 288 },
         fileViewerWidth: 560,
       },
     },
@@ -823,6 +823,7 @@ try {
   assert.deepEqual(savedLayout.body?.data?.layout?.sidePanel?.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: ["files"] });
   assert.deepEqual(savedLayout.body?.data?.layout?.composerActions?.order, ["new", "git", "send"]);
   assert.equal(savedLayout.body?.data?.layout?.terminalTabs?.layout, "left");
+  assert.equal(savedLayout.body?.data?.layout?.terminalTabs?.sidebarWidth, 288);
   assert.notEqual(savedLayout.body?.data?.layoutRevision, initialLayoutRevision);
   assert.equal(JSON.stringify(savedLayout.body).includes(settingsFile), false, "successful layout responses must not disclose the settings path");
   const savedLayoutRevision = savedLayout.body.data.layoutRevision;
@@ -862,6 +863,7 @@ try {
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { composerActions: { order: ["send"] } } },
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { unknown: true } },
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { terminalTabs: { layout: "bottom" } } },
+    { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { terminalTabs: { sidebarWidth: 100 } } },
     { expectedLayoutRevision: partialLayout.body.data.layoutRevision, layout: { fileViewerWidth: 1 } },
     { sidePanelWidth: 700, unexpected: true },
     {},

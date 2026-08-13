@@ -28,6 +28,7 @@ const completeV1 = {
   terminalTabs: {
     layout: "left",
     customGroups: { version: 1, groups: [{ id: "group-1", title: "Group 1", tabIds: ["tab-a", "tab-b"] }] },
+    sidebarWidth: 284.6,
   },
   fileViewerWidth: 560.4,
 };
@@ -41,7 +42,7 @@ assert.deepEqual(migrated.sidePanel.collapsedPanels, { left: false, right: true 
 assert.deepEqual(migrated.sidePanel.panelWidths, { left: 384, right: 612 });
 assert.deepEqual(migrated.composerActions, completeV1.composerActions, "composer action order and grid must survive migration");
 assert.deepEqual(migrated.footerScopedModelOrder, completeV1.footerScopedModelOrder);
-assert.deepEqual(migrated.terminalTabs, completeV1.terminalTabs, "terminal placement and custom groups must survive migration");
+assert.deepEqual(migrated.terminalTabs, { ...completeV1.terminalTabs, sidebarWidth: 285 }, "terminal placement, custom groups, and normalized sidebar width must survive migration");
 assert.equal(migrated.fileViewerWidth, 560);
 
 const malformedV1 = normalizeUiLayout({
@@ -85,6 +86,9 @@ const valid = normalizeUiLayout({
 assert.equal(valid.sidePanel.placement, "both");
 assert.deepEqual(valid.sidePanel.sectionLayout.leftSectionIds, ["files", "future-section"], "unknown historical section ids may be retained");
 assert.deepEqual(valid.sidePanel.panelWidths, { left: 420, right: 641 });
+assert.equal(valid.fileViewerWidth, 560);
+assert.equal(valid.terminalTabs.layout, "left");
+assert.equal(valid.terminalTabs.sidebarWidth, 285);
 
 const partiallyMalformed = normalizeUiLayout({
   ...valid,
@@ -143,6 +147,7 @@ assert.throws(() => validateUiLayoutPatch({ sidePanel: { collapsedPanels: { left
 assert.throws(() => validateUiLayoutPatch({ sidePanel: { panelWidths: { left: UI_LAYOUT_LIMITS.panelWidthMin - 1 } } }), /must be between/);
 assert.throws(() => validateUiLayoutPatch({ sidePanel: { panelWidths: { right: UI_LAYOUT_LIMITS.panelWidthMax + 1 } } }), /must be between/);
 assert.throws(() => validateUiLayoutPatch({ fileViewerWidth: UI_LAYOUT_LIMITS.fileViewerWidthMin - 1 }), /must be between/);
+assert.throws(() => validateUiLayoutPatch({ terminalTabs: { sidebarWidth: UI_LAYOUT_LIMITS.terminalTabsSidebarWidthMin - 1 } }), /must be between/);
 assert.throws(() => validateUiLayoutPatch({ footerScopedModelOrder: Array(UI_LAYOUT_LIMITS.listItems + 1).fill("model") }), /at most/);
 assert.throws(() => validateUiLayoutPatch({
   composerActions: { order: ["a", "b"], grid: { version: 2, columns: 2, positions: { a: 0, b: 0 } } },

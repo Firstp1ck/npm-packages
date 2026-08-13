@@ -72,6 +72,7 @@
   --tooltip-blend-ease: ease;
   --file-viewer-width: 520px;
   --side-panel-width: 384px;
+  --terminal-tabs-sidebar-width: clamp(13rem, 18vw, 19rem);
 
   /* Tier 1 typography scale: --text-xs is the absolute interface floor. */
   --text-xs: 0.75rem;
@@ -804,7 +805,8 @@ body.control-deck-overlay.side-panel-collapsed .terminal-tabs-shell {
   box-shadow: 0 1rem 3rem var(--shadow), 0 0 2rem rgba(137, 180, 250, 0.10), inset 0 1px 0 rgba(255,255,255,0.06);
 }
 .file-viewer-resize-handle,
-.side-panel-resize-handle {
+.side-panel-resize-handle,
+.terminal-tabs-resize-handle {
   position: absolute;
   top: 50%;
   left: -0.78rem;
@@ -824,8 +826,16 @@ body.control-deck-overlay.side-panel-collapsed .terminal-tabs-shell {
     var(--neon-gradient);
   box-shadow: 0 0 1rem rgba(148, 226, 213, 0.22), 0 0.7rem 1.4rem rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.08);
 }
+.side-panel-resize-handle-right {
+  left: 0;
+}
+.side-panel-resize-handle-left {
+  right: 0;
+  left: auto;
+}
 .file-viewer-resize-handle::before,
-.side-panel-resize-handle::before {
+.side-panel-resize-handle::before,
+.terminal-tabs-resize-handle::before {
   content: "";
   width: 0.28rem;
   height: 3.1rem;
@@ -837,27 +847,34 @@ body.control-deck-overlay.side-panel-collapsed .terminal-tabs-shell {
 .file-viewer-resize-handle:focus-visible,
 .side-panel-resize-handle:hover,
 .side-panel-resize-handle:focus-visible,
+.terminal-tabs-resize-handle:hover,
+.terminal-tabs-resize-handle:focus-visible,
 body.file-viewer-resizing .file-viewer-resize-handle,
-body.side-panel-resizing .side-panel-resize-handle {
+body.side-panel-resizing .side-panel-resize-handle,
+body.terminal-tabs-resizing .terminal-tabs-resize-handle {
   border-color: rgba(148, 226, 213, 0.72);
   box-shadow: 0 0 1.35rem rgba(148, 226, 213, 0.34), 0 0.9rem 1.7rem rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.11);
   outline: none;
 }
 .file-viewer-resize-handle[hidden],
-.side-panel-resize-handle[hidden] {
+.side-panel-resize-handle[hidden],
+.terminal-tabs-resize-handle[hidden] {
   display: none;
 }
 body.file-viewer-resizing .layout,
-body.side-panel-resizing .layout {
+body.side-panel-resizing .layout,
+body.terminal-tabs-resizing .chat-panel {
   transition: none;
 }
 body.file-viewer-resizing,
-body.side-panel-resizing {
+body.side-panel-resizing,
+body.terminal-tabs-resizing {
   cursor: col-resize;
   user-select: none;
 }
 body.file-viewer-resizing *,
-body.side-panel-resizing * {
+body.side-panel-resizing *,
+body.terminal-tabs-resizing * {
   cursor: col-resize !important;
 }
 .file-viewer-header {
@@ -5135,7 +5152,7 @@ button.subagent-gate-attempt:focus-visible {
 @media (min-width: 721px) {
   body.terminal-tabs-left .chat-panel {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) clamp(13rem, 18vw, 19rem);
+    grid-template-columns: minmax(0, 1fr) minmax(13rem, var(--terminal-tabs-sidebar-width));
     grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto auto auto auto auto;
     align-items: stretch;
     overflow: visible;

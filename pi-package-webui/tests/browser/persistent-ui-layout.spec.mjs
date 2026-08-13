@@ -19,6 +19,7 @@ const layoutKeys = {
   footerOrder: "pi-webui-footer-scoped-model-order-v1",
   terminalLayout: "pi-webui-terminal-tabs-layout",
   terminalGroups: "pi-webui-terminal-custom-groups-v1",
+  terminalSidebarWidth: "pi-webui-terminal-tabs-sidebar-width",
   fileViewerWidth: "pi-webui-file-viewer-width",
   sidePanelWidth: "pi-webui-side-panel-width",
 };
@@ -145,6 +146,7 @@ async function localLayout(page) {
       footerOrder: json(keys.footerOrder),
       terminalLayout: localStorage.getItem(keys.terminalLayout),
       terminalGroups: json(keys.terminalGroups),
+      terminalSidebarWidth: Number(localStorage.getItem(keys.terminalSidebarWidth)),
       fileViewerWidth: Number(localStorage.getItem(keys.fileViewerWidth)),
       sidePanelWidth: Number(localStorage.getItem(keys.sidePanelWidth)),
     };
@@ -203,7 +205,12 @@ async function composerColumnCount(page) {
 }
 
 
+async function suppressUnrelatedUpdateNotification(page) {
+  await page.addStyleTag({ content: "#updateNotification { display: none !important; }" });
+}
+
 async function assertRestoredLayout(page, expected, { expectCustomGroup = null } = {}) {
+  await suppressUnrelatedUpdateNotification(page);
   await expect.poll(() => sectionOrder(page)).toEqual(expected.sideOrder);
   await expect.poll(() => localLayout(page)).toMatchObject({
     sideOrder: expected.sideOrder,
@@ -211,11 +218,13 @@ async function assertRestoredLayout(page, expected, { expectCustomGroup = null }
     composerGrid: expected.composerGrid,
     footerOrder: expected.footerOrder,
     terminalLayout: "left",
+    terminalSidebarWidth: expected.terminalSidebarWidth,
     fileViewerWidth: expected.fileViewerWidth,
     sidePanelWidth: expected.sidePanelWidth,
   });
   await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
   await expect(page.locator("#terminalTabsLayoutSelect")).toHaveValue("left");
+  await expect.poll(async () => Number(await page.locator("#terminalTabsResizeHandle").getAttribute("aria-valuenow"))).toBe(expected.terminalSidebarWidth);
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeGreaterThanOrEqual(320);
   await expect.poll(async () => Number(await page.locator("#sidePanelResizeHandle").getAttribute("aria-valuenow"))).toBeLessThanOrEqual(expected.sidePanelWidth);
   await expect(page.locator("[data-side-panel-section-resize]")).toHaveCount(0);
@@ -309,6 +318,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   });
 
   await page.goto(baseURL);
+  await suppressUnrelatedUpdateNotification(page);
   await staleGetReady;
   await expect(page.locator("#sidePanel")).toBeVisible();
   await expect(page.locator('[data-composer-action-id="options"]')).toBeVisible();
@@ -350,6 +360,12 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect(page.locator("#terminalTabsLayoutSelect")).toBeVisible();
   await page.locator("#terminalTabsLayoutSelect").selectOption("left");
   await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
+  const terminalTabsResize = page.locator("#terminalTabsResizeHandle");
+  await expect(terminalTabsResize).toBeVisible();
+  await terminalTabsResize.focus();
+  await terminalTabsResize.press("Shift+ArrowLeft");
+  const expectedTerminalSidebarWidth = Number(await terminalTabsResize.getAttribute("aria-valuenow"));
+  expect(expectedTerminalSidebarWidth).toBeGreaterThan(208);
   const options = page.locator('[data-composer-action-id="options"]');
   const optionsBox = await options.boundingBox();
   expect(optionsBox).toBeTruthy();
@@ -383,6 +399,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
     footerOrder: expectedFooterOrder,
     fileViewerWidth: expectedFileViewerWidth,
     sidePanelWidth: expectedSidePanelWidth,
+    terminalSidebarWidth: expectedTerminalSidebarWidth,
     optionsColumn,
   };
 
@@ -397,7 +414,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
     sidePanel: { sectionLayout: { order: expected.sideOrder } },
     composerActions: { order: expected.composerOrder, grid: expected.composerGrid },
     footerScopedModelOrder: expected.footerOrder,
-    terminalTabs: { layout: "left", customGroups: expected.terminalGroups },
+    terminalTabs: { layout: "left", customGroups: expected.terminalGroups, sidebarWidth: expected.terminalSidebarWidth },
     fileViewerWidth: expected.fileViewerWidth,
   });
   await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.preferences.sidePanelWidth).toBe(expected.sidePanelWidth);
@@ -420,6 +437,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), layoutKeys.composerGrid)).toEqual(expected.composerGrid);
   await setTerminalLayout(page, "left");
   await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
+  await expect.poll(async () => (await serverApi("/api/interface-preferences")).data.layout.terminalTabs.layout).toBe("left");
 
   await context.close();
   await stopServer();
@@ -427,6 +445,7 @@ test("server-owned layout survives stale reads, failed writes, localStorage clea
   assert.deepEqual(settingsOnDisk.uiLayout.sidePanel.sectionLayout.order, expected.sideOrder, "the private settings file should contain the browser-committed Control Deck order");
   assert.equal("sectionHeights" in settingsOnDisk.uiLayout.sidePanel, false, "removed Control Deck section heights must not be persisted");
   assert.deepEqual(settingsOnDisk.uiLayout.composerActions.grid, expected.composerGrid, "the private settings file should contain the exact sparse composer grid");
+  assert.equal(settingsOnDisk.uiLayout.terminalTabs.sidebarWidth, expected.terminalSidebarWidth, "the private settings file should contain the browser-committed terminal rail width");
   assert.equal(settingsOnDisk.uiLayout.fileViewerWidth, expected.fileViewerWidth, "the private settings file should contain the browser-committed file-viewer width");
 
   await startServer();
@@ -763,6 +782,7 @@ test("same-origin sibling placement adoption cannot overwrite a dirty section la
     await route.continue();
   });
   await Promise.all([pageA.goto(baseURL), pageB.goto(baseURL)]);
+  await Promise.all([suppressUnrelatedUpdateNotification(pageA), suppressUnrelatedUpdateNotification(pageB)]);
   await expect.poll(async () => (await sectionOrder(pageA)).slice(0, initialOrder.length)).toEqual(initialOrder);
   await pageA.waitForTimeout(700);
   await expect.poll(async () => (await sectionOrder(pageA)).slice(0, initialOrder.length)).toEqual(initialOrder);

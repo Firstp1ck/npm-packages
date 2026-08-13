@@ -44,14 +44,17 @@ assert.match(app, /subfield === "collapsedSectionIds"[\s\S]*durableLayoutIdList\
 assert.match(app, /subfield === "hiddenSectionIds"[\s\S]*durableLayoutIdList\(value\.value\)/);
 assert.match(app, /function cacheControlDeckLayout\(next = controlDeckLayout, subfield = null\)[\s\S]*readStoredControlDeckLayout\(\)[\s\S]*\[subfield\]: incoming\[subfield\]/);
 assert.match(app, /activelyManipulated[\s\S]*subfield === "sectionLayout"[\s\S]*subfield === "panelWidths"/);
+assert.match(app, /function controlDeckSideResizeAvailable\(side = "right"\)[\s\S]*presentation === "left"[\s\S]*presentation === "both"[\s\S]*presentation === "right"/);
 assert.match(app, /function updateSidePanelResizeHandle\(width = currentSidePanelWidth\("right"\), side = "right"\)/);
 assert.match(app, /function handleSidePanelResizeKeydown\(event\)[\s\S]*side === "left"/);
+assert.match(css, /\.side-panel-resize-handle-right \{[\s\S]*left:\s*0/);
+assert.match(css, /\.side-panel-resize-handle-left \{[\s\S]*right:\s*0;[\s\S]*left:\s*auto/);
 assert.match(css, /--side-panel-left-width/);
 assert.match(css, /--side-panel-right-width/);
 assert.match(css, /body\.control-deck-both \.layout/);
 assert.match(css, /side-panel-left-collapsed[\s\S]*side-panel-right-collapsed/);
 assert.match(css, /body\.control-deck-overlay \.layout/);
-assert.match(css, /body\.terminal-tabs-left \.chat-panel[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) clamp/);
+assert.match(css, /body\.terminal-tabs-left \.chat-panel[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(13rem, var\(--terminal-tabs-sidebar-width\)\)/);
 assert.match(css, /body\.terminal-tabs-left \.terminal-tabs-shell[\s\S]*grid-column:\s*2/);
 assert.match(css, /body\.terminal-tabs-left \.chat-search-bar[\s\S]*body\.terminal-tabs-left \.context-meter-bar[\s\S]*grid-column:\s*1/);
 assert.match(css, /\.workspace-column[\s\S]*body\.terminal-split-open \.workspace-column[\s\S]*body\.file-viewer-open \.workspace-column[\s\S]*body\.terminal-split-open\.file-viewer-open \.workspace-column/);

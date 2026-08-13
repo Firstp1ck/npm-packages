@@ -122,16 +122,40 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await page.waitForTimeout(600);
   await dismissUpdateNotification(page);
 
+  const rightResizeHandle = page.locator("#sidePanelResizeHandle");
+  const leftResizeHandle = page.locator("#sidePanelLeftResizeHandle");
   await expect(page.locator("#sidePanel")).toBeVisible();
   await expect(page.locator("#sidePanelLeft")).toBeHidden();
+  await expect(rightResizeHandle).toBeVisible();
+  await expect(leftResizeHandle).toBeHidden();
+  const rightOnlyBefore = Number(await rightResizeHandle.getAttribute("aria-valuenow"));
+  await rightResizeHandle.focus();
+  await rightResizeHandle.press("Shift+ArrowLeft");
+  const rightOnlyWidth = Number(await rightResizeHandle.getAttribute("aria-valuenow"));
+  expect(rightOnlyWidth).toBeGreaterThan(rightOnlyBefore);
+
   await selectPlacement(page, "left");
   await expect(page.locator("#sidePanelLeft")).toBeVisible();
+  await expect(leftResizeHandle).toBeVisible();
+  await expect(rightResizeHandle).toBeHidden();
   await expect(page.locator("#openIssueButton")).toBeVisible();
   await expect(page.locator("#piVersionButton")).toHaveCount(1);
+  const leftOnlyBefore = Number(await leftResizeHandle.getAttribute("aria-valuenow"));
+  const leftHandleBox = await leftResizeHandle.boundingBox();
+  assert.ok(leftHandleBox, "left Control Deck resize handle should have pointer geometry");
+  await page.mouse.move(leftHandleBox.x + leftHandleBox.width / 2, leftHandleBox.y + leftHandleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(leftHandleBox.x + leftHandleBox.width / 2 + 80, leftHandleBox.y + leftHandleBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const leftOnlyWidth = Number(await leftResizeHandle.getAttribute("aria-valuenow"));
+  expect(leftOnlyWidth).toBeGreaterThan(leftOnlyBefore);
 
   await selectPlacement(page, "both");
   await expect(page.locator("#sidePanelLeft")).toBeVisible();
   await expect(page.locator("#sidePanel")).toBeVisible();
+  await expect(leftResizeHandle).toBeVisible();
+  await expect(rightResizeHandle).toBeVisible();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-webui-control-deck-layout-v2") || "null")?.panelWidths)).toMatchObject({ left: leftOnlyWidth, right: rightOnlyWidth });
   await assertAxeClean(page, "visible left Control Deck", "#sidePanelLeft");
   await assertAxeClean(page, "visible right Control Deck", "#sidePanel");
   const controls = page.locator('[data-side-panel-section-toggle="controls"]');
@@ -198,10 +222,17 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await expect(page.locator("#sidePanel")).toBeVisible();
   await page.locator("#sidePanelLeftExpandButton").click();
   await expect(page.locator("body")).not.toHaveClass(/side-panel-left-collapsed/);
-  await page.locator("#sidePanelLeftResizeHandle").focus();
-  const leftBefore = Number(await page.locator("#sidePanelLeftResizeHandle").getAttribute("aria-valuenow"));
-  await page.locator("#sidePanelLeftResizeHandle").press("Shift+ArrowRight");
-  await expect.poll(async () => Number(await page.locator("#sidePanelLeftResizeHandle").getAttribute("aria-valuenow"))).toBeGreaterThan(leftBefore);
+  await leftResizeHandle.focus();
+  const leftBefore = Number(await leftResizeHandle.getAttribute("aria-valuenow"));
+  await leftResizeHandle.press("Shift+ArrowRight");
+  await expect.poll(async () => Number(await leftResizeHandle.getAttribute("aria-valuenow"))).toBeGreaterThan(leftBefore);
+  const bothLeftWidth = Number(await leftResizeHandle.getAttribute("aria-valuenow"));
+  await rightResizeHandle.focus();
+  const rightBefore = Number(await rightResizeHandle.getAttribute("aria-valuenow"));
+  await rightResizeHandle.press("Shift+ArrowLeft");
+  await expect.poll(async () => Number(await rightResizeHandle.getAttribute("aria-valuenow"))).toBeGreaterThan(rightBefore);
+  const bothRightWidth = Number(await rightResizeHandle.getAttribute("aria-valuenow"));
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-webui-control-deck-layout-v2") || "null")?.panelWidths)).toMatchObject({ left: bothLeftWidth, right: bothRightWidth });
 
   await openControls(page);
   await page.locator("#terminalTabsLayoutSelect").selectOption("left");
@@ -274,4 +305,6 @@ test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARI
   await page.reload();
   await expect(page.locator("body")).toHaveClass(/control-deck-both/);
   await expect(page.locator('#sidePanelBodyLeft > [data-side-panel-section="files"]')).toHaveCount(1);
+  await expect.poll(async () => Number(await leftResizeHandle.getAttribute("aria-valuenow"))).toBe(bothLeftWidth);
+  await expect.poll(async () => Number(await rightResizeHandle.getAttribute("aria-valuenow"))).toBe(bothRightWidth);
 });
