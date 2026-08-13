@@ -26,6 +26,14 @@ const WEBUI_WIDGET_PAYLOAD_PREFIX = "BTW_WEBUI_PAYLOAD ";
 const WEBUI_PAYLOAD_TYPE = "firstpick.pi-extension-btw.output";
 const WEBUI_PAYLOAD_VERSION = 2;
 const SIDE_SYSTEM_PROMPT = `\n\n[/btw SIDE QUESTION MODE]\nAnswer the user's /btw side question using the main-session transcript and prior /btw turns included in the request.\nDo not call tools, ask to inspect files, run commands, or search. You have no tool access in this side request.\nKeep the answer concise unless the question explicitly asks for detail.\nThis side thread is separate from the main conversation, but earlier /btw questions and answers in the request are normal conversation context and must be remembered.`;
+const STATUS_REQUEST = `Summarize the current main session status concisely using only evidence in the transcript.
+Cover:
+- the current goal;
+- completed work;
+- active work;
+- remaining todos and the next step;
+- blockers and uncertainty.
+Do not invent progress, plans, blockers, or certainty. Clearly mark anything that is missing or uncertain.`;
 const TRANSFER_SUMMARY_SYSTEM_PROMPT = `\n\n[/btw TRANSFER SUMMARY MODE]\nSummarize a /btw side question and side answer for transfer back into the main agent conversation as steering context.\nReturn only a concise steering summary. Preserve actionable facts, decisions, constraints, caveats, and requested behavior relevant to the main task.\nDo not add new facts, do not call tools, and do not re-answer the original side question.`;
 const MAX_TOOL_ARGS_CHARS = 2000;
 const WEBUI_UPDATE_INTERVAL_MS = 90;
@@ -33,6 +41,24 @@ const WEBUI_UPDATE_INTERVAL_MS = 90;
 type BtwStatus = "loading" | "streaming" | "done" | "error" | "aborted";
 type BtwOverlayResult = "dismiss" | "abort";
 type BtwTransferMode = "full" | "summary";
+type BtwPresentation = {
+  displayQuestion?: string;
+  overlayTitle?: string;
+  footerText?: string;
+  commandName?: string;
+  requestName?: string;
+  errorPrefix?: string;
+  onSettled?: () => void;
+};
+
+const STATUS_PRESENTATION = {
+  displayQuestion: "Current session, goal, and todo status",
+  overlayTitle: "/btw session status",
+  footerText: "Fresh session snapshot · not appended to main transcript · continue chatting while it streams",
+  commandName: "/btw-status",
+  requestName: "Status request",
+  errorPrefix: "/btw-status failed",
+} as const;
 
 type BtwTransferPayload = {
   question?: string;
@@ -194,7 +220,7 @@ function webuiStatusLabel(status: BtwStatus): string {
   }
 }
 
-function createWebuiPublisher(ctx: ExtensionCommandContext, id: string, question: string) {
+function createWebuiPublisher(ctx: ExtensionCommandContext, id: string, question: string, footerText: string) {
   let answer = "";
   let status: BtwStatus = "loading";
   let error = "";
@@ -228,7 +254,7 @@ function createWebuiPublisher(ctx: ExtensionCommandContext, id: string, question
     ], { placement: "aboveEditor" });
     ctx.ui.setWidget(WEBUI_FOOTER_WIDGET_KEY, [
       `btw: ${webuiStatusLabel(status)} · ${truncatePlain(question, 90)}${modelLabel(ctx) ? ` · ${modelLabel(ctx)}` : ""}`,
-      "Continuous side thread · not appended to main transcript · continue chatting while it streams",
+      footerText,
     ], { placement: "belowEditor" });
   };
 
@@ -279,12 +305,14 @@ class BtwOverlayComponent {
   private error = "";
   private requestRender: (() => void) | undefined;
   private readonly theme: Theme;
+  private readonly title: string;
   private readonly question: string;
   private readonly model: string | undefined;
   private readonly done: (result: BtwOverlayResult) => void;
 
-  constructor(theme: Theme, question: string, model: string | undefined, done: (result: BtwOverlayResult) => void) {
+  constructor(theme: Theme, title: string, question: string, model: string | undefined, done: (result: BtwOverlayResult) => void) {
     this.theme = theme;
+    this.title = title;
     this.question = question;
     this.model = model;
     this.done = done;
@@ -346,7 +374,7 @@ class BtwOverlayComponent {
     const innerWidth = Math.max(12, width - 2);
     const contentWidth = Math.max(8, innerWidth - 2);
     const maxAnswerLines = 18;
-    const title = " /btw side question ";
+    const title = ` ${this.title} `;
     const titleText = th.fg("accent", title);
     const titleWidth = visibleWidth(title);
     const leftRule = "─".repeat(Math.max(0, Math.floor((innerWidth - titleWidth) / 2)));
@@ -434,6 +462,7 @@ async function runSideQuestion(
   question: string,
   signal: AbortSignal,
   onUpdate: (status: BtwStatus, answer: string, error?: string, force?: boolean) => void,
+  requestName = "Side question",
 ): Promise<string> {
   if (!ctx.model) throw new Error("No model selected.");
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
@@ -471,35 +500,58 @@ async function runSideQuestion(
       completedMessage = event.message;
       answer = assistantText(event.message) || answer;
     } else if (event.type === "error") {
-      throw new Error(event.error.errorMessage || (event.reason === "aborted" ? "Side question aborted." : "Side question failed."));
+      throw new Error(event.error.errorMessage || (event.reason === "aborted" ? `${requestName} aborted.` : `${requestName} failed.`));
     }
   }
 
   const final = await responseStream.result().catch(() => undefined);
   const assistantMessage = final || completedMessage;
   if (!assistantMessage || assistantMessage.role !== "assistant") {
-    throw new Error("Side question completed without an assistant response.");
+    throw new Error(`${requestName} completed without an assistant response.`);
   }
   answer = assistantText(assistantMessage) || answer;
-  if (signal.aborted) throw new Error("Side question aborted.");
+  if (signal.aborted) throw new Error(`${requestName} aborted.`);
   commitSideQuestion(sideThread, requestMessages, assistantMessage);
   return answer.trim();
 }
 
-async function handleBtw(args: string, ctx: ExtensionCommandContext, sideThread: SideThread) {
+async function handleBtw(
+  args: string,
+  ctx: ExtensionCommandContext,
+  sideThread: SideThread,
+  presentation: BtwPresentation = {},
+) {
   const question = args.trim();
+  const displayQuestion = presentation.displayQuestion || question;
+  const overlayTitle = presentation.overlayTitle || "/btw side question";
+  const footerText = presentation.footerText || "Continuous side thread · not appended to main transcript · continue chatting while it streams";
+  const commandName = presentation.commandName || "/btw";
+  const requestName = presentation.requestName || "Side question";
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    presentation.onSettled?.();
+  };
+  const formatError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return presentation.errorPrefix ? `${presentation.errorPrefix}: ${message}` : message;
+  };
+
   if (!question) {
     ctx.ui.notify("Usage: /btw <side question>", "warning");
+    settle();
     return;
   }
   if (!ctx.model) {
-    ctx.ui.notify("/btw needs a selected model.", "error");
+    ctx.ui.notify(`${commandName} needs a selected model.`, "error");
+    settle();
     return;
   }
 
   const id = randomUUID();
   const controller = new AbortController();
-  const webuiPublisher = createWebuiPublisher(ctx, id, question);
+  const webuiPublisher = createWebuiPublisher(ctx, id, displayQuestion, footerText);
   const publish = (status: BtwStatus, answer: string, error = "", force = false) => {
     if (!sideThread.cancelled) webuiPublisher.update(status, answer, error, force);
   };
@@ -513,47 +565,54 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext, sideThread:
       if (overlayOpen) component?.update(status, answer, error);
     };
 
-    const overlayResult = await ctx.ui.custom<BtwOverlayResult>((tui, theme, _keybindings, done) => {
-      component = new BtwOverlayComponent(theme, question, modelLabel(ctx), done);
-      component.setRequestRender(() => tui.requestRender());
-      updateComponent("loading", "");
-      publish("loading", "", "", true);
+    try {
+      const overlayResult = await ctx.ui.custom<BtwOverlayResult>((tui, theme, _keybindings, done) => {
+        component = new BtwOverlayComponent(theme, overlayTitle, displayQuestion, modelLabel(ctx), done);
+        component.setRequestRender(() => tui.requestRender());
+        updateComponent("loading", "");
+        publish("loading", "", "", true);
 
-      sidePromise = enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
-        if (threadSignal.aborted) return;
-        updateComponent(status, answer, error || "");
-        publish(status, answer, error || "", force);
-      }), controller.signal)
-        .then((answer) => {
-          finished = true;
-          updateComponent("done", answer || "(no text answer)");
-          publish("done", answer || "(no text answer)", "", true);
-        })
-        .catch((error) => {
-          finished = true;
-          if (sideThread.cancelled) return;
-          const aborted = controller.signal.aborted;
-          const message = aborted ? "Side question aborted." : error instanceof Error ? error.message : String(error);
-          updateComponent(aborted ? "aborted" : "error", "", message);
-          publish(aborted ? "aborted" : "error", "", message, true);
-        });
+        sidePromise = enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
+          if (threadSignal.aborted) return;
+          updateComponent(status, answer, error || "");
+          publish(status, answer, error || "", force);
+        }, requestName), controller.signal)
+          .then((answer) => {
+            finished = true;
+            updateComponent("done", answer || "(no text answer)");
+            publish("done", answer || "(no text answer)", "", true);
+          })
+          .catch((error) => {
+            finished = true;
+            if (sideThread.cancelled) return;
+            const aborted = controller.signal.aborted;
+            const message = aborted ? `${requestName} aborted.` : formatError(error);
+            updateComponent(aborted ? "aborted" : "error", "", message);
+            publish(aborted ? "aborted" : "error", "", message, true);
+          })
+          .finally(settle);
 
-      return component;
-    }, {
-      overlay: true,
-      overlayOptions: {
-        anchor: "center",
-        width: "72%",
-        minWidth: 48,
-        maxHeight: "82%",
-        margin: 1,
-      },
-    });
+        return component;
+      }, {
+        overlay: true,
+        overlayOptions: {
+          anchor: "center",
+          width: "72%",
+          minWidth: 48,
+          maxHeight: "82%",
+          margin: 1,
+        },
+      });
 
-    overlayOpen = false;
-    if ((overlayResult === "abort" || !finished) && !controller.signal.aborted) controller.abort();
-    await sidePromise?.catch(() => undefined);
-    webuiPublisher.dispose();
+      overlayOpen = false;
+      if ((overlayResult === "abort" || !finished) && !controller.signal.aborted) controller.abort();
+      await sidePromise?.catch(() => undefined);
+    } finally {
+      if (!finished && !controller.signal.aborted) controller.abort();
+      await sidePromise?.catch(() => undefined);
+      webuiPublisher.dispose();
+      settle();
+    }
     return;
   }
 
@@ -561,14 +620,16 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext, sideThread:
     publish("loading", "", "", true);
     void enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
       if (!threadSignal.aborted) publish(status, answer, error, force);
-    }), controller.signal)
+    }, requestName), controller.signal)
       .then((answer) => publish("done", answer || "(no text answer)", "", true))
       .catch((error) => {
         if (sideThread.cancelled) return;
-        const message = error instanceof Error ? error.message : String(error);
-        publish("error", "", message, true);
+        publish("error", "", formatError(error), true);
       })
-      .finally(() => webuiPublisher.dispose());
+      .finally(() => {
+        webuiPublisher.dispose();
+        settle();
+      });
     return;
   }
 
@@ -576,24 +637,29 @@ async function handleBtw(args: string, ctx: ExtensionCommandContext, sideThread:
   try {
     const answer = await enqueueSideThreadRun(sideThread, (threadSignal) => runSideQuestion(ctx, sideThread, question, threadSignal, (status, answer, error, force) => {
       if (!threadSignal.aborted) publish(status, answer, error, force);
-    }), controller.signal);
+    }, requestName), controller.signal);
     publish("done", answer || "(no text answer)", "", true);
     ctx.ui.notify(answer || "(no text answer)", "info");
   } catch (error) {
     if (!sideThread.cancelled) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = formatError(error);
       publish("error", "", message, true);
-      ctx.ui.notify(`/btw failed: ${message}`, "error");
+      ctx.ui.notify(presentation.errorPrefix ? message : `/btw failed: ${message}`, "error");
     }
   } finally {
     webuiPublisher.dispose();
+    settle();
   }
 }
 
 export default function btwExtension(pi: ExtensionAPI) {
   const sideThread = createSideThread();
+  const statusThreads = new Set<SideThread>();
 
-  pi.on("session_shutdown", () => cancelSideThread(sideThread));
+  pi.on("session_shutdown", () => {
+    cancelSideThread(sideThread);
+    for (const statusThread of statusThreads) cancelSideThread(statusThread);
+  });
 
   pi.registerCommand("btw", {
     description: "Ask in a continuous side thread without adding it to the main conversation. Usage: /btw <question>",
@@ -622,9 +688,17 @@ export default function btwExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("btw-status", {
-    description: "Show /btw extension status",
-    handler: async (_args, ctx) => {
-      ctx.ui.notify(`/btw loaded · mode ${ctx.mode} · model ${modelLabel(ctx) || "none"} · transcript ${truncatePlain(ctx.sessionManager.getSessionFile() || ctx.sessionManager.getSessionId())}`, "info");
+    description: "Summarize the current session, goal, and todo progress in a fresh side request.",
+    handler: (_args, ctx) => {
+      const statusThread = createSideThread();
+      statusThreads.add(statusThread);
+      return handleBtw(STATUS_REQUEST, ctx, statusThread, {
+        ...STATUS_PRESENTATION,
+        onSettled: () => statusThreads.delete(statusThread),
+      }).catch((error) => {
+        statusThreads.delete(statusThread);
+        throw error;
+      });
     },
   });
 }
