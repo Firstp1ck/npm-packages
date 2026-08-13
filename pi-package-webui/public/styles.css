@@ -2109,6 +2109,67 @@ body.control-deck-section-dragging .side-panel-empty-drop-target {
   color: var(--ctp-text);
   font-weight: 900;
 }
+.file-tree-node.git-ignored > .file-tree-item {
+  color: rgba(var(--ctp-overlay-rgb), 0.92);
+  border-color: rgba(var(--ctp-overlay-rgb), 0.24);
+  background: rgba(var(--ctp-crust-rgb), 0.34);
+}
+.file-tree-node.git-ignored > .file-tree-item .file-tree-icon,
+.file-tree-node.git-ignored > .file-tree-item .file-tree-expander {
+  color: rgba(var(--ctp-overlay-rgb), 0.86);
+}
+.file-tree-node.git-ignored > .file-tree-item .file-tree-kind,
+.file-tree-node.git-ignored > .file-tree-item .file-tree-search-path {
+  color: rgba(var(--ctp-overlay-rgb), 0.78);
+}
+.file-tree-node.git-ignored > .file-tree-item:hover,
+.file-tree-node.git-ignored > .file-tree-item:focus-visible {
+  color: rgba(var(--ctp-text-rgb), 0.92);
+  border-color: rgba(137, 180, 250, 0.30);
+  background: rgba(var(--ctp-surface-rgb), 0.34);
+  box-shadow: inset 2px 0 0 var(--ctp-blue);
+}
+.file-tree-node.git-ignored > .file-tree-item:hover .file-tree-icon,
+.file-tree-node.git-ignored > .file-tree-item:focus-visible .file-tree-icon,
+.file-tree-node.git-ignored > .file-tree-item:hover .file-tree-expander,
+.file-tree-node.git-ignored > .file-tree-item:focus-visible .file-tree-expander {
+  color: var(--ctp-teal);
+}
+.file-tree-node.git-ignored.selected > .file-tree-item,
+.file-tree-node.git-ignored > .file-tree-item[aria-selected="true"] {
+  color: var(--ctp-text);
+  border-color: rgba(148, 226, 213, 0.62);
+  background: rgba(148, 226, 213, 0.18);
+  box-shadow: inset 3px 0 0 var(--ctp-teal), 0 0 0 1px rgba(148, 226, 213, 0.10);
+}
+.file-tree-node.git-ignored.selected > .file-tree-item .file-tree-icon,
+.file-tree-node.git-ignored > .file-tree-item[aria-selected="true"] .file-tree-icon {
+  color: var(--ctp-teal);
+}
+.file-tree-node.git-ignored.git-changed > .file-tree-item {
+  color: rgba(var(--ctp-text-rgb), 0.88);
+  border-color: var(--file-tree-git-border);
+  background: linear-gradient(90deg, var(--file-tree-git-bg), transparent 72%);
+  box-shadow: inset 2px 0 0 var(--file-tree-git-color);
+}
+.file-tree-node.git-ignored.dragging > .file-tree-item {
+  cursor: grabbing;
+  color: rgba(var(--ctp-text-rgb), 0.88);
+  border-color: rgba(137, 180, 250, 0.46);
+  background: rgba(137, 180, 250, 0.12);
+}
+.file-tree-node.git-ignored.drop-target > .file-tree-item {
+  color: rgba(var(--ctp-text-rgb), 0.92);
+  border-color: rgba(166, 227, 161, 0.62);
+  background: rgba(166, 227, 161, 0.12);
+  box-shadow: inset 2px 0 0 var(--ctp-green), 0 0 0 1px rgba(166, 227, 161, 0.12);
+}
+.file-tree-node.git-ignored.drop-blocked > .file-tree-item {
+  color: rgba(var(--ctp-text-rgb), 0.92);
+  border-color: rgba(243, 139, 168, 0.56);
+  background: rgba(243, 139, 168, 0.10);
+  box-shadow: inset 2px 0 0 var(--ctp-red);
+}
 .file-tree-git-badge {
   justify-self: end;
   min-width: 1.35rem;

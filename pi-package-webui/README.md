@@ -20,7 +20,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 | **Sessions and workspaces** | Run several isolated Pi sessions, resume prior work, switch projects, preserve per-tab drafts, and create branch worktrees. |
 | **Live agent work** | Follow streaming Markdown, thinking, tool output, queues, todo progress, subagents, and context usage without leaving the browser. |
 | **Models and controls** | Change models and thinking effort, manage scoped models, configure tools and skills, and use the command palette. |
-| **Files and prompts** | Upload or paste files and images, edit text attachments, use slash-command suggestions, and reference project paths with `@`. |
+| **Files and prompts** | Upload or paste files and images, edit text attachments, use slash-command suggestions, browse project files, and reference project paths with `@`. |
 | **Git workflows** | Inspect changes, switch branches, review diffs, stage work, generate commit messages, push, and prepare pull requests through guided steps. |
 | **Project utilities** | Launch detected app runners, manage working directories, search files and transcripts, and customize themes. |
 | **Companion features** | Add stats, remote access, voice, `/btw`, richer Git status, themes, release tools, and other supported Pi packages. |
@@ -104,6 +104,12 @@ Manage the current session, workspace, model, theme, notifications, updates, usa
 **Optional feature needed:** None — included in Pi Web UI core.
 
 Browse, search, save, or create project directories and open them in the active Pi tab.
+
+#### Files panel
+
+**Optional feature needed:** None — the Files panel is included in Pi Web UI core.
+
+Browse and search the files of the active project, open them in the viewer, and use the row menu for file actions. In a Git repository, files and folders that Git ignores stay listed and fully usable, but appear greyed out so generated output such as `node_modules` or build folders is easy to tell apart. Point at a greyed row to see the “Ignored by Git” hint in its tooltip.
 
 #### Queue manager
 

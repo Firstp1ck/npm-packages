@@ -3380,6 +3380,10 @@ try {
   const movedDirectoryRelative = "files-fixture/docs/move-dir";
   const deleteFileRelative = "files-fixture/delete-me.txt";
   const deleteDirectoryRelative = "files-fixture/delete-dir";
+  const ignoredFileRelative = "files-fixture/ignored-note.txt";
+  const ignoredDirectoryRelative = "files-fixture/ignored-output";
+  const ignoredNestedFileRelative = "files-fixture/ignored-output/recursive-ignored-result.txt";
+  const trackedPatternRelative = "files-fixture/tracked-pattern.txt";
   const depthEightFileRelative = "deep-search/f1/f2/f3/f4/f5/f6/depth-eight-file.txt";
   const depthEightDirectoryRelative = "deep-search/d1/d2/d3/d4/d5/d6/depth-eight-dir";
   const depthNineFileRelative = "deep-search/t1/t2/t3/t4/t5/t6/t7/too-deep-file.txt";
@@ -3400,19 +3404,54 @@ try {
   await writeFile(path.join(cwd, deleteFileRelative), "delete me\n", "utf8");
   await mkdir(path.join(cwd, deleteDirectoryRelative), { recursive: true });
   await writeFile(path.join(cwd, deleteDirectoryRelative, "nested.txt"), "nested delete\n", "utf8");
+  await writeFile(path.join(cwd, ignoredFileRelative), "ignored file remains visible\n", "utf8");
+  await mkdir(path.join(cwd, ignoredDirectoryRelative), { recursive: true });
+  await writeFile(path.join(cwd, ignoredNestedFileRelative), "recursive ignored search fixture\n", "utf8");
+  await writeFile(path.join(cwd, trackedPatternRelative), "tracked files remain normal\n", "utf8");
+  if (gitAvailable) {
+    const gitignorePath = path.join(cwd, ".gitignore");
+    const gitignore = await readFile(gitignorePath, "utf8");
+    await writeFile(gitignorePath, `${gitignore.replace(/\n?$/, "\n")}/files-fixture/ignored-note.txt\n/files-fixture/ignored-output/\n/files-fixture/tracked-pattern.txt\n`, "utf8");
+    runGitFixture(["add", "-f", "--", trackedPatternRelative], cwd, "tracked ignore-pattern fixture should enter the Git index");
+  }
 
   const fileTree = await request("127.0.0.1", `/api/files?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent("files-fixture")}`);
   assert.equal(fileTree.status, 200, `file tree endpoint should list workspace directories: ${fileTree.body?.error || ""}`);
   assert.equal(fileTree.body?.ok, true);
   const fileTreeEntries = fileTree.body?.data?.entries || [];
   assert.equal(fileTreeEntries.find((entry) => entry.name === "docs")?.type, "directory", "file tree should identify subdirectories");
-  assert.equal(fileTreeEntries.find((entry) => entry.name === "viewer.txt")?.type, "file", "file tree should identify regular files");
+  const normalFileTreeEntry = fileTreeEntries.find((entry) => entry.name === "viewer.txt");
+  assert.equal(normalFileTreeEntry?.type, "file", "file tree should identify regular files");
+  assert.equal(normalFileTreeEntry?.gitIgnored, undefined, "ordinary file tree entries should omit the Git-ignore decoration");
+  if (gitAvailable) {
+    const ignoredFileEntry = fileTreeEntries.find((entry) => entry.path === ignoredFileRelative);
+    const ignoredDirectoryEntry = fileTreeEntries.find((entry) => entry.path === ignoredDirectoryRelative);
+    assert.equal(ignoredFileEntry?.type, "file", "ignored files should remain present in file tree responses");
+    assert.equal(ignoredFileEntry?.gitIgnored, true, "Git-ignored files should be decorated");
+    assert.equal(ignoredDirectoryEntry?.type, "directory", "ignored directories should remain present in file tree responses");
+    assert.equal(ignoredDirectoryEntry?.gitIgnored, true, "Git-ignored directories should be decorated");
+    assert.equal(fileTreeEntries.find((entry) => entry.path === trackedPatternRelative)?.gitIgnored, undefined, "tracked files that match an ignore pattern should remain normal");
+  }
 
   const fileSearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("readme")}`);
   assert.equal(fileSearch.status, 200, `file search endpoint should search workspace files: ${fileSearch.body?.error || ""}`);
   assert.equal(fileSearch.body?.ok, true);
   const fileSearchEntries = fileSearch.body?.data?.entries || [];
   assert.equal(fileSearchEntries.find((entry) => entry.path === markdownRelative)?.type, "file", "file search should find matching files recursively");
+  assert.equal(fileSearchEntries.find((entry) => entry.path === markdownRelative)?.gitIgnored, undefined, "ordinary search results should omit the Git-ignore decoration");
+
+  if (gitAvailable) {
+    const ignoredSearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("ignored")}`);
+    assert.equal(ignoredSearch.status, 200, `file search should retain Git-ignored entries: ${ignoredSearch.body?.error || ""}`);
+    const ignoredSearchEntries = ignoredSearch.body?.data?.entries || [];
+    assert.equal(ignoredSearchEntries.find((entry) => entry.path === ignoredFileRelative)?.gitIgnored, true, "ignored file search results should be decorated");
+    assert.equal(ignoredSearchEntries.find((entry) => entry.path === ignoredDirectoryRelative)?.gitIgnored, true, "ignored directory search results should be decorated");
+    assert.equal(ignoredSearchEntries.find((entry) => entry.path === ignoredNestedFileRelative)?.gitIgnored, true, "recursive search should descend into and decorate ignored directories");
+
+    const trackedPatternSearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("tracked-pattern")}`);
+    assert.equal(trackedPatternSearch.status, 200, "tracked ignore-pattern search should be accepted");
+    assert.equal(trackedPatternSearch.body?.data?.entries?.find((entry) => entry.path === trackedPatternRelative)?.gitIgnored, undefined, "tracked search results that match an ignore pattern should remain normal");
+  }
 
   const directorySearch = await request("127.0.0.1", `/api/files/search?tab=${encodeURIComponent(tabId)}&q=${encodeURIComponent("docs")}`);
   assert.equal(directorySearch.status, 200, `file search endpoint should search directories: ${directorySearch.body?.error || ""}`);

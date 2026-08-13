@@ -18,6 +18,7 @@ function sourceBetween(source, startMarker, endMarker, label) {
 }
 
 const searchEntry = sourceBetween(app, "function appendFileSearchEntry(", "\nasync function revealFileTreeEntry(", "file search entry renderer");
+const ignoreHelpers = sourceBetween(app, "function fileTreeEntryGitIgnored(", "\nfunction fileTreeGitStatusClasses(", "Git-ignore helpers");
 const revealSearchEntry = sourceBetween(app, "async function revealFileTreeEntry(", "\nfunction appendFileTreeEntry(", "file search reveal behavior");
 const clearSearch = sourceBetween(app, "function focusVisibleFileTreeSelection(", "\nasync function runFileTreeSearch(", "file search clear behavior");
 const searchLabelCss = sourceBetween(css, ".file-tree-search-label {", "\n.file-tree-kind {", "file search row styles");
@@ -106,7 +107,7 @@ const runtime = {
   fileTreeOverflowButton: () => fakeNode("button", "file-tree-overflow-button", "⋯"),
   appendFileTreeEntry: (parent, child, depth) => { renderedChildren.push({ child, depth }); parent.append(fakeNode("li", "file-tree-node", child.name)); },
 };
-vm.runInNewContext(`${searchEntry}\nthis.renderSearchEntry = appendFileSearchEntry;`, runtime);
+vm.runInNewContext(`${ignoreHelpers}\n${searchEntry}\nthis.renderSearchEntry = appendFileSearchEntry;`, runtime);
 
 const directory = { name: "packages", path: "packages", type: "directory", directory: true };
 const collapsedParent = fakeNode("ul");

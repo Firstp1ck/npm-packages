@@ -2182,6 +2182,11 @@ function renderMobilePhoneExperience({ focus = false } = {}) {
   }
   document.documentElement.dataset.mobilePresentation = mobilePresentation;
   const route = mobileShellState.route;
+  const surface = mobileShellElement("mobileShellSurface");
+  // Capture focus before route rendering can temporarily unmount canonical
+  // Settings controls. Streaming state refreshes rebuild the mobile shell, and
+  // the surface renderer remounts those same controls later in this pass.
+  const surfaceFocusSnapshot = captureMobileSurfaceRenderFocus(surface);
   const activeTabRecord = activeTab();
   const activeState = activeTabRecord ? mobileTabActivityState(activeTabRecord) : "idle";
   const title = mobileShellElement("mobileSessionTitle");
@@ -2228,8 +2233,6 @@ function renderMobilePhoneExperience({ focus = false } = {}) {
     mobileWidgetAreaUnmount();
     mobileCanonicalUnmount();
   }
-  const surface = mobileShellElement("mobileShellSurface");
-  const surfaceFocusSnapshot = captureMobileSurfaceRenderFocus(surface);
   if (mobileShellState.surface === "none") mobileSurfaceRenderFocus = null;
   if (surface) {
     surface.hidden = mobileShellState.surface === "none";
@@ -3791,11 +3794,20 @@ function reconcileControlDeckHosts() {
   const leftBody = elements.sidePanelBodyLeft;
   const rightBody = elements.sidePanelBodyRight || elements.sidePanel?.querySelector(".side-panel-body");
   const targetBody = presentation === "left" || presentation === "sidebar" ? leftBody : rightBody;
+  const desiredSectionsByBody = new Map();
   for (const id of order) {
     const record = byId.get(id);
     if (!record) continue;
     const body = presentation === "both" ? (leftIds.has(id) ? leftBody : rightBody) : targetBody;
-    if (body) body.append(record.section);
+    if (!body) continue;
+    if (!desiredSectionsByBody.has(body)) desiredSectionsByBody.set(body, []);
+    desiredSectionsByBody.get(body).push(record.section);
+  }
+  for (const [body, desiredSections] of desiredSectionsByBody) {
+    const currentSections = [...body.children].filter((child) => child.matches?.("[data-side-panel-section]"));
+    const alreadyReconciled = currentSections.length === desiredSections.length
+      && desiredSections.every((section, index) => currentSections[index] === section);
+    if (!alreadyReconciled) desiredSections.forEach((section) => body.append(section));
   }
   const sidebarPresentation = isControlDeckSidebarPresentation();
   document.body.classList.toggle("control-deck-both", presentation === "both");
@@ -11209,6 +11221,14 @@ function fileTreeGitStatusForEntry(entry = {}) {
   return fileTreeState.gitStatusByPath.get(normalizeFileTreePath(entry.path || "")) || null;
 }
 
+function fileTreeEntryGitIgnored(entry = {}) {
+  return entry?.gitIgnored === true;
+}
+
+function fileTreeGitIgnoredTitle(gitIgnored = false) {
+  return gitIgnored ? "Ignored by Git" : "";
+}
+
 function fileTreeGitStatusClasses(status) {
   const normalized = normalizeFileTreeGitStatus(status);
   if (!normalized) return "";
@@ -11329,6 +11349,7 @@ function fileTreeEntryRenderSignature(entry = {}) {
     entry.directory === true,
     String(entry.extension || ""),
     String(entry.error || ""),
+    fileTreeEntryGitIgnored(entry),
   ];
 }
 
@@ -11447,7 +11468,8 @@ function appendFileSearchEntry(parent, entry) {
   const loading = isDirectory && fileTreeState.loading.has(path);
   const gitStatus = fileTreeGitStatusForEntry(entry);
   const gitStatusClasses = fileTreeGitStatusClasses(gitStatus);
-  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  const gitIgnored = fileTreeEntryGitIgnored(entry);
+  const item = make("li", `file-tree-node file-tree-search-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${gitIgnored ? " git-ignored" : ""}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
   item.setAttribute("role", "none");
   const button = make("button", "file-tree-item file-tree-search-item");
   button.type = "button";
@@ -11460,7 +11482,7 @@ function appendFileSearchEntry(parent, entry) {
     button.setAttribute("aria-expanded", expanded ? "true" : "false");
     button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${entry.name || fileDisplayName(path)}`);
   }
-  button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
+  button.title = [path || ".", fileTreeGitIgnoredTitle(gitIgnored), fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   const contextPath = fileParentPath(path) || ".";
   const label = make("span", "file-tree-search-label");
   label.append(
@@ -11526,7 +11548,8 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
   const loading = isDirectory && fileTreeState.loading.has(path);
   const gitStatus = fileTreeGitStatusForEntry(entry);
   const gitStatusClasses = fileTreeGitStatusClasses(gitStatus);
-  const item = make("li", `file-tree-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
+  const gitIgnored = fileTreeEntryGitIgnored(entry);
+  const item = make("li", `file-tree-node ${entry.type || "file"}${gitStatusClasses ? ` ${gitStatusClasses}` : ""}${gitIgnored ? " git-ignored" : ""}${expanded ? " expanded" : ""}${fileTreeState.selectedPath === path ? " selected" : ""}`);
   item.setAttribute("role", "none");
   const button = make("button", "file-tree-item");
   button.type = "button";
@@ -11539,7 +11562,7 @@ function appendFileTreeEntry(parent, entry, depth = 0) {
     button.setAttribute("aria-expanded", expanded ? "true" : "false");
     button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${entry.name || fileDisplayName(path)}`);
   }
-  button.title = [path || ".", fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
+  button.title = [path || ".", fileTreeGitIgnoredTitle(gitIgnored), fileTreeGitStatusTitle(gitStatus), entry.error || ""].filter(Boolean).join("\n");
   button.append(
     isDirectory ? fileTreeExpander(expanded) : make("span", "file-tree-expander-spacer"),
     make("span", `file-tree-icon ${isDirectory && expanded ? "expanded" : ""}`, loading ? "…" : fileEntryIcon(entry)),

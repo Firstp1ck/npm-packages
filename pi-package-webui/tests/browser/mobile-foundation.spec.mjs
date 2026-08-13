@@ -44,6 +44,7 @@ test.beforeAll(async () => {
     env: {
       ...process.env,
       PI_WEBUI_RPC_SUPERVISOR: "0",
+      FAKE_PI_CONTINUITY_MODE: "1",
       PI_CODING_AGENT_DIR: join(tempRoot, "agent"),
       PI_WEBUI_SETTINGS_FILE: join(tempRoot, "settings.json"),
     },
@@ -536,6 +537,31 @@ test("phone v2 destinations, canonical actions, history, and presentation remain
 
   await assertAxeClean(page, "phone shell after history and rotation");
   await phoneContext.close();
+});
+
+test("mobile model search retains focus while agent output streams", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  await page.goto(`${baseURL}/?mobileShell=v2`);
+  await page.locator("#updateNotification").evaluate((notification) => { notification.hidden = true; notification.classList.remove("show"); });
+
+  await page.locator("#mobileMoreButton").click();
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.locator("#modelControlLabel").click();
+  const modelSearch = page.locator("#modelSearchInput");
+  await expect(modelSearch).toBeVisible();
+  await modelSearch.fill("gpt");
+
+  const tabsPayload = await (await page.request.get(`${baseURL}/api/tabs`)).json();
+  const streamingTabId = tabsPayload.data.activeTabId || tabsPayload.data.tabs[0].id;
+  const streamResponse = await page.request.post(`${baseURL}/api/prompt?tab=${encodeURIComponent(streamingTabId)}`, {
+    data: { message: "fixture continuity delayed stream", requestId: `model-search-focus-${Date.now()}` },
+  });
+  assert.equal(streamResponse.ok(), true);
+  await expect(page.locator(".message.assistant.streaming .streaming-markdown").last()).toContainText("continuity stream");
+  await expect(modelSearch).toBeFocused();
+  await expect(modelSearch).toHaveValue("gpt");
+  await context.close();
 });
 
 test("mobile continuity preserves drafts, restores metadata honestly, and retries only on command", async ({ browser }) => {

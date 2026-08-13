@@ -1842,16 +1842,17 @@ function latestEvents(limit = 40) {
   return eventHistory.slice(-Math.max(0, Math.min(EVENT_HISTORY_LIMIT, limit)));
 }
 
-function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20000, env = {} } = {}) {
+function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20000, env = {}, input, utf8Output = false } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       // LC_ALL=C keeps tool output in English so error classification works
       // regardless of locale.
       env: { ...process.env, ...env, LC_ALL: "C" },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       windowsHide: true,
     });
+    if (utf8Output) child.stdout.setEncoding("utf8");
     let stdout = "";
     let stderr = "";
     let stdoutTruncated = false;
@@ -1877,6 +1878,10 @@ function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20
       stderr += String(chunk);
       if (stderr.length > maxOutputLength) stderr = stderr.slice(-maxOutputLength);
     });
+    if (child.stdin) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
     child.on("error", (error) => {
       const message = formatCommandSpawnError(command, error);
       finish({ exitCode: undefined, stdout, stderr: message, error: message, errorCode: error?.code });
@@ -6070,6 +6075,46 @@ function withFileTreeGitStatus(entries = [], workspaceRoot, gitStatus) {
   return entries.map((entry) => {
     const status = gitStatusForWorkspaceEntry(workspaceRoot, entry, gitStatus);
     return status ? { ...entry, gitStatus: status } : entry;
+  });
+}
+
+async function readWorkspaceGitIgnoredPaths(workspaceRoot, entries = [], gitRoot = "") {
+  try {
+    const root = path.resolve(gitRoot || await getGitRoot(workspaceRoot));
+    const candidates = new Set();
+    for (const entry of entries) {
+      if (!entry?.path) continue;
+      const absolute = path.resolve(workspaceRoot, entry.path);
+      if (absolute !== root && !pathInside(root, absolute)) continue;
+      const relative = path.relative(root, absolute);
+      if (!relative || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) continue;
+      candidates.add(relative.split(path.sep).join("/"));
+    }
+    if (!candidates.size) return null;
+    const input = `${[...candidates].join("\0")}\0`;
+    const result = await runCommand("git", ["check-ignore", "-z", "--stdin"], {
+      cwd: root,
+      timeoutMs: GIT_CHANGES_COMMAND_TIMEOUT_MS,
+      maxOutputLength: Math.max(20_000, input.length + 1),
+      env: { GIT_OPTIONAL_LOCKS: "0" },
+      input,
+      utf8Output: true,
+    });
+    if (![0, 1].includes(result.exitCode) || result.timedOut || result.error || result.stdoutTruncated) return null;
+    return { root, paths: new Set(result.stdout.split("\0").filter(Boolean)) };
+  } catch {
+    return null;
+  }
+}
+
+function withFileTreeGitIgnored(entries = [], workspaceRoot, gitIgnored) {
+  if (!gitIgnored?.root || !gitIgnored.paths?.size) return entries;
+  return entries.map((entry) => {
+    if (!entry?.path) return entry;
+    const absolute = path.resolve(workspaceRoot, entry.path);
+    if (absolute !== gitIgnored.root && !pathInside(gitIgnored.root, absolute)) return entry;
+    const relative = path.relative(gitIgnored.root, absolute).split(path.sep).join("/");
+    return gitIgnored.paths.has(relative) ? { ...entry, gitIgnored: true } : entry;
   });
 }
 
@@ -13316,12 +13361,13 @@ async function getFileTreeData(tab, requestedPath = "") {
     statFileTreeEntries(resolved.targetPath, dirents, resolved.root, resolved.realRoot),
     readWorkspaceGitStatusIndex(resolved.root),
   ]);
+  const gitIgnored = await readWorkspaceGitIgnoredPaths(resolved.root, listed.entries, gitStatus?.root);
   return {
     root: resolved.root,
     displayRoot: displayPath(resolved.root),
     path: resolved.relative,
     displayPath: displayPath(resolved.targetPath),
-    entries: withFileTreeGitStatus(listed.entries, resolved.root, gitStatus),
+    entries: withFileTreeGitIgnored(withFileTreeGitStatus(listed.entries, resolved.root, gitStatus), resolved.root, gitIgnored),
     gitStatus: fileTreeGitStatusPayload(resolved.root, gitStatus),
     truncated: listed.truncated,
     total: listed.total,
@@ -13407,11 +13453,12 @@ async function getFileSearchData(tab, rawQuery = "") {
     }
   }
   truncated = queue.length > 0 || scanned >= FILE_SEARCH_MAX_SCANNED || entries.length >= FILE_SEARCH_MAX_RESULTS;
+  const gitIgnored = await readWorkspaceGitIgnoredPaths(resolved.root, entries, gitStatus?.root);
   return {
     root: resolved.root,
     displayRoot: displayPath(resolved.root),
     query,
-    entries: withFileTreeGitStatus(entries, resolved.root, gitStatus),
+    entries: withFileTreeGitIgnored(withFileTreeGitStatus(entries, resolved.root, gitStatus), resolved.root, gitIgnored),
     gitStatus: fileTreeGitStatusPayload(resolved.root, gitStatus),
     truncated,
     total: entries.length,
