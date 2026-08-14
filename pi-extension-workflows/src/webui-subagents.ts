@@ -3,6 +3,7 @@ import { workflowCallId, type WorkflowRunManager } from "./run-manager.ts";
 import type { TaskRun, WorkflowRun } from "./types.ts";
 
 export const WORKFLOW_SUBAGENTS_EVENT = "firstpick:workflow-subagents:v1";
+export const WEBUI_AGENT_RUNS_EVENT = "firstpick:webui-agent-runs:v1";
 export const WORKFLOW_SUBAGENTS_VERSION = 1 as const;
 
 export const WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS = {
@@ -12,14 +13,15 @@ export const WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS = {
   activityBytes: 80,
   recentOutputLines: 8,
   recentOutputLineBytes: 500,
-  runIdentifierBytes: 160,
-  agentIdentifierBytes: 240,
+  // Keep provider IDs at or below the protocol's common unchanged-ID threshold.
+  runIdentifierBytes: 120,
+  agentIdentifierBytes: 120,
 } as const;
 
 export type WorkflowSubagentSnapshotAgent = {
   id: string;
   name: string;
-  status: "running";
+  status: "running" | "done" | "failed" | "cancelled";
   index: number;
   activityState?: string;
   model?: string;
@@ -41,7 +43,7 @@ export type WorkflowSubagentsSnapshot = {
   runs: WorkflowSubagentSnapshotRun[];
 };
 
-type WorkflowRunSource = Pick<WorkflowRunManager, "active">;
+type WorkflowRunSource = Pick<WorkflowRunManager, "active"> & Partial<Pick<WorkflowRunManager, "list" | "get">>;
 
 function boundedText(value: unknown, maxBytes: number): string {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -89,6 +91,12 @@ function activityState(task: TaskRun): string | undefined {
   return boundedText(state, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.activityBytes) || undefined;
 }
 
+function canonicalTaskStatus(status: TaskRun["status"]): WorkflowSubagentSnapshotAgent["status"] {
+  if (status === "completed") return "done";
+  if (status === "failed" || status === "cancelled") return status;
+  return "running";
+}
+
 function snapshotAgent(run: WorkflowRun, phaseId: string, task: TaskRun, index: number): WorkflowSubagentSnapshotAgent {
   const model = typeof task.options?.model === "string"
     ? boundedText(task.options.model, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.nameBytes)
@@ -98,7 +106,7 @@ function snapshotAgent(run: WorkflowRun, phaseId: string, task: TaskRun, index: 
   return {
     id: workflowAgentSnapshotId(run, phaseId, task),
     name: boundedText(task.label ?? task.name ?? task.taskId, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.nameBytes) || "Workflow agent",
-    status: "running",
+    status: canonicalTaskStatus(task.status),
     index,
     ...(activity ? { activityState: activity } : {}),
     ...(model ? { model } : {}),
@@ -109,7 +117,7 @@ function snapshotAgent(run: WorkflowRun, phaseId: string, task: TaskRun, index: 
 function snapshotRun(run: WorkflowRun): WorkflowSubagentSnapshotRun {
   const agents = run.phases
     .flatMap((phase) => phase.tasks
-      .filter((task) => task.status === "running")
+      .filter((task) => task.status === "running" || task.status === "completed" || task.status === "failed" || task.status === "cancelled")
       .map((task) => ({ phaseId: phase.phaseId, task })))
     .slice(0, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.agentsPerRun)
     .map(({ phaseId, task }, index) => snapshotAgent(run, phaseId, task, index));
@@ -124,16 +132,20 @@ function snapshotRun(run: WorkflowRun): WorkflowSubagentSnapshotRun {
 }
 
 /**
- * Returns a complete, live-only projection for the WebUI subagent monitor.
- * It deliberately excludes workflow prompts, task outputs/results, errors,
- * policy data, paths, commands, and full subprocess transcripts.
+ * Returns a bounded projection for the WebUI subagent monitor. Current manager
+ * implementations retain terminal runs in memory, so settled calls remain
+ * inspectable until the normal manager/session retention boundary.
  */
 export function buildWorkflowSubagentsSnapshot(manager: WorkflowRunSource, now = new Date()): WorkflowSubagentsSnapshot {
-  const runs = manager.active()
-    .filter((run) => run.status !== "completed" && run.status !== "failed" && run.status !== "cancelled")
-    .slice()
+  const byId = new Map(manager.active().map((run) => [run.runId, run]));
+  if (manager.list && manager.get) for (const record of manager.list()) {
+    const run = manager.get(record.runId);
+    if (run) byId.set(run.runId, run);
+  }
+  const runs = [...byId.values()]
+    .filter((run) => run.phases.some((phase) => phase.tasks.some((task) => ["running", "completed", "failed", "cancelled"].includes(task.status))))
     .sort((left, right) => left.startedAt.localeCompare(right.startedAt) || left.runId.localeCompare(right.runId))
-    .slice(0, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.runs)
+    .slice(-WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.runs)
     .map(snapshotRun);
   return {
     version: WORKFLOW_SUBAGENTS_VERSION,
@@ -142,11 +154,53 @@ export function buildWorkflowSubagentsSnapshot(manager: WorkflowRunSource, now =
   };
 }
 
+function timestamp(value: string | undefined, fallback: number): number {
+  const parsed = Date.parse(value || "");
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export function buildWorkflowAgentRunsSnapshot(manager: WorkflowRunSource, now = new Date()) {
+  const legacy = buildWorkflowSubagentsSnapshot(manager, now);
+  const parentByRun = new Map(manager.list?.().map((record) => [record.runId, record.sessionId]) || []);
+  const nowMs = now.getTime();
+  return {
+    version: 1 as const,
+    producerId: "workflow-run",
+    complete: true,
+    instances: legacy.runs.flatMap((run) => run.agents.map((agent) => {
+      const startedAt = timestamp(run.startedAt, nowMs);
+      const sourceUpdatedAt = timestamp(run.endedAt || run.startedAt, startedAt);
+      const terminal = agent.status !== "running";
+      return {
+        version: 1 as const,
+        instanceId: agent.id,
+        runId: run.id,
+        parentSessionId: parentByRun.get(run.id.slice("workflow:".length)) || null,
+        launcher: "workflow",
+        provider: "workflow-run",
+        origin: "workflow_run",
+        name: agent.name,
+        status: agent.status,
+        startedAt,
+        updatedAt: sourceUpdatedAt,
+        endedAt: terminal ? sourceUpdatedAt : null,
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.activityState ? { activityState: agent.activityState } : {}),
+        capabilities: { open: true, refresh: true, cancel: false, steer: false },
+        outputRef: { kind: "none" as const },
+      };
+    })),
+    removals: [],
+  };
+}
+
 export function publishWorkflowSubagentsSnapshot(
   manager: WorkflowRunSource,
-  emit: (event: typeof WORKFLOW_SUBAGENTS_EVENT, snapshot: WorkflowSubagentsSnapshot) => void,
+  emit: (event: string, snapshot: WorkflowSubagentsSnapshot | ReturnType<typeof buildWorkflowAgentRunsSnapshot>) => void,
 ): WorkflowSubagentsSnapshot {
-  const snapshot = buildWorkflowSubagentsSnapshot(manager);
+  const now = new Date();
+  const snapshot = buildWorkflowSubagentsSnapshot(manager, now);
   emit(WORKFLOW_SUBAGENTS_EVENT, snapshot);
+  emit(WEBUI_AGENT_RUNS_EVENT, buildWorkflowAgentRunsSnapshot(manager, now));
   return snapshot;
 }

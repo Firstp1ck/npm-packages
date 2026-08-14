@@ -189,6 +189,18 @@ function latestPayload() {
   return JSON.parse(entry.text.slice("PI_WEBUI_SUBAGENTS_V1 ".length));
 }
 
+/** v1 delivery accounting must stay independent of the separate canonical v2 status key. */
+function legacyStatusCount() {
+  return statuses.filter((item) => item.key === "webui-subagents").length;
+}
+
+function latestCanonicalPayload() {
+  const entry = statuses.filter((item) => item.key === "webui-subagents-v2").at(-1);
+  assert.ok(entry, "helper should publish the canonical WebUI agent-run status");
+  assert.match(entry.text, /^PI_WEBUI_SUBAGENTS_V2 /);
+  return JSON.parse(entry.text.slice("PI_WEBUI_SUBAGENTS_V2 ".length));
+}
+
 function helperResponse(requestId) {
   const notice = notifications.findLast((entry) => entry.message.startsWith("__PI_WEBUI_HELPER_RESPONSE__:")
     && JSON.parse(entry.message.slice("__PI_WEBUI_HELPER_RESPONSE__:".length)).requestId === requestId);
@@ -284,13 +296,13 @@ const retryGate = {
   updatedAt: Date.now(),
   attempts: [],
 };
-const statusesBeforeFailedDelivery = statuses.length;
+const statusesBeforeFailedDelivery = legacyStatusCount();
 setStatusFailures = 1;
 bus.emit("webui:subagent-gate:v1:update", retryGate);
-assert.equal(statuses.length, statusesBeforeFailedDelivery, "a failed setStatus delivery should not appear successful");
+assert.equal(legacyStatusCount(), statusesBeforeFailedDelivery, "a failed setStatus delivery should not appear successful");
 bus.emit("webui:subagent-gate:v1:update", retryGate);
-assert.equal(statuses.length, statusesBeforeFailedDelivery + 1, "an unchanged snapshot should retry after setStatus throws");
-const statusesBeforeHeartbeat = statuses.length;
+assert.equal(legacyStatusCount(), statusesBeforeFailedDelivery + 1, "an unchanged snapshot should retry after setStatus throws");
+const statusesBeforeHeartbeat = legacyStatusCount();
 const realDateNow = Date.now;
 Date.now = () => realDateNow() + 16_000;
 try {
@@ -298,7 +310,7 @@ try {
 } finally {
   Date.now = realDateNow;
 }
-assert.equal(statuses.length, statusesBeforeHeartbeat + 1, "an unchanged snapshot should republish after the bounded heartbeat interval");
+assert.equal(legacyStatusCount(), statusesBeforeHeartbeat + 1, "an unchanged snapshot should republish after the bounded heartbeat interval");
 
 bus.emit("webui:subagent-gate:v1:update", {
   version: 1,
@@ -343,6 +355,9 @@ const workflowSnapshot = {
   }],
 };
 bus.emit("firstpick:workflow-subagents:v1", workflowSnapshot);
+const canonicalPublishesAfterWorkflow = statuses.filter((item) => item.key === "webui-subagents-v2").length;
+bus.emit("firstpick:workflow-subagents:v1", workflowSnapshot);
+assert.equal(statuses.filter((item) => item.key === "webui-subagents-v2").length, canonicalPublishesAfterWorkflow, "unchanged active snapshots must respect the bounded canonical publish heartbeat");
 payload = latestPayload();
 const workflowRun = payload.runs.find((run) => run.id === workflowRunId);
 assert.deepEqual(workflowRun && {
@@ -994,6 +1009,134 @@ for (let index = 0; index < 17; index += 1) {
 }
 payload = latestPayload();
 assert.ok(payload.runs.filter((run) => run.source !== "workflow" && run.status !== "running").length <= 16, "ordinary retained runs should enforce the 16-run finished retention cap");
+
+// --- canonical agent-run protocol (v2) ---------------------------------------
+
+for (const handler of extensionHandlers.get("tool_execution_start") || []) {
+  handler({ type: "tool_execution_start", toolCallId: "canon-run", toolName: "subagent", args: { agent: "reviewer" } }, ctx);
+}
+let canonical = latestCanonicalPayload();
+assert.equal(canonical.version, 2, "the canonical status key should carry the v2 envelope");
+const canonicalAgent = canonical.instances.find((instance) => instance.runId === "canon-run");
+assert.ok(canonicalAgent, "a live pi-subagents run should project a canonical instance");
+assert.equal(canonicalAgent.version, 1, "canonical instances stay on protocol version 1");
+assert.equal(canonicalAgent.launcher, "pi-subagents");
+assert.equal(canonicalAgent.provider, "pi-subagents");
+assert.equal(canonicalAgent.status, "running");
+assert.equal(canonicalAgent.capabilities.cancel, true, "the owning pi-subagents lifecycle keeps cancel authority");
+assert.equal(canonicalAgent.capabilities.steer, false, "v1 never advertises steer");
+assert.equal(canonicalAgent.outputRef.kind, "helper");
+assert.match(canonicalAgent.outputRef.id, /^h-[0-9a-f]{32}$/, "helper output handles must be opaque");
+assert.equal(JSON.stringify(canonical).includes(asyncRunDir), false, "canonical snapshots must not disclose host paths");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "canon-output",
+  action: "subagent-output",
+  payload: { outputId: canonicalAgent.outputRef.id },
+}), ctx);
+const canonicalOutput = helperResponse("canon-output");
+assert.equal(canonicalOutput.ok, true, "an opaque helper handle should resolve output");
+assert.equal(canonicalOutput.data.runId, "canon-run");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "canon-output-unknown",
+  action: "subagent-output",
+  payload: { outputId: "h-00000000000000000000000000000000" },
+}), ctx);
+assert.equal(helperResponse("canon-output-unknown").ok, false, "an unknown output handle must be rejected, not guessed");
+
+const providerInstance = (overrides = {}) => ({
+  version: 1,
+  instanceId: "sdk-instance-1",
+  runId: "sdk-run-1",
+  launcher: "sdk",
+  provider: "webui-registry",
+  name: "sdk worker",
+  status: "running",
+  startedAt: Date.now() - 1000,
+  updatedAt: Date.now(),
+  endedAt: null,
+  ...overrides,
+});
+
+bus.emit("firstpick:webui-agent-runs:v1", {
+  version: 1,
+  producerId: "custom-alpha",
+  complete: true,
+  instances: [providerInstance()],
+});
+canonical = latestCanonicalPayload();
+assert.ok(canonical.instances.some((instance) => instance.instanceId === "sdk-instance-1"), "a valid provider snapshot should be ingested");
+assert.ok(canonical.producers.includes("custom-alpha"));
+
+bus.emit("firstpick:webui-agent-runs:v1", {
+  version: 1,
+  producerId: "custom-beta",
+  complete: true,
+  instances: [providerInstance({ instanceId: "beta-instance-1", runId: "beta-run-1", launcher: "pi-print" })],
+});
+canonical = latestCanonicalPayload();
+assert.ok(canonical.instances.some((instance) => instance.instanceId === "sdk-instance-1"), "a complete snapshot must only clear its own producer's rows");
+assert.ok(canonical.instances.some((instance) => instance.instanceId === "beta-instance-1"));
+
+const instancesBeforeMalformed = canonical.instances.length;
+bus.emit("firstpick:webui-agent-runs:v1", { version: 1, producerId: "custom-alpha", complete: true, instances: [{ version: 1, instanceId: "../escape" }] });
+bus.emit("firstpick:webui-agent-runs:v1", { version: 9, producerId: "custom-alpha", complete: true, instances: [] });
+canonical = latestCanonicalPayload();
+assert.equal(canonical.instances.length, instancesBeforeMalformed, "a malformed snapshot must not clear valid rows");
+assert.ok(canonical.diagnostics.some((entry) => entry.code === "invalid-provider-snapshot"), "malformed snapshots should surface a bounded diagnostic");
+
+const countBeforeDuplicate = canonical.instances.length;
+bus.emit("firstpick:webui-agent-runs:v1", {
+  version: 1,
+  producerId: "custom-duplicate",
+  complete: true,
+  instances: [providerInstance({
+    instanceId: canonicalAgent.instanceId,
+    runId: canonicalAgent.runId,
+    launcher: "custom",
+    provider: "custom-duplicate",
+    capabilities: { open: true, refresh: true, cancel: true, steer: true },
+  })],
+});
+canonical = latestCanonicalPayload();
+assert.equal(canonical.instances.length, countBeforeDuplicate, "a second observer of the same instance must not add a count");
+const deduplicated = canonical.instances.find((instance) => instance.instanceId === canonicalAgent.instanceId);
+assert.equal(deduplicated.provider, "pi-subagents", "the owning provider keeps the row");
+assert.equal(deduplicated.capabilities.steer, false, "a foreign producer must not seize capabilities");
+
+const instancesBeforeGate = canonical.instances.length;
+bus.emit("webui:subagent-gate:v1:update", {
+  version: 1,
+  id: "canon-gate",
+  status: "running",
+  requiredSuccesses: 1,
+  qualifyingSuccesses: 0,
+  requireDistinctProviders: false,
+  startedAt: Date.now() - 500,
+  updatedAt: Date.now(),
+  attempts: [
+    { id: "canon-gate:0:1", taskIndex: 0, attempt: 1, maxAttempts: 1, agent: "reviewer", retrySafety: "read-only", runId: "canon-run", status: "running" },
+    { id: "canon-gate:1:1", taskIndex: 1, attempt: 1, maxAttempts: 1, agent: "reviewer", retrySafety: "read-only", runId: "never-launched", status: "failed", failureKind: "pre-launch" },
+  ],
+});
+canonical = latestCanonicalPayload();
+assert.equal(canonical.instances.length, instancesBeforeGate, "gate attempts must never add canonical agent counts");
+const resolvedReference = canonical.gateReferences.find((reference) => reference.attemptId === "canon-gate:0:1");
+assert.ok(resolvedReference?.resolved, "a gate attempt should reference its canonical child");
+assert.deepEqual(resolvedReference.instanceIds, [canonicalAgent.instanceId]);
+assert.equal(canonical.gateReferences.find((reference) => reference.attemptId === "canon-gate:1:1")?.resolved, false, "a pre-launch failure stays gate history only");
+assert.equal(canonical.instances.find((instance) => instance.instanceId === canonicalAgent.instanceId)?.launcher, "gate", "a gate-launched child reports the gate launch family");
+
+for (const handler of extensionHandlers.get("tool_execution_end") || []) {
+  handler({ type: "tool_execution_end", toolCallId: "canon-run", toolName: "subagent" }, ctx);
+}
+canonical = latestCanonicalPayload();
+const retainedCanonical = canonical.instances.find((instance) => instance.instanceId === canonicalAgent.instanceId);
+assert.equal(retainedCanonical.status, "done", "a terminal run keeps an explicit terminal status");
+assert.ok(Number.isSafeInteger(retainedCanonical.endedAt), "terminal instances carry endedAt");
+assert.equal(retainedCanonical.capabilities.cancel, false, "a finished run stops advertising cancel");
+assert.equal(retainedCanonical.capabilities.open, true, "retained rows stay openable");
 
 for (const handler of extensionHandlers.get("session_shutdown") || []) await handler({ reason: "quit" }, ctx);
 unsubscribeRpc();

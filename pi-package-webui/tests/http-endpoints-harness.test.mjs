@@ -7,6 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { AgentRunRegistry } from "../lib/agent-run-registry.mjs";
 import { terminateProcessTree } from "../lib/process-tree.mjs";
 import { deriveSupervisorRecoveryToken } from "../lib/rpc-supervisor-protocol.mjs";
 import { readSupervisorState, supervisorPaths, supervisorPidIsAlive } from "../lib/rpc-supervisor-state.mjs";
@@ -131,6 +132,8 @@ const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-"));
 const harnessSideEffectsRoot = await mkdtemp(path.join(tmpdir(), "pi-webui-http-harness-side-effects-"));
 const settingsFile = path.join(harnessSideEffectsRoot, "webui-settings.json");
 const workflowPolicyAgentDir = path.join(harnessSideEffectsRoot, "agent");
+const agentRunStateHome = path.join(harnessSideEffectsRoot, "state");
+const agentRunRegistry = new AgentRunRegistry({ agentDir: workflowPolicyAgentDir, port, stateHome: agentRunStateHome });
 const managedThemePackageRoot = path.join(workflowPolicyAgentDir, "npm", "node_modules", "@firstpick", "pi-themes-bundle");
 const managedThemeDir = path.join(managedThemePackageRoot, "themes");
 const workflowPolicyFile = path.join(workflowPolicyAgentDir, "workflow-policy.json");
@@ -253,6 +256,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.
     GIT_COMMITTER_EMAIL: "pi-webui-test@example.invalid",
     PATH: `${fakeOpenBinDir}${path.delimiter}${process.env.PATH || ""}`,
     PI_CODING_AGENT_DIR: workflowPolicyAgentDir,
+    XDG_STATE_HOME: agentRunStateHome,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
     PI_SESSION_SUMMARY_CONFIG_FILE: sessionSummaryConfigFile,
     PI_WEBUI_RPC_SUPERVISOR: "1",
@@ -1481,6 +1485,17 @@ try {
   await request("127.0.0.1", `/api/tabs/${encodeURIComponent(otherArtifactTab.body?.data?.tab?.id)}`, { method: "DELETE" });
   await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture document artifact clear" } });
 
+  const oldHelperFixture = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents old-helper" } });
+  assert.equal(oldHelperFixture.status, 200, "old-helper compatibility fixture should be accepted");
+  let oldHelperOverview;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    oldHelperOverview = await request("127.0.0.1", "/api/subagents");
+    if (oldHelperOverview.body?.data?.totalAgents === 2) break;
+    await delay(50);
+  }
+  assert.equal(oldHelperOverview.body?.data?.version, 2, "a new server must project an old v1-only helper status into the v2 overview");
+  assert.equal(oldHelperOverview.body?.data?.groups?.find((group) => group.tabId === tabId)?.runs?.[0]?.agents?.length, 2);
+
   const subagentFixtureStart = await request("127.0.0.1", "/api/prompt", { method: "POST", body: { tab: tabId, message: "fixture subagents running" } });
   assert.equal(subagentFixtureStart.status, 200, "subagent fixture status should be accepted");
   let subagentsResponse;
@@ -1540,8 +1555,83 @@ try {
       content: [{ type: "text", text: "# Fixture README" }],
     },
   ], "subagent output endpoint should preserve normalized structured transcript roles, order, IDs, and tool metadata");
+  const canonicalHelperOutput = await request("127.0.0.1", `/api/subagents/output?group=${encodeURIComponent(`tab:${tabId}`)}&run=fixture-run&agent=fixture-run%3A0`);
+  assert.equal(canonicalHelperOutput.status, 200, "the v2 output route should dispatch an opaque helper-owned handle");
+  assert.equal(canonicalHelperOutput.body?.data?.agent?.name, "reviewer");
   const unknownSubagentOutput = await request("127.0.0.1", `/api/subagents/output?tab=${encodeURIComponent(tabId)}&run=missing&agent=missing`);
   assert.equal(unknownSubagentOutput.status, 404, "subagent output endpoint should reject untracked selections");
+
+  const registryNow = Date.now();
+  await agentRunRegistry.writeRecord("duplicate-provider", {
+    version: 1, instanceId: "fixture-run:0", runId: "fixture-run", parentSessionId: "fake-session",
+    launcher: "custom", provider: "webui-registry", name: "duplicate observer", status: "running",
+    startedAt: registryNow - 2000, updatedAt: registryNow, endedAt: null,
+    capabilities: { open: false, refresh: false, cancel: false, steer: false }, outputRef: { kind: "none" },
+  }, { recordId: "duplicate-record" });
+  await agentRunRegistry.writeRecord("external-provider", {
+    version: 1, instanceId: "external-sdk", runId: "external-run", parentSessionId: null,
+    launcher: "sdk", provider: "webui-registry", origin: "createAgentSession", name: "external SDK", status: "running",
+    startedAt: registryNow - 1000, updatedAt: registryNow, endedAt: null,
+    capabilities: { open: true, refresh: true, cancel: false, steer: false }, outputRef: { kind: "plain-log", id: "external-record" },
+  }, { recordId: "external-record" });
+  await agentRunRegistry.appendArtifactEvent("external-provider", "external-record", { type: "output", stream: "stdout", message: "bounded external output" });
+  const corruptProducer = path.join(agentRunRegistry.paths.root, "corrupt-provider");
+  await mkdir(corruptProducer, { recursive: true });
+  await writeFile(path.join(corruptProducer, "corrupt-record.json"), "{not-json\n", { mode: 0o600 });
+  const registryOverview = await request("127.0.0.1", "/api/subagents");
+  assert.equal(registryOverview.status, 200, "registry reconciliation should isolate corrupt records");
+  assert.equal(registryOverview.body?.data?.counts?.totalAgents, 3, "duplicate helper/registry identity should count once while an external agent adds one");
+  assert.equal(registryOverview.body?.data?.counts?.byLauncher?.["pi-subagents"], 2);
+  assert.equal(registryOverview.body?.data?.counts?.byLauncher?.sdk, 1);
+  assert.equal(registryOverview.body?.data?.groups?.find((group) => group.id === "external")?.runs?.[0]?.agents?.[0]?.instanceId, "external-sdk", "an unmatched parent must group under External agents");
+  assert.ok(registryOverview.body?.data?.diagnostics?.some((entry) => entry.code === "invalid-record"), "a corrupt registry record should yield only a bounded diagnostic");
+  assert.equal(JSON.stringify(registryOverview.body).includes(harnessSideEffectsRoot), false, "registry overview payloads must not disclose host paths");
+  const externalOutput = await request("127.0.0.1", "/api/subagents/output?group=external&run=external-run&agent=external-sdk");
+  assert.equal(externalOutput.status, 200, "registry output should dispatch through its opaque server-owned record ID");
+  assert.deepEqual(externalOutput.body?.data?.agent?.recentOutput, ["bounded external output"]);
+  assert.equal(JSON.stringify(externalOutput.body).includes(agentRunRegistry.paths.root), false, "registry output must not expose its private path");
+  const unsupportedExternalCancel = await request("127.0.0.1", "/api/subagents/cancel", { method: "POST", body: { group: "external", runId: "external-run", agentId: "external-sdk" } });
+  assert.equal(unsupportedExternalCancel.status, 409, "canonical actions must reject providers without the declared capability");
+
+  const registryDoneAt = Date.now();
+  await agentRunRegistry.writeRecord("external-provider", {
+    version: 1, instanceId: "external-sdk", runId: "external-run", parentSessionId: null,
+    launcher: "sdk", provider: "webui-registry", origin: "createAgentSession", name: "external SDK", status: "done",
+    startedAt: registryNow - 1000, updatedAt: registryDoneAt, endedAt: registryDoneAt,
+    capabilities: { open: true, refresh: true, cancel: false, steer: false }, outputRef: { kind: "plain-log", id: "external-record" },
+  }, { recordId: "external-record" });
+  const terminalRegistryOverview = await request("127.0.0.1", "/api/subagents");
+  assert.equal(terminalRegistryOverview.body?.data?.groups?.find((group) => group.id === "external")?.runs?.[0]?.status, "done", "terminal registry runs should remain visible until dismissed");
+  const dismissedExternal = await request("127.0.0.1", "/api/subagents/dismiss", {
+    method: "POST",
+    body: { group: "external", runId: "external-run", agentId: "external-sdk" },
+  });
+  assert.equal(dismissedExternal.status, 200, `terminal registry projection should be dismissible: ${dismissedExternal.body?.error || ""}`);
+  assert.deepEqual(dismissedExternal.body?.data, { runId: "external-run", dismissed: true });
+  const afterExternalDismiss = await request("127.0.0.1", "/api/subagents");
+  assert.equal(afterExternalDismiss.body?.data?.groups?.some((group) => group.id === "external"), false, "dismissed external projections should disappear from groups");
+  assert.equal(afterExternalDismiss.body?.data?.counts?.totalAgents, 2, "dismissed external projections should disappear from canonical counts");
+  const retainedRegistrySnapshot = await agentRunRegistry.readRecords();
+  assert.ok(retainedRegistrySnapshot.records.some((record) => record.instance.instanceId === "external-sdk"), "dismissal must not delete the producer-owned registry record");
+  assert.deepEqual((await agentRunRegistry.readArtifact("external-record"))?.events?.map((event) => event.message), ["bounded external output"], "dismissal must not delete producer artifacts");
+
+  await agentRunRegistry.writeRecord("attached-provider", {
+    version: 1, instanceId: "attached-session", runId: "attached-run", parentSessionId: null,
+    launcher: "interactive", provider: "webui-registry", origin: "explicit-attach", name: "attached fixture", status: "stale",
+    startedAt: registryNow - 70_000, updatedAt: registryNow - 60_000, endedAt: null,
+    capabilities: { open: false, refresh: false, cancel: false, steer: false }, outputRef: { kind: "none" },
+  }, { recordId: "attached-record" });
+  const attachedOverview = await request("127.0.0.1", "/api/subagents");
+  assert.equal(attachedOverview.body?.data?.groups?.find((group) => group.id === "external")?.runs?.find((run) => run.id === "attached-run")?.status, "stale", "explicit attached sessions should remain visibly stale until manually detached");
+  const detachedAttachedSession = await request("127.0.0.1", "/api/subagents/dismiss", {
+    method: "POST",
+    body: { group: "external", runId: "attached-run", agentId: "attached-session" },
+  });
+  assert.equal(detachedAttachedSession.status, 200, `stale explicit attach projection should be detachable: ${detachedAttachedSession.body?.error || ""}`);
+  const afterAttachedDetach = await request("127.0.0.1", "/api/subagents");
+  assert.equal(afterAttachedDetach.body?.data?.groups?.some((group) => group.runs?.some((run) => run.id === "attached-run")), false, "detached attached-session projections should disappear from the overview");
+  assert.ok((await agentRunRegistry.readRecords()).records.some((record) => record.instance.instanceId === "attached-session"), "detaching must not delete the persisted-session registry record");
+  await Promise.all(["duplicate-provider", "external-provider", "attached-provider", "corrupt-provider"].map((producer) => rm(path.join(agentRunRegistry.paths.root, producer), { recursive: true, force: true })));
 
   const dismissRunningSubagent = await request("127.0.0.1", "/api/subagents/dismiss", {
     method: "POST",
@@ -3830,6 +3920,17 @@ try {
       body: { tab: tabId, scope: "user", revision: "remote-request-must-not-read", roles: {} },
     });
     assert.equal(remoteLaunchSlotSave.status, 403, "launch-slot saves must be localhost-only before the request body is processed");
+
+    const remoteSubagentCancel = await request(lan, "/api/subagents/cancel", {
+      method: "POST",
+      body: { tab: tabId, runId: "remote-request-must-not-dispatch" },
+    });
+    assert.equal(remoteSubagentCancel.status, 403, "subagent cancellation must be localhost-only before helper dispatch");
+    const remoteSubagentDismiss = await request(lan, "/api/subagents/dismiss", {
+      method: "POST",
+      body: { tab: tabId, runId: "remote-request-must-not-dispatch" },
+    });
+    assert.equal(remoteSubagentDismiss.status, 403, "subagent dismissal must be localhost-only before helper dispatch");
 
     const remoteFileOpenDefault = await request(lan, "/api/files/open-default", {
       method: "POST",

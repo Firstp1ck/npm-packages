@@ -1,6 +1,13 @@
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import {
+  AGENT_RUN_PROVIDER_EVENT,
+  AgentRunIndex,
+  canonicalAgentRunId,
+  normalizeProviderSnapshot,
+} from "./lib/agent-run-protocol.mjs";
 import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
 import { mutatePiRuntimeFollowUpQueue } from "./lib/queue-mutation.mjs";
 import {
@@ -31,6 +38,15 @@ const APP_RUNNER_CONTEXT_TYPE = "webui-app-runner-output";
 const RETAINED_SUBAGENT_RUNS_TYPE = "webui-subagent-retained-runs-v1";
 const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
+// The helper and the HTTP server can be version-skewed across restarts, so the
+// canonical payload travels on its own status key and never replaces the v1 key.
+const WEBUI_SUBAGENTS_V2_STATUS_KEY = "webui-subagents-v2";
+const WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V2 ";
+const WEBUI_SUBAGENTS_V2_VERSION = 2;
+const AGENT_RUN_PRODUCER_LIMIT = 16;
+const AGENT_RUN_INSTANCE_LIMIT = 512;
+const AGENT_RUN_DIAGNOSTIC_LIMIT = 16;
+const AGENT_RUN_GATE_REFERENCE_LIMIT = 128;
 const SUBAGENT_RPC_VERSION = 1;
 const SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
 const SUBAGENT_RPC_READY_EVENT = "subagents:rpc:v1:ready";
@@ -266,6 +282,20 @@ function replaceAvailableSkillsSection(systemPrompt, skills) {
     return systemPrompt.replace(/\n?The following skills provide[\s\S]*?<\/available_skills>\n?/m, replacement);
   }
   return systemPrompt;
+}
+
+const CANONICAL_AGENT_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+/** Opaque helper-owned output handle. The browser never sees run/agent internals or paths. */
+function helperAgentRunOutputId(runId, agentId) {
+  return `h-${createHash("sha256").update(`${runId}\u0000${agentId}`).digest("hex").slice(0, 32)}`;
+}
+
+function canonicalAgentRunStatus(runStatus, agentStatus) {
+  for (const candidate of [agentStatus, runStatus]) {
+    if (candidate === "cancelled" || candidate === "failed" || candidate === "done") return candidate;
+  }
+  return "running";
 }
 
 function subagentText(value, maxLength = 240) {
@@ -873,7 +903,13 @@ export default function webuiRpcHelper(pi) {
   let subagentFleetSummary = null;
   let lastPublishedSubagentSignature = "";
   let lastPublishedSubagentAt = 0;
+  let lastPublishedAgentRunSignature = "";
+  let lastPublishedAgentRunAt = 0;
   let lastPersistedRetainedSubagentSignature = "";
+  // producerId -> Map<instanceId, canonical instance>. One producer never owns another's rows.
+  const agentRunProviderSnapshots = new Map();
+  const agentRunProviderDiagnostics = [];
+  const helperAgentRunOutputSelections = new Map();
   const subagentStatusRequestsInFlight = new Set();
   const asyncSubagentRuns = new Map();
   const foregroundSubagentRuns = new Map();
@@ -1118,19 +1154,180 @@ export default function webuiRpcHelper(pi) {
       .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
   }
 
-  function publishSubagentStatus() {
-    if (!subagentContext?.hasUI) return;
-    const runs = publicSubagentRuns();
-    const gates = publicSubagentGates();
-    const snapshot = {
-      version: 1,
-      available: subagentBridgeAvailable,
-      runs,
-      gates,
-      ...(subagentFleetSummary ? { fleet: subagentFleetSummary } : {}),
+  function resetCanonicalAgentRunState() {
+    agentRunProviderSnapshots.clear();
+    agentRunProviderDiagnostics.length = 0;
+    helperAgentRunOutputSelections.clear();
+    lastPublishedAgentRunSignature = "";
+    lastPublishedAgentRunAt = 0;
+  }
+
+  function recordAgentRunDiagnostic(code, producerId) {
+    const entry = { code, ...(producerId ? { producerId: canonicalAgentRunId(producerId, "producer") } : {}) };
+    const signature = JSON.stringify(entry);
+    if (agentRunProviderDiagnostics.some((item) => JSON.stringify(item) === signature)) return;
+    agentRunProviderDiagnostics.push(entry);
+    while (agentRunProviderDiagnostics.length > AGENT_RUN_DIAGNOSTIC_LIMIT) agentRunProviderDiagnostics.shift();
+  }
+
+  /**
+   * Ingest one bounded process-local provider snapshot. A malformed or oversized
+   * snapshot is dropped with a diagnostic and can never clear another producer's rows.
+   */
+  function ingestAgentRunProviderSnapshot(value) {
+    let snapshot;
+    try {
+      snapshot = normalizeProviderSnapshot(value);
+    } catch {
+      recordAgentRunDiagnostic("invalid-provider-snapshot", value?.producerId);
+      return false;
+    }
+    const existing = agentRunProviderSnapshots.get(snapshot.producerId);
+    if (!existing && agentRunProviderSnapshots.size >= AGENT_RUN_PRODUCER_LIMIT) {
+      recordAgentRunDiagnostic("producer-limit-reached", snapshot.producerId);
+      return false;
+    }
+    const rows = snapshot.complete ? new Map() : new Map(existing || []);
+    for (const instance of snapshot.instances) rows.set(instance.instanceId, instance);
+    for (const removed of snapshot.removals) rows.delete(removed);
+    if (rows.size) agentRunProviderSnapshots.set(snapshot.producerId, rows);
+    else agentRunProviderSnapshots.delete(snapshot.producerId);
+    return true;
+  }
+
+  function canonicalInstancesFromPublicRun(run, gateRunIds) {
+    const workflow = run.source === "workflow";
+    const rawParentSessionId = subagentContext?.sessionManager?.getSessionId?.();
+    const parentSessionId = rawParentSessionId ? canonicalAgentRunId(rawParentSessionId, "session") : null;
+    const recovered = run.source === "recovered";
+    const terminal = run.status !== "running";
+    const startedAt = Number.isFinite(run.startedAt) ? run.startedAt : Date.now();
+    // Unknown terminal time stays anchored to the stable start time instead of inventing
+    // a fresh timestamp on every projection and defeating status deduplication.
+    const endedAt = terminal ? Math.max(startedAt, Number.isFinite(run.endedAt) ? run.endedAt : startedAt) : null;
+    // Projection signatures must stay stable between source changes; publication adds its own heartbeat timestamp.
+    const updatedAt = terminal ? endedAt : startedAt;
+    const canonicalRunId = canonicalAgentRunId(run.id, "run");
+    // Gate launches stay one canonical child: the launch family changes, the count does not.
+    const launcher = gateRunIds.has(run.id) ? "gate" : workflow ? "workflow" : "pi-subagents";
+    return (Array.isArray(run.agents) ? run.agents : []).map((agent) => {
+      const status = canonicalAgentRunStatus(run.status, agent.status);
+      const openable = !recovered;
+      return {
+        version: 1,
+        instanceId: canonicalAgentRunId(agent.id, `${canonicalRunId}-agent`),
+        runId: canonicalRunId,
+        parentSessionId,
+        launcher,
+        provider: workflow ? "workflow-run" : "pi-subagents",
+        origin: run.source,
+        name: agent.name,
+        status,
+        startedAt,
+        updatedAt,
+        endedAt: ["done", "failed", "cancelled"].includes(status) ? endedAt : null,
+        model: agent.model,
+        thinking: agent.thinking,
+        activityState: agent.activityState && CANONICAL_AGENT_RUN_ID_PATTERN.test(agent.activityState) ? agent.activityState : undefined,
+        currentTool: agent.currentTool,
+        capabilities: {
+          open: openable,
+          refresh: openable,
+          // Only the owning pi-subagents lifecycle keeps cancel authority in v1.
+          cancel: status === "running" && !workflow && !recovered && run.controllable !== false,
+          steer: false,
+        },
+        outputRef: openable
+          ? { kind: "helper", id: helperAgentRunOutputId(run.id, agent.id) }
+          : { kind: "none" },
+        _selection: openable ? { runId: run.id, agentId: agent.id } : null,
+      };
+    });
+  }
+
+  /**
+   * Canonical, deduplicated projection of every provider this helper observes.
+   * Counts derive from canonical instance IDs only; gates and workflow containers
+   * are references, never additional agents.
+   */
+  function canonicalAgentRunSnapshot(runs, gates) {
+    const index = new AgentRunIndex();
+    const selections = new Map();
+    const gateRunIds = new Set();
+    for (const gate of gates) {
+      for (const attempt of gate.attempts) if (attempt.runId) gateRunIds.add(attempt.runId);
+    }
+
+    const instanceIdByPublicRun = new Map();
+    for (const run of runs) {
+      for (const candidate of canonicalInstancesFromPublicRun(run, gateRunIds)) {
+        const { _selection: selection, ...instance } = candidate;
+        try {
+          // The helper owns lifecycle and capabilities for the rows it observes directly.
+          index.upsert(instance, { producerId: instance.provider, lifecycleOwner: true, capabilityOwner: true });
+        } catch {
+          recordAgentRunDiagnostic("invalid-helper-instance", instance.provider);
+          continue;
+        }
+        if (selection) selections.set(instance.outputRef.id, selection);
+        const known = instanceIdByPublicRun.get(run.id) || [];
+        known.push(instance.instanceId);
+        instanceIdByPublicRun.set(run.id, known);
+      }
+    }
+
+    for (const [producerId, rows] of agentRunProviderSnapshots) {
+      for (const instance of rows.values()) {
+        try {
+          // Foreign producers may enrich an existing instance but never seize ownership.
+          index.upsert(instance, { producerId, lifecycleOwner: false, capabilityOwner: false });
+        } catch {
+          recordAgentRunDiagnostic("invalid-provider-instance", producerId);
+        }
+      }
+    }
+
+    const gateReferences = [];
+    for (const gate of gates) {
+      for (const attempt of gate.attempts) {
+        if (!attempt.runId || gateReferences.length >= AGENT_RUN_GATE_REFERENCE_LIMIT) continue;
+        const instanceIds = instanceIdByPublicRun.get(attempt.runId) || [];
+        gateReferences.push({
+          gateId: gate.id,
+          attemptId: attempt.id,
+          runId: canonicalAgentRunId(attempt.runId, "run"),
+          instanceIds,
+          resolved: instanceIds.length > 0,
+        });
+      }
+    }
+
+    helperAgentRunOutputSelections.clear();
+    for (const [outputId, selection] of selections) helperAgentRunOutputSelections.set(outputId, selection);
+
+    return {
+      instances: index.values().slice(0, AGENT_RUN_INSTANCE_LIMIT),
+      gateReferences,
+      producers: [...agentRunProviderSnapshots.keys()].slice(0, AGENT_RUN_PRODUCER_LIMIT),
+      diagnostics: agentRunProviderDiagnostics.slice(-AGENT_RUN_DIAGNOSTIC_LIMIT),
     };
+  }
+
+  function publishCanonicalAgentRunStatus(runs, gates, now) {
+    const snapshot = { version: WEBUI_SUBAGENTS_V2_VERSION, available: subagentBridgeAvailable, ...canonicalAgentRunSnapshot(runs, gates) };
     const signature = JSON.stringify(snapshot);
-    const now = Date.now();
+    if (signature === lastPublishedAgentRunSignature && now - lastPublishedAgentRunAt < SUBAGENT_STATUS_HEARTBEAT_MS) return;
+    try {
+      subagentContext.ui.setStatus(WEBUI_SUBAGENTS_V2_STATUS_KEY, `${WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX}${JSON.stringify({ ...snapshot, updatedAt: now })}`);
+      lastPublishedAgentRunSignature = signature;
+      lastPublishedAgentRunAt = now;
+    } catch {
+      // Leave the signature uncommitted so a later poll or lifecycle event retries delivery.
+    }
+  }
+
+  function publishLegacySubagentStatus(snapshot, now) {
+    const signature = JSON.stringify(snapshot);
     if (signature === lastPublishedSubagentSignature && now - lastPublishedSubagentAt < SUBAGENT_STATUS_HEARTBEAT_MS) return;
     try {
       subagentContext.ui.setStatus(WEBUI_SUBAGENTS_STATUS_KEY, `${WEBUI_SUBAGENTS_PAYLOAD_PREFIX}${JSON.stringify({ ...snapshot, updatedAt: now })}`);
@@ -1139,6 +1336,23 @@ export default function webuiRpcHelper(pi) {
     } catch {
       // Leave the signature uncommitted so a later poll or lifecycle event retries delivery.
     }
+  }
+
+  function publishSubagentStatus() {
+    if (!subagentContext?.hasUI) return;
+    const runs = publicSubagentRuns();
+    const gates = publicSubagentGates();
+    const now = Date.now();
+    // Both keys are published independently: an old server keeps consuming v1,
+    // a new server prefers v2, and a failure on one key never suppresses the other.
+    publishLegacySubagentStatus({
+      version: 1,
+      available: subagentBridgeAvailable,
+      runs,
+      gates,
+      ...(subagentFleetSummary ? { fleet: subagentFleetSummary } : {}),
+    }, now);
+    publishCanonicalAgentRunStatus(runs, gates, now);
   }
 
   function requestSubagentRpc(method, params = {}) {
@@ -1308,6 +1522,15 @@ export default function webuiRpcHelper(pi) {
   }
 
   async function subagentOutputSnapshot(payload = {}) {
+    // Opaque helper-owned handles resolve to an internal selection here; the browser
+    // never supplies a run/agent path or an arbitrary locator.
+    const outputId = subagentText(payload.outputId, 160);
+    if (outputId) {
+      const selection = helperAgentRunOutputSelections.get(outputId);
+      if (!selection) throw new Error("Subagent output handle is no longer tracked");
+      return subagentOutputSnapshot({ runId: selection.runId, agentId: selection.agentId });
+    }
+
     const workflowRunId = workflowSubagentIdentifier(payload.runId, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.runIdentifierLength);
     const workflowAgentId = workflowSubagentIdentifier(payload.agentId, WORKFLOW_SUBAGENT_SNAPSHOT_LIMITS.agentIdentifierLength);
     if (workflowRunId && workflowAgentId) {
@@ -1529,6 +1752,13 @@ export default function webuiRpcHelper(pi) {
       } catch {
         // Ignore malformed cross-extension events without disrupting current live rows.
       }
+    }),
+    pi.events.on(AGENT_RUN_PROVIDER_EVENT, (value) => {
+      // Generic process-local producers: bounded, validated, and producer-scoped.
+      // Rejected snapshots still publish so their bounded diagnostic becomes visible;
+      // repeated identical failures collapse into one deduplicated entry.
+      ingestAgentRunProviderSnapshot(value);
+      publishSubagentStatus();
     }),
     pi.events.on(SUBAGENT_RPC_READY_EVENT, () => {
       subagentBridgeAvailable = true;
@@ -1898,6 +2128,7 @@ export default function webuiRpcHelper(pi) {
     workflowSubagentRuns.clear();
     recoveredSubagentRuns.clear();
     subagentGates.clear();
+    resetCanonicalAgentRunState();
     subagentFleetSummary = null;
     restoreRetainedSubagentRuns(ctx);
     lastPublishedSubagentSignature = "";
@@ -1918,6 +2149,7 @@ export default function webuiRpcHelper(pi) {
     workflowSubagentRuns.clear();
     recoveredSubagentRuns.clear();
     subagentGates.clear();
+    resetCanonicalAgentRunState();
     subagentFleetSummary = null;
     restoreRetainedSubagentRuns(ctx);
     lastPublishedSubagentSignature = "";
@@ -2012,6 +2244,7 @@ export default function webuiRpcHelper(pi) {
     workflowSubagentRuns.clear();
     recoveredSubagentRuns.clear();
     subagentGates.clear();
+    resetCanonicalAgentRunState();
     subagentFleetSummary = null;
     for (const unsubscribe of subagentEventUnsubscribers) unsubscribe();
   });

@@ -120,6 +120,28 @@ test("run indicator remains visible and stable on mobile until delayed agent sta
   await expect(page.locator("#chat .message.assistant").last()).toContainText("continuity stream complete");
 });
 
+test("run indicator keeps one-line geometry across changing activity text", async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 844 });
+  await page.goto(baseURL);
+  await page.locator("#promptInput").fill("fixture continuity delayed start");
+  await page.locator("#sendButton").click();
+
+  const runIndicator = page.locator("#runIndicatorHost .runIndicator");
+  await expect(runIndicator).toBeVisible();
+  const geometry = await runIndicator.evaluate((node) => {
+    const meta = node.querySelector(".run-indicator-meta");
+    const before = node.getBoundingClientRect();
+    meta.textContent = "Running tool: subagent_wait with a deliberately long activity description that must not wrap or resize the running status card · run time 1m 00s";
+    const after = node.getBoundingClientRect();
+    return {
+      heightDrift: Math.abs(after.height - before.height),
+      topDrift: Math.abs(after.top - before.top),
+    };
+  });
+  expect(geometry.heightDrift).toBeLessThanOrEqual(1.5);
+  expect(geometry.topDrift).toBeLessThanOrEqual(1.5);
+});
+
 test("confirmed streaming replaces routing status before delayed activity events", async ({ page }) => {
   await page.goto(baseURL);
   await page.locator("#promptInput").fill("fixture continuity confirmed before tool");

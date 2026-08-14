@@ -683,8 +683,11 @@ function handleWebuiHelperPrompt(command, base) {
       respondHelper({ requestId, ok: true, data: mutateRuntimeQueue(request.payload) });
       return true;
     case "subagent-output": {
-      const run = fixtureSubagentRuns.find((candidate) => candidate.id === request.payload?.runId);
-      const agent = run?.agents?.find((candidate) => candidate.id === request.payload?.agentId);
+      const opaqueSelection = request.payload?.outputId
+        ? fixtureSubagentRuns.flatMap((run) => run.agents.map((agent) => ({ run, agent }))).find(({ run, agent }) => `h-${createHash("sha256").update(`${run.id}\0${agent.id}`).digest("hex").slice(0, 32)}` === request.payload.outputId)
+        : null;
+      const run = opaqueSelection?.run || fixtureSubagentRuns.find((candidate) => candidate.id === request.payload?.runId);
+      const agent = opaqueSelection?.agent || run?.agents?.find((candidate) => candidate.id === request.payload?.agentId);
       if (!run || !agent) {
         respondHelper({ requestId, ok: false, error: "Subagent output is no longer tracked" });
         return true;
@@ -1055,23 +1058,56 @@ function handleTransportFixturePrompt(command, base) {
   return false;
 }
 
-function emitSubagentFixtureStatus() {
+function emitSubagentFixtureStatus({ legacyOnly = false } = {}) {
+  const now = Date.now();
   emitEvent({
     type: "extension_ui_request",
     id: randomUUID(),
     method: "setStatus",
     statusKey: "webui-subagents",
-    statusText: `PI_WEBUI_SUBAGENTS_V1 ${JSON.stringify({ version: 1, available: true, updatedAt: Date.now(), runs: fixtureSubagentRuns, gates: fixtureSubagentGates })}`,
+    statusText: `PI_WEBUI_SUBAGENTS_V1 ${JSON.stringify({ version: 1, available: true, updatedAt: now, runs: fixtureSubagentRuns, gates: fixtureSubagentGates })}`,
+  });
+  if (legacyOnly) return;
+  const instances = fixtureSubagentRuns.flatMap((run) => run.agents.map((agent) => {
+    const terminal = agent.status !== "running";
+    const startedAt = run.startedAt;
+    const endedAt = terminal ? run.endedAt || now : null;
+    return {
+      version: 1,
+      instanceId: agent.id,
+      runId: run.id,
+      parentSessionId: "fake-session",
+      launcher: run.source === "workflow" ? "workflow" : "pi-subagents",
+      provider: run.source === "workflow" ? "workflow-run" : "pi-subagents",
+      origin: run.source,
+      name: agent.name,
+      status: agent.status,
+      startedAt,
+      updatedAt: endedAt || now,
+      endedAt,
+      model: agent.model,
+      thinking: agent.thinking,
+      ...(agent.currentTool ? { currentTool: agent.currentTool } : {}),
+      capabilities: { open: true, refresh: true, cancel: !terminal && run.source !== "workflow", steer: false },
+      outputRef: { kind: "helper", id: `h-${createHash("sha256").update(`${run.id}\0${agent.id}`).digest("hex").slice(0, 32)}` },
+    };
+  }));
+  emitEvent({
+    type: "extension_ui_request",
+    id: randomUUID(),
+    method: "setStatus",
+    statusKey: "webui-subagents-v2",
+    statusText: `PI_WEBUI_SUBAGENTS_V2 ${JSON.stringify({ version: 2, available: true, updatedAt: now, instances, gateReferences: [], diagnostics: [] })}`,
   });
 }
 
 function handleSubagentFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
-  if (!["fixture subagents running", "fixture subagents clear", "fixture subagents retained"].includes(message)) return false;
+  if (!["fixture subagents running", "fixture subagents old-helper", "fixture subagents clear", "fixture subagents retained"].includes(message)) return false;
   const now = Date.now();
   fixtureSubagentRuns.splice(0, fixtureSubagentRuns.length);
   fixtureSubagentGates.splice(0, fixtureSubagentGates.length);
-  if (message === "fixture subagents running") {
+  if (message === "fixture subagents running" || message === "fixture subagents old-helper") {
     fixtureSubagentRuns.push({
       id: "fixture-run",
       source: "async",
@@ -1123,7 +1159,7 @@ function handleSubagentFixturePrompt(command, base) {
     );
   }
   respond({ ...base, data: { output: "fake subagent status emitted" } });
-  emitSubagentFixtureStatus();
+  emitSubagentFixtureStatus({ legacyOnly: message === "fixture subagents old-helper" });
   return true;
 }
 

@@ -22,6 +22,8 @@ import {
 } from "../public/theme-contract.mjs";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
+import { AgentRunIndex, canonicalAgentRunId, normalizeAgentInstance } from "../lib/agent-run-protocol.mjs";
+import { AgentRunRegistry } from "../lib/agent-run-registry.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
 import {
   readSessionSummaryPreferences,
@@ -186,6 +188,10 @@ const WEBUI_HELPER_RESPONSE_PREFIX = "__PI_WEBUI_HELPER_RESPONSE__:";
 const SAMPLING_PARAMS_HTTP_MAX_BYTES = 20 * 1024;
 const WEBUI_SUBAGENTS_STATUS_KEY = "webui-subagents";
 const WEBUI_SUBAGENTS_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V1 ";
+const WEBUI_SUBAGENTS_V2_STATUS_KEY = "webui-subagents-v2";
+const WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX = "PI_WEBUI_SUBAGENTS_V2 ";
+const WEBUI_AGENT_RUN_LIMIT = 512;
+const WEBUI_AGENT_RUN_DIAGNOSTIC_LIMIT = 128;
 const WEBUI_SUBAGENT_RUN_LIMIT = 128;
 const WEBUI_SUBAGENT_AGENT_LIMIT = 256;
 const WEBUI_SUBAGENT_GATE_LIMIT = 32;
@@ -9166,6 +9172,40 @@ try {
 
 process.env.PI_WEBUI_HOST = options.host;
 process.env.PI_WEBUI_PORT = String(options.port);
+const agentRunRegistry = new AgentRunRegistry({ agentDir, port: options.port });
+const AGENT_RUN_PRUNE_INTERVAL_MS = 5 * 60_000;
+const AGENT_RUN_PROJECTION_DISMISSAL_RETENTION_MS = 24 * 60 * 60_000;
+const AGENT_RUN_PROJECTION_DISMISSAL_LIMIT = 2_048;
+const AGENT_RUN_TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
+const dismissedAgentRunProjectionKeys = new Map();
+let lastAgentRunPruneAt = 0;
+
+function agentRunProjectionKey(instance) {
+  return `${instance?.parentSessionId || "external"}\0${instance?.instanceId || ""}`;
+}
+
+function agentRunProjectionCanBeDismissed(instance) {
+  return AGENT_RUN_TERMINAL_STATUSES.has(instance?.status)
+    || (instance?.origin === "explicit-attach" && ["stale", "lost"].includes(instance?.status));
+}
+
+function pruneDismissedAgentRunProjections(now = Date.now()) {
+  for (const [key, dismissedAt] of dismissedAgentRunProjectionKeys) {
+    if (!Number.isSafeInteger(dismissedAt) || now - dismissedAt > AGENT_RUN_PROJECTION_DISMISSAL_RETENTION_MS) dismissedAgentRunProjectionKeys.delete(key);
+  }
+  while (dismissedAgentRunProjectionKeys.size > AGENT_RUN_PROJECTION_DISMISSAL_LIMIT) {
+    const oldest = dismissedAgentRunProjectionKeys.keys().next().value;
+    if (oldest === undefined) break;
+    dismissedAgentRunProjectionKeys.delete(oldest);
+  }
+}
+
+function dismissAgentRunProjection(instance, now = Date.now()) {
+  const key = agentRunProjectionKey(instance);
+  dismissedAgentRunProjectionKeys.delete(key);
+  dismissedAgentRunProjectionKeys.set(key, now);
+  pruneDismissedAgentRunProjections(now);
+}
 const recoveryEndpointToken = String(process.env.PI_WEBUI_RECOVERY_TOKEN || "").trim() || `${randomUUID()}${randomUUID()}`;
 const recoveryEndpointTokens = new Set([recoveryEndpointToken]);
 
@@ -9958,7 +9998,9 @@ function filterSessionSummaryTranscriptMessages(messages) {
 }
 
 function clearWebuiSubagents(tab) {
-  if (tab) tab.webuiSubagents = null;
+  if (!tab) return;
+  tab.webuiSubagents = null;
+  tab.webuiAgentRuns = null;
 }
 
 function normalizeWebuiSubagentText(value, maxLength = 240) {
@@ -10078,19 +10120,51 @@ function normalizeWebuiSubagentPayload(value) {
   };
 }
 
+function normalizeWebuiAgentRunPayload(value) {
+  if (!value || typeof value !== "object" || value.version !== 2) return null;
+  const instances = [];
+  const diagnostics = [];
+  for (const raw of Array.isArray(value.instances) ? value.instances.slice(0, WEBUI_AGENT_RUN_LIMIT) : []) {
+    try { instances.push(normalizeAgentInstance(raw)); }
+    catch { diagnostics.push({ code: "invalid-helper-instance" }); }
+  }
+  for (const raw of Array.isArray(value.diagnostics) ? value.diagnostics.slice(-WEBUI_AGENT_RUN_DIAGNOSTIC_LIMIT) : []) {
+    const code = normalizeWebuiSubagentText(raw?.code, 80);
+    const producerId = normalizeWebuiSubagentText(raw?.producerId, 80);
+    if (code) diagnostics.push({ code, ...(producerId ? { producerId } : {}) });
+  }
+  return {
+    version: 2,
+    available: value.available === true,
+    updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
+    receivedAt: Date.now(),
+    instances,
+    gateReferences: (Array.isArray(value.gateReferences) ? value.gateReferences : []).slice(0, 128).map((reference) => ({
+      gateId: normalizeWebuiSubagentText(reference?.gateId, 160),
+      attemptId: normalizeWebuiSubagentText(reference?.attemptId, 240),
+      runId: normalizeWebuiSubagentText(reference?.runId, 160),
+      instanceIds: (Array.isArray(reference?.instanceIds) ? reference.instanceIds : []).slice(0, 32).map((id) => normalizeWebuiSubagentText(id, 160)).filter(Boolean),
+      resolved: reference?.resolved === true,
+    })).filter((reference) => reference.gateId && reference.attemptId && reference.runId),
+    diagnostics: diagnostics.slice(-WEBUI_AGENT_RUN_DIAGNOSTIC_LIMIT),
+  };
+}
+
 function rememberWebuiSubagentsStatusEvent(tab, event) {
-  if (event?.type !== "extension_ui_request" || event.method !== "setStatus" || event.statusKey !== WEBUI_SUBAGENTS_STATUS_KEY) return false;
+  if (event?.type !== "extension_ui_request" || event.method !== "setStatus") return false;
   const statusText = String(event.statusText || "");
-  if (!statusText) {
-    clearWebuiSubagents(tab);
+  if (event.statusKey === WEBUI_SUBAGENTS_V2_STATUS_KEY) {
+    if (!statusText) { tab.webuiAgentRuns = null; return true; }
+    if (!statusText.startsWith(WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX)) return true;
+    try { tab.webuiAgentRuns = normalizeWebuiAgentRunPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX.length))); }
+    catch { tab.webuiAgentRuns = null; }
     return true;
   }
+  if (event.statusKey !== WEBUI_SUBAGENTS_STATUS_KEY) return false;
+  if (!statusText) { tab.webuiSubagents = null; return true; }
   if (!statusText.startsWith(WEBUI_SUBAGENTS_PAYLOAD_PREFIX)) return true;
-  try {
-    tab.webuiSubagents = normalizeWebuiSubagentPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_PAYLOAD_PREFIX.length)));
-  } catch {
-    tab.webuiSubagents = null;
-  }
+  try { tab.webuiSubagents = normalizeWebuiSubagentPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_PAYLOAD_PREFIX.length))); }
+  catch { tab.webuiSubagents = null; }
   return true;
 }
 
@@ -10890,6 +10964,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     extensionWidgets: new Map(),
     sessionSummary: null,
     webuiSubagents: null,
+    webuiAgentRuns: null,
     subagentDisplayTitle: undefined,
     subagentDisplayTitlePromise: undefined,
     webuiHelperRequests: new Map(),
@@ -11075,50 +11150,191 @@ async function resolveSubagentDisplayTitle(tab) {
   return tab.subagentDisplayTitlePromise;
 }
 
-async function webuiSubagentsData() {
+function tabParentSessionId(tab) {
+  const raw = tab?.lastState?.sessionId;
+  return raw ? canonicalAgentRunId(raw, "session") : null;
+}
+
+function legacyRunInstances(tab, run) {
+  const parentSessionId = tabParentSessionId(tab) || `legacy-tab:${tab.id}`;
+  const startedAt = Number.isSafeInteger(run.startedAt) ? run.startedAt : Date.now();
+  return run.agents.map((agent) => {
+    const status = ["running", "done", "failed", "cancelled"].includes(agent.status) ? agent.status : run.status;
+    const endedAt = status === "running" ? null : Math.max(startedAt, Number.isSafeInteger(run.endedAt) ? run.endedAt : Date.now());
+    return normalizeAgentInstance({
+      version: 1,
+      instanceId: canonicalAgentRunId(agent.id, "agent"),
+      runId: canonicalAgentRunId(run.id, "run"),
+      parentSessionId,
+      launcher: run.source === "workflow" ? "workflow" : "pi-subagents",
+      provider: run.source === "workflow" ? "workflow-run" : "webui-helper",
+      origin: run.source,
+      name: agent.name,
+      status,
+      startedAt,
+      updatedAt: endedAt ?? Date.now(),
+      endedAt,
+      model: agent.model,
+      thinking: agent.thinking,
+      activityState: agent.activityState,
+      currentTool: agent.currentTool,
+      capabilities: {
+        open: webuiSubagentRunSupportsInteraction(run),
+        refresh: webuiSubagentRunSupportsInteraction(run),
+        cancel: status === "running" && webuiSubagentRunSupportsInteraction(run),
+        steer: false,
+      },
+      outputRef: { kind: "none" },
+    });
+  });
+}
+
+function groupedCanonicalRuns(instances) {
+  const byRun = new Map();
+  for (const instance of instances) {
+    const current = byRun.get(instance.runId) || [];
+    current.push(instance);
+    byRun.set(instance.runId, current);
+  }
+  return [...byRun.entries()].map(([runId, agents]) => {
+    agents.sort((a, b) => a.startedAt - b.startedAt || a.instanceId.localeCompare(b.instanceId));
+    const status = agents.some((agent) => agent.status === "running") ? "running"
+      : agents.some((agent) => agent.status === "stale") ? "stale"
+        : agents.some((agent) => agent.status === "lost") ? "lost"
+          : agents.some((agent) => agent.status === "failed") ? "failed"
+            : agents.some((agent) => agent.status === "cancelled") ? "cancelled" : "done";
+    return {
+      id: runId,
+      source: agents[0].origin || agents[0].launcher,
+      launcher: agents[0].launcher,
+      provider: agents[0].provider,
+      status,
+      startedAt: Math.min(...agents.map((agent) => agent.startedAt)),
+      endedAt: agents.every((agent) => Number.isSafeInteger(agent.endedAt)) ? Math.max(...agents.map((agent) => agent.endedAt)) : undefined,
+      capabilities: {
+        open: agents.some((agent) => agent.capabilities.open),
+        refresh: agents.some((agent) => agent.capabilities.refresh),
+        cancel: agents.some((agent) => agent.capabilities.cancel),
+        steer: agents.some((agent) => agent.capabilities.steer),
+      },
+      agents: agents.map((agent) => ({
+        id: agent.instanceId,
+        instanceId: agent.instanceId,
+        name: agent.name || "Agent",
+        status: agent.status,
+        launcher: agent.launcher,
+        provider: agent.provider,
+        origin: agent.origin,
+        model: agent.model,
+        thinking: agent.thinking,
+        activityState: agent.activityState,
+        currentTool: agent.currentTool,
+        capabilities: agent.capabilities,
+        outputRef: agent.outputRef,
+      })),
+    };
+  }).sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+}
+
+async function webuiSubagentsData({ includeSelections = false } = {}) {
   const sortedTabs = [...tabs.values()].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title));
   const tabSummaries = await Promise.all(sortedTabs.map(async (tab) => {
     const status = tab.webuiSubagents || { version: 1, available: false, updatedAt: null, receivedAt: null, runs: [], gates: [] };
     const runs = Array.isArray(status.runs) ? status.runs : [];
     const gates = Array.isArray(status.gates) ? status.gates : [];
-    const tabTitle = runs.length || gates.length ? await resolveSubagentDisplayTitle(tab) : tab.title;
+    const tabTitle = runs.length || gates.length || tab.webuiAgentRuns?.instances?.length ? await resolveSubagentDisplayTitle(tab) : tab.title;
     return {
-      tabId: tab.id,
-      tabIndex: tab.index,
-      tabTitle,
-      cwd: tab.cwd,
+      tabId: tab.id, tabIndex: tab.index, tabTitle, cwd: tab.cwd,
       sessionName: normalizeWebuiSubagentText(tab.lastState?.sessionName || tab.title, 160),
       sessionFile: tabRestorableSessionFile(tab) || null,
-      running: tab.rpc.isRunning(),
-      available: status.available === true,
-      updatedAt: status.updatedAt || null,
-      receivedAt: status.receivedAt || null,
-      fleet: status.fleet || null,
-      runs,
-      gates,
+      running: tab.rpc.isRunning(), available: status.available === true || tab.webuiAgentRuns?.available === true,
+      updatedAt: status.updatedAt || tab.webuiAgentRuns?.updatedAt || null,
+      receivedAt: status.receivedAt || tab.webuiAgentRuns?.receivedAt || null,
+      fleet: status.fleet || null, runs, gates,
       agentCount: runs.reduce((count, run) => count + run.agents.length, 0),
       runningRuns: runs.filter((run) => run.status === "running").length,
       runningAgents: runs.reduce((count, run) => count + run.agents.filter((agent) => agent.status === "running").length, 0),
       gateCount: gates.length,
     };
   }));
-  const fleet = tabSummaries.reduce((summary, tab) => ({
-    version: 1,
-    totalActive: Math.min(Number.MAX_SAFE_INTEGER, summary.totalActive + Number(tab.fleet?.totalActive || 0)),
-    omitted: Math.min(Number.MAX_SAFE_INTEGER, summary.omitted + Number(tab.fleet?.omitted || 0)),
-  }), { version: 1, totalActive: 0, omitted: 0 });
-  return {
-    version: 1,
-    updatedAt: Date.now(),
-    available: tabSummaries.some((tab) => tab.available),
-    fleet,
-    totalRuns: tabSummaries.reduce((count, tab) => count + tab.runs.length, 0),
-    totalAgents: tabSummaries.reduce((count, tab) => count + tab.agentCount, 0),
-    runningRuns: tabSummaries.reduce((count, tab) => count + tab.runningRuns, 0),
-    runningAgents: tabSummaries.reduce((count, tab) => count + tab.runningAgents, 0),
-    totalGates: tabSummaries.reduce((count, tab) => count + tab.gateCount, 0),
-    tabs: tabSummaries,
+  const index = new AgentRunIndex();
+  const selections = new Map();
+  const diagnostics = [];
+  for (const tab of sortedTabs) {
+    const canonical = tab.webuiAgentRuns?.instances;
+    if (Array.isArray(canonical)) {
+      for (const instance of canonical) {
+        index.upsert(instance, { producerId: instance.provider, lifecycleOwner: true, capabilityOwner: true });
+        selections.set(`${instance.parentSessionId || "external"}\0${instance.instanceId}`, { kind: "helper", tab, instance });
+      }
+      diagnostics.push(...(tab.webuiAgentRuns.diagnostics || []));
+    } else {
+      for (const run of tab.webuiSubagents?.runs || []) for (const instance of legacyRunInstances(tab, run)) {
+        index.upsert(instance, { producerId: instance.provider, lifecycleOwner: true, capabilityOwner: true });
+        selections.set(`${instance.parentSessionId}\0${instance.instanceId}`, { kind: "legacy-helper", tab, instance, run, agent: run.agents.find((candidate) => canonicalAgentRunId(candidate.id, "agent") === instance.instanceId) });
+      }
+    }
+  }
+  let registrySnapshot = { records: [], diagnostics: [], omitted: 0, artifacts: new Map() };
+  const reconcileNow = Date.now();
+  pruneDismissedAgentRunProjections(reconcileNow);
+  try {
+    if (reconcileNow - lastAgentRunPruneAt >= AGENT_RUN_PRUNE_INTERVAL_MS) {
+      lastAgentRunPruneAt = reconcileNow;
+      try { await agentRunRegistry.prune({ now: reconcileNow }); }
+      catch { diagnostics.push({ code: "registry-prune-unavailable" }); }
+    }
+    registrySnapshot = await agentRunRegistry.readRecords({ now: reconcileNow });
+  } catch { diagnostics.push({ code: "registry-unavailable" }); }
+  for (const record of registrySnapshot.records) {
+    const key = agentRunProjectionKey(record.instance);
+    if (dismissedAgentRunProjectionKeys.has(key)) {
+      if (agentRunProjectionCanBeDismissed(record.instance)) continue;
+      dismissedAgentRunProjectionKeys.delete(key);
+    }
+    index.upsert(record.instance, { producerId: record.producerId });
+    if (!selections.has(key) || record.instance.outputRef.kind === "session-jsonl") selections.set(key, { kind: "registry", instance: record.instance, record });
+  }
+  diagnostics.push(...registrySnapshot.diagnostics, ...(registrySnapshot.omitted ? [{ code: "registry-records-omitted", count: registrySnapshot.omitted }] : []));
+
+  const byParent = new Map();
+  for (const instance of index.values()) {
+    const key = instance.parentSessionId || "external";
+    const rows = byParent.get(key) || [];
+    rows.push(instance);
+    byParent.set(key, rows);
+  }
+  const groups = [];
+  const claimedParents = new Set();
+  for (const tabSummary of tabSummaries) {
+    const tab = tabs.get(tabSummary.tabId);
+    const parentId = tabParentSessionId(tab) || `legacy-tab:${tabSummary.tabId}`;
+    claimedParents.add(parentId);
+    groups.push({
+      id: `tab:${tabSummary.tabId}`, kind: "tab", tabId: tabSummary.tabId, tabIndex: tabSummary.tabIndex,
+      title: tabSummary.tabTitle, cwdLabel: path.basename(tabSummary.cwd) || tabSummary.cwd,
+      runs: groupedCanonicalRuns(byParent.get(parentId) || []), gates: tabSummary.gates,
+    });
+  }
+  const externalInstances = [...byParent.entries()].filter(([parent]) => !claimedParents.has(parent)).flatMap(([, rows]) => rows);
+  if (externalInstances.length) groups.push({ id: "external", kind: "external", title: "External agents", runs: groupedCanonicalRuns(externalInstances), gates: [] });
+  const instances = index.values();
+  const counts = {
+    totalRuns: groups.reduce((count, group) => count + group.runs.length, 0),
+    totalAgents: instances.length,
+    runningAgents: instances.filter((instance) => instance.status === "running").length,
+    staleAgents: instances.filter((instance) => instance.status === "stale").length,
+    byLauncher: Object.fromEntries([...new Set(instances.map((instance) => instance.launcher))].sort().map((launcher) => [launcher, instances.filter((instance) => instance.launcher === launcher).length])),
   };
+  const fleet = tabSummaries.reduce((summary, tab) => ({ version: 1, totalActive: Math.min(Number.MAX_SAFE_INTEGER, summary.totalActive + Number(tab.fleet?.totalActive || 0)), omitted: Math.min(Number.MAX_SAFE_INTEGER, summary.omitted + Number(tab.fleet?.omitted || 0)) }), { version: 1, totalActive: 0, omitted: 0 });
+  const overview = {
+    version: 2, updatedAt: Date.now(), available: tabSummaries.some((tab) => tab.available) || registrySnapshot.records.length > 0,
+    groups, counts, diagnostics: diagnostics.slice(-WEBUI_AGENT_RUN_DIAGNOSTIC_LIMIT), fleet,
+    totalRuns: counts.totalRuns, totalAgents: counts.totalAgents,
+    runningRuns: groups.reduce((count, group) => count + group.runs.filter((run) => run.status === "running").length, 0),
+    runningAgents: counts.runningAgents, totalGates: tabSummaries.reduce((count, tab) => count + tab.gateCount, 0), tabs: tabSummaries,
+  };
+  return includeSelections ? { overview, selections, registrySnapshot } : overview;
 }
 
 function normalizeWebuiSubagentTranscriptValue(value, maxLength = WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH) {
@@ -11290,6 +11506,117 @@ async function webuiSubagentOutputData(tab, runId, agentId) {
   if (!agent) throw makeHttpError(404, `Subagent not found: ${agentId}`);
   const data = await sendWebuiHelperCommand(tab, "subagent-output", { runId, agentId });
   return normalizeWebuiSubagentOutput(data, { run, agent });
+}
+
+function canonicalOutputSelection(groupId, runId, instanceId, state) {
+  const group = state.overview.groups.find((candidate) => candidate.id === groupId);
+  const run = group?.runs.find((candidate) => candidate.id === runId);
+  const agent = run?.agents.find((candidate) => candidate.instanceId === instanceId);
+  if (!group || !run || !agent) throw makeHttpError(404, "Agent run output is no longer tracked");
+  for (const selection of state.selections.values()) {
+    if (selection.instance.runId !== runId || selection.instance.instanceId !== instanceId) continue;
+    if (group.kind === "tab") {
+      const tab = tabs.get(group.tabId);
+      if (selection.tab?.id === group.tabId || selection.instance.parentSessionId === tabParentSessionId(tab)) return { group, run, agent, selection };
+    } else if (!selection.instance.parentSessionId || ![...tabs.values()].some((tab) => tabParentSessionId(tab) === selection.instance.parentSessionId)) {
+      return { group, run, agent, selection };
+    }
+  }
+  throw makeHttpError(404, "Agent run output is no longer tracked");
+}
+
+async function boundedSessionMessages(sessionFile, maximum = 256 * 1024) {
+  const handle = await open(sessionFile, "r");
+  try {
+    const info = await handle.stat();
+    const length = Math.min(info.size, maximum);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, Math.max(0, info.size - length));
+    const text = buffer.toString("utf8");
+    const lines = text.split("\n");
+    if (info.size > length) lines.shift();
+    const messages = [];
+    for (const line of lines) {
+      if (!line || Buffer.byteLength(line) > 64 * 1024) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry?.type === "message" && entry.message) messages.push(entry.message);
+        else if (["assistant", "toolResult"].includes(entry?.role)) messages.push(entry);
+      } catch {}
+    }
+    return messages;
+  } finally { await handle.close(); }
+}
+
+function registryOutputData(instance, events = [], transcript = []) {
+  const outputLines = events.filter((event) => typeof event?.message === "string").slice(-WEBUI_SUBAGENT_OUTPUT_LINE_LIMIT).map((event) => event.message.slice(0, WEBUI_SUBAGENT_OUTPUT_LINE_LENGTH));
+  const recentTools = events.filter((event) => typeof event?.tool === "string").slice(-20).map((event) => ({ tool: event.tool.slice(0, 120), args: "", endMs: Number.isFinite(event.at) ? event.at : undefined }));
+  return {
+    version: 1, runId: instance.runId, source: instance.launcher, mode: "single", startedAt: instance.startedAt, updatedAt: instance.updatedAt,
+    agent: {
+      id: instance.instanceId, name: instance.name || "Agent", index: 0, nested: false, status: instance.status,
+      activityState: instance.activityState, currentTool: instance.currentTool, model: instance.model, thinking: instance.thinking,
+      telemetry: normalizeWebuiSubagentTelemetry(null, { model: instance.model, effort: instance.thinking }),
+      recentTools, recentOutput: outputLines, transcript: normalizeWebuiSubagentTranscript(transcript),
+      ...(!outputLines.length && !transcript.length ? { unavailable: true, unavailableReason: "No bounded output has been registered for this agent." } : {}),
+    },
+  };
+}
+
+async function canonicalWebuiSubagentOutputData(groupId, runId, instanceId) {
+  const state = await webuiSubagentsData({ includeSelections: true });
+  const { selection } = canonicalOutputSelection(groupId, runId, instanceId, state);
+  const instance = selection.instance;
+  if (!instance.capabilities.open) throw makeHttpError(409, "This agent provider does not support opening output");
+  if (selection.kind === "legacy-helper") return webuiSubagentOutputData(selection.tab, selection.run.id, selection.agent.id);
+  if (selection.kind === "helper") {
+    if (instance.outputRef.kind !== "helper") return registryOutputData(instance);
+    const data = await sendWebuiHelperCommand(selection.tab, "subagent-output", { outputId: instance.outputRef.id });
+    const run = { id: instance.runId, source: instance.origin || "async", mode: "single", startedAt: instance.startedAt };
+    const agent = { id: instance.instanceId, name: instance.name || "Agent", index: 0, model: instance.model, thinking: instance.thinking };
+    return normalizeWebuiSubagentOutput(data, { run, agent });
+  }
+  if (instance.outputRef.kind === "session-jsonl") {
+    const locator = await agentRunRegistry.resolveSessionLocator(instance.outputRef.id, { allowedRoots: allowedSessionDirs() });
+    if (!locator) throw makeHttpError(404, "Registered session output is unavailable");
+    return registryOutputData(instance, [], await boundedSessionMessages(locator.sessionFile));
+  }
+  if (["rpc-events", "json-events", "plain-log", "registry-artifact"].includes(instance.outputRef.kind)) {
+    const artifact = await agentRunRegistry.readArtifact(instance.outputRef.id);
+    return registryOutputData(instance, artifact?.events || []);
+  }
+  return registryOutputData(instance);
+}
+
+async function canonicalWebuiSubagentAction(action, body) {
+  const groupId = normalizeWebuiSubagentText(body.group, 240);
+  const runId = normalizeWebuiSubagentText(body.runId || body.run, 160);
+  const requestedAgentId = normalizeWebuiSubagentText(body.agentId || body.agent, 160);
+  if (!groupId || !runId) throw makeHttpError(400, "group and runId are required");
+  const state = await webuiSubagentsData({ includeSelections: true });
+  const group = state.overview.groups.find((candidate) => candidate.id === groupId);
+  const run = group?.runs.find((candidate) => candidate.id === runId);
+  const agent = requestedAgentId ? run?.agents.find((candidate) => candidate.instanceId === requestedAgentId) : run?.agents[0];
+  if (!group || !run || !agent) throw makeHttpError(404, "Agent run is no longer tracked");
+  const { selection } = canonicalOutputSelection(groupId, runId, agent.instanceId, state);
+  if (action === "cancel") {
+    if (selection.kind !== "helper" && selection.kind !== "legacy-helper") throw makeHttpError(409, "This agent provider does not support cancellation");
+    if (!agent.capabilities?.cancel) throw makeHttpError(409, "This agent provider does not support cancellation");
+    return sendWebuiHelperCommand(selection.tab, "subagent-cancel", { runId: selection.kind === "legacy-helper" ? selection.run.id : selection.instance.runId, reason: body.reason, note: body.note });
+  }
+  if (!agentRunProjectionCanBeDismissed(selection.instance)) {
+    throw makeHttpError(409, "Only terminal retained runs or stale attached-session projections can be dismissed");
+  }
+  if (selection.kind === "registry") {
+    const registrySelections = run.agents.map((candidate) => canonicalOutputSelection(groupId, runId, candidate.instanceId, state).selection);
+    if (registrySelections.some((candidate) => candidate.kind !== "registry" || !agentRunProjectionCanBeDismissed(candidate.instance))) {
+      throw makeHttpError(409, "Only terminal registry-owned runs or stale attached-session projections can be dismissed as one projection");
+    }
+    for (const candidate of registrySelections) dismissAgentRunProjection(candidate.instance);
+    return { runId: selection.instance.runId, dismissed: true };
+  }
+  if (selection.kind !== "helper" && selection.kind !== "legacy-helper") throw makeHttpError(409, `This agent provider does not support ${action}`);
+  return sendWebuiHelperCommand(selection.tab, "subagent-dismiss", { runId: selection.kind === "legacy-helper" ? selection.run.id : selection.instance.runId });
 }
 
 function restorableTabDescriptor(tab, state = null) {
@@ -15388,11 +15715,14 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/subagents/output" && req.method === "GET") {
-      const tab = getRequestedTab(req, url);
       const runId = normalizeWebuiSubagentText(url.searchParams.get("run"), 160);
       const agentId = normalizeWebuiSubagentText(url.searchParams.get("agent"), 240);
       if (!runId || !agentId) throw makeHttpError(400, "run and agent query parameters are required");
-      sendJson(res, 200, { ok: true, data: await webuiSubagentOutputData(tab, runId, agentId) });
+      const groupId = normalizeWebuiSubagentText(url.searchParams.get("group"), 240);
+      const data = groupId
+        ? await canonicalWebuiSubagentOutputData(groupId, runId, agentId)
+        : await webuiSubagentOutputData(getRequestedTab(req, url), runId, agentId);
+      sendJson(res, 200, { ok: true, data });
       return;
     }
 
@@ -15413,19 +15743,23 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/subagents/cancel" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
+      if (body.group) {
+        sendJson(res, 200, { ok: true, data: await canonicalWebuiSubagentAction("cancel", body) });
+        return;
+      }
       const tab = getRequestedTab(req, url, body);
       const runId = rejectUnsupportedWebuiSubagentRun(tab, body.runId);
-      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-cancel", {
-        runId,
-        reason: body.reason,
-        note: body.note,
-      }) });
+      sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-cancel", { runId, reason: body.reason, note: body.note }) });
       return;
     }
 
     if (url.pathname === "/api/subagents/dismiss" && req.method === "POST") {
       requireLocalhostRoute(req, url.pathname);
       const body = await readJsonBody(req);
+      if (body.group) {
+        sendJson(res, 200, { ok: true, data: await canonicalWebuiSubagentAction("dismiss", body) });
+        return;
+      }
       const tab = getRequestedTab(req, url, body);
       const runId = rejectUnsupportedWebuiSubagentRun(tab, body.runId);
       sendJson(res, 200, { ok: true, data: await sendWebuiHelperCommand(tab, "subagent-dismiss", { runId }) });

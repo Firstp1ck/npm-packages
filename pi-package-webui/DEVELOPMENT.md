@@ -4,6 +4,30 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 [Back to README](README.md) · [Advanced user technical reference](TECHNICAL.md)
 
+## Unified subagent observability
+
+The server emits browser overview version 2 with `groups[]` (`tab` or `external`), each containing logical `runs[]` and canonical `agents[]`. Agent rows carry stable instance/run identity, launcher, provider, lifecycle status, capabilities, and an opaque output reference. Compatibility fields (`tabs`, `totalRuns`, `totalAgents`, `runningRuns`, `runningAgents`, and `totalGates`) remain during the v1 skew window. The browser prefers v2 groups and normalizes v1 tabs as a fallback.
+
+Canonical lifecycle values are `queued`, `running`, `stale`, `lost`, `done`, `failed`, and `cancelled`. Launchers are `sdk`, `pi-rpc`, `pi-json`, `pi-print`, `interactive`, `tmux`, `pi-subagents`, `schedule`, `gate`, `workflow`, and `custom`. Counts use parent-scoped canonical instance IDs; groups, runs, workflow containers, and gate references are count-neutral. Exact parent session identity maps an observation to a WebUI tab; all other valid instances are grouped as `external`.
+
+The browser opens both overlay and view-only terminal modes through `GET /api/subagents/output?group=<group-id>&run=<run-id>&agent=<instance-id>`. Helper, session JSONL, structured event, plain-log, and metadata-only output dispatch stays server-owned. Mutations use the canonical group/run/agent selection and are checked against owner capabilities; no browser value is interpreted as a host path. Provider snapshots use the process-local `firstpick:webui-agent-runs:v1` event. SDK extensions may use `trackPiAgentSessionEventBus`, which owns only observation (not the session), emits complete canonical snapshots, heartbeats while running, and exposes bounded observation errors. In v1, a producer removal ID is producer-wide: it removes that instance ID across every parent scope owned by that producer. Cross-process records live in the scope-bound private registry. See `lib/agent-run-protocol.mjs`, `lib/agent-run-registry.mjs`, `lib/agent-run-adapters.mjs`, `webui-rpc-helper.mjs`, and the subagent aggregation/output handlers in `bin/pi-webui.mjs`.
+
+Focused contributor validation:
+
+```bash
+node --check public/app.js
+node tests/subagent-observability-static.test.mjs
+node tests/mobile-static.test.mjs
+node tests/agent-run-protocol.test.mjs
+node tests/agent-run-registry.test.mjs
+node tests/agent-run-adapters.test.mjs
+node tests/agent-run-launcher.test.mjs
+node tests/subagents-helper.test.mjs
+node tests/subagent-reliability-integration.test.mjs
+node tests/http-endpoints-harness.test.mjs
+npx playwright test --project=chromium tests/browser/subagent-observability.spec.mjs
+```
+
 ## Control Deck side-panel architecture
 
 The durable interface envelope is schema version 2 and the private Web UI settings envelope is version 7. `layout.sidePanel` contains `placement`, atomic `sectionLayout` (`order` plus `leftSectionIds`), `collapsedSectionIds`, `hiddenSectionIds`, side-specific `collapsedPanels`, and side-specific `panelWidths`. Validation rejects unknown patch fields, duplicate section IDs, left IDs absent from the global order, invalid placements, and widths outside 320–4096 pixels. Version-1 reads migrate to right placement, no left assignments, right-only legacy collapse/width, and preserve every unrelated layout field; stale version-1 writes are rejected.

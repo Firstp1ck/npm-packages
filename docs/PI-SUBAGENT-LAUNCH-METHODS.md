@@ -10,25 +10,29 @@ Ranking favors Pi-core integration and runtime efficiency first. Within the exte
 
 ### Pi-core mechanisms — no extensions required
 
-| Rank | Mechanism | Best caller | Why use it |
-| ---: | --- | --- | --- |
-| 1 | SDK `createAgentSession()` | Node.js/TypeScript application | Most efficient native programmatic option; no subprocess protocol |
-| 2 | RPC subprocess: `pi --mode rpc` | Any language/application | Persistent, controllable, process-isolated Pi agent |
-| 3 | JSON subprocess: `pi --mode json -p` | Scripts and simple orchestrators | Structured one-shot event stream |
-| 4 | Print subprocess: `pi -p` | Shell scripts | Simplest one-shot child invocation |
-| 5 | Separate interactive Pi/tmux process | Human/operator | Fully visible independent Pi session |
+| Rank | Mechanism | Best caller | Why use it | WebUI observability |
+| ---: | --- | --- | --- | --- |
+| 1 | SDK `createAgentSession()` | Node.js/TypeScript application | Most efficient native programmatic option; no subprocess protocol | Tracking adapter required |
+| 2 | RPC subprocess: `pi --mode rpc` | Any language/application | Persistent, controllable, process-isolated Pi agent | `pi-webui agent run` wrapper |
+| 3 | JSON subprocess: `pi --mode json -p` | Scripts and simple orchestrators | Structured one-shot event stream | `pi-webui agent run` wrapper |
+| 4 | Print subprocess: `pi -p` | Shell scripts | Simplest one-shot child invocation | `pi-webui agent run` wrapper |
+| 5 | Separate interactive Pi/tmux process | Human/operator | Fully visible independent Pi session | Reporter or explicit attach |
 
 ### Extension/package mechanisms — not Pi-core subagents
 
-| Rank | Mechanism | Supplied by | Best use |
-| ---: | --- | --- | --- |
-| 6 | `subagent` tool with `workflowScript` | `pi-subagents` extension/package | Managed one-child, parallel, or scripted delegation |
-| 7 | `/run` and packaged subagent commands | `pi-subagents` extension/package | Human-facing managed delegation |
-| 8 | Scheduled `workflowScript` runs | `pi-subagents` extension/package | Deferred or recurring managed delegation |
-| 9 | `subagent_gate` | This repository's WebUI package | Success quorum and bounded safe retries |
-| 10 | `pi-subagents` event-bus RPC `spawn` | `pi-subagents` extension/package | Extension-to-extension managed launch |
-| 11 | `workflow_run` | `pi-extension-workflows` | Reusable, approved, policy-controlled agent workflows |
-| 12 | Bespoke subagent extension/tool | Pi extension API plus custom code | Custom orchestration, UX, or policy |
+| Rank | Mechanism | Supplied by | Best use | WebUI observability |
+| ---: | --- | --- | --- | --- |
+| 6 | `subagent` tool with `workflowScript` | `pi-subagents` extension/package | Managed one-child, parallel, or scripted delegation | Automatic while helper is connected |
+| 7 | `/run` and packaged subagent commands | `pi-subagents` extension/package | Human-facing managed delegation | Same canonical child; no extra count |
+| 8 | Scheduled `workflowScript` runs | `pi-subagents` extension/package | Deferred or recurring managed delegation | Automatic after the job launches |
+| 9 | `subagent_gate` | This repository's WebUI package | Success quorum and bounded safe retries | Gate references child; no extra count |
+| 10 | `pi-subagents` event-bus RPC `spawn` | `pi-subagents` extension/package | Extension-to-extension managed launch | Same canonical child; no extra count |
+| 11 | `workflow_run` | `pi-extension-workflows` | Reusable, approved, policy-controlled agent workflows | Automatic provider snapshot |
+| 12 | Bespoke subagent extension/tool | Pi extension API plus custom code | Custom orchestration, UX, or policy | Provider event or registry adapter |
+
+## WebUI registration note
+
+The WebUI **Subagents** panel uses cooperative registration rather than process or tmux scanning. Managed extension runs appear automatically; native SDK/subprocess/interactive launches need the adapter, wrapper, reporter, or explicit attach named above. Registered runs that cannot be matched exactly to an open parent session appear under **External agents**. See [`pi-package-webui/TECHNICAL.md`](../pi-package-webui/TECHNICAL.md#subagent-observability) for commands, lifecycle meanings, output limitations, and troubleshooting.
 
 # Part I: Pi-core mechanisms
 

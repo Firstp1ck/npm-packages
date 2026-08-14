@@ -17,6 +17,8 @@ export const LOCALHOST_ONLY_POST_ROUTES = new Map([
   ["/api/remote-auth/settings", "Remote PIN authentication settings are only allowed from localhost"],
   ["/api/workflow-policy", "Workflow policy setup is only allowed from localhost"],
   ["/api/subagents/config", "Saving subagent launch-slot configuration is only allowed from localhost"],
+  ["/api/subagents/cancel", "Cancelling subagent runs is only allowed from localhost"],
+  ["/api/subagents/dismiss", "Dismissing retained subagent runs is only allowed from localhost"],
   ["/api/recovery/plan", "Opening recovery plans is only allowed from localhost"],
   ["/api/restart", "Restart is only allowed from localhost"],
   ["/api/update", "Updating Pi from the Web UI is only allowed from localhost"],

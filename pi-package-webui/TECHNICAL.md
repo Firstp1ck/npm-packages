@@ -146,6 +146,41 @@ Before downgrading, stop the Web UI and copy `~/.pi/webui/settings.json` to a sa
 
 To restore: stop the Web UI, re-upgrade to a version that supports the two-sided Control Deck, replace `~/.pi/webui/settings.json` with the backup using the same owner and private permissions, then start the Web UI. Do not restore or edit the file while tabs are active.
 
+## Subagent observability
+
+The **Subagents** panel accepts managed `pi-subagents` and workflow runs plus cooperating SDK, Pi RPC, JSON, print, interactive/tmux, schedule, gate, and custom launchers. It groups exact parent-session matches with their WebUI terminal and places unmatched registered runs under **External agents**. Counts include retained visible instances; the status line separately reports running and stale instances. Gate history refers to its child and does not add another count.
+
+Use the WebUI wrapper when launching Pi subprocesses that should be visible:
+
+```bash
+pi-webui agent run --launcher rpc -- pi --mode rpc --no-session
+pi-webui agent run --launcher json -- pi --mode json -p --no-session "Review this change"
+pi-webui agent run --launcher print -- pi -p --no-session "Review this change"
+```
+
+The command prints its resolved registration port and scope. If WebUI uses a non-default port, pass the same value with `--port <webui-port>` or set `PI_WEBUI_PORT`; the CLI does not discover running WebUI processes or scopes automatically.
+
+Attach a persisted independent session read-only with:
+
+```bash
+pi-webui agent attach --session <session-id-or-session-file> --name "Independent review"
+```
+
+Unwrapped SDK sessions and independently started Pi/tmux processes are intentionally invisible: Pi has no safe universal parent-child discovery, and WebUI does not scan processes or tmux panes. Use the supplied tracking adapter, wrapper, reporter integration, or explicit attach. An attached session without live heartbeat evidence is shown as stale rather than assumed running.
+
+Output quality depends on the source. Session and structured-event sources can provide a transcript; print mode provides only bounded plain output; metadata-only registrations truthfully report that output is unavailable. Controls are owner-declared: unsupported cancel, refresh, copy, and dismissal actions are hidden. Opening remains read-only in both overlay and terminal-tab modes.
+
+**Clear finished** and **Auto-Clear** can hide terminal external-agent projections from WebUI. Stale or lost sessions added with `pi-webui agent attach` remain visible for inspection and provide a row-level **Detach persisted session from WebUI** action. Clearing or detaching does not delete or modify the producer-owned registry record, output artifact, process, or session; those remain subject to their normal private retention policy.
+
+Registry state uses the WebUI state directory (`$XDG_STATE_HOME/pi-webui/`, or `~/.local/state/pi-webui/`) and is private to the local user and WebUI scope. Do not expose WebUI directly to an untrusted network or manually edit registry files while runs are active. Browser requests use opaque output identifiers and cannot select host paths.
+
+Troubleshooting:
+
+- Keep the same WebUI port and Pi agent configuration directory across a restart so registered scope identity remains stable. For a non-default port, pass `--port` to every `pi-webui agent` command or set `PI_WEBUI_PORT`.
+- A **stale** row has missed heartbeat evidence; **lost** means the longer loss threshold elapsed without an explicit terminal event. Neither means success.
+- If an expected independent run is absent, confirm it used a wrapper/tracking adapter or attach it explicitly; process discovery is intentionally unavailable.
+- If output says unavailable, the producer registered metadata but no bounded output source. Restarting the browser cannot reconstruct evidence the producer never registered.
+
 ## Mobile layout
 
 At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses terminal navigation and secondary composer controls by default:

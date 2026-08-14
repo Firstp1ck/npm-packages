@@ -5,9 +5,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [server, app] = await Promise.all([
+const [server, app, helper] = await Promise.all([
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8").then((value) => value.replace(/\r\n/g, "\n")),
   readFile(join(root, "public", "app.js"), "utf8").then((value) => value.replace(/\r\n/g, "\n")),
+  readFile(join(root, "webui-rpc-helper.mjs"), "utf8").then((value) => value.replace(/\r\n/g, "\n")),
 ]);
 
 function sourceBetween(text, start, end) {
@@ -79,6 +80,14 @@ assert.deepEqual(JSON.parse(JSON.stringify(normalized.runs[0])), {
 }, "server should preserve public recovery flags without leaking prompt, path, or raw fleet-entry fields");
 assert.equal(normalizationContext.normalizePayload({ version: 1, fleet: { version: 1, totalActive: 1, omitted: 2 }, runs: [] }).fleet, null, "invalid aggregate counts should be discarded");
 
+const canonicalProjectionSource = sourceBetween(
+  helper,
+  "function canonicalInstancesFromPublicRun(",
+  "\n  /**\n   * Canonical, deduplicated projection",
+);
+assert.match(canonicalProjectionSource, /Number\.isFinite\(run\.endedAt\) \? run\.endedAt : startedAt/, "a terminal run without endedAt should use one stable fallback timestamp");
+assert.doesNotMatch(canonicalProjectionSource, /endedAt[^\n]*Date\.now\(\)/, "terminal projection timestamps must not change on every status poll");
+
 const interactionSource = sourceBetween(
   server,
   "function webuiSubagentRunSupportsInteraction(",
@@ -89,16 +98,20 @@ assert.match(interactionSource, /requireInteractiveWebuiSubagentRun[\s\S]*!webui
 assert.match(server, /\/api\/subagents\/cancel[\s\S]*rejectUnsupportedWebuiSubagentRun\(tab, body\.runId\)[\s\S]*\/api\/subagents\/dismiss[\s\S]*rejectUnsupportedWebuiSubagentRun\(tab, body\.runId\)/, "cancel and dismiss routes should reject unsupported recovered rows before helper dispatch");
 
 const renderAgentSource = sourceBetween(app, "function renderSubagentAgent(", "\nfunction renderSubagentRun(");
-assert.match(renderAgentSource, /make\(interactive \? "button" : "div"[\s\S]*recovered active[\s\S]*if \(interactive\)[\s\S]*openSubagentOutput/, "recovered rows should use truthful non-button rendering with no output affordance");
+assert.match(renderAgentSource, /make\(interactive \? "button" : "div"[\s\S]*metadata-only[\s\S]*if \(interactive\)[\s\S]*openSubagentOutput[\s\S]*output is unavailable from this provider/, "unsupported rows should use truthful non-button rendering with no output affordance");
 const materializationSource = sourceBetween(app, "function materializeRetainedSubagentTerminalViews(", "\nfunction subagentTerminalViewGroups(");
-assert.match(materializationSource, /!subagentRunSupportsInteraction\(run\)/, "unsupported rows should never materialize retained terminal views");
-assert.match(app, /function subagentRunCanCancel[\s\S]*subagentRunSupportsInteraction\(run\)/, "unsupported rows should never expose cancellation");
-assert.match(app, /function finishedSubagentRunSelections[\s\S]*subagentRunSupportsInteraction\(run\)/, "unsupported rows should never enter clear-finished dismissal selection");
+assert.match(materializationSource, /subagentAgentStatus\(run\)[\s\S]*ensureSubagentTerminalView/, "only terminal open-capable rows should materialize retained terminal views");
+assert.match(app, /function subagentRunCanCancel[\s\S]*capabilities\.cancel === true/, "canonical capability ownership should gate cancellation");
+assert.match(app, /function subagentRunIsTerminal[\s\S]*\["done", "failed", "cancelled"\]/, "clear-finished should select only explicit terminal lifecycle states");
+assert.match(app, /function subagentRunIsAttachedProjection[\s\S]*source === "explicit-attach"[\s\S]*\["stale", "lost"\]/, "stale explicit attached sessions should be manually detachable");
+assert.match(app, /function subagentRunCanDismiss[\s\S]*subagentRunIsAttachedProjection\(run\)[\s\S]*provider === "webui-registry"/, "terminal registry projections and explicit attaches should expose the appropriate manual dismissal control");
+assert.match(app, /function finishedSubagentRunSelections[\s\S]*subagentRunIsTerminal\(run\) && subagentRunCanDismiss\(run\)/, "auto-clear should remain limited to genuinely terminal rows");
+assert.match(server, /function agentRunProjectionCanBeDismissed[\s\S]*origin === "explicit-attach"[\s\S]*dismissedAgentRunProjectionKeys\.has\(key\)[\s\S]*agentRunProjectionCanBeDismissed\(record\.instance\)[\s\S]*selection\.kind === "registry"[\s\S]*registrySelections[\s\S]*dismissAgentRunProjection\(candidate\.instance\)/, "registry dismissal should retain bounded tombstones only for terminal or explicit-attach WebUI projections");
 const viewSyncSource = sourceBetween(app, "function syncSubagentTerminalViewsFromOverview(", "\nfunction materializeRetainedSubagentTerminalViews(");
-assert.match(viewSyncSource, /run && !subagentRunSupportsInteraction\(run\)[\s\S]*subagentTerminalViews\.delete/, "a row that becomes provisional should close an existing terminal output view");
-assert.match(viewSyncSource, /run && !subagentRunSupportsInteraction\(run\)[\s\S]*subagentOverlaySelection = null/, "a row that becomes provisional should close an existing output overlay");
-assert.match(app, /async function openSubagentOverlay\(tab, run, agent\)[\s\S]*!subagentRunSupportsInteraction\(run\)/, "direct overlay entry should reject unsupported rows");
-assert.match(app, /function subagentGateAttemptTarget\(tab, attempt\)[\s\S]*!subagentRunSupportsInteraction\(run\)/, "retry-gate output entry should reject unsupported rows");
+assert.match(viewSyncSource, /run && !subagentRunCanOpen\(run,[\s\S]*subagentTerminalViews\.delete/, "a row that loses open capability should close an existing terminal output view");
+assert.match(viewSyncSource, /run && !subagentRunCanOpen\(run,[\s\S]*subagentOverlaySelection = null/, "a row that loses open capability should close an existing output overlay");
+assert.match(app, /async function openSubagentOverlay\(tab, run, agent\)[\s\S]*!subagentRunCanOpen\(run, agent\)/, "direct overlay entry should reject unsupported rows");
+assert.match(app, /function subagentGateAttemptTarget\(tab, attempt\)[\s\S]*subagentRunCanOpen\(run, agent\)/, "retry-gate output entry should reject unsupported rows");
 
 const refreshSource = sourceBetween(app, "async function refreshSubagents(", "\nfunction scheduleRefreshSubagents(");
 let resolveFirst;

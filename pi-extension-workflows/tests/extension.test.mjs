@@ -164,6 +164,7 @@ await eventHandlers.get("session_start")({}, {
 assert.ok(activeTools.has("workflow_run") && activeTools.has("workflow_status"), "restored Workflow Mode must activate its required tools");
 assert.equal(statuses.findLast((entry) => entry.key === "workflow-mode").value, "Workflow: on");
 const workflowSubagentSnapshots = () => busEvents.filter((entry) => entry.name === "firstpick:workflow-subagents:v1").map((entry) => entry.payload);
+const canonicalWorkflowSnapshots = () => busEvents.filter((entry) => entry.name === "firstpick:webui-agent-runs:v1").map((entry) => entry.payload);
 const startupWorkflowSnapshot = workflowSubagentSnapshots().at(-1);
 assert.deepEqual(startupWorkflowSnapshot?.runs, [], "session startup must publish an empty complete workflow snapshot when no run is active");
 await commandHandlers.get("workflow")("mode off", modeCtx);
@@ -245,7 +246,11 @@ assert.match(inspectedAgent.id, new RegExp(`^workflow:${inspectedResult.details.
 assert.equal(inspectedAgent.activityState, "stdout");
 assert.deepEqual(inspectedAgent.recentOutput, ["read activity for inspector"]);
 assert.equal(JSON.stringify(inspectedActiveSnapshot).includes("Inspect workflow files"), false, "workflow prompts must not be published to the WebUI event");
-assert.ok(workflowSubagentSnapshots().slice(inspectedActiveSnapshotIndex + 1).some((snapshot) => !snapshot.runs.some((run) => run.id === inspectedWorkflowRunId)), "terminal completion must publish a complete snapshot without the workflow run");
+const retainedWorkflowSnapshot = workflowSubagentSnapshots().slice(inspectedActiveSnapshotIndex + 1).find((snapshot) => snapshot.runs.some((run) => run.id === inspectedWorkflowRunId));
+assert.equal(retainedWorkflowSnapshot?.runs.find((run) => run.id === inspectedWorkflowRunId)?.agents[0]?.status, "done", "terminal completion must retain a settled inspectable workflow call");
+const retainedCanonicalWorkflow = canonicalWorkflowSnapshots().at(-1)?.instances?.find((instance) => instance.runId === inspectedWorkflowRunId);
+assert.equal(retainedCanonicalWorkflow?.status, "done", "terminal workflow completion must publish through the canonical provider event");
+assert.equal(retainedCanonicalWorkflow?.parentSessionId, "ephemeral", "canonical workflow observations must keep exact parent-session identity");
 let replayConfirmation = "";
 await commandHandlers.get("workflows")("", {
   cwd: temp,

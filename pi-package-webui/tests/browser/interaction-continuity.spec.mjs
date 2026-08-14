@@ -367,6 +367,133 @@ test("same-context app-runner refresh preserves directional selection, control s
   await expect.poll(async () => (await tabIds(page)).length).toBe(1);
 });
 
+test("unchanged background-tab polling keeps the followed transcript and terminal controls stable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const foregroundTabId = await activeTabId(page) || (await tabIds(page))[0];
+  const created = await api(page, "/api/tabs", { method: "POST", data: {} });
+  const backgroundTabId = created.data?.tab?.id;
+  assert.ok(backgroundTabId && backgroundTabId !== foregroundTabId, "background polling fixture requires a second terminal tab");
+
+  await page.reload();
+  await expect.poll(() => activeTabId(page)).toBe(foregroundTabId);
+  await expect(page.locator(`[data-tab-id="${backgroundTabId}"] .terminal-tab-button`)).toBeVisible();
+  await page.locator(`[data-tab-id="${backgroundTabId}"] .terminal-tab-button`).click();
+  await startContinuityRunner(page);
+  await page.locator(`[data-tab-id="${foregroundTabId}"] .terminal-tab-button`).click();
+  await expect.poll(() => activeTabId(page)).toBe(foregroundTabId);
+
+  // Let the first poll observe the background runner. Subsequent identical
+  // snapshots must not rebuild the terminal strip or disturb chat follow.
+  await page.waitForTimeout(1700);
+  const foregroundButton = await page.locator(`[data-tab-id="${foregroundTabId}"] .terminal-tab-button`).elementHandle();
+  assert.ok(foregroundButton, "foreground terminal control should be mounted before stability sampling");
+  const movement = await page.locator("#chat").evaluate(async (chat) => {
+    const spacer = document.createElement("div");
+    spacer.dataset.pollingContinuityFixture = "true";
+    spacer.style.height = "3000px";
+    chat.append(spacer);
+    chat.scrollTop = chat.scrollHeight;
+    const positions = [];
+    const started = performance.now();
+    while (performance.now() - started < 1800) {
+      positions.push(chat.scrollTop);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    spacer.remove();
+    return Math.max(...positions) - Math.min(...positions);
+  });
+  assert.equal(await foregroundButton.evaluate((node) => node.isConnected), true, "an unchanged background-tab poll should preserve the existing foreground terminal control");
+  expect(movement).toBeLessThanOrEqual(1.5);
+
+  await api(page, `/api/tabs/${encodeURIComponent(backgroundTabId)}`, { method: "DELETE" });
+  await expect.poll(async () => (await tabIds(page)).length).toBe(1);
+});
+
+test("focus reconciliation and terminal switching keep the running status geometry stable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const foregroundTabId = await activeTabId(page) || (await tabIds(page))[0];
+  const created = await api(page, "/api/tabs", { method: "POST", data: {} });
+  const backgroundTabId = created.data?.tab?.id;
+  assert.ok(backgroundTabId && backgroundTabId !== foregroundTabId, "focus continuity requires a second terminal tab");
+  await page.reload();
+  await expect.poll(() => activeTabId(page)).toBe(foregroundTabId);
+  await expect(page.locator(`[data-tab-id="${backgroundTabId}"] .terminal-tab-button`)).toBeVisible();
+
+  await triggerDelayedStream(page, foregroundTabId);
+  await waitForFixtureSettlement(page, foregroundTabId);
+  await page.waitForTimeout(1500);
+  const runIndicator = page.locator("#runIndicatorHost .runIndicator");
+  await expect(runIndicator).toBeHidden();
+
+  const focusMovement = await page.locator("#chat").evaluate(async (chat) => {
+    chat.style.paddingBottom = "3000px";
+    chat.scrollTop = chat.scrollHeight;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sticky = document.querySelector("#stickyUserPromptButton");
+    window.dispatchEvent(new FocusEvent("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const stickyChildren = [...sticky.children];
+    const samples = [];
+    window.dispatchEvent(new FocusEvent("focus"));
+    const started = performance.now();
+    while (performance.now() - started < 800) {
+      samples.push({
+        gap: chat.scrollHeight - chat.clientHeight - chat.scrollTop,
+        stickyStable: stickyChildren.every((node, index) => node === sticky.children[index] && node.isConnected),
+      });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    chat.style.removeProperty("padding-bottom");
+    const gaps = samples.map((sample) => sample.gap);
+    return {
+      gapDrift: Math.max(...gaps) - Math.min(...gaps),
+      stickyStable: samples.every((sample) => sample.stickyStable),
+    };
+  });
+  expect(focusMovement.gapDrift).toBeLessThanOrEqual(1.5);
+  assert.equal(focusMovement.stickyStable, true, "focus reconciliation should preserve unchanged sticky-prompt children");
+
+  await triggerDelayedStream(page, foregroundTabId);
+  await expect(runIndicator).toBeVisible();
+  await page.locator(`[data-tab-id="${backgroundTabId}"] .terminal-tab-button`).click();
+  await expect.poll(() => activeTabId(page)).toBe(backgroundTabId);
+  await page.locator(`[data-tab-id="${foregroundTabId}"] .terminal-tab-button`).click();
+  const switchMovement = await page.evaluate(async () => {
+    const samples = [];
+    const started = performance.now();
+    while (performance.now() - started < 900) {
+      const indicator = document.querySelector("#runIndicatorHost .runIndicator");
+      samples.push({
+        connected: indicator?.isConnected === true,
+        indicatorTop: indicator?.getBoundingClientRect().top ?? null,
+        composerHeight: document.querySelector("#composer")?.getBoundingClientRect().height ?? null,
+        contextHeight: document.querySelector("#contextMeterBar")?.getBoundingClientRect().height ?? null,
+      });
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    const visibleSamples = samples.filter((sample) => sample.connected);
+    const range = (key) => {
+      const values = visibleSamples.map((sample) => sample[key]).filter(Number.isFinite);
+      return Math.max(...values) - Math.min(...values);
+    };
+    return {
+      observed: visibleSamples.length >= 5,
+      indicatorTop: range("indicatorTop"),
+      composerHeight: range("composerHeight"),
+      contextHeight: range("contextHeight"),
+    };
+  });
+  assert.equal(switchMovement.observed, true, "the running status should become visible again during the terminal switch");
+  expect(switchMovement.indicatorTop).toBeLessThanOrEqual(1.5);
+  expect(switchMovement.composerHeight).toBeLessThanOrEqual(1.5);
+  expect(switchMovement.contextHeight).toBeLessThanOrEqual(1.5);
+
+  await api(page, `/api/tabs/${encodeURIComponent(backgroundTabId)}`, { method: "DELETE" });
+  await expect.poll(async () => (await tabIds(page)).length).toBe(1);
+});
+
 test("main output text selection survives streaming-tail and settlement rerenders", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(baseURL);

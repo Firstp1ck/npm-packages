@@ -566,6 +566,9 @@ const transcriptRenderer = createTranscriptRenderer({
 const PI_WEBUI_NPM_URL = "https://www.npmjs.com/package/@firstpick/pi-package-webui";
 
 let currentState = null;
+let tabStateCache = new Map();
+let tabStatsCache = new Map();
+let tabWorkspaceCache = new Map();
 let tabs = [];
 let activeTabId = null;
 let activeTabGeneration = 0;
@@ -817,6 +820,7 @@ let nativeSettingsDirty = false;
 let sessionSummaryOverlayTabId = null;
 let sessionSummaryOverlayFocusReturn = null;
 let sessionSummaryOverlayFocusReturnKey = "";
+let sessionSummaryControlsRenderSignature = "";
 const sessionSummaryByTab = new Map();
 let pathPickerState = null;
 let firstTerminalCwdPromptShown = false;
@@ -3839,13 +3843,14 @@ function reconcileControlDeckHosts() {
   if (elements.controlDeckPlacementSelect) elements.controlDeckPlacementSelect.value = placement;
   if (elements.controlDeckPlacementStatus) {
     const label = `${placement[0].toUpperCase()}${placement.slice(1)}`;
-    elements.controlDeckPlacementStatus.textContent = sidebarPresentation
+    const statusText = sidebarPresentation
       ? placement === "right"
         ? `${label} · Control Deck right, terminal/tabs left`
         : placement === "left"
           ? `${label} · Control Deck left, terminal/tabs right`
           : `${label} · Control Deck on both sides, terminal/tabs right`
       : `${label} · saved in WebUI layout`;
+    if (elements.controlDeckPlacementStatus.textContent !== statusText) elements.controlDeckPlacementStatus.textContent = statusText;
   }
   syncControlDeckCollapsedClasses();
   updateSidePanelResizeHandle(controlDeckLayout.panelWidths?.left || SIDE_PANEL_WIDTH_DEFAULT_PX, "left");
@@ -14244,6 +14249,9 @@ function syncTabMetadata(nextTabs = []) {
       if (voiceConversationTabId === tabId) stopVoiceConversationLoop();
       clearGitWorkflowForTab(tabId);
       commandCatalogsByTab.delete(tabId);
+      tabStateCache.delete(tabId);
+      tabStatsCache.delete(tabId);
+      tabWorkspaceCache.delete(tabId);
       sessionSummaryByTab.delete(tabId);
       if (sessionSummaryOverlayTabId === tabId) closeSessionSummaryOverlay({ restoreFocus: false });
       clearGitFooterPayloadState(tabId);
@@ -14654,23 +14662,37 @@ function clearWidgetsForTab(tabId = activeTabId) {
   }
 }
 
+function cachedStateForTabSwitch(tabId = activeTabId) {
+  if (!tabId) return null;
+  const cached = tabStateCache.get(tabId) || null;
+  const activity = tabActivities.get(tabId);
+  if (!activity) return cached;
+  const isWorking = activity.isWorking === true;
+  return {
+    ...(cached || {}),
+    isStreaming: isWorking,
+    isCompacting: isWorking && cached?.isCompacting === true,
+  };
+}
+
 function resetActiveTabUi() {
   clearRefreshTimers();
   eventSource?.close();
   eventSource = null;
-  currentState = null;
-  latestStats = null;
+  currentState = cachedStateForTabSwitch(activeTabId);
+  latestStats = activeTabId ? tabStatsCache.get(activeTabId) || null : null;
   latestStatsOverlayPayload = null;
   latestBtwWidgetPayload = null;
   btwWidgetComposerOpen = false;
   btwWidgetInputDraft = "";
-  latestWorkspace = null;
+  latestWorkspace = activeTabId ? tabWorkspaceCache.get(activeTabId) || null : null;
   latestMessages = [];
   latestMessagesSessionKey = "";
   resetFileViewerUi();
   resetFileTreeState();
   restoreFileViewerForActiveTab();
   clearRunIndicatorActivity({ render: false });
+  if (currentState) syncRunIndicatorFromState(currentState);
   statusEntries.clear();
   restoreWidgetsForActiveTab();
   transientMessages = [];
@@ -14680,6 +14702,7 @@ function resetActiveTabUi() {
   availableCommands = commandCatalog?.available || [];
   rawAvailableCommands = commandCatalog?.raw || [];
   resetOptionalFeatureAvailability();
+  if (commandCatalog) updateOptionalFeatureAvailability();
   commandSuggestions = [];
   pathSuggestions = [];
   suggestionMode = "none";
@@ -14708,6 +14731,7 @@ function resetActiveTabUi() {
   restoreCachedMessagesForActiveTab();
   renderFooter();
   renderFeedbackTray();
+  restoreComposerActionSlotLayout();
 }
 
 function tabGroupStatusRank(state) {
@@ -15974,17 +15998,81 @@ function prefetchInactiveTabCommandCatalogs() {
   }
 }
 
+function tabsSnapshotSignature(tabList = []) {
+  try {
+    return JSON.stringify(tabList);
+  } catch {
+    return "";
+  }
+}
+
+function tabsRenderSnapshotSignature(tabList = []) {
+  return tabsSnapshotSignature(tabList.map((tab) => {
+    const activity = normalizeTabActivity(tab?.activity || {});
+    const runner = tab?.appRunner || null;
+    const conversation = normalizeConversationModeState(tab?.conversationMode || {});
+    const summary = tab?.sessionSummary || null;
+    const pendingExtensionUiRequestCount = normalizePendingExtensionUiRequestCount(tab?.pendingExtensionUiRequestCount);
+    const seenCompletionSerial = tabSeenCompletionSerials.get(tab?.id) ?? activity.completionSerial;
+    const activityState = tab?.running && pendingExtensionUiRequestCount > 0
+      ? "blocked"
+      : tab?.running && activity.isWorking
+        ? "working"
+        : tab?.running && activity.completionSerial > seenCompletionSerial
+          ? "done"
+          : tab?.running ? "idle" : "stopped";
+    return {
+      id: tab?.id || "",
+      index: Number(tab?.index) || 0,
+      title: tab?.title || "",
+      titleSource: tab?.titleSource || "",
+      running: tab?.running === true,
+      cwd: tab?.cwd || "",
+      gitWorkspace: tab?.gitWorkspace || null,
+      pendingExtensionUiRequestCount,
+      activityState,
+      appRunner: runner ? {
+        status: runner.status || "",
+        stopping: runner.stopping === true,
+        displayCommand: runner.displayCommand || runner.label || runner.command || "",
+      } : null,
+      conversationMode: {
+        available: conversation.available,
+        enabled: conversation.enabled,
+        uiState: conversation.uiState,
+        statusText: conversation.statusText,
+      },
+      sessionSummary: summary ? {
+        status: summary.status || "",
+        configured: summary.configured === true,
+        enabled: summary.enabled === true,
+        durable: summary.durable === true,
+        hasSummary: Boolean(summary.summaryMarkdown),
+        message: summary.message || "",
+      } : null,
+    };
+  }));
+}
+
 async function refreshTabs({ selectStored = false } = {}) {
   const previousTabs = tabs;
+  const previousTabsSignature = tabsSnapshotSignature(previousTabs);
+  const previousTabsRenderSignature = tabsRenderSnapshotSignature(previousTabs);
+  const previousActiveTabId = activeTabId;
   const response = await api("/api/tabs", { scoped: false });
-  tabs = response.data?.tabs || [];
-  syncTabMetadata(tabs);
-  const liveParentTabIds = new Set(tabs.map((tab) => tab.id));
-  for (const view of [...subagentTerminalViews.values()]) {
-    if (!liveParentTabIds.has(view.parentTabId)) removeSubagentTerminalViewsForParent(view.parentTabId);
+  const nextTabs = response.data?.tabs || [];
+  const tabsChanged = previousTabsSignature !== tabsSnapshotSignature(nextTabs);
+  const tabsRenderChanged = previousTabsRenderSignature !== tabsRenderSnapshotSignature(nextTabs);
+  if (tabsChanged) {
+    tabs = nextTabs;
+    syncTabMetadata(tabs);
+    const liveParentTabIds = new Set(tabs.map((tab) => tab.id));
+    for (const view of [...subagentTerminalViews.values()]) {
+      if (!liveParentTabIds.has(view.parentTabId)) removeSubagentTerminalViewsForParent(view.parentTabId);
+    }
+    syncBlockedTabNotificationsFromTabs(tabs, previousTabs);
+    syncAgentDoneNotificationsFromTabs(tabs, previousTabs);
   }
-  syncBlockedTabNotificationsFromTabs(tabs, previousTabs);
-  syncAgentDoneNotificationsFromTabs(tabs, previousTabs);
   const requested = selectStored ? requestedTabIdFromUrl() : null;
   const stored = selectStored ? restoreStoredTabId() : null;
   if (!activeTabId || !tabs.some((tab) => tab.id === activeTabId)) {
@@ -15997,7 +16085,8 @@ async function refreshTabs({ selectStored = false } = {}) {
     setWorkspaceDashboardCollapsed(false, { persist: false });
   }
   renderSessionSkillTags(activeTabId);
-  renderTabs();
+  if (tabsRenderChanged || activeTabId !== previousActiveTabId || selectStored) renderTabs();
+  else syncTabPolling();
   prefetchInactiveTabCommandCatalogs();
   return tabs;
 }
@@ -16029,6 +16118,9 @@ async function switchTab(tabId) {
   cacheMessagesForTab(activeTabId);
   cacheWidgetsForTab(activeTabId);
   cacheActiveFileViewerForTab(activeTabId);
+  if (activeTabId && currentState) tabStateCache.set(activeTabId, currentState);
+  if (activeTabId && latestStats) tabStatsCache.set(activeTabId, latestStats);
+  if (activeTabId && latestWorkspace) tabWorkspaceCache.set(activeTabId, latestWorkspace);
   const tabContext = setActiveTabId(tabId, { remember: true });
   if (voiceConversation && voiceConversationTabId !== tabId) stopVoiceConversationLoop();
   resetActiveTabUi();
@@ -23114,15 +23206,65 @@ function initializeClaudeUsage() {
   claudeUsageRenderTimer = setInterval(renderClaudeUsage, CLAUDE_USAGE_RENDER_TICK_MS);
 }
 
-function subagentTabsWithRunningAgents() {
-  const serverNow = Number(latestSubagents?.updatedAt);
+const SUBAGENT_LAUNCHER_LABELS = Object.freeze({
+  sdk: "SDK", "pi-rpc": "Pi RPC", "pi-json": "Pi JSON", "pi-print": "Pi print",
+  interactive: "Pi session", tmux: "tmux", "pi-subagents": "pi-subagents",
+  schedule: "scheduled", gate: "gate", workflow: "workflow", custom: "custom",
+});
+const SUBAGENT_LIFECYCLE_STATES = new Set(["queued", "running", "stale", "lost", "done", "failed", "cancelled"]);
+
+function subagentLauncherLabel(value = "") {
+  const launcher = String(value || "").trim();
+  return SUBAGENT_LAUNCHER_LABELS[launcher] || launcher || "agent";
+}
+
+function subagentAgentStatus(run = {}, agent = null) {
+  const status = String(agent?.status || run?.status || "running").toLowerCase();
+  return SUBAGENT_LIFECYCLE_STATES.has(status) ? status : status === "pending" ? "queued" : "running";
+}
+
+function subagentCapabilities(run = {}, agent = null) {
+  const agentCapabilities = agent?.capabilities && typeof agent.capabilities === "object" ? agent.capabilities : null;
+  const runCapabilities = run?.capabilities && typeof run.capabilities === "object" ? run.capabilities : null;
+  return agentCapabilities || runCapabilities || null;
+}
+
+function subagentOverviewGroups(data = latestSubagents) {
+  const serverNow = Number(data?.updatedAt);
   const now = Number.isFinite(serverNow) ? serverNow : Date.now();
-  return (Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [])
-    .map((tab) => {
-      const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
-      const displayRuns = ungatedSubagentRuns(tab);
-      return { ...tab, gates, gateCount: gates.length, displayRuns };
-    })
+  if (Number(data?.version) === 2 && Array.isArray(data?.groups)) {
+    const legacyTabs = new Map((Array.isArray(data.tabs) ? data.tabs : []).map((tab) => [tab.tabId, tab]));
+    return data.groups.map((group, index) => {
+      const legacy = legacyTabs.get(group.tabId) || {};
+      const gates = visibleSubagentGates({ ...legacy, gates: group.gates || legacy.gates || [] }, dismissedSubagentGateKeys, now);
+      const runs = Array.isArray(group.runs) ? group.runs : [];
+      return {
+        ...legacy,
+        ...group,
+        groupId: group.id,
+        groupKind: group.kind,
+        tabId: group.tabId || activeTabId || "external",
+        tabIndex: group.tabIndex || legacy.tabIndex || index + 1,
+        tabTitle: group.title || legacy.tabTitle || (group.kind === "external" ? "External agents" : `Terminal ${index + 1}`),
+        sessionName: group.cwdLabel || legacy.sessionName || "registered agents",
+        available: true,
+        gates,
+        gateCount: gates.length,
+        displayRuns: runs,
+        agentCount: runs.reduce((count, run) => count + (Array.isArray(run.agents) ? run.agents.length : 0), 0),
+        runningAgents: runs.reduce((count, run) => count + (Array.isArray(run.agents) ? run.agents.filter((agent) => subagentAgentStatus(run, agent) === "running").length : 0), 0),
+        staleAgents: runs.reduce((count, run) => count + (Array.isArray(run.agents) ? run.agents.filter((agent) => subagentAgentStatus(run, agent) === "stale").length : 0), 0),
+      };
+    });
+  }
+  return (Array.isArray(data?.tabs) ? data.tabs : []).map((tab) => {
+    const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
+    return { ...tab, groupId: `tab:${tab.tabId}`, groupKind: "tab", gates, gateCount: gates.length, displayRuns: ungatedSubagentRuns(tab) };
+  });
+}
+
+function subagentTabsWithRunningAgents() {
+  return subagentOverviewGroups()
     .filter((tab) => tab.displayRuns.length > 0 || Number(tab?.gateCount || 0) > 0)
     .sort((a, b) => Number(a.tabIndex || 0) - Number(b.tabIndex || 0) || String(a.tabTitle || "").localeCompare(String(b.tabTitle || "")));
 }
@@ -23178,20 +23320,45 @@ function subagentGateAttemptViewFacts(attempt) {
 }
 
 function subagentRunIsRunning(run = {}, agent = null) {
-  if (run?.status && run.status !== "running") return false;
-  const status = String(agent?.status || "").trim();
-  return !status || ["running", "queued", "pending"].includes(status);
+  return ["queued", "running"].includes(subagentAgentStatus(run, agent));
+}
+
+function subagentRunIsTerminal(run = {}, agent = null) {
+  return ["done", "failed", "cancelled"].includes(subagentAgentStatus(run, agent));
+}
+
+function subagentRunIsAttachedProjection(run = {}) {
+  return run?.provider === "webui-registry"
+    && run?.source === "explicit-attach"
+    && ["stale", "lost"].includes(subagentAgentStatus(run));
+}
+
+function subagentRunCanOpen(run = {}, agent = null) {
+  const capabilities = subagentCapabilities(run, agent);
+  return capabilities ? capabilities.open === true : subagentRunSupportsInteraction(run);
+}
+
+function subagentRunCanRefresh(run = {}, agent = null) {
+  const capabilities = subagentCapabilities(run, agent);
+  return capabilities ? capabilities.refresh === true : subagentRunSupportsInteraction(run);
 }
 
 function subagentRunCanCancel(run = {}, agent = null) {
-  return subagentRunSupportsInteraction(run) && run?.source !== "workflow" && subagentRunIsRunning(run, agent);
+  const capabilities = subagentCapabilities(run, agent);
+  return capabilities ? capabilities.cancel === true && subagentRunIsRunning(run, agent) : subagentRunSupportsInteraction(run) && run?.source !== "workflow" && subagentRunIsRunning(run, agent);
 }
 
-function subagentRunStateLabel(run = {}) {
-  if (run?.status === "cancelled") return "cancelled by you";
-  if (run?.status === "failed") return "failed";
-  if (run?.status === "done") return "done";
-  return "running";
+function subagentRunCanDismiss(run = {}) {
+  if (subagentRunIsAttachedProjection(run)) return true;
+  if (!subagentRunIsTerminal(run)) return false;
+  if (run?.provider === "webui-registry") return true;
+  const capabilities = subagentCapabilities(run);
+  return capabilities ? capabilities.open === true && ["webui-helper", "pi-subagents"].includes(run.provider) : run?.source !== "workflow" && subagentRunSupportsInteraction(run);
+}
+
+function subagentRunStateLabel(run = {}, agent = null) {
+  const status = subagentAgentStatus(run, agent);
+  return status === "cancelled" ? "cancelled" : status;
 }
 
 function setSubagentCancelStatus(message = "", level = "muted") {
@@ -23216,11 +23383,13 @@ function subagentCancelTargetLabel(selection = subagentCancelSelection) {
 }
 
 function openSubagentCancelDialog(tab, run, agent = null) {
-  if (!tab?.tabId || !run?.id || !subagentRunCanCancel(run, agent) || !elements.subagentCancelDialog) return;
+  if (!tab?.groupId || !run?.id || !subagentRunCanCancel(run, agent) || !elements.subagentCancelDialog) return;
   const agentCount = Array.isArray(run.agents) ? run.agents.length : 0;
   subagentCancelSelection = {
+    groupId: tab.groupId,
     tabId: tab.tabId,
     runId: run.id,
+    agentId: agent?.instanceId || agent?.id || "",
     agentCount,
   };
   if (elements.subagentCancelDialogSubtitle) {
@@ -23252,8 +23421,9 @@ async function submitSubagentCancel() {
       method: "POST",
       scoped: false,
       body: {
-        tab: selection.tabId,
+        group: selection.groupId,
         runId: selection.runId,
+        ...(selection.agentId ? { agentId: selection.agentId } : {}),
         ...(reason ? { reason } : {}),
         ...(note ? { note } : {}),
       },
@@ -23272,14 +23442,15 @@ async function submitSubagentCancel() {
 }
 
 async function dismissSubagentRun(tab, run) {
-  if (!tab?.tabId || !run?.id || !subagentRunSupportsInteraction(run) || subagentRunIsRunning(run)) return;
+  if (!tab?.groupId || !run?.id || !subagentRunCanDismiss(run)) return;
+  const attachedProjection = subagentRunIsAttachedProjection(run);
   try {
     await api("/api/subagents/dismiss", {
       method: "POST",
       scoped: false,
-      body: { tab: tab.tabId, runId: run.id },
+      body: { group: tab.groupId, runId: run.id },
     });
-    addEvent(`dismissed finished subagent run ${run.id}`, "info");
+    addEvent(attachedProjection ? `detached persisted session projection ${run.id}` : `dismissed finished subagent run ${run.id}`, "info");
     await refreshSubagents();
     scheduleRefreshSubagents();
   } catch (error) {
@@ -23288,12 +23459,10 @@ async function dismissSubagentRun(tab, run) {
 }
 
 function finishedSubagentRunSelections(data = latestSubagents) {
-  return (Array.isArray(data?.tabs) ? data.tabs : []).flatMap((tab) => (
-    ungatedSubagentRuns(tab)
-      .filter((run) => run?.status && run.status !== "running" && run.source !== "workflow" && subagentRunSupportsInteraction(run))
-      .map((run) => ({ tabId: tab.tabId, runId: run.id }))
-      .filter((selection) => selection.tabId && selection.runId)
-  ));
+  return subagentOverviewGroups(data).flatMap((tab) => tab.displayRuns
+    .filter((run) => subagentRunIsTerminal(run) && subagentRunCanDismiss(run))
+    .map((run) => ({ groupId: tab.groupId, runId: run.id }))
+    .filter((selection) => selection.groupId && selection.runId));
 }
 
 async function clearFinishedSubagentRuns({ automatic = false } = {}) {
@@ -23311,7 +23480,7 @@ async function clearFinishedSubagentRuns({ automatic = false } = {}) {
         await api("/api/subagents/dismiss", {
           method: "POST",
           scoped: false,
-          body: { tab: selection.tabId, runId: selection.runId },
+          body: { group: selection.groupId, runId: selection.runId },
         });
         dismissed += 1;
       } catch (error) {
@@ -23521,7 +23690,7 @@ function renderSubagentOverlayWidget() {
   const transcriptMessages = subagentOverlayTranscriptMessages(data);
   const hasStructuredTranscript = transcriptMessages.length > 0;
   const outputText = subagentOverlayOutputText(data);
-  const fallbackText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
+  const fallbackText = outputText || agent.unavailableReason || (agent.unavailable ? "Output is unavailable for this registered agent." : running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
   const shownLineCount = outputText ? outputText.split("\n").length : fallbackText ? fallbackText.split("\n").length : 0;
   const widget = make("section", `widget release-npm-widget app-runner-widget subagent-overlay-widget${running ? " app-runner-live-widget" : " app-runner-log-widget"}`);
   widget.setAttribute("aria-label", `Live output for subagent ${agent.name || "subagent"}`);
@@ -23563,11 +23732,13 @@ function renderSubagentOverlayWidget() {
   }, "subagent-overlay-refresh-action");
   refreshButton.disabled = subagentOverlayLoading || selection.finished;
   if (subagentRunCanCancel(selection.run, agent)) {
-    actions.append(appRunnerActionButton("Cancel…", () => openSubagentCancelDialog(tab, selection.run, agent), "subagent-overlay-cancel-action danger"));
+    actions.append(appRunnerActionButton("Cancel…", () => openSubagentCancelDialog(selection.tab, selection.run, agent), "subagent-overlay-cancel-action danger"));
   }
-  actions.append(copyButton, refreshButton, appRunnerActionButton("Close", closeSubagentOverlay, "subagent-overlay-close-action"));
+  actions.append(copyButton);
+  if (subagentRunCanRefresh(selection.run, agent)) actions.append(refreshButton);
+  actions.append(appRunnerActionButton("Close", closeSubagentOverlay, "subagent-overlay-close-action"));
   const details = [
-    `${tab?.title || `Terminal ${selection.tabIndex || "?"}`} · run ${selection.runId}`,
+    `${selection.tab?.tabTitle || tab?.title || `Terminal ${selection.tabIndex || "?"}`} · run ${selection.runId}`,
     agent.currentPath ? `path: ${agent.currentPath}` : "",
     agent.activityState ? `activity: ${agent.activityState}` : "",
     agent.error ? `status warning: ${agent.error}` : "",
@@ -23598,7 +23769,7 @@ async function refreshSubagentOverlay() {
   const previousSignature = subagentOverlayMeaningfulSignature();
   subagentOverlayLoading = true;
   try {
-    const query = new URLSearchParams({ tab: selection.tabId, run: selection.runId, agent: selection.agentId });
+    const query = new URLSearchParams({ group: selection.groupId, run: selection.runId, agent: selection.agentId });
     const response = await api(`/api/subagents/output?${query}`, { scoped: false });
     if (requestSerial !== subagentOverlayRequestSerial || subagentOverlaySelection !== selection) return;
     subagentOverlayData = response.data || null;
@@ -23618,11 +23789,12 @@ async function refreshSubagentOverlay() {
 }
 
 async function openSubagentOverlay(tab, run, agent) {
-  if (!tab?.tabId || !run?.id || !agent?.id || !subagentRunSupportsInteraction(run)) return;
+  if (!tab?.groupId || !run?.id || !agent?.id || !subagentRunCanOpen(run, agent)) return;
   if (activeSubagentTerminalId) deactivateSubagentTerminalView({ render: false });
   try {
     if (activeTabId !== tab.tabId) await switchTab(tab.tabId);
     subagentOverlaySelection = {
+      groupId: tab.groupId,
       tabId: tab.tabId,
       tabIndex: tab.tabIndex,
       tab,
@@ -23700,6 +23872,7 @@ function updateSubagentTerminalRefreshState(view, { running = subagentTerminalVi
   elements.subagentTerminalStatus.setAttribute("aria-live", view.error ? "polite" : "off");
   elements.subagentTerminalStatus.textContent = status;
   elements.subagentTerminalStatus.classList.toggle("warning", !!view.error);
+  elements.subagentTerminalRefreshButton.hidden = !subagentRunCanRefresh(view.run, view.data?.agent || view.agent);
   elements.subagentTerminalRefreshButton.disabled = view.loading || view.finished === true;
   elements.subagentTerminalRefreshButton.textContent = view.loading ? "Refreshing…" : "Refresh";
 }
@@ -23750,7 +23923,7 @@ function renderSubagentTerminalView() {
   const transcriptMessages = subagentOverlayTranscriptMessages({ agent });
   const hasStructuredTranscript = transcriptMessages.length > 0;
   const outputText = subagentOverlayOutputText({ agent });
-  const fallbackText = outputText || (running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
+  const fallbackText = outputText || agent.unavailableReason || (agent.unavailable ? "Output is unavailable for this registered agent." : running && agent.currentTool ? "" : running ? "Waiting for the first agent activity…" : "No recent output was captured.");
   const parent = tabs.find((tab) => tab.id === view.parentTabId);
   const elapsed = subagentRunElapsed(view.run);
   const facts = [
@@ -23788,6 +23961,7 @@ function renderSubagentTerminalView() {
   if (running) appendSubagentRunIndicator(elements.subagentTerminalTranscript, { agent, run: view.run });
 
   updateSubagentTerminalRefreshState(view, { running });
+  elements.subagentTerminalCopyButton.hidden = !outputText;
   elements.subagentTerminalCopyButton.disabled = !outputText;
   if (elements.subagentTerminalCancelButton) {
     const cancellable = subagentRunCanCancel(view.run, agent);
@@ -23816,7 +23990,7 @@ async function refreshSubagentTerminalView(viewId = activeSubagentTerminalId, { 
   view.loading = true;
   if (showLoading) updateSubagentTerminalRefreshState(view);
   try {
-    const query = new URLSearchParams({ tab: view.parentTabId, run: view.runId, agent: view.agentId });
+    const query = new URLSearchParams({ group: view.groupId, run: view.runId, agent: view.agentId });
     const response = await api(`/api/subagents/output?${query}`, { scoped: false });
     if (view.requestSerial !== requestSerial || !subagentTerminalViews.has(view.id)) return;
     view.data = response.data || null;
@@ -23871,10 +24045,11 @@ async function activateSubagentTerminalView(viewId) {
 }
 
 function ensureSubagentTerminalView(tab, run, agent) {
-  if (!tab?.tabId || !run?.id || !agent?.id || !subagentRunSupportsInteraction(run)) return null;
+  if (!tab?.groupId || !tab?.tabId || !run?.id || !agent?.id || !subagentRunCanOpen(run, agent)) return null;
   const id = subagentTerminalViewId(tab, run, agent);
   const existing = subagentTerminalViews.get(id);
   if (existing) {
+    existing.groupId = tab.groupId;
     existing.tab = tab;
     existing.run = run;
     existing.agent = agent;
@@ -23884,6 +24059,7 @@ function ensureSubagentTerminalView(tab, run, agent) {
   }
   const view = {
     id,
+    groupId: tab.groupId,
     parentTabId: tab.tabId,
     parentTitle: tab.tabTitle,
     tabIndex: tab.tabIndex,
@@ -23905,7 +24081,7 @@ function ensureSubagentTerminalView(tab, run, agent) {
 }
 
 async function openSubagentTerminal(tab, run, agent) {
-  if (!subagentRunSupportsInteraction(run)) return;
+  if (!subagentRunCanOpen(run, agent)) return;
   const view = ensureSubagentTerminalView(tab, run, agent);
   if (!view) return;
   try {
@@ -23967,11 +24143,11 @@ function removeSubagentTerminalViewsForParent(parentTabId) {
 
 function syncSubagentTerminalViewsFromOverview() {
   let changed = false;
-  const overviewTabs = Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : [];
+  const overviewTabs = subagentOverviewGroups();
   for (const view of [...subagentTerminalViews.values()]) {
-    const tab = overviewTabs.find((candidate) => candidate.tabId === view.parentTabId);
+    const tab = overviewTabs.find((candidate) => candidate.groupId === view.groupId);
     const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === view.runId);
-    if (run && !subagentRunSupportsInteraction(run)) {
+    if (run && !subagentRunCanOpen(run, (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate.id === view.agentId))) {
       view.requestSerial += 1;
       subagentTerminalViews.delete(view.id);
       if (activeSubagentTerminalId === view.id) activeSubagentTerminalId = null;
@@ -23996,9 +24172,9 @@ function syncSubagentTerminalViewsFromOverview() {
   }
   const selection = subagentOverlaySelection;
   if (selection) {
-    const tab = overviewTabs.find((candidate) => candidate.tabId === selection.tabId);
+    const tab = overviewTabs.find((candidate) => candidate.groupId === selection.groupId);
     const run = (Array.isArray(tab?.runs) ? tab.runs : []).find((candidate) => candidate.id === selection.runId);
-    if (run && !subagentRunSupportsInteraction(run)) {
+    if (run && !subagentRunCanOpen(run, (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate.id === selection.agentId))) {
       clearTimeout(subagentOverlayRefreshTimer);
       subagentOverlayRefreshTimer = null;
       subagentOverlayRequestSerial += 1;
@@ -24027,13 +24203,13 @@ function syncSubagentTerminalViewsFromOverview() {
 function materializeRetainedSubagentTerminalViews() {
   if (subagentOpenMode !== "tab") return false;
   let materialized = false;
-  for (const tab of Array.isArray(latestSubagents?.tabs) ? latestSubagents.tabs : []) {
+  for (const tab of subagentOverviewGroups()) {
     if (tab?.available !== true || !tab?.tabId) continue;
     const restoreKey = `${tab.tabId}\u0000${tab.sessionFile || ""}`;
     if (subagentTerminalRestoredParentTabs.has(restoreKey)) continue;
     subagentTerminalRestoredParentTabs.add(restoreKey);
-    for (const run of ungatedSubagentRuns(tab)) {
-      if (run?.status === "running" || run?.source === "workflow" || !subagentRunSupportsInteraction(run)) continue;
+    for (const run of tab.displayRuns) {
+      if (["queued", "running", "stale"].includes(subagentAgentStatus(run)) || run?.source === "workflow") continue;
       for (const agent of Array.isArray(run.agents) ? run.agents : []) {
         const id = subagentTerminalViewId(tab, run, agent);
         if (subagentTerminalViews.has(id)) continue;
@@ -24171,24 +24347,27 @@ function renderSubagentTerminalTabGroup(group) {
 }
 
 function openSubagentOutput(tab, run, agent) {
-  if (!subagentRunSupportsInteraction(run)) return;
+  if (!subagentRunCanOpen(run, agent)) return;
   return subagentOpenMode === "tab" ? openSubagentTerminal(tab, run, agent) : openSubagentOverlay(tab, run, agent);
 }
 
 function renderSubagentAgent(tab, run, agent) {
-  const running = subagentRunIsRunning(run, agent);
-  const interactive = subagentRunSupportsInteraction(run);
+  const status = subagentAgentStatus(run, agent);
+  const running = ["queued", "running"].includes(status);
+  const interactive = subagentRunCanOpen(run, agent);
   const name = agent?.name || "subagent";
   const [model, thinking] = subagentExecutionValues(agent);
-  const row = make(interactive ? "button" : "div", `subagent-agent-row${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}${interactive ? "" : " provisional"}`);
+  const launcher = subagentLauncherLabel(agent?.launcher || run?.launcher);
+  const row = make(interactive ? "button" : "div", `subagent-agent-row state-${status}${agent?.nested ? " nested" : ""}${running ? " running" : " finished"}${interactive ? "" : " metadata-only"}`);
   if (interactive) row.type = "button";
   row.dataset.subagentContinuityKey = `agent:${tab?.tabId || ""}:${run?.id || ""}:${agent?.id || ""}`;
-  const dot = make("span", running ? "subagent-running-dot" : `subagent-state-dot ${agent?.status || "done"}`);
+  const dot = make("span", `subagent-state-dot ${status}`);
   dot.setAttribute("aria-hidden", "true");
   const identity = make("span", "subagent-agent-identity");
   identity.append(
     make("strong", "subagent-agent-name", name),
-    make("span", "subagent-agent-inline-meta", `· ${interactive ? "" : "recovered active · "}${model} · ${thinking}`),
+    make("span", "subagent-source-badge", launcher),
+    make("span", "subagent-agent-inline-meta", `· ${status} · ${model} · ${thinking}`),
   );
   row.append(dot, identity);
   if (interactive) {
@@ -24196,12 +24375,12 @@ function renderSubagentAgent(tab, run, agent) {
     open.setAttribute("aria-hidden", "true");
     row.append(open);
     const destination = subagentOpenMode === "tab" ? "subagent tab" : "output overlay";
-    row.title = `${name} · ${model} · ${thinking} · open ${destination}`;
-    row.setAttribute("aria-label", `Open ${destination} for ${name}, model ${model}, reasoning ${thinking}, in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
+    row.title = `${name} · ${launcher} · ${status} · ${model} · ${thinking} · open ${destination}`;
+    row.setAttribute("aria-label", `Open ${destination} for ${name}, launched by ${launcher}, ${status}, model ${model}, reasoning ${thinking}, in ${tab?.tabTitle || `Terminal ${tab?.tabIndex || "?"}`}`);
     row.addEventListener("click", () => openSubagentOutput(tab, run, agent));
   } else {
-    row.title = `${name} · recovered active child · output and controls unavailable until the run is identified`;
-    row.setAttribute("aria-label", `${name}, recovered active child; output and controls are unavailable until the run is identified`);
+    row.title = `${name} · ${launcher} · ${status} · output is unavailable from this provider`;
+    row.setAttribute("aria-label", `${name}, launched by ${launcher}, ${status}; output and controls are unavailable from this provider`);
   }
   return row;
 }
@@ -24226,11 +24405,12 @@ function renderSubagentRun(tab, run) {
     applyStyledTooltip(cancel, "Cancel entire subagent run…", { ariaLabel: "Cancel entire subagent run" });
     cancel.addEventListener("click", () => openSubagentCancelDialog(tab, run));
     actions.append(cancel);
-  } else if (!running && run?.source !== "workflow" && subagentRunSupportsInteraction(run)) {
+  } else if (subagentRunCanDismiss(run)) {
     const dismiss = make("button", "subagent-run-dismiss", "×");
     dismiss.type = "button";
     dismiss.dataset.subagentContinuityKey = `run:${tab?.tabId || ""}:${run?.id || ""}:dismiss`;
-    applyStyledTooltip(dismiss, "Dismiss finished run", { ariaLabel: "Dismiss finished run" });
+    const dismissLabel = subagentRunIsAttachedProjection(run) ? "Detach persisted session from WebUI" : "Dismiss finished run";
+    applyStyledTooltip(dismiss, dismissLabel, { ariaLabel: dismissLabel });
     dismiss.addEventListener("click", () => dismissSubagentRun(tab, run));
     actions.append(dismiss);
   }
@@ -24243,13 +24423,13 @@ function subagentGateStatusLabel(status) {
 }
 
 function subagentGateAttemptTarget(tab, attempt) {
-  if (!tab?.tabId || !attempt?.runId) return null;
-  const run = (Array.isArray(tab.runs) ? tab.runs : []).find((candidate) => candidate?.id === attempt.runId);
-  if (!run || !subagentRunSupportsInteraction(run)) return null;
+  if (!tab?.groupId || !attempt?.runId) return null;
+  const run = (Array.isArray(tab.displayRuns) ? tab.displayRuns : []).find((candidate) => candidate?.id === attempt.runId);
+  if (!run) return null;
   const agents = Array.isArray(run.agents) ? run.agents : [];
-  let agent = agents.find((candidate) => candidate?.name === attempt.agent);
+  let agent = agents.find((candidate) => candidate?.id === attempt.instanceId || candidate?.instanceId === attempt.instanceId || candidate?.name === attempt.agent);
   if (!agent && agents.length === 1) [agent] = agents;
-  return agent?.id ? { run, agent } : null;
+  return agent?.id && subagentRunCanOpen(run, agent) ? { run, agent } : null;
 }
 
 function subagentGateAttemptExecutionValues(attempt = {}) {
@@ -24329,28 +24509,32 @@ function renderSubagentGate(tab, gate) {
 }
 
 function renderSubagentTabGroup(tab) {
-  const group = make("section", `subagent-tab-group${tab.tabId === activeTabId ? " active" : ""}`);
-  const header = make("button", "subagent-tab-header");
-  header.type = "button";
+  const isExternal = tab.groupKind === "external";
+  const group = make("section", `subagent-tab-group${isExternal ? " external" : ""}${tab.tabId === activeTabId && !isExternal ? " active" : ""}`);
+  const header = make(isExternal ? "div" : "button", "subagent-tab-header");
+  if (!isExternal) header.type = "button";
   header.dataset.subagentContinuityKey = `tab:${tab?.tabId || ""}`;
-  header.setAttribute("aria-label", `Open ${tab.tabTitle || `Terminal ${tab.tabIndex || ""}`}`);
+  if (!isExternal) header.setAttribute("aria-label", `Open ${tab.tabTitle || `Terminal ${tab.tabIndex || ""}`}`);
   const title = make("span", "subagent-tab-title");
   title.append(
     make("strong", undefined, tab.tabTitle || `Terminal ${tab.tabIndex || "?"}`),
-    make("span", "subagent-tab-session", `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
+    make("span", "subagent-tab-session", isExternal ? "Registered outside open WebUI tabs" : `Terminal ${tab.tabIndex || "?"} · ${subagentTabMeta(tab)}`),
   );
   const runs = (Array.isArray(tab.displayRuns) ? tab.displayRuns : ungatedSubagentRuns(tab))
     .slice()
     .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
   const runningAgents = Number(tab.runningAgents || 0);
-  const retainedRuns = runs.filter((run) => run?.status !== "running").length;
+  const staleAgents = Number(tab.staleAgents || 0);
+  const retainedRuns = runs.filter((run) => !["queued", "running", "stale"].includes(subagentAgentStatus(run))).length;
   const countLabel = [
-    `${runningAgents} running`,
+    `${tab.agentCount || 0} total`,
+    runningAgents ? `${runningAgents} running` : "",
+    staleAgents ? `${staleAgents} stale` : "",
     retainedRuns ? `${retainedRuns} retained` : "",
     Number(tab.gateCount || 0) ? `${tab.gateCount} gates` : "",
   ].filter(Boolean).join(" · ");
   header.append(title, make("span", "subagent-tab-count", countLabel));
-  header.addEventListener("click", () => switchTab(tab.tabId));
+  if (!isExternal) header.addEventListener("click", () => switchTab(tab.tabId));
   group.append(header);
 
   const list = make("div", "subagent-agent-list");
@@ -24375,7 +24559,9 @@ function renderSubagents() {
   const restoreFocus = () => restoreScopedControlContinuity(box, continuityContextKey, focusSnapshot, (key) => [...box.querySelectorAll("[data-subagent-continuity-key]")].find((node) => subagentPanelControlKey(node) === key));
   const activeTabs = subagentTabsWithRunningAgents();
   const finishedRuns = finishedSubagentRunSelections();
-  const totalAgents = Number(latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
+  const totalAgents = Number(latestSubagents?.counts?.totalAgents ?? latestSubagents?.totalAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.agentCount || 0), 0));
+  const runningAgents = Number(latestSubagents?.counts?.runningAgents ?? latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
+  const staleAgents = Number(latestSubagents?.counts?.staleAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.staleAgents || 0), 0));
   const totalRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.length, 0);
   const runningRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.filter((run) => run?.status === "running").length, 0);
   const retainedRuns = Math.max(0, totalRuns - runningRuns);
@@ -24401,7 +24587,7 @@ function renderSubagents() {
   }
   if (elements.subagentsStatus) {
     elements.subagentsStatus.textContent = hasItems
-      ? [`${totalAgents} running`, Number(latestSubagents?.fleet?.omitted || 0) ? `${latestSubagents.fleet.omitted} active ${latestSubagents.fleet.omitted === 1 ? "child" : "children"} omitted upstream` : "", retainedRuns ? `${retainedRuns} retained ${retainedRuns === 1 ? "run" : "runs"}` : "", totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "terminal" : "terminals"}`].filter(Boolean).join(" · ")
+      ? [`${totalAgents} total`, `${runningAgents} running`, staleAgents ? `${staleAgents} stale` : "", Number(latestSubagents?.fleet?.omitted || 0) ? `${latestSubagents.fleet.omitted} active ${latestSubagents.fleet.omitted === 1 ? "child" : "children"} omitted upstream` : "", retainedRuns ? `${retainedRuns} retained ${retainedRuns === 1 ? "run" : "runs"}` : "", totalGates ? `${totalGates} retry ${totalGates === 1 ? "gate" : "gates"}` : "", `across ${activeTabs.length} ${activeTabs.length === 1 ? "group" : "groups"}`].filter(Boolean).join(" · ")
       : subagentsLoading && !latestSubagents
         ? "Checking subagents and retry gates…"
         : "No running subagents, retained runs, or retry gates.";
@@ -24411,7 +24597,7 @@ function renderSubagents() {
   box.classList.toggle("muted", !hasItems);
   box.classList.toggle("has-items", hasItems);
   if (!hasItems) {
-    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Running and retained subagents will appear here, grouped by terminal and session."));
+    box.append(make("div", "subagents-empty", subagentsError ? `Subagent status unavailable: ${subagentsError.message || subagentsError}` : "Managed and registered Pi agent runs will appear here, grouped by terminal or under External agents."));
     restoreFocus();
     return;
   }
@@ -34274,9 +34460,11 @@ function updateStickyUserPromptButton() {
   const targets = userPromptTargets();
   const target = findStickyUserPromptTarget(targets);
   if (!target) {
+    if (button.hidden && button.childElementCount === 0) return;
     button.hidden = true;
     button.removeAttribute("data-message-index");
     button.removeAttribute("data-compacted");
+    delete button.dataset.renderSignature;
     button.replaceChildren();
     return;
   }
@@ -34285,12 +34473,16 @@ function updateStickyUserPromptButton() {
   const isLatest = target.compacted || ordinal === targets.length;
   const label = target.compacted ? "Last user prompt (compacted)" : isLatest ? "Last user prompt" : "Previous user prompt";
   const meta = target.compacted ? "summary ↑" : `${ordinal}/${targets.length} ↑`;
-  button.hidden = false;
-  button.dataset.compacted = target.compacted ? "true" : "false";
-  if (Number.isInteger(target.index) && target.index >= 0) button.dataset.messageIndex = String(target.index);
-  else button.removeAttribute("data-message-index");
+  const messageIndex = Number.isInteger(target.index) && target.index >= 0 ? String(target.index) : "";
   const baseTitle = target.compacted ? `Prompt was compacted; jump to compaction summary: ${target.preview}` : `Jump to ${label.toLowerCase()}: ${target.preview}`;
   const baseAriaLabel = target.compacted ? `Prompt was compacted; jump to compaction summary: ${target.preview}` : `Jump to ${label.toLowerCase()} (${ordinal} of ${targets.length}): ${target.preview}`;
+  const renderSignature = JSON.stringify([target.compacted === true, messageIndex, baseTitle, baseAriaLabel, label, target.preview, meta]);
+  if (!button.hidden && button.dataset.renderSignature === renderSignature) return;
+  button.hidden = false;
+  button.dataset.renderSignature = renderSignature;
+  button.dataset.compacted = target.compacted ? "true" : "false";
+  if (messageIndex) button.dataset.messageIndex = messageIndex;
+  else button.removeAttribute("data-message-index");
   button.title = baseTitle;
   button.setAttribute("aria-label", baseAriaLabel);
   const children = [
@@ -38821,6 +39013,17 @@ function createTerminalTabSessionSummaryButton(tab) {
 function renderSessionSummaryControls() {
   const setupAvailable = !!activeTabId && hasAvailableCommand("summary-setup", { tabId: activeTabId });
   if (elements.optionsSummarySetupButton) elements.optionsSummarySetupButton.hidden = !setupAvailable;
+  const state = sessionSummaryStateForTab(activeTabId);
+  const renderSignature = JSON.stringify([
+    activeTabId || "",
+    setupAvailable,
+    !!activeTabId && hasAvailableCommand("summary", { tabId: activeTabId }),
+    state?.status || "",
+    Boolean(state?.summaryMarkdown),
+    state?.message || "",
+  ]);
+  if (renderSignature === sessionSummaryControlsRenderSignature) return;
+  sessionSummaryControlsRenderSignature = renderSignature;
   scheduleTabsRender();
 }
 
@@ -38891,8 +39094,10 @@ function openSessionSummaryOverlay(tabId, { loading = false, focusReturnKey = ""
 
 function updateSessionSummaryForTab(tabId, value, { resetProjection = false } = {}) {
   if (!tabId) return null;
-  const normalized = normalizeSessionSummaryClientState(value, sessionSummaryByTab.get(tabId), { resetProjection });
+  const previous = sessionSummaryByTab.get(tabId);
+  const normalized = normalizeSessionSummaryClientState(value, previous, { resetProjection });
   if (!normalized) return null;
+  if (previous && tabsSnapshotSignature(previous) === tabsSnapshotSignature(normalized)) return previous;
   sessionSummaryByTab.set(tabId, normalized);
   renderSessionSummaryControls();
   if (sessionSummaryOverlayTabId === tabId) renderSessionSummaryOverlay();
@@ -41846,6 +42051,8 @@ async function refreshState(tabContext = activeTabContext()) {
   if (!isCurrentTabContext(tabContext)) return;
   const previousState = currentState;
   currentState = response.data || null;
+  if (currentState) tabStateCache.set(tabContext.tabId, currentState);
+  else tabStateCache.delete(tabContext.tabId);
   if (latestMessages.length) {
     latestMessagesSessionKey = resolveMessagesSessionKey(tabContext.tabId);
     cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);
@@ -41868,6 +42075,8 @@ async function refreshStats(tabContext = activeTabContext()) {
   const response = await api("/api/stats", { tabId: tabContext.tabId });
   if (!isCurrentTabContext(tabContext)) return;
   latestStats = response.data || null;
+  if (latestStats) tabStatsCache.set(tabContext.tabId, latestStats);
+  else tabStatsCache.delete(tabContext.tabId);
   renderFooter();
   renderContextMeter();
   renderWorkspaceDashboard();
@@ -41894,6 +42103,8 @@ async function refreshWorkspace(tabContext = activeTabContext()) {
   }
   if (!isCurrentTabContext(tabContext)) return;
   latestWorkspace = nextWorkspace;
+  if (latestWorkspace) tabWorkspaceCache.set(tabContext.tabId, latestWorkspace);
+  else tabWorkspaceCache.delete(tabContext.tabId);
   rememberServerStartCwd(nextWorkspace?.cwd);
   renderFooter();
   renderWorkspaceDashboard();
@@ -42071,6 +42282,7 @@ function restoreCachedMessagesForActiveTab() {
   latestMessages = cached.messages;
   latestMessagesSessionKey = cached.sessionKey || resolveMessagesSessionKey(activeTabId);
   renderMessages(latestMessages);
+  if (autoFollowChat) setChatScrollTopInstant(elements.chat.scrollHeight);
   return true;
 }
 
@@ -42234,19 +42446,23 @@ function populateModelSelect(models = availableModels, query = "") {
   const previousValue = elements.modelSelect.value;
   const normalizedQuery = String(query || "").trim().toLowerCase();
   const matchingModels = models.filter((model) => !normalizedQuery || modelSelectOptionText(model).toLowerCase().includes(normalizedQuery));
-  elements.modelSelect.replaceChildren();
-  for (const model of matchingModels) {
-    const option = document.createElement("option");
-    option.value = modelSelectValue(model);
-    option.textContent = modelSelectOptionText(model);
-    elements.modelSelect.append(option);
-  }
-  if (!matchingModels.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "No models match the search";
-    option.disabled = true;
-    elements.modelSelect.append(option);
+  const optionsSignature = JSON.stringify(matchingModels.map((model) => [modelSelectValue(model), modelSelectOptionText(model)]));
+  if (elements.modelSelect.dataset.optionsSignature !== optionsSignature) {
+    elements.modelSelect.dataset.optionsSignature = optionsSignature;
+    elements.modelSelect.replaceChildren();
+    for (const model of matchingModels) {
+      const option = document.createElement("option");
+      option.value = modelSelectValue(model);
+      option.textContent = modelSelectOptionText(model);
+      elements.modelSelect.append(option);
+    }
+    if (!matchingModels.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No models match the search";
+      option.disabled = true;
+      elements.modelSelect.append(option);
+    }
   }
   if (previousValue && [...elements.modelSelect.options].some((option) => option.value === previousValue)) elements.modelSelect.value = previousValue;
   renderModelSearchResults(matchingModels);
@@ -42929,8 +43145,9 @@ async function refreshCommands(tabContext = activeTabContext()) {
   // Keep results for their originating tab even when the active tab changed
   // while this request was in flight. Guided Git must never borrow another
   // tab's extension availability or duplicate-command alias.
+  const previousCatalog = commandCatalogsByTab.get(tabContext.tabId);
   commandCatalogsByTab.set(tabContext.tabId, catalog);
-  scheduleTabsRender();
+  if (tabsSnapshotSignature(previousCatalog) !== tabsSnapshotSignature(catalog)) scheduleTabsRender();
   if (!isCurrentTabContext(tabContext)) return;
   rawAvailableCommands = catalog.raw;
   availableCommands = catalog.available;
