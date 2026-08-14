@@ -261,6 +261,8 @@ Use the optional Remote Web UI package when you need trusted-LAN access and PIN 
 
 ## Technical details
 
+Core updates use a persisted exact-target plan bound to a plan digest. The server verifies package ownership before mutation, supports npm-hoisted bundled Pi installs, and refuses plans with no accepted targets without entering the restart flow.
+
 > **Before downgrading:** stop the Web UI and back up `~/.pi/webui/settings.json`. Older releases do not understand the two-sided Control Deck layout and can overwrite it. Re-upgrade before restoring the backup.
 
 See [TECHNICAL.md](TECHNICAL.md) for complete commands, configuration, update and rollback behavior, session continuity, security, compatibility, mobile behavior, and troubleshooting.

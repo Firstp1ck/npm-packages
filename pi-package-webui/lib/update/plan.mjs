@@ -114,6 +114,17 @@ export async function createUpdatePlan({
   return Object.freeze({ ...unsigned, digest });
 }
 
+export function assertActionableUpdatePlan(plan) {
+  if (Array.isArray(plan?.targets) && plan.targets.length > 0) return true;
+  const refusals = Array.isArray(plan?.refusals) ? plan.refusals.map((item) => clean(item?.id)).filter(Boolean) : [];
+  const error = new Error(refusals.length
+    ? `Update plan has no accepted targets; automatic update was refused for: ${refusals.join(", ")}.`
+    : "Update plan has no accepted targets.");
+  error.code = "UPDATE_PLAN_NO_TARGETS";
+  error.statusCode = 409;
+  throw error;
+}
+
 export function assertUpdatePlanDigest(plan, suppliedDigest) {
   const expected = digestUpdatePlan(plan);
   if (!/^[a-f0-9]{64}$/.test(clean(suppliedDigest)) || suppliedDigest !== plan?.digest || suppliedDigest !== expected) {

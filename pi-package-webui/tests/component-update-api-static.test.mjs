@@ -15,7 +15,8 @@ assert.match(state, /validateUpdatePlanRequest[\s\S]*targets must contain one or
 assert.match(state, /validateUpdateApplyRequest[\s\S]*Apply accepts only transactionId and planDigest/);
 assert.match(server, /url\.pathname === "\/api\/update\/plan"[\s\S]*requireLocalhostRoute[\s\S]*validateUpdatePlanRequest[\s\S]*sendJson\(res, 201/);
 assert.match(server, /url\.pathname === "\/api\/update\/apply"[\s\S]*requireLocalhostRoute[\s\S]*validateUpdateApplyRequest[\s\S]*applyServerOwnedUpdate/);
-assert.match(server, /assertUpdatePlanDigest\(journal\.plan, planDigest\)[\s\S]*acquireInstallLock\(agentDir\)/);
+assert.match(server, /assertActionableUpdatePlan\(plan\)[\s\S]*createUpdateJournal\(agentDir, plan\)/);
+assert.match(server, /assertUpdatePlanDigest\(journal\.plan, planDigest\)[\s\S]*assertActionableUpdatePlan\(journal\.plan\)[\s\S]*acquireInstallLock\(agentDir\)/);
 assert.match(server, /assertPlanIdentity\(target, active\)/);
 assert.match(server, /probeCandidateRuntime\(serverEntry, \{ expectedVersion: target\.metadata\.webuiVersion, expectedPiVersion: target\.metadata\.piVersion \}\)/);
 assert.match(server, /Legacy update mutation is disabled/);

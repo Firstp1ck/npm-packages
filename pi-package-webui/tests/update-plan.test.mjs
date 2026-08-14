@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { assertPlanIdentity, assertUpdatePlanDigest, createUpdatePlan, digestUpdatePlan } from "../lib/update/plan.mjs";
+import { assertActionableUpdatePlan, assertPlanIdentity, assertUpdatePlanDigest, createUpdatePlan, digestUpdatePlan } from "../lib/update/plan.mjs";
 
 const ownerRoot = path.resolve("tmp", "agent", "npm", "node_modules");
 let movingLatest = "2.0.0";
@@ -50,6 +50,16 @@ assert.equal(plan.refusals[0].code, "source");
 assertUpdatePlanDigest(plan, plan.digest);
 assert.equal(plan.digest, digestUpdatePlan(plan));
 assertPlanIdentity(plan.targets[0], identity);
+assert.equal(assertActionableUpdatePlan(plan), true);
+const refusedOnlyPlan = await createUpdatePlan({
+  transactionId: "refused-only",
+  createdAt: "2026-08-07T00:00:00.000Z",
+  registry: "https://registry.example.invalid/",
+  identities: [],
+  candidates: [{ id: "pi", packageName: "@earendil-works/pi-coding-agent", owner: { manager: "unknown" } }],
+  resolveExactTarget: () => assert.fail("refused plans must not resolve moving targets"),
+});
+assert.throws(() => assertActionableUpdatePlan(refusedOnlyPlan), { code: "UPDATE_PLAN_NO_TARGETS", statusCode: 409 });
 
 movingLatest = "3.0.0";
 assert.equal(plan.targets[0].targetVersion, "2.0.0", "confirmation remains bound to the originally resolved exact target");

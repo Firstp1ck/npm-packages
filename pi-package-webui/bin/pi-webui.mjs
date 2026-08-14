@@ -56,7 +56,8 @@ import {
 } from "../lib/git-command-errors.mjs";
 import { ComponentUpdateState, sanitizeComponentUpdateError, validateComponentUpdateRequest, validateUpdateApplyRequest, validateUpdatePlanRequest } from "../lib/component-update-state.mjs";
 import { resolveCanonicalPiRuntime, resolveWebuiRuntimeIdentity } from "../lib/update/resolver.mjs";
-import { createUpdatePlan, assertPlanIdentity, assertUpdatePlanDigest } from "../lib/update/plan.mjs";
+import { bundledPackageOwnership, packageOwnerRoot } from "../lib/update/package-layout.mjs";
+import { createUpdatePlan, assertActionableUpdatePlan, assertPlanIdentity, assertUpdatePlanDigest } from "../lib/update/plan.mjs";
 import { executeCommand, executePlanTargets } from "../lib/update/executor.mjs";
 import { verifyTargetResult } from "../lib/update/verify.mjs";
 import { acquireInstallLock, createUpdateJournal, readUpdateJournal, reconcileInterruptedUpdates, releaseInstallLock, transferInstallLock, transitionUpdateJournal } from "../lib/update/journal.mjs";
@@ -1894,13 +1895,7 @@ function runCommand(command, args, { cwd, timeoutMs = 2000, maxOutputLength = 20
 }
 
 function nodeModulesParentForPackageRoot(root = packageRoot) {
-  const parts = root.split(path.sep);
-  const nodeModulesIndex = parts.lastIndexOf("node_modules");
-  if (nodeModulesIndex >= 0) {
-    const parent = parts.slice(0, nodeModulesIndex).join(path.sep);
-    return parent || path.parse(root).root;
-  }
-  return root;
+  return packageOwnerRoot(root);
 }
 
 function packageNodeModulesPath(nodeModulesRoot, packageName) {
@@ -11527,10 +11522,9 @@ function updateOwnerForTarget(target, identities) {
   }
   const active = identities.pi.active;
   const piRoot = active?.packageRoot || "";
-  const installRoot = piRoot ? nodeModulesParentForPackageRoot(piRoot) : "";
-  const bundled = piRoot && exactUpdatePathInside(path.join(packageRoot, "node_modules"), piRoot);
+  const bundled = bundledPackageOwnership({ hostPackageRoot: packageRoot, packageRoot: piRoot, source: active?.source });
   if (bundled && webuiDevServer) return { manager: "unknown", packageRoot: piRoot, ownerRoot: packageRoot, sourceCheckout: true };
-  if (bundled) return { manager: "npm", packageRoot: piRoot, ownerRoot: installRoot, topLevel: true };
+  if (bundled) return { manager: "npm", packageRoot: piRoot, ownerRoot: bundled.ownerRoot, topLevel: true };
   if ((active?.source === "explicit" || active?.source === "path") && piRoot) {
     return { manager: "pi", packageRoot: piRoot, ownerRoot: piRoot, topLevel: true };
   }
@@ -11547,7 +11541,7 @@ async function createServerOwnedUpdatePlan(targets) {
     if (!status[target]?.checked || !status[target]?.latestVersion) throw makeHttpError(409, `${target} exact target metadata is unavailable.`);
   }
   const piRoot = identities.pi.active?.packageRoot || "";
-  const bundledPi = Boolean(piRoot && exactUpdatePathInside(path.join(packageRoot, "node_modules"), piRoot));
+  const bundledPi = Boolean(bundledPackageOwnership({ hostPackageRoot: packageRoot, packageRoot: piRoot, source: identities.pi.active?.source }));
   const requested = new Set(targets);
   const desiredPiVersion = requested.has("pi") ? status.pi.latestVersion : identities.pi.active?.version;
   const desiredWebuiVersion = requested.has("webui") ? status.webui.latestVersion : identities.webui.version;
@@ -11649,6 +11643,7 @@ async function createServerOwnedUpdatePlan(targets) {
       return { version: targetVersion, registry, metadata };
     },
   });
+  assertActionableUpdatePlan(plan);
   await createUpdateJournal(agentDir, plan);
   return plan;
 }
@@ -11706,6 +11701,7 @@ async function applyServerOwnedUpdate(transactionId, planDigest) {
   const journal = await readUpdateJournal(agentDir, transactionId);
   if (!journal) throw makeHttpError(404, "Update transaction was not found.");
   assertUpdatePlanDigest(journal.plan, planDigest);
+  assertActionableUpdatePlan(journal.plan);
   if (journal.state !== "planned") throw makeHttpError(409, `Update transaction is already ${journal.state}.`);
   piUpdateInProgress = true;
   let lock = null;

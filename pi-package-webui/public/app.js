@@ -8341,20 +8341,56 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
   try {
     plan = (await api("/api/update/plan", { method: "POST", body: { targets: all ? ["pi", "webui"] : ["pi"] }, scoped: false }))?.data?.plan;
   } catch (error) {
-    addEvent(error.message || String(error), "error");
+    const message = error.message || String(error);
+    setServerActionStatus(message, "error");
+    addEvent(message, "error");
+    renderUpdateNotification(latestUpdateStatus, { force: true });
+    return;
+  }
+  const planTargets = Array.isArray(plan?.targets) ? plan.targets : [];
+  if (planTargets.length === 0) {
+    const refused = Array.isArray(plan?.refusals) ? plan.refusals.map((item) => `${item.id}: ${item.guidance}`).join(" · ") : "";
+    const message = refused ? `No update targets were accepted. ${refused}` : "No update targets were accepted; nothing was changed.";
+    setServerActionStatus(message, "error");
+    addEvent(message, "error");
+    renderUpdateNotification(latestUpdateStatus, { force: true });
     return;
   }
   if (!(await appConfirmText(piUpdateConfirmationText({ all, plan }), { affected: "Only targets accepted by the exact server-owned plan", confirmLabel: all ? "Apply exact update plan" : "Apply exact Pi plan" }))) return;
 
   const updateLabel = all ? "Pi and Web UI exact updates" : "Pi exact update";
+  const plannedRestart = planTargets.some((target) => target?.metadata?.managedRuntime === true);
+  const progressMessage = plannedRestart
+    ? `Running ${updateLabel}. The server will restart after activation…`
+    : `Running ${updateLabel}…`;
   updateRequestInProgress = true;
   hideUpdateNotification();
   setServerActionBusy("Updating…");
-  setServerActionStatus(`Running ${updateLabel}. The server will restart after the update completes…`, "warn");
-  setServerRestartOverlay(true, `Running ${updateLabel}. The server will restart after the update completes…`);
+  setServerActionStatus(progressMessage, "warn");
+  if (plannedRestart) setServerRestartOverlay(true, progressMessage);
   try {
-    await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false });
-    addEvent(`${updateLabel} completed; Pi Web UI server restart requested`, "warn");
+    const applyData = (await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false }))?.data || null;
+    if (applyData?.state !== "activating") {
+      updateRequestInProgress = false;
+      setServerRestartOverlay(false);
+      resetServerActionControls();
+      const outcome = applyData?.outcome || applyData?.state || "failed";
+      const succeeded = outcome === "success";
+      const partial = outcome === "partial";
+      const message = succeeded
+        ? `${updateLabel} completed without a Web UI restart.`
+        : partial
+          ? `${updateLabel} completed partially; review the update receipts before retrying.`
+          : `${updateLabel} did not complete; no Web UI restart was requested.`;
+      const level = succeeded ? "success" : partial ? "warn" : "error";
+      setServerActionStatus(message, level);
+      addEvent(message, level === "success" ? "info" : level);
+      if (succeeded) hideUpdateNotification({ remember: true });
+      else renderUpdateNotification(latestUpdateStatus, { force: true });
+      refreshUpdateStatus({ force: true, notify: false }).catch(() => {});
+      return;
+    }
+    addEvent(`${updateLabel} verified; Pi Web UI server activation requested`, "warn");
   } catch (error) {
     if (!error?.backendOffline) {
       updateRequestInProgress = false;
@@ -8366,10 +8402,10 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
       renderUpdateNotification(latestUpdateStatus, { force: true });
       return;
     }
-    addEvent("Pi Web UI server connection dropped during update restart request", "warn");
+    addEvent("Pi Web UI server connection dropped during update activation", "warn");
   }
 
-  setBackendOffline(true, new Error("update requested from side panel"));
+  setBackendOffline(true, new Error("update activation requested from side panel"));
   const restarted = await waitForServerRestart(serverBootIdentity);
   updateRequestInProgress = false;
   resetServerActionControls();
@@ -8380,8 +8416,8 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
   } else {
     setServerRestartOverlay(false);
     setBackendOffline(true, new Error("update restart reconnect timed out"));
-    setServerActionStatus("Update completed, but the server did not reconnect automatically.", "error");
-    addEvent("Pi Web UI server did not come back online after update request", "error");
+    setServerActionStatus("Update activation started, but the server did not reconnect automatically.", "error");
+    addEvent("Pi Web UI server did not come back online after update activation", "error");
   }
 }
 

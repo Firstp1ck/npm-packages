@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateUpdateApplyRequest, validateUpdatePlanRequest } from "../lib/component-update-state.mjs";
 import { exactNpmInstallArgs, exactPackageSpec, updatePlanConfirmationText } from "../lib/update-commands.mjs";
+import { createUpdateJournal } from "../lib/update/journal.mjs";
+import { createUpdatePlan } from "../lib/update/plan.mjs";
 
 assert.deepEqual(validateUpdatePlanRequest({ targets: ["pi", "webui"] }), { ok: true, targets: ["pi", "webui"] });
 for (const invalid of [{}, { targets: [] }, { targets: ["all"] }, { targets: ["pi", "pi"] }, { targets: ["pi"], registry: "https://evil.test" }]) {
@@ -88,18 +90,30 @@ try {
   assert.doesNotMatch(plan.targets[0].command.args.join(" "), /@latest/);
   assert.deepEqual(plan.refusals.map((item) => item.id), ["webui"]);
 
+  const updatesDir = path.join(temp, "agent", "webui", "updates");
+  const journalsBeforeRefusal = await readdir(updatesDir);
   const sourcePlanResponse = await fetch(`http://127.0.0.1:${webuiPort}/api/update/plan`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ targets: ["webui"] }) });
   const sourcePlanPayload = await sourcePlanResponse.json();
-  assert.equal(sourcePlanResponse.status, 201, JSON.stringify(sourcePlanPayload));
-  const sourcePlan = sourcePlanPayload.data.plan;
-  assert.equal(sourcePlan.targets.length, 0);
-  assert.deepEqual(sourcePlan.refusals.map((item) => item.id), ["webui"]);
-  const tampered = await fetch(`http://127.0.0.1:${webuiPort}/api/update/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transactionId: sourcePlan.transactionId, planDigest: "0".repeat(64) }) });
+  assert.equal(sourcePlanResponse.status, 409, JSON.stringify(sourcePlanPayload));
+  assert.match(sourcePlanPayload.error || "", /no accepted targets/i, "a refused-only plan must fail before confirmation or persistence");
+  assert.deepEqual(await readdir(updatesDir), journalsBeforeRefusal, "a refused-only plan must not create an update journal");
+
+  const legacyRefusedPlan = await createUpdatePlan({
+    transactionId: "legacy-refused-only",
+    createdAt: "2026-08-14T00:00:00.000Z",
+    registry: `http://127.0.0.1:${registryPort}`,
+    identities: [],
+    candidates: [{ id: "pi", packageName: "@earendil-works/pi-coding-agent", owner: { manager: "unknown" } }],
+    resolveExactTarget: () => assert.fail("refused targets must not resolve"),
+  });
+  await createUpdateJournal(path.join(temp, "agent"), legacyRefusedPlan);
+  const refusedApply = await fetch(`http://127.0.0.1:${webuiPort}/api/update/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transactionId: legacyRefusedPlan.transactionId, planDigest: legacyRefusedPlan.digest }) });
+  const refusedApplyPayload = await refusedApply.json();
+  assert.equal(refusedApply.status, 409, JSON.stringify(refusedApplyPayload));
+  assert.match(refusedApplyPayload.error || "", /no accepted targets/i, "persisted legacy empty plans must also fail before apply");
+
+  const tampered = await fetch(`http://127.0.0.1:${webuiPort}/api/update/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transactionId: plan.transactionId, planDigest: "0".repeat(64) }) });
   assert.equal(tampered.status, 500);
-  const apply = await fetch(`http://127.0.0.1:${webuiPort}/api/update/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ transactionId: sourcePlan.transactionId, planDigest: sourcePlan.digest }) });
-  const applyPayload = await apply.json();
-  assert.equal(apply.status, 200, JSON.stringify(applyPayload));
-  assert.equal(applyPayload.data.outcome, "failed");
   const legacy = await fetch(`http://127.0.0.1:${webuiPort}/api/update`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(legacy.status, 410);
 } finally {
