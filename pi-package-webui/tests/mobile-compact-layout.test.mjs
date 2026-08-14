@@ -4,11 +4,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [html, css, app, readme, technical] = await Promise.all([
+const [html, css, app, technical] = await Promise.all([
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "public", "app.js"), "utf8"),
-  readFile(join(root, "README.md"), "utf8"),
   readFile(join(root, "TECHNICAL.md"), "utf8"),
 ]);
 
@@ -54,7 +53,7 @@ assert.match(app, /function isSidePanelSectionReorderingEnabled\(\) \{\n\s+retur
 assert.match(css, /\.side-panel-edit-button \{\n\s+display:\s*none;[\s\S]*?\.side-panel-section-toggle\[data-side-panel-section-toggle\] \{\n\s+cursor:\s*pointer;\n\s+touch-action:\s*manipulation;[\s\S]*?\.side-panel\.section-edit-mode \.side-panel-section-toggle\[data-side-panel-section-toggle\] \{[\s\S]*?cursor:\s*grab;[\s\S]*?touch-action:\s*none;[\s\S]*?@media \(max-width: 720px\), \(max-device-width: 720px\), \(pointer: coarse\) and \(hover: none\) \{[\s\S]*?\.side-panel-edit-button \{ display:\s*inline-flex;/, "desktop should hide Edit while mobile restores it and switches section headers to drag capture in Edit mode");
 assert.match(css, /body\.mobile-composer-disclosure\.mobile-keyboard-open \.composer-row \{[\s\S]*?repeat\(4,[\s\S]*?body\.mobile-composer-disclosure\.mobile-keyboard-open \.composer-actions-button,[\s\S]*?display:\s*none !important/, "keyboard-open mode should retain primary controls and suppress secondary chrome");
 
-assert.match(readme, /On a phone, tap the current terminal name to open full-screen terminal navigation[\s\S]*Grouped terminals use their title as a dropdown[\s\S]*tap \*\*More\*\* to open[\s\S]*in a full-screen overlay[\s\S]*Git footer \*\*Details\*\* opens full-screen with refresh inside and a top `−` button[\s\S]*Hover-only tooltips stay hidden on touch controls[\s\S]*\*\*Control Deck\*\*[\s\S]*tap \*\*Edit\*\*[\s\S]*tap \*\*Done\*\*/, "README should explain the full-screen mobile paths and explicit Control Deck editing");
+assert.match(technical, /On a phone, tap the current terminal name to open full-screen terminal navigation[\s\S]*Grouped terminals use their title as a dropdown[\s\S]*Tap \*\*More\*\*[\s\S]*Git footer \*\*Details\*\* opens full-screen[\s\S]*Hover-only tooltips stay hidden[\s\S]*tap \*\*Edit\*\*[\s\S]*tap \*\*Done\*\*/, "technical reference should explain the full-screen mobile paths and explicit Control Deck editing");
 assert.match(technical, /## Mobile layout[\s\S]*open full-screen terminal navigation[\s\S]*regular or subagent terminal-group title is a dropdown button[\s\S]*Git footer \*\*Details\*\* opens as a full-screen legacy-mobile overlay[\s\S]*Tap \*\*More\*\* to open[\s\S]*accessible top-right `−` control[\s\S]*Control Deck section reordering is always enabled on desktop[\s\S]*`Alt\+ArrowUp` \/ `Alt\+ArrowDown`[\s\S]*Mobile keeps the transient \*\*Edit\*\* \/ \*\*Done\*\* mode[\s\S]*Touch pointers do not schedule hover-only tooltips[\s\S]*Tablet layout, desktop tab placement/, "technical reference should document always-on desktop reordering and transient mobile Edit mode");
 
 console.log("mobile compact layout contracts passed");

@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [catalog, app, readme, manifest] = await Promise.all([
+const [catalog, app, development, manifest] = await Promise.all([
   readFile(new URL("../lib/optional-feature-catalog.mjs", import.meta.url), "utf8"),
   readFile(new URL("../public/app.js", import.meta.url), "utf8"),
-  readFile(new URL("../README.md", import.meta.url), "utf8"),
+  readFile(new URL("../DEVELOPMENT.md", import.meta.url), "utf8"),
   readFile(new URL("../../pi-extension-feature-system-prompt/package.json", import.meta.url), "utf8").then(JSON.parse),
 ]);
 
 assert.equal(manifest.name, "@firstpick/pi-extension-feature-system-prompt");
-assert.equal(manifest.version, "0.1.3");
+assert.equal(manifest.version, "0.1.5");
 assert.match(
   catalog,
   /\["featureSystemPrompt", "@firstpick\/pi-extension-feature-system-prompt", "\^0\.1\.3"\]/,
@@ -41,9 +41,9 @@ assert.match(
   "disabling the optional integration should clear replayed classifier state",
 );
 assert.match(
-  readme,
+  development,
   /`@firstpick\/pi-extension-feature-system-prompt` — feature-request classification and routing/,
-  "the optional companion list should document the new package",
+  "the contributor companion list should document the new package",
 );
 
 console.log("feature-system-prompt optional-feature static tests passed");

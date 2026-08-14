@@ -97,7 +97,7 @@ Use **Stop** when you intend to terminate managed tabs. Do not manually delete r
 
 ## Session titles and summaries
 
-Run `/summary-setup` to choose the summary model, automatic generation, title behavior, prompts, and optional latest-summary context.
+Tabs use automatic naming from the first prompt unless you provide an explicit name. Run `/summary-setup` to choose the summary model, automatic generation, title behavior, prompts, and optional latest-summary context.
 
 Summary generation is opt-in. It uses the active user message, final assistant response, and tool names; it excludes thinking, images, tool arguments and results, credentials, and hidden provider data. Failed refreshes keep the previous successful summary.
 
@@ -105,22 +105,39 @@ Use `/summary`, `/summary refresh`, or `/summary workspace` to view, refresh, or
 
 ## Optional features
 
-The Web UI checks optional companion packages when it starts. Missing or older companions appear in the Optional features panel.
+Every server start performs a bounded, read-only startup audit of optional companion packages. Missing, unregistered, or older companions appear in the Optional features panel without blocking the core Web UI.
 
 - **Migrate…** reviews and installs selected legacy companions.
 - **Later** dismisses the startup reminder while leaving migration available in settings.
 - **Retry failed** retries only failed package installs.
 - **Copy commands** provides manual Pi install commands.
 - **Recheck** repeats the read-only package check.
+- **Install all** selects every missing or unregistered companion. A section's **Install missing** selects only missing or unregistered companions in that section. Both use one confirmation, install sequentially, and continue after individual failures.
 - Configurable loaded companions show separate **Enable/Disable** and **Setup** actions. Native questionnaires use the real active-session `questionnaire` tool state; **Setup** opens Tools Setup, where session access and global defaults can be managed.
 
-Installs run one at a time and never invent percentage progress. Busy tabs are not restarted without a visible follow-up action.
+Installs run one at a time and never invent percentage progress. Busy tabs are not restarted without a visible follow-up action. For unattended migration, use `--migrate-optional-features`; use `--migration-dry-run` to print the planned audit-selected migration without changing packages.
+
+You can also install a companion directly with Pi, for example:
+
+```bash
+pi install npm:@firstpick/pi-extension-stats
+```
+
+Re-running the same `pi install npm:<package>` command is the supported update path.
 
 ## Normal and compact output
 
 Normal output shows the full live tool and response stream. Compact output keeps the current tool status and final answer while omitting most intermediate details from the live display.
 
-Choose the mode under **Controls → Output processing** or **Settings → Browser workflow**. The setting affects display only; it does not change Pi prompts, tools, models, saved transcript meaning, or inference.
+Choose the mode under **Controls → Output processing** or **Settings → Browser workflow**, then select **Compact**. The stable setting and command-line identifier is `compact-v1`. The setting affects display only; it does not change Pi prompts, tools, models, saved transcript meaning, or inference.
+
+## Codex subscription Fast mode
+
+The optional `@firstpick/pi-extension-codex-fast-mode` companion adds a **Normal / Fast** selector under **Codex Usage**. Fast mode is off by default and applies only to the active Pi session branch. Eligible subscription-backed models may respond about 1.5× faster while using 2× Standard credits for GPT-5.4 or 2.5× for GPT-5.5/5.6. Account and model eligibility remain controlled by the provider.
+
+## Tool and skill scopes
+
+The browser-native tool and skill selectors offer **Session only** and **Global default** scopes. Session choices apply to the current branch and take precedence when it is resumed. Global defaults are inherited by future sessions and do not rewrite branches that already have a session choice.
 
 When the browser page is hidden, the Web UI closes that page's live event stream so the browser cannot accumulate serialized output frames for later parsing and DOM rendering. Merely moving focus to another visible window does not pause streaming. On return, it first fetches authoritative tabs, state, and transcript snapshots, reconnects live events, and refreshes nonessential panels during browser idle time. Pending extension prompts are replayed by the server after reconnection, and completed output remains available from the authoritative transcript.
 
@@ -168,7 +185,11 @@ pi-webui agent attach --session <session-id-or-session-file> --name "Independent
 
 Unwrapped SDK sessions and independently started Pi/tmux processes are intentionally invisible: Pi has no safe universal parent-child discovery, and WebUI does not scan processes or tmux panes. Use the supplied tracking adapter, wrapper, reporter integration, or explicit attach. An attached session without live heartbeat evidence is shown as stale rather than assumed running.
 
-Output quality depends on the source. Session and structured-event sources can provide a transcript; print mode provides only bounded plain output; metadata-only registrations truthfully report that output is unavailable. Controls are owner-declared: unsupported cancel, refresh, copy, and dismissal actions are hidden. Opening remains read-only in both overlay and terminal-tab modes.
+Output quality depends on the source. Session and structured-event sources can provide a transcript; print mode provides only bounded plain output; metadata-only registrations truthfully report that output is unavailable. Controls are owner-declared: unsupported cancel, refresh, copy, and dismissal actions are hidden.
+
+Tracked subagent output can open in the normal non-blocking overlay or in a dedicated **Subagent** terminal tab. Both views are read-only. Closing a projected terminal tab only closes that view; it does not stop or interrupt the child run.
+
+Each tracked row can show exactly six telemetry cards: PI, measured token speed, context, model, effort, and input/output tokens from a bounded recent session scan. Unavailable or legacy evidence remains `—` or `unknown` rather than being estimated.
 
 **Clear finished** and **Auto-Clear** can hide terminal external-agent projections from WebUI. Stale or lost sessions added with `pi-webui agent attach` remain visible for inspection and provide a row-level **Detach persisted session from WebUI** action. Clearing or detaching does not delete or modify the producer-owned registry record, output artifact, process, or session; those remain subject to their normal private retention policy.
 
@@ -182,6 +203,8 @@ Troubleshooting:
 - If output says unavailable, the producer registered metadata but no bounded output source. Restarting the browser cannot reconstruct evidence the producer never registered.
 
 ## Mobile layout
+
+On a phone, tap the current terminal name to open full-screen terminal navigation. Grouped terminals use their title as a dropdown for choosing one terminal or subagent view. Tap **More** to open secondary controls in a full-screen overlay. Git footer **Details** opens full-screen with refresh inside and a top `−` button. Hover-only tooltips stay hidden on touch controls. To reorder the **Control Deck**, tap **Edit**, move sections, then tap **Done**.
 
 At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses terminal navigation and secondary composer controls by default:
 
@@ -198,15 +221,21 @@ At the phone/coarse-pointer breakpoint, the legacy mobile shell collapses termin
 - Touch pointers do not schedule hover-only tooltips or reveal latched CSS hover hints. Fine-pointer hover and keyboard-focus help remain available where supported.
 - Tablet layout, desktop tab placement, stored composer ordering, and command behavior are unchanged.
 
-The optional Mobile Experience v2 shell remains separately controlled by its existing preview setting and is not changed by this legacy mobile layout.
+The optional Mobile Experience v2 shell remains separately controlled by its existing preview setting and is not changed by this legacy mobile layout. Tablet adaptation is independently opt-in at medium widths with `?tabletShell=v2`; use `?tabletShell=legacy` for immediate rollback without changing the phone preview flag.
+
+## Git panel
+
+The side-panel **Git** section groups repositories represented by open terminal tabs. Expanding a repository refreshes stale status after a five-minute cache window; live filesystem updates use server-sent events (SSE) to invalidate visible results without periodic Git polling. The context menu provides refresh, stage/unstage, and confirmed discard/delete actions. History shows the latest 30 commits and opens bounded read-only commit diffs.
 
 ## Themes
 
-Use **Controls → Interface → Theme** to choose a theme. **Customize…** opens the visual editor.
+Use **Controls → Interface → Theme** to choose a theme.
 
-Project themes are saved under `.pi/themes/` in a trusted project. Global themes are saved under `~/.pi/agent/themes/`. Preview changes are temporary until saved, and overwriting an existing theme requires confirmation.
+### Custom themes
 
-Reload or restart Pi before selecting a newly saved custom theme in the terminal interface.
+**Customize…** opens a visual editor for Pi's exact 51 required theme tokens, optional colors, variables, and advanced JSON. Valid changes preview immediately. Invalid or incomplete edits remain editable but cannot replace the last valid preview or be saved.
+
+Choose **This project** to save under `.pi/themes/` in a trusted project, or **Global themes** to save under `~/.pi/agent/themes/`. Previewing or saving does not select the theme or mutate Pi/browser settings, and overwriting an existing theme requires confirmation. To activate a newly saved theme in Pi TUI, run `/reload` or restart Pi, then choose it with `/theme`.
 
 ## App runners
 
@@ -218,7 +247,7 @@ Search folders must stay inside the project, cannot use `..`, and are scanned on
 
 Web UI listens on localhost by default. Do not expose it directly to an untrusted network.
 
-Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection details, and PIN protection. Close LAN access when finished. PIN protection is a trusted-network convenience, not hardened multi-user authentication.
+Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection details, and PIN protection. When LAN access is open, the same control toggles to "Close for network". Close LAN access when finished. PIN protection is a trusted-network convenience, not hardened multi-user authentication.
 
 ## Keyboard shortcuts
 

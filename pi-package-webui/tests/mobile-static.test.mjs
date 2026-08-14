@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [pkgRaw, html, css, app, server, extension, readme, startScript, manifestRaw, serviceWorker, appleIcon, icon192, icon512, matrixBackground, mochaBackground] = await Promise.all([
+const [pkgRaw, html, css, app, server, extension, readme, technical, development, startScript, manifestRaw, serviceWorker, appleIcon, icon192, icon512, matrixBackground, mochaBackground] = await Promise.all([
   readFile(join(root, "package.json"), "utf8"),
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
@@ -13,6 +13,8 @@ const [pkgRaw, html, css, app, server, extension, readme, startScript, manifestR
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8").then((value) => value.replace(/\r\n/g, "\n")),
   readFile(join(root, "index.ts"), "utf8"),
   readFile(join(root, "README.md"), "utf8"),
+  readFile(join(root, "TECHNICAL.md"), "utf8"),
+  readFile(join(root, "DEVELOPMENT.md"), "utf8"),
   readFile(join(root, "dev", "scripts", "start-webui.sh"), "utf8"),
   readFile(join(root, "public", "manifest.webmanifest"), "utf8"),
   readFile(join(root, "public", "service-worker.js"), "utf8"),
@@ -194,13 +196,13 @@ assert.match(css, /\.git-side-panel-repository[\s\S]*\.git-side-panel-file[\s\S]
 assert.match(server, /async function readGitPanel\(cwd\)[\s\S]*GIT_PANEL_HISTORY_LIMIT[\s\S]*"status", "--porcelain=v1", "-z"[\s\S]*"--numstat", "-z"/, "server should build compact bounded local Git snapshots without full file contents");
 assert.match(server, /async function readGitCommit\(cwd, requestedHash\)[\s\S]*\^\[a-f0-9\][\s\S]*"show", "--format="/, "commit inspection should require a full hash and use a bounded read-only Git show");
 assert.match(server, /"\/api\/git-changes\/stage-all"[\s\S]*stageAllGitChanges[\s\S]*"\/api\/git-changes\/unstage-all"[\s\S]*unstageAllGitChanges/, "server should expose repository-wide stage and unstage mutations");
-assert.match(readme, /side-panel \*\*Git\*\* section[\s\S]*five-minute cache window[\s\S]*confirmed discard\/delete actions[\s\S]*latest 30 commits/, "README should document Git panel grouping, refresh, actions, and history behavior");
+assert.match(technical, /side-panel \*\*Git\*\* section[\s\S]*five-minute cache window[\s\S]*confirmed discard\/delete actions[\s\S]*latest 30 commits/, "technical reference should document Git panel grouping, refresh, actions, and history behavior");
 assert.match(html, /id="optionalFeaturesBox"/, "side panel should expose optional feature status and controls");
 assert.match(html, /class="optional-features-description[\s\S]*href="https:\/\/github\.com\/Firstp1ck\/pi-coding-agent-forge\/issues\/new"[\s\S]*open a GitHub issue/, "optional features should link users to GitHub issues for additional feature requests");
 assert.doesNotMatch(html, /id="btwOverlayDialog"/, "/btw should not use a blocking modal overlay");
 assert.match(html, /id="codexUsageBox"/, "side panel should expose Codex subscription usage status");
 assert.match(html, /data-side-panel-section="codex-usage"/, "Codex usage should live in a collapsible side-panel section");
-assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*<code>subagent<\/code>[\s\S]*<code>subagent_gate<\/code>[\s\S]*bounded retries or a success quorum[\s\S]*id="subagentsBox"/, "side panel should explain ordinary delegation and retry-gate workflows with a live count");
+assert.match(html, /data-side-panel-section="subagents"[\s\S]*class="side-panel-section-label">Subagents<\/span>[\s\S]*id="subagentCountBadge"[\s\S]*class="subagents-help"[\s\S]*Managed and registered Pi agent runs appear here[\s\S]*External agents[\s\S]*id="subagentsBox"/, "side panel should explain managed and registered agent visibility with a live count");
 assert.match(html, /id="subagentOpenModeSelect"[\s\S]*<option value="overlay">Overlay<\/option>[\s\S]*<option value="tab">Tab \/ terminal<\/option>[\s\S]*id="subagentOpenModeStatus"/, "Subagents should offer a browser-persisted overlay or terminal-tab opening choice");
 assert.match(html, /class="subagents-status-row"[\s\S]*id="subagentsAutoClearButton"[^>]*aria-pressed="false"[^>]*>Auto-Clear<\/button>[\s\S]*id="subagentsStatus"[\s\S]*id="subagentsClearFinishedButton"[^>]*disabled[^>]*>Clear finished<\/button>/, "Subagents should expose selectable auto-clear and manual clear controls beside its live status");
 const subagentCancelDialogHtml = html.match(/<dialog id="subagentCancelDialog"[\s\S]*?<\/dialog>/)?.[0] || "";
@@ -265,7 +267,7 @@ assert.deepEqual(Object.fromEntries(Object.entries(telemetryCardElements).map(([
 }, "terminal telemetry cards should render only normalized telemetry values");
 assert.match(css, /\.subagent-terminal-card-list\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(/, "telemetry cards should wrap responsively through a grid rather than require a fixed row");
 assert.match(css, /@media\s*\([^)]*max-width[^)]*\)\s*\{[\s\S]*?\.subagent-terminal-card-list\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/, "narrow viewports should collapse telemetry cards without horizontal overflow");
-assert.match(readme, /exactly six telemetry cards: PI, measured token speed, context, model, effort, and input\/output tokens from a bounded recent session scan; unavailable or legacy evidence remains `—` or `unknown` rather than an estimate/, "README should document each subagent telemetry card, bounded scan scope, and honest unknown behavior");
+assert.match(technical, /exactly six telemetry cards: PI, measured token speed, context, model, effort, and input\/output tokens from a bounded recent session scan[\s\S]*Unavailable or legacy evidence remains `—` or `unknown` rather than being estimated/, "technical reference should document each subagent telemetry card, bounded scan scope, and honest unknown behavior");
 assert.doesNotMatch(html, /id="subagentOverlayDialog"/, "subagent output should not use a blocking modal dialog");
 assert.match(html, /data-side-panel-section="session"[\s\S]*data-side-panel-section="subagents"[\s\S]*data-side-panel-section="queue"/, "Subagents should appear between Session and Queue in the side panel");
 assert.match(html, /data-side-panel-section="sampling"[\s\S]*class="side-panel-section-label">Sampling parameters<\/span>[\s\S]*id="samplingParametersSupport"[\s\S]*id="samplingParametersControls"[\s\S]*id="samplingParametersPreserved"[\s\S]*id="applySamplingParametersButton"[\s\S]*id="resetSamplingParametersButton"[\s\S]*id="samplingParametersStatus"/, "Sampling parameters should be a labelled side-panel section with native controls, hidden-key preservation status, apply/reset actions, and live status");
@@ -1075,7 +1077,7 @@ assert.match(server, /async function closeNetworkAccess\(\)/, "server should exp
 assert.match(server, /url\.pathname === "\/api\/network\/close" && req\.method === "POST"/, "server should route network close requests");
 assert.match(server, /server\.closeAllConnections\?\.\(\)/, "network rebind should force-close long-lived clients so close-to-localhost can complete");
 assert.match(server, /connection: "close"/, "network rebind API responses should not hold keep-alive sockets open");
-assert.match(readme, /toggles to "Close for network"/, "README should document the close-network toggle");
+assert.match(technical, /toggles to "Close for network"/, "technical reference should document the close-network toggle");
 assert.match(app, /window\.visualViewport/, "app should listen to VisualViewport for keyboard/viewport updates");
 assert.match(html, /<textarea id="promptInput"[^>]*autofocus/, "prompt composer should autofocus for new Web UI/app launches");
 assert.match(app, /function syncMobileChatToBottomForInput\(\)/, "mobile input focus should force the output view to the latest message");
@@ -2062,7 +2064,7 @@ assert.match(app, /\/api\/skills\?scope=\$\{encodeURIComponent\(scope\)\}[\s\S]*
 assert.match(server, /writeWebuiSettings\(\{ resourceDefaults: \{ tools: \{ enabledTools \} \} \}\)[\s\S]*writeWebuiSettings\(\{ resourceDefaults: \{ skills: \{ enabledSkills \} \} \}\)/, "server should persist global tool and skill defaults in the shared Web UI settings file");
 assert.match(helper, /const saved = lastBranchConfig\(ctx, TOOLS_CONFIG_TYPE\)\?\.enabledTools;[\s\S]*const selected = Array\.isArray\(saved\) \? saved : inherited/, "session tool entries should take precedence over global defaults");
 assert.match(helper, /const saved = lastBranchConfig\(ctx, SKILLS_CONFIG_TYPE\)\?\.disabledSkills;[\s\S]*if \(Array\.isArray\(saved\)\)/, "session skill entries should take precedence over global defaults");
-assert.match(readme, /Session only[\s\S]*Global default/, "README should document resource selector scopes");
+assert.match(technical, /Session only[\s\S]*Global default/, "technical reference should document resource selector scopes");
 assert.match(app, /const tags = Array\.isArray\(item\.tags\)[\s\S]*?item\.badge, \.\.\.tags/, "native selector filtering should include extra resource tags");
 assert.match(app, /publishMenuContainer\?\.addEventListener\("pointerenter", \(\) => \{[\s\S]*?setPublishMenuOpen\(true\);[\s\S]*?\}\)/, "Publish menu should expand on hover");
 assert.match(app, /publishMenuContainer\?\.addEventListener\("pointerleave", \(\) => setPublishMenuOpen\(false\)\)/, "Publish menu should collapse after hover leaves");
@@ -2168,7 +2170,7 @@ assert.match(app, /WARNING: \$\{activeAgentTabs\.length\}[\s\S]*?still running o
 assert.match(app, /elements\.closeAllTabsButton\.addEventListener\("click", \(\) => closeAllTerminalTabs\(\)\)/, "close-all tabs button should be wired in JS");
 assert.match(app, /const groups = tabCwdGroups\(\);[\s\S]*?for \(const group of groups\) \{\n\s+if \(shouldRenderTerminalTabGroup\(group, groups\.length\)\)[\s\S]*?renderTerminalTabGroup\(group, groups\.length\)[\s\S]*?for \(const tab of group\.tabs\) elements\.tabBar\.append\(renderTerminalTab\(tab\)\);/, "terminal tabs should render groups with group count and ungrouped tabs when grouping is skipped");
 assert.match(app, /const subagentGroups = subagentTerminalViewGroups\(\)[\s\S]*renderSubagentTerminalTabGroup\(group\)[\s\S]*renderSubagentTerminalTab\(group\.views\[0\]\)/, "open subagent views should render as first-class virtual tabs, grouped by parent workspace when siblings exist");
-assert.match(readme, /Tracked subagent output[\s\S]*dedicated \*\*Subagent\*\* terminal tab[\s\S]*view-only[\s\S]*close without stopping or interrupting/, "README should document the selectable view-only child terminal behavior");
+assert.match(technical, /Tracked subagent output[\s\S]*dedicated \*\*Subagent\*\* terminal tab[\s\S]*read-only[\s\S]*does not stop or interrupt/, "technical reference should document the selectable read-only child terminal behavior");
 assert.match(app, /let tabSeenCompletionSerials = new Map\(\)/, "frontend should track which tab completions have been seen");
 assert.match(app, /let activeTabGeneration = 0/, "frontend should version active-tab UI state to reject stale async work");
 assert.match(app, /function isCurrentTabContext\(context\)/, "frontend should identify stale active-tab refresh contexts");
@@ -2439,32 +2441,32 @@ assert.match(server, /function configuredScopedModelPatterns\(cwd = options\.cwd
 assert.match(server, /readJsonFileIfExists\(path\.join\(cwd, "\.pi", "settings\.json"\)\)/, "server should read project-local scoped-model settings from active tab cwd");
 assert.match(server, /resolveScopedModelsFromPatterns\(patterns, response\.data\?\.models/, "server should resolve scoped patterns against available models");
 assert.match(server, /writeFile\(tmpFile[\s\S]*?rename\(tmpFile, storageFile\)/, "server should persist fast picks with an atomic temp-file rename");
-assert.match(readme, /Automatic tab naming from the first prompt/, "README should describe automatic terminal-tab naming");
-assert.match(readme, /Feedback reactions \(`👍`, `👎`, `\?`\) on final assistant output plus tool\/bash action cards/, "README should describe final-output and action feedback reactions");
-assert.match(readme, /POST \/api\/action-feedback\?tab=<tabId>/, "README should document the action-feedback endpoint");
-assert.match(readme, /`@` file\/path references with live suggestions/, "README should describe @ file/path reference autocomplete");
-assert.match(readme, /optional `@firstpick\/pi-extension-bang-command-autocomplete` companion[\s\S]*GET \/api\/bang-suggestions\?tab=<tabId>&query=<command>/, "README should document optional bang-command autocomplete and its endpoint");
-assert.match(readme, /optional `@firstpick\/pi-extension-fish-user-bash` companion/, "README should document optional fish user-bash integration");
-assert.match(readme, /GET \/api\/path-suggestions\?tab=<tabId>&query=<path>/, "README should document the path-suggestions endpoint");
-assert.match(readme, /GET \/api\/optional-features/, "README should document optional feature status endpoint");
-assert.match(readme, /POST \/api\/optional-feature-install/, "README should document optional feature install endpoint");
-assert.match(readme, /POST \/api\/optional-feature-install-batch[\s\S]*bounded allowlisted[\s\S]*sequentially/, "README should document the bounded sequential batch endpoint");
-assert.match(readme, /\*\*Install all\*\*[\s\S]*\*\*Install missing\*\*[\s\S]*missing\/unregistered[\s\S]*one confirmation[\s\S]*continues after failures/, "README should document bulk control scope and partial-failure behavior");
-assert.match(readme, /pi install npm:@firstpick\/pi-extension-stats[\s\S]*Re-running the same `pi install npm:<package>` command is the supported update path/, "README should document separate manual Pi package installation and updates");
-assert.match(readme, /server-persisted fast picks/, "README should describe server-persisted fast picks");
-assert.match(readme, /`\/btw` side-question output widgets with optional context transfer\/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications/, "README should describe /btw, blocked-tab, and agent-done notifications");
-assert.match(readme, /blocked-tab browser notifications, and optional agent-done notifications require browser service-worker\/notification support/, "README should document notification requirements");
-assert.match(readme, /Side-panel theme picker backed by optional `@firstpick\/pi-themes-bundle` themes plus Pi-native project\/global custom themes/, "README should describe bundled and custom theme selection");
-assert.match(readme, /## Optional companion packages/, "README should document optional Web UI companion packages");
-assert.match(readme, /Web UI tabs load enabled resources resolved from normal Pi settings/, "README should document Pi-settings-based optional feature loading");
-assert.match(readme, /legacy\/hoisted package files without either a Pi settings entry or an enabled top-level resource remain installable/i, "README should document migration handling for physically present but unregistered packages");
-assert.match(readme, /excluding the Web UI package itself from re-loading/, "README should document Web UI self-loading duplicate prevention");
-assert.match(readme, /checks loaded Pi capabilities directly through RPC-visible commands, tools, themes, and live widget events/, "README should document capability-based startup checks");
-assert.match(readme, /side panel separately reports physical installation and Pi registration/, "README should document distinct installed and registered optional feature status");
-assert.match(readme, /per-row \*\*Install\*\* or \*\*Update\*\* action[\s\S]*batch has one confirmation[\s\S]*bounded diagnostics/, "README should document per-row and bulk warning/result behavior");
-assert.match(readme, /Natural Conversation Mode shell[\s\S]*\/talk[\s\S]*read-only/, "README should document the optional Natural Conversation WebUI shell");
-assert.match(readme, /\.\/dev\/scripts\/start-webui\.sh --dev --cwd \/path\/to\/project/, "README should document the dev helper launcher");
-assert.match(readme, /register that package with Pi from its absolute local path[\s\S]*resolved from Pi settings rather than the Web UI manifest/, "README should document local companion registration through Pi settings");
+assert.match(technical, /automatic naming from the first prompt/i, "technical reference should describe automatic terminal-tab naming");
+assert.match(development, /Feedback reactions \(`👍`, `👎`, `\?`\) on final assistant output plus tool\/bash action cards/, "development guide should describe final-output and action feedback reactions");
+assert.match(development, /POST \/api\/action-feedback\?tab=<tabId>/, "development guide should document the action-feedback endpoint");
+assert.match(development, /`@` file\/path references with live suggestions/, "development guide should describe @ file/path reference autocomplete");
+assert.match(development, /optional `@firstpick\/pi-extension-bang-command-autocomplete` companion[\s\S]*GET \/api\/bang-suggestions\?tab=<tabId>&query=<command>/, "development guide should document optional bang-command autocomplete and its endpoint");
+assert.match(development, /optional `@firstpick\/pi-extension-fish-user-bash` companion/, "development guide should document optional fish user-bash integration");
+assert.match(development, /GET \/api\/path-suggestions\?tab=<tabId>&query=<path>/, "development guide should document the path-suggestions endpoint");
+assert.match(development, /GET \/api\/optional-features/, "development guide should document optional feature status endpoint");
+assert.match(development, /POST \/api\/optional-feature-install/, "development guide should document optional feature install endpoint");
+assert.match(development, /POST \/api\/optional-feature-install-batch[\s\S]*bounded allowlisted[\s\S]*sequentially/, "development guide should document the bounded sequential batch endpoint");
+assert.match(technical, /\*\*Install all\*\*[\s\S]*\*\*Install missing\*\*[\s\S]*missing or unregistered[\s\S]*one confirmation[\s\S]*continue after individual failures/, "technical reference should document bulk control scope and partial-failure behavior");
+assert.match(technical, /pi install npm:@firstpick\/pi-extension-stats[\s\S]*Re-running the same `pi install npm:<package>` command is the supported update path/, "technical reference should document separate manual Pi package installation and updates");
+assert.match(development, /server-persisted fast picks/, "development guide should describe server-persisted fast picks");
+assert.match(development, /`\/btw` side-question output widgets with optional context transfer\/live steering, browser notifications when a tab needs an extension UI response, and an optional side-panel toggle for agent-done notifications/, "development guide should describe /btw, blocked-tab, and agent-done notifications");
+assert.match(development, /blocked-tab browser notifications, and optional agent-done notifications require browser service-worker\/notification support/, "development guide should document notification requirements");
+assert.match(development, /Side-panel theme picker backed by optional `@firstpick\/pi-themes-bundle` themes plus Pi-native project\/global custom themes/, "development guide should describe bundled and custom theme selection");
+assert.match(development, /## Optional companion packages/, "development guide should document optional Web UI companion packages");
+assert.match(development, /Web UI tabs load enabled resources resolved from normal Pi settings/, "development guide should document Pi-settings-based optional feature loading");
+assert.match(development, /legacy\/hoisted package files without either a Pi settings entry or an enabled top-level resource remain installable/i, "development guide should document migration handling for physically present but unregistered packages");
+assert.match(development, /excluding the Web UI package itself from re-loading/, "development guide should document Web UI self-loading duplicate prevention");
+assert.match(development, /checks loaded Pi capabilities directly through RPC-visible commands, tools, themes, and live widget events/, "development guide should document capability-based startup checks");
+assert.match(development, /side panel separately reports physical installation and Pi registration/, "development guide should document distinct installed and registered optional feature status");
+assert.match(development, /per-row \*\*Install\*\* or \*\*Update\*\* action[\s\S]*batch has one confirmation[\s\S]*bounded diagnostics/, "development guide should document per-row and bulk warning/result behavior");
+assert.match(development, /Natural Conversation Mode shell[\s\S]*\/talk[\s\S]*read-only/, "development guide should document the optional Natural Conversation WebUI shell");
+assert.match(development, /\.\/dev\/scripts\/start-webui\.sh --dev --cwd \/path\/to\/project/, "development guide should document the dev helper launcher");
+assert.match(development, /register that package with Pi from its absolute local path[\s\S]*resolved from Pi settings rather than the Web UI manifest/, "development guide should document local companion registration through Pi settings");
 assert.match(startScript, /--dev\)/, "start-webui.sh should accept a --dev flag");
 assert.match(startScript, /local_pi_webui_bin\(\)/, "start-webui.sh should resolve this checkout's local server entrypoint");
 assert.match(startScript, /candidate="\$\(package_root\)\/bin\/pi-webui\.mjs"/, "start-webui.sh should resolve the package-root bin from dev/scripts");

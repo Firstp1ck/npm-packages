@@ -57,6 +57,8 @@ const elements = {
   contextMeterBar: $("#contextMeterBar"),
   serverOfflinePanel: $("#serverOfflinePanel"),
   serverRestartPanel: $("#serverRestartPanel"),
+  serverRestartKicker: $("#serverRestartKicker"),
+  serverRestartTitle: $("#serverRestartTitle"),
   serverRestartMessage: $("#serverRestartMessage"),
   updateNotification: $("#updateNotification"),
   updateNotificationTitle: $("#updateNotificationTitle"),
@@ -7363,10 +7365,16 @@ function renderServerOfflinePanel() {
   if (elements.serverOfflineSlashCommand) elements.serverOfflineSlashCommand.textContent = serverStartSlashCommandText();
 }
 
-function setServerRestartOverlay(active, message = "Waiting for the server to come back…") {
+function setServerRestartOverlay(active, message = "Waiting for the server to come back…", { phase = "restarting" } = {}) {
   serverRestartInProgress = !!active;
+  const updating = phase === "updating";
   document.body.classList.toggle("server-restarting", serverRestartInProgress);
-  if (elements.serverRestartPanel) elements.serverRestartPanel.hidden = !serverRestartInProgress;
+  if (elements.serverRestartPanel) {
+    elements.serverRestartPanel.hidden = !serverRestartInProgress;
+    elements.serverRestartPanel.dataset.phase = updating ? "updating" : "restarting";
+  }
+  if (elements.serverRestartKicker) elements.serverRestartKicker.textContent = updating ? "Updating" : "Restarting";
+  if (elements.serverRestartTitle) elements.serverRestartTitle.textContent = updating ? "Applying exact update" : "Restarting Pi Web UI server";
   if (elements.serverRestartMessage) elements.serverRestartMessage.textContent = message;
   if (serverRestartInProgress) hideUpdateNotification();
   if (serverRestartInProgress && elements.serverOfflinePanel) elements.serverOfflinePanel.hidden = true;
@@ -8189,7 +8197,8 @@ function componentUpdateButtonState(target) {
   const pkg = latestUpdateStatus?.[target] || {};
   if (job?.state === "running") return { disabled: true, label: "Updating…" };
   if (job && job.canStart === false) return { disabled: true, label: `Update ${label}` };
-  if (componentUpdateStartInProgress || updateRequestInProgress || latestUpdateStatus?.updateInProgress || anyComponentUpdateRunning()) {
+  if (componentUpdateStartInProgress) return { disabled: true, label: "Starting…" };
+  if (updateRequestInProgress || latestUpdateStatus?.updateInProgress || anyComponentUpdateRunning()) {
     return { disabled: true, label: `Update ${label}` };
   }
   if (job?.state === "failed") return { disabled: false, label: `Retry ${label} update` };
@@ -8279,6 +8288,7 @@ async function startComponentUpdate(target) {
   if (!confirmed) return;
   componentUpdateStartInProgress = true;
   renderComponentUpdateDialogs();
+  setServerRestartOverlay(true, `Starting exact ${label} update…`, { phase: "updating" });
   try {
     const response = await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false });
     const acceptedState = ["applying", "verifying", "activating"].includes(response?.data?.state)
@@ -8298,6 +8308,7 @@ async function startComponentUpdate(target) {
     if (error?.statusCode === 409) await refreshUpdateStatus({ notify: false }).catch(() => {});
   } finally {
     componentUpdateStartInProgress = false;
+    setServerRestartOverlay(false);
     renderComponentUpdateIndicators();
     renderComponentUpdateDialogs();
     syncComponentUpdatePolling();
@@ -8372,7 +8383,7 @@ async function runPiUpdateAndRestart({ all = false } = {}) {
   hideUpdateNotification();
   setServerActionBusy("Updating…");
   setServerActionStatus(progressMessage, "warn");
-  if (plannedRestart) setServerRestartOverlay(true, progressMessage);
+  setServerRestartOverlay(true, progressMessage, { phase: "updating" });
   try {
     const applyData = (await api("/api/update/apply", { method: "POST", body: { transactionId: plan.transactionId, planDigest: plan.digest }, scoped: false }))?.data || null;
     if (applyData?.state !== "activating") {

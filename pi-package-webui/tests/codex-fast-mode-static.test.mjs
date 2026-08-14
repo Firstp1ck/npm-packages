@@ -4,13 +4,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [server, app, html, styles, serviceWorker, readme, packageRaw, lockRaw, optionalFeatureCatalog] = await Promise.all([
+const [server, app, html, styles, serviceWorker, technical, development, packageRaw, lockRaw, optionalFeatureCatalog] = await Promise.all([
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "public", "service-worker.js"), "utf8"),
-  readFile(join(root, "README.md"), "utf8"),
+  readFile(join(root, "TECHNICAL.md"), "utf8"),
+  readFile(join(root, "DEVELOPMENT.md"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
   readFile(join(root, "package-lock.json"), "utf8"),
   readFile(join(root, "lib", "optional-feature-catalog.mjs"), "utf8"),
@@ -51,10 +52,10 @@ assert.match(app, /async function disableCodexFastModeIntegration\(\)[\s\S]*?tab
 assert.match(app, /refreshNaturalConversationMode\(tabContext\),[\s\S]*?refreshCodexFastMode\(tabContext\),/, "tab refreshes should reload branch-scoped Fast-mode state");
 assert.match(app, /statusKey === CODEX_FAST_MODE_STATUS_KEY[\s\S]*?applyCodexFastModeStatus\(request\.statusText\)/, "extension status events should refresh the active-tab selector");
 
-assert.match(readme, /### Compact live output mode[\s\S]*?select \*\*Compact\*\*[\s\S]*?`compact-v1`/, "README should document Compact mode with the stable wire identifier");
-assert.match(readme, /### Codex subscription Fast mode[\s\S]*?service_tier: "priority"[\s\S]*?1\.5× faster[\s\S]*?2× Standard credits[\s\S]*?2\.5×/, "README should separately document subscription Fast mode and its cost semantics");
+assert.match(technical, /## Normal and compact output[\s\S]*?select \*\*Compact\*\*[\s\S]*?`compact-v1`/, "technical reference should document Compact mode with the stable identifier");
+assert.match(development, /### Codex subscription Fast mode[\s\S]*?service_tier: "priority"[\s\S]*?1\.5× faster[\s\S]*?2× Standard credits[\s\S]*?2\.5×/, "development guide should document Fast-mode integration and cost semantics");
 // Intent preserved: browser-asset changes must advance the coherent cache tuple.
-assert.match(serviceWorker, /pi-webui-pwa-v94/, "PWA cache identity should be bumped for changed browser assets");
-assert.match(html, /data-app-src="\/app\.js\?v=132"/, "browser module URL should be cache-busted for Fast-mode wiring");
+assert.match(serviceWorker, /pi-webui-pwa-v95/, "PWA cache identity should be bumped for changed browser assets");
+assert.match(html, /data-app-src="\/app\.js\?v=133"/, "browser module URL should be cache-busted for Fast-mode wiring");
 
 console.log("codex-fast-mode-static.test.mjs passed");

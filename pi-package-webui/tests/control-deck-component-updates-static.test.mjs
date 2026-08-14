@@ -20,6 +20,10 @@ assert.match(app, /api\("\/api\/update\/apply", \{ method: "POST", body: \{ tran
 assert.match(app, /function piUpdateConfirmationText\(\{ all = false, plan = null \} = \{\}\)[\s\S]*Exact immutable plan digest/);
 assert.match(app, /const planTargets = Array\.isArray\(plan\?\.targets\)[\s\S]*planTargets\.length === 0[\s\S]*No update targets were accepted/);
 assert.match(app, /applyData\?\.state !== "activating"[\s\S]*completed without a Web UI restart[\s\S]*did not complete; no Web UI restart was requested/);
+assert.match(html, /id="serverRestartPanel"[\s\S]*server-restart-spinner[\s\S]*id="serverRestartKicker"[\s\S]*id="serverRestartTitle"/);
+assert.match(app, /function setServerRestartOverlay\(active[\s\S]*phase = "restarting"[\s\S]*phase === "updating"[\s\S]*Applying exact update/);
+assert.match(app, /async function startComponentUpdate\(target\)[\s\S]*setServerRestartOverlay\(true, `Starting exact \$\{label\} update…`, \{ phase: "updating" \}\)[\s\S]*setServerRestartOverlay\(false\)/);
+assert.match(app, /async function runPiUpdateAndRestart[\s\S]*setServerRestartOverlay\(true, progressMessage, \{ phase: "updating" \}\)/);
 assert.match(app, /will not re-resolve latest or scan package roots/);
 assert.match(app, /function separatePathPiPlanNotice\(plan\)[\s\S]*PATH Pi[\s\S]*separate installation[\s\S]*will remain untouched/);
 assert.match(app, /async function waitForServerRestart\(previousBootIdentity = serverBootIdentity\)[\s\S]*Date\.now\(\) \+ 90_000[\s\S]*health\.bootIdentity === previousBootIdentity/);

@@ -5,13 +5,13 @@ import { fileURLToPath } from "node:url";
 import { REQUIRED_THEME_TOKENS, THEME_TOKEN_GROUPS } from "../public/theme-contract.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, css, serviceWorker, pkg, readme] = await Promise.all([
+const [app, html, css, serviceWorker, pkg, technical] = await Promise.all([
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
   readFile(join(root, "public", "service-worker.js"), "utf8"),
   readFile(join(root, "package.json"), "utf8"),
-  readFile(join(root, "README.md"), "utf8"),
+  readFile(join(root, "TECHNICAL.md"), "utf8"),
 ]);
 
 assert.equal(THEME_TOKEN_GROUPS.length, 7, "customizer contract should expose seven labelled groups");
@@ -34,7 +34,7 @@ assert.match(html, /role="alert" hidden>[\s\S]*Replace this exact target\?/, "ov
 
 assert.match(app, /from "\.\/theme-contract\.mjs"/, "frontend should consume the shared browser-safe theme contract");
 assert.match(serviceWorker, /"\/theme-contract\.mjs"/, "the PWA app shell should cache the startup-critical theme contract");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v94"/, "adding the theme contract to the startup graph should advance the PWA cache identity");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v95"/, "adding the theme contract to the startup graph should advance the PWA cache identity");
 assert.match(pkg, /node --check public\/theme-contract\.mjs/, "the package check should syntax-check the startup-critical theme contract");
 assert.match(app, /function themeDraftFromCatalog\(theme, name = theme\?\.name\)[\s\S]*colors: cloneThemeDraft\(theme\?\.colors \|\| \{\}\)/, "catalog metadata should be projected into a schema-only editable draft");
 assert.match(app, /for \(const \{ name, label \} of group\.tokens\)/, "visual controls should render from the exact shared token inventory");
@@ -76,7 +76,7 @@ assert.match(css, /\.extension-dialog\.theme-customizer-dialog \{[\s\S]*inset: 0
 assert.match(css, /\.theme-token-swatch \{[^}]*width: 44px[^}]*height: 44px/, "visual color targets should remain at least 44px");
 assert.match(css, /env\(safe-area-inset-bottom\)/, "dialog actions should honor mobile safe-area insets");
 
-assert.match(readme, /### Custom themes[\s\S]*exact 51 required theme tokens[\s\S]*last valid preview[\s\S]*This project[\s\S]*Global themes/, "README should document controls, validation, and both scopes");
-assert.match(readme, /does not select the theme or mutate Pi\/browser settings[\s\S]*run `\/reload` or restart Pi/, "README should document non-persistence and truthful TUI activation");
+assert.match(technical, /### Custom themes[\s\S]*exact 51 required theme tokens[\s\S]*last valid preview[\s\S]*This project[\s\S]*Global themes/, "technical reference should document controls, validation, and both scopes");
+assert.match(technical, /does not select the theme or mutate Pi\/browser settings[\s\S]*run `\/reload` or restart Pi/, "technical reference should document non-persistence and truthful TUI activation");
 
 console.log("theme-customizer-static: all assertions passed");

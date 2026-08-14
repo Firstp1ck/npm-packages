@@ -4,11 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [app, html, css, readme] = await Promise.all([
+const [app, html, css, technical] = await Promise.all([
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "public", "index.html"), "utf8"),
   readFile(join(root, "public", "styles.css"), "utf8"),
-  readFile(join(root, "README.md"), "utf8"),
+  readFile(join(root, "TECHNICAL.md"), "utf8"),
 ]);
 
 function sourceBetween(startMarker, endMarker) {
@@ -76,8 +76,8 @@ assert.match(css, /\.optional-feature-migration-surface[\s\S]*\.optional-feature
 assert.match(css, /\.optional-feature-migration-card:focus-visible/, "focused completion summary should have a visible focus treatment");
 assert.match(css, /\.optional-feature-migration-card\.phase-degraded[\s\S]*padding-right:[^;]+;[\s\S]*\.optional-feature-migration-dismiss \{[\s\S]*position: absolute;[\s\S]*top:[^;]+;[\s\S]*right:[^;]+;/, "the degraded popup should reserve space for a top-right dismiss button");
 
-assert.match(readme, /read-only startup audit/i, "README should document startup auditing");
-assert.match(readme, /--migrate-optional-features[\s\S]*--migration-dry-run/, "README should document explicit unattended migration and dry-run flags");
-assert.match(readme, /Retry failed[\s\S]*Copy commands[\s\S]*Recheck/i, "README should document migration troubleshooting actions");
+assert.match(technical, /read-only startup audit/i, "technical reference should document startup auditing");
+assert.match(technical, /--migrate-optional-features[\s\S]*--migration-dry-run/, "technical reference should document explicit unattended migration and dry-run flags");
+assert.match(technical, /Retry failed[\s\S]*Copy commands[\s\S]*Recheck/i, "technical reference should document migration troubleshooting actions");
 
 console.log("optional feature migration frontend static tests passed");

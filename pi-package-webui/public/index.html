@@ -110,8 +110,8 @@
     <section id="serverRestartPanel" class="server-restart-panel" aria-live="assertive" hidden>
       <div class="server-restart-card" role="status">
         <div class="server-restart-spinner" aria-hidden="true"></div>
-        <span class="server-restart-kicker">Restarting</span>
-        <h1>Restarting Pi Web UI server</h1>
+        <span id="serverRestartKicker" class="server-restart-kicker">Restarting</span>
+        <h1 id="serverRestartTitle">Restarting Pi Web UI server</h1>
         <p id="serverRestartMessage">Waiting for the server to come back…</p>
       </div>
     </section>
@@ -1794,7 +1794,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=132">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=133">
       (() => {
         "use strict";
 

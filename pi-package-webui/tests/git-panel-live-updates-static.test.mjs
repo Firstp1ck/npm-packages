@@ -4,11 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [app, server, watcher, readme] = await Promise.all([
+const [app, server, watcher, development] = await Promise.all([
   readFile(join(root, "public", "app.js"), "utf8"),
   readFile(join(root, "bin", "pi-webui.mjs"), "utf8"),
   readFile(join(root, "lib", "git-live-watcher.mjs"), "utf8"),
-  readFile(join(root, "README.md"), "utf8"),
+  readFile(join(root, "DEVELOPMENT.md"), "utf8"),
 ]);
 
 function functionBody(source, name) {
@@ -49,6 +49,6 @@ assert.match(invalidateRepository, /if \(!gitPanelSectionExpanded\(\)\) return;/
 assert.match(ensureVisibleFresh, /snapshot\?\.error/, "persistent Git read errors should not cause an unbounded render/reload loop");
 assert.match(ensureVisibleFresh, /gitPanelSnapshotFresh\(snapshot\)[\s\S]*loadGitPanelRepository\(card\)/, "visible stale repositories should refresh on render");
 assert.match(handleEvent, /case "webui_git_changed":[\s\S]*invalidateGitPanelRepository\(event\.root\)/, "the browser event stream should route Git invalidations to the cache");
-assert.match(readme, /live filesystem updates[\s\S]*SSE/, "README should document live watcher-driven Git refresh behavior");
+assert.match(development, /live filesystem updates[\s\S]*SSE/, "development guide should document live watcher-driven Git refresh behavior");
 
 console.log("git-panel-live-updates-static.test.mjs passed");

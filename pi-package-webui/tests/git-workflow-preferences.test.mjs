@@ -84,7 +84,7 @@ try {
   );
   assert.deepEqual(migrated.uiLayout.composerActions, completeV1Layout.composerActions);
   assert.deepEqual(migrated.uiLayout.footerScopedModelOrder, completeV1Layout.footerScopedModelOrder);
-  assert.deepEqual(migrated.uiLayout.terminalTabs, completeV1Layout.terminalTabs);
+  assert.deepEqual(migrated.uiLayout.terminalTabs, { ...completeV1Layout.terminalTabs, sidebarWidth: null });
   assert.equal(migrated.uiLayout.fileViewerWidth, 560);
 
   await writeFile(settingsFile, `${JSON.stringify({
@@ -131,7 +131,7 @@ try {
   assert.equal(persisted.uiLayout.version, 2, "the first unrelated locked write must persist the migrated v2 envelope");
   assert.deepEqual(persisted.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
   assert.deepEqual(persisted.uiLayout.composerActions, completeV1Layout.composerActions, "unchanged v1 composer fields must survive persistence");
-  assert.deepEqual(persisted.uiLayout.terminalTabs, completeV1Layout.terminalTabs, "unchanged v1 terminal fields must survive persistence");
+  assert.deepEqual(persisted.uiLayout.terminalTabs, { ...completeV1Layout.terminalTabs, sidebarWidth: null }, "unchanged v1 terminal fields must survive persistence while new width state defaults safely");
   assert.equal(persisted.remoteAuthEnabled, true);
   assert.equal(persisted.outputModeDefault, "compact-v1", "output-mode default should persist beside existing Web UI settings");
   assert.equal(persisted.gitWorkflow.generation.provider, "fake");
