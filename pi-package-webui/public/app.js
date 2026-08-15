@@ -34508,11 +34508,28 @@ function joinedThinkingFormatParts(parts) {
 function thinkingFormatOpenMatch(text) {
   const value = String(text || "");
   const think = THINKING_FORMAT_OPEN_TAG_REGEX.exec(value);
-  if (think) return { raw: think[0], closeRegex: THINKING_FORMAT_CLOSE_TAG_REGEX, closeTag: "</think>" };
+  if (think) return { kind: "think", raw: think[0], closeRegex: THINKING_FORMAT_CLOSE_TAG_REGEX, closeTag: "</think>" };
   const channel = CHANNEL_THINKING_FORMAT_OPEN_TAG_REGEX.exec(value);
   if (!channel) return null;
   const name = channel[1];
-  return { raw: channel[0], closeRegex: new RegExp(`<${escapeRegExp(name)}\\|>`, "i"), closeTag: `<${name}|>` };
+  return { kind: "channel", raw: channel[0], closeRegex: new RegExp(`<${escapeRegExp(name)}\\|>`, "i"), closeTag: `<${name}|>` };
+}
+
+function thinkingFormatCloseMatch(text, open) {
+  const value = String(text || "");
+  if (open?.kind !== "think") return open?.closeRegex?.exec(value) || null;
+  const tokens = /<think\b[^>]*>|<\/think\s*>/gi;
+  let depth = 1;
+  let match = null;
+  while ((match = tokens.exec(value))) {
+    if (/^<\s*\/think/i.test(match[0])) {
+      depth -= 1;
+      if (depth === 0) return match;
+    } else {
+      depth += 1;
+    }
+  }
+  return null;
 }
 
 function splitThinkingFormatText(text, { streaming = false } = {}) {
@@ -34528,7 +34545,7 @@ function splitThinkingFormatText(text, { streaming = false } = {}) {
   let open = thinkingFormatOpenMatch(rest);
   while (open) {
     const afterOpen = rest.slice(open.raw.length);
-    const close = open.closeRegex.exec(afterOpen);
+    const close = thinkingFormatCloseMatch(afterOpen, open);
     if (!close) {
       thinkingParts.push(streaming ? stripPartialThinkingFormatClose(afterOpen, open.closeTag) : afterOpen);
       return { hasThinkingFormat: true, thinkingText: joinedThinkingFormatParts(thinkingParts), finalText: "", complete: false };

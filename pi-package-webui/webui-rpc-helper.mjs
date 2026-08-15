@@ -1409,6 +1409,23 @@ export default function webuiRpcHelper(pi) {
     return { run, agent };
   }
 
+  function claimRecoveredSubagentMatches(agents) {
+    const available = [...recoveredSubagentRuns.entries()]
+      .sort((left, right) => Number(left[1]?.startedAt || 0) - Number(right[1]?.startedAt || 0));
+    return agents.map((agent) => {
+      const name = subagentAgentName(agent?.name);
+      const exactModelIndex = available.findIndex(([, run]) => run?.agent?.name === name
+        && agent?.model && run.agent.model && agent.model === run.agent.model);
+      const matchIndex = exactModelIndex >= 0
+        ? exactModelIndex
+        : available.findIndex(([, run]) => run?.agent?.name === name);
+      if (matchIndex < 0) return undefined;
+      const [[key, run]] = available.splice(matchIndex, 1);
+      recoveredSubagentRuns.delete(key);
+      return run;
+    });
+  }
+
   function workflowSubagentOutputSnapshot(run, agent) {
     return {
       version: 1,
@@ -2206,11 +2223,36 @@ export default function webuiRpcHelper(pi) {
   pi.on("tool_execution_update", (event, ctx) => {
     if (event.toolName !== "subagent") return;
     const id = subagentText(event.toolCallId, 160);
-    const run = foregroundSubagentRuns.get(id);
+    if (!id) return;
+    const details = event.partialResult?.details || event.result?.details;
+    const controlRunId = subagentText(details?.runId, 160);
+    const agents = subagentRunningAgentsFromDetails(details, controlRunId || id);
+    let run = foregroundSubagentRuns.get(id);
+    if (!run && controlRunId && agents.length) {
+      const recoveredMatches = claimRecoveredSubagentMatches(agents);
+      const startedAt = recoveredMatches
+        .map((match) => match?.startedAt)
+        .filter(Number.isFinite)
+        .sort((left, right) => left - right)[0];
+      run = {
+        id: controlRunId,
+        source: "foreground",
+        mode: subagentMode(details?.mode),
+        status: "running",
+        startedAt: Number.isFinite(startedAt) ? startedAt : Date.now(),
+        controlRunId,
+        workflowProvisional: false,
+        agents: agents.map((agent, index) => ({
+          ...recoveredMatches[index]?.agent,
+          ...agent,
+          model: agent.model || recoveredMatches[index]?.agent?.model,
+          thinking: agent.thinking || recoveredMatches[index]?.agent?.thinking,
+        })),
+      };
+      foregroundSubagentRuns.set(id, run);
+    }
     if (!run || run.status !== "running") return;
     subagentContext = ctx;
-    const details = event.partialResult?.details || event.result?.details;
-    const agents = subagentRunningAgentsFromDetails(details, details?.runId || id);
     if (agents.length) {
       run.workflowProvisional = false;
       const runningAgents = agents.map((agent) => {
@@ -2228,9 +2270,9 @@ export default function webuiRpcHelper(pi) {
         .map((agent) => ({ ...agent, status: agent.status === "running" ? "done" : agent.status }));
       run.agents = [...completedAgents, ...runningAgents];
     }
-    if (details?.runId) {
-      run.controlRunId = subagentText(details.runId, 160);
-      run.id = run.controlRunId;
+    if (controlRunId) {
+      run.controlRunId = controlRunId;
+      run.id = controlRunId;
     }
     run.mode = subagentMode(details?.mode, run.mode);
     publishSubagentStatus();

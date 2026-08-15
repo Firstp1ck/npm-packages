@@ -135,7 +135,7 @@ Review follow-ups, steering messages, user-bash work, and prompt lists while a t
 
 **Optional feature needed:** None — included in Pi Web UI core.
 
-Choose the supported reasoning effort before sending the next prompt.
+Choose the supported reasoning effort before sending the next prompt. Local models that return tagged `<think>…</think>` reasoning keep that content in the Thinking card, including literal tag examples inside the reasoning.
 
 #### Scoped models
 

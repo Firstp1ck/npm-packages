@@ -333,6 +333,7 @@ Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection d
 - Use **Recheck** after fixing an optional-package or settings problem.
 - If a summary model is unavailable, sign in or choose another model in `/summary-setup`.
 - If compact mode is confusing, return to Normal under Output processing.
+- OpenAI-compatible local providers such as LM Studio may return reasoning as literal `<think>…</think>` text. Web UI separates the outer tagged region into the Thinking card and preserves balanced literal tag examples inside it. If raw tags still appear, verify that the response starts with an opening `<think>` tag and includes its matching outer close.
 - If the Subagents section labels a child **recovered active**, Pi has authoritative evidence that the child is active but cannot yet map it to a controllable run. You can click the row to open a read-only metadata view; it explains that detailed live output remains unavailable until Pi observes the run locator. Cancel, dismiss, and automatic restored-terminal materialization remain unavailable for that provisional row. An “active children omitted upstream” count means the upstream bounded snapshot knows about more active children than it can describe individually.
 
 ## Compatibility and limitations

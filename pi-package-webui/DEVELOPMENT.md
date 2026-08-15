@@ -70,9 +70,16 @@ node tests/syntax-highlighting-static.test.mjs
 
 `public/app.js` keeps only in-memory per-tab summaries. `refreshIntercomConversationSummaries` uses tab-generation and request-serial guards; `refreshIntercomConversationDetail` adds a separate serial plus a five-second open-dialog refresh. Switching tabs or closing the native dialog invalidates pending detail responses and cancels its timer. The renderer rebuilds message bubbles only from normalized `direction`, participant name/ID, text, and timestamp fields, assigning text with safe DOM APIs. It never renders server records wholesale. The footer tag group uses equal-width implicit grid columns for up to eight conversations, then applies a wrapped `minmax(44px, 1fr)` grid through the `dense` class for 9–32 conversations. Both modes avoid horizontal scrolling and keep shrinkable visual labels plus full `aria-label` and `title` values. Each reused button stores a compact label/count signature, so unchanged tags retain their children instead of retriggering the polite live region.
 
+### Tagged local-model thinking
+
+Some OpenAI-compatible local models stream reasoning inside an outer `<think>…</think>` text region instead of emitting native thinking events. The browser parser treats balanced inner `<think>…</think>` examples as nested delimiters, so a literal tag pair in the reasoning cannot prematurely terminate the outer block and leak the remainder into final output. While the outer close has not arrived, streaming remains in the incomplete-thinking state.
+
+`tests/thinking-format-parser.test.mjs` executes the browser helpers against completed, streaming, nested-literal, consecutive-block, and channel-style fixtures.
+
 Focused contributor validation:
 
 ```bash
+node tests/thinking-format-parser.test.mjs
 node tests/intercom-transcript-filter.test.mjs
 node tests/intercom-main-transcript-suppression-static.test.mjs
 node tests/intercom-tag-layout-static.test.mjs

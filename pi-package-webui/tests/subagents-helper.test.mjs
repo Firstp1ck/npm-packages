@@ -399,6 +399,60 @@ assert.equal(recoveredOutputResponse.ok, true, "a recovered fleet row should ope
 assert.equal(recoveredOutputResponse.data.source, "recovered");
 assert.equal(recoveredOutputResponse.data.agent.unavailable, true);
 assert.match(recoveredOutputResponse.data.agent.unavailableReason, /recovered from aggregate fleet metadata/, "the read-only recovered view should explain why detailed output is not yet available");
+
+for (const handler of extensionHandlers.get("tool_execution_update") || []) {
+  handler({
+    type: "tool_execution_update",
+    toolCallId: "recovered-foreground-call",
+    toolName: "subagent",
+    partialResult: {
+      details: {
+        runId: "recovered-foreground-run",
+        mode: "single",
+        progress: [{
+          index: 0,
+          agent: "Recovery scout",
+          status: "running",
+          currentTool: "read",
+          recentOutput: ["Recovered child output is live again"],
+        }],
+      },
+    },
+  }, ctx);
+}
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "fleet:fleet-recovered"), false, "a recovered fleet placeholder should be replaced when its live tool update arrives");
+const recoveredForegroundRun = payload.runs.find((run) => run.id === "recovered-foreground-run");
+assert.deepEqual(recoveredForegroundRun && {
+  source: recoveredForegroundRun.source,
+  controllable: recoveredForegroundRun.controllable,
+  agents: recoveredForegroundRun.agents.map((agent) => [agent.name, agent.model, agent.thinking]),
+}, {
+  source: "foreground",
+  controllable: undefined,
+  agents: [["Recovery scout", "openai-codex/gpt-5.6-terra:xhigh", "xhigh"]],
+}, "a live update without a preceding start event should promote recovered metadata into a normal foreground run");
+const recoveredForegroundCanonical = latestCanonicalPayload().instances.find((instance) => instance.runId === "recovered-foreground-run");
+await helperCommand.handler(JSON.stringify({
+  requestId: "recovered-foreground-live-output-test",
+  action: "subagent-output",
+  payload: { outputId: recoveredForegroundCanonical.outputRef.id },
+}), ctx);
+const recoveredForegroundOutput = helperResponse("recovered-foreground-live-output-test");
+assert.equal(recoveredForegroundOutput.ok, true);
+assert.equal(recoveredForegroundOutput.data.source, "foreground");
+assert.equal(recoveredForegroundOutput.data.agent.unavailable, undefined);
+assert.deepEqual(recoveredForegroundOutput.data.agent.recentOutput, ["Recovered child output is live again"], "promoted recovered runs should expose subsequent live output");
+for (const handler of extensionHandlers.get("tool_execution_end") || []) {
+  handler({ type: "tool_execution_end", toolCallId: "recovered-foreground-call", toolName: "subagent" }, ctx);
+}
+await helperCommand.handler(JSON.stringify({
+  requestId: "dismiss-recovered-foreground-run",
+  action: "subagent-dismiss",
+  payload: { runId: "recovered-foreground-run" },
+}), ctx);
+assert.equal(helperResponse("dismiss-recovered-foreground-run").ok, true, "a promoted recovered run should follow the normal foreground completion lifecycle");
+
 const requestsBeforeWorkflowOutput = subagentStatusRequestCount;
 await helperCommand.handler(JSON.stringify({
   requestId: "workflow-subagent-output-test",
