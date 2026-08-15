@@ -29,7 +29,7 @@ const normalizationContext = {
   WEBUI_SUBAGENT_GATE_LIMIT: 32,
   WEBUI_SUBAGENT_GATE_ATTEMPT_LIMIT: 100,
 };
-vm.runInNewContext(`${normalizationSource}\nthis.normalizePayload = normalizeWebuiSubagentPayload;`, normalizationContext);
+vm.runInNewContext(`${normalizationSource}\nthis.normalizePayload = normalizeWebuiSubagentPayload; this.filterStartup = filterStartupInactiveRows;`, normalizationContext);
 const normalized = normalizationContext.normalizePayload({
   version: 1,
   available: true,
@@ -60,6 +60,26 @@ const ordinary = normalizationContext.normalizePayload({
 });
 assert.equal(Object.hasOwn(ordinary.runs[0], "provisional"), false, "ordinary payload v1 rows should not gain recovery-only provisional metadata");
 assert.equal(Object.hasOwn(ordinary.runs[0], "controllable"), false, "ordinary payload v1 rows should not gain recovery-only control metadata");
+const startupTab = {};
+const firstStartupSnapshot = normalizationContext.filterStartup(startupTab, {
+  runs: [
+    { id: "active-before-start", status: "running" },
+    { id: "done-before-start", status: "done" },
+  ],
+}, { rowsKey: "runs", stateKey: "fixtureStartup" });
+assert.deepEqual(Array.from(firstStartupSnapshot.runs, (run) => run.id), ["active-before-start"], "the first helper snapshot should suppress pre-existing inactive runs");
+const currentGenerationSnapshot = normalizationContext.filterStartup(startupTab, {
+  runs: [
+    { id: "done-before-start", status: "done" },
+    { id: "done-after-start", status: "done" },
+  ],
+}, { rowsKey: "runs", stateKey: "fixtureStartup" });
+assert.deepEqual(Array.from(currentGenerationSnapshot.runs, (run) => run.id), ["done-after-start"], "later terminal runs should remain visible while startup-suppressed identities stay hidden");
+const reactivatedSnapshot = normalizationContext.filterStartup(startupTab, {
+  runs: [{ id: "done-before-start", status: "running" }],
+}, { rowsKey: "runs", stateKey: "fixtureStartup" });
+assert.deepEqual(Array.from(reactivatedSnapshot.runs, (run) => run.id), ["done-before-start"], "an active transition should release startup suppression");
+assert.match(server, /filterStartupInactiveRows\(tab, payload,[\s\S]*rowsKey: "instances"[\s\S]*filterStartupInactiveRows\(tab, payload,[\s\S]*rowsKey: "runs"[\s\S]*startupSuppressedAgentRunProjectionKeys\.has\(key\)[\s\S]*!agentRunIsActive\(record\.instance\)/, "helper snapshots and startup registry records should both exclude pre-existing inactive rows");
 assert.deepEqual(JSON.parse(JSON.stringify(normalized.runs[0])), {
   id: "fleet:opaque",
   source: "recovered",
@@ -87,6 +107,8 @@ const canonicalProjectionSource = sourceBetween(
 );
 assert.match(canonicalProjectionSource, /Number\.isFinite\(run\.endedAt\) \? run\.endedAt : startedAt/, "a terminal run without endedAt should use one stable fallback timestamp");
 assert.doesNotMatch(canonicalProjectionSource, /endedAt[^\n]*Date\.now\(\)/, "terminal projection timestamps must not change on every status poll");
+assert.match(canonicalProjectionSource, /open: true,[\s\S]*refresh: true,[\s\S]*cancel: status === "running" && !workflow && !recovered[\s\S]*outputRef: \{ kind: "helper"/, "recovered fleet rows should expose a read-only helper output view while lifecycle control remains blocked");
+assert.match(server, /unavailable: rawAgent\.unavailable === true[\s\S]*unavailableReason: rawAgent\.unavailable === true/, "server normalization should preserve truthful recovered-output unavailability metadata");
 
 const interactionSource = sourceBetween(
   server,

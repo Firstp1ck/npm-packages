@@ -246,6 +246,33 @@ const voiceProvider = createServer(async (req, res) => {
 await new Promise((resolve) => voiceProvider.listen(0, "127.0.0.1", resolve));
 const voiceProviderPort = voiceProvider.address().port;
 
+const startupRegistryNow = Date.now();
+const startupRegistryProducers = ["startup-running", "startup-stale", "startup-lost", "startup-done"];
+for (const [producerId, status, updatedAt] of [
+  ["startup-running", "running", startupRegistryNow],
+  ["startup-stale", "stale", startupRegistryNow - 60_000],
+  ["startup-lost", "running", startupRegistryNow - 180_000],
+  ["startup-done", "done", startupRegistryNow - 5_000],
+]) {
+  const terminal = status === "done";
+  await agentRunRegistry.writeRecord(producerId, {
+    version: 1,
+    instanceId: producerId,
+    runId: `${producerId}-run`,
+    parentSessionId: null,
+    launcher: "sdk",
+    provider: "webui-registry",
+    origin: "startup-regression-fixture",
+    name: producerId,
+    status,
+    startedAt: updatedAt - 1_000,
+    updatedAt,
+    endedAt: terminal ? updatedAt : null,
+    capabilities: { open: false, refresh: false, cancel: false, steer: false },
+    outputRef: { kind: "none" },
+  }, { recordId: `${producerId}-record` });
+}
+
 const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "0.0.0.0", "--port", String(port), "--pi", fakePiCli], {
   stdio: ["ignore", "pipe", "pipe"],
   env: {
@@ -469,6 +496,13 @@ try {
   assert.equal(health.body.ok, true);
   assert.equal(health.body.piRunning, true, "fake pi RPC process should be attached and running");
   assert.match(health.body.piVersion, /^\d+\.\d+\.\d+/, "health metadata should expose the installed Pi version");
+
+  const startupSubagents = await request("127.0.0.1", "/api/subagents");
+  const startupExternalAgents = startupSubagents.body?.data?.groups
+    ?.find((group) => group.id === "external")?.runs
+    ?.flatMap((run) => run.agents.map((agent) => ({ name: agent.name, status: agent.status }))) || [];
+  assert.deepEqual(startupExternalAgents, [{ name: "startup-running", status: "running" }], "startup should attach only active registry agents, not pre-existing stale, lost, or completed records");
+  await Promise.all(startupRegistryProducers.map((producer) => rm(path.join(agentRunRegistry.paths.root, producer), { recursive: true, force: true })));
 
   const managedThemesResponse = await request("127.0.0.1", "/api/themes");
   assert.equal(managedThemesResponse.status, 200, managedThemesResponse.body?.error);
@@ -3461,6 +3495,7 @@ try {
   const filesRoot = path.join(cwd, "files-fixture");
   const viewerRelative = "files-fixture/viewer.txt";
   const markdownRelative = "files-fixture/docs/readme.md";
+  const imageRelative = "files-fixture/pixel.png";
   const binaryRelative = "files-fixture/binary.bin";
   const noDefaultRelative = "files-fixture/no-default.piunknown";
   const largeRelative = "files-fixture/large.txt";
@@ -3483,6 +3518,8 @@ try {
   await mkdir(path.join(cwd, path.dirname(depthNineFileRelative)), { recursive: true });
   await writeFile(path.join(cwd, viewerRelative), "hello file viewer\nsecond line\n", "utf8");
   await writeFile(path.join(cwd, markdownRelative), "# File Viewer\n\nMarkdown preview support.\n", "utf8");
+  const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  await writeFile(path.join(cwd, imageRelative), imageBytes);
   await writeFile(path.join(cwd, noDefaultRelative), "unknown extension should use text/plain editor fallback\n", "utf8");
   await writeFile(path.join(cwd, depthEightFileRelative), "depth 8 search fixture\n", "utf8");
   await writeFile(path.join(cwd, depthNineFileRelative), "depth 9 search fixture\n", "utf8");
@@ -3566,6 +3603,13 @@ try {
   const markdownContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(markdownRelative)}`);
   assert.equal(markdownContent.status, 200, `markdown file should open in WebUI: ${markdownContent.body?.error || ""}`);
   assert.equal(markdownContent.body?.data?.language, "markdown", "markdown files should get markdown viewer support metadata");
+
+  const imageContent = await request("127.0.0.1", `/api/files/content?tab=${encodeURIComponent(tabId)}&path=${encodeURIComponent(imageRelative)}`);
+  assert.equal(imageContent.status, 200, `supported images should open in WebUI: ${imageContent.body?.error || ""}`);
+  assert.equal(imageContent.body?.data?.kind, "image", "image responses should identify their viewer kind");
+  assert.equal(imageContent.body?.data?.mimeType, "image/png", "image responses should expose an allowlisted MIME type");
+  assert.equal(imageContent.body?.data?.data, imageBytes.toString("base64"), "image responses should preserve the bounded file bytes as base64");
+  assert.equal(imageContent.body?.data?.content, undefined, "image responses should not reinterpret binary bytes as editable text");
 
   const emptyDefaultOpen = await request("127.0.0.1", "/api/files/open-default", { method: "POST", body: { tab: tabId, path: "" } });
   assert.equal(emptyDefaultOpen.status, 400, "default editor opens should reject empty paths instead of opening the workspace root");

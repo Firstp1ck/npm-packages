@@ -92,6 +92,8 @@ const scrollChatToBottom = findFunctionBody(app, "scrollChatToBottom");
 const stripTodoProgressLines = findFunctionBody(app, "stripTodoProgressLines");
 const liveTodoProgressWidgetLinesFromText = findFunctionBody(app, "liveTodoProgressWidgetLinesFromText");
 const syncStreamingThinkingFormat = findFunctionBody(app, "syncStreamingThinkingFormat");
+const setStreamThinkingRawText = findFunctionBody(app, "setStreamThinkingRawText");
+const syncStreamingThinkingFromUpdate = findFunctionBody(app, "syncStreamingThinkingFromUpdate");
 const renderStreamingAssistantText = findFunctionBody(app, "renderStreamingAssistantText");
 const renderStreamingMarkdown = findFunctionBody(app, "renderStreamingMarkdown");
 const setRunIndicatorActivity = findFunctionBody(app, "setRunIndicatorActivity");
@@ -133,6 +135,9 @@ assert.match(styles, /\.chat > \.message:first-of-type \{ margin-top:\s*0; \}/, 
 assert.doesNotMatch(styles, /\.chat > \.message:first-of-type \{ margin-top:\s*auto; \}/, "short transcripts must not follow the moving composer edge while the user types");
 assert.match(appendOptimisticUserPrompt, /renderAllMessages\(\);[\s\S]*?scrollChatToBottom\(\{ force:\s*true \}\);/, "submitting a prompt should explicitly resume bottom-follow for the new turn");
 assert.doesNotMatch(appendOptimisticUserPrompt, /if \(autoFollowChat \|\| isChatNearBottom\(\)\)/, "a paused reader position should not leave a newly submitted turn off-screen");
+assert.match(app, /import \{[^}]*reconcileTranscriptThinkingSnapshot[^}]*\} from "\.\/stream-output-controller\.mjs";/, "the browser should import the tested thinking-snapshot reconciler");
+assert.match(setStreamThinkingRawText, /reconcile\s*\?\s*reconcileTranscriptThinkingSnapshot\(streamThinkingRawText, snapshot\)/, "thinking state should support prefix-safe snapshot reconciliation");
+assert.match(syncStreamingThinkingFromUpdate, /update\.type === "thinking_end"[\s\S]*?setStreamThinkingRawText\(delta, \{ reconcile: true \}\)[\s\S]*?setStreamThinkingRawText\(fallback, \{ reconcile: true \}\)/, "thinking_end snapshots and fallbacks must not cut off an already-rendered compatible tail");
 
 futureInvariant("theory #1: message_update streaming hot path must not call immediate scroll/layout work", () => {
   assert.doesNotMatch(handleMessageUpdate, /scrollChatToBottom\s*\(/, "handleMessageUpdate should schedule/coalesce follow-scroll instead of calling scrollChatToBottom() directly");

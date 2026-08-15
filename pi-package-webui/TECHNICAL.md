@@ -103,6 +103,12 @@ Summary generation is opt-in. It uses the active user message, final assistant r
 
 Use `/summary`, `/summary refresh`, or `/summary workspace` to view, refresh, or compare available summaries. Turn off automatic generation to stop recurring model calls without deleting saved prompts or previous summaries.
 
+## File viewer
+
+The Files panel opens UTF-8 text in Source mode, renders Markdown in Preview mode, and displays supported raster images as read-only previews. Image support covers PNG, JPEG, GIF, WebP, and AVIF. SVG, PDF, video, audio, and other binary formats are not rendered in the viewer; use **Open in Default Editor** from the file row instead.
+
+Text and image reads remain scoped to the active tab's working directory and its existing path-confinement checks. The viewer limits each file to 2 MiB. Image previews cannot be edited, searched as text, or sent as text selections. Git-originated image opens still begin in Changes mode when a bounded Git snapshot is available, with Preview available alongside it.
+
 ## Optional features
 
 Every server start performs a bounded, read-only startup audit of optional companion packages. Missing, unregistered, or older companions appear in the Optional features panel without blocking the core Web UI.
@@ -130,6 +136,43 @@ Re-running the same `pi install npm:<package>` command is the supported update p
 Normal output shows the full live tool and response stream. Compact output keeps the current tool status and final answer while omitting most intermediate details from the live display.
 
 Choose the mode under **Controls → Output processing** or **Settings → Browser workflow**, then select **Compact**. The stable setting and command-line identifier is `compact-v1`. The setting affects display only; it does not change Pi prompts, tools, models, saved transcript meaning, or inference.
+
+## Code block syntax highlighting
+
+Fenced code blocks in agent output, release notes, session summaries, and the Markdown file preview are colored automatically from the language written after the opening fence, for example ` ```python `.
+
+Recognized languages and their aliases:
+
+| Language | Accepted after the opening fence |
+| --- | --- |
+| Python | `python`, `py` |
+| JavaScript | `javascript`, `js`, `jsx`, `mjs`, `cjs`, `node` |
+| TypeScript | `typescript`, `ts`, `tsx` |
+| Shell | `bash`, `sh`, `shell`, `zsh` |
+| PowerShell | `powershell`, `pwsh`, `ps1` |
+| Windows command scripts | `cmd`, `bat`, `batch`, `dos` |
+| JSON | `json`, `jsonc` |
+| INI and properties | `ini`, `cfg`, `conf`, `properties` |
+| TOML | `toml` |
+| YAML | `yaml`, `yml` |
+| Diffs and patches | `diff`, `patch` |
+| SQL | `sql` |
+| Stylesheets | `css` |
+| Markup | `html`, `htm`, `xml`, `svg` |
+| Container files | `dockerfile`, `docker` |
+| C and C++ | `c`, `h`, `cpp`, `c++`, `cc`, `cxx`, `hpp`, `hxx` |
+| Java | `java` |
+| Go | `go`, `golang` |
+| Rust | `rust`, `rs` |
+| C# | `csharp`, `cs`, `c#`, `dotnet` |
+
+Behavior and limits:
+
+- Colors come from the active theme's **Syntax Highlighting** token group, so highlighting follows your chosen light or dark theme. Editing those tokens under **Controls → Interface → Theme → Customize…** changes code colors immediately.
+- A block without a language, with an unrecognized language, or larger than 50,000 characters or 2,000 lines is shown as ordinary unhighlighted text.
+- Highlighting is display only. Copying a code block, selecting text, and searching the transcript still return the exact original source, and nothing is sent anywhere for analysis.
+- Coloring is intentionally approximate rather than a full language parser. Unusual constructs such as nested string interpolation, shell heredocs, PowerShell here-strings, or embedded scripts inside markup may be colored imprecisely; the code text itself is never altered.
+- Fenced `mermaid` and `mmd` blocks keep rendering as diagrams instead of highlighted source.
 
 ## Codex subscription Fast mode
 
@@ -165,7 +208,9 @@ To restore: stop the Web UI, re-upgrade to a version that supports the two-sided
 
 ## Subagent observability
 
-The **Subagents** panel accepts managed `pi-subagents` and workflow runs plus cooperating SDK, Pi RPC, JSON, print, interactive/tmux, schedule, gate, and custom launchers. It groups exact parent-session matches with their WebUI terminal and places unmatched registered runs under **External agents**. Counts include retained visible instances; the status line separately reports running and stale instances. Gate history refers to its child and does not add another count.
+The **Subagents** panel accepts managed `pi-subagents` and workflow runs plus cooperating SDK, Pi RPC, JSON, print, interactive/tmux, schedule, gate, and custom launchers. It groups exact parent-session matches with their WebUI terminal and places unmatched registered runs under **External agents**. Counts include retained instances that became terminal during the current server run; the status line separately reports running and stale instances. Gate history refers to its child and does not add another count.
+
+At server start or restart, only queued or running agents reconnect from prior state. Pre-existing stale, lost, done, failed, and cancelled rows are not loaded into terminal groups or **External agents**. A run that becomes stale, lost, or terminal after the current server starts remains visible for inspection and normal clearing.
 
 Use the WebUI wrapper when launching Pi subprocesses that should be visible:
 
@@ -197,7 +242,7 @@ Registry state uses the WebUI state directory (`$XDG_STATE_HOME/pi-webui/`, or `
 
 Troubleshooting:
 
-- Keep the same WebUI port and Pi agent configuration directory across a restart so registered scope identity remains stable. For a non-default port, pass `--port` to every `pi-webui agent` command or set `PI_WEBUI_PORT`.
+- Keep the same WebUI port and Pi agent configuration directory across a restart so active registered runs reconnect to the same scope. For a non-default port, pass `--port` to every `pi-webui agent` command or set `PI_WEBUI_PORT`.
 - A **stale** row has missed heartbeat evidence; **lost** means the longer loss threshold elapsed without an explicit terminal event. Neither means success.
 - If an expected independent run is absent, confirm it used a wrapper/tracking adapter or attach it explicitly; process discovery is intentionally unavailable.
 - If output says unavailable, the producer registered metadata but no bounded output source. Restarting the browser cannot reconstruct evidence the producer never registered.
@@ -274,7 +319,7 @@ Use `@firstpick/pi-package-remote-webui` for trusted-LAN access, QR connection d
 - Use **Recheck** after fixing an optional-package or settings problem.
 - If a summary model is unavailable, sign in or choose another model in `/summary-setup`.
 - If compact mode is confusing, return to Normal under Output processing.
-- If the Subagents section labels a child **recovered active**, Pi has authoritative evidence that the child is active but cannot yet map it to a controllable run. Keep the parent session running and allow the next status refresh to reconcile it; output, cancel, dismiss, and restored terminal views remain unavailable for that provisional row. An “active children omitted upstream” count means the upstream bounded snapshot knows about more active children than it can describe individually.
+- If the Subagents section labels a child **recovered active**, Pi has authoritative evidence that the child is active but cannot yet map it to a controllable run. You can click the row to open a read-only metadata view; it explains that detailed live output remains unavailable until Pi observes the run locator. Cancel, dismiss, and automatic restored-terminal materialization remain unavailable for that provisional row. An “active children omitted upstream” count means the upstream bounded snapshot knows about more active children than it can describe individually.
 
 ## Compatibility and limitations
 

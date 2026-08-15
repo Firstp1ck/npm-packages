@@ -37,7 +37,7 @@ const forbiddenSinks = [
   ".focus(", "scrollIntoView", "fetch(", "api(",
 ];
 
-assert.match(app, /import \{ classifyTranscriptStreamEvent, createStreamOutputController \} from "\.\/stream-output-controller\.mjs";/);
+assert.match(app, /import \{[^}]*classifyTranscriptStreamEvent[^}]*createStreamOutputController[^}]*\} from "\.\/stream-output-controller\.mjs";/);
 assert.match(controller, /export function classifyTranscriptStreamEvent/);
 assert.match(controller, /export function createStreamOutputController/);
 assert.match(controller, /let frameHandle = null;[\s\S]*?let pending = \[\];[\s\S]*?let pendingBytes = 0;/, "controller should retain one cancellable bounded queue");

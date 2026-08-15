@@ -9,8 +9,9 @@ import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, ge
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 import { createTranscriptRenderer } from "./transcript-renderer.mjs";
-import { classifyTranscriptStreamEvent, createStreamOutputController } from "./stream-output-controller.mjs";
+import { classifyTranscriptStreamEvent, createStreamOutputController, reconcileTranscriptThinkingSnapshot } from "./stream-output-controller.mjs";
 import { installMiddleButtonDragScroll } from "./middle-button-drag-scroll.mjs";
+import { tokenizeCode } from "./syntax-highlight.mjs";
 import { PI_THEME_EXPORT_FIELDS, THEME_TOKEN_GROUPS, canonicalizeTheme, serializeTheme, themeColorToRgb, validateTheme } from "./theme-contract.mjs";
 import {
   SAMPLING_PARAMETER_CATALOG,
@@ -323,6 +324,8 @@ const elements = {
   fileViewerEditor: $("#fileViewerEditor"),
   fileViewerSearchOverlay: $("#fileViewerSearchOverlay"),
   fileViewerPreview: $("#fileViewerPreview"),
+  fileViewerImage: $("#fileViewerImage"),
+  fileViewerImageElement: $("#fileViewerImageElement"),
   fileViewerChanges: $("#fileViewerChanges"),
   fileViewerStatus: $("#fileViewerStatus"),
   fileViewerSearchBar: $("#fileViewerSearchBar"),
@@ -10478,6 +10481,15 @@ function applyTheme(theme, { persist = false, announce = false } = {}) {
     "--background-glow-pink": colorWithAlpha(pink, isLight ? 0.16 : 0.34, pink),
     "--background-glow-blue": colorWithAlpha(accent, isLight ? 0.15 : 0.32, accent),
     "--background-glow-teal": colorWithAlpha(accent2, isLight ? 0.12 : 0.20, accent2),
+    "--syntax-comment": themeColor(theme, "syntaxComment", muted),
+    "--syntax-keyword": themeColor(theme, "syntaxKeyword", mauve),
+    "--syntax-function": themeColor(theme, "syntaxFunction", accent),
+    "--syntax-variable": themeColor(theme, "syntaxVariable", text),
+    "--syntax-string": themeColor(theme, "syntaxString", green),
+    "--syntax-number": themeColor(theme, "syntaxNumber", peach),
+    "--syntax-type": themeColor(theme, "syntaxType", yellow),
+    "--syntax-operator": themeColor(theme, "syntaxOperator", accent2),
+    "--syntax-punctuation": themeColor(theme, "syntaxPunctuation", muted),
     "--theme-background-image": themeExportCssValue(theme, "backgroundImage", "none", LOCAL_BACKGROUND_IMAGE_PATTERN),
     "--theme-background-overlay": themeExportCssValue(theme, "backgroundOverlay", "linear-gradient(180deg, rgba(17, 17, 27, 0), rgba(17, 17, 27, 0))", BACKGROUND_OVERLAY_PATTERN),
     "--theme-background-size": themeExportCssValue(theme, "backgroundSize", "cover", SAFE_BACKGROUND_TOKEN_PATTERN),
@@ -13411,12 +13423,22 @@ async function openFileTreeEntryInWebui(entry = fileContextMenuState?.entry) {
   await openFileInViewer(path);
 }
 
-// Changes mode only exists for Git-originated opens; every other viewer keeps
-// the original Source/Markdown-Preview behavior.
+const FILE_VIEWER_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
+
+function fileViewerImageDataUrl(data = {}) {
+  const mimeType = String(data.mimeType || "").toLowerCase();
+  const encoded = String(data.data || "");
+  if (!FILE_VIEWER_IMAGE_MIME_TYPES.has(mimeType) || !encoded) return "";
+  return `data:${mimeType};base64,${encoded}`;
+}
+
+// Changes mode only exists for Git-originated opens. Image previews are
+// read-only, while text keeps the original Source/Markdown-Preview behavior.
 function resolveFileViewerMode(viewer) {
   if (!viewer) return "source";
   const hasChanges = !!viewer.gitChanges;
-  if (viewer.mode === "changes") return hasChanges ? "changes" : "source";
+  if (viewer.mode === "changes") return hasChanges ? "changes" : viewer.kind === "image" ? "image" : "source";
+  if (viewer.kind === "image") return "image";
   if (viewer.sourceAvailable === false) return hasChanges ? "changes" : "source";
   return viewer.mode === "preview" && viewer.language === "markdown" ? "preview" : "source";
 }
@@ -13455,6 +13477,7 @@ function updateFileViewerUi() {
   const viewer = activeFileViewer;
   captureFileViewerEditorContinuity(viewer);
   const isMarkdown = viewer.language === "markdown";
+  const isImage = viewer.kind === "image";
   const hasChanges = !!viewer.gitChanges;
   const sourceAvailable = viewer.sourceAvailable !== false;
   const mode = resolveFileViewerMode(viewer);
@@ -13462,7 +13485,9 @@ function updateFileViewerUi() {
   if (elements.fileViewerTitle) elements.fileViewerTitle.textContent = viewer.name || fileDisplayName(viewer.path);
   if (elements.fileViewerMeta) {
     const lineCount = textLineCount(viewer.content || "");
-    const sourceMeta = sourceAvailable ? [formatBytes(viewer.size), `${lineCount} ${lineCount === 1 ? "line" : "lines"}`] : ["source unavailable"];
+    const sourceMeta = isImage
+      ? [formatBytes(viewer.size), viewer.mimeType]
+      : sourceAvailable ? [formatBytes(viewer.size), `${lineCount} ${lineCount === 1 ? "line" : "lines"}`] : ["source unavailable"];
     elements.fileViewerMeta.textContent = [viewer.path, ...sourceMeta].filter(Boolean).join(" · ");
   }
   if (elements.fileViewerChangesModeButton) {
@@ -13478,10 +13503,10 @@ function updateFileViewerUi() {
     elements.fileViewerSourceModeButton.classList.toggle("active", mode === "source");
   }
   if (elements.fileViewerPreviewModeButton) {
-    elements.fileViewerPreviewModeButton.hidden = !isMarkdown;
-    elements.fileViewerPreviewModeButton.disabled = !isMarkdown || !sourceAvailable;
-    elements.fileViewerPreviewModeButton.setAttribute("aria-pressed", mode === "preview" ? "true" : "false");
-    elements.fileViewerPreviewModeButton.classList.toggle("active", mode === "preview");
+    elements.fileViewerPreviewModeButton.hidden = !isMarkdown && !isImage;
+    elements.fileViewerPreviewModeButton.disabled = (!isMarkdown || !sourceAvailable) && !isImage;
+    elements.fileViewerPreviewModeButton.setAttribute("aria-pressed", ["preview", "image"].includes(mode) ? "true" : "false");
+    elements.fileViewerPreviewModeButton.classList.toggle("active", ["preview", "image"].includes(mode));
   }
   if (elements.fileViewerEditor) {
     elements.fileViewerEditor.hidden = mode !== "source";
@@ -13493,6 +13518,17 @@ function updateFileViewerUi() {
   if (elements.fileViewerPreview) {
     elements.fileViewerPreview.hidden = mode !== "preview";
     if (mode === "preview") renderMarkdown(elements.fileViewerPreview, viewer.content || "");
+    else elements.fileViewerPreview.replaceChildren();
+  }
+  if (elements.fileViewerImage) elements.fileViewerImage.hidden = mode !== "image";
+  if (elements.fileViewerImageElement) {
+    if (isImage) {
+      if (elements.fileViewerImageElement.src !== viewer.imageUrl) elements.fileViewerImageElement.src = viewer.imageUrl;
+      elements.fileViewerImageElement.alt = `Preview of ${viewer.name || fileDisplayName(viewer.path)}`;
+    } else {
+      elements.fileViewerImageElement.removeAttribute("src");
+      elements.fileViewerImageElement.alt = "";
+    }
   }
   if (elements.fileViewerChanges) {
     elements.fileViewerChanges.hidden = mode !== "changes";
@@ -13504,6 +13540,10 @@ function updateFileViewerUi() {
     const viewerPath = normalizeFileTreePath(viewer.path || "");
     elements.fileViewerOpenDefaultButton.dataset.path = viewerPath;
     elements.fileViewerOpenDefaultButton.disabled = viewer.readOnly === true || !viewerPath;
+  }
+  if (isImage) {
+    clearFileViewerSelection();
+    closeFileViewerSearch({ restoreFocus: false });
   }
   renderFileViewerSelectionBar();
   if (elements.fileViewerSearchBar && !elements.fileViewerSearchBar.hidden) {
@@ -13520,6 +13560,7 @@ function fileViewerSearchQueryText() {
 
 function fileViewerSearchSurface() {
   const mode = resolveFileViewerMode(activeFileViewer);
+  if (mode === "image") return null;
   if (mode === "preview") return elements.fileViewerPreview;
   if (mode === "changes") return elements.fileViewerChanges;
   return elements.fileViewerEditor;
@@ -13683,7 +13724,7 @@ function stepFileViewerSearch(step) {
 }
 
 function openFileViewerSearch() {
-  if (!activeFileViewer || !elements.fileViewerSearchBar) return;
+  if (!activeFileViewer || activeFileViewer.kind === "image" || !elements.fileViewerSearchBar) return;
   closeChatSearch();
   const editor = fileViewerSearchSurface() === elements.fileViewerEditor ? elements.fileViewerEditor : null;
   const selectedText = editor && editor.selectionEnd > editor.selectionStart
@@ -13711,7 +13752,8 @@ function closeFileViewerSearch({ restoreFocus = true } = {}) {
   updateFileViewerSearchCount();
   if (!restoreFocus) return;
   const mode = resolveFileViewerMode(activeFileViewer);
-  if (mode === "preview") elements.fileViewerPreview?.focus({ preventScroll: true });
+  if (mode === "image") elements.fileViewerImage?.focus({ preventScroll: true });
+  else if (mode === "preview") elements.fileViewerPreview?.focus({ preventScroll: true });
   else if (mode === "changes") elements.fileViewerChanges?.focus({ preventScroll: true });
   else elements.fileViewerEditor?.focus({ preventScroll: true });
 }
@@ -13964,6 +14006,11 @@ function resetFileViewerUi() {
     elements.fileViewerEditor.readOnly = false;
   }
   if (elements.fileViewerPreview) elements.fileViewerPreview.replaceChildren();
+  if (elements.fileViewerImage) elements.fileViewerImage.hidden = true;
+  if (elements.fileViewerImageElement) {
+    elements.fileViewerImageElement.removeAttribute("src");
+    elements.fileViewerImageElement.alt = "";
+  }
   if (elements.fileViewerChanges) {
     elements.fileViewerChanges.hidden = true;
     elements.fileViewerChanges.replaceChildren();
@@ -14054,25 +14101,31 @@ async function openFileInViewer(path = "", { gitCategory = "", gitPath = "" } = 
     if (!isCurrentTabContext(tabContext) || openRequestSerial !== fileViewerOpenRequestSerial) return;
     const data = response.data || {};
     const gitChanges = changesRequest ? gitFileChangesPlaceholder(category, changesPath, changesRequestSerial) : null;
+    const kind = data.kind === "image" ? "image" : "text";
+    const imageUrl = kind === "image" ? fileViewerImageDataUrl(data) : "";
+    if (kind === "image" && !imageUrl) throw new Error("Image preview data is invalid or unsupported");
     activeFileViewer = {
       path: normalizeFileTreePath(data.path || normalized),
       name: data.name || fileDisplayName(normalized),
-      content: String(data.content || ""),
+      content: kind === "text" ? String(data.content || "") : "",
       size: Number(data.size) || 0,
       mtimeMs: Number(data.mtimeMs) || 0,
       extension: data.extension || "",
-      language: data.language || "text",
-      mode: gitChanges ? "changes" : data.language === "markdown" ? "preview" : "source",
+      language: kind === "text" ? data.language || "text" : "image",
+      kind,
+      mimeType: kind === "image" ? String(data.mimeType || "") : "",
+      imageUrl,
+      mode: gitChanges ? "changes" : kind === "image" ? "image" : data.language === "markdown" ? "preview" : "source",
       dirty: false,
-      readOnly: false,
-      sourceAvailable: true,
+      readOnly: kind === "image",
+      sourceAvailable: kind === "text",
       gitChanges,
     };
     if (elements.fileViewerEditor) elements.fileViewerEditor.value = activeFileViewer.content;
     clearFileViewerSelection();
     cacheActiveFileViewerForTab();
     updateFileViewerUi();
-    setFileViewerStatus("Opened in WebUI.", "success");
+    setFileViewerStatus(kind === "image" ? "Image opened in WebUI (read-only)." : "Opened in WebUI.", "success");
     if (changesRequest) void applyGitFileChangesSnapshot(changesRequest, tabContext, activeFileViewer.path, changesRequestSerial);
   } catch (error) {
     const message = error.message || String(error);
@@ -33260,6 +33313,22 @@ function appendMarkdownMermaidBlock(parent, code) {
   queueMicrotask(() => renderMermaidDiagram(diagram, status, source));
 }
 
+// Fenced code is rendered from the pure tokenizer as text nodes and span
+// textContent only. Source never reaches innerHTML, concatenated token text
+// reproduces the source exactly, and unknown/oversized blocks fall back to one
+// plain token so copy, selection, and transcript search stay unchanged.
+function appendMarkdownCodeTokens(codeNode, source, language) {
+  const tokens = tokenizeCode(source, normalizedMarkdownLanguage(language));
+  if (!tokens.length) {
+    codeNode.textContent = source;
+    return;
+  }
+  for (const { type, text } of tokens) {
+    if (type === "plain") codeNode.append(document.createTextNode(text));
+    else codeNode.append(make("span", `syntax-token syntax-${type}`, text));
+  }
+}
+
 function appendMarkdownCodeBlock(parent, code, language = "", { closed = true } = {}) {
   if (closed && isMermaidLanguage(language)) {
     appendMarkdownMermaidBlock(parent, code);
@@ -33269,7 +33338,7 @@ function appendMarkdownCodeBlock(parent, code, language = "", { closed = true } 
   if (language) wrapper.append(make("div", "markdown-code-language", language));
   const pre = make("pre", "code-block markdown-code");
   const codeNode = make("code", language ? `language-${language.replace(/[^a-z0-9_-]/gi, "")}` : "");
-  codeNode.textContent = String(code || "").replace(/\n+$/g, "");
+  appendMarkdownCodeTokens(codeNode, String(code || "").replace(/\n+$/g, ""), language);
   pre.append(codeNode);
   wrapper.append(pre);
   attachMarkdownCodeCopyButton(wrapper);
@@ -41961,8 +42030,11 @@ function streamingThinkingTextFallback(event) {
   return assistantThinkingTextFromMessage(assistantStreamingMessage(event), { streaming: true });
 }
 
-function setStreamThinkingRawText(text) {
-  const thinking = visibleThinkingText(text);
+function setStreamThinkingRawText(text, { reconcile = false } = {}) {
+  const snapshot = visibleThinkingText(text);
+  const thinking = reconcile
+    ? reconcileTranscriptThinkingSnapshot(streamThinkingRawText, snapshot)
+    : snapshot;
   if (thinking === streamThinkingRawText) return false;
   streamThinkingRawText = thinking;
   return true;
@@ -41987,10 +42059,10 @@ function syncStreamingThinkingFromUpdate(event, update, { placeholder = "" } = {
     return streamThinkingRawText ? setStreamingThinkingText(streamThinkingRawText || placeholder) : false;
   }
   if (update.type === "thinking_end") {
-    if (delta) setStreamThinkingRawText(delta);
+    if (delta) setStreamThinkingRawText(delta, { reconcile: true });
     else {
       const fallback = streamingThinkingTextFallback(event);
-      if (fallback !== null) setStreamThinkingRawText(fallback);
+      if (fallback !== null) setStreamThinkingRawText(fallback, { reconcile: true });
     }
     return setStreamingThinkingText(streamThinkingRawText || placeholder);
   }

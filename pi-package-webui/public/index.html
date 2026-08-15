@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=115" />
+    <link rel="stylesheet" href="/styles.css?v=117" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -672,7 +672,7 @@
             <button id="fileViewerCloseButton" type="button" aria-label="Close file viewer">Close</button>
           </div>
         </header>
-        <p id="fileViewerHelp" class="file-viewer-help muted">Files opened from Git start in Changes mode. Markdown files can also be viewed as Preview or Source. Select text in Source or Preview, add a one-line comment, then Send to include the selection and surrounding context in this Pi session.</p>
+        <p id="fileViewerHelp" class="file-viewer-help muted">Files opened from Git start in Changes mode. Markdown files can also be viewed as Preview or Source, while supported images open as read-only previews. Select text in Source or Markdown Preview, add a one-line comment, then Send to include the selection and surrounding context in this Pi session.</p>
         <div id="fileSelectionBar" class="file-selection-bar" hidden>
           <span id="fileSelectionSummary" class="file-selection-summary">No selection</span>
           <input id="fileSelectionCommentInput" class="file-selection-comment" type="text" placeholder="Comment for Pi about this selection…" autocomplete="off" />
@@ -696,6 +696,9 @@
           <pre id="fileViewerSearchOverlay" class="file-viewer-search-overlay" aria-hidden="true" hidden></pre>
           <textarea id="fileViewerEditor" class="file-viewer-editor" wrap="soft" spellcheck="false" aria-label="File contents"></textarea>
           <div id="fileViewerPreview" class="file-viewer-preview markdown-body" tabindex="0" hidden></div>
+          <div id="fileViewerImage" class="file-viewer-image" tabindex="0" role="group" aria-label="Image preview" hidden>
+            <img id="fileViewerImageElement" alt="" />
+          </div>
           <div id="fileViewerChanges" class="file-viewer-changes" tabindex="0" aria-label="Git changes for this file" hidden></div>
         </div>
         <p id="fileViewerStatus" class="file-viewer-status muted" role="status" aria-live="polite"></p>
@@ -1794,7 +1797,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=133">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=136">
       (() => {
         "use strict";
 

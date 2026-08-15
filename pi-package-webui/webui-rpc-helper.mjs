@@ -1212,7 +1212,6 @@ export default function webuiRpcHelper(pi) {
     const launcher = gateRunIds.has(run.id) ? "gate" : workflow ? "workflow" : "pi-subagents";
     return (Array.isArray(run.agents) ? run.agents : []).map((agent) => {
       const status = canonicalAgentRunStatus(run.status, agent.status);
-      const openable = !recovered;
       return {
         version: 1,
         instanceId: canonicalAgentRunId(agent.id, `${canonicalRunId}-agent`),
@@ -1231,16 +1230,14 @@ export default function webuiRpcHelper(pi) {
         activityState: agent.activityState && CANONICAL_AGENT_RUN_ID_PATTERN.test(agent.activityState) ? agent.activityState : undefined,
         currentTool: agent.currentTool,
         capabilities: {
-          open: openable,
-          refresh: openable,
-          // Only the owning pi-subagents lifecycle keeps cancel authority in v1.
+          open: true,
+          refresh: true,
+          // Aggregate fleet recovery grants a read-only metadata view, never lifecycle control.
           cancel: status === "running" && !workflow && !recovered && run.controllable !== false,
           steer: false,
         },
-        outputRef: openable
-          ? { kind: "helper", id: helperAgentRunOutputId(run.id, agent.id) }
-          : { kind: "none" },
-        _selection: openable ? { runId: run.id, agentId: agent.id } : null,
+        outputRef: { kind: "helper", id: helperAgentRunOutputId(run.id, agent.id) },
+        _selection: { runId: run.id, agentId: agent.id },
       };
     });
   }
@@ -1390,10 +1387,18 @@ export default function webuiRpcHelper(pi) {
   }
 
   function findTrackedSubagent(runId, agentId) {
-    const { run } = findTrackedSubagentRun(runId);
-    const agent = (Array.isArray(run.agents) ? run.agents : []).find((candidate) => candidate?.id === agentId);
-    if (!agent) throw new Error(`Subagent not found: ${agentId}`);
-    return { run, agent };
+    const entry = ordinarySubagentRunEntries().find((candidate) => candidate.run?.id === runId);
+    if (entry) {
+      const agent = (Array.isArray(entry.run.agents) ? entry.run.agents : []).find((candidate) => candidate?.id === agentId);
+      if (!agent) throw new Error(`Subagent not found: ${agentId}`);
+      return { run: entry.run, agent };
+    }
+    const recovered = [...recoveredSubagentRuns.values()].find((candidate) => candidate?.id === runId);
+    if (recovered?.agent?.id !== agentId) throw new Error(`Subagent run not found: ${runId}`);
+    return {
+      run: { id: recovered.id, source: "recovered", mode: "single", status: "running", startedAt: recovered.startedAt, provisional: true, controllable: false },
+      agent: { ...recovered.agent, status: "running", index: 0, nested: false },
+    };
   }
 
   function findWorkflowSubagent(runId, agentId) {
@@ -1493,7 +1498,7 @@ export default function webuiRpcHelper(pi) {
     return {
       version: 1,
       runId: run.id,
-      source: run.source === "foreground" ? "foreground" : "async",
+      source: ["foreground", "recovered"].includes(run.source) ? run.source : "async",
       mode: subagentMode(run.mode),
       startedAt: Number.isFinite(run.startedAt) ? run.startedAt : Date.now(),
       updatedAt: Number.isFinite(patch.updatedAt) ? patch.updatedAt : Date.now(),
@@ -1516,6 +1521,8 @@ export default function webuiRpcHelper(pi) {
         recentTools: subagentRecentTools(patch.recentTools || agent.recentTools),
         recentOutput: subagentOutputLines(patch.recentOutput || agent.recentOutput),
         transcript: Array.isArray(patch.transcript) ? patch.transcript : [],
+        unavailable: patch.unavailable === true || undefined,
+        unavailableReason: patch.unavailable === true ? subagentText(patch.unavailableReason, 1000) || "Live output is unavailable for this recovered agent." : undefined,
         error: subagentText(patch.error, 1000) || undefined,
       },
     };
@@ -1542,6 +1549,12 @@ export default function webuiRpcHelper(pi) {
     const agentId = subagentText(payload.agentId, 240);
     if (!runId || !agentId) throw new Error("Subagent output requires runId and agentId");
     const { run, agent } = findTrackedSubagent(runId, agentId);
+    if (run.source === "recovered") {
+      return subagentOutputSnapshotFromAgent(run, agent, {
+        unavailable: true,
+        unavailableReason: "This active pi-subagents child was recovered from aggregate fleet metadata; detailed live output is unavailable until its run locator is observed.",
+      });
+    }
     if (run.source === "foreground") return subagentOutputSnapshotFromAgent(run, agent, { updatedAt: run.endedAt });
     if (run.status !== "running") {
       if (!agent.sessionFile && agent.asyncDir) {

@@ -28,7 +28,7 @@ function functionBody(source, name) {
   assert.fail(`${name} should close`);
 }
 
-assert.match(app, /import \{ classifyTranscriptStreamEvent, createStreamOutputController \} from "\.\/stream-output-controller\.mjs";/);
+assert.match(app, /import \{[^}]*classifyTranscriptStreamEvent[^}]*createStreamOutputController[^}]*\} from "\.\/stream-output-controller\.mjs";/);
 assert.match(app, /let foregroundTranscriptCatchUpRequired = document\.visibilityState === "hidden";/);
 
 const beginCatchUp = functionBody(app, "beginForegroundTranscriptCatchUp");

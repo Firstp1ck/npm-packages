@@ -5,6 +5,7 @@ import {
   TRANSCRIPT_STREAM_MESSAGE_UPDATE_TYPES,
   classifyTranscriptStreamEvent,
   createStreamOutputController,
+  reconcileTranscriptThinkingSnapshot,
 } from "../public/stream-output-controller.mjs";
 
 function messageUpdate(type, delta = "", extra = {}) {
@@ -53,6 +54,13 @@ assert.deepEqual(classifyTranscriptStreamEvent(messageUpdate("future_delta")), {
 assert.equal(classifyTranscriptStreamEvent({ type: "agent_start" }), null);
 assert.equal(DEFAULT_STREAM_PENDING_ENTRY_LIMIT, 128);
 assert.equal(DEFAULT_STREAM_PENDING_BYTE_LIMIT, 256 * 1024);
+assert.equal(
+  reconcileTranscriptThinkingSnapshot("first\n\nsecond\n\nthird\n\nfourth", "first\n\nsecond\n\nthird"),
+  "first\n\nsecond\n\nthird\n\nfourth",
+  "a regressive final thinking snapshot must not remove an already-rendered tail",
+);
+assert.equal(reconcileTranscriptThinkingSnapshot("short", "shorter complete"), "shorter complete", "a longer compatible final snapshot should win");
+assert.equal(reconcileTranscriptThinkingSnapshot("draft reasoning", "provider correction"), "provider correction", "divergent provider corrections must remain authoritative");
 
 // Adjacent compatible deltas coalesce, while kind changes retain exact order.
 {

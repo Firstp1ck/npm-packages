@@ -1,4 +1,4 @@
-const CACHE_NAME = "pi-webui-pwa-v95";
+const CACHE_NAME = "pi-webui-pwa-v98";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -16,6 +16,7 @@ const APP_SHELL = [
   "/theme-contract.mjs",
   "/sampling-parameter-controls.mjs",
   "/transcript-renderer.mjs",
+  "/syntax-highlight.mjs",
   "/subagent-launch-slot-state.mjs",
   "/subagent-gate-visibility.mjs",
   "/workflow-status-stack.mjs",

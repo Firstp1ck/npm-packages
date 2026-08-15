@@ -18,7 +18,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 | Area | Highlights |
 | --- | --- |
 | **Sessions and workspaces** | Run several isolated Pi sessions, resume prior work, switch projects, preserve per-tab drafts, and create branch worktrees. |
-| **Live agent work** | Follow streaming Markdown, thinking, tool output, queues, todo progress, and managed or registered Pi agent runs without leaving the browser. |
+| **Live agent work** | Follow streaming Markdown with syntax highlighting for code blocks, thinking, tool output, queues, todo progress, and managed or registered Pi agent runs without leaving the browser. |
 | **Models and controls** | Change models and thinking effort, manage scoped models, configure tools and skills, and use the command palette. |
 | **Files and prompts** | Upload or paste files and images, edit text attachments, use slash-command suggestions, browse project files, and reference project paths with `@`. |
 | **Git workflows** | Inspect changes, switch branches, review diffs, stage work, generate commit messages, push, and prepare pull requests through guided steps. |
@@ -64,7 +64,7 @@ Check the server at any time with:
 5. Open the Control Deck for sessions, Git, app runners, themes, updates, and optional features. Under **Controls → Interface**, choose **Top bar** or **Sidebar** for terminal tabs, then choose **Right**, **Left**, or **Both** for the Control Deck. In **Sidebar**, **Both** is unavailable; choosing **Right** or **Left** swaps the Control Deck and terminal/tabs rails across the chat.
 6. On desktop, drag the workspace-facing edge of any visible Control Deck—or the terminal/tabs rail in **Sidebar**—to choose a comfortable width. In **Both**, resize the left and right Control Decks independently; widths return on your next visit.
 
-Open **Subagents** to follow agent runs launched by managed extensions or registered SDK, RPC, JSON, print, interactive, tmux, workflow, schedule, gate, and custom integrations. Runs linked to an open WebUI terminal stay in that terminal’s group; other registered runs appear under **External agents**. Each row shows its launch source and lifecycle, and only offers output or controls that its owner supports.
+Open **Subagents** to follow agent runs launched by managed extensions or registered SDK, RPC, JSON, print, interactive, tmux, workflow, schedule, gate, and custom integrations. Runs linked to an open WebUI terminal stay in that terminal’s group; other registered runs appear under **External agents**. Each row shows its launch source and lifecycle, and only offers output or controls that its owner supports. Starting or restarting the server reconnects active runs without reopening stale, lost, or already-finished rows from an earlier server run.
 
 Independent Pi processes do not appear automatically. Start them through `pi-webui agent run`, attach a persisted session with `pi-webui agent attach`, or use a cooperating registration adapter. See [TECHNICAL.md](TECHNICAL.md#subagent-observability) for supported commands and limitations.
 
@@ -111,7 +111,7 @@ Browse, search, save, or create project directories and open them in the active 
 
 **Optional feature needed:** None — the Files panel is included in Pi Web UI core.
 
-Browse and search the files of the active project, open them in the viewer, and use the row menu for file actions. In a Git repository, files and folders that Git ignores stay listed and fully usable, but appear greyed out so generated output such as `node_modules` or build folders is easy to tell apart. Point at a greyed row to see the “Ignored by Git” hint in its tooltip.
+Browse and search the files of the active project, open them in the viewer, and use the row menu for file actions. The viewer edits text, previews Markdown, and displays PNG, JPEG, GIF, WebP, and AVIF images read-only. In a Git repository, files and folders that Git ignores stay listed and fully usable, but appear greyed out so generated output such as `node_modules` or build folders is easy to tell apart. Point at a greyed row to see the “Ignored by Git” hint in its tooltip.
 
 #### Queue manager
 

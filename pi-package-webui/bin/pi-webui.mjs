@@ -241,6 +241,14 @@ const RECOVERY_TITLE = "Anthropic compatibility recovery";
 const SKILL_FILE_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const FILE_VIEWER_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_VIEWER_BODY_LIMIT_BYTES = FILE_VIEWER_MAX_BYTES + 64 * 1024;
+const FILE_VIEWER_IMAGE_MIME_TYPES_BY_EXTENSION = Object.freeze({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+});
 const FILE_TREE_MAX_ENTRIES = 1200;
 const FILE_TREE_ENTRY_STAT_CONCURRENCY = 32;
 const FILE_SEARCH_MAX_RESULTS = 200;
@@ -9206,6 +9214,17 @@ function dismissAgentRunProjection(instance, now = Date.now()) {
   dismissedAgentRunProjectionKeys.set(key, now);
   pruneDismissedAgentRunProjections(now);
 }
+
+const startupSuppressedAgentRunProjectionKeys = new Set();
+try {
+  const startupRegistrySnapshot = await agentRunRegistry.readRecords();
+  for (const record of startupRegistrySnapshot.records) {
+    if (!agentRunIsActive(record.instance)) startupSuppressedAgentRunProjectionKeys.add(agentRunProjectionKey(record.instance));
+  }
+} catch {
+  // Registry startup is best-effort; normal reconciliation reports later availability errors.
+}
+
 const recoveryEndpointToken = String(process.env.PI_WEBUI_RECOVERY_TOKEN || "").trim() || `${randomUUID()}${randomUUID()}`;
 const recoveryEndpointTokens = new Set([recoveryEndpointToken]);
 
@@ -10020,6 +10039,10 @@ function normalizeWebuiSubagentFleet(value) {
   return { version: 1, totalActive, omitted };
 }
 
+function agentRunIsActive(value) {
+  return ["queued", "running"].includes(value?.status);
+}
+
 function normalizeWebuiSubagentPayload(value) {
   if (!value || typeof value !== "object" || value.version !== 1) return null;
   const runs = [];
@@ -10150,21 +10173,46 @@ function normalizeWebuiAgentRunPayload(value) {
   };
 }
 
+function filterStartupInactiveRows(tab, payload, { rowsKey, stateKey }) {
+  if (!payload) return payload;
+  const rows = Array.isArray(payload[rowsKey]) ? payload[rowsKey] : [];
+  const seenKey = `${stateKey}Seen`;
+  const suppressedKey = `${stateKey}Suppressed`;
+  const suppressed = tab[suppressedKey] instanceof Set ? tab[suppressedKey] : new Set();
+  if (tab[seenKey] !== true) {
+    for (const row of rows) if (!agentRunIsActive(row)) suppressed.add(row.instanceId || row.id);
+    tab[seenKey] = true;
+    tab[suppressedKey] = suppressed;
+  }
+  const visibleRows = rows.filter((row) => {
+    const id = row.instanceId || row.id;
+    if (!suppressed.has(id)) return true;
+    if (!agentRunIsActive(row)) return false;
+    suppressed.delete(id);
+    return true;
+  });
+  return { ...payload, [rowsKey]: visibleRows };
+}
+
 function rememberWebuiSubagentsStatusEvent(tab, event) {
   if (event?.type !== "extension_ui_request" || event.method !== "setStatus") return false;
   const statusText = String(event.statusText || "");
   if (event.statusKey === WEBUI_SUBAGENTS_V2_STATUS_KEY) {
     if (!statusText) { tab.webuiAgentRuns = null; return true; }
     if (!statusText.startsWith(WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX)) return true;
-    try { tab.webuiAgentRuns = normalizeWebuiAgentRunPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX.length))); }
-    catch { tab.webuiAgentRuns = null; }
+    try {
+      const payload = normalizeWebuiAgentRunPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_V2_PAYLOAD_PREFIX.length)));
+      tab.webuiAgentRuns = filterStartupInactiveRows(tab, payload, { rowsKey: "instances", stateKey: "webuiAgentRunStartup" });
+    } catch { tab.webuiAgentRuns = null; }
     return true;
   }
   if (event.statusKey !== WEBUI_SUBAGENTS_STATUS_KEY) return false;
   if (!statusText) { tab.webuiSubagents = null; return true; }
   if (!statusText.startsWith(WEBUI_SUBAGENTS_PAYLOAD_PREFIX)) return true;
-  try { tab.webuiSubagents = normalizeWebuiSubagentPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_PAYLOAD_PREFIX.length))); }
-  catch { tab.webuiSubagents = null; }
+  try {
+    const payload = normalizeWebuiSubagentPayload(JSON.parse(statusText.slice(WEBUI_SUBAGENTS_PAYLOAD_PREFIX.length)));
+    tab.webuiSubagents = filterStartupInactiveRows(tab, payload, { rowsKey: "runs", stateKey: "webuiSubagentStartup" });
+  } catch { tab.webuiSubagents = null; }
   return true;
 }
 
@@ -11286,12 +11334,18 @@ async function webuiSubagentsData({ includeSelections = false } = {}) {
     }
     registrySnapshot = await agentRunRegistry.readRecords({ now: reconcileNow });
   } catch { diagnostics.push({ code: "registry-unavailable" }); }
+  const visibleRegistryRecords = [];
   for (const record of registrySnapshot.records) {
     const key = agentRunProjectionKey(record.instance);
+    if (startupSuppressedAgentRunProjectionKeys.has(key)) {
+      if (!agentRunIsActive(record.instance)) continue;
+      startupSuppressedAgentRunProjectionKeys.delete(key);
+    }
     if (dismissedAgentRunProjectionKeys.has(key)) {
       if (agentRunProjectionCanBeDismissed(record.instance)) continue;
       dismissedAgentRunProjectionKeys.delete(key);
     }
+    visibleRegistryRecords.push(record);
     index.upsert(record.instance, { producerId: record.producerId });
     if (!selections.has(key) || record.instance.outputRef.kind === "session-jsonl") selections.set(key, { kind: "registry", instance: record.instance, record });
   }
@@ -11328,7 +11382,7 @@ async function webuiSubagentsData({ includeSelections = false } = {}) {
   };
   const fleet = tabSummaries.reduce((summary, tab) => ({ version: 1, totalActive: Math.min(Number.MAX_SAFE_INTEGER, summary.totalActive + Number(tab.fleet?.totalActive || 0)), omitted: Math.min(Number.MAX_SAFE_INTEGER, summary.omitted + Number(tab.fleet?.omitted || 0)) }), { version: 1, totalActive: 0, omitted: 0 });
   const overview = {
-    version: 2, updatedAt: Date.now(), available: tabSummaries.some((tab) => tab.available) || registrySnapshot.records.length > 0,
+    version: 2, updatedAt: Date.now(), available: tabSummaries.some((tab) => tab.available) || visibleRegistryRecords.length > 0,
     groups, counts, diagnostics: diagnostics.slice(-WEBUI_AGENT_RUN_DIAGNOSTIC_LIMIT), fleet,
     totalRuns: counts.totalRuns, totalAgents: counts.totalAgents,
     runningRuns: groups.reduce((count, group) => count + group.runs.filter((run) => run.status === "running").length, 0),
@@ -11474,6 +11528,8 @@ function normalizeWebuiSubagentOutput(value, selection) {
       recentTools,
       recentOutput,
       transcript,
+      unavailable: rawAgent.unavailable === true || undefined,
+      unavailableReason: rawAgent.unavailable === true ? normalizeWebuiSubagentText(rawAgent.unavailableReason, 1000) || "Live output is unavailable for this agent." : undefined,
       error: normalizeWebuiSubagentText(rawAgent.error, 1000) || undefined,
     },
   };
@@ -13624,6 +13680,10 @@ function fileViewerLanguage(filePath) {
   return "text";
 }
 
+function fileViewerImageMimeType(filePath) {
+  return FILE_VIEWER_IMAGE_MIME_TYPES_BY_EXTENSION[path.extname(String(filePath || "")).toLowerCase()] || "";
+}
+
 function fileTreeEntryType(dirent, info) {
   if (info?.isDirectory?.() || dirent?.isDirectory?.()) return "directory";
   if (info?.isFile?.() || dirent?.isFile?.()) return "file";
@@ -13792,7 +13852,7 @@ async function getFileSearchData(tab, rawQuery = "") {
 }
 
 function assertTextFileBuffer(buffer) {
-  if (isLikelyBinaryBuffer(buffer)) throw makeHttpError(415, "File appears to be binary; only text files can be opened in WebUI");
+  if (isLikelyBinaryBuffer(buffer)) throw makeHttpError(415, "File appears to be binary; only text files and supported raster images can be opened in WebUI");
 }
 
 async function getFileContentData(tab, requestedPath = "") {
@@ -13800,17 +13860,21 @@ async function getFileContentData(tab, requestedPath = "") {
   if (!resolved.info?.isFile()) throw makeHttpError(400, "Path is not a regular file");
   if (resolved.info.size > FILE_VIEWER_MAX_BYTES) throw makeHttpError(413, `File is too large to open in WebUI (limit ${formatBytes(FILE_VIEWER_MAX_BYTES)})`);
   const buffer = await readFile(resolved.targetPath);
-  assertTextFileBuffer(buffer);
-  return {
+  const extension = path.extname(resolved.targetPath).toLowerCase();
+  const imageMimeType = fileViewerImageMimeType(resolved.targetPath);
+  const shared = {
     root: resolved.root,
     path: resolved.relative,
     name: path.basename(resolved.targetPath),
-    content: buffer.toString("utf8"),
     size: resolved.info.size,
     mtimeMs: resolved.info.mtimeMs,
-    extension: path.extname(resolved.targetPath).toLowerCase(),
-    language: fileViewerLanguage(resolved.targetPath),
+    extension,
   };
+  if (imageMimeType) {
+    return { ...shared, kind: "image", mimeType: imageMimeType, data: buffer.toString("base64") };
+  }
+  assertTextFileBuffer(buffer);
+  return { ...shared, kind: "text", content: buffer.toString("utf8"), language: fileViewerLanguage(resolved.targetPath) };
 }
 
 function aurReviewReportPathSegments(value = "") {

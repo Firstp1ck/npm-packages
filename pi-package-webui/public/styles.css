@@ -1029,6 +1029,7 @@ body.terminal-tabs-resizing * {
 }
 .file-viewer-editor,
 .file-viewer-preview,
+.file-viewer-image,
 .file-viewer-changes {
   grid-area: 1 / 1;
   width: 100%;
@@ -1087,6 +1088,19 @@ body.terminal-tabs-resizing * {
 .file-viewer-preview {
   padding: 0.85rem;
   line-height: 1.55;
+}
+.file-viewer-image {
+  display: grid;
+  place-items: center;
+  padding: 0.85rem;
+}
+.file-viewer-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 0.5rem;
+  box-shadow: 0 0.75rem 2rem rgba(var(--ctp-crust-rgb), 0.42);
 }
 /* Git changes reuse the shared split diff renderer inside the narrower viewer pane. */
 .file-viewer-changes {
@@ -8752,6 +8766,27 @@ button.git-workflow-step:hover:not(:disabled) {
   display: block;
   min-width: max-content;
 }
+/* Fenced-code syntax tokens. Colors come from the Pi theme syntax tokens applied
+   as CSS variables, with Catppuccin fallbacks before a theme is applied. */
+.markdown-code .syntax-token {
+  color: inherit;
+  background: none;
+}
+.markdown-code .syntax-comment {
+  color: var(--syntax-comment, var(--ctp-subtext));
+  font-style: italic;
+}
+.markdown-code .syntax-keyword {
+  color: var(--syntax-keyword, var(--ctp-mauve));
+  font-weight: 760;
+}
+.markdown-code .syntax-function { color: var(--syntax-function, var(--ctp-blue)); }
+.markdown-code .syntax-variable { color: var(--syntax-variable, var(--ctp-text)); }
+.markdown-code .syntax-string { color: var(--syntax-string, var(--ctp-green)); }
+.markdown-code .syntax-number { color: var(--syntax-number, var(--ctp-peach)); }
+.markdown-code .syntax-type { color: var(--syntax-type, var(--ctp-yellow)); }
+.markdown-code .syntax-operator { color: var(--syntax-operator, var(--ctp-teal)); }
+.markdown-code .syntax-punctuation { color: var(--syntax-punctuation, var(--ctp-subtext)); }
 .markdown-mermaid-block {
   overflow-x: auto;
   padding: 0.72rem;

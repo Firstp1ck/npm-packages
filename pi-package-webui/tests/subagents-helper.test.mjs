@@ -261,6 +261,13 @@ assert.deepEqual(recoveredFleetRun && {
   controllable: false,
   agents: [["Recovery scout", "openai-codex/gpt-5.6-terra:xhigh", "xhigh"]],
 }, "unmatched authoritative fleet children should publish a bounded non-controllable provisional row");
+const recoveredCanonical = latestCanonicalPayload().instances.find((instance) => instance.runId === "fleet:fleet-recovered");
+assert.deepEqual(recoveredCanonical && {
+  open: recoveredCanonical.capabilities.open,
+  refresh: recoveredCanonical.capabilities.refresh,
+  cancel: recoveredCanonical.capabilities.cancel,
+  outputKind: recoveredCanonical.outputRef.kind,
+}, { open: true, refresh: true, cancel: false, outputKind: "helper" }, "recovered pi-subagents rows should expose a read-only helper-owned output view without lifecycle controls");
 assert.deepEqual(payload.fleet, { version: 1, totalActive: 5, omitted: 0 }, "fleet recovery should publish only bounded aggregate recovery metadata");
 
 subagentRpcReplyHook = (request) => {
@@ -382,6 +389,16 @@ assert.ok(payload.runs.some((run) => run.id === workflowRunId), "pi-subagents po
 
 const helperCommand = registeredCommands.get("webui-helper");
 assert.ok(helperCommand?.handler, "Web UI helper command should be registered");
+await helperCommand.handler(JSON.stringify({
+  requestId: "recovered-subagent-output-test",
+  action: "subagent-output",
+  payload: { outputId: recoveredCanonical.outputRef.id },
+}), ctx);
+const recoveredOutputResponse = helperResponse("recovered-subagent-output-test");
+assert.equal(recoveredOutputResponse.ok, true, "a recovered fleet row should open through its opaque helper handle");
+assert.equal(recoveredOutputResponse.data.source, "recovered");
+assert.equal(recoveredOutputResponse.data.agent.unavailable, true);
+assert.match(recoveredOutputResponse.data.agent.unavailableReason, /recovered from aggregate fleet metadata/, "the read-only recovered view should explain why detailed output is not yet available");
 const requestsBeforeWorkflowOutput = subagentStatusRequestCount;
 await helperCommand.handler(JSON.stringify({
   requestId: "workflow-subagent-output-test",

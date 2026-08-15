@@ -115,7 +115,7 @@ assert.match(setModeSource, /if \(activeFileViewer\.mode === "changes" && previo
 assert.match(viewerUiSource, /const hasChanges = !!viewer\.gitChanges;/, "the viewer UI should derive Changes availability from the open-time snapshot");
 assert.match(viewerUiSource, /elements\.fileViewerChangesModeButton\.hidden = !hasChanges;\s*elements\.fileViewerChangesModeButton\.disabled = !hasChanges;/, "the Changes control should stay hidden and disabled for non-Git opens");
 assert.match(viewerUiSource, /elements\.fileViewerSourceModeButton\.disabled = !sourceAvailable;/, "Source should be disabled when the live file content is unavailable");
-assert.match(viewerUiSource, /elements\.fileViewerPreviewModeButton\.hidden = !isMarkdown;\s*elements\.fileViewerPreviewModeButton\.disabled = !isMarkdown \|\| !sourceAvailable;/, "Markdown Preview should stay hidden for non-Markdown and disabled when live source is unavailable");
+assert.match(viewerUiSource, /elements\.fileViewerPreviewModeButton\.hidden = !isMarkdown && !isImage;\s*elements\.fileViewerPreviewModeButton\.disabled = \(!isMarkdown \|\| !sourceAvailable\) && !isImage;/, "Preview should be available for Markdown and supported images while remaining unavailable for other files");
 assert.match(viewerUiSource, /elements\.fileViewerEditor\.hidden = mode !== "source";/, "Source editing should remain bound to Source mode");
 assert.match(
   viewerUiSource,
@@ -171,10 +171,10 @@ assert.match(openFileSource, /const changesRequestSerial = category \? \+\+fileV
 assert.match(openFileSource, /const changesRequest = category \? loadGitFileChangesSnapshot\(changesPath, category, tabContext\.tabId\) : null;/, "only category-carrying opens should request a diff");
 assert.match(openFileSource, /const gitChanges = changesRequest \? gitFileChangesPlaceholder\(category, changesPath, changesRequestSerial\) : null;/, "normal File-section opens should carry no Git snapshot at all");
 assert.match(openFileSource, /applyGitFileChangesSnapshot\(changesRequest, tabContext, activeFileViewer\.path, changesRequestSerial\)/, "same-path Git requests should apply only through their captured request identity");
-assert.match(openFileSource, /mode: gitChanges \? "changes" : data\.language === "markdown" \? "preview" : "source",/, "Git opens should default to Changes while normal opens keep the Markdown/Source default");
+assert.match(openFileSource, /mode: gitChanges \? "changes" : kind === "image" \? "image" : data\.language === "markdown" \? "preview" : "source",/, "Git opens should default to Changes while normal opens keep the Image/Markdown/Source default");
 assert.match(openFileSource, /if \(!isCurrentTabContext\(tabContext\) \|\| openRequestSerial !== fileViewerOpenRequestSerial\) return;/, "the source-success path should reject stale same-tab viewer opens");
 assert.match(openFileSource, /const gitChanges = changesRequest \? await changesRequest : null;\s*if \(!isCurrentTabContext\(tabContext\) \|\| openRequestSerial !== fileViewerOpenRequestSerial\) return;/, "the deleted-file fallback should reject stale same-tab viewer opens after awaiting the diff");
-assert.match(openFileSource, /readOnly: false,\s*sourceAvailable: true,/, "a live Git-originated file should stay editable");
+assert.match(openFileSource, /readOnly: kind === "image",\s*sourceAvailable: kind === "text",/, "a live Git-originated text file should stay editable while image previews remain read-only");
 assert.match(
   openFileSource,
   /const gitChanges = changesRequest \? await changesRequest : null;\s*if \(!isCurrentTabContext\(tabContext\) \|\| openRequestSerial !== fileViewerOpenRequestSerial\) return;\s*if \(gitChanges && !gitChanges\.error\) \{/,
@@ -228,7 +228,7 @@ assert.match(changesRenderSource, /return renderGitDiffFile\(gitUntrackedEntryTo
 assert.match(changesRenderSource, /if \(entry\.contentMissing\) return fileViewerChangesNotice\("Untracked file content is unavailable\.", "error"\);/, "an untracked response without content should not pretend the file is empty");
 assert.doesNotMatch(changesRenderSource, /runGitFileAction|gitChangesFileActionsFor|gitFileActionButtons/, "the read-only changes surface must not expose staging or discard actions");
 
-assert.match(css, /\.file-viewer-editor,\n\.file-viewer-preview,\n\.file-viewer-changes \{/, "the changes surface should share the file viewer content frame");
+assert.match(css, /\.file-viewer-editor,\n\.file-viewer-preview,\n\.file-viewer-image,\n\.file-viewer-changes \{/, "the text, image, and changes surfaces should share the file viewer content frame");
 assert.match(css, /\.file-viewer-changes \{\n\s*padding: 0\.72rem;\n\}/, "the changes surface should have its own padding inside the shared frame");
 assert.match(css, /\.file-viewer-changes \.git-diff-grid \{[\s\S]*grid-template-columns:[\s\S]*min-width: 30rem;[\s\S]*\}/, "the split diff grid should be narrowed for the file viewer pane");
 assert.match(css, /\.file-viewer-changes-notice \{[\s\S]*font-size: var\(--text-xs\);[\s\S]*\}\n\.file-viewer-changes-notice\.error \{ color: var\(--ctp-red\); \}/, "changes notices should be readable and mark errors distinctly");

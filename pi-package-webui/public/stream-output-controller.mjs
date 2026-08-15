@@ -18,6 +18,21 @@ export const DEFAULT_STREAM_PENDING_BYTE_LIMIT = 256 * 1024;
 
 export const TRANSCRIPT_STREAM_MESSAGE_UPDATE_TYPES = Object.freeze(Object.keys(MESSAGE_UPDATE_KINDS));
 
+/**
+ * Keep the longer value when a final snapshot is only a prefix of the text
+ * already streamed. Divergent snapshots still win so provider corrections or
+ * redactions remain authoritative.
+ */
+export function reconcileTranscriptThinkingSnapshot(accumulated, snapshot) {
+  const previous = typeof accumulated === "string" ? accumulated : "";
+  const next = typeof snapshot === "string" ? snapshot : "";
+  if (!previous) return next;
+  if (!next) return previous;
+  if (next.startsWith(previous)) return next;
+  if (previous.startsWith(next)) return previous;
+  return next;
+}
+
 export function classifyTranscriptStreamEvent(event) {
   if (event?.type === "tool_execution_update") {
     return Object.freeze({ kind: "tool-execution", subtype: "tool_execution_update", recognized: true, barrier: false });
