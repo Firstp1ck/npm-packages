@@ -274,6 +274,67 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
+test("collapsed tracked skill tags expand upward and keep hidden tags selectable", async ({ browser }) => {
+  const tabs = await serverApi("/api/tabs");
+  const tabId = tabs.data.tabs[0].id;
+  const names = [
+    "subagent-governance",
+    "feature-development-workflow",
+    "repository-explorer",
+    "accessibility-review",
+    "release-verification",
+    "browser-regression-testing",
+    "documentation-maintenance",
+    "interface-consistency-check",
+  ];
+  const entries = names.map((name, index) => ({
+    name,
+    firstSeenAt: 1_000 + index,
+    lastSeenAt: 2_000 + index,
+    kinds: ["read"],
+    sources: ["browser-test"],
+    path: `/skills/${name}/SKILL.md`,
+    paths: [`/skills/${name}/SKILL.md`],
+  }));
+  const context = await browser.newContext({ viewport: { width: 820, height: 720 } });
+  await context.addInitScript(({ activeTabId, storedEntries }) => {
+    localStorage.setItem("pi-webui-skill-usage-v1", JSON.stringify({
+      version: 1,
+      tabs: { [activeTabId]: storedEntries },
+    }));
+  }, { activeTabId: tabId, storedEntries: entries });
+  const page = await context.newPage();
+  await page.goto(baseURL);
+  await suppressUnrelatedUpdateNotification(page);
+
+  const overflow = page.locator("#sessionSkillTags > button.composer-skill-tag.overflow");
+  const menu = page.locator("#sessionSkillOverflowMenu");
+  await expect(overflow).toBeVisible();
+  const hiddenCount = Number((await overflow.textContent())?.replace("+", ""));
+  assert.ok(hiddenCount > 0, "the narrow fixture should collapse at least one tracked skill");
+
+  await overflow.click();
+  await expect(overflow).toHaveAttribute("aria-expanded", "true");
+  await expect(menu).toBeVisible();
+  await expect(menu.locator("button:not([hidden])")).toHaveCount(hiddenCount);
+  const [overflowBox, menuBox] = await Promise.all([overflow.boundingBox(), menu.boundingBox()]);
+  assert.ok(overflowBox && menuBox && menuBox.y + menuBox.height <= overflowBox.y + 1, "the popup should render above the +X disclosure");
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(overflow).toBeFocused();
+
+  await overflow.click();
+  await page.locator("#promptInput").click();
+  await expect(menu).toBeHidden();
+
+  await overflow.click();
+  await menu.locator("button:not([hidden])").first().click();
+  await expect(menu).toBeHidden();
+  await expect(overflow).toHaveAttribute("aria-expanded", "false");
+  await context.close();
+});
+
 test("server-owned layout survives stale reads, failed writes, localStorage clear, and process restart", async ({ browser }) => {
   test.setTimeout(90_000);
 

@@ -9421,12 +9421,16 @@ summary { cursor: pointer; color: var(--warning); }
   border-color: rgba(137, 180, 250, 0.38);
 }
 .composer-skill-tags {
+  position: relative;
   display: inline-flex;
   flex: 1 1 0;
   align-items: center;
   gap: 0.28rem;
   min-width: 0;
   overflow: hidden;
+}
+.composer-skill-tags.overflow-open {
+  overflow: visible;
 }
 .composer-skill-tags[hidden] {
   display: none !important;
@@ -9755,6 +9759,49 @@ button.composer-skill-tag:focus-visible {
   font-variant-numeric: tabular-nums;
   border-color: rgba(166, 173, 200, 0.30);
   background: linear-gradient(120deg, rgba(166, 173, 200, 0.22), rgba(166, 173, 200, 0.08)), var(--ctp-crust);
+  cursor: pointer;
+}
+.composer-skill-tag.overflow[aria-expanded="true"] {
+  color: var(--ctp-teal);
+  border-color: rgba(148, 226, 213, 0.68);
+  box-shadow: 0 0.35rem 0.9rem rgba(var(--ctp-crust-rgb), 0.48), 0 0 1rem rgba(148, 226, 213, 0.28);
+}
+.composer-skill-overflow-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.42rem);
+  z-index: 150;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 0.34rem;
+  box-sizing: border-box;
+  width: min(24rem, calc(100vw - 1.5rem));
+  max-height: min(42vh, 18rem);
+  padding: 0.46rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  border: 1px solid rgba(148, 226, 213, 0.32);
+  border-radius: 0.9rem;
+  background: var(--ctp-crust);
+  box-shadow: 0 0.9rem 2.2rem rgba(var(--ctp-crust-rgb), 0.72), 0 0 1rem rgba(148, 226, 213, 0.16), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.composer-skill-overflow-menu[hidden] {
+  display: none !important;
+}
+.composer-skill-overflow-menu .composer-skill-tag {
+  width: 100%;
+  max-width: none;
+  min-height: 2rem;
+}
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .composer-skill-overflow-menu {
+    width: min(24rem, calc(100vw - 1rem));
+    max-height: min(50vh, 20rem);
+  }
+  .composer-skill-overflow-menu .composer-skill-tag {
+    min-height: 44px;
+  }
 }
 .composer-busy-mode-menu {
   position: absolute;

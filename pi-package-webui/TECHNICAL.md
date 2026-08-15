@@ -182,6 +182,8 @@ The optional `@firstpick/pi-extension-codex-fast-mode` companion adds a **Normal
 
 The browser-native tool and skill selectors offer **Session only** and **Global default** scopes. Session choices apply to the current branch and take precedence when it is resumed. Global defaults are inherited by future sessions and do not rewrite branches that already have a session choice.
 
+Tracked skill files appear as selectable tags above the composer. The strip keeps as many tags visible as fit; **+X** opens a bounded list above the strip containing only the hidden tags. Select an item to open the same skill editor. The list closes after selection, outside interaction, `Escape`, tab/session rerendering, or when resizing makes every tag visible.
+
 When the browser page is hidden, the Web UI closes that page's live event stream so the browser cannot accumulate serialized output frames for later parsing and DOM rendering. Merely moving focus to another visible window does not pause streaming. On return, it first fetches authoritative tabs, state, and transcript snapshots, reconnects live events, and refreshes nonessential panels during browser idle time. Pending extension prompts are replayed by the server after reconnection, and completed output remains available from the authoritative transcript.
 
 ## Control Deck placement and persistence

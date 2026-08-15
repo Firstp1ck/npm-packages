@@ -6041,13 +6041,35 @@ function skillKindsLabel(entry) {
 
 let sessionSkillTagLayoutFrame = 0;
 let sessionSkillTagResizeObserver = null;
+let sessionSkillOverflowOpen = false;
+
+function setSessionSkillOverflowOpen(open, { focusMenu = false, restoreFocus = false } = {}) {
+  const container = elements.sessionSkillTags;
+  const overflow = container?.querySelector("button.composer-skill-tag.overflow");
+  const menu = container?.querySelector(".composer-skill-overflow-menu");
+  if (!container || !overflow || !menu) {
+    sessionSkillOverflowOpen = false;
+    return;
+  }
+
+  const availableItems = [...menu.querySelectorAll("button:not([hidden])")];
+  const expanded = Boolean(open && !overflow.hidden && availableItems.length);
+  sessionSkillOverflowOpen = expanded;
+  container.classList.toggle("overflow-open", expanded);
+  overflow.setAttribute("aria-expanded", expanded ? "true" : "false");
+  menu.hidden = !expanded;
+
+  if (expanded && focusMenu) availableItems[0]?.focus();
+  else if (!expanded && restoreFocus) overflow.focus();
+}
 
 function fitSessionSkillTags() {
   const container = elements.sessionSkillTags;
   if (!container || container.hidden) return;
-  const tags = [...container.querySelectorAll("button.composer-skill-tag")];
-  const overflow = container.querySelector(".composer-skill-tag.overflow");
-  if (!tags.length || !overflow) return;
+  const tags = [...container.querySelectorAll(":scope > button.composer-skill-tag:not(.overflow)")];
+  const overflow = container.querySelector("button.composer-skill-tag.overflow");
+  const menuItems = [...container.querySelectorAll(".composer-skill-overflow-menu-item")];
+  if (!tags.length || !overflow || menuItems.length !== tags.length) return;
 
   const availableWidth = container.clientWidth;
   if (availableWidth <= 0) return;
@@ -6079,11 +6101,17 @@ function fitSessionSkillTags() {
   }
 
   tags.forEach((tag, index) => { tag.hidden = index >= visibleCount; });
+  menuItems.forEach((item, index) => { item.hidden = index < visibleCount; });
   const hiddenCount = tags.length - visibleCount;
   overflow.hidden = hiddenCount === 0;
   if (hiddenCount) {
+    const label = `Show ${hiddenCount} more tracked skill${hiddenCount === 1 ? "" : "s"}`;
     overflow.textContent = `+${hiddenCount}`;
-    overflow.title = `${hiddenCount} more tracked skill${hiddenCount === 1 ? "" : "s"}.`;
+    overflow.title = `${label}.`;
+    overflow.setAttribute("aria-label", label);
+    if (sessionSkillOverflowOpen) setSessionSkillOverflowOpen(true);
+  } else {
+    setSessionSkillOverflowOpen(false);
   }
 }
 
@@ -6105,12 +6133,28 @@ function installSessionSkillTagResizeHandling() {
   } else {
     window.addEventListener("resize", scheduleSessionSkillTagLayout, { passive: true });
   }
+  container.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !sessionSkillOverflowOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSessionSkillOverflowOpen(false, { restoreFocus: true });
+  });
+  container.addEventListener("focusout", () => {
+    queueMicrotask(() => {
+      if (sessionSkillOverflowOpen && !container.contains(document.activeElement)) setSessionSkillOverflowOpen(false);
+    });
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (sessionSkillOverflowOpen && !container.contains(event.target)) setSessionSkillOverflowOpen(false);
+  });
 }
 
 function renderSessionSkillTags(tabId = activeTabId) {
   const container = elements.sessionSkillTags;
   if (!container) return;
   const entries = sortedSkillUsageEntries(tabId).filter((entry) => entry.kinds.has("read"));
+  sessionSkillOverflowOpen = false;
+  container.classList.remove("overflow-open");
   container.replaceChildren();
   if (!entries.length) {
     container.hidden = true;
@@ -6127,9 +6171,37 @@ function renderSessionSkillTags(tabId = activeTabId) {
     tag.addEventListener("click", () => openSkillEditor(entry));
     container.append(tag);
   }
-  const overflow = make("span", "composer-skill-tag overflow", `+${entries.length}`);
+  const overflow = make("button", "composer-skill-tag overflow", `+${entries.length}`);
+  overflow.type = "button";
   overflow.hidden = true;
+  overflow.setAttribute("aria-haspopup", "dialog");
+  overflow.setAttribute("aria-expanded", "false");
+  overflow.setAttribute("aria-controls", "sessionSkillOverflowMenu");
+  overflow.addEventListener("click", () => {
+    const opening = !sessionSkillOverflowOpen;
+    setSessionSkillOverflowOpen(opening, { focusMenu: opening });
+  });
   container.append(overflow);
+
+  const menu = make("div", "composer-skill-overflow-menu");
+  menu.id = "sessionSkillOverflowMenu";
+  menu.hidden = true;
+  menu.setAttribute("role", "dialog");
+  menu.setAttribute("aria-label", "More tracked skills");
+  for (const entry of entries) {
+    const item = make("button", "composer-skill-tag read composer-skill-overflow-menu-item", entry.name);
+    item.type = "button";
+    item.dataset.skillName = entry.name;
+    item.dataset.skillPath = skillPathForEntry(entry);
+    item.title = `Open and edit skill ${entry.name} (${skillKindsLabel(entry)}) tracked in this tab/session.`;
+    item.setAttribute("aria-label", `Open skill ${entry.name}`);
+    item.addEventListener("click", () => {
+      setSessionSkillOverflowOpen(false);
+      openSkillEditor(entry);
+    });
+    menu.append(item);
+  }
+  container.append(menu);
   container.hidden = false;
   scheduleSessionSkillTagLayout();
 }
