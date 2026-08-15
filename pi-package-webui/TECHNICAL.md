@@ -247,6 +247,16 @@ Troubleshooting:
 - If an expected independent run is absent, confirm it used a wrapper/tracking adapter or attach it explicitly; process discovery is intentionally unavailable.
 - If output says unavailable, the producer registered metadata but no bounded output source. Restarting the browser cannot reconstruct evidence the producer never registered.
 
+## Agent conversation viewer
+
+Direct `pi-intercom` messages and native subagent-supervisor coordination appear as conversation tags beneath the composer for the active tab. Each tag represents one direct two-agent conversation. Select it to open a large, read-only chat dialog; keyboard focus remains inside the dialog until it closes and then returns to the tag when that tag is still present.
+
+The viewer reconstructs conversations from the active branch of the persisted Pi session, so supported history returns after a browser or WebUI restart. Compacted or bounded-away history may be marked unavailable. While the dialog is open, WebUI periodically checks for new persisted messages; tab changes and rapid selections discard stale responses.
+
+Only participant names or IDs, message text, ordering time, and truncation notices are displayed. Attachments, tool calls and results, thinking, stdout/stderr, filesystem paths, raw session records, and automated subagent control/result relays are excluded. The initial view is limited to 32 conversations, 200 displayed messages per conversation, and bounded message/response sizes.
+
+If an expected tag is absent, confirm that the agents used direct Intercom or native supervisor coordination in the active session branch. Generic child output and independent process logs do not become conversations.
+
 ## Mobile layout
 
 On a phone, tap the current terminal name to open full-screen terminal navigation. Grouped terminals use their title as a dropdown for choosing one terminal or subagent view. Tap **More** to open secondary controls in a full-screen overlay. Git footer **Details** opens full-screen with refresh inside and a top `−` button. Hover-only tooltips stay hidden on touch controls. To reorder the **Control Deck**, tap **Edit**, move sections, then tap **Done**.

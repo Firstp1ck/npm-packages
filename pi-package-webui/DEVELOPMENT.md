@@ -21,6 +21,21 @@ node tests/file-viewer-search-static.test.mjs
 node tests/http-endpoints-harness.test.mjs
 ```
 
+## Main output loading feedback
+
+Every `refreshMessages(tabContext)` call acquires its own object token in `mainOutputLoadingRequests` before requesting a transcript snapshot or delta and releases that exact token in `finally`. Visibility is derived only from tokens whose copied tab context still matches the active tab generation. This prevents an old tab response or one of several overlapping refreshes from hiding the current request’s status.
+
+The transcript receives `aria-busy` immediately. The inline `#mainOutputLoading` status waits 120 ms before becoming visible, avoiding flashes on fast local responses while preserving polite assistive-technology state. It is a non-modal, pointer-transparent sibling of `#chat`; cached transcript content remains mounted and interactive. The global reduced-motion policy reduces its spinner to one effectively static iteration. Dedicated subagent output hides this main-transcript status.
+
+Focused contributor validation:
+
+```bash
+node --check public/app.js
+node tests/main-output-loading-static.test.mjs
+```
+
+The focused test protects DOM/ARIA semantics, tab-generation and overlap ownership, `try`/`finally` cleanup, non-modal styling, reduced motion, Sidebar placement, dedicated-subagent hiding, documentation, and browser/PWA cache revisions.
+
 ## Fenced code syntax highlighting
 
 `public/syntax-highlight.mjs` is a dependency-free leaf module with no imports and no DOM access. It exports `MAX_SYNTAX_HIGHLIGHT_CHARACTERS` (50,000), `MAX_SYNTAX_HIGHLIGHT_LINES` (2,000), `SYNTAX_LANGUAGE_ALIASES`, `SUPPORTED_SYNTAX_LANGUAGES`, `normalizeSyntaxLanguage(language)`, and `tokenizeCode(code, language)`.
@@ -46,6 +61,24 @@ node tests/syntax-highlighting-static.test.mjs
 ```
 
 `tests/syntax-highlight.test.mjs` covers all 23 profiles and 58 aliases with exact round-trip assertions, representative token classes, prototype-pollution-style alias names, malicious-looking markup source, non-string input, and exact/over-limit character and line boundaries. `tests/syntax-highlighting-static.test.mjs` covers renderer wiring, the absence of HTML sinks, theme-token mapping against `THEME_TOKEN_GROUPS`, CSS fallbacks, app-shell closure, asset/cache revision coherence, and documentation coverage. When changing browser assets, advance `styles.css?v=`, `app.js?v=`, and `CACHE_NAME` together; several static tests assert those exact values.
+
+## Intercom conversation projection and viewer
+
+`GET /api/intercom/conversations?tab=<tab-id>` projects bounded summaries from `SessionManager.getBranch()` for the selected server-owned session. Adding `conversation=<opaque-id>` returns one sanitized detail. Browser values never select a session path. The pure projector in `lib/intercom-conversations.mjs` accepts only structured generic Intercom records and matched native supervisor request/reply records, deduplicates protocol identities, excludes synthetic relays and attachments, and applies conversation/message/text/response bounds before serialization.
+
+`public/app.js` keeps only in-memory per-tab summaries. `refreshIntercomConversationSummaries` uses tab-generation and request-serial guards; `refreshIntercomConversationDetail` adds a separate serial plus a five-second open-dialog refresh. Switching tabs or closing the native dialog invalidates pending detail responses and cancels its timer. The renderer rebuilds message bubbles only from normalized `direction`, participant name/ID, text, and timestamp fields, assigning text with safe DOM APIs. It never renders server records wholesale.
+
+Focused contributor validation:
+
+```bash
+node tests/intercom-conversations.test.mjs
+node tests/intercom-conversations-http.test.mjs
+node tests/intercom-conversation-viewer-static.test.mjs
+node --check public/app.js
+npx playwright test --project=chromium tests/browser/intercom-conversation-viewer.spec.mjs
+```
+
+The static viewer test covers singleton DOM/ARIA wiring, one-tag-per-ID rendering, endpoint scoping, summary/detail stale-response guards, open-dialog polling cleanup, safe text assignment, responsive reachability, asset revisions, and user/developer documentation. The Chromium flow exercises dialog focus restoration, safe peer/local bubbles, open-dialog refresh, Escape, and narrow composer-disclosure reachability against a persisted fixture session.
 
 ## Unified subagent observability
 

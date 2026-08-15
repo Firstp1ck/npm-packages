@@ -5390,6 +5390,7 @@ button.subagent-gate-attempt:focus-visible {
   body.terminal-tabs-left .widget-area,
   body.terminal-tabs-left .subagent-terminal-view,
   body.terminal-tabs-left .chat-search-bar,
+  body.terminal-tabs-left .main-output-loading,
   body.terminal-tabs-left .chat,
   body.terminal-tabs-left .run-indicator-host,
   body.terminal-tabs-left .feedback-tray,
@@ -5407,7 +5408,9 @@ button.subagent-gate-attempt:focus-visible {
   body.terminal-tabs-left .widget-area { grid-row: 2; }
   body.terminal-tabs-left .subagent-terminal-view { grid-row: 1 / -1; }
   body.terminal-tabs-left .chat-search-bar { grid-row: 3; }
+  body.terminal-tabs-left .main-output-loading,
   body.terminal-tabs-left .chat { grid-row: 4; }
+  body.terminal-tabs-left .main-output-loading { align-self: start; justify-self: center; margin-top: 0.75rem; }
   body.terminal-tabs-left .run-indicator-host { grid-row: 5; }
   body.terminal-tabs-left .feedback-tray { grid-row: 6; }
   body.terminal-tabs-left .jump-to-latest-button { grid-row: 7; }
@@ -5442,6 +5445,7 @@ button.subagent-gate-attempt:focus-visible {
   body.terminal-tabs-left.terminal-tabs-sidebar-start .widget-area,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .subagent-terminal-view,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .chat-search-bar,
+  body.terminal-tabs-left.terminal-tabs-sidebar-start .main-output-loading,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .chat,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .run-indicator-host,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .feedback-tray,
@@ -8049,6 +8053,41 @@ button.git-workflow-step:hover:not(:disabled) {
   padding: 1rem;
   scroll-behavior: smooth;
 }
+.main-output-loading[hidden] { display: none !important; }
+.main-output-loading {
+  position: relative;
+  z-index: 13;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-self: center;
+  align-items: center;
+  gap: 0.48rem;
+  max-width: calc(100% - 1.2rem);
+  margin: 0.55rem auto 0;
+  padding: 0.42rem 0.7rem;
+  pointer-events: none;
+  user-select: none;
+  border: 1px solid rgba(148, 226, 213, 0.38);
+  border-radius: 999px;
+  color: var(--ctp-teal);
+  background: rgba(var(--ctp-mantle-rgb), 0.92);
+  box-shadow: 0 0.5rem 1.4rem rgba(var(--ctp-crust-rgb), 0.34), 0 0 1rem rgba(148, 226, 213, 0.12);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  line-height: 1.2;
+}
+.main-output-loading-spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+  border: 2px solid rgba(148, 226, 213, 0.26);
+  border-top-color: var(--ctp-teal);
+  border-radius: 50%;
+  animation: main-output-loading-spin 780ms linear infinite;
+}
+@keyframes main-output-loading-spin {
+  to { transform: rotate(360deg); }
+}
 /* Keep transcript cards top-anchored so textarea autosizing changes only the
    available viewport height instead of translating settled agent output. */
 .chat > .message:first-of-type { margin-top: 0; }
@@ -9270,6 +9309,7 @@ summary { cursor: pointer; color: var(--warning); }
 }
 .composer-busy-mode-tag,
 .composer-skill-tag,
+.composer-intercom-tag,
 .composer-feature-category-tag,
 .composer-conversation-mode-chip,
 .composer-workflow-mode-chip {
@@ -9337,6 +9377,70 @@ summary { cursor: pointer; color: var(--warning); }
 }
 .composer-skill-tags[hidden] {
   display: none !important;
+}
+.composer-intercom-tags {
+  pointer-events: auto;
+  display: flex;
+  flex: 1 1 12rem;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: min(8rem, 100%);
+  max-width: 100%;
+  padding-block: 0.12rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+.composer-intercom-tags[hidden] { display: none !important; }
+.composer-intercom-tag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+  max-width: min(24rem, 78vw);
+  min-height: 0;
+  margin: 0;
+  padding: 0.14rem 0.5rem;
+  border: 1px solid rgba(166, 227, 161, 0.48);
+  border-radius: 999px;
+  color: var(--ctp-green);
+  background:
+    linear-gradient(120deg, rgba(166, 227, 161, 0.22), rgba(148, 226, 213, 0.08)),
+    var(--ctp-crust);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 0.9rem rgba(166, 227, 161, 0.16);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: 850;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.composer-intercom-tag:hover,
+.composer-intercom-tag:focus-visible {
+  border-color: rgba(166, 227, 161, 0.78);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1.1rem rgba(166, 227, 161, 0.3);
+  transform: translateY(-1px);
+}
+.composer-intercom-tag-icon { color: var(--ctp-teal); }
+.composer-intercom-tag-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-intercom-tag-count {
+  min-width: 1.25rem;
+  padding: 0.08rem 0.3rem;
+  border-radius: 999px;
+  color: var(--ctp-crust);
+  background: var(--ctp-green);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  text-align: center;
+}
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .composer-intercom-tags { flex: 1 1 100%; min-width: 0; }
+  .composer-intercom-tag { min-height: 44px; max-width: min(26rem, 84vw); }
 }
 .composer-feature-category-tag {
   flex: 0 1 auto;
@@ -11406,6 +11510,148 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   .git-pull-error-dialog menu button { width: 100%; }
 }
 
+.extension-dialog.intercom-conversation-dialog {
+  width: min(76rem, calc(100vw - 1.5rem));
+  height: min(54rem, calc(var(--visual-viewport-height, 100dvh) - 1.5rem));
+  max-width: calc(100vw - 1.5rem);
+  max-height: calc(var(--visual-viewport-height, 100dvh) - 1.5rem);
+  overflow: hidden;
+  border-color: rgba(166, 227, 161, 0.46);
+  background:
+    radial-gradient(circle at 0 0, rgba(148, 226, 213, 0.12), transparent 30rem),
+    linear-gradient(145deg, rgba(var(--ctp-base-rgb), 0.99), rgba(var(--ctp-crust-rgb), 0.99));
+  box-shadow: 0 2rem 5rem var(--shadow), 0 0 2.4rem rgba(166, 227, 161, 0.18);
+}
+.intercom-conversation-dialog form {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 0.72rem;
+  height: 100%;
+  min-height: 0;
+  padding: clamp(0.8rem, 1.8vw, 1.35rem);
+}
+.intercom-conversation-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.intercom-conversation-kicker {
+  display: block;
+  margin-bottom: 0.22rem;
+  color: var(--ctp-teal);
+  font-size: var(--text-xs);
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.intercom-conversation-dialog h2,
+.intercom-conversation-participants,
+.intercom-conversation-status,
+.intercom-conversation-dialog menu { margin: 0; }
+.intercom-conversation-dialog h2 {
+  color: var(--ctp-green);
+  overflow-wrap: anywhere;
+  text-shadow: 0 0 1rem rgba(166, 227, 161, 0.18);
+}
+.intercom-conversation-participants {
+  margin-top: 0.28rem;
+  overflow-wrap: anywhere;
+}
+.intercom-conversation-status {
+  min-height: 1.25rem;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-size: var(--text-xs);
+}
+.intercom-conversation-status.warn { color: var(--ctp-yellow); }
+.intercom-conversation-status.error { color: var(--ctp-red); }
+.intercom-conversation-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 0.72rem;
+  min-height: 0;
+  padding: clamp(0.7rem, 1.6vw, 1.2rem);
+  overflow: auto;
+  border: 1px solid rgba(166, 227, 161, 0.24);
+  border-radius: 0.9rem;
+  background:
+    radial-gradient(circle at 100% 0, rgba(137, 180, 250, 0.08), transparent 24rem),
+    rgba(var(--ctp-crust-rgb), 0.68);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.intercom-conversation-message {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: min(78%, 54rem);
+  padding: 0.72rem 0.82rem;
+  border: 1px solid rgba(166, 227, 161, 0.26);
+  border-radius: 0.3rem 1rem 1rem 1rem;
+  background: rgba(166, 227, 161, 0.1);
+  box-shadow: 0 0.7rem 1.6rem rgba(var(--ctp-crust-rgb), 0.3);
+}
+.intercom-conversation-message.local {
+  align-self: flex-end;
+  border-color: rgba(137, 180, 250, 0.32);
+  border-radius: 1rem 0.3rem 1rem 1rem;
+  background: rgba(137, 180, 250, 0.13);
+}
+.intercom-conversation-message-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem 0.8rem;
+  margin-bottom: 0.36rem;
+}
+.intercom-conversation-message-sender {
+  color: var(--ctp-green);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.intercom-conversation-message.local .intercom-conversation-message-sender { color: var(--ctp-blue); }
+.intercom-conversation-message-time {
+  color: rgba(var(--ctp-subtext-rgb), 0.72);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.intercom-conversation-message-text {
+  margin: 0;
+  color: var(--ctp-text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: pre-wrap;
+}
+.intercom-conversation-truncated {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--ctp-yellow);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+.intercom-conversation-empty {
+  margin: auto;
+  color: rgba(var(--ctp-subtext-rgb), 0.72);
+  text-align: center;
+}
+.intercom-conversation-dialog menu {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0;
+}
+@media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
+  .extension-dialog.intercom-conversation-dialog {
+    width: calc(100vw - 0.7rem);
+    height: calc(var(--visual-viewport-height, 100dvh) - 0.7rem);
+    max-width: calc(100vw - 0.7rem);
+    max-height: calc(var(--visual-viewport-height, 100dvh) - 0.7rem);
+  }
+  .intercom-conversation-dialog form { padding: 0.72rem; }
+  .intercom-conversation-message { max-width: 92%; }
+  .intercom-conversation-dialog menu button { width: 100%; min-height: 44px; }
+}
+
 .extension-dialog.feature-decision-dialog {
   width: min(30rem, calc(100vw - 2rem));
 }
@@ -12199,6 +12445,7 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
 }
 body.subagent-terminal-active .workspace-dashboard,
 body.subagent-terminal-active .widget-area,
+body.subagent-terminal-active .main-output-loading,
 body.subagent-terminal-active .chat,
 body.subagent-terminal-active .feedback-tray,
 body.subagent-terminal-active .jump-to-latest-button,
@@ -18306,6 +18553,7 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
     background: rgba(var(--ctp-crust-rgb), 0.34);
   }
   body.mobile-composer-disclosure .composer-actions-panel > .composer-context-tags > * { pointer-events: auto; }
+  body.mobile-composer-disclosure .composer-intercom-tag { min-height: 44px; }
   body.mobile-composer-disclosure .composer-actions-panel > .composer-busy-mode-menu {
     display: grid;
     z-index: auto;

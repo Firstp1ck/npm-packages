@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=117" />
+    <link rel="stylesheet" href="/styles.css?v=120" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -296,7 +296,11 @@
           <button id="chatSearchNextButton" class="chat-search-button" type="button" aria-label="Next match" title="Next match (Enter)">↓</button>
           <button id="chatSearchCloseButton" class="chat-search-button" type="button" aria-label="Close search" title="Close (Escape)">✕</button>
         </div>
-        <div id="chat" class="chat" aria-live="polite">
+        <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
+          <span class="main-output-loading-spinner" aria-hidden="true"></span>
+          <span>Loading agent output…</span>
+        </div>
+        <div id="chat" class="chat" aria-live="polite" aria-busy="false">
           <button id="stickyUserPromptButton" class="sticky-user-prompt-button" type="button" aria-controls="chat" hidden></button>
         </div>
         <div id="runIndicatorHost" class="run-indicator-host"></div>
@@ -360,6 +364,7 @@
                 aria-live="polite"
               >Follow-up</button>
               <div id="sessionSkillTags" class="composer-skill-tags" aria-live="polite" hidden></div>
+              <div id="intercomConversationTags" class="composer-intercom-tags" role="group" aria-label="Agent conversations" aria-live="polite" hidden></div>
               <button id="featureCategoryTag" class="composer-feature-category-tag" type="button" aria-haspopup="dialog" aria-controls="featureDecisionDialog" aria-live="polite" aria-atomic="true" disabled hidden></button>
               <button id="conversationModeChip" class="composer-conversation-mode-chip" type="button" aria-live="polite" hidden>Voice: off</button>
               <button id="workflowModeChip" class="composer-workflow-mode-chip" type="button" aria-live="polite" aria-pressed="true" hidden>Workflow: on</button>
@@ -1492,6 +1497,23 @@
       </form>
     </dialog>
 
+    <dialog id="intercomConversationDialog" class="extension-dialog intercom-conversation-dialog" aria-labelledby="intercomConversationTitle" aria-describedby="intercomConversationParticipants intercomConversationStatus">
+      <form method="dialog">
+        <header class="intercom-conversation-header">
+          <div>
+            <span class="intercom-conversation-kicker">Agent conversation · view only</span>
+            <h2 id="intercomConversationTitle">Agent conversation</h2>
+            <p id="intercomConversationParticipants" class="intercom-conversation-participants muted"></p>
+          </div>
+        </header>
+        <p id="intercomConversationStatus" class="intercom-conversation-status muted" role="status" aria-live="polite" aria-atomic="true"></p>
+        <div id="intercomConversationTranscript" class="intercom-conversation-transcript" role="log" aria-live="polite" aria-relevant="additions text"></div>
+        <menu>
+          <button id="intercomConversationCloseButton" type="submit" value="close">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="featureDecisionDialog" class="extension-dialog feature-decision-dialog" aria-labelledby="featureDecisionDialogTitle">
       <form method="dialog">
         <h2 id="featureDecisionDialogTitle">Classifier output</h2>
@@ -1797,7 +1819,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=136">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=139">
       (() => {
         "use strict";
 

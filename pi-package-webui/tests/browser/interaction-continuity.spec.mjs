@@ -210,6 +210,40 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true });
 });
 
+test("main output shows non-blocking inline feedback while transcript data loads", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  let releaseMessages;
+  const messagesReleased = new Promise((resolve) => { releaseMessages = resolve; });
+  let delayedMessagesRequest = false;
+  const messagesPattern = "**/api/messages?*";
+  await page.route(messagesPattern, async (route) => {
+    if (!delayedMessagesRequest) {
+      delayedMessagesRequest = true;
+      await messagesReleased;
+    }
+    await route.continue();
+  });
+
+  try {
+    await page.goto(baseURL);
+    const loading = page.locator("#mainOutputLoading");
+    const chat = page.locator("#chat");
+    await expect(loading).toBeVisible();
+    await expect(loading).toContainText("Loading agent output…");
+    await expect(loading).toHaveCSS("pointer-events", "none");
+    await expect(chat).toHaveAttribute("aria-busy", "true");
+    await expect(page.locator("#promptInput")).toBeEnabled();
+    assert.equal(await page.evaluate(() => document.querySelectorAll("dialog:modal").length), 0, "loading feedback should not open a popup");
+
+    releaseMessages();
+    await expect(loading).toBeHidden();
+    await expect(chat).toHaveAttribute("aria-busy", "false");
+  } finally {
+    releaseMessages?.();
+    await page.unroute(messagesPattern);
+  }
+});
+
 test("only hidden pages disconnect live events and resume from one authoritative snapshot", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(baseURL);

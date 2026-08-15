@@ -97,6 +97,7 @@ const elements = {
   subagentCancelSubmitButton: $("#subagentCancelSubmitButton"),
   stickyUserPromptButton: $("#stickyUserPromptButton"),
   chat: $("#chat"),
+  mainOutputLoading: $("#mainOutputLoading"),
   runIndicatorHost: $("#runIndicatorHost"),
   chatSearchBar: $("#chatSearchBar"),
   chatSearchInput: $("#chatSearchInput"),
@@ -130,6 +131,13 @@ const elements = {
   busyPromptBehaviorTag: $("#busyPromptBehaviorTag"),
   busyPromptBehaviorMenu: $("#busyPromptBehaviorMenu"),
   sessionSkillTags: $("#sessionSkillTags"),
+  intercomConversationTags: $("#intercomConversationTags"),
+  intercomConversationDialog: $("#intercomConversationDialog"),
+  intercomConversationTitle: $("#intercomConversationTitle"),
+  intercomConversationParticipants: $("#intercomConversationParticipants"),
+  intercomConversationTranscript: $("#intercomConversationTranscript"),
+  intercomConversationStatus: $("#intercomConversationStatus"),
+  intercomConversationCloseButton: $("#intercomConversationCloseButton"),
   featureCategoryTag: $("#featureCategoryTag"),
   featureDecisionDialog: $("#featureDecisionDialog"),
   featureDecisionDialogOutput: $("#featureDecisionDialogOutput"),
@@ -577,6 +585,12 @@ let tabWorkspaceCache = new Map();
 let tabs = [];
 let activeTabId = null;
 let activeTabGeneration = 0;
+const intercomConversationSummariesByTab = new Map();
+let intercomSummaryRequestSerial = 0;
+let intercomSummaryRefreshTimer = null;
+let intercomDetailRequestSerial = 0;
+let intercomDetailRefreshTimer = null;
+let intercomConversationDialogState = null;
 let tabDrafts = new Map();
 let tabAttachments = new Map();
 let activeTextAttachmentEditor = null;
@@ -778,6 +792,9 @@ let runIndicatorActivity = "Waiting for output or action…";
 let refreshMessagesTimer = null;
 let refreshStateTimer = null;
 let refreshFooterTimer = null;
+const mainOutputLoadingRequests = new Set();
+let mainOutputLoadingRevealTimer = null;
+const MAIN_OUTPUT_LOADING_REVEAL_DELAY_MS = 120;
 let refreshTabsTimer = null;
 let tabsRenderFrame = null;
 let foregroundReconcileTimer = null;
@@ -6108,6 +6125,330 @@ function renderSessionSkillTags(tabId = activeTabId) {
   scheduleSessionSkillTagLayout();
 }
 
+const INTERCOM_CONVERSATION_ID_PATTERN = /^conv_[A-Za-z0-9_-]{24}$/;
+const INTERCOM_MESSAGE_ID_PATTERN = /^msg_[A-Za-z0-9_-]{24}$/;
+const INTERCOM_DETAIL_REFRESH_MS = 5_000;
+const intercomMessageRenderSignatures = new WeakMap();
+
+function intercomBoundedString(value, maxLength = 240) {
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, maxLength);
+}
+
+function normalizeIntercomParticipant(value, fallback) {
+  const participant = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const id = intercomBoundedString(participant.id, 240);
+  const name = intercomBoundedString(participant.name, 160);
+  return { id: id || null, name: name || id || fallback };
+}
+
+function intercomParticipantLabel(participant, fallback = "Agent") {
+  const normalized = normalizeIntercomParticipant(participant, fallback);
+  return normalized.id && normalized.id !== normalized.name ? `${normalized.name} (${normalized.id})` : normalized.name;
+}
+
+function normalizeIntercomConversationSummary(value) {
+  if (!value || typeof value !== "object" || !INTERCOM_CONVERSATION_ID_PATTERN.test(String(value.id || ""))) return null;
+  const participants = value.participants && typeof value.participants === "object" ? value.participants : {};
+  const messageCount = Number(value.messageCount);
+  return {
+    id: String(value.id),
+    participants: {
+      local: normalizeIntercomParticipant(participants.local, "Local agent"),
+      peer: normalizeIntercomParticipant(participants.peer, "Peer agent"),
+    },
+    messageCount: Number.isSafeInteger(messageCount) && messageCount >= 0 ? messageCount : 0,
+    lastMessageAt: typeof value.lastMessageAt === "string" ? value.lastMessageAt : null,
+    truncatedBefore: value.truncatedBefore === true,
+  };
+}
+
+function normalizeIntercomConversationDetail(value) {
+  const summary = normalizeIntercomConversationSummary(value);
+  if (!summary) return null;
+  const messages = [];
+  const seenMessageIds = new Set();
+  for (const candidate of Array.isArray(value.messages) ? value.messages.slice(-200) : []) {
+    const id = String(candidate?.id || "");
+    if (!candidate || typeof candidate !== "object" || !INTERCOM_MESSAGE_ID_PATTERN.test(id) || seenMessageIds.has(id)
+      || !["local", "peer"].includes(candidate.direction) || typeof candidate.text !== "string") continue;
+    seenMessageIds.add(id);
+    const timestamp = typeof candidate.timestamp === "string" && Number.isFinite(Date.parse(candidate.timestamp)) ? candidate.timestamp : null;
+    messages.push({
+      id,
+      direction: candidate.direction,
+      text: candidate.text.slice(0, 65_536),
+      timestamp,
+      truncatedText: candidate.truncatedText === true,
+    });
+  }
+  return { ...summary, messages };
+}
+
+function intercomConversationLabel(conversation) {
+  const local = intercomParticipantLabel(conversation?.participants?.local, "Local agent");
+  const peer = intercomParticipantLabel(conversation?.participants?.peer, "Peer agent");
+  return `${local} ↔ ${peer}`;
+}
+
+function intercomConversationSummarySignature(conversations) {
+  return JSON.stringify((conversations || []).map((conversation) => [
+    conversation.id,
+    intercomConversationLabel(conversation),
+    conversation.messageCount,
+    conversation.lastMessageAt,
+    conversation.truncatedBefore,
+  ]));
+}
+
+function renderIntercomConversationTags(tabId = activeTabId) {
+  const container = elements.intercomConversationTags;
+  if (!container) return;
+  const conversations = intercomConversationSummariesByTab.get(tabId) || [];
+  const existingTags = new Map([...container.querySelectorAll(".composer-intercom-tag[data-intercom-conversation-id]")]
+    .map((tag) => [tag.dataset.intercomConversationId, tag]));
+  const orderedTags = [];
+  const seenConversationIds = new Set();
+  for (const conversation of conversations) {
+    if (seenConversationIds.has(conversation.id)) continue;
+    seenConversationIds.add(conversation.id);
+    const label = intercomConversationLabel(conversation);
+    let tag = existingTags.get(conversation.id);
+    if (tag) existingTags.delete(conversation.id);
+    else {
+      tag = make("button", "composer-intercom-tag");
+      tag.type = "button";
+      tag.dataset.intercomConversationId = conversation.id;
+      tag.setAttribute("aria-haspopup", "dialog");
+      tag.setAttribute("aria-controls", "intercomConversationDialog");
+      tag.addEventListener("click", () => openIntercomConversation(tag.dataset.intercomConversationId));
+    }
+    tag.setAttribute("aria-label", `Open agent conversation ${label}`);
+    tag.title = `${label} · ${conversation.messageCount} message${conversation.messageCount === 1 ? "" : "s"}`;
+    const children = [make("span", "composer-intercom-tag-icon", "↔"), make("span", "composer-intercom-tag-label", label)];
+    if (conversation.messageCount > 0) children.push(make("span", "composer-intercom-tag-count", String(conversation.messageCount)));
+    tag.replaceChildren(...children);
+    orderedTags.push(tag);
+  }
+  for (const staleTag of existingTags.values()) staleTag.remove();
+  const currentTags = [...container.querySelectorAll(":scope > .composer-intercom-tag")];
+  if (currentTags.length !== orderedTags.length || orderedTags.some((tag, index) => currentTags[index] !== tag)) {
+    for (const tag of orderedTags) container.append(tag);
+  }
+  container.hidden = orderedTags.length === 0;
+}
+
+async function refreshIntercomConversationSummaries(tabContext = activeTabContext()) {
+  if (!tabContext.tabId) return;
+  const requestSerial = ++intercomSummaryRequestSerial;
+  const response = await api("/api/intercom/conversations", { tabId: tabContext.tabId });
+  if (requestSerial !== intercomSummaryRequestSerial || !isCurrentTabContext(tabContext)) return;
+  const seenConversationIds = new Set();
+  const conversations = [];
+  for (const value of Array.isArray(response.data?.conversations) ? response.data.conversations : []) {
+    const conversation = normalizeIntercomConversationSummary(value);
+    if (!conversation || seenConversationIds.has(conversation.id)) continue;
+    seenConversationIds.add(conversation.id);
+    conversations.push(conversation);
+  }
+  const previous = intercomConversationSummariesByTab.get(tabContext.tabId) || [];
+  intercomConversationSummariesByTab.set(tabContext.tabId, conversations);
+  if (intercomConversationSummarySignature(previous) !== intercomConversationSummarySignature(conversations) && !elements.intercomConversationDialog?.open) {
+    renderIntercomConversationTags(tabContext.tabId);
+  }
+  if (intercomConversationDialogState?.tabId === tabContext.tabId && !seenConversationIds.has(intercomConversationDialogState.conversationId)) {
+    closeIntercomConversationDialog({ restoreFocus: false });
+  }
+}
+
+function scheduleIntercomConversationRefresh(tabContext = activeTabContext(), delayMs = 180) {
+  clearTimeout(intercomSummaryRefreshTimer);
+  const scheduledContext = { ...tabContext };
+  intercomSummaryRefreshTimer = setTimeout(() => {
+    intercomSummaryRefreshTimer = null;
+    if (!isCurrentTabContext(scheduledContext)) return;
+    refreshIntercomConversationSummaries(scheduledContext).catch((error) => {
+      if (isCurrentTabContext(scheduledContext)) addEvent(`agent conversation refresh failed: ${error.message || String(error)}`, "warn");
+    });
+  }, delayMs);
+}
+
+function setIntercomConversationStatus(message = "", level = "") {
+  const status = elements.intercomConversationStatus;
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("error", level === "error");
+  status.classList.toggle("warn", level === "warn");
+}
+
+function formatIntercomMessageTime(value) {
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) return "";
+  return new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function renderIntercomConversationMessage(article, message, conversation) {
+  const participant = message.direction === "local" ? conversation.participants.local : conversation.participants.peer;
+  const senderLabel = intercomParticipantLabel(participant, message.direction === "local" ? "Local agent" : "Peer agent");
+  const formattedTime = formatIntercomMessageTime(message.timestamp);
+  const signature = JSON.stringify([message.direction, senderLabel, message.text, message.timestamp, message.truncatedText]);
+  if (intercomMessageRenderSignatures.get(article) === signature) return;
+
+  article.className = `intercom-conversation-message ${message.direction}`;
+  article.dataset.intercomMessageId = message.id;
+  article.setAttribute("aria-label", `${senderLabel} message`);
+  const header = make("header", "intercom-conversation-message-header");
+  header.append(make("strong", "intercom-conversation-message-sender", senderLabel));
+  if (formattedTime) {
+    const time = make("time", "intercom-conversation-message-time", formattedTime);
+    time.dateTime = message.timestamp;
+    header.append(time);
+  }
+  const text = make("p", "intercom-conversation-message-text");
+  text.textContent = message.text;
+  const children = [header, text];
+  if (message.truncatedText) children.push(make("span", "intercom-conversation-truncated", "Message truncated"));
+  article.replaceChildren(...children);
+  intercomMessageRenderSignatures.set(article, signature);
+}
+
+function renderIntercomConversationDetail(conversation) {
+  const transcript = elements.intercomConversationTranscript;
+  if (!transcript || !conversation) return;
+  const state = intercomConversationDialogState;
+  const signature = JSON.stringify([
+    conversation.id,
+    conversation.truncatedBefore,
+    intercomConversationLabel(conversation),
+    conversation.messages.map((message) => [message.id, message.direction, message.text, message.timestamp, message.truncatedText]),
+  ]);
+  if (state?.detailSignature === signature) return;
+  if (state) state.detailSignature = signature;
+
+  const existingArticles = new Map([...transcript.querySelectorAll(":scope > .intercom-conversation-message[data-intercom-message-id]")]
+    .map((article) => [article.dataset.intercomMessageId, article]));
+  const shouldFollow = !existingArticles.size || transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
+  const previousScrollTop = transcript.scrollTop;
+  const anchor = shouldFollow ? null : [...existingArticles.values()]
+    .find((article) => article.offsetTop + article.offsetHeight > transcript.scrollTop);
+  const anchorOffset = anchor ? anchor.getBoundingClientRect().top - transcript.getBoundingClientRect().top : 0;
+  const orderedArticles = [];
+
+  for (const message of conversation.messages) {
+    let article = existingArticles.get(message.id);
+    if (article) existingArticles.delete(message.id);
+    else article = make("article", `intercom-conversation-message ${message.direction}`);
+    renderIntercomConversationMessage(article, message, conversation);
+    orderedArticles.push(article);
+  }
+  for (const staleArticle of existingArticles.values()) staleArticle.remove();
+  transcript.querySelector(":scope > .intercom-conversation-empty")?.remove();
+
+  let cursor = transcript.firstElementChild;
+  for (const article of orderedArticles) {
+    if (article === cursor) cursor = cursor.nextElementSibling;
+    else transcript.insertBefore(article, cursor);
+  }
+  if (!orderedArticles.length) transcript.append(make("p", "intercom-conversation-empty", "No messages are available in this conversation."));
+
+  requestAnimationFrame(() => {
+    if (state !== intercomConversationDialogState) return;
+    if (shouldFollow) transcript.scrollTop = transcript.scrollHeight;
+    else if (anchor?.isConnected) {
+      const currentAnchorOffset = anchor.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
+      transcript.scrollTop += currentAnchorOffset - anchorOffset;
+    }
+    else transcript.scrollTop = previousScrollTop;
+  });
+}
+
+function updateIntercomSummaryFromDetail(conversation) {
+  const state = intercomConversationDialogState;
+  if (!state || !conversation) return;
+  const summaries = intercomConversationSummariesByTab.get(state.tabId) || [];
+  const index = summaries.findIndex((summary) => summary.id === conversation.id);
+  if (index < 0) return;
+  const next = [...summaries];
+  next[index] = { ...next[index], ...normalizeIntercomConversationSummary(conversation) };
+  intercomConversationSummariesByTab.set(state.tabId, next);
+}
+
+function scheduleIntercomConversationDetailRefresh() {
+  clearTimeout(intercomDetailRefreshTimer);
+  intercomDetailRefreshTimer = null;
+  const state = intercomConversationDialogState;
+  if (!state || !elements.intercomConversationDialog?.open) return;
+  intercomDetailRefreshTimer = setTimeout(() => {
+    intercomDetailRefreshTimer = null;
+    refreshIntercomConversationDetail({ announceLoading: false });
+  }, INTERCOM_DETAIL_REFRESH_MS);
+}
+
+async function refreshIntercomConversationDetail({ announceLoading = false } = {}) {
+  const state = intercomConversationDialogState;
+  if (!state || !elements.intercomConversationDialog?.open) return;
+  const requestSerial = ++intercomDetailRequestSerial;
+  if (announceLoading) setIntercomConversationStatus("Loading agent messages…");
+  try {
+    const path = `/api/intercom/conversations?conversation=${encodeURIComponent(state.conversationId)}`;
+    const response = await api(path, { tabId: state.tabId });
+    if (requestSerial !== intercomDetailRequestSerial || state !== intercomConversationDialogState || !isCurrentTabContext(state)) return;
+    const conversation = normalizeIntercomConversationDetail(response.data?.conversation);
+    if (!conversation || conversation.id !== state.conversationId) throw new Error("Agent conversation is unavailable.");
+    elements.intercomConversationTitle.textContent = intercomParticipantLabel(conversation.participants.peer, "Agent conversation");
+    elements.intercomConversationParticipants.textContent = intercomConversationLabel(conversation);
+    renderIntercomConversationDetail(conversation);
+    updateIntercomSummaryFromDetail(conversation);
+    const notices = [];
+    if (conversation.truncatedBefore) notices.push("Earlier messages are unavailable.");
+    if (conversation.messages.some((message) => message.truncatedText)) notices.push("One or more messages were truncated.");
+    setIntercomConversationStatus(notices.join(" "), notices.length ? "warn" : "");
+  } catch (error) {
+    if (requestSerial === intercomDetailRequestSerial && state === intercomConversationDialogState && isCurrentTabContext(state)) {
+      setIntercomConversationStatus(error.message || String(error), "error");
+    }
+  } finally {
+    if (requestSerial === intercomDetailRequestSerial && state === intercomConversationDialogState) scheduleIntercomConversationDetailRefresh();
+  }
+}
+
+function openIntercomConversation(conversationId) {
+  if (!activeTabId || !INTERCOM_CONVERSATION_ID_PATTERN.test(String(conversationId || "")) || !elements.intercomConversationDialog) return;
+  const summary = (intercomConversationSummariesByTab.get(activeTabId) || []).find((conversation) => conversation.id === conversationId);
+  if (!summary) return;
+  intercomDetailRequestSerial += 1;
+  clearTimeout(intercomDetailRefreshTimer);
+  intercomConversationDialogState = { ...activeTabContext(), conversationId, detailSignature: "" };
+  elements.intercomConversationTitle.textContent = intercomParticipantLabel(summary.participants.peer, "Agent conversation");
+  elements.intercomConversationParticipants.textContent = intercomConversationLabel(summary);
+  elements.intercomConversationTranscript.replaceChildren();
+  setIntercomConversationStatus("Loading agent messages…");
+  if (!elements.intercomConversationDialog.open) elements.intercomConversationDialog.showModal();
+  queueMicrotask(() => elements.intercomConversationCloseButton?.focus({ preventScroll: true }));
+  refreshIntercomConversationDetail({ announceLoading: false });
+}
+
+function resetIntercomConversationDialog() {
+  intercomDetailRequestSerial += 1;
+  clearTimeout(intercomDetailRefreshTimer);
+  intercomDetailRefreshTimer = null;
+  intercomConversationDialogState = null;
+  elements.intercomConversationTranscript?.replaceChildren();
+  if (elements.intercomConversationParticipants) elements.intercomConversationParticipants.textContent = "";
+  setIntercomConversationStatus("");
+  renderIntercomConversationTags(activeTabId);
+}
+
+function closeIntercomConversationDialog({ restoreFocus = true } = {}) {
+  const dialog = elements.intercomConversationDialog;
+  if (!dialog?.open) {
+    resetIntercomConversationDialog();
+    return;
+  }
+  if (!restoreFocus) modalSurfaceState.delete(dialog);
+  dialog.close();
+}
+
 function normalizeFeatureCategory(value) {
   return value === "lightweight-feature" || value === "complex-feature" ? value : "";
 }
@@ -11225,11 +11566,17 @@ function setActiveTabId(tabId, { remember = false } = {}) {
   const nextTabId = tabId || null;
   if (nextTabId !== activeTabId) {
     activeTabGeneration += 1;
+    intercomSummaryRequestSerial += 1;
+    clearTimeout(intercomSummaryRefreshTimer);
+    intercomSummaryRefreshTimer = null;
+    closeIntercomConversationDialog({ restoreFocus: false });
     closeFeatureDecisionDialog({ restoreFocus: false });
     closeSessionSummaryOverlay({ restoreFocus: false });
   }
   activeTabId = nextTabId;
+  renderMainOutputLoading();
   bindGitWorkflowToActiveTab();
+  renderIntercomConversationTags(nextTabId);
   renderFeatureCategoryTag(nextTabId);
   renderSessionSummaryControls();
   if (remember) rememberActiveTab();
@@ -16131,6 +16478,9 @@ async function refreshTabs({ selectStored = false } = {}) {
     tabs = nextTabs;
     syncTabMetadata(tabs);
     const liveParentTabIds = new Set(tabs.map((tab) => tab.id));
+    for (const tabId of intercomConversationSummariesByTab.keys()) {
+      if (!liveParentTabIds.has(tabId)) intercomConversationSummariesByTab.delete(tabId);
+    }
     for (const view of [...subagentTerminalViews.values()]) {
       if (!liveParentTabIds.has(view.parentTabId)) removeSubagentTerminalViewsForParent(view.parentTabId);
     }
@@ -42393,45 +42743,86 @@ function mergeMessagesDelta(previous, data) {
   return previous.slice(0, since).concat(data.messages);
 }
 
+function mainOutputLoadingRequestIsCurrent(request) {
+  return !!request?.tabContext && isCurrentTabContext(request.tabContext);
+}
+
+function renderMainOutputLoading({ reveal = false } = {}) {
+  const active = [...mainOutputLoadingRequests].some(mainOutputLoadingRequestIsCurrent);
+  elements.chat?.setAttribute("aria-busy", active ? "true" : "false");
+  clearTimeout(mainOutputLoadingRevealTimer);
+  mainOutputLoadingRevealTimer = null;
+  if (!elements.mainOutputLoading) return;
+  if (!active) {
+    elements.mainOutputLoading.hidden = true;
+    return;
+  }
+  if (reveal) {
+    elements.mainOutputLoading.hidden = false;
+    return;
+  }
+  mainOutputLoadingRevealTimer = setTimeout(() => {
+    mainOutputLoadingRevealTimer = null;
+    if ([...mainOutputLoadingRequests].some(mainOutputLoadingRequestIsCurrent)) elements.mainOutputLoading.hidden = false;
+  }, MAIN_OUTPUT_LOADING_REVEAL_DELAY_MS);
+}
+
+function beginMainOutputLoading(tabContext) {
+  const request = { tabContext: { ...tabContext } };
+  mainOutputLoadingRequests.add(request);
+  renderMainOutputLoading();
+  return request;
+}
+
+function finishMainOutputLoading(request) {
+  mainOutputLoadingRequests.delete(request);
+  renderMainOutputLoading();
+}
+
 async function refreshMessages(tabContext = activeTabContext(), { authoritative = false } = {}) {
   if (!tabContext.tabId) return;
-  const previousMessages = latestMessages;
-  const sessionKey = resolveMessagesSessionKey(tabContext.tabId);
-  let nextMessages = null;
-  if (!authoritative && previousMessages.length > 1 && sessionKey === latestMessagesSessionKey) {
-    // Delta fetch with a one-message overlap: the last known message is
-    // re-requested so retroactive changes are detected via mergeMessagesDelta.
-    const response = await api(`/api/messages?since=${previousMessages.length - 1}`, { tabId: tabContext.tabId });
-    if (!isCurrentTabContext(tabContext)) return;
-    nextMessages = mergeMessagesDelta(previousMessages, response.data);
+  const loadingRequest = beginMainOutputLoading(tabContext);
+  try {
+    const previousMessages = latestMessages;
+    const sessionKey = resolveMessagesSessionKey(tabContext.tabId);
+    let nextMessages = null;
+    if (!authoritative && previousMessages.length > 1 && sessionKey === latestMessagesSessionKey) {
+      // Delta fetch with a one-message overlap: the last known message is
+      // re-requested so retroactive changes are detected via mergeMessagesDelta.
+      const response = await api(`/api/messages?since=${previousMessages.length - 1}`, { tabId: tabContext.tabId });
+      if (!isCurrentTabContext(tabContext)) return;
+      nextMessages = mergeMessagesDelta(previousMessages, response.data);
+    }
+    if (!nextMessages) {
+      const response = await api("/api/messages", { tabId: tabContext.tabId });
+      if (!isCurrentTabContext(tabContext)) return;
+      nextMessages = response.data?.messages || [];
+    }
+    latestMessages = nextMessages;
+    latestMessagesSessionKey = sessionKey;
+    cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);
+    const selectionSnapshot = captureChatTextSelection();
+    const preserveCompactStream = compactLiveStreamRenderActive();
+    const preserveNormalStream = !preserveCompactStream && liveStreamRenderActive();
+    if (!preserveCompactStream && !preserveNormalStream) {
+      const adoptedOutput = adoptLiveAssistantBubble(latestMessages);
+      resetStreamBubble({ preserveCompact: adoptedOutput === "compact" });
+    }
+    renderMessages(latestMessages);
+    if (preserveCompactStream) restoreCompactLiveOutputAfterChatRebuild();
+    else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
+    restoreChatTextSelection(selectionSnapshot);
+    markTabOutputSeen();
+    // Authoritative content just landed: derive the todo-progress record once
+    // here instead of from raw token cadence, and let the coalesced semantic
+    // reconciler own the footer/widget chrome that message data can change.
+    // syncLiveTodoProgressWidgetFromText owns the frame-coalesced widget render
+    // and only fires when the parsed checklist value actually changed.
+    reconcileTodoProgressFromMessages(latestMessages, tabContext.tabId);
+    scheduleSemanticReconcile({ footer: true }, tabContext);
+  } finally {
+    finishMainOutputLoading(loadingRequest);
   }
-  if (!nextMessages) {
-    const response = await api("/api/messages", { tabId: tabContext.tabId });
-    if (!isCurrentTabContext(tabContext)) return;
-    nextMessages = response.data?.messages || [];
-  }
-  latestMessages = nextMessages;
-  latestMessagesSessionKey = sessionKey;
-  cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);
-  const selectionSnapshot = captureChatTextSelection();
-  const preserveCompactStream = compactLiveStreamRenderActive();
-  const preserveNormalStream = !preserveCompactStream && liveStreamRenderActive();
-  if (!preserveCompactStream && !preserveNormalStream) {
-    const adoptedOutput = adoptLiveAssistantBubble(latestMessages);
-    resetStreamBubble({ preserveCompact: adoptedOutput === "compact" });
-  }
-  renderMessages(latestMessages);
-  if (preserveCompactStream) restoreCompactLiveOutputAfterChatRebuild();
-  else if (preserveNormalStream) restoreStreamRenderAfterChatRebuild();
-  restoreChatTextSelection(selectionSnapshot);
-  markTabOutputSeen();
-  // Authoritative content just landed: derive the todo-progress record once
-  // here instead of from raw token cadence, and let the coalesced semantic
-  // reconciler own the footer/widget chrome that message data can change.
-  // syncLiveTodoProgressWidgetFromText owns the frame-coalesced widget render
-  // and only fires when the parsed checklist value actually changed.
-  reconcileTodoProgressFromMessages(latestMessages, tabContext.tabId);
-  scheduleSemanticReconcile({ footer: true }, tabContext);
 }
 
 async function refreshModels(tabContext = activeTabContext()) {
@@ -43437,6 +43828,7 @@ async function refreshAll(tabContext = activeTabContext()) {
   const results = await Promise.allSettled([
     refreshState(tabContext),
     refreshMessages(tabContext),
+    refreshIntercomConversationSummaries(tabContext),
     ...supplementalRefreshRequests(tabContext),
   ]);
   if (!isCurrentTabContext(tabContext)) return;
@@ -44802,6 +45194,7 @@ function handleEvent(event) {
     return;
   }
   const tabContext = activeTabContext(event.tabId || activeTabId);
+  if (["webui_connected", "agent_end", "message_end", "tool_execution_end"].includes(event.type)) scheduleIntercomConversationRefresh(tabContext);
   switch (event.type) {
     case "webui_connected": {
       const connectedTabId = event.tabId || activeTabId;
@@ -45176,6 +45569,7 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   source.onopen = () => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
     if (!eventStreamPausedForBackground) refreshOptionalFeaturePackageStatuses().catch(() => {});
+    scheduleIntercomConversationRefresh(tabContext, 0);
   };
   source.onmessage = (message) => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
@@ -45250,6 +45644,11 @@ elements.skillEditorDialog?.addEventListener("keydown", (event) => {
   if (!elements.skillEditorSaveButton?.disabled) saveSkillEditor();
 });
 elements.skillEditorDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
+elements.intercomConversationDialog?.addEventListener("close", resetIntercomConversationDialog);
+elements.intercomConversationDialog?.addEventListener("cancel", () => {
+  clearTimeout(intercomDetailRefreshTimer);
+  intercomDetailRefreshTimer = null;
+});
 elements.featureCategoryTag?.addEventListener("click", openFeatureDecisionDialog);
 elements.featureDecisionDialog?.addEventListener("close", () => {
   featureDecisionDialogTabId = null;

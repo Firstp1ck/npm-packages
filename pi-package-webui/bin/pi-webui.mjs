@@ -25,6 +25,7 @@ import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
 import { AgentRunIndex, canonicalAgentRunId, normalizeAgentInstance } from "../lib/agent-run-protocol.mjs";
 import { AgentRunRegistry } from "../lib/agent-run-registry.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
+import { projectIntercomConversations } from "../lib/intercom-conversations.mjs";
 import {
   readSessionSummaryPreferences,
   supportedSessionSummaryThinkingLevels,
@@ -14205,6 +14206,45 @@ async function getSessionSelectorData(tab, scope = "current") {
   };
 }
 
+function requestedIntercomConversationId(url) {
+  const value = String(url.searchParams.get("conversation") || "").trim();
+  if (!value) return "";
+  if (!/^conv_[A-Za-z0-9_-]{24}$/.test(value)) throw makeHttpError(400, "conversation must be an opaque Intercom conversation ID");
+  return value;
+}
+
+async function getIntercomConversationsData(tab, conversationId = "") {
+  const state = await currentSessionState(tab).catch(() => tab.lastState || {});
+  const sessionFile = sessionFileFromState(state) || tabRestorableSessionFile(tab);
+  const projectionOptions = {
+    conversationId,
+    localSessionId: normalizedRestoreString(state.sessionId, 240) || "local",
+    localName: normalizedRestoreString(state.sessionName, 160) || tab.title || "Local agent",
+  };
+  if (options.noSession || !sessionFile) {
+    const empty = projectIntercomConversations([], projectionOptions);
+    if (conversationId) throw makeHttpError(404, "Intercom conversation not found");
+    return empty;
+  }
+
+  requireAllowedSessionPath(sessionFile);
+  const sessionInfo = await stat(sessionFile).catch(() => null);
+  if (!sessionInfo?.isFile()) throw makeHttpError(404, "Persisted session is unavailable");
+
+  let manager;
+  try {
+    manager = SessionManager.open(sessionFile, configuredSessionDir(), tab.cwd);
+  } catch {
+    throw makeHttpError(400, "Persisted session could not be read");
+  }
+  const data = projectIntercomConversations(manager.getBranch(), {
+    ...projectionOptions,
+    localSessionId: normalizedRestoreString(manager.getSessionId(), 240) || projectionOptions.localSessionId,
+  });
+  if (conversationId && !data.conversation) throw makeHttpError(404, "Intercom conversation not found");
+  return data;
+}
+
 function extractSessionTextContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -16397,6 +16437,13 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/fork-messages" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await getForkMessagesData(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/intercom/conversations" && req.method === "GET") {
+      if (!requestedTabId(req, url)) throw makeHttpError(400, "tab is required");
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await getIntercomConversationsData(tab, requestedIntercomConversationId(url)) }, { "cache-control": "private, no-store" });
       return;
     }
 
